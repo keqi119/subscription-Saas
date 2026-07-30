@@ -14,11 +14,12 @@ import {
   VehicleBatteryUsageType,
   VehicleCapitalEventStatus,
   VehicleCapitalEventType,
-  VehicleModel,
   VehiclePoolAllocationMethod,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { FinancingService } from "../src/financing/financing.service";
 import { VehicleAssetPoolService } from "../src/vehicle-asset-pool/vehicle-asset-pool.service";

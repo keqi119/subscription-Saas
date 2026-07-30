@@ -1,5 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma, VehicleModel, VehicleModelDefinition } from "@prisma/client";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException
+} from "@nestjs/common";
+import { Prisma, VehicleModelDefinition } from "@prisma/client";
 
 import { RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
@@ -70,49 +75,61 @@ export class VehicleModelDefinitionService {
 
   async createDefinition(dto: CreateVehicleModelDefinitionDto, user: RequestUser) {
     const normalized = normalizeCreateInput(dto);
-    await this.assertModelCodeAvailable(normalized.modelCode);
-    await this.assertLegacyVehicleModelAvailable(normalized.legacyVehicleModel);
 
     try {
-      const definition = await this.prisma.vehicleModelDefinition.create({
-        data: {
-          ...normalized,
-          createdBy: user.id,
-          snapshot: {
-            source: "BACK_OFFICE",
-            stage: "10X-C"
-          },
-          updatedBy: user.id
-        }
-      });
+      const definition = await this.prisma.$transaction(async (tx) => {
+        await this.assertCodeNamespaceAvailable(
+          [normalized.modelCode],
+          undefined,
+          tx
+        );
+        return tx.vehicleModelDefinition.create({
+          data: {
+            ...normalized,
+            createdBy: user.id,
+            snapshot: {
+              source: "BACK_OFFICE",
+              stage: "10X-C"
+            },
+            updatedBy: user.id
+          }
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       return toVehicleModelDefinitionView(definition);
     } catch (error) {
-      throwUniqueConstraintAsBadRequest(error);
+      throwVehicleModelDefinitionWriteError(error);
     }
   }
 
   async updateDefinition(id: string, dto: UpdateVehicleModelDefinitionDto, user: RequestUser) {
-    await this.findDefinitionOrThrow(id);
-    const data = normalizeUpdateInput(dto);
-
-    if (data.modelCode !== undefined) {
-      await this.assertModelCodeAvailable(data.modelCode as string, id);
-    }
-    if (data.legacyVehicleModel !== undefined && data.legacyVehicleModel !== null) {
-      await this.assertLegacyVehicleModelAvailable(data.legacyVehicleModel as VehicleModel, id);
-    }
-
     try {
-      const definition = await this.prisma.vehicleModelDefinition.update({
-        data: {
-          ...data,
-          updatedBy: user.id
-        },
-        where: { id }
-      });
+      const definition = await this.prisma.$transaction(async (tx) => {
+        const existing = await this.findDefinitionOrThrow(id, tx);
+        const nextModelCode =
+          dto.modelCode === undefined ? existing.modelCode : normalizeModelCode(dto.modelCode);
+        if (nextModelCode !== existing.modelCode) {
+          throw new BadRequestException(
+            "Vehicle model code is immutable after creation."
+          );
+        }
+        await this.assertCodeNamespaceAvailable(
+          [nextModelCode],
+          id,
+          tx
+        );
+        const data = normalizeUpdateInput(dto);
+
+        return tx.vehicleModelDefinition.update({
+          data: {
+            ...data,
+            updatedBy: user.id
+          },
+          where: { id }
+        });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       return toVehicleModelDefinitionView(definition);
     } catch (error) {
-      throwUniqueConstraintAsBadRequest(error);
+      throwVehicleModelDefinitionWriteError(error);
     }
   }
 
@@ -153,8 +170,11 @@ export class VehicleModelDefinitionService {
     return toVehicleModelDefinitionView(definition);
   }
 
-  private async findDefinitionOrThrow(id: string) {
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
+  private async findDefinitionOrThrow(
+    id: string,
+    db: VehicleModelDefinitionWriteClient = this.prisma
+  ) {
+    const definition = await db.vehicleModelDefinition.findFirst({
       where: {
         deletedAt: null,
         id
@@ -168,38 +188,39 @@ export class VehicleModelDefinitionService {
     return definition;
   }
 
-  private async assertModelCodeAvailable(modelCode: string, excludeId?: string) {
-    const existing = await this.prisma.vehicleModelDefinition.findFirst({
-      select: { id: true },
-      where: {
-        modelCode,
-        ...(excludeId ? { id: { not: excludeId } } : {})
-      }
-    });
-
-    if (existing) {
-      throw new BadRequestException("Vehicle model code already exists.");
-    }
-  }
-
-  private async assertLegacyVehicleModelAvailable(legacyVehicleModel?: VehicleModel | null, excludeId?: string) {
-    if (!legacyVehicleModel) {
+  private async assertCodeNamespaceAvailable(
+    values: Array<string | null | undefined>,
+    excludeId?: string,
+    db: VehicleModelDefinitionWriteClient = this.prisma
+  ) {
+    const codes = [...new Set(values.filter((value): value is string => Boolean(value)))];
+    if (codes.length === 0) {
       return;
     }
 
-    const existing = await this.prisma.vehicleModelDefinition.findFirst({
+    const existing = await db.vehicleModelDefinition.findFirst({
       select: { id: true },
       where: {
-        legacyVehicleModel,
+        OR: [
+          { modelCode: { in: codes } },
+          { legacyVehicleModel: { in: codes } }
+        ],
         ...(excludeId ? { id: { not: excludeId } } : {})
       }
     });
 
     if (existing) {
-      throw new BadRequestException("Legacy vehicle model is already mapped.");
+      throw new BadRequestException(
+        "Vehicle model code or legacy alias conflicts with an existing definition."
+      );
     }
   }
 }
+
+type VehicleModelDefinitionWriteClient = Pick<
+  Prisma.TransactionClient,
+  "vehicleModelDefinition"
+>;
 
 function normalizeCreateInput(dto: CreateVehicleModelDefinitionDto) {
   return {
@@ -211,7 +232,6 @@ function normalizeCreateInput(dto: CreateVehicleModelDefinitionDto) {
     driveType: normalizeOptionalText(dto.driveType),
     enabled: dto.enabled ?? true,
     energyType: normalizeOptionalText(dto.energyType),
-    legacyVehicleModel: dto.legacyVehicleModel ?? null,
     modelCode: normalizeModelCode(dto.modelCode),
     modelName: normalizeRequiredText(dto.modelName),
     modelYear: dto.modelYear ?? null,
@@ -240,8 +260,6 @@ function normalizeUpdateInput(dto: UpdateVehicleModelDefinitionDto): Prisma.Vehi
   assignIfDefined(data, "driveType", normalizeOptionalText(dto.driveType), dto.driveType !== undefined);
   assignIfDefined(data, "enabled", dto.enabled);
   assignIfDefined(data, "energyType", normalizeOptionalText(dto.energyType), dto.energyType !== undefined);
-  assignIfDefined(data, "legacyVehicleModel", dto.legacyVehicleModel ?? null, dto.legacyVehicleModel !== undefined);
-  assignIfDefined(data, "modelCode", dto.modelCode === undefined ? undefined : normalizeModelCode(dto.modelCode));
   assignIfDefined(data, "modelName", dto.modelName === undefined ? undefined : normalizeRequiredText(dto.modelName));
   assignIfDefined(data, "modelYear", dto.modelYear ?? null, dto.modelYear !== undefined);
   assignIfDefined(data, "officialRangeKm", dto.officialRangeKm ?? null, dto.officialRangeKm !== undefined);
@@ -328,9 +346,20 @@ function toVehicleModelDefinitionView(definition: VehicleModelDefinition) {
   };
 }
 
-function throwUniqueConstraintAsBadRequest(error: unknown): never {
-  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+function throwVehicleModelDefinitionWriteError(error: unknown): never {
+  const code =
+    error instanceof Prisma.PrismaClientKnownRequestError
+      ? error.code
+      : error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : null;
+  if (code === "P2002") {
     throw new BadRequestException("Vehicle model definition conflicts with an existing record.");
+  }
+  if (code === "P2034") {
+    throw new ConflictException(
+      "Vehicle model definition changed concurrently. Please retry."
+    );
   }
 
   throw error;

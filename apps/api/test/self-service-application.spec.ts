@@ -14,10 +14,11 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { CustomerService } from "../src/customer/customer.service";
 
@@ -214,6 +215,53 @@ describe("self-service application intake API rules", () => {
     expect(harness.tx.vehicle.updateMany).not.toHaveBeenCalled();
   });
 
+  it("accepts a canonical plan for a historical legacy-code vehicle", async () => {
+    const modelDefinition = {
+      displayName: "NIO ET5",
+      id: "model-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    };
+    const harness = createSelfServiceApplicationHarness({
+      plan: {
+        vehiclePackage: {
+          modelDefinition,
+          modelDefinitionId: modelDefinition.id,
+          vehicleModel: modelDefinition.modelCode
+        }
+      },
+      vehicle: {
+        modelDefinition: null,
+        modelDefinitionId: null,
+        vehicleModel: VehicleModel.ET5
+      }
+    });
+
+    await expect(
+      harness.service.createSelfServiceApplication(
+        {
+          customerId: harness.customer.id,
+          periodMonths: 12,
+          subscriptionPlanId: harness.plan.id,
+          vehicleId: harness.vehicle.id
+        },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({ status: ApplicationStatus.SUBMITTED });
+    expect(harness.prisma.subscriptionPlan.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          vehiclePackage: {
+            include: expect.objectContaining({
+              modelDefinition: { select: expect.any(Object) }
+            })
+          }
+        })
+      })
+    );
+  });
+
   it("rejects manual quote plans for A-line self-service intake", async () => {
     const harness = createSelfServiceApplicationHarness({
       plan: { monthlyFeeMode: MonthlyFeeMode.MANUAL_QUOTE }
@@ -356,7 +404,7 @@ function createSelfServiceApplicationHarness(overrides: {
     {} as never
   );
 
-  return { auditService, context, customer, plan, service, state, tx, user, vehicle };
+  return { auditService, context, customer, plan, prisma, service, state, tx, user, vehicle };
 }
 
 function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}) {

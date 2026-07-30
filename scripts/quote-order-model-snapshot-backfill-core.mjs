@@ -53,7 +53,7 @@ export function buildQuoteSnapshotPlan({ definitions, quotes }) {
       continue;
     }
 
-    updates.push(snapshotUpdateFromDefinition({ definition: match.definition, id: quote.id, source: "legacyVehicleModel", vehicleModel }));
+    updates.push(snapshotUpdateFromDefinition({ definition: match.definition, id: quote.id, source: "vehicleModel", vehicleModel }));
   }
 
   return {
@@ -114,7 +114,7 @@ export function buildOrderSnapshotPlan({ definitions, orders, quotePlan }) {
     }
 
     updates.push({
-      ...snapshotUpdateFromDefinition({ definition: match.definition, id: order.id, source: "legacyVehicleModel", vehicleModel }),
+      ...snapshotUpdateFromDefinition({ definition: match.definition, id: order.id, source: "vehicleModel", vehicleModel }),
       quoteId
     });
   }
@@ -157,18 +157,22 @@ function buildDefinitionMap(definitions) {
   const map = new Map();
 
   for (const definition of definitions) {
-    if (definition.deletedAt || !definition.legacyVehicleModel) {
+    if (definition.deletedAt) {
       continue;
     }
 
-    const key = clean(definition.legacyVehicleModel);
-    if (!key) {
-      continue;
-    }
+    for (const code of [definition.modelCode, definition.legacyVehicleModel]) {
+      const key = clean(code);
+      if (!key) {
+        continue;
+      }
 
-    const bucket = map.get(key) ?? [];
-    bucket.push(definition);
-    map.set(key, bucket);
+      const bucket = map.get(key) ?? [];
+      if (!bucket.some((candidate) => candidate.id === definition.id)) {
+        bucket.push(definition);
+      }
+      map.set(key, bucket);
+    }
   }
 
   return map;

@@ -31,7 +31,6 @@ import {
   PRODUCT_VERSION_STATUS_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
-  VEHICLE_MODEL_LABELS,
   labelOf
 } from "../../constants/labels";
 import {
@@ -140,7 +139,6 @@ interface PackageValues {
   remark?: string | null;
   serviceDescription?: string | null;
   stationScope?: string | null;
-  vehicleModel?: string | null;
   vehicleModelName?: string | null;
 }
 
@@ -197,7 +195,6 @@ interface VehicleModelDefinitionSummary {
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
 }
 
@@ -212,9 +209,6 @@ const statusColors: Record<string, string> = {
   INACTIVE: "default"
 };
 
-const vehicleOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
-  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
-);
 const benefitOptions = [
   { label: "洗车权益", value: "WASH_CAR" },
   { label: "换车权益", value: "CAR_SWAP" },
@@ -270,17 +264,14 @@ function toCents(value?: number | null) {
 }
 
 function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
-  return `${definition.modelCode} - ${definition.displayName} (legacy: ${labelOf(
-    VEHICLE_MODEL_LABELS,
-    definition.legacyVehicleModel
-  )})`;
+  return `${definition.modelCode} - ${definition.displayName}`;
 }
 
 function packageModelDisplayName(row?: PackageRow | null) {
   if (!row) {
     return "-";
   }
-  return row.modelDisplayName ?? row.modelDefinition?.displayName ?? labelOf(VEHICLE_MODEL_LABELS, row.vehicleModel);
+  return row.modelDisplayName ?? row.modelDefinition?.displayName ?? row.vehicleModel ?? "-";
 }
 
 function getErrorMessage(error: unknown) {
@@ -477,25 +468,12 @@ function ProductsPageContent() {
   );
   const vehicleModelDefinitionOptions = useMemo(
     () =>
-      vehicleModelDefinitions
-        .filter((definition) => definition.legacyVehicleModel)
-        .map((definition) => ({
+      vehicleModelDefinitions.map((definition) => ({
           label: modelDefinitionOptionLabel(definition),
           value: definition.id
         })),
     [vehicleModelDefinitions]
   );
-  const vehicleModelDefinitionById = useMemo(
-    () => new Map(vehicleModelDefinitions.map((definition) => [definition.id, definition])),
-    [vehicleModelDefinitions]
-  );
-
-  function syncPackageLegacyVehicleModel(modelDefinitionId?: string) {
-    const definition = modelDefinitionId ? vehicleModelDefinitionById.get(modelDefinitionId) : null;
-    if (definition?.legacyVehicleModel) {
-      packageForm.setFieldValue("vehicleModel", definition.legacyVehicleModel);
-    }
-  }
 
   function openProductModal(product?: Product) {
     setEditingProduct(product ?? null);
@@ -1121,11 +1099,11 @@ function ProductsPageContent() {
             <Alert
               showIcon
               style={{ marginBottom: 16 }}
-              message="当前车型包仍使用兼容车型，建议补充车型代码主数据。"
+              message="当前车型包尚未关联车型主数据；可在本次编辑时选择车型代码完成关联。"
               type="warning"
             />
           ) : null}
-          {packageFields(packageKind, vehicleModelDefinitionOptions, syncPackageLegacyVehicleModel, !editingPackage)}
+          {packageFields(packageKind, vehicleModelDefinitionOptions, !editingPackage)}
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
         </Form>
       </Modal>
@@ -1300,7 +1278,7 @@ function ProductsPageContent() {
 function defaultPackageValues(kind: PackageKind): Partial<PackageValues> {
   const base = { priceAmountYuan: 0 };
   if (kind === "vehicle") {
-    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035, vehicleModel: null };
+    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035 };
   }
   if (kind === "mileage") {
     return { ...base, monthlyMileageKm: 1500, overMileageFeeAmountYuan: 1 };
@@ -1373,14 +1351,13 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
 function packageFields(
   kind: PackageKind,
   modelDefinitionOptions: Array<{ label: string; value: string }>,
-  onModelDefinitionChange: (value?: string) => void,
   requireModelDefinition = false
 ) {
   if (kind === "vehicle") {
     return (
       <>
         <Form.Item
-          extra="新增车型包必须关联车型主数据；仅展示已映射 legacy 车型的启用主数据。"
+          extra="新增车型包必须关联车型主数据。"
           label="车型代码（主数据）"
           name="modelDefinitionId"
           rules={
@@ -1391,17 +1368,9 @@ function packageFields(
         >
           <Select
             options={modelDefinitionOptions}
-            onChange={(value?: string) => onModelDefinitionChange(value)}
             showSearch
             optionFilterProp="label"
           />
-        </Form.Item>
-        <Form.Item
-          extra="兼容车型由车型代码自动带出，主要用于历史兼容。"
-          label="兼容车型（legacy）"
-          name="vehicleModel"
-        >
-          <Select disabled options={vehicleOptions} />
         </Form.Item>
         <Form.Item label="车型包展示名" name="vehicleModelName"><Input /></Form.Item>
         <Form.Item label="品牌" name="brand"><Input /></Form.Item>
@@ -1506,7 +1475,6 @@ function packageSpecificColumns(kind: PackageKind): ColumnsType<PackageRow> {
     return [
       { render: (_, record) => record.modelDefinition?.modelCode ?? "-", title: "车型代码", width: 120 },
       { render: (_, record) => packageModelDisplayName(record), title: "车型显示名", width: 150 },
-      { render: (_, record) => labelOf(VEHICLE_MODEL_LABELS, record.vehicleModel), title: "legacy 车型", width: 110 },
       { dataIndex: "monthlyFeeRate", render: formatRate, title: "月费率", width: 100 },
       { render: (_, record) => `${record.minPeriodMonths ?? "-"} - ${record.maxPeriodMonths ?? "-"} 个月`, title: "订阅周期", width: 140 }
     ];

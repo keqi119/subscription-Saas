@@ -400,7 +400,7 @@ async function createScenarioVehicle({
   vehicleNo,
   vin
 }) {
-  const modelDefinition = await getVehicleModelDefinitionByLegacy("ET5");
+  const modelDefinition = await getVehicleModelDefinitionByCode("NIO_ET5");
   const vehicle = await prisma.vehicle.create({
     data: {
       assetLocation: "SCN9 acceptance pool",
@@ -426,7 +426,7 @@ async function createScenarioVehicle({
       series: "ET5",
       status: "AVAILABLE",
       updatedBy: operatorId,
-      vehicleModel: "ET5",
+      vehicleModel: "NIO_ET5",
       vehicleNo,
       vin
     }
@@ -476,21 +476,21 @@ async function createScenarioVehicle({
   return vehicle;
 }
 
-async function getVehicleModelDefinitionByLegacy(legacyVehicleModel) {
+async function getVehicleModelDefinitionByCode(modelCode) {
   const definition = await prisma.vehicleModelDefinition.findFirst({
     select: {
       id: true,
-      legacyVehicleModel: true
+      modelCode: true
     },
     where: {
       deletedAt: null,
       enabled: true,
-      legacyVehicleModel
+      modelCode
     }
   });
 
   if (!definition) {
-    throw new Error(`VehicleModelDefinition is required for scenario vehicle model ${legacyVehicleModel}.`);
+    throw new Error(`VehicleModelDefinition is required for scenario vehicle model code ${modelCode}.`);
   }
 
   return definition;

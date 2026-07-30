@@ -33,14 +33,17 @@ import {
   VehicleDepreciationPolicyStatus,
   VehicleDepreciationRecordStatus,
   VehicleDepreciationScheduleStatus,
-  VehicleModel,
   VehicleResidualForecastPointStatus,
   VehicleResidualForecastStatus,
   VehicleStatus
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
-import { VehicleModelLegacyAdapter } from "../common/vehicle-model-resolver";
+import {
+  buildVehicleModelCanonicalCodeMap,
+  canonicalVehicleModelCode,
+  VehicleModelLegacyAdapter
+} from "../common/vehicle-model-resolver";
 import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
 import {
   buildVehicleAssetCostProfilePreview,
@@ -145,7 +148,7 @@ type ReportModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
 export class ReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: VehicleModel | undefined) {
+  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: string | undefined) {
     if (!modelDefinitionId) {
       return null;
     }
@@ -161,7 +164,7 @@ export class ReportService {
     if (!definition) {
       throw new BadRequestException("车型主数据不存在");
     }
-    if (vehicleModel && vehicleModel !== definition.legacyVehicleModel) {
+    if (vehicleModel && vehicleModel !== definition.modelCode) {
       throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
     }
 
@@ -170,7 +173,7 @@ export class ReportService {
 
   private async resolveReportModelDefinitionIdentity(
     modelDefinitionId: string | undefined,
-    vehicleModel: VehicleModel | undefined
+    vehicleModel: string | undefined
   ) {
     if (!modelDefinitionId && !vehicleModel) {
       return null;
@@ -200,7 +203,15 @@ export class ReportService {
       return {};
     }
 
-    return { modelDefinitionId: definition.modelDefinitionId };
+    return {
+      OR: [
+        { modelDefinitionId: definition.modelDefinitionId },
+        {
+          modelDefinitionId: null,
+          vehicleModel: { in: definition.compatibleVehicleModelCodes }
+        }
+      ]
+    };
   }
 
   private async reportOrderModelWhere(
@@ -214,7 +225,19 @@ export class ReportService {
     return {
       OR: [
         { modelDefinitionIdSnapshot: definition.modelDefinitionId },
-        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } }
+        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } },
+        {
+          modelDefinitionIdSnapshot: null,
+          vehicleModel: { in: definition.compatibleVehicleModelCodes }
+        },
+        {
+          legacyVehicleModelSnapshot: { in: definition.compatibleVehicleModelCodes },
+          modelDefinitionIdSnapshot: null
+        },
+        {
+          legacyVehicleModelCodeSnapshot: { in: definition.compatibleVehicleModelCodes },
+          modelDefinitionIdSnapshot: null
+        }
       ]
     };
   }
@@ -327,7 +350,14 @@ export class ReportService {
       ...(query.productId ? { productId: query.productId } : {})
     };
 
-    const [totalOrders, statusGroups, sourceGroups, vehicleModelGroups, ordersWithPlans] =
+    const [
+      totalOrders,
+      statusGroups,
+      sourceGroups,
+      vehicleModelGroups,
+      ordersWithPlans,
+      modelDefinitions
+    ] =
       await Promise.all([
         this.prisma.subscriptionOrder.count({ where }),
         this.prisma.subscriptionOrder.groupBy({
@@ -355,20 +385,19 @@ export class ReportService {
               }
             }
           }
+        }),
+        this.prisma.vehicleModelDefinition.findMany({
+          select: { legacyVehicleModel: true, modelCode: true }
         })
       ]);
+    const canonicalCodeByAlias = buildVehicleModelCanonicalCodeMap(modelDefinitions);
 
     return {
       dateRange: range.output,
       totalOrders,
       byStatus: enumCountRows(OrderStatus, statusGroups, "orderStatus", "orderStatus"),
       bySource: enumCountRows(OrderSource, sourceGroups, "orderSource", "orderSource"),
-      byVehicleModel: enumCountRows(
-        VehicleModel,
-        vehicleModelGroups,
-        "vehicleModel",
-        "vehicleModel"
-      ).filter((row) => row.count > 0),
+      byVehicleModel: vehicleModelCountRows(vehicleModelGroups, canonicalCodeByAlias),
       bySubscriptionPlan: subscriptionPlanRows(ordersWithPlans)
     };
   }
@@ -540,7 +569,8 @@ export class ReportService {
       vehicleTotals,
       vehiclesWithCurrentSalePrice,
       vehicleModelGroups,
-      vehicleIncomeBills
+      vehicleIncomeBills,
+      modelDefinitions
     ] = await Promise.all([
       this.prisma.vehicle.count({ where: vehicleWhere }),
       this.prisma.vehicle.groupBy({
@@ -566,6 +596,9 @@ export class ReportService {
           order: { select: { vehicleModel: true } },
           paidAmount: true
         }
+      }),
+      this.prisma.vehicleModelDefinition.findMany({
+        select: { legacyVehicleModel: true, modelCode: true }
       })
     ]);
 
@@ -576,7 +609,8 @@ export class ReportService {
       0
     );
     const totalCurrentSalePriceAmount = toNumber(vehicleTotals._sum.currentSalePriceAmount);
-    const incomeByVehicleModel = incomeMap(vehicleIncomeBills);
+    const canonicalCodeByAlias = buildVehicleModelCanonicalCodeMap(modelDefinitions);
+    const incomeByVehicleModel = incomeMap(vehicleIncomeBills, canonicalCodeByAlias);
 
     // Full ROA/ROE needs funding cost, depreciation, lifecycle revenue, residual value, and expenses.
     return {
@@ -595,7 +629,11 @@ export class ReportService {
       totalPurchasePriceAmount: toNumber(vehicleTotals._sum.purchasePriceAmount),
       totalCurrentSalePriceAmount,
       totalPaidAmount: sumNumbers([...incomeByVehicleModel.values()]),
-      byVehicleModel: vehicleModelAssetRows(vehicleModelGroups, incomeByVehicleModel)
+      byVehicleModel: vehicleModelAssetRows(
+        vehicleModelGroups,
+        incomeByVehicleModel,
+        canonicalCodeByAlias
+      )
     };
   }
 
@@ -5361,7 +5399,7 @@ function reportModelDefinitionSummary(definition: ReportModelDefinition | null |
 
 function reportVehicleModelDisplayName(
   definition: ReportModelDefinition | null | undefined,
-  vehicleModel: VehicleModel | string | null | undefined
+  vehicleModel: string | null | undefined
 ) {
   const summary = reportModelDefinitionSummary(definition);
   return summary?.displayName ?? vehicleModel ?? null;
@@ -7083,13 +7121,47 @@ function leasedVehicleCount(statusCount: Map<string, number>) {
   );
 }
 
-function incomeMap(bills: Array<{ order: { vehicleModel: VehicleModel }; paidAmount: bigint }>) {
+function vehicleModelCountRows(
+  groups: Array<{
+    _count: { _all: number };
+    vehicleModel: string | null;
+  }>,
+  canonicalCodeByAlias: ReadonlyMap<string, string>
+) {
+  const counts = new Map<
+    string | null,
+    { count: number; vehicleModel: string | null }
+  >();
+
+  for (const group of groups) {
+    if (group._count._all <= 0) {
+      continue;
+    }
+    const vehicleModel = canonicalVehicleModelCode(
+      group.vehicleModel,
+      canonicalCodeByAlias
+    );
+    const row = counts.get(vehicleModel) ?? { count: 0, vehicleModel };
+    row.count += group._count._all;
+    counts.set(vehicleModel, row);
+  }
+
+  return [...counts.values()];
+}
+
+function incomeMap(
+  bills: Array<{ order: { vehicleModel: string }; paidAmount: bigint }>,
+  canonicalCodeByAlias: ReadonlyMap<string, string>
+) {
   const result = new Map<string, number>();
 
   for (const bill of bills) {
+    const vehicleModel =
+      canonicalVehicleModelCode(bill.order.vehicleModel, canonicalCodeByAlias) ??
+      bill.order.vehicleModel;
     result.set(
-      bill.order.vehicleModel,
-      (result.get(bill.order.vehicleModel) ?? 0) + Number(bill.paidAmount)
+      vehicleModel,
+      (result.get(vehicleModel) ?? 0) + Number(bill.paidAmount)
     );
   }
 
@@ -7100,29 +7172,34 @@ function vehicleModelAssetRows(
   groups: Array<{
     _count: { _all: number };
     status: VehicleStatus;
-    vehicleModel: VehicleModel | null;
+    vehicleModel: string | null;
   }>,
-  incomeByVehicleModel: Map<string, number>
+  incomeByVehicleModel: Map<string, number>,
+  canonicalCodeByAlias: ReadonlyMap<string, string>
 ) {
   const rows = new Map<
-    string,
+    string | null,
     {
       availableVehicles: number;
       incomeAmount: number;
       leasedVehicles: number;
       totalVehicles: number;
-      vehicleModel: VehicleModel | null;
+      vehicleModel: string | null;
     }
   >();
 
   for (const group of groups) {
-    const key = group.vehicleModel ?? "UNSPECIFIED";
-    const row = rows.get(key) ?? {
+    const vehicleModel = canonicalVehicleModelCode(
+      group.vehicleModel,
+      canonicalCodeByAlias
+    );
+    const row = rows.get(vehicleModel) ?? {
       availableVehicles: 0,
-      incomeAmount: incomeByVehicleModel.get(key) ?? 0,
+      incomeAmount:
+        vehicleModel === null ? 0 : incomeByVehicleModel.get(vehicleModel) ?? 0,
       leasedVehicles: 0,
       totalVehicles: 0,
-      vehicleModel: group.vehicleModel
+      vehicleModel
     };
 
     row.totalVehicles += group._count._all;
@@ -7132,7 +7209,7 @@ function vehicleModelAssetRows(
     if (group.status === VehicleStatus.LEASED || group.status === VehicleStatus.RENTED) {
       row.leasedVehicles += group._count._all;
     }
-    rows.set(key, row);
+    rows.set(vehicleModel, row);
   }
 
   for (const [vehicleModel, incomeAmount] of incomeByVehicleModel.entries()) {
@@ -7142,7 +7219,7 @@ function vehicleModelAssetRows(
         incomeAmount,
         leasedVehicles: 0,
         totalVehicles: 0,
-        vehicleModel: vehicleModel as VehicleModel
+        vehicleModel
       });
     }
   }

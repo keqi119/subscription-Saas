@@ -18,9 +18,10 @@ import {
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleStatus,
-  VehicleModel
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ProductService } from "../src/product/product.service";
@@ -159,6 +160,41 @@ describe("subscription plan backend flow", () => {
         vehicleModel: VehicleModel.ET5
       }
     ]);
+  });
+
+  it("discovers canonical plans for an assisted legacy-code vehicle", async () => {
+    const modelDefinition = makeModelDefinition();
+    const canonicalPackage = makeVehiclePackage({
+      modelDefinition,
+      modelDefinitionId: modelDefinition.id,
+      vehicleModel: modelDefinition.modelCode
+    });
+    const { prisma, service } = makeService({
+      plans: [makeSubscriptionPlan({ vehiclePackage: canonicalPackage })],
+      vehicle: makeVehicle({
+        modelDefinition: null,
+        modelDefinitionId: null,
+        vehicleModel: VehicleModel.ET5
+      })
+    });
+
+    await expect(
+      service.listAvailableSubscriptionPlans("application-1", user, "vehicle-asset-1")
+    ).resolves.toMatchObject([
+      {
+        subscriptionPlanId: "plan-1",
+        vehicleModel: "NIO_ET5"
+      }
+    ]);
+    expect(prisma.subscriptionPlan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.not.objectContaining({ vehiclePackage: expect.anything() })
+      })
+    );
+    expect(prisma.vehicle.findUnique).toHaveBeenCalledWith({
+      include: { modelDefinition: { select: expect.any(Object) } },
+      where: { id: "vehicle-asset-1" }
+    });
   });
 
   it("rejects available plan lookup and quote creation for non-approved applications", async () => {
@@ -357,6 +393,10 @@ describe("subscription plan backend flow", () => {
         where: { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
       })
     );
+    expect(prisma.vehicleModelDefinition.findFirst.mock.calls.slice(0, 2).map(([args]) => args.where)).toEqual([
+      { deletedAt: null, modelCode: VehicleModel.ET5 },
+      { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+    ]);
     expect(prisma.productPriceRule.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -782,10 +822,18 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findUnique: vi.fn().mockResolvedValue(seed.vehiclePackage ?? makeVehiclePackage())
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) =>
+      findFirst: vi.fn(async ({ where }: {
+        where: {
+          deletedAt?: null;
+          id?: string;
+          legacyVehicleModel?: VehicleModel | string;
+          modelCode?: string;
+        };
+      }) =>
         (seed.modelDefinitions ?? [makeModelDefinition()]).find(
           (definition) =>
             (where.id === undefined || definition.id === where.id) &&
+            (where.modelCode === undefined || definition.modelCode === where.modelCode) &&
             (where.legacyVehicleModel === undefined || definition.legacyVehicleModel === where.legacyVehicleModel) &&
             (where.deletedAt !== null || definition.deletedAt === null)
         ) ?? null

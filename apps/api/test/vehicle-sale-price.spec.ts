@@ -13,12 +13,13 @@ import {
   VehicleDepreciationMethod,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
-  VehicleModel,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { AuditService } from "../src/audit/audit.service";
 import { RequestContext, RequestUser } from "../src/auth/auth.types";
@@ -656,7 +657,7 @@ describe("VehicleService sale price baseline", () => {
     for (const vin of ["TESTVINET50000001", "TESTVINET70000001", "TESTVINES60000001"]) {
       expect(seedSource).toContain(`vin: "${vin}"`);
     }
-    for (const vehicleModel of ["ET5", "ET7", "ES6"]) {
+    for (const vehicleModel of ["NIO_ET5", "NIO_ET7", "NIO_ES6"]) {
       expect(seedSource).toContain(`vehicleModel: "${vehicleModel}"`);
     }
     expect(seedSource).toContain("prisma.vehicle.upsert");

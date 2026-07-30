@@ -5,10 +5,11 @@ import {
   OrderSource,
   OrderStatus,
   Prisma,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 describe("A/B order status model schema", () => {
   it("keeps sales-assisted legacy order create input compatible", () => {

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   buildVehicleModelRemovalReadinessReport,
@@ -7,7 +8,7 @@ import {
   validateExternalConsumerRegistry
 } from "./vehicle-model-removal-readiness-core.mjs";
 
-test("scanExternalEnumUsage classifies API, report, CSV, and integration references", () => {
+test("scanExternalEnumUsage classifies API, portal catalog, report, CSV, and integration references", () => {
   const result = scanExternalEnumUsage([
     {
       content: "export class OrderReportQueryDto { vehicleModel?: VehicleModel }",
@@ -20,13 +21,42 @@ test("scanExternalEnumUsage classifies API, report, CSV, and integration referen
     {
       content: "export function buildPayload(order) { return { vehicleModel: order.vehicleModel }; }",
       path: "apps/api/src/external/example-integration.ts"
+    },
+    {
+      content: "export class PortalCatalogService { list(vehicleModel) { return vehicleModel; } }",
+      path: "apps/api/src/portal/portal-catalog.service.ts"
+    },
+    {
+      content: "export interface PortalCatalogVehicle { vehicleModel?: string | null }",
+      path: "apps/web/src/lib/portal-types.ts"
     }
   ]);
 
-  assert.equal(result.totalReferences, 3);
+  assert.equal(result.totalReferences, 5);
   assert.deepEqual(
     result.items.map((item) => item.category).sort(),
-    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION"]
+    ["API_CONTRACT", "CSV_EXPORT", "EXTERNAL_INTEGRATION", "PORTAL_CATALOG", "PORTAL_SHARED_TYPES"]
+  );
+});
+
+test("external consumer registry tracks Web portal shared types separately from catalog", () => {
+  const registry = JSON.parse(
+    readFileSync(
+      new URL("../docs/vehicle-model-external-contract-consumer-register.json", import.meta.url),
+      "utf8"
+    )
+  );
+  const catalogConsumer = registry.consumers.find(
+    (consumer) => consumer.consumerId === "portal-catalog-vehicle-model-compatibility"
+  );
+  const sharedTypesConsumer = registry.consumers.find(
+    (consumer) => consumer.consumerId === "portal-shared-types-vehicle-model-contract"
+  );
+
+  assert.ok(sharedTypesConsumer);
+  assert.equal(sharedTypesConsumer.evidencePath, "apps/web/src/lib/portal-types.ts");
+  assert.ok(
+    !(catalogConsumer.evidencePaths ?? []).includes("apps/web/src/lib/portal-types.ts")
   );
 });
 
@@ -75,12 +105,14 @@ test("buildVehicleModelRemovalReadinessReport combines runtime and external evid
     ]
   });
 
-  assert.equal(report.enumUsageCount, 3);
+  assert.equal(report.compatibilityFieldUsageCount, 3);
   assert.equal(report.businessDecisionUsageCount, 1);
   assert.equal(report.fallbackUsageCount, 1);
   assert.equal(report.externalUsageCount, 1);
-  assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.decision, "READY");
   assert.equal(report.riskClassification, "HIGH");
+  assert.equal(report.enumTypeRemoval.decision, "READY");
+  assert.equal(report.compatibilityFieldRetirement.decision, "NOT_READY");
 });
 
 test("buildVehicleModelRemovalReadinessReport treats deprecation warnings as external usage", () => {
@@ -108,10 +140,27 @@ test("buildVehicleModelRemovalReadinessReport treats deprecation warnings as ext
   });
 
   assert.equal(report.businessDecisionUsageCount, 0);
-  assert.equal(report.enumUsageCount, 1);
+  assert.equal(report.compatibilityFieldUsageCount, 1);
   assert.equal(report.externalUsageCount, 1);
-  assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.decision, "READY");
+  assert.equal(report.enumTypeRemoval.decision, "READY");
+  assert.equal(report.compatibilityFieldRetirement.decision, "NOT_READY");
   assert.equal(report.riskClassification, "MEDIUM");
+});
+
+test("buildVehicleModelRemovalReadinessReport reports a failed no-enum check separately from compatibility retirement", () => {
+  const report = buildVehicleModelRemovalReadinessReport({
+    enumTypeRemoval: {
+      decision: "NOT_READY",
+      dependencies: [{ category: "SCHEMA_ENUM_BLOCK", path: "apps/api/prisma/schema.prisma" }],
+      enforcement: "node scripts/check-vehicle-model-no-enum.mjs"
+    },
+    externalUsage: { items: [], totalReferences: 0 }
+  });
+
+  assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.enumTypeRemoval.decision, "NOT_READY");
+  assert.equal(report.compatibilityFieldRetirement.decision, "READY");
 });
 
 test("validateExternalConsumerRegistry requires every external reference to be registered", () => {

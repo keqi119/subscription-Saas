@@ -32,6 +32,27 @@ test("reports ready when product price rules have unique modelDefinitionId scope
   });
 });
 
+test("accepts a canonical modelCode when the compatibility alias differs", () => {
+  const report = buildProductPriceRuleConstraintReadinessReport({
+    rules: [
+      {
+        id: "rule-nio-et5",
+        modelDefinition: {
+          id: "model-et5",
+          legacyVehicleModel: "ET5",
+          modelCode: "NIO_ET5"
+        },
+        modelDefinitionId: "model-et5",
+        productVersionId: "version-1",
+        vehicleModel: "NIO_ET5"
+      }
+    ]
+  });
+
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.legacyMappingMismatches, []);
+});
+
 test("blocks migration when modelDefinitionId is missing", () => {
   const report = buildProductPriceRuleConstraintReadinessReport({
     rules: [

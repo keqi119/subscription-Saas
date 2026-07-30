@@ -13,10 +13,11 @@ import {
   RecordStatus,
   SalePriceStatus,
   SubscriptionPlanStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { OrderService } from "../src/order/order.service";
 

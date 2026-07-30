@@ -1,14 +1,49 @@
-import { VehicleModel } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
-import { buildQuoteOrderModelDisplay } from "../src/common/vehicle-model-snapshot";
+import {
+  buildQuoteOrderModelDisplay,
+  buildVehicleModelSnapshot
+} from "../src/common/vehicle-model-snapshot";
+
+const VehicleModel = {
+  ES6: "ES6",
+  ET5: "ET5",
+  ET7: "ET7"
+} as const;
 
 describe("quote/order model snapshot display helper", () => {
+  it("freezes a new model definition code without a legacy enum mapping", () => {
+    const snapshot = buildVehicleModelSnapshot({
+      modelDefinition: {
+        displayName: "Model X 2027",
+        id: "model-x-2027",
+        modelCode: "MODEL_X_2027"
+      },
+      modelDefinitionId: "model-x-2027"
+    });
+
+    expect(snapshot).toEqual({
+      legacyVehicleModelSnapshot: "MODEL_X_2027",
+      legacyVehicleModelCodeSnapshot: "MODEL_X_2027",
+      modelDefinitionIdSnapshot: "model-x-2027",
+      modelDisplayNameSnapshot: "Model X 2027"
+    });
+    expect(buildQuoteOrderModelDisplay(snapshot)).toMatchObject({
+      legacyVehicleModelCode: "MODEL_X_2027",
+      modelDisplayName: "Model X 2027",
+      modelDisplaySource: "SNAPSHOT"
+    });
+  });
+
   it("prefers immutable snapshot display names", () => {
     expect(
       buildQuoteOrderModelDisplay({
         legacyVehicleModelSnapshot: VehicleModel.ET5,
-        modelDefinition: { displayName: "Runtime ET5", id: "runtime-model" },
+        modelDefinition: {
+          displayName: "Runtime ET5",
+          id: "runtime-model",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionId: "runtime-model",
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen ET5",
@@ -27,7 +62,11 @@ describe("quote/order model snapshot display helper", () => {
     expect(
       buildQuoteOrderModelDisplay({
         legacyVehicleModelSnapshot: VehicleModel.ET5,
-        modelDefinition: { displayName: "Current ET5 Name", id: "snapshot-model" },
+        modelDefinition: {
+          displayName: "Current ET5 Name",
+          id: "snapshot-model",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: null,
         vehicleModel: VehicleModel.ES6

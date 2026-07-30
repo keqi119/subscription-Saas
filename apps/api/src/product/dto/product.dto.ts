@@ -6,8 +6,7 @@ import {
   ProductVersionStatus,
   QuoteStatus,
   RecordStatus,
-  SubscriptionPlanStatus,
-  VehicleModel
+  SubscriptionPlanStatus
 } from "@prisma/client";
 import {
   IsEnum,
@@ -16,9 +15,13 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
+  MaxLength,
   Min
 } from "class-validator";
+
+const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class CreateProductDto {
   @IsString()
@@ -88,8 +91,10 @@ export class UpdateProductVersionDto {
 export class CreatePriceRuleDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -135,8 +140,10 @@ export class CreatePriceRuleDto {
 export class UpdatePriceRuleDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -244,8 +251,10 @@ export class CreateQuoteDto {
 
   /** @deprecated Legacy compatibility only. Quote model display now uses snapshots where available. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsInt()
@@ -427,8 +436,10 @@ export class CreateVehiclePackageDto {
 
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -486,8 +497,10 @@ export class CreateVehiclePackageDto {
 export class UpdateVehiclePackageDto {
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()

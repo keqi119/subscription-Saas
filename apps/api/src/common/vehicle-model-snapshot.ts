@@ -1,8 +1,11 @@
-import { Prisma, VehicleModel } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+
+import type { VehicleModelCode } from "./vehicle-model-resolver";
 
 export const vehicleModelSnapshotDefinitionSelect = {
   displayName: true,
-  id: true
+  id: true,
+  modelCode: true
 } satisfies Prisma.VehicleModelDefinitionSelect;
 
 export type VehicleModelSnapshotDefinition = Prisma.VehicleModelDefinitionGetPayload<{
@@ -10,8 +13,8 @@ export type VehicleModelSnapshotDefinition = Prisma.VehicleModelDefinitionGetPay
 }>;
 
 export type VehicleModelSnapshot = {
-  legacyVehicleModelSnapshot: VehicleModel | null;
-  legacyVehicleModelCodeSnapshot: string | null;
+  legacyVehicleModelSnapshot: VehicleModelCode | null;
+  legacyVehicleModelCodeSnapshot: VehicleModelCode | null;
   modelDefinitionIdSnapshot: string | null;
   modelDisplayNameSnapshot: string | null;
 };
@@ -26,16 +29,17 @@ export type QuoteOrderModelDisplaySource =
 
 type VehicleModelSnapshotSource = {
   legacyVehicleModelCodeSnapshot?: string | null;
-  legacyVehicleModelSnapshot?: VehicleModel | null;
+  legacyVehicleModelSnapshot?: VehicleModelCode | null;
   modelDefinition?: VehicleModelSnapshotDefinition | null;
   modelDefinitionId?: string | null;
   modelDefinitionIdSnapshot?: string | null;
   modelDisplayNameSnapshot?: string | null;
-  vehicleModel?: VehicleModel | null;
+  vehicleModel?: VehicleModelCode | null;
 };
 
 export function buildVehicleModelSnapshot(source: VehicleModelSnapshotSource): VehicleModelSnapshot {
-  const legacyVehicleModel = source.legacyVehicleModelSnapshot ?? source.vehicleModel ?? null;
+  const legacyVehicleModel =
+    source.legacyVehicleModelSnapshot ?? source.vehicleModel ?? source.modelDefinition?.modelCode ?? null;
   const legacyVehicleModelCode =
     source.legacyVehicleModelCodeSnapshot ?? (legacyVehicleModel ? String(legacyVehicleModel) : null);
   const modelDefinitionId = source.modelDefinitionIdSnapshot ?? source.modelDefinitionId ?? null;

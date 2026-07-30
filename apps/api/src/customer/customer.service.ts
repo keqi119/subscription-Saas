@@ -138,6 +138,11 @@ const selfServicePackageInclude = {
   productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
 } satisfies Prisma.VehiclePackageInclude;
 
+const selfServiceVehiclePackageInclude = {
+  ...selfServicePackageInclude,
+  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+} satisfies Prisma.VehiclePackageInclude;
+
 const selfServiceSubscriptionPlanInclude = {
   benefitPackage: { include: selfServicePackageInclude },
   energyPackage: { include: selfServicePackageInclude },
@@ -163,7 +168,7 @@ const selfServiceSubscriptionPlanInclude = {
       versionNo: true
     }
   },
-  vehiclePackage: { include: selfServicePackageInclude }
+  vehiclePackage: { include: selfServiceVehiclePackageInclude }
 } satisfies Prisma.SubscriptionPlanInclude;
 
 const selfServiceVehicleInclude = {

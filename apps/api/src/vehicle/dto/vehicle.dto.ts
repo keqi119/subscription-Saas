@@ -4,11 +4,12 @@ import {
   VehicleBatteryUsageType,
   VehicleCapitalEventType,
   VehicleDepreciationMethod,
-  VehicleModel,
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
-import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from "class-validator";
+
+const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class CreateVehicleDto {
   @IsString()
@@ -29,8 +30,10 @@ export class CreateVehicleDto {
 
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel | null;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string | null;
 
   @IsOptional()
   @IsUUID("4")
@@ -112,8 +115,10 @@ export class UpdateVehicleDto {
 
   /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
   @IsOptional()
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel | null;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string | null;
 
   @IsOptional()
   @IsUUID("4")

@@ -20,7 +20,6 @@ import {
   VehicleAcquisitionMode,
   VehicleBatteryUsageType,
   VehicleMarketPriceObservation,
-  VehicleModel,
   VehicleModelDefinition,
   VehicleResidualCurve,
   VehicleResidualCurveMethod,
@@ -35,6 +34,8 @@ import {
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { parseCsv, parseCsvRecords } from "../src/residual-market/csv-parser";
 import { calculateConfidenceScore, ResidualMarketService } from "../src/residual-market/residual-market.service";

@@ -70,8 +70,8 @@ async function main() {
 
 async function buildDryRunPlan() {
   const definitions = await prisma.vehicleModelDefinition.findMany({
-    select: { deletedAt: true, enabled: true, id: true, legacyVehicleModel: true },
-    where: { deletedAt: null, enabled: true, legacyVehicleModel: { not: null } }
+    select: { deletedAt: true, enabled: true, id: true, legacyVehicleModel: true, modelCode: true },
+    where: { deletedAt: null, enabled: true }
   });
   const vehicles = await prisma.vehicle.findMany({
     select: { id: true, modelDefinitionId: true, vehicleModel: true }

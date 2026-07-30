@@ -12,7 +12,6 @@ import {
   EntitlementUsageStatus,
   OrderSource,
   OrderStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { Type } from "class-transformer";
@@ -24,9 +23,13 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
+  MaxLength,
   Min
 } from "class-validator";
+
+const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class ReportDateRangeQueryDto {
   @IsOptional()
@@ -53,8 +56,10 @@ export class OrderReportQueryDto extends ReportDateRangeQueryDto {
 
   @IsOptional()
   /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -87,8 +92,10 @@ export class OrderDetailQueryDto extends ReportDetailQueryDto {
 
   @IsOptional()
   /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -198,8 +205,10 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
 
   @IsOptional()
   /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -237,8 +246,10 @@ export const sortOrders = ["asc", "desc"] as const;
 export class AssetProfitabilityQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()
   /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsEnum(VehicleModel)
-  vehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()

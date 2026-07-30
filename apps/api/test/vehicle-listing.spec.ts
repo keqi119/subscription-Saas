@@ -10,11 +10,12 @@ import {
   VehicleListingConditionGrade,
   VehicleListingMediaCategory,
   VehicleListingStatus,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
+
+import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { VehicleListingService } from "../src/vehicle/vehicle-listing.service";
 

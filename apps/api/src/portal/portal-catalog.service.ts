@@ -16,6 +16,10 @@ import {
 } from "@prisma/client";
 import type { Readable } from "node:stream";
 
+import {
+  vehicleModelReadPathMatches,
+  VehicleModelLegacyAdapter
+} from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
@@ -55,6 +59,7 @@ const portalSubscriptionPlanInclude = {
           deletedAt: true,
           displayName: true,
           id: true,
+          legacyVehicleModel: true,
           modelCode: true
         }
       }
@@ -69,6 +74,7 @@ const portalVehicleInclude = {
       deletedAt: true,
       displayName: true,
       id: true,
+      legacyVehicleModel: true,
       modelCode: true
     }
   },
@@ -286,7 +292,9 @@ export class PortalCatalogService {
     return fallbackPlans.map((plan) => ({ plan }));
   }
 
-  private async findAvailablePlansForVehicle(vehicle: Pick<PortalVehicle, "modelDefinitionId" | "vehicleModel">) {
+  private async findAvailablePlansForVehicle(
+    vehicle: Pick<PortalVehicle, "modelDefinition" | "modelDefinitionId" | "vehicleModel">
+  ) {
     const plans = await this.findAvailablePlans();
     return plans.filter((plan) => isPlanAvailableForVehicle(plan, vehicle));
   }
@@ -326,34 +334,30 @@ export class PortalCatalogService {
   }
 
   private async resolveCatalogModelFilter(query: PortalVehicleCatalogQueryDto): Promise<Prisma.VehicleWhereInput> {
-    if (!query.modelDefinitionId) {
-      return query.vehicleModel ? { vehicleModel: query.vehicleModel } : {};
+    if (!query.modelDefinitionId && !query.vehicleModel) {
+      return {};
     }
 
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
-      select: {
-        id: true,
-        legacyVehicleModel: true
+    const definition = await VehicleModelLegacyAdapter.resolveModelDefinitionInput(
+      this.prisma,
+      {
+        modelDefinitionId: query.modelDefinitionId,
+        vehicleModel: query.vehicleModel
       },
-      where: {
-        deletedAt: null,
-        id: query.modelDefinitionId
+      {
+        allowDisabled: true,
+        missingMessage: "车型主数据不存在",
+        mismatchMessage: "modelDefinitionId 与 vehicleModel 不一致"
       }
-    });
-
-    if (!definition) {
-      throw new BadRequestException("车型主数据不存在");
-    }
-    if (query.vehicleModel && query.vehicleModel !== definition.legacyVehicleModel) {
-      throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
-    }
+    );
 
     return {
       OR: [
-        { modelDefinitionId: definition.id },
-        ...(definition.legacyVehicleModel
-          ? [{ modelDefinitionId: null, vehicleModel: definition.legacyVehicleModel }]
-          : [])
+        { modelDefinitionId: definition.modelDefinitionId },
+        {
+          modelDefinitionId: null,
+          vehicleModel: { in: definition.compatibleVehicleModelCodes }
+        }
       ]
     };
   }
@@ -601,15 +605,12 @@ function isPortalSubscriptionPlanAvailable(plan: PortalSubscriptionPlan) {
 
 function isPlanAvailableForVehicle(
   plan: PortalSubscriptionPlan,
-  vehicle: Pick<PortalVehicle, "modelDefinitionId" | "vehicleModel">
+  vehicle: Pick<PortalVehicle, "modelDefinition" | "modelDefinitionId" | "vehicleModel">
 ) {
   if (!isPortalSubscriptionPlanAvailable(plan)) {
     return false;
   }
-  if (vehicle.modelDefinitionId && plan.vehiclePackage.modelDefinitionId) {
-    return vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId;
-  }
-  return Boolean(vehicle.vehicleModel && plan.vehiclePackage.vehicleModel === vehicle.vehicleModel);
+  return vehicleModelReadPathMatches(vehicle, plan.vehiclePackage);
 }
 
 function packageBelongsToPlan(

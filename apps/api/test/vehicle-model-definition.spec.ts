@@ -1,11 +1,142 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { BadRequestException } from "@nestjs/common";
-import { VehicleModel } from "@prisma/client";
+import { BadRequestException, ConflictException, ValidationPipe } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
+import "reflect-metadata";
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  CreateVehicleModelDefinitionDto,
+  UpdateVehicleModelDefinitionDto
+} from "../src/vehicle-model-definition/dto/vehicle-model-definition.dto";
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
+import { VehicleModel, type VehicleModel as VehicleModelCode } from "./helpers/vehicle-model-codes";
+
+const LEGACY_WRITE_ERROR =
+  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
+
+function validateProductionBody<T>(value: unknown, metatype: new () => T) {
+  return new ValidationPipe({
+    transform: true,
+    whitelist: true
+  }).transform(value, {
+    metatype,
+    type: "body"
+  });
+}
+
+async function expectLegacyWriteRejected(validation: Promise<unknown>) {
+  try {
+    await validation;
+    throw new Error("Expected legacyVehicleModel validation to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect((error as BadRequestException).getResponse()).toEqual(
+      expect.objectContaining({
+        message: expect.arrayContaining([LEGACY_WRITE_ERROR])
+      })
+    );
+  }
+}
+
+describe("VehicleModelDefinition write DTO production validation", () => {
+  it("accepts a canonical create payload", async () => {
+    const dto = await validateProductionBody(
+      {
+        brand: "NIO",
+        displayName: "ET5",
+        modelCode: "NIO_ET5",
+        modelName: "ET5"
+      },
+      CreateVehicleModelDefinitionDto
+    );
+
+    expect(dto).toBeInstanceOf(CreateVehicleModelDefinitionDto);
+    expect(dto).toMatchObject({
+      brand: "NIO",
+      displayName: "ET5",
+      modelCode: "NIO_ET5",
+      modelName: "ET5"
+    });
+  });
+
+  it("rejects legacyVehicleModel in a create payload", async () => {
+    await expectLegacyWriteRejected(
+      validateProductionBody(
+        {
+          brand: "NIO",
+          displayName: "ET5",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5",
+          modelName: "ET5"
+        },
+        CreateVehicleModelDefinitionDto
+      )
+    );
+  });
+
+  it.each([null, ""])(
+    "rejects JSON-present legacyVehicleModel=%j in a create payload",
+    async (legacyVehicleModel) => {
+      await expectLegacyWriteRejected(
+        validateProductionBody(
+          {
+            brand: "NIO",
+            displayName: "ET5",
+            legacyVehicleModel,
+            modelCode: "NIO_ET5",
+            modelName: "ET5"
+          },
+          CreateVehicleModelDefinitionDto
+        )
+      );
+    }
+  );
+
+  it("accepts a canonical update payload", async () => {
+    const dto = await validateProductionBody(
+      {
+        displayName: "ET5 2027",
+        modelCode: "NIO_ET5_2027"
+      },
+      UpdateVehicleModelDefinitionDto
+    );
+
+    expect(dto).toBeInstanceOf(UpdateVehicleModelDefinitionDto);
+    expect(dto).toMatchObject({
+      displayName: "ET5 2027",
+      modelCode: "NIO_ET5_2027"
+    });
+  });
+
+  it("rejects legacyVehicleModel in an update payload", async () => {
+    await expectLegacyWriteRejected(
+      validateProductionBody(
+        {
+          legacyVehicleModel: VehicleModel.ET5T,
+          modelCode: "NIO_ET5_TOURING"
+        },
+        UpdateVehicleModelDefinitionDto
+      )
+    );
+  });
+
+  it.each([null, ""])(
+    "rejects JSON-present legacyVehicleModel=%j in an update payload",
+    async (legacyVehicleModel) => {
+      await expectLegacyWriteRejected(
+        validateProductionBody(
+          {
+            legacyVehicleModel,
+            modelCode: "NIO_ET5_TOURING"
+          },
+          UpdateVehicleModelDefinitionDto
+        )
+      );
+    }
+  );
+});
 
 describe("VehicleModelDefinitionService", () => {
   it("creates an enabled model definition without exposing it to portal by default", async () => {
@@ -39,6 +170,95 @@ describe("VehicleModelDefinitionService", () => {
     );
   });
 
+  it("checks the namespace and creates inside a Serializable transaction", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+
+    await service.createDefinition(
+      {
+        brand: "NIO",
+        displayName: "Model X",
+        modelCode: "MODEL_X_2027",
+        modelName: "Model X"
+      },
+      user
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalled();
+    expect(prisma.vehicleModelDefinition.create).toHaveBeenCalled();
+  });
+
+  it("checks the namespace and updates inside a Serializable transaction", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [createDefinition({ id: "definition-et5" })]
+    });
+
+    await service.updateDefinition(
+      "definition-et5",
+      { displayName: "ET5 refreshed", modelCode: "ET5" },
+      user
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+    expect(prisma.vehicleModelDefinition.update).toHaveBeenCalled();
+  });
+
+  it("rejects modelCode renaming after a definition has been created", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [createDefinition({ id: "definition-et5", modelCode: "ET5" })]
+    });
+
+    await expect(
+      service.updateDefinition(
+        "definition-et5",
+        { modelCode: "NIO_ET5" },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.vehicleModelDefinition.update).not.toHaveBeenCalled();
+  });
+
+  it("maps Serializable write conflicts to a safe domain conflict", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+    prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Model X",
+          modelCode: "MODEL_X_2027",
+          modelName: "Model X"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it("maps transaction unique conflicts to a safe validation error", async () => {
+    const { prisma, service, user } = createHarness({ definitions: [] });
+    prisma.$transaction.mockRejectedValueOnce({ code: "P2002" });
+
+    await expect(
+      service.createDefinition(
+        {
+          brand: "NIO",
+          displayName: "Model X",
+          modelCode: "MODEL_X_2027",
+          modelName: "Model X"
+        },
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it("rejects duplicate modelCode including soft-deleted records", async () => {
     const { service, user } = createHarness({
       definitions: [createDefinition({ deletedAt: new Date("2026-06-24T00:00:00.000Z"), modelCode: "ET5T" })]
@@ -57,23 +277,55 @@ describe("VehicleModelDefinitionService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("rejects duplicate legacyVehicleModel mappings", async () => {
+  it("rejects a modelCode that collides with another definition legacy alias", async () => {
     const { service, user } = createHarness({
-      definitions: [createDefinition({ legacyVehicleModel: VehicleModel.ET5, modelCode: "ET5" })]
+      definitions: [
+        createDefinition({
+          id: "definition-existing",
+          legacyVehicleModel: VehicleModel.ET5,
+          modelCode: "NIO_ET5"
+        })
+      ]
     });
 
     await expect(
       service.createDefinition(
         {
           brand: "NIO",
-          displayName: "ET5 legacy duplicate",
-          legacyVehicleModel: VehicleModel.ET5,
-          modelCode: "ET5_COPY",
+          displayName: "Conflicting ET5",
+          modelCode: VehicleModel.ET5,
           modelName: "ET5"
         },
         user
       )
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("never persists legacy aliases when the service is called directly", async () => {
+    const { prisma, service, user } = createHarness({
+      definitions: [createDefinition({ id: "definition-et5", legacyVehicleModel: VehicleModel.ET5 })]
+    });
+    const legacyCreate = {
+      brand: "NIO",
+      displayName: "Model X",
+      legacyVehicleModel: "MODEL_X_2027",
+      modelCode: "MODEL_X_2027",
+      modelName: "Model X"
+    } as unknown as CreateVehicleModelDefinitionDto;
+    const legacyUpdate = {
+      legacyVehicleModel: VehicleModel.ET5T,
+      modelCode: "ET5"
+    } as unknown as UpdateVehicleModelDefinitionDto;
+
+    await service.createDefinition(legacyCreate, user);
+    await service.updateDefinition("definition-et5", legacyUpdate, user);
+
+    expect(prisma.vehicleModelDefinition.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.not.objectContaining({ legacyVehicleModel: expect.anything() }) })
+    );
+    expect(prisma.vehicleModelDefinition.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.not.objectContaining({ legacyVehicleModel: expect.anything() }) })
+    );
   });
 
   it("allows new model definitions without legacyVehicleModel", async () => {
@@ -132,29 +384,40 @@ describe("VehicleModelDefinitionService", () => {
     expect(portalVisibleResult.items.map((item) => item.modelCode)).toEqual(["ET5"]);
   });
 
-  it("keeps seed initialization aligned to the eight legacy enum mappings", () => {
+  it("keeps seed initialization aligned to the eight canonical codes and legacy aliases", () => {
     const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
     expect(seedSource).toContain("const vehicleModelDefinitionSeedRows = [");
-    for (const modelCode of ["ET5", "ET5T", "ET7", "EC6", "ES6", "ES8", "ET9", "ES9"]) {
-      expect(seedSource).toContain(`"${modelCode}"`);
+    for (const [modelCode, legacyAlias] of [
+      ["NIO_ET5", "ET5"],
+      ["NIO_ET5T", "ET5T"],
+      ["NIO_ET7", "ET7"],
+      ["NIO_EC6", "EC6"],
+      ["NIO_ES6", "ES6"],
+      ["NIO_ES8", "ES8"],
+      ["NIO_ET9", "ET9"],
+      ["NIO_ES9", "ES9"]
+    ]) {
+      expect(seedSource).toContain(`["${modelCode}", "${legacyAlias}"`);
     }
     expect(seedSource).toContain("await seedVehicleModelDefinitions(adminUser.id)");
-    expect(seedSource).toContain("prisma.vehicleModelDefinition.upsert");
+    expect(seedSource).toContain("await convergeVehicleModelDefinition(prisma");
   });
 
-  it("keeps Vehicle on the legacy VehicleModel enum while allowing optional master-data linkage", () => {
+  it("keeps Vehicle model compatibility columns as strings with optional master-data linkage", () => {
     const schemaSource = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
 
-    expect(schemaSource).toContain("vehicleModel                  VehicleModel?");
+    expect(schemaSource).toContain("vehicleModel                  String");
     expect(schemaSource).toContain("modelDefinitionId");
     expect(schemaSource).toContain("VehicleModelDefinition?");
+    expect(schemaSource).not.toContain("enum VehicleModel");
   });
 });
 
 function createHarness(options: { definitions?: Array<ReturnType<typeof createDefinition>> } = {}) {
   const definitions = [...(options.definitions ?? [createDefinition()])];
   const prisma = {
+    $transaction: vi.fn(),
     vehicleModelDefinition: {
       count: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) =>
         filterDefinitions(definitions, where).length
@@ -191,6 +454,9 @@ function createHarness(options: { definitions?: Array<ReturnType<typeof createDe
       })
     }
   };
+  prisma.$transaction.mockImplementation(
+    (callback: (tx: typeof prisma) => unknown) => callback(prisma)
+  );
 
   const service = new VehicleModelDefinitionService(prisma as never);
   const user = {
@@ -210,7 +476,7 @@ function createDefinition(options: {
   displayName?: string;
   enabled?: boolean;
   id?: string;
-  legacyVehicleModel?: VehicleModel | null;
+  legacyVehicleModel?: VehicleModelCode | string | null;
   modelCode?: string;
   portalVisible?: boolean;
 } = {}) {
@@ -287,6 +553,12 @@ function matchesOrFilter(definition: ReturnType<typeof createDefinition>, item: 
     return false;
   }
   return Object.entries(item as Record<string, unknown>).some(([field, filter]) => {
+    if (typeof filter === "string") {
+      return definition[field as keyof typeof definition] === filter;
+    }
+    if (isStringInFilter(filter)) {
+      return filter.in.includes(String(definition[field as keyof typeof definition] ?? ""));
+    }
     if (!isStringContainsFilter(filter)) {
       return false;
     }
@@ -305,5 +577,14 @@ function isNotFilter(value: unknown): value is { not: string } {
 function isStringContainsFilter(value: unknown): value is { contains: string } {
   return Boolean(
     value && typeof value === "object" && typeof (value as { contains?: unknown }).contains === "string"
+  );
+}
+
+function isStringInFilter(value: unknown): value is { in: string[] } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as { in?: unknown }).in) &&
+      (value as { in: unknown[] }).in.every((item) => typeof item === "string")
   );
 }

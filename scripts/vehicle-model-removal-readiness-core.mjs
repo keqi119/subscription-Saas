@@ -24,20 +24,24 @@ export function scanExternalEnumUsage(files) {
   };
 }
 
-export function buildVehicleModelRemovalReadinessReport({ externalUsage, runtimeEvents = [] }) {
+export function buildVehicleModelRemovalReadinessReport({
+  enumTypeRemoval = defaultEnumTypeRemoval(),
+  externalUsage,
+  runtimeEvents = []
+}) {
   const externalEvents = externalUsage.items.map((item) => ({
-    decisionPath: "LEGACY_ENUM",
+    decisionPath: "LEGACY_COMPATIBILITY_FIELD",
     legacyVehicleModelCode: null,
     metadata: { category: item.category, path: item.path },
     module: item.category === "CSV_EXPORT" ? "csv" : item.category === "EXTERNAL_INTEGRATION" ? "external" : "api",
     operation: item.category,
     riskLevel: item.riskLevel,
-    usageKind: "EXTERNAL_CONTRACT"
+    usageKind: "EXTERNAL_COMPATIBILITY_FIELD"
   }));
   const events = [...runtimeEvents, ...externalEvents];
-  const enumUsageCount = events.filter(isEnumUsageEvent).length;
+  const compatibilityFieldUsageCount = events.filter(isCompatibilityFieldUsageEvent).length;
   const businessDecisionUsageCount = events.filter(
-    (event) => event.usageKind === "BUSINESS_DECISION" && event.decisionPath === "LEGACY_ENUM"
+    (event) => event.usageKind === "BUSINESS_DECISION" && isLegacyCompatibilityDecision(event.decisionPath)
   ).length;
   const fallbackUsageCount = events.filter((event) => event.usageKind === "FALLBACK").length;
   const externalRuntimeWarningCount = runtimeEvents.filter(
@@ -45,7 +49,7 @@ export function buildVehicleModelRemovalReadinessReport({ externalUsage, runtime
   ).length;
   const externalUsageCount = externalEvents.length + externalRuntimeWarningCount;
   const displayOnlyEnumUsageCount = events.filter(
-    (event) => isEnumUsageEvent(event) && event.usageKind === "DISPLAY"
+    (event) => isCompatibilityFieldUsageEvent(event) && event.usageKind === "DISPLAY"
   ).length;
   const readinessScore = clampReadinessScore(
     100 -
@@ -58,18 +62,33 @@ export function buildVehicleModelRemovalReadinessReport({ externalUsage, runtime
     businessDecisionUsageCount === 0 && fallbackUsageCount === 0 && externalUsageCount === 0 && readinessScore >= 90
       ? "READY"
       : "NOT_READY";
+  const compatibilityFieldRetirement = {
+    decision,
+    externalUsageCount,
+    fallbackUsageCount,
+    readinessScore
+  };
 
   return {
     businessDecisionUsageCount,
-    decision,
-    enumUsageCount,
+    compatibilityFieldRetirement,
+    compatibilityFieldUsageCount,
+    decision: enumTypeRemoval.decision,
+    enumTypeRemoval,
     events,
-    externalEnumUsageMap: externalUsage,
+    externalCompatibilityFieldUsageMap: externalUsage,
     externalUsageCount,
     fallbackUsageCount,
     readinessScore,
     riskClassification: classifyRisk({ businessDecisionUsageCount, externalUsageCount, fallbackUsageCount }),
     totalUsageCount: events.length
+  };
+}
+
+function defaultEnumTypeRemoval() {
+  return {
+    decision: "READY",
+    enforcement: "node scripts/check-vehicle-model-no-enum.mjs"
   };
 }
 
@@ -125,6 +144,12 @@ function classifyExternalUsage(path, content) {
   if (/\bcsv\b|csvexport|导出 csv/i.test(content) || normalizedPath.includes("export")) {
     return "CSV_EXPORT";
   }
+  if (normalizedPath.includes("/portal/portal-catalog")) {
+    return "PORTAL_CATALOG";
+  }
+  if (normalizedPath === "apps/web/src/lib/portal-types.ts") {
+    return "PORTAL_SHARED_TYPES";
+  }
   if (normalizedPath.includes("/dto/") || normalizedPath.includes("controller")) {
     return "API_CONTRACT";
   }
@@ -146,15 +171,20 @@ function riskLevelForCategory(category) {
   if (category === "EXTERNAL_INTEGRATION") {
     return "HIGH";
   }
-  if (category === "API_CONTRACT" || category === "REPORTS_API") {
+  if (
+    category === "API_CONTRACT" ||
+    category === "PORTAL_CATALOG" ||
+    category === "PORTAL_SHARED_TYPES" ||
+    category === "REPORTS_API"
+  ) {
     return "MEDIUM";
   }
   return "LOW";
 }
 
-function isEnumUsageEvent(event) {
+function isCompatibilityFieldUsageEvent(event) {
   return Boolean(
-    event.decisionPath === "LEGACY_ENUM" ||
+    isLegacyCompatibilityDecision(event.decisionPath) ||
       event.legacyVehicleModelCode ||
       event.usageKind === "API_ENUM_FILTER" ||
       event.usageKind === "ENUM_RESOLVE" ||
@@ -163,6 +193,10 @@ function isEnumUsageEvent(event) {
       event.usageKind === "FALLBACK" ||
       event.usageKind === "PRODUCT_PRICE_RULE_INPUT"
   );
+}
+
+function isLegacyCompatibilityDecision(decisionPath) {
+  return decisionPath === "LEGACY_COMPATIBILITY_FIELD" || decisionPath === "LEGACY_ENUM";
 }
 
 function classifyRisk(input) {

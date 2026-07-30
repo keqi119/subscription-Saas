@@ -191,6 +191,11 @@ const packageInclude = {
   productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
 } satisfies Prisma.VehiclePackageInclude;
 
+const vehiclePackageInclude = {
+  ...packageInclude,
+  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+} satisfies Prisma.VehiclePackageInclude;
+
 const subscriptionPlanInclude = {
   benefitPackage: { include: packageInclude },
   energyPackage: { include: packageInclude },
@@ -207,7 +212,7 @@ const subscriptionPlanInclude = {
       versionNo: true
     }
   },
-  vehiclePackage: { include: packageInclude }
+  vehiclePackage: { include: vehiclePackageInclude }
 } satisfies Prisma.SubscriptionPlanInclude;
 
 const orderInclude = {
@@ -2478,14 +2483,14 @@ export class OrderService {
     ensureUserPermission(user, PermissionCode.ORDER_CHANGE_CREATE);
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
-    const orderVehicleModelDefinitionId = order.vehicle ? resolveVehicleModelDefinitionId(order.vehicle) : null;
-    if (!order.vehicleId || !order.vehicle || (!orderVehicleModelDefinitionId && !order.vehicle.vehicleModel)) {
+    if (
+      !order.vehicleId ||
+      !order.vehicle ||
+      (!resolveVehicleModelDefinitionId(order.vehicle) && !order.vehicle.vehicleModel)
+    ) {
       throw new BadRequestException("当前订单未绑定车辆，无法发起套餐变更。");
     }
 
-    const vehiclePackageWhere: Prisma.VehiclePackageWhereInput = orderVehicleModelDefinitionId
-      ? { modelDefinitionId: orderVehicleModelDefinitionId }
-      : { vehicleModel: order.vehicle.vehicleModel! };
     const today = new Date();
     const plans = await this.prisma.subscriptionPlan.findMany({
       include: subscriptionPlanInclude,
@@ -2496,12 +2501,20 @@ export class OrderService {
         OR: [{ effectiveTo: null }, { effectiveTo: { gte: today } }],
         product: { deletedAt: null, status: ProductStatus.ACTIVE },
         productVersion: { deletedAt: null, status: ProductVersionStatus.ACTIVE },
-        status: SubscriptionPlanStatus.ACTIVE,
-        vehiclePackage: vehiclePackageWhere
+        status: SubscriptionPlanStatus.ACTIVE
       }
     });
 
-    return plans.filter(isSubscriptionPlanCurrentlyAvailableForOrder).map(toPlanChangeSubscriptionPlanView);
+    return plans
+      .filter(isSubscriptionPlanCurrentlyAvailableForOrder)
+      .filter((plan) =>
+        vehicleModelReadPathMatches(order.vehicle!, plan.vehiclePackage, {
+          businessDecision: true,
+          module: "order",
+          operation: "order.planChange.availableSubscriptionPlans.package.match"
+        })
+      )
+      .map(toPlanChangeSubscriptionPlanView);
   }
 
   async createOrderChange(orderId: string, dto: CreateOrderChangeDto, user: RequestUser, context: RequestContext) {

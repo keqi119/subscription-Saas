@@ -5,7 +5,6 @@ import {
   SalePriceStatus,
   VehicleAcquisitionMode,
   VehicleBatteryUsageType,
-  VehicleModel,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +14,54 @@ import { RequestContext, RequestUser } from "../src/auth/auth.types";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { VehicleService } from "../src/vehicle/vehicle.service";
 
+const VehicleModel = {
+  EC6: "EC6",
+  ES6: "ES6",
+  ES8: "ES8",
+  ES9: "ES9",
+  ET5: "ET5",
+  ET5T: "ET5T",
+  ET7: "ET7",
+  ET9: "ET9"
+} as const;
+
+type VehicleModelCode = (typeof VehicleModel)[keyof typeof VehicleModel];
+
 describe("VehicleService vehicle model master-data integration", () => {
+  it("creates a vehicle from a new model definition code without a legacy enum mapping", async () => {
+    const definition = makeDefinition({
+      id: "definition-model-x-2027",
+      legacyVehicleModel: null,
+      modelCode: "MODEL_X_2027"
+    });
+    const { prisma, service } = createHarness({ definitions: [definition] });
+
+    await expect(
+      service.createVehicle(
+        {
+          brand: "NIO",
+          modelDefinitionId: definition.id,
+          purchasePriceAmount: 16800000,
+          vin: "TESTVINMODELX2027"
+        },
+        user,
+        context
+      )
+    ).resolves.toMatchObject({
+      modelDefinitionId: definition.id,
+      vehicleModel: "MODEL_X_2027"
+    });
+
+    expect(prisma.vehicle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinition: { connect: { id: definition.id } },
+          vehicleModel: "MODEL_X_2027"
+        })
+      })
+    );
+  });
+
   it("creates a vehicle with modelDefinitionId and writes the mapped legacy VehicleModel", async () => {
     const definition = makeDefinition({ id: "definition-et5t", legacyVehicleModel: VehicleModel.ET5T, modelCode: "ET5T" });
     const { auditService, prisma, service } = createHarness({ definitions: [definition] });
@@ -74,6 +120,37 @@ describe("VehicleService vehicle model master-data integration", () => {
     expect(result.modelDefinitionId).toBe(definition.id);
   });
 
+  it("accepts a legacy alias and normalizes the new vehicle write to modelCode", async () => {
+    const definition = makeDefinition({
+      id: "definition-et5",
+      legacyVehicleModel: VehicleModel.ET5,
+      modelCode: "NIO_ET5"
+    });
+    const { prisma, service } = createHarness({ definitions: [definition] });
+
+    const result = await service.createVehicle(
+      {
+        brand: "NIO",
+        modelDefinitionId: definition.id,
+        purchasePriceAmount: 16800000,
+        vehicleModel: VehicleModel.ET5,
+        vin: "TESTVINET5ALIAS01"
+      },
+      user,
+      context
+    );
+
+    expect(result.vehicleModel).toBe("NIO_ET5");
+    expect(prisma.vehicle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDefinition: { connect: { id: definition.id } },
+          vehicleModel: "NIO_ET5"
+        })
+      })
+    );
+  });
+
   it("rejects modelDefinitionId with mismatched legacy vehicleModel", async () => {
     const definition = makeDefinition({ id: "definition-et7", legacyVehicleModel: VehicleModel.ET7, modelCode: "ET7" });
     const { prisma, service } = createHarness({ definitions: [definition] });
@@ -117,7 +194,7 @@ describe("VehicleService vehicle model master-data integration", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("rejects model definitions without legacyVehicleModel for vehicle creation", async () => {
+  it("uses modelCode when a model definition has no legacy compatibility mapping", async () => {
     const definition = makeDefinition({
       id: "definition-future",
       legacyVehicleModel: null,
@@ -136,7 +213,7 @@ describe("VehicleService vehicle model master-data integration", () => {
         user,
         context
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).resolves.toMatchObject({ vehicleModel: "FUTURE_MODEL" });
   });
 
   it("rejects legacy-only vehicle creation even when a model definition mapping exists", async () => {
@@ -291,6 +368,33 @@ describe("VehicleService vehicle model master-data integration", () => {
       modelDisplayName: VehicleModel.ET5
     });
   });
+
+  it("lists enabled model definitions even when they have no legacy mapping", async () => {
+    const definition = makeDefinition({
+      id: "definition-model-x-2027",
+      legacyVehicleModel: null,
+      modelCode: "MODEL_X_2027"
+    });
+    const { prisma, service } = createHarness({ definitions: [definition] });
+
+    const result = await service.listVehicleModelDefinitionOptions();
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: definition.id,
+        legacyVehicleModel: null,
+        modelCode: "MODEL_X_2027"
+      })
+    ]);
+    expect(prisma.vehicleModelDefinition.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          deletedAt: null,
+          enabled: true
+        }
+      })
+    );
+  });
 });
 
 function createHarness(options: {
@@ -313,7 +417,7 @@ function createHarness(options: {
           modelDefinitionId: definitionId,
           purchasePriceAmount: data.purchasePriceAmount as bigint,
           series: (data.series as string | null | undefined) ?? null,
-          vehicleModel: data.vehicleModel as VehicleModel,
+          vehicleModel: data.vehicleModel as string,
           vin: data.vin as string
         });
         vehicles.push(vehicle);
@@ -343,14 +447,28 @@ function createHarness(options: {
           vehicleModel:
             data.vehicleModel === undefined
               ? current.vehicleModel
-              : data.vehicleModel as VehicleModel
+              : data.vehicleModel as string
         });
         vehicles[index] = updated;
         return updated;
       })
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) =>
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null; enabled?: boolean; legacyVehicleModel?: unknown } }) =>
+        definitions.filter((definition) => {
+          if (where.deletedAt === null && definition.deletedAt !== null) {
+            return false;
+          }
+          if (where.enabled !== undefined && definition.enabled !== where.enabled) {
+            return false;
+          }
+          if (where.legacyVehicleModel && definition.legacyVehicleModel === null) {
+            return false;
+          }
+          return true;
+        })
+      ),
+      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: string } }) =>
         definitions.find((definition) => {
           if (where.deletedAt === null && definition.deletedAt !== null) {
             return false;
@@ -382,7 +500,7 @@ function makeDefinition(options: {
   deletedAt?: Date | null;
   enabled?: boolean;
   id?: string;
-  legacyVehicleModel?: VehicleModel | null;
+  legacyVehicleModel?: VehicleModelCode | null;
   modelCode?: string;
 } = {}) {
   const modelCode = options.modelCode ?? "ET5";

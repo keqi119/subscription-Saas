@@ -1,8 +1,7 @@
 import { Transform, Type } from "class-transformer";
-import { VehicleModel } from "@prisma/client";
 import {
+  Equals,
   IsBoolean,
-  IsEnum,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -15,6 +14,8 @@ import {
 } from "class-validator";
 
 const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
+const LEGACY_WRITE_ERROR =
+  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
 
 function parseOptionalBoolean({ value }: { value: unknown }) {
   if (value === undefined || value === null || value === "") {
@@ -53,8 +54,10 @@ export class VehicleModelDefinitionsQueryDto {
   portalVisible?: boolean;
 
   @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel;
+  @IsString()
+  @MaxLength(64)
+  @Matches(MODEL_CODE_PATTERN)
+  legacyVehicleModel?: string;
 
   @IsOptional()
   @Type(() => Number)
@@ -77,9 +80,8 @@ export class CreateVehicleModelDefinitionDto {
   @Matches(MODEL_CODE_PATTERN)
   modelCode!: string;
 
-  @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel | null;
+  @Equals(undefined, { message: LEGACY_WRITE_ERROR })
+  legacyVehicleModel?: never;
 
   @IsString()
   @IsNotEmpty()
@@ -177,9 +179,8 @@ export class UpdateVehicleModelDefinitionDto {
   @Matches(MODEL_CODE_PATTERN)
   modelCode?: string;
 
-  @IsOptional()
-  @IsEnum(VehicleModel)
-  legacyVehicleModel?: VehicleModel | null;
+  @Equals(undefined, { message: LEGACY_WRITE_ERROR })
+  legacyVehicleModel?: never;
 
   @IsOptional()
   @IsString()

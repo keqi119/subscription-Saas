@@ -1,9 +1,18 @@
 import { BadRequestException, ExecutionContext, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
+import {
+  ContractStatus,
+  DeliveryHandoverStatus,
+  VehicleHandoverWorkflowJobStatus,
+  VehicleHandoverWorkflowJobType
+} from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { DeliveryEvidenceService } from "../src/delivery-evidence/delivery-evidence.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
+import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 import { CustomerAuthGuard } from "../src/portal/portal-auth.guard";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 import { PortalHandoverReviewController } from "../src/portal/portal-handover-review.controller";
@@ -89,6 +98,13 @@ describe("Portal handover review API", () => {
     const serialized = stringifyForSafety(detail);
 
     expect(detail).toMatchObject({
+      evidencePackage: {
+        confirmationText: expect.stringContaining("全部照片和视频"),
+        fileCount: 14,
+        manifestHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        photoCount: 14,
+        videoCount: 0
+      },
       evidenceChecklist: {
         ready: true
       },
@@ -107,7 +123,7 @@ describe("Portal handover review API", () => {
       fileCount: 1,
       files: [
         expect.objectContaining({
-          file: expect.objectContaining({ id: "file-1" })
+          mediaType: "PHOTO"
         })
       ]
     });
@@ -128,7 +144,6 @@ describe("Portal handover review API", () => {
       displayName: "evidence-1.jpg",
       downloadUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/download",
       evidenceFileId: "evidence-file-1",
-      fileId: "file-1",
       mimeType: "image/jpeg",
       previewAvailable: true,
       previewUrl: "/api/portal/handover-reviews/work-order-1/evidence-files/evidence-file-1/preview",
@@ -137,6 +152,38 @@ describe("Portal handover review API", () => {
     expect(serialized).not.toContain("oss/private");
     expect(serialized).not.toContain("objectKey");
     expect(serialized).not.toContain("bucket");
+    expect(firstFile).not.toHaveProperty("fileId");
+    expect(firstFile?.file).not.toHaveProperty("id");
+  });
+
+  it("keeps historical unprocessed evidence visible but disables manifest-bound confirmation", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    harness.state.evidenceChecklist.items[0]!.files[0]!.metadata.processingStatus = "PENDING";
+
+    const detail = await harness.service.getReview("work-order-1", currentCustomer("customer-1"));
+
+    expect(detail.evidenceChecklist.items[0]?.files).toHaveLength(1);
+    expect(detail.evidencePackage).toMatchObject({
+      fileCount: 14,
+      manifestHash: null,
+      ready: false
+    });
+    expect(detail.readiness).toMatchObject({
+      readyForStage2ESign: false,
+      readyForStage2Pdf: false
+    });
+  });
+
+  it("does not disguise unexpected evidence package failures as normal processing state", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    vi.spyOn(harness.handoverWorkOrderService, "getCurrentEvidencePackage")
+      .mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      harness.service.getReview("work-order-1", currentCustomer("customer-1"))
+    ).rejects.toThrow("database unavailable");
   });
 
   it("streams only customer-owned evidence files through the Portal proxy", async () => {
@@ -201,10 +248,14 @@ describe("Portal handover review API", () => {
     await expect(harness.handoverWorkOrderService.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
       "客户尚未确认"
     );
+    const review = await harness.service.getReview("work-order-1", currentCustomer("customer-1"));
 
     const detail = await harness.service.confirmNoObjection(
       "work-order-1",
-      { acknowledgement: true },
+      {
+        acknowledgement: true,
+        manifestHash: review.evidencePackage.manifestHash!
+      },
       currentCustomer("customer-1")
     );
 
@@ -218,7 +269,110 @@ describe("Portal handover review API", () => {
       status: "CUSTOMER_CONFIRMED"
     });
     await expect(harness.handoverWorkOrderService.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
+    expect(harness.state.reviewAttempts[0]).toMatchObject({
+      evidenceSnapshot: {
+        evidencePackage: {
+          manifestHash: review.evidencePackage.manifestHash
+        }
+      },
+      status: "CUSTOMER_CONFIRMED"
+    });
+    const firstMetadata = harness.state.evidenceChecklist.items[0]!.files[0]!.metadata;
+    firstMetadata.sourceSha256 = `sha256:${"e".repeat(64)}`;
+    await expect(harness.handoverWorkOrderService.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
+      "客户确认未绑定当前交接证据"
+    );
     expectNoStage2SideEffects(harness);
+  });
+
+  it("returns PDF_PENDING and the same durable job for repeated workflow confirmation", async () => {
+    const harness = createPortalReviewHarness({ workflowEnabled: true });
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    const review = await harness.service.getReview(
+      "work-order-1",
+      currentCustomer("customer-1")
+    );
+    const input = {
+      acknowledgement: true,
+      manifestHash: review.evidencePackage.manifestHash!
+    };
+
+    const first = await harness.service.confirmNoObjection(
+      "work-order-1",
+      input,
+      currentCustomer("customer-1")
+    );
+    const repeated = await harness.service.confirmNoObjection(
+      "work-order-1",
+      input,
+      currentCustomer("customer-1")
+    );
+
+    expect(first.stage2Workflow).toMatchObject({
+      jobId: harness.state.workflowJobs[0]!.id,
+      state: "PDF_PENDING"
+    });
+    expect(repeated.stage2Workflow).toEqual(first.stage2Workflow);
+    expect(harness.state.workflowJobs).toHaveLength(1);
+    expect(harness.state.workflowJobs[0]).toMatchObject({
+      jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+    });
+    expectNoStage2SideEffects(harness);
+  });
+
+  it.each([
+    ["PDF_PENDING", null],
+    ["PDF_READY", 1],
+    ["WORKFLOW_EXCEPTION", null]
+  ] as const)(
+    "exposes the local %s workflow projection without advancing provider state",
+    async (state, artifactVersion) => {
+      const harness = createPortalReviewHarness({
+        workflowEnabled: true,
+        workflowProjection: {
+          artifactVersion,
+          errorCode: state === "WORKFLOW_EXCEPTION" ? "WORKFLOW_ERROR" : null,
+          jobId: "workflow-job-1",
+          state
+        }
+      });
+      harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+      const detail = await harness.service.getReview(
+        "work-order-1",
+        currentCustomer("customer-1")
+      );
+
+      expect(detail.stage2Workflow).toEqual({
+        artifactVersion,
+        errorCode: state === "WORKFLOW_EXCEPTION" ? "WORKFLOW_ERROR" : null,
+        jobId: "workflow-job-1",
+        state
+      });
+      expect(harness.stage2HandoverWorkflowService.getProjection)
+        .toHaveBeenCalledWith("work-order-1");
+      expectNoStage2SideEffects(harness);
+    }
+  );
+
+  it("rejects a stale evidence manifest hash and leaves the review unconfirmed", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+
+    await expect(harness.service.confirmNoObjection(
+      "work-order-1",
+      {
+        acknowledgement: true,
+        manifestHash: `sha256:${"f".repeat(64)}`
+      },
+      currentCustomer("customer-1")
+    )).rejects.toThrow("交接证据已变化");
+
+    expect(harness.state.workOrders[0]).toMatchObject({
+      customerConfirmedAt: null,
+      status: "CUSTOMER_REVIEWING"
+    });
   });
 
   it("blocks confirmation before field evidence is submitted", async () => {
@@ -226,7 +380,11 @@ describe("Portal handover review API", () => {
     harness.state.workOrders.push(completeReviewWorkOrder(harness, { status: "FIELD_IN_PROGRESS" }));
 
     await expect(
-      harness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      harness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toBeInstanceOf(BadRequestException);
     expectNoStage2SideEffects(harness);
   });
@@ -241,7 +399,11 @@ describe("Portal handover review API", () => {
     );
 
     await expect(
-      harness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      harness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toThrow("客户已确认");
   });
 
@@ -255,13 +417,21 @@ describe("Portal handover review API", () => {
       })
     );
     await expect(
-      objectedHarness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-1"))
+      objectedHarness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-1")
+      )
     ).rejects.toThrow("客户已提交异议");
 
     const unrelatedHarness = createPortalReviewHarness();
     unrelatedHarness.state.workOrders.push(completeReviewWorkOrder(unrelatedHarness));
     await expect(
-      unrelatedHarness.service.confirmNoObjection("work-order-1", {}, currentCustomer("customer-other"))
+      unrelatedHarness.service.confirmNoObjection(
+        "work-order-1",
+        { acknowledgement: true, manifestHash: `sha256:${"0".repeat(64)}` },
+        currentCustomer("customer-other")
+      )
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
@@ -333,7 +503,119 @@ describe("Portal handover review API", () => {
   });
 });
 
-function createPortalReviewHarness() {
+describe("Stage2HandoverWorkflowService local projection", () => {
+  it.each([
+    {
+      label: "handover status",
+      mutate(source: Record<string, unknown>) {
+        source.status = DeliveryHandoverStatus.DRAFT;
+      }
+    },
+    {
+      label: "Contract artifact snapshot",
+      mutate(source: Record<string, unknown>) {
+        const contract = source.handoverContract as Record<string, unknown>;
+        const snapshot = contract.contractSnapshot as Record<string, unknown>;
+        snapshot.stage2HandoverPdfArtifact = {
+          artifactVersion: 2,
+          fileId: "different-file",
+          sourcePdfHash: "f".repeat(64)
+        };
+      }
+    }
+  ])(
+    "returns WORKFLOW_EXCEPTION when the local $label is invalid",
+    async ({ mutate }) => {
+      const manifestHash = "a".repeat(64);
+      const sourcePdfHash = "b".repeat(64);
+      const source: Record<string, unknown> = {
+        artifactVersion: 1,
+        handoverContract: {
+          contractSnapshot: {
+            evidencePackage: {
+              manifestHash: `sha256:${manifestHash}`
+            },
+            fileId: "file-pdf-1",
+            handoverId: "handover-1",
+            orderId: "order-1",
+            stage2HandoverPdfArtifact: {
+              artifactVersion: 1,
+              fileId: "file-pdf-1",
+              sourcePdfHash
+            },
+            workOrderId: "work-order-1"
+          },
+          customerId: "customer-1",
+          deletedAt: null,
+          fileId: "file-pdf-1",
+          id: "contract-stage2-1",
+          orderId: "order-1",
+          status: ContractStatus.GENERATED
+        },
+        handoverContractId: "contract-stage2-1",
+        id: "handover-1",
+        manifestHash,
+        orderId: "order-1",
+        sourceDocumentFileId: "file-pdf-1",
+        sourceObjectKey: "contracts/contract-stage2-1/generated/source.pdf",
+        sourcePdfHash,
+        status: DeliveryHandoverStatus.SOURCE_GENERATED
+      };
+      mutate(source);
+      const prisma = {
+        fileObject: {
+          findUnique: vi.fn(async () => ({
+            bucket: "application-materials",
+            id: "file-pdf-1",
+            mimeType: "application/pdf",
+            objectKey: source.sourceObjectKey,
+            sizeBytes: 1024n
+          }))
+        },
+        vehicleHandoverWorkflowJob: {
+          findFirst: vi.fn(async () => ({
+            id: "workflow-job-1",
+            jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
+            payload: { manifestHash: `sha256:${manifestHash}` }
+          }))
+        },
+        vehicleHandoverWorkOrder: {
+          findUnique: vi.fn(async () => ({
+            handover: source,
+            handoverId: "handover-1",
+            id: "work-order-1",
+            order: { customerId: "customer-1" },
+            orderId: "order-1"
+          }))
+        }
+      };
+      const service = new Stage2HandoverWorkflowService(
+        prisma as never,
+        new ConfigService({ STAGE2_HANDOVER_WORKFLOW_ENABLED: "true" }),
+        {} as never,
+        {} as never
+      );
+
+      await expect(service.getProjection("work-order-1")).resolves.toEqual({
+        artifactVersion: null,
+        errorCode: "SOURCE_ARTIFACT_INVALID",
+        jobId: "workflow-job-1",
+        state: "WORKFLOW_EXCEPTION"
+      });
+      expect(prisma.fileObject.findUnique).toHaveBeenCalledOnce();
+    }
+  );
+});
+
+function createPortalReviewHarness(options: {
+  workflowEnabled?: boolean;
+  workflowProjection?: {
+    artifactVersion: number | null;
+    errorCode: null | string;
+    jobId: null | string;
+    state: "PDF_PENDING" | "PDF_READY" | "WORKFLOW_EXCEPTION";
+  };
+} = {}) {
   const now = new Date("2026-07-22T08:00:00.000Z");
   const orderId = "order-1";
   const state = {
@@ -429,6 +711,8 @@ function createPortalReviewHarness() {
         vehicleId: "vehicle-other"
       }
     ],
+    reviewAttempts: [] as Array<Record<string, unknown>>,
+    workflowJobs: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>
   };
 
@@ -450,6 +734,57 @@ function createPortalReviewHarness() {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         state.evidenceFiles.find((file) => matchesEvidenceFileWhere(file, where)) ?? null
       )
+    },
+    vehicleHandoverReviewAttempt: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const attempt = {
+          ...data,
+          createdAt: now,
+          id: `review-attempt-${state.reviewAttempts.length + 1}`,
+          updatedAt: now
+        };
+        state.reviewAttempts.push(attempt);
+        return attempt;
+      }),
+      findFirst: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        [...state.reviewAttempts]
+          .filter((attempt) => attempt.workOrderId === where.workOrderId)
+          .sort((left, right) => Number(right.attemptNo) - Number(left.attemptNo))[0] ?? null
+      ),
+      findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        state.reviewAttempts.filter((attempt) => attempt.workOrderId === where.workOrderId)
+      ),
+      update: vi.fn(async ({ data, where }: {
+        data: Record<string, unknown>;
+        where: { id?: string };
+      }) => {
+        const attempt = state.reviewAttempts.find((item) => item.id === where.id);
+        if (!attempt) {
+          throw new Error("review attempt not found");
+        }
+        Object.assign(attempt, data, { updatedAt: now });
+        return attempt;
+      })
+    },
+    vehicleHandoverWorkflowJob: {
+      upsert: vi.fn(async ({ create, where }: {
+        create: Record<string, unknown>;
+        where: { idempotencyKey: string };
+      }) => {
+        const existing = state.workflowJobs.find(
+          (job) => job.idempotencyKey === where.idempotencyKey
+        );
+        if (existing) {
+          return existing;
+        }
+        const job = {
+          ...create,
+          id: `workflow-job-${state.workflowJobs.length + 1}`,
+          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+        };
+        state.workflowJobs.push(job);
+        return job;
+      })
     },
     vehicleHandoverWorkOrder: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
@@ -509,13 +844,46 @@ function createPortalReviewHarness() {
       stream: Buffer.from("synthetic-image")
     }))
   };
+  const workflowRepository = new Stage2HandoverWorkflowRepository(
+    prisma as never
+  );
   const handoverWorkOrderService = new HandoverWorkOrderService(
     prisma as never,
     evidenceService,
     undefined,
-    storageService as never
+    storageService as never,
+    undefined,
+    new ConfigService({
+      STAGE2_HANDOVER_WORKFLOW_ENABLED:
+        options.workflowEnabled ? "true" : "false"
+    }),
+    undefined,
+    workflowRepository
   );
-  const service = new PortalHandoverReviewService(prisma as never, evidenceService, handoverWorkOrderService);
+  const stage2HandoverESignService = {
+    getPortalStatus: vi.fn(),
+    startPortalSigning: vi.fn()
+  };
+  const stage2HandoverWorkflowService = {
+    getProjection: vi.fn(async () => options.workflowProjection ?? (
+      options.workflowEnabled && state.workflowJobs[0]
+        ? {
+            artifactVersion: null,
+            errorCode: null,
+            jobId: String(state.workflowJobs[0].id),
+            state: "PDF_PENDING" as const
+          }
+        : null
+    )),
+    isEnabled: vi.fn(() => options.workflowEnabled === true)
+  };
+  const service = new PortalHandoverReviewService(
+    prisma as never,
+    evidenceService,
+    handoverWorkOrderService,
+    stage2HandoverESignService as never,
+    stage2HandoverWorkflowService as never
+  );
 
   return {
     handoverWorkOrderService,
@@ -523,6 +891,8 @@ function createPortalReviewHarness() {
     orderId,
     prisma,
     service,
+    stage2HandoverESignService,
+    stage2HandoverWorkflowService,
     state,
     storageService
   };
@@ -588,6 +958,17 @@ function completeEvidenceChecklist(now: Date) {
           },
           fileId: `file-${index + 1}`,
           id: `evidence-file-${index + 1}`,
+          metadata: {
+            artifactVersion: 1,
+            detectedMimeType: "image/jpeg",
+            photoPreviewFileId: `preview-file-${index + 1}`,
+            processedAt: now.toISOString(),
+            processingStatus: "READY",
+            sourceSha256: `sha256:${String(index + 1).padStart(64, "0")}`,
+            sourceSizeBytes: 1024,
+            videoDurationMs: null,
+            videoFrameFileIds: []
+          },
           mediaType: "PHOTO",
           objectKey: `oss/private/evidence-link/${index + 1}.jpg`,
           uploadedAt: now,
@@ -619,7 +1000,8 @@ function withRelations(workOrder: Record<string, unknown> | null, state: ReturnT
       id: workOrder.handoverId,
       status: "DRAFT"
     },
-    order
+    order,
+    reviewAttempts: state.reviewAttempts.filter((attempt) => attempt.workOrderId === workOrder.id)
   };
 }
 

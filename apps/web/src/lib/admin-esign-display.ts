@@ -38,8 +38,11 @@ export type AdminESignArchiveStatusState =
 
 export interface AdminESignArchiveStatusInput {
   archiveError?: string | null;
+  archiveStatus?: string | null;
   hasSignedDocument?: boolean | null;
   provider: string;
+  signedArtifactAvailable?: boolean | null;
+  signingStage?: string | null;
   taskStatus: string;
 }
 
@@ -86,6 +89,60 @@ export function getAdminESignArchiveStatus(input: AdminESignArchiveStatusInput):
   const provider = input.provider.toUpperCase();
   const isFadadaCompleted = provider === "FADADA" && input.taskStatus === "COMPLETED";
   const errorSummary = normalizeOptionalText(input.archiveError);
+
+  if (input.signingStage === "STAGE2_DELIVERY_HANDOVER") {
+    if (
+      input.archiveStatus === "ARCHIVED" &&
+      input.signedArtifactAvailable === true
+    ) {
+      return {
+        actionLabel: "查看已签署PDF",
+        canArchive: false,
+        canOpenSignedPdf: true,
+        errorSummary: null,
+        state: "ARCHIVED",
+        tagColor: "green",
+        tagLabel: "已签文件已归档"
+      };
+    }
+
+    if (input.archiveStatus === "FAILED") {
+      return {
+        actionLabel: null,
+        canArchive: false,
+        canOpenSignedPdf: false,
+        errorSummary,
+        state: "ARCHIVE_FAILED",
+        tagColor: "red",
+        tagLabel: "归档失败，签署已完成"
+      };
+    }
+
+    if (isFadadaCompleted) {
+      return {
+        actionLabel: null,
+        canArchive: false,
+        canOpenSignedPdf: false,
+        errorSummary: null,
+        state: "PENDING_ARCHIVE",
+        tagColor: input.archiveStatus === "PENDING" ? "blue" : "orange",
+        tagLabel:
+          input.archiveStatus === "PENDING"
+            ? "签署文件归档中"
+            : "已签署，待归档已签文件"
+      };
+    }
+
+    return {
+      actionLabel: null,
+      canArchive: false,
+      canOpenSignedPdf: false,
+      errorSummary: null,
+      state: "NOT_READY",
+      tagColor: null,
+      tagLabel: null
+    };
+  }
 
   if (input.hasSignedDocument) {
     return {

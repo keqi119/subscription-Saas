@@ -739,7 +739,7 @@ describe("onboarding product entry controllers", () => {
     const onboardingService = {
       startOnboardingForOrder: vi.fn(async () => ({ state: CustomerESignOnboardingState.ONBOARDING }))
     };
-    const controller = new OrderController(orderService as never, onboardingService as never);
+    const controller = new OrderController(orderService as never, onboardingService as never, {} as never);
 
     const result = await controller.startOrderESignOnboarding("order-1", {
       user: { id: "operator-1" }

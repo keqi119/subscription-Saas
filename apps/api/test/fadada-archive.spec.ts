@@ -2,12 +2,19 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   ContractStatus,
+  DeliveryHandoverArchiveStatus,
+  DeliveryHandoverStatus,
+  ESignDocumentType,
+  ESignProviderActionType,
   ESignProviderType,
   ESignSignerStatus,
   ESignSignerType,
+  ESignSigningStage,
+  ESignSlotId,
   ESignTaskStatus,
   OrderStatus
 } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,12 +30,16 @@ describe("FadadaSignedArtifactService", () => {
     const { service, state } = createFixture();
     state.task.taskStatus = ESignTaskStatus.WAITING_CUSTOMER;
 
-    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(
+      BadRequestException
+    );
 
     state.task.taskStatus = ESignTaskStatus.COMPLETED;
     state.task.provider = ESignProviderType.MOCK;
 
-    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.archiveSignedContract({ taskId: "task-1" })).rejects.toBeInstanceOf(
+      BadRequestException
+    );
   });
 
   it("requires all task signers to be signed before archiving signed artifacts", async () => {
@@ -112,19 +123,23 @@ describe("FadadaSignedArtifactService", () => {
       downloadUrl: "https://download.example.test/file.pdf?token=secret"
     });
     expect(apiClient.createContractFiling).toHaveBeenCalledWith({ contractId: "FADADA-CON-1" });
-    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      buffer: expect.any(Buffer),
-      contentType: "application/pdf",
-      contractId: "contract-1",
-      originalName: "CON-1-signed.pdf",
-      provider: "fadada"
-    }));
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buffer: expect.any(Buffer),
+        contentType: "application/pdf",
+        contractId: "contract-1",
+        originalName: "CON-1-signed.pdf",
+        provider: "fadada"
+      })
+    );
     expect(result).toMatchObject({
       archived: true,
       evidenceObjectKey: null,
       signedPdfObjectKey: "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
     });
-    expect(state.task.signedDocumentObjectKey).toBe("contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf");
+    expect(state.task.signedDocumentObjectKey).toBe(
+      "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
+    );
     expect(state.task.evidenceObjectKey).toBeNull();
     expect(state.contract.signedAt).toBe(signedAt);
     expect(state.contract.order.orderStatus).toBe(orderStatus);
@@ -135,7 +150,8 @@ describe("FadadaSignedArtifactService", () => {
 
   it("skips archive idempotently when a signed PDF already exists", async () => {
     const { apiClient, service, state, storageService } = createFixture();
-    state.task.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/existing.pdf";
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-1/esign/fadada/signed/2026/existing.pdf";
 
     const result = await service.archiveSignedContract({ taskId: "task-1" });
 
@@ -177,12 +193,806 @@ describe("FadadaSignedArtifactService", () => {
     expect(storageService.putContractSignedArtifact).toHaveBeenCalledTimes(2);
   });
 
+  it("archives a typed Stage 2 PDF with a FileObject and signed hash while preserving signed business state", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const completedAt = state.task.completedAt;
+    const contractSignedAt = state.contract.signedAt;
+    const orderStatus = state.contract.order.orderStatus;
+    const finance = financeSnapshot(state);
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true,
+      signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(result).not.toHaveProperty("objectKey");
+    expect(result).not.toHaveProperty("bucket");
+    expect(apiClient.querySignResult).toHaveBeenCalledWith({
+      contractId: "FADADA-HANDOVER-1",
+      customerId: "platform-customer-1",
+      transactionId: "STAGE2PLATFORMH2"
+    });
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    expect(state.fileObjects).toHaveLength(1);
+    expect(state.fileObjects[0]).toMatchObject({
+      mimeType: "application/pdf",
+      originalName: "HDV-1-signed.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-admin"
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveLastError: null,
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archivedAt: expect.any(Date),
+      signedDocumentFileId: state.fileObjects[0]!.id,
+      signedPdfHash: result.signedPdfHash,
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.task).toMatchObject({
+      completedAt,
+      signedDocumentObjectKey: expect.any(String),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contract).toMatchObject({
+      signedAt: contractSignedAt,
+      status: ContractStatus.SIGNED
+    });
+    expect(state.contract.order.orderStatus).toBe(orderStatus);
+    expect(financeSnapshot(state)).toEqual(finance);
+
+    const adminPreview = await service.getAdminSignedContractPreview(state.task.id, adminUser());
+    const portalPreview = await service.getPortalSignedContractPreview(
+      state.contract.id,
+      currentCustomer("customer-1")
+    );
+    expect(adminPreview).toMatchObject({
+      contentType: "application/pdf",
+      filename: "HDV-1-signed.pdf"
+    });
+    expect(portalPreview).toMatchObject({
+      contentType: "application/pdf",
+      filename: "HDV-1-signed.pdf"
+    });
+    expect(storageService.getContractSignedArtifactStream).toHaveBeenCalledWith(
+      state.handover!.signedObjectKey
+    );
+  });
+
+  it("adopts a validated task-bound Stage 2 signed PDF without downloading it again", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const signedObjectKey = "contracts/contract-1/esign/fadada/signed/2026/existing-signed.pdf";
+    state.task.signedDocumentObjectKey = signedObjectKey;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true,
+      signedPdfHash: createHash("sha256").update(minimalPdf()).digest("hex")
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastError: null,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey,
+      signedPdfHash: result.signedPdfHash,
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.fileObjects[0]).toMatchObject({
+      bucket: "application-materials",
+      mimeType: "application/pdf",
+      objectKey: signedObjectKey,
+      sizeBytes: BigInt(minimalPdf().length)
+    });
+    expect(storageService.getContractSignedArtifactStream).toHaveBeenCalledWith(signedObjectKey);
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(apiClient.downloadSignedContract).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("does not adopt a signed artifact object owned by another contract", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-other/esign/fadada/signed/2026/foreign.pdf";
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(storageService.getContractSignedArtifactStream).not.toHaveBeenCalled();
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      contentLength: minimalPdf().length,
+      contentType: "text/plain",
+      description: "non-PDF content type",
+      payload: minimalPdf()
+    },
+    {
+      contentLength: 20 * 1024 * 1024 + 1,
+      contentType: "application/pdf",
+      description: "oversized declared length",
+      payload: minimalPdf()
+    },
+    {
+      contentLength: 16,
+      contentType: "application/pdf",
+      description: "invalid PDF signature",
+      payload: Buffer.from("not-a-signed-pdf")
+    }
+  ])(
+    "falls back to the provider for a task-bound artifact with $description",
+    async ({ contentLength, contentType, payload }) => {
+      const { apiClient, service, state, storageService } = createStage2Fixture();
+      state.task.signedDocumentObjectKey =
+        "contracts/contract-1/esign/fadada/signed/2026/invalid.pdf";
+      vi.mocked(storageService.getContractSignedArtifactStream).mockResolvedValueOnce({
+        contentLength,
+        contentType,
+        originalName: "invalid.pdf",
+        stream: Readable.from([payload])
+      });
+
+      const result = await service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      });
+
+      expect(result).toMatchObject({
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: true
+      });
+      expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+      expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("classifies a task-bound artifact read failure as a storage failure", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.signedDocumentObjectKey =
+      "contracts/contract-1/esign/fadada/signed/2026/unreadable.pdf";
+    vi.mocked(storageService.getContractSignedArtifactStream).mockRejectedValueOnce(
+      new Error("OSS timeout with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(JSON.stringify(state.handover)).not.toContain("sensitive");
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+  });
+
+  it("classifies a provider artifact storage write failure separately", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(storageService.putContractSignedArtifact).mockRejectedValueOnce(
+      new Error("OSS write failed with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_STORAGE_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+  });
+
+  it("classifies typed archive database finalization separately", async () => {
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
+    vi.mocked(prisma.$transaction).mockRejectedValueOnce(
+      new Error("database finalization failed with sensitive details")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED",
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a typed Stage 2 task from the generic signed-contract archive path", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+
+    await expect(
+      service.archiveSignedContract({
+        taskId: state.task.id
+      })
+    ).rejects.toThrow(/STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/);
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects a linked Stage 2 task from the generic archive path despite legacy discriminators", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.documentType = ESignDocumentType.SUBSCRIPTION_CONTRACT;
+    state.task.signingStage = ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT;
+
+    await expect(service.archiveSignedContract({ taskId: state.task.id })).rejects.toThrow(
+      /STAGE2_HANDOVER_ARCHIVE_TYPED_ENDPOINT_REQUIRED/
+    );
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("requires the platform customer ID before completing a typed Stage 2 archive", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture({
+      FADADA_PLATFORM_CUSTOMER_ID: ""
+    });
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toThrow(/FADADA_PLATFORM_CUSTOMER_ID is required/);
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      signedPdfHash: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
+  it("uses a deterministic object identity and removes a known-uncommitted signed PDF after DB finalization fails", async () => {
+    const { prisma, service, state, storageService } = createStage2Fixture();
+    prisma.$transaction.mockRejectedValueOnce(new Error("simulated archive finalization failure"));
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_FINALIZATION_FAILED"
+      })
+    });
+
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectIdentity: expect.stringMatching(/^task-1-v1-[a-f0-9]{64}$/)
+      })
+    );
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "application-materials",
+      expect.stringContaining("task-1-v1")
+    );
+    expect(state.fileObjects).toHaveLength(0);
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      signedDocumentFileId: null,
+      signedObjectKey: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
+  it.each([
+    {
+      buffer: Buffer.from('{"code":"provider-error"}', "utf8"),
+      contentType: "application/json",
+      title: "JSON MIME"
+    },
+    {
+      buffer: Buffer.from('{"code":"not-a-pdf"}', "utf8"),
+      contentType: "application/pdf",
+      title: "invalid PDF magic"
+    }
+  ])("rejects a Stage 2 $title response without storing it", async ({ buffer, contentType }) => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(apiClient.downloadSignedContract).mockResolvedValueOnce({
+      buffer,
+      contentType,
+      fileName: "provider-response.pdf"
+    });
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF"
+      })
+    });
+
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.fileObjects).toHaveLength(0);
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveLastError: "FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF",
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      signedDocumentFileId: null,
+      signedPdfHash: null,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(state.task.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contract.status).toBe(ContractStatus.SIGNED);
+  });
+
+  it("keeps Stage 2 signed on archive failure, then retries once and skips later duplicates", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    vi.mocked(apiClient.querySignResult).mockRejectedValueOnce(
+      new Error("provider response contained a secret token")
+    );
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(JSON.stringify(state.handover)).not.toContain("secret token");
+
+    const retried = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+    const duplicate = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(retried).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(duplicate).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: false,
+      skippedReason: "SIGNED_PDF_ALREADY_ARCHIVED"
+    });
+    expect(state.handover!.archiveRetryCount).toBe(2);
+    expect(apiClient.querySignResult).toHaveBeenCalledTimes(2);
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledTimes(1);
+    expect(state.fileObjects).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      corrupt: (handover: FakeStage2Handover) => {
+        handover.status = DeliveryHandoverStatus.SIGNED;
+      },
+      description: "handover status"
+    },
+    {
+      corrupt: (handover: FakeStage2Handover) => {
+        handover.signedObjectKey = null;
+      },
+      description: "signed object key"
+    }
+  ])(
+    "rearchives an incomplete ARCHIVED row with missing $description on typed retry",
+    async ({ corrupt }) => {
+      const { apiClient, service, state, storageService } = createStage2Fixture();
+      await service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      });
+      corrupt(state.handover!);
+
+      const retried = await service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      });
+
+      expect(retried).toMatchObject({
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        archived: true,
+        signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+      });
+      expect(state.handover).toMatchObject({
+        archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+        signedDocumentFileId: state.fileObjects[1]!.id,
+        signedObjectKey: state.fileObjects[1]!.objectKey,
+        signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        status: DeliveryHandoverStatus.ARCHIVED
+      });
+      expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+      expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("rearchives instead of promoting an unverifiable file from an incomplete ARCHIVED row", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.fileObjects.push({
+      bucket: "application-materials",
+      id: "unverified-file",
+      mimeType: "application/pdf",
+      objectKey: "contracts/unrelated/signed.pdf",
+      originalName: "unverified.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-other"
+    });
+    Object.assign(state.handover!, {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archivedAt: new Date("2026-07-28T08:00:00.000Z"),
+      signedDocumentFileId: "unverified-file",
+      signedObjectKey: null,
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.SIGNED
+    });
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(state.handover).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-2",
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.handover!.signedObjectKey).not.toBe("contracts/unrelated/signed.pdf");
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("rearchives a lost-claim ARCHIVED row instead of trusting its partial file tuple", async () => {
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
+    const objectKey = "contracts/contract-1/esign/fadada/signed/race-signed.pdf";
+    state.fileObjects.push({
+      bucket: "application-materials",
+      id: "signed-file-race",
+      mimeType: "application/pdf",
+      objectKey,
+      originalName: "HDV-1-signed.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-admin"
+    });
+    const updateMany = vi.mocked(prisma.vehicleDeliveryHandover.updateMany);
+    const updateImplementation = updateMany.getMockImplementation()!;
+    updateMany
+      .mockImplementationOnce(async () => {
+        Object.assign(state.handover!, {
+          archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+          signedDocumentFileId: "signed-file-race",
+          signedObjectKey: null,
+          signedPdfHash: "d".repeat(64),
+          status: DeliveryHandoverStatus.SIGNED
+        });
+        return { count: 0 };
+      })
+      .mockImplementation(updateImplementation);
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true,
+      signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/)
+    });
+    expect(state.handover).toMatchObject({
+      signedDocumentFileId: "signed-file-2",
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    expect(state.handover!.signedObjectKey).not.toBe(objectKey);
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("does not steal a fresh Stage 2 archive claim within the default five-minute lease", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 4 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toEqual({
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      archived: false,
+      skippedReason: "ARCHIVE_IN_PROGRESS"
+    });
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 1,
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING
+    });
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("atomically reclaims a stale Stage 2 archive claim after the default five-minute lease", async () => {
+    const { apiClient, prisma, service, state, storageService } = createStage2Fixture();
+    const staleAttemptAt = new Date(Date.now() - 6 * 60 * 1000);
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = staleAttemptAt;
+    state.handover!.archiveRetryCount = 1;
+    state.handover!.signedObjectKey = "application-materials/stale-signed.pdf";
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: expect.any(Date),
+      archiveRetryCount: 2,
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED
+    });
+    expect(state.handover!.archiveLastAttemptAt).not.toEqual(staleAttemptAt);
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledOnce();
+    const clearPointerCall = vi
+      .mocked(prisma.vehicleDeliveryHandover.updateMany)
+      .mock.calls.find(
+        (call) => (call[0] as { data: Record<string, unknown> }).data.signedObjectKey === null
+      );
+    expect(clearPointerCall).toBeDefined();
+    expect(
+      vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.invocationCallOrder[
+        vi.mocked(prisma.vehicleDeliveryHandover.updateMany).mock.calls.indexOf(clearPointerCall!)
+      ]
+    ).toBeLessThan(
+      vi.mocked(storageService.deleteContractSignedArtifactObject).mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("binds the Stage 2 archive object identity to the downloaded signed PDF hash", async () => {
+    const { service, state, storageService } = createStage2Fixture();
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(storageService.putContractSignedArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        objectIdentity: `${state.task.id}-v1-${result.signedPdfHash}`
+      })
+    );
+  });
+
+  it("fences a reclaimed Stage 2 archive worker after download and before storage write", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const newerAttemptAt = new Date(Date.now() + 60_000);
+    vi.mocked(apiClient.downloadSignedContract).mockImplementationOnce(async () => {
+      state.handover!.archiveLastAttemptAt = newerAttemptAt;
+      state.handover!.archiveRetryCount = 2;
+      return {
+        buffer: Buffer.from("%PDF-1.4\nnewer worker owns the claim\n%%EOF\n"),
+        contentType: "application/pdf",
+        fileName: "signed.pdf"
+      };
+    });
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(state.handover!.archiveLastAttemptAt).toEqual(newerAttemptAt);
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("uses a valid configured Stage 2 archive claim timeout", async () => {
+    const { apiClient, service, state } = createStage2Fixture({
+      STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS: "60000"
+    });
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 2 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      archived: true
+    });
+    expect(apiClient.querySignResult).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the five-minute archive lease for an unsafe configured timeout", async () => {
+    const { apiClient, service, state } = createStage2Fixture({
+      STAGE2_HANDOVER_ARCHIVE_CLAIM_TIMEOUT_MS: "0"
+    });
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = new Date(Date.now() - 4 * 60 * 1000);
+    state.handover!.archiveRetryCount = 1;
+
+    const result = await service.archiveSignedStage2Handover({
+      actorId: "user-admin",
+      taskId: state.task.id
+    });
+
+    expect(result).toMatchObject({
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      archived: false,
+      skippedReason: "ARCHIVE_IN_PROGRESS"
+    });
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+  });
+
+  it("does not let an expired archive worker overwrite a newer reclaimed lease", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    const staleAttemptAt = new Date(Date.now() - 6 * 60 * 1000);
+    const newerAttemptAt = new Date(Date.now() + 60 * 1000);
+    state.handover!.archiveStatus = DeliveryHandoverArchiveStatus.PENDING;
+    state.handover!.archiveLastAttemptAt = staleAttemptAt;
+    state.handover!.archiveRetryCount = 1;
+    vi.mocked(apiClient.querySignResult).mockImplementationOnce(async () => {
+      state.handover!.archiveLastAttemptAt = newerAttemptAt;
+      state.handover!.archiveRetryCount = 3;
+      throw new Error("expired worker resumed after lease takeover");
+    });
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED"
+      })
+    });
+
+    expect(state.handover).toMatchObject({
+      archiveLastAttemptAt: newerAttemptAt,
+      archiveLastError: null,
+      archiveRetryCount: 3,
+      archiveStatus: DeliveryHandoverArchiveStatus.PENDING,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Stage 2 source identity mismatch before provider or storage calls", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.requestSnapshot = {
+      ...(state.task.requestSnapshot as Record<string, unknown>),
+      manifestHash: "c".repeat(64)
+    };
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 0,
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
+  it("rejects a stale Stage 2 source file identity before provider or storage calls", async () => {
+    const { apiClient, service, state, storageService } = createStage2Fixture();
+    state.task.requestSnapshot = {
+      ...(state.task.requestSnapshot as Record<string, unknown>),
+      sourceDocumentFileId: "superseded-source-file"
+    };
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH"
+      })
+    });
+
+    expect(apiClient.querySignResult).not.toHaveBeenCalled();
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.handover).toMatchObject({
+      archiveRetryCount: 0,
+      archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+      status: DeliveryHandoverStatus.SIGNED
+    });
+  });
+
   it("streams archived signed PDFs for admins and owning portal customers only", async () => {
     const { service, state, storageService } = createFixture();
     state.task.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
 
     const adminPreview = await service.getAdminSignedContractPreview("task-1", adminUser());
-    const portalPreview = await service.getPortalSignedContractPreview("contract-1", currentCustomer("customer-1"));
+    const portalPreview = await service.getPortalSignedContractPreview(
+      "contract-1",
+      currentCustomer("customer-1")
+    );
 
     expect(adminPreview).toMatchObject({
       contentType: "application/pdf",
@@ -203,6 +1013,36 @@ describe("FadadaSignedArtifactService", () => {
       service.getPortalSignedContractPreview("contract-1", currentCustomer("customer-other"))
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  it("rejects Stage 2 previews until the authoritative archive tuple is complete", async () => {
+    const { service, state, storageService } = createStage2Fixture();
+    const objectKey = "contracts/contract-1/esign/fadada/signed/incomplete.pdf";
+    state.fileObjects.push({
+      bucket: "application-materials",
+      id: "signed-file-incomplete",
+      mimeType: "application/pdf",
+      objectKey,
+      originalName: "HDV-1-signed.pdf",
+      sizeBytes: BigInt(minimalPdf().length),
+      uploadedBy: "user-admin"
+    });
+    state.task.signedDocumentObjectKey = objectKey;
+    Object.assign(state.handover!, {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-incomplete",
+      signedObjectKey: objectKey,
+      signedPdfHash: "d".repeat(64),
+      status: DeliveryHandoverStatus.SIGNED
+    });
+
+    await expect(
+      service.getAdminSignedContractPreview(state.task.id, adminUser())
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.getPortalSignedContractPreview(state.contract.id, currentCustomer("customer-1"))
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(storageService.getContractSignedArtifactStream).not.toHaveBeenCalled();
+  });
 });
 
 class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
@@ -220,7 +1060,7 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
   }
 }
 
-function createFixture() {
+function createFixture(env: Record<string, string> = {}) {
   const state = {
     contract: {
       contractNo: "CON-1",
@@ -231,7 +1071,7 @@ function createFixture() {
         application: { salesUserId: "user-sales" },
         deletedAt: null,
         id: "order-1",
-        orderStatus: OrderStatus.PENDING_PAYMENT
+        orderStatus: OrderStatus.PENDING_PAYMENT as OrderStatus
       },
       signedAt: new Date("2026-01-03T04:05:06.000Z"),
       status: ContractStatus.SIGNED
@@ -265,6 +1105,8 @@ function createFixture() {
         }
       ]
     },
+    fileObjects: [] as FakeFileObject[],
+    handover: null as FakeStage2Handover | null,
     signers: [
       {
         deletedAt: null as Date | null,
@@ -280,6 +1122,7 @@ function createFixture() {
       contractId: "contract-1",
       customerId: "customer-1",
       deletedAt: null as Date | null,
+      documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT,
       documentName: "Subscription Contract",
       errorSnapshot: null as unknown,
       evidenceObjectKey: null as string | null,
@@ -288,8 +1131,10 @@ function createFixture() {
       provider: ESignProviderType.FADADA as ESignProviderType,
       providerEnvelopeId: "FADADA-CON-1",
       providerTaskId: "TX-1",
+      requestSnapshot: null as unknown,
       responseSnapshot: null as unknown,
       signedDocumentObjectKey: null as string | null,
+      signingStage: ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT,
       taskNo: "ESG-1",
       taskStatus: ESignTaskStatus.COMPLETED as ESignTaskStatus
     }
@@ -325,6 +1170,12 @@ function createFixture() {
     }))
   };
   const prisma = {
+    $transaction: vi.fn(async (input: unknown) => {
+      if (typeof input === "function") {
+        return (input as (tx: typeof prisma) => unknown)(prisma);
+      }
+      return Promise.all(input as Array<Promise<unknown>>);
+    }),
     contractESignTask: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         if (where.id && where.id !== state.task.id) return null;
@@ -337,37 +1188,102 @@ function createFixture() {
         if (signedWhere?.not === null && !state.task.signedDocumentObjectKey) return null;
         return hydrateTask(state);
       }),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        if (where.id !== state.task.id) {
-          throw new Error("task not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          if (where.id !== state.task.id) {
+            throw new Error("task not found");
+          }
+          Object.assign(state.task, data);
+          return hydrateTask(state);
         }
-        Object.assign(state.task, data);
-        return hydrateTask(state);
-      })
+      )
+    },
+    fileObject: {
+      create: vi.fn(async ({ data }: { data: Omit<FakeFileObject, "id"> }) => {
+        const fileObject: FakeFileObject = {
+          ...data,
+          id: `signed-file-${state.fileObjects.length + 1}`
+        };
+        state.fileObjects.push(fileObject);
+        return fileObject;
+      }),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) =>
+          state.fileObjects.find((fileObject) => fileObject.id === where.id) ?? null
+      )
+    },
+    vehicleDeliveryHandover: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        state.handover?.id === where.id ? state.handover : null
+      ),
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          if (!state.handover || !matchesHandoverWhere(state.handover, where)) {
+            return { count: 0 };
+          }
+          for (const [key, value] of Object.entries(data)) {
+            if (value && typeof value === "object" && "increment" in value) {
+              state.handover[key] =
+                Number(state.handover[key] ?? 0) +
+                Number((value as { increment: number }).increment);
+            } else {
+              state.handover[key] = value;
+            }
+          }
+          return { count: 1 };
+        }
+      )
     }
   };
   let signedArtifactWriteCount = 0;
   const storageService = {
+    buildContractSignedArtifactObjectKey: vi.fn(
+      (contractId: string, provider: string, originalName: string, objectIdentity: string) =>
+        `contracts/${contractId}/esign/${provider}/signed/${objectIdentity}-${originalName}`
+    ),
+    deleteContractSignedArtifactObject: vi.fn(async () => undefined),
+    deleteObject: vi.fn(async () => undefined),
     getContractSignedArtifactStream: vi.fn(async () => ({
       contentLength: pdf.length,
       contentType: "application/pdf",
       originalName: "signed.pdf",
       stream: Readable.from([pdf])
     })),
-    putContractSignedArtifact: vi.fn(async () => {
-      signedArtifactWriteCount += 1;
-      const objectKey = `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
-      return {
-        bucket: "application-materials",
-        objectKey,
-        stored: {
-          contentType: "application/pdf",
-          driver: "local",
-          key: `application-materials/${objectKey}`,
-          size: pdf.length
-        }
-      };
-    })
+    resolveContractSignedArtifactIdentity: vi.fn(
+      (contractId: string, provider: string, objectKey: string) => {
+        const expectedPrefix = `contracts/${contractId}/esign/${provider}/signed/`;
+        return objectKey.startsWith(expectedPrefix)
+          ? {
+              bucket: "application-materials",
+              objectKey
+            }
+          : null;
+      }
+    ),
+    putContractSignedArtifact: vi.fn(
+      async (input: { objectIdentity?: string; originalName?: string }) => {
+        signedArtifactWriteCount += 1;
+        const objectKey = input.objectIdentity
+          ? `contracts/contract-1/esign/fadada/signed/${input.objectIdentity}-${input.originalName}`
+          : `contracts/contract-1/esign/fadada/signed/2026/signed-${signedArtifactWriteCount}.pdf`;
+        return {
+          bucket: "application-materials",
+          objectKey,
+          stored: {
+            contentType: "application/pdf",
+            driver: "local",
+            key: `application-materials/${objectKey}`,
+            size: pdf.length
+          }
+        };
+      }
+    )
   };
   const service = new TestFadadaSignedArtifactService(
     prisma as never,
@@ -379,7 +1295,8 @@ function createFixture() {
       FADADA_APP_SECRET: "secret-xyz",
       FADADA_BASE_URL: "https://testapi.fadada.com:8443/api/",
       FADADA_ENABLED: "false",
-      FADADA_ENV: "sandbox"
+      FADADA_ENV: "sandbox",
+      ...env
     }),
     apiClient
   );
@@ -391,8 +1308,95 @@ function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {
   return {
     ...state.task,
     contract: state.contract,
+    deliveryHandover: state.handover,
     signers: state.signers.filter((signer) => signer.taskId === state.task.id && !signer.deletedAt)
   };
+}
+
+function createStage2Fixture(env: Record<string, string> = {}) {
+  const harness = createFixture({
+    FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
+    ...env
+  });
+  harness.state.contract.contractNo = "HDV-1";
+  harness.state.contract.order.orderStatus = OrderStatus.PENDING_DELIVERY;
+  Object.assign(harness.state.task, {
+    documentName: "Delivery handover confirmation",
+    documentType: ESignDocumentType.DELIVERY_HANDOVER,
+    providerEnvelopeId: "FADADA-HANDOVER-1",
+    providerTaskId: "STAGE2CUSTOMERH1",
+    requestSnapshot: {
+      artifactVersion: 1,
+      contractId: harness.state.contract.id,
+      handoverId: "handover-1",
+      manifestHash: "b".repeat(64),
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourceDocumentFileId: "source-file-1",
+      sourcePdfHash: "a".repeat(64)
+    },
+    signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER
+  });
+  (harness.state.signers as Array<Record<string, unknown>>).splice(
+    0,
+    harness.state.signers.length,
+    {
+      deletedAt: null,
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      id: "stage2-customer",
+      providerActionType: ESignProviderActionType.CUSTOMER_MANUAL_SIGN,
+      providerTransactionId: "STAGE2CUSTOMERH1",
+      required: true,
+      signerStatus: ESignSignerStatus.SIGNED,
+      signerType: ESignSignerType.CUSTOMER,
+      slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
+      taskId: harness.state.task.id
+    },
+    {
+      deletedAt: null,
+      documentType: ESignDocumentType.DELIVERY_HANDOVER,
+      id: "stage2-platform",
+      providerActionType: ESignProviderActionType.PLATFORM_AUTO_SEAL,
+      providerTransactionId: "STAGE2PLATFORMH2",
+      required: true,
+      signerStatus: ESignSignerStatus.SIGNED,
+      signerType: ESignSignerType.PLATFORM,
+      slotId: ESignSlotId.STAGE2_HANDOVER_PLATFORM,
+      taskId: harness.state.task.id
+    }
+  );
+  harness.state.handover = {
+    archiveLastAttemptAt: null,
+    archiveLastError: null,
+    archiveRetryCount: 0,
+    archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
+    archivedAt: null,
+    artifactVersion: 1,
+    completedAt: harness.state.task.completedAt,
+    deletedAt: null,
+    handoverContractId: harness.state.contract.id,
+    handoverESignTaskId: harness.state.task.id,
+    id: "handover-1",
+    manifestHash: "b".repeat(64),
+    signedDocumentFileId: null,
+    signedObjectKey: null,
+    signedPdfHash: null,
+    sourceDocumentFileId: "source-file-1",
+    sourcePdfHash: "a".repeat(64),
+    status: DeliveryHandoverStatus.SIGNED
+  };
+  return harness;
+}
+
+function matchesHandoverWhere(handover: FakeStage2Handover, where: Record<string, unknown>) {
+  return Object.entries(where).every(([key, expected]) => {
+    if (expected === undefined) {
+      return true;
+    }
+    if (expected && typeof expected === "object" && "in" in expected) {
+      return (expected as { in: unknown[] }).in.includes(handover[key]);
+    }
+    return handover[key] === expected;
+  });
 }
 
 function financeSnapshot(state: ReturnType<typeof createFixture>["state"]) {
@@ -421,4 +1425,35 @@ function currentCustomer(customerId: string): CurrentCustomer {
     customerId,
     phone: "13800000000"
   } as CurrentCustomer;
+}
+
+interface FakeFileObject {
+  bucket: string;
+  id: string;
+  mimeType: string;
+  objectKey: string;
+  originalName: string;
+  sizeBytes: bigint;
+  uploadedBy: string | null;
+}
+
+interface FakeStage2Handover extends Record<string, unknown> {
+  archiveLastAttemptAt: Date | null;
+  archiveLastError: string | null;
+  archiveRetryCount: number;
+  archiveStatus: DeliveryHandoverArchiveStatus;
+  archivedAt: Date | null;
+  artifactVersion: number;
+  completedAt: Date | null;
+  deletedAt: Date | null;
+  handoverContractId: string;
+  handoverESignTaskId: string;
+  id: string;
+  manifestHash: string;
+  signedDocumentFileId: string | null;
+  signedObjectKey: string | null;
+  signedPdfHash: string | null;
+  sourceDocumentFileId: string;
+  sourcePdfHash: string;
+  status: DeliveryHandoverStatus;
 }

@@ -1,9 +1,13 @@
-import { IsBoolean, IsOptional, IsString } from "class-validator";
+import { Equals, IsBoolean, IsOptional, IsString, Matches } from "class-validator";
 
 export class ConfirmPortalHandoverReviewDto {
-  @IsOptional()
   @IsBoolean()
-  acknowledgement?: boolean;
+  @Equals(true)
+  acknowledgement!: boolean;
+
+  @IsString()
+  @Matches(/^sha256:[0-9a-f]{64}$/)
+  manifestHash!: string;
 }
 
 export class ObjectPortalHandoverReviewDto {

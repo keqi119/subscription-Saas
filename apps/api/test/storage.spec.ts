@@ -127,6 +127,56 @@ describe("Storage providers", () => {
     await expect(readStream(downloaded.stream)).resolves.toBe("hello");
   });
 
+  it("encodes Unicode OSS metadata values for object and file uploads while preserving ASCII and undefined metadata", async () => {
+    const put = vi.fn(async () => ({ res: { headers: { etag: "etag-1" } }, url: "private-url" }));
+    const factory: OssClientFactory = vi.fn(() => ({
+      delete: vi.fn(),
+      getStream: vi.fn(),
+      put
+    }));
+    const provider = new OssStorageProvider(
+      config({
+        OSS_ACCESS_KEY_ID: "test-key",
+        OSS_ACCESS_KEY_SECRET: "test-secret",
+        OSS_BUCKET: "private-bucket",
+        OSS_ENDPOINT: "https://oss-cn-shanghai.aliyuncs.com",
+        OSS_REGION: "oss-cn-shanghai"
+      }) as never,
+      factory
+    );
+    const templateName = "车辆交接确认单";
+    const metadata = { templateName, templateVersion: "V1.0" };
+
+    await provider.putObject({
+      buffer: Buffer.from("hello"),
+      key: "materials/app-1/object.pdf",
+      metadata
+    });
+    await provider.putFile({
+      filePath: "temporary-source.pdf",
+      key: "materials/app-1/file.pdf",
+      metadata,
+      sizeBytes: 5
+    });
+    await provider.putObject({
+      buffer: Buffer.from("hello"),
+      key: "materials/app-1/no-metadata.pdf"
+    });
+
+    expect(put).toHaveBeenNthCalledWith(1, "materials/app-1/object.pdf", expect.any(Buffer), {
+      headers: undefined,
+      meta: { templateName: encodeURIComponent(templateName), templateVersion: "V1.0" }
+    });
+    expect(put).toHaveBeenNthCalledWith(2, "materials/app-1/file.pdf", "temporary-source.pdf", {
+      headers: undefined,
+      meta: { templateName: encodeURIComponent(templateName), templateVersion: "V1.0" }
+    });
+    expect(put).toHaveBeenNthCalledWith(3, "materials/app-1/no-metadata.pdf", expect.any(Buffer), {
+      headers: undefined,
+      meta: undefined
+    });
+  });
+
   it("maps material uploads to local or OSS database fields", async () => {
     const local = {
       deleteObject: vi.fn(),
@@ -172,7 +222,42 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^materials\/app-1\/\d{4}\/\d{2}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/materials\/app-1\/\d{4}\/\d{2}\//
+    );
+  });
+
+  it("deletes a contract signed artifact through its encoded storage driver", async () => {
+    const local = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const oss = {
+      deleteObject: vi.fn(async () => undefined)
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "oss" }) as never,
+      local as never,
+      oss as never
+    );
+
+    await localService.deleteContractSignedArtifactObject(
+      "contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    await ossService.deleteContractSignedArtifactObject(
+      "oss:subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+
+    expect(local.deleteObject).toHaveBeenCalledWith(
+      "application-materials/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
+    expect(oss.deleteObject).toHaveBeenCalledWith(
+      "subscription/contracts/contract-1/esign/fadada/signed/hash.pdf"
+    );
   });
 
   it("maps vehicle listing media uploads to private local or OSS database fields", async () => {
@@ -220,7 +305,9 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^vehicle-listings\/vehicle-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/vehicle-listings\/vehicle-1\/\d{4}\//
+    );
   });
 
   it("maps field delivery evidence uploads to private local or OSS database fields", async () => {
@@ -270,7 +357,115 @@ describe("Storage providers", () => {
     expect(localStored.bucket).toBe("application-materials");
     expect(localStored.objectKey).toMatch(/^delivery-evidence\/work-order-1\/\d{4}\//);
     expect(ossStored.bucket).toBe("oss:private-bucket");
-    expect(ossStored.objectKey).toMatch(/^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//);
+    expect(ossStored.objectKey).toMatch(
+      /^oss:subscription-saas\/staging\/delivery-evidence\/work-order-1\/\d{4}\//
+    );
+  });
+
+  it("plans the same deterministic signed-artifact locator returned by each storage driver", async () => {
+    const local = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        driver: "local" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const oss = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn(async (input: UploadObjectInput) => ({
+        bucket: "private-bucket",
+        driver: "oss" as const,
+        key: input.key,
+        size: input.buffer.length
+      }))
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      local as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({
+        OSS_PREFIX: "subscription-saas/staging",
+        UPLOAD_STORAGE_DRIVER: "oss"
+      }) as never,
+      local as never,
+      oss as never
+    );
+    const originalName = "contract-signed.pdf";
+    const objectIdentity = "task-1-v3";
+    const input = {
+      buffer: Buffer.from("%PDF-1.7"),
+      contractId: "contract-1",
+      objectIdentity,
+      originalName,
+      provider: "fadada"
+    };
+
+    const localPlanned = localService.buildContractSignedArtifactObjectKey(
+      input.contractId,
+      input.provider,
+      originalName,
+      objectIdentity
+    );
+    const ossPlanned = ossService.buildContractSignedArtifactObjectKey(
+      input.contractId,
+      input.provider,
+      originalName,
+      objectIdentity
+    );
+    const localStored = await localService.putContractSignedArtifact(input);
+    const ossStored = await ossService.putContractSignedArtifact(input);
+
+    expect(localPlanned).toBe(localStored.objectKey);
+    expect(ossPlanned).toBe(ossStored.objectKey);
+  });
+
+  it("resolves only signed-artifact locators owned by the requested contract", () => {
+    const providers = {
+      deleteObject: vi.fn(),
+      getObject: vi.fn(),
+      putObject: vi.fn()
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      providers as never,
+      providers as never
+    );
+    const ossService = new StorageService(
+      config({
+        OSS_BUCKET: "private-bucket",
+        OSS_PREFIX: "subscription-saas/staging",
+        UPLOAD_STORAGE_DRIVER: "oss"
+      }) as never,
+      providers as never,
+      providers as never
+    );
+    const localObjectKey = "contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
+    const ossObjectKey =
+      "oss:subscription-saas/staging/contracts/contract-1/esign/fadada/signed/2026/signed.pdf";
+
+    expect(
+      localService.resolveContractSignedArtifactIdentity("contract-1", "fadada", localObjectKey)
+    ).toEqual({
+      bucket: "application-materials",
+      objectKey: localObjectKey
+    });
+    expect(
+      ossService.resolveContractSignedArtifactIdentity("contract-1", "fadada", ossObjectKey)
+    ).toEqual({
+      bucket: "oss:private-bucket",
+      objectKey: ossObjectKey
+    });
+    expect(
+      localService.resolveContractSignedArtifactIdentity("contract-other", "fadada", localObjectKey)
+    ).toBeNull();
+    expect(
+      ossService.resolveContractSignedArtifactIdentity("contract-1", "other-provider", ossObjectKey)
+    ).toBeNull();
   });
 
   it("maps disk-backed field evidence to local or OSS providers", async () => {
@@ -316,14 +511,18 @@ describe("Storage providers", () => {
     const localStored = await localService.putDeliveryEvidenceFileFromPath(input);
     const ossStored = await ossService.putDeliveryEvidenceFileFromPath(input);
 
-    expect(local.putFile).toHaveBeenCalledWith(expect.objectContaining({
-      filePath: input.filePath,
-      sizeBytes: input.sizeBytes
-    }));
-    expect(oss.putFile).toHaveBeenCalledWith(expect.objectContaining({
-      filePath: input.filePath,
-      sizeBytes: input.sizeBytes
-    }));
+    expect(local.putFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: input.filePath,
+        sizeBytes: input.sizeBytes
+      })
+    );
+    expect(oss.putFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePath: input.filePath,
+        sizeBytes: input.sizeBytes
+      })
+    );
     expect(localStored.bucket).toBe("application-materials");
     expect(ossStored.bucket).toBe("oss:private-bucket");
   });

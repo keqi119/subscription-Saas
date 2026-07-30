@@ -25,6 +25,16 @@ export interface GeneratedContractPdfArtifactStorageInput extends Omit<UploadObj
   originalName: string;
 }
 
+export interface GeneratedContractPdfArtifactFileStorageInput extends Omit<
+  UploadFileObjectInput,
+  "key"
+> {
+  contractId: string;
+  contentType: "application/pdf";
+  objectKey?: string;
+  originalName: string;
+}
+
 export interface GeneratedContractPdfArtifactStorageResult {
   bucket: string;
   contentType: "application/pdf";
@@ -50,7 +60,9 @@ export class StorageService {
     throw new BadRequestException("UPLOAD_STORAGE_DRIVER 必须为 local 或 oss。");
   }
 
-  async putApplicationMaterial(input: Omit<UploadObjectInput, "key"> & { applicationId: string }): Promise<{
+  async putApplicationMaterial(
+    input: Omit<UploadObjectInput, "key"> & { applicationId: string }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -59,29 +71,44 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
-  async putCustomerProfileMaterial(input: Omit<UploadObjectInput, "key"> & { customerId: string }): Promise<{
+  async putCustomerProfileMaterial(
+    input: Omit<UploadObjectInput, "key"> & { customerId: string }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
   }> {
-    const key = this.buildCustomerProfileMaterialKey(input.customerId, input.originalName ?? "file");
+    const key = this.buildCustomerProfileMaterialKey(
+      input.customerId,
+      input.originalName ?? "file"
+    );
     return this.putPrivateObject(key, input);
   }
 
-  getCustomerProfileMaterialStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
+  getCustomerProfileMaterialStream(
+    bucket: string,
+    objectKey: string
+  ): Promise<DownloadObjectResult> {
     return this.getObject(bucket, objectKey);
   }
 
-  async putServiceCaseAttachment(input: Omit<UploadObjectInput, "key"> & { serviceCaseId: string }): Promise<{
+  async putServiceCaseAttachment(
+    input: Omit<UploadObjectInput, "key"> & { serviceCaseId: string }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
   }> {
-    const key = this.buildServiceCaseAttachmentKey(input.serviceCaseId, input.originalName ?? "file");
+    const key = this.buildServiceCaseAttachmentKey(
+      input.serviceCaseId,
+      input.originalName ?? "file"
+    );
     return this.putPrivateObject(key, input);
   }
 
-  async putVehicleListingMedia(input: Omit<UploadObjectInput, "key"> & { vehicleId: string }): Promise<{
+  async putVehicleListingMedia(
+    input: Omit<UploadObjectInput, "key"> & { vehicleId: string }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -107,19 +134,26 @@ export class StorageService {
     return this.getObject(bucket, objectKey);
   }
 
-  async putVehicleBaasContractAttachment(input: Omit<UploadObjectInput, "key"> & { contractId: string }): Promise<{
+  async putVehicleBaasContractAttachment(
+    input: Omit<UploadObjectInput, "key"> & { contractId: string }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
   }> {
-    const key = this.buildVehicleBaasContractAttachmentKey(input.contractId, input.originalName ?? "file");
+    const key = this.buildVehicleBaasContractAttachmentKey(
+      input.contractId,
+      input.originalName ?? "file"
+    );
     return this.putPrivateObject(key, input);
   }
 
-  async putDeliveryEvidenceFile(input: Omit<UploadObjectInput, "key"> & {
-    orderId: string;
-    workOrderId: string;
-  }): Promise<{
+  async putDeliveryEvidenceFile(
+    input: Omit<UploadObjectInput, "key"> & {
+      orderId: string;
+      workOrderId: string;
+    }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -128,10 +162,12 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
-  async putDeliveryEvidenceFileFromPath(input: Omit<UploadFileObjectInput, "key"> & {
-    orderId: string;
-    workOrderId: string;
-  }): Promise<{
+  async putDeliveryEvidenceFileFromPath(
+    input: Omit<UploadFileObjectInput, "key"> & {
+      orderId: string;
+      workOrderId: string;
+    }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -140,19 +176,49 @@ export class StorageService {
     return this.putPrivateFile(key, input);
   }
 
-  getVehicleBaasContractAttachmentStream(bucket: string, objectKey: string): Promise<DownloadObjectResult> {
-    return this.getObject(bucket, objectKey);
-  }
-
-  async putContractSignedArtifact(input: Omit<UploadObjectInput, "key"> & {
-    contractId: string;
-    provider: string;
-  }): Promise<{
+  async putDeliveryEvidenceDerivativeFromPath(
+    input: Omit<UploadFileObjectInput, "key"> & {
+      kind: "PHOTO_PREVIEW" | "VIDEO_FRAME";
+      orderId: string;
+      workOrderId: string;
+    }
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
   }> {
-    const key = this.buildContractSignedArtifactKey(input.contractId, input.provider, input.originalName ?? "signed.pdf");
+    const key = this.buildDeliveryEvidenceDerivativeKey(
+      input.workOrderId,
+      input.kind,
+      input.originalName ?? "derivative.jpg"
+    );
+    return this.putPrivateFile(key, input);
+  }
+
+  getVehicleBaasContractAttachmentStream(
+    bucket: string,
+    objectKey: string
+  ): Promise<DownloadObjectResult> {
+    return this.getObject(bucket, objectKey);
+  }
+
+  async putContractSignedArtifact(
+    input: Omit<UploadObjectInput, "key"> & {
+      contractId: string;
+      objectIdentity?: string;
+      provider: string;
+    }
+  ): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildContractSignedArtifactKey(
+      input.contractId,
+      input.provider,
+      input.originalName ?? "signed.pdf",
+      input.objectIdentity
+    );
     return this.putPrivateObject(key, {
       buffer: input.buffer,
       contentType: input.contentType,
@@ -166,7 +232,8 @@ export class StorageService {
   ): Promise<GeneratedContractPdfArtifactStorageResult> {
     const objectKey = normalizeGeneratedContractPdfObjectKey(
       input.contractId,
-      input.objectKey ?? this.buildGeneratedContractPdfArtifactKey(input.contractId, input.originalName)
+      input.objectKey ??
+        this.buildGeneratedContractPdfArtifactKey(input.contractId, input.originalName)
     );
     const stored = await this.putPrivateObject(objectKey, {
       buffer: input.buffer,
@@ -185,11 +252,88 @@ export class StorageService {
     };
   }
 
+  async putGeneratedContractPdfArtifactFromPath(
+    input: GeneratedContractPdfArtifactFileStorageInput
+  ): Promise<GeneratedContractPdfArtifactStorageResult> {
+    const objectKey = normalizeGeneratedContractPdfObjectKey(
+      input.contractId,
+      input.objectKey ??
+        this.buildGeneratedContractPdfArtifactKey(input.contractId, input.originalName)
+    );
+    const stored = await this.putPrivateFile(objectKey, {
+      contentType: input.contentType,
+      filePath: input.filePath,
+      metadata: input.metadata,
+      originalName: input.originalName,
+      sizeBytes: input.sizeBytes
+    });
+
+    return {
+      bucket: stored.bucket,
+      contentType: input.contentType,
+      objectKey: stored.objectKey,
+      originalName: input.originalName,
+      sizeBytes: input.sizeBytes,
+      stored: stored.stored
+    };
+  }
+
   getContractSignedArtifactStream(objectKey: string): Promise<DownloadObjectResult> {
     return this.getObject(LOCAL_BUCKET, objectKey);
   }
 
-  private async putPrivateObject(key: string, input: Omit<UploadObjectInput, "key">): Promise<{
+  resolveContractSignedArtifactIdentity(
+    contractId: string,
+    provider: string,
+    objectKey: string
+  ): { bucket: string; objectKey: string } | null {
+    const namespace =
+      `contracts/${sanitizeKeyPart(contractId)}/esign/` + `${sanitizeKeyPart(provider)}/signed/`;
+    if (objectKey.startsWith(OSS_KEY_PREFIX)) {
+      const storedKey = stripPrefix(objectKey, OSS_KEY_PREFIX);
+      if (!storedKey.startsWith(this.withOssPrefix(namespace))) {
+        return null;
+      }
+      const bucket = this.configService.get<string>("OSS_BUCKET")?.trim();
+      return bucket
+        ? {
+            bucket: `${OSS_BUCKET_PREFIX}${bucket}`,
+            objectKey
+          }
+        : null;
+    }
+    return objectKey.startsWith(namespace)
+      ? {
+          bucket: LOCAL_BUCKET,
+          objectKey
+        }
+      : null;
+  }
+
+  buildContractSignedArtifactObjectKey(
+    contractId: string,
+    provider: string,
+    originalName: string,
+    objectIdentity: string
+  ) {
+    const key = this.buildContractSignedArtifactKey(
+      contractId,
+      provider,
+      originalName,
+      objectIdentity
+    );
+    return this.getDriver() === "oss" ? `${OSS_KEY_PREFIX}${this.withOssPrefix(key)}` : key;
+  }
+
+  async deleteContractSignedArtifactObject(objectKey: string): Promise<void> {
+    const bucket = objectKey.startsWith(OSS_KEY_PREFIX) ? OSS_BUCKET_PREFIX : LOCAL_BUCKET;
+    await this.deleteObject(bucket, objectKey);
+  }
+
+  private async putPrivateObject(
+    key: string,
+    input: Omit<UploadObjectInput, "key">
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -220,7 +364,10 @@ export class StorageService {
     };
   }
 
-  private async putPrivateFile(key: string, input: Omit<UploadFileObjectInput, "key">): Promise<{
+  private async putPrivateFile(
+    key: string,
+    input: Omit<UploadFileObjectInput, "key">
+  ): Promise<{
     bucket: string;
     objectKey: string;
     stored: StoredObject;
@@ -261,7 +408,10 @@ export class StorageService {
     await resolved.provider.deleteObject(resolved.key);
   }
 
-  private resolveStoredObject(bucket: string, objectKey: string): { key: string; provider: StorageProvider } {
+  private resolveStoredObject(
+    bucket: string,
+    objectKey: string
+  ): { key: string; provider: StorageProvider } {
     if (bucket.startsWith(OSS_BUCKET_PREFIX) || objectKey.startsWith(OSS_KEY_PREFIX)) {
       return {
         key: stripPrefix(objectKey, OSS_KEY_PREFIX),
@@ -319,7 +469,25 @@ export class StorageService {
     return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
-  private buildContractSignedArtifactKey(contractId: string, provider: string, originalName: string) {
+  private buildDeliveryEvidenceDerivativeKey(
+    workOrderId: string,
+    kind: "PHOTO_PREVIEW" | "VIDEO_FRAME",
+    originalName: string
+  ) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `delivery-evidence/${sanitizeKeyPart(workOrderId)}/${year}/derivatives/${kind.toLowerCase()}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildContractSignedArtifactKey(
+    contractId: string,
+    provider: string,
+    originalName: string,
+    objectIdentity?: string
+  ) {
+    if (objectIdentity) {
+      return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${sanitizeKeyPart(objectIdentity)}-${sanitizeFilename(originalName)}`;
+    }
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `contracts/${sanitizeKeyPart(contractId)}/esign/${sanitizeKeyPart(provider)}/signed/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;

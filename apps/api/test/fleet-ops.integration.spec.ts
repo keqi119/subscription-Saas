@@ -16,6 +16,7 @@ import { VehicleTimelineService } from "../src/fleet-ops/timeline/vehicle-timeli
 import { CollectionPriorityLevel, ControlDecision } from "../src/fleet-ops/risk/risk.types";
 import { TimelineState } from "../src/fleet-ops/timeline/vehicle-timeline.types";
 import { VehicleComputedOperationalState, VehicleOperationalConfidenceBand } from "../src/fleet-ops/vehicle-operational-state.types";
+import { PrismaService } from "../src/prisma/prisma.service";
 
 describe("FleetOpsModule", () => {
   it("compiles as the single production module boundary and exposes facade plus health service", async () => {
@@ -27,7 +28,10 @@ describe("FleetOpsModule", () => {
         }),
         FleetOpsModule
       ]
-    }).compile();
+    })
+      .overrideProvider(PrismaService)
+      .useValue({})
+      .compile();
 
     expect(moduleRef.get(FleetOpsFacade)).toBeInstanceOf(FleetOpsFacade);
     expect(moduleRef.get(FleetOpsHealthService).getHealth()).toEqual({

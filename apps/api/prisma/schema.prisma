@@ -85,6 +85,8 @@ enum CustomerVerificationCodePurpose {
   LOGIN
   BIND_PHONE
   FIELD_HANDOVER_LOGIN
+  FIELD_HANDOVER_ESIGN_READY
+  CUSTOMER_HANDOVER_ESIGN_READY
 
   @@map("customer_verification_code_purpose")
 }
@@ -100,6 +102,8 @@ enum SmsSendStatus {
   SENT
   FAILED
   SKIPPED
+  SENDING
+  UNCERTAIN
 
   @@map("sms_send_status")
 }
@@ -801,6 +805,8 @@ enum NotificationTemplateType {
   BILL_OVERDUE
   SERVICE_CASE_UPDATE
   RESCUE_UPDATE
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
   SYSTEM
 
   @@map("notification_template_type")
@@ -823,6 +829,8 @@ enum NotificationType {
   BILL_OVERDUE
   SERVICE_CASE_UPDATE
   RESCUE_UPDATE
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
   SYSTEM
 
   @@map("notification_type")
@@ -850,6 +858,8 @@ enum NotificationEventType {
   SERVICE_CASE_SUBMITTED
   SERVICE_CASE_UPDATED
   RESCUE_UPDATED
+  HANDOVER_ESIGN_PENDING
+  HANDOVER_ESIGN_READY
 
   @@map("notification_event_type")
 }
@@ -1008,6 +1018,28 @@ enum VehicleHandoverWorkOrderStatus {
   @@map("vehicle_handover_work_order_status")
 }
 
+enum VehicleHandoverWorkflowJobType {
+  GENERATE_SOURCE_PDF
+  NOTIFY_FIELD_ESIGN_READY
+  NOTIFY_CUSTOMER_ESIGN_READY
+  RECONCILE_CUSTOMER_SIGNATURE
+  AUTO_SEAL_PLATFORM
+  RECONCILE_PLATFORM_SEAL
+  ARCHIVE_SIGNED_PDF
+
+  @@map("vehicle_handover_workflow_job_type")
+}
+
+enum VehicleHandoverWorkflowJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("vehicle_handover_workflow_job_status")
+}
+
 enum VehicleHandoverOpsReviewStatus {
   NOT_REQUIRED
   PENDING
@@ -1159,6 +1191,40 @@ enum ESignTaskStatus {
   EXPIRED
 
   @@map("esign_task_status")
+}
+
+enum ESignSigningStage {
+  STAGE1_SUBSCRIPTION_CONTRACT
+  STAGE2_DELIVERY_HANDOVER
+
+  @@map("esign_signing_stage")
+}
+
+enum ESignDocumentType {
+  SUBSCRIPTION_CONTRACT
+  CONTRACT_BODY
+  ATTACHMENT1_SUBSCRIPTION_PLAN
+  DELIVERY_HANDOVER
+
+  @@map("esign_document_type")
+}
+
+enum ESignSlotId {
+  STAGE1_BODY_CUSTOMER
+  STAGE1_BODY_PLATFORM
+  STAGE1_ATTACHMENT1_CUSTOMER
+  STAGE1_ATTACHMENT1_PLATFORM
+  STAGE2_HANDOVER_CUSTOMER
+  STAGE2_HANDOVER_PLATFORM
+
+  @@map("esign_slot_id")
+}
+
+enum ESignProviderActionType {
+  CUSTOMER_MANUAL_SIGN
+  PLATFORM_AUTO_SEAL
+
+  @@map("esign_provider_action_type")
 }
 
 enum ESignSignerType {
@@ -2093,6 +2159,7 @@ model SmsSendLog {
   purpose            CustomerVerificationCodePurpose
   provider           SmsProviderType
   sendStatus         SmsSendStatus                   @map("send_status")
+  idempotencyKey     String?                         @unique @map("idempotency_key") @db.VarChar(256)
   providerMessageId  String?                         @map("provider_message_id") @db.VarChar(128)
   providerRequestId  String?                         @map("provider_request_id") @db.VarChar(128)
   providerResponse   Json?                           @map("provider_response")
@@ -4869,11 +4936,18 @@ model VehicleDeliveryHandover {
   handoverESignTaskId  String?                       @unique @map("handover_esign_task_id") @db.Uuid
   handoverESignTask    ContractESignTask?            @relation("DeliveryHandoverESignTask", fields: [handoverESignTaskId], references: [id])
   sourceDocumentFileId String?                       @map("source_document_file_id") @db.Uuid
+  sourcePdfHash        String?                       @map("source_pdf_hash") @db.Char(64)
   sourceObjectKey      String?                       @map("source_object_key") @db.VarChar(512)
   signedDocumentFileId String?                       @map("signed_document_file_id") @db.Uuid
+  signedPdfHash        String?                       @map("signed_pdf_hash") @db.Char(64)
+  manifestHash         String?                       @map("manifest_hash") @db.Char(64)
+  artifactVersion      Int                           @default(1) @map("artifact_version")
   signedObjectKey      String?                       @map("signed_object_key") @db.VarChar(512)
   status               DeliveryHandoverStatus        @default(DRAFT)
   archiveStatus        DeliveryHandoverArchiveStatus @default(NOT_STARTED) @map("archive_status")
+  archiveRetryCount    Int                           @default(0) @map("archive_retry_count")
+  archiveLastAttemptAt DateTime?                     @map("archive_last_attempt_at") @db.Timestamptz(6)
+  archiveLastError     String?                       @map("archive_last_error") @db.Text
   customerSignedAt     DateTime?                     @map("customer_signed_at") @db.Timestamptz(6)
   platformSignedAt     DateTime?                     @map("platform_signed_at") @db.Timestamptz(6)
   completedAt          DateTime?                     @map("completed_at") @db.Timestamptz(6)
@@ -4918,6 +4992,8 @@ model VehicleHandoverWorkOrder {
   externalOperatorName         String?                        @map("external_operator_name") @db.VarChar(64)
   externalOperatorPhone        String?                        @map("external_operator_phone") @db.VarChar(32)
   externalOperatorOrganization String?                        @map("external_operator_organization") @db.VarChar(128)
+  fieldOperatorName            String?                        @map("field_operator_name") @db.VarChar(64)
+  fieldOperatorPhone           String?                        @map("field_operator_phone") @db.VarChar(32)
   accessTokenHash              String?                        @unique @map("access_token_hash") @db.VarChar(128)
   accessTokenExpiresAt         DateTime?                      @map("access_token_expires_at") @db.Timestamptz(6)
   accessTokenRevokedAt         DateTime?                      @map("access_token_revoked_at") @db.Timestamptz(6)
@@ -4949,6 +5025,7 @@ model VehicleHandoverWorkOrder {
   metadata                     Json?
   reviewAttempts               VehicleHandoverReviewAttempt[]
   events                       VehicleHandoverEvent[]
+  workflowJobs                 VehicleHandoverWorkflowJob[]
   createdAt                    DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -4959,10 +5036,40 @@ model VehicleHandoverWorkOrder {
   @@index([status])
   @@index([operatorType])
   @@index([assignedInternalUserId])
+  @@index([fieldOperatorPhone])
   @@index([accessTokenExpiresAt])
   @@index([opsReviewStatus])
   @@index([opsReviewedBy])
   @@map("vehicle_handover_work_order")
+}
+
+model VehicleHandoverWorkflowJob {
+  id               String                           @id @default(uuid()) @db.Uuid
+  workOrderId      String                           @map("work_order_id") @db.Uuid
+  workOrder        VehicleHandoverWorkOrder         @relation(fields: [workOrderId], references: [id])
+  handoverId       String?                          @map("handover_id") @db.Uuid
+  eSignTaskId      String?                          @map("esign_task_id") @db.Uuid
+  jobType          VehicleHandoverWorkflowJobType   @map("job_type")
+  jobStatus        VehicleHandoverWorkflowJobStatus @default(PENDING) @map("job_status")
+  idempotencyKey   String                           @unique @map("idempotency_key") @db.VarChar(256)
+  availableAt      DateTime                         @default(now()) @map("available_at") @db.Timestamptz(6)
+  attemptCount     Int                              @default(0) @map("attempt_count")
+  maxAttempts      Int                              @default(6) @map("max_attempts")
+  leaseToken       String?                          @map("lease_token") @db.Uuid
+  leaseExpiresAt   DateTime?                        @map("lease_expires_at") @db.Timestamptz(6)
+  payload          Json?
+  resultSnapshot   Json?                            @map("result_snapshot")
+  lastErrorCode    String?                          @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage String?                          @map("last_error_message") @db.VarChar(512)
+  startedAt        DateTime?                        @map("started_at") @db.Timestamptz(6)
+  completedAt      DateTime?                        @map("completed_at") @db.Timestamptz(6)
+  createdAt        DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([jobStatus, availableAt])
+  @@index([workOrderId, createdAt])
+  @@index([leaseExpiresAt])
+  @@map("vehicle_handover_workflow_job")
 }
 
 model VehicleHandoverReviewAttempt {
@@ -5272,6 +5379,8 @@ model ContractESignTask {
   orderId                 String?                    @map("order_id") @db.Uuid
   customerId              String?                    @map("customer_id") @db.Uuid
   provider                ESignProviderType
+  signingStage            ESignSigningStage          @default(STAGE1_SUBSCRIPTION_CONTRACT) @map("signing_stage")
+  documentType            ESignDocumentType          @default(SUBSCRIPTION_CONTRACT) @map("document_type")
   taskStatus              ESignTaskStatus            @default(CREATED) @map("task_status")
   providerTaskId          String?                    @map("provider_task_id") @db.VarChar(128)
   providerEnvelopeId      String?                    @map("provider_envelope_id") @db.VarChar(128)
@@ -5303,32 +5412,46 @@ model ContractESignTask {
   @@index([customerId])
   @@index([provider])
   @@index([taskStatus])
+  @@index([signingStage, taskStatus])
   @@map("contract_esign_task")
 }
 
 model ContractESignSigner {
-  id               String              @id @default(uuid()) @db.Uuid
-  taskId           String              @map("task_id") @db.Uuid
-  task             ContractESignTask   @relation(fields: [taskId], references: [id])
-  signerType       ESignSignerType     @map("signer_type")
-  signerName       String?             @map("signer_name") @db.VarChar(128)
-  signerPhone      String?             @map("signer_phone") @db.VarChar(32)
-  signerIdNoMasked String?             @map("signer_id_no_masked") @db.VarChar(64)
-  customerId       String?             @map("customer_id") @db.Uuid
-  signerStatus     ESignSignerStatus   @default(PENDING) @map("signer_status")
-  providerSignerId String?             @map("provider_signer_id") @db.VarChar(128)
-  signUrl          String?             @map("sign_url") @db.Text
-  signUrlExpiresAt DateTime?           @map("sign_url_expires_at") @db.Timestamptz(6)
-  signedAt         DateTime?           @map("signed_at") @db.Timestamptz(6)
-  rejectedAt       DateTime?           @map("rejected_at") @db.Timestamptz(6)
-  rejectReason     String?             @map("reject_reason") @db.Text
-  snapshot         Json?
-  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt        DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  id                    String                  @id @default(uuid()) @db.Uuid
+  taskId                String                  @map("task_id") @db.Uuid
+  task                  ContractESignTask       @relation(fields: [taskId], references: [id])
+  signerType            ESignSignerType         @map("signer_type")
+  slotId                ESignSlotId?            @map("slot_id")
+  documentType          ESignDocumentType?      @map("document_type")
+  providerActionType    ESignProviderActionType? @map("provider_action_type")
+  required              Boolean                 @default(true)
+  signerName            String?                 @map("signer_name") @db.VarChar(128)
+  signerPhone           String?                 @map("signer_phone") @db.VarChar(32)
+  signerIdNoMasked      String?                 @map("signer_id_no_masked") @db.VarChar(64)
+  customerId            String?                 @map("customer_id") @db.Uuid
+  signerStatus          ESignSignerStatus       @default(PENDING) @map("signer_status")
+  providerSignerId      String?                 @map("provider_signer_id") @db.VarChar(128)
+  providerTransactionId String?                 @map("provider_transaction_id") @db.VarChar(32)
+  signUrl               String?                 @map("sign_url") @db.Text
+  signUrlExpiresAt      DateTime?               @map("sign_url_expires_at") @db.Timestamptz(6)
+  attemptCount          Int                     @default(0) @map("attempt_count")
+  lastAttemptAt         DateTime?               @map("last_attempt_at") @db.Timestamptz(6)
+  nextRetryAt           DateTime?               @map("next_retry_at") @db.Timestamptz(6)
+  lastErrorCode         String?                 @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage      String?                 @map("last_error_message") @db.Text
+  claimExpiresAt        DateTime?               @map("claim_expires_at") @db.Timestamptz(6)
+  signedAt              DateTime?               @map("signed_at") @db.Timestamptz(6)
+  rejectedAt            DateTime?               @map("rejected_at") @db.Timestamptz(6)
+  rejectReason          String?                 @map("reject_reason") @db.Text
+  snapshot              Json?
+  createdAt             DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt             DateTime?               @map("deleted_at") @db.Timestamptz(6)
 
+  @@unique([taskId, slotId])
   @@index([taskId])
   @@index([customerId])
+  @@index([providerTransactionId])
   @@index([signerStatus])
   @@map("contract_esign_signer")
 }
@@ -5340,6 +5463,8 @@ model ContractESignCallbackLog {
   provider       ESignProviderType
   eventType      String?            @map("event_type") @db.VarChar(128)
   providerTaskId String?            @map("provider_task_id") @db.VarChar(128)
+  providerTransactionId String?     @map("provider_transaction_id") @db.VarChar(32)
+  payloadHash    String?            @map("payload_hash") @db.Char(64)
   payload        Json?
   verified       Boolean            @default(false)
   handled        Boolean            @default(false)
@@ -5352,6 +5477,7 @@ model ContractESignCallbackLog {
   @@index([providerTaskId])
   @@index([eventType])
   @@index([receivedAt])
+  @@unique([provider, payloadHash])
   @@map("contract_esign_callback_log")
 }
 

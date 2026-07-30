@@ -9,7 +9,8 @@ import {
   ESignProviderCertBindingStatus,
   ESignProviderRealNameStatusSource,
   ESignProviderType,
-  ESignRealNameStatus
+  ESignRealNameStatus,
+  Prisma
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
@@ -56,8 +57,11 @@ export class FadadaCustomerReadinessService {
     private readonly configService: ConfigService
   ) {}
 
-  async getReadiness(customerId: string): Promise<FadadaCustomerReadiness> {
-    const account = await this.prisma.customerESignProviderAccount.findFirst({
+  async getReadiness(
+    customerId: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ): Promise<FadadaCustomerReadiness> {
+    const account = await db.customerESignProviderAccount.findFirst({
       where: {
         accountType: ESignProviderAccountType.PERSONAL,
         customerId,

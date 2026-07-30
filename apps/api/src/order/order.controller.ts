@@ -1,4 +1,16 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  StreamableFile,
+  UseGuards
+} from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
@@ -24,12 +36,14 @@ import {
   ConfirmReturnDto,
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
+  ListContractsQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
+import { OrderWorkspaceService } from "./order-workspace.service";
 import { OrderService } from "./order.service";
 
 @Controller()
@@ -37,7 +51,8 @@ import { OrderService } from "./order.service";
 export class OrderController {
   constructor(
     private readonly orderService: OrderService,
-    private readonly onboardingService: CustomerESignOnboardingService
+    private readonly onboardingService: CustomerESignOnboardingService,
+    private readonly orderWorkspaceService: OrderWorkspaceService
   ) {}
 
   @Get("orders")
@@ -210,6 +225,35 @@ export class OrderController {
     return this.orderService.getOrder(id, request.user);
   }
 
+  @Get("orders/:id/workspace/detail")
+  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  getOrderWorkspaceDetail(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderWorkspaceService.getDetail(id, request.user);
+  }
+
+  @Get("orders/:id/workspace/service-cases/:serviceCaseId")
+  @RequirePermissions(
+    PermissionCode.ORDER_VIEW,
+    PermissionCode.SERVICE_CASE_VIEW
+  )
+  getOrderWorkspaceServiceCase(
+    @Param("id") id: string,
+    @Param("serviceCaseId") serviceCaseId: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderWorkspaceService.getServiceCase(
+      id,
+      serviceCaseId,
+      request.user
+    );
+  }
+
+  @Get("orders/:id/workspace/summary")
+  @RequirePermissions(PermissionCode.ORDER_VIEW)
+  getOrderWorkspaceSummary(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.orderWorkspaceService.getSummary(id, request.user);
+  }
+
   @Post("customer-orders")
   @RequirePermissions(PermissionCode.ORDER_CREATE)
   createCustomerOrder(
@@ -309,8 +353,8 @@ export class OrderController {
 
   @Get("contracts")
   @RequirePermissions(PermissionCode.CONTRACT_VIEW)
-  listContracts(@Req() request: AuthenticatedRequest) {
-    return this.orderService.listContracts(request.user);
+  listContracts(@Query() query: ListContractsQueryDto, @Req() request: AuthenticatedRequest) {
+    return this.orderService.listContracts(request.user, query);
   }
 
   @Get("contracts/:id")

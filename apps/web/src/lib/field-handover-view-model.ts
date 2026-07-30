@@ -69,6 +69,23 @@ export interface FieldEvidenceCaptureView {
   submitBlockers: string[];
 }
 
+export interface FieldStage2HandoverView {
+  artifactVersion: number | null;
+  canDownload: boolean;
+  canPreview: boolean;
+  canStartESign: boolean;
+  documentNoText: string;
+  downloadUrl: string | null;
+  fileNameText: string;
+  fileSizeText: string;
+  generatedAtText: string;
+  notificationStatusText: string;
+  previewUrl: string | null;
+  shouldPollESign: boolean;
+  shouldShow: boolean;
+  sourcePdfHash: string | null;
+}
+
 export interface FieldHandoverFactsDraft {
   accessoryChecklistText?: string | null;
   damageDeclared?: boolean | null;
@@ -192,6 +209,59 @@ export function buildFieldEvidenceCaptureView(detail: FieldHandoverWorkOrderDeta
   };
 }
 
+export function buildFieldStage2HandoverView(
+  detail: FieldHandoverWorkOrderDetail
+): FieldStage2HandoverView {
+  const artifact = detail.stage2Pdf;
+  const capabilities = detail.stage2Capabilities;
+  const generated = artifact?.status === "GENERATED";
+  const artifactVersion =
+    typeof artifact?.artifactVersion === "number" &&
+    Number.isInteger(artifact.artifactVersion) &&
+    artifact.artifactVersion > 0
+      ? artifact.artifactVersion
+      : null;
+  const sourcePdfHash =
+    typeof artifact?.sourcePdfHash === "string" && /^[a-f0-9]{64}$/.test(artifact.sourcePdfHash)
+      ? artifact.sourcePdfHash
+      : null;
+  const hasActiveESign = Boolean(detail.stage2ESign?.taskId);
+
+  return {
+    artifactVersion,
+    canDownload:
+      generated &&
+      Boolean(artifact?.downloadUrl) &&
+      capabilities?.canDownload === true,
+    canPreview:
+      generated &&
+      Boolean(artifact?.previewUrl) &&
+      capabilities?.canPreview === true,
+    canStartESign:
+      detail.status === "CUSTOMER_CONFIRMED" &&
+      generated &&
+      artifactVersion !== null &&
+      sourcePdfHash !== null &&
+      !hasActiveESign &&
+      capabilities?.canStartESign === true,
+    documentNoText: artifact?.documentNo || "-",
+    downloadUrl: artifact?.downloadUrl ?? null,
+    fileNameText: artifact?.fileName || "车辆交接确认单.pdf",
+    fileSizeText: formatFileSize(artifact?.fileSize),
+    generatedAtText: formatDateTime(artifact?.generatedAt),
+    notificationStatusText: formatFieldNotificationStatus(
+      detail.stage2Notification?.status,
+      generated
+    ),
+    previewUrl: artifact?.previewUrl ?? null,
+    shouldPollESign:
+      detail.stage2ESign?.finalizationPending === true &&
+      capabilities?.shouldPollESign === true,
+    shouldShow: detail.status === "CUSTOMER_CONFIRMED" || Boolean(artifact),
+    sourcePdfHash
+  };
+}
+
 function canEditFieldEvidence(detail: FieldHandoverWorkOrderDetail) {
   if (
     detail.fieldResubmissionRequested === true &&
@@ -203,6 +273,22 @@ function canEditFieldEvidence(detail: FieldHandoverWorkOrderDetail) {
     return false;
   }
   return !LOCKED_WORK_ORDER_STATUSES.has(String(detail.status ?? ""));
+}
+
+function formatFieldNotificationStatus(
+  status: null | string | undefined,
+  generated: boolean
+) {
+  if (["COMPLETED", "READ", "SENT", "SUCCESS"].includes(status ?? "")) {
+    return "通知已发送";
+  }
+  if (["FAILED", "DEAD_LETTER"].includes(status ?? "")) {
+    return "通知发送异常";
+  }
+  if (["PENDING", "PROCESSING", "QUEUED", "RETRYING"].includes(status ?? "")) {
+    return "通知发送中";
+  }
+  return generated ? "通知状态待同步" : "等待交接确认单生成";
 }
 
 function formatFieldLockedMessage(detail: FieldHandoverWorkOrderDetail) {
@@ -292,6 +378,14 @@ export function fieldFactsToDraft(fieldFacts: FieldHandoverFieldFacts | null | u
     noVisibleDamageDeclared: fieldFacts?.noVisibleDamageDeclared ?? null,
     scheduledAt: fieldFacts?.scheduledAt ?? null
   };
+}
+
+export function resolveFieldHandoverFactsAfterRefresh(
+  currentDraft: FieldHandoverFactsDraft,
+  fieldFacts: FieldHandoverFieldFacts | null | undefined,
+  preserveFacts: boolean
+) {
+  return preserveFacts ? currentDraft : fieldFactsToDraft(fieldFacts);
 }
 
 function formatEvidenceProgress(progress: FieldHandoverEvidenceProgress | null | undefined) {

@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { createHash } from "node:crypto";
 import {
   CustomerAccountStatus,
   NotificationChannel,
@@ -39,10 +40,16 @@ export interface NotifyCustomerInput {
   url?: string;
 }
 
-const TEMPLATE_CODE_BY_EVENT: Record<NotificationEventType, {
+export interface NotifyStage2CustomerReadyInput {
+  customerId: string;
+  idempotencyKey: string;
+  workOrderId: string;
+}
+
+const TEMPLATE_CODE_BY_EVENT: Partial<Record<NotificationEventType, {
   inApp: string;
   wechat: string;
-}> = {
+}>> = {
   [NotificationEventType.APPLICATION_SUBMITTED]: {
     inApp: "APPLICATION_SUBMITTED_IN_APP",
     wechat: "APPLICATION_SUBMITTED_WECHAT"
@@ -85,7 +92,7 @@ const TEMPLATE_CODE_BY_EVENT: Record<NotificationEventType, {
   }
 };
 
-const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Record<NotificationType, NotificationTemplateType> = {
+const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<Record<NotificationType, NotificationTemplateType>> = {
   [NotificationType.APPLICATION_PROGRESS]: NotificationTemplateType.APPLICATION_PROGRESS,
   [NotificationType.MATERIAL_REQUIRED]: NotificationTemplateType.MATERIAL_REQUIRED,
   [NotificationType.FINAL_PLAN_PENDING]: NotificationTemplateType.FINAL_PLAN_PENDING,
@@ -171,6 +178,25 @@ export class NotificationService {
       });
       this.logger.warn(`Notification event ${event.id} failed: ${errorMessage(error)}`);
       return [];
+    }
+  }
+
+  async notifyStage2CustomerReady(
+    input: NotifyStage2CustomerReadyInput
+  ) {
+    const notificationNo = stage2NotificationNo(input.idempotencyKey);
+    const reconcile = () =>
+      this.prisma.$transaction((tx) =>
+        this.reconcileStage2CustomerReady(tx, input, notificationNo)
+      );
+
+    try {
+      return await reconcile();
+    } catch (error) {
+      if (!isUniqueConflict(error)) {
+        throw error;
+      }
+      return reconcile();
     }
   }
 
@@ -339,6 +365,9 @@ export class NotificationService {
       }
     });
     const templateCodes = TEMPLATE_CODE_BY_EVENT[input.eventType];
+    if (!templateCodes) {
+      throw new Error(`Notification event type ${input.eventType} is not configured.`);
+    }
     const [inAppTemplate, wechatTemplate] = await Promise.all([
       this.findTemplate(templateCodes.inApp),
       this.findTemplate(templateCodes.wechat)
@@ -385,6 +414,85 @@ export class NotificationService {
     });
 
     return [inApp, wechat].filter(Boolean);
+  }
+
+  private async reconcileStage2CustomerReady(
+    tx: Prisma.TransactionClient,
+    input: NotifyStage2CustomerReadyInput,
+    notificationNo: string
+  ) {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "notification_record"
+      WHERE "notification_no" = ${notificationNo}
+      FOR UPDATE
+    `);
+    const now = new Date();
+    let record = await tx.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    if (!record) {
+      record = await tx.notificationRecord.create({
+        data: {
+          channel: NotificationChannel.IN_APP,
+          content: "Log in to Portal to review the handover signing request.",
+          customerId: input.customerId,
+          notificationNo,
+          notificationStatus: NotificationStatus.SENT,
+          notificationType: NotificationType.HANDOVER_ESIGN_READY,
+          readAt: null,
+          sentAt: now,
+          templateCode: "HANDOVER_ESIGN_READY_IN_APP",
+          title: "Handover signing is ready",
+          url: normalizePortalUrl(
+            `/portal/handover-reviews/${encodeURIComponent(input.workOrderId)}`,
+            this.portalBaseUrl
+          )
+        }
+      });
+    } else if (
+      record.notificationStatus !== NotificationStatus.SENT &&
+      record.notificationStatus !== NotificationStatus.READ
+    ) {
+      record = await tx.notificationRecord.update({
+        data: {
+          errorMessage: null,
+          failedAt: null,
+          notificationStatus: NotificationStatus.SENT,
+          sentAt: now
+        },
+        where: { id: record.id }
+      });
+    }
+
+    const event = await tx.notificationEvent.findFirst({
+      where: { notificationId: record.id }
+    });
+    if (!event) {
+      await tx.notificationEvent.create({
+        data: {
+          aggregateId: input.workOrderId,
+          aggregateType: "VehicleHandoverWorkOrder",
+          attempts: 1,
+          customerId: input.customerId,
+          eventStatus: NotificationEventStatus.PROCESSED,
+          eventType: NotificationEventType.HANDOVER_ESIGN_READY,
+          notificationId: record.id,
+          processedAt: now
+        }
+      });
+    } else if (event.eventStatus !== NotificationEventStatus.PROCESSED) {
+      await tx.notificationEvent.update({
+        data: {
+          eventStatus: NotificationEventStatus.PROCESSED,
+          lastError: null,
+          processedAt: now
+        },
+        where: { id: event.id }
+      });
+    }
+
+    return record;
   }
 
   private async createWechatRecord(input: {
@@ -611,7 +719,7 @@ export class NotificationService {
 
   private envTemplateId(notificationType: NotificationType) {
     const templateType = TEMPLATE_TYPE_BY_NOTIFICATION_TYPE[notificationType];
-    const envKey = WECHAT_TEMPLATE_ENV_BY_TYPE[templateType];
+    const envKey = templateType ? WECHAT_TEMPLATE_ENV_BY_TYPE[templateType] : undefined;
     const value = envKey ? this.configService.get<string>(envKey)?.trim() : undefined;
     if (!value || value === "<CHANGE_ME>") {
       return null;
@@ -826,4 +934,16 @@ function maskOpenId(value: string) {
     return `${value.slice(0, 2)}****`;
   }
   return `${value.slice(0, 4)}****${value.slice(-4)}`;
+}
+
+function stage2NotificationNo(idempotencyKey: string) {
+  return `HESR${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 60)}`;
+}
+
+function isUniqueConflict(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "P2002"
+  );
 }

@@ -26,7 +26,7 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("/handover-review-queue");
     expect(source).toContain("创建交付工单");
     expect(source).toContain("暂无 Stage 2 现场交接工单");
-    expect(source).toContain("/orders/${params.id}/handover-work-orders");
+    expect(source).toContain("/orders/${orderId}/handover-work-orders");
     expect(source).toContain("/objection/${action}");
     expect(source).toContain("\"acknowledge\"");
     expect(source).toContain("\"request-resubmission\"");
@@ -42,6 +42,14 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).not.toMatch(/accessTokenHash|objectKey|bucket|signingUrl|idCard|fullPhone|raw DTO/i);
   });
 
+  it("renders canonical full Field identity and states equal OTP task permissions", () => {
+    const source = read(orderPagePath);
+
+    expect(source).toContain("row.operator?.phone || \"-\"");
+    expect(source).toContain("请填写用于 Field 登录的手机号");
+    expect(source).not.toContain("row.operator?.phoneMasked || \"-\"");
+  });
+
   it("provides an Admin objection queue entry with links back to the order workflow", () => {
     const source = read(reviewQueuePagePath);
 
@@ -50,6 +58,116 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("/orders/${row.orderId}");
     expect(source).toContain("进入订单处理");
     expect(source).not.toMatch(/accessToken|objectKey|bucket|signingUrl|idCard|fullPhone/i);
+  });
+
+  it("integrates the Stage 2 workflow timeline and dead-letter recovery into the review surfaces", () => {
+    const source = read(orderPagePath);
+
+    expect(source).toContain("Stage2HandoverWorkflowCell");
+    expect(source).toContain("loadAdminStage2HandoverESign");
+    expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
+    expect(source).toContain("retryAdminStage2WorkflowJob");
+    expect(source).toContain("reconcileAdminStage2CustomerSignature");
+    expect(source).toContain("getAdminStage2HandoverESignErrorMessage");
+    expect(source).toContain('canRecoverWorkflow={permissions.has("delivery:confirm")}');
+    expect(source).toContain("display.recoveries.map");
+    expect(source).toContain("<Timeline");
+    expect(source).not.toContain("function Stage2HandoverPdfCell");
+    expect(source).not.toContain("function Stage2HandoverESignCell");
+    expect(source).not.toMatch(
+      /signUrl|providerTransactionId|providerTaskId|providerEnvelopeId|objectKey|bucket|idCard|fullPhone/i
+    );
+  });
+
+  it("refreshes order and workflow state after recovery without advancing delivery", () => {
+    const source = read(orderPagePath);
+    const actionBlock = source.slice(
+      source.indexOf("async function runStage2WorkflowRecovery"),
+      source.indexOf("function openAssignExternalHandover")
+    );
+
+    expect(actionBlock).toContain("await loadOrder()");
+    expect(actionBlock).toContain("retryAdminStage2WorkflowJob");
+    expect(actionBlock).toContain("reconcileAdminStage2CustomerSignature");
+    expect(actionBlock).not.toMatch(
+      /confirmDelivery|prepareDelivery|activateLease|leaseActivation|billing|payment/i
+    );
+  });
+
+  it("requires explicit confirmation before an exception recovery mutation", () => {
+    const source = read(orderPagePath);
+    const confirmationBlock = source.slice(
+      source.indexOf("function confirmStage2WorkflowRecovery"),
+      source.indexOf("function openAssignExternalHandover")
+    );
+
+    expect(confirmationBlock).toContain("scopedConfirm.confirm");
+    expect(confirmationBlock).toContain("确认执行异常恢复？");
+    expect(confirmationBlock).toContain("runStage2WorkflowRecovery");
+    expect(confirmationBlock).toContain("onOk");
+  });
+
+  it("uses a synchronous ref guard and disables recovery while one is pending", () => {
+    const source = read(orderPagePath);
+    const guardBlock = source.slice(
+      source.indexOf("async function runStage2WorkflowRecovery"),
+      source.indexOf("function confirmStage2WorkflowRecovery")
+    );
+    const cellBlock = source.slice(
+      source.indexOf("function Stage2HandoverWorkflowCell"),
+      source.indexOf("function Stage2HandoverReviewPanel")
+    );
+
+    expect(source).toContain("stage2WorkflowRecoveryInFlightRef = useRef(false)");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current = true");
+    expect(guardBlock).toContain("stage2WorkflowRecoveryInFlightRef.current = false");
+    expect(cellBlock).toContain("disabled={!canRecoverWorkflow || mutationInFlight}");
+  });
+
+  it("delegates the delivery signing gate and exposes controlled void/reissue plus Admin fallback UI", () => {
+    const source = read(orderPagePath);
+    const signingGateBlock = source.slice(
+      source.indexOf("const stage2SigningComplete ="),
+      source.indexOf("const confirmDeliveryDisabledReason")
+    );
+
+    expect(signingGateBlock).toContain('handoverWorkOrdersLoadState === "LOADED"');
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 0");
+    expect(signingGateBlock).toContain("activeHandoverWorkOrders.length === 1");
+    expect(signingGateBlock).toContain("deliveryConfirmationAvailable");
+    expect(signingGateBlock).not.toContain("archiveStatus");
+    expect(signingGateBlock).not.toContain("signedArtifactAvailable");
+    expect(source).toContain("voidAdminStage2HandoverESign");
+    expect(source).toContain("startAdminStage2HandoverESign");
+    expect(source).toContain("作废并重新发起");
+    expect(source).toContain("后台兜底发起签署");
+    expect(source).toContain("buildAdminStage2HandoverPdfDownloadUrl");
+    expect(source).toContain("确认后台兜底发起签署");
+    expect(source).toContain("已核对当前交接确认单");
+    expect(source).toContain("PDF 版本");
+    expect(source).toContain("SHA-256");
+    expect(source).toContain("预览/下载 PDF");
+    expect(source).toContain("validateAdminStage2HandoverFallbackReason");
+  });
+
+  it("freezes the reviewed PDF version and hash when the Admin fallback dialog opens", () => {
+    const source = read(orderPagePath);
+    const fallbackBlock = source.slice(
+      source.indexOf("async function runAdminStage2Fallback"),
+      source.indexOf("function openAdminStage2Void")
+    );
+
+    expect(fallbackBlock).toContain(
+      "const sourceArtifact = stage2FallbackSourceArtifact"
+    );
+    expect(fallbackBlock).toContain(
+      "setStage2FallbackSourceArtifact({"
+    );
+    expect(fallbackBlock).toContain("...status.sourceArtifact");
+    expect(fallbackBlock).not.toContain(
+      "handoverESignStatuses[id]?.sourceArtifact"
+    );
   });
 });
 

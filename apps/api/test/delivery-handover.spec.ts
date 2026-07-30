@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   DeliveryHandoverService,
+  findDeliveryHandoverForConfirmation,
   getDeliveryHandoverArchiveWarning
 } from "../src/delivery-handover/delivery-handover.service";
 
@@ -89,12 +90,36 @@ describe("DeliveryHandoverService", () => {
   it("requires a signed Stage 2 handover before delivery confirmation while archive failure stays retryable", async () => {
     const harness = createDeliveryHandoverHarness();
 
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(BadRequestException);
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).rejects.toThrow(BadRequestException);
 
     const draft = await harness.service.createHandoverRecord(harness.orderId, harness.user.id);
     await harness.service.markCompleted(draft.id, new Date("2026-07-21T04:12:00.000Z"), harness.user.id);
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
-    expect(getDeliveryHandoverArchiveWarning(harness.state.handovers[0] as never)).toContain("已签 PDF 尚未完成归档");
+    completeStage2SignedState(harness, draft.id);
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).resolves.toBeUndefined();
+    const signedHandover = await findDeliveryHandoverForConfirmation(
+      harness.prisma as never,
+      harness.orderId
+    );
+    expect(signedHandover?.handoverESignTask).toMatchObject({
+      taskNo: "ESG20260721STAGE2",
+      signers: [
+        { providerTransactionId: "ESG20260721STAGE2H1" },
+        { providerTransactionId: "ESG20260721STAGE2H2" }
+      ]
+    });
+    expect(getDeliveryHandoverArchiveWarning(signedHandover)).toContain("已签 PDF 尚未完成归档");
 
     const failedArchive = await harness.service.markArchiveFailed(draft.id, "temporary provider download timeout", harness.user.id);
     expect(failedArchive).toMatchObject({
@@ -102,7 +127,13 @@ describe("DeliveryHandoverService", () => {
       failureReason: "temporary provider download timeout",
       status: "SIGNED"
     });
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).resolves.toBeUndefined();
   });
 
   it("delegates Stage 2 PDF, eSign, and delivery confirmation evidence gates", async () => {
@@ -114,18 +145,46 @@ describe("DeliveryHandoverService", () => {
     const harness = createDeliveryHandoverHarness(evidenceService);
     const draft = await harness.service.createHandoverRecord(harness.orderId, harness.user.id);
     await harness.service.markCompleted(draft.id, new Date("2026-07-21T04:12:00.000Z"), harness.user.id);
+    completeStage2SignedState(harness, draft.id);
 
     await harness.service.assertStage2PdfCanBeGenerated(harness.orderId, draft.id);
     await harness.service.assertStage2ESignCanStart(harness.orderId, draft.id);
-    await harness.service.assertDeliveryCanBeConfirmed(harness.orderId);
+    await harness.service.assertDeliveryCanBeConfirmed(
+      harness.orderId,
+      harness.prisma as never,
+      "a".repeat(64)
+    );
 
     expect(evidenceService.assertEvidenceReadyForStage2Pdf).toHaveBeenCalledWith(harness.orderId, draft.id);
     expect(evidenceService.assertEvidenceReadyForStage2ESign).toHaveBeenCalledWith(harness.orderId, draft.id);
     expect(evidenceService.assertEvidenceReadyForDeliveryConfirmation).toHaveBeenCalledWith(
       harness.orderId,
-      draft.id
+      draft.id,
+      harness.prisma
     );
     expect(harness.providerCallCount).toBe(0);
+  });
+
+  it("blocks a newly confirmed evidence manifest that still points at an older signed source", async () => {
+    const harness = createDeliveryHandoverHarness();
+    const draft = await harness.service.createHandoverRecord(
+      harness.orderId,
+      harness.user.id
+    );
+    await harness.service.markCompleted(
+      draft.id,
+      new Date("2026-07-21T04:12:00.000Z"),
+      harness.user.id
+    );
+    completeStage2SignedState(harness, draft.id);
+
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "d".repeat(64)
+      )
+    ).rejects.toThrow(BadRequestException);
   });
 });
 
@@ -138,6 +197,7 @@ function createDeliveryHandoverHarness(evidenceService?: {
   const now = new Date("2026-07-21T04:00:00.000Z");
   const user = { id: "user-admin" };
   const state = {
+    fileObjects: [] as Array<Record<string, unknown>>,
     handovers: [] as Array<Record<string, unknown>>,
     order: {
       contract: {
@@ -163,6 +223,11 @@ function createDeliveryHandoverHarness(evidenceService?: {
   const providerCallCount = 0;
 
   const prisma = {
+    fileObject: {
+      findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        state.fileObjects.find((file) => file.id === where.id) ?? null
+      )
+    },
     subscriptionOrder: {
       findUnique: vi.fn(async () => state.order),
       update: vi.fn()
@@ -231,5 +296,100 @@ function matchesHandoverWhere(handover: Record<string, unknown>, where: Record<s
       return !notIn?.includes(handover.status);
     }
     return true;
+  });
+}
+
+function completeStage2SignedState(
+  harness: ReturnType<typeof createDeliveryHandoverHarness>,
+  handoverId: string
+) {
+  const handover = harness.state.handovers.find((item) => item.id === handoverId);
+  if (!handover) {
+    throw new Error("handover not found");
+  }
+  const signedAt = new Date("2026-07-21T04:12:00.000Z");
+  const manifestHash = "a".repeat(64);
+  const sourcePdfHash = "b".repeat(64);
+  const signedObjectKey = "contracts/stage2/signed.pdf";
+  harness.state.fileObjects.push(
+    {
+      id: "stage2-source-file",
+      mimeType: "application/pdf",
+      objectKey: "contracts/stage2/source.pdf",
+      sizeBytes: 1024n
+    },
+    {
+      id: "stage2-signed-file",
+      mimeType: "application/pdf",
+      objectKey: signedObjectKey,
+      sizeBytes: 2048n
+    }
+  );
+  Object.assign(handover, {
+    artifactVersion: 1,
+    customerSignedAt: signedAt,
+    handoverContract: {
+      deletedAt: null,
+      fileId: "stage2-source-file",
+      id: "contract-stage2",
+      status: "SIGNED"
+    },
+    handoverContractId: "contract-stage2",
+    handoverESignTask: {
+      completedAt: signedAt,
+      contractId: "contract-stage2",
+      customerId: "customer-1",
+      deletedAt: null,
+      documentType: "DELIVERY_HANDOVER",
+      id: "esign-task-stage2",
+      orderId: harness.orderId,
+      requestSnapshot: {
+        artifactVersion: 1,
+        contractId: "contract-stage2",
+        handoverId,
+        manifestHash,
+        sourceDocumentFileId: "stage2-source-file",
+        sourcePdfHash
+      },
+      signedDocumentObjectKey: signedObjectKey,
+      signers: [
+        {
+          customerId: "customer-1",
+          deletedAt: null,
+          documentType: "DELIVERY_HANDOVER",
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerTransactionId: "ESG20260721STAGE2H1",
+          required: true,
+          signedAt,
+          signerStatus: "SIGNED",
+          signerType: "CUSTOMER",
+          slotId: "STAGE2_HANDOVER_CUSTOMER"
+        },
+        {
+          customerId: null,
+          deletedAt: null,
+          documentType: "DELIVERY_HANDOVER",
+          providerActionType: "PLATFORM_AUTO_SEAL",
+          providerTransactionId: "ESG20260721STAGE2H2",
+          required: true,
+          signedAt,
+          signerStatus: "SIGNED",
+          signerType: "PLATFORM",
+          slotId: "STAGE2_HANDOVER_PLATFORM"
+        }
+      ],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskNo: "ESG20260721STAGE2",
+      taskStatus: "COMPLETED"
+    },
+    handoverESignTaskId: "esign-task-stage2",
+    manifestHash,
+    platformSignedAt: signedAt,
+    signedDocumentFileId: "stage2-signed-file",
+    signedObjectKey,
+    signedPdfHash: "c".repeat(64),
+    sourceDocumentFileId: "stage2-source-file",
+    sourceObjectKey: "contracts/stage2/source.pdf",
+    sourcePdfHash
   });
 }

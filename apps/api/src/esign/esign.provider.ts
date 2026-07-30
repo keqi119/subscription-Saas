@@ -3,7 +3,7 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
 export type ESignSigningStage = "STAGE1_CONTRACT" | "STAGE2_DELIVERY_HANDOVER";
-export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER_CONFIRMATION";
+export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER";
 export type ESignSlotId =
   | "STAGE1_BODY_CUSTOMER"
   | "STAGE1_BODY_PLATFORM"
@@ -50,18 +50,27 @@ export interface CreateSignTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName: string;
+  documentType?: ESignDocumentType;
   redirectUrl?: string;
   signers: Array<{
     customerId?: string;
     name?: string;
     phone?: string;
+    signerId?: string;
     signerType: "CUSTOMER" | "PLATFORM";
   }>;
   signingSlots?: ESignSigningSlot[];
+  /**
+   * Stage 2 customer signing uses persisted artifact coordinates as the source
+   * of truth. When supplied, this must contain exactly the matching customer
+   * coordinate and acts only as a fail-closed consistency assertion.
+   */
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingStage?: ESignSigningStage;
+  sourcePdfHash?: string;
   taskId?: string;
   taskNo: string;
+  transactionId?: string;
 }
 
 export interface CreateSignTaskResult {
@@ -93,6 +102,7 @@ export interface GetSignerUrlInput {
   providerTaskId: string;
   redirectUrl?: string;
   signerId?: string;
+  signingStage: ESignSigningStage;
   taskId?: string;
 }
 
@@ -100,6 +110,22 @@ export interface GetSignerUrlResult {
   expiresAt?: Date;
   rawResponse?: unknown;
   signUrl: string;
+}
+
+export interface QuerySignerStatusInput {
+  contractId: string;
+  providerCustomerId: string;
+  providerTaskId: string;
+  providerTransactionId: string;
+  signerId: string;
+  slotId: ESignSlotId;
+  taskId: string;
+}
+
+export interface ESignProviderSignerStatusResult {
+  resultCode?: string;
+  resultDescription?: string;
+  status: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";
 }
 
 export interface VerifyCallbackResult {
@@ -127,11 +153,14 @@ export interface AutoSealTaskInput {
   callbackUrl?: string;
   contractId: string;
   documentName?: string;
+  documentType?: ESignDocumentType;
   placement?: AutoSealPlacement;
   platformCustomerId?: string;
   platformSignatureId?: string;
   providerEnvelopeId?: string;
+  providerTaskId?: string;
   sealId?: string;
+  signerId?: string;
   signingSlotCoordinates?: ESignSigningSlotCoordinate[];
   signingSlots?: ESignSigningSlot[];
   signingStage?: ESignSigningStage;
@@ -156,5 +185,8 @@ export interface ESignProvider {
   autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
   createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult>;
   getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult>;
+  querySignerStatus(
+    input: QuerySignerStatusInput
+  ): Promise<ESignProviderSignerStatusResult>;
   verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyCallbackResult>;
 }

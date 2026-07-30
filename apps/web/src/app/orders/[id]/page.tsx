@@ -1,14 +1,45 @@
 "use client";
 
-import { ArrowLeftOutlined, ClockCircleOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined, UserAddOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import {
+  ClockCircleOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  RollbackOutlined,
+  SendOutlined,
+  UserAddOutlined
+} from "@ant-design/icons";
+import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Timeline, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type HTMLAttributes,
+  type ReactNode
+} from "react";
 
 import { ActionButton } from "../../../components/action-button";
+import {
+  OrderTransactionGuide,
+  type OrderTransactionGuideItem
+} from "../../../components/order-workspace/order-transaction-guide";
+import {
+  OrderWorkspaceHeader,
+  type OrderWorkspaceHeaderAction,
+  type OrderWorkspaceHeaderData
+} from "../../../components/order-workspace/order-workspace-header";
+import {
+  OrderWorkspace,
+  type OrderWorkspaceTabBadge
+} from "../../../components/order-workspace/order-workspace";
 import { ProtectedShell } from "../../../components/protected-shell";
 import {
   BILL_STATUS_LABELS,
@@ -26,6 +57,8 @@ import {
   ORDER_STATUS_LABELS,
   ORDER_CHANGE_TYPE_LABELS,
   PAYMENT_METHOD_LABELS,
+  SERVICE_CASE_STATUS_LABELS,
+  SERVICE_CASE_TYPE_LABELS,
   STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
@@ -43,7 +76,75 @@ import {
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
+import {
+  createAdminStage2DeliveryConfirmationController,
+  createAdminStage2DeliveryVerifier,
+  getAdminStage2HandoverESignDisplay,
+  getAdminStage2HandoverESignErrorMessage,
+  getAdminStage2HandoverWorkflowDisplay,
+  loadAdminStage2HandoverESign,
+  reconcileAdminStage2CustomerSignature,
+  retryAdminStage2WorkflowJob,
+  runAdminStage2WorkflowRecovery,
+  startAdminStage2HandoverESign,
+  type AdminStage2HandoverESignStatus,
+  type AdminStage2HandoverWorkflowJob,
+  type AdminStage2HandoverWorkflowRecovery,
+  validateAdminStage2HandoverFallbackReason,
+  validateAdminStage2HandoverVoidReason,
+  voidAdminStage2HandoverESign
+} from "../../../lib/admin-stage2-handover-esign";
+import {
+  buildAdminStage2HandoverPdfDownloadUrl,
+  getAdminStage2HandoverDocumentDownload,
+  type Stage2HandoverPdfArtifact
+} from "../../../lib/admin-stage2-handover-pdf";
+import {
+  buildOrderWorkspaceLocation,
+  buildOrderWorkspaceRecordSelector,
+  createOrderWorkspaceConfirmScope,
+  getOrderWorkspaceChangeGuard,
+  getOrderWorkspaceCustomerPresentation,
+  getOrderWorkspaceFallbackRecordIds,
+  getOrderWorkspaceFinanceLinks,
+  getOrderWorkspaceFocusAttemptKey,
+  getOrderWorkspaceRecordIds,
+  getVehicleReturnWorkspaceState,
+  getVisibleOrderWorkspaceTabs,
+  getWorkspaceStatePresentation,
+  mergeOrderWorkspaceFocusedServiceCase,
+  parseOrderWorkspaceLocation,
+  refreshActiveOrderWorkspaceTab,
+  shouldLoadOrderWorkspaceFocusedServiceCase,
+  type OrderWorkspaceTabKey
+} from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
+import type {
+  PortalPagedResponse,
+  PortalServiceCase
+} from "../../../lib/portal-types";
+
+interface OrderWorkspaceSummary {
+  asOf: string;
+  guidance: OrderTransactionGuideItem[];
+  header: OrderWorkspaceHeaderData & { orderId: string };
+  primaryAction: {
+    actionCode: string;
+    targetRecordId: string | null;
+    targetTab: Exclude<OrderWorkspaceTabKey, "overview">;
+  } | null;
+  recentActivity: OrderWorkspaceActivity[];
+  tabBadges: OrderWorkspaceTabBadge[];
+}
+
+interface OrderWorkspaceActivity {
+  category: Exclude<OrderWorkspaceTabKey, "overview"> | "order";
+  id: string;
+  occurredAt: string;
+  targetRecordId: string | null;
+  targetTab: OrderWorkspaceTabKey;
+  title: string;
+}
 
 interface OrderDetail {
   actualDeliveryAt?: string | null;
@@ -52,8 +153,8 @@ interface OrderDetail {
   contract?: { contractNo: string; id: string; status: string } | null;
   createdAt: string;
   creditReviewStatus?: string;
-  customer: { name: string; mobile: string };
-  customerId: string;
+  customer?: { name?: string | null; mobile?: string | null } | null;
+  customerId?: string;
   customerConfirmedAt?: string | null;
   depositAmount: number;
   depositStatus?: string;
@@ -139,6 +240,7 @@ interface DamageFeeBillResponse extends ReceivableBillRow {
 
 interface OrderChangeRow {
   afterSnapshot?: unknown;
+  beforeSnapshot?: unknown;
   changeType: string;
   createdAt: string;
   createdBy?: string | null;
@@ -288,14 +390,23 @@ interface HandoverWorkOrderSummary {
   handoverType?: string | null;
   id: string;
   objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
-  operator?: { name?: string | null; phoneMasked?: string | null; type?: string | null } | null;
+  operator?: { name?: string | null; phone?: string | null; type?: string | null } | null;
   orderId?: string | null;
   orderNo?: string | null;
+  readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
   reviewAttempts?: HandoverReviewAttempt[];
   scheduledAt?: string | null;
+  stage2Pdf?: Stage2HandoverPdfArtifact | null;
   status?: string | null;
   vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
+  workflowJobs?: AdminStage2HandoverWorkflowJob[];
 }
+
+type HandoverWorkOrdersLoadState =
+  | "ERROR"
+  | "LOADED"
+  | "LOADING"
+  | "UNKNOWN";
 
 interface AssignExternalHandoverFormValues {
   expiresAt?: Dayjs;
@@ -308,6 +419,15 @@ interface HandoverResubmissionFormValues {
   note: string;
   targetEvidenceItemIds?: string[];
   targetFieldKeys?: string[];
+}
+
+interface Stage2VoidFormValues {
+  reason: string;
+}
+
+interface Stage2FallbackFormValues {
+  acknowledgement?: boolean;
+  reason: string;
 }
 
 interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
@@ -1835,42 +1955,18 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
 }
 
 function OrderInfoSections({
+  customerLabel,
+  customerMobile,
   currentVehicleSalePrice,
   order
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   currentVehicleSalePrice: number | null;
   order: OrderDetail;
 }) {
   const snapshot = toSnapshotRecord(order.quoteSnapshot);
   const vehicleSnapshot = getSnapshotValue(snapshot, "vehicleSnapshot", "vehicle");
-  const vehicleBaseFeeMode = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeMode",
-    "packageSnapshot.pricing.vehicleBaseFeeMode",
-    "packageSnapshot.vehicleBaseFeeMode",
-    "packageSnapshot.subscriptionPlan.monthlyFeeMode"
-  );
-  const vehicleBaseFeeModeLabel = formatVehicleBaseFeeModeLabel(
-    vehicleBaseFeeMode,
-    getSnapshotValue(
-      snapshot,
-      "vehicleBaseFeeModeLabel",
-      "packageSnapshot.pricing.vehicleBaseFeeModeLabel",
-      "packageSnapshot.vehicleBaseFeeModeLabel",
-      "packageSnapshot.subscriptionPlan.monthlyFeeModeLabel"
-    )
-  );
-  const vehicleBaseFeeCapAmount = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeCapAmount",
-    "packageSnapshot.pricing.vehicleBaseFeeCapAmount",
-    "monthlyFeeCapAmount"
-  );
-  const vehicleBaseFeeAmount = getSnapshotValue(
-    snapshot,
-    "vehicleBaseFeeAmount",
-    "packageSnapshot.pricing.vehicleBaseFeeAmount"
-  );
 
   return (
     <Space orientation="vertical" size={16} style={{ width: "100%" }}>
@@ -1904,8 +2000,8 @@ function OrderInfoSections({
           bordered
           column={2}
           items={[
-            { label: "客户姓名", children: safeText(order.customer.name) },
-            { label: "手机号", children: safeText(order.customer.mobile) },
+            { label: "客户姓名", children: safeText(customerLabel) },
+            { label: "手机号", children: safeText(customerMobile) },
             { label: "客户确认时间", children: formatTime(order.customerConfirmedAt) },
             { label: "押金状态", children: order.depositStatus ? labelOf(STATUS_LABELS, order.depositStatus) : "-" },
             { label: "押金金额", children: formatYuan(order.finalDepositAmount ?? order.depositAmount) },
@@ -1939,28 +2035,13 @@ function OrderInfoSections({
         />
       </Card>
 
-      <Card title="合同信息">
-        <Descriptions
-          bordered
-          column={2}
-          items={[
-            {
-              label: "合同编号",
-              children: order.contract ? <Link href={`/contracts/${order.contract.id}`}>{order.contract.contractNo}</Link> : "-"
-            },
-            { label: "合同状态", children: order.contract?.status ? labelOf(STATUS_LABELS, order.contract.status) : "-" },
-            { label: "产品匹配审核", children: <ReviewStatusTag value={order.productReviewStatus} /> },
-            { label: "车辆基础月费模式", children: vehicleBaseFeeModeLabel },
-            { label: "车辆基础费上限", children: formatYuan(vehicleBaseFeeCapAmount) },
-            { label: "车辆基础费", children: formatYuan(vehicleBaseFeeAmount) }
-          ]}
-        />
-      </Card>
     </Space>
   );
 }
 
 function EntitlementPanel({
+  customerLabel,
+  customerMobile,
   entitlements,
   entitlementLoading,
   expiringEntitlements,
@@ -1979,6 +2060,8 @@ function EntitlementPanel({
   usageTotal,
   usages
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   entitlements: OrderEntitlementsResponse;
   entitlementLoading: boolean;
   expiringEntitlements: boolean;
@@ -2174,7 +2257,7 @@ function EntitlementPanel({
                 { label: "权益账户编号", children: safeText(account.accountNo) },
                 { label: "账户状态", children: <EntitlementAccountStatusTag value={account.accountStatus} /> },
                 { label: "订单编号", children: safeText(order.orderNo) },
-                { label: "客户", children: joinText(order.customer.name, order.customer.mobile) },
+                { label: "客户", children: joinText(customerLabel, customerMobile) },
                 { label: "订阅套餐", children: getEntitlementPlanText(account) },
                 { label: "权益周期开始", children: formatDate(account.periodStart) },
                 { label: "权益周期结束", children: formatDate(account.periodEnd) },
@@ -2552,6 +2635,11 @@ function FinancePanel({
           dataSource={bills}
           loading={financeLoading}
           locale={{ emptyText: "-" }}
+          onRow={(bill) =>
+            ({
+              "data-workspace-record": bill.id
+            }) as HTMLAttributes<HTMLTableRowElement>
+          }
           pagination={false}
           rowKey="id"
           scroll={{ x: 1480 }}
@@ -2563,30 +2651,207 @@ function FinancePanel({
   );
 }
 
+function Stage2HandoverWorkflowCell({
+  actionLoading,
+  canRecoverWorkflow,
+  error,
+  loading,
+  mutationInFlight,
+  onRecover,
+  onRefresh,
+  onStart,
+  onVoid,
+  status,
+  workOrder
+}: {
+  actionLoading: string | null;
+  canRecoverWorkflow: boolean;
+  error?: string | null;
+  loading: boolean;
+  mutationInFlight: boolean;
+  onRecover: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
+  onRefresh: (id: string) => void;
+  onStart: (id: string) => void;
+  onVoid: (id: string) => void;
+  status?: AdminStage2HandoverESignStatus;
+  workOrder: HandoverWorkOrderSummary;
+}) {
+  const workflowStatus = status
+    ? {
+        ...status,
+        workflowJobs: status.workflowJobs ?? workOrder.workflowJobs
+      }
+    : undefined;
+  const display = getAdminStage2HandoverWorkflowDisplay(workflowStatus, {
+    customerConfirmedAt: workOrder.customerConfirmedAt,
+    pdfStatus: workOrder.stage2Pdf?.status,
+    workflowJobs: workOrder.workflowJobs
+  });
+  const actionDisplay = status
+    ? getAdminStage2HandoverESignDisplay(status)
+    : null;
+  const documentDownload = getAdminStage2HandoverDocumentDownload({
+    archiveStatus: workOrder.stage2Pdf?.archiveStatus,
+    handoverStatus: workOrder.stage2Pdf?.handoverStatus,
+    signedArtifactAvailable: workOrder.stage2Pdf?.signedArtifactAvailable,
+    sourceDownloadUrl: workOrder.stage2Pdf?.downloadUrl,
+    workOrderId: workOrder.id
+  });
+  return (
+    <Space
+      orientation="vertical"
+      size={6}
+      style={{ minHeight: 188, minWidth: 280, width: "100%" }}
+    >
+      <Space align="center" size={6}>
+        <Typography.Text strong>交接签署流程</Typography.Text>
+        {loading ? <Spin size="small" /> : null}
+      </Space>
+      <Timeline
+        items={display.steps.map((step) => ({
+          content: (
+            <Typography.Text
+              style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}
+            >
+              {step.label}
+            </Typography.Text>
+          ),
+          color:
+            step.state === "complete"
+              ? "green"
+              : step.state === "error"
+                ? "red"
+                : step.state === "current"
+                  ? "blue"
+                  : "gray"
+        }))}
+        style={{ marginBottom: -16 }}
+      />
+      {workOrder.stage2Pdf?.status === "GENERATED" ? (
+        <Space size={6} wrap>
+          <Typography.Text
+            ellipsis={{ tooltip: workOrder.stage2Pdf.documentNo || undefined }}
+            style={{ maxWidth: 190 }}
+            type="secondary"
+          >
+            {workOrder.stage2Pdf.documentNo || "交接确认单"}
+          </Typography.Text>
+          {documentDownload ? (
+            <Button
+              href={documentDownload.url}
+              icon={<DownloadOutlined />}
+              rel="noreferrer"
+              size="small"
+              target="_blank"
+            >
+              {documentDownload.label}
+            </Button>
+          ) : null}
+        </Space>
+      ) : null}
+      {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
+      <Space size={[6, 6]} wrap>
+        {actionDisplay?.voidAvailable ? (
+          <Button
+            danger
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<DeleteOutlined />}
+            loading={actionLoading === `stage2-void:${workOrder.id}`}
+            onClick={() => onVoid(workOrder.id)}
+            size="small"
+          >
+            作废并重新发起
+          </Button>
+        ) : null}
+        {actionDisplay?.startAvailable ? (
+          <Button
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            icon={<SendOutlined />}
+            loading={actionLoading === `stage2-start:${workOrder.id}`}
+            onClick={() => onStart(workOrder.id)}
+            size="small"
+            type="primary"
+          >
+            后台兜底发起签署
+          </Button>
+        ) : null}
+        {display.recoveries.map((recovery) => (
+          <Button
+            disabled={!canRecoverWorkflow || mutationInFlight}
+            key={recovery.jobId}
+            loading={
+              actionLoading ===
+              `workflow-recovery:${workOrder.id}:${recovery.jobId}`
+            }
+            onClick={() => onRecover(workOrder.id, recovery)}
+            size="small"
+          >
+            {recovery.label}
+          </Button>
+        ))}
+        <Button
+          aria-label="刷新交接签署流程"
+          disabled={mutationInFlight}
+          icon={<ReloadOutlined />}
+          loading={loading}
+          onClick={() => onRefresh(workOrder.id)}
+          size="small"
+        />
+      </Space>
+    </Space>
+  );
+}
+
 function Stage2HandoverReviewPanel({
   actionLoading,
   canAssignExternal,
   canHandleObjection,
+  canRecoverWorkflow,
   createAvailability,
+  esignErrors,
+  esignLoading,
+  esignStatuses,
   loading,
+  loadState,
+  mutationInFlight,
   onAcknowledge,
   onAssignExternal,
   onCreateWorkOrder,
+  onRecoverWorkflow,
+  onRefreshESign,
   onRequestResubmission,
   onSendCustomerReview,
+  onStartESign,
+  onVoidESign,
   onViewDetail,
   workOrders
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
   canHandleObjection: boolean;
+  canRecoverWorkflow: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
+  esignErrors: Record<string, string | undefined>;
+  esignLoading: Record<string, boolean | undefined>;
+  esignStatuses: Record<string, AdminStage2HandoverESignStatus | undefined>;
   loading: boolean;
+  loadState: HandoverWorkOrdersLoadState;
+  mutationInFlight: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
+  onRecoverWorkflow: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
+  onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
+  onStartESign: (id: string) => void;
+  onVoidESign: (id: string) => void;
   onViewDetail: (id: string) => void;
   workOrders: HandoverWorkOrderSummary[];
 }) {
@@ -2600,7 +2865,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatHandoverType(row.handoverType)}</Typography.Text>
         </Space>
       ),
-      title: "工单"
+      title: "工单",
+      width: 180
     },
     {
       dataIndex: "status",
@@ -2610,22 +2876,45 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatAdminReviewStatus(row.adminReview?.status)}</Typography.Text>
         </Space>
       ),
-      title: "状态"
+      title: "状态",
+      width: 150
+    },
+    {
+      key: "stage2ESign",
+      render: (_value, row) => (
+        <Stage2HandoverWorkflowCell
+          actionLoading={actionLoading}
+          canRecoverWorkflow={canRecoverWorkflow}
+          error={esignErrors[row.id]}
+          loading={esignLoading[row.id] === true}
+          mutationInFlight={mutationInFlight}
+          onRecover={onRecoverWorkflow}
+          onRefresh={onRefreshESign}
+          onStart={onStartESign}
+          onVoid={onVoidESign}
+          status={esignStatuses[row.id]}
+          workOrder={row}
+        />
+      ),
+      title: "交接签署流程",
+      width: 360
     },
     {
       dataIndex: "customer",
       render: (_value, row) => joinText(row.customer?.displayName, row.customer?.mobileMasked),
-      title: "客户"
+      title: "客户",
+      width: 160
     },
     {
       dataIndex: "operator",
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
           <Typography.Text>{row.operator?.name || "尚未指派"}</Typography.Text>
-          <Typography.Text type="secondary">{row.operator?.phoneMasked || "-"}</Typography.Text>
+          <Typography.Text type="secondary">{row.operator?.phone || "-"}</Typography.Text>
         </Space>
       ),
-      title: "Field 人员"
+      title: "Field 人员",
+      width: 244
     },
     {
       dataIndex: "fieldSubmittedAt",
@@ -2635,7 +2924,8 @@ function Stage2HandoverReviewPanel({
           <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
         </Space>
       ),
-      title: "现场资料"
+      title: "现场资料",
+      width: 180
     },
     {
       dataIndex: "objection",
@@ -2646,7 +2936,8 @@ function Stage2HandoverReviewPanel({
             <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
           </Space>
         ) : "-",
-      title: "客户异议"
+      title: "客户异议",
+      width: 180
     },
     {
       key: "actions",
@@ -2663,7 +2954,8 @@ function Stage2HandoverReviewPanel({
           workOrder={row}
         />
       ),
-      title: "操作"
+      title: "操作",
+      width: 280
     }
   ];
 
@@ -2687,7 +2979,16 @@ function Stage2HandoverReviewPanel({
       }
       title="Stage 2 现场交接 / 客户复核"
     >
-      {workOrders.length === 0 ? (
+      {loadState === "ERROR" ? (
+        <Alert
+          message="Stage 2 现场交接工单加载失败"
+          description="当前无法确认交接签署状态，请刷新页面后重试。"
+          showIcon
+          style={{ marginBottom: 12 }}
+          type="error"
+        />
+      ) : null}
+      {loadState === "LOADED" && workOrders.length === 0 ? (
         <Alert
           message="暂无 Stage 2 现场交接工单"
           description="完成准备交付后，可在此创建交付工单并指派现场交付人员。"
@@ -2701,9 +3002,22 @@ function Stage2HandoverReviewPanel({
         dataSource={workOrders}
         loading={loading}
         locale={{ emptyText: "暂无 Stage 2 现场交接记录" }}
+        onRow={(workOrder) => {
+          const recordIds = getOrderWorkspaceRecordIds(
+            workOrder.id,
+            esignStatuses[workOrder.id]?.handoverId,
+            workOrder.handoverId
+          );
+          return {
+            "data-workspace-record": workOrder.id,
+            "data-workspace-record-alias": recordIds[1]
+          } as HTMLAttributes<HTMLTableRowElement>;
+        }}
         pagination={false}
         rowKey="id"
+        scroll={{ x: 1734 }}
         size="small"
+        tableLayout="fixed"
       />
     </Card>
   );
@@ -2785,23 +3099,44 @@ function Stage2HandoverReviewDetailModal({
   actionLoading,
   canAssignExternal,
   canHandleObjection,
+  canRecoverWorkflow,
   detail,
+  esignError,
+  esignLoading,
+  esignStatus,
+  mutationInFlight,
   onAcknowledge,
   onAssignExternal,
   onClose,
+  onRecoverWorkflow,
+  onRefreshESign,
   onRequestResubmission,
   onSendCustomerReview,
+  onStartESign,
+  onVoidESign,
   open
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
   canHandleObjection: boolean;
+  canRecoverWorkflow: boolean;
   detail: HandoverWorkOrderDetail | null;
+  esignError?: string | null;
+  esignLoading: boolean;
+  esignStatus?: AdminStage2HandoverESignStatus;
+  mutationInFlight: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onClose: () => void;
+  onRecoverWorkflow: (
+    workOrderId: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) => void;
+  onRefreshESign: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
+  onStartESign: (id: string) => void;
+  onVoidESign: (id: string) => void;
   open: boolean;
 }) {
   return (
@@ -2819,6 +3154,20 @@ function Stage2HandoverReviewDetailModal({
               { label: "客户确认时间", children: formatTime(detail.customerConfirmedAt) },
               { label: "客户异议时间", children: formatTime(detail.customerObjectedAt) }
             ]}
+          />
+
+          <Stage2HandoverWorkflowCell
+            actionLoading={actionLoading}
+            canRecoverWorkflow={canRecoverWorkflow}
+            error={esignError}
+            loading={esignLoading}
+            mutationInFlight={mutationInFlight}
+            onRecover={onRecoverWorkflow}
+            onRefresh={onRefreshESign}
+            onStart={onStartESign}
+            onVoid={onVoidESign}
+            status={esignStatus}
+            workOrder={detail}
           />
 
           {detail.objection?.reason ? (
@@ -3019,8 +3368,8 @@ function DeliveryPanel({
               "交付准备已完成，待确认交付"
             ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {blockingReasons.map((reason) => (
-                  <li key={reason}>
+                {blockingReasons.map((reason, index) => (
+                  <li key={`${reason}-${index}`}>
                     <Space size={8} wrap>
                       <span>{reason}</span>
                       <DeliveryBlockerGuidance reason={reason} />
@@ -3218,14 +3567,16 @@ function ReturnPanel({
   return (
     <Card
       extra={
-        <Space wrap>
-          <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
-            准备退车
-          </ActionButton>
-          <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
-            确认退车
-          </ActionButton>
-        </Space>
+        alreadyReturned ? null : (
+          <Space wrap>
+            <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
+              准备退车
+            </ActionButton>
+            <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
+              确认退车
+            </ActionButton>
+          </Space>
+        )
       }
       title="车辆退回 / 退车验收"
     >
@@ -3251,8 +3602,8 @@ function ReturnPanel({
               "退车准备已完成，待确认退车"
             ) : blockingReasons.length > 0 ? (
               <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {blockingReasons.map((reason) => (
-                  <li key={reason}>{reason}</li>
+                {blockingReasons.map((reason, index) => (
+                  <li key={`${reason}-${index}`}>{reason}</li>
                 ))}
               </ul>
             ) : undefined
@@ -3330,7 +3681,30 @@ function ReturnPanel({
   );
 }
 
+function VehicleReturnEntry({
+  onOpenPrepare,
+  prepareAvailability
+}: {
+  onOpenPrepare: () => void;
+  prepareAvailability: ReturnType<typeof actionAvailability>;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      <ActionButton
+        availability={prepareAvailability}
+        icon={<RollbackOutlined />}
+        onClick={onOpenPrepare}
+        type="primary"
+      >
+        车辆退回 / 退车验收
+      </ActionButton>
+    </div>
+  );
+}
+
 function DepositSettlementPanel({
+  customerLabel,
+  customerMobile,
   deductAvailability,
   depositSettlementLoading,
   generateAvailability,
@@ -3343,6 +3717,8 @@ function DepositSettlementPanel({
   settlement,
   settlementError
 }: {
+  customerLabel: string;
+  customerMobile?: string;
   deductAvailability: ReturnType<typeof actionAvailability>;
   depositSettlementLoading: boolean;
   generateAvailability: ReturnType<typeof actionAvailability>;
@@ -3467,7 +3843,7 @@ function DepositSettlementPanel({
             { label: "订单编号", children: safeText(settlement?.orderNo ?? order.orderNo) },
             {
               label: "客户",
-              children: joinText(settlement?.customer?.name ?? order.customer.name, settlement?.customer?.mobile ?? order.customer.mobile)
+              children: joinText(customerLabel, customerMobile)
             },
             { label: "保证金已收", children: formatYuan(settlement?.collectedAmount) },
             { label: "已扣减", children: formatYuan(settlement?.deductedAmount) },
@@ -3498,6 +3874,11 @@ function DepositSettlementPanel({
           dataSource={ledgerRows}
           loading={depositSettlementLoading}
           locale={{ emptyText: "-" }}
+          onRow={(ledger) =>
+            ({
+              "data-workspace-record": ledger.id
+            }) as HTMLAttributes<HTMLTableRowElement>
+          }
           pagination={false}
           rowKey="id"
           scroll={{ x: 1040 }}
@@ -3546,7 +3927,8 @@ function getConfirmDeliveryDisabledReason(
   order: OrderDetail | null,
   deliveryCheck: DeliveryCheck | null,
   delivery: VehicleDelivery | null,
-  orderChangeLocked: boolean
+  orderChangeLocked: boolean,
+  stage2SigningComplete: boolean
 ) {
   if (!order) {
     return "数据加载完成后才可操作";
@@ -3559,6 +3941,9 @@ function getConfirmDeliveryDisabledReason(
   }
   if (delivery?.deliveryStatus !== "READY") {
     return "请先完成准备交付";
+  }
+  if (!stage2SigningComplete) {
+    return "客户签署与平台盖章完成后才可确认交付";
   }
   if ((deliveryCheck?.vehicleStatus ?? order.vehicle?.status) !== "RESERVED") {
     return "交付前车辆必须处于“签约锁定（RESERVED）”状态。";
@@ -3647,11 +4032,421 @@ function isContractSigned(status?: string | null) {
   return status === "SIGNED" || status === "ARCHIVED";
 }
 
-function OrderDetailPageContent() {
-  const params = useParams<{ id: string }>();
+function OverviewLifecycleSummary({ order }: { order: OrderDetail }) {
+  return (
+    <Descriptions
+      bordered
+      column={{ lg: 4, md: 2, sm: 1, xs: 1 }}
+      items={[
+        {
+          children: <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag>,
+          label: "当前生命周期"
+        },
+        {
+          children: <ReviewStatusTag value={order.creditReviewStatus} />,
+          label: "信用审核"
+        },
+        {
+          children: <ReviewStatusTag value={order.productReviewStatus} />,
+          label: "产品审核"
+        },
+        {
+          children: <ReviewStatusTag value={order.vehicleReviewStatus} />,
+          label: "车辆审核"
+        }
+      ]}
+      size="small"
+    />
+  );
+}
+
+function RecentOrderActivity({
+  items,
+  onNavigate
+}: {
+  items: OrderWorkspaceActivity[];
+  onNavigate: (target: { focus?: string; tab: OrderWorkspaceTabKey }) => void;
+}) {
+  return (
+    <section aria-label="最近动态">
+      <Typography.Title level={5} style={{ margin: "0 0 8px" }}>
+        最近动态
+      </Typography.Title>
+      <List
+        dataSource={items}
+        locale={{ emptyText: "暂无最近动态" }}
+        renderItem={(item) => (
+          <List.Item
+            actions={[
+              <Button
+                key="open"
+                onClick={() =>
+                  onNavigate({
+                    ...(item.targetRecordId ? { focus: item.targetRecordId } : {}),
+                    tab: item.targetTab
+                  })
+                }
+                size="small"
+                type="link"
+              >
+                查看
+              </Button>
+            ]}
+            data-workspace-record={item.id}
+          >
+            <List.Item.Meta
+              description={formatTime(item.occurredAt)}
+              title={item.title}
+            />
+          </List.Item>
+        )}
+        size="small"
+      />
+    </section>
+  );
+}
+
+function ServiceCasesPanel({
+  items,
+  loading,
+  orderId
+}: {
+  items: PortalServiceCase[];
+  loading: boolean;
+  orderId: string;
+}) {
+  const columns: ColumnsType<PortalServiceCase> = [
+    {
+      dataIndex: "caseNo",
+      render: (value: string, record) => (
+        <Typography.Text data-workspace-record={record.id} strong>
+          {value}
+        </Typography.Text>
+      ),
+      title: "工单编号",
+      width: 180
+    },
+    {
+      dataIndex: "caseType",
+      render: (value: string, record) => (
+        <Space orientation="vertical" size={0}>
+          <Typography.Text>{labelOf(SERVICE_CASE_TYPE_LABELS, value)}</Typography.Text>
+          <Typography.Text ellipsis style={{ maxWidth: 360 }} type="secondary">
+            {record.title || record.description || "-"}
+          </Typography.Text>
+        </Space>
+      ),
+      title: "类型 / 标题"
+    },
+    {
+      dataIndex: "caseStatus",
+      render: (value: string) => (
+        <Tag>{labelOf(SERVICE_CASE_STATUS_LABELS, value)}</Tag>
+      ),
+      title: "状态",
+      width: 130
+    },
+    {
+      dataIndex: "priority",
+      title: "优先级",
+      width: 100
+    },
+    {
+      dataIndex: "updatedAt",
+      render: (value: string | null, record) =>
+        formatTime(value ?? record.createdAt),
+      title: "更新时间",
+      width: 180
+    }
+  ];
+
+  return (
+    <Card
+      extra={
+        <Link href={`/service-cases?orderId=${encodeURIComponent(orderId)}`}>
+          进入服务工单列表
+        </Link>
+      }
+      title="订单服务工单"
+    >
+      <Table
+        columns={columns}
+        dataSource={items}
+        loading={loading}
+        locale={{ emptyText: "当前订单暂无服务工单" }}
+        onRow={(serviceCase) =>
+          ({
+            "data-workspace-record": serviceCase.id
+          }) as HTMLAttributes<HTMLTableRowElement>
+        }
+        pagination={false}
+        rowKey="id"
+        scroll={{ x: 960 }}
+        size="small"
+      />
+    </Card>
+  );
+}
+
+function HandoverProgressRecords({
+  resolvedRecordIds,
+  summary
+}: {
+  resolvedRecordIds: readonly string[];
+  summary: OrderWorkspaceSummary | null;
+}) {
+  const guidance = summary?.guidance.filter(
+    (item) => item.category === "handover"
+  ) ?? [];
+  const targetIds = getOrderWorkspaceFallbackRecordIds(
+    getOrderWorkspaceRecordIds(
+      summary?.primaryAction?.targetTab === "handover"
+        ? summary.primaryAction.targetRecordId
+        : null,
+      ...guidance.map((item) => item.targetRecordId)
+    ),
+    resolvedRecordIds
+  );
+
+  if (targetIds.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card size="small" title="当前交接推进记录">
+      <List
+        dataSource={targetIds}
+        renderItem={(targetId) => {
+          const state = guidance.find(
+            (item) => item.targetRecordId === targetId
+          )?.state;
+          return (
+            <List.Item data-workspace-record={targetId}>
+              <Space wrap>
+                <Typography.Text strong>交接事项</Typography.Text>
+                {state ? (
+                  <Tag color={getWorkspaceStatePresentation(state).color}>
+                    {getWorkspaceStatePresentation(state).label}
+                  </Tag>
+                ) : null}
+                <Typography.Text type="secondary">
+                  请在当前交接工作台继续查看和处理
+                </Typography.Text>
+              </Space>
+            </List.Item>
+          );
+        }}
+        size="small"
+      />
+    </Card>
+  );
+}
+
+function FinanceProgressRecords({
+  links,
+  resolvedRecordIds,
+  summary
+}: {
+  links: ReadonlyArray<{ href: string; label: string }>;
+  resolvedRecordIds: readonly string[];
+  summary: OrderWorkspaceSummary | null;
+}) {
+  const guidance = summary?.guidance.filter(
+    (item) => item.category === "finance"
+  ) ?? [];
+  const targetIds = getOrderWorkspaceFallbackRecordIds(
+    getOrderWorkspaceRecordIds(
+      summary?.primaryAction?.targetTab === "finance"
+        ? summary.primaryAction.targetRecordId
+        : null,
+      ...guidance.map((item) => item.targetRecordId)
+    ),
+    resolvedRecordIds
+  );
+
+  return (
+    <Card
+      extra={
+        links.length > 0 ? (
+          <Space wrap>
+            {links.map((link) => (
+              <Link href={link.href} key={link.href}>
+                {link.label}
+              </Link>
+            ))}
+          </Space>
+        ) : null
+      }
+      size="small"
+      title="当前财务推进记录"
+    >
+      {targetIds.length > 0 ? (
+        <List
+          dataSource={targetIds}
+          renderItem={(targetId) => {
+            const state = guidance.find(
+              (item) => item.targetRecordId === targetId
+            )?.state;
+            return (
+              <List.Item data-workspace-record={targetId}>
+                <Space wrap>
+                  <Typography.Text strong>财务事项</Typography.Text>
+                  {state ? (
+                    <Tag color={getWorkspaceStatePresentation(state).color}>
+                      {getWorkspaceStatePresentation(state).label}
+                    </Tag>
+                  ) : null}
+                  <Typography.Text type="secondary">
+                    请在现有财务模块继续查看和处理
+                  </Typography.Text>
+                </Space>
+              </List.Item>
+            );
+          }}
+          size="small"
+        />
+      ) : (
+        <Typography.Text type="secondary">
+          当前没有需要定位的财务推进记录
+        </Typography.Text>
+      )}
+    </Card>
+  );
+}
+
+function OrderChangeSnapshots({ changes }: { changes: OrderChangeRow[] }) {
+  const snapshotChanges = changes.filter(
+    (change) => change.beforeSnapshot !== undefined || change.afterSnapshot !== undefined
+  );
+
+  return (
+    <section aria-label="订单变更快照">
+      <Typography.Title level={5} style={{ margin: "0 0 8px" }}>
+        变更前后快照
+      </Typography.Title>
+      <List
+        dataSource={snapshotChanges}
+        locale={{ emptyText: "暂无变更快照" }}
+        renderItem={(change) => (
+          <List.Item data-workspace-record={change.id}>
+            <Descriptions
+              bordered
+              column={2}
+              items={[
+                {
+                  children: renderCompactSnapshot(change.beforeSnapshot),
+                  label: "变更前"
+                },
+                {
+                  children: renderCompactSnapshot(change.afterSnapshot),
+                  label: "变更后"
+                }
+              ]}
+              size="small"
+              style={{ width: "100%" }}
+              title={`${labelOf(ORDER_CHANGE_TYPE_LABELS, change.changeType)} / ${formatTime(change.createdAt)}`}
+            />
+          </List.Item>
+        )}
+        size="small"
+      />
+    </section>
+  );
+}
+
+function renderCompactSnapshot(snapshot: unknown) {
+  if (snapshot === null || snapshot === undefined) {
+    return "-";
+  }
+
+  let value: string;
+  try {
+    value = JSON.stringify(snapshot, null, 2);
+  } catch {
+    value = String(snapshot);
+  }
+
+  return (
+    <pre
+      style={{
+        margin: 0,
+        maxHeight: 220,
+        maxWidth: "100%",
+        overflow: "auto",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word"
+      }}
+    >
+      {value}
+    </pre>
+  );
+}
+
+interface WorkspaceDomainLoadState {
+  error: string | null;
+  loaded: boolean;
+  loading: boolean;
+}
+
+function createWorkspaceDomainLoadStates(): Record<
+  OrderWorkspaceTabKey,
+  WorkspaceDomainLoadState
+> {
+  return {
+    change: { error: null, loaded: false, loading: false },
+    contract: { error: null, loaded: false, loading: false },
+    entitlement: { error: null, loaded: false, loading: false },
+    finance: { error: null, loaded: false, loading: false },
+    handover: { error: null, loaded: false, loading: false },
+    overview: { error: null, loaded: false, loading: false },
+    service: { error: null, loaded: false, loading: false }
+  };
+}
+
+function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const workspaceLocation = useMemo(
+    () => parseOrderWorkspaceLocation(searchParams),
+    [searchParams]
+  );
   const { message, modal } = App.useApp();
+  const modalConfirmRef = useRef(modal.confirm);
+  modalConfirmRef.current = modal.confirm;
+  const scopedConfirmRef = useRef<{
+    confirm: typeof modal.confirm;
+    destroy: () => void;
+  } | null>(null);
+  const scopedConfirm = useMemo<{ confirm: typeof modal.confirm }>(
+    () => ({
+      confirm(config) {
+        const scope = scopedConfirmRef.current;
+        if (scope) {
+          return scope.confirm(config);
+        }
+        const handle = modalConfirmRef.current(config);
+        handle.destroy();
+        return handle;
+      }
+    }),
+    []
+  );
+  useEffect(
+    () => {
+      const scope = createOrderWorkspaceConfirmScope(
+        (config: Parameters<typeof modal.confirm>[0]) =>
+          modalConfirmRef.current(config)
+      );
+      scopedConfirmRef.current = scope;
+      return () => {
+        scope.destroy();
+        if (scopedConfirmRef.current === scope) {
+          scopedConfirmRef.current = null;
+        }
+      };
+    },
+    []
+  );
   const [changeForm] = Form.useForm<ChangeFormValues>();
   const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
@@ -3666,10 +4461,14 @@ function OrderDetailPageContent() {
   const [renewEntitlementForm] = Form.useForm<EntitlementOperationFormValues>();
   const [refundDepositForm] = Form.useForm<RefundDepositFormValues>();
   const [handoverResubmissionForm] = Form.useForm<HandoverResubmissionFormValues>();
+  const [stage2FallbackForm] = Form.useForm<Stage2FallbackFormValues>();
+  const [stage2VoidForm] = Form.useForm<Stage2VoidFormValues>();
+  const stage2WorkflowRecoveryInFlightRef = useRef(false);
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
   const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
+  const [changesLoaded, setChangesLoaded] = useState(false);
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
   const [deductDepositModalOpen, setDeductDepositModalOpen] = useState(false);
@@ -3678,9 +4477,32 @@ function OrderDetailPageContent() {
   const [deliveryCheck, setDeliveryCheck] = useState<DeliveryCheck | null>(null);
   const [handoverWorkOrders, setHandoverWorkOrders] = useState<HandoverWorkOrderSummary[]>([]);
   const [handoverWorkOrdersLoading, setHandoverWorkOrdersLoading] = useState(false);
+  const [handoverWorkOrdersLoadState, setHandoverWorkOrdersLoadState] =
+    useState<HandoverWorkOrdersLoadState>("UNKNOWN");
   const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
   const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
+  const [handoverESignErrors, setHandoverESignErrors] = useState<Record<string, string | undefined>>({});
+  const [handoverESignLoading, setHandoverESignLoading] = useState<Record<string, boolean | undefined>>({});
+  const [handoverESignStatuses, setHandoverESignStatuses] = useState<
+    Record<string, AdminStage2HandoverESignStatus | undefined>
+  >({});
+  const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] =
+    useState(false);
+  const [stage2FallbackOpen, setStage2FallbackOpen] = useState(false);
+  const [
+    stage2FallbackSourceArtifact,
+    setStage2FallbackSourceArtifact
+  ] = useState<
+    NonNullable<
+      AdminStage2HandoverESignStatus["sourceArtifact"]
+    > | null
+  >(null);
+  const [stage2FallbackWorkOrderId, setStage2FallbackWorkOrderId] =
+    useState<string | null>(null);
+  const [stage2VoidOpen, setStage2VoidOpen] = useState(false);
+  const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] =
+    useState<string | null>(null);
   const [handoverResubmissionDetail, setHandoverResubmissionDetail] = useState<HandoverWorkOrderDetail | null>(null);
   const [handoverResubmissionOpen, setHandoverResubmissionOpen] = useState(false);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
@@ -3705,7 +4527,11 @@ function OrderDetailPageContent() {
   const [generatingDamageFeeBill, setGeneratingDamageFeeBill] = useState(false);
   const [generatingBills, setGeneratingBills] = useState(false);
   const [generatingMonthlyRentBill, setGeneratingMonthlyRentBill] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [domainLoadStates, setDomainLoadStates] = useState(
+    createWorkspaceDomainLoadStates
+  );
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -3719,19 +4545,91 @@ function OrderDetailPageContent() {
   const [renewEntitlementResult, setRenewEntitlementResult] = useState<EntitlementRenewalResponse | null>(null);
   const [renewingEntitlements, setRenewingEntitlements] = useState(false);
   const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
+  const [serviceCases, setServiceCases] = useState<PortalServiceCase[]>([]);
+  const [serviceCasesLoading, setServiceCasesLoading] = useState(false);
+  const [summary, setSummary] = useState<OrderWorkspaceSummary | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const [vehicleReturn, setVehicleReturn] = useState<VehicleReturn | null>(null);
   const [autoOpenChangeModalDone, setAutoOpenChangeModalDone] = useState(false);
+  const createChangeRequested = searchParams.get("createChange") === "1";
+  const autoOpenChangeRequestedRef = useRef(createChangeRequested);
+  const loadedDomainsRef = useRef(new Set<OrderWorkspaceTabKey>());
+  const loadedResourcesRef = useRef(new Set<string>());
+  const resourcePromisesRef = useRef(new Map<string, Promise<void>>());
+  const orderRef = useRef<OrderDetail | null>(null);
   const paymentAmountYuan = Form.useWatch("paymentAmountYuan", paymentForm);
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const stage2DeliveryVerifier = useMemo(
+    () =>
+      createAdminStage2DeliveryVerifier({
+        loadESignStatus: loadAdminStage2HandoverESign,
+        loadWorkOrders: (orderId) =>
+          apiFetch<HandoverWorkOrderSummary[]>(
+            `/orders/${encodeURIComponent(orderId)}/handover-work-orders`
+          )
+      }),
+    []
+  );
+  const stage2DeliveryConfirmationController = useMemo(
+    () =>
+      createAdminStage2DeliveryConfirmationController({
+        onBlocked: (verification) => {
+          void message.warning(
+            verification.reason === "LOAD_ERROR"
+              ? "交接签署状态加载失败，请刷新后重试"
+              : "客户签署与平台盖章完成后才可确认交付"
+          );
+        },
+        verifier: stage2DeliveryVerifier
+      }),
+    [message, stage2DeliveryVerifier]
+  );
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
+  const hasCustomerViewPermission = permissions.has("customer:view");
   const hasBillingViewPermission = permissions.has("billing:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
   const hasDeliveryViewPermission = permissions.has("delivery:view");
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
   const hasDepositSettlementViewPermission = permissions.has("deposit_ledger:view");
   const hasEntitlementViewPermission = permissions.has("entitlement:view");
+  const hasOrderChangeView = permissions.has("order_change:view");
+  const visibleTabs = useMemo(
+    () => getVisibleOrderWorkspaceTabs(permissions),
+    [permissions]
+  );
+  const activeTab = visibleTabs.includes(workspaceLocation.tab)
+    ? workspaceLocation.tab
+    : "overview";
+  const activeTabRef = useRef<OrderWorkspaceTabKey>(activeTab);
+  activeTabRef.current = activeTab;
+  const focus =
+    activeTab === workspaceLocation.tab ? workspaceLocation.focus : undefined;
+  const activeDomainState = domainLoadStates[activeTab];
+  const activeDomainError = activeDomainState.error;
+  const activeDomainLoading = activeDomainState.loading;
+  const focusAttemptKey = getOrderWorkspaceFocusAttemptKey({
+    activeTab,
+    domainLoaded: activeDomainState.loaded,
+    domainLoading: activeDomainLoading,
+    focus,
+    summaryAsOf: summary?.asOf ?? null
+  });
+  const customerPresentation = useMemo(
+    () =>
+      getOrderWorkspaceCustomerPresentation({
+        canViewCustomer: hasCustomerViewPermission,
+        customer: order?.customer,
+        summaryLabel: summary?.header.customerLabel
+      }),
+    [
+      hasCustomerViewPermission,
+      order?.customer,
+      summary?.header.customerLabel
+    ]
+  );
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
@@ -3769,6 +4667,17 @@ function OrderDetailPageContent() {
     damageFeeBills.find((bill) => (toNumber(bill.remainingAmount) ?? 0) > 0) ?? null;
   const hasActiveDamageFeeBill = damageFeeBills.length > 0;
   const orderReturned = Boolean(order && isOrderReturned(order));
+  const vehicleReturnWorkspaceState = getVehicleReturnWorkspaceState({
+    actualDeliveryAt: order?.actualDeliveryAt,
+    actualReturnAt: order?.actualReturnAt,
+    deliveryAlreadyDelivered: deliveryCheck?.alreadyDelivered,
+    deliveryStatus:
+      deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null,
+    hasReturnRecord: Boolean(vehicleReturn),
+    returnAlreadyCompleted: returnCheck?.alreadyReturned,
+    returnStatus:
+      returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null
+  });
   const availableDepositBalance = getDepositAvailableBalance(depositSettlement);
   const damageFeeRemainingAmount = getDamageFeeRemainingAmount(depositSettlement);
   const suggestedDeductibleAmount = getSuggestedDeductibleAmount(depositSettlement);
@@ -3868,23 +4777,41 @@ function OrderDetailPageContent() {
   const returnToPlanHint = isCustomerSelfServiceOrder
     ? "客户需重新提交订单申请。"
     : "返回进件详情重新生成订阅报价和订阅订单。";
-  const activeOrderChange = changes.find(
-    (change) =>
-      !change.executedAt &&
-      (change.status === "PENDING" || change.status === "APPROVED")
-  );
-  const orderChangeLocked = Boolean(activeOrderChange);
+  const activeOrderChange = hasOrderChangeView
+    ? changes.find(
+        (change) =>
+          !change.executedAt &&
+          (change.status === "PENDING" || change.status === "APPROVED")
+      )
+    : undefined;
+  const changeGuard = getOrderWorkspaceChangeGuard({
+    changesLoaded,
+    hasActiveChange: Boolean(activeOrderChange),
+    hasOrderChangeView
+  });
+  const orderChangeLocked = changeGuard.locked;
   const canCancelActiveChange = Boolean(
     activeOrderChange &&
       activeOrderChange.status === "PENDING" &&
       (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
   );
-  const generateContractAvailability = orderChangeLocked
+  const generateContractAvailability = changeGuard.waiting
+    ? { allowed: false, reason: "订单变更状态加载完成后才可生成合同" }
+    : orderChangeLocked
     ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
     : getGenerateContractAvailability(order, permissions);
   const applyChangeAvailability = actionAvailability({
-    allowed: Boolean(order && !orderChangeLocked && PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)),
-    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许发起变更",
+    allowed: Boolean(
+      order &&
+        !changeGuard.waiting &&
+        !orderChangeLocked &&
+        PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
+    ),
+    disabledReason: changeGuard.waiting
+      ? "订单变更状态加载完成后才可操作"
+      : orderChangeLocked
+        ? "该订单已有进行中的变更申请"
+        : "当前订单状态不允许发起变更",
     noPermissionReason: "无创建订单变更权限",
     permission: "order_change:create",
     permissions
@@ -3892,15 +4819,22 @@ function OrderDetailPageContent() {
   const cancelOrderAvailability = actionAvailability({
     allowed: Boolean(
       order &&
+        !changeGuard.waiting &&
         ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
         !orderChangeLocked
     ),
-    disabledReason: orderChangeLocked ? "该订单已有进行中的变更申请" : "当前订单状态不允许取消",
+    disabledReason: changeGuard.waiting
+      ? "订单变更状态加载完成后才可操作"
+      : orderChangeLocked
+        ? "该订单已有进行中的变更申请"
+        : "当前订单状态不允许取消",
     noPermissionReason: "无取消订单权限",
     permission: "order:cancel",
     permissions
   });
-  const prepareDeliveryDisabledReason = getPrepareDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
+  const prepareDeliveryDisabledReason = changeGuard.waiting
+    ? "订单变更状态加载完成后才可操作"
+    : getPrepareDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
   const prepareDeliveryAvailability = actionAvailability({
     allowed: prepareDeliveryDisabledReason === null,
     disabledReason: prepareDeliveryDisabledReason ?? "当前订单状态不允许准备交付",
@@ -3908,7 +4842,36 @@ function OrderDetailPageContent() {
     permission: "delivery:prepare",
     permissions
   });
-  const confirmDeliveryDisabledReason = getConfirmDeliveryDisabledReason(order, deliveryCheck, delivery, orderChangeLocked);
+  const activeHandoverWorkOrders = handoverWorkOrders.filter(
+    isActiveHandoverWorkOrder
+  );
+  const activeHandoverWorkOrder = activeHandoverWorkOrders[0];
+  const stage2SigningComplete =
+    handoverWorkOrdersLoadState === "LOADED" &&
+    (
+      activeHandoverWorkOrders.length === 0 ||
+      (
+        activeHandoverWorkOrders.length === 1 &&
+        activeHandoverWorkOrder !== undefined &&
+        getAdminStage2HandoverWorkflowDisplay(
+          handoverESignStatuses[activeHandoverWorkOrder.id],
+          {
+            customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
+            pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
+            workflowJobs: activeHandoverWorkOrder.workflowJobs
+          }
+        ).deliveryConfirmationAvailable
+      )
+    );
+  const confirmDeliveryDisabledReason = changeGuard.waiting
+    ? "订单变更状态加载完成后才可操作"
+    : getConfirmDeliveryDisabledReason(
+        order,
+        deliveryCheck,
+        delivery,
+        orderChangeLocked,
+        stage2SigningComplete
+      );
   const confirmDeliveryAvailability = actionAvailability({
     allowed: confirmDeliveryDisabledReason === null,
     disabledReason: confirmDeliveryDisabledReason ?? "当前订单状态不允许交付",
@@ -3916,10 +4879,11 @@ function OrderDetailPageContent() {
     permission: "delivery:confirm",
     permissions
   });
-  const activeHandoverWorkOrder = handoverWorkOrders.find(isActiveHandoverWorkOrder);
   const createHandoverWorkOrderDisabledReason = !order
     ? "数据加载完成后才可操作"
-    : orderChangeLocked
+    : changeGuard.waiting
+      ? "订单变更状态加载完成后才可操作"
+      : orderChangeLocked
       ? "当前订单存在进行中的变更申请"
       : activeHandoverWorkOrder
         ? "已存在进行中的交付工单"
@@ -3937,7 +4901,9 @@ function OrderDetailPageContent() {
     permission: "delivery:prepare",
     permissions
   });
-  const prepareReturnDisabledReason = getPrepareReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
+  const prepareReturnDisabledReason = changeGuard.waiting
+    ? "订单变更状态加载完成后才可操作"
+    : getPrepareReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
   const prepareReturnAvailability = actionAvailability({
     allowed: prepareReturnDisabledReason === null,
     disabledReason: prepareReturnDisabledReason ?? "当前订单状态不允许准备退车",
@@ -3945,7 +4911,9 @@ function OrderDetailPageContent() {
     permission: "vehicle_return:prepare",
     permissions
   });
-  const confirmReturnDisabledReason = getConfirmReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
+  const confirmReturnDisabledReason = changeGuard.waiting
+    ? "订单变更状态加载完成后才可操作"
+    : getConfirmReturnDisabledReason(order, returnCheck, vehicleReturn, orderChangeLocked);
   const confirmReturnAvailability = actionAvailability({
     allowed: confirmReturnDisabledReason === null,
     disabledReason: confirmReturnDisabledReason ?? "当前订单状态不允许确认退车",
@@ -4037,90 +5005,519 @@ function OrderDetailPageContent() {
     }
   }, [message]);
 
-  const loadOrder = useCallback(async () => {
-    setLoading(true);
+  const refreshStage2HandoverESignStatus = useCallback(async (id: string) => {
+    setHandoverESignLoading((current) => ({ ...current, [id]: true }));
+    setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
     try {
-      const nextMe = await apiFetch<AuthMeResponse>("/auth/me");
-      const canViewFinance = nextMe.user.permissions.includes("billing:view");
-      const canViewDepositSettlement = nextMe.user.permissions.includes("deposit_ledger:view");
-      const canViewDelivery = nextMe.user.permissions.includes("delivery:view");
-      const canViewReturn = nextMe.user.permissions.includes("vehicle_return:view");
-      const canViewEntitlement = nextMe.user.permissions.includes("entitlement:view");
-      setFinanceLoading(canViewFinance);
-      setDepositSettlementLoading(canViewDepositSettlement);
-      setEntitlementLoading(canViewEntitlement);
-      setEntitlementUsageLoading(canViewEntitlement);
-      setHandoverWorkOrdersLoading(canViewDelivery);
-      setDepositSettlementError(null);
-      const [
-        nextOrder,
-        nextChanges,
-        nextFinanceSummary,
-        nextBills,
-        nextDepositSettlement,
-        nextDeliveryCheck,
-        nextDelivery,
-        nextReturnCheck,
-        nextReturn,
-        nextHandoverWorkOrders,
-        nextEntitlements,
-        nextEntitlementUsages
-      ] = await Promise.all([
-        apiFetch<OrderDetail>(`/orders/${params.id}`),
-        apiFetch<OrderChangeRow[]>(`/orders/${params.id}/changes`).catch(() => []),
-        canViewFinance ? apiFetch<FinanceSummary>(`/orders/${params.id}/finance-summary`) : Promise.resolve(null),
-        canViewFinance ? apiFetch<ReceivableBillRow[]>(`/orders/${params.id}/bills`) : Promise.resolve([]),
-        canViewDepositSettlement
-          ? apiFetch<DepositSettlement>(`/orders/${params.id}/deposit-settlement`).catch((error) => {
-              setDepositSettlementError(getErrorMessage(error));
-              return null;
-            })
-          : Promise.resolve(null),
-        canViewDelivery ? apiFetch<DeliveryCheck>(`/orders/${params.id}/delivery-check`) : Promise.resolve(null),
-        canViewDelivery ? apiFetch<VehicleDelivery | null>(`/orders/${params.id}/delivery`) : Promise.resolve(null),
-        canViewReturn ? apiFetch<ReturnCheck>(`/orders/${params.id}/return-check`) : Promise.resolve(null),
-        canViewReturn ? apiFetch<VehicleReturn | null>(`/orders/${params.id}/return`) : Promise.resolve(null),
-        canViewDelivery
-          ? apiFetch<HandoverWorkOrderSummary[]>(`/orders/${params.id}/handover-work-orders`).catch(() => [])
-          : Promise.resolve([]),
-        canViewEntitlement
-          ? apiFetch<OrderEntitlementsResponse>(`/orders/${params.id}/entitlements`)
-          : Promise.resolve({ account: null, grants: [] }),
-        canViewEntitlement
-          ? apiFetch<OrderEntitlementUsageResponse>(`/orders/${params.id}/entitlement-usages?page=1&pageSize=10`)
-          : Promise.resolve({ items: [], page: 1, pageSize: 10, total: 0 })
-      ]);
-      setOrder(nextOrder);
-      setChanges(nextChanges);
-      setFinanceSummary(nextFinanceSummary);
-      setReceivableBills(nextBills);
-      setDepositSettlement(nextDepositSettlement);
-      setMe(nextMe);
-      setDeliveryCheck(nextDeliveryCheck);
-      setDelivery(nextDelivery);
-      setReturnCheck(nextReturnCheck);
-      setVehicleReturn(nextReturn);
-      setHandoverWorkOrders(nextHandoverWorkOrders);
-      setEntitlements(nextEntitlements);
-      setEntitlementUsages(nextEntitlementUsages.items);
-      setEntitlementUsageTotal(nextEntitlementUsages.total);
-      setEntitlementUsagePage(nextEntitlementUsages.page);
-      setEntitlementUsagePageSize(nextEntitlementUsages.pageSize);
+      const status = await loadAdminStage2HandoverESign(id);
+      setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
     } catch (error) {
-      void message.error(getErrorMessage(error));
+      setHandoverESignErrors((current) => ({
+        ...current,
+        [id]: getAdminStage2HandoverESignErrorMessage(error)
+      }));
     } finally {
-      setLoading(false);
-      setFinanceLoading(false);
-      setDepositSettlementLoading(false);
-      setEntitlementLoading(false);
-      setEntitlementUsageLoading(false);
-      setHandoverWorkOrdersLoading(false);
+      setHandoverESignLoading((current) => ({ ...current, [id]: false }));
     }
-  }, [message, params.id]);
+  }, []);
+
+  const navigateWorkspace = useCallback(
+    (target: {
+      createChange?: boolean;
+      focus?: string;
+      tab: OrderWorkspaceTabKey;
+    }) => {
+      const location = buildOrderWorkspaceLocation({
+        ...(target.createChange ? { createChange: true } : {}),
+        ...(target.focus ? { focus: target.focus } : {}),
+        orderId,
+        tab: target.tab
+      });
+      router.replace(location, { scroll: false });
+    },
+    [orderId, router]
+  );
+
+  const loadOrderDetail = useCallback(
+    async (force = false) => {
+      if (!force && loadedResourcesRef.current.has("order") && orderRef.current) {
+        return;
+      }
+      const nextOrder = await apiFetch<OrderDetail>(
+        `/orders/${orderId}/workspace/detail`
+      );
+      orderRef.current = nextOrder;
+      setOrder(nextOrder);
+      loadedResourcesRef.current.add("order");
+    },
+    [orderId]
+  );
+
+  const loadWorkspaceResource = useCallback(
+    async (key: string, force: boolean, loader: () => Promise<void>) => {
+      if (!force && loadedResourcesRef.current.has(key)) {
+        return;
+      }
+      const inFlight = resourcePromisesRef.current.get(key);
+      if (!force && inFlight) {
+        await inFlight;
+        return;
+      }
+
+      const promise = loader().then(() => {
+        loadedResourcesRef.current.add(key);
+      });
+      resourcePromisesRef.current.set(key, promise);
+      try {
+        await promise;
+      } finally {
+        if (resourcePromisesRef.current.get(key) === promise) {
+          resourcePromisesRef.current.delete(key);
+        }
+      }
+    },
+    []
+  );
+
+  const loadChangesDomain = useCallback(
+    async (force: boolean) => {
+      if (!hasOrderChangeView) {
+        return;
+      }
+      await loadWorkspaceResource("changes", force, async () => {
+        const nextChanges = await apiFetch<OrderChangeRow[]>(
+          `/orders/${orderId}/changes`
+        );
+        setChanges(nextChanges);
+        setChangesLoaded(true);
+      });
+    },
+    [hasOrderChangeView, loadWorkspaceResource, orderId]
+  );
+
+  const loadDepositSettlementDomain = useCallback(
+    async (force: boolean) => {
+      if (!hasDepositSettlementViewPermission) {
+        return;
+      }
+      setDepositSettlementLoading(true);
+      setDepositSettlementError(null);
+      try {
+        await loadWorkspaceResource("deposit-settlement", force, async () => {
+          const nextSettlement = await apiFetch<DepositSettlement>(
+            `/orders/${orderId}/deposit-settlement`
+          );
+          setDepositSettlement(nextSettlement);
+        });
+      } catch (error) {
+        setDepositSettlementError(getErrorMessage(error));
+        throw error;
+      } finally {
+        setDepositSettlementLoading(false);
+      }
+    },
+    [
+      hasDepositSettlementViewPermission,
+      loadWorkspaceResource,
+      orderId
+    ]
+  );
+
+  const loadHandoverDomain = useCallback(
+    async (force: boolean) => {
+      const loads: Promise<void>[] = [];
+
+      if (hasOrderChangeView) {
+        loads.push(loadChangesDomain(force));
+      }
+
+      if (hasDeliveryViewPermission) {
+        loads.push(
+          loadWorkspaceResource("delivery", force, async () => {
+            const [nextDeliveryCheck, nextDelivery] = await Promise.all([
+              apiFetch<DeliveryCheck>(`/orders/${orderId}/delivery-check`),
+              apiFetch<VehicleDelivery | null>(`/orders/${orderId}/delivery`)
+            ]);
+            setDeliveryCheck(nextDeliveryCheck);
+            setDelivery(nextDelivery);
+          })
+        );
+        loads.push(
+          loadWorkspaceResource("handover-work-orders", force, async () => {
+            setHandoverWorkOrdersLoading(true);
+            setHandoverWorkOrdersLoadState("LOADING");
+            try {
+              const nextWorkOrders = await apiFetch<HandoverWorkOrderSummary[]>(
+                `/orders/${orderId}/handover-work-orders`
+              );
+              setHandoverWorkOrders(nextWorkOrders);
+              setHandoverWorkOrdersLoadState("LOADED");
+              await Promise.all(
+                nextWorkOrders.map((workOrder) =>
+                  refreshStage2HandoverESignStatus(workOrder.id)
+                )
+              );
+            } catch (error) {
+              setHandoverWorkOrdersLoadState("ERROR");
+              throw error;
+            } finally {
+              setHandoverWorkOrdersLoading(false);
+            }
+          })
+        );
+      }
+
+      if (
+        hasReturnViewPermission &&
+        vehicleReturnWorkspaceState !== "HIDDEN"
+      ) {
+        loads.push(
+          loadWorkspaceResource("vehicle-return", force, async () => {
+            const [nextReturnCheck, nextReturn] = await Promise.all([
+              apiFetch<ReturnCheck>(`/orders/${orderId}/return-check`),
+              apiFetch<VehicleReturn | null>(`/orders/${orderId}/return`)
+            ]);
+            setReturnCheck(nextReturnCheck);
+            setVehicleReturn(nextReturn);
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(loads);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
+      if (failure) {
+        throw failure.reason;
+      }
+    },
+    [
+      hasDeliveryViewPermission,
+      hasOrderChangeView,
+      hasReturnViewPermission,
+      loadChangesDomain,
+      loadWorkspaceResource,
+      orderId,
+      refreshStage2HandoverESignStatus,
+      vehicleReturnWorkspaceState
+    ]
+  );
+
+  const loadEntitlementDomain = useCallback(
+    async (force: boolean) => {
+      if (!hasEntitlementViewPermission) {
+        return;
+      }
+      setEntitlementLoading(true);
+      setEntitlementUsageLoading(true);
+      try {
+        await loadWorkspaceResource("entitlement", force, async () => {
+          const [nextEntitlements, nextUsages] = await Promise.all([
+            apiFetch<OrderEntitlementsResponse>(
+              `/orders/${orderId}/entitlements`
+            ),
+            apiFetch<OrderEntitlementUsageResponse>(
+              `/orders/${orderId}/entitlement-usages?page=1&pageSize=10`
+            )
+          ]);
+          setEntitlements(nextEntitlements);
+          setEntitlementUsages(nextUsages.items);
+          setEntitlementUsageTotal(nextUsages.total);
+          setEntitlementUsagePage(nextUsages.page);
+          setEntitlementUsagePageSize(nextUsages.pageSize);
+        });
+      } finally {
+        setEntitlementLoading(false);
+        setEntitlementUsageLoading(false);
+      }
+    },
+    [
+      hasEntitlementViewPermission,
+      loadWorkspaceResource,
+      orderId
+    ]
+  );
+
+  const loadFinanceDomain = useCallback(
+    async (force: boolean) => {
+      const loads: Promise<void>[] = [];
+      if (hasBillingViewPermission) {
+        setFinanceLoading(true);
+        loads.push(
+          loadWorkspaceResource("finance", force, async () => {
+            try {
+              const [nextFinanceSummary, nextBills] = await Promise.all([
+                apiFetch<FinanceSummary>(
+                  `/orders/${orderId}/finance-summary`
+                ),
+                apiFetch<ReceivableBillRow[]>(`/orders/${orderId}/bills`)
+              ]);
+              setFinanceSummary(nextFinanceSummary);
+              setReceivableBills(nextBills);
+            } finally {
+              setFinanceLoading(false);
+            }
+          })
+        );
+      }
+      if (hasDepositSettlementViewPermission) {
+        loads.push(loadDepositSettlementDomain(force));
+      }
+
+      const results = await Promise.allSettled(loads);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected"
+      );
+      if (failure) {
+        throw failure.reason;
+      }
+    },
+    [
+      hasBillingViewPermission,
+      hasDepositSettlementViewPermission,
+      loadDepositSettlementDomain,
+      loadWorkspaceResource,
+      orderId
+    ]
+  );
+
+  const loadServiceDomain = useCallback(
+    async (force: boolean) => {
+      if (!permissions.has("service_case:view")) {
+        return;
+      }
+      setServiceCasesLoading(true);
+      try {
+        await loadWorkspaceResource("service-cases", force, async () => {
+          const query = new URLSearchParams({
+            orderId,
+            pageSize: "20"
+          });
+          const result = await apiFetch<PortalPagedResponse<PortalServiceCase>>(
+            `/service-cases?${query.toString()}`
+          );
+          let nextItems = result.items;
+          if (
+            focus &&
+            !nextItems.some((serviceCase) => serviceCase.id === focus)
+          ) {
+            const focused = await apiFetch<PortalServiceCase>(
+              `/orders/${encodeURIComponent(orderId)}/workspace/service-cases/${encodeURIComponent(focus)}`
+            );
+            nextItems = mergeOrderWorkspaceFocusedServiceCase({
+              focus,
+              focused,
+              items: nextItems,
+              orderId
+            });
+          }
+          setServiceCases(nextItems);
+        });
+      } finally {
+        setServiceCasesLoading(false);
+      }
+    },
+    [focus, loadWorkspaceResource, orderId, permissions]
+  );
+
+  const loadActiveWorkspaceTab = useCallback(
+    async (activeTab: OrderWorkspaceTabKey, force = false) => {
+      if (!force && loadedDomainsRef.current.has(activeTab)) {
+        return;
+      }
+      setDomainLoadStates((current) => ({
+        ...current,
+        [activeTab]: {
+          ...current[activeTab],
+          error: null,
+          loading: true
+        }
+      }));
+
+      try {
+        await loadOrderDetail(force);
+        switch (activeTab) {
+          case "contract":
+            if (hasOrderChangeView) {
+              await loadChangesDomain(force);
+            }
+            break;
+          case "handover":
+            await loadHandoverDomain(force);
+            break;
+          case "entitlement":
+            await loadEntitlementDomain(force);
+            break;
+          case "service":
+            await loadServiceDomain(force);
+            break;
+          case "finance":
+            await loadFinanceDomain(force);
+            break;
+          case "change":
+            await loadChangesDomain(force);
+            break;
+          case "overview":
+            break;
+        }
+        loadedDomainsRef.current.add(activeTab);
+        setDomainLoadStates((current) => ({
+          ...current,
+          [activeTab]: {
+            error: null,
+            loaded: true,
+            loading: false
+          }
+        }));
+      } catch (error) {
+        setDomainLoadStates((current) => ({
+          ...current,
+          [activeTab]: {
+            ...current[activeTab],
+            error: getErrorMessage(error),
+            loading: false
+          }
+        }));
+      }
+    },
+    [
+      hasOrderChangeView,
+      loadChangesDomain,
+      loadEntitlementDomain,
+      loadFinanceDomain,
+      loadHandoverDomain,
+      loadOrderDetail,
+      loadServiceDomain
+    ]
+  );
+
+  const loadWorkspaceSummary = useCallback(async () => {
+    setSummaryLoading(true);
+    setSummaryError(null);
+    try {
+      const nextSummary = await apiFetch<OrderWorkspaceSummary>(
+        `/orders/${orderId}/workspace/summary`
+      );
+      setSummary(nextSummary);
+    } catch (error) {
+      setSummaryError(getErrorMessage(error));
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [orderId]);
+
+  const loadWorkspaceShell = useCallback(async () => {
+    setAuthLoading(true);
+    setAuthError(null);
+    const [authResult] = await Promise.allSettled([
+      apiFetch<AuthMeResponse>("/auth/me"),
+      loadWorkspaceSummary()
+    ]);
+    if (authResult.status === "fulfilled") {
+      setMe(authResult.value);
+    } else {
+      setAuthError(getErrorMessage(authResult.reason));
+    }
+    setAuthLoading(false);
+  }, [loadWorkspaceSummary]);
+
+  const retryWorkspaceSummary = useCallback(() => {
+    void loadWorkspaceSummary();
+  }, [loadWorkspaceSummary]);
+
+  const retryActiveWorkspaceTab = useCallback(() => {
+    void loadActiveWorkspaceTab(activeTab, true);
+  }, [activeTab, loadActiveWorkspaceTab]);
+
+  const loadOrder = useCallback(async () => {
+    await refreshActiveOrderWorkspaceTab({
+      activeTabRef,
+      refreshSummary: loadWorkspaceSummary,
+      refreshTab: (tab) => loadActiveWorkspaceTab(tab, true)
+    });
+  }, [loadActiveWorkspaceTab, loadWorkspaceSummary]);
 
   useEffect(() => {
-    void loadOrder();
-  }, [loadOrder]);
+    loadedDomainsRef.current.clear();
+    loadedResourcesRef.current.clear();
+    resourcePromisesRef.current.clear();
+    orderRef.current = null;
+    setMe(null);
+    setOrder(null);
+    setSummary(null);
+    setChangesLoaded(false);
+    setDomainLoadStates(createWorkspaceDomainLoadStates());
+    void loadWorkspaceShell();
+  }, [loadWorkspaceShell]);
+
+  useEffect(() => {
+    if (authLoading || !me) {
+      return;
+    }
+    if (!visibleTabs.includes(workspaceLocation.tab)) {
+      navigateWorkspace({ tab: "overview" });
+      return;
+    }
+    void loadActiveWorkspaceTab(activeTab);
+  }, [
+    activeTab,
+    authLoading,
+    loadActiveWorkspaceTab,
+    me,
+    navigateWorkspace,
+    visibleTabs,
+    workspaceLocation.tab
+  ]);
+
+  useEffect(() => {
+    if (
+      !shouldLoadOrderWorkspaceFocusedServiceCase({
+        activeTab,
+        domainLoaded: activeDomainState.loaded,
+        focus,
+        serviceCaseIds: serviceCases.map((serviceCase) => serviceCase.id)
+      })
+    ) {
+      return;
+    }
+    void loadActiveWorkspaceTab("service", true);
+  }, [
+    activeDomainState.loaded,
+    activeTab,
+    focus,
+    loadActiveWorkspaceTab,
+    serviceCases
+  ]);
+
+  useEffect(() => {
+    if (!focus || !focusAttemptKey) {
+      return;
+    }
+    const record = document.querySelector<HTMLElement>(
+      buildOrderWorkspaceRecordSelector(focus, CSS.escape)
+    );
+    if (!record) {
+      return;
+    }
+
+    record.scrollIntoView({ behavior: "smooth", block: "center" });
+    record.setAttribute("data-workspace-focus-highlight", "true");
+    const previousBackground = record.style.backgroundColor;
+    const previousBoxShadow = record.style.boxShadow;
+    record.style.backgroundColor = "#e6f4ff";
+    record.style.boxShadow = "inset 3px 0 #1677ff";
+    const clearFocusHighlight = () => {
+      record.removeAttribute("data-workspace-focus-highlight");
+      record.style.backgroundColor = previousBackground;
+      record.style.boxShadow = previousBoxShadow;
+    };
+    const timeout = window.setTimeout(clearFocusHighlight, 1800);
+
+    return () => {
+      window.clearTimeout(timeout);
+      clearFocusHighlight();
+    };
+  }, [focus, focusAttemptKey]);
 
   async function viewHandoverWorkOrderDetail(id: string) {
     setHandoverActionLoading(`detail:${id}`);
@@ -4141,7 +5538,7 @@ function OrderDetailPageContent() {
     }
     setHandoverActionLoading("create");
     try {
-      const created = await apiFetch<{ id: string }>(`/orders/${params.id}/handover-work-orders`, {
+      const created = await apiFetch<{ id: string }>(`/orders/${orderId}/handover-work-orders`, {
         body: JSON.stringify({ handoverType: "DELIVERY_OUTBOUND" }),
         method: "POST"
       });
@@ -4198,6 +5595,251 @@ function OrderDetailPageContent() {
 
   function sendCustomerObjectionBackToReview(id: string) {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
+  }
+
+  async function runStage2WorkflowRecovery(
+    id: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) {
+    if (
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(
+      `workflow-recovery:${id}:${recovery.jobId}`
+    );
+    try {
+      const executed = await runAdminStage2WorkflowRecovery({
+        allowed: permissions.has("delivery:confirm"),
+        execute: async (workOrderId, selectedRecovery) => {
+          if (selectedRecovery.kind === "RECONCILE_CUSTOMER") {
+            await reconcileAdminStage2CustomerSignature(workOrderId);
+          } else {
+            await retryAdminStage2WorkflowJob(
+              workOrderId,
+              selectedRecovery.jobId
+            );
+          }
+        },
+        recovery,
+        workOrderId: id
+      });
+      if (!executed) {
+        return;
+      }
+      setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
+      void message.success("异常恢复任务已提交");
+      await loadOrder();
+      if (handoverWorkOrderDetail?.id === id) {
+        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+          `/handover-work-orders/${encodeURIComponent(id)}`
+        );
+        setHandoverWorkOrderDetail(nextDetail);
+      }
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
+  }
+
+  function confirmStage2WorkflowRecovery(
+    id: string,
+    recovery: AdminStage2HandoverWorkflowRecovery
+  ) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    scopedConfirm.confirm({
+      cancelText: "取消",
+      content: `仅重新提交“${recovery.label}”对应的异常任务。`,
+      okText: "确认恢复",
+      onOk: () => runStage2WorkflowRecovery(id, recovery),
+      title: "确认执行异常恢复？"
+    });
+  }
+
+  async function refreshAfterStage2Action(
+    id: string,
+    status: AdminStage2HandoverESignStatus
+  ) {
+    setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
+    setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
+    await loadOrder();
+    if (handoverWorkOrderDetail?.id === id) {
+      const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+        `/handover-work-orders/${encodeURIComponent(id)}`
+      );
+      setHandoverWorkOrderDetail(nextDetail);
+    }
+  }
+
+  async function runAdminStage2Fallback(
+    id: string,
+    values: Stage2FallbackFormValues
+  ) {
+    if (
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const sourceArtifact = stage2FallbackSourceArtifact;
+    if (!sourceArtifact || values.acknowledgement !== true) {
+      void message.error("交接确认单状态已变化，请刷新后重试");
+      return;
+    }
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-start:${id}`);
+    try {
+      const status = await startAdminStage2HandoverESign(id, {
+        acknowledgement: true,
+        artifactVersion: sourceArtifact.artifactVersion,
+        reason: values.reason,
+        sourcePdfHash: sourceArtifact.sourcePdfHash
+      });
+      setStage2FallbackOpen(false);
+      setStage2FallbackSourceArtifact(null);
+      setStage2FallbackWorkOrderId(null);
+      stage2FallbackForm.resetFields();
+      await refreshAfterStage2Action(id, status);
+      void message.success("后台已发起交接签署");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
+  }
+
+  function confirmAdminStage2Fallback(id: string) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    const status = handoverESignStatuses[id];
+    if (
+      !status?.canAdminInitiate ||
+      !status.sourceArtifact
+    ) {
+      void message.warning("当前不满足后台兜底发起条件，请刷新状态");
+      return;
+    }
+    stage2FallbackForm.setFieldsValue({
+      acknowledgement: false,
+      reason: ""
+    });
+    setStage2FallbackSourceArtifact({
+      ...status.sourceArtifact
+    });
+    setStage2FallbackWorkOrderId(id);
+    setStage2FallbackOpen(true);
+  }
+
+  function closeAdminStage2Fallback() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2FallbackOpen(false);
+    setStage2FallbackSourceArtifact(null);
+    setStage2FallbackWorkOrderId(null);
+    stage2FallbackForm.resetFields();
+  }
+
+  async function submitAdminStage2Fallback() {
+    if (
+      !stage2FallbackWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2FallbackForm.validateFields();
+    const validationError =
+      validateAdminStage2HandoverFallbackReason(values.reason);
+    if (validationError) {
+      stage2FallbackForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+    await runAdminStage2Fallback(
+      stage2FallbackWorkOrderId,
+      values
+    );
+  }
+
+  function openAdminStage2Void(id: string) {
+    if (!permissions.has("delivery:confirm")) {
+      return;
+    }
+    stage2VoidForm.resetFields();
+    setStage2VoidWorkOrderId(id);
+    setStage2VoidOpen(true);
+  }
+
+  function closeAdminStage2Void() {
+    if (stage2WorkflowRecoveryInFlight) {
+      return;
+    }
+    setStage2VoidOpen(false);
+    setStage2VoidWorkOrderId(null);
+    stage2VoidForm.resetFields();
+  }
+
+  async function submitAdminStage2Void() {
+    if (
+      !stage2VoidWorkOrderId ||
+      !permissions.has("delivery:confirm") ||
+      stage2WorkflowRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+    const values = await stage2VoidForm.validateFields();
+    const validationError = validateAdminStage2HandoverVoidReason(
+      values.reason
+    );
+    if (validationError) {
+      stage2VoidForm.setFields([
+        { errors: [validationError], name: "reason" }
+      ]);
+      return;
+    }
+
+    const id = stage2VoidWorkOrderId;
+    stage2WorkflowRecoveryInFlightRef.current = true;
+    setStage2WorkflowRecoveryInFlight(true);
+    setHandoverActionLoading(`stage2-void:${id}`);
+    try {
+      const status = await voidAdminStage2HandoverESign(
+        id,
+        values.reason
+      );
+      setStage2VoidOpen(false);
+      setStage2VoidWorkOrderId(null);
+      stage2VoidForm.resetFields();
+      await refreshAfterStage2Action(id, status);
+      void message.success("签署任务已作废，可重新发起");
+    } catch (error) {
+      const safeError = getAdminStage2HandoverESignErrorMessage(error);
+      setHandoverESignErrors((current) => ({ ...current, [id]: safeError }));
+      void message.error(safeError);
+    } finally {
+      stage2WorkflowRecoveryInFlightRef.current = false;
+      setStage2WorkflowRecoveryInFlight(false);
+      setHandoverActionLoading(null);
+    }
   }
 
   function openAssignExternalHandover(id: string) {
@@ -4265,17 +5907,55 @@ function OrderDetailPageContent() {
   }, [canCreateChange, changeForm, message, order, orderChangeLocked]);
 
   useEffect(() => {
+    autoOpenChangeRequestedRef.current = createChangeRequested;
+    setAutoOpenChangeModalDone(false);
+  }, [createChangeRequested]);
+
+  useEffect(() => {
+    if (authLoading) {
+      return;
+    }
     if (
-      searchParams.get("createChange") === "1" &&
+      autoOpenChangeRequestedRef.current &&
+      !visibleTabs.includes("change")
+    ) {
+      autoOpenChangeRequestedRef.current = false;
+      return;
+    }
+    if (
+      autoOpenChangeRequestedRef.current &&
+      activeTab !== "change" &&
+      !autoOpenChangeModalDone
+    ) {
+      navigateWorkspace({ createChange: true, tab: "change" });
+      return;
+    }
+    if (
+      autoOpenChangeRequestedRef.current &&
+      activeTab === "change" &&
       order &&
+      changesLoaded &&
       canCreateChange &&
       !changeModalOpen &&
       !autoOpenChangeModalDone
     ) {
+      autoOpenChangeRequestedRef.current = false;
       setAutoOpenChangeModalDone(true);
       void openChangeModal();
     }
-  }, [autoOpenChangeModalDone, canCreateChange, changeModalOpen, openChangeModal, order, searchParams]);
+  }, [
+    activeTab,
+    authLoading,
+    autoOpenChangeModalDone,
+    canCreateChange,
+    changeModalOpen,
+    changesLoaded,
+    createChangeRequested,
+    navigateWorkspace,
+    openChangeModal,
+    order,
+    visibleTabs
+  ]);
 
   function closeChangeModal() {
     setChangeModalOpen(false);
@@ -4303,13 +5983,23 @@ function OrderDetailPageContent() {
     prepareDeliveryForm.resetFields();
   }
 
-  function openConfirmDeliveryModal() {
-    confirmDeliveryForm.setFieldsValue({
-      deliveredAt: dayjs(),
-      handoverMileageKm: order?.vehicle?.currentMileageKm ?? undefined,
-      remark: delivery?.remark ?? undefined
+  async function openConfirmDeliveryModal() {
+    if (!order) {
+      return;
+    }
+    await stage2DeliveryConfirmationController.run({
+      boundary: "MODAL_OPEN",
+      onAllowed: () => {
+        confirmDeliveryForm.setFieldsValue({
+          deliveredAt: dayjs(),
+          handoverMileageKm:
+            order.vehicle?.currentMileageKm ?? undefined,
+          remark: delivery?.remark ?? undefined
+        });
+        setConfirmDeliveryModalOpen(true);
+      },
+      orderId: order.id
     });
-    setConfirmDeliveryModalOpen(true);
   }
 
   function closeConfirmDeliveryModal() {
@@ -4514,7 +6204,7 @@ function OrderDetailPageContent() {
       void executeRenewEntitlements(true);
       return;
     }
-    modal.confirm({
+    scopedConfirm.confirm({
       content: "本操作将为该订单创建 MONTHLY_RENEWAL 权益发放记录。",
       okText: "确认生成",
       onOk: () => executeRenewEntitlements(false),
@@ -4575,7 +6265,7 @@ function OrderDetailPageContent() {
       void executeExpireEntitlements(true);
       return;
     }
-    modal.confirm({
+    scopedConfirm.confirm({
       content: "本操作将把所有已超过有效期的可用权益标记为已过期。",
       okText: "确认处理",
       onOk: () => executeExpireEntitlements(false),
@@ -4951,14 +6641,23 @@ function OrderDetailPageContent() {
     }
     const values = await confirmDeliveryForm.validateFields();
     try {
-      await apiFetch(`/orders/${order.id}/confirm-delivery`, {
-        body: JSON.stringify({
-          deliveredAt: values.deliveredAt?.toISOString(),
-          handoverMileageKm: values.handoverMileageKm,
-          remark: values.remark
-        }),
-        method: "POST"
-      });
+      const submitted =
+        await stage2DeliveryConfirmationController.run({
+          boundary: "BEFORE_POST",
+          onAllowed: () =>
+            apiFetch(`/orders/${order.id}/confirm-delivery`, {
+              body: JSON.stringify({
+                deliveredAt: values.deliveredAt?.toISOString(),
+                handoverMileageKm: values.handoverMileageKm,
+                remark: values.remark
+              }),
+              method: "POST"
+            }),
+          orderId: order.id
+        });
+      if (!submitted) {
+        return;
+      }
       void message.success("车辆已确认交付");
       closeConfirmDeliveryModal();
       await loadOrder();
@@ -5233,197 +6932,733 @@ function OrderDetailPageContent() {
       title: "操作"
     }
   ];
+  const visibleGuideSummary = summary
+    ? {
+        ...summary,
+        guidance: summary.guidance.filter((item) =>
+          visibleTabs.includes(item.targetTab)
+        ),
+        primaryAction:
+          summary.primaryAction &&
+          visibleTabs.includes(summary.primaryAction.targetTab)
+            ? summary.primaryAction
+            : null
+      }
+    : null;
+  const workspaceHeader: OrderWorkspaceHeaderData = summary
+    ? {
+        ...summary.header,
+        orderStatusLabel: labelOf(
+          ORDER_STATUS_LABELS,
+          summary.header.orderStatus
+        )
+      }
+    : {
+        currentVehicleLabel: null,
+        customerLabel: authLoading ? "加载中" : "-",
+        orderNo: order?.orderNo ?? "订单工作台",
+        orderStatus: order?.orderStatus ?? "LOADING",
+        orderStatusLabel: order
+          ? labelOf(ORDER_STATUS_LABELS, order.orderStatus)
+          : "加载中",
+        ownerLabel: null
+      };
+  const workspaceOverflowActions: OrderWorkspaceHeaderAction[] = [];
+  if (order) {
+    workspaceOverflowActions.push({
+      disabled: !applyChangeAvailability.allowed,
+      key: "apply-change",
+      label: "申请变更方案",
+      onClick: () => {
+        if (hasOrderChangeView) {
+          navigateWorkspace({ tab: "change" });
+          return;
+        }
+        void openChangeModal();
+      }
+    });
+    workspaceOverflowActions.push({
+      danger: true,
+      disabled: !cancelOrderAvailability.allowed,
+      key: "cancel-order",
+      label: "取消订单",
+      onClick: cancelOrder
+    });
+    if (
+      order.orderStatus === "CANCELLED" &&
+      order.application &&
+      !isCustomerSelfServiceOrder
+    ) {
+      workspaceOverflowActions.push({
+        key: "return-application",
+        label: "返回进件重新生成方案",
+        onClick: () =>
+          router.push(`/applications/${order.application?.id}`)
+      });
+    }
+  }
 
-  return (
-    <ProtectedShell>
-      <Space orientation="vertical" size={20} style={{ width: "100%" }}>
-        <Space style={{ justifyContent: "space-between", width: "100%" }}>
-          <Space>
-            <Button aria-label="返回订单列表" icon={<ArrowLeftOutlined />} onClick={() => router.push("/orders")} />
-            <Typography.Title level={4} style={{ margin: 0 }}>
-              {order?.orderNo ?? "订阅订单详情"}
-            </Typography.Title>
-            {order ? <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> : null}
-          </Space>
-          {order ? (
-            <Space>
-              <ActionButton
-                availability={generateContractAvailability}
-                onClick={generateContract}
-                type="primary"
+  function renderActiveWorkspaceTab() {
+    let content: ReactNode;
+
+    switch (activeTab) {
+      case "overview":
+        content = order ? (
+          <>
+            <OverviewLifecycleSummary order={order} />
+            <ReviewPanel
+              canConfirmFinalPlan={canConfirmFinalPlan}
+              canRejectOrder={canRejectCustomerOrder}
+              canReviewCredit={canReviewCredit}
+              canReviewProduct={canReviewProduct}
+              canReviewVehicle={canReviewVehicle}
+              creditForm={creditForm}
+              onConfirmCustomer={confirmCustomerOrder}
+              onFinalizePlan={finalizePlan}
+              onRejectOrder={rejectCustomerOrder}
+              onReview={reviewOrder}
+              order={order}
+            />
+            <OrderInfoSections
+              customerLabel={customerPresentation.label}
+              customerMobile={customerPresentation.mobile}
+              currentVehicleSalePrice={currentVehicleSalePrice}
+              order={order}
+            />
+            <RecentOrderActivity
+              items={summary?.recentActivity ?? []}
+              onNavigate={navigateWorkspace}
+            />
+          </>
+        ) : null;
+        break;
+      case "contract":
+        content = order ? (
+          <>
+            <div
+              {...(order.contract
+                ? { "data-workspace-record": order.contract.id }
+                : {})}
+            >
+              <Card
+                extra={
+                  <Space wrap>
+                    <ActionButton
+                      availability={generateContractAvailability}
+                      onClick={generateContract}
+                      type="primary"
+                    >
+                      生成合同
+                    </ActionButton>
+                    {order.contract ? (
+                      <Button
+                        onClick={() =>
+                          router.push(`/contracts/${order.contract?.id}`)
+                        }
+                      >
+                        查看合同
+                      </Button>
+                    ) : null}
+                  </Space>
+                }
+                title="主合同及订阅套餐"
               >
-                生成合同
-              </ActionButton>
-              {order.contract ? (
-                <Button onClick={() => router.push(`/contracts/${order.contract?.id}`)}>查看合同</Button>
-              ) : null}
+                <Descriptions
+                  bordered
+                  column={2}
+                  items={[
+                    {
+                      children: order.contract?.contractNo ?? "-",
+                      label: "主合同"
+                    },
+                    {
+                      children: order.contract
+                        ? labelOf(STATUS_LABELS, order.contract.status)
+                        : "尚未生成",
+                      label: "合同状态"
+                    },
+                    {
+                      children: (
+                        <ReviewStatusTag value={order.productReviewStatus} />
+                      ),
+                      label: "产品匹配审核"
+                    },
+                    {
+                      children: order.quote?.quoteNo ?? "-",
+                      label: "原始报价"
+                    },
+                    {
+                      children: `${order.periodMonths} 个月 / ${formatYuan(order.monthlyFeeAmount)}`,
+                      label: "签约套餐"
+                    }
+                  ]}
+                  size="small"
+                />
+              </Card>
+            </div>
+            <Typography.Title level={5} style={{ margin: 0 }}>
+              报价快照
+            </Typography.Title>
+            <QuoteSnapshotSection order={order} />
+          </>
+        ) : null;
+        break;
+      case "handover":
+        content = order ? (
+          <>
+            <HandoverProgressRecords
+              resolvedRecordIds={getOrderWorkspaceRecordIds(
+                ...handoverWorkOrders.map((workOrder) => workOrder.id),
+                ...handoverWorkOrders.map(
+                  (workOrder) => workOrder.handoverId
+                ),
+                ...Object.values(handoverESignStatuses).map(
+                  (status) => status?.handoverId
+                )
+              )}
+              summary={summary}
+            />
+            {hasDeliveryViewPermission ? (
+              <DeliveryPanel
+                confirmAvailability={confirmDeliveryAvailability}
+                delivery={delivery}
+                deliveryCheck={deliveryCheck}
+                onOpenConfirm={openConfirmDeliveryModal}
+                onOpenPrepare={openPrepareDeliveryModal}
+                prepareAvailability={prepareDeliveryAvailability}
+              />
+            ) : null}
+            {hasDeliveryViewPermission ? (
+              <Stage2HandoverReviewPanel
+                actionLoading={handoverActionLoading}
+                canAssignExternal={permissions.has("delivery:prepare")}
+                canHandleObjection={permissions.has("delivery:confirm")}
+                canRecoverWorkflow={permissions.has("delivery:confirm")}
+                createAvailability={createHandoverWorkOrderAvailability}
+                esignErrors={handoverESignErrors}
+                esignLoading={handoverESignLoading}
+                esignStatuses={handoverESignStatuses}
+                loading={handoverWorkOrdersLoading}
+                loadState={handoverWorkOrdersLoadState}
+                mutationInFlight={stage2WorkflowRecoveryInFlight}
+                onAcknowledge={acknowledgeCustomerObjection}
+                onAssignExternal={openAssignExternalHandover}
+                onCreateWorkOrder={createHandoverWorkOrder}
+                onRecoverWorkflow={confirmStage2WorkflowRecovery}
+                onRefreshESign={refreshStage2HandoverESignStatus}
+                onRequestResubmission={requestCustomerObjectionResubmission}
+                onSendCustomerReview={sendCustomerObjectionBackToReview}
+                onStartESign={confirmAdminStage2Fallback}
+                onVoidESign={openAdminStage2Void}
+                onViewDetail={viewHandoverWorkOrderDetail}
+                workOrders={handoverWorkOrders}
+              />
+            ) : null}
+            {hasReturnViewPermission &&
+            vehicleReturnWorkspaceState === "ENTRY" ? (
+              <VehicleReturnEntry
+                onOpenPrepare={openPrepareReturnModal}
+                prepareAvailability={prepareReturnAvailability}
+              />
+            ) : null}
+            {hasReturnViewPermission &&
+            (
+              vehicleReturnWorkspaceState === "WORKFLOW" ||
+              vehicleReturnWorkspaceState === "COMPLETED"
+            ) ? (
+              <ReturnPanel
+                confirmAvailability={confirmReturnAvailability}
+                onOpenConfirm={openConfirmReturnModal}
+                onOpenPrepare={openPrepareReturnModal}
+                order={order}
+                prepareAvailability={prepareReturnAvailability}
+                returnCheck={returnCheck}
+                vehicleReturn={vehicleReturn}
+              />
+            ) : null}
+          </>
+        ) : null;
+        break;
+      case "entitlement":
+        content =
+          order && hasEntitlementViewPermission ? (
+            <div data-workspace-record={entitlements.account?.id}>
+              <EntitlementPanel
+                customerLabel={customerPresentation.label}
+                customerMobile={customerPresentation.mobile}
+                entitlements={entitlements}
+                entitlementLoading={entitlementLoading}
+                expiringEntitlements={expiringEntitlements}
+                generatingEntitlements={generatingEntitlements}
+                onGenerateEntitlements={generateOrderEntitlements}
+                onOpenExpireEntitlements={openExpireEntitlementModal}
+                onOpenConsume={openConsumeEntitlementModal}
+                onOpenMonthlyRenewal={openRenewEntitlementModal}
+                onUsagePageChange={handleEntitlementUsagePageChange}
+                order={order}
+                permissions={permissions}
+                renewingEntitlements={renewingEntitlements}
+                usageLoading={entitlementUsageLoading}
+                usagePage={entitlementUsagePage}
+                usagePageSize={entitlementUsagePageSize}
+                usageTotal={entitlementUsageTotal}
+                usages={entitlementUsages}
+              />
+            </div>
+          ) : null;
+        break;
+      case "service":
+        content = order ? (
+          <ServiceCasesPanel
+            items={serviceCases}
+            loading={serviceCasesLoading}
+            orderId={order.id}
+          />
+        ) : null;
+        break;
+      case "finance":
+        content = order ? (
+          <>
+            <FinanceProgressRecords
+              links={getOrderWorkspaceFinanceLinks(permissions)}
+              resolvedRecordIds={getOrderWorkspaceRecordIds(
+                ...receivableBills.map((bill) => bill.id),
+                ...(depositSettlement?.depositLedgers ?? []).map(
+                  (ledger) => ledger.id
+                )
+              )}
+              summary={summary}
+            />
+            {hasBillingViewPermission ? (
+              <FinancePanel
+                bills={receivableBills}
+                financeLoading={financeLoading}
+                generateAvailability={generateInitialBillsAvailability}
+                generateMonthlyRentAvailability={
+                  generateMonthlyRentAvailability
+                }
+                generatingBills={generatingBills}
+                generatingMonthlyRentBill={generatingMonthlyRentBill}
+                onGenerateInitialBills={generateInitialBills}
+                onGenerateNextMonthlyRentBill={generateNextMonthlyRentBill}
+                onOpenPayment={openPaymentModal}
+                paymentAvailability={paymentAvailability}
+                summary={financeSummary}
+              />
+            ) : null}
+            {hasDepositSettlementViewPermission ? (
+              <DepositSettlementPanel
+                customerLabel={customerPresentation.label}
+                customerMobile={customerPresentation.mobile}
+                deductAvailability={deductDepositAvailability}
+                depositSettlementLoading={depositSettlementLoading}
+                generateAvailability={generateDamageFeeBillAvailability}
+                generatingDamageFeeBill={generatingDamageFeeBill}
+                onGenerateDamageFeeBill={generateDamageFeeBill}
+                onOpenDeduct={openDeductDepositModal}
+                onOpenRefund={openRefundDepositModal}
+                order={order}
+                refundAvailability={refundDepositAvailability}
+                settlement={depositSettlement}
+                settlementError={depositSettlementError}
+              />
+            ) : null}
+          </>
+        ) : null;
+        break;
+      case "change":
+        content = order ? (
+          <>
+            <Space style={{ justifyContent: "flex-end", width: "100%" }}>
               <ActionButton
                 availability={applyChangeAvailability}
                 onClick={openChangeModal}
+                type="primary"
               >
                 申请变更方案
               </ActionButton>
-              <ActionButton
-                availability={cancelOrderAvailability}
-                danger
-                onClick={cancelOrder}
-              >
-                取消订单
-              </ActionButton>
-              {order.orderStatus === "CANCELLED" && order.application && !isCustomerSelfServiceOrder ? (
-                <Button onClick={() => router.push(`/applications/${order.application?.id}`)}>
-                  返回进件重新生成方案
-                </Button>
-              ) : null}
             </Space>
-          ) : null}
-        </Space>
+            {activeOrderChange ? (
+              <Alert
+                action={
+                  <Space wrap>
+                    <ActionButton
+                      allowed={canCancelActiveChange}
+                      disabledReason="当前变更不允许取消"
+                      onClick={() => cancelChange(activeOrderChange.id)}
+                      size="small"
+                    >
+                      取消变更申请
+                    </ActionButton>
+                    <ActionButton
+                      allowed={activeOrderChange.status === "PENDING"}
+                      disabledReason="当前变更状态不允许审批"
+                      noPermissionReason="无审批订单变更权限"
+                      onClick={() =>
+                        reviewChange(activeOrderChange.id, "approve")
+                      }
+                      permission="order_change:approve"
+                      permissions={permissions}
+                      size="small"
+                      type="primary"
+                    >
+                      同意变更
+                    </ActionButton>
+                    <ActionButton
+                      availability={
+                        canRejectChange
+                          ? actionAvailability({
+                              allowed:
+                                activeOrderChange.status === "PENDING",
+                              disabledReason:
+                                "当前变更状态不允许拒绝",
+                              permissions
+                            })
+                          : {
+                              allowed: false,
+                              reason: "无拒绝订单变更权限"
+                            }
+                      }
+                      danger
+                      onClick={() =>
+                        reviewChange(activeOrderChange.id, "reject")
+                      }
+                      size="small"
+                    >
+                      拒绝变更
+                    </ActionButton>
+                    <ActionButton
+                      availability={canExecuteOrderChange(
+                        activeOrderChange,
+                        order,
+                        permissions
+                      )}
+                      onClick={() =>
+                        returnChangeToPlan(activeOrderChange.id)
+                      }
+                      size="small"
+                      type="primary"
+                    >
+                      取消当前订单并退回方案生成环节
+                    </ActionButton>
+                  </Space>
+                }
+                description={`状态：${labelOf(STATUS_LABELS, activeOrderChange.status)} / 创建时间：${formatTime(activeOrderChange.createdAt)}`}
+                message="当前订单存在进行中的变更申请，暂不能继续后续操作。"
+                showIcon
+                type="warning"
+              />
+            ) : null}
+            {order.orderStatus === "CANCELLED" ? (
+              <Alert
+                action={
+                  !isCustomerSelfServiceOrder && order.application ? (
+                    <Link href={`/applications/${order.application.id}`}>
+                      返回进件重新生成方案
+                    </Link>
+                  ) : undefined
+                }
+                description={returnToPlanHint}
+                message="方案变更已退回"
+                showIcon
+                type="info"
+              />
+            ) : null}
+            <Card title="订单变更记录">
+              <Table
+                columns={changeColumns}
+                dataSource={changes}
+                onRow={(change) =>
+                  ({
+                    "data-workspace-record": change.id
+                  }) as HTMLAttributes<HTMLTableRowElement>
+                }
+                pagination={false}
+                rowKey="id"
+                scroll={{ x: 1280 }}
+                size="small"
+              />
+            </Card>
+            <OrderChangeSnapshots changes={changes} />
+          </>
+        ) : null;
+        break;
+    }
 
-        {activeOrderChange ? (
-          <Card>
-            <Space orientation="vertical" size={8}>
-              <Typography.Text strong>当前订单存在进行中的变更申请，暂不能继续后续操作。</Typography.Text>
-              <Typography.Text>
-                状态：{labelOf(STATUS_LABELS, activeOrderChange.status)} / 创建时间：{formatTime(activeOrderChange.createdAt)}
-              </Typography.Text>
-              <Space wrap>
-                <ActionButton
-                  allowed={canCancelActiveChange}
-                  disabledReason="当前变更不允许取消"
-                  onClick={() => cancelChange(activeOrderChange.id)}
-                >
-                  取消变更申请
-                </ActionButton>
-                <ActionButton
-                  allowed={activeOrderChange.status === "PENDING"}
-                  disabledReason="当前变更状态不允许审批"
-                  noPermissionReason="无审批订单变更权限"
-                  onClick={() => reviewChange(activeOrderChange.id, "approve")}
-                  permission="order_change:approve"
-                  permissions={permissions}
-                  type="primary"
-                >
-                  同意变更
-                </ActionButton>
-                <ActionButton
-                  availability={
-                    canRejectChange
-                      ? actionAvailability({
-                          allowed: activeOrderChange.status === "PENDING",
-                          disabledReason: "当前变更状态不允许拒绝",
-                          permissions
-                        })
-                      : { allowed: false, reason: "无拒绝订单变更权限" }
-                  }
-                  danger
-                  onClick={() => reviewChange(activeOrderChange.id, "reject")}
-                >
-                  拒绝变更
-                </ActionButton>
-                <ActionButton
-                  availability={canExecuteOrderChange(activeOrderChange, order, permissions)}
-                  onClick={() => returnChangeToPlan(activeOrderChange.id)}
-                  type="primary"
-                >
-                  取消当前订单并退回方案生成环节
-                </ActionButton>
-              </Space>
-            </Space>
-          </Card>
+    return (
+      <Space
+        data-workspace-domain={activeTab}
+        orientation="vertical"
+        size={16}
+        style={{ width: "100%" }}
+      >
+        {authError ? (
+          <Alert
+            description={authError}
+            message="权限信息加载失败"
+            showIcon
+            type="error"
+          />
         ) : null}
-
-        {order?.orderStatus === "CANCELLED" ? (
-          <Card>
-            <Space orientation="vertical" size={8}>
-              <Typography.Text strong>方案变更已退回</Typography.Text>
-              <Typography.Text>{returnToPlanHint}</Typography.Text>
-              {!isCustomerSelfServiceOrder && order.application ? (
-                <Link href={`/applications/${order.application.id}`}>返回进件重新生成方案</Link>
-              ) : null}
-            </Space>
-          </Card>
+        {activeDomainError ? (
+          <Alert
+            action={
+              <Button onClick={retryActiveWorkspaceTab} size="small">
+                重试当前页签
+              </Button>
+            }
+            description="已保留工作台和成功加载的数据，可单独重试当前页签。"
+            message={activeDomainError}
+            showIcon
+            type="error"
+          />
         ) : null}
+        {activeDomainLoading && !activeDomainState.loaded ? (
+          <div style={{ minHeight: 180, paddingTop: 48, textAlign: "center" }}>
+            <Spin />
+          </div>
+        ) : (
+          content
+        )}
+      </Space>
+    );
+  }
 
-        {loading ? <Spin /> : order ? <OrderInfoSections currentVehicleSalePrice={currentVehicleSalePrice} order={order} /> : null}
+  const stage2FallbackPdfDownloadUrl = stage2FallbackWorkOrderId
+    ? buildAdminStage2HandoverPdfDownloadUrl(
+        stage2FallbackWorkOrderId
+      )
+    : null;
 
-        {order && hasBillingViewPermission ? (
-          <FinancePanel
-            bills={receivableBills}
-            financeLoading={financeLoading}
-            generateAvailability={generateInitialBillsAvailability}
-            generateMonthlyRentAvailability={generateMonthlyRentAvailability}
-            generatingBills={generatingBills}
-            generatingMonthlyRentBill={generatingMonthlyRentBill}
-            onGenerateInitialBills={generateInitialBills}
-            onGenerateNextMonthlyRentBill={generateNextMonthlyRentBill}
-            onOpenPayment={openPaymentModal}
-            paymentAvailability={paymentAvailability}
-            summary={financeSummary}
+  return (
+    <ProtectedShell>
+      <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+        <OrderWorkspaceHeader
+          header={workspaceHeader}
+          onBack={() => router.push("/orders")}
+          onRefresh={() => void loadOrder()}
+          overflowActions={workspaceOverflowActions}
+          refreshing={summaryLoading || activeDomainLoading}
+        />
+
+        {summaryError ? (
+          <Alert
+            action={
+              <Button onClick={retryWorkspaceSummary} size="small">
+                重试摘要
+              </Button>
+            }
+            description="订单摘要加载失败不会清空已加载的页签数据。"
+            message={summaryError}
+            showIcon
+            type="error"
           />
         ) : null}
 
-        {order && hasEntitlementViewPermission ? (
-          <EntitlementPanel
-            entitlements={entitlements}
-            entitlementLoading={entitlementLoading}
-            expiringEntitlements={expiringEntitlements}
-            generatingEntitlements={generatingEntitlements}
-            onGenerateEntitlements={generateOrderEntitlements}
-            onOpenExpireEntitlements={openExpireEntitlementModal}
-            onOpenConsume={openConsumeEntitlementModal}
-            onOpenMonthlyRenewal={openRenewEntitlementModal}
-            onUsagePageChange={handleEntitlementUsagePageChange}
-            order={order}
-            permissions={permissions}
-            renewingEntitlements={renewingEntitlements}
-            usageLoading={entitlementUsageLoading}
-            usagePage={entitlementUsagePage}
-            usagePageSize={entitlementUsagePageSize}
-            usageTotal={entitlementUsageTotal}
-            usages={entitlementUsages}
+        {visibleGuideSummary ? (
+          <OrderTransactionGuide
+            onNavigate={navigateWorkspace}
+            summary={visibleGuideSummary}
           />
-        ) : null}
+        ) : (
+          <section
+            aria-label="订单推进指引"
+            data-workspace-guide="true"
+            style={{ minHeight: 116, padding: "36px 0", textAlign: "center" }}
+          >
+            {summaryLoading ? <Spin size="small" /> : null}
+          </section>
+        )}
 
-        {order && hasDeliveryViewPermission ? (
-          <DeliveryPanel
-            confirmAvailability={confirmDeliveryAvailability}
-            delivery={delivery}
-            deliveryCheck={deliveryCheck}
-            onOpenConfirm={openConfirmDeliveryModal}
-            onOpenPrepare={openPrepareDeliveryModal}
-            prepareAvailability={prepareDeliveryAvailability}
-          />
-        ) : null}
-
-        {order && hasDeliveryViewPermission ? (
-          <Stage2HandoverReviewPanel
-            actionLoading={handoverActionLoading}
-            canAssignExternal={permissions.has("delivery:prepare")}
-            canHandleObjection={permissions.has("delivery:confirm")}
-            createAvailability={createHandoverWorkOrderAvailability}
-            loading={handoverWorkOrdersLoading}
-            onAcknowledge={acknowledgeCustomerObjection}
-            onAssignExternal={openAssignExternalHandover}
-            onCreateWorkOrder={createHandoverWorkOrder}
-            onRequestResubmission={requestCustomerObjectionResubmission}
-            onSendCustomerReview={sendCustomerObjectionBackToReview}
-            onViewDetail={viewHandoverWorkOrderDetail}
-            workOrders={handoverWorkOrders}
-          />
-        ) : null}
+        <OrderWorkspace
+          activeTab={activeTab}
+          onTabChange={(tab) => navigateWorkspace({ tab })}
+          slots={{ [activeTab]: renderActiveWorkspaceTab() }}
+          tabBadges={summary?.tabBadges}
+          visibleTabs={visibleTabs}
+        />
 
         <Stage2HandoverReviewDetailModal
           actionLoading={handoverActionLoading}
           canAssignExternal={permissions.has("delivery:prepare")}
           canHandleObjection={permissions.has("delivery:confirm")}
+          canRecoverWorkflow={permissions.has("delivery:confirm")}
           detail={handoverWorkOrderDetail}
+          esignError={handoverWorkOrderDetail ? handoverESignErrors[handoverWorkOrderDetail.id] : undefined}
+          esignLoading={Boolean(handoverWorkOrderDetail && handoverESignLoading[handoverWorkOrderDetail.id])}
+          esignStatus={handoverWorkOrderDetail ? handoverESignStatuses[handoverWorkOrderDetail.id] : undefined}
+          mutationInFlight={stage2WorkflowRecoveryInFlight}
           onAcknowledge={acknowledgeCustomerObjection}
           onAssignExternal={openAssignExternalHandover}
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
+          onRecoverWorkflow={confirmStage2WorkflowRecovery}
+          onRefreshESign={refreshStage2HandoverESignStatus}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
+          onStartESign={confirmAdminStage2Fallback}
+          onVoidESign={openAdminStage2Void}
           open={handoverWorkOrderDetailOpen}
         />
+
+        <Modal
+          cancelButtonProps={{
+            disabled: stage2WorkflowRecoveryInFlight
+          }}
+          confirmLoading={Boolean(
+            stage2FallbackWorkOrderId &&
+            handoverActionLoading ===
+              `stage2-start:${stage2FallbackWorkOrderId}`
+          )}
+          destroyOnHidden
+          okText="确认发起"
+          onCancel={closeAdminStage2Fallback}
+          onOk={submitAdminStage2Fallback}
+          open={stage2FallbackOpen}
+          title="确认后台兜底发起签署"
+          width={680}
+        >
+          <Space
+            orientation="vertical"
+            size={12}
+            style={{ width: "100%" }}
+          >
+            <Alert
+              message="后台将以 ADMIN_FALLBACK 身份发起，不会代替 Field 经办人。"
+              showIcon
+              type="warning"
+            />
+            <Descriptions
+              bordered
+              column={1}
+              items={[
+                {
+                  children:
+                    stage2FallbackSourceArtifact
+                      ?.artifactVersion ?? "-",
+                  label: "PDF 版本"
+                },
+                {
+                  children: stage2FallbackSourceArtifact ? (
+                    <Typography.Text
+                      code
+                      copyable={{
+                        text:
+                          stage2FallbackSourceArtifact
+                            .sourcePdfHash
+                      }}
+                      style={{ overflowWrap: "anywhere" }}
+                    >
+                      {
+                        stage2FallbackSourceArtifact
+                          .sourcePdfHash
+                      }
+                    </Typography.Text>
+                  ) : "-",
+                  label: "SHA-256"
+                }
+              ]}
+              size="small"
+            />
+            {stage2FallbackPdfDownloadUrl ? (
+              <Button
+                href={stage2FallbackPdfDownloadUrl}
+                icon={<DownloadOutlined />}
+                rel="noreferrer"
+                target="_blank"
+              >
+                预览/下载 PDF
+              </Button>
+            ) : null}
+            <Form<Stage2FallbackFormValues>
+              form={stage2FallbackForm}
+              layout="vertical"
+            >
+              <Form.Item
+                name="acknowledgement"
+                rules={[
+                  {
+                    validator: async (_, value) => {
+                      if (value !== true) {
+                        throw new Error(
+                          "请先核对当前交接确认单"
+                        );
+                      }
+                    }
+                  }
+                ]}
+                valuePropName="checked"
+              >
+                <Checkbox>已核对当前交接确认单</Checkbox>
+              </Form.Item>
+              <Form.Item
+                label="兜底发起原因"
+                name="reason"
+                rules={[
+                  {
+                    required: true,
+                    message: "请填写兜底发起原因"
+                  },
+                  {
+                    validator: async (_, value) => {
+                      const validationError =
+                        validateAdminStage2HandoverFallbackReason(
+                          value ?? ""
+                        );
+                      if (validationError) {
+                        throw new Error(validationError);
+                      }
+                    }
+                  }
+                ]}
+              >
+                <Input.TextArea
+                  autoSize={{ maxRows: 6, minRows: 3 }}
+                />
+              </Form.Item>
+            </Form>
+          </Space>
+        </Modal>
+
+        <Modal
+          cancelButtonProps={{ disabled: stage2WorkflowRecoveryInFlight }}
+          confirmLoading={Boolean(
+            stage2VoidWorkOrderId &&
+            handoverActionLoading === `stage2-void:${stage2VoidWorkOrderId}`
+          )}
+          destroyOnHidden
+          okText="确认作废"
+          onCancel={closeAdminStage2Void}
+          onOk={submitAdminStage2Void}
+          open={stage2VoidOpen}
+          title="作废并重新发起"
+        >
+          <Form<Stage2VoidFormValues>
+            form={stage2VoidForm}
+            layout="vertical"
+          >
+            <Form.Item
+              label="作废原因"
+              name="reason"
+              rules={[
+                { required: true, message: "请填写作废原因" },
+                {
+                  validator: async (_, value) => {
+                    const validationError =
+                      validateAdminStage2HandoverVoidReason(value ?? "");
+                    if (validationError) {
+                      throw new Error(validationError);
+                    }
+                  }
+                }
+              ]}
+            >
+              <Input.TextArea
+                autoSize={{ maxRows: 6, minRows: 3 }}
+                maxLength={500}
+              />
+            </Form.Item>
+          </Form>
+        </Modal>
 
         <Modal
           destroyOnHidden
@@ -5516,101 +7751,6 @@ function OrderDetailPageContent() {
             </Button>
           </Form>
         </Modal>
-
-        {order && hasReturnViewPermission ? (
-          <ReturnPanel
-            confirmAvailability={confirmReturnAvailability}
-            onOpenConfirm={openConfirmReturnModal}
-            onOpenPrepare={openPrepareReturnModal}
-            order={order}
-            prepareAvailability={prepareReturnAvailability}
-            returnCheck={returnCheck}
-            vehicleReturn={vehicleReturn}
-          />
-        ) : null}
-
-        {order && hasDepositSettlementViewPermission ? (
-          <DepositSettlementPanel
-            deductAvailability={deductDepositAvailability}
-            depositSettlementLoading={depositSettlementLoading}
-            generateAvailability={generateDamageFeeBillAvailability}
-            generatingDamageFeeBill={generatingDamageFeeBill}
-            onGenerateDamageFeeBill={generateDamageFeeBill}
-            onOpenDeduct={openDeductDepositModal}
-            onOpenRefund={openRefundDepositModal}
-            order={order}
-            refundAvailability={refundDepositAvailability}
-            settlement={depositSettlement}
-            settlementError={depositSettlementError}
-          />
-        ) : null}
-
-        {/*
-          <Descriptions
-            bordered
-            column={3}
-            items={
-              order
-              ? [
-                  { label: "订单编号", children: order.orderNo },
-                  { label: "客户信息", children: `${order.customer.name} / ${order.customer.mobile}` },
-                  {
-                    label: "关联进件",
-                    children: order.application ? (
-                      <Link href={`/applications/${order.application.id}`}>{order.application.applicationNo}</Link>
-                    ) : "-"
-                  },
-                  {
-                    label: "关联报价",
-                    children: order.quote ? <Link href={`/quotes/${order.quote.id}`}>{order.quote.quoteNo}</Link> : "-"
-                  },
-                  { label: "车型", children: orderModelDisplay(order) },
-                  { label: "车辆采购价", children: formatYuan(order.vehiclePurchasePriceAmount) },
-                  { label: "月费", children: formatYuan(order.monthlyFeeAmount) },
-                  { label: "押金", children: formatYuan(order.depositAmount) },
-                  { label: "订阅周期", children: `${order.periodMonths} 个月` },
-                  { label: "月里程额度", children: `${order.mileageLimitKm} km` },
-                  { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
-                  {
-                    label: "合同信息",
-                    children: order.contract ? (
-                      <Link href={`/contracts/${order.contract.id}`}>{order.contract.contractNo}</Link>
-                    ) : "-"
-                  },
-                  { label: "创建时间", children: formatTime(order.createdAt) }
-                ]
-              : []
-            }
-          />
-        */}
-
-        {order ? (
-          <ReviewPanel
-            canConfirmFinalPlan={canConfirmFinalPlan}
-            canRejectOrder={canRejectCustomerOrder}
-            canReviewCredit={canReviewCredit}
-            canReviewProduct={canReviewProduct}
-            canReviewVehicle={canReviewVehicle}
-            creditForm={creditForm}
-            onConfirmCustomer={confirmCustomerOrder}
-            onFinalizePlan={finalizePlan}
-            onRejectOrder={rejectCustomerOrder}
-            onReview={reviewOrder}
-            order={order}
-          />
-        ) : null}
-
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          报价快照
-        </Typography.Title>
-        <QuoteSnapshotSection order={order} />
-
-        <Typography.Title level={5} style={{ margin: 0 }}>
-          订单变更记录
-        </Typography.Title>
-        <Card title="订单变更记录">
-          <Table columns={changeColumns} dataSource={changes} pagination={false} rowKey="id" />
-        </Card>
 
         <Modal
           confirmLoading={consumeEntitlementSubmitting}
@@ -6286,6 +8426,12 @@ function OrderDetailPageContent() {
   );
 }
 
+function OrderDetailPageRoute() {
+  const { id: orderId } = useParams<{ id: string }>();
+
+  return <OrderDetailPageContent key={orderId} orderId={orderId} />;
+}
+
 export default function OrderDetailPage() {
   return (
     <Suspense
@@ -6295,7 +8441,7 @@ export default function OrderDetailPage() {
         </ProtectedShell>
       }
     >
-      <OrderDetailPageContent />
+      <OrderDetailPageRoute />
     </Suspense>
   );
 }

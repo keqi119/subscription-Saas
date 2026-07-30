@@ -1,8 +1,19 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Optional
+} from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 
 import { DeliveryEvidenceService } from "../delivery-evidence/delivery-evidence.service";
+import {
+  STAGE2_EVIDENCE_ARTIFACT_NOT_READY,
+  STAGE2_EVIDENCE_CONFIRMATION_TEXT
+} from "../delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
+import { Stage2HandoverWorkflowService } from "../handover-work-order/stage2-handover-workflow.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -68,7 +79,10 @@ export class PortalHandoverReviewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
-    private readonly handoverWorkOrderService: HandoverWorkOrderService
+    private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    private readonly stage2HandoverESignService: Stage2HandoverESignService,
+    @Optional()
+    private readonly stage2HandoverWorkflowService?: Stage2HandoverWorkflowService
   ) {}
 
   async listReviews(currentCustomer: CurrentCustomer) {
@@ -95,6 +109,22 @@ export class PortalHandoverReviewService {
     return this.toReviewDetail(workOrder);
   }
 
+  async getESignStatus(id: string, currentCustomer: CurrentCustomer) {
+    await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
+    return this.stage2HandoverESignService.getPortalStatus(
+      id,
+      currentCustomer.customerId
+    );
+  }
+
+  async startESignSigning(id: string, currentCustomer: CurrentCustomer) {
+    await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
+    return this.stage2HandoverESignService.startPortalSigning(
+      id,
+      currentCustomer.customerId
+    );
+  }
+
   async previewEvidenceFile(id: string, evidenceFileId: string, currentCustomer: CurrentCustomer) {
     await this.findVisibleReviewOrThrow(id, currentCustomer.customerId);
     return this.handoverWorkOrderService.previewEvidenceFile(id, evidenceFileId);
@@ -107,12 +137,19 @@ export class PortalHandoverReviewService {
 
   async confirmNoObjection(
     id: string,
-    _dto: ConfirmPortalHandoverReviewDto,
+    dto: ConfirmPortalHandoverReviewDto,
     currentCustomer: CurrentCustomer
   ) {
     const workOrder = await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
-    assertCanConfirmNoObjection(workOrder.status);
-    await this.handoverWorkOrderService.customerConfirmNoObjection(id, currentCustomer.customerId);
+    assertCanConfirmNoObjection(
+      workOrder.status,
+      this.stage2HandoverWorkflowService?.isEnabled() === true
+    );
+    await this.handoverWorkOrderService.customerConfirmNoObjection(
+      id,
+      currentCustomer.customerId,
+      dto.manifestHash
+    );
     return this.getReview(id, currentCustomer);
   }
 
@@ -203,17 +240,40 @@ export class PortalHandoverReviewService {
   }
 
   private async toReviewDetail(workOrder: PortalHandoverReviewRecord) {
-    const [listItem, evidenceChecklist, readiness] = await Promise.all([
+    const [listItem, evidenceChecklist, readiness, stage2Workflow] = await Promise.all([
       this.toReviewListItem(workOrder),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
-      this.handoverWorkOrderService.getReadiness(workOrder.id)
+      this.handoverWorkOrderService.getReadiness(workOrder.id),
+      this.stage2HandoverWorkflowService?.getProjection(workOrder.id) ??
+        Promise.resolve(null)
     ]);
+    let evidencePackage;
+    try {
+      evidencePackage = await this.handoverWorkOrderService.getCurrentEvidencePackage(workOrder.id);
+    } catch (error) {
+      if (!isEvidencePackageNotReadyError(error)) {
+        throw error;
+      }
+      evidencePackage = null;
+    }
+    const checklistStats = summarizeEvidenceFileTypes(evidenceChecklist);
 
     return {
       ...listItem,
+      ...(stage2Workflow ? { stage2Workflow } : {}),
+      evidencePackage: {
+        confirmationText: STAGE2_EVIDENCE_CONFIRMATION_TEXT,
+        evidencePackageId: evidencePackage?.manifest.evidencePackageId ?? null,
+        fileCount: evidencePackage?.stats.fileCount ?? checklistStats.fileCount,
+        manifestHash: evidencePackage?.manifestHash ?? null,
+        photoCount: evidencePackage?.stats.photoCount ?? checklistStats.photoCount,
+        ready: Boolean(evidencePackage),
+        schemaVersion: evidencePackage?.manifest.schemaVersion ?? null,
+        videoCount: evidencePackage?.stats.videoCount ?? checklistStats.videoCount
+      },
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, workOrder.id),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
@@ -246,8 +306,11 @@ export class PortalHandoverReviewService {
   }
 }
 
-function assertCanConfirmNoObjection(status: unknown) {
-  if (status === "CUSTOMER_CONFIRMED") {
+function assertCanConfirmNoObjection(
+  status: unknown,
+  allowConfirmedReplay = false
+) {
+  if (status === "CUSTOMER_CONFIRMED" && !allowConfirmedReplay) {
     throw new BadRequestException("客户已确认无异议。");
   }
   if (status === "CUSTOMER_OBJECTED") {
@@ -256,7 +319,10 @@ function assertCanConfirmNoObjection(status: unknown) {
   if (TERMINAL_WORK_ORDER_STATUSES.has(String(status))) {
     throw new BadRequestException("交付工单已终止。");
   }
-  if (!CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(status))) {
+  if (
+    status !== "CUSTOMER_CONFIRMED" &&
+    !CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(String(status))
+  ) {
     throw new BadRequestException("当前交接复核状态不能确认。");
   }
 }
@@ -373,14 +439,12 @@ function toSafeEvidenceFile(file: Record<string, unknown>, reviewId?: string) {
     evidenceFileId,
     file: linkedFile
       ? {
-          id: readString(linkedFile, "id"),
           mimeType,
           originalName: displayName,
           sizeBytes
         }
       : null,
-    fileId: readString(file, "fileId"),
-    id: readString(file, "id"),
+    id: evidenceFileId,
     mimeType,
     mediaType: readString(file, "mediaType"),
     previewAvailable,
@@ -391,6 +455,21 @@ function toSafeEvidenceFile(file: Record<string, unknown>, reviewId?: string) {
     sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
+}
+
+function summarizeEvidenceFileTypes(checklist: unknown) {
+  const files = getChecklistItems(checklist).flatMap((item) =>
+    Array.isArray(item.files) ? item.files.filter(isPlainObject) : []
+  );
+  return {
+    fileCount: files.length,
+    photoCount: files.filter((file) => readString(file, "mediaType") === "PHOTO").length,
+    videoCount: files.filter((file) => readString(file, "mediaType") === "VIDEO").length
+  };
+}
+
+function isEvidencePackageNotReadyError(error: unknown) {
+  return error instanceof Error && error.message.startsWith(`${STAGE2_EVIDENCE_ARTIFACT_NOT_READY}:`);
 }
 
 function getChecklistItems(checklist: unknown) {

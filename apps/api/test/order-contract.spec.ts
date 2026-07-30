@@ -583,6 +583,91 @@ describe("subscription order and contract rules", () => {
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
+  it("lists non-deleted contracts without search filters", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser());
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      deletedAt: null,
+      order: { deletedAt: null }
+    });
+  });
+
+  it("excludes contracts whose parent order is soft deleted", async () => {
+    const { service } = createContractListService({
+      contracts: [
+        contractListRecord("contract-active", null),
+        contractListRecord(
+          "contract-deleted-order",
+          new Date("2026-07-28T08:00:00.000Z")
+        )
+      ]
+    });
+
+    const contracts = await service.listContracts(contractListUser());
+
+    expect(contracts.map((contract) => contract.id)).toEqual([
+      "contract-active"
+    ]);
+  });
+
+  it("filters contracts by a trimmed case-insensitive contract number", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { contractNo: "  con-2026  " });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ contractNo: { contains: "con-2026", mode: "insensitive" } }],
+      deletedAt: null,
+      order: { deletedAt: null }
+    });
+  });
+
+  it("filters contracts by a case-insensitive order number", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { orderNo: "ord-2026" });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ order: { orderNo: { contains: "ord-2026", mode: "insensitive" } } }],
+      deletedAt: null,
+      order: { deletedAt: null }
+    });
+  });
+
+  it("combines contract and order number filters with AND", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser(), { contractNo: "CON-2026", orderNo: "ORD-2026" });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [
+        { contractNo: { contains: "CON-2026", mode: "insensitive" } },
+        { order: { orderNo: { contains: "ORD-2026", mode: "insensitive" } } }
+      ],
+      deletedAt: null,
+      order: { deletedAt: null }
+    });
+  });
+
+  it("preserves the sales-user scope while applying contract search", async () => {
+    const { findMany, service } = createContractListService();
+
+    await service.listContracts(contractListUser({ id: "sales-1", roles: ["SA"] }), {
+      contractNo: "CON-2026"
+    });
+
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({
+      AND: [{ contractNo: { contains: "CON-2026", mode: "insensitive" } }],
+      deletedAt: null,
+      order: {
+        application: { salesUserId: "sales-1" },
+        deletedAt: null
+      }
+    });
+  });
+
   it("generates timestamp and random business numbers without count based suffixes", () => {
     const now = new Date(2026, 5, 2, 15, 30, 45);
     let sequence = 0;
@@ -609,6 +694,67 @@ describe("subscription order and contract rules", () => {
     expect(attempts).toBe(3);
   });
 });
+
+function createContractListService(options: {
+  contracts?: Array<Record<string, unknown>>;
+} = {}) {
+  const findMany = vi.fn(async (args: {
+    where?: {
+      deletedAt?: Date | null;
+      order?: {
+        deletedAt?: Date | null;
+      };
+    };
+  }) => {
+    return (options.contracts ?? []).filter((contract) => {
+      if (args.where?.deletedAt === null && contract.deletedAt !== null) {
+        return false;
+      }
+      const order = contract.order as { deletedAt: Date | null };
+      if (
+        args.where?.order?.deletedAt === null &&
+        order.deletedAt !== null
+      ) {
+        return false;
+      }
+      return true;
+    });
+  });
+  const service = new OrderService(
+    { write: vi.fn(async () => undefined) } as never,
+    { contract: { findMany } } as never,
+    {} as never,
+    {} as never,
+    {} as never
+  );
+
+  return { findMany, service };
+}
+
+function contractListRecord(id: string, orderDeletedAt: Date | null) {
+  return {
+    contractSnapshot: null,
+    deletedAt: null,
+    fileId: null,
+    id,
+    order: {
+      deletedAt: orderDeletedAt,
+      id: `order-${id}`
+    }
+  };
+}
+
+function contractListUser(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "admin-1",
+    menus: [],
+    name: "Admin",
+    permissions: [],
+    roles: ["ADMIN"],
+    username: "admin",
+    ...overrides
+  } as never;
+}
 
 function createOrderServiceHarness(options: {
   artifactGenerationEnabled?: boolean;

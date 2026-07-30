@@ -1,10 +1,21 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
-import { ContractStatus } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { ContractStatus, UserStatus } from "@prisma/client";
+import { Readable } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 describe("HandoverWorkOrderService", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-21T08:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("creates one active delivery-outbound work order, links Stage 2 handover, and initializes evidence checklist", async () => {
     const harness = createHandoverWorkOrderHarness();
 
@@ -174,7 +185,7 @@ describe("HandoverWorkOrderService", () => {
     );
   });
 
-  it("lists only active external work orders assigned to the field operator phone with safe summaries", async () => {
+  it("lists active work orders by canonical phone regardless of legacy token state with safe summaries", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(
       {
@@ -183,6 +194,8 @@ describe("HandoverWorkOrderService", () => {
         deliveryLocation: "上海市测试交付点",
         externalOperatorName: "现场交付员",
         externalOperatorPhone: "13800000000",
+        fieldOperatorName: "现场交付员",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-visible-late",
         operatorType: "EXTERNAL",
         scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
@@ -194,6 +207,8 @@ describe("HandoverWorkOrderService", () => {
         deliveryLocation: "上海市测试交付点",
         externalOperatorName: "现场交付员",
         externalOperatorPhone: "13800000000",
+        fieldOperatorName: "现场交付员",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-visible-early",
         operatorType: "EXTERNAL",
         scheduledAt: new Date("2026-07-22T02:00:00.000Z"),
@@ -203,6 +218,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13900000000",
+        fieldOperatorPhone: "13900000000",
         id: "work-order-other-phone",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -211,6 +227,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-20T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-expired",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -220,6 +237,7 @@ describe("HandoverWorkOrderService", () => {
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         accessTokenRevokedAt: harness.now,
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-revoked",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -228,6 +246,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-completed",
         operatorType: "EXTERNAL",
         status: "FIELD_COMPLETED"
@@ -236,7 +255,12 @@ describe("HandoverWorkOrderService", () => {
 
     const list = await harness.service.listFieldAccessibleWorkOrders("+86 138-0000-0000");
 
-    expect(list.map((item) => item.id)).toEqual(["work-order-visible-early", "work-order-visible-late"]);
+    expect(list.map((item) => item.id)).toEqual([
+      "work-order-visible-early",
+      "work-order-visible-late",
+      "work-order-expired",
+      "work-order-revoked"
+    ]);
     expect(list[0]).toMatchObject({
       customer: {
         mobileMasked: "186****0212"
@@ -266,6 +290,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13900000000",
+        fieldOperatorPhone: "13900000000",
         id: "work-order-other-phone",
         operatorType: "EXTERNAL",
         status: "ASSIGNED"
@@ -274,6 +299,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-cancelled",
         operatorType: "EXTERNAL",
         status: "CANCELLED"
@@ -282,6 +308,7 @@ describe("HandoverWorkOrderService", () => {
         ...baseWorkOrder(harness),
         accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
         externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
         id: "work-order-ops-reviewed",
         operatorType: "EXTERNAL",
         status: "OPS_REVIEWED"
@@ -289,6 +316,86 @@ describe("HandoverWorkOrderService", () => {
     );
 
     await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
+  });
+
+  it("denies stale internal snapshots after the assigned user is disabled or deleted", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    for (const [id, status, deletedAt] of [
+      ["user-disabled", "DISABLED", null],
+      ["user-deleted", "ACTIVE", harness.now]
+    ] as const) {
+      harness.state.users.push({
+        deletedAt,
+        id,
+        mobile: "13800000000",
+        name: id,
+        status
+      });
+      harness.state.workOrders.push({
+        ...baseWorkOrder(harness),
+        assignedInternalUserId: id,
+        fieldOperatorName: id,
+        fieldOperatorPhone: "13800000000",
+        id: `work-order-${id}`,
+        operatorType: "INTERNAL",
+        status: "ASSIGNED"
+      });
+    }
+
+    await expect(
+      harness.service.listFieldAccessibleWorkOrders("13800000000")
+    ).resolves.toEqual([]);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-disabled",
+        "13800000000"
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-deleted",
+        "13800000000"
+      )
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it("projects safe read-only workflow jobs in Admin work-order responses", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push(baseWorkOrder(harness));
+    harness.state.workflowJobs.push({
+      attemptCount: 5,
+      createdAt: new Date("2026-07-27T08:00:00.000Z"),
+      id: "workflow-job-current",
+      idempotencyKey: "archive:secret-task:1",
+      jobStatus: "DEAD_LETTER",
+      jobType: "ARCHIVE_SIGNED_PDF",
+      lastErrorMessage: "private provider detail",
+      maxAttempts: 5,
+      payload: { providerTransactionId: "PRIVATE-H2" },
+      updatedAt: new Date("2026-07-27T08:05:00.000Z"),
+      workOrderId: "work-order-1"
+    });
+
+    const [summary] = await harness.service.listByOrder(harness.orderId);
+
+    expect(summary).toBeDefined();
+    if (!summary) {
+      throw new Error("expected projected work order");
+    }
+    expect(summary.workflowJobs).toEqual([
+      {
+        attemptCount: 5,
+        createdAt: new Date("2026-07-27T08:00:00.000Z"),
+        id: "workflow-job-current",
+        jobStatus: "DEAD_LETTER",
+        jobType: "ARCHIVE_SIGNED_PDF",
+        maxAttempts: 5,
+        updatedAt: new Date("2026-07-27T08:05:00.000Z")
+      }
+    ]);
+    expect(JSON.stringify(summary.workflowJobs)).not.toMatch(
+      /idempotencyKey|payload|lastErrorMessage|PRIVATE-H2|secret-task/
+    );
   });
 
   it("returns safe field task detail only for the assigned phone", async () => {
@@ -336,6 +443,7 @@ describe("HandoverWorkOrderService", () => {
       deliveryLocation: "上海市测试交付点",
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       fieldNotes: "客户现场确认车辆外观",
       fuelLevelText: null,
       handoverMileageKm: 28500,
@@ -383,6 +491,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "ASSIGNED"
@@ -434,6 +543,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -460,13 +570,30 @@ describe("HandoverWorkOrderService", () => {
         workOrderId: "work-order-visible"
       })
     );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        evidenceType: "VEHICLE_FRONT",
+        mediaType: "PHOTO"
+      })
+    );
+    expect(harness.storageService.putDeliveryEvidenceDerivativeFromPath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "PHOTO_PREVIEW",
+        workOrderId: "work-order-visible"
+      })
+    );
     expect(harness.evidenceService.attachEvidenceFile).toHaveBeenCalledWith(
       "evidence-item-owned",
       "file-1",
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({
+        photoPreviewFileId: "file-2",
+        processingStatus: "READY",
+        sourceSha256: expect.stringMatching(/^sha256:/)
+      })
     );
     expect(attached).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
     await expect(
@@ -487,6 +614,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -513,7 +641,8 @@ describe("HandoverWorkOrderService", () => {
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ processingStatus: "READY" })
     );
     expect(result).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
     expect(harness.state.events).toContainEqual(expect.objectContaining({
@@ -527,6 +656,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -560,12 +690,13 @@ describe("HandoverWorkOrderService", () => {
     expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
   });
 
-  it("enforces 5 MiB photo and 200 MiB video upload limits before storage", async () => {
+  it("enforces 10 MiB photo and 300 MiB video upload limits before storage", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push({
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -576,26 +707,43 @@ describe("HandoverWorkOrderService", () => {
       orderId: harness.orderId
     });
 
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("photo-at-limit.jpg", "image/jpeg", 10 * 1024 * 1024)],
+      {},
+      "field-session-1"
+    );
+    await harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+      "work-order-visible",
+      "13800000000",
+      "evidence-item-owned",
+      [uploadFile("video-at-limit.mp4", "video/mp4", 300 * 1024 * 1024)],
+      {},
+      "field-session-1"
+    );
+    harness.storageService.putDeliveryEvidenceFile.mockClear();
     await expect(
       harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
         "work-order-visible",
         "13800000000",
         "evidence-item-owned",
-        [uploadFile("too-large.jpg", "image/jpeg", 5 * 1024 * 1024 + 1)],
+        [uploadFile("photo-over-limit.jpg", "image/jpeg", 10 * 1024 * 1024 + 1)],
         {},
         "field-session-1"
       )
-    ).rejects.toThrow("图片不能超过 5MB");
+    ).rejects.toThrow("图片不能超过 10MB");
     await expect(
       harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
         "work-order-visible",
         "13800000000",
         "evidence-item-owned",
-        [uploadFile("too-large.mp4", "video/mp4", 200 * 1024 * 1024 + 1)],
+        [uploadFile("video-over-limit.mp4", "video/mp4", 300 * 1024 * 1024 + 1)],
         {},
         "field-session-1"
       )
-    ).rejects.toThrow("视频不能超过 200MB");
+    ).rejects.toThrow("视频不能超过 300MB");
     expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
   });
 
@@ -605,6 +753,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -647,16 +796,18 @@ describe("HandoverWorkOrderService", () => {
       "PHOTO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ photoPreviewFileId: "file-2" })
     );
     expect(harness.evidenceService.attachEvidenceFile).toHaveBeenNthCalledWith(
       2,
       "evidence-item-owned",
-      "file-2",
+      "file-3",
       "VIDEO",
       undefined,
       expect.any(Object),
-      "field-session-1"
+      "field-session-1",
+      expect.objectContaining({ videoFrameFileIds: ["file-4"] })
     );
   });
 
@@ -666,6 +817,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -702,6 +854,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -726,7 +879,7 @@ describe("HandoverWorkOrderService", () => {
 
     expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
     expect(harness.state.fileObjects).toEqual([]);
-    expect(harness.storageService.deleteObject).toHaveBeenCalledTimes(1);
+    expect(harness.storageService.deleteObject).toHaveBeenCalledTimes(2);
   });
 
   it("requires evidence files to remain ACTIVE before previewing or downloading them", async () => {
@@ -749,6 +902,97 @@ describe("HandoverWorkOrderService", () => {
         })
       })
     );
+  });
+
+  it("repairs historical evidence artifacts once and verifies derivative file objects before treating them as ready", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const workOrder = {
+      ...baseWorkOrder(harness),
+      id: "work-order-visible",
+      status: "FIELD_IN_PROGRESS"
+    };
+    const evidenceFile = {
+      evidenceItem: {
+        evidenceType: "VEHICLE_FRONT",
+        handoverId: "handover-1",
+        orderId: harness.orderId
+      },
+      file: {
+        bucket: "application-materials",
+        mimeType: "image/jpeg",
+        objectKey: "delivery-evidence/legacy/front.jpg",
+        originalName: "legacy-front.jpg",
+        sizeBytes: 5n
+      },
+      id: "evidence-file-legacy",
+      lifecycleStatus: "ACTIVE",
+      mediaType: "PHOTO",
+      metadata: null
+    };
+    harness.state.workOrders.push(workOrder);
+    harness.state.evidenceFiles.push(evidenceFile);
+
+    const repaired = await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+
+    expect(repaired).toMatchObject({
+      alreadyReady: false,
+      evidenceFileId: evidenceFile.id,
+      processingStatus: "READY"
+    });
+    expect(harness.storageService.getObject).toHaveBeenCalledWith(
+      "application-materials",
+      "delivery-evidence/legacy/front.jpg"
+    );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(1);
+    expect(harness.state.fileObjects).toHaveLength(1);
+    expect(evidenceFile.metadata).toMatchObject({
+      photoPreviewFileId: "file-1",
+      processingStatus: "READY"
+    });
+
+    const second = await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+    expect(second).toMatchObject({
+      evidenceFileId: evidenceFile.id,
+      processingStatus: "READY"
+    });
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(1);
+
+    harness.state.fileObjects.splice(0);
+    await harness.service.prepareExistingEvidenceFileArtifacts(
+      workOrder.id,
+      evidenceFile.id,
+      harness.admin.id
+    );
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects the legacy external file-id binding route before evidence can bypass artifact processing", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    const assigned = await harness.service.assignExternalOperator(
+      draft.id,
+      {
+        expiresAt: new Date("2026-07-28T08:00:00.000Z"),
+        name: "External field operator",
+        phone: "13900001111"
+      },
+      harness.admin.id
+    );
+
+    await expect(harness.service.attachEvidenceFileWithExternalToken(
+      assigned.accessToken,
+      "evidence-item-owned",
+      { fileId: "unsafe-existing-file", mediaType: "PHOTO" }
+    )).rejects.toThrow(BadRequestException);
+    expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
   });
 
   it("records legacy token operators as display names instead of UUID actor ids", async () => {
@@ -778,6 +1022,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       id: "work-order-visible",
       operatorType: "EXTERNAL",
       status: "FIELD_IN_PROGRESS"
@@ -819,6 +1064,7 @@ describe("HandoverWorkOrderService", () => {
       accessoryChecklist: { chargingCable: true, keys: 2 },
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       operatorType: "EXTERNAL",
@@ -867,6 +1113,7 @@ describe("HandoverWorkOrderService", () => {
       damageDeclared: true,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       noVisibleDamageDeclared: false,
@@ -889,6 +1136,7 @@ describe("HandoverWorkOrderService", () => {
       damageDeclared: false,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       handoverMileageKm: 28600,
       id: "work-order-visible",
       noVisibleDamageDeclared: true,
@@ -955,7 +1203,12 @@ describe("HandoverWorkOrderService", () => {
 
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("客户尚未确认");
 
-    const confirmed = await harness.service.customerConfirmNoObjection("work-order-1", "customer-1");
+    const manifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
+    const confirmed = await harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      manifestHash
+    );
     expect(confirmed).toMatchObject({
       customerConfirmedAt: expect.any(Date),
       status: "CUSTOMER_CONFIRMED"
@@ -1051,6 +1304,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
 
@@ -1095,7 +1349,11 @@ describe("HandoverWorkOrderService", () => {
       adminReviewStatus: "RESUBMITTED_PENDING_ADMIN"
     });
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("现场资料已重新提交");
-    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).rejects.toThrow(
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      `sha256:${"0".repeat(64)}`
+    )).rejects.toThrow(
       "客户已提交异议"
     );
 
@@ -1123,7 +1381,13 @@ describe("HandoverWorkOrderService", () => {
         })
       ])
     );
-    await expect(harness.service.customerConfirmNoObjection("work-order-1", "customer-1")).resolves.toMatchObject({
+    const refreshedManifestHash =
+      (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      refreshedManifestHash
+    )).resolves.toMatchObject({
       status: "CUSTOMER_CONFIRMED"
     });
     expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
@@ -1142,6 +1406,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
     await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");
@@ -1196,6 +1461,7 @@ describe("HandoverWorkOrderService", () => {
       customerObjectedAt: harness.now,
       customerObjectionReason: "legacy objection",
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL",
       status: "CUSTOMER_REVIEWING"
     });
@@ -1218,6 +1484,7 @@ describe("HandoverWorkOrderService", () => {
     Object.assign(harness.state.workOrders[0]!, {
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
       operatorType: "EXTERNAL"
     });
     harness.evidenceService.setChecklist({
@@ -1383,6 +1650,27 @@ function createConfirmedWorkOrderHarness() {
     customerConfirmedAt: harness.now,
     status: "CUSTOMER_CONFIRMED"
   });
+  const evidencePackage = buildDeliveryHandoverEvidencePackage({
+    evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
+    handoverId: "handover-1",
+    orderId: harness.orderId,
+    workOrderId: "work-order-1"
+  });
+  harness.state.reviewAttempts.push({
+    attemptNo: 1,
+    evidenceSnapshot: {
+      evidencePackage: {
+        manifest: evidencePackage.manifest,
+        manifestHash: evidencePackage.manifestHash,
+        stats: evidencePackage.stats
+      }
+    },
+    handoverId: "handover-1",
+    id: "review-attempt-confirmed",
+    orderId: harness.orderId,
+    status: "CUSTOMER_CONFIRMED",
+    workOrderId: "work-order-1"
+  });
   return harness;
 }
 
@@ -1405,6 +1693,8 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     externalOperatorName: null,
     externalOperatorOrganization: null,
     externalOperatorPhone: null,
+    fieldOperatorName: null,
+    fieldOperatorPhone: null,
     fieldCompletedAt: null,
     fieldNotes: null,
     fieldStartedAt: null,
@@ -1436,7 +1726,7 @@ function createHandoverWorkOrderHarness() {
   const now = new Date("2026-07-21T08:00:00.000Z");
   const orderId = "order-1";
   const admin = { id: "admin-1" };
-  const internalUser = { id: "user-field-1" };
+  const internalUser = { id: "user-field-1", mobile: "13800000000" };
   const state = {
     handover: {
       archiveStatus: "NOT_STARTED",
@@ -1476,9 +1766,26 @@ function createHandoverWorkOrderHarness() {
       vehicleId: "vehicle-1"
     },
     users: [
-      { deletedAt: null, id: admin.id, name: "管理员" },
-      { deletedAt: null, id: internalUser.id, name: "内部交付员" }
-    ],
+      {
+        deletedAt: null,
+        id: admin.id,
+        name: "管理员",
+        status: UserStatus.ACTIVE
+      },
+      {
+        deletedAt: null,
+        id: internalUser.id,
+        mobile: internalUser.mobile,
+        name: "内部交付员",
+        status: UserStatus.ACTIVE
+      }
+    ] as Array<{
+      deletedAt: Date | null;
+      id: string;
+      mobile?: string;
+      name: string;
+      status: UserStatus;
+    }>,
     vehicleDelivery: {
       deletedAt: null,
       deliveryLocation: "上海市测试交付点",
@@ -1491,7 +1798,8 @@ function createHandoverWorkOrderHarness() {
     events: [] as Array<Record<string, unknown>>,
     fileObjects: [] as Array<Record<string, unknown>>,
     reviewAttempts: [] as Array<Record<string, unknown>>,
-    workOrders: [] as Array<Record<string, unknown>>
+    workOrders: [] as Array<Record<string, unknown>>,
+    workflowJobs: [] as Array<Record<string, unknown>>
   };
   const evidenceService = createEvidenceService();
   const handoverService = {
@@ -1509,14 +1817,26 @@ function createHandoverWorkOrderHarness() {
       findUnique: vi.fn(async () => state.order)
     },
     user: {
-      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        state.users.find((user) => user.id === where.id && user.deletedAt === null) ?? null
+      findFirst: vi.fn(async ({
+        where
+      }: {
+        where: { deletedAt?: null; id?: string; status?: UserStatus };
+      }) =>
+        state.users.find((user) =>
+          user.id === where.id &&
+          (where.deletedAt === undefined || user.deletedAt === where.deletedAt) &&
+          (where.status === undefined || user.status === where.status)
+        ) ?? null
       )
     },
     vehicleDelivery: {
       findUnique: vi.fn(async () => state.vehicleDelivery)
     },
     fileObject: {
+      count: vi.fn(async ({ where }: { where: { id?: { in?: string[] } } }) => {
+        const ids = where.id?.in ?? [];
+        return state.fileObjects.filter((fileObject) => ids.includes(String(fileObject.id))).length;
+      }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const fileObject = {
           ...data,
@@ -1532,7 +1852,20 @@ function createHandoverWorkOrderHarness() {
       )
     },
     vehicleDeliveryEvidenceFile: {
-      findFirst: vi.fn(async () => null)
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceFiles.find((file) =>
+          (!where.id || file.id === where.id) &&
+          (!where.lifecycleStatus || file.lifecycleStatus === where.lifecycleStatus)
+        ) ?? null
+      ),
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const evidenceFile = state.evidenceFiles.find((row) => row.id === where.id);
+        if (!evidenceFile) {
+          throw new Error("evidence file not found");
+        }
+        Object.assign(evidenceFile, data);
+        return evidenceFile;
+      })
     },
     vehicleHandoverWorkOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -1544,11 +1877,12 @@ function createHandoverWorkOrderHarness() {
         state.workOrders.push(workOrder);
         return workOrder;
       }),
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.find((workOrder) => matchesWorkOrderWhere(workOrder, where)) ?? null
-      ),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        return state.workOrders.find((row) => matchesWorkOrderWhere(row, where)) ?? null;
+      }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
+        state.workOrders
+          .filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
       ),
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
         state.workOrders.find((workOrder) => workOrder.id === where.id) ?? null
@@ -1610,9 +1944,21 @@ function createHandoverWorkOrderHarness() {
         return attempt;
       })
     },
+    vehicleHandoverWorkflowJob: {
+      findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
+        state.workflowJobs
+          .filter((job) => job.workOrderId === where.workOrderId)
+          .sort(
+            (left, right) =>
+              new Date(String(right.updatedAt)).getTime() -
+              new Date(String(left.updatedAt)).getTime()
+          )
+      )
+    },
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {
         events: structuredClone(state.events),
+        evidenceFiles: structuredClone(state.evidenceFiles),
         fileObjects: structuredClone(state.fileObjects),
         reviewAttempts: structuredClone(state.reviewAttempts),
         workOrders: structuredClone(state.workOrders)
@@ -1621,6 +1967,7 @@ function createHandoverWorkOrderHarness() {
         return await callback(prisma);
       } catch (error) {
         state.events.splice(0, state.events.length, ...snapshots.events);
+        state.evidenceFiles.splice(0, state.evidenceFiles.length, ...snapshots.evidenceFiles);
         state.fileObjects.splice(0, state.fileObjects.length, ...snapshots.fileObjects);
         state.reviewAttempts.splice(0, state.reviewAttempts.length, ...snapshots.reviewAttempts);
         state.workOrders.splice(0, state.workOrders.length, ...snapshots.workOrders);
@@ -1630,6 +1977,16 @@ function createHandoverWorkOrderHarness() {
   };
   const storageService = {
     deleteObject: vi.fn(async () => undefined),
+    getObject: vi.fn(async () => ({
+      contentLength: 5,
+      contentType: "image/jpeg",
+      stream: Readable.from([Buffer.from("photo")])
+    })),
+    putDeliveryEvidenceDerivativeFromPath: vi.fn(async (input: Record<string, unknown>) => ({
+      bucket: "application-materials",
+      objectKey: `delivery-evidence/${input.workOrderId}/2026/derivatives/preview.jpg`,
+      stored: { driver: "local", key: "local-derivative-key", size: input.sizeBytes }
+    })),
     putDeliveryEvidenceFileFromPath: vi.fn(async (input: Record<string, unknown>) => ({
       bucket: "application-materials",
       objectKey: `delivery-evidence/${input.workOrderId}/2026/video.mp4`,
@@ -1641,15 +1998,66 @@ function createHandoverWorkOrderHarness() {
       stored: { driver: "local", key: "local-key", size: 5 }
     }))
   };
+  const artifactService = {
+    prepareUpload: vi.fn(async (input: {
+      file: { mimetype?: string; originalname?: string; size: number };
+      mediaType: "PHOTO" | "VIDEO";
+    }) => {
+      const extension = input.file.originalname?.split(".").pop()?.toLowerCase();
+      const detectedMimeType = input.mediaType === "PHOTO"
+        ? extension === "heic"
+          ? "image/heic"
+          : extension === "heif"
+            ? "image/heif"
+            : input.file.mimetype || "image/jpeg"
+        : extension === "mov"
+          ? "video/quicktime"
+          : extension === "m4v"
+            ? "video/x-m4v"
+            : input.file.mimetype || "video/mp4";
+      return {
+        cleanup: vi.fn(async () => undefined),
+        derivatives: input.mediaType === "PHOTO"
+          ? [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-photo-preview.jpg",
+              kind: "PHOTO_PREVIEW",
+              originalName: "front-preview.jpg",
+              sizeBytes: 8
+            }]
+          : [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-video-frame-01.jpg",
+              kind: "VIDEO_FRAME",
+              originalName: "video-frame-01.jpg",
+              sizeBytes: 8
+            }],
+        metadata: {
+          artifactVersion: 1,
+          detectedCodec: input.mediaType === "VIDEO" ? "h264" : null,
+          detectedMimeType,
+          processedAt: "2026-07-25T00:00:00.000Z",
+          processingStatus: "READY",
+          sourceSha256: `sha256:${"a".repeat(64)}`,
+          sourceSizeBytes: input.file.size,
+          videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null
+        }
+      };
+    })
+  };
   const service = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
     handoverService as never,
-    storageService as never
+    storageService as never,
+    undefined,
+    undefined,
+    artifactService as never
   );
 
   return {
     admin,
+    artifactService,
     evidenceService,
     handoverService,
     internalUser,
@@ -1677,7 +2085,30 @@ function createEvidenceService() {
     items: [
       {
         evidenceType: "VEHICLE_FRONT",
-        files: [{ id: "evidence-file-default", objectKey: "oss/internal/evidence.jpg" }],
+        files: [{
+          file: {
+            id: "file-default",
+            mimeType: "image/jpeg",
+            originalName: "front.jpg",
+            sizeBytes: 1024
+          },
+          fileId: "file-default",
+          id: "evidence-file-default",
+          mediaType: "PHOTO",
+          metadata: {
+            artifactVersion: 1,
+            detectedMimeType: "image/jpeg",
+            photoPreviewFileId: "preview-file-default",
+            processedAt: "2026-07-22T08:00:00.000Z",
+            processingStatus: "READY",
+            sourceSha256: `sha256:${"1".repeat(64)}`,
+            sourceSizeBytes: 1024,
+            videoDurationMs: null,
+            videoFrameFileIds: []
+          },
+          objectKey: "oss/internal/evidence.jpg",
+          uploadedAt: new Date("2026-07-22T08:00:00.000Z")
+        }],
         id: "evidence-item-default",
         isRequired: true,
         reviewStatus: "PENDING",
@@ -1713,6 +2144,9 @@ function createEvidenceService() {
       status: "APPROVED"
     })),
     getChecklist: vi.fn(async () => checklist),
+    getCurrentChecklist() {
+      return checklist;
+    },
     initializeChecklist: vi.fn(async () => ({ items: [] })),
     removeEvidenceFile: vi.fn(async (itemId: string) => ({
       fileCount: 0,
@@ -1769,6 +2203,9 @@ function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record
     }
     if (key === "externalOperatorPhone") {
       return workOrder.externalOperatorPhone === expected;
+    }
+    if (key === "fieldOperatorPhone") {
+      return workOrder.fieldOperatorPhone === expected;
     }
     if (key === "accessTokenRevokedAt") {
       return workOrder.accessTokenRevokedAt === expected;

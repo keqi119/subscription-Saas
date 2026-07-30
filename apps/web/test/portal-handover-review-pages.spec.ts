@@ -7,6 +7,8 @@ const repoRoot = join(__dirname, "..", "..", "..");
 const portalHomePath = "apps/web/src/app/portal/page.tsx";
 const listPagePath = "apps/web/src/app/portal/handover-reviews/page.tsx";
 const detailPagePath = "apps/web/src/app/portal/handover-reviews/[id]/page.tsx";
+const contractListPagePath = "apps/web/src/app/portal/contracts/page.tsx";
+const contractDetailPagePath = "apps/web/src/app/portal/contracts/[id]/page.tsx";
 
 describe("portal handover review pages", () => {
   it("adds the Portal entry and list route with safe loading, empty, error, and auth handling", () => {
@@ -35,7 +37,8 @@ describe("portal handover review pages", () => {
     expect(source).toContain("现场交接信息");
     expect(source).toContain("资料清单");
     expect(source).toContain("客户确认");
-    expect(source).toContain("我已查看车辆交接资料，并确认无异议");
+    expect(source).toContain("本人已查看本次交接证据包所列全部照片和视频");
+    expect(source).toContain("manifestHash");
     expect(source).toContain("确认无异议");
     expect(source).toContain("提出异议");
     expect(source).toContain("提交异议");
@@ -50,9 +53,52 @@ describe("portal handover review pages", () => {
     expect(source).toContain("下载/打开");
     expect(source).toContain("复核历史");
     expect(source).toContain("reviewHistory");
+    expect(source).toContain("车辆交接确认单签署");
+    expect(source).toContain("getPortalHandoverESign");
+    expect(source).toContain("startPortalHandoverSigning");
+    expect(source).toContain("buildPortalHandoverESignView");
+    expect(source).toContain("buildPortalHandoverWorkflowView");
+    expect(source).toContain("正在加载签署状态...");
+    expect(source).toContain("签署状态加载失败");
+    expect(source).toContain("去签署");
+    expect(source).toContain("loading={startingSigning}");
+    expect(source).toContain("!workflowDisplay.canStartSigning || startingSigning");
+    expect(source).toContain(
+      "window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl))"
+    );
+    expect(source).toContain('"alreadySigned" in result');
+    expect(source).toContain("createPortalWorkflowRequestController");
+    expect(source).toContain("startPolling(3000)");
+    expect(source).not.toContain("window.setInterval");
+    expect(source).toContain("PENDING_CUSTOMER_SIGNATURE");
     expect(source).toContain('router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/handover-reviews/${params.id}`)}`)');
     expect(source).not.toMatch(/objectKey|bucket|storage path|signingUrl|idCard|deposit|payment|lease|billing|raw DTO|JSON.stringify/i);
-    expect(source).not.toMatch(/生成.*PDF|电子签|去签署|确认交付|去支付|付款|账单/);
+    expect(source).not.toMatch(/setSignUrl|localStorage|sessionStorage|console\.(log|info|debug)|href=\{[^}]*signUrl/i);
+    expect(source).not.toMatch(/生成.*PDF|确认交付|去支付|付款|账单/);
+  });
+
+  it("guards the intentional signing start action against repeated clicks", () => {
+    const source = read(detailPagePath);
+
+    expect(source).toContain("signingStartInFlight.current");
+    expect(source).toContain("!workflowDisplay?.canStartSigning");
+    expect(source).toContain('review?.handover?.status !== "PENDING_CUSTOMER_SIGNATURE"');
+    expect(source).toContain("signingStartInFlight.current = true");
+    expect(source).toContain("signingStartInFlight.current = false");
+  });
+
+  it("routes generic Stage 2 contract entries to the dedicated handover review before Stage 1 signing", () => {
+    const listSource = read(contractListPagePath);
+    const detailSource = read(contractDetailPagePath);
+    const stage2GuardIndex = detailSource.indexOf("const stage2Destination");
+    const stage1StartIndex = detailSource.indexOf(
+      "`/portal/contracts/${contract.id}/signing/start`"
+    );
+
+    expect(listSource).toContain("getPortalContractDestination(contract)");
+    expect(stage2GuardIndex).toBeGreaterThan(-1);
+    expect(stage1StartIndex).toBeGreaterThan(stage2GuardIndex);
+    expect(detailSource.slice(stage2GuardIndex, stage1StartIndex)).toContain("return;");
   });
 });
 

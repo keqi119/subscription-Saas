@@ -448,6 +448,9 @@ export class FadadaApiClient {
   }): Promise<{
     contractId: string;
     downloadUrl?: string;
+    providerContractId?: string;
+    providerCustomerId?: string;
+    providerTransactionId?: string;
     raw: unknown;
     resultCode?: string;
     resultDesc?: string;
@@ -489,6 +492,18 @@ export class FadadaApiClient {
     return {
       contractId: input.contractId,
       downloadUrl: stringField(raw, ["download_url", "downloadUrl"]),
+      providerContractId: stringField(raw, [
+        "contract_id",
+        "contractId"
+      ]),
+      providerCustomerId: stringField(raw, [
+        "customer_id",
+        "customerId"
+      ]),
+      providerTransactionId: stringField(raw, [
+        "transaction_id",
+        "transactionId"
+      ]),
       raw,
       resultCode,
       resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),

@@ -49,6 +49,15 @@ export class FieldOperatorAuthService {
 
   async requestCode(dto: RequestFieldOperatorCodeDto, context: FieldOperatorRequestContext) {
     const phone = normalizeFieldOperatorPhone(dto.phone);
+    if (
+      await this.handoverWorkOrderService.countFieldAccessibleWorkOrders(
+        phone
+      ) === 0
+    ) {
+      throw new UnauthorizedException(
+        "No active field handover work order is assigned to this phone."
+      );
+    }
     const now = new Date();
     const resendSeconds = this.getOtpResendSeconds();
     const recentCode = await this.prisma.fieldOperatorOtp.findFirst({
@@ -170,7 +179,7 @@ export class FieldOperatorAuthService {
         data: {
           expiresAt,
           ipHash: hashContextValue(context.ipAddress),
-          operatorType: VehicleHandoverOperatorType.EXTERNAL,
+          operatorType: null,
           phone,
           sessionTokenHash: hashSessionToken(jti),
           userAgentHash: hashContextValue(normalizeUserAgent(context.userAgent))
@@ -227,7 +236,7 @@ export class FieldOperatorAuthService {
     });
 
     return {
-      operatorType: session.operatorType,
+      operatorType: null,
       phone: session.phone,
       sessionId: session.id
     };
@@ -237,7 +246,7 @@ export class FieldOperatorAuthService {
     const taskCount = await this.handoverWorkOrderService.countFieldAccessibleWorkOrders(current.phone);
     return {
       authenticated: true,
-      operatorType: current.operatorType,
+      operatorType: null,
       phoneMasked: maskFieldOperatorPhone(current.phone),
       taskCount
     };
@@ -404,7 +413,7 @@ function isFieldOperatorJwtPayload(payload: JwtPayload): payload is FieldOperato
 
 function toSafeSessionView(session: { operatorType: VehicleHandoverOperatorType | null; phone: string }) {
   return {
-    operatorType: session.operatorType,
+    operatorType: null,
     phoneMasked: maskFieldOperatorPhone(session.phone)
   };
 }

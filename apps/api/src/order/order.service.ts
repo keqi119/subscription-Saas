@@ -9,7 +9,6 @@ import {
   AuditAction,
   BusinessType,
   ContractStatus,
-  DeliveryHandoverStatus,
   ContractVersionStatus,
   CustomerStatus,
   DeliveryStatus,
@@ -79,12 +78,14 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import {
   DELIVERY_HANDOVER_NOT_READY_MESSAGE,
+  findDeliveryHandoverForConfirmation,
   getDeliveryHandoverArchiveWarning,
   isDeliveryHandoverArchived,
   isDeliveryHandoverReadyForDelivery,
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -97,12 +98,14 @@ import {
   ConfirmReturnDto,
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
+  ListContractsQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
   ReviewOrderDto,
   UpdateContractVersionDto
 } from "./dto/order.dto";
+import { projectOrderChangeView } from "./order-workspace-detail-projection";
 
 const CURRENT_BUSINESS_TYPE = BusinessType.SUBSCRIPTION;
 const RENT_TO_OWN_ORDER_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购订单。";
@@ -1640,7 +1643,8 @@ export class OrderService {
 
   async attachDeliveryEvidenceFile(itemId: string, dto: AttachDeliveryEvidenceFileDto, user: RequestUser) {
     await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
-    return this.getDeliveryEvidenceService().attachEvidenceFile(itemId, dto.fileId, dto.mediaType, user.id);
+    void dto;
+    throw new BadRequestException("该文件绑定入口已停用，请使用交接现场证据上传接口完成预处理。");
   }
 
   async approveDeliveryEvidenceItem(itemId: string, user: RequestUser) {
@@ -1664,6 +1668,9 @@ export class OrderService {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);
     const handover = await findActiveDeliveryHandover(this.prisma, id);
+    if (dto.fileId) {
+      throw new BadRequestException("损伤近拍必须通过交接现场证据上传接口完成预处理。");
+    }
     return this.getDeliveryEvidenceService().addDamageCloseup({
       actorId: user.id,
       description: dto.description,
@@ -1768,7 +1775,48 @@ export class OrderService {
     await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
+      await lockDeliveryConfirmationGateRows(tx, id);
+      const orderBefore = await tx.subscriptionOrder.findUnique({
+        include: orderInclude,
+        where: { id }
+      });
+      if (!orderBefore || orderBefore.deletedAt) {
+        throw new NotFoundException("Order not found.");
+      }
+      ensureCanAccessOrder(orderBefore, user);
+      assertNoActiveOrderChange(orderBefore);
+      assertOrderNotDelivered(orderBefore);
+
+      const deliveryBefore = await tx.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      });
+      const currentHandover = await findDeliveryHandoverForConfirmation(
+        tx,
+        id
+      );
+      const currentEvidenceReadiness =
+        await this.getDeliveryConfirmationReadiness(
+          id,
+          currentHandover?.id ?? null,
+          tx
+        );
+      assertCanConfirmDelivery(
+        orderBefore,
+        deliveryBefore,
+        deliveredAt,
+        currentHandover,
+        currentEvidenceReadiness
+      );
+      await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(
+        id,
+        currentHandover?.id ?? null,
+        tx
+      );
+
+      const vehicleBefore = await tx.vehicle.findUnique({
+        where: { id: orderBefore.vehicleId! }
+      });
       if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.RESERVED) {
         throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
       }
@@ -1776,9 +1824,9 @@ export class OrderService {
       const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
         where: {
           deletedAt: null,
-          id: { not: beforeOrder.id },
+          id: { not: orderBefore.id },
           orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
-          vehicleId: beforeOrder.vehicleId
+          vehicleId: orderBefore.vehicleId
         }
       });
       if (occupiedByOtherOrderCount > 0) {
@@ -1794,7 +1842,7 @@ export class OrderService {
           updatedBy: user.id
         },
         include: deliveryInclude,
-        where: { id: beforeDelivery!.id }
+        where: { id: deliveryBefore!.id }
       });
       const order = await tx.subscriptionOrder.update({
         data: {
@@ -1807,17 +1855,26 @@ export class OrderService {
       });
       const vehicleAfter = await tx.vehicle.update({
         data: { status: VehicleStatus.LEASED, updatedBy: user.id },
-        where: { id: beforeOrder.vehicleId! }
+        where: { id: orderBefore.vehicleId! }
       });
 
-      return { delivery, order, vehicleAfter, vehicleBefore };
+      return {
+        delivery,
+        deliveryBefore,
+        order,
+        orderBefore,
+        vehicleAfter,
+        vehicleBefore
+      };
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
     });
 
     await this.writeAudit(
       AuditAction.UPDATE,
       "subscription_order",
       id,
-      toOrderView(beforeOrder),
+      toOrderView(result.orderBefore),
       toOrderView(result.order),
       user,
       context
@@ -1825,7 +1882,7 @@ export class OrderService {
     await this.writeDeliveryAudit(
       AuditAction.UPDATE,
       result.delivery.id,
-      toDeliveryView(beforeDelivery!),
+      toDeliveryView(result.deliveryBefore!),
       toDeliveryView(result.delivery),
       user,
       context
@@ -2212,11 +2269,32 @@ export class OrderService {
     }
   }
 
-  async listContracts(user: RequestUser) {
+  async listContracts(user: RequestUser, query: ListContractsQueryDto = {}) {
+    const contractNo = query.contractNo?.trim() || undefined;
+    const orderNo = query.orderNo?.trim() || undefined;
+    const filters: Prisma.ContractWhereInput[] = [];
+
+    if (contractNo) {
+      filters.push({ contractNo: { contains: contractNo, mode: "insensitive" } });
+    }
+    if (orderNo) {
+      filters.push({ order: { orderNo: { contains: orderNo, mode: "insensitive" } } });
+    }
+    const orderScope: Prisma.SubscriptionOrderWhereInput = {
+      deletedAt: null,
+      ...(canViewAllOrders(user)
+        ? {}
+        : { application: { salesUserId: user.id } })
+    };
+
     const contracts = await this.prisma.contract.findMany({
       include: contractInclude,
       orderBy: { createdAt: "desc" },
-      where: canViewAllOrders(user) ? { deletedAt: null } : { deletedAt: null, order: { application: { salesUserId: user.id } } }
+      where: {
+        deletedAt: null,
+        order: orderScope,
+        ...(filters.length > 0 ? { AND: filters } : {})
+      }
     });
     return contracts.map(toContractView);
   }
@@ -2398,7 +2476,7 @@ export class OrderService {
   async listOrderChanges(orderId: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
-    return order.changes.map(toOrderChangeView);
+    return order.changes.map((change) => toOrderChangeResponse(change, user));
   }
 
   async listPlanChangeSubscriptionPlans(orderId: string, user: RequestUser) {
@@ -2462,8 +2540,8 @@ export class OrderService {
         updatedBy: user.id
       }
     });
-    await this.writeAudit(AuditAction.CREATE, "order_change", change.id, undefined, toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(AuditAction.CREATE, "order_change", change.id, undefined, toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async setOrderChangeStatus(id: string, status: OrderChangeStatus, user: RequestUser, context: RequestContext) {
@@ -2487,8 +2565,8 @@ export class OrderService {
       data: { approvedAt: new Date(), approvedBy: user.id, status, updatedBy: user.id },
       where: { id }
     });
-    await this.writeAudit(status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT, "order_change", id, toOrderChangeView(before), toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async cancelOrderChange(id: string, user: RequestUser, context: RequestContext) {
@@ -2513,8 +2591,8 @@ export class OrderService {
       },
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "order_change", id, toOrderChangeView(before), toOrderChangeView(change), user, context);
-    return toOrderChangeView(change);
+    await this.writeAudit(AuditAction.UPDATE, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    return toOrderChangeResponse(change, user);
   }
 
   async executeOrderChange(id: string, user: RequestUser, context: RequestContext) {
@@ -2637,8 +2715,8 @@ export class OrderService {
       AuditAction.UPDATE,
       "order_change",
       id,
-      toOrderChangeView(before),
-      toOrderChangeView(result.changeAfter),
+      toOrderChangeAuditView(before),
+      toOrderChangeAuditView(result.changeAfter),
       user,
       context
     );
@@ -2677,7 +2755,7 @@ export class OrderService {
         userAgent: context.userAgent
       });
     }
-    return toOrderChangeView(result.changeAfter);
+    return toOrderChangeResponse(result.changeAfter, user);
   }
 
   private async findOrderOrThrow(id: string) {
@@ -2692,16 +2770,26 @@ export class OrderService {
     return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
   }
 
-  private async getDeliveryConfirmationReadiness(orderId: string, handoverId?: string | null) {
+  private async getDeliveryConfirmationReadiness(
+    orderId: string,
+    handoverId?: string | null,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
     const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
       orderId,
-      handoverId ?? null
+      handoverId ?? null,
+      undefined,
+      db
     );
     if (!this.handoverWorkOrderService) {
       return evidenceReadiness;
     }
     try {
-      await this.handoverWorkOrderService.assertReadyForStage2ESign(orderId, handoverId ?? null);
+      await this.handoverWorkOrderService.assertReadyForStage2ESign(
+        orderId,
+        handoverId ?? null,
+        db
+      );
       return evidenceReadiness;
     } catch (error) {
       const message = error instanceof Error ? error.message : "交付工单尚未就绪。";
@@ -3779,14 +3867,7 @@ function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | n
 }
 
 function findActiveDeliveryHandover(prisma: PrismaService, orderId: string) {
-  return prisma.vehicleDeliveryHandover.findFirst({
-    orderBy: { createdAt: "desc" },
-    where: {
-      deletedAt: null,
-      orderId,
-      status: { notIn: [DeliveryHandoverStatus.CANCELLED, DeliveryHandoverStatus.FAILED] }
-    }
-  });
+  return findDeliveryHandoverForConfirmation(prisma, orderId);
 }
 
 function assertCanConfirmDelivery(
@@ -4849,8 +4930,18 @@ function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>
   return toPlain(version) as Record<string, unknown>;
 }
 
-function toOrderChangeView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
+function toOrderChangeAuditView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
   return toPlain(change) as Record<string, unknown>;
+}
+
+function toOrderChangeResponse(
+  change: Prisma.OrderChangeGetPayload<object>,
+  user: RequestUser
+): Record<string, unknown> {
+  return projectOrderChangeView(
+    toOrderChangeAuditView(change),
+    new Set(user.permissions)
+  );
 }
 
 function buildContractSnapshotWithGeneratedPdfArtifact(

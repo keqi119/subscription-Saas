@@ -7,9 +7,13 @@ import {
   formatFieldHandoverType,
   formatFieldWorkOrderStatus,
   getFieldHandoverSubmitBlockers,
+  resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput
 } from "../src/lib/field-handover-view-model";
-import type { FieldHandoverWorkOrderDetail, FieldHandoverWorkOrderListItem } from "../src/lib/field-handover-api";
+import type {
+  FieldHandoverWorkOrderDetail,
+  FieldHandoverWorkOrderListItem
+} from "../src/lib/field-handover-api";
 
 const FULL_PHONE_SHOULD_NOT_RENDER = ["139", "0000", "1111"].join("");
 const ID_NUMBER_SHOULD_NOT_RENDER = "ID_NUMBER_SHOULD_NOT_RENDER";
@@ -101,32 +105,43 @@ describe("field handover view model", () => {
       displayName: "0.jpg",
       evidenceFileId: "evidence-file-0"
     });
-    expect(capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")).toMatchObject({
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")
+    ).toMatchObject({
       uploadAccept: "video/*"
     });
-    expect(capture.evidenceItems.find((item) => item.evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION")).toMatchObject({
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION")
+    ).toMatchObject({
       showDeclarationComplete: true,
       showUpload: false,
       statusLabel: "声明已完成"
     });
-    expect(capture.evidenceItems.find((item) => item.evidenceType === "DAMAGE_STATIC_CLOSEUP")).toMatchObject({
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "DAMAGE_STATIC_CLOSEUP")
+    ).toMatchObject({
       allowsMultiple: true,
       uploadLabel: "继续添加"
     });
-    expect(JSON.stringify(capture)).not.toMatch(/esign|pdf|signingUrl|objectKey|token|cookie|deposit|payment/i);
+    expect(JSON.stringify(capture)).not.toMatch(
+      /esign|pdf|signingUrl|objectKey|token|cookie|deposit|payment/i
+    );
     expect(JSON.stringify(capture)).not.toContain(FULL_PHONE_SHOULD_NOT_RENDER);
     expect(JSON.stringify(capture)).not.toContain(ID_NUMBER_SHOULD_NOT_RENDER);
   });
 
   it("validates mileage, mutually exclusive damage states, and damage close-up blockers", () => {
     expect(
-      validateFieldHandoverFactsInput({
-        accessoryChecklistText: "",
-        damageDeclared: true,
-        energyLevelText: "",
-        handoverMileageKm: 0,
-        noVisibleDamageDeclared: true
-      }, { requireComplete: true })
+      validateFieldHandoverFactsInput(
+        {
+          accessoryChecklistText: "",
+          damageDeclared: true,
+          energyLevelText: "",
+          handoverMileageKm: 0,
+          noVisibleDamageDeclared: true
+        },
+        { requireComplete: true }
+      )
     ).toEqual([
       "请填写交接里程",
       "请填写能源/油量状态",
@@ -162,6 +177,76 @@ describe("field handover view model", () => {
     expect(view.showStartAction).toBe(false);
     expect(view.showSaveAction).toBe(false);
     expect(view.showSubmitAction).toBe(false);
+    expect(view.evidenceItems.every((item) => item.showUpload === false)).toBe(true);
+  });
+
+  it("preserves a local facts draft during upload reconciliation refresh", () => {
+    const draft = {
+      accessoryChecklistText: "本地未保存清单",
+      energyLevelText: "本地 70%",
+      fieldNotes: "上传期间编辑的草稿",
+      handoverMileageKm: 321
+    };
+
+    expect(
+      resolveFieldHandoverFactsAfterRefresh(
+        draft,
+        {
+          accessoryChecklist: { chargingCable: true },
+          energyLevelText: "服务端 50%",
+          fieldNotes: "服务端旧备注",
+          handoverMileageKm: 123
+        },
+        true
+      )
+    ).toEqual(draft);
+    expect(
+      resolveFieldHandoverFactsAfterRefresh(
+        draft,
+        {
+          energyLevelText: "服务端 50%",
+          fieldNotes: "服务端旧备注",
+          handoverMileageKm: 123
+        },
+        false
+      )
+    ).toMatchObject({
+      energyLevelText: "服务端 50%",
+      fieldNotes: "服务端旧备注",
+      handoverMileageKm: 123
+    });
+  });
+
+  it("preserves all local facts after a damage-state refresh", () => {
+    const draft = {
+      accessoryChecklistText: "两把钥匙、充电线",
+      damageDeclared: true,
+      deliveryLocation: "上海交付中心 B 区",
+      energyLevelText: "72%",
+      fieldNotes: "右前轮毂轻微划痕",
+      fuelLevelText: "满油",
+      handoverMileageKm: 321,
+      noVisibleDamageDeclared: false,
+      scheduledAt: "2026-07-26T07:30:00.000Z"
+    };
+
+    expect(
+      resolveFieldHandoverFactsAfterRefresh(
+        draft,
+        {
+          accessoryChecklist: {},
+          damageDeclared: true,
+          deliveryLocation: "",
+          energyLevelText: "",
+          fieldNotes: "",
+          fuelLevelText: "",
+          handoverMileageKm: null,
+          noVisibleDamageDeclared: false,
+          scheduledAt: null
+        },
+        true
+      )
+    ).toEqual(draft);
   });
 
   it("reopens legacy customer-reviewing objections when Admin requested field resubmission", () => {
@@ -231,7 +316,11 @@ function sampleDetail(): FieldHandoverWorkOrderDetail {
   } as FieldHandoverWorkOrderDetail;
 }
 
-function sampleEvidenceItems(options: { damageDeclared?: boolean; missingDamageCloseup?: boolean; noVisibleDamageDeclared?: boolean }) {
+function sampleEvidenceItems(options: {
+  damageDeclared?: boolean;
+  missingDamageCloseup?: boolean;
+  noVisibleDamageDeclared?: boolean;
+}) {
   const titles = [
     ["CUSTOMER_WITH_VEHICLE_FRONT", "客户与车辆正面合影", ["PHOTO"]],
     ["VEHICLE_FRONT", "车辆车头正面", ["PHOTO"]],
@@ -252,7 +341,9 @@ function sampleEvidenceItems(options: { damageDeclared?: boolean; missingDamageC
   return titles.map(([evidenceType, title, allowedMediaTypes], index) => {
     const isDamageCloseup = evidenceType === "DAMAGE_STATIC_CLOSEUP";
     const isNoDamage = evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION";
-    const hasFile = !isNoDamage && (!isDamageCloseup || (options.damageDeclared && !options.missingDamageCloseup));
+    const hasFile =
+      !isNoDamage &&
+      (!isDamageCloseup || (options.damageDeclared && !options.missingDamageCloseup));
     return {
       allowsMultiple: isDamageCloseup,
       allowedMediaTypes,
@@ -260,18 +351,37 @@ function sampleEvidenceItems(options: { damageDeclared?: boolean; missingDamageC
       evidenceType,
       fileCount: hasFile ? 1 : 0,
       fileRequired: !isNoDamage,
-      files: hasFile ? [{
-        displayName: `${index}.jpg`,
-        evidenceFileId: `evidence-file-${index}`,
-        file: { id: `file-${index}`, mimeType: "image/jpeg", originalName: `${index}.jpg`, sizeBytes: 1000 },
-        previewUrl: `/api/field/handover/work-orders/work-order-1/evidence-files/evidence-file-${index}/preview`
-      }] : [],
+      files: hasFile
+        ? [
+            {
+              displayName: `${index}.jpg`,
+              evidenceFileId: `evidence-file-${index}`,
+              file: {
+                id: `file-${index}`,
+                mimeType: "image/jpeg",
+                originalName: `${index}.jpg`,
+                sizeBytes: 1000
+              },
+              previewUrl: `/api/field/handover/work-orders/work-order-1/evidence-files/evidence-file-${index}/preview`
+            }
+          ]
+        : [],
       id: `evidence-item-${index + 1}`,
       isConditional: isDamageCloseup || isNoDamage,
       isRequired: !isDamageCloseup && !isNoDamage,
       requirementLevel: isDamageCloseup || isNoDamage ? "CONDITIONAL" : "REQUIRED",
-      reviewStatus: isNoDamage && options.noVisibleDamageDeclared ? "APPROVED" : hasFile ? "PENDING" : "NOT_STARTED",
-      status: isNoDamage && options.noVisibleDamageDeclared ? "APPROVED" : hasFile ? "UPLOADED" : "NOT_STARTED",
+      reviewStatus:
+        isNoDamage && options.noVisibleDamageDeclared
+          ? "APPROVED"
+          : hasFile
+            ? "PENDING"
+            : "NOT_STARTED",
+      status:
+        isNoDamage && options.noVisibleDamageDeclared
+          ? "APPROVED"
+          : hasFile
+            ? "UPLOADED"
+            : "NOT_STARTED",
       title
     };
   });

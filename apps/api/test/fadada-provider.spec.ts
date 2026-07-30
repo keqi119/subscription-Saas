@@ -1,4 +1,5 @@
 import { ConfigService } from "@nestjs/config";
+import { ESignProviderType } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { createESignProviderClient } from "../src/esign/esign.module";
@@ -13,6 +14,84 @@ describe("Fadada provider configuration", () => {
     const provider = createESignProviderClient(new ConfigService({ ESIGN_PROVIDER: "mock" }));
 
     expect(provider).toBeInstanceOf(MockESignProvider);
+  });
+
+  it("maps the actual mock provider through typed Stage 2 customer and platform actions", async () => {
+    const provider = createESignProviderClient(new ConfigService({
+      ESIGN_PROVIDER: "mock",
+      PORTAL_BASE_URL: "https://portal.invalid"
+    }));
+    const customer = await provider.createSignTask({
+      contractId: "contract-stage2-mock",
+      documentName: "handover.pdf",
+      documentType: "DELIVERY_HANDOVER",
+      signers: [{
+        customerId: "customer-1",
+        signerId: "signer-stage2-mock",
+        signerType: "CUSTOMER"
+      }],
+      signingSlots: [{
+        documentType: "DELIVERY_HANDOVER",
+        keyword: "stage2-handover-customer",
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        required: true,
+        signerRole: "CUSTOMER",
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        slotId: "STAGE2_HANDOVER_CUSTOMER"
+      }],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourcePdfHash: "a".repeat(64),
+      taskId: "task-stage2-mock",
+      taskNo: "MOCKSTAGE2TASK",
+      transactionId: "MOCKSTAGE2H1"
+    });
+    const platform = await provider.autoSealTask?.({
+      contractId: "contract-stage2-mock",
+      documentType: "DELIVERY_HANDOVER",
+      platformCustomerId: "platform-customer-1",
+      providerEnvelopeId: "MOCKSTAGE2TASK",
+      providerTaskId: "MOCKSTAGE2H1",
+      signerId: "platform-signer-stage2-mock",
+      signingSlots: [{
+        documentType: "DELIVERY_HANDOVER",
+        keyword: "stage2-handover-platform",
+        providerActionType: "PLATFORM_AUTO_SEAL",
+        required: true,
+        signerRole: "PLATFORM",
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        slotId: "STAGE2_HANDOVER_PLATFORM"
+      }],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "task-stage2-mock",
+      taskNo: "MOCKSTAGE2TASK",
+      transactionId: "MOCKSTAGE2H2"
+    });
+
+    expect(customer).toMatchObject({
+      actions: [{
+        coveredSlotIds: ["STAGE2_HANDOVER_CUSTOMER"],
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerTransactionId: "MOCKSTAGE2H1",
+        signerType: "CUSTOMER",
+        signingStage: "STAGE2_DELIVERY_HANDOVER"
+      }],
+      providerEnvelopeId: "MOCKSTAGE2TASK",
+      providerTaskId: "MOCKSTAGE2H1"
+    });
+    expect(platform).toMatchObject({
+      coveredSlotIds: ["STAGE2_HANDOVER_PLATFORM"],
+      providerActionType: "PLATFORM_AUTO_SEAL",
+      providerTransactionId: "MOCKSTAGE2H2",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      status: "COMPLETED"
+    });
+
+    await expect(provider.autoSealTask?.({
+      contractId: "contract-stage1-mock",
+      signingStage: "STAGE1_CONTRACT",
+      taskNo: "MOCKSTAGE1TASK",
+      transactionId: "MOCKSTAGE1H2"
+    })).rejects.toThrow(/ESIGN_PLATFORM_AUTO_SEAL_UNSUPPORTED/);
   });
 
   it("requires base URL, app ID, and app secret when ESIGN_PROVIDER=fadada", () => {
@@ -502,7 +581,12 @@ describe("Fadada provider B2-A flow", () => {
         findFirst: vi.fn(async () => ({
           providerSignerId: "ESG1S1",
           signUrl: "https://sign.example.test/customer",
-          signUrlExpiresAt: new Date(Date.now() + 60_000)
+          signUrlExpiresAt: new Date(Date.now() + 60_000),
+          task: {
+            deletedAt: null,
+            provider: ESignProviderType.FADADA,
+            signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
+          }
         }))
       }
     };
@@ -513,7 +597,11 @@ describe("Fadada provider B2-A flow", () => {
       prisma as never
     );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).resolves.toMatchObject({
+    await expect(provider.getSignerUrl({
+      providerTaskId: "ESG1S1",
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-1"
+    })).resolves.toMatchObject({
       rawResponse: { source: "LOCAL_SIGNER_URL" },
       signUrl: "https://sign.example.test/customer"
     });
@@ -525,7 +613,12 @@ describe("Fadada provider B2-A flow", () => {
         findFirst: vi.fn(async () => ({
           providerSignerId: "ESG1S1",
           signUrl: "https://sign.example.test/customer",
-          signUrlExpiresAt: null
+          signUrlExpiresAt: null,
+          task: {
+            deletedAt: null,
+            provider: ESignProviderType.FADADA,
+            signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
+          }
         }))
       }
     };
@@ -536,7 +629,11 @@ describe("Fadada provider B2-A flow", () => {
       prisma as never
     );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).resolves.toMatchObject({
+    await expect(provider.getSignerUrl({
+      providerTaskId: "ESG1S1",
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-1"
+    })).resolves.toMatchObject({
       rawResponse: { source: "LOCAL_SIGNER_URL" },
       signUrl: "https://sign.example.test/customer"
     });
@@ -548,7 +645,12 @@ describe("Fadada provider B2-A flow", () => {
         findFirst: vi.fn(async () => ({
           providerSignerId: "ESG1S1",
           signUrl: "https://sign.example.test/expired",
-          signUrlExpiresAt: new Date(Date.now() - 60_000)
+          signUrlExpiresAt: new Date(Date.now() - 60_000),
+          task: {
+            deletedAt: null,
+            provider: ESignProviderType.FADADA,
+            signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
+          }
         }))
       }
     };
@@ -559,9 +661,44 @@ describe("Fadada provider B2-A flow", () => {
       prisma as never
     );
 
-    await expect(provider.getSignerUrl({ providerTaskId: "ESG1S1", taskId: "task-1" })).rejects.toThrow(
+    await expect(provider.getSignerUrl({
+      providerTaskId: "ESG1S1",
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-1"
+    })).rejects.toThrow(
       /FADADA_SIGN_URL_NOT_AVAILABLE/
     );
+  });
+
+  it("never falls back to a persisted URL for a typed Stage 2 signer", async () => {
+    const prisma = {
+      contractESignSigner: {
+        findFirst: vi.fn(async () => ({
+          providerSignerId: "ESG1H1",
+          signUrl: "https://sign.example.test/persisted-stage2",
+          signUrlExpiresAt: new Date(Date.now() + 60_000),
+          task: {
+            deletedAt: null,
+            provider: ESignProviderType.FADADA,
+            signingStage: "STAGE2_DELIVERY_HANDOVER"
+          }
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      undefined,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.getSignerUrl({
+      contractId: "ESG1",
+      providerTaskId: "ESG1H1",
+      signerId: "signer-1",
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: "task-1"
+    })).rejects.toThrow(/FADADA_SIGN_URL_NOT_AVAILABLE/);
   });
 
   it("auto seals with configured platform account and signature IDs", async () => {

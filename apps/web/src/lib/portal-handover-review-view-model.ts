@@ -4,7 +4,8 @@ import type {
   PortalHandoverReviewEvidenceItem,
   PortalHandoverReviewEvidenceProgress,
   PortalHandoverReviewFieldFacts,
-  PortalHandoverReviewListItem
+  PortalHandoverReviewListItem,
+  Stage2PortalESignView
 } from "./portal-handover-review-api";
 
 export interface PortalHandoverReviewCardView {
@@ -51,6 +52,27 @@ export interface PortalHandoverReviewEvidenceFileView {
   previewAvailable: boolean;
   previewUrl: string | null;
   sizeText: string;
+}
+
+export interface PortalHandoverWorkflowView {
+  canStartSigning: boolean;
+  shouldPoll: boolean;
+  statusLabel:
+    | "交接确认单生成中"
+    | "平台盖章处理中"
+    | "待客户签署"
+    | "等待经办人发起签署"
+    | "签署已完成";
+  statusTone: "default" | "processing" | "success" | "warning";
+}
+
+export interface PortalContractDestinationSource {
+  documentType?: null | string;
+  handoverWorkOrderId?: null | string;
+  id: string;
+  signingStage?: null | string;
+  signTask?: object | null;
+  workOrderId?: null | string;
 }
 
 export type PortalHandoverReviewDecisionView =
@@ -164,6 +186,176 @@ export function validatePortalHandoverObjectionReason(value: string) {
   return value.trim() ? null : "请填写异议原因";
 }
 
+export function buildPortalHandoverWorkflowView(
+  detail: PortalHandoverReviewDetail,
+  esign?: Stage2PortalESignView
+): PortalHandoverWorkflowView {
+  const handoverStatus = detail.handover?.status;
+  const signingCompleted =
+    handoverStatus === "ARCHIVED" ||
+    (
+      esign?.archiveStatus === "ARCHIVED" &&
+      esign.signedArtifactAvailable
+    );
+  if (signingCompleted) {
+    return {
+      canStartSigning: false,
+      shouldPoll: false,
+      statusLabel: "签署已完成",
+      statusTone: "success"
+    };
+  }
+
+  const platformSealInProgress =
+    ["PENDING_PLATFORM_SEAL", "PLATFORM_SEALED"].includes(handoverStatus ?? "") ||
+    esign?.customerSigner.status === "SIGNED" ||
+    esign?.platformSigner.status === "SIGNED" ||
+    esign?.status === "COMPLETED";
+  if (platformSealInProgress) {
+    return {
+      canStartSigning: false,
+      shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+      statusLabel: "平台盖章处理中",
+      statusTone: "processing"
+    };
+  }
+
+  if (handoverStatus === "PENDING_CUSTOMER_SIGNATURE") {
+    return {
+      canStartSigning: esign?.capability.canStartSigning === true,
+      shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+      statusLabel: "待客户签署",
+      statusTone: "warning"
+    };
+  }
+
+  if (
+    detail.stage2Workflow?.state === "PDF_PENDING" ||
+    (
+      detail.status === "CUSTOMER_CONFIRMED" &&
+      !detail.stage2Workflow &&
+      !detail.handover
+    )
+  ) {
+    return {
+      canStartSigning: false,
+      shouldPoll: true,
+      statusLabel: "交接确认单生成中",
+      statusTone: "processing"
+    };
+  }
+
+  return {
+    canStartSigning: false,
+    shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+    statusLabel: "等待经办人发起签署",
+    statusTone: "default"
+  };
+}
+
+export function getPortalContractDestination(contract: PortalContractDestinationSource) {
+  const stage2SignTask = contract.signTask as
+    | {
+      signingStage?: null | string;
+      documentType?: null | string;
+      workOrderId?: null | string;
+      }
+    | null
+    | undefined;
+  const workOrderId =
+    contract.handoverWorkOrderId ??
+    contract.workOrderId ??
+    stage2SignTask?.workOrderId;
+  const signingStage =
+    contract.signingStage ??
+    stage2SignTask?.signingStage;
+  const documentType =
+    contract.documentType ??
+    stage2SignTask?.documentType;
+  const stage2Typed =
+    signingStage === "STAGE2_DELIVERY_HANDOVER" ||
+    documentType === "DELIVERY_HANDOVER";
+  if (stage2Typed) {
+    return workOrderId
+      ? `/portal/handover-reviews/${encodeURIComponent(workOrderId)}`
+      : null;
+  }
+  return `/portal/contracts/${encodeURIComponent(contract.id)}`;
+}
+
+export function createPortalWorkflowRequestController<T>({
+  load,
+  onApply,
+  onError
+}: {
+  load: () => Promise<T>;
+  onApply: (value: T) => void;
+  onError: (error: unknown) => void;
+}) {
+  let active = true;
+  let generation = 0;
+  let inFlight: null | Promise<void> = null;
+  let timer: null | ReturnType<typeof setInterval> = null;
+
+  const refresh = () => {
+    if (!active) {
+      return Promise.resolve();
+    }
+    if (inFlight) {
+      return inFlight;
+    }
+    const requestGeneration = generation;
+    const request = load()
+      .then((value) => {
+        if (active && requestGeneration === generation) {
+          onApply(value);
+        }
+      })
+      .catch((error) => {
+        if (active && requestGeneration === generation) {
+          onError(error);
+        }
+      })
+      .finally(() => {
+        if (inFlight === request) {
+          inFlight = null;
+        }
+      });
+    inFlight = request;
+    return request;
+  };
+
+  const stopPolling = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+
+  return {
+    dispose() {
+      active = false;
+      generation += 1;
+      inFlight = null;
+      stopPolling();
+    },
+    invalidate() {
+      generation += 1;
+      inFlight = null;
+    },
+    refresh,
+    startPolling(intervalMs: number) {
+      stopPolling();
+      if (active) {
+        timer = setInterval(() => {
+          void refresh();
+        }, intervalMs);
+      }
+    },
+    stopPolling
+  };
+}
+
 function buildFieldFactRows(detail: PortalHandoverReviewDetail) {
   const facts = detail.fieldFacts;
   return [
@@ -226,7 +418,7 @@ function buildEvidenceFileView(file: PortalHandoverReviewEvidenceFile): PortalHa
   return {
     displayName: file.displayName || file.file?.originalName || "资料文件",
     downloadUrl: file.downloadUrl ?? null,
-    id: file.evidenceFileId || file.id || file.fileId || "",
+    id: file.evidenceFileId || file.id || "",
     mediaType: file.mediaType || "-",
     previewAvailable: file.previewAvailable === true,
     previewUrl: file.previewUrl ?? null,

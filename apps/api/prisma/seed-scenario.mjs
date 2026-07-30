@@ -426,7 +426,6 @@ async function createScenarioVehicle({
       series: "ET5",
       status: "AVAILABLE",
       updatedBy: operatorId,
-      vehicleModel: "NIO_ET5",
       vehicleNo,
       vin
     }

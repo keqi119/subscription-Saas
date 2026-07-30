@@ -33,7 +33,6 @@ const modelDefinitionSelect = {
   customerDisplayName: true,
   displayName: true,
   id: true,
-  legacyVehicleModel: true,
   modelCode: true,
   modelName: true,
   modelYear: true,
@@ -65,7 +64,7 @@ const forecastPointInclude = {
 
 type ModelDefinitionSummary = Pick<
   VehicleModelDefinition,
-  "brand" | "customerDisplayName" | "displayName" | "id" | "legacyVehicleModel" | "modelCode" | "modelName" | "modelYear" | "series"
+  "brand" | "customerDisplayName" | "displayName" | "id" | "modelCode" | "modelName" | "modelYear" | "series"
 >;
 
 type VehicleWithModelDefinition = Vehicle & {
@@ -702,7 +701,6 @@ function toModelDefinitionSummary(definition?: ModelDefinitionSummary | null) {
         customerDisplayName: definition.customerDisplayName,
         displayName: definition.displayName,
         id: definition.id,
-        legacyVehicleModel: definition.legacyVehicleModel,
         modelCode: definition.modelCode,
         modelName: definition.modelName,
         modelYear: definition.modelYear,

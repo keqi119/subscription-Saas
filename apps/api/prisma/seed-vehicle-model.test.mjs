@@ -5,13 +5,13 @@ import {
   upsertCanonicalProductPriceRule
 } from "./seed-vehicle-model.mjs";
 
-test("converges a prior ET5 definition to NIO_ET5 without attempting a duplicate insert", async () => {
+test("updates an existing canonical model definition by modelCode", async () => {
   const mock = createStatefulPrismaMock({
     definitions: [
       {
+        displayName: "Old ET5",
         id: "definition-et5",
-        legacyVehicleModel: "ET5",
-        modelCode: "ET5"
+        modelCode: "NIO_ET5"
       }
     ]
   });
@@ -27,13 +27,12 @@ test("converges a prior ET5 definition to NIO_ET5 without attempting a duplicate
       displayName: "ET5",
       enabled: true,
       id: "definition-et5",
-      legacyVehicleModel: "ET5",
       modelCode: "NIO_ET5"
     }
   ]);
 });
 
-test("creates a canonical NIO_ET5 definition when no matching definition exists", async () => {
+test("creates one canonical definition and remains idempotent", async () => {
   const mock = createStatefulPrismaMock();
 
   await convergeVehicleModelDefinition(mock.prisma, definitionSeedInput());
@@ -43,42 +42,16 @@ test("creates a canonical NIO_ET5 definition when no matching definition exists"
   expect(mock.calls.vehicleModelDefinition.update).toBe(1);
   expect(mock.state.definitions).toHaveLength(1);
   expect(mock.state.definitions[0].modelCode).toBe("NIO_ET5");
-  expect(mock.state.definitions[0].legacyVehicleModel).toBe("ET5");
 });
 
-test("rejects cross-namespace modelCode and legacy alias conflicts before convergence", async () => {
-  const mock = createStatefulPrismaMock({
-    definitions: [
-      {
-        id: "definition-old-code",
-        legacyVehicleModel: null,
-        modelCode: "ET5"
-      },
-      {
-        id: "definition-canonical",
-        legacyVehicleModel: "ET5",
-        modelCode: "NIO_ET5"
-      }
-    ]
-  });
-
-  await expect(
-    convergeVehicleModelDefinition(mock.prisma, definitionSeedInput())
-  ).rejects.toThrow(
-    "VehicleModelDefinition seed conflict for NIO_ET5: multiple canonical or legacy matches."
-  );
-
-  expect(mock.calls.vehicleModelDefinition.update).toBe(0);
-});
-
-test("updates an existing ProductPriceRule compatibility code to NIO_ET5", async () => {
+test("upserts a price rule by product version and model definition", async () => {
   const mock = createStatefulPrismaMock({
     priceRules: [
       {
         id: "price-rule-et5",
         modelDefinitionId: "definition-et5",
-        productVersionId: "product-version-1",
-        vehicleModel: "ET5"
+        monthlyFeeRate: "0.035000",
+        productVersionId: "product-version-1"
       }
     ]
   });
@@ -92,13 +65,12 @@ test("updates an existing ProductPriceRule compatibility code to NIO_ET5", async
     productVersionId: "product-version-1",
     updateData: {
       monthlyFeeRate: "0.040000"
-    },
-    vehicleModel: "NIO_ET5"
+    }
   });
 
   expect(mock.calls.productPriceRule.create).toBe(0);
   expect(mock.calls.productPriceRule.update).toBe(1);
-  expect(mock.state.priceRules[0].vehicleModel).toBe("NIO_ET5");
+  expect(mock.state.priceRules[0].modelDefinitionId).toBe("definition-et5");
   expect(mock.state.priceRules[0].monthlyFeeRate).toBe("0.040000");
 });
 
@@ -109,7 +81,6 @@ function definitionSeedInput() {
       displayName: "ET5",
       enabled: true
     },
-    legacyVehicleModel: "ET5",
     modelCode: "NIO_ET5",
     updateData: {
       brand: "NIO",
@@ -152,41 +123,24 @@ function createStatefulPrismaMock({ definitions = [], priceRules = [] } = {}) {
       }
     },
     vehicleModelDefinition: {
-      async create({ data }) {
-        calls.vehicleModelDefinition.create += 1;
-        if (
-          state.definitions.some(
-            (row) =>
-              row.modelCode === data.modelCode ||
-              (data.legacyVehicleModel && row.legacyVehicleModel === data.legacyVehicleModel)
-          )
-        ) {
-          throw new Error("duplicate vehicle model definition");
+      async upsert({ create, update, where }) {
+        const existing = state.definitions.find(
+          (row) => row.modelCode === where.modelCode
+        );
+
+        if (existing) {
+          calls.vehicleModelDefinition.update += 1;
+          Object.assign(existing, update);
+          return structuredClone(existing);
         }
-        const created = { id: `definition-${state.definitions.length + 1}`, ...data };
+
+        calls.vehicleModelDefinition.create += 1;
+        const created = {
+          id: `definition-${state.definitions.length + 1}`,
+          ...create
+        };
         state.definitions.push(created);
         return structuredClone(created);
-      },
-      async findMany({ where }) {
-        const aliases = where.OR;
-        return state.definitions
-          .filter((row) =>
-            aliases.some((alias) =>
-              alias.modelCode
-                ? row.modelCode === alias.modelCode
-                : row.legacyVehicleModel === alias.legacyVehicleModel
-            )
-          )
-          .map((row) => structuredClone(row));
-      },
-      async update({ data, where }) {
-        calls.vehicleModelDefinition.update += 1;
-        const existing = state.definitions.find((row) => row.id === where.id);
-        if (!existing) {
-          throw new Error(`missing definition ${where.id}`);
-        }
-        Object.assign(existing, data);
-        return structuredClone(existing);
       }
     }
   };

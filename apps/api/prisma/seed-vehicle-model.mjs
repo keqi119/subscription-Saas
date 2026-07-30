@@ -1,64 +1,33 @@
 export async function convergeVehicleModelDefinition(
   prisma,
-  { createData, legacyVehicleModel, modelCode, updateData }
+  { createData, modelCode, updateData }
 ) {
-  const codes = [...new Set([modelCode, legacyVehicleModel].filter(Boolean))];
-  const aliases = codes.flatMap((code) => [
-    { modelCode: code },
-    { legacyVehicleModel: code }
-  ]);
-
-  const matches = await prisma.vehicleModelDefinition.findMany({
-    select: {
-      id: true,
-      legacyVehicleModel: true,
-      modelCode: true
-    },
-    where: { OR: aliases }
-  });
-
-  if (matches.length > 1) {
-    throw new Error(
-      `VehicleModelDefinition seed conflict for ${modelCode}: multiple canonical or legacy matches.`
-    );
-  }
-
-  if (matches.length === 1) {
-    return prisma.vehicleModelDefinition.update({
-      data: {
-        ...updateData,
-        deletedAt: null,
-        legacyVehicleModel,
-        modelCode
-      },
-      where: { id: matches[0].id }
-    });
-  }
-
-  return prisma.vehicleModelDefinition.create({
-    data: {
+  return prisma.vehicleModelDefinition.upsert({
+    create: {
       ...createData,
-      legacyVehicleModel,
       modelCode
-    }
+    },
+    update: {
+      ...updateData,
+      deletedAt: null
+    },
+    where: { modelCode }
   });
 }
 
 export async function upsertCanonicalProductPriceRule(
   prisma,
-  { createData, modelDefinitionId, productVersionId, updateData, vehicleModel }
+  { createData, modelDefinitionId, productVersionId, updateData }
 ) {
   return prisma.productPriceRule.upsert({
     create: {
       ...createData,
       modelDefinitionId,
-      productVersionId,
-      vehicleModel
+      productVersionId
     },
     update: {
       ...updateData,
-      modelDefinitionId,
-      vehicleModel
+      modelDefinitionId
     },
     where: {
       productVersionId_modelDefinitionId: {

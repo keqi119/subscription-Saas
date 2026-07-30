@@ -3,15 +3,27 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-const enumStringFields = [
-  { field: "vehicleModel", model: "VehiclePackage", type: "String" },
-  { field: "vehicleModel", model: "ProductPriceRule", type: "String" },
-  { field: "vehicleModel", model: "Vehicle", type: "String?" },
-  { field: "legacyVehicleModel", model: "VehicleModelDefinition", type: "String?" },
-  { field: "vehicleModel", model: "SubscriptionQuote", type: "String" },
-  { field: "legacyVehicleModelSnapshot", model: "SubscriptionQuote", type: "String?" },
-  { field: "vehicleModel", model: "SubscriptionOrder", type: "String" },
-  { field: "legacyVehicleModelSnapshot", model: "SubscriptionOrder", type: "String?" }
+const canonicalFields = [
+  { field: "modelDefinitionId", model: "VehiclePackage", type: "String" },
+  { field: "modelDefinitionId", model: "ProductPriceRule", type: "String" },
+  { field: "modelDefinitionId", model: "Vehicle", type: "String" },
+  { field: "modelDefinitionIdSnapshot", model: "SubscriptionQuote", type: "String" },
+  { field: "modelCodeSnapshot", model: "SubscriptionQuote", type: "String" },
+  { field: "modelDisplayNameSnapshot", model: "SubscriptionQuote", type: "String" },
+  { field: "modelDefinitionIdSnapshot", model: "SubscriptionOrder", type: "String" },
+  { field: "modelCodeSnapshot", model: "SubscriptionOrder", type: "String" },
+  { field: "modelDisplayNameSnapshot", model: "SubscriptionOrder", type: "String" }
+];
+
+const removedCompatibilityFields = [
+  { field: "vehicleModel", model: "VehiclePackage" },
+  { field: "vehicleModel", model: "ProductPriceRule" },
+  { field: "vehicleModel", model: "Vehicle" },
+  { field: "legacyVehicleModel", model: "VehicleModelDefinition" },
+  { field: "vehicleModel", model: "SubscriptionQuote" },
+  { field: "legacyVehicleModelSnapshot", model: "SubscriptionQuote" },
+  { field: "vehicleModel", model: "SubscriptionOrder" },
+  { field: "legacyVehicleModelSnapshot", model: "SubscriptionOrder" }
 ];
 
 const enumColumnConversions = [
@@ -25,7 +37,7 @@ const enumColumnConversions = [
   { column: "legacy_vehicle_model_snapshot", table: "subscription_order" }
 ];
 
-describe("VehicleModel enum string schema contract", () => {
+describe("canonical vehicle model schema contract", () => {
   it("ignores VehicleModel enum examples inside Prisma comments", () => {
     const commentedExamples = `
       // enum VehicleModel {
@@ -47,12 +59,22 @@ describe("VehicleModel enum string schema contract", () => {
     expect(schema).not.toMatch(/\benum\s+VehicleModel\s*\{/);
   });
 
-  it("represents every former enum field as a string compatibility field", () => {
+  it("requires canonical master-data links and immutable snapshots", () => {
     const schema = readSchema();
 
-    for (const expected of enumStringFields) {
+    for (const expected of canonicalFields) {
       expect(extractModel(schema, expected.model)).toMatch(
         new RegExp(`^\\s*${expected.field}\\s+${escapeRegExp(expected.type)}(?:\\s|$)`, "m")
+      );
+    }
+  });
+
+  it("does not retain former compatibility fields", () => {
+    const schema = readSchema();
+
+    for (const removed of removedCompatibilityFields) {
+      expect(extractModel(schema, removed.model)).not.toMatch(
+        new RegExp(`^\\s*${removed.field}\\s+`, "m")
       );
     }
   });

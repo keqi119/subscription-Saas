@@ -15,13 +15,9 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
-  MaxLength,
   Min
 } from "class-validator";
-
-const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class CreateProductDto {
   @IsString()
@@ -89,16 +85,8 @@ export class UpdateProductVersionDto {
 }
 
 export class CreatePriceRuleDto {
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
-  @IsOptional()
   @IsUUID()
-  modelDefinitionId?: string | null;
+  modelDefinitionId!: string;
 
   @IsOptional()
   @IsNumber()
@@ -138,16 +126,9 @@ export class CreatePriceRuleDto {
 }
 
 export class UpdatePriceRuleDto {
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
   @IsOptional()
   @IsUUID()
-  modelDefinitionId?: string | null;
+  modelDefinitionId?: string;
 
   @IsOptional()
   @IsNumber()
@@ -248,13 +229,6 @@ export class CreateQuoteDto {
   @IsOptional()
   @IsUUID()
   benefitPackageId?: string | null;
-
-  /** @deprecated Legacy compatibility only. Quote model display now uses snapshots where available. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
 
   @IsOptional()
   @IsInt()
@@ -434,16 +408,8 @@ export class CreateVehiclePackageDto {
   @IsString()
   packageName!: string;
 
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
-  @IsOptional()
   @IsUUID()
-  modelDefinitionId?: string | null;
+  modelDefinitionId!: string;
 
   @IsOptional()
   @IsString()
@@ -495,16 +461,9 @@ export class CreateVehiclePackageDto {
 }
 
 export class UpdateVehiclePackageDto {
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
   @IsOptional()
   @IsUUID()
-  modelDefinitionId?: string | null;
+  modelDefinitionId?: string;
 
   @IsOptional()
   @IsString()

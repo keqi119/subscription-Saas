@@ -2641,9 +2641,8 @@ model VehiclePackage {
   product                Product             @relation(fields: [productId], references: [id])
   productVersionId       String              @map("product_version_id") @db.Uuid
   productVersion         ProductVersion      @relation(fields: [productVersionId], references: [id])
-  vehicleModel           String              @map("vehicle_model") @db.VarChar(64)
-  modelDefinitionId      String?             @map("model_definition_id") @db.Uuid
-  modelDefinition        VehicleModelDefinition? @relation(fields: [modelDefinitionId], references: [id])
+  modelDefinitionId      String              @map("model_definition_id") @db.Uuid
+  modelDefinition        VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
   vehicleModelName       String?             @map("vehicle_model_name") @db.VarChar(128)
   brand                  String?             @db.VarChar(64)
   series                 String?             @db.VarChar(64)
@@ -2665,7 +2664,6 @@ model VehiclePackage {
 
   @@index([productId])
   @@index([productVersionId])
-  @@index([vehicleModel])
   @@index([modelDefinitionId])
   @@index([status])
   @@map("vehicle_package")
@@ -2806,9 +2804,8 @@ model ProductPriceRule {
   id                   String         @id @default(uuid()) @db.Uuid
   productVersionId     String         @map("product_version_id") @db.Uuid
   productVersion       ProductVersion @relation(fields: [productVersionId], references: [id])
-  vehicleModel         String         @map("vehicle_model") @db.VarChar(64)
-  modelDefinitionId    String?        @map("model_definition_id") @db.Uuid
-  modelDefinition      VehicleModelDefinition? @relation(fields: [modelDefinitionId], references: [id])
+  modelDefinitionId    String         @map("model_definition_id") @db.Uuid
+  modelDefinition      VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
   monthlyFeeRate       Decimal        @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
   minPeriodMonths      Int            @map("min_period_months")
   maxPeriodMonths      Int            @map("max_period_months")
@@ -2825,7 +2822,6 @@ model ProductPriceRule {
 
   @@unique([productVersionId, modelDefinitionId], map: "product_price_rule_product_version_model_definition_key")
   @@index([productVersionId])
-  @@index([vehicleModel])
   @@index([modelDefinitionId])
   @@index([status])
   @@map("product_price_rule")
@@ -2840,9 +2836,8 @@ model Vehicle {
   series                        String?                   @db.VarChar(64)
   model                         String?                   @db.VarChar(64)
   modelYear                     Int?                      @map("model_year")
-  vehicleModel                  String?                   @map("vehicle_model") @db.VarChar(64)
-  modelDefinitionId             String?                   @map("model_definition_id") @db.Uuid
-  modelDefinition               VehicleModelDefinition?   @relation(fields: [modelDefinitionId], references: [id])
+  modelDefinitionId             String                    @map("model_definition_id") @db.Uuid
+  modelDefinition               VehicleModelDefinition    @relation(fields: [modelDefinitionId], references: [id])
   batteryCapacityKwh            Decimal?                  @map("battery_capacity_kwh") @db.Decimal(6, 2)
   batteryUsageType              VehicleBatteryUsageType   @default(BUYOUT) @map("battery_usage_type")
   acquisitionMode               VehicleAcquisitionMode    @default(OWNED_CASH) @map("acquisition_mode")
@@ -2894,7 +2889,6 @@ model Vehicle {
   updatedBy                     String?                   @map("updated_by") @db.Uuid
   deletedAt                     DateTime?                 @map("deleted_at") @db.Timestamptz(6)
 
-  @@index([vehicleModel])
   @@index([modelDefinitionId])
   @@index([status])
   @@index([salePriceStatus])
@@ -2906,7 +2900,6 @@ model Vehicle {
 model VehicleModelDefinition {
   id                  String        @id @default(uuid()) @db.Uuid
   modelCode           String        @unique @map("model_code") @db.VarChar(64)
-  legacyVehicleModel  String?       @unique @map("legacy_vehicle_model") @db.VarChar(64)
   brand               String        @db.VarChar(64)
   series              String?       @db.VarChar(64)
   modelName           String        @map("model_name") @db.VarChar(128)
@@ -2939,7 +2932,6 @@ model VehicleModelDefinition {
   residualModelRuns   ResidualModelRun[]
 
   @@index([modelCode])
-  @@index([legacyVehicleModel])
   @@index([brand])
   @@index([series])
   @@index([enabled])
@@ -4125,7 +4117,6 @@ model SubscriptionQuote {
   mileagePackagePriceAmount  BigInt?            @map("mileage_package_price_amount")
   energyPackagePriceAmount   BigInt?            @map("energy_package_price_amount")
   benefitPackagePriceAmount  BigInt?            @map("benefit_package_price_amount")
-  vehicleModel               String             @map("vehicle_model") @db.VarChar(64)
   vehiclePurchasePriceAmount BigInt             @map("vehicle_purchase_price_amount")
   monthlyFeeRate             Decimal            @map("monthly_fee_rate") @db.Decimal(8, 6)
   monthlyFeeAmount           BigInt             @map("monthly_fee_amount")
@@ -4135,10 +4126,9 @@ model SubscriptionQuote {
   overMileageFeeAmount       BigInt             @map("over_mileage_fee_amount")
   energyLimitKwh             Int?               @map("energy_limit_kwh")
   energyLimitCount           Int?               @map("energy_limit_count")
-  modelDefinitionIdSnapshot  String?            @map("model_definition_id_snapshot") @db.Uuid
-  modelDisplayNameSnapshot   String?            @map("model_display_name_snapshot") @db.VarChar(128)
-  legacyVehicleModelSnapshot String?            @map("legacy_vehicle_model_snapshot") @db.VarChar(64)
-  legacyVehicleModelCodeSnapshot String?        @map("legacy_vehicle_model_code_snapshot") @db.VarChar(64)
+  modelDefinitionIdSnapshot  String             @map("model_definition_id_snapshot") @db.Uuid
+  modelCodeSnapshot          String             @map("model_code_snapshot") @db.VarChar(64)
+  modelDisplayNameSnapshot   String             @map("model_display_name_snapshot") @db.VarChar(128)
   status                     QuoteStatus        @default(DRAFT)
   confirmedAt                DateTime?          @map("confirmed_at") @db.Timestamptz(6)
   confirmedBy                String?            @map("confirmed_by") @db.Uuid
@@ -4163,7 +4153,6 @@ model SubscriptionQuote {
   @@index([mileagePackageId])
   @@index([energyPackageId])
   @@index([benefitPackageId])
-  @@index([vehicleModel])
   @@index([status])
   @@index([confirmedBy])
   @@map("subscription_quote")
@@ -4189,7 +4178,6 @@ model SubscriptionOrder {
   product                    Product               @relation(fields: [productId], references: [id])
   productVersionId           String                @map("product_version_id") @db.Uuid
   productVersion             ProductVersion        @relation(fields: [productVersionId], references: [id])
-  vehicleModel               String                @map("vehicle_model") @db.VarChar(64)
   vehiclePurchasePriceAmount BigInt                @map("vehicle_purchase_price_amount")
   monthlyFeeAmount           BigInt                @map("monthly_fee_amount")
   depositAmount              BigInt                @map("deposit_amount")
@@ -4198,10 +4186,9 @@ model SubscriptionOrder {
   overMileageFeeAmount       BigInt                @map("over_mileage_fee_amount")
   energyLimitKwh             Int?                  @map("energy_limit_kwh")
   energyLimitCount           Int?                  @map("energy_limit_count")
-  modelDefinitionIdSnapshot  String?               @map("model_definition_id_snapshot") @db.Uuid
-  modelDisplayNameSnapshot   String?               @map("model_display_name_snapshot") @db.VarChar(128)
-  legacyVehicleModelSnapshot String?               @map("legacy_vehicle_model_snapshot") @db.VarChar(64)
-  legacyVehicleModelCodeSnapshot String?           @map("legacy_vehicle_model_code_snapshot") @db.VarChar(64)
+  modelDefinitionIdSnapshot  String                @map("model_definition_id_snapshot") @db.Uuid
+  modelCodeSnapshot          String                @map("model_code_snapshot") @db.VarChar(64)
+  modelDisplayNameSnapshot   String                @map("model_display_name_snapshot") @db.VarChar(128)
   quoteSnapshot              Json                  @map("quote_snapshot")
   customerSelectedSnapshot   Json?                 @map("customer_selected_snapshot")
   finalPlanSnapshot          Json?                 @map("final_plan_snapshot")
@@ -4257,7 +4244,6 @@ model SubscriptionOrder {
   @@index([riskResultId])
   @@index([productId])
   @@index([productVersionId])
-  @@index([vehicleModel])
   @@index([orderSource])
   @@index([orderStatus])
   @@index([creditReviewStatus])

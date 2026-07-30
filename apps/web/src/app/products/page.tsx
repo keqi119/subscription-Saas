@@ -93,6 +93,7 @@ interface PackageRow {
   minPurchasePriceAmount?: number | null;
   modelDefinition?: VehicleModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
+  modelCode?: string | null;
   modelDisplayName?: string | null;
   monthlyEnergyCount?: number | null;
   monthlyEnergyKwh?: number | null;
@@ -110,7 +111,6 @@ interface PackageRow {
   serviceDescription?: string | null;
   stationScope?: string | null;
   status: string;
-  vehicleModel?: string | null;
   vehicleModelName?: string | null;
 }
 
@@ -271,7 +271,7 @@ function packageModelDisplayName(row?: PackageRow | null) {
   if (!row) {
     return "-";
   }
-  return row.modelDisplayName ?? row.modelDefinition?.displayName ?? row.vehicleModel ?? "-";
+  return row.modelDisplayName ?? row.modelDefinition?.displayName ?? "-";
 }
 
 function getErrorMessage(error: unknown) {
@@ -1473,7 +1473,7 @@ function packageTable(
 function packageSpecificColumns(kind: PackageKind): ColumnsType<PackageRow> {
   if (kind === "vehicle") {
     return [
-      { render: (_, record) => record.modelDefinition?.modelCode ?? "-", title: "车型代码", width: 120 },
+      { render: (_, record) => record.modelCode ?? record.modelDefinition?.modelCode ?? "-", title: "车型代码", width: 120 },
       { render: (_, record) => packageModelDisplayName(record), title: "车型显示名", width: 150 },
       { dataIndex: "monthlyFeeRate", render: formatRate, title: "月费率", width: 100 },
       { render: (_, record) => `${record.minPeriodMonths ?? "-"} - ${record.maxPeriodMonths ?? "-"} 个月`, title: "订阅周期", width: 140 }

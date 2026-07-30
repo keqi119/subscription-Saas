@@ -92,7 +92,7 @@ export function trackVehicleModelExternalContractWarning(input: VehicleModelExte
     metadata: {
       consumerId: input.consumerId ?? null,
       deprecationStage: "warning",
-      field: "vehicleModel",
+      field: "modelDefinitionId",
       replacement: input.replacement ?? "modelDefinitionId",
       surface: input.surface,
       ...(input.metadata ?? {})

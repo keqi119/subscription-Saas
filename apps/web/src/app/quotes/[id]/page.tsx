@@ -70,10 +70,12 @@ interface PackageSnapshot {
   vehicleBaseFeeMode?: string | null;
   vehicleBaseFeeModeLabel?: string | null;
   vehiclePackage?: {
+    modelCode?: string | null;
+    modelDefinitionId?: string | null;
+    modelDisplayName?: string | null;
     monthlyFeeRate?: number | string | null;
     packageName?: string | null;
     packageNo?: string | null;
-    vehicleModel?: string | null;
   } | null;
 }
 
@@ -85,10 +87,16 @@ interface VehicleSnapshot {
   brand?: string | null;
   currentMileageKm?: number | string | null;
   currentSalePriceAmount?: number | string | null;
+  model?: string | null;
+  modelCode?: string | null;
+  modelCodeSnapshot?: string | null;
+  modelDefinitionId?: string | null;
+  modelDefinitionIdSnapshot?: string | null;
+  modelDisplayName?: string | null;
+  modelDisplayNameSnapshot?: string | null;
   plateNo?: string | null;
   series?: string | null;
   status?: string | null;
-  vehicleModel?: string | null;
   vehicleNo?: string | null;
   vin?: string | null;
 }
@@ -136,12 +144,12 @@ interface QuoteDetail {
   energyLimitKwh?: number | string | null;
   energyPackagePriceAmount?: number | string | null;
   id: string;
-  legacyVehicleModelSnapshot?: string | null;
   mileagePackagePriceAmount?: number | string | null;
   mileageLimitKm?: number | string | null;
   monthlyFeeAmount?: number | string | null;
   monthlyFeeCapAmount?: number | string | null;
   monthlyFeeRate?: number | string | null;
+  modelCodeSnapshot?: string | null;
   modelDefinitionIdSnapshot?: string | null;
   modelDisplayName?: string | null;
   modelDisplayNameSnapshot?: string | null;
@@ -172,7 +180,6 @@ interface QuoteDetail {
   vehicleBaseFeeAmount?: number | string | null;
   vehicleBaseFeeCapAmount?: number | string | null;
   vehicleId?: string | null;
-  vehicleModel?: string | null;
   vehicleSalePriceAmount?: number | string | null;
   vehicleSnapshot?: VehicleSnapshot | null;
 }
@@ -375,18 +382,20 @@ function getVehicleLabel(quote: QuoteDetail) {
   return joinText(
     quote.vehicleSnapshot?.vehicleNo ?? quote.vehicle?.vehicleNo,
     quote.vehicleSnapshot?.plateNo ?? quote.vehicle?.plateNo,
-    quote.vehicleSnapshot?.vehicleModel ?? quote.vehicle?.vehicleModel ?? quote.vehicleModel
+    quote.vehicleSnapshot?.modelDisplayNameSnapshot ??
+      quote.vehicle?.modelDisplayName ??
+      quote.modelDisplayNameSnapshot ??
+      quote.modelCodeSnapshot
   );
 }
 
-function getVehicleModel(quote: QuoteDetail) {
+function getCanonicalModel(quote: QuoteDetail) {
   return safeText(
     quote.modelDisplayName ??
       quote.modelDisplayNameSnapshot ??
-      quote.legacyVehicleModelSnapshot ??
-      quote.vehicleSnapshot?.vehicleModel ??
-      quote.vehicle?.vehicleModel ??
-      quote.vehicleModel
+      quote.vehicleSnapshot?.modelDisplayNameSnapshot ??
+      quote.vehicle?.modelDisplayName ??
+      quote.modelCodeSnapshot
   );
 }
 
@@ -660,7 +669,7 @@ export default function QuoteDetailPage() {
                   { label: "车牌号", children: safeText(quote.vehicleSnapshot?.plateNo ?? quote.vehicle?.plateNo) },
                   { label: "品牌", children: safeText(quote.vehicleSnapshot?.brand ?? quote.vehicle?.brand) },
                   { label: "车系", children: safeText(quote.vehicleSnapshot?.series ?? quote.vehicle?.series) },
-                  { label: "车型", children: getVehicleModel(quote) },
+                  { label: "车型", children: getCanonicalModel(quote) },
                   { label: "电池容量", children: formatNumberWithUnit(quote.vehicleSnapshot?.batteryCapacityKwh ?? quote.vehicle?.batteryCapacityKwh, "kWh") },
                   {
                     label: "电池使用方式",

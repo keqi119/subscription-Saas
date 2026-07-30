@@ -78,21 +78,22 @@ const WORKSPACE_VEHICLE_FIELDS = [
   "currentSalePriceAmount",
   "id",
   "model",
+  "modelCode",
   "modelDefinitionId",
+  "modelDisplayName",
   "modelYear",
   "plateNo",
   "series",
   "status",
-  "vehicleModel",
   "vehicleNo",
   "vin"
 ] as const;
 const WORKSPACE_VEHICLE_ORDER_FIELDS = [
-  "legacyVehicleModelSnapshot",
+  "modelCodeSnapshot",
+  "modelDefinitionIdSnapshot",
   "modelDisplayName",
   "modelDisplayNameSnapshot",
-  "modelDisplaySource",
-  "vehicleModel"
+  "modelDisplaySource"
 ] as const;
 const WORKSPACE_VEHICLE_INSURANCE_POLICY_FIELDS = [
   "createdAt",
@@ -217,8 +218,10 @@ const WORKSPACE_QUOTE_VEHICLE_PACKAGE_RECORD_FIELDS = [
   "configName",
   "maxPurchasePriceAmount",
   "minPurchasePriceAmount",
+  "modelCode",
+  "modelDefinitionId",
+  "modelDisplayName",
   "monthlyFeeRate",
-  "vehicleModel"
 ] as const;
 const WORKSPACE_QUOTE_MILEAGE_PACKAGE_RECORD_FIELDS = [
   ...WORKSPACE_QUOTE_PACKAGE_BASE_FIELDS,
@@ -293,9 +296,10 @@ const WORKSPACE_QUOTE_VEHICLE_TOP_LEVEL_FIELDS = [
   "brand",
   "currentMileageKm",
   "currentSalePriceAmount",
-  "legacyVehicleModelCodeSnapshot",
-  "legacyVehicleModelSnapshot",
   "model",
+  "modelCode",
+  "modelCodeSnapshot",
+  "modelDefinitionId",
   "modelDefinitionIdSnapshot",
   "modelDisplayName",
   "modelDisplayNameSnapshot",
@@ -304,7 +308,6 @@ const WORKSPACE_QUOTE_VEHICLE_TOP_LEVEL_FIELDS = [
   "plateNo",
   "series",
   "vehicleId",
-  "vehicleModel",
   "vehicleNo",
   "vehiclePurchasePriceAmount",
   "vehicleSalePriceAmount",
@@ -320,12 +323,16 @@ const WORKSPACE_QUOTE_VEHICLE_FIELDS = [
   "currentSalePriceAmount",
   "id",
   "model",
+  "modelCode",
+  "modelCodeSnapshot",
   "modelDefinitionId",
+  "modelDefinitionIdSnapshot",
+  "modelDisplayName",
+  "modelDisplayNameSnapshot",
   "modelYear",
   "plateNo",
   "series",
   "status",
-  "vehicleModel",
   "vehicleNo",
   "vin"
 ] as const;

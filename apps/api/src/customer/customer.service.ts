@@ -41,13 +41,9 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
-  resolveVehicleModelDefinitionId,
-  vehicleModelReadPathMatches
-} from "../common/vehicle-model-resolver";
-import {
   buildVehicleModelSnapshot,
-  type VehicleModelSnapshotDefinition,
-  vehicleModelSnapshotDefinitionSelect
+  type ModelDefinitionSnapshot,
+  modelDefinitionSnapshotSelect
 } from "../common/vehicle-model-snapshot";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -140,7 +136,7 @@ const selfServicePackageInclude = {
 
 const selfServiceVehiclePackageInclude = {
   ...selfServicePackageInclude,
-  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+  modelDefinition: { select: modelDefinitionSnapshotSelect }
 } satisfies Prisma.VehiclePackageInclude;
 
 const selfServiceSubscriptionPlanInclude = {
@@ -172,7 +168,7 @@ const selfServiceSubscriptionPlanInclude = {
 } satisfies Prisma.SubscriptionPlanInclude;
 
 const selfServiceVehicleInclude = {
-  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+  modelDefinition: { select: modelDefinitionSnapshotSelect }
 } satisfies Prisma.VehicleInclude;
 
 const applicationInclude = {
@@ -249,9 +245,10 @@ type ApplicationWithDetails = Prisma.ApplicationGetPayload<{ include: typeof app
 type SelfServiceSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
   include: typeof selfServiceSubscriptionPlanInclude;
 }>;
-type SelfServiceVehicle = Prisma.VehicleGetPayload<object> & {
-  modelDefinition?: VehicleModelSnapshotDefinition | null;
-};
+type SelfServiceVehicle = Prisma.VehicleGetPayload<{
+  include: typeof selfServiceVehicleInclude;
+}>;
+type VehicleRecord = Prisma.VehicleGetPayload<object>;
 type Tx = Prisma.TransactionClient;
 type ApplicationReviewType = "material" | "credit" | "product" | "vehicle";
 type ApplicationFinalPlanInput = {
@@ -898,7 +895,9 @@ export class CustomerService {
       const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: details.vehicle.id } });
 
       const finalPlanSnapshot = (before.finalPlanSnapshot ?? details.finalPlanSnapshot) as Prisma.InputJsonValue;
-      const modelSnapshot = buildVehicleModelSnapshot(details.vehicle);
+      const modelSnapshot = buildVehicleModelSnapshot(
+        toCanonicalModelIdentity(details.vehicle)
+      );
       const quote = await tx.subscriptionQuote.create({
         data: {
           applicationId: before.id,
@@ -935,7 +934,6 @@ export class CustomerService {
           vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
           vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
           vehicleId: details.vehicle.id,
-          vehicleModel: assertVehicleModel(details.vehicle.vehicleModel),
           vehiclePackageId: details.plan.vehiclePackage.id,
           vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
           vehicleSalePriceAmount: details.vehicleSalePriceAmount,
@@ -976,7 +974,6 @@ export class CustomerService {
           riskResultId: null,
           updatedBy: user.id,
           vehicleId: details.vehicle.id,
-          vehicleModel: assertVehicleModel(details.vehicle.vehicleModel),
           vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
           vehicleReviewStatus: OrderReviewStatus.APPROVED
         }
@@ -1145,11 +1142,7 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
-      throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
-    }
-    const vehicleModel = vehicle.vehicleModel;
-    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
+    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
@@ -1179,10 +1172,12 @@ export class CustomerService {
       brand: vehicle.brand,
       currentMileageKm: vehicle.currentMileageKm,
       currentSalePriceAmount: Number(vehicleSalePriceAmount),
+      model: vehicle.model,
+      modelYear: vehicle.modelYear,
+      ...buildVehicleModelSnapshot(toCanonicalModelIdentity(vehicle)),
       plateNo: vehicle.plateNo,
       series: vehicle.series,
       status: vehicle.status,
-      vehicleModel,
       vehicleNo: vehicle.vehicleNo,
       vin: vehicle.vin
     });
@@ -1243,7 +1238,7 @@ export class CustomerService {
           intentSubscriptionPlanId: plan.id,
           intentVehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
           intentVehicleId: vehicle.id,
-          intendedModel: vehicleModel,
+          intendedModel: vehicle.modelDefinition.displayName,
           intendedPeriodMonths: dto.periodMonths,
           materialReviewStatus: OrderReviewStatus.PENDING,
           planConfirmStatus: PlanConfirmStatus.PENDING,
@@ -1361,18 +1356,14 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
-      throw new BadRequestException("所选车辆缺少车型信息，无法提交自助进件");
-    }
-    const vehicleModel = vehicle.vehicleModel;
-    if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
+    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     if (dto.periodMonths !== undefined) {
       assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
     }
 
-    return { plan, vehicle, vehicleModel };
+    return { plan, vehicle };
   }
 
   async getApplication(id: string, user: RequestUser) {
@@ -2291,8 +2282,7 @@ async function loadApplicationFinalPlanDetails(
 
   assertSelfServiceSubscriptionPlanAvailable(plan);
   assertApplicationVehicleExists(vehicle);
-  const vehicleModel = assertVehicleModel(vehicle.vehicleModel);
-  if (!vehicleModelReadPathMatches(vehicle, plan.vehiclePackage)) {
+  if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
     throw new BadRequestException("所选套餐不适用于该车辆车型。");
   }
   assertSelfServicePeriodInRange(input.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
@@ -2317,10 +2307,12 @@ async function loadApplicationFinalPlanDetails(
     brand: vehicle.brand,
     currentMileageKm: vehicle.currentMileageKm,
     currentSalePriceAmount: Number(vehicleSalePriceAmount),
+    model: vehicle.model,
+    modelYear: vehicle.modelYear,
+    ...buildVehicleModelSnapshot(toCanonicalModelIdentity(vehicle)),
     plateNo: vehicle.plateNo,
     series: vehicle.series,
     status: vehicle.status,
-    vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
   });
@@ -2428,19 +2420,23 @@ function resolveApplicationFinalPlanInput(
   return { periodMonths, subscriptionPlanId, vehicleId };
 }
 
-function assertApplicationVehicleExists(
-  vehicle: SelfServiceVehicle | null
-): asserts vehicle is SelfServiceVehicle {
+function assertApplicationVehicleExists<T extends VehicleRecord>(
+  vehicle: T | null
+): asserts vehicle is T {
   if (!vehicle || vehicle.deletedAt) {
     throw new NotFoundException("Vehicle not found.");
   }
 }
 
-function assertVehicleModel(model: SelfServiceVehicle["vehicleModel"]) {
-  if (!model) {
-    throw new BadRequestException("车辆缺少车型信息，无法确认方案。");
-  }
-  return model;
+function toCanonicalModelIdentity(vehicle: {
+  modelDefinition: ModelDefinitionSnapshot;
+  modelDefinitionId: string;
+}) {
+  return {
+    modelCode: vehicle.modelDefinition.modelCode,
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: vehicle.modelDefinition.displayName
+  };
 }
 
 async function assertApplicationVehicleReviewAllowed(
@@ -2517,8 +2513,8 @@ function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {
 
 function assertApplicationVehicleCanEnterOrder(
   application: ApplicationWithDetails,
-  vehicle: SelfServiceVehicle | null
-): asserts vehicle is SelfServiceVehicle {
+  vehicle: VehicleRecord | null
+): asserts vehicle is VehicleRecord {
   assertApplicationVehicleExists(vehicle);
   if (
     application.applicationSource === ApplicationSource.SELF_SERVICE &&
@@ -2857,9 +2853,9 @@ function normalizeRequiredText(value: string | undefined | null, field: string) 
   return normalized;
 }
 
-function assertSelfServiceVehicleAvailable(
-  vehicle: SelfServiceVehicle | null
-): asserts vehicle is SelfServiceVehicle {
+function assertSelfServiceVehicleAvailable<T extends VehicleRecord>(
+  vehicle: T | null
+): asserts vehicle is T {
   if (!vehicle || vehicle.deletedAt) {
     throw new NotFoundException("Vehicle not found.");
   }
@@ -3019,7 +3015,7 @@ function toSelfServiceSubscriptionPlanSnapshot(plan: SelfServiceSubscriptionPlan
 }
 
 type SelfServicePackage =
-  | Prisma.VehiclePackageGetPayload<{ include: typeof selfServicePackageInclude }>
+  | Prisma.VehiclePackageGetPayload<{ include: typeof selfServiceVehiclePackageInclude }>
   | Prisma.MileagePackageGetPayload<{ include: typeof selfServicePackageInclude }>
   | Prisma.EnergyPackageGetPayload<{ include: typeof selfServicePackageInclude }>
   | Prisma.BenefitPackageGetPayload<{ include: typeof selfServicePackageInclude }>;
@@ -3034,14 +3030,16 @@ function toSelfServicePackageSnapshot(row: SelfServicePackage) {
     status: row.status
   };
 
-  if ("vehicleModel" in row) {
+  if ("modelDefinitionId" in row) {
     result.configName = row.configName;
     result.maxPurchasePriceAmount =
       row.maxPurchasePriceAmount === null ? null : Number(row.maxPurchasePriceAmount);
     result.minPurchasePriceAmount =
       row.minPurchasePriceAmount === null ? null : Number(row.minPurchasePriceAmount);
+    result.modelCode = row.modelDefinition.modelCode;
+    result.modelDefinitionId = row.modelDefinitionId;
+    result.modelDisplayName = row.modelDefinition.displayName;
     result.monthlyFeeRate = Number(row.monthlyFeeRate);
-    result.vehicleModel = row.vehicleModel;
   }
   if ("monthlyMileageKm" in row) {
     result.monthlyMileageKm = row.monthlyMileageKm;

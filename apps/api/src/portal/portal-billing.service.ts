@@ -9,7 +9,6 @@ import {
   Prisma
 } from "@prisma/client";
 
-import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -108,8 +107,7 @@ const portalOrderInclude = {
       id: true,
       model: true,
       modelYear: true,
-      series: true,
-      vehicleModel: true
+      series: true
     }
   }
 } satisfies Prisma.SubscriptionOrderInclude;
@@ -482,14 +480,6 @@ function toVehicleSummary(order: PortalOrder) {
   if (!vehicle) {
     return null;
   }
-  const modelDisplay = buildQuoteOrderModelDisplay({
-    legacyVehicleModelCodeSnapshot: order.legacyVehicleModelCodeSnapshot,
-    legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
-    modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
-    modelDisplayNameSnapshot: order.modelDisplayNameSnapshot,
-    vehicleModel: order.vehicleModel ?? vehicle.vehicleModel
-  });
-
   const summary = {
     batteryCapacityKwh: vehicle.batteryCapacityKwh === null ? null : Number(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
@@ -501,14 +491,16 @@ function toVehicleSummary(order: PortalOrder) {
       .join(" "),
     id: vehicle.id,
     model: vehicle.model,
+    modelCode: order.modelCodeSnapshot,
+    modelDefinitionId: order.modelDefinitionIdSnapshot,
+    modelDisplayName: order.modelDisplayNameSnapshot,
     modelYear: vehicle.modelYear,
-    series: vehicle.series,
-    vehicleModel: vehicle.vehicleModel
+    series: vehicle.series
   };
 
   return {
     ...summary,
-    displayName: modelDisplay.modelDisplayName ?? summary.displayName
+    displayName: order.modelDisplayNameSnapshot || summary.displayName
   };
 }
 

@@ -14,8 +14,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../src/common/business-number";
 import { STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS } from "../src/contract/contract-pdf-render-model";
 import {
@@ -429,13 +427,16 @@ describe("subscription order and contract rules", () => {
   it("freezes the quote model snapshot when creating an order from quote", async () => {
     const harness = createOrderServiceHarness({
       quote: {
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
-        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+        modelCodeSnapshot: "NIO_ET5",
         modelDefinitionIdSnapshot: "quote-model-definition",
         modelDisplayNameSnapshot: "Quote Frozen ET5"
       },
       vehicle: {
-        modelDefinition: { displayName: "Current Vehicle Display" },
+        modelDefinition: {
+          displayName: "Current Vehicle Display",
+          id: "current-vehicle-model-definition",
+          modelCode: "CURRENT_MODEL"
+        },
         modelDefinitionId: "current-vehicle-model-definition"
       }
     });
@@ -451,8 +452,7 @@ describe("subscription order and contract rules", () => {
     expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          legacyVehicleModelSnapshot: VehicleModel.ET5,
-          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+          modelCodeSnapshot: "NIO_ET5",
           modelDefinitionIdSnapshot: "quote-model-definition",
           modelDisplayNameSnapshot: "Quote Frozen ET5"
         })
@@ -460,13 +460,12 @@ describe("subscription order and contract rules", () => {
     );
   });
 
-  it("derives order model code snapshot from a legacy quote enum snapshot when the code snapshot is missing", async () => {
+  it("copies the required canonical model code snapshot from the quote", async () => {
     const harness = createOrderServiceHarness({
       quote: {
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
-        legacyVehicleModelCodeSnapshot: null,
+        modelCodeSnapshot: "MODEL_X_2027",
         modelDefinitionIdSnapshot: "quote-model-definition",
-        modelDisplayNameSnapshot: "Quote Frozen ET5"
+        modelDisplayNameSnapshot: "Model X 2027"
       }
     });
     harness.state.vehicleStatus = VehicleStatus.RESERVED;
@@ -481,7 +480,7 @@ describe("subscription order and contract rules", () => {
     expect(harness.prisma.subscriptionOrder.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          legacyVehicleModelCodeSnapshot: VehicleModel.ET5
+          modelCodeSnapshot: "MODEL_X_2027"
         })
       })
     );
@@ -502,33 +501,32 @@ describe("subscription order and contract rules", () => {
   it("order response exposes snapshot display metadata before runtime vehicle display", async () => {
     const harness = createOrderServiceHarness({
       order: {
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
-        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+        modelCodeSnapshot: "NIO_ET5",
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen Order ET5"
       },
       vehicle: {
-        modelDefinition: { displayName: "Runtime Vehicle ET5", id: "runtime-model" },
+        modelDefinition: {
+          displayName: "Runtime Vehicle ET5",
+          id: "runtime-model",
+          modelCode: "RUNTIME_ET5"
+        },
         modelDefinitionId: "runtime-model"
       }
     });
 
     const order = (await harness.service.getOrder(harness.orderId, harness.user)) as {
-      legacyVehicleModelSnapshot: VehicleModel;
-      legacyVehicleModelCodeSnapshot: string;
+      modelCodeSnapshot: string;
       modelDefinitionIdSnapshot: string;
       modelDisplayName: string;
       modelDisplaySource: string;
-      vehicleModel: VehicleModel;
     };
 
     expect(order).toMatchObject({
-      legacyVehicleModelSnapshot: VehicleModel.ET5,
-      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+      modelCodeSnapshot: "NIO_ET5",
       modelDefinitionIdSnapshot: "snapshot-model",
       modelDisplayName: "Frozen Order ET5",
-      modelDisplaySource: "SNAPSHOT",
-      vehicleModel: VehicleModel.ET5
+      modelDisplaySource: "SNAPSHOT"
     });
   });
 
@@ -820,6 +818,12 @@ function createOrderServiceHarness(options: {
       deletedAt: null,
       id: vehicleId,
       model: "ET5",
+      modelDefinition: {
+        displayName: "ET5",
+        id: "model-et5",
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       plateNo: "沪A00001",
       purchasePriceAmount: 12000000n,
       status: state.vehicleStatus,
@@ -863,6 +867,9 @@ function createOrderServiceHarness(options: {
       expiredAt: null,
       id: quoteId,
       mileageLimitKm: 1500,
+      modelCodeSnapshot: "NIO_ET5",
+      modelDefinitionIdSnapshot: "model-et5",
+      modelDisplayNameSnapshot: "ET5",
       monthlyFeeAmount: 300000n,
       order: null,
       overMileageFeeAmount: 100n,
@@ -880,7 +887,6 @@ function createOrderServiceHarness(options: {
       updatedBy: user.id,
       vehicle: buildVehicle(),
       vehicleId,
-      vehicleModel: "ET5",
       vehiclePurchasePriceAmount: 10000000n,
       vehicleSnapshot: { vehicleNo: "VEH2026060200001", vin: "VIN202606020000001" },
       ...options.quote
@@ -915,6 +921,9 @@ function createOrderServiceHarness(options: {
       energyLimitKwh: 200,
       id: orderId,
       mileageLimitKm: 1500,
+      modelCodeSnapshot: "NIO_ET5",
+      modelDefinitionIdSnapshot: "model-et5",
+      modelDisplayNameSnapshot: "ET5",
       monthlyFeeAmount: 300000n,
       orderNo: "ORD202606020800000001",
       orderStatus: state.orderStatus,
@@ -937,7 +946,6 @@ function createOrderServiceHarness(options: {
       updatedBy: user.id,
       vehicle: buildVehicle(),
       vehicleId,
-      vehicleModel: "ET5",
       vehiclePurchasePriceAmount: 10000000n,
       ...options.order
     };

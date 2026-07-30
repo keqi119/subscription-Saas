@@ -112,7 +112,8 @@ describe("default seed baseline customer and catalog data", () => {
       expect(catalogSource).toContain(upsert);
     }
     expect(catalogSource).toContain("upsertCanonicalProductPriceRule(prisma");
-    expect(catalogSource).toContain('vehicleModel: "NIO_ET5"');
+    expect(catalogSource).toContain('modelCode: "NIO_ET5"');
+    expect(catalogSource).toContain("modelDefinitionId: et5ModelDefinition.id");
   });
 
   it("keeps seed idempotent for baseline objects", () => {

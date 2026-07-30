@@ -138,6 +138,7 @@ interface Vehicle {
   model?: string | null;
   modelDefinition?: VehicleModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
+  modelCode?: string | null;
   modelDisplayName?: string | null;
   modelYear?: number | null;
   nextSalePriceReviewAt?: string | null;
@@ -151,7 +152,6 @@ interface Vehicle {
   salePriceStatus: string;
   series?: string | null;
   status: string;
-  vehicleModel?: string | null;
   vehicleNo: string;
   vin?: string | null;
 }
@@ -1041,7 +1041,7 @@ function getErrorMessage(error: unknown) {
 }
 
 function vehicleModelText(vehicle: Vehicle) {
-  const modelDisplayName = vehicle.modelDefinition?.displayName ?? vehicle.modelDisplayName ?? vehicle.vehicleModel;
+  const modelDisplayName = vehicle.modelDisplayName ?? vehicle.modelDefinition?.displayName;
   return [vehicle.brand, vehicle.series, vehicle.model, modelDisplayName].filter(Boolean).join(" / ") || "-";
 }
 

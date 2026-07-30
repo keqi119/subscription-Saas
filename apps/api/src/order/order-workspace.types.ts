@@ -84,8 +84,9 @@ export type OrderWorkspaceDetail = {
   finalDepositAmount?: unknown;
   finalPlanConfirmedAt?: unknown;
   id?: unknown;
-  legacyVehicleModelSnapshot?: unknown;
   mileageLimitKm?: unknown;
+  modelCodeSnapshot?: unknown;
+  modelDefinitionIdSnapshot?: unknown;
   modelDisplayName?: unknown;
   modelDisplayNameSnapshot?: unknown;
   modelDisplaySource?: unknown;
@@ -99,7 +100,6 @@ export type OrderWorkspaceDetail = {
   quoteSnapshot?: unknown;
   riskResult?: OrderWorkspaceRiskDetail | null;
   vehicle?: OrderWorkspaceVehicleDetail | null;
-  vehicleModel?: unknown;
   vehicleReviewStatus?: unknown;
 };
 
@@ -184,12 +184,13 @@ export type OrderWorkspaceVehicleDetail = {
   insuranceClaims?: OrderWorkspaceInsuranceClaimDetail[];
   insurancePolicies?: OrderWorkspaceVehicleInsurancePolicyDetail[];
   model?: unknown;
+  modelCode?: unknown;
   modelDefinitionId?: unknown;
+  modelDisplayName?: unknown;
   modelYear?: unknown;
   plateNo?: unknown;
   series?: unknown;
   status?: unknown;
-  vehicleModel?: unknown;
   vehicleNo?: unknown;
   vin?: unknown;
 };

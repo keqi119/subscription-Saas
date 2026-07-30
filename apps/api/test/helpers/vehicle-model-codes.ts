@@ -1,12 +1,12 @@
-export const VehicleModel = {
-  EC6: "EC6",
-  ES6: "ES6",
-  ES8: "ES8",
-  ES9: "ES9",
-  ET5: "ET5",
-  ET5T: "ET5T",
-  ET7: "ET7",
-  ET9: "ET9"
+export const TEST_MODEL_CODES = {
+  EC6: "NIO_EC6",
+  ES6: "NIO_ES6",
+  ES8: "NIO_ES8",
+  ES9: "NIO_ES9",
+  ET5: "NIO_ET5",
+  ET5T: "NIO_ET5T",
+  ET7: "NIO_ET7",
+  ET9: "NIO_ET9"
 } as const;
 
-export type VehicleModel = (typeof VehicleModel)[keyof typeof VehicleModel];
+export type TestModelCode = (typeof TEST_MODEL_CODES)[keyof typeof TEST_MODEL_CODES];

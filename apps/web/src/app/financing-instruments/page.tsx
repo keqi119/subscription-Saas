@@ -87,6 +87,9 @@ interface VehicleBrief {
   brand?: string | null;
   id: string;
   model?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   plateNo?: string | null;
   vehicleNo?: string | null;
   vin?: string | null;
@@ -94,7 +97,6 @@ interface VehicleBrief {
 
 interface VehicleOptionRow extends VehicleBrief {
   purchasePriceAmount?: number | null;
-  vehicleModel?: string | null;
 }
 
 interface FinancingAllocationRow {
@@ -201,7 +203,9 @@ interface PoolAllocationPreviewItem {
   reason?: string | null;
   vehicleCoverageBps?: number | null;
   vehicleId: string;
-  vehicleModel?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   vehicleNo?: string | null;
   vin?: string | null;
 }
@@ -240,7 +244,12 @@ const statusColors: Record<string, string> = {
 };
 
 function vehicleOptionLabel(vehicle: VehicleOptionRow) {
-  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin, vehicle.vehicleModel ?? vehicle.model]
+  return [
+    vehicle.vehicleNo,
+    vehicle.plateNo,
+    vehicle.vin,
+    vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+  ]
     .filter(Boolean)
     .join(" / ");
 }
@@ -256,7 +265,10 @@ function vehicleModelText(vehicle?: VehicleBrief | null) {
   if (!vehicle) {
     return "-";
   }
-  return [vehicle.brand, vehicle.model].filter(Boolean).join(" / ") || "-";
+  return [
+    vehicle.brand,
+    vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+  ].filter(Boolean).join(" / ") || "-";
 }
 
 function formatPercentFromRatio(numerator?: number | null, denominator?: number | null) {
@@ -846,7 +858,7 @@ export default function FinancingInstrumentsPage() {
     { dataIndex: "vehicleNo", render: safeText, title: "车辆编号", width: 180 },
     { dataIndex: "vin", render: safeText, title: "VIN", width: 180 },
     { dataIndex: "plateNo", render: safeText, title: "车牌号", width: 120 },
-    { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 130 },
+    { dataIndex: "modelDisplayName", render: safeText, title: "车型", width: 160 },
     { dataIndex: "purchasePriceAmount", render: formatYuan, title: "采购价", width: 130 },
     { dataIndex: "currentSalePriceAmount", render: formatYuan, title: "当前销售价", width: 130 },
     { dataIndex: "allocatedPrincipalAmount", render: formatYuan, title: "预计分摊本金", width: 150 },

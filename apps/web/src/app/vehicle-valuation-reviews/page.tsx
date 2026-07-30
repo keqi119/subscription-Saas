@@ -35,7 +35,6 @@ import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
 import {
   SALE_PRICE_REVIEW_TYPE_LABELS,
-  VEHICLE_MODEL_LABELS,
   VEHICLE_VALUATION_REVIEW_SOURCE_LABELS,
   VEHICLE_VALUATION_REVIEW_STATUS_LABELS,
   labelOf
@@ -56,7 +55,6 @@ interface VehicleModelDefinitionSummary {
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
   modelName: string;
   series?: string | null;
@@ -237,7 +235,7 @@ function vehicleTitle(vehicle?: VehicleSummary | null) {
 }
 
 function vehicleModelDisplayName(vehicle?: VehicleSummary | null) {
-  return vehicle?.modelDisplayName ?? vehicle?.modelDefinition?.displayName ?? labelOf(VEHICLE_MODEL_LABELS, vehicle?.model);
+  return vehicle?.modelDisplayName ?? vehicle?.modelDefinition?.displayName ?? vehicle?.model ?? "-";
 }
 
 function formatSnapshot(value?: unknown) {
@@ -774,7 +772,7 @@ export default function VehicleValuationReviewsPage() {
                 { label: "车系", children: detail.vehicle?.series ?? "-" },
                 { label: "车型代码", children: detail.vehicle?.modelDefinition?.modelCode ?? "-" },
                 { label: "车型", children: vehicleModelDisplayName(detail.vehicle) },
-                { label: "legacy 车型", children: detail.vehicle?.model ?? "-" },
+                { label: "车型配置", children: detail.vehicle?.model ?? "-" },
                 { label: "年款", children: "-" },
                 { label: "当前销售价", children: formatYuan(detail.vehicle?.currentSalePriceAmount) },
                 { label: "原销售价", children: formatYuan(detail.originalSalePriceAmount) }

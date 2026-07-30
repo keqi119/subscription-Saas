@@ -40,12 +40,6 @@ import {
 
 import { PrismaService } from "../prisma/prisma.service";
 import {
-  buildVehicleModelCanonicalCodeMap,
-  canonicalVehicleModelCode,
-  VehicleModelLegacyAdapter
-} from "../common/vehicle-model-resolver";
-import { buildQuoteOrderModelDisplay } from "../common/vehicle-model-snapshot";
-import {
   buildVehicleAssetCostProfilePreview,
   buildVehicleAssetPeriodCost,
   MANUAL_DEPRECIATION_UNSUPPORTED_REASON
@@ -136,7 +130,6 @@ const reportModelDefinitionSelect = {
   deletedAt: true,
   displayName: true,
   id: true,
-  legacyVehicleModel: true,
   modelCode: true
 } satisfies Prisma.VehicleModelDefinitionSelect;
 
@@ -148,7 +141,7 @@ type ReportModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
 export class ReportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async resolveReportModelDefinition(modelDefinitionId: string | undefined, vehicleModel: string | undefined) {
+  private async resolveReportModelDefinition(modelDefinitionId: string | undefined) {
     if (!modelDefinitionId) {
       return null;
     }
@@ -164,82 +157,29 @@ export class ReportService {
     if (!definition) {
       throw new BadRequestException("车型主数据不存在");
     }
-    if (vehicleModel && vehicleModel !== definition.modelCode) {
-      throw new BadRequestException("modelDefinitionId 与 vehicleModel 不一致");
-    }
-
     return definition;
   }
 
-  private async resolveReportModelDefinitionIdentity(
-    modelDefinitionId: string | undefined,
-    vehicleModel: string | undefined
-  ) {
-    if (!modelDefinitionId && !vehicleModel) {
-      return null;
-    }
-
-    return VehicleModelLegacyAdapter.resolveModelDefinitionInput(
-      this.prisma,
-      { modelDefinitionId, vehicleModel },
-      {
-        allowDisabled: true,
-        evidenceContext: {
-          module: "report",
-          operation: "report.filter.resolve",
-          usageKind: "API_ENUM_FILTER"
-        },
-        missingMessage: "车型主数据不存在",
-        mismatchMessage: "modelDefinitionId 与 vehicleModel 不一致"
-      }
-    );
-  }
-
   private async reportVehicleModelWhere(
-    query: Pick<AssetProfitabilityQueryDto, "modelDefinitionId" | "vehicleModel">
+    query: Pick<AssetProfitabilityQueryDto, "modelDefinitionId">
   ): Promise<Prisma.VehicleWhereInput> {
-    const definition = await this.resolveReportModelDefinitionIdentity(query.modelDefinitionId, query.vehicleModel);
+    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId);
     if (!definition) {
       return {};
     }
 
-    return {
-      OR: [
-        { modelDefinitionId: definition.modelDefinitionId },
-        {
-          modelDefinitionId: null,
-          vehicleModel: { in: definition.compatibleVehicleModelCodes }
-        }
-      ]
-    };
+    return { modelDefinitionId: definition.id };
   }
 
   private async reportOrderModelWhere(
-    query: Pick<OrderReportQueryDto, "modelDefinitionId" | "vehicleModel">
+    query: Pick<OrderReportQueryDto, "modelDefinitionId">
   ): Promise<Prisma.SubscriptionOrderWhereInput> {
-    const definition = await this.resolveReportModelDefinitionIdentity(query.modelDefinitionId, query.vehicleModel);
+    const definition = await this.resolveReportModelDefinition(query.modelDefinitionId);
     if (!definition) {
       return {};
     }
 
-    return {
-      OR: [
-        { modelDefinitionIdSnapshot: definition.modelDefinitionId },
-        { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: definition.modelDefinitionId } },
-        {
-          modelDefinitionIdSnapshot: null,
-          vehicleModel: { in: definition.compatibleVehicleModelCodes }
-        },
-        {
-          legacyVehicleModelSnapshot: { in: definition.compatibleVehicleModelCodes },
-          modelDefinitionIdSnapshot: null
-        },
-        {
-          legacyVehicleModelCodeSnapshot: { in: definition.compatibleVehicleModelCodes },
-          modelDefinitionIdSnapshot: null
-        }
-      ]
-    };
+    return { modelDefinitionIdSnapshot: definition.id };
   }
 
   async getDashboardSummary(query: ReportDateRangeQueryDto) {
@@ -354,7 +294,7 @@ export class ReportService {
       totalOrders,
       statusGroups,
       sourceGroups,
-      vehicleModelGroups,
+      modelGroups,
       ordersWithPlans,
       modelDefinitions
     ] =
@@ -371,7 +311,7 @@ export class ReportService {
           _count: { _all: true }
         }),
         this.prisma.subscriptionOrder.groupBy({
-          by: ["vehicleModel"],
+          by: ["modelDefinitionIdSnapshot"],
           where,
           _count: { _all: true }
         }),
@@ -387,17 +327,16 @@ export class ReportService {
           }
         }),
         this.prisma.vehicleModelDefinition.findMany({
-          select: { legacyVehicleModel: true, modelCode: true }
+          select: { displayName: true, id: true, modelCode: true }
         })
       ]);
-    const canonicalCodeByAlias = buildVehicleModelCanonicalCodeMap(modelDefinitions);
 
     return {
       dateRange: range.output,
       totalOrders,
       byStatus: enumCountRows(OrderStatus, statusGroups, "orderStatus", "orderStatus"),
       bySource: enumCountRows(OrderSource, sourceGroups, "orderSource", "orderSource"),
-      byVehicleModel: vehicleModelCountRows(vehicleModelGroups, canonicalCodeByAlias),
+      byVehicleModel: modelDefinitionCountRows(modelGroups, modelDefinitions),
       bySubscriptionPlan: subscriptionPlanRows(ordersWithPlans)
     };
   }
@@ -568,7 +507,7 @@ export class ReportService {
       statusGroups,
       vehicleTotals,
       vehiclesWithCurrentSalePrice,
-      vehicleModelGroups,
+      modelGroups,
       vehicleIncomeBills,
       modelDefinitions
     ] = await Promise.all([
@@ -586,19 +525,19 @@ export class ReportService {
         where: { ...vehicleWhere, currentSalePriceAmount: { not: null } }
       }),
       this.prisma.vehicle.groupBy({
-        by: ["vehicleModel", "status"],
+        by: ["modelDefinitionId", "status"],
         where: vehicleWhere,
         _count: { _all: true }
       }),
       this.prisma.receivableBill.findMany({
         where: billWhere,
         select: {
-          order: { select: { vehicleModel: true } },
+          order: { select: { modelDefinitionIdSnapshot: true } },
           paidAmount: true
         }
       }),
       this.prisma.vehicleModelDefinition.findMany({
-        select: { legacyVehicleModel: true, modelCode: true }
+        select: { displayName: true, id: true, modelCode: true }
       })
     ]);
 
@@ -609,8 +548,7 @@ export class ReportService {
       0
     );
     const totalCurrentSalePriceAmount = toNumber(vehicleTotals._sum.currentSalePriceAmount);
-    const canonicalCodeByAlias = buildVehicleModelCanonicalCodeMap(modelDefinitions);
-    const incomeByVehicleModel = incomeMap(vehicleIncomeBills, canonicalCodeByAlias);
+    const incomeByModelDefinitionId = incomeByModelDefinitionIdMap(vehicleIncomeBills);
 
     // Full ROA/ROE needs funding cost, depreciation, lifecycle revenue, residual value, and expenses.
     return {
@@ -628,12 +566,8 @@ export class ReportService {
           : Math.floor(totalCurrentSalePriceAmount / vehiclesWithCurrentSalePrice),
       totalPurchasePriceAmount: toNumber(vehicleTotals._sum.purchasePriceAmount),
       totalCurrentSalePriceAmount,
-      totalPaidAmount: sumNumbers([...incomeByVehicleModel.values()]),
-      byVehicleModel: vehicleModelAssetRows(
-        vehicleModelGroups,
-        incomeByVehicleModel,
-        canonicalCodeByAlias
-      )
+      totalPaidAmount: sumNumbers([...incomeByModelDefinitionId.values()]),
+      byVehicleModel: modelDefinitionAssetRows(modelGroups, incomeByModelDefinitionId, modelDefinitions)
     };
   }
 
@@ -702,8 +636,8 @@ export class ReportService {
         model: vehicle.model,
         modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
         modelDefinitionId: vehicle.modelDefinitionId,
-        modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
-        vehicleModel: vehicle.vehicleModel,
+        modelCode: vehicle.modelDefinition?.modelCode ?? null,
+        modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition),
         batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
         batteryUsageType: vehicle.batteryUsageType,
         salePriceStatus: vehicle.salePriceStatus,
@@ -1288,11 +1222,11 @@ export class ReportService {
         modelDefinition: row.modelDefinition,
         modelDefinitionId: row.modelDefinitionId,
         modelDisplayName: row.modelDisplayName,
+        modelCode: row.modelDefinition?.modelCode ?? null,
         plateNo: vehicle.plateNo,
         purchasePriceAmount: row.purchasePriceAmount,
         series: vehicle.series,
         vehicleId: vehicle.id,
-        vehicleModel: vehicle.vehicleModel,
         vehicleNo: vehicle.vehicleNo,
         vehicleStatus: vehicle.status,
         vin: vehicle.vin
@@ -1307,7 +1241,7 @@ export class ReportService {
       ["统计周期", dateRangeText(report.dateRange)],
       ["残值预测周期", residualHorizonText(query.residualHorizonMonth)],
       ["残值校准比例", formatPercent(report.residualCalibrationPercent / 100)],
-      ["车型筛选", query.vehicleModel ?? "全部"],
+      ["车型筛选", query.modelDefinitionId ?? "全部"],
       ["车辆状态筛选", query.vehicleStatus ? labelOf(vehicleStatusLabels, query.vehicleStatus) : "全部"],
       [],
       ["核心结果"],
@@ -1475,7 +1409,6 @@ export class ReportService {
         "车系",
         "车型代码",
         "车型显示名",
-        "legacy 车型",
         "车辆状态",
         "BaaS 合同状态",
         "BaaS 服务商",
@@ -1552,8 +1485,7 @@ export class ReportService {
         vehicle.brand,
         vehicle.series,
         vehicle.modelDefinition?.modelCode ?? "",
-        vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel,
-        vehicle.vehicleModel,
+        vehicle.modelDisplayName ?? vehicle.model,
         labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
         labelOf(vehicleBaasContractStatusLabels, vehicle.baasContractStatus),
         vehicle.baasProviderName,
@@ -1666,8 +1598,7 @@ export class ReportService {
       ["品牌", vehicle.brand],
       ["车系", vehicle.series],
       ["车型代码", vehicle.modelDefinition?.modelCode ?? ""],
-      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel],
-      ["legacy 车型", vehicle.vehicleModel],
+      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model],
       ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
       [],
       ["成本参数"],
@@ -2104,7 +2035,6 @@ export class ReportService {
         "车系",
         "车型代码",
         "车型显示名",
-        "legacy 车型",
         "车辆状态",
         "电池容量（kWh）",
         "电池使用方式",
@@ -2132,8 +2062,7 @@ export class ReportService {
         vehicle.brand,
         vehicle.series,
         vehicle.modelDefinition?.modelCode ?? "",
-        vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel,
-        vehicle.vehicleModel,
+        vehicle.modelDisplayName ?? vehicle.model,
         labelOf(vehicleStatusLabels, vehicle.vehicleStatus),
         vehicle.batteryCapacityKwh,
         labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType),
@@ -2183,8 +2112,7 @@ export class ReportService {
       ["品牌", vehicle.brand],
       ["车系", vehicle.series],
       ["车型代码", vehicle.modelDefinition?.modelCode ?? ""],
-      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model ?? vehicle.vehicleModel],
-      ["legacy 车型", vehicle.vehicleModel],
+      ["车型显示名", vehicle.modelDisplayName ?? vehicle.model],
       ["电池容量（kWh）", vehicle.batteryCapacityKwh],
       ["电池使用方式", labelOf(vehicleBatteryUsageTypeLabels, vehicle.batteryUsageType)],
       ["车辆状态", labelOf(vehicleStatusLabels, vehicle.vehicleStatus)],
@@ -2594,8 +2522,7 @@ export class ReportService {
           customer: { select: { mobile: true, name: true } },
           depositAmount: true,
           id: true,
-          legacyVehicleModelCodeSnapshot: true,
-          legacyVehicleModelSnapshot: true,
+          modelCodeSnapshot: true,
           modelDefinitionIdSnapshot: true,
           modelDisplayNameSnapshot: true,
           monthlyFeeAmount: true,
@@ -2617,8 +2544,7 @@ export class ReportService {
               vehicleNo: true,
               vin: true
             }
-          },
-          vehicleModel: true
+          }
         },
         skip: pagination.skip,
         take: pagination.pageSize,
@@ -2627,18 +2553,7 @@ export class ReportService {
     ]);
 
     return pagedResult(
-      items.map((order) => {
-        const modelDisplay = buildQuoteOrderModelDisplay({
-          legacyVehicleModelCodeSnapshot: order.legacyVehicleModelCodeSnapshot,
-          legacyVehicleModelSnapshot: order.legacyVehicleModelSnapshot,
-          modelDefinition: order.vehicle?.modelDefinition ?? null,
-          modelDefinitionId: order.vehicle?.modelDefinitionId ?? null,
-          modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
-          modelDisplayNameSnapshot: order.modelDisplayNameSnapshot,
-          vehicleModel: order.vehicleModel
-        });
-
-        return {
+      items.map((order) => ({
           id: order.id,
           orderNo: order.orderNo,
           customerName: order.customer.name,
@@ -2649,10 +2564,10 @@ export class ReportService {
           vehicleNo: order.vehicle?.vehicleNo ?? null,
           plateNo: order.vehicle?.plateNo ?? null,
           modelDefinition: reportModelDefinitionSummary(order.vehicle?.modelDefinition ?? null),
-          modelDefinitionId: modelDisplay.modelDefinitionId,
-          modelDisplayName: modelDisplay.modelDisplayName,
-          modelDisplaySource: modelDisplay.modelDisplaySource,
-          vehicleModel: order.vehicleModel,
+          modelCode: order.modelCodeSnapshot,
+          modelDefinitionId: order.modelDefinitionIdSnapshot,
+          modelDisplayName: order.modelDisplayNameSnapshot,
+          modelDisplaySource: "ORDER_SNAPSHOT",
           subscriptionPlanId: order.quote.subscriptionPlanId,
           subscriptionPlanName: order.quote.subscriptionPlan?.planName ?? null,
           subscriptionPlanNo: order.quote.subscriptionPlan?.planNo ?? null,
@@ -2662,8 +2577,7 @@ export class ReportService {
           leaseStartDate: order.startDate,
           returnAt: order.actualReturnAt,
           createdAt: order.createdAt
-        };
-      }),
+        })),
       total,
       pagination
     );
@@ -2974,7 +2888,6 @@ export class ReportService {
           },
           series: true,
           status: true,
-          vehicleModel: true,
           vehicleNo: true,
           vin: true
         },
@@ -3002,8 +2915,8 @@ export class ReportService {
           model: vehicle.model,
           modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
           modelDefinitionId: vehicle.modelDefinitionId,
-          modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
-          vehicleModel: vehicle.vehicleModel,
+          modelCode: vehicle.modelDefinition?.modelCode ?? null,
+          modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition),
           batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
           batteryUsageType: vehicle.batteryUsageType,
           vehicleStatus: vehicle.status,
@@ -3041,7 +2954,7 @@ export class ReportService {
       [],
       ["车型统计"],
       ["车型", "数量"],
-      ...report.byVehicleModel.map((row) => [row.vehicleModel, row.count]),
+      ...report.byVehicleModel.map((row) => [row.modelCode ?? row.modelDisplayName, row.count]),
       [],
       ["订阅套餐统计"],
       ["套餐", "数量"],
@@ -3175,7 +3088,7 @@ export class ReportService {
       ["按车型统计"],
       ["车型", "车辆数", "在租数", "可租数", "收入（元）"],
       ...report.byVehicleModel.map((row) => [
-        row.vehicleModel,
+        row.modelCode ?? row.modelDisplayName,
         row.totalVehicles,
         row.leasedVehicles,
         row.availableVehicles,
@@ -3204,7 +3117,6 @@ export class ReportService {
         "车牌号",
         "车型代码",
         "车型显示名",
-        "legacy 车型",
         "订阅套餐",
         "月费（元）",
         "押金（元）",
@@ -3221,10 +3133,9 @@ export class ReportService {
         labelOf(orderStatusLabels, row.orderStatus),
         row.vehicleVin,
         row.plateNo,
-        row.modelDefinition?.modelCode ?? "",
-        row.modelDisplayName ?? row.vehicleModel,
+        row.modelCode,
+        row.modelDisplayName,
         row.modelDisplaySource ?? "",
-        row.vehicleModel,
         row.subscriptionPlanName ?? row.subscriptionPlanNo,
         formatMoneyYuan(row.monthlyFeeAmount),
         formatMoneyYuan(row.depositAmount),
@@ -3410,7 +3321,6 @@ export class ReportService {
         "车系",
         "车型代码",
         "车型显示名",
-        "legacy 车型",
         "电池容量（kWh）",
         "电池使用方式",
         "车辆状态",
@@ -3429,9 +3339,8 @@ export class ReportService {
         row.plateNo,
         row.brand,
         row.series,
-        row.modelDefinition?.modelCode ?? "",
-        row.modelDisplayName ?? row.model ?? row.vehicleModel,
-        row.vehicleModel,
+        row.modelCode,
+        row.modelDisplayName ?? row.model,
         row.batteryCapacityKwh,
         labelOf(vehicleBatteryUsageTypeLabels, row.batteryUsageType),
         labelOf(vehicleStatusLabels, row.vehicleStatus),
@@ -4832,7 +4741,6 @@ const assetProfitabilityVehicleSelect = {
   },
   series: true,
   status: true,
-  vehicleModel: true,
   vehicleNo: true,
   vin: true
 } satisfies Prisma.VehicleSelect;
@@ -5392,17 +5300,13 @@ function reportModelDefinitionSummary(definition: ReportModelDefinition | null |
     customerDisplayName: definition.customerDisplayName,
     displayName: definition.displayName,
     id: definition.id,
-    legacyVehicleModel: definition.legacyVehicleModel,
     modelCode: definition.modelCode
   };
 }
 
-function reportVehicleModelDisplayName(
-  definition: ReportModelDefinition | null | undefined,
-  vehicleModel: string | null | undefined
-) {
+function reportVehicleModelDisplayName(definition: ReportModelDefinition | null | undefined) {
   const summary = reportModelDefinitionSummary(definition);
-  return summary?.displayName ?? vehicleModel ?? null;
+  return summary?.displayName ?? null;
 }
 
 function assetProfitabilityVehicleRow(
@@ -5423,8 +5327,8 @@ function assetProfitabilityVehicleRow(
     model: vehicle.model,
     modelDefinition: reportModelDefinitionSummary(vehicle.modelDefinition),
     modelDefinitionId: vehicle.modelDefinitionId,
-    modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition, vehicle.vehicleModel),
-    vehicleModel: vehicle.vehicleModel,
+    modelCode: vehicle.modelDefinition?.modelCode ?? null,
+    modelDisplayName: reportVehicleModelDisplayName(vehicle.modelDefinition),
     batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
     vehicleStatus: vehicle.status,
@@ -7121,85 +7025,79 @@ function leasedVehicleCount(statusCount: Map<string, number>) {
   );
 }
 
-function vehicleModelCountRows(
+function modelDefinitionCountRows(
   groups: Array<{
     _count: { _all: number };
-    vehicleModel: string | null;
+    modelDefinitionIdSnapshot: string | null;
   }>,
-  canonicalCodeByAlias: ReadonlyMap<string, string>
+  definitions: Array<{ displayName: string; id: string; modelCode: string }>
 ) {
-  const counts = new Map<
-    string | null,
-    { count: number; vehicleModel: string | null }
-  >();
+  const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
 
-  for (const group of groups) {
-    if (group._count._all <= 0) {
-      continue;
-    }
-    const vehicleModel = canonicalVehicleModelCode(
-      group.vehicleModel,
-      canonicalCodeByAlias
-    );
-    const row = counts.get(vehicleModel) ?? { count: 0, vehicleModel };
-    row.count += group._count._all;
-    counts.set(vehicleModel, row);
-  }
-
-  return [...counts.values()];
+  return groups
+    .filter((group) => group._count._all > 0)
+    .map((group) => {
+      const definition = group.modelDefinitionIdSnapshot
+        ? definitionById.get(group.modelDefinitionIdSnapshot)
+        : undefined;
+      return {
+        count: group._count._all,
+        modelCode: definition?.modelCode ?? null,
+        modelDefinitionId: group.modelDefinitionIdSnapshot,
+        modelDisplayName: definition?.displayName ?? null
+      };
+    });
 }
 
-function incomeMap(
-  bills: Array<{ order: { vehicleModel: string }; paidAmount: bigint }>,
-  canonicalCodeByAlias: ReadonlyMap<string, string>
+function incomeByModelDefinitionIdMap(
+  bills: Array<{ order: { modelDefinitionIdSnapshot: string }; paidAmount: bigint }>
 ) {
   const result = new Map<string, number>();
 
   for (const bill of bills) {
-    const vehicleModel =
-      canonicalVehicleModelCode(bill.order.vehicleModel, canonicalCodeByAlias) ??
-      bill.order.vehicleModel;
+    const modelDefinitionId = bill.order.modelDefinitionIdSnapshot;
     result.set(
-      vehicleModel,
-      (result.get(vehicleModel) ?? 0) + Number(bill.paidAmount)
+      modelDefinitionId,
+      (result.get(modelDefinitionId) ?? 0) + Number(bill.paidAmount)
     );
   }
 
   return result;
 }
 
-function vehicleModelAssetRows(
+function modelDefinitionAssetRows(
   groups: Array<{
     _count: { _all: number };
+    modelDefinitionId: string;
     status: VehicleStatus;
-    vehicleModel: string | null;
   }>,
-  incomeByVehicleModel: Map<string, number>,
-  canonicalCodeByAlias: ReadonlyMap<string, string>
+  incomeByModelDefinitionId: Map<string, number>,
+  definitions: Array<{ displayName: string; id: string; modelCode: string }>
 ) {
   const rows = new Map<
-    string | null,
+    string,
     {
       availableVehicles: number;
       incomeAmount: number;
       leasedVehicles: number;
+      modelCode: string | null;
+      modelDefinitionId: string;
+      modelDisplayName: string | null;
       totalVehicles: number;
-      vehicleModel: string | null;
     }
   >();
+  const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
 
   for (const group of groups) {
-    const vehicleModel = canonicalVehicleModelCode(
-      group.vehicleModel,
-      canonicalCodeByAlias
-    );
-    const row = rows.get(vehicleModel) ?? {
+    const definition = definitionById.get(group.modelDefinitionId);
+    const row = rows.get(group.modelDefinitionId) ?? {
       availableVehicles: 0,
-      incomeAmount:
-        vehicleModel === null ? 0 : incomeByVehicleModel.get(vehicleModel) ?? 0,
+      incomeAmount: incomeByModelDefinitionId.get(group.modelDefinitionId) ?? 0,
       leasedVehicles: 0,
+      modelCode: definition?.modelCode ?? null,
+      modelDefinitionId: group.modelDefinitionId,
+      modelDisplayName: definition?.displayName ?? null,
       totalVehicles: 0,
-      vehicleModel
     };
 
     row.totalVehicles += group._count._all;
@@ -7209,17 +7107,20 @@ function vehicleModelAssetRows(
     if (group.status === VehicleStatus.LEASED || group.status === VehicleStatus.RENTED) {
       row.leasedVehicles += group._count._all;
     }
-    rows.set(vehicleModel, row);
+    rows.set(group.modelDefinitionId, row);
   }
 
-  for (const [vehicleModel, incomeAmount] of incomeByVehicleModel.entries()) {
-    if (!rows.has(vehicleModel)) {
-      rows.set(vehicleModel, {
+  for (const [modelDefinitionId, incomeAmount] of incomeByModelDefinitionId.entries()) {
+    if (!rows.has(modelDefinitionId)) {
+      const definition = definitionById.get(modelDefinitionId);
+      rows.set(modelDefinitionId, {
         availableVehicles: 0,
         incomeAmount,
         leasedVehicles: 0,
+        modelCode: definition?.modelCode ?? null,
+        modelDefinitionId,
+        modelDisplayName: definition?.displayName ?? null,
         totalVehicles: 0,
-        vehicleModel
       });
     }
   }

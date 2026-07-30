@@ -60,7 +60,6 @@ import {
   VEHICLE_DEPRECIATION_RECORD_SOURCE_LABELS,
   VEHICLE_DEPRECIATION_RECORD_STATUS_LABELS,
   VEHICLE_DEPRECIATION_SOURCE_LABELS,
-  VEHICLE_MODEL_LABELS,
   VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
   VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
   VEHICLE_RESIDUAL_FORECAST_METHOD_LABELS,
@@ -244,7 +243,6 @@ interface AssetProfitabilityVehicleRow {
   totalRemainingAmount?: number | null;
   utilizationRate?: number | null;
   vehicleId: string;
-  vehicleModel?: string | null;
   vehicleNo?: string | null;
   vehicleStatus?: string | null;
   vin?: string | null;
@@ -560,7 +558,6 @@ interface VehicleBaseInfo {
   salePriceStatus?: string | null;
   series?: string | null;
   vehicleId?: string | null;
-  vehicleModel?: string | null;
   vehicleNo?: string | null;
   vehicleStatus?: string | null;
   vin?: string | null;
@@ -880,18 +877,11 @@ interface VehicleModelDefinitionSummary {
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
 }
 
-const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
-  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
-);
 function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
-  return `${definition.modelCode} - ${definition.displayName} (legacy: ${labelOf(
-    VEHICLE_MODEL_LABELS,
-    definition.legacyVehicleModel
-  )})`;
+  return `${definition.modelCode} - ${definition.displayName}`;
 }
 
 const residualHorizonMonthOptions = [
@@ -970,7 +960,6 @@ export default function AssetProfitabilityPage() {
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs]>(defaultDateRange);
   const [modelDefinitionId, setModelDefinitionId] = useState<string | undefined>();
   const [modelDefinitions, setModelDefinitions] = useState<VehicleModelDefinitionSummary[]>([]);
-  const [vehicleModel, setVehicleModel] = useState<string | undefined>();
   const [vehicleStatus, setVehicleStatus] = useState<string | undefined>();
   const [summary, setSummary] = useState<AssetProfitabilitySummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -1059,10 +1048,9 @@ export default function AssetProfitabilityPage() {
       endDate: dateRange[1].format("YYYY-MM-DD"),
       modelDefinitionId,
       startDate: dateRange[0].format("YYYY-MM-DD"),
-      vehicleModel,
       vehicleStatus
     };
-  }, [dateRange, modelDefinitionId, vehicleModel, vehicleStatus]);
+  }, [dateRange, modelDefinitionId, vehicleStatus]);
 
   const returnQuery = useCallback(() => {
     return {
@@ -1735,11 +1723,6 @@ export default function AssetProfitabilityPage() {
           setReturnPage(1);
         }}
         onRefresh={() => void refresh()}
-        onVehicleModelChange={(value) => {
-          setVehicleModel(value);
-          setPage(1);
-          setReturnPage(1);
-        }}
         onVehicleStatusChange={(value) => {
           setVehicleStatus(value);
           setPage(1);
@@ -1766,7 +1749,6 @@ export default function AssetProfitabilityPage() {
         }
         residualHorizonMonth={activeTab === "returns" ? residualHorizonMonth : undefined}
         summaryExporting={activeTab === "returns" ? returnSummaryExporting : summaryExporting}
-        vehicleModel={vehicleModel}
         vehiclesExporting={activeTab === "returns" ? returnVehiclesExporting : vehiclesExporting}
         vehicleStatus={vehicleStatus}
       />
@@ -1932,12 +1914,10 @@ function FilterBar({
   onRefresh,
   onResidualCalibrationPercentChange,
   onResidualHorizonMonthChange,
-  onVehicleModelChange,
   onVehicleStatusChange,
   residualCalibrationPercent,
   residualHorizonMonth,
   summaryExporting,
-  vehicleModel,
   vehiclesExporting,
   vehicleStatus
 }: {
@@ -1954,12 +1934,10 @@ function FilterBar({
   onRefresh: () => void;
   onResidualCalibrationPercentChange?: (value: number) => void;
   onResidualHorizonMonthChange?: (value: number) => void;
-  onVehicleModelChange: (value?: string) => void;
   onVehicleStatusChange: (value?: string) => void;
   residualCalibrationPercent?: number;
   residualHorizonMonth?: number;
   summaryExporting: boolean;
-  vehicleModel?: string;
   vehiclesExporting: boolean;
   vehicleStatus?: string;
 }) {
@@ -1989,17 +1967,6 @@ function FilterBar({
             showSearch
             style={{ width: 220 }}
             value={modelDefinitionId}
-          />
-        </Space>
-        <Space orientation="vertical" size={4}>
-          <Typography.Text type="secondary">车型</Typography.Text>
-          <Select
-            allowClear
-            onChange={onVehicleModelChange}
-            options={vehicleModelOptions}
-            placeholder="全部车型"
-            style={{ width: 140 }}
-            value={vehicleModel}
           />
         </Space>
         <Space orientation="vertical" size={4}>
@@ -4100,8 +4067,8 @@ function safeText(value?: unknown) {
   return typeof value === "string" && value.trim() ? value : "-";
 }
 
-function vehicleDisplayName(vehicle?: { model?: string | null; modelDisplayName?: string | null; vehicleModel?: string | null } | null) {
-  return safeText(vehicle?.modelDisplayName ?? vehicle?.model ?? vehicle?.vehicleModel);
+function vehicleDisplayName(vehicle?: { model?: string | null; modelDisplayName?: string | null } | null) {
+  return safeText(vehicle?.modelDisplayName ?? vehicle?.model);
 }
 
 function normalizeErrorMessage(error: unknown) {

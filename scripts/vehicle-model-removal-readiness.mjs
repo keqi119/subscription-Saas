@@ -38,6 +38,7 @@ async function main() {
         businessDecisionUsageCount: report.businessDecisionUsageCount,
         compatibilityFieldRetirementDecision: report.compatibilityFieldRetirement.decision,
         decision: report.decision,
+        enumUsageCount: report.enumUsageCount,
         enumTypeRemovalDecision: report.enumTypeRemoval.decision,
         compatibilityFieldUsageCount: report.compatibilityFieldUsageCount,
         externalUsageCount: report.externalUsageCount,
@@ -49,7 +50,7 @@ async function main() {
     )
   );
 
-  if (report.enumTypeRemoval.decision !== "READY") {
+  if (report.decision !== "READY") {
     process.exitCode = 1;
   }
 }

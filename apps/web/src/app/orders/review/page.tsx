@@ -49,13 +49,17 @@ interface ReviewOrderRow {
   vehicle?: {
     currentMileageKm?: number | null;
     currentSalePriceAmount?: number | null;
+    modelCode?: string | null;
+    modelDefinitionId?: string | null;
+    modelDisplayName?: string | null;
     plateNo?: string | null;
     status?: string | null;
-    vehicleModel?: string | null;
     vehicleNo?: string;
     vin?: string | null;
   } | null;
-  vehicleModel?: string | null;
+  modelCodeSnapshot?: string | null;
+  modelDefinitionIdSnapshot?: string | null;
+  modelDisplayNameSnapshot?: string | null;
   vehicleReviewStatus?: string | null;
 }
 
@@ -236,12 +240,18 @@ function vehicleLabel(record: ReviewOrderRow) {
   );
 }
 
-function vehicleModelLabel(record: ReviewOrderRow) {
+function canonicalModelLabel(record: ReviewOrderRow) {
   return safeText(
     record.modelDisplayName ??
-      record.vehicle?.vehicleModel ??
-      record.vehicleModel ??
-      snapshotValue(record.quoteSnapshot, "vehicleSnapshot.vehicleModel", "vehicleSnapshot.model", "vehicleModel")
+      record.modelDisplayNameSnapshot ??
+      record.vehicle?.modelDisplayName ??
+      snapshotValue(
+        record.quoteSnapshot,
+        "modelDisplayNameSnapshot",
+        "vehicleSnapshot.modelDisplayNameSnapshot",
+        "vehicleSnapshot.model"
+      ) ??
+      record.modelCodeSnapshot
   );
 }
 
@@ -717,7 +727,7 @@ function ReviewDrawerContent({
         column={2}
         items={[
           { label: "套餐信息", children: planLabel(order) },
-          { label: "车辆车型", children: vehicleModelLabel(order) },
+          { label: "车辆车型", children: canonicalModelLabel(order) },
           {
             label: "产品版本状态",
             children: statusLabel(
@@ -756,7 +766,7 @@ function ReviewDrawerContent({
         items={[
           { label: "VIN", children: safeText(order.vehicle?.vin ?? snapshotValue(order.quoteSnapshot, "vehicleSnapshot.vin")) },
           { label: "车牌号", children: safeText(order.vehicle?.plateNo ?? snapshotValue(order.quoteSnapshot, "vehicleSnapshot.plateNo")) },
-          { label: "车型", children: vehicleModelLabel(order) },
+          { label: "车型", children: canonicalModelLabel(order) },
           { label: "车辆状态", children: <StatusTag value={order.vehicle?.status ?? safeText(snapshotValue(order.quoteSnapshot, "vehicleSnapshot.status"))} /> },
           {
             label: "当前销售价",

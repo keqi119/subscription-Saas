@@ -11,10 +11,10 @@ import {
   UpdateVehicleModelDefinitionDto
 } from "../src/vehicle-model-definition/dto/vehicle-model-definition.dto";
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
-import { VehicleModel, type VehicleModel as VehicleModelCode } from "./helpers/vehicle-model-codes";
-
-const LEGACY_WRITE_ERROR =
-  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
+import {
+  TEST_MODEL_CODES,
+  type TestModelCode
+} from "./helpers/vehicle-model-codes";
 
 function validateProductionBody<T>(value: unknown, metatype: new () => T) {
   return new ValidationPipe({
@@ -27,17 +27,8 @@ function validateProductionBody<T>(value: unknown, metatype: new () => T) {
 }
 
 async function expectLegacyWriteRejected(validation: Promise<unknown>) {
-  try {
-    await validation;
-    throw new Error("Expected legacyVehicleModel validation to fail");
-  } catch (error) {
-    expect(error).toBeInstanceOf(BadRequestException);
-    expect((error as BadRequestException).getResponse()).toEqual(
-      expect.objectContaining({
-        message: expect.arrayContaining([LEGACY_WRITE_ERROR])
-      })
-    );
-  }
+  const dto = await validation;
+  expect(dto).not.toHaveProperty("legacyVehicleModel");
 }
 
 describe("VehicleModelDefinition write DTO production validation", () => {
@@ -67,7 +58,7 @@ describe("VehicleModelDefinition write DTO production validation", () => {
         {
           brand: "NIO",
           displayName: "ET5",
-          legacyVehicleModel: VehicleModel.ET5,
+          legacyVehicleModel: TEST_MODEL_CODES.ET5,
           modelCode: "NIO_ET5",
           modelName: "ET5"
         },
@@ -114,7 +105,7 @@ describe("VehicleModelDefinition write DTO production validation", () => {
     await expectLegacyWriteRejected(
       validateProductionBody(
         {
-          legacyVehicleModel: VehicleModel.ET5T,
+          legacyVehicleModel: TEST_MODEL_CODES.ET5T,
           modelCode: "NIO_ET5_TOURING"
         },
         UpdateVehicleModelDefinitionDto
@@ -156,7 +147,6 @@ describe("VehicleModelDefinitionService", () => {
       brand: "NIO",
       displayName: "ET5T",
       enabled: true,
-      legacyVehicleModel: null,
       modelCode: "ET5T",
       portalVisible: false
     });
@@ -277,12 +267,12 @@ describe("VehicleModelDefinitionService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("rejects a modelCode that collides with another definition legacy alias", async () => {
+  it("uses modelCode rather than displayName as the uniqueness namespace", async () => {
     const { service, user } = createHarness({
       definitions: [
         createDefinition({
+          displayName: "Shared display name",
           id: "definition-existing",
-          legacyVehicleModel: VehicleModel.ET5,
           modelCode: "NIO_ET5"
         })
       ]
@@ -292,18 +282,23 @@ describe("VehicleModelDefinitionService", () => {
       service.createDefinition(
         {
           brand: "NIO",
-          displayName: "Conflicting ET5",
-          modelCode: VehicleModel.ET5,
-          modelName: "ET5"
+          displayName: "Shared display name",
+          modelCode: "NIO_ET5_CUSTOM",
+          modelName: "ET5 Custom"
         },
         user
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).resolves.toMatchObject({ modelCode: "NIO_ET5_CUSTOM" });
   });
 
   it("never persists legacy aliases when the service is called directly", async () => {
     const { prisma, service, user } = createHarness({
-      definitions: [createDefinition({ id: "definition-et5", legacyVehicleModel: VehicleModel.ET5 })]
+      definitions: [
+        createDefinition({
+          id: "definition-et5",
+          legacyVehicleModel: TEST_MODEL_CODES.ET5
+        })
+      ]
     });
     const legacyCreate = {
       brand: "NIO",
@@ -313,7 +308,7 @@ describe("VehicleModelDefinitionService", () => {
       modelName: "Model X"
     } as unknown as CreateVehicleModelDefinitionDto;
     const legacyUpdate = {
-      legacyVehicleModel: VehicleModel.ET5T,
+      legacyVehicleModel: TEST_MODEL_CODES.ET5T,
       modelCode: "ET5"
     } as unknown as UpdateVehicleModelDefinitionDto;
 
@@ -328,7 +323,7 @@ describe("VehicleModelDefinitionService", () => {
     );
   });
 
-  it("allows new model definitions without legacyVehicleModel", async () => {
+  it("allows new model definitions with canonical modelCode", async () => {
     const { service, user } = createHarness({ definitions: [] });
 
     const definition = await service.createDefinition(
@@ -341,7 +336,7 @@ describe("VehicleModelDefinitionService", () => {
       user
     );
 
-    expect(definition.legacyVehicleModel).toBeNull();
+    expect(definition.modelCode).toBe("NEW_MODEL");
   });
 
   it("enables and disables model definitions", async () => {
@@ -384,32 +379,33 @@ describe("VehicleModelDefinitionService", () => {
     expect(portalVisibleResult.items.map((item) => item.modelCode)).toEqual(["ET5"]);
   });
 
-  it("keeps seed initialization aligned to the eight canonical codes and legacy aliases", () => {
+  it("keeps seed initialization aligned to the eight canonical codes without aliases", () => {
     const seedSource = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
 
     expect(seedSource).toContain("const vehicleModelDefinitionSeedRows = [");
-    for (const [modelCode, legacyAlias] of [
-      ["NIO_ET5", "ET5"],
-      ["NIO_ET5T", "ET5T"],
-      ["NIO_ET7", "ET7"],
-      ["NIO_EC6", "EC6"],
-      ["NIO_ES6", "ES6"],
-      ["NIO_ES8", "ES8"],
-      ["NIO_ET9", "ET9"],
-      ["NIO_ES9", "ES9"]
+    for (const modelCode of [
+      "NIO_ET5",
+      "NIO_ET5T",
+      "NIO_ET7",
+      "NIO_EC6",
+      "NIO_ES6",
+      "NIO_ES8",
+      "NIO_ET9",
+      "NIO_ES9"
     ]) {
-      expect(seedSource).toContain(`["${modelCode}", "${legacyAlias}"`);
+      expect(seedSource).toContain(`["${modelCode}", "NIO"`);
     }
+    expect(seedSource).not.toContain("legacyVehicleModel");
     expect(seedSource).toContain("await seedVehicleModelDefinitions(adminUser.id)");
     expect(seedSource).toContain("await convergeVehicleModelDefinition(prisma");
   });
 
-  it("keeps Vehicle model compatibility columns as strings with optional master-data linkage", () => {
+  it("keeps only required canonical master-data linkage", () => {
     const schemaSource = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
 
-    expect(schemaSource).toContain("vehicleModel                  String");
+    expect(schemaSource).not.toContain("vehicleModel                  String");
     expect(schemaSource).toContain("modelDefinitionId");
-    expect(schemaSource).toContain("VehicleModelDefinition?");
+    expect(schemaSource).toContain("VehicleModelDefinition");
     expect(schemaSource).not.toContain("enum VehicleModel");
   });
 });
@@ -476,7 +472,7 @@ function createDefinition(options: {
   displayName?: string;
   enabled?: boolean;
   id?: string;
-  legacyVehicleModel?: VehicleModelCode | string | null;
+  legacyVehicleModel?: TestModelCode | string | null;
   modelCode?: string;
   portalVisible?: boolean;
 } = {}) {

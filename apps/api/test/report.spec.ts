@@ -44,7 +44,6 @@ import {
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ReportController } from "../src/report/report.controller";
 import { escapeCsvCell, toCsv } from "../src/report/report-csv";
 import { ReportService } from "../src/report/report.service";
@@ -136,9 +135,9 @@ describe("reporting dashboard APIs", () => {
 
     const result = await service.getOrderReport({
       endDate: "2026-06-30",
+      modelDefinitionId: "model-et5",
       orderSource: OrderSource.SALES_ASSISTED,
-      startDate: "2026-06-01",
-      vehicleModel: VehicleModel.ET5
+      startDate: "2026-06-01"
     });
 
     expect(findBy(result.bySource, "orderSource", OrderSource.SALES_ASSISTED)).toMatchObject({
@@ -150,8 +149,18 @@ describe("reporting dashboard APIs", () => {
       }
     );
     expect(result.byVehicleModel).toEqual([
-      { count: 2, vehicleModel: VehicleModel.ET5 },
-      { count: 1, vehicleModel: VehicleModel.ES6 }
+      {
+        count: 2,
+        modelCode: "NIO_ET5",
+        modelDefinitionId: "model-et5",
+        modelDisplayName: "ET5 主数据"
+      },
+      {
+        count: 1,
+        modelCode: "NIO_ES6",
+        modelDefinitionId: "model-es6",
+        modelDisplayName: "ES6 主数据"
+      }
     ]);
     expect(result.bySubscriptionPlan).toEqual([
       {
@@ -169,17 +178,10 @@ describe("reporting dashboard APIs", () => {
     ]);
   });
 
-  it("combines historical and canonical order model buckets", async () => {
+  it("groups orders by canonical model definition snapshots", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma, "Standard", [
-      countGroup("vehicleModel", VehicleModel.ET5, 2),
-      countGroup("vehicleModel", "NIO_ET5", 1)
-    ]);
-    prisma.vehicleModelDefinition.findMany.mockResolvedValue([
-      reportModelDefinition({
-        legacyVehicleModel: VehicleModel.ET5,
-        modelCode: "NIO_ET5"
-      })
+      countGroup("modelDefinitionIdSnapshot", "model-et5", 3)
     ]);
 
     const result = await service.getOrderReport({
@@ -188,15 +190,19 @@ describe("reporting dashboard APIs", () => {
     });
 
     expect(result.byVehicleModel).toEqual([
-      { count: 3, vehicleModel: "NIO_ET5" }
+      {
+        count: 3,
+        modelCode: "NIO_ET5",
+        modelDefinitionId: "model-et5",
+        modelDisplayName: "ET5 主数据"
+      }
     ]);
   });
 
-  it("keeps null and legitimate UNSPECIFIED order model buckets distinct", async () => {
+  it("keeps an unknown canonical definition visible without inventing a model code", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma, "Standard", [
-      countGroup("vehicleModel", null, 2),
-      countGroup("vehicleModel", "UNSPECIFIED", 1)
+      countGroup("modelDefinitionIdSnapshot", "model-unknown", 1)
     ]);
 
     const result = await service.getOrderReport({
@@ -205,12 +211,16 @@ describe("reporting dashboard APIs", () => {
     });
 
     expect(result.byVehicleModel).toEqual([
-      { count: 2, vehicleModel: null },
-      { count: 1, vehicleModel: "UNSPECIFIED" }
+      {
+        count: 1,
+        modelCode: null,
+        modelDefinitionId: "model-unknown",
+        modelDisplayName: null
+      }
     ]);
   });
 
-  it("orders report filters by modelDefinitionId with legacy fallback and rejects mismatched legacy filter", async () => {
+  it("orders report filters directly by the canonical snapshot modelDefinitionId", async () => {
     const { prisma, service } = createReportHarness();
     mockOrderReport(prisma);
 
@@ -227,79 +237,18 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.subscriptionOrder.count).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionIdSnapshot: "model-et5" },
-            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } },
-            {
-              modelDefinitionIdSnapshot: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            },
-            {
-              legacyVehicleModelSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
-              modelDefinitionIdSnapshot: null
-            },
-            {
-              legacyVehicleModelCodeSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
-              modelDefinitionIdSnapshot: null
-            }
-          ]
+          modelDefinitionIdSnapshot: "model-et5"
         })
       })
     );
-
-    await expect(
-      service.getOrderReport({
-        modelDefinitionId: "model-et5",
-        vehicleModel: VehicleModel.ES6
-      })
-    ).rejects.toThrow("modelDefinitionId");
   });
 
-  it("resolves legacy order report filters through VehicleModelDefinition before filtering", async () => {
-    vehicleModelUsageTracker.reset();
-    const { prisma, service } = createReportHarness();
-    mockOrderReport(prisma);
+  it("rejects an unknown canonical order report modelDefinitionId", async () => {
+    const { service } = createReportHarness();
 
-    await service.getOrderReport({
-      endDate: "2026-06-30",
-      startDate: "2026-06-01",
-      vehicleModel: VehicleModel.ET5
-    });
-
-    expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          deletedAt: null,
-          legacyVehicleModel: VehicleModel.ET5
-        }
-      })
-    );
-    expect(prisma.subscriptionOrder.count).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: [
-            { modelDefinitionIdSnapshot: "model-et5" },
-            { modelDefinitionIdSnapshot: null, vehicle: { modelDefinitionId: "model-et5" } },
-            {
-              modelDefinitionIdSnapshot: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            },
-            {
-              legacyVehicleModelSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
-              modelDefinitionIdSnapshot: null
-            },
-            {
-              legacyVehicleModelCodeSnapshot: { in: ["NIO_ET5", VehicleModel.ET5] },
-              modelDefinitionIdSnapshot: null
-            }
-          ]
-        })
-      })
-    );
-    expect(vehicleModelUsageTracker.report()).toMatchObject({
-      businessDecisionUsageCount: 0,
-      fallbackUsageCount: 1
-    });
+    await expect(
+      service.getOrderReport({ modelDefinitionId: "missing-model-definition" })
+    ).rejects.toThrow("车型主数据不存在");
   });
 
   it("finance report calculates receivable, paid, and unpaid totals from ReceivableBill", async () => {
@@ -478,7 +427,7 @@ describe("reporting dashboard APIs", () => {
       totalPurchasePriceAmount: 10000,
       totalVehicles: 6
     });
-    expect(findBy(result.byVehicleModel, "vehicleModel", VehicleModel.ET5)).toMatchObject({
+    expect(findBy(result.byVehicleModel, "modelCode", "NIO_ET5")).toMatchObject({
       availableVehicles: 1,
       incomeAmount: 1000,
       leasedVehicles: 2,
@@ -498,31 +447,25 @@ describe("reporting dashboard APIs", () => {
     expect(result.rentalRate).toBeCloseTo(2 / 6);
   });
 
-  it("combines historical and canonical vehicle asset and income buckets", async () => {
+  it("combines vehicle and income rows by canonical modelDefinitionId", async () => {
     const { prisma, service } = createReportHarness();
     mockVehicleAssetReport(
       prisma,
       [
         {
-          ...countGroup("vehicleModel", VehicleModel.ET5, 1),
+          ...countGroup("modelDefinitionId", "model-et5", 1),
           status: VehicleStatus.AVAILABLE
         },
         {
-          ...countGroup("vehicleModel", "NIO_ET5", 2),
+          ...countGroup("modelDefinitionId", "model-et5", 2),
           status: VehicleStatus.LEASED
         }
       ],
       [
-        { order: { vehicleModel: VehicleModel.ET5 }, paidAmount: 1000n },
-        { order: { vehicleModel: "NIO_ET5" }, paidAmount: 500n }
+        { order: { modelDefinitionIdSnapshot: "model-et5" }, paidAmount: 1000n },
+        { order: { modelDefinitionIdSnapshot: "model-et5" }, paidAmount: 500n }
       ]
     );
-    prisma.vehicleModelDefinition.findMany.mockResolvedValue([
-      reportModelDefinition({
-        legacyVehicleModel: VehicleModel.ET5,
-        modelCode: "NIO_ET5"
-      })
-    ]);
 
     const result = await service.getVehicleAssetReport({
       endDate: "2026-06-30",
@@ -534,28 +477,30 @@ describe("reporting dashboard APIs", () => {
         availableVehicles: 1,
         incomeAmount: 1500,
         leasedVehicles: 2,
+        modelCode: "NIO_ET5",
+        modelDefinitionId: "model-et5",
+        modelDisplayName: "ET5 主数据",
         totalVehicles: 3,
-        vehicleModel: "NIO_ET5"
       }
     ]);
   });
 
-  it("keeps null and legitimate UNSPECIFIED vehicle asset buckets distinct", async () => {
+  it("keeps an unknown modelDefinitionId bucket visible without inventing display data", async () => {
     const { prisma, service } = createReportHarness();
     mockVehicleAssetReport(
       prisma,
       [
         {
-          ...countGroup("vehicleModel", null, 1),
+          ...countGroup("modelDefinitionId", "model-unknown", 1),
           status: VehicleStatus.AVAILABLE
         },
         {
-          ...countGroup("vehicleModel", "UNSPECIFIED", 2),
+          ...countGroup("modelDefinitionId", "model-unknown", 2),
           status: VehicleStatus.LEASED
         }
       ],
       [
-        { order: { vehicleModel: "UNSPECIFIED" }, paidAmount: 500n }
+        { order: { modelDefinitionIdSnapshot: "model-unknown" }, paidAmount: 500n }
       ]
     );
 
@@ -567,17 +512,12 @@ describe("reporting dashboard APIs", () => {
     expect(result.byVehicleModel).toEqual([
       {
         availableVehicles: 1,
-        incomeAmount: 0,
-        leasedVehicles: 0,
-        totalVehicles: 1,
-        vehicleModel: null
-      },
-      {
-        availableVehicles: 0,
         incomeAmount: 500,
         leasedVehicles: 2,
-        totalVehicles: 2,
-        vehicleModel: "UNSPECIFIED"
+        modelCode: null,
+        modelDefinitionId: "model-unknown",
+        modelDisplayName: null,
+        totalVehicles: 3
       }
     ]);
   });
@@ -618,7 +558,7 @@ describe("reporting dashboard APIs", () => {
       sortBy: "rentalPaidAmount",
       sortOrder: "desc",
       startDate: "2026-06-01",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinitionId: "model-et5",
       vehicleStatus: VehicleStatus.LEASED
     });
 
@@ -643,13 +583,7 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionId: "model-et5" },
-            {
-              modelDefinitionId: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            }
-          ],
+          modelDefinitionId: "model-et5",
           status: VehicleStatus.LEASED
         })
       })
@@ -685,13 +619,7 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionId: definition.id },
-            {
-              modelDefinitionId: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            }
-          ]
+          modelDefinitionId: definition.id
         })
       })
     );
@@ -2666,7 +2594,7 @@ describe("reporting dashboard APIs", () => {
       sortBy: "rentalPaidAmount",
       sortOrder: "desc",
       startDate: "2026-06-01",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinitionId: "model-et5",
       vehicleStatus: VehicleStatus.LEASED
     });
 
@@ -2682,20 +2610,14 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionId: "model-et5" },
-            {
-              modelDefinitionId: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            }
-          ],
+          modelDefinitionId: "model-et5",
           status: VehicleStatus.LEASED
         })
       })
     );
   });
 
-  it("asset-profitability vehicles export includes model definition code, display name, and legacy model", async () => {
+  it("asset-profitability vehicles export includes only canonical model code and display name", async () => {
     const { prisma, service } = createReportHarness();
     const definition = reportModelDefinition();
     mockAssetProfitability(prisma);
@@ -2711,8 +2633,9 @@ describe("reporting dashboard APIs", () => {
       startDate: "2026-06-01"
     });
 
-    expect(result.content).toContain("车型代码,车型显示名,legacy 车型");
-    expect(result.content).toContain("NIO_ET5,ET5 主数据,ET5");
+    expect(result.content).toContain("车型代码,车型显示名");
+    expect(result.content).toContain("NIO_ET5,ET5 主数据");
+    expect(result.content).not.toContain("legacy 车型");
     expect(result.content).not.toMatch(/undefined|null|\[object Object\]|NaN|Invalid Date/);
   });
 
@@ -2893,7 +2816,7 @@ describe("reporting dashboard APIs", () => {
       sortBy: "trialNetOperatingIncomeAmount",
       sortOrder: "desc",
       startDate: "2026-01-01",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinitionId: "model-et5",
       vehicleStatus: VehicleStatus.LEASED
     });
 
@@ -2939,13 +2862,7 @@ describe("reporting dashboard APIs", () => {
     expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [
-            { modelDefinitionId: "model-et5" },
-            {
-              modelDefinitionId: null,
-              vehicleModel: { in: ["NIO_ET5", VehicleModel.ET5] }
-            }
-          ],
+          modelDefinitionId: "model-et5",
           status: VehicleStatus.LEASED
         })
       })
@@ -3331,7 +3248,7 @@ describe("reporting dashboard APIs", () => {
         customer: { mobile: "13800000000", name: "张三" },
         depositAmount: 200000n,
         id: "order-1",
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelCodeSnapshot: "NIO_ET5",
         modelDefinitionIdSnapshot: "snapshot-model-et5",
         modelDisplayNameSnapshot: "Frozen Order ET5",
         monthlyFeeAmount: 300000n,
@@ -3343,8 +3260,7 @@ describe("reporting dashboard APIs", () => {
           subscriptionPlanId: "plan-1"
         },
         startDate: new Date("2026-06-01T00:00:00.000Z"),
-        vehicle: { plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" },
-        vehicleModel: VehicleModel.ET5
+        vehicle: { modelDefinition: null, modelDefinitionId: "model-et5", plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" }
       }
     ]);
 
@@ -3366,8 +3282,9 @@ describe("reporting dashboard APIs", () => {
           customerName: "张三",
           depositAmount: 200000,
           id: "order-1",
+          modelCode: "NIO_ET5",
           modelDisplayName: "Frozen Order ET5",
-          modelDisplaySource: "SNAPSHOT",
+          modelDisplaySource: "ORDER_SNAPSHOT",
           monthlyFeeAmount: 300000,
           orderNo: "SO-001",
           orderStatus: OrderStatus.ACTIVE,
@@ -3592,13 +3509,14 @@ describe("reporting dashboard APIs", () => {
         deliveries: [{ deliveredAt: new Date("2026-06-03T08:00:00.000Z") }],
         id: "vehicle-1",
         model: "ET5 75kWh",
+        modelDefinition: reportModelDefinition(),
+        modelDefinitionId: "model-et5",
         orders: [{ customer: { name: "张三" }, id: "order-1", orderNo: "SO-001" }],
         plateNo: "沪A12345",
         purchasePriceAmount: 25000000n,
         returns: [],
         series: "ET",
         status: VehicleStatus.LEASED,
-        vehicleModel: VehicleModel.ET5,
         vehicleNo: "VH-001",
         vin: "VIN001"
       }
@@ -3648,7 +3566,7 @@ describe("reporting dashboard APIs", () => {
         customer: { mobile: "13800000000", name: "张三" },
         depositAmount: 200000n,
         id: "order-1",
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
+        modelCodeSnapshot: "NIO_ET5",
         modelDefinitionIdSnapshot: "snapshot-model-et5",
         modelDisplayNameSnapshot: "Frozen CSV ET5",
         monthlyFeeAmount: 300000n,
@@ -3660,8 +3578,7 @@ describe("reporting dashboard APIs", () => {
           subscriptionPlanId: "plan-1"
         },
         startDate: new Date("2026-06-01T00:00:00.000Z"),
-        vehicle: { plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" },
-        vehicleModel: VehicleModel.ET5
+        vehicle: { modelDefinition: null, modelDefinitionId: "model-et5", plateNo: "沪A12345", vehicleNo: "VH-001", vin: "VIN001" }
       }
     ]);
 
@@ -3673,7 +3590,7 @@ describe("reporting dashboard APIs", () => {
 
     expect(result.filename).toBe("orders-detail-20260601-20260630.csv");
     expect(result.content.charCodeAt(0)).toBe(0xfeff);
-    expect(result.content).toContain("Frozen CSV ET5,SNAPSHOT,ET5");
+    expect(result.content).toContain("NIO_ET5,Frozen CSV ET5,ORDER_SNAPSHOT");
     expect(result.content).toContain("订单编号,客户姓名,手机号,订单来源,订单状态");
     expect(result.content).toContain("销售人工,在租");
     expect(result.content).toContain('"标准,套餐""豪华\n版"');
@@ -3847,13 +3764,14 @@ describe("reporting dashboard APIs", () => {
         deliveries: [{ deliveredAt: new Date("2026-06-03T08:00:00.000Z") }],
         id: "vehicle-1",
         model: "ET5 75kWh",
+        modelDefinition: reportModelDefinition(),
+        modelDefinitionId: "model-et5",
         orders: [{ customer: { name: "张三" }, id: "order-1", orderNo: "SO-001" }],
         plateNo: "沪A12345",
         purchasePriceAmount: 25000000n,
         returns: [],
         series: "ET",
         status: VehicleStatus.LEASED,
-        vehicleModel: VehicleModel.ET5,
         vehicleNo: "VH-001",
         vin: "VIN001"
       }
@@ -4058,12 +3976,12 @@ function expectReportWriteGuardsNotCalled(prisma: ReportPrismaMock) {
 function mockOrderReport(
   prisma: ReportPrismaMock,
   planName = "Standard",
-  vehicleModelGroups: Array<{
+  modelGroups: Array<{
     _count: { _all: number };
     [key: string]: unknown;
   }> = [
-    countGroup("vehicleModel", VehicleModel.ET5, 2),
-    countGroup("vehicleModel", VehicleModel.ES6, 1)
+    countGroup("modelDefinitionIdSnapshot", "model-et5", 2),
+    countGroup("modelDefinitionIdSnapshot", "model-es6", 1)
   ]
 ) {
   prisma.subscriptionOrder.count.mockResolvedValue(3);
@@ -4076,7 +3994,7 @@ function mockOrderReport(
       countGroup("orderSource", OrderSource.SALES_ASSISTED, 2),
       countGroup("orderSource", OrderSource.CUSTOMER_SELF_SERVICE, 1)
     ])
-    .mockResolvedValueOnce(vehicleModelGroups);
+    .mockResolvedValueOnce(modelGroups);
   prisma.subscriptionOrder.findMany.mockResolvedValue([
     {
       quote: {
@@ -4097,38 +4015,46 @@ function mockOrderReport(
       }
     }
   ]);
+  prisma.vehicleModelDefinition.findMany.mockResolvedValue([
+    reportModelDefinition(),
+    reportModelDefinition({
+      displayName: "ES6 主数据",
+      id: "model-es6",
+      modelCode: "NIO_ES6"
+    })
+  ]);
 }
 
 function mockVehicleAssetReport(
   prisma: ReportPrismaMock,
-  vehicleModelGroups: Array<{
+  modelGroups: Array<{
     _count: { _all: number };
     [key: string]: unknown;
     status: VehicleStatus;
   }> = [
     {
-      ...countGroup("vehicleModel", VehicleModel.ET5, 1),
+      ...countGroup("modelDefinitionId", "model-et5", 1),
       status: VehicleStatus.AVAILABLE
     },
     {
-      ...countGroup("vehicleModel", VehicleModel.ET5, 2),
+      ...countGroup("modelDefinitionId", "model-et5", 2),
       status: VehicleStatus.LEASED
     },
     {
-      ...countGroup("vehicleModel", VehicleModel.ES6, 1),
+      ...countGroup("modelDefinitionId", "model-es6", 1),
       status: VehicleStatus.AVAILABLE
     },
     {
-      ...countGroup("vehicleModel", VehicleModel.ES6, 1),
+      ...countGroup("modelDefinitionId", "model-es6", 1),
       status: VehicleStatus.MAINTENANCE
     }
   ],
   vehicleIncomeBills: Array<{
-    order: { vehicleModel: string };
+    order: { modelDefinitionIdSnapshot: string };
     paidAmount: bigint;
   }> = [
-    { order: { vehicleModel: VehicleModel.ET5 }, paidAmount: 1000n },
-    { order: { vehicleModel: VehicleModel.ES6 }, paidAmount: 500n }
+    { order: { modelDefinitionIdSnapshot: "model-et5" }, paidAmount: 1000n },
+    { order: { modelDefinitionIdSnapshot: "model-es6" }, paidAmount: 500n }
   ]
 ) {
   prisma.vehicle.count.mockResolvedValueOnce(6).mockResolvedValueOnce(4);
@@ -4139,7 +4065,7 @@ function mockVehicleAssetReport(
       countGroup("status", VehicleStatus.MAINTENANCE, 1),
       countGroup("status", VehicleStatus.RETURNED, 1)
     ])
-    .mockResolvedValueOnce(vehicleModelGroups);
+    .mockResolvedValueOnce(modelGroups);
   prisma.vehicle.aggregate.mockResolvedValue(
     sumResult({
       currentSalePriceAmount: 8000n,
@@ -4147,6 +4073,14 @@ function mockVehicleAssetReport(
     })
   );
   prisma.receivableBill.findMany.mockResolvedValue(vehicleIncomeBills);
+  prisma.vehicleModelDefinition.findMany.mockResolvedValue([
+    reportModelDefinition(),
+    reportModelDefinition({
+      displayName: "ES6 主数据",
+      id: "model-es6",
+      modelCode: "NIO_ES6"
+    })
+  ]);
 }
 
 function mockAssetProfitability(prisma: ReportPrismaMock) {
@@ -4320,15 +4254,14 @@ function assetVehicle(overrides: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: new Date("2026-06-01T02:00:00.000Z"),
     id: "vehicle-1",
     model: "ET5 75kWh",
-    modelDefinition: null,
-    modelDefinitionId: null,
+    modelDefinition: reportModelDefinition(),
+    modelDefinitionId: "model-et5",
     plateNo: "沪A10001",
     purchasePriceAmount: 1000000n,
     salePriceStatus: "EFFECTIVE",
     salePriceHistories: [salePriceHistory()],
     series: "ET",
     status: VehicleStatus.LEASED,
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VH-001",
     vin: "VIN001",
     ...overrides

@@ -48,6 +48,10 @@ export function buildVehicleModelRemovalReadinessReport({
     (event) => event.usageKind === "EXTERNAL_CONTRACT_DEPRECATION_WARNING"
   ).length;
   const externalUsageCount = externalEvents.length + externalRuntimeWarningCount;
+  const enumUsageCount =
+    enumTypeRemoval.decision === "READY"
+      ? 0
+      : Math.max(1, enumTypeRemoval.dependencies?.length ?? 0);
   const displayOnlyEnumUsageCount = events.filter(
     (event) => isCompatibilityFieldUsageEvent(event) && event.usageKind === "DISPLAY"
   ).length;
@@ -73,7 +77,11 @@ export function buildVehicleModelRemovalReadinessReport({
     businessDecisionUsageCount,
     compatibilityFieldRetirement,
     compatibilityFieldUsageCount,
-    decision: enumTypeRemoval.decision,
+    decision:
+      enumUsageCount === 0 && compatibilityFieldRetirement.decision === "READY"
+        ? "READY"
+        : "NOT_READY",
+    enumUsageCount,
     enumTypeRemoval,
     events,
     externalCompatibilityFieldUsageMap: externalUsage,

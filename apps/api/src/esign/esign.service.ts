@@ -3840,10 +3840,10 @@ function toPortalVehicleSummary(vehicle: ContractForESign["order"]["vehicle"]) {
     brand: vehicle.brand,
     city: vehicle.assetLocation,
     currentMileageKm: vehicle.currentMileageKm,
-    displayName: [vehicle.brand, vehicle.series, vehicle.vehicleModel, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
+    displayName: [vehicle.brand, vehicle.series, vehicle.model, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
       .filter(Boolean)
       .join(" "),
-    model: vehicle.vehicleModel,
+    model: vehicle.model,
     modelYear: vehicle.modelYear,
     series: vehicle.series
   };

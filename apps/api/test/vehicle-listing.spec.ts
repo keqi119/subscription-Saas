@@ -15,7 +15,6 @@ import {
 import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
 
 import { VehicleListingService } from "../src/vehicle/vehicle-listing.service";
 
@@ -228,13 +227,13 @@ function createVehicle() {
     deletedAt: null,
     id: "vehicle-1",
     model: "ES6",
+    modelDefinitionId: "model-es6",
     modelYear: 2025,
     purchasePriceAmount: 26000000n,
     salePriceStatus: "EFFECTIVE",
     series: "ES6",
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
-    vehicleModel: VehicleModel.ES6,
     vehicleNo: "VH001"
   };
 }
@@ -396,12 +395,12 @@ function createPlan() {
     vehiclePackage: {
       deletedAt: null,
       id: "vehicle-package-1",
+      modelDefinitionId: "model-es6",
       monthlyFeeRate: new Prisma.Decimal("0.04"),
       packageName: "ES6 基础车包",
       productId: "product-1",
       productVersionId: "version-1",
-      status: RecordStatus.ACTIVE,
-      vehicleModel: VehicleModel.ES6
+      status: RecordStatus.ACTIVE
     },
     vehiclePackageId: "vehicle-package-1"
   };

@@ -1865,7 +1865,9 @@ function buildMonthlyRentBillSnapshot(
         }
       : null,
     vehicleId: order.vehicleId,
-    vehicleModel: order.vehicleModel
+    modelCode: order.modelCodeSnapshot,
+    modelDefinitionId: order.modelDefinitionIdSnapshot,
+    modelDisplayName: order.modelDisplayNameSnapshot
   };
 }
 

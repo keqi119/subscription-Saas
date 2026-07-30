@@ -20,8 +20,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { OrderService } from "../src/order/order.service";
 
 describe("customer self-service order API rules", () => {
@@ -139,7 +137,11 @@ describe("customer self-service order API rules", () => {
   it("writes model snapshots to the quote and order created by customer self-service", async () => {
     const harness = createCustomerOrderHarness({
       vehicle: {
-        modelDefinition: { displayName: "NIO ET5 Snapshot" },
+        modelDefinition: {
+          displayName: "NIO ET5 Snapshot",
+          id: "model-et5",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionId: "model-et5"
       }
     });
@@ -157,8 +159,7 @@ describe("customer self-service order API rules", () => {
     );
 
     const expectedSnapshot = {
-      legacyVehicleModelSnapshot: VehicleModel.ET5,
-      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+      modelCodeSnapshot: "NIO_ET5",
       modelDefinitionIdSnapshot: "model-et5",
       modelDisplayNameSnapshot: "NIO ET5 Snapshot"
     };
@@ -176,7 +177,16 @@ describe("customer self-service order API rules", () => {
 
   it("rejects a subscription plan that does not match the selected vehicle model", async () => {
     const harness = createCustomerOrderHarness({
-      plan: { vehiclePackage: { vehicleModel: VehicleModel.ES6 } }
+      plan: {
+        vehiclePackage: {
+          modelDefinition: {
+            displayName: "NIO ES6",
+            id: "model-es6",
+            modelCode: "NIO_ES6"
+          },
+          modelDefinitionId: "model-es6"
+        }
+      }
     });
 
     await expect(
@@ -197,25 +207,22 @@ describe("customer self-service order API rules", () => {
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
-  it("accepts a canonical plan for a historical legacy-code vehicle", async () => {
+  it("accepts matching canonical plan and vehicle identities", async () => {
     const modelDefinition = {
       displayName: "NIO ET5",
       id: "model-et5",
-      legacyVehicleModel: VehicleModel.ET5,
       modelCode: "NIO_ET5"
     };
     const harness = createCustomerOrderHarness({
       plan: {
         vehiclePackage: {
           modelDefinition,
-          modelDefinitionId: modelDefinition.id,
-          vehicleModel: modelDefinition.modelCode
+          modelDefinitionId: modelDefinition.id
         }
       },
       vehicle: {
-        modelDefinition: null,
-        modelDefinitionId: null,
-        vehicleModel: VehicleModel.ET5
+        modelDefinition,
+        modelDefinitionId: modelDefinition.id
       }
     });
 
@@ -364,6 +371,12 @@ function createCustomerOrderHarness(overrides: {
     deletedAt: null,
     id: "vehicle-1",
     model: "ET5",
+    modelDefinition: {
+      displayName: "NIO ET5",
+      id: "model-et5",
+      modelCode: "NIO_ET5"
+    },
+    modelDefinitionId: "model-et5",
     modelYear: 2024,
     nextSalePriceReviewAt: null,
     plateNo: "沪A00001",
@@ -377,7 +390,6 @@ function createCustomerOrderHarness(overrides: {
     status: state.vehicleStatus,
     updatedAt: now,
     updatedBy: user.id,
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH202606040001",
     vin: "VIN202606040001",
     ...overrides.vehicle
@@ -509,7 +521,12 @@ function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePacka
       packageName: "车型包",
       packageNo: "VEH001",
       series: "ET5",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinition: {
+        displayName: "NIO ET5",
+        id: "model-et5",
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       vehicleModelName: "ET5",
       ...vehiclePackageOverrides
     },

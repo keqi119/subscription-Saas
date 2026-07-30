@@ -34,7 +34,8 @@ async function main() {
       modelDefinition: {
         select: {
           id: true,
-          legacyVehicleModel: true
+          legacyVehicleModel: true,
+          modelCode: true
         }
       },
       modelDefinitionId: true,

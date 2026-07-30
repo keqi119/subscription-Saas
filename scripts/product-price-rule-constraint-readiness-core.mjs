@@ -24,9 +24,18 @@ export function buildProductPriceRuleConstraintReadinessReport({ rules }) {
 
     const legacyVehicleModel = clean(rule.vehicleModel);
     const definitionLegacyVehicleModel = clean(rule.modelDefinition?.legacyVehicleModel);
-    if (definitionLegacyVehicleModel && legacyVehicleModel && legacyVehicleModel !== definitionLegacyVehicleModel) {
+    const definitionModelCode = clean(rule.modelDefinition?.modelCode);
+    const acceptedVehicleModels = new Set(
+      [definitionModelCode, definitionLegacyVehicleModel].filter(Boolean)
+    );
+    if (
+      legacyVehicleModel &&
+      acceptedVehicleModels.size > 0 &&
+      !acceptedVehicleModels.has(legacyVehicleModel)
+    ) {
       legacyMappingMismatches.push({
         definitionLegacyVehicleModel,
+        definitionModelCode,
         id: rule.id,
         modelDefinitionId: rule.modelDefinitionId,
         productVersionId: rule.productVersionId,

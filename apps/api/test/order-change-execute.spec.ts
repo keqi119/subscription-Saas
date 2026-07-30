@@ -18,8 +18,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { OrderService } from "../src/order/order.service";
 
 describe("pre-contract order change return-to-plan flow", () => {
@@ -421,15 +419,15 @@ describe("pre-contract order change return-to-plan flow", () => {
     ).rejects.toThrow("Permission denied.");
   });
 
-  it("discovers canonical plan changes for a historical legacy-code vehicle", async () => {
-    const harness = createOrderChangeHarness({ planVehicleModel: "NIO_ET5" });
+  it("discovers plan changes for a matching canonical vehicle identity", async () => {
+    const harness = createOrderChangeHarness({ planModelCode: "NIO_ET5" });
 
     await expect(
       harness.service.listPlanChangeSubscriptionPlans(harness.orderId, harness.saUser)
     ).resolves.toMatchObject([
       {
+        modelCode: "NIO_ET5",
         subscriptionPlanId: "plan-new",
-        vehicleModel: "NIO_ET5"
       }
     ]);
     expect(harness.prisma.subscriptionPlan.findMany).toHaveBeenCalledWith(
@@ -461,7 +459,7 @@ interface HarnessOptions {
   executedAt?: Date | null;
   orderSource?: "CUSTOMER_SELF_SERVICE" | "SALES_ASSISTED";
   orderStatus?: OrderStatus;
-  planVehicleModel?: string;
+  planModelCode?: string;
   vehicleStatus?: VehicleStatus;
 }
 
@@ -530,15 +528,18 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
       deletedAt: null,
       id: vehicleId,
       model: "ET5",
-      modelDefinition: null,
-      modelDefinitionId: null,
+      modelDefinition: {
+        displayName: "NIO ET5",
+        id: "model-et5",
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       plateNo: "沪A00001",
       purchasePriceAmount: 18000000n,
       salePriceStatus: SalePriceStatus.EFFECTIVE,
       series: "ET5",
       status: state.vehicleStatus,
       updatedAt: now,
-      vehicleModel: VehicleModel.ET5,
       vehicleNo: "VEH202606050001",
       vin: "VIN202606050001"
     };
@@ -622,7 +623,6 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
       updatedBy: opUser.id,
       vehicle: buildVehicle(),
       vehicleId,
-      vehicleModel: VehicleModel.ET5,
       vehiclePurchasePriceAmount: 18000000n,
       vehicleReviewStatus: "APPROVED"
     };
@@ -648,7 +648,7 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
     };
   }
 
-  const plan = makePlan(now, options.planVehicleModel ?? VehicleModel.ET5);
+  const plan = makePlan(now, options.planModelCode ?? "NIO_ET5");
 
   const tx = {
     contract: {
@@ -755,7 +755,7 @@ function createOrderChangeHarness(options: HarnessOptions = {}) {
   return { auditService, changeId, context, contractId, opUser, orderId, prisma, saUser, service, state, tx, vehicleId };
 }
 
-function makePlan(now: Date, vehicleModel: string) {
+function makePlan(now: Date, modelCode: string) {
   const product = {
     deletedAt: null,
     id: "product-new",
@@ -852,8 +852,7 @@ function makePlan(now: Date, vehicleModel: string) {
       modelDefinition: {
         displayName: "NIO ET5",
         id: "model-et5",
-        legacyVehicleModel: VehicleModel.ET5,
-        modelCode: "NIO_ET5"
+        modelCode
       },
       modelDefinitionId: "model-et5",
       minPeriodMonths: 6,
@@ -863,8 +862,7 @@ function makePlan(now: Date, vehicleModel: string) {
       packageNo: "VEH-NEW",
       remark: null,
       series: "ET5",
-      vehicleModel,
-      vehicleModelName: vehicleModel
+      vehicleModelName: "ET5"
     },
     vehiclePackageId: "vehicle-package-new"
   };

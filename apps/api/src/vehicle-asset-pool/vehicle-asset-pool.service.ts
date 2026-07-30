@@ -29,11 +29,17 @@ const poolDetailInclude = {
           currentSalePriceAmount: true,
           id: true,
           model: true,
+          modelDefinition: {
+            select: {
+              displayName: true,
+              modelCode: true
+            }
+          },
+          modelDefinitionId: true,
           plateNo: true,
           purchasePriceAmount: true,
           series: true,
           status: true,
-          vehicleModel: true,
           vehicleNo: true,
           vin: true
         }
@@ -297,11 +303,17 @@ export class VehicleAssetPoolService {
             currentSalePriceAmount: true,
             id: true,
             model: true,
+            modelDefinition: {
+              select: {
+                displayName: true,
+                modelCode: true
+              }
+            },
+            modelDefinitionId: true,
             plateNo: true,
             purchasePriceAmount: true,
             series: true,
             status: true,
-            vehicleModel: true,
             vehicleNo: true,
             vin: true
           }
@@ -375,7 +387,17 @@ export class VehicleAssetPoolService {
   }
 
   private async findVehicleOrThrow(vehicleId: string) {
-    const vehicle = await this.prisma.vehicle.findUnique({ where: { id: vehicleId } });
+    const vehicle = await this.prisma.vehicle.findUnique({
+      include: {
+        modelDefinition: {
+          select: {
+            displayName: true,
+            modelCode: true
+          }
+        }
+      },
+      where: { id: vehicleId }
+    });
     if (!vehicle || vehicle.deletedAt) {
       throw new NotFoundException("车辆不存在");
     }
@@ -560,11 +582,15 @@ function toMembershipView(
     currentSalePriceAmount?: bigint | null;
     id: string;
     model?: string | null;
+    modelDefinition: {
+      displayName: string;
+      modelCode: string;
+    };
+    modelDefinitionId: string;
     plateNo?: string | null;
     purchasePriceAmount: bigint;
     series?: string | null;
     status?: string;
-    vehicleModel?: string | null;
     vehicleNo: string;
     vin?: string | null;
   }
@@ -588,11 +614,13 @@ function toMembershipView(
           currentSalePriceAmount: numberOrNull(vehicle.currentSalePriceAmount),
           id: vehicle.id,
           model: vehicle.model ?? null,
+          modelCode: vehicle.modelDefinition.modelCode,
+          modelDefinitionId: vehicle.modelDefinitionId,
+          modelDisplayName: vehicle.modelDefinition.displayName,
           plateNo: vehicle.plateNo ?? null,
           purchasePriceAmount: Number(vehicle.purchasePriceAmount),
           series: vehicle.series ?? null,
           status: vehicle.status ?? null,
-          vehicleModel: vehicle.vehicleModel ?? null,
           vehicleNo: vehicle.vehicleNo,
           vin: vehicle.vin ?? null
         }

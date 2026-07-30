@@ -65,7 +65,9 @@ type VehiclePoolAllocationItem = {
   vehicleAcquisitionMode: string;
   vehicleCoverageBps: number | null;
   vehicleId: string;
-  vehicleModel: string | null;
+  modelCode: string | null;
+  modelDefinitionId: string;
+  modelDisplayName: string | null;
   vehicleNo: string;
   vin: string | null;
 };
@@ -567,9 +569,10 @@ export class FinancingService {
                 acquisitionMode: true,
                 currentSalePriceAmount: true,
                 id: true,
+                modelDefinition: { select: { displayName: true, modelCode: true } },
+                modelDefinitionId: true,
                 plateNo: true,
                 purchasePriceAmount: true,
-                vehicleModel: true,
                 vehicleNo: true,
                 vin: true
               }
@@ -624,7 +627,9 @@ export class FinancingService {
         vehicleAcquisitionMode: vehicle.acquisitionMode,
         vehicleCoverageBps: calculateRatioBps(allocatedPrincipalAmount, vehicle.purchasePriceAmount),
         vehicleId: vehicle.id,
-        vehicleModel: vehicle.vehicleModel,
+        modelCode: vehicle.modelDefinition.modelCode,
+        modelDefinitionId: vehicle.modelDefinitionId,
+        modelDisplayName: vehicle.modelDefinition.displayName,
         vehicleNo: vehicle.vehicleNo,
         vin: vehicle.vin
       };
@@ -870,9 +875,10 @@ function buildSkippedPoolAllocationItem(
     acquisitionMode: string;
     currentSalePriceAmount: bigint | null;
     id: string;
+    modelDefinition: { displayName: string; modelCode: string };
+    modelDefinitionId: string;
     plateNo: string | null;
     purchasePriceAmount: bigint;
-    vehicleModel: string | null;
     vehicleNo: string;
     vin: string | null;
   },
@@ -889,7 +895,9 @@ function buildSkippedPoolAllocationItem(
     vehicleAcquisitionMode: vehicle.acquisitionMode,
     vehicleCoverageBps: null,
     vehicleId: vehicle.id,
-    vehicleModel: vehicle.vehicleModel,
+    modelCode: vehicle.modelDefinition.modelCode,
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: vehicle.modelDefinition.displayName,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
   };
@@ -925,7 +933,9 @@ function toVehiclePoolAllocationItemView(item: VehiclePoolAllocationItem) {
     reason: item.reason,
     vehicleCoverageBps: item.vehicleCoverageBps,
     vehicleId: item.vehicleId,
-    vehicleModel: item.vehicleModel,
+    modelCode: item.modelCode,
+    modelDefinitionId: item.modelDefinitionId,
+    modelDisplayName: item.modelDisplayName,
     vehicleNo: item.vehicleNo,
     vin: item.vin
   };

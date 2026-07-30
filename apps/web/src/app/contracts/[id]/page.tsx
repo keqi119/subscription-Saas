@@ -298,7 +298,16 @@ function ContractSnapshotSection({ contract }: { contract: ContractDetail | null
             label: "品牌 / 车系",
             children: joinSnapshotText(getSnapshotValue(vehicleSnapshot, "brand"), getSnapshotValue(vehicleSnapshot, "series"))
           },
-          { label: "车型", children: safeText(getSnapshotValue(vehicleSnapshot, "vehicleModel", "model") ?? getSnapshotValue(orderSnapshot, "vehicleModel")) },
+          {
+            label: "车型",
+            children: safeText(
+              getSnapshotValue(
+                vehicleSnapshot,
+                "modelDisplayNameSnapshot",
+                "model"
+              ) ?? getSnapshotValue(orderSnapshot, "modelDisplayNameSnapshot")
+            )
+          },
           { label: "电池容量", children: formatKwh(getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
           {
             label: "电池使用方式",

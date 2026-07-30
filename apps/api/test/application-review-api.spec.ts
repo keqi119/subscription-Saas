@@ -25,8 +25,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { CustomerService } from "../src/customer/customer.service";
 
 interface ApprovalRiskInput {
@@ -437,7 +435,11 @@ describe("application self-service review APIs", () => {
     const harness = createApplicationReviewHarness({
       application: readyToCreateOrderApplication(),
       vehicle: {
-        modelDefinition: { displayName: "NIO ET5 Final Plan" },
+        modelDefinition: {
+          displayName: "NIO ET5 Final Plan",
+          id: "model-et5",
+          modelCode: "NIO_ET5"
+        },
         modelDefinitionId: "model-et5"
       }
     });
@@ -460,7 +462,7 @@ describe("application self-service review APIs", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           depositAmount: 300000n,
-          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelCodeSnapshot: "NIO_ET5",
           modelDefinitionIdSnapshot: "model-et5",
           modelDisplayNameSnapshot: "NIO ET5 Final Plan",
           status: QuoteStatus.CONFIRMED,
@@ -474,7 +476,7 @@ describe("application self-service review APIs", () => {
         data: expect.objectContaining({
           depositAmount: 300000n,
           finalDepositAmount: 300000n,
-          legacyVehicleModelSnapshot: VehicleModel.ET5,
+          modelCodeSnapshot: "NIO_ET5",
           modelDefinitionIdSnapshot: "model-et5",
           modelDisplayNameSnapshot: "NIO ET5 Final Plan",
           orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
@@ -870,7 +872,7 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
     intentSubscriptionPlanId: "plan-1",
     intentVehicleBaseFeeAmount: 700000n,
     intentVehicleId: "vehicle-1",
-    intendedModel: VehicleModel.ET5,
+    intendedModel: "NIO_ET5",
     intendedPeriodMonths: 12,
     materialGroups: [],
     materialReviewStatus: OrderReviewStatus.PENDING,
@@ -955,6 +957,12 @@ function makeVehicle(now: Date, overrides: Record<string, unknown> = {}) {
     deletedAt: null,
     id: "vehicle-1",
     model: "ET5",
+    modelDefinition: {
+      displayName: "NIO ET5",
+      id: "model-et5",
+      modelCode: "NIO_ET5"
+    },
+    modelDefinitionId: "model-et5",
     modelYear: 2024,
     nextSalePriceReviewAt: null,
     plateNo: "沪A00001",
@@ -968,7 +976,6 @@ function makeVehicle(now: Date, overrides: Record<string, unknown> = {}) {
     status: VehicleStatus.REVIEW_RESERVED,
     updatedAt: now,
     updatedBy: "00000000-0000-4000-8000-000000000001",
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH202606050001",
     vin: "VIN202606050001",
     ...overrides
@@ -1068,7 +1075,12 @@ function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePacka
       packageName: "车型包",
       packageNo: "VEH001",
       series: "ET5",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinition: {
+        displayName: "NIO ET5",
+        id: "model-et5",
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       vehicleModelName: "ET5",
       ...vehiclePackageOverrides
     },

@@ -25,7 +25,7 @@ import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
+import { TEST_MODEL_CODES } from "./helpers/vehicle-model-codes";
 
 import { PortalApplicationService } from "../src/portal/portal-application.service";
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";
@@ -797,7 +797,7 @@ function createFinalPlanSnapshot() {
       plateNo: "沪A12345",
       purchasePriceAmount: 26000000,
       series: "ES6",
-      vehicleModel: VehicleModel.ES6,
+      vehicleModel: TEST_MODEL_CODES.ES6,
       vehicleNo: "VH001",
       vin: "VIN1234567890"
     }
@@ -848,14 +848,14 @@ function createApplication(overrides: Record<string, unknown> = {}) {
         currentMileageKm: 12000,
         plateNo: "沪A12345",
         series: "ES6",
-        vehicleModel: VehicleModel.ES6,
+        vehicleModel: TEST_MODEL_CODES.ES6,
         vin: "VIN1234567890"
       }
     },
     intentSubscriptionPlanId: "plan-1",
     intentVehicleBaseFeeAmount: 700000n,
     intentVehicleId: "vehicle-1",
-    intendedModel: VehicleModel.ES6,
+    intendedModel: TEST_MODEL_CODES.ES6,
     intendedPeriodMonths: 12,
     materialGroups: [],
     materialReviewStatus: OrderReviewStatus.PENDING,
@@ -908,7 +908,7 @@ function createVehicle() {
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ES6,
+    vehicleModel: TEST_MODEL_CODES.ES6,
     vehicleNo: "VH001",
     vin: "VIN1234567890"
   };
@@ -997,7 +997,7 @@ function createPlan() {
       productId: "product-1",
       productVersionId: "version-1",
       status: RecordStatus.ACTIVE,
-      vehicleModel: VehicleModel.ES6
+      vehicleModel: TEST_MODEL_CODES.ES6
     },
     vehiclePackageId: "vehicle-package-1"
   };

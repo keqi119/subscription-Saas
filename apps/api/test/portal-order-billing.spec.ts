@@ -16,7 +16,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
+import { TEST_MODEL_CODES } from "./helpers/vehicle-model-codes";
 
 import { PortalBillingService } from "../src/portal/portal-billing.service";
 
@@ -234,8 +234,8 @@ function makeOrder(input: Partial<AnyRecord>) {
     entitlementGrants: [],
     finalPlanSnapshot: { subscriptionPlan: { planName: "安心订阅套餐" } },
     id: input.id ?? "order_a",
-    legacyVehicleModelSnapshot: input.legacyVehicleModelSnapshot ?? VehicleModel.ET5,
-    legacyVehicleModelCodeSnapshot: input.legacyVehicleModelCodeSnapshot ?? VehicleModel.ET5,
+    legacyVehicleModelSnapshot: input.legacyVehicleModelSnapshot ?? TEST_MODEL_CODES.ET5,
+    legacyVehicleModelCodeSnapshot: input.legacyVehicleModelCodeSnapshot ?? TEST_MODEL_CODES.ET5,
     mileageLimitKm: 1500,
     modelDefinitionIdSnapshot: input.modelDefinitionIdSnapshot ?? "model-et5",
     modelDisplayNameSnapshot: input.modelDisplayNameSnapshot ?? "Frozen Portal ET5",
@@ -255,7 +255,7 @@ function makeOrder(input: Partial<AnyRecord>) {
     quoteSnapshot: {},
     receivableBills: [],
     startDate: null,
-    vehicleModel: input.vehicleModel ?? VehicleModel.ET5,
+    vehicleModel: input.vehicleModel ?? TEST_MODEL_CODES.ET5,
     vehicle: {
       assetLocation: "上海",
       batteryCapacityKwh: new Prisma.Decimal(75),

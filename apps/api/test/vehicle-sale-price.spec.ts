@@ -19,8 +19,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { AuditService } from "../src/audit/audit.service";
 import { RequestContext, RequestUser } from "../src/auth/auth.types";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -657,8 +655,8 @@ describe("VehicleService sale price baseline", () => {
     for (const vin of ["TESTVINET50000001", "TESTVINET70000001", "TESTVINES60000001"]) {
       expect(seedSource).toContain(`vin: "${vin}"`);
     }
-    for (const vehicleModel of ["NIO_ET5", "NIO_ET7", "NIO_ES6"]) {
-      expect(seedSource).toContain(`vehicleModel: "${vehicleModel}"`);
+    for (const modelCode of ["NIO_ET5", "NIO_ET7", "NIO_ES6"]) {
+      expect(seedSource).toContain(`modelCode: "${modelCode}"`);
     }
     expect(seedSource).toContain("prisma.vehicle.upsert");
     expect(seedSource).toContain('status: "AVAILABLE"');
@@ -958,8 +956,7 @@ function makeService() {
     displayName: "ET5",
     enabled: true,
     id: "definition-et5",
-    legacyVehicleModel: VehicleModel.ET5,
-    modelCode: "ET5",
+    modelCode: "NIO_ET5",
     modelName: "ET5",
     modelYear: null,
     series: "ET"
@@ -982,11 +979,8 @@ function makeService() {
       findMany: vi.fn()
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: VehicleModel } }) => {
-        if (where.deletedAt === null && where.legacyVehicleModel === VehicleModel.ET5) {
-          return defaultModelDefinition;
-        }
-        if (where.deletedAt === null && where.id === defaultModelDefinition.id) {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) => {
+        if (where.id === defaultModelDefinition.id) {
           return defaultModelDefinition;
         }
         return null;
@@ -1008,7 +1002,28 @@ function makeService() {
   };
 }
 
-type VehicleFixture = Vehicle & { salePriceHistories: VehicleSalePriceHistory[] };
+type VehicleFixture = Vehicle & {
+  insurancePolicies: Array<{
+    deletedAt: Date | null;
+    effectiveFrom: Date;
+    effectiveTo: Date | null;
+    id: string;
+    policyStatus: VehicleInsurancePolicyStatus;
+    policyType: VehicleInsurancePolicyType;
+  }>;
+  modelDefinition: {
+    brand: string;
+    customerDisplayName: string | null;
+    displayName: string;
+    enabled: boolean;
+    id: string;
+    modelCode: string;
+    modelName: string;
+    modelYear: number | null;
+    series: string | null;
+  };
+  salePriceHistories: VehicleSalePriceHistory[];
+};
 
 function makeVehicle(overrides: Partial<VehicleFixture> = {}) {
   return {
@@ -1034,7 +1049,19 @@ function makeVehicleBase(): VehicleFixture {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
+    insurancePolicies: [],
     model: null,
+    modelDefinition: {
+      brand: "NIO",
+      customerDisplayName: "ET5",
+      displayName: "ET5",
+      enabled: true,
+      id: "definition-et5",
+      modelCode: "NIO_ET5",
+      modelName: "ET5",
+      modelYear: null,
+      series: "ET"
+    },
     modelYear: null,
     nextSalePriceReviewAt: null,
     plateNo: null,
@@ -1050,8 +1077,7 @@ function makeVehicleBase(): VehicleFixture {
     status: VehicleStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
-    modelDefinitionId: null,
-    vehicleModel: VehicleModel.ET5,
+    modelDefinitionId: "definition-et5",
     vehicleNo: "VEH20260602000000A1B2",
     vin: null
   };

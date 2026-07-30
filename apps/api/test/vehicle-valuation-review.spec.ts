@@ -24,8 +24,6 @@ import {
 } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { AuditService } from "../src/audit/audit.service";
 import { RequestContext, RequestUser } from "../src/auth/auth.types";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -712,7 +710,6 @@ function makeModelDefinition(overrides: Partial<VehicleModelDefinition> = {}): V
     enabled: true,
     energyType: null,
     id: "00000000-0000-4000-8000-000000000e50",
-    legacyVehicleModel: VehicleModel.ET5,
     modelCode: "ET5",
     modelName: "ET5",
     modelYear: 2024,
@@ -760,8 +757,7 @@ function makeVehicle(overrides: Partial<Vehicle> = {}): Vehicle {
     status: VehicleStatus.AVAILABLE,
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedBy: user.id,
-    modelDefinitionId: null,
-    vehicleModel: VehicleModel.ET5,
+    modelDefinitionId: "00000000-0000-4000-8000-000000000e50",
     vehicleNo: "VH20260601000000A1B2",
     vin: "LJ1TEST0000000001",
     ...overrides

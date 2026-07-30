@@ -226,7 +226,6 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ET5 Touring",
       id: "model-et5t",
-      legacyVehicleModel: VehicleModel.ET5T,
       modelCode: "NIO_ET5T"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -248,16 +247,15 @@ describe("product component model definitions", () => {
     expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: definition.id } })
     );
-    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    const createData = prisma.vehiclePackage.create.mock.calls[0]![0].data;
     expect(createData).toMatchObject({ modelDefinitionId: definition.id });
     expect(createData).not.toHaveProperty("vehicleModel");
     expect(result).toMatchObject({ modelDefinitionId: definition.id });
   });
 
-  it("accepts a vehicle package legacy alias and normalizes it to modelCode", async () => {
+  it("accepts a canonical vehicle package model definition", async () => {
     const definition = makeModelDefinition({
       id: "model-et5",
-      legacyVehicleModel: VehicleModel.ET5,
       modelCode: "NIO_ET5"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -270,14 +268,13 @@ describe("product component model definitions", () => {
         monthlyFeeRate: 0.035,
         packageName: "ET5 standard",
         productId: "product-1",
-        productVersionId: "version-1",
-        vehicleModel: VehicleModel.ET5
+        productVersionId: "version-1"
       },
       user,
       context
     );
 
-    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    const createData = prisma.vehiclePackage.create.mock.calls[0]![0].data;
     expect(createData).toMatchObject({ modelDefinitionId: definition.id });
     expect(createData).not.toHaveProperty("vehicleModel");
   });
@@ -286,7 +283,6 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "Model X 2027",
       id: "model-x-2027",
-      legacyVehicleModel: null,
       modelCode: "MODEL_X_2027"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -305,7 +301,7 @@ describe("product component model definitions", () => {
       context
     );
 
-    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    const createData = prisma.vehiclePackage.create.mock.calls[0]![0].data;
     expect(createData).toMatchObject({ modelDefinitionId: definition.id });
     expect(createData).not.toHaveProperty("vehicleModel");
   });
@@ -314,7 +310,6 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ES6",
       id: "model-es6",
-      legacyVehicleModel: VehicleModel.ES6,
       modelCode: "NIO_ES6"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -329,7 +324,7 @@ describe("product component model definitions", () => {
           productId: "product-1",
           productVersionId: "version-1",
           vehicleModel: VehicleModel.ES6
-        },
+        } as never,
         user,
         context
       )
@@ -350,7 +345,7 @@ describe("product component model definitions", () => {
           productId: "product-1",
           productVersionId: "version-1",
           vehicleModel: VehicleModel.ES6
-        },
+        } as never,
         user,
         context
       )
@@ -362,7 +357,6 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ES8",
       id: "model-es8",
-      legacyVehicleModel: VehicleModel.ES8,
       modelCode: "NIO_ES8"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -384,7 +378,7 @@ describe("product component model definitions", () => {
     ).resolves.toMatchObject({
       modelDefinitionId: definition.id
     });
-    const createData = prisma.productPriceRule.create.mock.calls[0][0].data;
+    const createData = prisma.productPriceRule.create.mock.calls[0]![0].data;
     expect(createData).toMatchObject({ modelDefinitionId: definition.id });
     expect(createData).not.toHaveProperty("vehicleModel");
 
@@ -395,20 +389,18 @@ describe("product component model definitions", () => {
         maxPeriodMonths: 36,
         minPeriodMonths: 12,
         modelDefinitionId: definition.id,
-        overMileageFeeAmount: 100,
-        vehicleModel: VehicleModel.ET5
+        overMileageFeeAmount: 100
       },
       user,
       context
     );
-    const retiredInputData = prisma.productPriceRule.create.mock.calls[1][0].data;
+    const retiredInputData = prisma.productPriceRule.create.mock.calls[1]![0].data;
     expect(retiredInputData).not.toHaveProperty("vehicleModel");
   });
 
-  it("accepts a price rule legacy alias and normalizes it to modelCode", async () => {
+  it("accepts a canonical price rule model definition", async () => {
     const definition = makeModelDefinition({
       id: "model-et5",
-      legacyVehicleModel: VehicleModel.ET5,
       modelCode: "NIO_ET5"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -420,14 +412,13 @@ describe("product component model definitions", () => {
         maxPeriodMonths: 36,
         minPeriodMonths: 12,
         modelDefinitionId: definition.id,
-        overMileageFeeAmount: 100,
-        vehicleModel: VehicleModel.ET5
+        overMileageFeeAmount: 100
       },
       user,
       context
     );
 
-    const createData = prisma.productPriceRule.create.mock.calls[0][0].data;
+    const createData = prisma.productPriceRule.create.mock.calls[0]![0].data;
     expect(createData).toMatchObject({ modelDefinitionId: definition.id });
     expect(createData).not.toHaveProperty("vehicleModel");
   });
@@ -436,21 +427,19 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ES9",
       id: "model-es9",
-      legacyVehicleModel: VehicleModel.ES9,
       modelCode: "NIO_ES9"
     });
     const { prisma, service } = makeService({
       vehiclePackages: [
         makeVehiclePackage({
           modelDefinition: definition,
-          modelDefinitionId: definition.id,
-          vehicleModel: VehicleModel.ES9
+          modelDefinitionId: definition.id
         })
       ]
     });
 
     await expect(
-      service.updateVehiclePackage("vehicle-1", { modelDefinitionId: null }, user, context)
+      service.updateVehiclePackage("vehicle-1", { modelDefinitionId: null } as never, user, context)
     ).rejects.toThrow();
     expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
   });
@@ -459,21 +448,20 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ET7",
       id: "model-et7",
-      legacyVehicleModel: VehicleModel.ET7,
       modelCode: "NIO_ET7"
     });
     const { prisma, service } = makeService({
       modelDefinitions: [definition],
-      vehiclePackages: [makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null })]
+      vehiclePackages: [makeVehiclePackage({ modelDefinition: definition, modelDefinitionId: definition.id })]
     });
 
     await service.updateVehiclePackage(
       "vehicle-1",
-      { vehicleModel: VehicleModel.ET7 },
+      { vehicleModel: VehicleModel.ET7 } as never,
       user,
       context
     );
-    expect(prisma.vehiclePackage.update.mock.calls[0][0].data).not.toHaveProperty(
+    expect(prisma.vehiclePackage.update.mock.calls[0]![0].data).not.toHaveProperty(
       "vehicleModel"
     );
   });
@@ -482,7 +470,6 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "EC6",
       id: "model-ec6",
-      legacyVehicleModel: VehicleModel.EC6,
       modelCode: "NIO_EC6"
     });
     const { prisma, service } = makeService({ modelDefinitions: [definition] });
@@ -496,7 +483,7 @@ describe("product component model definitions", () => {
           minPeriodMonths: 12,
           overMileageFeeAmount: 100,
           vehicleModel: VehicleModel.EC6
-        },
+        } as never,
         user,
         context
       )
@@ -515,7 +502,7 @@ describe("product component model definitions", () => {
           maxPeriodMonths: 36,
           minPeriodMonths: 12,
           overMileageFeeAmount: 100
-        },
+        } as never,
         user,
         context
       )
@@ -527,14 +514,13 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "ES8",
       id: "model-es8",
-      legacyVehicleModel: VehicleModel.ES8,
       modelCode: "NIO_ES8"
     });
     const { prisma, service } = makeService({
-      priceRules: [makePriceRule({ modelDefinition: definition, modelDefinitionId: definition.id, vehicleModel: VehicleModel.ES8 })]
+      priceRules: [makePriceRule({ modelDefinition: definition, modelDefinitionId: definition.id })]
     });
 
-    await expect(service.updatePriceRule("rule-1", { modelDefinitionId: null }, user, context)).rejects.toThrow();
+    await expect(service.updatePriceRule("rule-1", { modelDefinitionId: null } as never, user, context)).rejects.toThrow();
     expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
   });
 
@@ -542,21 +528,20 @@ describe("product component model definitions", () => {
     const definition = makeModelDefinition({
       displayName: "EC6",
       id: "model-ec6",
-      legacyVehicleModel: VehicleModel.EC6,
       modelCode: "NIO_EC6"
     });
     const { prisma, service } = makeService({
       modelDefinitions: [definition],
-      priceRules: [makePriceRule({ modelDefinition: null, modelDefinitionId: null })]
+      priceRules: [makePriceRule({ modelDefinition: definition, modelDefinitionId: definition.id })]
     });
 
     await service.updatePriceRule(
       "rule-1",
-      { vehicleModel: VehicleModel.EC6 },
+      { vehicleModel: VehicleModel.EC6 } as never,
       user,
       context
     );
-    expect(prisma.productPriceRule.update.mock.calls[0][0].data).not.toHaveProperty(
+    expect(prisma.productPriceRule.update.mock.calls[0]![0].data).not.toHaveProperty(
       "vehicleModel"
     );
   });
@@ -632,7 +617,6 @@ function makeService(seed: Partial<MockSeed> = {}) {
           (seed.modelDefinitions ?? [makeModelDefinition()]).find(
             (definition) =>
               (where.id === undefined || definition.id === where.id) &&
-              (where.legacyVehicleModel === undefined || definition.legacyVehicleModel === where.legacyVehicleModel) &&
               (where.deletedAt !== null || definition.deletedAt === null)
           ) ?? null
         )

@@ -21,9 +21,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
-import { vehicleModelUsageTracker } from "../src/common/vehicle-model-usage-tracker";
 import { ProductService } from "../src/product/product.service";
 
 const now = new Date("2026-06-02T00:00:00.000Z");
@@ -157,24 +154,22 @@ describe("subscription plan backend flow", () => {
         planName: "ET5 standard 12 months",
         productName: "Subscription",
         subscriptionPlanId: "plan-1",
-        vehicleModel: VehicleModel.ET5
+        modelCode: "NIO_ET5"
       }
     ]);
   });
 
-  it("discovers canonical plans for an assisted legacy-code vehicle", async () => {
+  it("discovers canonical plans for an assisted vehicle", async () => {
     const modelDefinition = makeModelDefinition();
     const canonicalPackage = makeVehiclePackage({
       modelDefinition,
-      modelDefinitionId: modelDefinition.id,
-      vehicleModel: modelDefinition.modelCode
+      modelDefinitionId: modelDefinition.id
     });
     const { prisma, service } = makeService({
       plans: [makeSubscriptionPlan({ vehiclePackage: canonicalPackage })],
       vehicle: makeVehicle({
-        modelDefinition: null,
-        modelDefinitionId: null,
-        vehicleModel: VehicleModel.ET5
+        modelDefinition,
+        modelDefinitionId: modelDefinition.id
       })
     });
 
@@ -182,8 +177,8 @@ describe("subscription plan backend flow", () => {
       service.listAvailableSubscriptionPlans("application-1", user, "vehicle-asset-1")
     ).resolves.toMatchObject([
       {
+        modelCode: "NIO_ET5",
         subscriptionPlanId: "plan-1",
-        vehicleModel: "NIO_ET5"
       }
     ]);
     expect(prisma.subscriptionPlan.findMany).toHaveBeenCalledWith(
@@ -317,10 +312,9 @@ describe("subscription plan backend flow", () => {
           vehicleBaseFeeAmount: BigInt(420000),
           vehicleBaseFeeCapAmount: BigInt(420000),
           vehicleId: "vehicle-asset-1",
+          modelCodeSnapshot: "NIO_ET5",
           modelDefinitionIdSnapshot: "model-et5",
           modelDisplayNameSnapshot: "NIO ET5",
-          legacyVehicleModelSnapshot: VehicleModel.ET5,
-          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
           vehiclePurchasePriceAmount: BigInt(10000000),
           vehicleSalePriceAmount: BigInt(12000000),
           vehicleSnapshot: expect.objectContaining({
@@ -334,39 +328,7 @@ describe("subscription plan backend flow", () => {
     );
   });
 
-  it("falls back to the legacy vehicle model snapshot when quote vehicle has no model definition", async () => {
-    const legacyVehiclePackage = makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null });
-    const { prisma, service } = makeService({
-      plan: makeSubscriptionPlan({ vehiclePackage: legacyVehiclePackage }),
-      vehicle: makeVehicle({ modelDefinition: null, modelDefinitionId: null })
-    });
-
-    await service.createQuote(
-      "application-1",
-      {
-        periodMonths: 12,
-        subscriptionPlanId: "plan-1",
-        vehicleBaseFeeAmount: 420000,
-        vehicleId: "vehicle-asset-1"
-      },
-      user,
-      context
-    );
-
-    expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          legacyVehicleModelSnapshot: VehicleModel.ET5,
-          legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
-          modelDefinitionIdSnapshot: null,
-          modelDisplayNameSnapshot: VehicleModel.ET5
-        })
-      })
-    );
-  });
-
   it("resolves direct price-rule quotes to modelDefinitionId before querying ProductPriceRule", async () => {
-    vehicleModelUsageTracker.reset();
     const modelDefinition = makeModelDefinition({ id: "model-et5" });
     const priceRule = makePriceRule({ modelDefinition, modelDefinitionId: modelDefinition.id });
     const { prisma, service } = makeService({
@@ -379,9 +341,9 @@ describe("subscription plan backend flow", () => {
       "application-1",
       {
         monthlyFeeAmount: 420000,
+        modelDefinitionId: modelDefinition.id,
         periodMonths: 12,
         productVersionId: "version-1",
-        vehicleModel: VehicleModel.ET5,
         vehiclePurchasePriceAmount: 12000000
       },
       user,
@@ -390,13 +352,9 @@ describe("subscription plan backend flow", () => {
 
     expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
+        where: { id: modelDefinition.id }
       })
     );
-    expect(prisma.vehicleModelDefinition.findFirst.mock.calls.slice(0, 2).map(([args]) => args.where)).toEqual([
-      { deletedAt: null, modelCode: VehicleModel.ET5 },
-      { deletedAt: null, legacyVehicleModel: VehicleModel.ET5 }
-    ]);
     expect(prisma.productPriceRule.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -405,32 +363,22 @@ describe("subscription plan backend flow", () => {
         })
       })
     );
-    expect(prisma.productPriceRule.findFirst).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ vehicleModel: VehicleModel.ET5 })
-      })
-    );
     expect(prisma.subscriptionQuote.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          modelCodeSnapshot: modelDefinition.modelCode,
           modelDefinitionIdSnapshot: modelDefinition.id,
-          modelDisplayNameSnapshot: modelDefinition.displayName,
-          vehicleModel: VehicleModel.ET5
+          modelDisplayNameSnapshot: modelDefinition.displayName
         })
       })
     );
-    expect(vehicleModelUsageTracker.report()).toMatchObject({
-      businessDecisionUsageCount: 1,
-      fallbackUsageCount: 1
-    });
   });
 
   it("quote response exposes snapshot display metadata before runtime vehicle display", async () => {
     const runtimeDefinition = makeModelDefinition({ displayName: "Runtime ET5", id: "runtime-model" });
     const { service } = makeService({
       quote: makeQuote({
-        legacyVehicleModelSnapshot: VehicleModel.ET5,
-        legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+        modelCodeSnapshot: "NIO_ET5",
         modelDefinitionIdSnapshot: "snapshot-model",
         modelDisplayNameSnapshot: "Frozen ET5",
         vehicle: makeVehicle({
@@ -441,21 +389,17 @@ describe("subscription plan backend flow", () => {
     });
 
     const quote = (await service.getQuote("quote-1", user)) as {
-      legacyVehicleModelSnapshot: VehicleModel;
-      legacyVehicleModelCodeSnapshot: string;
+      modelCodeSnapshot: string;
       modelDefinitionIdSnapshot: string;
       modelDisplayName: string;
       modelDisplaySource: string;
-      vehicleModel: VehicleModel;
     };
 
     expect(quote).toMatchObject({
-      legacyVehicleModelSnapshot: VehicleModel.ET5,
-      legacyVehicleModelCodeSnapshot: VehicleModel.ET5,
+      modelCodeSnapshot: "NIO_ET5",
       modelDefinitionIdSnapshot: "snapshot-model",
       modelDisplayName: "Frozen ET5",
-      modelDisplaySource: "SNAPSHOT",
-      vehicleModel: VehicleModel.ET5
+      modelDisplaySource: "SNAPSHOT"
     });
   });
 
@@ -674,14 +618,12 @@ describe("subscription plan backend flow", () => {
     const et7Definition = makeModelDefinition({
       displayName: "NIO ET7",
       id: "model-et7",
-      legacyVehicleModel: VehicleModel.ET7,
       modelCode: "NIO_ET7"
     });
     const { service } = makeService({
       vehicle: makeVehicle({
         modelDefinition: et7Definition,
-        modelDefinitionId: et7Definition.id,
-        vehicleModel: VehicleModel.ET7
+        modelDefinitionId: et7Definition.id
       })
     });
 
@@ -717,8 +659,7 @@ describe("subscription plan backend flow", () => {
     expect(prisma.subscriptionQuote.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.not.objectContaining({
-          legacyVehicleModelSnapshot: expect.anything(),
-          legacyVehicleModelCodeSnapshot: expect.anything(),
+          modelCodeSnapshot: expect.anything(),
           modelDefinitionIdSnapshot: expect.anything(),
           modelDisplayNameSnapshot: expect.anything()
         })
@@ -824,18 +765,13 @@ function makeService(seed: Partial<MockSeed> = {}) {
     vehicleModelDefinition: {
       findFirst: vi.fn(async ({ where }: {
         where: {
-          deletedAt?: null;
           id?: string;
-          legacyVehicleModel?: VehicleModel | string;
-          modelCode?: string;
         };
       }) =>
         (seed.modelDefinitions ?? [makeModelDefinition()]).find(
           (definition) =>
             (where.id === undefined || definition.id === where.id) &&
-            (where.modelCode === undefined || definition.modelCode === where.modelCode) &&
-            (where.legacyVehicleModel === undefined || definition.legacyVehicleModel === where.legacyVehicleModel) &&
-            (where.deletedAt !== null || definition.deletedAt === null)
+            definition.deletedAt === null
         ) ?? null
       )
     }
@@ -930,7 +866,6 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     status: RecordStatus.ACTIVE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehicleModelName: null,
     ...overrides
   };
@@ -1083,7 +1018,6 @@ function makeVehicle(overrides: Record<string, unknown> = {}) {
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH2026060200001",
     vin: "VIN0001",
     ...overrides
@@ -1096,7 +1030,6 @@ function makeModelDefinition(overrides: Record<string, unknown> = {}) {
     displayName: "NIO ET5",
     enabled: true,
     id: "model-et5",
-    legacyVehicleModel: VehicleModel.ET5,
     modelCode: "NIO_ET5",
     ...overrides
   };
@@ -1123,7 +1056,6 @@ function makePriceRule(overrides: Record<string, unknown> = {}) {
     status: RecordStatus.ACTIVE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     ...overrides
   };
 }
@@ -1179,7 +1111,9 @@ function makeQuote(overrides: Record<string, unknown> = {}) {
     subscriptionPlanId: subscriptionPlan?.id ?? null,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
+    modelCodeSnapshot: "NIO_ET5",
+    modelDefinitionIdSnapshot: "model-et5",
+    modelDisplayNameSnapshot: "NIO ET5",
     vehicle: null,
     vehicleBaseFeeAmount: null,
     vehicleBaseFeeCapAmount: null,

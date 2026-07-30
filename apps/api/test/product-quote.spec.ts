@@ -48,10 +48,10 @@ describe("product and quote rules", () => {
     expect(() =>
       ensureNoRentToOwnQuoteFields({
         downPaymentAmount: 100000,
+        modelDefinitionId: "00000000-0000-0000-0000-000000000001",
         monthlyFeeAmount: 560000,
         periodMonths: 12,
         productVersionId: "00000000-0000-0000-0000-000000000001",
-        vehicleModel: "ET5",
         vehiclePurchasePriceAmount: 16000000
       })
     ).toThrow("当前阶段暂未开放以租代购报价字段");

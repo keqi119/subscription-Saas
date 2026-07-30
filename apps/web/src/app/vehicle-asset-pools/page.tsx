@@ -72,11 +72,13 @@ interface VehicleBrief {
   currentSalePriceAmount?: number | null;
   id: string;
   model?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   plateNo?: string | null;
   purchasePriceAmount?: number | null;
   series?: string | null;
   status?: string | null;
-  vehicleModel?: string | null;
   vehicleNo?: string | null;
   vin?: string | null;
 }
@@ -160,7 +162,12 @@ function formatTag(labels: Record<string, string>, value?: string | null) {
 }
 
 function vehicleOptionLabel(vehicle: VehicleBrief) {
-  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin, vehicle.vehicleModel ?? vehicle.model]
+  return [
+    vehicle.vehicleNo,
+    vehicle.plateNo,
+    vehicle.vin,
+    vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+  ]
     .filter(Boolean)
     .join(" / ");
 }
@@ -169,7 +176,11 @@ function vehicleModelText(vehicle?: VehicleBrief | null) {
   if (!vehicle) {
     return "-";
   }
-  return [vehicle.brand, vehicle.series, vehicle.vehicleModel ?? vehicle.model].filter(Boolean).join(" / ") || "-";
+  return [
+    vehicle.brand,
+    vehicle.series,
+    vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+  ].filter(Boolean).join(" / ") || "-";
 }
 
 function parseVehicleIdsText(value?: string | null) {

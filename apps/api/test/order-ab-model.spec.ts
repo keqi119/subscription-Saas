@@ -9,16 +9,19 @@ import {
 } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
+const MODEL_DEFINITION_ID = "00000000-0000-0000-0000-000000000101";
 
 describe("A/B order status model schema", () => {
-  it("keeps sales-assisted legacy order create input compatible", () => {
-    const legacyOrderInput = {
+  it("keeps sales-assisted order create input canonical", () => {
+    const salesAssistedOrderInput = {
       applicationId: "application-1",
       businessType: BusinessType.SUBSCRIPTION,
       customerId: "customer-1",
       depositAmount: 500000n,
       mileageLimitKm: 1500,
+      modelCodeSnapshot: "NIO_ET5",
+      modelDefinitionIdSnapshot: MODEL_DEFINITION_ID,
+      modelDisplayNameSnapshot: "ET5",
       monthlyFeeAmount: 300000n,
       orderNo: "ORD202606040001",
       orderStatus: OrderStatus.PENDING_CONTRACT,
@@ -29,14 +32,14 @@ describe("A/B order status model schema", () => {
       quoteId: "quote-1",
       quoteSnapshot: { quoteNo: "QUO202606040001" },
       riskResultId: "risk-result-1",
-      vehicleModel: VehicleModel.ET5,
       vehiclePurchasePriceAmount: 10000000n
     } satisfies Prisma.SubscriptionOrderUncheckedCreateInput;
 
-    expect(legacyOrderInput.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
-    expect("orderSource" in legacyOrderInput).toBe(false);
-    expect("creditReviewStatus" in legacyOrderInput).toBe(false);
-    expect("depositStatus" in legacyOrderInput).toBe(false);
+    expect(salesAssistedOrderInput.orderStatus).toBe(OrderStatus.PENDING_CONTRACT);
+    expect(salesAssistedOrderInput.modelDefinitionIdSnapshot).toBe(MODEL_DEFINITION_ID);
+    expect("orderSource" in salesAssistedOrderInput).toBe(false);
+    expect("creditReviewStatus" in salesAssistedOrderInput).toBe(false);
+    expect("depositStatus" in salesAssistedOrderInput).toBe(false);
   });
 
   it("allows customer self-service orders to store pending review and pending deposit states", () => {
@@ -59,6 +62,9 @@ describe("A/B order status model schema", () => {
         vehicleId: "vehicle-1"
       },
       mileageLimitKm: 1500,
+      modelCodeSnapshot: "NIO_ET5",
+      modelDefinitionIdSnapshot: MODEL_DEFINITION_ID,
+      modelDisplayNameSnapshot: "ET5",
       monthlyFeeAmount: 300000n,
       orderNo: "ORD202606040002",
       orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
@@ -72,7 +78,6 @@ describe("A/B order status model schema", () => {
       quoteSnapshot: { intent: true, subscriptionPlanId: "plan-1" },
       riskResultId: "risk-result-2",
       reviewComment: "Initial customer intent pending back-office review.",
-      vehicleModel: VehicleModel.ET5,
       vehiclePurchasePriceAmount: 10000000n,
       vehicleReviewStatus: OrderReviewStatus.PENDING
     } satisfies Prisma.SubscriptionOrderUncheckedCreateInput;

@@ -14,171 +14,57 @@ import { RequestContext, RequestUser } from "../src/auth/auth.types";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { VehicleService } from "../src/vehicle/vehicle.service";
 
-const VehicleModel = {
-  EC6: "EC6",
-  ES6: "ES6",
-  ES8: "ES8",
-  ES9: "ES9",
-  ET5: "ET5",
-  ET5T: "ET5T",
-  ET7: "ET7",
-  ET9: "ET9"
-} as const;
-
-type VehicleModelCode = (typeof VehicleModel)[keyof typeof VehicleModel];
-
-describe("VehicleService vehicle model master-data integration", () => {
-  it("creates a vehicle from a new model definition code without a legacy enum mapping", async () => {
+describe("VehicleService canonical model master-data integration", () => {
+  it("creates a vehicle from an active model definition", async () => {
     const definition = makeDefinition({
+      displayName: "Model X 2027",
       id: "definition-model-x-2027",
-      legacyVehicleModel: null,
       modelCode: "MODEL_X_2027"
     });
-    const { prisma, service } = createHarness({ definitions: [definition] });
-
-    await expect(
-      service.createVehicle(
-        {
-          brand: "NIO",
-          modelDefinitionId: definition.id,
-          purchasePriceAmount: 16800000,
-          vin: "TESTVINMODELX2027"
-        },
-        user,
-        context
-      )
-    ).resolves.toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: "MODEL_X_2027"
+    const { auditService, prisma, service } = createHarness({
+      definitions: [definition]
     });
-
-    expect(prisma.vehicle.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinition: { connect: { id: definition.id } },
-          vehicleModel: "MODEL_X_2027"
-        })
-      })
-    );
-  });
-
-  it("creates a vehicle with modelDefinitionId and writes the mapped legacy VehicleModel", async () => {
-    const definition = makeDefinition({ id: "definition-et5t", legacyVehicleModel: VehicleModel.ET5T, modelCode: "ET5T" });
-    const { auditService, prisma, service } = createHarness({ definitions: [definition] });
 
     const result = await service.createVehicle(
       {
         brand: "NIO",
         modelDefinitionId: definition.id,
         purchasePriceAmount: 16800000,
-        vin: "TESTVINET5T00001"
+        vin: "TESTVINMODELX2027"
       },
       user,
       context
     );
 
     expect(result).toMatchObject({
+      modelCode: "MODEL_X_2027",
       modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ET5T
-    });
-    expect(result.modelDefinition).toMatchObject({
-      displayName: "ET5T",
-      id: definition.id,
-      legacyVehicleModel: VehicleModel.ET5T,
-      modelCode: "ET5T"
+      modelDisplayName: "Model X 2027"
     });
     expect(prisma.vehicle.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          modelDefinition: { connect: { id: definition.id } },
-          vehicleModel: VehicleModel.ET5T
+          modelDefinition: { connect: { id: definition.id } }
         })
       })
+    );
+    expect(prisma.vehicle.create.mock.calls[0]![0].data).not.toHaveProperty(
+      "vehicleModel"
     );
     expect(auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ action: AuditAction.CREATE, entityType: "vehicle" })
-    );
-  });
-
-  it("allows modelDefinitionId with matching legacy vehicleModel", async () => {
-    const definition = makeDefinition({ id: "definition-es8", legacyVehicleModel: VehicleModel.ES8, modelCode: "ES8" });
-    const { service } = createHarness({ definitions: [definition] });
-
-    const result = await service.createVehicle(
-      {
-        brand: "NIO",
-        modelDefinitionId: definition.id,
-        purchasePriceAmount: 16800000,
-        vehicleModel: VehicleModel.ES8,
-        vin: "TESTVINES800001"
-      },
-      user,
-      context
-    );
-
-    expect(result.vehicleModel).toBe(VehicleModel.ES8);
-    expect(result.modelDefinitionId).toBe(definition.id);
-  });
-
-  it("accepts a legacy alias and normalizes the new vehicle write to modelCode", async () => {
-    const definition = makeDefinition({
-      id: "definition-et5",
-      legacyVehicleModel: VehicleModel.ET5,
-      modelCode: "NIO_ET5"
-    });
-    const { prisma, service } = createHarness({ definitions: [definition] });
-
-    const result = await service.createVehicle(
-      {
-        brand: "NIO",
-        modelDefinitionId: definition.id,
-        purchasePriceAmount: 16800000,
-        vehicleModel: VehicleModel.ET5,
-        vin: "TESTVINET5ALIAS01"
-      },
-      user,
-      context
-    );
-
-    expect(result.vehicleModel).toBe("NIO_ET5");
-    expect(prisma.vehicle.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinition: { connect: { id: definition.id } },
-          vehicleModel: "NIO_ET5"
-        })
+        action: AuditAction.CREATE,
+        entityType: "vehicle"
       })
     );
   });
 
-  it("rejects modelDefinitionId with mismatched legacy vehicleModel", async () => {
-    const definition = makeDefinition({ id: "definition-et7", legacyVehicleModel: VehicleModel.ET7, modelCode: "ET7" });
-    const { prisma, service } = createHarness({ definitions: [definition] });
-
-    await expect(
-      service.createVehicle(
-        {
-          brand: "NIO",
-          modelDefinitionId: definition.id,
-          purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ET5,
-          vin: "TESTVINMISMATCH01"
-        },
-        user,
-        context
-      )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.vehicle.create).not.toHaveBeenCalled();
-  });
-
-  it("rejects disabled model definitions for vehicle creation", async () => {
+  it("rejects disabled model definitions", async () => {
     const definition = makeDefinition({
       enabled: false,
-      id: "definition-disabled",
-      legacyVehicleModel: VehicleModel.EC6,
-      modelCode: "EC6"
+      id: "definition-disabled"
     });
-    const { service } = createHarness({ definitions: [definition] });
+    const { prisma, service } = createHarness({ definitions: [definition] });
 
     await expect(
       service.createVehicle(
@@ -192,69 +78,11 @@ describe("VehicleService vehicle model master-data integration", () => {
         context
       )
     ).rejects.toBeInstanceOf(BadRequestException);
-  });
-
-  it("uses modelCode when a model definition has no legacy compatibility mapping", async () => {
-    const definition = makeDefinition({
-      id: "definition-future",
-      legacyVehicleModel: null,
-      modelCode: "FUTURE_MODEL"
-    });
-    const { service } = createHarness({ definitions: [definition] });
-
-    await expect(
-      service.createVehicle(
-        {
-          brand: "NIO",
-          modelDefinitionId: definition.id,
-          purchasePriceAmount: 16800000,
-          vin: "TESTVINFUTURE001"
-        },
-        user,
-        context
-      )
-    ).resolves.toMatchObject({ vehicleModel: "FUTURE_MODEL" });
-  });
-
-  it("rejects legacy-only vehicle creation even when a model definition mapping exists", async () => {
-    const definition = makeDefinition({ id: "definition-es6", legacyVehicleModel: VehicleModel.ES6, modelCode: "ES6" });
-    const { prisma, service } = createHarness({ definitions: [definition] });
-
-    await expect(
-      service.createVehicle(
-        {
-          brand: "NIO",
-          purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ES6,
-          vin: "TESTVINES600001"
-        },
-        user,
-        context
-      )
-    ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.vehicle.create).not.toHaveBeenCalled();
   });
 
-  it("rejects legacy-only vehicle creation when no matching model definition exists", async () => {
-    const { prisma, service } = createHarness({ definitions: [] });
-
-    await expect(
-      service.createVehicle(
-        {
-          brand: "NIO",
-          purchasePriceAmount: 16800000,
-          vehicleModel: VehicleModel.ES6,
-          vin: "TESTVINES600002"
-        },
-        user,
-        context
-      )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.vehicle.create).not.toHaveBeenCalled();
-  });
-
-  it("rejects vehicle creation without modelDefinitionId and vehicleModel", async () => {
-    const { prisma, service } = createHarness({ definitions: [] });
+  it("requires modelDefinitionId on vehicle creation", async () => {
+    const { prisma, service } = createHarness();
 
     await expect(
       service.createVehicle(
@@ -262,7 +90,7 @@ describe("VehicleService vehicle model master-data integration", () => {
           brand: "NIO",
           purchasePriceAmount: 16800000,
           vin: "TESTVINNOMODEL01"
-        },
+        } as never,
         user,
         context
       )
@@ -270,109 +98,77 @@ describe("VehicleService vehicle model master-data integration", () => {
     expect(prisma.vehicle.create).not.toHaveBeenCalled();
   });
 
-  it("updates a vehicle to use a model definition and syncs the legacy VehicleModel", async () => {
-    const definition = makeDefinition({ id: "definition-et9", legacyVehicleModel: VehicleModel.ET9, modelCode: "ET9" });
-    const vehicle = makeVehicle({ id: "vehicle-1", vehicleModel: VehicleModel.ET5 });
-    const { prisma, service } = createHarness({ definitions: [definition], vehicles: [vehicle] });
+  it("updates a vehicle model relation by canonical definition id", async () => {
+    const oldDefinition = makeDefinition({
+      id: "definition-et5",
+      modelCode: "NIO_ET5"
+    });
+    const nextDefinition = makeDefinition({
+      displayName: "ET9",
+      id: "definition-et9",
+      modelCode: "NIO_ET9"
+    });
+    const vehicle = makeVehicle(oldDefinition, { id: "vehicle-1" });
+    const { prisma, service } = createHarness({
+      definitions: [oldDefinition, nextDefinition],
+      vehicles: [vehicle]
+    });
 
     const result = await service.updateVehicle(
       "vehicle-1",
-      { modelDefinitionId: definition.id },
+      { modelDefinitionId: nextDefinition.id },
       user,
       context
     );
 
     expect(result).toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ET9
+      modelCode: "NIO_ET9",
+      modelDefinitionId: nextDefinition.id,
+      modelDisplayName: "ET9"
     });
     expect(prisma.vehicle.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          modelDefinition: { connect: { id: definition.id } },
-          vehicleModel: VehicleModel.ET9
+          modelDefinition: { connect: { id: nextDefinition.id } }
         })
       })
     );
   });
 
-  it("rejects clearing modelDefinitionId on update", async () => {
-    const definition = makeDefinition({ id: "definition-es9", legacyVehicleModel: VehicleModel.ES9, modelCode: "ES9" });
-    const vehicle = makeVehicle({
-      id: "vehicle-1",
-      modelDefinition: definition,
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.ES9
+  it("returns canonical summaries for linked vehicles", async () => {
+    const definition = makeDefinition({
+      displayName: "EC6",
+      id: "definition-ec6",
+      modelCode: "NIO_EC6"
     });
-    const { prisma, service } = createHarness({ definitions: [definition], vehicles: [vehicle] });
-
-    await expect(
-      service.updateVehicle(
-        "vehicle-1",
-        { modelDefinitionId: null, vehicleModel: VehicleModel.ET7 },
-        user,
-        context
-      )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.vehicle.update).not.toHaveBeenCalled();
-  });
-
-  it("rejects legacy-only vehicleModel updates", async () => {
-    const definition = makeDefinition({ id: "definition-et7", legacyVehicleModel: VehicleModel.ET7, modelCode: "ET7" });
-    const vehicle = makeVehicle({
-      id: "vehicle-1",
-      modelDefinition: null,
-      modelDefinitionId: null,
-      vehicleModel: VehicleModel.ET5
+    const vehicle = makeVehicle(definition, { id: "vehicle-linked" });
+    const { service } = createHarness({
+      definitions: [definition],
+      vehicles: [vehicle]
     });
-    const { prisma, service } = createHarness({ definitions: [definition], vehicles: [vehicle] });
-
-    await expect(
-      service.updateVehicle(
-        "vehicle-1",
-        { vehicleModel: VehicleModel.ET7 },
-        user,
-        context
-      )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.vehicle.update).not.toHaveBeenCalled();
-  });
-
-  it("returns modelDefinition summaries for linked vehicles and legacy fallback for historical vehicles", async () => {
-    const definition = makeDefinition({ id: "definition-ec6", legacyVehicleModel: VehicleModel.EC6, modelCode: "EC6" });
-    const linkedVehicle = makeVehicle({
-      id: "vehicle-linked",
-      modelDefinition: definition,
-      modelDefinitionId: definition.id,
-      vehicleModel: VehicleModel.EC6
-    });
-    const legacyVehicle = makeVehicle({
-      id: "vehicle-legacy",
-      modelDefinition: null,
-      modelDefinitionId: null,
-      vehicleModel: VehicleModel.ET5
-    });
-    const { service } = createHarness({ definitions: [definition], vehicles: [linkedVehicle, legacyVehicle] });
 
     const listResult = await service.listVehicles();
-    const detailResult = await service.getVehicle("vehicle-legacy");
+    const detailResult = await service.getVehicle("vehicle-linked");
 
     expect(listResult[0]).toMatchObject({
-      modelDefinition: expect.objectContaining({ id: definition.id, modelCode: "EC6" }),
+      modelCode: "NIO_EC6",
+      modelDefinition: expect.objectContaining({
+        id: definition.id,
+        modelCode: "NIO_EC6"
+      }),
       modelDefinitionId: definition.id,
       modelDisplayName: "EC6"
     });
     expect(detailResult).toMatchObject({
-      modelDefinition: null,
-      modelDefinitionId: null,
-      modelDisplayName: VehicleModel.ET5
+      modelCode: "NIO_EC6",
+      modelDefinitionId: definition.id,
+      modelDisplayName: "EC6"
     });
   });
 
-  it("lists enabled model definitions even when they have no legacy mapping", async () => {
+  it("lists enabled model definitions using canonical fields", async () => {
     const definition = makeDefinition({
       id: "definition-model-x-2027",
-      legacyVehicleModel: null,
       modelCode: "MODEL_X_2027"
     });
     const { prisma, service } = createHarness({ definitions: [definition] });
@@ -382,10 +178,10 @@ describe("VehicleService vehicle model master-data integration", () => {
     expect(result.items).toEqual([
       expect.objectContaining({
         id: definition.id,
-        legacyVehicleModel: null,
         modelCode: "MODEL_X_2027"
       })
     ]);
+    expect(result.items[0]).not.toHaveProperty("legacyVehicleModel");
     expect(prisma.vehicleModelDefinition.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -408,16 +204,18 @@ function createHarness(options: {
     vehicle: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const definitionId = relationConnectId(data.modelDefinition);
-        const definition = definitionId ? definitions.find((item) => item.id === definitionId) ?? null : null;
-        const vehicle = makeVehicle({
+        const definition = definitions.find(
+          (item) => item.id === definitionId
+        );
+        if (!definition) {
+          throw new Error("missing model definition");
+        }
+        const vehicle = makeVehicle(definition, {
           brand: data.brand as string,
           id: `vehicle-${vehicles.length + 1}`,
           model: (data.model as string | null | undefined) ?? null,
-          modelDefinition: definition,
-          modelDefinitionId: definitionId,
           purchasePriceAmount: data.purchasePriceAmount as bigint,
           series: (data.series as string | null | undefined) ?? null,
-          vehicleModel: data.vehicleModel as string,
           vin: data.vin as string
         });
         vehicles.push(vehicle);
@@ -427,64 +225,59 @@ function createHarness(options: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         vehicles.find((vehicle) => vehicle.id === where.id) ?? null
       ),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+      update: vi.fn(async ({
+        data,
+        where
+      }: {
+        data: Record<string, unknown>;
+        where: { id: string };
+      }) => {
         const index = vehicles.findIndex((vehicle) => vehicle.id === where.id);
-        const current = vehicles[index] ?? makeVehicle({ id: where.id });
+        const current = vehicles[index];
+        if (!current) {
+          throw new Error("missing vehicle");
+        }
         const definitionId = relationConnectId(data.modelDefinition);
-        const disconnectModelDefinition = relationDisconnect(data.modelDefinition);
-        const nextDefinition =
-          definitionId
-            ? definitions.find((item) => item.id === definitionId) ?? null
-            : disconnectModelDefinition
-              ? null
-              : current.modelDefinition;
-        const updated = makeVehicle({
+        const definition = definitionId
+          ? definitions.find((item) => item.id === definitionId)
+          : current.modelDefinition;
+        if (!definition) {
+          throw new Error("missing model definition");
+        }
+        const updated = makeVehicle(definition, {
           ...current,
           ...data,
-          modelDefinition: nextDefinition,
-          modelDefinitionId: definitionId ?? (disconnectModelDefinition ? null : current.modelDefinitionId),
-          updatedAt: new Date("2026-06-24T08:00:00.000Z"),
-          vehicleModel:
-            data.vehicleModel === undefined
-              ? current.vehicleModel
-              : data.vehicleModel as string
+          updatedAt: new Date("2026-06-24T08:00:00.000Z")
         });
         vehicles[index] = updated;
         return updated;
       })
     },
     vehicleModelDefinition: {
-      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null; enabled?: boolean; legacyVehicleModel?: unknown } }) =>
-        definitions.filter((definition) => {
-          if (where.deletedAt === null && definition.deletedAt !== null) {
-            return false;
-          }
-          if (where.enabled !== undefined && definition.enabled !== where.enabled) {
-            return false;
-          }
-          if (where.legacyVehicleModel && definition.legacyVehicleModel === null) {
-            return false;
-          }
-          return true;
-        })
+      findFirst: vi.fn(async ({
+        where
+      }: {
+        where: { id?: string };
+      }) =>
+        definitions.find((definition) => definition.id === where.id) ?? null
       ),
-      findFirst: vi.fn(async ({ where }: { where: { deletedAt?: null; id?: string; legacyVehicleModel?: string } }) =>
-        definitions.find((definition) => {
-          if (where.deletedAt === null && definition.deletedAt !== null) {
-            return false;
-          }
-          if (where.id && definition.id !== where.id) {
-            return false;
-          }
-          if (where.legacyVehicleModel && definition.legacyVehicleModel !== where.legacyVehicleModel) {
-            return false;
-          }
-          return true;
-        }) ?? null
+      findMany: vi.fn(async ({
+        where
+      }: {
+        where: { deletedAt?: null; enabled?: boolean };
+      }) =>
+        definitions.filter(
+          (definition) =>
+            (where.deletedAt !== null || definition.deletedAt === null) &&
+            (where.enabled === undefined ||
+              definition.enabled === where.enabled)
+        )
       )
     }
   };
-  prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => callback(prisma));
+  prisma.$transaction.mockImplementation(
+    async (callback: (tx: typeof prisma) => unknown) => callback(prisma)
+  );
   const auditService = {
     write: vi.fn()
   };
@@ -492,34 +285,41 @@ function createHarness(options: {
   return {
     auditService,
     prisma,
-    service: new VehicleService(auditService as unknown as AuditService, prisma as unknown as PrismaService)
+    service: new VehicleService(
+      auditService as unknown as AuditService,
+      prisma as unknown as PrismaService
+    )
   };
 }
 
-function makeDefinition(options: {
-  deletedAt?: Date | null;
-  enabled?: boolean;
-  id?: string;
-  legacyVehicleModel?: VehicleModelCode | null;
-  modelCode?: string;
-} = {}) {
-  const modelCode = options.modelCode ?? "ET5";
+function makeDefinition(
+  options: {
+    deletedAt?: Date | null;
+    displayName?: string;
+    enabled?: boolean;
+    id?: string;
+    modelCode?: string;
+  } = {}
+) {
+  const modelCode = options.modelCode ?? "NIO_ET5";
   return {
     brand: "NIO",
-    customerDisplayName: modelCode,
+    customerDisplayName: options.displayName ?? modelCode,
     deletedAt: options.deletedAt ?? null,
-    displayName: modelCode,
+    displayName: options.displayName ?? modelCode,
     enabled: options.enabled ?? true,
     id: options.id ?? `definition-${modelCode}`,
-    legacyVehicleModel: options.legacyVehicleModel === undefined ? VehicleModel.ET5 : options.legacyVehicleModel,
     modelCode,
     modelName: modelCode,
     modelYear: null,
-    series: modelCode.startsWith("EC") ? "EC" : modelCode.startsWith("ES") ? "ES" : "ET"
+    series: "ET"
   };
 }
 
-function makeVehicle(options: Record<string, unknown> = {}) {
+function makeVehicle(
+  modelDefinition: ReturnType<typeof makeDefinition>,
+  options: Record<string, unknown> = {}
+) {
   const now = new Date("2026-06-24T00:00:00.000Z");
 
   return {
@@ -536,10 +336,9 @@ function makeVehicle(options: Record<string, unknown> = {}) {
     currentSalePriceReviewedAt: null,
     deletedAt: null,
     id: "vehicle-1",
+    insurancePolicies: [],
     latestRegistrationDate: null,
     model: null,
-    modelDefinition: null,
-    modelDefinitionId: null,
     modelYear: null,
     nextSalePriceReviewAt: null,
     plateNo: null,
@@ -554,10 +353,11 @@ function makeVehicle(options: Record<string, unknown> = {}) {
     status: VehicleStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH20260624000000A1B2",
     vin: "TESTVIN000000001",
-    ...options
+    ...options,
+    modelDefinition,
+    modelDefinitionId: modelDefinition.id
   };
 }
 
@@ -568,10 +368,6 @@ function relationConnectId(value: unknown) {
 
   const connect = (value as { connect?: { id?: unknown } }).connect;
   return typeof connect?.id === "string" ? connect.id : null;
-}
-
-function relationDisconnect(value: unknown) {
-  return Boolean(value && typeof value === "object" && (value as { disconnect?: unknown }).disconnect);
 }
 
 const user: RequestUser = {

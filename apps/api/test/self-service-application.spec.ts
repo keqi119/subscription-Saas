@@ -18,8 +18,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { CustomerService } from "../src/customer/customer.service";
 
 describe("self-service application intake API rules", () => {
@@ -195,7 +193,16 @@ describe("self-service application intake API rules", () => {
 
   it("rejects plans that do not match the selected vehicle model", async () => {
     const harness = createSelfServiceApplicationHarness({
-      plan: { vehiclePackage: { vehicleModel: VehicleModel.ES6 } }
+      plan: {
+        vehiclePackage: {
+          modelDefinition: {
+            displayName: "NIO ES6",
+            id: "model-es6",
+            modelCode: "NIO_ES6"
+          },
+          modelDefinitionId: "model-es6"
+        }
+      }
     });
 
     await expect(
@@ -215,25 +222,22 @@ describe("self-service application intake API rules", () => {
     expect(harness.tx.vehicle.updateMany).not.toHaveBeenCalled();
   });
 
-  it("accepts a canonical plan for a historical legacy-code vehicle", async () => {
+  it("accepts matching canonical plan and vehicle identities", async () => {
     const modelDefinition = {
       displayName: "NIO ET5",
       id: "model-et5",
-      legacyVehicleModel: VehicleModel.ET5,
       modelCode: "NIO_ET5"
     };
     const harness = createSelfServiceApplicationHarness({
       plan: {
         vehiclePackage: {
           modelDefinition,
-          modelDefinitionId: modelDefinition.id,
-          vehicleModel: modelDefinition.modelCode
+          modelDefinitionId: modelDefinition.id
         }
       },
       vehicle: {
-        modelDefinition: null,
-        modelDefinitionId: null,
-        vehicleModel: VehicleModel.ET5
+        modelDefinition,
+        modelDefinitionId: modelDefinition.id
       }
     });
 
@@ -333,6 +337,12 @@ function createSelfServiceApplicationHarness(overrides: {
     deletedAt: null,
     id: "vehicle-1",
     model: "ET5",
+    modelDefinition: {
+      displayName: "NIO ET5",
+      id: "model-et5",
+      modelCode: "NIO_ET5"
+    },
+    modelDefinitionId: "model-et5",
     modelYear: 2024,
     nextSalePriceReviewAt: null,
     plateNo: "沪A00001",
@@ -346,7 +356,6 @@ function createSelfServiceApplicationHarness(overrides: {
     status: state.vehicleStatus,
     updatedAt: now,
     updatedBy: user.id,
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH202606050001",
     vin: "VIN202606050001",
     ...overrides.vehicle
@@ -500,7 +509,12 @@ function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePacka
       packageName: "车型包",
       packageNo: "VEH001",
       series: "ET5",
-      vehicleModel: VehicleModel.ET5,
+      modelDefinition: {
+        displayName: "NIO ET5",
+        id: "model-et5",
+        modelCode: "NIO_ET5"
+      },
+      modelDefinitionId: "model-et5",
       vehicleModelName: "ET5",
       ...vehiclePackageOverrides
     },

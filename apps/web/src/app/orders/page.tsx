@@ -28,7 +28,7 @@ interface OrderRow {
   orderStatus: string;
   periodMonths: number;
   quote?: { quoteNo: string; id: string } | null;
-  vehicleModel: string;
+  modelCodeSnapshot?: string | null;
 }
 
 const statusColors: Record<string, string> = {
@@ -60,7 +60,7 @@ export default function OrdersPage() {
         apiFetch<OrderRow[]>("/orders"),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
-      setOrders(nextOrders.map((order) => ({ ...order, vehicleModel: order.modelDisplayName ?? order.vehicleModel })));
+      setOrders(nextOrders);
       setMe(nextMe);
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -110,7 +110,7 @@ export default function OrdersPage() {
       title: "报价编号",
       width: 160
     },
-    { dataIndex: "vehicleModel", title: "车型", width: 90 },
+    { dataIndex: "modelDisplayName", title: "车型", width: 140 },
     { dataIndex: "monthlyFeeAmount", render: formatYuan, title: "月费", width: 110 },
     { dataIndex: "depositAmount", render: formatYuan, title: "押金", width: 110 },
     { dataIndex: "periodMonths", render: (value: number) => `${value} 个月`, title: "订阅周期", width: 110 },

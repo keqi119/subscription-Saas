@@ -161,8 +161,8 @@ interface OrderDetail {
   finalDepositAmount?: number | null;
   finalPlanConfirmedAt?: string | null;
   id: string;
-  legacyVehicleModelSnapshot?: string | null;
   mileageLimitKm: number;
+  modelCodeSnapshot?: string | null;
   modelDefinitionIdSnapshot?: string | null;
   modelDisplayName?: string | null;
   modelDisplayNameSnapshot?: string | null;
@@ -181,13 +181,14 @@ interface OrderDetail {
     batteryUsageTypeLabel?: string | null;
     currentMileageKm?: number | null;
     currentSalePriceAmount?: number | null;
+    modelCode?: string | null;
+    modelDefinitionId?: string | null;
+    modelDisplayName?: string | null;
     plateNo?: string | null;
     status?: string | null;
-    vehicleModel?: string | null;
     vehicleNo?: string;
     vin?: string | null;
   } | null;
-  vehicleModel: string;
   vehiclePurchasePriceAmount: number;
   vehicleReviewStatus?: string;
 }
@@ -1306,8 +1307,8 @@ function orderModelDisplay(order?: OrderDetail | null) {
   return safeText(
     order?.modelDisplayName ??
       order?.modelDisplayNameSnapshot ??
-      order?.legacyVehicleModelSnapshot ??
-      order?.vehicleModel
+      order?.vehicle?.modelDisplayName ??
+      order?.modelCodeSnapshot
   );
 }
 

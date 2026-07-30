@@ -39,25 +39,17 @@ test("scanExternalEnumUsage classifies API, portal catalog, report, CSV, and int
   );
 });
 
-test("external consumer registry tracks Web portal shared types separately from catalog", () => {
+test("external consumer registry records the Stage 0B zero-consumer baseline", () => {
   const registry = JSON.parse(
     readFileSync(
       new URL("../docs/vehicle-model-external-contract-consumer-register.json", import.meta.url),
       "utf8"
     )
   );
-  const catalogConsumer = registry.consumers.find(
-    (consumer) => consumer.consumerId === "portal-catalog-vehicle-model-compatibility"
-  );
-  const sharedTypesConsumer = registry.consumers.find(
-    (consumer) => consumer.consumerId === "portal-shared-types-vehicle-model-contract"
-  );
 
-  assert.ok(sharedTypesConsumer);
-  assert.equal(sharedTypesConsumer.evidencePath, "apps/web/src/lib/portal-types.ts");
-  assert.ok(
-    !(catalogConsumer.evidencePaths ?? []).includes("apps/web/src/lib/portal-types.ts")
-  );
+  assert.equal(registry.schemaVersion, "vehicle-model-contract-governance-v2");
+  assert.equal(registry.hardRemovalBaseline, "stage0b");
+  assert.deepEqual(registry.consumers, []);
 });
 
 test("scanExternalEnumUsage ignores internal telemetry implementation references", () => {
@@ -109,7 +101,8 @@ test("buildVehicleModelRemovalReadinessReport combines runtime and external evid
   assert.equal(report.businessDecisionUsageCount, 1);
   assert.equal(report.fallbackUsageCount, 1);
   assert.equal(report.externalUsageCount, 1);
-  assert.equal(report.decision, "READY");
+  assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.enumUsageCount, 0);
   assert.equal(report.riskClassification, "HIGH");
   assert.equal(report.enumTypeRemoval.decision, "READY");
   assert.equal(report.compatibilityFieldRetirement.decision, "NOT_READY");
@@ -142,7 +135,8 @@ test("buildVehicleModelRemovalReadinessReport treats deprecation warnings as ext
   assert.equal(report.businessDecisionUsageCount, 0);
   assert.equal(report.compatibilityFieldUsageCount, 1);
   assert.equal(report.externalUsageCount, 1);
-  assert.equal(report.decision, "READY");
+  assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.enumUsageCount, 0);
   assert.equal(report.enumTypeRemoval.decision, "READY");
   assert.equal(report.compatibilityFieldRetirement.decision, "NOT_READY");
   assert.equal(report.riskClassification, "MEDIUM");
@@ -159,6 +153,7 @@ test("buildVehicleModelRemovalReadinessReport reports a failed no-enum check sep
   });
 
   assert.equal(report.decision, "NOT_READY");
+  assert.equal(report.enumUsageCount, 1);
   assert.equal(report.enumTypeRemoval.decision, "NOT_READY");
   assert.equal(report.compatibilityFieldRetirement.decision, "READY");
 });
@@ -228,4 +223,32 @@ test("validateExternalConsumerRegistry blocks medium and high risk consumers wit
   assert.deepEqual(result.blockingConsumers.map((consumer) => consumer.consumerId), [
     "product-api-vehicle-model-contract"
   ]);
+});
+
+test("zero enum, external, and fallback usage is ready for hard removal", () => {
+  const report = buildVehicleModelRemovalReadinessReport({
+    externalUsage: { items: [], totalReferences: 0 }
+  });
+  const validation = validateExternalConsumerRegistry({
+    consumers: [],
+    externalUsage: { items: [], totalReferences: 0 }
+  });
+
+  assert.deepEqual(
+    {
+      decision: report.decision,
+      enumUsageCount: report.enumUsageCount,
+      externalUsageCount: report.externalUsageCount,
+      fallbackUsageCount: report.fallbackUsageCount,
+      readinessScore: report.readinessScore
+    },
+    {
+      decision: "READY",
+      enumUsageCount: 0,
+      externalUsageCount: 0,
+      fallbackUsageCount: 0,
+      readinessScore: 100
+    }
+  );
+  assert.equal(validation.hardRemovalReady, true);
 });

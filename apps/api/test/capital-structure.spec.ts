@@ -19,8 +19,6 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
-
 import { FinancingService } from "../src/financing/financing.service";
 import { VehicleAssetPoolService } from "../src/vehicle-asset-pool/vehicle-asset-pool.service";
 import { VehicleService } from "../src/vehicle/vehicle.service";
@@ -1238,6 +1236,18 @@ function makeVehicle(overrides: Partial<Prisma.VehicleGetPayload<Record<string, 
     deletedAt: null,
     id: "vehicle-1",
     model: null,
+    modelDefinition: {
+      brand: "NIO",
+      customerDisplayName: "NIO ET5",
+      displayName: "NIO ET5",
+      enabled: true,
+      id: "00000000-0000-4000-8000-000000000e50",
+      modelCode: "NIO_ET5",
+      modelName: "ET5",
+      modelYear: null,
+      series: "ET"
+    },
+    modelDefinitionId: "00000000-0000-4000-8000-000000000e50",
     modelYear: null,
     nextSalePriceReviewAt: null,
     plateNo: null,
@@ -1252,7 +1262,6 @@ function makeVehicle(overrides: Partial<Prisma.VehicleGetPayload<Record<string, 
     status: VehicleStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehicleNo: "VEH20260602000000A1B2",
     vin: null,
     ...overrides

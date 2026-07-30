@@ -1,64 +1,53 @@
-# Stage 10X Vehicle Model Schema and Compatibility Retirement Preparation
+# Stage 0B 车型最终 Schema 初始化说明
 
-## Current State
+## 最终模型
 
-The codebase has completed the lossless Prisma type conversion:
-
-```text
-VehicleModel enum source is removed.
-Former enum-backed columns are string model-code columns.
-Runtime and Admin controls use VehicleModelDefinition and modelDefinitionId.
-Historical values remain readable as strings.
-```
-
-The no-enum guard is the acceptance criterion for this completed type-removal stage:
-
-```powershell
-node scripts/check-vehicle-model-no-enum.mjs
-```
-
-No database was accessed or migrated as part of this documentation update. The enum-to-string migration remains subject to normal deployment review and rehearsal.
-
-## Compatibility Fields Are Separate
-
-The following are still compatibility concerns, not remaining Prisma enum dependencies:
+全新数据库只使用以下车型身份：
 
 ```text
-Vehicle.vehicleModel and related operational string code fields
-VehicleModelDefinition.legacyVehicleModel historical alias
-VehiclePackage and ProductPriceRule string compatibility values
-SubscriptionQuote and SubscriptionOrder original-code snapshots
-API, CSV, report, and Portal Catalog vehicleModel surfaces
+VehicleModelDefinition.id
+VehicleModelDefinition.modelCode
+VehicleModelDefinition.displayName
 ```
 
-They remain registered and `NOT_READY` for external retirement until consumer ownership and migration are complete. Their presence must not be reported as a failure of the no-enum guard or as a reason to restore an enum dependency.
+业务关系：
 
-## Required Governance
-
-```powershell
-pnpm vehicle-model:removal-readiness
-pnpm vehicle-model:contract-governance
-```
-
-Interpret the outputs separately:
-
-`vehicle-model:removal-readiness` executes the same no-enum dependency check before reporting `enumTypeRemoval`.
-
-| Gate | Current meaning |
+| 对象 | 最终字段 |
 | --- | --- |
-| `enumTypeRemoval.decision` | Type conversion is protected by the no-enum guard. |
-| `compatibilityFieldRetirement.decision` | External field and CSV retirement is not approved while registered consumers remain. |
-| `hardRemovalReady` | Contract-governance status for removing compatibility fields, not a prerequisite for the completed type conversion. |
+| `Vehicle` | 必填 `modelDefinitionId` |
+| `VehiclePackage` | 必填 `modelDefinitionId` |
+| `ProductPriceRule` | 必填 `modelDefinitionId`，按产品版本与车型主数据唯一 |
+| `SubscriptionQuote` | 三个必填车型快照字段 |
+| `SubscriptionOrder` | 三个必填车型快照字段 |
 
-Portal Catalog is a registered compatibility consumer whenever the scanner detects its `vehicleModel` path.
+运行时写入只接受主数据 ID；列表、详情和导出使用 `modelCode` 与
+`modelDisplayName`；合同事实读取不可变快照，不读取车辆当前车型主数据来改写历史含义。
 
-## Future Removal Rules
+## 初始化边界
 
-Before removing any string compatibility column, snapshot, API field, CSV column, or Portal filter:
+阶段 0B 明确使用全新数据库，因此：
 
-1. Preserve original historical code meaning with a string snapshot or documented replacement.
-2. Migrate or obtain an approved exception for every registered external consumer.
-3. Rehearse the migration on a production-like clone and retain rollback evidence.
-4. Run the no-enum guard, readiness command, contract governance command, API/Web typechecks, and relevant regression suites.
+1. 不回填旧测试数据。
+2. 不保留旧字段双写、双读或字符串回退。
+3. 不保留只服务于旧库的车型回填、报价/订单快照回填和旧价格规则约束退役脚本。
+4. 历史迁移文件保持不变，最终形态通过新增迁移形成。
 
-Do not claim that legacy columns are removed or that consumer sign-off is complete until these gates are satisfied.
+## 新库验收
+
+目标数据库固定为：
+
+```text
+subscription_saas_stage0b_verify
+```
+
+验收顺序：
+
+```powershell
+pnpm --filter @subscription-saas/api exec prisma migrate deploy --schema prisma/schema.prisma
+pnpm --filter @subscription-saas/api exec prisma migrate status --schema prisma/schema.prisma
+pnpm --filter @subscription-saas/api exec node prisma/seed.mjs
+pnpm --filter @subscription-saas/api exec node prisma/seed.mjs
+```
+
+随后检查旧枚举和旧列均不存在，三个业务模型的 `model_definition_id` 以及报价、
+订单三字段快照均为非空约束。任何验证不得复用阶段 0A 或当前测试数据库。

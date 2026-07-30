@@ -65,8 +65,9 @@ interface AssignmentOrder {
 
 interface OrderOptionRow extends AssignmentOrder {
   customer?: { mobile?: string | null; name?: string | null } | null;
+  modelCodeSnapshot?: string | null;
+  modelDisplayName?: string | null;
   orderStatus?: string | null;
-  vehicleModel?: string | null;
 }
 
 interface AssignmentBill {
@@ -102,7 +103,9 @@ interface FinancingInstrumentListResponse {
 
 interface VehicleOptionRow extends AssignmentVehicle {
   model?: string | null;
-  vehicleModel?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
 }
 
 interface RevenueRightAssignmentRow {
@@ -220,14 +223,25 @@ function instrumentOptionLabel(instrument: AssignmentInstrument) {
 }
 
 function vehicleOptionLabel(vehicle: VehicleOptionRow) {
-  return [vehicle.vehicleNo, vehicle.plateNo, vehicle.vin, vehicle.vehicleModel ?? vehicle.model]
+  return [
+    vehicle.vehicleNo,
+    vehicle.plateNo,
+    vehicle.vin,
+    vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+  ]
     .filter(Boolean)
     .join(" / ");
 }
 
 function orderOptionLabel(order: OrderOptionRow) {
   const statusLabel = order.orderStatus ? labelOf(ORDER_STATUS_LABELS, order.orderStatus) : null;
-  const label = [order.orderNo, order.customer?.name, order.customer?.mobile, order.vehicleModel, statusLabel]
+  const label = [
+    order.orderNo,
+    order.customer?.name,
+    order.customer?.mobile,
+    order.modelDisplayName ?? order.modelCodeSnapshot,
+    statusLabel
+  ]
     .filter(Boolean)
     .join(" / ");
   return label || order.id;

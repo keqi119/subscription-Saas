@@ -13,7 +13,7 @@ import { CreateVehicleDto, UpdateVehicleDto } from "../src/vehicle/dto/vehicle.d
 
 const MODEL_DEFINITION_ID = "260315b8-755b-4f85-b41d-71c0358dfb3b";
 
-function validateProductionBody<T>(value: unknown, metatype: new () => T) {
+function validateProductionBody(value: unknown, metatype: new () => object) {
   return new ValidationPipe({
     transform: true,
     whitelist: true
@@ -53,7 +53,9 @@ describe("canonical vehicle model write DTOs", () => {
       }
     ]
   ])("%s requires modelDefinitionId", async (Dto, payload) => {
-    await expect(validateProductionBody(payload, Dto)).rejects.toThrow();
+    await expect(
+      validateProductionBody(payload, Dto as new () => object)
+    ).rejects.toThrow();
   });
 
   it.each([
@@ -100,7 +102,7 @@ describe("canonical vehicle model write DTOs", () => {
   ])("%s strips the retired vehicleModel input", async (Dto, payload) => {
     const dto = await validateProductionBody(
       { ...payload, vehicleModel: "ET5" },
-      Dto
+      Dto as new () => object
     );
 
     expect(dto).not.toHaveProperty("vehicleModel");

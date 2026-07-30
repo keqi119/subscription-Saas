@@ -24,7 +24,7 @@ interface QuoteRow {
   productVersion: { product: { name: string }; versionNo: string };
   quoteNo: string;
   status: string;
-  vehicleModel: string;
+  modelCodeSnapshot?: string | null;
   vehiclePurchasePriceAmount: number;
 }
 
@@ -47,7 +47,7 @@ export default function QuotesPage() {
     setLoading(true);
     try {
       const nextQuotes = await apiFetch<QuoteRow[]>("/quotes");
-      setQuotes(nextQuotes.map((quote) => ({ ...quote, vehicleModel: quote.modelDisplayName ?? quote.vehicleModel })));
+      setQuotes(nextQuotes);
     } finally {
       setLoading(false);
     }
@@ -78,7 +78,7 @@ export default function QuotesPage() {
       title: "客户信息",
       width: 160
     },
-    { dataIndex: "vehicleModel", title: "车型", width: 90 },
+    { dataIndex: "modelDisplayName", title: "车型", width: 140 },
     { dataIndex: "vehiclePurchasePriceAmount", render: formatYuan, title: "车辆采购价", width: 130 },
     { dataIndex: "monthlyFeeAmount", render: formatYuan, title: "月费金额", width: 120 },
     { dataIndex: "depositAmount", render: formatYuan, title: "押金", width: 120 },

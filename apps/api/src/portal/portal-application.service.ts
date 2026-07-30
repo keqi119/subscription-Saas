@@ -979,7 +979,10 @@ function toPortalFinalPlanView(application: PortalApplication) {
       city: stringOrNull(vehicleSnapshot.assetLocation),
       currentMileageKm: numberOrNull(vehicleSnapshot.currentMileageKm),
       displayName: buildSnapshotVehicleDisplayName(vehicleSnapshot),
-      model: stringOrNull(vehicleSnapshot.vehicleModel),
+      model: stringOrNull(vehicleSnapshot.model),
+      modelCode: stringOrNull(vehicleSnapshot.modelCodeSnapshot),
+      modelDefinitionId: stringOrNull(vehicleSnapshot.modelDefinitionIdSnapshot),
+      modelDisplayName: stringOrNull(vehicleSnapshot.modelDisplayNameSnapshot),
       modelYear: numberOrNull(vehicleSnapshot.modelYear),
       series: stringOrNull(vehicleSnapshot.series)
     }
@@ -1416,7 +1419,10 @@ function parseIntentSnapshot(snapshot: Prisma.JsonValue) {
     currentMileageKm: numberOrNull(vehicleSnapshot.currentMileageKm),
     displayName: buildSnapshotVehicleDisplayName(vehicleSnapshot),
     id: stringOrNull(intent.vehicleId),
-    model: stringOrNull(vehicleSnapshot.vehicleModel),
+    model: stringOrNull(vehicleSnapshot.model),
+    modelCode: stringOrNull(vehicleSnapshot.modelCodeSnapshot),
+    modelDefinitionId: stringOrNull(vehicleSnapshot.modelDefinitionIdSnapshot),
+    modelDisplayName: stringOrNull(vehicleSnapshot.modelDisplayNameSnapshot),
     series: stringOrNull(vehicleSnapshot.series)
   };
   const plan = {
@@ -1435,10 +1441,15 @@ function parseIntentSnapshot(snapshot: Prisma.JsonValue) {
 }
 
 function buildSnapshotVehicleDisplayName(vehicleSnapshot: Record<string, unknown>) {
+  const canonicalDisplayName = stringOrNull(vehicleSnapshot.modelDisplayNameSnapshot);
+  if (canonicalDisplayName) {
+    return canonicalDisplayName;
+  }
+
   return [
     stringOrNull(vehicleSnapshot.brand),
     stringOrNull(vehicleSnapshot.series),
-    stringOrNull(vehicleSnapshot.vehicleModel)
+    stringOrNull(vehicleSnapshot.model)
   ].filter(Boolean).join(" ");
 }
 

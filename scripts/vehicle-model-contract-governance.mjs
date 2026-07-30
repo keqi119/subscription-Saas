@@ -54,7 +54,7 @@ async function main() {
     )
   );
 
-  if (validation.missingReferences.length > 0 || validation.blockingConsumers.length > 0) {
+  if (!validation.hardRemovalReady) {
     console.error("VehicleModel external contract governance check failed.");
     process.exitCode = 1;
   }

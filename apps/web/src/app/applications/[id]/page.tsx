@@ -253,11 +253,13 @@ interface AvailableVehicle {
   currentSalePriceAmount?: number | null;
   id: string;
   model?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   plateNo?: string | null;
   series?: string | null;
   status: string;
   vehicleId?: string;
-  vehicleModel?: string | null;
   vehicleNo: string;
   vin?: string | null;
 }
@@ -286,7 +288,7 @@ interface AvailableSubscriptionPlan {
   productName: string;
   productVersionId: string;
   subscriptionPlanId: string;
-  vehicleModel: string;
+  modelCode: string;
   versionNo: string;
 }
 
@@ -460,7 +462,7 @@ export default function ApplicationDetailPage() {
   const selectedQuotePlan = availablePlans.find((plan) => plan.subscriptionPlanId === quoteSubscriptionPlanId);
   const quotePlanEmptyReason =
     selectedQuoteVehicle && availablePlans.length === 0
-      ? `当前所选车辆车型 ${selectedQuoteVehicle.vehicleModel ?? "-"} 暂无可报价订阅套餐。请确认该车型套餐已启用，且所属产品和产品版本已激活。`
+      ? `当前所选车辆车型 ${selectedQuoteVehicle.modelDisplayName ?? selectedQuoteVehicle.modelCode ?? "-"} 暂无可报价订阅套餐。请确认该车型套餐已启用，且所属产品和产品版本已激活。`
       : null;
   const quoteVehicleBaseFeeModeDescription =
     selectedQuotePlan?.monthlyFeeMode === "FIXED_AMOUNT"
@@ -745,8 +747,10 @@ export default function ApplicationDetailPage() {
       const intendedModel = normalizeVehicleModel(detail?.intendedModel);
       const firstVehicle =
         vehicles.find((vehicle) => {
-          const vehicleModel = normalizeVehicleModel(vehicle.vehicleModel ?? vehicle.model);
-          return intendedModel && vehicleModel === intendedModel;
+          const canonicalModel = normalizeVehicleModel(
+            vehicle.modelDisplayName ?? vehicle.modelCode ?? vehicle.model
+          );
+          return intendedModel && canonicalModel === intendedModel;
         }) ?? vehicles[0];
       const firstVehicleId = firstVehicle ? (firstVehicle.vehicleId ?? firstVehicle.id) : undefined;
       const plans = firstVehicleId ? await loadQuotePlans(firstVehicleId) : [];
@@ -1147,7 +1151,11 @@ export default function ApplicationDetailPage() {
                     {
                       label: "车型",
                       children: safeText(
-                        snapshotValue(intentSnapshot, "vehicleSnapshot.vehicleModel", "vehicleSnapshot.model")
+                        snapshotValue(
+                          intentSnapshot,
+                          "vehicleSnapshot.modelDisplayNameSnapshot",
+                          "vehicleSnapshot.model"
+                        )
                       )
                     },
                     {
@@ -1580,7 +1588,7 @@ export default function ApplicationDetailPage() {
             <Typography.Text>车辆：{selectedQuoteVehicle ? `${selectedQuoteVehicle.vehicleNo} / ${selectedQuoteVehicle.plateNo ?? selectedQuoteVehicle.vin ?? "-"}` : "-"}</Typography.Text>
             <Typography.Text>VIN：{selectedQuoteVehicle?.vin ?? "-"}</Typography.Text>
             <Typography.Text>车牌号：{selectedQuoteVehicle?.plateNo ?? "-"}</Typography.Text>
-            <Typography.Text>车型：{selectedQuoteVehicle?.vehicleModel ?? selectedQuotePlan?.vehicleModel ?? "-"}</Typography.Text>
+            <Typography.Text>车型：{selectedQuoteVehicle?.modelDisplayName ?? selectedQuoteVehicle?.modelCode ?? selectedQuotePlan?.modelCode ?? "-"}</Typography.Text>
             <Typography.Text>电池容量：{formatKwh(selectedQuoteVehicle?.batteryCapacityKwh)}</Typography.Text>
             <Typography.Text>
               电池使用方式：{formatBatteryUsageType(selectedQuoteVehicle?.batteryUsageType, selectedQuoteVehicle?.batteryUsageTypeLabel)}
@@ -1628,7 +1636,7 @@ export default function ApplicationDetailPage() {
             <Select
               onChange={changeQuoteVehicle}
               options={availableVehicles.map((vehicle) => ({
-                label: `${vehicle.vehicleNo} / ${vehicle.plateNo ?? vehicle.vin ?? "-"} / ${vehicle.vehicleModel ?? "-"}`,
+                label: `${vehicle.vehicleNo} / ${vehicle.plateNo ?? vehicle.vin ?? "-"} / ${vehicle.modelDisplayName ?? vehicle.modelCode ?? "-"}`,
                 value: vehicle.vehicleId ?? vehicle.id
               }))}
             />
@@ -1637,7 +1645,7 @@ export default function ApplicationDetailPage() {
             <Select
               notFoundContent={quotePlanEmptyReason ?? "暂无可报价套餐"}
               options={availablePlans.map((plan) => ({
-                label: `${plan.planNo} / ${plan.planName} / ${vehicleBaseFeeModeLabel(plan)} / ${plan.productName} / ${plan.versionNo} / ${plan.vehicleModel}`,
+                label: `${plan.planNo} / ${plan.planName} / ${vehicleBaseFeeModeLabel(plan)} / ${plan.productName} / ${plan.versionNo} / ${plan.modelCode}`,
                 value: plan.subscriptionPlanId
               }))}
               optionFilterProp="label"

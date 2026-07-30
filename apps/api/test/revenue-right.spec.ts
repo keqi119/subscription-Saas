@@ -25,7 +25,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
+import { TEST_MODEL_CODES } from "./helpers/vehicle-model-codes";
 
 import { RevenueRightService } from "../src/revenue-right/revenue-right.service";
 
@@ -701,7 +701,7 @@ function makeOrder(overrides: Partial<Prisma.SubscriptionOrderGetPayload<Record<
     updatedAt: now,
     updatedBy: "user-1",
     vehicleId: "vehicle-1",
-    vehicleModel: VehicleModel.ET5,
+    vehicleModel: TEST_MODEL_CODES.ET5,
     vehiclePurchasePriceAmount: 16800000n,
     vehicleReviewStatus: OrderReviewStatus.APPROVED,
     ...overrides
@@ -737,7 +737,7 @@ function makeVehicle(overrides: Partial<Prisma.VehicleGetPayload<Record<string, 
     status: VehicleStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
+    vehicleModel: TEST_MODEL_CODES.ET5,
     vehicleNo: "VEH20260602000000A1B2",
     vin: null,
     ...overrides

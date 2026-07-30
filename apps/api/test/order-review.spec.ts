@@ -17,7 +17,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { VehicleModel } from "./helpers/vehicle-model-codes";
+import { TEST_MODEL_CODES } from "./helpers/vehicle-model-codes";
 
 import { OrderService } from "../src/order/order.service";
 
@@ -446,7 +446,7 @@ function buildOrder(state: ReviewState, now: Date, orderId: string, quoteId: str
     updatedBy: "user-1",
     vehicle: buildVehicle(state, now, vehicleId),
     vehicleId,
-    vehicleModel: VehicleModel.ET5,
+    vehicleModel: TEST_MODEL_CODES.ET5,
     vehiclePurchasePriceAmount: 18000000n,
     vehicleReviewStatus: state.vehicleReviewStatus
   };
@@ -499,7 +499,7 @@ function buildVehicle(state: ReviewState, now: Date, vehicleId: string) {
     salePriceStatus: state.vehicleSalePriceStatus,
     status: state.vehicleStatus,
     updatedAt: now,
-    vehicleModel: VehicleModel.ET5,
+    vehicleModel: TEST_MODEL_CODES.ET5,
     vehicleNo: "VEH202606040001",
     vin: "VIN202606040001"
   };
@@ -560,7 +560,7 @@ function buildSubscriptionPlan(now: Date) {
     vehiclePackage: {
       ...packageBase,
       id: "vehicle-package-1",
-      vehicleModel: VehicleModel.ET5
+      vehicleModel: TEST_MODEL_CODES.ET5
     },
     vehiclePackageId: "vehicle-package-1"
   };

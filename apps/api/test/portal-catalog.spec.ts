@@ -177,7 +177,6 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       customerDisplayName: "乐道 ES6",
       displayName: "ES6 主数据",
       id: "model-es6",
-      legacyVehicleModel: VehicleModel.ES6,
       modelCode: "NIO_ES6"
     });
     const vehicle = createVehicle({
@@ -212,7 +211,6 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   it("filters catalog vehicles by modelDefinitionId only", async () => {
     const definition = createModelDefinition({
       id: "model-es6",
-      legacyVehicleModel: VehicleModel.ES6,
       modelCode: "NIO_ES6"
     });
     const { service } = createHarness({
@@ -238,7 +236,6 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   it("returns an arbitrary canonical model without an enum mapping", async () => {
     const definition = createModelDefinition({
       id: "model-x-2027",
-      legacyVehicleModel: null,
       modelCode: "MODEL_X_2027"
     });
     const { service } = createHarness({
@@ -272,7 +269,6 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   it("matches a vehicle and package by canonical modelDefinitionId", async () => {
     const definition = createModelDefinition({
       id: "model-et5",
-      legacyVehicleModel: VehicleModel.ET5,
       modelCode: "NIO_ET5"
     });
     const plan = createPlan("plan-et5", {
@@ -361,7 +357,6 @@ function createHarness(
         where: {
           deletedAt?: null;
           id?: string;
-          legacyVehicleModel?: string;
           modelCode?: string;
         };
       }) =>
@@ -369,7 +364,6 @@ function createHarness(
           (definition) =>
             (!where.id || definition.id === where.id) &&
             (!where.modelCode || definition.modelCode === where.modelCode) &&
-            (!where.legacyVehicleModel || definition.legacyVehicleModel === where.legacyVehicleModel) &&
             (where.deletedAt !== null || definition.deletedAt === null)
         ) ?? null
       ),
@@ -437,30 +431,6 @@ function filterCatalogVehicles(
       vehicle.modelDefinitionId !== where.modelDefinitionId
     ) {
       return false;
-    }
-    const modelOr = where.OR as Array<{
-      modelDefinitionId?: string | null;
-      vehicleModel?: string | { in?: string[] };
-    }> | undefined;
-    if (modelOr?.length) {
-      return modelOr.some((condition) => {
-        if (condition.modelDefinitionId !== undefined && vehicle.modelDefinitionId !== condition.modelDefinitionId) {
-          return false;
-        }
-        if (condition.vehicleModel !== undefined) {
-          if (typeof condition.vehicleModel === "string" && vehicle.vehicleModel !== condition.vehicleModel) {
-            return false;
-          }
-          if (
-            typeof condition.vehicleModel === "object" &&
-            condition.vehicleModel.in &&
-            !condition.vehicleModel.in.includes(vehicle.vehicleModel)
-          ) {
-            return false;
-          }
-        }
-        return true;
-      });
     }
     return true;
   });

@@ -247,9 +247,13 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
       currentMileageKm: 1000,
       id: "vehicle-a",
       model: "ES6",
+      modelDefinition: {
+        displayName: "NIO ES6",
+        modelCode: "NIO_ES6"
+      },
+      modelDefinitionId: "00000000-0000-4000-8000-000000000e60",
       modelYear: 2025,
-      series: null,
-      vehicleModel: "SUV"
+      series: null
     },
     {
       assetLocation: "上海",
@@ -259,9 +263,13 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
       currentMileageKm: 2000,
       id: "vehicle-b",
       model: "G6",
+      modelDefinition: {
+        displayName: "XPENG G6",
+        modelCode: "XPENG_G6"
+      },
+      modelDefinitionId: "00000000-0000-4000-8000-000000000660",
       modelYear: 2025,
-      series: null,
-      vehicleModel: "SUV"
+      series: null
     }
   ];
   const orders = [

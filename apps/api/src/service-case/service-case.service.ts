@@ -96,9 +96,15 @@ const serviceCaseInclude = {
       currentMileageKm: true,
       id: true,
       model: true,
+      modelDefinition: {
+        select: {
+          displayName: true,
+          modelCode: true
+        }
+      },
+      modelDefinitionId: true,
       modelYear: true,
-      series: true,
-      vehicleModel: true
+      series: true
     }
   }
 } satisfies Prisma.ServiceCaseInclude;
@@ -153,9 +159,15 @@ export class ServiceCaseService {
             currentMileageKm: true,
             id: true,
             model: true,
+            modelDefinition: {
+              select: {
+                displayName: true,
+                modelCode: true
+              }
+            },
+            modelDefinitionId: true,
             modelYear: true,
-            series: true,
-            vehicleModel: true
+            series: true
           }
         }
       },
@@ -983,9 +995,13 @@ function buildVehicleSnapshot(
     currentMileageKm: number;
     id: string;
     model: string | null;
+    modelDefinition: {
+      displayName: string;
+      modelCode: string;
+    };
+    modelDefinitionId: string;
     modelYear: number | null;
     series: string | null;
-    vehicleModel: string | null;
   } | null
 ) {
   if (!vehicle) {
@@ -1001,9 +1017,11 @@ function buildVehicleSnapshot(
     displayName: [vehicle.brand, vehicle.series, vehicle.model].filter(Boolean).join(" "),
     id: vehicle.id,
     model: vehicle.model,
+    modelCode: vehicle.modelDefinition.modelCode,
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: vehicle.modelDefinition.displayName,
     modelYear: vehicle.modelYear,
-    series: vehicle.series,
-    vehicleModel: vehicle.vehicleModel
+    series: vehicle.series
   };
 }
 

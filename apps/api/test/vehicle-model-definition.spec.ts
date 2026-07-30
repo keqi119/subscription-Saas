@@ -13,9 +13,6 @@ import {
 import { VehicleModelDefinitionService } from "../src/vehicle-model-definition/vehicle-model-definition.service";
 import { VehicleModel, type VehicleModel as VehicleModelCode } from "./helpers/vehicle-model-codes";
 
-const LEGACY_WRITE_ERROR =
-  "legacyVehicleModel is deprecated and read-only; use modelCode instead.";
-
 function validateProductionBody<T>(value: unknown, metatype: new () => T) {
   return new ValidationPipe({
     transform: true,
@@ -27,17 +24,8 @@ function validateProductionBody<T>(value: unknown, metatype: new () => T) {
 }
 
 async function expectLegacyWriteRejected(validation: Promise<unknown>) {
-  try {
-    await validation;
-    throw new Error("Expected legacyVehicleModel validation to fail");
-  } catch (error) {
-    expect(error).toBeInstanceOf(BadRequestException);
-    expect((error as BadRequestException).getResponse()).toEqual(
-      expect.objectContaining({
-        message: expect.arrayContaining([LEGACY_WRITE_ERROR])
-      })
-    );
-  }
+  const dto = await validation;
+  expect(dto).not.toHaveProperty("legacyVehicleModel");
 }
 
 describe("VehicleModelDefinition write DTO production validation", () => {
@@ -156,7 +144,6 @@ describe("VehicleModelDefinitionService", () => {
       brand: "NIO",
       displayName: "ET5T",
       enabled: true,
-      legacyVehicleModel: null,
       modelCode: "ET5T",
       portalVisible: false
     });
@@ -277,7 +264,7 @@ describe("VehicleModelDefinitionService", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it("rejects a modelCode that collides with another definition legacy alias", async () => {
+  it("uses modelCode as the only uniqueness namespace", async () => {
     const { service, user } = createHarness({
       definitions: [
         createDefinition({
@@ -298,7 +285,7 @@ describe("VehicleModelDefinitionService", () => {
         },
         user
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
+    ).resolves.toMatchObject({ modelCode: VehicleModel.ET5 });
   });
 
   it("never persists legacy aliases when the service is called directly", async () => {
@@ -328,7 +315,7 @@ describe("VehicleModelDefinitionService", () => {
     );
   });
 
-  it("allows new model definitions without legacyVehicleModel", async () => {
+  it("allows new model definitions with canonical modelCode", async () => {
     const { service, user } = createHarness({ definitions: [] });
 
     const definition = await service.createDefinition(
@@ -341,7 +328,7 @@ describe("VehicleModelDefinitionService", () => {
       user
     );
 
-    expect(definition.legacyVehicleModel).toBeNull();
+    expect(definition.modelCode).toBe("NEW_MODEL");
   });
 
   it("enables and disables model definitions", async () => {
@@ -404,12 +391,12 @@ describe("VehicleModelDefinitionService", () => {
     expect(seedSource).toContain("await convergeVehicleModelDefinition(prisma");
   });
 
-  it("keeps Vehicle model compatibility columns as strings with optional master-data linkage", () => {
+  it("keeps only required canonical master-data linkage", () => {
     const schemaSource = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
 
-    expect(schemaSource).toContain("vehicleModel                  String");
+    expect(schemaSource).not.toContain("vehicleModel                  String");
     expect(schemaSource).toContain("modelDefinitionId");
-    expect(schemaSource).toContain("VehicleModelDefinition?");
+    expect(schemaSource).toContain("VehicleModelDefinition");
     expect(schemaSource).not.toContain("enum VehicleModel");
   });
 });

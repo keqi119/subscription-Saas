@@ -32,6 +32,10 @@ export async function requireActiveVehicleModelDefinition(
   prisma: VehicleModelDefinitionReader,
   modelDefinitionId: string
 ): Promise<VehicleModelIdentity> {
+  if (!modelDefinitionId) {
+    throw new BadRequestException("车型主数据不存在。");
+  }
+
   const definition = await prisma.vehicleModelDefinition.findFirst({
     select: vehicleModelResolverDefinitionSelect,
     where: { id: modelDefinitionId }

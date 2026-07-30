@@ -7,9 +7,7 @@ import {
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
-import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from "class-validator";
-
-const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
+import { IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
 
 export class CreateVehicleDto {
   @IsString()
@@ -28,16 +26,8 @@ export class CreateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string | null;
-
-  @IsOptional()
   @IsUUID("4")
-  modelDefinitionId?: string | null;
+  modelDefinitionId!: string;
 
   @IsOptional()
   @Type(() => Number)
@@ -113,16 +103,9 @@ export class UpdateVehicleDto {
   @Min(1900)
   modelYear?: number | null;
 
-  /** @deprecated Legacy compatibility only. Use modelDefinitionId. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string | null;
-
   @IsOptional()
   @IsUUID("4")
-  modelDefinitionId?: string | null;
+  modelDefinitionId?: string;
 
   @IsOptional()
   @Type(() => Number)

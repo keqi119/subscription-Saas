@@ -246,20 +246,12 @@ describe("product component model definitions", () => {
     );
 
     expect(prisma.vehicleModelDefinition.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { deletedAt: null, id: definition.id } })
+      expect.objectContaining({ where: { id: definition.id } })
     );
-    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: definition.modelCode
-        })
-      })
-    );
-    expect(result).toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: definition.modelCode
-    });
+    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    expect(createData).toMatchObject({ modelDefinitionId: definition.id });
+    expect(createData).not.toHaveProperty("vehicleModel");
+    expect(result).toMatchObject({ modelDefinitionId: definition.id });
   });
 
   it("accepts a vehicle package legacy alias and normalizes it to modelCode", async () => {
@@ -285,14 +277,9 @@ describe("product component model definitions", () => {
       context
     );
 
-    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: "NIO_ET5"
-        })
-      })
-    );
+    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    expect(createData).toMatchObject({ modelDefinitionId: definition.id });
+    expect(createData).not.toHaveProperty("vehicleModel");
   });
 
   it("writes MODEL_X_2027 from a model definition without a legacy mapping", async () => {
@@ -318,14 +305,9 @@ describe("product component model definitions", () => {
       context
     );
 
-    expect(prisma.vehiclePackage.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: "MODEL_X_2027"
-        })
-      })
-    );
+    const createData = prisma.vehiclePackage.create.mock.calls[0][0].data;
+    expect(createData).toMatchObject({ modelDefinitionId: definition.id });
+    expect(createData).not.toHaveProperty("vehicleModel");
   });
 
   it("rejects legacy-only vehicle package creation even when a model definition mapping exists", async () => {
@@ -376,7 +358,7 @@ describe("product component model definitions", () => {
     expect(prisma.vehiclePackage.create).not.toHaveBeenCalled();
   });
 
-  it("creates price rules from modelDefinitionId and rejects mismatched compatibility codes", async () => {
+  it("creates price rules from modelDefinitionId and ignores retired inputs", async () => {
     const definition = makeModelDefinition({
       displayName: "ES8",
       id: "model-es8",
@@ -400,33 +382,27 @@ describe("product component model definitions", () => {
         context
       )
     ).resolves.toMatchObject({
-      modelDefinitionId: definition.id,
-      vehicleModel: definition.modelCode
+      modelDefinitionId: definition.id
     });
-    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: definition.modelCode
-        })
-      })
-    );
+    const createData = prisma.productPriceRule.create.mock.calls[0][0].data;
+    expect(createData).toMatchObject({ modelDefinitionId: definition.id });
+    expect(createData).not.toHaveProperty("vehicleModel");
 
-    await expect(
-      service.createPriceRule(
-        "version-1",
-        {
-          baseMileageKm: 1500,
-          maxPeriodMonths: 36,
-          minPeriodMonths: 12,
-          modelDefinitionId: definition.id,
-          overMileageFeeAmount: 100,
-          vehicleModel: VehicleModel.ET5
-        },
-        user,
-        context
-      )
-    ).rejects.toThrow();
+    await service.createPriceRule(
+      "version-1",
+      {
+        baseMileageKm: 1500,
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: definition.id,
+        overMileageFeeAmount: 100,
+        vehicleModel: VehicleModel.ET5
+      },
+      user,
+      context
+    );
+    const retiredInputData = prisma.productPriceRule.create.mock.calls[1][0].data;
+    expect(retiredInputData).not.toHaveProperty("vehicleModel");
   });
 
   it("accepts a price rule legacy alias and normalizes it to modelCode", async () => {
@@ -451,14 +427,9 @@ describe("product component model definitions", () => {
       context
     );
 
-    expect(prisma.productPriceRule.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          modelDefinitionId: definition.id,
-          vehicleModel: "NIO_ET5"
-        })
-      })
-    );
+    const createData = prisma.productPriceRule.create.mock.calls[0][0].data;
+    expect(createData).toMatchObject({ modelDefinitionId: definition.id });
+    expect(createData).not.toHaveProperty("vehicleModel");
   });
 
   it("rejects clearing vehicle package modelDefinitionId", async () => {
@@ -484,7 +455,7 @@ describe("product component model definitions", () => {
     expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
   });
 
-  it("rejects legacy-only vehicle package updates", async () => {
+  it("does not persist retired vehicle package update inputs", async () => {
     const definition = makeModelDefinition({
       displayName: "ET7",
       id: "model-et7",
@@ -496,10 +467,15 @@ describe("product component model definitions", () => {
       vehiclePackages: [makeVehiclePackage({ modelDefinition: null, modelDefinitionId: null })]
     });
 
-    await expect(
-      service.updateVehiclePackage("vehicle-1", { vehicleModel: VehicleModel.ET7 }, user, context)
-    ).rejects.toThrow();
-    expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
+    await service.updateVehiclePackage(
+      "vehicle-1",
+      { vehicleModel: VehicleModel.ET7 },
+      user,
+      context
+    );
+    expect(prisma.vehiclePackage.update.mock.calls[0][0].data).not.toHaveProperty(
+      "vehicleModel"
+    );
   });
 
   it("rejects legacy-only product price rule creation", async () => {
@@ -562,7 +538,7 @@ describe("product component model definitions", () => {
     expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
   });
 
-  it("rejects legacy-only product price rule updates", async () => {
+  it("does not persist retired price rule update inputs", async () => {
     const definition = makeModelDefinition({
       displayName: "EC6",
       id: "model-ec6",
@@ -574,8 +550,15 @@ describe("product component model definitions", () => {
       priceRules: [makePriceRule({ modelDefinition: null, modelDefinitionId: null })]
     });
 
-    await expect(service.updatePriceRule("rule-1", { vehicleModel: VehicleModel.EC6 }, user, context)).rejects.toThrow();
-    expect(prisma.productPriceRule.update).not.toHaveBeenCalled();
+    await service.updatePriceRule(
+      "rule-1",
+      { vehicleModel: VehicleModel.EC6 },
+      user,
+      context
+    );
+    expect(prisma.productPriceRule.update.mock.calls[0][0].data).not.toHaveProperty(
+      "vehicleModel"
+    );
   });
 });
 
@@ -709,8 +692,8 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     minPeriodMonths: 12,
     minPurchasePriceAmount: BigInt(12000000),
     monthlyFeeRate: new Prisma.Decimal("0.035"),
-    modelDefinition: null,
-    modelDefinitionId: null,
+    modelDefinition: makeModelDefinition(),
+    modelDefinitionId: "model-et5",
     packageName: "ET5 standard",
     packageNo: "VPK2026060100001",
     product,
@@ -722,7 +705,6 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     status: RecordStatus.ACTIVE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehicleModelName: null,
     ...overrides
   };
@@ -739,8 +721,8 @@ function makePriceRule(overrides: Record<string, unknown> = {}) {
     id: "rule-1",
     maxPeriodMonths: 36,
     minPeriodMonths: 12,
-    modelDefinition: null,
-    modelDefinitionId: null,
+    modelDefinition: makeModelDefinition(),
+    modelDefinitionId: "model-et5",
     monthlyFeeRate: new Prisma.Decimal("0.035"),
     overMileageFeeAmount: BigInt(100),
     productVersion: version,
@@ -748,7 +730,6 @@ function makePriceRule(overrides: Record<string, unknown> = {}) {
     status: RecordStatus.ACTIVE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     ...overrides
   };
 }
@@ -763,7 +744,6 @@ function makeModelDefinition(overrides: Record<string, unknown> = {}) {
     displayName: "ET5",
     enabled: true,
     id: "model-et5",
-    legacyVehicleModel: VehicleModel.ET5,
     modelCode: "NIO_ET5",
     modelName: "ET5",
     portalVisible: true,
@@ -874,6 +854,9 @@ function makeQuote(overrides: Record<string, unknown> = {}) {
     mileagePackageId: null,
     monthlyFeeAmount: BigInt(420000),
     monthlyFeeRate: new Prisma.Decimal("0.035"),
+    modelCodeSnapshot: "NIO_ET5",
+    modelDefinitionIdSnapshot: "model-et5",
+    modelDisplayNameSnapshot: "ET5",
     order: null,
     overMileageFeeAmount: BigInt(100),
     packageSnapshot: null,
@@ -887,7 +870,6 @@ function makeQuote(overrides: Record<string, unknown> = {}) {
     status: QuoteStatus.DRAFT,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ET5,
     vehiclePackage: null,
     vehiclePackageId: null,
     vehiclePurchasePriceAmount: BigInt(12000000),

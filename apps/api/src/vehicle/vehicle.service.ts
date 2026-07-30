@@ -24,7 +24,7 @@ import {
   type PolicyTypeCoverage,
   resolveVehicleInsuranceCoverage
 } from "../common/vehicle-insurance-coverage";
-import { normalizeVehicleModelWriteCode } from "../common/vehicle-model-resolver";
+import { requireActiveVehicleModelDefinition } from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
@@ -45,7 +45,6 @@ const vehicleModelDefinitionSelect = {
   displayName: true,
   enabled: true,
   id: true,
-  legacyVehicleModel: true,
   modelCode: true,
   modelName: true,
   modelYear: true,
@@ -186,14 +185,22 @@ export class VehicleService {
 
   async createVehicle(dto: CreateVehicleDto, user: RequestUser, context: RequestContext) {
     assertRequiredString(dto.vin, "VIN 必填");
-    const modelContext = await this.resolveModelContextForCreate(dto.modelDefinitionId, dto.vehicleModel);
+    const modelIdentity = await requireActiveVehicleModelDefinition(
+      this.prisma,
+      dto.modelDefinitionId
+    );
     assertPositiveAmount(dto.purchasePriceAmount, "车辆采购价必须大于 0");
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
     assertCanCreateAsAvailable(dto.status ?? VehicleStatus.DRAFT);
 
-    const vehicle = await createVehicleWithRetry(this.prisma, dto, user.id, modelContext);
+    const vehicle = await createVehicleWithRetry(
+      this.prisma,
+      dto,
+      user.id,
+      modelIdentity.modelDefinitionId
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -223,15 +230,17 @@ export class VehicleService {
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
-    const modelContext = await this.resolveModelContextForUpdate(
-      dto.modelDefinitionId,
-      dto.vehicleModel,
-      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
-    );
+    const modelDefinitionId =
+      dto.modelDefinitionId === undefined
+        ? undefined
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
     const data = updateVehicleData(dto, user.id, {
-      modelDefinition: modelContext.modelDefinition,
-      modelDefinitionProvided: dto.modelDefinitionId !== undefined,
-      vehicleModel: modelContext.vehicleModel
+      modelDefinitionId
     });
 
     if (dto.status) {
@@ -782,86 +791,18 @@ export class VehicleService {
     return financingInstrument;
   }
 
-  private async resolveModelDefinitionForVehicle(modelDefinitionId: string | null | undefined) {
-    if (modelDefinitionId === undefined || modelDefinitionId === null) {
-      return null;
-    }
-
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
-      select: vehicleModelDefinitionSelect,
-      where: {
-        deletedAt: null,
-        id: modelDefinitionId
-      }
-    });
-
-    if (!definition) {
-      throw new BadRequestException("车型主数据不存在");
-    }
-    if (!definition.enabled) {
-      throw new BadRequestException("车型主数据已停用");
-    }
-    return definition;
-  }
-
-  private async resolveModelContextForCreate(
-    modelDefinitionId: string | null | undefined,
-    vehicleModel: string | null | undefined
-  ) {
-    if (modelDefinitionId) {
-      const modelDefinition = await this.resolveModelDefinitionForVehicle(modelDefinitionId);
-      return {
-        modelDefinition,
-        vehicleModel: resolveVehicleModelForWrite(vehicleModel, modelDefinition)
-      };
-    }
-
-    void vehicleModel;
-    throw new BadRequestException("新增车辆必须选择车型主数据，请传入 modelDefinitionId。");
-  }
-
-  private async resolveModelContextForUpdate(
-    modelDefinitionId: string | null | undefined,
-    vehicleModel: string | null | undefined,
-    vehicleModelProvided: boolean
-  ) {
-    if (modelDefinitionId === null) {
-      throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
-    }
-
-    if (modelDefinitionId) {
-      const modelDefinition = await this.resolveModelDefinitionForVehicle(modelDefinitionId);
-      return {
-        modelDefinition,
-        vehicleModel: resolveVehicleModelForWrite(vehicleModel, modelDefinition)
-      };
-    }
-
-    if (vehicleModelProvided) {
-      void vehicleModel;
-      throw new BadRequestException("修改车辆车型必须选择车型主数据，请传入 modelDefinitionId。");
-    }
-
-    return {
-      modelDefinition: null,
-      vehicleModel: undefined
-    };
-  }
 }
 
 async function createVehicleWithRetry(
   prisma: PrismaService,
   dto: CreateVehicleDto,
   operatorId: string,
-  modelContext: {
-    modelDefinition: VehicleModelDefinitionForVehicle | null;
-    vehicleModel: string;
-  }
+  modelDefinitionId: string
 ) {
   try {
     return await withUniqueBusinessNoRetry(() => prisma.vehicle.create({
       data: {
-        ...createVehicleData(dto, modelContext),
+        ...createVehicleData(dto, modelDefinitionId),
         createdBy: operatorId,
         updatedBy: operatorId,
         vehicleNo: createBusinessNo("VEH")
@@ -875,10 +816,7 @@ async function createVehicleWithRetry(
 
 function createVehicleData(
   dto: CreateVehicleDto,
-  modelContext: {
-    modelDefinition: VehicleModelDefinitionForVehicle | null;
-    vehicleModel: string;
-  }
+  modelDefinitionId: string
 ): Omit<Prisma.VehicleCreateInput, "vehicleNo"> {
   return {
     assetLocation: dto.assetLocation,
@@ -900,10 +838,7 @@ function createVehicleData(
     remark: dto.remark,
     series: dto.series,
     status: dto.status ?? VehicleStatus.DRAFT,
-    vehicleModel: modelContext.vehicleModel,
-    ...(modelContext.modelDefinition
-      ? { modelDefinition: { connect: { id: modelContext.modelDefinition.id } } }
-      : {}),
+    modelDefinition: { connect: { id: modelDefinitionId } },
     vin: dto.vin
   };
 }
@@ -912,9 +847,7 @@ function updateVehicleData(
   dto: UpdateVehicleDto,
   operatorId: string,
   modelContext: {
-    modelDefinition: VehicleModelDefinitionForVehicle | null;
-    modelDefinitionProvided: boolean;
-    vehicleModel?: string | null;
+    modelDefinitionId?: string;
   }
 ): Prisma.VehicleUpdateInput {
   const data: Prisma.VehicleUpdateInput = {
@@ -947,11 +880,8 @@ function updateVehicleData(
   assignIfDefined(data, "remark", dto.remark);
   assignIfDefined(data, "series", dto.series);
   assignIfDefined(data, "status", dto.status);
-  assignIfDefined(data, "vehicleModel", modelContext.vehicleModel);
-  if (modelContext.modelDefinition) {
-    data.modelDefinition = { connect: { id: modelContext.modelDefinition.id } };
-  } else if (modelContext.modelDefinitionProvided) {
-    data.modelDefinition = { disconnect: true };
+  if (modelContext.modelDefinitionId) {
+    data.modelDefinition = { connect: { id: modelContext.modelDefinitionId } };
   }
   assignIfDefined(data, "vin", dto.vin);
 
@@ -962,25 +892,6 @@ function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K,
   if (value !== undefined) {
     target[key] = value;
   }
-}
-
-function resolveVehicleModelForWrite(
-  vehicleModel: string | null | undefined,
-  modelDefinition: VehicleModelDefinitionForVehicle | null
-) {
-  if (modelDefinition) {
-    return normalizeVehicleModelWriteCode(
-      modelDefinition,
-      vehicleModel,
-      "车型主数据与 legacy 车型不一致"
-    );
-  }
-
-  if (!vehicleModel) {
-    throw new BadRequestException("车型代码必填");
-  }
-
-  return vehicleModel;
 }
 
 function assertRequiredString(value: string | null | undefined, message: string) {
@@ -1205,8 +1116,9 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
     modelDefinition: vehicle.modelDefinition ? toVehicleModelDefinitionView(vehicle.modelDefinition) : null,
-    modelDefinitionId: vehicle.modelDefinitionId ?? null,
-    modelDisplayName: vehicle.modelDefinition?.displayName ?? vehicle.vehicleModel,
+    modelCode: vehicle.modelDefinition.modelCode,
+    modelDefinitionId: vehicle.modelDefinitionId,
+    modelDisplayName: vehicle.modelDefinition.displayName,
     modelYear: vehicle.modelYear,
     nextSalePriceReviewAt: vehicle.nextSalePriceReviewAt,
     plateNo: vehicle.plateNo,
@@ -1221,7 +1133,6 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     status: vehicle.status,
     updatedAt: vehicle.updatedAt,
     vehicleId: vehicle.id,
-    vehicleModel: vehicle.vehicleModel,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
   };
@@ -1242,7 +1153,6 @@ function toVehicleModelDefinitionView(definition: VehicleModelDefinitionForVehic
     displayName: definition.displayName,
     enabled: definition.enabled,
     id: definition.id,
-    legacyVehicleModel: definition.legacyVehicleModel,
     modelCode: definition.modelCode,
     modelName: definition.modelName,
     modelYear: definition.modelYear,

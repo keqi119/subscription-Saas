@@ -45,16 +45,7 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
-import {
-  resolveVehicleModelDefinitionId,
-  vehicleModelReadPathMatches
-} from "../common/vehicle-model-resolver";
-import {
-  buildQuoteOrderModelDisplay,
-  buildVehicleModelSnapshot,
-  freezeQuoteVehicleModelSnapshot,
-  vehicleModelSnapshotDefinitionSelect,
-} from "../common/vehicle-model-snapshot";
+import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
 import {
@@ -191,9 +182,15 @@ const packageInclude = {
   productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
 } satisfies Prisma.VehiclePackageInclude;
 
+const modelDefinitionIdentitySelect = {
+  displayName: true,
+  id: true,
+  modelCode: true
+} satisfies Prisma.VehicleModelDefinitionSelect;
+
 const vehiclePackageInclude = {
   ...packageInclude,
-  modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+  modelDefinition: { select: modelDefinitionIdentitySelect }
 } satisfies Prisma.VehiclePackageInclude;
 
 const subscriptionPlanInclude = {
@@ -236,7 +233,7 @@ const orderInclude = {
   vehicle: {
     include: {
       insurancePolicies: { where: { deletedAt: null } },
-      modelDefinition: { select: vehicleModelSnapshotDefinitionSelect }
+      modelDefinition: { select: modelDefinitionIdentitySelect }
     }
   }
 } satisfies Prisma.SubscriptionOrderInclude;
@@ -247,7 +244,7 @@ const quoteInclude = {
   order: true,
   productVersion: { include: { product: true } },
   riskResult: true,
-  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } }
+  vehicle: { include: { modelDefinition: { select: modelDefinitionIdentitySelect } } }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
 const contractInclude = {
@@ -1197,7 +1194,7 @@ export class OrderService {
     const [customer, vehicle, plan] = await Promise.all([
       this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
       this.prisma.vehicle.findUnique({
-        include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } },
+        include: { modelDefinition: { select: modelDefinitionIdentitySelect } },
         where: { id: dto.vehicleId }
       }),
       this.prisma.subscriptionPlan.findUnique({
@@ -1212,23 +1209,15 @@ export class OrderService {
     assertVehicleAvailableForCustomerOrder(vehicle);
     assertSubscriptionPlanAvailableForCustomerOrder(plan);
 
-    if (!resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
-      throw new BadRequestException("所选车辆缺少车型信息，无法下单");
-    }
-    if (!vehicle.vehicleModel) {
-      throw new BadRequestException("Selected vehicle is missing legacy compatibility model.");
-    }
-    const vehicleModel = vehicle.vehicleModel;
-    if (
-      !vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
-        businessDecision: true,
-        module: "order",
-        operation: "order.customerOrder.package.match"
-      })
-    ) {
+    const modelCode = vehicle.modelDefinition.modelCode;
+    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
       throw new BadRequestException("所选套餐不适用于该车型");
     }
-    const modelSnapshot = buildVehicleModelSnapshot(vehicle);
+    const modelSnapshot = buildVehicleModelSnapshot({
+      modelCode,
+      modelDefinitionId: vehicle.modelDefinitionId,
+      modelDisplayName: vehicle.modelDefinition.displayName
+    });
     assertPeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
 
     const vehicleSalePriceAmount = vehicle.currentSalePriceAmount;
@@ -1260,7 +1249,7 @@ export class OrderService {
       plateNo: vehicle.plateNo,
       series: vehicle.series,
       status: vehicle.status,
-      vehicleModel,
+      modelCode,
       vehicleNo: vehicle.vehicleNo,
       vin: vehicle.vin
     });
@@ -1312,7 +1301,7 @@ export class OrderService {
           applicationNo: createBusinessNo("APP"),
           createdBy: user.id,
           customerId: customer.id,
-          intendedModel: vehicleModel,
+          intendedModel: modelCode,
           intendedPeriodMonths: dto.periodMonths,
           salesUserId: customer.ownerUserId ?? user.id,
           status: ApplicationStatus.SUBMITTED,
@@ -1375,7 +1364,6 @@ export class OrderService {
           vehicleBaseFeeAmount,
           vehicleBaseFeeCapAmount,
           vehicleId: vehicle.id,
-          vehicleModel,
           vehiclePackageId: plan.vehiclePackage.id,
           vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
           vehicleSalePriceAmount,
@@ -1421,7 +1409,6 @@ export class OrderService {
           riskResultId: null,
           updatedBy: user.id,
           vehicleId: vehicle.id,
-          vehicleModel,
           vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
           vehicleReviewStatus: OrderReviewStatus.PENDING
         },
@@ -1508,10 +1495,10 @@ export class OrderService {
     }
 
     const quoteSnapshot = toJsonValue(toPlain(quote));
-    const modelSnapshot = freezeQuoteVehicleModelSnapshot({
-      ...quote,
-      modelDefinition: quote.vehicle?.modelDefinition ?? null,
-      modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
+    const modelSnapshot = buildVehicleModelSnapshot({
+      modelCode: quote.modelCodeSnapshot,
+      modelDefinitionId: quote.modelDefinitionIdSnapshot,
+      modelDisplayName: quote.modelDisplayNameSnapshot
     });
     const order = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionOrder.create({
       data: {
@@ -1536,7 +1523,6 @@ export class OrderService {
         riskResultId: quote.riskResultId,
         updatedBy: user.id,
         vehicleId: quote.vehicleId,
-        vehicleModel: quote.vehicleModel,
         vehiclePurchasePriceAmount: quote.vehiclePurchasePriceAmount
       },
       include: orderInclude
@@ -2483,11 +2469,7 @@ export class OrderService {
     ensureUserPermission(user, PermissionCode.ORDER_CHANGE_CREATE);
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
-    if (
-      !order.vehicleId ||
-      !order.vehicle ||
-      (!resolveVehicleModelDefinitionId(order.vehicle) && !order.vehicle.vehicleModel)
-    ) {
+    if (!order.vehicleId || !order.vehicle) {
       throw new BadRequestException("当前订单未绑定车辆，无法发起套餐变更。");
     }
 
@@ -2507,12 +2489,9 @@ export class OrderService {
 
     return plans
       .filter(isSubscriptionPlanCurrentlyAvailableForOrder)
-      .filter((plan) =>
-        vehicleModelReadPathMatches(order.vehicle!, plan.vehiclePackage, {
-          businessDecision: true,
-          module: "order",
-          operation: "order.planChange.availableSubscriptionPlans.package.match"
-        })
+      .filter(
+        (plan) =>
+          order.vehicle!.modelDefinitionId === plan.vehiclePackage.modelDefinitionId
       )
       .map(toPlanChangeSubscriptionPlanView);
   }
@@ -3182,7 +3161,7 @@ function buildContractPdfRenderModel(
         buildAppendixSection("车辆摘要", [
           appendixRow("车辆编号", order.vehicle?.vehicleNo),
           appendixRow("品牌", order.vehicle?.brand),
-          appendixRow("车型", order.vehicle?.model ?? formatValueForPdf(order.vehicleModel)),
+          appendixRow("车型", order.vehicle?.model ?? order.modelDisplayNameSnapshot),
           appendixRow("车牌号", maskPlate(order.vehicle?.plateNo), { applied: true, reason: "plate_masked" })
         ])
       ]
@@ -4403,7 +4382,9 @@ function buildFinalPlanSnapshot(order: OrderWithDetails) {
     quoteId: order.quoteId,
     quoteSnapshot: order.quoteSnapshot,
     vehicleId: order.vehicleId,
-    vehicleModel: order.vehicleModel
+    modelCodeSnapshot: order.modelCodeSnapshot,
+    modelDefinitionIdSnapshot: order.modelDefinitionIdSnapshot,
+    modelDisplayNameSnapshot: order.modelDisplayNameSnapshot
   });
 }
 
@@ -4425,20 +4406,11 @@ async function assertCustomerOrderProductStillMatches(
 
   assertSubscriptionPlanAvailableForCustomerOrder(quote.subscriptionPlan);
 
-  const vehicleModelSource =
-    order.vehicle ??
-    quote.vehicle ??
-    {
-      modelDefinitionId: order.modelDefinitionIdSnapshot,
-      vehicleModel: order.vehicleModel
-    };
-  if (
-    !vehicleModelReadPathMatches(vehicleModelSource, quote.subscriptionPlan.vehiclePackage, {
-      businessDecision: true,
-      module: "order",
-      operation: "order.change.package.match"
-    })
-  ) {
+  const modelDefinitionId =
+    order.vehicle?.modelDefinitionId ??
+    quote.vehicle?.modelDefinitionId ??
+    order.modelDefinitionIdSnapshot;
+  if (modelDefinitionId !== quote.subscriptionPlan.vehiclePackage.modelDefinitionId) {
     throw new BadRequestException("套餐仍需匹配订单车辆车型。");
   }
 }
@@ -4564,7 +4536,7 @@ function toPlanChangeSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
     productName: plan.product.name,
     productVersionId: plan.productVersionId,
     subscriptionPlanId: plan.id,
-    vehicleModel: plan.vehiclePackage.vehicleModel,
+    modelCode: plan.vehiclePackage.modelDefinition.modelCode,
     versionNo: plan.productVersion.versionNo
   };
 }
@@ -4797,17 +4769,12 @@ function parseDateOnly(value: string, field: string) {
 }
 
 function toOrderView(order: OrderWithDetails): Record<string, unknown> {
-  const modelDisplay = buildQuoteOrderModelDisplay({
-    ...order,
-    modelDefinition: order.vehicle?.modelDefinition ?? null,
-    modelDefinitionId: order.vehicle?.modelDefinitionId ?? null
-  });
   const view = toPlain({
     ...order,
     depositAmount: Number(order.depositAmount),
     finalDepositAmount: order.finalDepositAmount === null ? null : Number(order.finalDepositAmount),
-    modelDisplayName: modelDisplay.modelDisplayName,
-    modelDisplaySource: modelDisplay.modelDisplaySource,
+    modelDisplayName: order.modelDisplayNameSnapshot,
+    modelDisplaySource: "SNAPSHOT",
     monthlyFeeAmount: Number(order.monthlyFeeAmount),
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     vehiclePurchasePriceAmount: Number(order.vehiclePurchasePriceAmount)
@@ -4874,7 +4841,7 @@ function toSubscriptionPlanSnapshot(plan: SubscriptionPlanWithDetails) {
 
 function toPackageSnapshot(
   row:
-    | Prisma.VehiclePackageGetPayload<{ include: typeof packageInclude }>
+    | Prisma.VehiclePackageGetPayload<{ include: typeof vehiclePackageInclude }>
     | Prisma.MileagePackageGetPayload<{ include: typeof packageInclude }>
     | Prisma.EnergyPackageGetPayload<{ include: typeof packageInclude }>
     | Prisma.BenefitPackageGetPayload<{ include: typeof packageInclude }>
@@ -4888,14 +4855,16 @@ function toPackageSnapshot(
     status: row.status
   };
 
-  if ("vehicleModel" in row) {
+  if ("modelDefinitionId" in row) {
     result.configName = row.configName;
     result.maxPurchasePriceAmount =
       row.maxPurchasePriceAmount === null ? null : Number(row.maxPurchasePriceAmount);
     result.minPurchasePriceAmount =
       row.minPurchasePriceAmount === null ? null : Number(row.minPurchasePriceAmount);
+    result.modelCode = row.modelDefinition.modelCode;
+    result.modelDefinitionId = row.modelDefinitionId;
+    result.modelDisplayName = row.modelDefinition.displayName;
     result.monthlyFeeRate = Number(row.monthlyFeeRate);
-    result.vehicleModel = row.vehicleModel;
   }
   if ("monthlyMileageKm" in row) {
     result.monthlyMileageKm = row.monthlyMileageKm;

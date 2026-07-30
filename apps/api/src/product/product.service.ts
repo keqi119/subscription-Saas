@@ -26,18 +26,9 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
-import {
-  normalizeVehicleModelWriteCode,
-  resolveVehicleModelDefinitionId,
-  vehicleModelReadPathMatches,
-  VehicleModelLegacyAdapter
-} from "../common/vehicle-model-resolver";
+import { requireActiveVehicleModelDefinition } from "../common/vehicle-model-resolver";
 import { trackVehicleModelUsage } from "../common/vehicle-model-usage-tracker";
-import {
-  buildQuoteOrderModelDisplay,
-  buildVehicleModelSnapshot,
-  vehicleModelSnapshotDefinitionSelect,
-} from "../common/vehicle-model-snapshot";
+import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   CreatePriceRuleDto,
@@ -65,7 +56,6 @@ const productModelDefinitionSelect = {
   displayName: true,
   enabled: true,
   id: true,
-  legacyVehicleModel: true,
   modelCode: true
 } satisfies Prisma.VehicleModelDefinitionSelect;
 
@@ -169,7 +159,13 @@ const quoteInclude = {
   productVersion: { include: { product: true } },
   riskResult: true,
   subscriptionPlan: { include: subscriptionPlanInclude },
-  vehicle: { include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } } },
+  vehicle: {
+    include: {
+      modelDefinition: {
+        select: { displayName: true, id: true, modelCode: true }
+      }
+    }
+  },
   vehiclePackage: { include: vehiclePackageInclude }
 } satisfies Prisma.SubscriptionQuoteInclude;
 
@@ -433,10 +429,9 @@ export class ProductService {
   ) {
     const version = await this.findVersionOrThrow(versionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const modelContext = await this.resolveModelContextForProductConfigCreate(
-      dto.modelDefinitionId,
-      dto.vehicleModel,
-      "新增价格规则必须选择车型主数据，请传入 modelDefinitionId。"
+    const modelIdentity = await requireActiveVehicleModelDefinition(
+      this.prisma,
+      dto.modelDefinitionId
     );
 
     const rule = await this.prisma.productPriceRule.create({
@@ -448,12 +443,11 @@ export class ProductService {
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
-        modelDefinitionId: modelContext.modelDefinition.id,
+        modelDefinitionId: modelIdentity.modelDefinitionId,
         overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
         productVersionId: version.id,
         status: dto.status ?? RecordStatus.ACTIVE,
-        updatedBy: user.id,
-        vehicleModel: modelContext.vehicleModel
+        updatedBy: user.id
       },
       include: priceRuleInclude
     });
@@ -473,12 +467,15 @@ export class ProductService {
       dto.minPeriodMonths ?? before.minPeriodMonths,
       dto.maxPeriodMonths ?? before.maxPeriodMonths
     );
-    const modelContext = await this.resolveModelContextForProductConfigUpdate(
-      dto.modelDefinitionId,
-      dto.vehicleModel,
-      "修改价格规则车型必须选择车型主数据，请传入 modelDefinitionId。",
-      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
-    );
+    const modelDefinitionId =
+      dto.modelDefinitionId === undefined
+        ? undefined
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
 
     const rule = await this.prisma.productPriceRule.update({
       data: {
@@ -487,7 +484,7 @@ export class ProductService {
         energyLimitKwh: dto.energyLimitKwh,
         maxPeriodMonths: dto.maxPeriodMonths,
         minPeriodMonths: dto.minPeriodMonths,
-        modelDefinitionId: modelContext.modelDefinition?.id,
+        modelDefinitionId,
         monthlyFeeRate:
           dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         overMileageFeeAmount:
@@ -495,8 +492,7 @@ export class ProductService {
             ? undefined
             : BigInt(dto.overMileageFeeAmount),
         status: dto.status,
-        updatedBy: user.id,
-        vehicleModel: modelContext.vehicleModel
+        updatedBy: user.id
       },
       include: priceRuleInclude,
       where: { id }
@@ -561,10 +557,9 @@ export class ProductService {
   async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const modelContext = await this.resolveModelContextForProductConfigCreate(
-      dto.modelDefinitionId,
-      dto.vehicleModel,
-      "新增车型包必须选择车型主数据，请传入 modelDefinitionId。"
+    const modelIdentity = await requireActiveVehicleModelDefinition(
+      this.prisma,
+      dto.modelDefinitionId
     );
     const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
@@ -575,7 +570,7 @@ export class ProductService {
         maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
-        modelDefinitionId: modelContext.modelDefinition.id,
+        modelDefinitionId: modelIdentity.modelDefinitionId,
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
         packageName: dto.packageName,
         packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
@@ -585,7 +580,6 @@ export class ProductService {
         series: dto.series,
         status: dto.status ?? RecordStatus.ACTIVE,
         updatedBy: user.id,
-        vehicleModel: modelContext.vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
       include: vehiclePackageInclude
@@ -597,12 +591,15 @@ export class ProductService {
   async updateVehiclePackage(id: string, dto: UpdateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
     ensureValidPeriod(dto.minPeriodMonths ?? before.minPeriodMonths, dto.maxPeriodMonths ?? before.maxPeriodMonths);
-    const modelContext = await this.resolveModelContextForProductConfigUpdate(
-      dto.modelDefinitionId,
-      dto.vehicleModel,
-      "修改车型包车型必须选择车型主数据，请传入 modelDefinitionId。",
-      Object.prototype.hasOwnProperty.call(dto, "vehicleModel")
-    );
+    const modelDefinitionId =
+      dto.modelDefinitionId === undefined
+        ? undefined
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
     const row = await this.prisma.vehiclePackage.update({
       data: {
         brand: dto.brand,
@@ -611,13 +608,12 @@ export class ProductService {
         maxPurchasePriceAmount: dto.maxPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: dto.minPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.minPurchasePriceAmount),
-        modelDefinitionId: modelContext.modelDefinition?.id,
+        modelDefinitionId,
         monthlyFeeRate: dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         packageName: dto.packageName,
         remark: dto.remark,
         series: dto.series,
         updatedBy: user.id,
-        vehicleModel: modelContext.vehicleModel,
         vehicleModelName: dto.vehicleModelName
       },
       include: vehiclePackageInclude,
@@ -1024,9 +1020,6 @@ export class ProductService {
     }
 
     const vehicle = vehicleId ? await this.findAvailableVehicleForQuote(vehicleId) : null;
-    if (vehicle && !resolveVehicleModelDefinitionId(vehicle) && !vehicle.vehicleModel) {
-      return [];
-    }
     const today = new Date();
     const plans = await this.prisma.subscriptionPlan.findMany({
       include: subscriptionPlanInclude,
@@ -1045,11 +1038,7 @@ export class ProductService {
       .filter(isSubscriptionPlanCurrentlyAvailable)
       .filter((plan) =>
         vehicle
-          ? vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
-              businessDecision: true,
-              module: "quote",
-              operation: "quote.availableSubscriptionPlans.package.match"
-            })
+          ? vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId
           : true
       )
       .map(toAvailableSubscriptionPlanView);
@@ -1156,11 +1145,9 @@ export class ProductService {
       vehicleBaseFeeAmount?: bigint;
       vehicleBaseFeeCapAmount?: bigint;
       vehicleId?: string | null;
-      vehicleModel: string;
-      modelDefinitionIdSnapshot?: string | null;
-      modelDisplayNameSnapshot?: string | null;
-      legacyVehicleModelSnapshot?: string | null;
-      legacyVehicleModelCodeSnapshot?: string | null;
+      modelCodeSnapshot: string;
+      modelDefinitionIdSnapshot: string;
+      modelDisplayNameSnapshot: string;
       vehiclePackageId?: string;
       vehiclePurchasePriceAmount: bigint;
       vehicleSalePriceAmount?: bigint;
@@ -1178,17 +1165,8 @@ export class ProductService {
       const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
       const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
       ensureSubscriptionPlanAvailableForQuote(plan);
-      if (
-        !vehicleModelReadPathMatches(vehicle, plan.vehiclePackage, {
-          businessDecision: true,
-          module: "quote",
-          operation: "quote.subscriptionPlan.package.match"
-        })
-      ) {
+      if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
         throw new BadRequestException("所选套餐不适用于该车型");
-      }
-      if (!vehicle.vehicleModel) {
-        throw new BadRequestException("Selected vehicle is missing legacy compatibility model.");
       }
       ensurePeriodInRange(dto.periodMonths, plan);
       const vehicleSalePriceAmount = vehicle.currentSalePriceAmount;
@@ -1219,11 +1197,15 @@ export class ProductService {
         plateNo: vehicle.plateNo,
         series: vehicle.series,
         status: vehicle.status,
-        vehicleModel: vehicle.vehicleModel,
+        modelCode: vehicle.modelDefinition.modelCode,
         vehicleNo: vehicle.vehicleNo,
         vin: vehicle.vin
       });
-      const modelSnapshot = buildVehicleModelSnapshot(vehicle);
+      const modelSnapshot = buildVehicleModelSnapshot({
+        modelCode: vehicle.modelDefinition.modelCode,
+        modelDefinitionId: vehicle.modelDefinitionId,
+        modelDisplayName: vehicle.modelDefinition.displayName
+      });
       quoteData = {
         benefitPackageId: plan.benefitPackage?.id ?? null,
         depositRuleSnapshot,
@@ -1269,7 +1251,6 @@ export class ProductService {
         vehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
         vehicleBaseFeeCapAmount: vehicleBaseFeePricing.vehicleBaseFeeCapAmount,
         vehicleId: vehicle.id,
-        vehicleModel: vehicle.vehicleModel,
         vehiclePackageId: plan.vehiclePackage.id,
         vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
         vehicleSalePriceAmount,
@@ -1307,7 +1288,11 @@ export class ProductService {
       ensurePeriodInRange(dto.periodMonths, vehiclePackage);
       assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, vehiclePackage.monthlyFeeRate);
       ensurePurchasePriceInRange(vehiclePurchasePriceAmount, vehiclePackage);
-      const modelSnapshot = buildVehicleModelSnapshot(vehiclePackage);
+      const modelSnapshot = buildVehicleModelSnapshot({
+        modelCode: vehiclePackage.modelDefinition.modelCode,
+        modelDefinitionId: vehiclePackage.modelDefinitionId,
+        modelDisplayName: vehiclePackage.modelDefinition.displayName
+      });
       quoteData = {
         benefitPackageId: benefitPackage?.id ?? null,
         energyLimitCount: energyPackage.monthlyEnergyCount,
@@ -1334,21 +1319,26 @@ export class ProductService {
         }),
         productId: version.productId,
         productVersionId: version.id,
-        vehicleModel: vehiclePackage.vehicleModel,
         vehiclePackageId: vehiclePackage.id,
         vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     } else {
       const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
       const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
-      if (!dto.productVersionId || (!dto.modelDefinitionId && !dto.vehicleModel)) {
+      if (!dto.productVersionId || !dto.modelDefinitionId) {
         throw new BadRequestException("请选择产品版本和车辆型号。");
       }
-      const modelContext = await this.resolveQuotePriceRuleModelContext(dto.modelDefinitionId, dto.vehicleModel);
-      const priceRule = await this.findActivePriceRule(dto.productVersionId, modelContext.modelDefinitionId);
+      const modelIdentity = await requireActiveVehicleModelDefinition(
+        this.prisma,
+        dto.modelDefinitionId
+      );
+      const priceRule = await this.findActivePriceRule(
+        dto.productVersionId,
+        modelIdentity.modelDefinitionId
+      );
       ensurePeriodInRange(dto.periodMonths, priceRule);
       assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
-      const modelSnapshot = buildVehicleModelSnapshot(priceRule);
+      const modelSnapshot = buildVehicleModelSnapshot(modelIdentity);
       quoteData = {
         energyLimitCount: dto.energyLimitCount ?? priceRule.energyLimitCount,
         energyLimitKwh: dto.energyLimitKwh ?? priceRule.energyLimitKwh,
@@ -1359,7 +1349,6 @@ export class ProductService {
         overMileageFeeAmount: priceRule.overMileageFeeAmount,
         productId: priceRule.productVersion.productId,
         productVersionId: dto.productVersionId,
-        vehicleModel: priceRule.vehicleModel,
         vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     }
@@ -1383,8 +1372,7 @@ export class ProductService {
         monthlyFeeAmount: quoteData.monthlyFeeAmount,
         monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
         monthlyFeeRate: quoteData.monthlyFeeRate,
-        legacyVehicleModelSnapshot: quoteData.legacyVehicleModelSnapshot,
-        legacyVehicleModelCodeSnapshot: quoteData.legacyVehicleModelCodeSnapshot,
+        modelCodeSnapshot: quoteData.modelCodeSnapshot,
         modelDefinitionIdSnapshot: quoteData.modelDefinitionIdSnapshot,
         modelDisplayNameSnapshot: quoteData.modelDisplayNameSnapshot,
         overMileageFeeAmount: quoteData.overMileageFeeAmount,
@@ -1399,7 +1387,6 @@ export class ProductService {
         vehicleBaseFeeAmount: quoteData.vehicleBaseFeeAmount,
         vehicleBaseFeeCapAmount: quoteData.vehicleBaseFeeCapAmount,
         vehicleId: quoteData.vehicleId,
-        vehicleModel: quoteData.vehicleModel,
         vehiclePackageId: quoteData.vehiclePackageId,
         vehiclePurchasePriceAmount: quoteData.vehiclePurchasePriceAmount,
         vehicleSalePriceAmount: quoteData.vehicleSalePriceAmount,
@@ -1424,11 +1411,10 @@ export class ProductService {
       ensureSubscriptionPlanAvailableForQuote(before.subscriptionPlan);
       ensurePeriodInRange(periodMonths, before.subscriptionPlan);
     } else {
-      const modelContext = await this.resolveQuotePriceRuleModelContext(
-        before.modelDefinitionIdSnapshot,
-        before.vehicleModel
+      const priceRule = await this.findActivePriceRule(
+        before.productVersionId,
+        before.modelDefinitionIdSnapshot
       );
-      const priceRule = await this.findActivePriceRule(before.productVersionId, modelContext.modelDefinitionId);
       ensurePeriodInRange(periodMonths, priceRule);
     }
     assertMonthlyFeeWithinCap(
@@ -1586,7 +1572,11 @@ export class ProductService {
 
   private async findAvailableVehicleForQuote(id: string) {
     const vehicle = await this.prisma.vehicle.findUnique({
-      include: { modelDefinition: { select: vehicleModelSnapshotDefinitionSelect } },
+      include: {
+        modelDefinition: {
+          select: { displayName: true, id: true, modelCode: true }
+        }
+      },
       where: { id }
     });
     if (!vehicle || vehicle.deletedAt) {
@@ -1680,97 +1670,6 @@ export class ProductService {
     };
   }
 
-  private async resolveModelDefinitionForProductConfig(modelDefinitionId: string | null | undefined) {
-    if (modelDefinitionId === undefined || modelDefinitionId === null) {
-      return null;
-    }
-
-    const definition = await this.prisma.vehicleModelDefinition.findFirst({
-      select: productModelDefinitionSelect,
-      where: {
-        deletedAt: null,
-        id: modelDefinitionId
-      }
-    });
-
-    if (!definition) {
-      throw new BadRequestException("车型主数据不存在");
-    }
-    if (!definition.enabled) {
-      throw new BadRequestException("车型主数据已停用");
-    }
-    return definition;
-  }
-
-  private async resolveModelContextForProductConfigCreate(
-    modelDefinitionId: string | null | undefined,
-    vehicleModel: string | null | undefined,
-    requiredModelDefinitionMessage: string
-  ): Promise<{ modelDefinition: ProductModelDefinition; vehicleModel: string }> {
-    if (modelDefinitionId) {
-      const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
-      if (!modelDefinition) {
-        throw new BadRequestException("车型代码主数据缺失");
-      }
-      return {
-        modelDefinition,
-        vehicleModel: resolveVehicleModelForProductConfig(vehicleModel, modelDefinition)
-      };
-    }
-
-    void vehicleModel;
-    throw new BadRequestException(requiredModelDefinitionMessage);
-  }
-
-  private async resolveModelContextForProductConfigUpdate(
-    modelDefinitionId: string | null | undefined,
-    vehicleModel: string | null | undefined,
-    legacyOnlyMessage: string,
-    vehicleModelProvided: boolean
-  ): Promise<{ modelDefinition?: ProductModelDefinition; vehicleModel?: string }> {
-    if (modelDefinitionId === null) {
-      throw new BadRequestException("车型代码主数据已启用，不能清除车型代码。");
-    }
-
-    if (modelDefinitionId) {
-      const modelDefinition = await this.resolveModelDefinitionForProductConfig(modelDefinitionId);
-      if (!modelDefinition) {
-        throw new BadRequestException("车型代码主数据缺失");
-      }
-      return {
-        modelDefinition,
-        vehicleModel: resolveVehicleModelForProductConfig(vehicleModel, modelDefinition)
-      };
-    }
-
-    if (vehicleModelProvided) {
-      void vehicleModel;
-      throw new BadRequestException(legacyOnlyMessage);
-    }
-
-    return {};
-  }
-
-  private async resolveQuotePriceRuleModelContext(
-    modelDefinitionId: string | null | undefined,
-    vehicleModel: string | null | undefined
-  ) {
-    return VehicleModelLegacyAdapter.resolveModelDefinitionInput(
-      this.prisma,
-      { modelDefinitionId, vehicleModel },
-      {
-        evidenceContext: {
-          businessDecision: true,
-          module: "product",
-          operation: "quote.priceRule.resolve",
-          usageKind: "PRODUCT_PRICE_RULE_INPUT"
-        },
-        missingMessage: "车型主数据缺失，无法按车型主数据查询价格规则。",
-        mismatchMessage: "车型主数据与 legacy 车型不一致。",
-      }
-    );
-  }
-
   private async findActivePriceRule(productVersionId: string, modelDefinitionId: string) {
     trackVehicleModelUsage({
       decisionPath: "MODEL_DEFINITION_ID",
@@ -1860,25 +1759,6 @@ function ensureValidDateRange(effectiveFrom: Date, effectiveTo: Date | null) {
 
 function optionalBigInt(value?: number | null) {
   return value === undefined || value === null ? null : BigInt(value);
-}
-
-function resolveVehicleModelForProductConfig(
-  vehicleModel: string | null | undefined,
-  modelDefinition: ProductModelDefinition | null
-) {
-  if (modelDefinition) {
-    return normalizeVehicleModelWriteCode(
-      modelDefinition,
-      vehicleModel,
-      "车型主数据与 legacy 车型不一致"
-    );
-  }
-
-  if (!vehicleModel) {
-    throw new BadRequestException("车型代码必填");
-  }
-
-  return vehicleModel;
 }
 
 function requirePositiveInteger(value: number | undefined, message: string): number {
@@ -2207,7 +2087,6 @@ function toModelDefinitionSummary(value: unknown) {
     displayName: toStringOrDash(value.displayName),
     enabled: Boolean(value.enabled),
     id: toStringOrDash(value.id),
-    legacyVehicleModel: toStringOrNull(value.legacyVehicleModel),
     modelCode: toStringOrDash(value.modelCode)
   };
 }
@@ -2323,12 +2202,12 @@ function toPriceRuleView(rule?: RecordSource | null) {
     minPeriodMonths: rule.minPeriodMonths,
     modelDefinition,
     modelDefinitionId: toStringOrNull(rule.modelDefinitionId),
-    modelDisplayName: modelDefinition?.displayName ?? toStringOrDash(rule.vehicleModel),
+    modelCode: modelDefinition?.modelCode ?? "-",
+    modelDisplayName: modelDefinition?.displayName ?? "-",
     monthlyFeeRate: toNumberOrZero(rule.monthlyFeeRate),
     overMileageFeeAmount: toNumberOrZero(rule.overMileageFeeAmount),
     productVersionId: toStringOrDash(rule.productVersionId),
-    status: toStringOrDash(rule.status),
-    vehicleModel: toStringOrDash(rule.vehicleModel)
+    status: toStringOrDash(rule.status)
   };
 }
 
@@ -2416,7 +2295,7 @@ function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
     productName: plan.product.name,
     productVersionId: plan.productVersionId,
     subscriptionPlanId: plan.id,
-    vehicleModel: plan.vehiclePackage.vehicleModel,
+    modelCode: plan.vehiclePackage.modelDefinition.modelCode,
     vehiclePackage: toPackageView(plan.vehiclePackage),
     versionNo: plan.productVersion.versionNo
   };
@@ -2468,7 +2347,7 @@ function toPackageView(row?: RecordSource | null) {
     updatedAt: row.updatedAt
   };
 
-  if ("vehicleModel" in row) {
+  if ("modelDefinitionId" in row) {
     const modelDefinition = toModelDefinitionSummary(row.modelDefinition);
     result.brand = row.brand;
     result.configName = row.configName;
@@ -2478,10 +2357,10 @@ function toPackageView(row?: RecordSource | null) {
     result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
     result.modelDefinition = modelDefinition;
     result.modelDefinitionId = toStringOrNull(row.modelDefinitionId);
-    result.modelDisplayName = modelDefinition?.displayName ?? toStringOrDash(row.vehicleModel);
+    result.modelCode = modelDefinition?.modelCode ?? "-";
+    result.modelDisplayName = modelDefinition?.displayName ?? "-";
     result.monthlyFeeRate = toNumberOrZero(row.monthlyFeeRate);
     result.series = row.series;
-    result.vehicleModel = row.vehicleModel;
     result.vehicleModelName = row.vehicleModelName;
   }
   if ("monthlyMileageKm" in row) {
@@ -2516,11 +2395,6 @@ function toQuoteView(quote: QuoteWithDetails) {
       : quote.monthlyFeeCapAmount === null
         ? computedMonthlyFeeCapAmount
         : Number(quote.monthlyFeeCapAmount);
-  const modelDisplay = buildQuoteOrderModelDisplay({
-    ...quote,
-    modelDefinition: quote.vehicle?.modelDefinition ?? null,
-    modelDefinitionId: quote.vehicle?.modelDefinitionId ?? null
-  });
   return {
     application: quote.application,
     applicationId: quote.applicationId,
@@ -2548,12 +2422,11 @@ function toQuoteView(quote: QuoteWithDetails) {
     monthlyFeeAmount: Number(quote.monthlyFeeAmount),
     monthlyFeeCapAmount,
     monthlyFeeRate: Number(quote.monthlyFeeRate),
-    legacyVehicleModelSnapshot: quote.legacyVehicleModelSnapshot,
-    legacyVehicleModelCodeSnapshot: quote.legacyVehicleModelCodeSnapshot,
+    modelCodeSnapshot: quote.modelCodeSnapshot,
     modelDefinitionIdSnapshot: quote.modelDefinitionIdSnapshot,
-    modelDisplayName: modelDisplay.modelDisplayName,
+    modelDisplayName: quote.modelDisplayNameSnapshot,
     modelDisplayNameSnapshot: quote.modelDisplayNameSnapshot,
-    modelDisplaySource: modelDisplay.modelDisplaySource,
+    modelDisplaySource: "SNAPSHOT",
     order: quote.order && !quote.order.deletedAt
       ? {
           id: quote.order.id,
@@ -2589,7 +2462,6 @@ function toQuoteView(quote: QuoteWithDetails) {
     vehicleBaseFeeCapAmount:
       quote.vehicleBaseFeeCapAmount === null ? null : Number(quote.vehicleBaseFeeCapAmount),
     vehicleId: quote.vehicleId,
-    vehicleModel: quote.vehicleModel,
     vehiclePurchasePriceAmount: Number(quote.vehiclePurchasePriceAmount),
     vehicleSalePriceAmount:
       quote.vehicleSalePriceAmount === null ? null : Number(quote.vehicleSalePriceAmount),
@@ -2612,8 +2484,8 @@ function toQuoteVehicleView(vehicle: NonNullable<QuoteWithDetails["vehicle"]>) {
     series: vehicle.series,
     status: vehicle.status,
     modelDefinitionId: vehicle.modelDefinitionId,
-    modelDisplayName: vehicle.modelDefinition?.displayName ?? vehicle.vehicleModel,
-    vehicleModel: vehicle.vehicleModel,
+    modelCode: vehicle.modelDefinition.modelCode,
+    modelDisplayName: vehicle.modelDefinition.displayName,
     vehicleNo: vehicle.vehicleNo,
     vin: vehicle.vin
   };

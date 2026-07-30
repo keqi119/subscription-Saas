@@ -25,7 +25,6 @@ export class VehicleModelDefinitionService {
     const where: Prisma.VehicleModelDefinitionWhereInput = {
       deletedAt: null,
       enabled: query.enabled,
-      legacyVehicleModel: query.legacyVehicleModel,
       portalVisible: query.portalVisible
     };
 
@@ -78,11 +77,7 @@ export class VehicleModelDefinitionService {
 
     try {
       const definition = await this.prisma.$transaction(async (tx) => {
-        await this.assertCodeNamespaceAvailable(
-          [normalized.modelCode],
-          undefined,
-          tx
-        );
+        await this.assertModelCodeAvailable(normalized.modelCode, undefined, tx);
         return tx.vehicleModelDefinition.create({
           data: {
             ...normalized,
@@ -112,11 +107,7 @@ export class VehicleModelDefinitionService {
             "Vehicle model code is immutable after creation."
           );
         }
-        await this.assertCodeNamespaceAvailable(
-          [nextModelCode],
-          id,
-          tx
-        );
+        await this.assertModelCodeAvailable(nextModelCode, id, tx);
         const data = normalizeUpdateInput(dto);
 
         return tx.vehicleModelDefinition.update({
@@ -188,31 +179,21 @@ export class VehicleModelDefinitionService {
     return definition;
   }
 
-  private async assertCodeNamespaceAvailable(
-    values: Array<string | null | undefined>,
+  private async assertModelCodeAvailable(
+    modelCode: string,
     excludeId?: string,
     db: VehicleModelDefinitionWriteClient = this.prisma
   ) {
-    const codes = [...new Set(values.filter((value): value is string => Boolean(value)))];
-    if (codes.length === 0) {
-      return;
-    }
-
     const existing = await db.vehicleModelDefinition.findFirst({
       select: { id: true },
       where: {
-        OR: [
-          { modelCode: { in: codes } },
-          { legacyVehicleModel: { in: codes } }
-        ],
+        modelCode,
         ...(excludeId ? { id: { not: excludeId } } : {})
       }
     });
 
     if (existing) {
-      throw new BadRequestException(
-        "Vehicle model code or legacy alias conflicts with an existing definition."
-      );
+      throw new BadRequestException("Vehicle model code conflicts with an existing definition.");
     }
   }
 }
@@ -331,7 +312,6 @@ function toVehicleModelDefinitionView(definition: VehicleModelDefinition) {
     enabled: definition.enabled,
     energyType: definition.energyType,
     id: definition.id,
-    legacyVehicleModel: definition.legacyVehicleModel,
     modelCode: definition.modelCode,
     modelName: definition.modelName,
     modelYear: definition.modelYear,

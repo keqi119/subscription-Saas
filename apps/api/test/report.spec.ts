@@ -244,7 +244,7 @@ describe("reporting dashboard APIs", () => {
   });
 
   it("rejects an unknown canonical order report modelDefinitionId", async () => {
-    const { prisma, service } = createReportHarness();
+    const { service } = createReportHarness();
 
     await expect(
       service.getOrderReport({ modelDefinitionId: "missing-model-definition" })

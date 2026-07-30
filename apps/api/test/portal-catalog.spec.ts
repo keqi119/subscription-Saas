@@ -24,11 +24,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";
 
-const VehicleModel = {
-  ES6: "ES6",
-  ET5: "ET5"
-} as const;
-
 describe("PortalCatalogService enhanced vehicle listing", () => {
   it("returns enhanced list fields without internal asset fields", async () => {
     const { service } = createHarness();

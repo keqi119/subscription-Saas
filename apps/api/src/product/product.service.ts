@@ -174,9 +174,6 @@ type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof vers
 type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
-type ProductModelDefinition = Prisma.VehicleModelDefinitionGetPayload<{
-  select: typeof productModelDefinitionSelect;
-}>;
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
 const SELF_SERVICE_APPLICATION_QUOTE_MESSAGE = "客户自助进件请使用确认最终方案 / 生成正式订单流程。";

@@ -23,13 +23,9 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
-  MaxLength,
   Min
 } from "class-validator";
-
-const MODEL_CODE_PATTERN = /^[A-Z0-9_-]+$/;
 
 export class ReportDateRangeQueryDto {
   @IsOptional()
@@ -53,13 +49,6 @@ export class OrderReportQueryDto extends ReportDateRangeQueryDto {
   @IsOptional()
   @IsUUID()
   productId?: string;
-
-  @IsOptional()
-  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -89,13 +78,6 @@ export class OrderDetailQueryDto extends ReportDetailQueryDto {
   @IsOptional()
   @IsEnum(OrderSource)
   orderSource?: OrderSource;
-
-  @IsOptional()
-  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
 
   @IsOptional()
   @IsUUID()
@@ -204,13 +186,6 @@ export class VehicleDetailQueryDto extends ReportDetailQueryDto {
   vehicleStatus?: VehicleStatus;
 
   @IsOptional()
-  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
-  @IsOptional()
   @IsUUID()
   modelDefinitionId?: string;
 
@@ -244,13 +219,6 @@ export const assetReturnTrialSortFields = [
 export const sortOrders = ["asc", "desc"] as const;
 
 export class AssetProfitabilityQueryDto extends ReportDateRangeQueryDto {
-  @IsOptional()
-  /** @deprecated Legacy compatibility filter. Prefer modelDefinitionId. */
-  @IsString()
-  @MaxLength(64)
-  @Matches(MODEL_CODE_PATTERN)
-  vehicleModel?: string;
-
   @IsOptional()
   @IsUUID()
   modelDefinitionId?: string;

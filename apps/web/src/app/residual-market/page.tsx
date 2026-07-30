@@ -54,7 +54,6 @@ import {
   RESIDUAL_MODEL_RUN_TYPE_LABELS,
   RESIDUAL_MODEL_TARGET_TYPE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
-  VEHICLE_MODEL_LABELS,
   VEHICLE_RESIDUAL_CURVE_METHOD_LABELS,
   VEHICLE_RESIDUAL_CURVE_STATUS_LABELS,
   labelOf
@@ -152,7 +151,6 @@ interface VehicleModelDefinitionSummary {
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
   modelName: string;
   modelYear?: number | null;
@@ -661,10 +659,7 @@ function enumTag(labels: Record<string, string>, value?: string | null) {
 }
 
 function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
-  return `${definition.modelCode} - ${definition.displayName} (legacy: ${labelOf(
-    VEHICLE_MODEL_LABELS,
-    definition.legacyVehicleModel
-  )})`;
+  return `${definition.modelCode} - ${definition.displayName}`;
 }
 
 function modelDisplayName(record?: {
@@ -1817,7 +1812,7 @@ export default function ResidualMarketPage() {
     { dataIndex: "series", render: text, title: "车系", width: 110 },
     { render: (_, record) => text(record.modelDefinition?.modelCode), title: "车型代码", width: 130 },
     { render: (_, record) => modelDisplayName(record), title: "车型", width: 170 },
-    { dataIndex: "model", render: text, title: "legacy 车型", width: 150 },
+    { dataIndex: "model", render: text, title: "车型配置", width: 150 },
     { dataIndex: "modelYear", render: text, title: "年款", width: 90 },
     { dataIndex: "trim", render: text, title: "版本 / trim", width: 140 },
     { dataIndex: "batteryCapacityKwh", render: kwh, title: "电池容量", width: 120 },
@@ -1934,7 +1929,7 @@ export default function ResidualMarketPage() {
     { dataIndex: "series", render: text, title: "车系", width: 110 },
     { render: (_, record) => text(record.modelDefinition?.modelCode), title: "车型代码", width: 130 },
     { render: (_, record) => modelDisplayName(record), title: "车型", width: 170 },
-    { dataIndex: "model", render: text, title: "legacy 车型", width: 150 },
+    { dataIndex: "model", render: text, title: "车型配置", width: 150 },
     { dataIndex: "modelYear", render: text, title: "年款", width: 90 },
     { dataIndex: "trim", render: text, title: "版本 / trim", width: 140 },
     { dataIndex: "batteryCapacityKwh", render: kwh, title: "电池容量", width: 120 },
@@ -2007,7 +2002,7 @@ export default function ResidualMarketPage() {
     { dataIndex: "targetSeries", render: text, title: "目标车系", width: 120 },
     { render: (_, record) => text(record.targetModelDefinition?.modelCode), title: "目标车型代码", width: 140 },
     { render: (_, record) => targetModelDisplayName(record), title: "目标车型", width: 170 },
-    { dataIndex: "targetModel", render: text, title: "legacy 目标车型", width: 150 },
+    { dataIndex: "targetModel", render: text, title: "目标车型配置", width: 150 },
     { dataIndex: "targetModelYear", render: text, title: "年款", width: 90 },
     { dataIndex: "sampleCount", render: text, title: "样本数", width: 100 },
     { dataIndex: "startedAt", render: formatDateTime, title: "开始时间", width: 150 },
@@ -2570,7 +2565,7 @@ export default function ResidualMarketPage() {
                   { label: "车系", children: text(detail.series) },
                   { label: "车型代码", children: text(detail.modelDefinition?.modelCode) },
                   { label: "车型", children: modelDisplayName(detail) },
-                  { label: "legacy 车型", children: text(detail.model) },
+                  { label: "车型配置", children: text(detail.model) },
                   { label: "年款", children: text(detail.modelYear) },
                   { label: "版本 / trim", children: text(detail.trim) },
                   { label: "电池容量", children: kwh(detail.batteryCapacityKwh) },
@@ -2691,7 +2686,7 @@ export default function ResidualMarketPage() {
                   { label: "车系", children: text(curveDetail.series) },
                   { label: "车型代码", children: text(curveDetail.modelDefinition?.modelCode) },
                   { label: "车型", children: modelDisplayName(curveDetail) },
-                  { label: "legacy 车型", children: text(curveDetail.model) },
+                  { label: "车型配置", children: text(curveDetail.model) },
                   { label: "年款", children: text(curveDetail.modelYear) },
                   { label: "版本 / trim", children: text(curveDetail.trim) },
                   { label: "电池容量", children: kwh(curveDetail.batteryCapacityKwh) },
@@ -2774,7 +2769,7 @@ export default function ResidualMarketPage() {
                   { label: "目标车系", children: text(modelRunDetail.targetSeries) },
                   { label: "目标车型代码", children: text(modelRunDetail.targetModelDefinition?.modelCode) },
                   { label: "目标车型", children: targetModelDisplayName(modelRunDetail) },
-                  { label: "legacy 目标车型", children: text(modelRunDetail.targetModel) },
+                  { label: "目标车型配置", children: text(modelRunDetail.targetModel) },
                   { label: "目标年款", children: text(modelRunDetail.targetModelYear) },
                   { label: "目标版本", children: text(modelRunDetail.targetTrim) },
                   { label: "目标电池容量", children: kwh(modelRunDetail.targetBatteryCapacityKwh) },
@@ -3599,7 +3594,7 @@ export default function ResidualMarketPage() {
         >
           <Space orientation="vertical" size={16} style={{ width: "100%" }}>
             <Alert
-              description="Required fields: observedAt, modelDefinitionId, priceType, priceAmount. brand / series / model are compatibility columns derived from model master data. The browser submits CSV text, not multipart upload."
+              description="必填字段：observedAt、modelDefinitionId、priceType、priceAmount。brand / series / model 会从车型主数据派生；浏览器提交 CSV 文本，不使用 multipart 上传。"
               showIcon
               type="info"
             />

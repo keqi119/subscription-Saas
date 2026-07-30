@@ -40,7 +40,6 @@ import {
   ORDER_STATUS_LABELS,
   STATUS_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
-  VEHICLE_MODEL_LABELS,
   labelOf
 } from "../../constants/labels";
 import { ApiError, apiFetch } from "../../lib/api";
@@ -93,7 +92,9 @@ interface OrderSourceRow extends CountRow {
 }
 
 interface VehicleModelCountRow extends CountRow {
-  vehicleModel?: string | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
 }
 
 interface SubscriptionPlanCountRow extends CountRow {
@@ -177,8 +178,10 @@ interface VehicleModelAssetRow {
   availableVehicles?: number | null;
   incomeAmount?: number | null;
   leasedVehicles?: number | null;
+  modelCode?: string | null;
+  modelDefinitionId?: string | null;
+  modelDisplayName?: string | null;
   totalVehicles?: number | null;
-  vehicleModel?: string | null;
 }
 
 interface VehicleAssetReport {
@@ -261,14 +264,12 @@ interface OrderFilterValues {
   modelDefinitionId?: string;
   orderSource?: string;
   orderStatus?: string;
-  vehicleModel?: string;
 }
 
 interface VehicleModelDefinitionSummary {
   customerDisplayName?: string | null;
   displayName: string;
   id: string;
-  legacyVehicleModel?: string | null;
   modelCode: string;
 }
 
@@ -332,14 +333,10 @@ const collectionCaseStatusLabels: Record<string, string> = {
   PAUSED: "暂停催收"
 };
 
-const vehicleModelOptions = ["ET5", "ET5T", "ET7", "ES6", "EC6", "ES8", "ET9", "ES9"].map(
-  (value) => ({ label: labelOf(VEHICLE_MODEL_LABELS, value), value })
-);
 const detailDrawerSize = "min(1472px, calc(100vw - 32px))";
 
 function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
-  const legacyLabel = labelOf(VEHICLE_MODEL_LABELS, definition.legacyVehicleModel);
-  return `${definition.modelCode} - ${definition.displayName} (legacy: ${legacyLabel})`;
+  return `${definition.modelCode} - ${definition.displayName}`;
 }
 
 function buildQuery(values: Record<string, unknown>) {
@@ -528,6 +525,10 @@ function detailId(record: DetailRow, key: string) {
 }
 
 function detailModelDefinitionCode(record: DetailRow) {
+  const modelCode = detailValue(record, "modelCode");
+  if (typeof modelCode === "string" && modelCode.trim()) {
+    return modelCode;
+  }
   const definition = detailValue(record, "modelDefinition");
   if (!definition || typeof definition !== "object") {
     return "-";
@@ -536,7 +537,7 @@ function detailModelDefinitionCode(record: DetailRow) {
 }
 
 function detailVehicleModelDisplayName(record: DetailRow) {
-  return safeText(detailValue(record, "modelDisplayName") ?? detailValue(record, "model") ?? detailValue(record, "vehicleModel"));
+  return safeText(detailValue(record, "modelDisplayName") ?? detailValue(record, "model"));
 }
 
 function detailLink(href: string | null, text: unknown) {
@@ -1129,9 +1130,6 @@ export default function ReportsPage() {
         value: definition ? modelDefinitionOptionLabel(definition) : values.modelDefinitionId
       });
     }
-    if (typeof values.vehicleModel === "string") {
-      entries.push({ label: "车型", value: values.vehicleModel });
-    }
     return entries;
   }
 
@@ -1199,18 +1197,6 @@ export default function ReportsPage() {
                   value={orderFilters.modelDefinitionId}
                 />
               </Space>
-              <Space orientation="vertical" size={4}>
-                <Typography.Text type="secondary">车型</Typography.Text>
-                <Select
-                  allowClear
-                  onChange={(value) =>
-                    setOrderFilters((current) => ({ ...current, vehicleModel: value }))
-                  }
-                  options={vehicleModelOptions}
-                  style={{ width: 120 }}
-                  value={orderFilters.vehicleModel}
-                />
-              </Space>
               <Button
                 icon={<ReloadOutlined />}
                 loading={loading.orders}
@@ -1275,13 +1261,13 @@ export default function ReportsPage() {
                 loading={loading.orders}
                 onRow={clickableRow((record: VehicleModelCountRow) =>
                   openOrderDetails(
-                    `${safeText(record.vehicleModel)}订单明细`,
-                    currentOrderFilters({ vehicleModel: record.vehicleModel }),
-                    currentOrderFilterEntries({ vehicleModel: record.vehicleModel })
+                    `${safeText(record.modelDisplayName ?? record.modelCode)}订单明细`,
+                    currentOrderFilters({ modelDefinitionId: record.modelDefinitionId }),
+                    currentOrderFilterEntries({ modelDefinitionId: record.modelDefinitionId })
                   )
                 )}
                 pagination={false}
-                rowKey={(record) => record.vehicleModel ?? "unknown"}
+                rowKey={(record) => record.modelDefinitionId ?? "unknown"}
                 size="small"
                 title={() => "按车型统计"}
                 locale={{ emptyText: "暂无数据" }}
@@ -1644,13 +1630,13 @@ export default function ReportsPage() {
             loading={loading.assets}
             onRow={clickableRow((record: VehicleModelAssetRow) =>
               openVehicleDetails(
-                `${safeText(record.vehicleModel)}车辆明细`,
-                { vehicleModel: record.vehicleModel },
-                [{ label: "车型", value: safeText(record.vehicleModel) }]
+                `${safeText(record.modelDisplayName ?? record.modelCode)}车辆明细`,
+                { modelDefinitionId: record.modelDefinitionId },
+                [{ label: "车型", value: safeText(record.modelDisplayName ?? record.modelCode) }]
               )
             )}
             pagination={false}
-            rowKey={(record) => record.vehicleModel ?? "unknown"}
+            rowKey={(record) => record.modelDefinitionId ?? "unknown"}
             size="small"
             title={() => "按车型统计"}
             locale={{ emptyText: "暂无数据" }}
@@ -1770,7 +1756,8 @@ const orderSourceColumns: ColumnsType<OrderSourceRow> = [
 ];
 
 const vehicleModelCountColumns: ColumnsType<VehicleModelCountRow> = [
-  { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 120 },
+  { dataIndex: "modelCode", render: safeText, title: "车型代码", width: 140 },
+  { dataIndex: "modelDisplayName", render: safeText, title: "车型显示名", width: 160 },
   { dataIndex: "count", render: formatInteger, title: "订单数", width: 110 }
 ];
 
@@ -1841,7 +1828,8 @@ const collectionCaseStatusColumns: ColumnsType<CollectionCaseStatusRow> = [
 ];
 
 const vehicleAssetColumns: ColumnsType<VehicleModelAssetRow> = [
-  { dataIndex: "vehicleModel", render: safeText, title: "车型", width: 120 },
+  { dataIndex: "modelCode", render: safeText, title: "车型代码", width: 140 },
+  { dataIndex: "modelDisplayName", render: safeText, title: "车型显示名", width: 160 },
   { dataIndex: "totalVehicles", render: formatInteger, title: "车辆数", width: 110 },
   { dataIndex: "leasedVehicles", render: formatInteger, title: "在租数", width: 110 },
   { dataIndex: "availableVehicles", render: formatInteger, title: "可租数", width: 110 },
@@ -2059,7 +2047,6 @@ const detailColumnsByKind: Record<DetailKind, ColumnsType<DetailRow>> = {
     { render: (_value, record) => detailText(record, "plateNo"), title: "车牌号", width: 110 },
     { render: (_value, record) => detailModelDefinitionCode(record), title: "车型代码", width: 120 },
     { render: (_value, record) => detailVehicleModelDisplayName(record), title: "车型显示名", width: 140 },
-    { render: (_value, record) => detailText(record, "vehicleModel"), title: "legacy 车型", width: 110 },
     { render: (_value, record) => detailText(record, "subscriptionPlanName"), title: "订阅套餐", width: 180 },
     { render: (_value, record) => formatYuan(detailNumber(record, "monthlyFeeAmount")), title: "月费", width: 120 },
     { render: (_value, record) => formatYuan(detailNumber(record, "depositAmount")), title: "押金", width: 120 },
@@ -2097,7 +2084,6 @@ const detailColumnsByKind: Record<DetailKind, ColumnsType<DetailRow>> = {
     { render: (_value, record) => detailText(record, "model"), title: "车型配置", width: 140 },
     { render: (_value, record) => detailModelDefinitionCode(record), title: "车型代码", width: 120 },
     { render: (_value, record) => detailVehicleModelDisplayName(record), title: "车型显示名", width: 140 },
-    { render: (_value, record) => detailText(record, "vehicleModel"), title: "legacy 车型", width: 110 },
     { render: (_value, record) => safeText(detailNumber(record, "batteryCapacityKwh")), title: "电池容量", width: 110 },
     {
       render: (_value, record) => labelOf(VEHICLE_BATTERY_USAGE_TYPE_LABELS, detailId(record, "batteryUsageType")),

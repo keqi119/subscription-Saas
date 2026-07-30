@@ -298,7 +298,7 @@ export class DeliveryHandoverService {
   async assertDeliveryCanBeConfirmed(
     orderId: string,
     db: DeliveryHandoverDb,
-    currentEvidenceManifestHash: string
+    currentEvidenceManifestDigest: string
   ) {
     const handover = await findDeliveryHandoverForConfirmation(
       db,
@@ -306,7 +306,7 @@ export class DeliveryHandoverService {
     );
     assertDeliveryHandoverReadyForDelivery(
       handover,
-      currentEvidenceManifestHash
+      currentEvidenceManifestDigest
     );
     if (this.deliveryEvidenceService) {
       await this.deliveryEvidenceService.assertEvidenceReadyForDeliveryConfirmation(
@@ -345,11 +345,11 @@ export class DeliveryHandoverService {
 
 export function assertDeliveryHandoverReadyForDelivery(
   handover: DeliveryHandoverConfirmationRecord | null | undefined,
-  currentEvidenceManifestHash: string
+  currentEvidenceManifestDigest: string
 ) {
   if (
     !isDeliveryHandoverReadyForDelivery(handover) ||
-    handover?.manifestHash !== currentEvidenceManifestHash
+    handover?.manifestHash !== currentEvidenceManifestDigest
   ) {
     throw new BadRequestException(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
   }

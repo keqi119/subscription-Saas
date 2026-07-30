@@ -2246,11 +2246,14 @@ export class HandoverWorkOrderService {
           db
         )
       ).manifestHash;
+    const confirmedEvidenceManifestDigest = requireSha256Digest(
+      confirmedEvidenceManifestHash
+    );
     if (this.deliveryHandoverService) {
       await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(
         orderId,
         db,
-        confirmedEvidenceManifestHash
+        confirmedEvidenceManifestDigest
       );
       return;
     }
@@ -2264,7 +2267,7 @@ export class HandoverWorkOrderService {
     if (
       !handover ||
       !["SIGNED", "ARCHIVED"].includes(handover.status) ||
-      handover.manifestHash !== confirmedEvidenceManifestHash
+      handover.manifestHash !== confirmedEvidenceManifestDigest
     ) {
       throw new BadRequestException("交付交接确认书尚未完成签署。");
     }

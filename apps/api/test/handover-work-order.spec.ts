@@ -1656,6 +1656,10 @@ function createConfirmedWorkOrderHarness() {
     orderId: harness.orderId,
     workOrderId: "work-order-1"
   });
+  harness.state.handover.manifestHash = evidencePackage.manifestHash.replace(
+    /^sha256:/,
+    ""
+  );
   harness.state.reviewAttempts.push({
     attemptNo: 1,
     evidenceSnapshot: {
@@ -1732,6 +1736,7 @@ function createHandoverWorkOrderHarness() {
       archiveStatus: "NOT_STARTED",
       deletedAt: null,
       id: "handover-1",
+      manifestHash: null as string | null,
       orderId,
       signedObjectKey: null,
       status: "DRAFT",
@@ -1805,8 +1810,16 @@ function createHandoverWorkOrderHarness() {
   const handoverService = {
     getOrCreateDraftHandover: vi.fn(async () => state.handover),
     isDeliveryReady: vi.fn(),
-    assertDeliveryCanBeConfirmed: vi.fn(async () => {
-      if (state.handover.status !== "SIGNED" && state.handover.status !== "ARCHIVED") {
+    assertDeliveryCanBeConfirmed: vi.fn(async (
+      _orderId: string,
+      _db: unknown,
+      currentEvidenceManifestDigest: string
+    ) => {
+      if (
+        (state.handover.status !== "SIGNED" &&
+          state.handover.status !== "ARCHIVED") ||
+        state.handover.manifestHash !== currentEvidenceManifestDigest
+      ) {
         throw new BadRequestException("交付交接确认书尚未完成签署。");
       }
     })

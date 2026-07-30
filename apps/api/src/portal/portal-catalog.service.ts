@@ -16,10 +16,6 @@ import {
 } from "@prisma/client";
 import type { Readable } from "node:stream";
 
-import {
-  vehicleModelReadPathMatches,
-  VehicleModelLegacyAdapter
-} from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
@@ -59,7 +55,6 @@ const portalSubscriptionPlanInclude = {
           deletedAt: true,
           displayName: true,
           id: true,
-          legacyVehicleModel: true,
           modelCode: true
         }
       }
@@ -74,7 +69,6 @@ const portalVehicleInclude = {
       deletedAt: true,
       displayName: true,
       id: true,
-      legacyVehicleModel: true,
       modelCode: true
     }
   },
@@ -293,7 +287,7 @@ export class PortalCatalogService {
   }
 
   private async findAvailablePlansForVehicle(
-    vehicle: Pick<PortalVehicle, "modelDefinition" | "modelDefinitionId" | "vehicleModel">
+    vehicle: Pick<PortalVehicle, "modelDefinitionId">
   ) {
     const plans = await this.findAvailablePlans();
     return plans.filter((plan) => isPlanAvailableForVehicle(plan, vehicle));
@@ -334,32 +328,10 @@ export class PortalCatalogService {
   }
 
   private async resolveCatalogModelFilter(query: PortalVehicleCatalogQueryDto): Promise<Prisma.VehicleWhereInput> {
-    if (!query.modelDefinitionId && !query.vehicleModel) {
+    if (!query.modelDefinitionId) {
       return {};
     }
-
-    const definition = await VehicleModelLegacyAdapter.resolveModelDefinitionInput(
-      this.prisma,
-      {
-        modelDefinitionId: query.modelDefinitionId,
-        vehicleModel: query.vehicleModel
-      },
-      {
-        allowDisabled: true,
-        missingMessage: "车型主数据不存在",
-        mismatchMessage: "modelDefinitionId 与 vehicleModel 不一致"
-      }
-    );
-
-    return {
-      OR: [
-        { modelDefinitionId: definition.modelDefinitionId },
-        {
-          modelDefinitionId: null,
-          vehicleModel: { in: definition.compatibleVehicleModelCodes }
-        }
-      ]
-    };
+    return { modelDefinitionId: query.modelDefinitionId };
   }
 }
 
@@ -427,7 +399,8 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     mileageKm: vehicle.currentMileageKm,
     model: vehicle.model,
     modelDefinition,
-    modelDefinitionId: modelDefinition?.id ?? null,
+    modelCode: modelDefinition?.modelCode ?? null,
+    modelDefinitionId: vehicle.modelDefinitionId,
     modelDisplayName,
     modelYear: vehicle.modelYear,
     monthlyFeeFromAmount: monthlyFeeFrom(plans, vehicle),
@@ -438,7 +411,6 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     statusLabel: "可申请",
     subtitle: profile?.subtitle ?? null,
     tags: buildVehicleTags(vehicle, customerTags, profile),
-    vehicleModel: vehicle.vehicleModel,
     customerModelDisplayName
   };
 }
@@ -471,6 +443,7 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
       displayName: listItem.displayName,
       id: vehicle.id,
       model: vehicle.model,
+      modelCode: listItem.modelCode,
       modelDefinition: listItem.modelDefinition,
       modelDefinitionId: listItem.modelDefinitionId,
       modelDisplayName: listItem.modelDisplayName,
@@ -605,12 +578,12 @@ function isPortalSubscriptionPlanAvailable(plan: PortalSubscriptionPlan) {
 
 function isPlanAvailableForVehicle(
   plan: PortalSubscriptionPlan,
-  vehicle: Pick<PortalVehicle, "modelDefinition" | "modelDefinitionId" | "vehicleModel">
+  vehicle: Pick<PortalVehicle, "modelDefinitionId">
 ) {
   if (!isPortalSubscriptionPlanAvailable(plan)) {
     return false;
   }
-  return vehicleModelReadPathMatches(vehicle, plan.vehiclePackage);
+  return vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId;
 }
 
 function packageBelongsToPlan(
@@ -841,16 +814,16 @@ function toPortalModelDefinitionSummary(definition: PortalVehicle["modelDefiniti
   };
 }
 
-function portalModelDisplayName(vehicle: Pick<PortalVehicle, "modelDefinition" | "vehicleModel">) {
+function portalModelDisplayName(vehicle: Pick<PortalVehicle, "modelDefinition">) {
   const definition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
-  return definition?.displayName ?? vehicle.vehicleModel ?? null;
+  return definition?.displayName ?? null;
 }
 
 function portalCustomerModelDisplayName(
-  vehicle: Pick<PortalVehicle, "brand" | "model" | "modelDefinition" | "modelYear" | "series" | "vehicleModel">
+  vehicle: Pick<PortalVehicle, "brand" | "model" | "modelDefinition" | "modelYear" | "series">
 ) {
   const definition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
-  const modelName = definition?.customerDisplayName ?? definition?.displayName ?? vehicle.vehicleModel ?? vehicle.model;
+  const modelName = definition?.customerDisplayName ?? definition?.displayName ?? vehicle.model;
   return [vehicle.brand, vehicle.series, modelName, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
     .filter(Boolean)
     .join(" ");

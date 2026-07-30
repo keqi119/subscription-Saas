@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const productsPagePath = "apps/web/src/app/products/page.tsx";
+const portalTypesPath = "apps/web/src/lib/portal-types.ts";
 const vehiclesPagePath = "apps/web/src/app/vehicles/page.tsx";
 const vehicleModelDefinitionsPagePath = "apps/web/src/app/vehicle-model-definitions/page.tsx";
 
@@ -85,6 +86,7 @@ describe("product center access isolation", () => {
   });
 
   it("keeps legacy model controls out of Admin pages while retaining canonical selectors", () => {
+    const portalTypesSource = read(portalTypesPath);
     const vehiclesSource = read(vehiclesPagePath);
     const definitionsSource = read(vehicleModelDefinitionsPagePath);
 
@@ -96,6 +98,11 @@ describe("product center access isolation", () => {
 
     expect(vehiclesSource).not.toContain("legacyVehicleModels");
     expect(vehiclesSource).not.toContain("vehicleModelOptions");
+    expect(source).not.toMatch(/\bvehicleModel\??:/);
+    expect(source).not.toMatch(/\.vehicleModel\b/);
+    expect(vehiclesSource).not.toMatch(/\bvehicleModel\??:/);
+    expect(vehiclesSource).not.toMatch(/\.vehicleModel\b/);
+    expect(portalTypesSource).not.toMatch(/\bvehicleModel\??:/);
     expect(vehiclesSource).toContain('name="modelDefinitionId"');
     expect(source).toContain('name="modelDefinitionId"');
     expect(functionDeclarationSource(vehiclesSource, "saveCreateVehicle")).not.toContain("vehicleModel");

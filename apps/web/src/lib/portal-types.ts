@@ -24,6 +24,7 @@ export interface PortalCatalogVehicle {
   model: string | null;
   modelDefinition?: PortalModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
+  modelCode?: string | null;
   modelDisplayName?: string | null;
   modelYear: number | null;
   monthlyFeeFromAmount?: number | null;
@@ -34,7 +35,6 @@ export interface PortalCatalogVehicle {
   statusLabel: string;
   subtitle?: string | null;
   tags: string[];
-  vehicleModel?: string | null;
 }
 
 export interface PortalModelDefinitionSummary {
@@ -130,6 +130,7 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
     displayName: string;
     id: string;
     model: string | null;
+    modelCode?: string | null;
     modelDefinition?: PortalModelDefinitionSummary | null;
     modelDefinitionId?: string | null;
     modelDisplayName?: string | null;
@@ -782,9 +783,11 @@ export interface PortalOrderVehicleSummary {
   displayName: string;
   id: string;
   model: string | null;
+  modelCode: string | null;
+  modelDefinitionId: string | null;
+  modelDisplayName: string | null;
   modelYear: number | null;
   series: string | null;
-  vehicleModel: string | null;
 }
 
 export interface PortalOrderContractSummary {
@@ -972,9 +975,11 @@ export interface PortalServiceCase {
     displayName: string;
     id: string;
     model: string | null;
+    modelCode: string | null;
+    modelDefinitionId: string | null;
+    modelDisplayName: string | null;
     modelYear: number | null;
     series: string | null;
-    vehicleModel: string | null;
   } | null;
 }
 

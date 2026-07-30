@@ -203,12 +203,13 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     expect(rows[0]?.modelDefinition).not.toHaveProperty("legacyVehicleModel");
     expect(rows[0]?.modelDefinition).not.toHaveProperty("portalVisible");
     expect(detail.vehicle).toMatchObject({
+      modelCode: "NIO_ES6",
       modelDefinitionId: definition.id,
       modelDisplayName: "ES6 主数据"
     });
   });
 
-  it("filters modelDefinitionId by canonical and legacy codes while rejecting other definitions", async () => {
+  it("filters catalog vehicles by modelDefinitionId only", async () => {
     const definition = createModelDefinition({
       id: "model-es6",
       legacyVehicleModel: VehicleModel.ES6,
@@ -218,42 +219,23 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       modelDefinitions: [definition],
       vehicles: [
         createVehicle({ id: "vehicle-master", modelDefinition: definition, modelDefinitionId: definition.id }),
-        createVehicle({ id: "vehicle-legacy", modelDefinitionId: null, vehicleNo: "VH-LEGACY" }),
         createVehicle({
-          id: "vehicle-canonical",
-          modelDefinitionId: null,
-          vehicleModel: "NIO_ES6",
-          vehicleNo: "VH-CANONICAL"
-        }),
-        createVehicle({ id: "vehicle-et5", modelDefinitionId: null, vehicleModel: VehicleModel.ET5 })
+          id: "vehicle-et5",
+          modelDefinition: createModelDefinition({
+            id: "model-et5",
+            modelCode: "NIO_ET5"
+          }),
+          modelDefinitionId: "model-et5"
+        })
       ]
     });
 
     const byDefinition = await service.listVehicles({ modelDefinitionId: definition.id });
-    const byLegacyAlias = await service.listVehicles({ vehicleModel: VehicleModel.ES6 });
-    const byCanonicalCode = await service.listVehicles({ vehicleModel: "NIO_ES6" });
 
-    expect(byDefinition.map((row) => row.id)).toEqual([
-      "vehicle-master",
-      "vehicle-legacy",
-      "vehicle-canonical"
-    ]);
-    expect(byLegacyAlias.map((row) => row.id)).toEqual([
-      "vehicle-master",
-      "vehicle-legacy",
-      "vehicle-canonical"
-    ]);
-    expect(byCanonicalCode.map((row) => row.id)).toEqual([
-      "vehicle-master",
-      "vehicle-legacy",
-      "vehicle-canonical"
-    ]);
-    await expect(
-      service.listVehicles({ modelDefinitionId: definition.id, vehicleModel: VehicleModel.ET5 })
-    ).rejects.toThrow();
+    expect(byDefinition.map((row) => row.id)).toEqual(["vehicle-master"]);
   });
 
-  it("filters an arbitrary canonical modelCode without a legacy mapping", async () => {
+  it("returns an arbitrary canonical model without an enum mapping", async () => {
     const definition = createModelDefinition({
       id: "model-x-2027",
       legacyVehicleModel: null,
@@ -265,23 +247,29 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
         createVehicle({
           id: "vehicle-model-x",
           modelDefinition: definition,
-          modelDefinitionId: definition.id,
-          vehicleModel: "MODEL_X_2027"
+          modelDefinitionId: definition.id
         }),
         createVehicle({
           id: "vehicle-other",
-          modelDefinitionId: null,
-          vehicleModel: VehicleModel.ET5
+          modelDefinition: createModelDefinition({
+            id: "model-et5",
+            modelCode: "NIO_ET5"
+          }),
+          modelDefinitionId: "model-et5"
         })
       ]
     });
 
-    const rows = await service.listVehicles({ vehicleModel: "MODEL_X_2027" });
+    const rows = await service.listVehicles({ modelDefinitionId: definition.id });
 
     expect(rows.map((row) => row.id)).toEqual(["vehicle-model-x"]);
+    expect(rows[0]).toMatchObject({
+      modelCode: "MODEL_X_2027",
+      modelDefinitionId: definition.id
+    });
   });
 
-  it("matches a historical legacy vehicle with a canonical model package", async () => {
+  it("matches a vehicle and package by canonical modelDefinitionId", async () => {
     const definition = createModelDefinition({
       id: "model-et5",
       legacyVehicleModel: VehicleModel.ET5,
@@ -291,15 +279,13 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       vehiclePackage: {
         ...createPlan("plan-template").vehiclePackage,
         modelDefinition: definition,
-        modelDefinitionId: definition.id,
-        vehicleModel: "NIO_ET5"
+        modelDefinitionId: definition.id
       }
     });
     const vehicle = createVehicle({
       listingProfile: null,
-      modelDefinition: null,
-      modelDefinitionId: null,
-      vehicleModel: VehicleModel.ET5
+      modelDefinition: definition,
+      modelDefinitionId: definition.id
     });
     const { service } = createHarness({
       modelDefinitions: [definition],
@@ -446,7 +432,10 @@ function filterCatalogVehicles(
     if (where.id && vehicle.id !== where.id) {
       return false;
     }
-    if (where.vehicleModel && vehicle.vehicleModel !== where.vehicleModel) {
+    if (
+      where.modelDefinitionId &&
+      vehicle.modelDefinitionId !== where.modelDefinitionId
+    ) {
       return false;
     }
     const modelOr = where.OR as Array<{
@@ -488,7 +477,6 @@ function createModelDefinition(overrides: Record<string, unknown> = {}) {
     displayName: "ES6",
     enabled: true,
     id: "model-es6",
-    legacyVehicleModel: VehicleModel.ES6,
     modelCode: "NIO_ES6",
     modelName: "ES6",
     portalVisible: true,
@@ -520,8 +508,8 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     latestRegistrationDate: null,
     listingProfile: createListingProfile(),
     model: "ES6",
-    modelDefinition: null,
-    modelDefinitionId: null,
+    modelDefinition: createModelDefinition(),
+    modelDefinitionId: "model-es6",
     modelYear: 2025,
     nextSalePriceReviewAt: null,
     plateNo: "沪A12345",
@@ -535,7 +523,6 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
     updatedBy: "user-1",
-    vehicleModel: VehicleModel.ES6,
     vehicleNo: "VH001",
     vin: "VIN1234567890",
     ...overrides
@@ -807,14 +794,13 @@ function createPlan(id: string, overrides: Record<string, unknown> = {}) {
     vehiclePackage: {
       deletedAt: null,
       id: "vehicle-package-1",
-      modelDefinition: null,
-      modelDefinitionId: null,
+      modelDefinition: createModelDefinition(),
+      modelDefinitionId: "model-es6",
       monthlyFeeRate: new Prisma.Decimal("0.04"),
       packageName: "ES6 基础车包",
       productId: "product-1",
       productVersionId: "version-1",
-      status: RecordStatus.ACTIVE,
-      vehicleModel: VehicleModel.ES6
+      status: RecordStatus.ACTIVE
     },
     vehiclePackageId: "vehicle-package-1",
     ...overrides

@@ -66,10 +66,10 @@ export class BillingAutomationRepository {
         WHERE (
           (
             "subscription_automation_job"."job_status" = 'PENDING'
-            AND "subscription_automation_job"."available_at" <= now()
+            AND "subscription_automation_job"."available_at" <= clock_timestamp()
           ) OR (
             "subscription_automation_job"."job_status" = 'PROCESSING'
-            AND "subscription_automation_job"."lease_expires_at" <= now()
+            AND "subscription_automation_job"."lease_expires_at" <= clock_timestamp()
           )
         )
           AND "subscription_automation_job"."job_type" IN (${Prisma.join(
@@ -100,17 +100,17 @@ export class BillingAutomationRepository {
         SET
           "job_status" = 'PROCESSING',
           "lease_token" = ${leaseToken}::uuid,
-          "lease_expires_at" = now() + (${leaseMs} * interval '1 millisecond'),
-          "started_at" = now(),
-          "updated_at" = now()
+          "lease_expires_at" = clock_timestamp() + (${leaseMs} * interval '1 millisecond'),
+          "started_at" = clock_timestamp(),
+          "updated_at" = clock_timestamp()
         WHERE "id" = ANY(ARRAY[${Prisma.join(ids)}]::uuid[])
           AND (
             (
               "job_status" = 'PENDING'
-              AND "available_at" <= now()
+              AND "available_at" <= clock_timestamp()
             ) OR (
               "job_status" = 'PROCESSING'
-              AND "lease_expires_at" <= now()
+              AND "lease_expires_at" <= clock_timestamp()
             )
           )
       `);

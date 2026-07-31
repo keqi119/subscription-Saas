@@ -128,6 +128,9 @@ describe("BillingAutomationRepository", () => {
     expect(query.strings.join(" ")).toContain(
       `"billing_schedule"."status" = 'ACTIVE'`
     );
+    expect(query.strings.join(" ")).toContain(
+      `"available_at" <= clock_timestamp()`
+    );
   });
 
   it("cancels only pending bill lifecycle jobs for settled bills", async () => {

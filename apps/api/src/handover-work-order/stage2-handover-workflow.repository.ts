@@ -24,10 +24,7 @@ export class Stage2HandoverWorkflowRepository {
     tx: Stage2HandoverWorkflowDb,
     input: EnqueueStage2WorkflowJobInput
   ): Promise<VehicleHandoverWorkflowJob> {
-    const availableAt =
-      input.delayMs === undefined
-        ? undefined
-        : await databaseAvailableAt(tx, input.delayMs);
+    const availableAt = await databaseAvailableAt(tx, input.delayMs ?? 0);
 
     return tx.vehicleHandoverWorkflowJob.upsert({
       create: {
@@ -64,10 +61,10 @@ export class Stage2HandoverWorkflowRepository {
         WHERE (
           (
             "job_status" = 'PENDING'
-            AND "available_at" <= now()
+            AND "available_at" <= clock_timestamp()
           ) OR (
             "job_status" = 'PROCESSING'
-            AND "lease_expires_at" <= now()
+            AND "lease_expires_at" <= clock_timestamp()
           )
         )
           AND "job_type" IN (${Prisma.join(
@@ -91,17 +88,17 @@ export class Stage2HandoverWorkflowRepository {
         SET
           "job_status" = 'PROCESSING',
           "lease_token" = ${leaseToken}::uuid,
-          "lease_expires_at" = now() + (${leaseMs} * interval '1 millisecond'),
-          "started_at" = now(),
-          "updated_at" = now()
+          "lease_expires_at" = clock_timestamp() + (${leaseMs} * interval '1 millisecond'),
+          "started_at" = clock_timestamp(),
+          "updated_at" = clock_timestamp()
         WHERE "id" = ANY(ARRAY[${Prisma.join(ids)}]::uuid[])
           AND (
             (
               "job_status" = 'PENDING'
-              AND "available_at" <= now()
+              AND "available_at" <= clock_timestamp()
             ) OR (
               "job_status" = 'PROCESSING'
-              AND "lease_expires_at" <= now()
+              AND "lease_expires_at" <= clock_timestamp()
             )
           )
       `);

@@ -288,7 +288,7 @@ export class PortalApplicationService {
 
     return {
       ...toPortalFinalPlanView(updated),
-      nextAction: "GO_CONTRACT_PENDING_BACKOFFICE",
+      nextAction: "WAIT_ORDER_CREATION",
       order: null
     };
   }
@@ -859,7 +859,7 @@ function toPortalApplicationDetail(
     materials: application.materialGroups.map(toPortalMaterialGroupView),
     missingMaterials: materialCompleteness.missingMaterials,
     nextStepHint: buildApplicationNextStepHint(application),
-    ordersGenerated: application.orders.length > 0,
+    ordersGenerated: Boolean(findActivePortalOrder(application)),
     profileMaterialsAvailable: materialCompleteness.completedCount > 0,
     rejectedReason: application.rejectedReason,
     salesUser: application.salesUser
@@ -912,6 +912,7 @@ function toPortalApplicationProgress(application: PortalApplication) {
   const steps = buildPortalProgressSteps(application);
   const currentStep = steps.find((step) => step.status === "CURRENT")?.key ??
     steps.find((step) => step.status === "FAILED")?.key ??
+    [...steps].reverse().find((step) => step.status === "DONE")?.key ??
     "SUBMITTED";
 
   return {
@@ -1008,11 +1009,12 @@ function buildPortalProgressSteps(application: PortalApplication) {
     isStepDone(productStatus)
   );
   const finalPlanStatus = mapFinalPlanStepStatus(application, isStepDone(vehicleStatus));
-  const order = application.orders.find((row) => !row.deletedAt);
-  const contractStatus = mapContractStepStatus(order, isStepDone(finalPlanStatus));
-  const paymentStatus = mapPaymentStepStatus(order, isStepDone(contractStatus));
-  const deliveryStatus = mapDeliveryStepStatus(order, isStepDone(paymentStatus));
-  const activeStatus = mapActiveStepStatus(order, isStepDone(deliveryStatus));
+  const orderStage = resolvePortalOrderStage(findActivePortalOrder(application));
+  const orderStatus = mapOrderStepStatus(orderStage, isStepDone(finalPlanStatus));
+  const contractStatus = mapContractStepStatus(orderStage);
+  const paymentStatus = mapPaymentStepStatus(orderStage);
+  const deliveryStatus = mapDeliveryStepStatus(orderStage);
+  const activeStatus = mapActiveStepStatus(orderStage);
 
   if (application.status === ApplicationStatus.CANCELLED) {
     return [
@@ -1036,7 +1038,8 @@ function buildPortalProgressSteps(application: PortalApplication) {
     buildProgressStep("PRODUCT_REVIEW", "产品方案审核", productStatus, null, "平台正在确认订阅套餐与周期。"),
     buildProgressStep("VEHICLE_REVIEW", "车辆库存审核", vehicleStatus, null, "平台正在确认车辆库存占用。"),
     buildProgressStep("FINAL_PLAN", "最终方案确认", finalPlanStatus, application.finalPlanConfirmedAt, buildFinalPlanStepMessage(application)),
-    buildProgressStep("CONTRACT", "待签约", contractStatus, null, "确认最终方案后将进入合同签署流程。"),
+    buildProgressStep("ORDER", "生成正式订单", orderStatus, null, "最终方案确认后，由平台生成正式订单。"),
+    buildProgressStep("CONTRACT", "待签约", contractStatus, null, "正式订单生成后进入合同签署流程。"),
     buildProgressStep("PAYMENT", "待支付", paymentStatus, null, "合同签署后开放线上支付。"),
     buildProgressStep("DELIVERY", "待交付", deliveryStatus, null, "支付完成后安排交付。"),
     buildProgressStep("ACTIVE", "在租中", activeStatus, null)
@@ -1077,18 +1080,21 @@ function resolvePortalNextAction(application: PortalApplication) {
     return "CONFIRM_FINAL_PLAN";
   }
   if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
-    const order = application.orders.find((row) => !row.deletedAt);
-    if (!order) {
-      return "GO_CONTRACT_PENDING_BACKOFFICE";
-    }
-    if (order.orderStatus === OrderStatus.PENDING_CONTRACT || order.orderStatus === OrderStatus.PENDING_SIGN) {
-      return "GO_CONTRACT";
-    }
-    if (order.orderStatus === OrderStatus.PENDING_PAYMENT) {
-      return "GO_PAYMENT";
-    }
-    if (order.orderStatus === OrderStatus.PENDING_DELIVERY) {
-      return "WAIT_DELIVERY";
+    switch (resolvePortalOrderStage(findActivePortalOrder(application))) {
+      case "NONE":
+        return "WAIT_ORDER_CREATION";
+      case "ORDER":
+        return "WAIT_REVIEW";
+      case "CONTRACT":
+        return "GO_CONTRACT";
+      case "PAYMENT":
+        return "GO_PAYMENT";
+      case "DELIVERY":
+        return "WAIT_DELIVERY";
+      case "ACTIVE":
+      case "COMPLETED":
+      case "FAILED":
+        return "NONE";
     }
   }
   return "WAIT_REVIEW";
@@ -1104,16 +1110,51 @@ function resolvePortalOverallStatus(application: PortalApplication, nextAction: 
   if (nextAction === "CONFIRM_FINAL_PLAN") {
     return "PENDING_CUSTOMER_CONFIRMATION";
   }
-  if (nextAction === "GO_CONTRACT" || nextAction === "GO_CONTRACT_PENDING_BACKOFFICE") {
-    return "PENDING_CONTRACT";
-  }
-  if (nextAction === "GO_PAYMENT") {
-    return "PENDING_PAYMENT";
-  }
-  if (nextAction === "WAIT_DELIVERY") {
-    return "PENDING_DELIVERY";
+  if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+    const order = findActivePortalOrder(application);
+    switch (resolvePortalOrderStage(order)) {
+      case "NONE":
+      case "ORDER":
+        return "PENDING_ORDER";
+      case "CONTRACT":
+        return "PENDING_CONTRACT";
+      case "PAYMENT":
+        return "PENDING_PAYMENT";
+      case "DELIVERY":
+        return "PENDING_DELIVERY";
+      case "ACTIVE":
+      case "COMPLETED":
+      case "FAILED":
+        return order?.orderStatus ?? "APPROVED";
+    }
   }
   return application.status === ApplicationStatus.APPROVED ? "APPROVED" : "UNDER_REVIEW";
+}
+
+type PortalOrderStage = "NONE" | "ORDER" | "CONTRACT" | "PAYMENT" | "DELIVERY" | "ACTIVE" | "COMPLETED" | "FAILED";
+
+const PORTAL_ORDER_STAGE_BY_STATUS = {
+  [OrderStatus.PENDING_REVIEW]: "ORDER",
+  [OrderStatus.PENDING_CUSTOMER_CONFIRMATION]: "ORDER",
+  [OrderStatus.PENDING_CONTRACT]: "CONTRACT",
+  [OrderStatus.PENDING_SIGN]: "CONTRACT",
+  [OrderStatus.PENDING_PAYMENT]: "PAYMENT",
+  [OrderStatus.PENDING_VEHICLE]: "DELIVERY",
+  [OrderStatus.PENDING_DELIVERY]: "DELIVERY",
+  [OrderStatus.ACTIVE]: "ACTIVE",
+  [OrderStatus.SUSPENDED]: "ACTIVE",
+  [OrderStatus.TERMINATED]: "COMPLETED",
+  [OrderStatus.COMPLETED]: "COMPLETED",
+  [OrderStatus.CANCELLED]: "FAILED",
+  [OrderStatus.REJECTED]: "FAILED"
+} satisfies Record<OrderStatus, PortalOrderStage>;
+
+function findActivePortalOrder(application: PortalApplication) {
+  return application.orders.find((order) => !order.deletedAt);
+}
+
+function resolvePortalOrderStage(order: PortalApplication["orders"][number] | undefined): PortalOrderStage {
+  return order ? PORTAL_ORDER_STAGE_BY_STATUS[order.orderStatus] : "NONE";
 }
 
 function mapReviewStepStatus(status: OrderReviewStatus, reachable: boolean) {
@@ -1152,57 +1193,57 @@ function mapFinalPlanStepStatus(application: PortalApplication, reachable: boole
   return reachable ? "CURRENT" as const : "PENDING" as const;
 }
 
-function mapContractStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
-  if (!order) {
-    return reachable ? "CURRENT" as const : "PENDING" as const;
+function mapOrderStepStatus(orderStage: PortalOrderStage, reachable: boolean) {
+  if (orderStage === "FAILED") {
+    return "FAILED" as const;
   }
-  if (order.orderStatus === OrderStatus.PENDING_CONTRACT || order.orderStatus === OrderStatus.PENDING_SIGN) {
+  if (orderStage === "ORDER") {
     return "CURRENT" as const;
   }
-  return "DONE" as const;
-}
-
-function mapPaymentStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
-  if (!order) {
-    return "PENDING" as const;
-  }
-  if (order.orderStatus === OrderStatus.PENDING_PAYMENT) {
-    return "CURRENT" as const;
-  }
-  if (
-    order.orderStatus === OrderStatus.PENDING_DELIVERY ||
-    order.orderStatus === OrderStatus.ACTIVE ||
-    order.orderStatus === OrderStatus.COMPLETED
-  ) {
+  if (orderStage !== "NONE") {
     return "DONE" as const;
   }
   return reachable ? "CURRENT" as const : "PENDING" as const;
 }
 
-function mapDeliveryStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
-  if (!order) {
-    return "PENDING" as const;
-  }
-  if (order.orderStatus === OrderStatus.PENDING_DELIVERY) {
+function mapContractStepStatus(orderStage: PortalOrderStage) {
+  if (orderStage === "CONTRACT") {
     return "CURRENT" as const;
   }
-  if (order.orderStatus === OrderStatus.ACTIVE || order.orderStatus === OrderStatus.COMPLETED) {
+  if (["PAYMENT", "DELIVERY", "ACTIVE", "COMPLETED"].includes(orderStage)) {
     return "DONE" as const;
   }
-  return reachable ? "CURRENT" as const : "PENDING" as const;
+  return "PENDING" as const;
 }
 
-function mapActiveStepStatus(order: PortalApplication["orders"][number] | undefined, reachable: boolean) {
-  if (!order) {
-    return "PENDING" as const;
-  }
-  if (order.orderStatus === OrderStatus.ACTIVE) {
+function mapPaymentStepStatus(orderStage: PortalOrderStage) {
+  if (orderStage === "PAYMENT") {
     return "CURRENT" as const;
   }
-  if (order.orderStatus === OrderStatus.COMPLETED) {
+  if (["DELIVERY", "ACTIVE", "COMPLETED"].includes(orderStage)) {
     return "DONE" as const;
   }
-  return reachable ? "CURRENT" as const : "PENDING" as const;
+  return "PENDING" as const;
+}
+
+function mapDeliveryStepStatus(orderStage: PortalOrderStage) {
+  if (orderStage === "DELIVERY") {
+    return "CURRENT" as const;
+  }
+  if (["ACTIVE", "COMPLETED"].includes(orderStage)) {
+    return "DONE" as const;
+  }
+  return "PENDING" as const;
+}
+
+function mapActiveStepStatus(orderStage: PortalOrderStage) {
+  if (orderStage === "ACTIVE") {
+    return "CURRENT" as const;
+  }
+  if (orderStage === "COMPLETED") {
+    return "DONE" as const;
+  }
+  return "PENDING" as const;
 }
 
 function isStepDone(status: "DONE" | "CURRENT" | "FAILED" | "PENDING") {
@@ -1235,7 +1276,7 @@ function buildMaterialStepMessage(application: PortalApplication) {
 
 function buildFinalPlanStepMessage(application: PortalApplication) {
   if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
-    return "已确认最终方案，等待合同签署。";
+    return buildConfirmedApplicationStageMessage(application);
   }
   if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
     return application.rejectedReason ? `您已拒绝最终方案：${application.rejectedReason}` : "您已拒绝最终方案。";
@@ -1350,12 +1391,12 @@ function buildFinalPlanChanges(
 
 function buildFinalPlanImportantNotes(application: PortalApplication) {
   if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
-    return ["已确认最终方案，平台将继续处理合同签署流程。"];
+    return [buildConfirmedApplicationStageMessage(application)];
   }
   if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
     return ["您已拒绝当前最终方案，平台将联系您或重新处理方案。"];
   }
-  return ["请确认最终签约方案。确认后将进入合同签署流程。"];
+  return ["请确认最终签约方案。确认后由平台生成正式订单，再进入合同签署流程。"];
 }
 
 function buildPackageSummary(packageSnapshot: Record<string, unknown>) {
@@ -1461,6 +1502,9 @@ function buildApplicationNextStepHint(application: PortalApplication) {
     return "请根据平台提示补充材料。";
   }
   if (application.status === ApplicationStatus.APPROVED) {
+    if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
+      return buildConfirmedApplicationStageMessage(application);
+    }
     return "审核已通过，最终方案确认将在下一阶段开放。";
   }
   if (application.status === ApplicationStatus.REJECTED) {
@@ -1470,6 +1514,28 @@ function buildApplicationNextStepHint(application: PortalApplication) {
     return "申请已取消。";
   }
   return "请等待平台处理。";
+}
+
+function buildConfirmedApplicationStageMessage(application: PortalApplication) {
+  const order = findActivePortalOrder(application);
+  switch (resolvePortalOrderStage(order)) {
+    case "NONE":
+      return "已确认最终方案，等待平台生成正式订单。";
+    case "ORDER":
+      return "正式订单已生成，等待平台审核。";
+    case "CONTRACT":
+      return "正式订单已生成，等待合同签署。";
+    case "PAYMENT":
+      return "合同已签署，等待支付。";
+    case "DELIVERY":
+      return "订单已完成签约支付，等待车辆交付。";
+    case "ACTIVE":
+      return order?.orderStatus === OrderStatus.SUSPENDED ? "订阅服务当前已暂停。" : "订阅服务进行中。";
+    case "COMPLETED":
+      return "订阅流程已结束。";
+    case "FAILED":
+      return "正式订单已取消或未通过，请联系平台。";
+  }
 }
 
 function buildPortalMaterialActionComment(

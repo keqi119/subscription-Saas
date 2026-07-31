@@ -859,6 +859,7 @@ export const PORTAL_PROGRESS_STEP_LABELS: Record<string, string> = {
   DEPOSIT_CONFIRM: "押金确认",
   FINAL_PLAN: "最终方案确认",
   MATERIAL_REVIEW: "材料审核",
+  ORDER: "生成正式订单",
   PAYMENT: "待支付",
   PRODUCT_REVIEW: "产品方案审核",
   REJECTED: "已拒绝",
@@ -870,12 +871,13 @@ export const PORTAL_NEXT_ACTION_LABELS: Record<string, string> = {
   CANCELLED: "申请已取消",
   CONFIRM_FINAL_PLAN: "请确认最终方案",
   GO_CONTRACT: "等待合同签署",
-  GO_CONTRACT_PENDING_BACKOFFICE: "已确认最终方案，等待平台生成合同",
+  GO_CONTRACT_PENDING_BACKOFFICE: "已确认最终方案，等待平台生成正式订单",
   GO_PAYMENT: "等待支付",
   NONE: "无后续操作",
   REJECTED: "方案或申请已拒绝",
   UPLOAD_MATERIAL: "请补充材料",
   WAIT_DELIVERY: "等待交付",
+  WAIT_ORDER_CREATION: "已确认最终方案，等待平台生成正式订单",
   WAIT_REVIEW: "等待平台审核"
 };
 

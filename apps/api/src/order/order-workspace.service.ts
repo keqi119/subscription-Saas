@@ -176,7 +176,7 @@ export class OrderWorkspaceResolver {
   resolveContract(facts: ContractWorkspaceFacts): OrderWorkspaceGuideItem {
     const contract = facts.contracts[0];
     if (!contract) {
-      return guideItem("contract", "BLOCKED", "CONTRACT_REQUIRED", "contract.generate", null, null, true);
+      return guideItem("contract", "ACTION_REQUIRED", "CONTRACT_REQUIRED", "contract.generate", null, null);
     }
 
     if (["SIGNED", "ARCHIVED"].includes(contract.status)) {

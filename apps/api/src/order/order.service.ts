@@ -9,6 +9,7 @@ import {
   AuditAction,
   BusinessType,
   ContractStatus,
+  ContractTemplateType,
   ContractVersionStatus,
   CustomerStatus,
   DeliveryStatus,
@@ -2140,7 +2141,8 @@ export class OrderService {
         deletedAt: null,
         effectiveFrom: { lte: new Date() },
         OR: [{ effectiveTo: null }, { effectiveTo: { gte: new Date() } }],
-        status: ContractVersionStatus.ACTIVE
+        status: ContractVersionStatus.ACTIVE,
+        templateType: ContractTemplateType.SUBSCRIPTION_STANDARD
       }
     });
     if (!template) {

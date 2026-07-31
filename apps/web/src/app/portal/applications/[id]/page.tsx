@@ -164,7 +164,7 @@ export default function PortalApplicationDetailPage() {
 
   function openConfirmFinalPlanModal() {
     modal.confirm({
-      content: "确认后将进入合同签署流程。请仔细核对车辆、套餐、月租、押金和订阅周期。",
+      content: "确认后将由平台生成正式订单，再进入合同签署流程。请仔细核对车辆、套餐、月租、押金和订阅周期。",
       okText: "确认最终方案",
       onOk: confirmFinalPlan,
       title: "确认最终方案",
@@ -180,7 +180,7 @@ export default function PortalApplicationDetailPage() {
     try {
       setFinalPlanSubmitting(true);
       await portalApiFetch(`/portal/applications/${params.id}/final-plan/confirm`, { method: "POST" });
-      void message.success("已确认最终方案，等待合同签署");
+      void message.success("已确认最终方案，等待平台生成正式订单");
       await loadApplication();
     } catch (error) {
       void message.error(error instanceof PortalApiError ? error.message : "确认最终方案失败");
@@ -311,9 +311,10 @@ export default function PortalApplicationDetailPage() {
               type="warning"
             />
           ) : null}
-          {progress?.nextAction === "GO_CONTRACT_PENDING_BACKOFFICE" ? (
+          {progress?.nextAction === "WAIT_ORDER_CREATION" ||
+          progress?.nextAction === "GO_CONTRACT_PENDING_BACKOFFICE" ? (
             <Alert
-              message="已确认最终方案，等待平台生成合同。"
+              message="已确认最终方案，等待平台生成正式订单。"
               showIcon
               style={{ marginTop: 12 }}
               type="success"

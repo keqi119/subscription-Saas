@@ -454,11 +454,11 @@ git commit -m "feat(billing): start and settle billing automation"
   - `POST /billing/automation/jobs/:id/retry`
 - View model produces status labels/colors and safe date/error formatting.
 
-- [ ] **Step 1: Write failing controller permission/contract tests**
+- [x] **Step 1: Write failing controller permission/contract tests**
 
 Assert read endpoints require `PermissionCode.BILLING_VIEW`; reconcile, pause, resume and retry require `PermissionCode.BILLING_GENERATE`. Assert retry rejects non-dead-letter jobs and pause requires a non-empty reason.
 
-- [ ] **Step 2: Run controller tests and verify RED**
+- [x] **Step 2: Run controller tests and verify RED**
 
 Run:
 
@@ -468,11 +468,11 @@ pnpm --filter @subscription-saas/api test -- billing-automation-controller.spec.
 
 Expected: FAIL because controller/module do not exist.
 
-- [ ] **Step 3: Implement admin module, DTOs and APIs**
+- [x] **Step 3: Implement admin module, DTOs and APIs**
 
 Return paged, JSON-safe views with `BigInt` converted to numbers only at response boundaries. Write audit entries for reconcile apply, pause, resume and retry using the authenticated operator.
 
-- [ ] **Step 4: Write failing web view-model tests**
+- [x] **Step 4: Write failing web view-model tests**
 
 ```ts
 expect(scheduleStatusView("ACTIVE")).toEqual({ color: "green", label: "运行中" });
@@ -481,7 +481,7 @@ expect(jobStatusView("DEAD_LETTER")).toEqual({ color: "red", label: "需人工�
 
 Also test unknown statuses and sanitized error display.
 
-- [ ] **Step 5: Run web test and verify RED**
+- [x] **Step 5: Run web test and verify RED**
 
 Run:
 
@@ -491,11 +491,11 @@ pnpm --filter @subscription-saas/web test -- billing-automation-view-model.spec.
 
 Expected: FAIL because the view model does not exist.
 
-- [ ] **Step 6: Implement workbench UI**
+- [x] **Step 6: Implement workbench UI**
 
 Replace the obsolete “不包含自动定时任务、逾期催收” copy. Add summary cards, schedule and job tables, reconciliation preview/apply, pause/resume and dead-letter retry controls. Retain the existing manual batch card under an “应急兜底” heading.
 
-- [ ] **Step 7: Run API and web tests and verify GREEN**
+- [x] **Step 7: Run API and web tests and verify GREEN**
 
 Run:
 
@@ -507,7 +507,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Task 6**
+- [x] **Step 8: Commit Task 6**
 
 ```bash
 git add apps/api/src/billing-automation apps/api/src/app.module.ts apps/api/src/lease/lease.module.ts apps/api/test/billing-automation-controller.spec.ts apps/web/src/app/billing/monthly-rent/page.tsx apps/web/src/lib/billing-automation-view-model.ts apps/web/test/billing-automation-view-model.spec.ts

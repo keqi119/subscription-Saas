@@ -58,24 +58,34 @@ export class BillingAutomationRepository {
     return this.prisma.$transaction(async (tx) => {
       const leaseToken = randomUUID();
       const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-        SELECT "id"
+        SELECT "subscription_automation_job"."id"
         FROM "subscription_automation_job"
+        LEFT JOIN "billing_schedule"
+          ON "billing_schedule"."id" =
+            "subscription_automation_job"."billing_schedule_id"
         WHERE (
           (
-            "job_status" = 'PENDING'
-            AND "available_at" <= now()
+            "subscription_automation_job"."job_status" = 'PENDING'
+            AND "subscription_automation_job"."available_at" <= now()
           ) OR (
-            "job_status" = 'PROCESSING'
-            AND "lease_expires_at" <= now()
+            "subscription_automation_job"."job_status" = 'PROCESSING'
+            AND "subscription_automation_job"."lease_expires_at" <= now()
           )
         )
-          AND "job_type" IN (${Prisma.join(
+          AND "subscription_automation_job"."job_type" IN (${Prisma.join(
             supportedJobTypes.map(
               (jobType) =>
                 Prisma.sql`${jobType}::"subscription_automation_job_type"`
             )
           )})
-        ORDER BY "available_at" ASC, "created_at" ASC
+          AND (
+            "subscription_automation_job"."job_type" <>
+              'GENERATE_MONTHLY_RENT_BILL'
+            OR "billing_schedule"."status" = 'ACTIVE'
+          )
+        ORDER BY
+          "subscription_automation_job"."available_at" ASC,
+          "subscription_automation_job"."created_at" ASC
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
       `);

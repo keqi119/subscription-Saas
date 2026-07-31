@@ -99,6 +99,37 @@ describe("BillingAutomationRepository", () => {
     expect(result).toEqual([leased]);
   });
 
+  it("does not claim generation jobs while their schedule is paused", async () => {
+    const transaction = {
+      $executeRaw: vi.fn(),
+      $queryRaw: vi.fn(async (query: unknown) => {
+        void query;
+        return [];
+      }),
+      subscriptionAutomationJob: {
+        findMany: vi.fn()
+      }
+    };
+    const repository = new BillingAutomationRepository({
+      $transaction: (operation: (tx: typeof transaction) => unknown) =>
+        operation(transaction)
+    } as never);
+
+    await repository.claimDue(1, 120_000, [
+      SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+    ]);
+
+    const query = transaction.$queryRaw.mock.calls[0]?.[0] as {
+      strings: string[];
+    };
+    expect(query.strings.join(" ")).toContain(
+      `"subscription_automation_job"."job_type" <>`
+    );
+    expect(query.strings.join(" ")).toContain(
+      `"billing_schedule"."status" = 'ACTIVE'`
+    );
+  });
+
   it("cancels only pending bill lifecycle jobs for settled bills", async () => {
     const settledBillId = randomUUID();
     const rows = [

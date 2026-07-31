@@ -4,7 +4,7 @@ import { ReloadOutlined } from "@ant-design/icons";
 import { App, Button, Input, Modal, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import {
@@ -18,6 +18,7 @@ import {
   labelOf
 } from "../../constants/labels";
 import { ApiError, apiFetch } from "../../lib/api";
+import type { AuthMeResponse } from "../../lib/auth";
 import type {
   AdminNotificationEvent,
   AdminNotificationRecord,
@@ -44,6 +45,7 @@ export default function NotificationsPage() {
   const [templates, setTemplates] = useState<AdminNotificationTemplate[]>([]);
   const [records, setRecords] = useState<AdminNotificationRecord[]>([]);
   const [events, setEvents] = useState<AdminNotificationEvent[]>([]);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [processingReason, setProcessingReason] = useState("");
   const [processingResolution, setProcessingResolution] = useState<{
@@ -51,18 +53,24 @@ export default function NotificationsPage() {
     resolution: ProcessingResolution;
   } | null>(null);
   const [resolving, setResolving] = useState(false);
+  const canManageNotifications = useMemo(
+    () => me?.user.permissions.includes("notification:manage") ?? false,
+    [me]
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [templateResult, recordResult, eventResult] = await Promise.all([
+      const [templateResult, recordResult, eventResult, nextMe] = await Promise.all([
         apiFetch<PortalPagedResponse<AdminNotificationTemplate>>("/notifications/templates?pageSize=100"),
         apiFetch<PortalPagedResponse<AdminNotificationRecord>>("/notifications/records?pageSize=100"),
-        apiFetch<PortalPagedResponse<AdminNotificationEvent>>("/notifications/events?pageSize=100")
+        apiFetch<PortalPagedResponse<AdminNotificationEvent>>("/notifications/events?pageSize=100"),
+        apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setTemplates(templateResult.items);
       setRecords(recordResult.items);
       setEvents(eventResult.items);
+      setMe(nextMe);
     } catch (error) {
       void message.error(error instanceof ApiError ? error.message : "无法加载通知中心数据");
     } finally {
@@ -180,7 +188,7 @@ export default function NotificationsPage() {
   recordColumns.push({
     fixed: "right",
     render: (_, record) =>
-      record.notificationStatus === "PROCESSING" ? (
+      record.notificationStatus === "PROCESSING" && canManageNotifications ? (
         <Space size={4}>
           <Button
             onClick={() => {

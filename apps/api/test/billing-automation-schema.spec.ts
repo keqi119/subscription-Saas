@@ -47,6 +47,16 @@ describe("billing automation persistence contract", () => {
     );
   });
 
+  it("applies the migration atomically while collection uniqueness is checked", () => {
+    const sql = migrationSql().trim();
+
+    expect(sql.startsWith("BEGIN;")).toBe(true);
+    expect(sql).toContain(
+      'LOCK TABLE "collection_case", "collection_case_bill" IN SHARE ROW EXCLUSIVE MODE'
+    );
+    expect(sql.endsWith("COMMIT;")).toBe(true);
+  });
+
   it("gives receivable bills a database-enforced optional source key", () => {
     expect(field(model("ReceivableBill"), "sourceKey")).toMatchObject({
       type: "String"

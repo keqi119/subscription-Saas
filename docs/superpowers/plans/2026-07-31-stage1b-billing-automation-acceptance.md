@@ -106,6 +106,8 @@ HAVING COUNT(*) > 1;
 
 第二个唯一索引只约束未删除的催收账单关联；已软删除的历史关联可以保留，并允许后续重新建立一条有效关联。migration 内仍包含同样的防御性检查，若发现重复会返回 `STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE` 或 `STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE_BILL`。
 
+第 72 个 migration 使用显式 `BEGIN/COMMIT` 包裹全部 DDL，并在事务开始时以 `SHARE ROW EXCLUSIVE` 锁定 `collection_case` 和 `collection_case_bill`。因此重复检查与唯一索引创建之间不会出现并发写入窗口；任何检查或 DDL 失败都会整体回滚，不留下部分应用状态。
+
 ## 4. Staging 发布顺序
 
 1. 构建并部署包含本期代码的新 API/Web 镜像。

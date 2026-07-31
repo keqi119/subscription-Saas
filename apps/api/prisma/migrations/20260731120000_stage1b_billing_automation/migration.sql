@@ -1,3 +1,7 @@
+BEGIN;
+
+LOCK TABLE "collection_case", "collection_case_bill" IN SHARE ROW EXCLUSIVE MODE;
+
 CREATE TYPE "billing_schedule_status" AS ENUM (
   'ACTIVE',
   'PAUSED',
@@ -162,3 +166,5 @@ ALTER TABLE "subscription_automation_job"
 ADD CONSTRAINT "subscription_automation_job_bill_id_fkey"
 FOREIGN KEY ("bill_id") REFERENCES "receivable_bill"("id")
 ON DELETE SET NULL ON UPDATE CASCADE;
+
+COMMIT;

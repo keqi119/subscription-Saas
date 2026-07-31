@@ -16,6 +16,8 @@ import {
   PaymentMethod,
   PaymentStatus,
   QuoteStatus,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleDamageLevel,
   VehicleDamageResponsibleParty,
   VehicleDamageType,
@@ -216,6 +218,62 @@ describe("billing finance minimum backend loop", () => {
       paidAmount: 300000n,
       remainingAmount: 0n
     });
+  });
+
+  it("cancels pending billing jobs when a bill is fully settled", async () => {
+    const harness = createFinanceHarness();
+    await harness.service.generateInitialBills(
+      harness.orderId,
+      harness.user,
+      harness.context
+    );
+    const payment = await harness.createPayment(300000);
+    const bill = harness.findBill(BillType.FIRST_MONTHLY_FEE);
+    const cancellableTypes = [
+      SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
+      SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+    ];
+    for (const [index, jobType] of cancellableTypes.entries()) {
+      harness.state.automationJobs.push({
+        billId: bill.id,
+        id: `automation-job-${index + 1}`,
+        jobStatus: SubscriptionAutomationJobStatus.PENDING,
+        jobType
+      });
+    }
+    harness.state.automationJobs.push({
+      billId: bill.id,
+      id: "automation-job-completed",
+      jobStatus: SubscriptionAutomationJobStatus.COMPLETED,
+      jobType: SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE
+    });
+
+    await harness.service.writeOffPayment(
+      payment.id,
+      {
+        items: [
+          { billId: bill.id, writeOffAmount: 300000 }
+        ]
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(
+      harness.state.automationJobs
+        .filter((job) => job.id !== "automation-job-completed")
+        .map((job) => job.jobStatus)
+    ).toEqual([
+      SubscriptionAutomationJobStatus.CANCELLED,
+      SubscriptionAutomationJobStatus.CANCELLED,
+      SubscriptionAutomationJobStatus.CANCELLED
+    ]);
+    expect(
+      harness.state.automationJobs.find(
+        (job) => job.id === "automation-job-completed"
+      )?.jobStatus
+    ).toBe(SubscriptionAutomationJobStatus.COMPLETED);
   });
 
   it("creates a confirmed deposit COLLECT ledger when the deposit bill is fully written off", async () => {
@@ -1361,6 +1419,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   };
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state = {
+    automationJobs: [] as Array<Record<string, unknown>>,
     bills: [] as Array<Record<string, unknown>>,
     collectionActions: [] as Array<Record<string, unknown>>,
     collectionCaseBills: [] as Array<Record<string, unknown>>,
@@ -1617,6 +1676,23 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     subscriptionOrder: {
       findMany: vi.fn(async ({ where }) => filterOrders(state.orders, where)),
       findUnique: vi.fn(async ({ where }) => state.orders.find((order) => order.id === where.id) ?? null)
+    },
+    subscriptionAutomationJob: {
+      updateMany: vi.fn(async ({ data, where }) => {
+        const matches = state.automationJobs.filter(
+          (job) =>
+            (!where.billId?.in ||
+              where.billId.in.includes(job.billId)) &&
+            (!where.jobStatus ||
+              job.jobStatus === where.jobStatus) &&
+            (!where.jobType?.in ||
+              where.jobType.in.includes(job.jobType))
+        );
+        for (const job of matches) {
+          Object.assign(job, data);
+        }
+        return { count: matches.length };
+      })
     },
     vehicleReturn: {
       findUnique: vi.fn(async ({ where }) => {

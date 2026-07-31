@@ -29,6 +29,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { billingSourceKey } from "../billing-automation/billing-automation.calendar";
+import { cancelPendingBillAutomationJobs } from "../billing-automation/billing-automation.repository";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -856,6 +857,13 @@ export class FinanceService {
             }
           }
         }
+
+        await cancelPendingBillAutomationJobs(
+          tx,
+          updatedBills
+            .filter((bill) => bill.remainingAmount === 0n)
+            .map((bill) => bill.id)
+        );
 
         const paymentAfter = await tx.paymentRecord.findUniqueOrThrow({
           include: paymentWriteOffInclude,

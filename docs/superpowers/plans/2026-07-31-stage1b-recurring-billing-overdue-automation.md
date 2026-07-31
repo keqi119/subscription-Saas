@@ -369,7 +369,7 @@ git commit -m "feat(billing): run idempotent billing automation jobs"
 - Consumes: `BillingAutomationService.ensureActiveSchedule` and `cancelSettledBillJobs`.
 - Produces: activation creates/returns the lease and its billing schedule transactionally; all finance write-off paths cancel pending bill jobs when the bill becomes fully settled.
 
-- [ ] **Step 1: Write failing lease activation test**
+- [x] **Step 1: Write failing lease activation test**
 
 ```ts
 const lease = await engine.activate(orderId, user, context);
@@ -379,7 +379,7 @@ expect(state.billingSchedules).toHaveLength(1);
 
 Call activation twice and assert one schedule.
 
-- [ ] **Step 2: Run lease test and verify RED**
+- [x] **Step 2: Run lease test and verify RED**
 
 Run:
 
@@ -389,15 +389,15 @@ pnpm --filter @subscription-saas/api test -- lease-activation.spec.ts
 
 Expected: FAIL because activation does not create a billing schedule.
 
-- [ ] **Step 3: Integrate schedule creation with lease activation**
+- [x] **Step 3: Integrate schedule creation with lease activation**
 
 Persist lease activation and schedule initialization in one Prisma transaction. Keep audit writes after commit. Reconciliation remains the recovery path for pre-existing active leases.
 
-- [ ] **Step 4: Write failing settlement cancellation test**
+- [x] **Step 4: Write failing settlement cancellation test**
 
 After fully writing off a monthly-rent bill, assert pending `SEND_BILL_DUE_NOTICE`, `MARK_BILL_OVERDUE` and `SEND_BILL_OVERDUE_NOTICE` jobs are `CANCELLED`, while completed history remains unchanged.
 
-- [ ] **Step 5: Run finance test and verify RED**
+- [x] **Step 5: Run finance test and verify RED**
 
 Run:
 
@@ -407,11 +407,11 @@ pnpm --filter @subscription-saas/api test -- finance-billing.spec.ts
 
 Expected: FAIL because write-off does not cancel future jobs.
 
-- [ ] **Step 6: Add transaction-local settlement coordination**
+- [x] **Step 6: Add transaction-local settlement coordination**
 
 At the end of each write-off transaction, collect bills whose `remainingAmount` becomes zero and call `cancelSettledBillJobs(tx, ids)`. Online payment already uses `FinanceService.writeOffPayment`, so no second payment-specific implementation is added.
 
-- [ ] **Step 7: Run integration tests and verify GREEN**
+- [x] **Step 7: Run integration tests and verify GREEN**
 
 Run:
 

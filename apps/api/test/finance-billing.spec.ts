@@ -373,6 +373,7 @@ describe("billing finance minimum backend loop", () => {
       billType: BillType;
       created: boolean;
       dueDate: string;
+      sourceKey: string;
     };
 
     expect(bill).toMatchObject({
@@ -382,8 +383,77 @@ describe("billing finance minimum backend loop", () => {
       billStatus: BillStatus.PENDING,
       billType: BillType.MONTHLY_RENT,
       created: true,
-      dueDate: "2026-07-10T00:00:00.000Z"
+      dueDate: "2026-07-10T00:00:00.000Z",
+      sourceKey: "monthly-rent:order-1:2026-07-10"
     });
+  });
+
+  it("creates one source-keyed monthly rent bill for an automation cycle", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const input = {
+      actorId: null,
+      cycleNo: 1,
+      orderId: harness.orderId,
+      periodEnd: dateOnly("2026-08-09"),
+      periodStart: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    };
+
+    const first = await harness.service.generateMonthlyRentBillForCycle(
+      harness.prisma as never,
+      input
+    );
+    const second = await harness.service.generateMonthlyRentBillForCycle(
+      harness.prisma as never,
+      input
+    );
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.bill.id).toBe(first.bill.id);
+    expect(harness.state.bills).toHaveLength(1);
+    expect(harness.state.bills[0]).toMatchObject({
+      billPeriodEnd: dateOnly("2026-08-09"),
+      billPeriodStart: dateOnly("2026-07-10"),
+      dueDate: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    });
+  });
+
+  it("marks a D+5 monthly bill overdue and creates one collection link", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const input = {
+      actorId: null,
+      cycleNo: 1,
+      orderId: harness.orderId,
+      periodEnd: dateOnly("2026-08-09"),
+      periodStart: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    };
+    const generated =
+      await harness.service.generateMonthlyRentBillForCycle(
+        harness.prisma as never,
+        input
+      );
+
+    const first = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+    const second = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+
+    expect(first.action).toBe("MARKED_OVERDUE");
+    expect(second.action).toBe("ALREADY_OVERDUE");
+    expect(harness.state.bills[0]?.billStatus).toBe(BillStatus.OVERDUE);
+    expect(harness.state.collectionCases).toHaveLength(1);
+    expect(harness.state.collectionCaseBills).toHaveLength(1);
   });
 
   it("rejects monthly rent generation when order is not ACTIVE", async () => {

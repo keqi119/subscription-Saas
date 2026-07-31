@@ -219,7 +219,7 @@ git commit -m "feat(billing): add durable automation job repository"
 - Produces: `reconcileSchedules({ dryRun, now, actorId })`, `ensureActiveSchedule(tx, orderId, actualDeliveryAt)`, `enqueueDueSchedules(now)`, `generateScheduledMonthlyRent(job)`, `markScheduledBillOverdue(job)`, and `cancelSettledBillJobs(tx, billIds)`.
 - Finance produces system-callable `generateMonthlyRentBillForCycle(tx, input)` and `markBillOverdue(tx, input)` methods shared by manual and automatic paths.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Cover the observable behaviors:
 
@@ -235,7 +235,7 @@ expect(result.nextSchedule.nextCycleNo).toBe(2);
 
 Also assert: existing same-period bill is reconciled, missing price leaves schedule unchanged, bill/schedule/follow-up jobs are one transaction, paid/cancelled bills produce no overdue change, and repeated overdue handling keeps one active collection case link.
 
-- [ ] **Step 2: Run service tests and verify RED**
+- [x] **Step 2: Run service tests and verify RED**
 
 Run:
 
@@ -245,11 +245,11 @@ pnpm --filter @subscription-saas/api test -- billing-automation-service.spec.ts
 
 Expected: FAIL because the service and handlers do not exist.
 
-- [ ] **Step 3: Extract shared finance-domain functions**
+- [x] **Step 3: Extract shared finance-domain functions**
 
 Move existing month-period bill creation and overdue case mutation behind transaction-aware methods. Keep current controller methods as adapters using the authenticated actor. Add `sourceKey` to both manual single/batch and automatic month-rent creation.
 
-- [ ] **Step 4: Implement schedule reconciliation and handlers**
+- [x] **Step 4: Implement schedule reconciliation and handlers**
 
 Rules:
 
@@ -260,7 +260,7 @@ Rules:
 - overdue handler re-checks bill status/remaining amount immediately before mutation;
 - automatic audit entries use `operatorId = null` and include `actorType: "SYSTEM"` plus the job ID.
 
-- [ ] **Step 5: Run service and finance tests and verify GREEN**
+- [x] **Step 5: Run service and finance tests and verify GREEN**
 
 Run:
 
@@ -270,7 +270,7 @@ pnpm --filter @subscription-saas/api test -- billing-automation-service.spec.ts 
 
 Expected: PASS, including all pre-existing finance tests.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```bash
 git add apps/api/src/billing-automation apps/api/src/finance/finance.service.ts apps/api/test/billing-automation-service.spec.ts apps/api/test/finance-billing.spec.ts

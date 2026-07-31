@@ -28,6 +28,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { billingSourceKey } from "../billing-automation/billing-automation.calendar";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -143,7 +144,7 @@ type VehicleReturnDamageRecord = VehicleReturnDamage;
 type CollectionCaseRecord = CollectionCase;
 type CollectionCaseBillRecord = CollectionCaseBill;
 type CollectionActionRecord = CollectionAction;
-type MonthlyRentBillSource = "SINGLE" | "BATCH";
+type MonthlyRentBillSource = "SINGLE" | "BATCH" | "AUTOMATION";
 export type MonthlyRentBatchAction =
   | "GENERATED"
   | "SKIPPED_NOT_DUE"
@@ -157,6 +158,15 @@ interface MonthlyRentPeriod {
   end: Date;
   index: number;
   start: Date;
+}
+
+export interface MonthlyRentAutomationCycleInput {
+  actorId: string | null;
+  cycleNo: number;
+  orderId: string;
+  periodEnd: Date;
+  periodStart: Date;
+  sourceKey: string;
 }
 
 interface DepositBalanceDetails {
@@ -316,6 +326,177 @@ export class FinanceService {
     }
 
     return { ...toBillView(result.bill), created: result.created };
+  }
+
+  async generateMonthlyRentBillForCycle(
+    tx: Prisma.TransactionClient,
+    input: MonthlyRentAutomationCycleInput
+  ) {
+    const order = await tx.subscriptionOrder.findUnique({
+      include: financeOrderInclude,
+      where: { id: input.orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException(ORDER_NOT_FOUND_MESSAGE);
+    }
+    ensureOrderCanGenerateMonthlyRentBill(order);
+
+    const monthlyRentAmount = resolveMonthlyRentAmount(order);
+    if (monthlyRentAmount === null) {
+      throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
+    }
+
+    return createMonthlyRentBillForPeriodIfAbsent(
+      tx,
+      order,
+      monthlyRentAmount,
+      {
+        end: input.periodEnd,
+        index: input.cycleNo,
+        start: input.periodStart
+      },
+      input.actorId ?? undefined,
+      "AUTOMATION",
+      input.sourceKey
+    );
+  }
+
+  async markBillOverdueForAutomation(
+    tx: Prisma.TransactionClient,
+    billId: string,
+    asOfDate: Date,
+    actorId: string | null = null
+  ) {
+    const [bill] = await tx.receivableBill.findMany({
+      include: overdueBillInclude,
+      where: {
+        deletedAt: null,
+        id: billId
+      }
+    });
+    if (!bill) {
+      throw new NotFoundException(BILL_NOT_FOUND_MESSAGE);
+    }
+    if (
+      bill.billStatus === BillStatus.CANCELLED ||
+      bill.billStatus === BillStatus.PAID ||
+      bill.remainingAmount === 0n
+    ) {
+      return { action: "SKIPPED_SETTLED" as const, bill };
+    }
+
+    const overdueDays = calculateOverdueDays(bill.dueDate, asOfDate);
+    if (overdueDays < 5) {
+      return { action: "SKIPPED_NOT_DUE" as const, bill };
+    }
+
+    const alreadyOverdue = bill.billStatus === BillStatus.OVERDUE;
+    const updatedBill = alreadyOverdue
+      ? bill
+      : await tx.receivableBill.update({
+          data: {
+            billStatus: BillStatus.OVERDUE,
+            updatedBy: actorId ?? undefined
+          },
+          where: { id: bill.id }
+        });
+    const eligibleBills = await tx.receivableBill.findMany({
+      include: overdueBillInclude,
+      where: {
+        billStatus: { in: [...OVERDUE_BILL_STATUSES] },
+        deletedAt: null,
+        dueDate: { lte: asOfDate },
+        orderId: bill.orderId,
+        remainingAmount: { gt: 0n }
+      }
+    });
+    const totalOverdueAmount = eligibleBills.reduce(
+      (sum, item) => sum + item.remainingAmount,
+      0n
+    );
+    const maxOverdueDays = Math.max(
+      overdueDays,
+      ...eligibleBills.map((item) =>
+        calculateOverdueDays(item.dueDate, asOfDate)
+      )
+    );
+    const latestDueDate = eligibleBills.reduce(
+      (latest, item) =>
+        item.dueDate.getTime() > latest.getTime() ? item.dueDate : latest,
+      bill.dueDate
+    );
+    const existingCase = await tx.collectionCase.findFirst({
+      where: {
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        deletedAt: null,
+        orderId: bill.orderId
+      }
+    });
+    const caseData = {
+      collectionLevel: calculateCollectionLevel(maxOverdueDays),
+      latestDueDate,
+      maxOverdueDays,
+      snapshot: toJsonValue(
+        buildCollectionCaseSnapshot(
+          bill.order,
+          eligibleBills,
+          asOfDate,
+          totalOverdueAmount,
+          maxOverdueDays
+        )
+      ),
+      totalOverdueAmount,
+      updatedBy: actorId ?? undefined
+    };
+    const collectionCase = existingCase
+      ? await tx.collectionCase.update({
+          data: caseData,
+          where: { id: existingCase.id }
+        })
+      : await tx.collectionCase.create({
+          data: {
+            ...caseData,
+            caseNo: createBusinessNo("COL"),
+            caseStatus: CollectionCaseStatus.ACTIVE,
+            createdBy: actorId ?? undefined,
+            customerId: bill.customerId,
+            orderId: bill.orderId
+          }
+        });
+    const existingLink = await tx.collectionCaseBill.findFirst({
+      where: {
+        billId: bill.id,
+        caseId: collectionCase.id,
+        deletedAt: null
+      }
+    });
+    const caseBill = existingLink
+      ? await tx.collectionCaseBill.update({
+          data: {
+            overdueAmount: bill.remainingAmount,
+            overdueDays
+          },
+          where: { id: existingLink.id }
+        })
+      : await tx.collectionCaseBill.create({
+          data: {
+            billId: bill.id,
+            caseId: collectionCase.id,
+            customerId: bill.customerId,
+            orderId: bill.orderId,
+            overdueAmount: bill.remainingAmount,
+            overdueDays
+          }
+        });
+
+    return {
+      action: alreadyOverdue
+        ? ("ALREADY_OVERDUE" as const)
+        : ("MARKED_OVERDUE" as const),
+      bill: updatedBill,
+      caseBill,
+      collectionCase
+    };
   }
 
   async generateDamageFeeBill(orderId: string, user: RequestUser, context: RequestContext) {
@@ -1715,15 +1896,23 @@ async function createMonthlyRentBillForPeriodIfAbsent(
   order: FinanceOrder,
   amount: bigint,
   period: MonthlyRentPeriod,
-  userId: string,
-  source: MonthlyRentBillSource
+  userId: string | undefined,
+  source: MonthlyRentBillSource,
+  sourceKey = billingSourceKey(order.id, period.start)
 ) {
   const existingBill = await tx.receivableBill.findFirst({
     where: monthlyRentPeriodWhere(order.id, period)
   });
 
   if (existingBill) {
-    return { bill: existingBill, created: false, period };
+    const reconciledBill =
+      existingBill.sourceKey === null
+        ? await tx.receivableBill.update({
+            data: { sourceKey },
+            where: { id: existingBill.id }
+          })
+        : existingBill;
+    return { bill: reconciledBill, created: false, period };
   }
 
   const bill = await tx.receivableBill.create({
@@ -1740,6 +1929,7 @@ async function createMonthlyRentBillForPeriodIfAbsent(
       orderId: order.id,
       paidAmount: 0n,
       remainingAmount: amount,
+      sourceKey,
       snapshot: toJsonValue(buildMonthlyRentBillSnapshot(order, period, amount, source)),
       updatedBy: userId
     }
@@ -2356,6 +2546,7 @@ function toBillView(bill: ReceivableBillRecord) {
     paidAt: toIsoDateTime(bill.paidAt),
     remainingAmount: Number(bill.remainingAmount),
     remark: bill.remark,
+    sourceKey: bill.sourceKey,
     snapshot: bill.snapshot,
     updatedAt: toIsoDateTime(bill.updatedAt)
   };

@@ -45,16 +45,20 @@ export function PaymentOrderBillDetails({ items }: { items: PortalPaymentOrderIt
         />
       </div>
       <div className={styles.mobile} data-testid="payment-order-bills-mobile">
-        {items.map((item) => (
-          <article className={styles.card} key={item.id}>
-            <BillRow label="账单编号" value={item.billNo} wrap />
-            <BillRow label="类型" value={labelOf(BILL_TYPE_LABELS, item.billType)} />
-            <BillRow label="状态" value={labelOf(BILL_STATUS_LABELS, item.billStatus)} />
-            <BillRow label="应付" value={formatPortalMoney(item.amount)} />
-            <BillRow label="待付" value={formatPortalMoney(item.remainingAmount)} />
-            <BillRow label="到期日" value={formatPortalTime(item.dueDate)} />
-          </article>
-        ))}
+        {items.length === 0 ? (
+          <div role="status">暂无账单明细</div>
+        ) : (
+          items.map((item) => (
+            <article className={styles.card} key={item.id}>
+              <BillRow label="账单编号" value={item.billNo} wrap />
+              <BillRow label="类型" value={labelOf(BILL_TYPE_LABELS, item.billType)} />
+              <BillRow label="状态" value={labelOf(BILL_STATUS_LABELS, item.billStatus)} />
+              <BillRow label="应付" value={formatPortalMoney(item.amount)} />
+              <BillRow label="待付" value={formatPortalMoney(item.remainingAmount)} />
+              <BillRow label="到期日" value={formatPortalTime(item.dueDate)} />
+            </article>
+          ))
+        )}
       </div>
     </>
   );

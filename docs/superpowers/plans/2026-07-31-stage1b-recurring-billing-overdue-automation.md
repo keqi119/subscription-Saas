@@ -347,7 +347,7 @@ pnpm --filter @subscription-saas/api test -- notification.spec.ts billing-automa
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Task 4**
+- [x] **Step 8: Commit Task 4**
 
 ```bash
 git add apps/api/src/billing-automation/billing-automation.worker.ts apps/api/src/notification/notification.service.ts apps/api/test/billing-automation-worker.spec.ts apps/api/test/notification.spec.ts
@@ -421,7 +421,7 @@ pnpm --filter @subscription-saas/api test -- lease-activation.spec.ts finance-bi
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Task 5**
+- [x] **Step 8: Commit Task 5**
 
 ```bash
 git add apps/api/src/lease apps/api/src/finance/finance.service.ts apps/api/test/lease-activation.spec.ts apps/api/test/finance-billing.spec.ts
@@ -526,7 +526,7 @@ git commit -m "feat(billing): add automation operations workbench"
 **Interfaces:**
 - Documents the four Worker environment variables, migration command, staging enablement order, rollback switch and acceptance evidence.
 
-- [ ] **Step 1: Add safe configuration defaults**
+- [x] **Step 1: Add safe configuration defaults**
 
 Document:
 
@@ -537,7 +537,7 @@ BILLING_AUTOMATION_WORKER_LEASE_MS=120000
 BILLING_AUTOMATION_WORKER_POLL_INTERVAL_MS=5000
 ```
 
-- [ ] **Step 2: Run focused full feature tests**
+- [x] **Step 2: Run focused full feature tests**
 
 ```bash
 pnpm --filter @subscription-saas/api test -- billing-automation-calendar.spec.ts billing-automation-schema.spec.ts billing-automation-repository.spec.ts billing-automation-service.spec.ts billing-automation-worker.spec.ts billing-automation-controller.spec.ts finance-billing.spec.ts lease-activation.spec.ts notification.spec.ts
@@ -546,7 +546,7 @@ pnpm --filter @subscription-saas/web test -- billing-automation-view-model.spec.
 
 Expected: PASS.
 
-- [ ] **Step 3: Run repository quality gates**
+- [x] **Step 3: Run repository quality gates**
 
 ```bash
 pnpm prisma:validate
@@ -564,7 +564,7 @@ git diff --check
 
 Expected: every applicable command PASS and migration status reports the new migration pending only until it is deployed to the target database.
 
-- [ ] **Step 4: Write acceptance and rollout evidence**
+- [x] **Step 4: Write acceptance and rollout evidence**
 
 Record exact command results and staging procedure:
 
@@ -576,7 +576,7 @@ Record exact command results and staging procedure:
 6. verify D-3 generation, idempotent replay, settlement cancellation, D+5 collection and manual dead-letter retry;
 7. disable Worker as the immediate rollback without disabling manual finance operations.
 
-- [ ] **Step 5: Commit Task 7**
+- [x] **Step 5: Commit Task 7**
 
 ```bash
 git add .env.example README.md docs/superpowers/plans/2026-07-31-stage1b-billing-automation-acceptance.md

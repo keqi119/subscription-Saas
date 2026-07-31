@@ -583,7 +583,7 @@ git add .env.example README.md docs/superpowers/plans/2026-07-31-stage1b-billing
 git commit -m "docs(billing): add automation rollout runbook"
 ```
 
-- [ ] **Step 6: Review branch and prepare integration**
+- [x] **Step 6: Review branch and prepare integration**
 
 Run:
 

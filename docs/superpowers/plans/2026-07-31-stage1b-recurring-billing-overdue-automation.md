@@ -292,11 +292,11 @@ git commit -m "feat(billing): automate recurring bills and overdue cases"
 - Produces: `BillingAutomationWorker.runOnce()` and idempotent `NotificationService.notifyBillLifecycle(input)`.
 - `notifyBillLifecycle` consumes `{ billId, customerId, eventType, idempotencyKey, data }` and returns existing or newly created notification records.
 
-- [ ] **Step 1: Write failing notification tests**
+- [x] **Step 1: Write failing notification tests**
 
 Invoke `notifyBillLifecycle` twice with `bill-due-notice:{billId}` and assert one logical Portal notification/event. Assert a retry after provider failure reuses the same notification identity.
 
-- [ ] **Step 2: Run notification test and verify RED**
+- [x] **Step 2: Run notification test and verify RED**
 
 Run:
 
@@ -306,11 +306,11 @@ pnpm --filter @subscription-saas/api test -- notification.spec.ts
 
 Expected: FAIL because `notifyBillLifecycle` is absent.
 
-- [ ] **Step 3: Implement idempotent bill notifications**
+- [x] **Step 3: Implement idempotent bill notifications**
 
 Derive deterministic `notificationNo` values from the idempotency key. Reconcile the existing record on unique conflict. Do not let notification failure roll back bill or overdue facts.
 
-- [ ] **Step 4: Write failing Worker tests**
+- [x] **Step 4: Write failing Worker tests**
 
 Assert:
 
@@ -323,7 +323,7 @@ Assert:
 - logs and persisted errors exclude raw sensitive content;
 - configured concurrency is respected.
 
-- [ ] **Step 5: Run Worker tests and verify RED**
+- [x] **Step 5: Run Worker tests and verify RED**
 
 Run:
 
@@ -333,11 +333,11 @@ pnpm --filter @subscription-saas/api test -- billing-automation-worker.spec.ts
 
 Expected: FAIL because the Worker does not exist.
 
-- [ ] **Step 6: Implement Worker**
+- [x] **Step 6: Implement Worker**
 
 Use `BILLING_AUTOMATION_WORKER_ENABLED`, `BILLING_AUTOMATION_WORKER_CONCURRENCY`, `BILLING_AUTOMATION_WORKER_LEASE_MS`, and `BILLING_AUTOMATION_WORKER_POLL_INTERVAL_MS`. Before claiming jobs, enqueue due schedules and reconcile eligible active orders on a bounded cadence.
 
-- [ ] **Step 7: Run notification and Worker tests and verify GREEN**
+- [x] **Step 7: Run notification and Worker tests and verify GREEN**
 
 Run:
 

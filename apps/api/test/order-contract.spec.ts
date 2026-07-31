@@ -4,6 +4,7 @@ import {
   ApplicationStatus,
   BusinessType,
   ContractStatus,
+  ContractTemplateType,
   ContractVersionStatus,
   OrderChangeType,
   OrderSource,
@@ -114,6 +115,45 @@ describe("subscription order and contract rules", () => {
     expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).not.toHaveBeenCalled();
     expect(harness.state.contractId).toBe(contract.id);
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
+  it("selects only the active subscription-standard template for Stage 1", async () => {
+    const harness = createOrderServiceHarness({
+      artifactGenerationEnabled: true,
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" }),
+      resolveContractVersion: (args, standardTemplate) =>
+        args.where?.templateType === ContractTemplateType.SUBSCRIPTION_STANDARD
+          ? standardTemplate
+          : {
+              ...standardTemplate,
+              effectiveFrom: new Date("2026-07-26T00:00:00.000Z"),
+              id: "delivery-handover-version-1",
+              templateName: "车辆交接确认单",
+              templateType: ContractTemplateType.DELIVERY_HANDOVER,
+              versionNo: "V1.0"
+            }
+    });
+
+    await harness.service.generateContract(
+      harness.orderId,
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.contracts[0]).toMatchObject({
+      contractTitle: `${harness.template.templateName} ${harness.template.versionNo}`,
+      contractVersionId: harness.template.id
+    });
+    const artifactCalls = harness.artifactWriter.writeGeneratedContractPdfArtifact
+      .mock.calls as unknown as Array<[
+        { renderModel: { templateName: string; templateVersion: string } }
+      ]>;
+    expect(artifactCalls[0]?.[0]).toMatchObject({
+      renderModel: {
+        templateName: harness.template.templateName,
+        templateVersion: harness.template.versionNo
+      }
+    });
   });
 
   it("attaches a generated PDF artifact before moving the order to pending sign when enabled", async () => {
@@ -762,6 +802,10 @@ function createOrderServiceHarness(options: {
   customer?: Record<string, unknown>;
   order?: Record<string, unknown>;
   quote?: Record<string, unknown>;
+  resolveContractVersion?: (
+    args: { where?: { templateType?: ContractTemplateType } },
+    standardTemplate: Record<string, unknown>
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
   vehicle?: Record<string, unknown>;
 } = {}) {
   const now = new Date("2026-06-02T08:00:00.000Z");
@@ -1063,7 +1107,11 @@ function createOrderServiceHarness(options: {
       })
     },
     contractVersion: {
-      findFirst: vi.fn(async () => template)
+      findFirst: vi.fn(async (args) =>
+        options.resolveContractVersion
+          ? options.resolveContractVersion(args, template)
+          : template
+      )
     },
     subscriptionQuote: {
       findUnique: vi.fn(async () => buildQuote())

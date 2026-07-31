@@ -328,6 +328,17 @@ describe("OrderWorkspaceResolver", () => {
     );
   });
 
+  it("marks a missing generatable contract as actionable instead of blocked", () => {
+    expect(new OrderWorkspaceResolver().resolveContract({ contracts: [] })).toEqual(
+      expect.objectContaining({
+        actionCode: "contract.generate",
+        blocking: false,
+        reasonCode: "CONTRACT_REQUIRED",
+        state: "ACTION_REQUIRED"
+      })
+    );
+  });
+
   it("treats Stage 2 as complete when both required signers signed even if archival is pending", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: AS_OF,
@@ -518,7 +529,7 @@ describe("OrderWorkspaceResolver", () => {
     expect(tie.targetRecordId).toBe("change-a");
   });
 
-  it("ranks a contract blocker ahead of a due finance action", () => {
+  it("ranks an older due finance action ahead of a missing generatable contract", () => {
     const resolver = new OrderWorkspaceResolver();
     const summary = resolveWith(
       [
@@ -541,9 +552,9 @@ describe("OrderWorkspaceResolver", () => {
     );
 
     expect(summary.primaryAction).toEqual({
-      actionCode: "contract.generate",
-      targetRecordId: null,
-      targetTab: "contract"
+      actionCode: "finance.collect",
+      targetRecordId: "bill-1",
+      targetTab: "finance"
     });
   });
 

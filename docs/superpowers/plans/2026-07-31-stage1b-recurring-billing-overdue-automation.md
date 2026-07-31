@@ -35,7 +35,7 @@
 - Produces: `BillingCycle`, `buildInitialBillingCycle(actualDeliveryAt)`, `buildNextBillingCycle(current)`, `billingSourceKey(orderId, periodStart)`, `dueNoticeJobKey(billId)`, `overdueJobKey(billId, dueDate)`, and `overdueNoticeJobKey(billId)`.
 - Produces Prisma models `BillingSchedule` and `SubscriptionAutomationJob`, plus enums `BillingScheduleStatus`, `SubscriptionAutomationJobType`, and `SubscriptionAutomationJobStatus`.
 
-- [ ] **Step 1: Write failing calendar tests**
+- [x] **Step 1: Write failing calendar tests**
 
 ```ts
 expect(buildInitialBillingCycle(new Date("2026-01-31T03:00:00Z"))).toMatchObject({
@@ -48,7 +48,7 @@ expect(billingSourceKey("order-1", new Date("2026-02-28T00:00:00Z")))
   .toBe("monthly-rent:order-1:2026-02-28");
 ```
 
-- [ ] **Step 2: Run the calendar test and verify RED**
+- [x] **Step 2: Run the calendar test and verify RED**
 
 Run:
 
@@ -58,11 +58,11 @@ pnpm --filter @subscription-saas/api test -- billing-automation-calendar.spec.ts
 
 Expected: FAIL because `billing-automation.calendar.ts` does not exist.
 
-- [ ] **Step 3: Implement the pure calendar and key functions**
+- [x] **Step 3: Implement the pure calendar and key functions**
 
 Use UTC date-only values after converting the activation timestamp to a China business date. Clamp the day when moving to a shorter month. Derive `periodEnd` as one day before the following clamped boundary, `generateAt` as three days before `periodStart`, and the overdue date as five days after `dueDate`.
 
-- [ ] **Step 4: Run the calendar test and verify GREEN**
+- [x] **Step 4: Run the calendar test and verify GREEN**
 
 Run:
 
@@ -72,7 +72,7 @@ pnpm --filter @subscription-saas/api test -- billing-automation-calendar.spec.ts
 
 Expected: PASS for normal dates, month-end clamping, leap year, D-3, D+5 and stable keys.
 
-- [ ] **Step 5: Write the failing schema contract test**
+- [x] **Step 5: Write the failing schema contract test**
 
 The test reads `schema.prisma` and asserts observable persistence contracts:
 
@@ -83,7 +83,7 @@ expect(schema).toContain("idempotencyKey   String");
 expect(schema).toContain("sourceKey        String?           @unique");
 ```
 
-- [ ] **Step 6: Run the schema test and verify RED**
+- [x] **Step 6: Run the schema test and verify RED**
 
 Run:
 
@@ -93,7 +93,7 @@ pnpm --filter @subscription-saas/api test -- billing-automation-schema.spec.ts
 
 Expected: FAIL because the models and source key are absent.
 
-- [ ] **Step 7: Add Prisma schema and migration**
+- [x] **Step 7: Add Prisma schema and migration**
 
 Add:
 
@@ -123,7 +123,7 @@ enum SubscriptionAutomationJobStatus {
 
 `BillingSchedule` has unique `orderId`, next cycle and period fields, `nextGenerateAt`, last result fields, pause/completion fields and `version`. `SubscriptionAutomationJob` has optional schedule/order/bill relations, unique `idempotencyKey`, lease, retry, payload, result and error fields. Add nullable unique `ReceivableBill.sourceKey` and relations on `SubscriptionOrder`, `ReceivableBill`, and `BillingSchedule`.
 
-- [ ] **Step 8: Validate schema and migration**
+- [x] **Step 8: Validate schema and migration**
 
 Run:
 
@@ -135,7 +135,7 @@ pnpm --filter @subscription-saas/api test -- billing-automation-schema.spec.ts b
 
 Expected: all commands PASS.
 
-- [ ] **Step 9: Commit Task 1**
+- [x] **Step 9: Commit Task 1**
 
 ```bash
 git add apps/api/prisma apps/api/src/billing-automation/billing-automation.calendar.ts apps/api/test/billing-automation-calendar.spec.ts apps/api/test/billing-automation-schema.spec.ts

@@ -63,6 +63,7 @@ services:
       - "127.0.0.1:${API_HOST_PORT:-3101}:3001"
     volumes:
       - staging_api_uploads:${UPLOAD_LOCAL_DIR:-/app/uploads}
+      - /opt/subscription-saas/secrets/wechatpay:/opt/subscription-saas/secrets/wechatpay:ro
     depends_on:
       postgres:
         condition: service_healthy

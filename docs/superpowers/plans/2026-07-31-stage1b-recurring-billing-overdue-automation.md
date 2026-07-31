@@ -156,7 +156,7 @@ git commit -m "feat(billing): add recurring schedule persistence"
 - Produces: `enqueue(tx, input)`, `claimDue(limit, leaseMs, supportedTypes)`, `complete(id, leaseToken, result)`, `reschedule(id, leaseToken, input)`, `deadLetter(id, leaseToken, error)`, `cancelPendingForBills(tx, billIds)`, `cancelPendingForSchedule(tx, scheduleId)`, and `retryDeadLetter(id)`.
 - Produces: `BillingAutomationError` with `{ code, message, retryable }`.
 
-- [ ] **Step 1: Write failing repository tests**
+- [x] **Step 1: Write failing repository tests**
 
 Cover:
 
@@ -172,7 +172,7 @@ await repository.enqueue(tx, {
 
 Assert duplicate enqueue returns the same row, concurrent claim uses `FOR UPDATE SKIP LOCKED`, completion requires the current lease, settlement cancellation affects only pending bill jobs, and retry reuses the same job/idempotency key.
 
-- [ ] **Step 2: Run the repository test and verify RED**
+- [x] **Step 2: Run the repository test and verify RED**
 
 Run:
 
@@ -182,11 +182,11 @@ pnpm --filter @subscription-saas/api test -- billing-automation-repository.spec.
 
 Expected: FAIL because repository and types do not exist.
 
-- [ ] **Step 3: Implement repository and types**
+- [x] **Step 3: Implement repository and types**
 
 Mirror the proven Stage 2 lease pattern but target `subscription_automation_job`. Use database time for claiming and delayed availability. Sanitize persisted errors to fixed codes/messages and never persist raw provider or customer data.
 
-- [ ] **Step 4: Run repository tests and verify GREEN**
+- [x] **Step 4: Run repository tests and verify GREEN**
 
 Run:
 
@@ -196,7 +196,7 @@ pnpm --filter @subscription-saas/api test -- billing-automation-repository.spec.
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add apps/api/src/billing-automation/billing-automation.repository.ts apps/api/src/billing-automation/billing-automation.types.ts apps/api/test/billing-automation-repository.spec.ts

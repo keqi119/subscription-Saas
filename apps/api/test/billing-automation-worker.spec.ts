@@ -114,6 +114,30 @@ describe("BillingAutomationWorker", () => {
     expect(harness.repository.reschedule).not.toHaveBeenCalled();
   });
 
+  it("returns a claimed generation job to pending without consuming an attempt when paused", async () => {
+    const job = claimedJob();
+    const error = new BillingAutomationError({
+      code: "BILLING_SCHEDULE_PAUSED",
+      message: "Billing schedule is paused.",
+      retryable: true
+    });
+    const harness = createWorkerHarness({ error, jobs: [job] });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.defer).toHaveBeenCalledWith(
+      job.id,
+      job.leaseToken,
+      {
+        code: "BILLING_SCHEDULE_PAUSED",
+        message: "Billing schedule is paused.",
+        retryable: true
+      }
+    );
+    expect(harness.repository.deadLetter).not.toHaveBeenCalled();
+    expect(harness.repository.reschedule).not.toHaveBeenCalled();
+  });
+
   it("moves the sixth transient failure to dead letter", async () => {
     const job = claimedJob({ attemptCount: 5 });
     const harness = createWorkerHarness({
@@ -236,6 +260,7 @@ function createWorkerHarness(
     claimDue: vi.fn().mockResolvedValue(options.jobs ?? []),
     complete: vi.fn().mockResolvedValue(true),
     deadLetter: vi.fn().mockResolvedValue(true),
+    defer: vi.fn().mockResolvedValue(true),
     reschedule: vi.fn().mockResolvedValue(true)
   };
   const service = {

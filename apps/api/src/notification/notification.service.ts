@@ -202,7 +202,10 @@ export class NotificationService {
     const eventId = billNotificationEventId(input.idempotencyKey);
     const now = new Date();
     const incomplete = records.some(
-      (record) => record.notificationStatus === NotificationStatus.FAILED
+      (record) =>
+        record.notificationStatus !== NotificationStatus.SENT &&
+        record.notificationStatus !== NotificationStatus.READ &&
+        record.notificationStatus !== NotificationStatus.SKIPPED
     );
     const event = await this.prisma.notificationEvent.findUnique({
       where: { id: eventId }
@@ -511,7 +514,9 @@ export class NotificationService {
             url: normalizePortalUrl(input.url, this.portalBaseUrl)
           });
 
-    return [inApp, wechat].filter(Boolean);
+    return [inApp, wechat].filter(
+      (record): record is NonNullable<typeof record> => record !== null
+    );
   }
 
   private async reconcileStage2CustomerReady(
@@ -653,39 +658,7 @@ export class NotificationService {
       }
     }
 
-    if (providerMode === "mock") {
-      const result = await this.provider.send({
-        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
-        content: input.content,
-        data: input.data,
-        providerTemplateId: providerTemplateId ?? input.templateCode,
-        recipientOpenId: input.account.wechatOpenId,
-        recipientPhone: input.account.phone,
-        templateCode: input.templateCode,
-        title: input.title,
-        url: input.url
-      });
-      return this.createRecord({
-        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
-        content: input.content,
-        customerAccountId: input.account.id,
-        customerId: input.customerId,
-        existingRecordId: input.existingRecordId,
-        notificationNo: input.notificationNo,
-        payload: input.data,
-        recipientOpenId: input.account.wechatOpenId,
-        recipientPhone: input.account.phone,
-        result,
-        status: result.success ? NotificationStatus.SENT : NotificationStatus.FAILED,
-        template: input.template,
-        templateCode: input.templateCode,
-        title: input.title,
-        type: input.notificationType,
-        url: input.url
-      });
-    }
-
-    if (!this.wechatEnabled) {
+    if (providerMode !== "mock" && !this.wechatEnabled) {
       return this.createRecord({
         channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
         content: input.content,
@@ -706,7 +679,7 @@ export class NotificationService {
       });
     }
 
-    if (!providerTemplateId) {
+    if (providerMode !== "mock" && !providerTemplateId) {
       return this.createRecord({
         channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
         content: input.content,
@@ -727,23 +700,57 @@ export class NotificationService {
       });
     }
 
-    const result = await this.provider.send({
-      channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
-      content: input.content,
-      data: input.data,
-      providerTemplateId,
-      recipientOpenId: input.account.wechatOpenId,
-      recipientPhone: input.account.phone,
-      templateCode: input.templateCode,
-      title: input.title,
-      url: input.url
+    const claim = await this.claimWechatSend({
+      ...input,
+      account: input.account
     });
+    if (!claim.claimed) {
+      if (!claim.record) {
+        throw new Error("Bill notification send claim is missing.");
+      }
+      return claim.record;
+    }
+    let result: SendNotificationResult;
+    try {
+      result = await this.provider.send({
+        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+        content: input.content,
+        data: input.data,
+        providerTemplateId:
+          providerTemplateId ?? input.templateCode,
+        recipientOpenId: input.account.wechatOpenId,
+        recipientPhone: input.account.phone,
+        templateCode: input.templateCode,
+        title: input.title,
+        url: input.url
+      });
+    } catch (error) {
+      await this.createRecord({
+        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+        content: input.content,
+        customerAccountId: input.account.id,
+        customerId: input.customerId,
+        errorMessage: "BILL_NOTIFICATION_PROVIDER_ERROR",
+        existingRecordId: claim.record?.id,
+        notificationNo: input.notificationNo,
+        payload: input.data,
+        recipientOpenId: input.account.wechatOpenId,
+        recipientPhone: input.account.phone,
+        status: NotificationStatus.FAILED,
+        template: input.template,
+        templateCode: input.templateCode,
+        title: input.title,
+        type: input.notificationType,
+        url: input.url
+      });
+      throw error;
+    }
     return this.createRecord({
       channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
       content: input.content,
       customerAccountId: input.account.id,
       customerId: input.customerId,
-      existingRecordId: input.existingRecordId,
+      existingRecordId: claim.record?.id ?? input.existingRecordId,
       notificationNo: input.notificationNo,
       payload: input.data,
       recipientOpenId: input.account.wechatOpenId,
@@ -756,6 +763,87 @@ export class NotificationService {
       type: input.notificationType,
       url: input.url
     });
+  }
+
+  private async claimWechatSend(input: {
+    account: { id: string; phone: string; wechatOpenId: string | null };
+    content: string;
+    customerId: string;
+    data: Record<string, unknown>;
+    existingRecordId?: string;
+    notificationNo?: string;
+    notificationType: NotificationType;
+    template: Prisma.NotificationTemplateGetPayload<Record<string, never>> | null;
+    templateCode: string;
+    title: string;
+    url: string | null;
+  }) {
+    if (!input.notificationNo) {
+      return { claimed: true, record: null };
+    }
+    let record = input.existingRecordId
+      ? await this.prisma.notificationRecord.findUnique({
+          where: { id: input.existingRecordId }
+        })
+      : await this.prisma.notificationRecord.findUnique({
+          where: { notificationNo: input.notificationNo }
+        });
+    if (!record) {
+      record = await this.createRecord({
+        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+        content: input.content,
+        customerAccountId: input.account.id,
+        customerId: input.customerId,
+        notificationNo: input.notificationNo,
+        payload: input.data,
+        recipientOpenId: input.account.wechatOpenId,
+        recipientPhone: input.account.phone,
+        status: NotificationStatus.PENDING,
+        template: input.template,
+        templateCode: input.templateCode,
+        title: input.title,
+        type: input.notificationType,
+        url: input.url
+      });
+    }
+    if (
+      record.notificationStatus === NotificationStatus.SENT ||
+      record.notificationStatus === NotificationStatus.READ ||
+      record.notificationStatus === NotificationStatus.SKIPPED ||
+      record.notificationStatus === NotificationStatus.PROCESSING
+    ) {
+      return { claimed: false, record };
+    }
+    const claimed = await this.prisma.notificationRecord.updateMany({
+      data: {
+        errorMessage: null,
+        failedAt: null,
+        notificationStatus: NotificationStatus.PROCESSING,
+        scheduledAt: new Date()
+      },
+      where: {
+        id: record.id,
+        notificationStatus: {
+          in: [NotificationStatus.PENDING, NotificationStatus.FAILED]
+        }
+      }
+    });
+    if (claimed.count !== 1) {
+      return {
+        claimed: false,
+        record:
+          (await this.prisma.notificationRecord.findUnique({
+            where: { id: record.id }
+          })) ?? record
+      };
+    }
+    return {
+      claimed: true,
+      record: {
+        ...record,
+        notificationStatus: NotificationStatus.PROCESSING
+      }
+    };
   }
 
   private async createRecord(input: {

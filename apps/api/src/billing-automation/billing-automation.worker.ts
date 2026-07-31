@@ -81,6 +81,16 @@ export class BillingAutomationWorker implements OnModuleInit, OnModuleDestroy {
       await this.repository.complete(job.id, job.leaseToken, toResultSnapshot(result));
     } catch (error) {
       const sanitized = sanitizeBillingAutomationError(error);
+      if (sanitized.code === "BILLING_SCHEDULE_PAUSED") {
+        await this.repository.defer(job.id, job.leaseToken, sanitized);
+        this.logger.warn({
+          attemptCount: job.attemptCount,
+          errorCode: sanitized.code,
+          jobId: job.id,
+          jobType: job.jobType
+        });
+        return;
+      }
       const failedAttempt = job.attemptCount + 1;
       if (!sanitized.retryable || failedAttempt >= job.maxAttempts) {
         await this.repository.deadLetter(job.id, job.leaseToken, sanitized);
@@ -162,6 +172,13 @@ export function sanitizeBillingAutomationError(error: unknown): BillingAutomatio
     }
     if (error.code === "BILLING_EXECUTION_ERROR") {
       return genericExecutionError();
+    }
+    if (error.code === "BILLING_SCHEDULE_PAUSED") {
+      return {
+        code: "BILLING_SCHEDULE_PAUSED",
+        message: "Billing schedule is paused.",
+        retryable: true
+      };
     }
   }
   return genericExecutionError();

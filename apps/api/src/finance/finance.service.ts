@@ -28,7 +28,10 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
-import { billingSourceKey } from "../billing-automation/billing-automation.calendar";
+import {
+  billingSourceKey,
+  buildBillingCycleForDelivery
+} from "../billing-automation/billing-automation.calendar";
 import { cancelPendingBillAutomationJobs } from "../billing-automation/billing-automation.repository";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
@@ -368,6 +371,18 @@ export class FinanceService {
     asOfDate: Date,
     actorId: string | null = null
   ) {
+    const locator = await tx.receivableBill.findFirst({
+      select: { orderId: true },
+      where: {
+        deletedAt: null,
+        id: billId
+      }
+    });
+    if (!locator) {
+      throw new NotFoundException(BILL_NOT_FOUND_MESSAGE);
+    }
+    await lockSubscriptionOrders(tx, [locator.orderId]);
+    await lockReceivableBills(tx, [billId]);
     const [bill] = await tx.receivableBill.findMany({
       include: overdueBillInclude,
       where: {
@@ -755,6 +770,7 @@ export class FinanceService {
         }
 
         const billIds = dto.items.map((item) => item.billId);
+        await lockReceivableBills(tx, billIds);
         const bills = await tx.receivableBill.findMany({
           where: { deletedAt: null, id: { in: billIds } }
         });
@@ -917,9 +933,13 @@ export class FinanceService {
     const asOfDate = parseBillingDate(dto.asOfDate, "asOfDate");
     const dryRun = Boolean(dto.dryRun);
     const overdueBills = await this.findRefreshableOverdueBills(asOfDate, user);
-    const casePlans = await this.buildCollectionCasePlans(overdueBills, asOfDate);
 
     if (dryRun) {
+      const casePlans = await this.buildCollectionCasePlans(
+        overdueBills,
+        asOfDate,
+        this.prisma
+      );
       return {
         asOfDate: toIsoDate(asOfDate),
         createdCaseCount: casePlans.filter((plan) => !plan.existingCase).length,
@@ -932,12 +952,35 @@ export class FinanceService {
 
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        await lockSubscriptionOrders(
+          tx,
+          overdueBills.map((bill) => bill.orderId)
+        );
+        await lockReceivableBills(
+          tx,
+          overdueBills.map((bill) => bill.id)
+        );
+        const lockedBills = await tx.receivableBill.findMany({
+          include: overdueBillInclude,
+          where: {
+            billStatus: { in: [...OVERDUE_BILL_STATUSES] },
+            deletedAt: null,
+            dueDate: { lt: asOfDate },
+            id: { in: overdueBills.map((bill) => bill.id) },
+            remainingAmount: { gt: 0n }
+          }
+        });
+        const casePlans = await this.buildCollectionCasePlans(
+          lockedBills,
+          asOfDate,
+          tx
+        );
         const updatedBills: ReceivableBillRecord[] = [];
         const createdCases: CollectionCaseRecord[] = [];
         const updatedCases: CollectionCaseRecord[] = [];
         const linkedCaseBills: CollectionCaseBillRecord[] = [];
 
-        for (const bill of overdueBills) {
+        for (const bill of lockedBills) {
           if (bill.billStatus === BillStatus.OVERDUE) {
             updatedBills.push(bill);
             continue;
@@ -1413,6 +1456,7 @@ export class FinanceService {
 
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        await lockReceivableBills(tx, [dto.billId!]);
         const bill = await tx.receivableBill.findFirst({
           where: {
             deletedAt: null,
@@ -1601,7 +1645,11 @@ export class FinanceService {
     return bills.filter((bill) => calculateOverdueDays(bill.dueDate, asOfDate) > 0);
   }
 
-  private async buildCollectionCasePlans(overdueBills: OverdueBillWithRelations[], asOfDate: Date) {
+  private async buildCollectionCasePlans(
+    overdueBills: OverdueBillWithRelations[],
+    asOfDate: Date,
+    db: Pick<Prisma.TransactionClient, "collectionCase">
+  ) {
     const billsByOrder = new Map<string, OverdueBillWithRelations[]>();
 
     for (const bill of overdueBills) {
@@ -1613,7 +1661,7 @@ export class FinanceService {
     const plans: CollectionCasePlan[] = [];
 
     for (const [orderId, bills] of billsByOrder) {
-      const existingCase = await this.prisma.collectionCase.findFirst({
+      const existingCase = await db.collectionCase.findFirst({
         where: {
           caseStatus: CollectionCaseStatus.ACTIVE,
           deletedAt: null,
@@ -1999,33 +2047,14 @@ function periodFromBill(bill: ReceivableBillRecord): MonthlyRentPeriod {
 }
 
 function buildNextMonthlyRentPeriod(actualDeliveryAt: Date, existingMonthlyRentBillCount: number): MonthlyRentPeriod {
-  const startDate = toBillingDateOnly(actualDeliveryAt);
   const index = existingMonthlyRentBillCount + 1;
-  const start = addMonthsClamped(startDate, index);
-  const end = addDays(addMonthsClamped(start, 1), -1);
-  return { end, index, start };
+  const cycle = buildBillingCycleForDelivery(actualDeliveryAt, index);
+  return { end: cycle.periodEnd, index, start: cycle.periodStart };
 }
 
 function toBillingDateOnly(value: Date) {
   const shifted = new Date(value.getTime() + CHINA_TIME_OFFSET_MINUTES * 60 * 1000);
   return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
-}
-
-function addMonthsClamped(value: Date, months: number) {
-  const year = value.getUTCFullYear();
-  const month = value.getUTCMonth() + months;
-  const day = value.getUTCDate();
-  const targetFirstDay = new Date(Date.UTC(year, month, 1));
-  const targetYear = targetFirstDay.getUTCFullYear();
-  const targetMonth = targetFirstDay.getUTCMonth();
-  const targetLastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(targetYear, targetMonth, Math.min(day, targetLastDay)));
-}
-
-function addDays(value: Date, days: number) {
-  const next = new Date(value);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
 }
 
 function buildMonthlyRentBillSnapshot(
@@ -2642,6 +2671,40 @@ function toDepositLedgerView(ledger: DepositLedgerRecord) {
     transactionStatus: ledger.transactionStatus,
     transactionType: ledger.transactionType
   };
+}
+
+async function lockReceivableBills(
+  tx: Prisma.TransactionClient,
+  billIds: string[]
+) {
+  const ids = [...new Set(billIds)].sort();
+  if (ids.length === 0) {
+    return;
+  }
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "receivable_bill"
+    WHERE "id" = ANY(ARRAY[${Prisma.join(ids)}]::uuid[])
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+}
+
+async function lockSubscriptionOrders(
+  tx: Prisma.TransactionClient,
+  orderIds: string[]
+) {
+  const ids = [...new Set(orderIds)].sort();
+  if (ids.length === 0) {
+    return;
+  }
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "subscription_order"
+    WHERE "id" = ANY(ARRAY[${Prisma.join(ids)}]::uuid[])
+    ORDER BY "id"
+    FOR UPDATE
+  `);
 }
 
 function toIsoDateTime(value: Date | null) {

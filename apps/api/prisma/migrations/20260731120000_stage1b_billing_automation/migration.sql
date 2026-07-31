@@ -5,6 +5,8 @@ CREATE TYPE "billing_schedule_status" AS ENUM (
   'CANCELLED'
 );
 
+ALTER TYPE "notification_status" ADD VALUE 'PROCESSING';
+
 CREATE TYPE "subscription_automation_job_type" AS ENUM (
   'GENERATE_MONTHLY_RENT_BILL',
   'SEND_BILL_DUE_NOTICE',
@@ -84,6 +86,13 @@ ON "billing_schedule"("last_generated_bill_id");
 
 CREATE UNIQUE INDEX "subscription_automation_job_idempotency_key_key"
 ON "subscription_automation_job"("idempotency_key");
+
+CREATE UNIQUE INDEX "collection_case_one_active_per_order_key"
+ON "collection_case"("order_id")
+WHERE "case_status" = 'ACTIVE' AND "deleted_at" IS NULL;
+
+CREATE UNIQUE INDEX "collection_case_bill_case_id_bill_id_key"
+ON "collection_case_bill"("case_id", "bill_id");
 
 CREATE INDEX "subscription_automation_job_job_status_available_at_idx"
 ON "subscription_automation_job"("job_status", "available_at");

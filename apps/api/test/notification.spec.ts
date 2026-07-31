@@ -103,6 +103,44 @@ describe("NotificationService", () => {
     expect(harness.provider.send).toHaveBeenCalledTimes(2);
   });
 
+  it("does not resend after provider success when persisting the result fails", async () => {
+    const harness = createNotificationHarness();
+    harness.prisma.notificationRecord.update.mockRejectedValueOnce(
+      new Error("database unavailable after provider success")
+    );
+    const input = {
+      aggregateId: "00000000-0000-4000-8000-000000000003",
+      aggregateType: "ReceivableBill",
+      billId: "00000000-0000-4000-8000-000000000003",
+      content: "月租账单即将到期。",
+      customerId: "customer-a",
+      eventType: NotificationEventType.BILL_DUE,
+      idempotencyKey:
+        "bill-due-notice:00000000-0000-4000-8000-000000000003",
+      notificationType: NotificationType.BILL_DUE,
+      title: "月租账单到期提醒",
+      url: "/portal/billing"
+    };
+
+    await expect(
+      harness.service.notifyBillLifecycle(input)
+    ).rejects.toThrow("database unavailable after provider success");
+    await expect(
+      harness.service.notifyBillLifecycle(input)
+    ).rejects.toThrow("BILL_NOTIFICATION_INCOMPLETE");
+
+    expect(harness.provider.send).toHaveBeenCalledTimes(1);
+    expect(
+      harness.records.find(
+        (record) =>
+          record.channel ===
+          NotificationChannel.WECHAT_OFFICIAL_ACCOUNT
+      )
+    ).toMatchObject({
+      notificationStatus: NotificationStatus.PROCESSING
+    });
+  });
+
   it("creates in-app and mock WeChat notifications for a customer event", async () => {
     const harness = createNotificationHarness();
 
@@ -615,6 +653,7 @@ function createNotificationHarness(
       });
     },
     events,
+    prisma,
     provider,
     records,
     service,
@@ -711,6 +750,11 @@ function filterRecords(records: any[], where: any = {}) {
       return false;
     }
     if (where.notificationStatus?.not && record.notificationStatus === where.notificationStatus.not)
+      return false;
+    if (
+      where.notificationStatus?.in &&
+      !where.notificationStatus.in.includes(record.notificationStatus)
+    )
       return false;
     return true;
   });

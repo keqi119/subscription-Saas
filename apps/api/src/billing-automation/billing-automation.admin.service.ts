@@ -111,7 +111,19 @@ export class BillingAutomationAdminService {
     const { page, pageSize, skip } = pagination(query);
     const where = {
       ...(query.billId ? { billId: query.billId } : {}),
-      ...(query.jobStatus ? { jobStatus: query.jobStatus } : {}),
+      ...(query.jobStatus
+        ? { jobStatus: query.jobStatus }
+        : query.actionableOnly
+          ? {
+              jobStatus: {
+                in: [
+                  SubscriptionAutomationJobStatus.PENDING,
+                  SubscriptionAutomationJobStatus.PROCESSING,
+                  SubscriptionAutomationJobStatus.DEAD_LETTER
+                ]
+              }
+            }
+          : {}),
       ...(query.jobType ? { jobType: query.jobType } : {}),
       ...(query.orderId ? { orderId: query.orderId } : {})
     };

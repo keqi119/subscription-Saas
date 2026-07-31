@@ -44,6 +44,17 @@ export class BillingScheduleQueryDto extends BillingAutomationPageQueryDto {
 }
 
 export class BillingAutomationJobQueryDto extends BillingAutomationPageQueryDto {
+  @Transform(({ value }) =>
+    value === true || value === "true"
+      ? true
+      : value === false || value === "false"
+        ? false
+        : value
+  )
+  @IsBoolean()
+  @IsOptional()
+  actionableOnly?: boolean;
+
   @IsUUID()
   @IsOptional()
   billId?: string;

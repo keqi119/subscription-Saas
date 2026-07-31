@@ -866,6 +866,7 @@ enum NotificationType {
 
 enum NotificationStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
   SKIPPED
@@ -4722,6 +4723,7 @@ model CollectionCaseBill {
   @@index([billId])
   @@index([orderId])
   @@index([customerId])
+  @@unique([caseId, billId], map: "collection_case_bill_case_id_bill_id_key")
   @@map("collection_case_bill")
 }
 

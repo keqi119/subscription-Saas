@@ -514,6 +514,44 @@ describe("billing finance minimum backend loop", () => {
     expect(harness.state.collectionCaseBills).toHaveLength(1);
   });
 
+  it("re-reads a bill after locking so concurrent settlement wins over overdue marking", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const generated =
+      await harness.service.generateMonthlyRentBillForCycle(
+        harness.prisma as never,
+        {
+          actorId: null,
+          cycleNo: 1,
+          orderId: harness.orderId,
+          periodEnd: dateOnly("2026-08-09"),
+          periodStart: dateOnly("2026-07-10"),
+          sourceKey: "monthly-rent:order-1:2026-07-10"
+        }
+      );
+    harness.prisma.$queryRaw.mockImplementationOnce(async () => {
+      Object.assign(harness.state.bills[0]!, {
+        billStatus: BillStatus.PAID,
+        paidAmount: 300000n,
+        remainingAmount: 0n
+      });
+      return [{ id: generated.bill.id }];
+    });
+
+    const result = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+
+    expect(result.action).toBe("SKIPPED_SETTLED");
+    expect(harness.state.bills[0]).toMatchObject({
+      billStatus: BillStatus.PAID,
+      remainingAmount: 0n
+    });
+    expect(harness.state.collectionCases).toHaveLength(0);
+  });
+
   it("rejects monthly rent generation when order is not ACTIVE", async () => {
     const harness = createFinanceHarness();
 
@@ -578,6 +616,24 @@ describe("billing finance minimum backend loop", () => {
       created: true
     });
     expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(2);
+  });
+
+  it("uses the delivery anchor for month-end periods in manual generation", async () => {
+    const harness = createFinanceHarness({
+      actualDeliveryAt: new Date("2026-01-31T02:00:00.000Z"),
+      orderStatus: OrderStatus.ACTIVE
+    });
+
+    const bill = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { billPeriodEnd: string; billPeriodStart: string };
+
+    expect(bill).toMatchObject({
+      billPeriodEnd: "2026-03-30",
+      billPeriodStart: "2026-02-28"
+    });
   });
 
   it("returns an existing monthly rent bill when the same period already exists", async () => {
@@ -1489,6 +1545,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   state.orders.push(state.order);
 
   const client = {
+    $queryRaw: vi.fn(async () => [] as Array<{ id: string }>),
     collectionAction: {
       create: vi.fn(async ({ data }) => {
         const action = {

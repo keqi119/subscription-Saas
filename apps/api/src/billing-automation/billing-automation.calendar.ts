@@ -13,7 +13,14 @@ export interface BillingCycle {
 export function buildInitialBillingCycle(
   actualDeliveryAt: Date
 ): BillingCycle {
-  return buildBillingCycle(toChinaBusinessDate(actualDeliveryAt), 1);
+  return buildBillingCycleForDelivery(actualDeliveryAt, 1);
+}
+
+export function buildBillingCycleForDelivery(
+  actualDeliveryAt: Date,
+  cycleNo: number
+): BillingCycle {
+  return buildBillingCycle(toBillingBusinessDate(actualDeliveryAt), cycleNo);
 }
 
 export function buildNextBillingCycle(current: BillingCycle): BillingCycle {
@@ -37,6 +44,18 @@ export function overdueNoticeJobKey(billId: string) {
   return `bill-overdue-notice:${billId}`;
 }
 
+export function toBillingBusinessDate(value: Date) {
+  assertValidDate(value);
+  const shifted = new Date(value.getTime() + CHINA_TIME_OFFSET_MS);
+  return new Date(
+    Date.UTC(
+      shifted.getUTCFullYear(),
+      shifted.getUTCMonth(),
+      shifted.getUTCDate()
+    )
+  );
+}
+
 function buildBillingCycle(anchorDate: Date, cycleNo: number): BillingCycle {
   assertValidDate(anchorDate);
   assertPositiveCycleNo(cycleNo);
@@ -57,18 +76,6 @@ function buildBillingCycle(anchorDate: Date, cycleNo: number): BillingCycle {
     periodEnd,
     periodStart
   };
-}
-
-function toChinaBusinessDate(value: Date) {
-  assertValidDate(value);
-  const shifted = new Date(value.getTime() + CHINA_TIME_OFFSET_MS);
-  return new Date(
-    Date.UTC(
-      shifted.getUTCFullYear(),
-      shifted.getUTCMonth(),
-      shifted.getUTCDate()
-    )
-  );
 }
 
 function addMonthsClamped(value: Date, months: number) {

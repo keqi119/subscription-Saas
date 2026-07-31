@@ -48,7 +48,19 @@ describe("BillingAutomationService", () => {
     expect(preview).toMatchObject({
       createdCount: 1,
       dryRun: true,
-      eligibleCount: 1
+      eligibleCount: 1,
+      items: [
+        {
+          action: "WOULD_CREATE",
+          amountSource: "ORDER_MONTHLY_FEE",
+          basisBillId: null,
+          monthlyRentAmount: 300000,
+          nextCycleNo: 1,
+          nextGenerateAt: "2026-07-07",
+          nextPeriodEnd: "2026-08-09",
+          nextPeriodStart: "2026-07-10"
+        }
+      ]
     });
     expect(harness.schedules).toHaveLength(0);
 
@@ -68,6 +80,68 @@ describe("BillingAutomationService", () => {
     expect(harness.schedules[0]?.status).toBe(
       BillingScheduleStatus.PAUSED
     );
+  });
+
+  it("starts reconciliation after an existing current-period bill", async () => {
+    const harness = createHarness();
+    const existingBillId = randomUUID();
+    harness.bills.push({
+      billPeriodEnd: new Date("2026-08-09T00:00:00.000Z"),
+      billPeriodStart: new Date("2026-07-10T00:00:00.000Z"),
+      billStatus: BillStatus.PENDING,
+      billType: "MONTHLY_RENT",
+      deletedAt: null,
+      id: existingBillId,
+      sourceKey: null
+    });
+
+    const result = await harness.service.reconcileSchedules({
+      dryRun: false
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        action: "CREATED",
+        baselineReason: "EXISTING_BILL",
+        basisBillId: existingBillId,
+        nextCycleNo: 2,
+        nextGenerateAt: "2026-08-07",
+        nextPeriodEnd: "2026-09-09",
+        nextPeriodStart: "2026-08-10"
+      })
+    ]);
+    expect(harness.schedules[0]).toMatchObject({
+      nextCycleNo: 2,
+      nextGenerateAt: new Date("2026-08-07T00:00:00.000Z"),
+      nextPeriodEnd: new Date("2026-09-09T00:00:00.000Z"),
+      nextPeriodStart: new Date("2026-08-10T00:00:00.000Z")
+    });
+  });
+
+  it("baselines an old lease at the current period instead of replaying history", async () => {
+    const harness = createHarness();
+    harness.order.actualDeliveryAt = new Date(
+      "2026-01-10T02:00:00.000Z"
+    );
+
+    const result = await harness.service.reconcileSchedules({
+      dryRun: false
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        baselineReason: "CURRENT_PERIOD",
+        basisBillId: null,
+        nextCycleNo: 5,
+        nextGenerateAt: "2026-06-07",
+        nextPeriodEnd: "2026-07-09",
+        nextPeriodStart: "2026-06-10"
+      })
+    ]);
+    expect(harness.schedules[0]).toMatchObject({
+      nextCycleNo: 5,
+      nextPeriodStart: new Date("2026-06-10T00:00:00.000Z")
+    });
   });
 
   it("enqueues a due schedule once across repeated dispatcher scans", async () => {
@@ -166,6 +240,63 @@ describe("BillingAutomationService", () => {
     expect(harness.jobs.size).toBe(0);
   });
 
+  it("reports a claimed generation job as deferred when its schedule is paused", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.schedules[0]!.status = BillingScheduleStatus.PAUSED;
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).rejects.toMatchObject({
+      code: "BILLING_SCHEDULE_PAUSED",
+      retryable: true
+    });
+    expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
+  });
+
+  it("completes without billing when the current period starts after the contract ends", async () => {
+    const harness = createHarness();
+    harness.order.endDate = new Date("2026-07-09T00:00:00.000Z");
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+
+    const result = await harness.service.generateScheduledMonthlyRent(
+      claimedJob({
+        billingScheduleId: schedule.id,
+        idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+        orderId: harness.order.id
+      })
+    );
+
+    expect(result).toEqual({
+      billId: null,
+      completed: true,
+      created: false,
+      sourceKey: `monthly-rent:${harness.order.id}:2026-07-10`
+    });
+    expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
+    expect(harness.schedules[0]).toMatchObject({
+      completedAt: new Date("2026-07-07T00:00:00.000Z"),
+      lastGeneratedBillId: null,
+      status: BillingScheduleStatus.COMPLETED,
+      version: 1
+    });
+    expect(harness.jobs.size).toBe(0);
+  });
+
   it("enqueues one overdue notification only after an overdue fact is confirmed", async () => {
     const harness = createHarness();
     const billId = randomUUID();
@@ -193,6 +324,13 @@ describe("BillingAutomationService", () => {
         idempotencyKey: `bill-overdue-notice:${billId}`,
         jobType:
           SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+      })
+    ]);
+    expect(harness.audits).toEqual([
+      expect.objectContaining({
+        entityId: billId,
+        entityType: "receivable_bill",
+        operatorId: null
       })
     ]);
   });
@@ -235,6 +373,9 @@ function createHarness() {
     },
     orderNo: "ORD-1",
     orderStatus: OrderStatus.ACTIVE
+    ,
+    monthlyFeeAmount: 300000n,
+    quoteSnapshot: null
   };
   const schedules: Array<Record<string, unknown>> = [];
   const bills: Array<Record<string, unknown>> = [];
@@ -339,7 +480,8 @@ function createHarness() {
             billingSchedule:
               schedules.find(
                 (schedule) => schedule.orderId === order.id
-              ) ?? null
+              ) ?? null,
+            receivableBills: bills
           }
         ];
       }

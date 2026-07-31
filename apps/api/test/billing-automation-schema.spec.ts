@@ -1,5 +1,6 @@
 import {
   BillingScheduleStatus,
+  NotificationStatus,
   Prisma,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType
@@ -52,6 +53,25 @@ describe("billing automation persistence contract", () => {
     });
     expect(migrationSql()).toContain(
       'CREATE UNIQUE INDEX "receivable_bill_source_key_key"'
+    );
+  });
+
+  it("enforces one active collection case per order and one bill link per case", () => {
+    expect(migrationSql()).toContain(
+      'CREATE UNIQUE INDEX "collection_case_one_active_per_order_key"'
+    );
+    expect(migrationSql()).toContain(
+      'WHERE "case_status" = \'ACTIVE\' AND "deleted_at" IS NULL'
+    );
+    expect(migrationSql()).toContain(
+      'CREATE UNIQUE INDEX "collection_case_bill_case_id_bill_id_key"'
+    );
+  });
+
+  it("persists a pre-send processing state for external notifications", () => {
+    expect(NotificationStatus.PROCESSING).toBe("PROCESSING");
+    expect(migrationSql()).toContain(
+      'ALTER TYPE "notification_status" ADD VALUE \'PROCESSING\''
     );
   });
 

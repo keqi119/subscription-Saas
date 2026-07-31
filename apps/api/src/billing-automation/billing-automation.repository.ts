@@ -87,7 +87,7 @@ export class BillingAutomationRepository {
           "subscription_automation_job"."available_at" ASC,
           "subscription_automation_job"."created_at" ASC
         LIMIT ${limit}
-        FOR UPDATE SKIP LOCKED
+        FOR UPDATE OF "subscription_automation_job" SKIP LOCKED
       `);
       const ids = candidates.map(({ id }) => id);
 
@@ -161,6 +161,28 @@ export class BillingAutomationRepository {
           jobStatus: SubscriptionAutomationJobStatus.PENDING,
           lastErrorCode: input.error.code,
           lastErrorMessage: input.error.message,
+          leaseExpiresAt: null,
+          leaseToken: null
+        },
+        where: processingLease(jobId, leaseToken)
+      });
+      return updated.count === 1;
+    });
+  }
+
+  async defer(
+    jobId: string,
+    leaseToken: string,
+    reason: BillingAutomationFailure
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const availableAt = await databaseAvailableAt(tx, 0);
+      const updated = await tx.subscriptionAutomationJob.updateMany({
+        data: {
+          availableAt,
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          lastErrorCode: reason.code,
+          lastErrorMessage: reason.message,
           leaseExpiresAt: null,
           leaseToken: null
         },

@@ -103,6 +103,23 @@ interface ReconcileResult {
   dryRun: boolean;
   eligibleCount: number;
   existingCount: number;
+  items: ReconcileItem[];
+}
+
+interface ReconcileItem {
+  action: "EXISTING" | "CREATED" | "WOULD_CREATE";
+  amountSource: string;
+  baselineReason: string;
+  basisBillId: string | null;
+  basisPeriodStart: string | null;
+  monthlyRentAmount: number | null;
+  nextCycleNo: number;
+  nextGenerateAt: string;
+  nextPeriodEnd: string;
+  nextPeriodStart: string;
+  orderId: string;
+  orderNo: string;
+  scheduleId: string | null;
 }
 
 interface MonthlyRentBatchFormValues {
@@ -161,6 +178,17 @@ export default function MonthlyRentAutomationPage() {
   const [summary, setSummary] = useState<AutomationSummary | null>(null);
   const [schedules, setSchedules] = useState<BillingScheduleItem[]>([]);
   const [jobs, setJobs] = useState<BillingJobItem[]>([]);
+  const [schedulePage, setSchedulePage] = useState({
+    current: 1,
+    pageSize: 10,
+    total: 0
+  });
+  const [jobPage, setJobPage] = useState({
+    current: 1,
+    pageSize: 10,
+    total: 0
+  });
+  const [showJobHistory, setShowJobHistory] = useState(false);
   const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
   const [pauseTarget, setPauseTarget] = useState<BillingScheduleItem | null>(null);
   const [manualSubmitting, setManualSubmitting] = useState(false);
@@ -179,22 +207,45 @@ export default function MonthlyRentAutomationPage() {
   const loadAutomation = useCallback(async () => {
     setAutomationLoading(true);
     try {
-      const [nextSummary, schedulePage, jobPage] = await Promise.all([
+      const [nextSummary, scheduleResult, jobResult] = await Promise.all([
         apiFetch<AutomationSummary>("/billing/automation/summary"),
         apiFetch<PageResult<BillingScheduleItem>>(
-          "/billing/automation/schedules?page=1&pageSize=50"
+          `/billing/automation/schedules?page=${schedulePage.current}&pageSize=${schedulePage.pageSize}`
         ),
-        apiFetch<PageResult<BillingJobItem>>("/billing/automation/jobs?page=1&pageSize=50")
+        apiFetch<PageResult<BillingJobItem>>(
+          `/billing/automation/jobs?page=${jobPage.current}&pageSize=${jobPage.pageSize}${
+            showJobHistory ? "" : "&actionableOnly=true"
+          }`
+        )
       ]);
       setSummary(nextSummary);
-      setSchedules(schedulePage.items);
-      setJobs(jobPage.items);
+      setSchedules(scheduleResult.items);
+      setJobs(jobResult.items);
+      setSchedulePage((current) => ({
+        ...current,
+        current: scheduleResult.page,
+        pageSize: scheduleResult.pageSize,
+        total: scheduleResult.total
+      }));
+      setJobPage((current) => ({
+        ...current,
+        current: jobResult.page,
+        pageSize: jobResult.pageSize,
+        total: jobResult.total
+      }));
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
       setAutomationLoading(false);
     }
-  }, [message]);
+  }, [
+    jobPage.current,
+    jobPage.pageSize,
+    message,
+    schedulePage.current,
+    schedulePage.pageSize,
+    showJobHistory
+  ]);
 
   useEffect(() => {
     apiFetch<AuthMeResponse>("/auth/me")
@@ -330,6 +381,56 @@ export default function MonthlyRentAutomationPage() {
       setManualSubmitting(false);
     }
   }
+
+  const reconcileColumns: ColumnsType<ReconcileItem> = [
+    {
+      dataIndex: "orderNo",
+      render: (value: string, record) => (
+        <Link href={`/orders/${record.orderId}`}>{value}</Link>
+      ),
+      title: "订单",
+      width: 170
+    },
+    {
+      dataIndex: "action",
+      render: (value: ReconcileItem["action"]) =>
+        ({
+          CREATED: "已创建",
+          EXISTING: "已有计划",
+          WOULD_CREATE: "预计创建"
+        })[value],
+      title: "协调结果",
+      width: 100
+    },
+    {
+      render: (_, record) =>
+        `${formatDate(record.nextPeriodStart)} 至 ${formatDate(record.nextPeriodEnd)}`,
+      title: "下一账期",
+      width: 210
+    },
+    {
+      dataIndex: "nextGenerateAt",
+      render: formatAutomationDate,
+      title: "计划生成时间",
+      width: 170
+    },
+    {
+      render: (_, record) =>
+        record.monthlyRentAmount === null
+          ? "缺少月租金额"
+          : `¥${(record.monthlyRentAmount / 100).toFixed(2)}（${record.amountSource}）`,
+      title: "月租金额来源",
+      width: 220
+    },
+    {
+      render: (_, record) =>
+        record.basisBillId
+          ? `${record.basisBillId} / ${formatDate(record.basisPeriodStart)}`
+          : record.baselineReason,
+      title: "期初依据",
+      width: 260
+    }
+  ];
 
   const scheduleColumns: ColumnsType<BillingScheduleItem> = [
     {
@@ -616,17 +717,32 @@ export default function MonthlyRentAutomationPage() {
             size="small"
           />
           {reconcileResult ? (
-            <Alert
-              message={
-                reconcileResult.dryRun ? "当前为协调预览，未写入任何计划。" : "账单计划协调已执行。"
-              }
-              description={`符合条件 ${reconcileResult.eligibleCount} 单；已有计划 ${reconcileResult.existingCount} 单；${
-                reconcileResult.dryRun ? "预计新增" : "实际新增"
-              } ${reconcileResult.createdCount} 单。`}
-              showIcon
-              style={{ marginTop: 16 }}
-              type={reconcileResult.dryRun ? "info" : "success"}
-            />
+            <Space
+              orientation="vertical"
+              size={12}
+              style={{ marginTop: 16, width: "100%" }}
+            >
+              <Alert
+                message={
+                  reconcileResult.dryRun
+                    ? "当前为协调预览，未写入任何计划。"
+                    : "账单计划协调已执行。"
+                }
+                description={`符合条件 ${reconcileResult.eligibleCount} 单；已有计划 ${reconcileResult.existingCount} 单；${
+                  reconcileResult.dryRun ? "预计新增" : "实际新增"
+                } ${reconcileResult.createdCount} 单。`}
+                showIcon
+                type={reconcileResult.dryRun ? "info" : "success"}
+              />
+              <Table
+                columns={reconcileColumns}
+                dataSource={reconcileResult.items}
+                pagination={{ pageSize: 10 }}
+                rowKey="orderId"
+                scroll={{ x: 1130 }}
+                size="small"
+              />
+            </Space>
           ) : null}
         </Card>
 
@@ -635,19 +751,56 @@ export default function MonthlyRentAutomationPage() {
             columns={scheduleColumns}
             dataSource={schedules}
             loading={automationLoading}
-            pagination={{ pageSize: 10, showSizeChanger: true }}
+            onChange={(pagination) =>
+              setSchedulePage((current) => ({
+                ...current,
+                current: pagination.current ?? 1,
+                pageSize: pagination.pageSize ?? current.pageSize
+              }))
+            }
+            pagination={{
+              current: schedulePage.current,
+              pageSize: schedulePage.pageSize,
+              showSizeChanger: true,
+              total: schedulePage.total
+            }}
             rowKey="id"
             scroll={{ x: 1260 }}
             size="small"
           />
         </Card>
 
-        <Card title="自动化任务与异常">
+        <Card
+          extra={
+            <Checkbox
+              checked={showJobHistory}
+              onChange={(event) => {
+                setShowJobHistory(event.target.checked);
+                setJobPage((current) => ({ ...current, current: 1 }));
+              }}
+            >
+              包含已完成历史
+            </Checkbox>
+          }
+          title="自动化任务与异常"
+        >
           <Table
             columns={jobColumns}
             dataSource={jobs}
             loading={automationLoading}
-            pagination={{ pageSize: 10, showSizeChanger: true }}
+            onChange={(pagination) =>
+              setJobPage((current) => ({
+                ...current,
+                current: pagination.current ?? 1,
+                pageSize: pagination.pageSize ?? current.pageSize
+              }))
+            }
+            pagination={{
+              current: jobPage.current,
+              pageSize: jobPage.pageSize,
+              showSizeChanger: true,
+              total: jobPage.total
+            }}
             rowKey="id"
             scroll={{ x: 1300 }}
             size="small"

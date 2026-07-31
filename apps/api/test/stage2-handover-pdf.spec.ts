@@ -1623,9 +1623,13 @@ function createServiceHarness(options: {
     $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) => {
       const sql = query.strings?.join(" ") ?? "";
-      return sql.includes("SELECT now()")
-        ? [{ now: new Date("2026-07-25T10:00:00.000Z") }]
-        : [records.handover];
+      if (sql.includes('AS "availableAt"')) {
+        return [{ availableAt: new Date("2026-07-25T10:00:00.000Z") }];
+      }
+      if (sql.includes("SELECT now()")) {
+        return [{ now: new Date("2026-07-25T10:00:00.000Z") }];
+      }
+      return [records.handover];
     }),
     contract: {
       create: vi.fn(async ({ data }) => {

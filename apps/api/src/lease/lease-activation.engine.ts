@@ -14,6 +14,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { BillingAutomationService } from "../billing-automation/billing-automation.service";
 import {
   DeliveryEvidenceReadiness,
   DeliveryEvidenceService
@@ -43,7 +44,9 @@ export class LeaseActivationEngine {
     @Inject(LEASE_ACTIVATION_CLOCK)
     private readonly clock: LeaseActivationClock = () => new Date(),
     @Optional()
-    private readonly deliveryEvidenceService?: DeliveryEvidenceService
+    private readonly deliveryEvidenceService?: DeliveryEvidenceService,
+    @Optional()
+    private readonly billingAutomationService?: BillingAutomationService
   ) {}
 
   async evaluate(orderId: string): Promise<LeaseActivationResult> {
@@ -142,34 +145,53 @@ export class LeaseActivationEngine {
       });
     }
 
-    const existing = await this.prisma.lease.findUnique({ where: { orderId } });
-    const order = await this.prisma.subscriptionOrder.findUnique({
-      select: { actualDeliveryAt: true, deletedAt: true, id: true },
-      where: { id: orderId }
-    });
-    if (!order || order.deletedAt || !order.actualDeliveryAt) {
-      throw new BadRequestException("DELIVERY_CONFIRMED");
-    }
-    const activatedAt = order.actualDeliveryAt;
-    const lease =
-      existing && !existing.deletedAt
-        ? await this.prisma.lease.update({
-            data: {
-              activatedAt,
-              status: LeaseStatus.ACTIVE,
-              updatedBy: user?.id
-            },
-            where: { id: existing.id }
-          })
-        : await this.prisma.lease.create({
-            data: {
-              activatedAt,
-              createdBy: user?.id,
-              orderId,
-              status: LeaseStatus.ACTIVE,
-              updatedBy: user?.id
-            }
-          });
+    const { existing, lease } = await this.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.lease.findUnique({
+          where: { orderId }
+        });
+        const order = await tx.subscriptionOrder.findUnique({
+          select: {
+            actualDeliveryAt: true,
+            deletedAt: true,
+            id: true
+          },
+          where: { id: orderId }
+        });
+        if (!order || order.deletedAt || !order.actualDeliveryAt) {
+          throw new BadRequestException("DELIVERY_CONFIRMED");
+        }
+        const activatedAt = order.actualDeliveryAt;
+        const lease =
+          existing && !existing.deletedAt
+            ? await tx.lease.update({
+                data: {
+                  activatedAt,
+                  status: LeaseStatus.ACTIVE,
+                  updatedBy: user?.id
+                },
+                where: { id: existing.id }
+              })
+            : await tx.lease.create({
+                data: {
+                  activatedAt,
+                  createdBy: user?.id,
+                  orderId,
+                  status: LeaseStatus.ACTIVE,
+                  updatedBy: user?.id
+                }
+              });
+        if (!this.billingAutomationService) {
+          throw new Error("Billing automation service is unavailable.");
+        }
+        await this.billingAutomationService.ensureActiveSchedule(
+          tx,
+          orderId,
+          activatedAt
+        );
+        return { existing, lease };
+      }
+    );
 
     await this.auditService.write({
       action: existing && !existing.deletedAt ? AuditAction.UPDATE : AuditAction.CREATE,

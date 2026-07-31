@@ -26,6 +26,7 @@ describe("Stage 2 workflow customer confirmation", () => {
     });
     expect(harness.jobs).toHaveLength(1);
     expect(harness.jobs[0]).toMatchObject({
+      availableAt: harness.databaseNow,
       handoverId: harness.workOrder.handoverId,
       idempotencyKey:
         `pdf:${harness.workOrder.id}:${harness.reviewAttempt.id}:${harness.manifestHash}`,
@@ -294,8 +295,10 @@ function createConfirmationHarness(options: {
   }).manifestHash;
   const jobs: Array<Record<string, unknown>> = [];
   let transactionActive = false;
+  const databaseNow = new Date("2026-07-25T10:00:00.000Z");
 
   const transactionClient = {
+    $queryRaw: vi.fn(async () => [{ availableAt: databaseNow }]),
     vehicleHandoverReviewAttempt: {
       create: vi.fn(),
       findFirst: vi.fn(async () => reviewAttempt),
@@ -396,6 +399,7 @@ function createConfirmationHarness(options: {
 
   return {
     customerId,
+    databaseNow,
     jobs,
     manifestHash,
     prisma,

@@ -16,6 +16,8 @@ import {
   PaymentMethod,
   PaymentStatus,
   QuoteStatus,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleDamageLevel,
   VehicleDamageResponsibleParty,
   VehicleDamageType,
@@ -218,6 +220,62 @@ describe("billing finance minimum backend loop", () => {
     });
   });
 
+  it("cancels pending billing jobs when a bill is fully settled", async () => {
+    const harness = createFinanceHarness();
+    await harness.service.generateInitialBills(
+      harness.orderId,
+      harness.user,
+      harness.context
+    );
+    const payment = await harness.createPayment(300000);
+    const bill = harness.findBill(BillType.FIRST_MONTHLY_FEE);
+    const cancellableTypes = [
+      SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
+      SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+    ];
+    for (const [index, jobType] of cancellableTypes.entries()) {
+      harness.state.automationJobs.push({
+        billId: bill.id,
+        id: `automation-job-${index + 1}`,
+        jobStatus: SubscriptionAutomationJobStatus.PENDING,
+        jobType
+      });
+    }
+    harness.state.automationJobs.push({
+      billId: bill.id,
+      id: "automation-job-completed",
+      jobStatus: SubscriptionAutomationJobStatus.COMPLETED,
+      jobType: SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE
+    });
+
+    await harness.service.writeOffPayment(
+      payment.id,
+      {
+        items: [
+          { billId: bill.id, writeOffAmount: 300000 }
+        ]
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(
+      harness.state.automationJobs
+        .filter((job) => job.id !== "automation-job-completed")
+        .map((job) => job.jobStatus)
+    ).toEqual([
+      SubscriptionAutomationJobStatus.CANCELLED,
+      SubscriptionAutomationJobStatus.CANCELLED,
+      SubscriptionAutomationJobStatus.CANCELLED
+    ]);
+    expect(
+      harness.state.automationJobs.find(
+        (job) => job.id === "automation-job-completed"
+      )?.jobStatus
+    ).toBe(SubscriptionAutomationJobStatus.COMPLETED);
+  });
+
   it("creates a confirmed deposit COLLECT ledger when the deposit bill is fully written off", async () => {
     const harness = createFinanceHarness();
     await harness.service.generateInitialBills(harness.orderId, harness.user, harness.context);
@@ -373,6 +431,7 @@ describe("billing finance minimum backend loop", () => {
       billType: BillType;
       created: boolean;
       dueDate: string;
+      sourceKey: string;
     };
 
     expect(bill).toMatchObject({
@@ -382,8 +441,115 @@ describe("billing finance minimum backend loop", () => {
       billStatus: BillStatus.PENDING,
       billType: BillType.MONTHLY_RENT,
       created: true,
-      dueDate: "2026-07-10T00:00:00.000Z"
+      dueDate: "2026-07-10T00:00:00.000Z",
+      sourceKey: "monthly-rent:order-1:2026-07-10"
     });
+  });
+
+  it("creates one source-keyed monthly rent bill for an automation cycle", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const input = {
+      actorId: null,
+      cycleNo: 1,
+      orderId: harness.orderId,
+      periodEnd: dateOnly("2026-08-09"),
+      periodStart: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    };
+
+    const first = await harness.service.generateMonthlyRentBillForCycle(
+      harness.prisma as never,
+      input
+    );
+    const second = await harness.service.generateMonthlyRentBillForCycle(
+      harness.prisma as never,
+      input
+    );
+
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.bill.id).toBe(first.bill.id);
+    expect(harness.state.bills).toHaveLength(1);
+    expect(harness.state.bills[0]).toMatchObject({
+      billPeriodEnd: dateOnly("2026-08-09"),
+      billPeriodStart: dateOnly("2026-07-10"),
+      dueDate: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    });
+  });
+
+  it("marks a D+5 monthly bill overdue and creates one collection link", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const input = {
+      actorId: null,
+      cycleNo: 1,
+      orderId: harness.orderId,
+      periodEnd: dateOnly("2026-08-09"),
+      periodStart: dateOnly("2026-07-10"),
+      sourceKey: "monthly-rent:order-1:2026-07-10"
+    };
+    const generated =
+      await harness.service.generateMonthlyRentBillForCycle(
+        harness.prisma as never,
+        input
+      );
+
+    const first = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+    const second = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+
+    expect(first.action).toBe("MARKED_OVERDUE");
+    expect(second.action).toBe("ALREADY_OVERDUE");
+    expect(harness.state.bills[0]?.billStatus).toBe(BillStatus.OVERDUE);
+    expect(harness.state.collectionCases).toHaveLength(1);
+    expect(harness.state.collectionCaseBills).toHaveLength(1);
+  });
+
+  it("re-reads a bill after locking so concurrent settlement wins over overdue marking", async () => {
+    const harness = createFinanceHarness();
+    activateMonthlyOrder(harness);
+    const generated =
+      await harness.service.generateMonthlyRentBillForCycle(
+        harness.prisma as never,
+        {
+          actorId: null,
+          cycleNo: 1,
+          orderId: harness.orderId,
+          periodEnd: dateOnly("2026-08-09"),
+          periodStart: dateOnly("2026-07-10"),
+          sourceKey: "monthly-rent:order-1:2026-07-10"
+        }
+      );
+    harness.prisma.$queryRaw.mockImplementationOnce(async () => {
+      Object.assign(harness.state.bills[0]!, {
+        billStatus: BillStatus.PAID,
+        paidAmount: 300000n,
+        remainingAmount: 0n
+      });
+      return [{ id: generated.bill.id }];
+    });
+
+    const result = await harness.service.markBillOverdueForAutomation(
+      harness.prisma as never,
+      generated.bill.id,
+      dateOnly("2026-07-15")
+    );
+
+    expect(result.action).toBe("SKIPPED_SETTLED");
+    expect(harness.state.bills[0]).toMatchObject({
+      billStatus: BillStatus.PAID,
+      remainingAmount: 0n
+    });
+    expect(harness.state.collectionCases).toHaveLength(0);
   });
 
   it("rejects monthly rent generation when order is not ACTIVE", async () => {
@@ -450,6 +616,24 @@ describe("billing finance minimum backend loop", () => {
       created: true
     });
     expect(harness.state.bills.filter((bill) => bill.billType === BillType.MONTHLY_RENT)).toHaveLength(2);
+  });
+
+  it("uses the delivery anchor for month-end periods in manual generation", async () => {
+    const harness = createFinanceHarness({
+      actualDeliveryAt: new Date("2026-01-31T02:00:00.000Z"),
+      orderStatus: OrderStatus.ACTIVE
+    });
+
+    const bill = (await harness.service.generateNextMonthlyRentBill(
+      harness.orderId,
+      harness.user,
+      harness.context
+    )) as { billPeriodEnd: string; billPeriodStart: string };
+
+    expect(bill).toMatchObject({
+      billPeriodEnd: "2026-03-30",
+      billPeriodStart: "2026-02-28"
+    });
   });
 
   it("returns an existing monthly rent bill when the same period already exists", async () => {
@@ -1291,6 +1475,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   };
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state = {
+    automationJobs: [] as Array<Record<string, unknown>>,
     bills: [] as Array<Record<string, unknown>>,
     collectionActions: [] as Array<Record<string, unknown>>,
     collectionCaseBills: [] as Array<Record<string, unknown>>,
@@ -1360,6 +1545,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
   state.orders.push(state.order);
 
   const client = {
+    $queryRaw: vi.fn(async () => [] as Array<{ id: string }>),
     collectionAction: {
       create: vi.fn(async ({ data }) => {
         const action = {
@@ -1547,6 +1733,23 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     subscriptionOrder: {
       findMany: vi.fn(async ({ where }) => filterOrders(state.orders, where)),
       findUnique: vi.fn(async ({ where }) => state.orders.find((order) => order.id === where.id) ?? null)
+    },
+    subscriptionAutomationJob: {
+      updateMany: vi.fn(async ({ data, where }) => {
+        const matches = state.automationJobs.filter(
+          (job) =>
+            (!where.billId?.in ||
+              where.billId.in.includes(job.billId)) &&
+            (!where.jobStatus ||
+              job.jobStatus === where.jobStatus) &&
+            (!where.jobType?.in ||
+              where.jobType.in.includes(job.jobType))
+        );
+        for (const job of matches) {
+          Object.assign(job, data);
+        }
+        return { count: matches.length };
+      })
     },
     vehicleReturn: {
       findUnique: vi.fn(async ({ where }) => {

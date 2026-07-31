@@ -717,6 +717,7 @@ function createPortalReviewHarness(options: {
   };
 
   const prisma = {
+    $queryRaw: vi.fn(async () => [{ availableAt: now }]),
     contract: { create: vi.fn() },
     contractESignTask: { create: vi.fn() },
     lease: { create: vi.fn() },

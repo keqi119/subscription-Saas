@@ -5,6 +5,7 @@ import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
 import { AuditModule } from "./audit/audit.module";
 import { AuthModule } from "./auth/auth.module";
+import { BillingAutomationModule } from "./billing-automation/billing-automation.module";
 import { CustomerModule } from "./customer/customer.module";
 import { ESignModule } from "./esign/esign.module";
 import { FleetOpsModule } from "./fleet-ops/fleet-ops.module";
@@ -41,6 +42,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     PrismaModule,
     AuditModule,
     AuthModule,
+    BillingAutomationModule,
     CustomerModule,
     ESignModule,
     FleetOpsModule,

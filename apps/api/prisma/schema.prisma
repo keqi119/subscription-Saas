@@ -402,6 +402,34 @@ enum BillStatus {
   @@map("bill_status")
 }
 
+enum BillingScheduleStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+
+  @@map("billing_schedule_status")
+}
+
+enum SubscriptionAutomationJobType {
+  GENERATE_MONTHLY_RENT_BILL
+  SEND_BILL_DUE_NOTICE
+  MARK_BILL_OVERDUE
+  SEND_BILL_OVERDUE_NOTICE
+
+  @@map("subscription_automation_job_type")
+}
+
+enum SubscriptionAutomationJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("subscription_automation_job_status")
+}
+
 enum PaymentMethod {
   BANK_TRANSFER
   WECHAT
@@ -838,6 +866,7 @@ enum NotificationType {
 
 enum NotificationStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
   SKIPPED
@@ -4232,6 +4261,8 @@ model SubscriptionOrder {
   changes                    OrderChange[]
   revenueRightAssignments    RevenueRightAssignment[]
   insuranceClaims            InsuranceClaim[]
+  billingSchedule            BillingSchedule?
+  automationJobs             SubscriptionAutomationJob[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?               @map("created_by") @db.Uuid
@@ -4363,6 +4394,7 @@ model OrderEntitlementUsage {
 model ReceivableBill {
   id              String            @id @default(uuid()) @db.Uuid
   billNo          String            @unique @map("bill_no") @db.VarChar(64)
+  sourceKey       String?           @unique @map("source_key") @db.VarChar(256)
   orderId         String            @map("order_id") @db.Uuid
   order           SubscriptionOrder @relation(fields: [orderId], references: [id])
   customerId      String            @map("customer_id") @db.Uuid
@@ -4384,6 +4416,8 @@ model ReceivableBill {
   depositLedgers  DepositLedger[]
   collectionCaseBills CollectionCaseBill[]
   revenueRightAssignments RevenueRightAssignment[]
+  billingScheduleLastGeneratedFor BillingSchedule[] @relation("BillingScheduleLastGeneratedBill")
+  automationJobs  SubscriptionAutomationJob[]
   createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy       String?           @map("created_by") @db.Uuid
@@ -4396,6 +4430,66 @@ model ReceivableBill {
   @@index([billStatus])
   @@index([dueDate])
   @@map("receivable_bill")
+}
+
+model BillingSchedule {
+  id                  String                      @id @default(uuid()) @db.Uuid
+  orderId             String                      @unique @map("order_id") @db.Uuid
+  order               SubscriptionOrder           @relation(fields: [orderId], references: [id])
+  status              BillingScheduleStatus       @default(ACTIVE)
+  timezone            String                      @default("Asia/Shanghai") @db.VarChar(64)
+  nextCycleNo         Int                         @map("next_cycle_no")
+  nextPeriodStart     DateTime                    @map("next_period_start") @db.Date
+  nextPeriodEnd       DateTime                    @map("next_period_end") @db.Date
+  nextGenerateAt      DateTime                    @map("next_generate_at") @db.Timestamptz(6)
+  lastGeneratedBillId String?                     @map("last_generated_bill_id") @db.Uuid
+  lastGeneratedBill   ReceivableBill?             @relation("BillingScheduleLastGeneratedBill", fields: [lastGeneratedBillId], references: [id])
+  lastGeneratedAt     DateTime?                   @map("last_generated_at") @db.Timestamptz(6)
+  pauseReason         String?                     @map("pause_reason") @db.VarChar(255)
+  completedAt         DateTime?                   @map("completed_at") @db.Timestamptz(6)
+  cancelledAt         DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  version             Int                         @default(0)
+  automationJobs      SubscriptionAutomationJob[]
+  createdAt           DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, nextGenerateAt])
+  @@index([lastGeneratedBillId])
+  @@map("billing_schedule")
+}
+
+model SubscriptionAutomationJob {
+  id                String                          @id @default(uuid()) @db.Uuid
+  billingScheduleId String?                         @map("billing_schedule_id") @db.Uuid
+  billingSchedule   BillingSchedule?                @relation(fields: [billingScheduleId], references: [id])
+  orderId           String?                         @map("order_id") @db.Uuid
+  order             SubscriptionOrder?              @relation(fields: [orderId], references: [id])
+  billId            String?                         @map("bill_id") @db.Uuid
+  bill              ReceivableBill?                 @relation(fields: [billId], references: [id])
+  jobType           SubscriptionAutomationJobType   @map("job_type")
+  jobStatus         SubscriptionAutomationJobStatus @default(PENDING) @map("job_status")
+  idempotencyKey    String                          @unique @map("idempotency_key") @db.VarChar(256)
+  availableAt       DateTime                        @default(now()) @map("available_at") @db.Timestamptz(6)
+  attemptCount      Int                             @default(0) @map("attempt_count")
+  maxAttempts       Int                             @default(6) @map("max_attempts")
+  leaseToken        String?                         @map("lease_token") @db.Uuid
+  leaseExpiresAt    DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
+  payload           Json?
+  resultSnapshot    Json?                           @map("result_snapshot")
+  lastErrorCode     String?                         @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage  String?                         @map("last_error_message") @db.VarChar(512)
+  startedAt         DateTime?                       @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?                       @map("completed_at") @db.Timestamptz(6)
+  cancelledAt       DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
+  createdAt         DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([jobStatus, availableAt])
+  @@index([billingScheduleId, createdAt])
+  @@index([orderId, createdAt])
+  @@index([billId, createdAt])
+  @@index([leaseExpiresAt])
+  @@map("subscription_automation_job")
 }
 
 model PaymentRecord {

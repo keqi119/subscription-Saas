@@ -233,6 +233,31 @@ pnpm prisma:seed
 
 ## Production Deployment
 
+### 订阅月租自动化发布顺序
+
+阶段 1B-A 的月租账单 Worker 默认关闭。目标环境必须按以下顺序启用：
+
+1. 部署新 API/Web 镜像，并保持 `BILLING_AUTOMATION_WORKER_ENABLED=false`。
+2. 执行 `pnpm prisma:migrate:deploy`，再用 `pnpm prisma:migrate:status` 确认数据库已同步。
+3. 在“月租账单自动化”页面执行“协调预览”，核对符合条件订单、下一账期和计划生成时间。
+4. 执行“账单计划协调”，确认计划列表无重复记录。
+5. 设置 `BILLING_AUTOMATION_WORKER_ENABLED=true` 并重启 API。
+6. 验证 D-3 生成、通知幂等、核销后任务取消、D+5 逾期和死信人工重试。
+
+Worker 参数：
+
+```dotenv
+BILLING_AUTOMATION_WORKER_ENABLED=false
+BILLING_AUTOMATION_WORKER_CONCURRENCY=1
+BILLING_AUTOMATION_WORKER_LEASE_MS=120000
+BILLING_AUTOMATION_WORKER_POLL_INTERVAL_MS=5000
+```
+
+如自动化运行异常，可立即关闭 Worker 并重启 API。人工月租生成、人工逾期刷新、收款和核销入口不受该开关影响。
+
+验收清单、迁移证据和详细回滚步骤见
+`docs/superpowers/plans/2026-07-31-stage1b-billing-automation-acceptance.md`。
+
 - `docs/production-deployment-runbook.md`: Stage 9F-A production deployment dry-run runbook
 - `docs/production-deployment-runbook.zh-CN.md`: Stage 9F-A 中文生产部署演练 Runbook
 - `docs/staging-deployment-runbook.md`: Stage 9F-B staging server deployment dry-run runbook

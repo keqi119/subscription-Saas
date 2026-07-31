@@ -114,6 +114,26 @@ describe("LeaseActivationEngine", () => {
     }));
   });
 
+  it("initializes one recurring billing schedule when activation is retried", async () => {
+    const harness = createLeaseActivationHarness();
+
+    await harness.engine.activate(
+      harness.orderId,
+      harness.user,
+      harness.context
+    );
+    await harness.engine.activate(
+      harness.orderId,
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.billingSchedules).toHaveLength(1);
+    expect(
+      harness.billingAutomationService.ensureActiveSchedule
+    ).toHaveBeenCalledTimes(2);
+  });
+
   it("uses actualDeliveryAt as leaseStartAt instead of Stage 2 customerSignedAt", async () => {
     const leaseStartAt = new Date("2026-06-30T08:00:00.000Z");
     const harness = createLeaseActivationHarness({
@@ -147,6 +167,7 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state: LeaseActivationState = {
     actualDeliveryAt: now,
+    billingSchedules: [],
     contractStatus: ContractStatus.SIGNED,
     depositBillStatus: BillStatus.PAID,
     depositRemainingAmount: 0n,
@@ -200,7 +221,7 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
     ];
   }
 
-  const prisma = {
+  const client = {
     lease: {
       create: vi.fn(async ({ data }) => {
         state.lease = {
@@ -213,7 +234,11 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
         };
         return state.lease;
       }),
-      findUnique: vi.fn(async () => state.lease)
+      findUnique: vi.fn(async () => state.lease),
+      update: vi.fn(async ({ data }) => {
+        Object.assign(state.lease!, data, { updatedAt: now });
+        return state.lease;
+      })
     },
     receivableBill: {
       findMany: vi.fn(async () => buildBills())
@@ -243,8 +268,28 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
       }))
     }
   };
+  const prisma = {
+    ...client,
+    $transaction: vi.fn(async (callback) => callback(client))
+  };
   const auditService = {
     write: vi.fn(async () => undefined)
+  };
+  const billingAutomationService = {
+    ensureActiveSchedule: vi.fn(async (_tx, targetOrderId) => {
+      const existing = state.billingSchedules.find(
+        (schedule) => schedule.orderId === targetOrderId
+      );
+      if (existing) {
+        return existing;
+      }
+      const schedule = {
+        id: "billing-schedule-1",
+        orderId: targetOrderId
+      };
+      state.billingSchedules.push(schedule);
+      return schedule;
+    })
   };
   const deliveryEvidenceService = {
     validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
@@ -253,10 +298,21 @@ function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> =
     auditService as never,
     prisma as never,
     () => now,
-    deliveryEvidenceService as never
+    deliveryEvidenceService as never,
+    billingAutomationService as never
   );
 
-  return { auditService, context, deliveryEvidenceService, engine, orderId, prisma, state, user };
+  return {
+    auditService,
+    billingAutomationService,
+    context,
+    deliveryEvidenceService,
+    engine,
+    orderId,
+    prisma,
+    state,
+    user
+  };
 }
 
 function buildEvidenceReadiness(
@@ -283,6 +339,7 @@ function buildEvidenceReadiness(
 
 interface LeaseActivationState {
   actualDeliveryAt: Date | null;
+  billingSchedules: Array<{ id: string; orderId: string }>;
   contractStatus: ContractStatus;
   depositBillStatus: BillStatus;
   depositRemainingAmount: bigint;

@@ -45,6 +45,7 @@ describe("WeChatPayProvider", () => {
     expect(body.amount.total).toBe(100);
     expect(body.payer.openid).toBe("openid_customer");
     expect((init?.headers as Record<string, string>).Authorization).toContain("WECHATPAY2-SHA256-RSA2048");
+    expect((init?.headers as Record<string, string>)["Accept-Language"]).toBe("zh-CN");
     expect(result.providerTradeNo).toBe("PYO202606170001");
     expect(result.providerPrepayId).toBe("wx_prepay_1");
     expect(result.jsapiParams?.package).toBe("prepay_id=wx_prepay_1");

@@ -71,6 +71,7 @@ export class WeChatPayProvider implements PaymentProvider {
       body,
       headers: {
         Accept: "application/json",
+        "Accept-Language": "zh-CN",
         Authorization: authorization,
         "Content-Type": "application/json",
         "User-Agent": "subscription-saas"

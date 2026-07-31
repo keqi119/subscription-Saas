@@ -9,6 +9,7 @@ import {
   MaterialStatus,
   MonthlyFeeMode,
   OrderReviewStatus,
+  OrderStatus,
   PlanConfirmStatus,
   Prisma,
   ProductStatus,
@@ -362,6 +363,84 @@ describe("PortalApplicationService", () => {
     );
   });
 
+  it("keeps a confirmed application at formal-order creation until an active order exists", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication({
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        orders: [
+          {
+            deletedAt: new Date("2026-06-16T11:00:00.000Z"),
+            orderStatus: OrderStatus.PENDING_CONTRACT
+          }
+        ]
+      })
+    });
+
+    const progress = await service.getApplicationProgress("application-1", currentCustomer("customer-1"));
+    const detail = await service.getApplication("application-1", currentCustomer("customer-1"));
+
+    expect(progress).toEqual(
+      expect.objectContaining({
+        currentStep: "ORDER",
+        nextAction: "WAIT_ORDER_CREATION",
+        overallStatus: "PENDING_ORDER"
+      })
+    );
+    expect(progress.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "ORDER", status: "CURRENT" }),
+        expect.objectContaining({ key: "CONTRACT", status: "PENDING" })
+      ])
+    );
+    expect(detail).toEqual(
+      expect.objectContaining({
+        nextStepHint: "已确认最终方案，等待平台生成正式订单。",
+        ordersGenerated: false
+      })
+    );
+  });
+
+  it.each([
+    [OrderStatus.PENDING_REVIEW, "ORDER", "CURRENT", "WAIT_REVIEW", "PENDING_ORDER"],
+    [OrderStatus.PENDING_CUSTOMER_CONFIRMATION, "ORDER", "CURRENT", "WAIT_REVIEW", "PENDING_ORDER"],
+    [OrderStatus.PENDING_CONTRACT, "CONTRACT", "CURRENT", "GO_CONTRACT", "PENDING_CONTRACT"],
+    [OrderStatus.PENDING_SIGN, "CONTRACT", "CURRENT", "GO_CONTRACT", "PENDING_CONTRACT"],
+    [OrderStatus.PENDING_PAYMENT, "PAYMENT", "CURRENT", "GO_PAYMENT", "PENDING_PAYMENT"],
+    [OrderStatus.PENDING_VEHICLE, "DELIVERY", "CURRENT", "WAIT_DELIVERY", "PENDING_DELIVERY"],
+    [OrderStatus.PENDING_DELIVERY, "DELIVERY", "CURRENT", "WAIT_DELIVERY", "PENDING_DELIVERY"],
+    [OrderStatus.ACTIVE, "ACTIVE", "CURRENT", "NONE", "ACTIVE"],
+    [OrderStatus.SUSPENDED, "ACTIVE", "CURRENT", "NONE", "SUSPENDED"],
+    [OrderStatus.TERMINATED, "ACTIVE", "DONE", "NONE", "TERMINATED"],
+    [OrderStatus.COMPLETED, "ACTIVE", "DONE", "NONE", "COMPLETED"],
+    [OrderStatus.CANCELLED, "ORDER", "FAILED", "NONE", "CANCELLED"],
+    [OrderStatus.REJECTED, "ORDER", "FAILED", "NONE", "REJECTED"]
+  ])(
+    "maps an active %s formal order to a consistent portal stage",
+    async (orderStatus, expectedStep, expectedStepStatus, nextAction, overallStatus) => {
+      const { service } = createPortalApplicationFixture({
+        application: readyFinalPlanApplication({
+          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          orders: [
+            {
+              deletedAt: new Date("2026-06-16T11:00:00.000Z"),
+              orderStatus: OrderStatus.PENDING_CONTRACT
+            },
+            { deletedAt: null, orderStatus }
+          ]
+        })
+      });
+
+      const progress = await service.getApplicationProgress("application-1", currentCustomer("customer-1"));
+
+      expect(progress).toEqual(expect.objectContaining({ currentStep: expectedStep, nextAction, overallStatus }));
+      expect(progress.steps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: expectedStep, status: expectedStepStatus })
+        ])
+      );
+    }
+  );
+
   it("blocks progress access to another customer's application", async () => {
     const { service } = createPortalApplicationFixture();
 
@@ -417,7 +496,7 @@ describe("PortalApplicationService", () => {
     expect(result).toEqual(
       expect.objectContaining({
         finalPlanStatus: PlanConfirmStatus.CONFIRMED,
-        nextAction: "GO_CONTRACT_PENDING_BACKOFFICE",
+        nextAction: "WAIT_ORDER_CREATION",
         order: null
       })
     );

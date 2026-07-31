@@ -2296,13 +2296,49 @@ function resolveFirstMonthlyFeeAmount(order: FinanceOrder) {
   );
 }
 
+export function resolveMonthlyRentAmountWithSource(order: {
+  monthlyFeeAmount: unknown;
+  quote?: { monthlyFeeAmount: unknown } | null;
+  quoteSnapshot: unknown;
+}) {
+  const candidates = [
+    {
+      amountSource: "ORDER_MONTHLY_FEE",
+      value: order.monthlyFeeAmount
+    },
+    {
+      amountSource: "QUOTE_SNAPSHOT_PRICING",
+      value: readSnapshotAmount(order.quoteSnapshot, [
+        "pricing",
+        "monthlyFeeAmount"
+      ])
+    },
+    {
+      amountSource: "QUOTE_SNAPSHOT",
+      value: readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"])
+    },
+    {
+      amountSource: "QUOTE_MONTHLY_FEE",
+      value: order.quote?.monthlyFeeAmount
+    }
+  ];
+  for (const candidate of candidates) {
+    const amount = toPositiveBigInt(candidate.value);
+    if (amount !== null) {
+      return {
+        amount,
+        amountSource: candidate.amountSource
+      };
+    }
+  }
+  return {
+    amount: null,
+    amountSource: "MISSING"
+  };
+}
+
 function resolveMonthlyRentAmount(order: FinanceOrder) {
-  return pickPositiveAmount(
-    order.monthlyFeeAmount,
-    readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"]),
-    readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
-    order.quote.monthlyFeeAmount
-  );
+  return resolveMonthlyRentAmountWithSource(order).amount;
 }
 
 function pickPositiveAmount(...values: unknown[]) {

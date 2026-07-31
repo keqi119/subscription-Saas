@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash } from "node:crypto";
 import {
+  AuditAction,
   CustomerAccountStatus,
   NotificationChannel,
   NotificationEventStatus,
@@ -13,6 +14,7 @@ import {
   Prisma
 } from "@prisma/client";
 
+import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
@@ -20,7 +22,9 @@ import {
   AdminNotificationEventsQueryDto,
   AdminNotificationRecordsQueryDto,
   NotificationPageQueryDto,
-  PortalNotificationsQueryDto
+  NotificationProcessingResolution,
+  PortalNotificationsQueryDto,
+  ResolveProcessingNotificationDto
 } from "./dto/notification.dto";
 import {
   NOTIFICATION_PROVIDER_CLIENT,
@@ -313,6 +317,94 @@ export class NotificationService {
       pageSize,
       total
     };
+  }
+
+  async resolveProcessingRecord(
+    id: string,
+    dto: ResolveProcessingNotificationDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    const after = await this.prisma.$transaction(async (tx) => {
+      const before = await tx.notificationRecord.findFirst({
+        where: {
+          deletedAt: null,
+          id
+        }
+      });
+      if (!before) {
+        throw new NotFoundException("通知记录不存在。");
+      }
+      if (before.notificationStatus !== NotificationStatus.PROCESSING) {
+        throw new BadRequestException(
+          "只有待核对的发送中通知可以人工处置。"
+        );
+      }
+
+      const now = new Date();
+      const confirmedSent =
+        dto.resolution ===
+        NotificationProcessingResolution.CONFIRMED_SENT;
+      const updated = await tx.notificationRecord.updateMany({
+        data: confirmedSent
+          ? {
+              errorMessage: null,
+              failedAt: null,
+              notificationStatus: NotificationStatus.SENT,
+              sentAt: before.sentAt ?? now
+            }
+          : {
+              errorMessage: "MANUAL_CONFIRMED_NOT_SENT",
+              failedAt: now,
+              notificationStatus: NotificationStatus.FAILED,
+              sentAt: null
+            },
+        where: {
+          deletedAt: null,
+          id,
+          notificationStatus: NotificationStatus.PROCESSING
+        }
+      });
+      if (updated.count !== 1) {
+        throw new BadRequestException(
+          "通知状态已经变化，请刷新后重新核对。"
+        );
+      }
+      const resolved = await tx.notificationRecord.findUnique({
+        include: {
+          customer: {
+            select: { customerNo: true, mobile: true, name: true }
+          },
+          template: true
+        },
+        where: { id }
+      });
+      if (!resolved) {
+        throw new NotFoundException("通知记录不存在。");
+      }
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            notificationStatus: resolved.notificationStatus,
+            reason: dto.reason,
+            resolution: dto.resolution
+          },
+          beforeSnapshot: {
+            notificationStatus: before.notificationStatus
+          },
+          entityId: id,
+          entityType: "notification_record",
+          ipAddress: context.ipAddress,
+          module: "notification",
+          operatorId: user.id,
+          userAgent: context.userAgent
+        }
+      });
+      return resolved;
+    });
+
+    return toRecordView(after);
   }
 
   async listEvents(query: AdminNotificationEventsQueryDto) {

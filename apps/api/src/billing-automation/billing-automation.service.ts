@@ -12,7 +12,8 @@ import {
 
 import {
   FinanceService,
-  MonthlyRentAutomationCycleInput
+  MonthlyRentAutomationCycleInput,
+  resolveMonthlyRentAmountWithSource
 } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -91,6 +92,11 @@ export class BillingAutomationService {
     const orders = await this.prisma.subscriptionOrder.findMany({
       include: {
         billingSchedule: true,
+        quote: {
+          select: {
+            monthlyFeeAmount: true
+          }
+        },
         receivableBills: {
           orderBy: { billPeriodStart: "asc" },
           select: {
@@ -433,7 +439,23 @@ export class BillingAutomationService {
         };
       });
     } catch (error) {
-      throw classifyExecutionError(error);
+      const classified = classifyExecutionError(error);
+      if (
+        classified.code === "BILLING_EXECUTION_ERROR" &&
+        job.billingScheduleId
+      ) {
+        const currentSchedule =
+          await this.prisma.billingSchedule
+            .findUnique({
+              select: { status: true },
+              where: { id: job.billingScheduleId }
+            })
+            .catch(() => null);
+        if (currentSchedule?.status === BillingScheduleStatus.PAUSED) {
+          throw pausedScheduleError();
+        }
+      }
+      throw classified;
     }
   }
 
@@ -558,61 +580,15 @@ function cycleForPeriodStart(
 
 function reconciliationAmount(order: {
   monthlyFeeAmount: bigint;
+  quote: { monthlyFeeAmount: bigint } | null;
   quoteSnapshot: Prisma.JsonValue | null;
 }) {
-  const candidates: Array<[string, unknown]> = [
-    ["ORDER_MONTHLY_FEE", order.monthlyFeeAmount],
-    [
-      "QUOTE_SNAPSHOT_PRICING",
-      readPath(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"])
-    ],
-    [
-      "QUOTE_SNAPSHOT",
-      readPath(order.quoteSnapshot, ["monthlyFeeAmount"])
-    ]
-  ];
-  for (const [amountSource, value] of candidates) {
-    const amount = positiveBigInt(value);
-    if (amount !== null) {
-      return {
-        amountSource,
-        monthlyRentAmount: Number(amount)
-      };
-    }
-  }
+  const resolved = resolveMonthlyRentAmountWithSource(order);
   return {
-    amountSource: "MISSING",
-    monthlyRentAmount: null
+    amountSource: resolved.amountSource,
+    monthlyRentAmount:
+      resolved.amount === null ? null : Number(resolved.amount)
   };
-}
-
-function readPath(value: unknown, path: string[]) {
-  let current = value;
-  for (const segment of path) {
-    if (
-      typeof current !== "object" ||
-      current === null ||
-      Array.isArray(current)
-    ) {
-      return null;
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
-
-function positiveBigInt(value: unknown) {
-  if (typeof value === "bigint") {
-    return value > 0n ? value : null;
-  }
-  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
-    return BigInt(value);
-  }
-  if (typeof value === "string" && /^\d+$/.test(value)) {
-    const parsed = BigInt(value);
-    return parsed > 0n ? parsed : null;
-  }
-  return null;
 }
 
 function cycleAt(actualDeliveryAt: Date, cycleNo: number) {

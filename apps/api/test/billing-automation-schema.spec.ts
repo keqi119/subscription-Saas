@@ -66,6 +66,15 @@ describe("billing automation persistence contract", () => {
     expect(migrationSql()).toContain(
       'CREATE UNIQUE INDEX "collection_case_bill_case_id_bill_id_key"'
     );
+    expect(migrationSql()).toContain(
+      "STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE"
+    );
+    expect(migrationSql()).toContain(
+      "STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE_BILL"
+    );
+    expect(migrationSql()).toMatch(
+      /collection_case_bill_case_id_bill_id_key"[\s\S]+WHERE "deleted_at" IS NULL/
+    );
   });
 
   it("persists a pre-send processing state for external notifications", () => {

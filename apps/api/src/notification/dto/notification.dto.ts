@@ -1,6 +1,11 @@
 import { NotificationChannel, NotificationEventStatus, NotificationStatus, NotificationType } from "@prisma/client";
-import { IsEnum, IsInt, IsOptional, IsUUID, Max, Min } from "class-validator";
-import { Type } from "class-transformer";
+import { IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from "class-validator";
+import { Transform, Type } from "class-transformer";
+
+export enum NotificationProcessingResolution {
+  CONFIRMED_NOT_SENT = "CONFIRMED_NOT_SENT",
+  CONFIRMED_SENT = "CONFIRMED_SENT"
+}
 
 export class NotificationPageQueryDto {
   @IsInt()
@@ -49,4 +54,15 @@ export class PortalNotificationsQueryDto extends NotificationPageQueryDto {
   @IsEnum(NotificationStatus)
   @IsOptional()
   notificationStatus?: NotificationStatus;
+}
+
+export class ResolveProcessingNotificationDto {
+  @MaxLength(500)
+  @MinLength(2)
+  @IsString()
+  @Transform(({ value }) => typeof value === "string" ? value.trim() : value)
+  reason!: string;
+
+  @IsEnum(NotificationProcessingResolution)
+  resolution!: NotificationProcessingResolution;
 }

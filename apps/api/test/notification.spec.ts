@@ -2,6 +2,7 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
+import { PermissionCode } from "@subscription-saas/shared";
 import {
   CustomerAccountStatus,
   NotificationChannel,
@@ -14,6 +15,9 @@ import {
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
+import { NotificationProcessingResolution } from "../src/notification/dto/notification.dto";
+import { NotificationAdminController } from "../src/notification/notification.controller";
 import { NotificationModule } from "../src/notification/notification.module";
 import { NotificationProvider } from "../src/notification/notification.provider";
 import { NotificationService } from "../src/notification/notification.service";
@@ -35,6 +39,17 @@ describe("NotificationModule", () => {
     }).compile();
 
     await moduleRef.close();
+  });
+});
+
+describe("NotificationAdminController", () => {
+  it("requires notification manage permission for uncertain-send disposition", () => {
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        NotificationAdminController.prototype.resolveProcessingRecord
+      )
+    ).toEqual([PermissionCode.NOTIFICATION_MANAGE]);
   });
 });
 
@@ -139,6 +154,65 @@ describe("NotificationService", () => {
     ).toMatchObject({
       notificationStatus: NotificationStatus.PROCESSING
     });
+  });
+
+  it("lets an audited operator resolve an uncertain processing notification", async () => {
+    const harness = createNotificationHarness();
+    harness.addRecord({
+      channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+      notificationStatus: NotificationStatus.PROCESSING
+    });
+    const processing = harness.records[0]!;
+
+    await harness.service.resolveProcessingRecord(
+      processing.id,
+      {
+        reason: "已核对微信渠道回执，确认未发送",
+        resolution:
+          NotificationProcessingResolution.CONFIRMED_NOT_SENT
+      },
+      testUser(),
+      {
+        ipAddress: "127.0.0.1",
+        userAgent: "vitest"
+      }
+    );
+
+    expect(processing).toMatchObject({
+      errorMessage: "MANUAL_CONFIRMED_NOT_SENT",
+      notificationStatus: NotificationStatus.FAILED
+    });
+    expect(harness.audits).toEqual([
+      expect.objectContaining({
+        entityId: processing.id,
+        entityType: "notification_record",
+        operatorId: testUser().id
+      })
+    ]);
+  });
+
+  it("records a manually confirmed provider success without resending", async () => {
+    const harness = createNotificationHarness();
+    harness.addRecord({
+      channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+      notificationStatus: NotificationStatus.PROCESSING,
+      sentAt: null
+    });
+    const processing = harness.records[0]!;
+
+    await harness.service.resolveProcessingRecord(
+      processing.id,
+      {
+        reason: "已核对微信渠道回执，确认发送成功",
+        resolution: NotificationProcessingResolution.CONFIRMED_SENT
+      },
+      testUser(),
+      {}
+    );
+
+    expect(processing.notificationStatus).toBe(NotificationStatus.SENT);
+    expect(processing.sentAt).toBeInstanceOf(Date);
+    expect(harness.provider.send).not.toHaveBeenCalled();
   });
 
   it("creates in-app and mock WeChat notifications for a customer event", async () => {
@@ -515,6 +589,7 @@ function createNotificationHarness(
     wechatOpenId?: string | null;
   } = {}
 ) {
+  const audits: any[] = [];
   const events: any[] = [];
   const records: any[] = [];
   const templates = createTemplates();
@@ -531,6 +606,12 @@ function createNotificationHarness(
     $transaction: vi.fn((input: Promise<unknown>[] | ((tx: any) => Promise<unknown>)) =>
       typeof input === "function" ? input(prisma) : Promise.all(input)
     ),
+    auditLog: {
+      create: vi.fn(({ data }: any) => {
+        audits.push(data);
+        return Promise.resolve(data);
+      })
+    },
     customer: {
       findFirst: vi.fn(({ where }: any) =>
         where.id === "customer-a"
@@ -652,12 +733,24 @@ function createNotificationHarness(
         ...input
       });
     },
+    audits,
     events,
     prisma,
     provider,
     records,
     service,
     templates
+  };
+}
+
+function testUser() {
+  return {
+    id: "00000000-0000-4000-8000-000000000099",
+    menus: [],
+    name: "运营管理员",
+    permissions: [PermissionCode.NOTIFICATION_MANAGE],
+    roles: ["OP"],
+    username: "operator"
   };
 }
 

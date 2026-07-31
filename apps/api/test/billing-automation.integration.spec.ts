@@ -89,8 +89,10 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
   });
 
   it("installs database uniqueness for active collection cases and bill links", async () => {
-    const indexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
-      SELECT "indexname"
+    const indexes = await prisma.$queryRaw<
+      Array<{ indexdef: string; indexname: string }>
+    >`
+      SELECT "indexdef", "indexname"
       FROM "pg_indexes"
       WHERE "schemaname" = 'public'
         AND "indexname" IN (
@@ -104,6 +106,12 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
       "collection_case_bill_case_id_bill_id_key",
       "collection_case_one_active_per_order_key"
     ]);
+    expect(indexes[0]?.indexdef).toContain(
+      "WHERE (deleted_at IS NULL)"
+    );
+    expect(indexes[1]?.indexdef).toContain(
+      "WHERE ((case_status = 'ACTIVE'::collection_case_status) AND (deleted_at IS NULL))"
+    );
   });
 
   it("does not lease a generation job while its schedule is paused", async () => {

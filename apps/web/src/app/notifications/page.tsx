@@ -1,7 +1,7 @@
 "use client";
 
 import { ReloadOutlined } from "@ant-design/icons";
-import { App, Button, Space, Table, Tabs, Tag, Typography } from "antd";
+import { App, Button, Input, Modal, Space, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useState } from "react";
@@ -37,12 +37,20 @@ const statusColors: Record<string, string> = {
   SKIPPED: "default"
 };
 
+type ProcessingResolution = "CONFIRMED_NOT_SENT" | "CONFIRMED_SENT";
+
 export default function NotificationsPage() {
   const { message } = App.useApp();
   const [templates, setTemplates] = useState<AdminNotificationTemplate[]>([]);
   const [records, setRecords] = useState<AdminNotificationRecord[]>([]);
   const [events, setEvents] = useState<AdminNotificationEvent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [processingReason, setProcessingReason] = useState("");
+  const [processingResolution, setProcessingResolution] = useState<{
+    record: AdminNotificationRecord;
+    resolution: ProcessingResolution;
+  } | null>(null);
+  const [resolving, setResolving] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -65,6 +73,50 @@ export default function NotificationsPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  async function resolveProcessingRecord() {
+    if (!processingResolution) {
+      return;
+    }
+    const reason = processingReason.trim();
+    if (reason.length < 2) {
+      void message.error("请填写至少 2 个字符的渠道核对说明");
+      throw new Error("PROCESSING_NOTIFICATION_REASON_REQUIRED");
+    }
+    setResolving(true);
+    try {
+      await apiFetch(
+        `/notifications/records/${processingResolution.record.notificationId}/resolve-processing`,
+        {
+          body: JSON.stringify({
+            reason,
+            resolution: processingResolution.resolution
+          }),
+          method: "POST"
+        }
+      );
+      void message.success(
+        processingResolution.resolution === "CONFIRMED_SENT"
+          ? "已确认渠道发送成功"
+          : "已确认渠道未发送，可在修复原因后重试原任务"
+      );
+      setProcessingResolution(null);
+      setProcessingReason("");
+      await loadData();
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== "PROCESSING_NOTIFICATION_REASON_REQUIRED"
+      ) {
+        void message.error(
+          error instanceof ApiError ? error.message : "通知核对处置失败"
+        );
+      }
+      throw error;
+    } finally {
+      setResolving(false);
+    }
+  }
 
   const templateColumns: ColumnsType<AdminNotificationTemplate> = [
     { dataIndex: "templateCode", title: "模板编码", width: 260 },
@@ -124,6 +176,44 @@ export default function NotificationsPage() {
     { dataIndex: "sentAt", render: formatTime, title: "发送时间", width: 170 },
     { dataIndex: "errorMessage", title: "错误", width: 220 }
   ];
+
+  recordColumns.push({
+    fixed: "right",
+    render: (_, record) =>
+      record.notificationStatus === "PROCESSING" ? (
+        <Space size={4}>
+          <Button
+            onClick={() => {
+              setProcessingReason("");
+              setProcessingResolution({
+                record,
+                resolution: "CONFIRMED_SENT"
+              });
+            }}
+            size="small"
+            type="link"
+          >
+            确认已发送
+          </Button>
+          <Button
+            danger
+            onClick={() => {
+              setProcessingReason("");
+              setProcessingResolution({
+                record,
+                resolution: "CONFIRMED_NOT_SENT"
+              });
+            }}
+            size="small"
+            type="link"
+          >
+            确认未发送
+          </Button>
+        </Space>
+      ) : null,
+    title: "人工核对",
+    width: 190
+  });
 
   const eventColumns: ColumnsType<AdminNotificationEvent> = [
     {
@@ -211,6 +301,35 @@ export default function NotificationsPage() {
             }
           ]}
         />
+        <Modal
+          cancelText="取消"
+          confirmLoading={resolving}
+          destroyOnHidden
+          okText={
+            processingResolution?.resolution === "CONFIRMED_SENT"
+              ? "确认已发送"
+              : "确认未发送"
+          }
+          onCancel={() => {
+            setProcessingResolution(null);
+            setProcessingReason("");
+          }}
+          onOk={resolveProcessingRecord}
+          open={processingResolution !== null}
+          title="核对不确定发送结果"
+        >
+          <Typography.Paragraph type="secondary">
+            请先在微信渠道后台核对真实发送结果。确认“未发送”后，原通知才会恢复为可安全重试状态。
+          </Typography.Paragraph>
+          <Input.TextArea
+            maxLength={500}
+            onChange={(event) => setProcessingReason(event.target.value)}
+            placeholder="填写渠道回执、核对时间或未发送依据"
+            rows={4}
+            showCount
+            value={processingReason}
+          />
+        </Modal>
       </Space>
     </ProtectedShell>
   );

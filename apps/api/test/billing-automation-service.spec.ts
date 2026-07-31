@@ -82,6 +82,24 @@ describe("BillingAutomationService", () => {
     );
   });
 
+  it("uses the same quote fallback for reconciliation preview as actual billing", async () => {
+    const harness = createHarness();
+    harness.order.monthlyFeeAmount = 0n;
+    harness.order.quoteSnapshot = null;
+    harness.order.quote.monthlyFeeAmount = 288000n;
+
+    const preview = await harness.service.reconcileSchedules({
+      dryRun: true
+    });
+
+    expect(preview.items).toEqual([
+      expect.objectContaining({
+        amountSource: "QUOTE_MONTHLY_FEE",
+        monthlyRentAmount: 288000
+      })
+    ]);
+  });
+
   it("starts reconciliation after an existing current-period bill", async () => {
     const harness = createHarness();
     const existingBillId = randomUUID();
@@ -264,6 +282,36 @@ describe("BillingAutomationService", () => {
     expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
   });
 
+  it("reclassifies an optimistic update conflict as paused when pause wins the race", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.finance.generateMonthlyRentBillForCycle.mockImplementationOnce(
+      async () => {
+        harness.schedules[0]!.status = BillingScheduleStatus.PAUSED;
+        return {
+          bill: { id: randomUUID() },
+          created: true
+        };
+      }
+    );
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).rejects.toMatchObject({
+      code: "BILLING_SCHEDULE_PAUSED"
+    });
+  });
+
   it("completes without billing when the current period starts after the contract ends", async () => {
     const harness = createHarness();
     harness.order.endDate = new Date("2026-07-09T00:00:00.000Z");
@@ -372,9 +420,11 @@ function createHarness() {
       status: LeaseStatus.ACTIVE
     },
     orderNo: "ORD-1",
-    orderStatus: OrderStatus.ACTIVE
-    ,
+    orderStatus: OrderStatus.ACTIVE,
     monthlyFeeAmount: 300000n,
+    quote: {
+      monthlyFeeAmount: 300000n
+    },
     quoteSnapshot: null
   };
   const schedules: Array<Record<string, unknown>> = [];
@@ -456,6 +506,9 @@ function createHarness() {
     $transaction: (operation: (client: typeof tx) => unknown) =>
       operation(tx),
     billingSchedule: {
+      async findUnique({ where }: { where: { id: string } }) {
+        return schedules.find((item) => item.id === where.id) ?? null;
+      },
       async findMany({
         where
       }: {

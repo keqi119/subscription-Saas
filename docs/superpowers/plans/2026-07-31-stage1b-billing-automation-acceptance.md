@@ -48,8 +48,8 @@
 
 | 验证项 | 结果 |
 | --- | --- |
-| 阶段 1B-A API 聚焦测试 | 9 个测试文件、117 项测试通过 |
-| API 全量测试 | 159 个测试文件、2055 项测试通过 |
+| 阶段 1B-A API 聚焦测试 | 9 个测试文件、122 项测试通过 |
+| API 全量测试 | 159 个测试文件、2060 项测试通过 |
 | Web 全量测试 | 38 个测试文件、413 项测试通过 |
 | PostgreSQL 数据库项目 | 5 个测试文件、18 项测试通过 |
 | 阶段 1B-A 真实 PostgreSQL 集成测试 | 4 项测试通过 |
@@ -88,24 +88,44 @@ Database schema is up to date!
 
 若目标数据库已经存在同一订单的多条有效催收案件，唯一索引会阻止 migration。遇到该情况必须停止发布、核对并人工归并脏数据，不得删除索引或跳过 migration。
 
+执行 migration 前先运行以下只读预检；两条查询都必须返回 0 行：
+
+```sql
+SELECT order_id, COUNT(*) AS duplicate_count
+FROM collection_case
+WHERE case_status = 'ACTIVE' AND deleted_at IS NULL
+GROUP BY order_id
+HAVING COUNT(*) > 1;
+
+SELECT case_id, bill_id, COUNT(*) AS duplicate_count
+FROM collection_case_bill
+WHERE deleted_at IS NULL
+GROUP BY case_id, bill_id
+HAVING COUNT(*) > 1;
+```
+
+第二个唯一索引只约束未删除的催收账单关联；已软删除的历史关联可以保留，并允许后续重新建立一条有效关联。migration 内仍包含同样的防御性检查，若发现重复会返回 `STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE` 或 `STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE_BILL`。
+
 ## 4. Staging 发布顺序
 
 1. 构建并部署包含本期代码的新 API/Web 镜像。
 2. 保持 `BILLING_AUTOMATION_WORKER_ENABLED=false`。
-3. 在 API 容器内执行：
+3. 在数据库执行上一节两条只读重复数据预检并保存结果。
+4. 在 API 容器内执行：
 
    ```bash
    pnpm prisma:migrate:deploy
    pnpm prisma:migrate:status
    ```
 
-4. 确认状态显示 72 个 migration 且数据库已同步。
-5. 进入后台“月租账单自动化”，先执行“协调预览”。
-6. 核对订单、下一账期、D-3 时间、金额来源、现有账单依据及基线原因。
-7. 执行“账单计划协调”，检查同一订单只有一条有效计划，重复协调不产生重复记录。
-8. 核对待处理任务列表，确认没有异常 `PROCESSING` 通知或死信。
-9. 设置 `BILLING_AUTOMATION_WORKER_ENABLED=true` 并重启 API。
-10. 先以并发数 1 运行，观察任务完成、重试、死信和通知结果。
+5. 确认状态显示 72 个 migration 且数据库已同步。
+6. 进入后台“月租账单自动化”，先执行“协调预览”。
+7. 核对订单、下一账期、D-3 时间、金额来源、现有账单依据及基线原因；金额来源必须与实际出账共用同一口径。
+8. 执行“账单计划协调”，检查同一订单只有一条有效计划，重复协调不产生重复记录。
+9. 在“通知中心”核对是否存在异常 `PROCESSING` 通知；只有查询渠道事实后，才可选择“确认已发送”或“确认未发送”。
+10. 核对待处理任务列表，确认没有无法解释的死信。
+11. 设置 `BILLING_AUTOMATION_WORKER_ENABLED=true` 并重启 API。
+12. 先以并发数 1 运行，观察任务完成、重试、死信和通知结果。
 
 建议首期配置：
 

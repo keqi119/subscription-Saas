@@ -87,12 +87,41 @@ ON "billing_schedule"("last_generated_bill_id");
 CREATE UNIQUE INDEX "subscription_automation_job_idempotency_key_key"
 ON "subscription_automation_job"("idempotency_key");
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "collection_case"
+    WHERE "case_status" = 'ACTIVE' AND "deleted_at" IS NULL
+    GROUP BY "order_id"
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE';
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "collection_case_bill"
+    WHERE "deleted_at" IS NULL
+    GROUP BY "case_id", "bill_id"
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'STAGE1B_DUPLICATE_ACTIVE_COLLECTION_CASE_BILL';
+  END IF;
+END
+$$;
+
 CREATE UNIQUE INDEX "collection_case_one_active_per_order_key"
 ON "collection_case"("order_id")
 WHERE "case_status" = 'ACTIVE' AND "deleted_at" IS NULL;
 
 CREATE UNIQUE INDEX "collection_case_bill_case_id_bill_id_key"
-ON "collection_case_bill"("case_id", "bill_id");
+ON "collection_case_bill"("case_id", "bill_id")
+WHERE "deleted_at" IS NULL;
 
 CREATE INDEX "subscription_automation_job_job_status_available_at_idx"
 ON "subscription_automation_job"("job_status", "available_at");

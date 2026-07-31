@@ -1,8 +1,8 @@
-import { Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
-import { AuthGuard } from "../auth/auth.guard";
+import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { CurrentPortalCustomer } from "../portal/portal-current-customer.decorator";
 import { CustomerAuthGuard } from "../portal/portal-auth.guard";
@@ -11,7 +11,8 @@ import {
   AdminNotificationEventsQueryDto,
   AdminNotificationRecordsQueryDto,
   NotificationPageQueryDto,
-  PortalNotificationsQueryDto
+  PortalNotificationsQueryDto,
+  ResolveProcessingNotificationDto
 } from "./dto/notification.dto";
 import { NotificationService } from "./notification.service";
 
@@ -36,6 +37,24 @@ export class NotificationAdminController {
   @RequirePermissions(PermissionCode.NOTIFICATION_VIEW)
   listEvents(@Query() query: AdminNotificationEventsQueryDto) {
     return this.notificationService.listEvents(query);
+  }
+
+  @Post("records/:id/resolve-processing")
+  @RequirePermissions(PermissionCode.NOTIFICATION_MANAGE)
+  resolveProcessingRecord(
+    @Param("id") id: string,
+    @Body() dto: ResolveProcessingNotificationDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.notificationService.resolveProcessingRecord(
+      id,
+      dto,
+      request.user,
+      {
+        ipAddress: request.ip,
+        userAgent: request.headers["user-agent"]
+      }
+    );
   }
 }
 

@@ -154,6 +154,17 @@ describe("Deployment operations safety", () => {
     expect(runbook).toMatch(/verification-only/i);
     expect(runbook).toMatch(/do not (change|update).*menu/i);
 
+    for (const script of [
+      "scripts/stage2-handover-workflow-backfill.mjs",
+      "scripts/stage2-handover-workflow-backfill-executor.mjs",
+      "scripts/stage2-handover-workflow-backfill-apply.mjs",
+      "scripts/stage2-handover-workflow-backfill-core.mjs",
+      "scripts/stage2-handover-workflow-contract.mjs"
+    ]) {
+      expect(runbook).toContain(script);
+    }
+    expect(runbook).not.toMatch(/three release-matched backfill scripts/i);
+
     const composeCommands = runbook
       .split(/\r?\n/)
       .filter((line) => line.trimStart().startsWith("docker compose "));

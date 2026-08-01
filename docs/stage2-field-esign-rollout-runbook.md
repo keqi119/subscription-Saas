@@ -69,9 +69,11 @@ records.
 - PostgreSQL, object storage, Aliyun SMS, Fadada, and API/Web health checks are
   healthy.
 - The operator has access to an Admin account with `DELIVERY_CONFIRM`.
-- The merged release checkout is the current directory and contains the three
-  release-matched files:
+- The merged release checkout is the current directory and contains all five
+  release-matched files required by the entrypoint and its static imports:
   `scripts/stage2-handover-workflow-backfill.mjs`,
+  `scripts/stage2-handover-workflow-backfill-executor.mjs`,
+  `scripts/stage2-handover-workflow-backfill-apply.mjs`,
   `scripts/stage2-handover-workflow-backfill-core.mjs`, and
   `scripts/stage2-handover-workflow-contract.mjs`.
 - Backfill reports are stored in the restricted operations directory. They
@@ -110,7 +112,7 @@ export ENV_FILE=.env.staging.images
    `STAGE2_HANDOVER_WORKER_ENABLED=false`. Confirm API, Admin Web, and Customer
    Web health, image digests, and migration status before proceeding.
 
-4. Bind-mount only the three release-matched backfill scripts read-only and run
+4. Bind-mount only the five release-matched backfill scripts read-only and run
    and retain the dry-run report:
 
    ```bash

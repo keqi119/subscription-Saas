@@ -4061,10 +4061,12 @@ export class HandoverWorkOrderService {
           args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
         ) => Promise<Array<{
           attemptCount: number;
+          availableAt: Date;
           createdAt: Date;
           id: string;
           jobStatus: string;
           jobType: string;
+          lastErrorCode: string | null;
           maxAttempts: number;
           updatedAt: Date;
         }>>;
@@ -4080,10 +4082,12 @@ export class HandoverWorkOrderService {
       ],
       select: {
         attemptCount: true,
+        availableAt: true,
         createdAt: true,
         id: true,
         jobStatus: true,
         jobType: true,
+        lastErrorCode: true,
         maxAttempts: true,
         updatedAt: true
       },
@@ -4091,12 +4095,14 @@ export class HandoverWorkOrderService {
     });
     return jobs.map((job) => ({
       attemptCount: job.attemptCount,
-      createdAt: job.createdAt,
+      availableAt: job.availableAt.toISOString(),
+      createdAt: job.createdAt.toISOString(),
       id: job.id,
       jobStatus: job.jobStatus,
       jobType: job.jobType,
+      lastErrorCode: job.lastErrorCode ?? null,
       maxAttempts: job.maxAttempts,
-      updatedAt: job.updatedAt
+      updatedAt: job.updatedAt.toISOString()
     }));
   }
 

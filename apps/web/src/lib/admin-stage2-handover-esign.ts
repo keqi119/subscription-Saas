@@ -18,6 +18,7 @@ export interface AdminStage2HandoverESignSigner {
 
 export type AdminStage2HandoverWorkflowJobType =
   | "GENERATE_SOURCE_PDF"
+  | "NOTIFY_FIELD_HANDOVER_ASSIGNED"
   | "NOTIFY_FIELD_ESIGN_READY"
   | "NOTIFY_CUSTOMER_ESIGN_READY"
   | "RECONCILE_CUSTOMER_SIGNATURE"
@@ -34,10 +35,12 @@ export type AdminStage2HandoverWorkflowJobStatus =
 
 export interface AdminStage2HandoverWorkflowJob {
   attemptCount: number;
+  availableAt?: string | null;
   createdAt?: string | null;
   id: string;
   jobStatus: AdminStage2HandoverWorkflowJobStatus;
   jobType: AdminStage2HandoverWorkflowJobType;
+  lastErrorCode?: string | null;
   maxAttempts: number;
   updatedAt: string | null;
 }
@@ -108,6 +111,7 @@ export interface AdminStage2HandoverESignDisplay {
 }
 
 export type AdminStage2HandoverWorkflowStepKey =
+  | "FIELD_ASSIGNMENT_NOTIFICATION"
   | "CUSTOMER_CONFIRMATION"
   | "SOURCE_PDF"
   | "FIELD_INITIATION"
@@ -116,6 +120,7 @@ export type AdminStage2HandoverWorkflowStepKey =
   | "ARCHIVE";
 
 export interface AdminStage2HandoverWorkflowStep {
+  detail?: string | null;
   key: AdminStage2HandoverWorkflowStepKey;
   label: string;
   state: "complete" | "current" | "error" | "waiting";
@@ -331,10 +336,17 @@ export function getAdminStage2HandoverWorkflowDisplay(
     fieldInitiationComplete || context.pdfStatus === "GENERATED";
   const customerConfirmationComplete =
     pdfComplete || Boolean(context.customerConfirmedAt);
+  const assignmentJob = currentJobs.valid
+    ? currentJobs.jobs.find(
+        (job) => job.jobType === "NOTIFY_FIELD_HANDOVER_ASSIGNED"
+      ) ?? null
+    : null;
   const completed: Record<AdminStage2HandoverWorkflowStepKey, boolean> = {
     ARCHIVE: archived,
     CUSTOMER_CONFIRMATION: customerConfirmationComplete,
     CUSTOMER_SIGNATURE: customerComplete,
+    FIELD_ASSIGNMENT_NOTIFICATION:
+      customerConfirmationComplete || assignmentJob?.jobStatus === "COMPLETED",
     FIELD_INITIATION: fieldInitiationComplete,
     PLATFORM_SEAL: platformComplete,
     SOURCE_PDF: pdfComplete
@@ -358,6 +370,11 @@ export function getAdminStage2HandoverWorkflowDisplay(
   const errorSteps = new Set(
     currentDeadLetters.map((job) => WORKFLOW_JOB_STEP[job.jobType])
   );
+  const currentJobByStep = new Map(
+    currentJobs.valid
+      ? currentJobs.jobs.map((job) => [WORKFLOW_JOB_STEP[job.jobType], job] as const)
+      : []
+  );
   const firstIncomplete = WORKFLOW_STEP_KEYS.find((key) => !completed[key]) ?? null;
 
   return {
@@ -372,6 +389,11 @@ export function getAdminStage2HandoverWorkflowDisplay(
             ? "current"
             : "waiting";
       return {
+        detail: getWorkflowStepDetail(
+          key,
+          currentJobByStep.get(key) ?? null,
+          customerConfirmationComplete
+        ),
         key,
         label: workflowStepLabel(key, state, status),
         state
@@ -557,6 +579,7 @@ function stage2ESignPath(id: string) {
 }
 
 const WORKFLOW_STEP_KEYS: AdminStage2HandoverWorkflowStepKey[] = [
+  "FIELD_ASSIGNMENT_NOTIFICATION",
   "CUSTOMER_CONFIRMATION",
   "SOURCE_PDF",
   "FIELD_INITIATION",
@@ -573,6 +596,7 @@ const WORKFLOW_JOB_STEP: Record<
   AUTO_SEAL_PLATFORM: "PLATFORM_SEAL",
   GENERATE_SOURCE_PDF: "SOURCE_PDF",
   NOTIFY_CUSTOMER_ESIGN_READY: "CUSTOMER_SIGNATURE",
+  NOTIFY_FIELD_HANDOVER_ASSIGNED: "FIELD_ASSIGNMENT_NOTIFICATION",
   NOTIFY_FIELD_ESIGN_READY: "FIELD_INITIATION",
   RECONCILE_CUSTOMER_SIGNATURE: "CUSTOMER_SIGNATURE",
   RECONCILE_PLATFORM_SEAL: "PLATFORM_SEAL"
@@ -597,6 +621,10 @@ const WORKFLOW_RECOVERY: Record<
   NOTIFY_CUSTOMER_ESIGN_READY: {
     kind: "RETRY_JOB",
     label: "重发客户通知"
+  },
+  NOTIFY_FIELD_HANDOVER_ASSIGNED: {
+    kind: "RETRY_JOB",
+    label: "重发交接任务通知"
   },
   NOTIFY_FIELD_ESIGN_READY: {
     kind: "RETRY_JOB",
@@ -708,6 +736,60 @@ function toWorkflowRecovery(
   };
 }
 
+function getWorkflowStepDetail(
+  key: AdminStage2HandoverWorkflowStepKey,
+  job: AdminStage2HandoverWorkflowJob | null,
+  customerConfirmationComplete: boolean
+) {
+  if (!job) {
+    return null;
+  }
+  const errorCode = safeWorkflowErrorCode(job.lastErrorCode);
+  if (
+    key === "FIELD_ASSIGNMENT_NOTIFICATION" &&
+    customerConfirmationComplete &&
+    job.jobStatus === "DEAD_LETTER"
+  ) {
+    return appendWorkflowErrorCode(
+      "通知任务异常，但后续流程已推进，不影响电子签",
+      errorCode
+    );
+  }
+  switch (job.jobStatus) {
+    case "PENDING": {
+      const availableAt = safeWorkflowTimestamp(job.availableAt);
+      return appendWorkflowErrorCode(
+        `等待系统重试，下次运行：${availableAt ?? "待调度"}`,
+        errorCode
+      );
+    }
+    case "PROCESSING":
+      return "系统正在处理";
+    case "DEAD_LETTER":
+      return appendWorkflowErrorCode("系统重试已用尽", errorCode);
+    case "COMPLETED":
+      return key === "FIELD_ASSIGNMENT_NOTIFICATION"
+        ? "交接任务通知已完成"
+        : null;
+    case "CANCELLED":
+      return "任务已取消";
+  }
+}
+
+function appendWorkflowErrorCode(message: string, errorCode: string | null) {
+  return errorCode ? `${message}（错误码：${errorCode}）` : message;
+}
+
+function safeWorkflowErrorCode(value: string | null | undefined) {
+  const normalized = value?.trim() ?? "";
+  return /^[A-Z0-9_]{1,128}$/.test(normalized) ? normalized : null;
+}
+
+function safeWorkflowTimestamp(value: string | null | undefined) {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function workflowStepLabel(
   key: AdminStage2HandoverWorkflowStepKey,
   state: AdminStage2HandoverWorkflowStep["state"],
@@ -718,6 +800,7 @@ function workflowStepLabel(
       ARCHIVE: "签署文件已归档",
       CUSTOMER_CONFIRMATION: "客户已确认",
       CUSTOMER_SIGNATURE: "客户已签署",
+      FIELD_ASSIGNMENT_NOTIFICATION: "交接任务通知已处理",
       FIELD_INITIATION: "经办人已发起签署",
       PLATFORM_SEAL: "平台已盖章",
       SOURCE_PDF: "交接确认单已生成"
@@ -728,6 +811,7 @@ function workflowStepLabel(
       ARCHIVE: "签署文件归档异常",
       CUSTOMER_CONFIRMATION: "客户确认异常",
       CUSTOMER_SIGNATURE: "客户签署流程异常",
+      FIELD_ASSIGNMENT_NOTIFICATION: "交接任务通知异常",
       FIELD_INITIATION: "经办人签署发起流程异常",
       PLATFORM_SEAL: "平台盖章流程异常",
       SOURCE_PDF: "交接确认单生成异常"
@@ -741,6 +825,7 @@ function workflowStepLabel(
           : "等待签署文件归档",
       CUSTOMER_CONFIRMATION: "等待客户确认",
       CUSTOMER_SIGNATURE: "待客户签署",
+      FIELD_ASSIGNMENT_NOTIFICATION: "等待交接任务通知",
       FIELD_INITIATION: "等待经办人发起签署",
       PLATFORM_SEAL: "平台盖章处理中",
       SOURCE_PDF: "交接确认单生成中"
@@ -750,6 +835,7 @@ function workflowStepLabel(
     ARCHIVE: "等待签署文件归档",
     CUSTOMER_CONFIRMATION: "等待客户确认",
     CUSTOMER_SIGNATURE: "等待客户签署",
+    FIELD_ASSIGNMENT_NOTIFICATION: "等待交接任务通知",
     FIELD_INITIATION: "等待经办人发起签署",
     PLATFORM_SEAL: "等待平台盖章",
     SOURCE_PDF: "等待生成交接确认单"

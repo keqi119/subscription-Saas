@@ -458,16 +458,18 @@ describe("HandoverWorkOrderService", () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(baseWorkOrder(harness));
     harness.state.workflowJobs.push({
-      attemptCount: 5,
-      createdAt: new Date("2026-07-27T08:00:00.000Z"),
+      attemptCount: 2,
+      availableAt: new Date("2026-08-01T06:10:00.000Z"),
+      createdAt: new Date("2026-08-01T06:00:00.000Z"),
       id: "workflow-job-current",
-      idempotencyKey: "archive:secret-task:1",
-      jobStatus: "DEAD_LETTER",
-      jobType: "ARCHIVE_SIGNED_PDF",
+      idempotencyKey: "field-assigned:secret-task:1",
+      jobStatus: "PENDING",
+      jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+      lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED",
       lastErrorMessage: "private provider detail",
-      maxAttempts: 5,
-      payload: { providerTransactionId: "PRIVATE-H2" },
-      updatedAt: new Date("2026-07-27T08:05:00.000Z"),
+      maxAttempts: 6,
+      payload: { phone: "13900001111", providerTransactionId: "PRIVATE-H2" },
+      updatedAt: new Date("2026-08-01T06:05:00.000Z"),
       workOrderId: "work-order-1"
     });
 
@@ -479,17 +481,27 @@ describe("HandoverWorkOrderService", () => {
     }
     expect(summary.workflowJobs).toEqual([
       {
-        attemptCount: 5,
-        createdAt: new Date("2026-07-27T08:00:00.000Z"),
+        attemptCount: 2,
+        availableAt: "2026-08-01T06:10:00.000Z",
+        createdAt: "2026-08-01T06:00:00.000Z",
         id: "workflow-job-current",
-        jobStatus: "DEAD_LETTER",
-        jobType: "ARCHIVE_SIGNED_PDF",
-        maxAttempts: 5,
-        updatedAt: new Date("2026-07-27T08:05:00.000Z")
+        jobStatus: "PENDING",
+        jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+        lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED",
+        maxAttempts: 6,
+        updatedAt: "2026-08-01T06:05:00.000Z"
       }
     ]);
-    expect(JSON.stringify(summary.workflowJobs)).not.toMatch(
-      /idempotencyKey|payload|lastErrorMessage|PRIVATE-H2|secret-task/
+    const projectedJob = summary.workflowJobs[0];
+    expect(projectedJob).toBeDefined();
+    if (!projectedJob) {
+      throw new Error("expected projected workflow job");
+    }
+    expect(Object.keys(projectedJob).join("|")).not.toMatch(
+      /phone|payload|provider|message|objectKey|token|url/i
+    );
+    expect(JSON.stringify(projectedJob)).not.toMatch(
+      /13900001111|PRIVATE-H2|private provider detail|secret-task/i
     );
   });
 

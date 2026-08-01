@@ -439,6 +439,58 @@ describe("Admin Stage 2 handover eSign display", () => {
 });
 
 describe("Admin Stage 2 workflow timeline and recovery", () => {
+  it.each([
+    ["PENDING", "等待系统重试", "2026-08-01T06:10:00.000Z"],
+    ["PROCESSING", "系统正在处理", null]
+  ] as const)(
+    "shows safe assignment notification detail for %s",
+    (jobStatus, expectedDetail, availableAt) => {
+      const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+        workflowJobs: [
+          workflowJob({
+            availableAt,
+            jobStatus,
+            jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+            lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED"
+          })
+        ]
+      }));
+      const step = display.steps.find(
+        ({ key }) => key === "FIELD_ASSIGNMENT_NOTIFICATION"
+      );
+
+      expect(step).toMatchObject({
+        detail: expect.stringContaining(expectedDetail),
+        key: "FIELD_ASSIGNMENT_NOTIFICATION",
+        state: "current"
+      });
+      if (availableAt) {
+        expect(step?.detail).toContain("2026-08-01");
+      }
+      expect(step?.detail).not.toMatch(/13900001111|provider response/i);
+    }
+  );
+
+  it("keeps ready eSign available when the Field-ready notification is pending or dead", () => {
+    for (const jobStatus of ["PENDING", "DEAD_LETTER"] as const) {
+      const status = esignStatus({
+        canAdminInitiate: true,
+        ready: true,
+        taskId: null,
+        workflowJobs: [
+          workflowJob({
+            jobStatus,
+            jobType: "NOTIFY_FIELD_ESIGN_READY"
+          })
+        ]
+      });
+
+      expect(getAdminStage2HandoverESignDisplay(status).startAvailable).toBe(
+        true
+      );
+    }
+  });
+
   it("renders one stable timeline from customer confirmation through archive", () => {
     const display = getAdminStage2HandoverWorkflowDisplay(
       esignStatus({
@@ -455,6 +507,7 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     );
 
     expect(display.steps.map(({ label, state }) => ({ label, state }))).toEqual([
+      { label: "交接任务通知已处理", state: "complete" },
       { label: "客户已确认", state: "complete" },
       { label: "交接确认单已生成", state: "complete" },
       { label: "经办人已发起签署", state: "complete" },
@@ -463,6 +516,31 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
       { label: "签署文件归档中", state: "current" }
     ]);
     expect(display.deliveryConfirmationAvailable).toBe(true);
+  });
+
+  it("retains a historical assignment failure without blocking downstream progress", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(
+      esignStatus({
+        workflowJobs: [
+          workflowJob({
+            jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+            lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED"
+          })
+        ]
+      }),
+      {
+        customerConfirmedAt: "2026-08-01T06:30:00.000Z"
+      }
+    );
+    const assignment = display.steps.find(
+      ({ key }) => key === "FIELD_ASSIGNMENT_NOTIFICATION"
+    );
+
+    expect(assignment).toMatchObject({
+      detail: expect.stringContaining("不影响电子签"),
+      state: "complete"
+    });
+    expect(display.recoveries).toEqual([]);
   });
 
   it("uses exact H1 and H2 signing as the delivery gate independently of archive", () => {
@@ -523,6 +601,7 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
 
   it.each([
     ["GENERATE_SOURCE_PDF", "RETRY_JOB", "重试生成交接确认单"],
+    ["NOTIFY_FIELD_HANDOVER_ASSIGNED", "RETRY_JOB", "重发交接任务通知"],
     ["NOTIFY_FIELD_ESIGN_READY", "RETRY_JOB", "重发经办人通知"],
     ["NOTIFY_CUSTOMER_ESIGN_READY", "RETRY_JOB", "重发客户通知"],
     ["RECONCILE_CUSTOMER_SIGNATURE", "RECONCILE_CUSTOMER", "核对客户签署状态"],
@@ -689,6 +768,7 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(source).toContain('"data-workspace-record": workOrder.id');
     expect(source).toContain("Stage2HandoverWorkflowCell");
     expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
+    expect(source).toContain("step.detail");
     expect(source).toContain("display.recoveries.map");
     expect(source).toContain(
       "createAdminStage2DeliveryConfirmationController"

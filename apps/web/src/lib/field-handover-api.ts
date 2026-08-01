@@ -75,6 +75,7 @@ export interface FieldHandoverEvidenceFile {
   id?: string | null;
   lifecycleStatus?: string | null;
   mediaType?: FieldHandoverEvidenceMediaType | null;
+  metadata?: Record<string, unknown> | null;
   mimeType?: string | null;
   previewAvailable?: boolean | null;
   previewUrl?: string | null;

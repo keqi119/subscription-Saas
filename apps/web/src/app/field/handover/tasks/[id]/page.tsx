@@ -1034,6 +1034,13 @@ export default function FieldHandoverTaskDetailPage() {
                                 <Typography.Text style={{ color: "#718096", fontSize: 12 }}>
                                   {file.sizeText}
                                 </Typography.Text>
+                                {file.videoQualityText ? (
+                                  <Typography.Text
+                                    style={{ color: "#718096", display: "block", fontSize: 12 }}
+                                  >
+                                    {file.videoQualityText}
+                                  </Typography.Text>
+                                ) : null}
                               </div>
                               <Flex gap={4}>
                                 {file.previewUrl ? (

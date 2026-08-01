@@ -6,6 +6,7 @@ import type {
   FieldHandoverWorkOrderListItem,
   UpdateFieldHandoverFactsInput
 } from "./field-handover-api";
+import { formatFieldEvidenceVideoQuality } from "./field-handover-video-quality";
 
 export interface FieldHandoverTaskCardView {
   customerText: string;
@@ -53,6 +54,7 @@ export interface FieldHandoverEvidenceFileView {
   mediaType: string;
   previewUrl: string | null;
   sizeText: string;
+  videoQualityText: string | null;
 }
 
 export interface FieldEvidenceCaptureView {
@@ -437,7 +439,8 @@ function buildEvidenceItemView(
     evidenceFileId: file.evidenceFileId || file.id || "",
     mediaType: file.mediaType || "",
     previewUrl: file.previewUrl ?? null,
-    sizeText: formatFileSize(file.sizeBytes ?? file.file?.sizeBytes)
+    sizeText: formatFileSize(file.sizeBytes ?? file.file?.sizeBytes),
+    videoQualityText: formatFieldEvidenceVideoQuality(file.mediaType, file.metadata)
   })).filter((file) => Boolean(file.evidenceFileId));
   const allowsMultiple = item.allowsMultiple === true;
 

@@ -34,8 +34,7 @@
 - Modify `apps/web/src/app/orders/[id]/page.tsx`: show the same server-detected resolution in Admin.
 - Modify `apps/web/test/field-handover-upload.spec.ts`: lock the no-direct-video-capture contract and guidance.
 - Modify `apps/web/test/field-handover-api.spec.ts`: lock explicit 413 behavior.
-- Create `apps/web/test/field-handover-video-quality.spec.ts`: lock resolution formatting and legacy behavior.
-- Modify `apps/web/test/field-handover-view-model.spec.ts`: lock Field evidence view integration.
+- Modify `apps/web/test/field-handover-view-model.spec.ts`: lock shared resolution formatting, legacy behavior, and Field evidence view integration.
 - Modify `apps/api/src/delivery-handover/delivery-handover-evidence-artifact.service.ts`: parse video quality metadata, enforce 720p, and distinguish quality failures from generic processing failures.
 - Modify `apps/api/src/handover-work-order/handover-work-order.service.ts`: return the actionable quality message and opt historical repair out of the new gate.
 - Modify `apps/api/test/stage2-handover-evidence-artifact.spec.ts`: lock ffprobe parsing, accepted dimensions, rejected dimensions, non-walkaround behavior, and legacy repair.
@@ -519,7 +518,6 @@ git commit -m "fix: surface stage2 video quality failures"
 
 **Files:**
 - Create: `apps/web/src/lib/field-handover-video-quality.ts`
-- Create: `apps/web/test/field-handover-video-quality.spec.ts`
 - Modify: `apps/web/src/lib/field-handover-api.ts`
 - Modify: `apps/web/src/lib/field-handover-view-model.ts`
 - Modify: `apps/web/src/app/field/handover/tasks/[id]/page.tsx`
@@ -531,35 +529,25 @@ git commit -m "fix: surface stage2 video quality failures"
 - Consumes: evidence file `mediaType` and untrusted JSON `metadata` returned by the existing DTO.
 - Produces: `formatFieldEvidenceVideoQuality(mediaType, metadata): string | null`; Field view `videoQualityText`.
 
-- [ ] **Step 1: Add pure formatter and integration tests**
+- [ ] **Step 1: Add behavior tests through the Field view model**
 
-Create `apps/web/test/field-handover-video-quality.spec.ts`:
+In `field-handover-view-model.spec.ts`, cover the shared formatter through the real evidence view-model boundary:
 
 ```ts
-import { describe, expect, it } from "vitest";
-import { formatFieldEvidenceVideoQuality } from "../src/lib/field-handover-video-quality";
+const walkaround = items.find((item) => item.evidenceType === "WALKAROUND_VIDEO")!;
+const photo = items.find((item) => item.evidenceType === "VEHICLE_FRONT")!;
+walkaround.files[0]!.metadata = { artifactVersion: 1 };
+photo.files[0]!.metadata = { videoHeightPx: 1080, videoWidthPx: 1920 };
 
-describe("field handover video quality", () => {
-  it("formats server-detected video dimensions", () => {
-    expect(formatFieldEvidenceVideoQuality("VIDEO", {
-      videoHeightPx: 1080,
-      videoQualityStatus: "PASSED",
-      videoWidthPx: 1920
-    })).toBe("视频清晰度：1920×1080（符合环绕视频最低要求）");
-  });
-
-  it("labels legacy video metadata without inventing dimensions", () => {
-    expect(formatFieldEvidenceVideoQuality("VIDEO", { artifactVersion: 1 }))
-      .toBe("视频清晰度：历史资料未记录");
-  });
-
-  it("does not add a video row to photos", () => {
-    expect(formatFieldEvidenceVideoQuality("PHOTO", { videoWidthPx: 1920 })).toBeNull();
-  });
-});
+expect(buildFieldEvidenceCaptureView(detail)
+  .evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")
+  ?.files[0]?.videoQualityText).toBe("视频清晰度：历史资料未记录");
+expect(buildFieldEvidenceCaptureView(detail)
+  .evidenceItems.find((item) => item.evidenceType === "VEHICLE_FRONT")
+  ?.files[0]?.videoQualityText).toBeNull();
 ```
 
-Add metadata to the sample walkaround file in `field-handover-view-model.spec.ts` and expect `videoQualityText`. The shared formatter test is the executable contract used by both Field and Admin; Admin page wiring is verified by typecheck and the Staging acceptance step rather than by inspecting source text.
+Also add 1920×1080 PASSED metadata to the sample walkaround file and expect the qualified `videoQualityText`. These integration assertions are the executable behavior contract for the shared formatter. Admin page wiring is verified by typecheck and the Staging acceptance step rather than by inspecting source text.
 
 In `delivery-evidence.spec.ts`, attach a VIDEO using the existing legacy `artifactVersion: 1` fixture without any quality fields and assert it remains accepted. This test proves the API source compatibility contract rather than changing `assertEvidenceArtifactsReady`.
 
@@ -568,7 +556,7 @@ In `delivery-evidence.spec.ts`, attach a VIDEO using the existing legacy `artifa
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- field-handover-video-quality.spec.ts field-handover-view-model.spec.ts
+pnpm --filter @subscription-saas/web test -- field-handover-view-model.spec.ts
 pnpm --filter @subscription-saas/api test -- delivery-evidence.spec.ts
 ```
 
@@ -616,7 +604,7 @@ In the Admin file row, call the same formatter and render the returned text next
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- field-handover-video-quality.spec.ts field-handover-view-model.spec.ts
+pnpm --filter @subscription-saas/web test -- field-handover-view-model.spec.ts
 pnpm --filter @subscription-saas/api test -- delivery-evidence.spec.ts
 ```
 
@@ -625,7 +613,7 @@ Expected: PASS; legacy VIDEO reads “历史资料未记录”, new accepted wal
 - [ ] **Step 6: Commit resolution visibility and compatibility proof**
 
 ```powershell
-git add -- apps/web/src/lib/field-handover-video-quality.ts apps/web/src/lib/field-handover-api.ts apps/web/src/lib/field-handover-view-model.ts "apps/web/src/app/field/handover/tasks/[id]/page.tsx" "apps/web/src/app/orders/[id]/page.tsx" apps/web/test/field-handover-video-quality.spec.ts apps/web/test/field-handover-view-model.spec.ts apps/api/test/delivery-evidence.spec.ts
+git add -- apps/web/src/lib/field-handover-video-quality.ts apps/web/src/lib/field-handover-api.ts apps/web/src/lib/field-handover-view-model.ts "apps/web/src/app/field/handover/tasks/[id]/page.tsx" "apps/web/src/app/orders/[id]/page.tsx" apps/web/test/field-handover-view-model.spec.ts apps/api/test/delivery-evidence.spec.ts docs/superpowers/plans/2026-08-02-stage2-media-upload-quality.md
 git commit -m "feat: display stage2 video resolution evidence"
 ```
 
@@ -643,7 +631,7 @@ git commit -m "feat: display stage2 video resolution evidence"
 - [ ] **Step 1: Run all focused regression tests together**
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- field-handover-upload.spec.ts field-handover-api.spec.ts field-handover-video-quality.spec.ts field-handover-view-model.spec.ts
+pnpm --filter @subscription-saas/web test -- field-handover-upload.spec.ts field-handover-api.spec.ts field-handover-view-model.spec.ts
 pnpm --filter @subscription-saas/api test -- stage2-handover-evidence-artifact.spec.ts handover-work-order.spec.ts delivery-evidence.spec.ts stage2-handover-e2e.spec.ts
 ```
 

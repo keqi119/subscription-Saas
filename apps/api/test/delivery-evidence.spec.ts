@@ -302,6 +302,32 @@ describe("DeliveryEvidenceService", () => {
     ).rejects.toThrow("Evidence artifacts are not ready.");
   });
 
+  it("accepts legacy walkaround artifact metadata without quality fields", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    const item = harness.findItem(DeliveryEvidenceType.WALKAROUND_VIDEO);
+    const file = harness.addFile("walkaround.mp4", "video/mp4");
+    const metadata = harness.prepareArtifactMetadata(
+      file,
+      DeliveryEvidenceMediaType.VIDEO,
+      item.evidenceType
+    );
+
+    expect(metadata).not.toHaveProperty("videoWidthPx");
+    expect(metadata).not.toHaveProperty("videoHeightPx");
+    await expect(
+      harness.service.attachEvidenceFile(
+        item.id,
+        file.id,
+        DeliveryEvidenceMediaType.VIDEO,
+        harness.userId,
+        harness.prisma as never,
+        harness.userId,
+        metadata as never
+      )
+    ).resolves.toMatchObject({ id: item.id, status: DeliveryEvidenceStatus.UPLOADED });
+  });
+
   it("rejects the legacy damage fileId shortcut", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);

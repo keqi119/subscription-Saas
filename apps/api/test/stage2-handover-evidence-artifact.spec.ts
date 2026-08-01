@@ -95,39 +95,20 @@ describe("Stage 2 handover evidence artifact preparation", () => {
   });
 
   it("probes video duration and creates four distinct walkaround keyframes", async () => {
-    let frameIndex = 0;
-    const runner = vi.fn(async (command: string, args: string[]) => {
-      if (command.includes("ffprobe")) {
-        return {
-          stderr: "",
-          stdout: JSON.stringify({
-            format: { duration: "20.5", format_name: "mov,mp4" },
-            streams: [{ codec_name: "h264", codec_type: "video" }]
-          })
-        };
-      }
-      frameIndex += 1;
-      await writeFakeJpeg(args.at(-1)!, frameIndex);
-      return { stderr: "", stdout: "" };
-    });
-    const service = new DeliveryHandoverEvidenceArtifactService(undefined, runner);
+    const { runner, service } = createVideoArtifactHarness();
 
-    const prepared = await service.prepareUpload({
-      evidenceType: "WALKAROUND_VIDEO",
-      file: {
-        buffer: Buffer.from("source-video"),
-        mimetype: "video/quicktime",
-        originalname: "walkaround.mov",
-        size: 12
-      },
-      mediaType: "VIDEO"
-    });
+    const prepared = await service.prepareUpload(walkaroundVideoInput());
 
     try {
       expect(prepared.metadata).toMatchObject({
         detectedCodec: "h264",
         detectedMimeType: "video/quicktime",
-        videoDurationMs: 20_500
+        videoBitRateBps: 8_000_000,
+        videoDurationMs: 20_500,
+        videoFrameRate: 29.97002997002997,
+        videoHeightPx: 1080,
+        videoQualityStatus: "PASSED",
+        videoWidthPx: 1920
       });
       expect(prepared.derivatives).toHaveLength(4);
       expect(new Set(prepared.derivatives.map((item) => item.originalName)).size).toBe(4);
@@ -138,6 +119,78 @@ describe("Stage 2 handover evidence artifact preparation", () => {
         "12.300",
         "17.425"
       ]);
+    } finally {
+      await prepared.cleanup();
+    }
+  });
+
+  it.each([
+    { height: 720, width: 1280 },
+    { height: 1280, width: 720 }
+  ])("accepts a walkaround video at the 720p short-edge boundary: $width x $height", async ({ height, width }) => {
+    const { service } = createVideoArtifactHarness({ height, width });
+    const prepared = await service.prepareUpload(walkaroundVideoInput());
+
+    try {
+      expect(prepared.metadata).toMatchObject({
+        videoHeightPx: height,
+        videoQualityStatus: "PASSED",
+        videoWidthPx: width
+      });
+    } finally {
+      await prepared.cleanup();
+    }
+  });
+
+  it("rejects a 480x360 walkaround before creating keyframes", async () => {
+    const { runner, service } = createVideoArtifactHarness({ height: 360, width: 480 });
+
+    await expect(service.prepareUpload(walkaroundVideoInput())).rejects.toThrow(
+      "车辆环绕视频清晰度不足，检测到 480×360，请使用系统相机以 720p 或更高画质重新录制后上传。"
+    );
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a walkaround whose dimensions cannot be identified", async () => {
+    const { runner, service } = createVideoArtifactHarness({ height: null, width: null });
+
+    await expect(service.prepareUpload(walkaroundVideoInput())).rejects.toThrow(
+      "车辆环绕视频清晰度不足，无法识别视频分辨率，请使用系统相机以 720p 或更高画质重新录制后上传。"
+    );
+    expect(runner).toHaveBeenCalledTimes(1);
+  });
+
+  it("records low resolution for non-walkaround video without enforcing the gate", async () => {
+    const { service } = createVideoArtifactHarness({ height: 360, width: 480 });
+    const prepared = await service.prepareUpload({
+      ...walkaroundVideoInput(),
+      evidenceType: "WHEEL_CLOSEUP_FRONT_LEFT"
+    });
+
+    try {
+      expect(prepared.metadata).toMatchObject({
+        videoHeightPx: 360,
+        videoQualityStatus: null,
+        videoWidthPx: 480
+      });
+    } finally {
+      await prepared.cleanup();
+    }
+  });
+
+  it("allows legacy repair to process an existing low-resolution walkaround", async () => {
+    const { service } = createVideoArtifactHarness({ height: 360, width: 480 });
+    const prepared = await service.prepareUpload({
+      ...walkaroundVideoInput(),
+      qualityPolicy: "LEGACY_REPAIR"
+    });
+
+    try {
+      expect(prepared.metadata).toMatchObject({
+        videoHeightPx: 360,
+        videoQualityStatus: null,
+        videoWidthPx: 480
+      });
     } finally {
       await prepared.cleanup();
     }
@@ -238,6 +291,64 @@ function photoInput() {
       size: 12
     },
     mediaType: "PHOTO" as const
+  };
+}
+
+function walkaroundVideoInput() {
+  return {
+    evidenceType: "WALKAROUND_VIDEO",
+    file: {
+      buffer: Buffer.from("source-video"),
+      mimetype: "video/quicktime",
+      originalname: "walkaround.mov",
+      size: 12
+    },
+    mediaType: "VIDEO" as const
+  };
+}
+
+function createVideoArtifactHarness({
+  height = 1080,
+  width = 1920
+}: {
+  height?: number | null;
+  width?: number | null;
+} = {}) {
+  let frameIndex = 0;
+  const stream: Record<string, unknown> = {
+    avg_frame_rate: "30000/1001",
+    bit_rate: "8000000",
+    codec_name: "h264",
+    codec_type: "video",
+    r_frame_rate: "30/1"
+  };
+  if (height !== null) {
+    stream.height = height;
+  }
+  if (width !== null) {
+    stream.width = width;
+  }
+  const runner = vi.fn(async (command: string, args: string[]) => {
+    if (command.includes("ffprobe")) {
+      return {
+        stderr: "",
+        stdout: JSON.stringify({
+          format: {
+            bit_rate: "9000000",
+            duration: "20.5",
+            format_name: "mov,mp4"
+          },
+          streams: [stream]
+        })
+      };
+    }
+    frameIndex += 1;
+    await writeFakeJpeg(args.at(-1)!, frameIndex);
+    return { stderr: "", stdout: "" };
+  });
+  return {
+    runner,
+    service: new DeliveryHandoverEvidenceArtifactService(undefined, runner)
   };
 }
 

@@ -258,6 +258,8 @@ describe("OrderWorkspaceResolver", () => {
     expect(
       resolver.resolveHandover({
         asOf: "2026-07-28T09:59:59.999Z",
+        canPrepareDelivery: false,
+        deliveryStatus: null,
         workOrder
       })
     ).toEqual(
@@ -270,6 +272,8 @@ describe("OrderWorkspaceResolver", () => {
     expect(
       resolver.resolveHandover({
         asOf: "2026-07-28T10:00:00.000Z",
+        canPrepareDelivery: false,
+        deliveryStatus: null,
         workOrder
       })
     ).toEqual(
@@ -279,6 +283,52 @@ describe("OrderWorkspaceResolver", () => {
         state: "ACTION_REQUIRED"
       })
     );
+  });
+
+  it.each([
+    [true, null],
+    [false, "READY"]
+  ] as const)(
+    "offers handover preparation without a work order when delivery readiness is %s/%s",
+    (canPrepareDelivery, deliveryStatus) => {
+      const resolver = new OrderWorkspaceResolver();
+
+      const item = resolver.resolveHandover({
+        asOf: AS_OF,
+        canPrepareDelivery,
+        deliveryStatus,
+        workOrders: []
+      });
+
+      expect(item).toMatchObject({
+        actionCode: "handover.prepare",
+        reasonCode: "HANDOVER_PREPARATION_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: null,
+        targetTab: "handover"
+      });
+      expect(
+        filterWorkspaceActionByPermission(
+          item,
+          workspaceUser([PermissionCode.DELIVERY_PREPARE])
+        ).actionCode
+      ).toBe("handover.prepare");
+    }
+  );
+
+  it("keeps handover not started when delivery preparation is not ready", () => {
+    expect(
+      new OrderWorkspaceResolver().resolveHandover({
+        asOf: AS_OF,
+        canPrepareDelivery: false,
+        deliveryStatus: null,
+        workOrders: []
+      })
+    ).toMatchObject({
+      actionCode: null,
+      reasonCode: "HANDOVER_NOT_STARTED",
+      state: "NOT_STARTED"
+    });
   });
 
   it("does not reset the signing-start timer when unrelated work-order updates occur", () => {
@@ -342,6 +392,8 @@ describe("OrderWorkspaceResolver", () => {
   it("treats Stage 2 as complete when both required signers signed even if archival is pending", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: AS_OF,
+      canPrepareDelivery: false,
+      deliveryStatus: null,
       workOrder: {
         assigned: true,
         handover: {
@@ -374,6 +426,8 @@ describe("OrderWorkspaceResolver", () => {
   it("surfaces a failed Stage 2 provider flow without provider payload text", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: AS_OF,
+      canPrepareDelivery: false,
+      deliveryStatus: null,
       workOrder: {
         assigned: true,
         handover: {
@@ -573,6 +627,8 @@ describe("OrderWorkspaceResolver", () => {
       }),
       resolver.resolveHandover({
         asOf: AS_OF,
+        canPrepareDelivery: false,
+        deliveryStatus: null,
         workOrder: {
           assigned: true,
           handover: {
@@ -1385,6 +1441,7 @@ describe("OrderWorkspaceService", () => {
     ["contract.sign", PermissionCode.CONTRACT_SIGN, PermissionCode.CONTRACT_GENERATE],
     ["contract.retry_signing", PermissionCode.CONTRACT_SIGN, PermissionCode.CONTRACT_ARCHIVE],
     ["handover.assign", PermissionCode.DELIVERY_PREPARE, PermissionCode.DELIVERY_CONFIRM],
+    ["handover.prepare", PermissionCode.DELIVERY_PREPARE, PermissionCode.DELIVERY_CONFIRM],
     ["handover.start_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
     ["handover.retry_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
     ["handover.follow_up_signing", PermissionCode.DELIVERY_CONFIRM, PermissionCode.DELIVERY_PREPARE],
@@ -1501,7 +1558,13 @@ describe("OrderWorkspaceService", () => {
       const resolve = vi.spyOn(resolver, "resolve");
       const service = new OrderWorkspaceService(
         prisma as never,
-        { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
+        {
+          getDeliveryCheck: vi.fn().mockResolvedValue({
+            canPrepareDelivery: false,
+            deliveryStatus: null
+          }),
+          getOrder: vi.fn().mockResolvedValue({ id: "order-1" })
+        } as never,
         resolver,
         {} as never
       );
@@ -1527,7 +1590,13 @@ describe("OrderWorkspaceService", () => {
     });
     const service = new OrderWorkspaceService(
       prisma as never,
-      { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
+      {
+        getDeliveryCheck: vi.fn().mockResolvedValue({
+          canPrepareDelivery: false,
+          deliveryStatus: null
+        }),
+        getOrder: vi.fn().mockResolvedValue({ id: "order-1" })
+      } as never,
       new OrderWorkspaceResolver(),
       {} as never
     );
@@ -1842,6 +1911,49 @@ describe("OrderWorkspaceService", () => {
       actionCode: "finance.collect",
       targetRecordId: "bill-1",
       targetTab: "finance"
+    });
+  });
+
+  it("loads authoritative delivery readiness before offering handover preparation", async () => {
+    const prisma = workspacePrisma();
+    prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValue([]);
+    const user = workspaceUser([
+      PermissionCode.ORDER_VIEW,
+      PermissionCode.DELIVERY_VIEW,
+      PermissionCode.DELIVERY_PREPARE
+    ]);
+    const getDeliveryCheck = vi.fn().mockResolvedValue({
+      canPrepareDelivery: false,
+      deliveryStatus: "READY"
+    });
+    const resolver = new OrderWorkspaceResolver();
+    const resolveHandover = vi.spyOn(resolver, "resolveHandover");
+    const service = new OrderWorkspaceService(
+      prisma as never,
+      {
+        getDeliveryCheck,
+        getOrder: vi.fn().mockResolvedValue({ id: "order-1" })
+      } as never,
+      resolver,
+      {} as never
+    );
+
+    const summary = await service.getSummary("order-1", user);
+
+    expect(getDeliveryCheck).toHaveBeenCalledWith("order-1", user);
+    expect(resolveHandover).toHaveBeenCalledWith({
+      asOf: expect.any(String),
+      canPrepareDelivery: false,
+      deliveryStatus: "READY",
+      workOrders: []
+    });
+    expect(
+      summary.guidance.find(({ category }) => category === "handover")
+    ).toMatchObject({
+      actionCode: "handover.prepare",
+      reasonCode: "HANDOVER_PREPARATION_REQUIRED",
+      state: "ACTION_REQUIRED",
+      targetRecordId: null
     });
   });
 
@@ -2461,7 +2573,13 @@ function workspaceProductionOrderChange() {
 function workspaceService(prisma: ReturnType<typeof workspacePrisma>) {
   return new OrderWorkspaceService(
     prisma as never,
-    { getOrder: vi.fn().mockResolvedValue({ id: "order-1" }) } as never,
+    {
+      getDeliveryCheck: vi.fn().mockResolvedValue({
+        canPrepareDelivery: false,
+        deliveryStatus: null
+      }),
+      getOrder: vi.fn().mockResolvedValue({ id: "order-1" })
+    } as never,
     new OrderWorkspaceResolver(),
     {} as never
   );

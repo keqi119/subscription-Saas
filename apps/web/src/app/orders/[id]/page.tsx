@@ -2714,11 +2714,18 @@ function Stage2HandoverWorkflowCell({
       <Timeline
         items={display.steps.map((step) => ({
           content: (
-            <Typography.Text
-              style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}
-            >
-              {step.label}
-            </Typography.Text>
+            <Space orientation="vertical" size={0}>
+              <Typography.Text
+                style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}
+              >
+                {step.label}
+              </Typography.Text>
+              {step.detail ? (
+                <Typography.Text style={{ fontSize: 12 }} type="secondary">
+                  {step.detail}
+                </Typography.Text>
+              ) : null}
+            </Space>
           ),
           color:
             step.state === "complete"

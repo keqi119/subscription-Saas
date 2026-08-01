@@ -5,12 +5,19 @@ import {
   buildStage2HandoverWorkflowBackfillPlan,
   parseStage2HandoverWorkflowBackfillMode
 } from "./stage2-handover-workflow-backfill-core.mjs";
+import {
+  STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION
+} from "./stage2-handover-workflow-contract.mjs";
 
 const MANIFEST_DIGEST = "a".repeat(64);
 const MANIFEST_HASH = `sha256:${MANIFEST_DIGEST}`;
 const SOURCE_PDF_HASH = "b".repeat(64);
 const CUSTOMER_TRANSACTION_ID = "ESG20260726080000ABCDH1";
 const PLATFORM_TRANSACTION_ID = "ESG20260726080000ABCDH2";
+
+test("uses source artifact version 2 for offline workflow planning", () => {
+  assert.equal(STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION, 2);
+});
 
 test("backfills internal and external canonical operator snapshots", () => {
   const plan = buildStage2HandoverWorkflowBackfillPlan([
@@ -233,10 +240,10 @@ test("creates NOTIFY_FIELD_ESIGN_READY for a ready source artifact without an eS
     {
       eSignTaskId: null,
       handoverId: "handover-1",
-      idempotencyKey: "field-notify:work-order-1:1",
+      idempotencyKey: "field-notify:work-order-1:2",
       jobType: "NOTIFY_FIELD_ESIGN_READY",
       payload: {
-        artifactVersion: 1,
+        artifactVersion: 2,
         manifestHash: MANIFEST_HASH,
         sourcePdfHash: SOURCE_PDF_HASH
       },
@@ -319,10 +326,10 @@ test("creates ARCHIVE_SIGNED_PDF when both signers are signed but archive is inc
     {
       eSignTaskId: "stage2-task-1",
       handoverId: "handover-1",
-      idempotencyKey: "archive:stage2-task-1:1",
+      idempotencyKey: "archive:stage2-task-1:2",
       jobType: "ARCHIVE_SIGNED_PDF",
       payload: {
-        artifactVersion: 1
+        artifactVersion: 2
       },
       workOrderId: "work-order-1"
     }
@@ -506,9 +513,9 @@ test("rejects inconsistent handover, contract, and source artifact bindings", ()
 test("rejects source artifacts outside the runtime version and size bounds", () => {
   const mutations = [
     (record) => {
-      record.handover.artifactVersion = 2;
+      record.handover.artifactVersion = 1;
       record.handover.handoverContract.contractSnapshot
-        .stage2HandoverPdfArtifact.artifactVersion = 2;
+        .stage2HandoverPdfArtifact.artifactVersion = 1;
     },
     (record) => {
       record.handover.sourceFileObject.sizeBytes =
@@ -676,7 +683,7 @@ function baseRecord(overrides = {}) {
     handover: {
       archiveStatus: "NOT_STARTED",
       archivedAt: null,
-      artifactVersion: 1,
+      artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
       deletedAt: null,
       handoverContract: null,
       handoverContractId: null,
@@ -734,7 +741,7 @@ function baseRecord(overrides = {}) {
 function withReadySource(record) {
   record.handover = {
     ...record.handover,
-    artifactVersion: 1,
+    artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
     handoverContract: {
       contractSnapshot: {
         evidencePackage: {
@@ -744,7 +751,7 @@ function withReadySource(record) {
         handoverId: record.handover.id,
         orderId: record.orderId,
         stage2HandoverPdfArtifact: {
-          artifactVersion: 1,
+          artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
           fileId: "file-source-1",
           sourcePdfHash: SOURCE_PDF_HASH
         },
@@ -784,7 +791,7 @@ function withActiveTask(record) {
     id: "stage2-task-1",
     orderId: record.orderId,
     requestSnapshot: {
-      artifactVersion: 1,
+      artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
       contractId: "contract-stage2-1",
       documentType: "DELIVERY_HANDOVER",
       handoverId: record.handover.id,

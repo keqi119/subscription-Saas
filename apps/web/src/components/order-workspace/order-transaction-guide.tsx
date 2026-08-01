@@ -1,6 +1,7 @@
 import {
   AuditOutlined,
   BellOutlined,
+  CarOutlined,
   FileAddOutlined,
   FormOutlined,
   MinusCircleOutlined,
@@ -84,6 +85,7 @@ const CATEGORY_ORDER: readonly OrderTransactionGuideCategory[] = [
 const ACTION_ICONS: Readonly<Record<string, ReactNode>> = {
   AuditOutlined: <AuditOutlined />,
   BellOutlined: <BellOutlined />,
+  CarOutlined: <CarOutlined />,
   FileAddOutlined: <FileAddOutlined />,
   FormOutlined: <FormOutlined />,
   MinusCircleOutlined: <MinusCircleOutlined />,

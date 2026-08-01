@@ -153,6 +153,7 @@ describe("admin order workspace navigation model", () => {
     ["contract.sign", { label: "发起合同签署", icon: "FormOutlined" }],
     ["contract.retry_signing", { label: "重试合同签署", icon: "RedoOutlined" }],
     ["handover.assign", { label: "分配交接任务", icon: "UserAddOutlined" }],
+    ["handover.prepare", { label: "推进车辆交接", icon: "CarOutlined" }],
     ["handover.start_signing", { label: "发起交接签署", icon: "FormOutlined" }],
     ["handover.follow_up_signing", { label: "跟进交接签署", icon: "BellOutlined" }],
     ["handover.retry_signing", { label: "重试交接签署", icon: "RedoOutlined" }],
@@ -1052,6 +1053,34 @@ describe("admin order workspace shell", () => {
     primaryAction.props.onClick?.();
 
     expect(navigations).toEqual([{ focus: "bill-1", tab: "finance" }]);
+  });
+
+  it("navigates handover preparation to the existing handover workspace", () => {
+    const navigations: Array<{ focus?: string; tab: string }> = [];
+    const rendered = OrderTransactionGuide({
+      onNavigate: (target) => navigations.push(target),
+      summary: {
+        asOf: "2026-08-01T06:00:00.000Z",
+        guidance: [
+          {
+            ...guidanceItem("handover", "ACTION_REQUIRED", "handover.prepare"),
+            targetRecordId: null
+          }
+        ],
+        primaryAction: {
+          actionCode: "handover.prepare",
+          targetRecordId: null,
+          targetTab: "handover"
+        }
+      }
+    });
+    const markup = renderToStaticMarkup(rendered);
+
+    expect(markup).toContain('data-workspace-action-code="handover.prepare"');
+    expect(markup).toContain("推进车辆交接");
+    expect(markup).toContain("anticon-car");
+    findWorkspaceAction(rendered, "primary").props.onClick?.();
+    expect(navigations).toEqual([{ tab: "handover" }]);
   });
 
   it("fails closed for an unknown guide action while retaining tab navigation", () => {

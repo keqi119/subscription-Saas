@@ -1,7 +1,7 @@
 const SHA256_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const ACTIVE_JOB_STATUSES = new Set(["PENDING", "PROCESSING"]);
 
-export const STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION = 1;
+export const STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION = 2;
 export const STAGE2_HANDOVER_PDF_HARD_MAX_BYTES = 18 * 1024 * 1024;
 
 export function canonicalStage2Sha256(value) {

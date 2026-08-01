@@ -24,6 +24,8 @@ import {
   NotificationStatus,
   Prisma,
   SmsSendStatus,
+  VehicleHandoverEventType,
+  VehicleHandoverOperatorType,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType,
   VehicleHandoverReviewAttemptStatus,
@@ -157,6 +159,28 @@ const sourceProjectionSelect = {
 const recoveryWorkOrderSelect = {
   customerConfirmedAt: true,
   customerObjectedAt: true,
+  events: {
+    orderBy: [
+      { createdAt: "desc" },
+      { id: "desc" }
+    ],
+    select: {
+      createdAt: true,
+      eventType: true,
+      id: true
+    },
+    take: 1,
+    where: {
+      eventType: {
+        in: [
+          VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED,
+          VehicleHandoverEventType.INTERNAL_OPERATOR_ASSIGNED
+        ]
+      }
+    }
+  },
+  externalOperatorPhone: true,
+  fieldOperatorPhone: true,
   handover: {
     select: {
       archiveStatus: true,
@@ -215,10 +239,18 @@ const recoveryWorkOrderSelect = {
   handoverId: true,
   handoverType: true,
   id: true,
+  operatorType: true,
   order: {
     select: {
       customerId: true,
-      id: true
+      id: true,
+      vehicle: {
+        select: {
+          id: true,
+          plateNo: true
+        }
+      },
+      vehicleId: true
     }
   },
   orderId: true,
@@ -260,6 +292,7 @@ export class Stage2HandoverWorkflowService
   implements Stage2HandoverWorkflowHandler {
   readonly supportedJobTypes = [
     VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+    VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
     VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
     VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
     VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
@@ -534,6 +567,8 @@ export class Stage2HandoverWorkflowService
     switch (job.jobType) {
       case VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF:
         return this.handleGenerateSourcePdf(job);
+      case VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED:
+        return this.handleFieldAssignmentNotification(job);
       case VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY:
         return this.handleFieldNotification(job);
       case VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY:
@@ -563,6 +598,95 @@ export class Stage2HandoverWorkflowService
         result: {
           artifactId: artifact.artifactId,
           artifactStatus: artifact.status
+        }
+      };
+    });
+  }
+
+  private async handleFieldAssignmentNotification(
+    job: ClaimedStage2WorkflowJob
+  ): Promise<WorkflowHandlerResult> {
+    const assignmentEventId = readRequiredString(
+      readPayloadString(job.payload, "assignmentEventId"),
+      "FIELD_HANDOVER_ASSIGNMENT_EVENT_MISSING"
+    );
+    const smsService = this.requireSmsService();
+    return this.withLeaseHeartbeat(job, async (lease) => {
+      const workOrder =
+        await this.prisma.vehicleHandoverWorkOrder.findUnique({
+          select: recoveryWorkOrderSelect,
+          where: { id: job.workOrderId }
+        });
+      if (!workOrder) {
+        throw new Error("FIELD_HANDOVER_WORK_ORDER_MISSING");
+      }
+
+      const latestAssignment = workOrder.events[0] ?? null;
+      if (
+        latestAssignment &&
+        (
+          latestAssignment.id !== assignmentEventId ||
+          latestAssignment.eventType !==
+            VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED
+        )
+      ) {
+        return {
+          kind: "COMPLETED",
+          result: {
+            skipped: "ASSIGNMENT_SUPERSEDED"
+          }
+        };
+      }
+
+      const handover = workOrder.handover;
+      if (
+        !latestAssignment ||
+        TERMINAL_WORK_ORDER_STATUSES.has(workOrder.status) ||
+        workOrder.status === VehicleHandoverWorkOrderStatus.FIELD_COMPLETED ||
+        workOrder.handoverType !== VehicleHandoverType.DELIVERY_OUTBOUND ||
+        workOrder.operatorType !== VehicleHandoverOperatorType.EXTERNAL ||
+        workOrder.order.id !== workOrder.orderId ||
+        !handover ||
+        workOrder.handoverId !== handover.id ||
+        job.handoverId !== handover.id ||
+        handover.orderId !== workOrder.orderId ||
+        handover.deletedAt !== null ||
+        handover.archivedAt !== null ||
+        handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED
+      ) {
+        throw new Error("STAGE2_HANDOVER_ASSIGNMENT_JOB_STALE");
+      }
+
+      const phone = readRequiredString(
+        workOrder.externalOperatorPhone,
+        "FIELD_HANDOVER_RECIPIENT_MISSING"
+      );
+      if (phone !== workOrder.fieldOperatorPhone?.trim()) {
+        throw new Error("FIELD_HANDOVER_RECIPIENT_MISSING");
+      }
+      const plateNo = readRequiredString(
+        workOrder.order.vehicle?.plateNo,
+        "FIELD_HANDOVER_PLATE_NO_MISSING"
+      );
+      const sms = await smsService.sendStage2FieldAssigned({
+        idempotencyKey:
+          `field-assigned:${workOrder.id}:${assignmentEventId}`,
+        phone,
+        plateNo
+      });
+      await lease.assertLease();
+      if (sms.sendStatus !== SmsSendStatus.SENT) {
+        throw new Error(
+          "FIELD_HANDOVER_ASSIGNMENT_NOTIFICATION_INCOMPLETE"
+        );
+      }
+      return {
+        kind: "COMPLETED",
+        result: {
+          sms: {
+            recordId: sms.sendLogId ?? null,
+            status: sms.sendStatus
+          }
         }
       };
     });
@@ -1156,6 +1280,15 @@ async function buildCanonicalRecoveryExpectation(
   workOrder: RecoveryWorkOrder | null,
   unavailable: () => BadRequestException = workflowJobNotRecoverable
 ): Promise<RecoveryJobExpectation> {
+  if (
+    jobType ===
+    VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED
+  ) {
+    return buildFieldAssignmentRecoveryExpectation(
+      workOrder,
+      unavailable
+    );
+  }
   const context = requireCanonicalRecoveryContext(workOrder, unavailable);
 
   switch (jobType) {
@@ -1360,7 +1493,50 @@ async function buildCanonicalRecoveryExpectation(
         sourcePayloads: [payload]
       };
     }
+    default:
+      throw unavailable();
   }
+}
+
+function buildFieldAssignmentRecoveryExpectation(
+  workOrder: RecoveryWorkOrder | null,
+  unavailable: () => BadRequestException
+): RecoveryJobExpectation {
+  const handover = workOrder?.handover ?? null;
+  const assignment = workOrder?.events[0] ?? null;
+  if (
+    !workOrder ||
+    TERMINAL_WORK_ORDER_STATUSES.has(workOrder.status) ||
+    workOrder.status === VehicleHandoverWorkOrderStatus.FIELD_COMPLETED ||
+    workOrder.handoverType !== VehicleHandoverType.DELIVERY_OUTBOUND ||
+    workOrder.operatorType !== VehicleHandoverOperatorType.EXTERNAL ||
+    workOrder.order.id !== workOrder.orderId ||
+    !handover ||
+    workOrder.handoverId !== handover.id ||
+    handover.orderId !== workOrder.orderId ||
+    handover.deletedAt !== null ||
+    handover.archivedAt !== null ||
+    handover.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED ||
+    !assignment ||
+    assignment.eventType !==
+      VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED
+  ) {
+    throw unavailable();
+  }
+  const payload = {
+    assignmentEventId: assignment.id
+  } satisfies Prisma.InputJsonObject;
+  return {
+    eSignTaskId: null,
+    handoverId: handover.id,
+    jobType:
+      VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+    maxAttempts: STAGE2_RECOVERY_MAX_ATTEMPTS,
+    notificationIdempotencyKey:
+      `field-assigned:${workOrder.id}:${assignment.id}`,
+    payload,
+    sourcePayloads: [payload]
+  };
 }
 
 function requireCanonicalRecoveryContext(

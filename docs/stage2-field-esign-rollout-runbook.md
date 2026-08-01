@@ -33,22 +33,30 @@ unavailable.
 
 ## Required Configuration
 
-Deploy the compatible API and Web images with these values first:
+Prepare these non-secret values, but keep the worker disabled until the
+migration, compatible images, and dry-run have all passed:
 
 ```dotenv
-STAGE2_HANDOVER_WORKFLOW_ENABLED=false
+PORTAL_SMS_ENABLED=true
+PORTAL_SMS_PROVIDER=aliyun
+FIELD_OPERATOR_SMS_ENABLED=true
+FIELD_OPERATOR_SMS_PROVIDER=aliyun
+STAGE2_HANDOVER_WORKFLOW_ENABLED=true
 STAGE2_HANDOVER_WORKER_ENABLED=false
 STAGE2_HANDOVER_WORKER_CONCURRENCY=1
 STAGE2_HANDOVER_WORKER_POLL_INTERVAL_MS=5000
 STAGE2_HANDOVER_WORKER_LEASE_MS=120000
+ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE=SMS_511185078
 ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510815118
 ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510795093
 ```
 
-The two SMS template codes are configuration values, not secrets. Their
-`instruction` parameter must remain generic and must not contain names,
-phones, order data, provider transaction data, or signing URLs. Keep the
-existing environment-specific Aliyun credentials, Fadada settings, public
+The three SMS template codes are configuration values, not secrets. The
+assignment template `SMS_511185078` receives exactly `{ name: Vehicle.plateNo }`.
+The Field-ready template `SMS_510815118` and customer-ready template
+`SMS_510795093` receive `{}`. Never include names, phones, order data, provider
+transaction data, or signing URLs beyond that approved plate variable. Keep
+the existing environment-specific Aliyun credentials, Fadada settings, public
 URLs, object-storage settings, and platform identity settings out of rollout
 records.
 
@@ -62,38 +70,51 @@ records.
   healthy.
 - The operator has access to an Admin account with `DELIVERY_CONFIRM`.
 - The merged release checkout is the current directory and contains the three
-  `scripts/stage2-handover-workflow-backfill*` files.
+  release-matched files:
+  `scripts/stage2-handover-workflow-backfill.mjs`,
+  `scripts/stage2-handover-workflow-backfill-core.mjs`, and
+  `scripts/stage2-handover-workflow-contract.mjs`.
 - Backfill reports are stored in the restricted operations directory. They
   may contain counts and local IDs only.
 
 Set the Compose file used by the Staging host:
 
 ```bash
-export COMPOSE_FILE=docker-compose.staging.images.yml
+export COMPOSE_FILE=docker-compose.staging.images.example.yml
+export ENV_FILE=.env.staging.images
 ```
 
 ## Staging Rollout
 
-1. Deploy compatible API and Web images with both Stage 2 flags set to
-   `false`. Confirm API, Admin Web, and Customer Web health before proceeding.
+1. Record the current API/Web image values and the SHA-256 checksum of the
+   active environment file. Create a timestamped backup under the Staging
+   deployment backup directory. Verify `PORTAL_SMS_ENABLED=true` remains
+   present. Set only `STAGE2_HANDOVER_WORKER_ENABLED=false`, recreate the
+   current API service, and confirm health before changing images or schema.
 
-2. Apply migrations with the Prisma binary already included in the runtime
-   image:
+2. Pull the compatible API image, then apply the additive migration with the
+   Prisma binary included in that release image while the worker remains off.
+   This is the release image's `prisma migrate deploy` step:
 
    ```bash
-   docker compose -f "$COMPOSE_FILE" exec -T \
-     --workdir /app/apps/api api \
-     /app/apps/api/node_modules/.bin/prisma migrate deploy \
-     --schema prisma/schema.prisma
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
+     --workdir /app/apps/api --entrypoint /app/apps/api/node_modules/.bin/prisma api \
+     migrate deploy --schema prisma/schema.prisma
    ```
 
    Do not run `pnpm install`, `pnpm exec`, or any dependency installation in
    the runtime container.
 
-3. Run and retain the dry-run report:
+3. Deploy the compatible API/Web images with
+   `STAGE2_HANDOVER_WORKER_ENABLED=false`. Confirm API, Admin Web, and Customer
+   Web health, image digests, and migration status before proceeding.
+
+4. Bind-mount only the three release-matched backfill scripts read-only and run
+   and retain the dry-run report:
 
    ```bash
-   docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
      --volume "$PWD/scripts:/app/scripts:ro" \
      --entrypoint node api \
      /app/scripts/stage2-handover-workflow-backfill.mjs --dry-run \
@@ -101,49 +122,34 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    ```
 
    Review only the reported counts, exception codes, and local IDs. Resolve
-   every exception before enabling the workflow. In particular, an invalid
+   every exception before enabling the workflow. This Wave 1 rollout is
+   dry-run only: do not use `--apply`, do not update queue rows directly, and
+   do not modify SMS logs. It must not downgrade a v2 artifact to v1 or insert
+   a retroactive assignment notification. In particular, an invalid
    internal-user mobile is an exception and must never be replaced from a
    legacy production field.
 
-4. Apply once, then repeat dry-run:
-
-   ```bash
-   docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
-     --volume "$PWD/scripts:/app/scripts:ro" \
-     --entrypoint node api \
-     /app/scripts/stage2-handover-workflow-backfill.mjs --apply \
-     | tee "stage2-backfill-apply-$(date -u +%Y%m%dT%H%M%SZ).json"
-
-   docker compose -f "$COMPOSE_FILE" run --rm --no-deps \
-     --volume "$PWD/scripts:/app/scripts:ro" \
-     --entrypoint node api \
-     /app/scripts/stage2-handover-workflow-backfill.mjs --dry-run \
-     | tee "stage2-backfill-convergence-$(date -u +%Y%m%dT%H%M%SZ).json"
-   ```
-
-   The repeated dry-run must report zero operator snapshot updates and zero
-   new job candidates. Repeated apply must also remain converged.
-
-5. Set `STAGE2_HANDOVER_WORKFLOW_ENABLED=true` while keeping
-   `STAGE2_HANDOVER_WORKER_ENABLED=false`, then recreate only the API service:
-
-   ```bash
-   docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api
-   ```
-
-6. Set `STAGE2_HANDOVER_WORKER_ENABLED=true` and keep concurrency at `1`.
+5. Set `STAGE2_HANDOVER_WORKER_ENABLED=true` and keep
+   `STAGE2_HANDOVER_WORKER_CONCURRENCY=1`.
    Recreate the API service again and confirm its health:
 
    ```bash
-   docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api
-   docker compose -f "$COMPOSE_FILE" ps api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps api
    ```
 
-7. In Admin Web, open order `ORD20260726073922TFHF`. Confirm its exact active
-   typed Stage 2 H1 transaction receives a
-   `RECONCILE_CUSTOMER_SIGNATURE` workflow job. The bounded workflow history
-   may show it as pending, processing, or completed; it must not bind to a
-   Stage 1 task.
+6. In Admin Web, open current acceptance order `ORD20260731173351SMF2` and
+   work order `69952e92-4a86-445d-9663-d8692716ec37`. Do not backfill or send
+   `SMS_511185078` for its historical assignment. Preserve its existing
+   `NOTIFY_FIELD_ESIGN_READY` job and original idempotency key; allow that job
+   to recover naturally and send `SMS_510815118` at most once. Only permit
+   `SMS_510795093` after a natural Field eSign initiation creates the customer
+   signing milestone.
+
+7. Verify the user-configured public-account `/field/handover` entry is
+   reachable and shows only authorized tasks. This is verification-only.
+   Do not change the WeChat public-account menu during this rollout; do not
+   update or reapply it.
 
 8. Confirm the provider status `3000` result advances only H1 to signed,
    creates the H2 platform-seal path, completes H2, and archives the signed
@@ -155,6 +161,10 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    handover end to end. Confirm both canonical operator snapshots are present,
    each task has exactly the typed H1/H2 signer pair, notifications are
    idempotent, provider completion is reconciled, and the signed PDF archives.
+   Only the new natural external assignment may exercise `SMS_511185078`;
+   confirm its `name` variable equals that work order's authoritative full
+   plate number. A superseded queued assignment must complete without
+   contacting the former recipient.
 
 10. In a controlled signed task, hold or fail archive completion. Confirm
     authorized Admin delivery confirmation remains available, the archive

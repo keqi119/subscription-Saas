@@ -323,7 +323,19 @@ function createIdentityHarness(
   const evidenceService = {
     getChecklist: vi.fn(async () => ({ items: [] }))
   };
-  const service = new HandoverWorkOrderService(prisma as never, evidenceService as never);
+  const workflowRepository = {
+    enqueue: vi.fn(async (_tx: unknown, input: Record<string, unknown>) => input)
+  };
+  const service = new HandoverWorkOrderService(
+    prisma as never,
+    evidenceService as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    workflowRepository as never
+  );
 
   return {
     events,

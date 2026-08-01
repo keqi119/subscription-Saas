@@ -109,7 +109,7 @@ describe("Stage 2 workflow recovery Admin API", () => {
       VehicleHandoverWorkflowJobType.RECONCILE_PLATFORM_SEAL,
       { platformTransactionId: PLATFORM_TRANSACTION_ID }
     ],
-    [VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF, { artifactVersion: 1 }]
+    [VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF, { artifactVersion: 2 }]
   ] as const)(
     "maps dead-letter %s to only its bounded retry payload",
     async (jobType, expectedPayload) => {
@@ -141,6 +141,53 @@ describe("Stage 2 workflow recovery Admin API", () => {
       expect(JSON.stringify(replacement)).not.toContain("old-private-value");
     }
   );
+
+  it("recovers only the current external assignment dead letter", async () => {
+    const current = createRecoveryHarness({
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED
+    });
+
+    await current.service.retryDeadLetterJob(
+      "work-order-1",
+      "dead-letter-1",
+      "admin-1"
+    );
+
+    expect(current.jobs[1]).toMatchObject({
+      eSignTaskId: null,
+      handoverId: "handover-1",
+      idempotencyKey: "recovery:dead-letter-1",
+      jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+      maxAttempts: 6,
+      payload: {
+        assignmentEventId: "assignment-event-1"
+      },
+      workOrderId: "work-order-1"
+    });
+
+    const superseded = createRecoveryHarness({
+      jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED
+    });
+    superseded.workOrder.events.unshift({
+      createdAt: new Date("2026-07-28T02:00:00.000Z"),
+      eventType: "EXTERNAL_OPERATOR_ASSIGNED",
+      id: "assignment-event-2"
+    });
+
+    await expect(
+      superseded.service.retryDeadLetterJob(
+        "work-order-1",
+        "dead-letter-1",
+        "admin-1"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_WORKFLOW_JOB_NOT_RECOVERABLE"
+      })
+    });
+    expect(superseded.jobs).toHaveLength(1);
+  });
 
   it("writes one bounded audit event and creates one replacement pending job idempotently", async () => {
     const harness = createRecoveryHarness();
@@ -631,7 +678,7 @@ function createRecoveryHarness(
       lastErrorMessage: "old-private-value",
       maxAttempts: 6,
       payload: {
-        artifactVersion: 1,
+        artifactVersion: 2,
         customerTransactionId: CUSTOMER_TRANSACTION_ID,
         manifestHash: "a".repeat(64),
         platformTransactionId: PLATFORM_TRANSACTION_ID,
@@ -650,10 +697,19 @@ function createRecoveryHarness(
   const workOrder: any = {
     customerConfirmedAt: new Date("2026-07-27T00:00:00.000Z"),
     customerObjectedAt: null,
+    events: [
+      {
+        createdAt: new Date("2026-07-27T00:00:00.000Z"),
+        eventType: "EXTERNAL_OPERATOR_ASSIGNED",
+        id: "assignment-event-1"
+      }
+    ],
+    externalOperatorPhone: "13900001111",
+    fieldOperatorPhone: "13900001111",
     handover: {
       archiveStatus: DeliveryHandoverArchiveStatus.NOT_STARTED,
       archivedAt: null,
-      artifactVersion: 1,
+      artifactVersion: 2,
       deletedAt: null,
       handoverContract: {
         contractSnapshot: {
@@ -664,7 +720,7 @@ function createRecoveryHarness(
           handoverId: "handover-1",
           orderId: "order-1",
           stage2HandoverPdfArtifact: {
-            artifactVersion: 1,
+            artifactVersion: 2,
             fileId: "file-source-1",
             sourcePdfHash: "b".repeat(64)
           },
@@ -686,7 +742,7 @@ function createRecoveryHarness(
         id: "stage2-task-1",
         orderId: "order-1",
         requestSnapshot: {
-          artifactVersion: 1,
+          artifactVersion: 2,
           contractId: "contract-stage2-1",
           documentType: "DELIVERY_HANDOVER",
           handoverId: "handover-1",
@@ -739,9 +795,15 @@ function createRecoveryHarness(
     handoverId: "handover-1",
     handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
     id: "work-order-1",
+    operatorType: "EXTERNAL",
     order: {
       customerId: "customer-1",
-      id: "order-1"
+      id: "order-1",
+      vehicle: {
+        id: "vehicle-1",
+        plateNo: "沪DGU580"
+      },
+      vehicleId: "vehicle-1"
     },
     orderId: "order-1",
     reviewAttempts: [
@@ -857,6 +919,21 @@ function configureCanonicalRecoveryState(
   const customerSigner = task.signers[0];
   const platformSigner = task.signers[1];
 
+  if (
+    jobType === VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED
+  ) {
+    workOrder.status = VehicleHandoverWorkOrderStatus.ASSIGNED;
+    workOrder.customerConfirmedAt = null;
+    workOrder.reviewAttempts = [];
+    sourceJob.eSignTaskId = null;
+    sourceJob.idempotencyKey =
+      "field-assigned:work-order-1:assignment-event-1";
+    sourceJob.payload = {
+      assignmentEventId: "assignment-event-1"
+    };
+    return;
+  }
+
   if (jobType === VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF) {
     workOrder.status = VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED;
     workOrder.handover.status = DeliveryHandoverStatus.DRAFT;
@@ -884,7 +961,7 @@ function configureCanonicalRecoveryState(
     workOrder.handover.handoverESignTaskId = null;
     sourceJob.eSignTaskId = null;
     sourceJob.payload = {
-      artifactVersion: 1,
+      artifactVersion: 2,
       manifestHash: `sha256:${"a".repeat(64)}`,
       sourcePdfHash: "b".repeat(64)
     };
@@ -927,5 +1004,5 @@ function configureCanonicalRecoveryState(
   workOrder.status = VehicleHandoverWorkOrderStatus.PLATFORM_SEALED;
   workOrder.handover.handoverContract.status = "SIGNED";
   workOrder.handover.status = DeliveryHandoverStatus.SIGNED;
-  sourceJob.payload = { artifactVersion: 1 };
+  sourceJob.payload = { artifactVersion: 2 };
 }

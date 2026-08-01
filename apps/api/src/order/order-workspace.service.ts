@@ -82,6 +82,8 @@ type HandoverWorkOrderFacts = {
 
 export type HandoverWorkspaceFacts = {
   asOf: string;
+  canPrepareDelivery: boolean;
+  deliveryStatus: string | null;
   workOrder?: HandoverWorkOrderFacts | null;
   workOrders?: HandoverWorkOrderFacts[];
 };
@@ -211,6 +213,16 @@ export class OrderWorkspaceResolver {
   resolveHandover(facts: HandoverWorkspaceFacts): OrderWorkspaceGuideItem {
     const workOrders = facts.workOrders ?? (facts.workOrder ? [facts.workOrder] : []);
     if (workOrders.length === 0) {
+      if (facts.canPrepareDelivery || facts.deliveryStatus === "READY") {
+        return guideItem(
+          "handover",
+          "ACTION_REQUIRED",
+          "HANDOVER_PREPARATION_REQUIRED",
+          "handover.prepare",
+          null,
+          null
+        );
+      }
       return guideItem("handover", "NOT_STARTED", "HANDOVER_NOT_STARTED", null, null, null);
     }
     return selectRepresentative(
@@ -645,39 +657,49 @@ export class OrderWorkspaceService {
       handoverTypes.push("RETURN_INBOUND");
     }
 
-    const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
-      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-      select: {
-        assignedInternalUserId: true,
-        customerConfirmedAt: true,
-        handover: {
-          select: {
-            archiveStatus: true,
-            handoverESignTask: {
-              select: {
-                signers: {
-                  select: { required: true, signerStatus: true },
-                  take: 10,
-                  where: { deletedAt: null }
-                },
-                taskStatus: true
-              }
-            },
-            id: true,
-            status: true,
-            updatedAt: true
-          }
+    const [deliveryCheck, workOrders] = await Promise.all([
+      permissions.has(PermissionCode.DELIVERY_VIEW)
+        ? this.orderService.getDeliveryCheck(orderId, user)
+        : Promise.resolve({
+            canPrepareDelivery: false,
+            deliveryStatus: null
+          }),
+      this.prisma.vehicleHandoverWorkOrder.findMany({
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        select: {
+          assignedInternalUserId: true,
+          customerConfirmedAt: true,
+          handover: {
+            select: {
+              archiveStatus: true,
+              handoverESignTask: {
+                select: {
+                  signers: {
+                    select: { required: true, signerStatus: true },
+                    take: 10,
+                    where: { deletedAt: null }
+                  },
+                  taskStatus: true
+                }
+              },
+              id: true,
+              status: true,
+              updatedAt: true
+            }
+          },
+          id: true,
+          operatorType: true,
+          status: true,
+          updatedAt: true
         },
-        id: true,
-        operatorType: true,
-        status: true,
-        updatedAt: true
-      },
-      take: 50,
-      where: { handoverType: { in: handoverTypes }, orderId }
-    });
+        take: 50,
+        where: { handoverType: { in: handoverTypes }, orderId }
+      })
+    ]);
     return this.resolver.resolveHandover({
       asOf,
+      canPrepareDelivery: deliveryCheck.canPrepareDelivery,
+      deliveryStatus: deliveryCheck.deliveryStatus,
       workOrders: workOrders.map((workOrder) => ({
         assigned:
           workOrder.status !== "DRAFT" ||
@@ -931,6 +953,7 @@ const ACTION_PERMISSION: Record<string, PermissionCode> = {
   "finance.deduct_deposit": PermissionCode.DEPOSIT_LEDGER_DEDUCT,
   "finance.refund_deposit": PermissionCode.DEPOSIT_LEDGER_REFUND,
   "handover.assign": PermissionCode.DELIVERY_PREPARE,
+  "handover.prepare": PermissionCode.DELIVERY_PREPARE,
   "handover.follow_up_signing": PermissionCode.DELIVERY_CONFIRM,
   "handover.retry_signing": PermissionCode.DELIVERY_CONFIRM,
   "handover.start_signing": PermissionCode.DELIVERY_CONFIRM,

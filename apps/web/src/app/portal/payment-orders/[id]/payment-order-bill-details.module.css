@@ -1,0 +1,52 @@
+.desktop {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.mobile {
+  display: none;
+}
+
+.card {
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.row + .row {
+  border-top: 1px solid #f0f2f5;
+}
+
+.label {
+  color: #8c8c8c;
+}
+
+.value,
+.wrappingValue {
+  min-width: 0;
+  text-align: right;
+}
+
+.wrappingValue {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 767px) {
+  .desktop {
+    display: none;
+  }
+
+  .mobile {
+    display: grid;
+    gap: 12px;
+  }
+}

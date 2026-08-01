@@ -1,15 +1,11 @@
 "use client";
 
 import { ArrowLeftOutlined, CheckCircleOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
+import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  BILL_STATUS_LABELS,
-  BILL_TYPE_LABELS,
   ORDER_STATUS_LABELS,
   PAYMENT_CHANNEL_LABELS,
   PAYMENT_ORDER_STATUS_LABELS,
@@ -17,7 +13,12 @@ import {
   labelOf
 } from "../../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
-import { PortalPaymentOrder, PortalPaymentOrderItem, PortalWeChatJsapiParams } from "../../../../lib/portal-types";
+import { PortalPaymentOrder, PortalWeChatJsapiParams } from "../../../../lib/portal-types";
+import {
+  formatPortalMoney,
+  formatPortalTime,
+  PaymentOrderBillDetails
+} from "./payment-order-bill-details";
 
 declare global {
   interface Window {
@@ -208,10 +209,10 @@ export default function PortalPaymentOrderPage() {
               { label: "订单状态", children: labelOf(ORDER_STATUS_LABELS, paymentOrder.orderStatus) },
               { label: "支付服务商", children: labelOf(PAYMENT_PROVIDER_LABELS, paymentOrder.provider) },
               { label: "支付通道", children: labelOf(PAYMENT_CHANNEL_LABELS, paymentOrder.paymentChannel) },
-              { label: "支付金额", children: formatMoney(paymentOrder.amount) },
-              { label: "已付金额", children: formatMoney(paymentOrder.paidAmount) },
-              { label: "支付时间", children: formatTime(paymentOrder.paidAt) },
-              { label: "支付链接有效期", children: formatTime(paymentOrder.cashierUrlExpiresAt) },
+              { label: "支付金额", children: formatPortalMoney(paymentOrder.amount) },
+              { label: "已付金额", children: formatPortalMoney(paymentOrder.paidAmount) },
+              { label: "支付时间", children: formatPortalTime(paymentOrder.paidAt) },
+              { label: "支付链接有效期", children: formatPortalTime(paymentOrder.cashierUrlExpiresAt) },
               { label: "收款记录", children: paymentOrder.paymentRecord?.paymentNo ?? "-" }
             ]}
           />
@@ -232,44 +233,12 @@ export default function PortalPaymentOrderPage() {
               {paymentActionText}
             </Button>
           </Flex>
-          <Table columns={columns} dataSource={paymentOrder.items} pagination={false} rowKey="id" size="small" />
+          <PaymentOrderBillDetails items={paymentOrder.items} />
         </section>
       </section>
     </main>
   );
 }
-
-const columns: ColumnsType<PortalPaymentOrderItem> = [
-  {
-    dataIndex: "billNo",
-    title: "账单编号"
-  },
-  {
-    dataIndex: "billType",
-    render: (value: string) => labelOf(BILL_TYPE_LABELS, value),
-    title: "类型"
-  },
-  {
-    dataIndex: "billStatus",
-    render: (value: string) => labelOf(BILL_STATUS_LABELS, value),
-    title: "状态"
-  },
-  {
-    dataIndex: "amount",
-    render: (value: number) => formatMoney(value),
-    title: "应付"
-  },
-  {
-    dataIndex: "remainingAmount",
-    render: (value: number) => formatMoney(value),
-    title: "待付"
-  },
-  {
-    dataIndex: "dueDate",
-    render: (value: string | null) => formatTime(value),
-    title: "到期日"
-  }
-];
 
 function isWeChatBrowser() {
   return /MicroMessenger/i.test(window.navigator.userAgent);
@@ -306,16 +275,6 @@ const PAYABLE_BILL_STATUSES = new Set(["PENDING", "PARTIALLY_PAID", "OVERDUE"]);
 function isPaymentOrderPayable(paymentOrder: PortalPaymentOrder) {
   return PAYABLE_PAYMENT_ORDER_STATUSES.has(paymentOrder.paymentStatus) &&
     paymentOrder.items.some((item) => PAYABLE_BILL_STATUSES.has(item.billStatus) && item.remainingAmount > 0);
-}
-
-function formatMoney(amount?: number | null) {
-  return amount === null || amount === undefined
-    ? "-"
-    : `${(amount / 100).toLocaleString("zh-CN", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} 元`;
-}
-
-function formatTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
 const sectionStyle = {

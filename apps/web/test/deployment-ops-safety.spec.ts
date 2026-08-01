@@ -66,6 +66,31 @@ describe("Deployment operations safety", () => {
       );
     }
   });
+
+  it("routes staging WeChat OAuth through the authorized Portal domain", () => {
+    const nginx = read("nginx/staging-app-wechat-oauth.example.conf");
+
+    for (const file of [
+      ".env.staging.example",
+      ".env.staging.images.example"
+    ]) {
+      const environment = read(file);
+
+      expect(environment).toContain(
+        "WECHAT_PAY_OAUTH_REDIRECT_URI=https://staging-app.subauto.keybox.cloud/api/portal/wechat/oauth/callback"
+      );
+      expect(environment).not.toContain(
+        "WECHAT_PAY_OAUTH_REDIRECT_URI=https://staging-api.subauto.keybox.cloud"
+      );
+    }
+    expect(nginx).toContain("location = /api/portal/wechat/oauth/callback");
+    expect(nginx).toContain(
+      "proxy_pass http://127.0.0.1:3101/api/portal/wechat/oauth/callback;"
+    );
+    expect(nginx).toContain("proxy_set_header Host staging-app.subauto.keybox.cloud;");
+    expect(nginx).not.toContain("127.0.0.1:3001");
+    expect(nginx).not.toContain("proxy_set_header Host app.subauto.keybox.cloud;");
+  });
 });
 
 function read(file: string) {

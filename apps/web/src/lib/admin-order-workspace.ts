@@ -32,6 +32,7 @@ export type OrderWorkspaceActionCode =
   | "contract.sign"
   | "contract.retry_signing"
   | "handover.assign"
+  | "handover.prepare"
   | "handover.start_signing"
   | "handover.follow_up_signing"
   | "handover.retry_signing"
@@ -98,6 +99,7 @@ const ACTION_PRESENTATIONS = {
   "contract.sign": { label: "发起合同签署", icon: "FormOutlined" },
   "contract.retry_signing": { label: "重试合同签署", icon: "RedoOutlined" },
   "handover.assign": { label: "分配交接任务", icon: "UserAddOutlined" },
+  "handover.prepare": { label: "推进车辆交接", icon: "CarOutlined" },
   "handover.start_signing": { label: "发起交接签署", icon: "FormOutlined" },
   "handover.follow_up_signing": { label: "跟进交接签署", icon: "BellOutlined" },
   "handover.retry_signing": { label: "重试交接签署", icon: "RedoOutlined" },

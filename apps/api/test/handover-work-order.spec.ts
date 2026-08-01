@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
+import { DeliveryEvidenceVideoQualityError } from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 describe("HandoverWorkOrderService", () => {
@@ -715,6 +716,52 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toThrow(UnauthorizedException);
   });
 
+  it("returns an actionable 422 before storing a low-resolution walkaround", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "walkaround-item",
+      orderId: harness.orderId
+    });
+    harness.evidenceService.validateEvidenceFileMutation.mockResolvedValueOnce({
+      allowsMultiple: false,
+      currentFileCount: 0,
+      evidenceType: "WALKAROUND_VIDEO",
+      itemId: "walkaround-item"
+    });
+    harness.artifactService.prepareUpload.mockRejectedValueOnce(
+      new DeliveryEvidenceVideoQualityError(480, 360)
+    );
+
+    await expect(
+      harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
+        "work-order-visible",
+        "13800000000",
+        "walkaround-item",
+        [uploadFile("low.mov", "video/quicktime")],
+        {},
+        "field-session-1"
+      )
+    ).rejects.toMatchObject({
+      response: {
+        message: expect.stringContaining("检测到 480×360")
+      },
+      status: 422
+    });
+    expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
+    expect(harness.storageService.putDeliveryEvidenceFileFromPath).not.toHaveBeenCalled();
+    expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
+  });
+
   it("uploads and replaces singleton evidence through one field operation", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push({
@@ -1055,6 +1102,9 @@ describe("HandoverWorkOrderService", () => {
       "delivery-evidence/legacy/front.jpg"
     );
     expect(harness.artifactService.prepareUpload).toHaveBeenCalledTimes(1);
+    expect(harness.artifactService.prepareUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ qualityPolicy: "LEGACY_REPAIR" })
+    );
     expect(harness.state.fileObjects).toHaveLength(1);
     expect(evidenceFile.metadata).toMatchObject({
       photoPreviewFileId: "file-1",
@@ -2122,6 +2172,7 @@ function createHandoverWorkOrderHarness() {
   };
   const artifactService = {
     prepareUpload: vi.fn(async (input: {
+      evidenceType: string;
       file: { mimetype?: string; originalname?: string; size: number };
       mediaType: "PHOTO" | "VIDEO";
     }) => {
@@ -2162,7 +2213,13 @@ function createHandoverWorkOrderHarness() {
           processingStatus: "READY",
           sourceSha256: `sha256:${"a".repeat(64)}`,
           sourceSizeBytes: input.file.size,
-          videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null
+          videoBitRateBps: input.mediaType === "VIDEO" ? 8_000_000 : null,
+          videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null,
+          videoFrameRate: input.mediaType === "VIDEO" ? 30 : null,
+          videoHeightPx: input.mediaType === "VIDEO" ? 1080 : null,
+          videoQualityStatus:
+            input.evidenceType === "WALKAROUND_VIDEO" ? "PASSED" : null,
+          videoWidthPx: input.mediaType === "VIDEO" ? 1920 : null
         }
       };
     })

@@ -40,6 +40,7 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import {
   DeliveryHandoverEvidenceArtifactService,
+  getDeliveryEvidenceVideoQualityPublicMessage,
   isDeliveryEvidenceArtifactProcessingError,
   PreparedDeliveryEvidenceArtifacts
 } from "../delivery-handover/delivery-handover-evidence-artifact.service";
@@ -612,6 +613,10 @@ export class HandoverWorkOrderService {
           mediaType
         });
       } catch (error) {
+        const qualityMessage = getDeliveryEvidenceVideoQualityPublicMessage(error);
+        if (qualityMessage) {
+          throw new UnprocessableEntityException(qualityMessage);
+        }
         if (isDeliveryEvidenceArtifactProcessingError(error)) {
           throw new UnprocessableEntityException(
             "资料文件处理失败，请重新选择文件后重试。"
@@ -879,7 +884,8 @@ export class HandoverWorkOrderService {
           path: sourcePath,
           size: actualSizeBytes
         },
-        mediaType
+        mediaType,
+        qualityPolicy: "LEGACY_REPAIR"
       });
       const derivatives: Array<{
         derivative: PreparedDeliveryEvidenceArtifacts["derivatives"][number];

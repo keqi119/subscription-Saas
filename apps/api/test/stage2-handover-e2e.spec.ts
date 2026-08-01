@@ -424,12 +424,19 @@ function createStage2HandoverE2EHarness() {
         })),
         metadata: {
           artifactVersion: 1,
+          detectedCodec: input.mediaType === "VIDEO" ? "h264" : null,
           detectedMimeType: input.mediaType === "PHOTO" ? "image/jpeg" : "video/mp4",
           processedAt: "2026-07-25T00:00:00.000Z",
           processingStatus: "READY",
           sourceSha256: `sha256:${String(state.evidenceFiles.length + 1).padStart(64, "0")}`,
           sourceSizeBytes: input.file.size,
-          videoDurationMs: input.mediaType === "VIDEO" ? 10_000 : null
+          videoBitRateBps: input.mediaType === "VIDEO" ? 8_000_000 : null,
+          videoDurationMs: input.mediaType === "VIDEO" ? 10_000 : null,
+          videoFrameRate: input.mediaType === "VIDEO" ? 30 : null,
+          videoHeightPx: input.mediaType === "VIDEO" ? 1080 : null,
+          videoQualityStatus:
+            input.evidenceType === "WALKAROUND_VIDEO" ? "PASSED" : null,
+          videoWidthPx: input.mediaType === "VIDEO" ? 1920 : null
         }
       };
     })

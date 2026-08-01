@@ -20,6 +20,7 @@ import {
   QuerySignerStatusInput
 } from "../src/esign/esign.provider";
 import { ESignService } from "../src/esign/esign.service";
+import { FadadaApiClient } from "../src/esign/fadada/fadada-api.client";
 import { loadFadadaConfig } from "../src/esign/fadada/fadada.config";
 import { FadadaESignProvider } from "../src/esign/fadada/fadada-esign.provider";
 import { MockESignProvider } from "../src/esign/mock-esign.provider";
@@ -40,6 +41,9 @@ const QUERY_INPUT: QuerySignerStatusInput = {
   slotId: "STAGE2_HANDOVER_CUSTOMER",
   taskId: "stage2-task-1"
 };
+type FadadaQuerySignResult = Awaited<
+  ReturnType<FadadaApiClient["querySignResult"]>
+>;
 
 describe("Stage 2 provider signer status query", () => {
   it("queries the locally bound provider contract, customer, and signer transaction", async () => {
@@ -95,6 +99,30 @@ describe("Stage 2 provider signer status query", () => {
     expect(
       harness.prisma.contractESignSigner.updateMany
     ).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes Fadada's empty signing record from an unverified UNKNOWN result", async () => {
+    const harness = fadadaHarness({
+      resultCode: "",
+      resultDesc: "签署记录为空",
+      status: "UNKNOWN"
+    });
+    harness.apiClient.querySignResult.mockResolvedValueOnce({
+      contractId: TASK_NO,
+      raw: { result_desc: "签署记录为空" },
+      resultDesc: "签署记录为空",
+      status: "UNKNOWN",
+      transactionId: TRANSACTION_ID
+    });
+
+    await expect(
+      harness.provider.querySignerStatus(QUERY_INPUT)
+    ).resolves.toEqual({
+      providerRecordAbsent: true,
+      resultCode: undefined,
+      resultDescription: "签署记录为空",
+      status: "UNKNOWN"
+    });
   });
 
   it("fails closed on a mismatched transaction, customer, slot, or unknown result", async () => {
@@ -1056,7 +1084,10 @@ function fadadaHarness(
   }
 ) {
   const apiClient = {
-    querySignResult: vi.fn(async () => exactRemoteResult(remote))
+    querySignResult: vi.fn(
+      async (): Promise<FadadaQuerySignResult> =>
+        exactRemoteResult(remote)
+    )
   };
   const prisma = {
     contractESignSigner: {

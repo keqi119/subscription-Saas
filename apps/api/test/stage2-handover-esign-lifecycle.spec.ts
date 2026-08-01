@@ -3335,6 +3335,62 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
   });
 
+  it("returns the first customer signing URL when Fadada confirms no signing record exists yet", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      providerRecordAbsent: true,
+      resultDescription: "签署记录为空",
+      status: "UNKNOWN"
+    });
+    const expiresAt = new Date(NOW.getTime() + 30 * 60 * 1000);
+    harness.provider.getSignerUrl.mockResolvedValueOnce({
+      expiresAt,
+      signUrl: "https://sentinel.example/stage2-first-sign"
+    });
+
+    await expect(
+      harness.service.startPortalSigning(
+        "work-order-1",
+        "customer-1"
+      )
+    ).resolves.toEqual({
+      expiresAt,
+      signUrl: "https://sentinel.example/stage2-first-sign"
+    });
+    expect(task.signers[0]).toMatchObject({
+      providerTransactionId: "ESG20260726080000ABCDH1",
+      signUrl: null,
+      signUrlExpiresAt: expiresAt,
+      signerStatus: ESignSignerStatus.SIGNING
+    });
+  });
+
+  it("still fails closed on an unverified UNKNOWN provider state", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.querySignerStatus.mockResolvedValueOnce({
+      resultDescription: "unverified provider response",
+      status: "UNKNOWN"
+    });
+
+    await expect(
+      harness.service.startPortalSigning(
+        "work-order-1",
+        "customer-1"
+      )
+    ).rejects.toMatchObject({
+      response: {
+        code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
+        message: "The customer signing link is temporarily unavailable."
+      },
+      status: 502
+    });
+    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+  });
+
   it("returns an already-signed projection instead of a URL when provider reports 3000", async () => {
     const harness = createHarness();
     const task = makeTask();

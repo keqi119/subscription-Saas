@@ -104,9 +104,13 @@ If the local URL is missing or expired:
 3. If Fadada reports `SIGNING`, issue a fresh signed entry URL for the same
    provider contract and transaction, persist its bounded expiry, and return
    it.
-4. If the provider reports `FAILED` or `UNKNOWN`, or the query cannot be
-   verified, fail closed with a typed business error. Do not advance state and
-   do not return the expired URL.
+4. Before the customer first opens an external-sign page, Fadada can return
+   the exact verified empty-record response. Treat only that typed absence as
+   the not-yet-started state and issue the first signed entry URL for the
+   already-bound contract and H1 transaction.
+5. If the provider reports `FAILED` or an unverified `UNKNOWN`, or the query
+   cannot be verified, fail closed with a typed business error. Do not advance
+   state and do not return the expired URL.
 
 The Portal displays a concise business message and does not surface an HTTP
 500 or provider implementation detail.
@@ -116,6 +120,9 @@ The Portal displays a concise business message and does not surface an HTTP
 Extend the provider abstraction with a signer-status query result containing:
 
 - `status`: `SIGNED | SIGNING | FAILED | UNKNOWN`;
+- an optional provider-record-absent marker that is set only for Fadada's
+  exact empty-record response with no returned contract, customer, or
+  transaction identifiers;
 - sanitized result code and description;
 - provider contract and transaction identifiers used for local equality
   checks.

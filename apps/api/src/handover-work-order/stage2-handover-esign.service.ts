@@ -534,7 +534,10 @@ export class Stage2HandoverESignService {
           eSign: await this.getPortalStatus(workOrderId, customerId)
         };
       }
-      if (providerStatus.status !== "SIGNING") {
+      if (
+        providerStatus.status !== "SIGNING" &&
+        !providerStatus.providerRecordAbsent
+      ) {
         throw new Error(
           "STAGE2_HANDOVER_CUSTOMER_STATUS_NOT_RECOVERABLE"
         );

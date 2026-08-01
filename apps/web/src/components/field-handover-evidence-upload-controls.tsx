@@ -3,10 +3,9 @@
 import {
   CameraOutlined,
   FolderOpenOutlined,
-  UploadOutlined,
-  VideoCameraOutlined
+  UploadOutlined
 } from "@ant-design/icons";
-import { Button, Drawer, Flex } from "antd";
+import { Button, Drawer, Flex, Typography } from "antd";
 import { useRef, useState } from "react";
 
 import {
@@ -15,6 +14,7 @@ import {
   type FieldEvidenceMediaType,
   type FieldEvidenceUploadEnvironment,
   type FieldEvidenceUploadInputContract,
+  getFieldEvidenceUploadGuidance,
   routeFieldEvidenceUploadPrimaryAction
 } from "../lib/field-handover-upload";
 
@@ -48,6 +48,7 @@ export function EvidenceUploadControls({
     Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>
   >({});
   const [chooserOpen, setChooserOpen] = useState(false);
+  const guidance = getFieldEvidenceUploadGuidance(allowedMediaTypes);
 
   function selectContract(contract: FieldEvidenceUploadInputContract) {
     inputRefs.current[contract.key]?.click();
@@ -78,6 +79,13 @@ export function EvidenceUploadControls({
           type="file"
         />
       ))}
+      {guidance ? (
+        <Typography.Paragraph
+          style={{ color: "#607086", fontSize: 12, marginBottom: 8 }}
+        >
+          {guidance}
+        </Typography.Paragraph>
+      ) : null}
       <Button
         block
         disabled={disabled}
@@ -109,9 +117,7 @@ export function EvidenceUploadControls({
                 icon={
                   contract.key === "photo-capture" ? (
                     <CameraOutlined />
-                  ) : contract.key === "video-capture" ? (
-                    <VideoCameraOutlined />
-                  ) : contract.accept === "image/*" ? (
+                  ) : contract.key === "library" ? (
                     <FolderOpenOutlined />
                   ) : (
                     <UploadOutlined />

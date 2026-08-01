@@ -12,6 +12,7 @@ import {
   completeFieldEvidenceUploadSelection,
   detectFieldEvidenceUploadEnvironment,
   formatUploadBytes,
+  getFieldEvidenceUploadGuidance,
   routeFieldEvidenceUploadPrimaryAction,
   resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
@@ -118,15 +119,8 @@ describe("field handover evidence upload validation", () => {
     ]);
   });
 
-  it("keeps exact video and mixed-media input contracts on mobile", () => {
+  it("never offers direct video capture on mobile", () => {
     expect(buildFieldEvidenceUploadInputContracts(["VIDEO"], false, "MOBILE")).toEqual([
-      {
-        accept: "video/*",
-        capture: "environment",
-        key: "video-capture",
-        label: "现场录像",
-        multiple: false
-      },
       {
         accept: "video/*",
         key: "library",
@@ -143,19 +137,21 @@ describe("field handover evidence upload validation", () => {
         multiple: false
       },
       {
-        accept: "video/*",
-        capture: "environment",
-        key: "video-capture",
-        label: "现场录像",
-        multiple: false
-      },
-      {
         accept: "image/*,video/*",
         key: "library",
         label: "从相册选择",
         multiple: true
       }
     ]);
+  });
+
+  it("guides video operators to the system camera and keeps photo-only copy empty", () => {
+    const guidance = getFieldEvidenceUploadGuidance(["VIDEO"]);
+    expect(guidance).toContain("系统相机");
+    expect(guidance).toContain("720p");
+    expect(guidance).toContain("300MB");
+    expect(getFieldEvidenceUploadGuidance(["PHOTO", "VIDEO"])).toContain("系统相机");
+    expect(getFieldEvidenceUploadGuidance(["PHOTO"])).toBeNull();
   });
 
   it("detects mobile devices from browser signals and defaults SSR to desktop", () => {

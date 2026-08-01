@@ -1360,6 +1360,8 @@ async function buildCanonicalRecoveryExpectation(
         sourcePayloads: [payload]
       };
     }
+    default:
+      throw unavailable();
   }
 }
 

@@ -1,5 +1,10 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
-import { ContractStatus, UserStatus } from "@prisma/client";
+import {
+  ContractStatus,
+  UserStatus,
+  VehicleHandoverEventType,
+  VehicleHandoverWorkflowJobType
+} from "@prisma/client";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -80,6 +85,96 @@ describe("HandoverWorkOrderService", () => {
     expect(harness.state.workOrders[0]!.accessTokenHash).toBeTruthy();
     expect(harness.state.workOrders[0]!.accessTokenHash).not.toBe(external.accessToken);
     expect(JSON.stringify(harness.state.workOrders[0]!)).not.toContain(external.accessToken);
+  });
+
+  it("enqueues one durable notification from the persisted external assignment event", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(
+      harness.orderId,
+      "DELIVERY_OUTBOUND",
+      harness.admin.id
+    );
+
+    await harness.service.assignExternalOperator(
+      draft.id,
+      { name: "External field operator", phone: "13900001111" },
+      harness.admin.id
+    );
+
+    const assignmentEvent = harness.state.events.find(
+      (event) =>
+        event.eventType === VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED
+    );
+    expect(assignmentEvent?.id).toBeTruthy();
+    expect(harness.workflowRepository.enqueue).toHaveBeenCalledWith(
+      harness.prisma,
+      expect.objectContaining({
+        handoverId: draft.handoverId,
+        idempotencyKey: `field-assigned:${draft.id}:${assignmentEvent!.id}`,
+        jobType:
+          VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+        maxAttempts: 6,
+        payload: { assignmentEventId: assignmentEvent!.id },
+        workOrderId: draft.id
+      })
+    );
+    expect(harness.state.workflowJobs).toHaveLength(1);
+  });
+
+  it("rolls back the external assignment when its audit event cannot be persisted", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(
+      harness.orderId,
+      "DELIVERY_OUTBOUND",
+      harness.admin.id
+    );
+    harness.prisma.vehicleHandoverEvent.create.mockRejectedValueOnce(
+      new Error("audit unavailable")
+    );
+
+    await expect(
+      harness.service.assignExternalOperator(
+        draft.id,
+        { name: "External field operator", phone: "13900001111" },
+        harness.admin.id
+      )
+    ).rejects.toThrow("audit unavailable");
+
+    expect(harness.state.workOrders[0]).toMatchObject({
+      externalOperatorPhone: null,
+      operatorType: "INTERNAL",
+      status: "DRAFT"
+    });
+    expect(harness.state.workflowJobs).toEqual([]);
+  });
+
+  it("rolls back the external assignment and event when notification enqueue fails", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const draft = await harness.service.createDraft(
+      harness.orderId,
+      "DELIVERY_OUTBOUND",
+      harness.admin.id
+    );
+    const eventCount = harness.state.events.length;
+    harness.workflowRepository.enqueue.mockRejectedValueOnce(
+      new Error("workflow enqueue unavailable")
+    );
+
+    await expect(
+      harness.service.assignExternalOperator(
+        draft.id,
+        { name: "External field operator", phone: "13900001111" },
+        harness.admin.id
+      )
+    ).rejects.toThrow("workflow enqueue unavailable");
+
+    expect(harness.state.workOrders[0]).toMatchObject({
+      externalOperatorPhone: null,
+      operatorType: "INTERNAL",
+      status: "DRAFT"
+    });
+    expect(harness.state.events).toHaveLength(eventCount);
+    expect(harness.state.workflowJobs).toEqual([]);
   });
 
   it("verifies external access, updates access timestamps, and returns only a limited masked task view", async () => {
@@ -1974,7 +2069,8 @@ function createHandoverWorkOrderHarness() {
         evidenceFiles: structuredClone(state.evidenceFiles),
         fileObjects: structuredClone(state.fileObjects),
         reviewAttempts: structuredClone(state.reviewAttempts),
-        workOrders: structuredClone(state.workOrders)
+        workOrders: structuredClone(state.workOrders),
+        workflowJobs: structuredClone(state.workflowJobs)
       };
       try {
         return await callback(prisma);
@@ -1984,6 +2080,7 @@ function createHandoverWorkOrderHarness() {
         state.fileObjects.splice(0, state.fileObjects.length, ...snapshots.fileObjects);
         state.reviewAttempts.splice(0, state.reviewAttempts.length, ...snapshots.reviewAttempts);
         state.workOrders.splice(0, state.workOrders.length, ...snapshots.workOrders);
+        state.workflowJobs.splice(0, state.workflowJobs.length, ...snapshots.workflowJobs);
         throw error;
       }
     })
@@ -2058,6 +2155,27 @@ function createHandoverWorkOrderHarness() {
       };
     })
   };
+  const workflowRepository = {
+    enqueue: vi.fn(async (_tx: unknown, input: Record<string, unknown>) => {
+      const existing = state.workflowJobs.find(
+        (job) => job.idempotencyKey === input.idempotencyKey
+      );
+      if (existing) {
+        return existing;
+      }
+      const job = {
+        ...input,
+        attemptCount: 0,
+        availableAt: now,
+        createdAt: now,
+        id: `workflow-job-${state.workflowJobs.length + 1}`,
+        jobStatus: "PENDING",
+        updatedAt: now
+      };
+      state.workflowJobs.push(job);
+      return job;
+    })
+  };
   const service = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
@@ -2065,7 +2183,8 @@ function createHandoverWorkOrderHarness() {
     storageService as never,
     undefined,
     undefined,
-    artifactService as never
+    artifactService as never,
+    workflowRepository as never
   );
 
   return {
@@ -2080,7 +2199,8 @@ function createHandoverWorkOrderHarness() {
     service,
     state
     ,
-    storageService
+    storageService,
+    workflowRepository
   };
 }
 

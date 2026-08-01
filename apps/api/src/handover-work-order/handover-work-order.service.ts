@@ -422,27 +422,54 @@ export class HandoverWorkOrderService {
     const expiresAt = input.expiresAt ? parseDate(input.expiresAt, "accessTokenExpiresAt") : defaultTokenExpiry();
     const phone = normalizeFieldOperatorPhone(input.phone ?? "");
 
-    const updated = await this.updateWorkOrderWithEvent(workOrder, {
-      accessTokenExpiresAt: expiresAt,
-      accessTokenHash,
-      accessTokenRevokedAt: null,
-      assignedInternalUserId: null,
-      externalOperatorName: name,
-      externalOperatorOrganization: normalizeOptionalText(input.organization),
-      externalOperatorPhone: phone,
-      fieldOperatorName: name,
-      fieldOperatorPhone: phone,
-      metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
-      operatorType: "EXTERNAL",
-      status: nextStatus(workOrder.status, "ASSIGNED")
-    }, VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: {
-        expiresAt: expiresAt.toISOString(),
-        operatorName: name,
-        phoneMasked: maskPhone(phone)
+    const updated = await this.runSerializableTransaction(async (tx) => {
+      const assigned = await this.updateWorkOrderVersioned(workOrder, {
+        accessTokenExpiresAt: expiresAt,
+        accessTokenHash,
+        accessTokenRevokedAt: null,
+        assignedInternalUserId: null,
+        externalOperatorName: name,
+        externalOperatorOrganization: normalizeOptionalText(input.organization),
+        externalOperatorPhone: phone,
+        fieldOperatorName: name,
+        fieldOperatorPhone: phone,
+        metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
+        operatorType: "EXTERNAL",
+        status: nextStatus(workOrder.status, "ASSIGNED")
+      }, tx);
+      const assignmentEvent = await this.recordEvent(
+        assigned,
+        VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: {
+            expiresAt: expiresAt.toISOString(),
+            operatorName: name,
+            phoneMasked: maskPhone(phone)
+          }
+        },
+        tx
+      );
+      const assignmentEventId = assignmentEvent
+        ? readString(assignmentEvent, "id")
+        : null;
+      if (!assignmentEventId) {
+        throw new Error("HANDOVER_ASSIGNMENT_EVENT_MISSING");
       }
+      if (!this.workflowRepository) {
+        throw new Error("HANDOVER_WORKFLOW_REPOSITORY_UNAVAILABLE");
+      }
+      await this.workflowRepository.enqueue(tx, {
+        handoverId: assigned.handoverId ?? undefined,
+        idempotencyKey: `field-assigned:${assigned.id}:${assignmentEventId}`,
+        jobType:
+          VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+        maxAttempts: 6,
+        payload: { assignmentEventId },
+        workOrderId: assigned.id
+      });
+      return assigned;
     });
 
     return {

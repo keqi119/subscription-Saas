@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   Stage2HandoverESignReadinessService
 } from "../src/handover-work-order/stage2-handover-esign-readiness.service";
+import { STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION } from "../src/handover-work-order/stage2-handover-source-artifact";
 import { ESignModule } from "../src/esign/esign.module";
 import { HandoverWorkOrderModule } from "../src/handover-work-order/handover-work-order.module";
 
@@ -129,6 +130,22 @@ describe("Stage2HandoverESignReadinessService", () => {
     });
 
     await expectBlocker(harness.service, "HANDOVER_SOURCE_NOT_GENERATED");
+  });
+
+  it("accepts the current Stage 2 source artifact version", async () => {
+    const harness = createHarness();
+
+    const readiness = await harness.service.getReadiness("work-order-1");
+
+    expect(readiness.ready).toBe(true);
+    expect(readiness.blockers).toEqual([]);
+  });
+
+  it.each([1, 3])("rejects non-current source artifact version %s", async (artifactVersion) => {
+    const harness = createHarness();
+    harness.state.workOrder!.handover.artifactVersion = artifactVersion;
+
+    await expectBlocker(harness.service, "SOURCE_ARTIFACT_VERSION_INVALID");
   });
 
   it("blocks before customer no-objection confirmation", async () => {
@@ -780,7 +797,7 @@ function readyWorkOrder() {
     fieldNotes: "ready for delivery",
     fuelLevelText: null,
     handover: {
-      artifactVersion: 1,
+      artifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
       deletedAt: null,
       handoverContract: {
         contractSnapshot: {

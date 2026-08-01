@@ -18,6 +18,7 @@ import { STAGE2_HANDOVER_PDF_HARD_MAX_BYTES } from "../delivery-handover/deliver
 import { FadadaCustomerReadinessService } from "../esign/fadada-customer-readiness.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
+import { STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION } from "./stage2-handover-source-artifact";
 import {
   buildAuthoritativeStage2TaskWhere
 } from "./stage2-handover-task-binding";
@@ -428,7 +429,7 @@ export class Stage2HandoverESignReadinessService {
     if (handover.status !== DeliveryHandoverStatus.SOURCE_GENERATED) {
       addBlocker("HANDOVER_SOURCE_NOT_GENERATED");
     }
-    if (handover.artifactVersion !== 1) {
+    if (handover.artifactVersion !== STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION) {
       addBlocker("SOURCE_ARTIFACT_VERSION_INVALID");
     }
     if (!isSha256Digest(handover.sourcePdfHash)) {

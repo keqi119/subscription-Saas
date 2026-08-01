@@ -12,6 +12,14 @@ const executableMigrationStatements = splitSqlStatements(migration);
 const executableMigration = `${executableMigrationStatements.join(";\n")};`;
 const developmentEnv = readFileSync(join(root, ".env.example"), "utf8");
 const productionEnv = readFileSync(join(root, ".env.production.example"), "utf8");
+const runtimeSourceArtifactContract = readFileSync(
+  join(root, "src/handover-work-order/stage2-handover-source-artifact.ts"),
+  "utf8"
+);
+const offlineSourceArtifactContract = readFileSync(
+  join(root, "../../scripts/stage2-handover-workflow-contract.mjs"),
+  "utf8"
+);
 
 const workflowJobTypes = [
   "GENERATE_SOURCE_PDF",
@@ -216,7 +224,17 @@ function environmentValue(source: string, name: string): string | undefined {
   return source.match(new RegExp(`^${name}=(.*)$`, "m"))?.[1];
 }
 
+function sourceArtifactVersion(source: string): number | undefined {
+  const value = source.match(/STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION\s*=\s*(\d+)/)?.[1];
+  return value === undefined ? undefined : Number(value);
+}
+
 describe("Stage 2 durable workflow schema", () => {
+  it("keeps runtime and offline source artifact contracts on version 2", () => {
+    expect(sourceArtifactVersion(runtimeSourceArtifactContract)).toBe(2);
+    expect(sourceArtifactVersion(offlineSourceArtifactContract)).toBe(2);
+  });
+
   it("defines the complete workflow job enum contracts in Prisma and SQL", () => {
     expect(prismaEnumValues(schema, "VehicleHandoverWorkflowJobType")).toEqual(workflowJobTypes);
     expect(prismaEnumValues(schema, "VehicleHandoverWorkflowJobStatus")).toEqual(

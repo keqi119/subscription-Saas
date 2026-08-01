@@ -302,6 +302,22 @@ describe("field handover API client", () => {
     await expect(timeoutFailure).rejects.toMatchObject({ message: "上传超时，请检查网络后重试。", status: 0 });
   });
 
+  it("maps an HTML gateway 413 to the configured upload-limit message", async () => {
+    const xhrMock = installMockXmlHttpRequest();
+    const request = uploadAndAttachFieldHandoverEvidenceFile(
+      "work-order-1",
+      "walkaround-item",
+      new File(["video"], "walkaround.mov", { type: "video/quicktime" })
+    );
+
+    xhrMock.latest().complete(413, "<html>request entity too large</html>");
+
+    await expect(request).rejects.toMatchObject({
+      message: "文件过大，单个视频不得超过 300MB。若文件未超过限制，请联系管理员检查上传网关配置。",
+      status: 413
+    });
+  });
+
   it("rejects malformed successful upload responses with a safe error", async () => {
     const xhrMock = installMockXmlHttpRequest();
     const request = uploadAndAttachFieldHandoverEvidenceFile(

@@ -5,6 +5,8 @@ const FIELD_EVIDENCE_UPLOAD_FAILED_MESSAGE = "上传失败，请稍后重试。"
 const FIELD_EVIDENCE_UPLOAD_NETWORK_ERROR_MESSAGE = "上传失败，请检查网络后重试。";
 const FIELD_EVIDENCE_UPLOAD_TIMEOUT_ERROR_MESSAGE = "上传超时，请检查网络后重试。";
 const FIELD_EVIDENCE_UPLOAD_CANCELLED_ERROR_MESSAGE = "上传已取消。";
+const FIELD_EVIDENCE_UPLOAD_TOO_LARGE_MESSAGE =
+  "文件过大，单个视频不得超过 300MB。若文件未超过限制，请联系管理员检查上传网关配置。";
 
 export interface FieldHandoverCodeResponse {
   expiresIn: number;
@@ -320,6 +322,10 @@ function settleFieldEvidenceUpload(
   reject: (error: ApiError) => void
 ) {
   if (xhr.status < 200 || xhr.status >= 300) {
+    if (xhr.status === 413) {
+      reject(new ApiError(FIELD_EVIDENCE_UPLOAD_TOO_LARGE_MESSAGE, 413));
+      return;
+    }
     reject(new ApiError(readFieldEvidenceUploadErrorMessage(xhr.responseText), xhr.status));
     return;
   }

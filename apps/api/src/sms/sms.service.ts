@@ -40,8 +40,9 @@ interface SendBusinessSmsInput {
   phone: string;
 }
 
-const FIELD_LOGIN_INSTRUCTION = "Log in to Field.";
-const PORTAL_LOGIN_INSTRUCTION = "Log in to Portal.";
+interface SendStage2FieldAssignedInput extends SendBusinessSmsInput {
+  plateNo: string;
+}
 
 @Injectable()
 export class SmsService {
@@ -73,11 +74,32 @@ export class SmsService {
     return this.sendBusinessTemplate({
       enabled: this.isSmsEnabled("FIELD_OPERATOR_SMS_ENABLED"),
       input,
-      instruction: FIELD_LOGIN_INSTRUCTION,
       purpose: "FIELD_HANDOVER_ESIGN_READY",
       templateCode: this.readRequiredTemplateCode(
         "ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE"
-      )
+      ),
+      templateParams: {}
+    });
+  }
+
+  async sendStage2FieldAssigned(
+    input: SendStage2FieldAssignedInput
+  ): Promise<SmsSendResult> {
+    const plateNo = input.plateNo.trim();
+    if (plateNo.length < 1 || plateNo.length > 20) {
+      throw new Error("FIELD_HANDOVER_PLATE_NO_INVALID");
+    }
+    return this.sendBusinessTemplate({
+      enabled: this.isSmsEnabled("FIELD_OPERATOR_SMS_ENABLED"),
+      input: {
+        idempotencyKey: input.idempotencyKey,
+        phone: input.phone
+      },
+      purpose: "FIELD_HANDOVER_ASSIGNED",
+      templateCode: this.readRequiredTemplateCode(
+        "ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE"
+      ),
+      templateParams: { name: plateNo }
     });
   }
 
@@ -87,11 +109,11 @@ export class SmsService {
     return this.sendBusinessTemplate({
       enabled: this.isSmsEnabled("PORTAL_SMS_ENABLED"),
       input,
-      instruction: PORTAL_LOGIN_INSTRUCTION,
       purpose: "CUSTOMER_HANDOVER_ESIGN_READY",
       templateCode: this.readRequiredTemplateCode(
         "ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE"
-      )
+      ),
+      templateParams: {}
     });
   }
 
@@ -172,9 +194,9 @@ export class SmsService {
   private async sendBusinessTemplate(input: {
     enabled: boolean;
     input: SendBusinessSmsInput;
-    instruction: string;
     purpose: SmsTemplatePurpose;
     templateCode: string;
+    templateParams: Record<string, string>;
   }): Promise<SmsSendResult> {
     const provider = this.getProviderName();
     let reservation: {
@@ -252,9 +274,7 @@ export class SmsService {
       phone: input.input.phone,
       purpose: input.purpose,
       templateCode: input.templateCode,
-      templateParams: {
-        instruction: input.instruction
-      }
+      templateParams: input.templateParams
     };
     let result: SmsProviderSendResult;
     try {
@@ -372,6 +392,7 @@ export class SmsService {
   private readRequiredTemplateCode(
     key:
       | "ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE"
+      | "ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE"
       | "ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE"
   ) {
     const value = this.configService.get<string>(key)?.trim();

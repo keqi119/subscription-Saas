@@ -5,6 +5,7 @@ export type SmsCodePurpose =
   | "BIND_PHONE"
   | "FIELD_HANDOVER_LOGIN";
 export type SmsTemplatePurpose =
+  | "FIELD_HANDOVER_ASSIGNED"
   | "FIELD_HANDOVER_ESIGN_READY"
   | "CUSTOMER_HANDOVER_ESIGN_READY";
 export type SmsProviderName = "aliyun" | "mock";

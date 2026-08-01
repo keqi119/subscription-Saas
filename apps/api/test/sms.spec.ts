@@ -125,7 +125,7 @@ describe("AliyunSmsProvider", () => {
     });
   });
 
-  it("uses the Field business template and contains only a login instruction", async () => {
+  it("uses the Field business template without template variables", async () => {
     const sentRequests: Array<{
       phoneNumbers?: string;
       signName?: string;
@@ -152,9 +152,7 @@ describe("AliyunSmsProvider", () => {
       phone: "13800000000",
       purpose: "FIELD_HANDOVER_ESIGN_READY",
       templateCode: "SMS_FIELD_READY",
-      templateParams: {
-        instruction: "Log in to Field."
-      }
+      templateParams: {}
     });
 
     expect(sentRequests).toEqual([
@@ -162,7 +160,7 @@ describe("AliyunSmsProvider", () => {
         phoneNumbers: "13800000000",
         signName: "TestSign",
         templateCode: "SMS_FIELD_READY",
-        templateParam: JSON.stringify({ instruction: "Log in to Field." })
+        templateParam: JSON.stringify({})
       })
     ]);
     expect(sentRequests[0]).not.toHaveProperty("outId");
@@ -174,7 +172,7 @@ describe("AliyunSmsProvider", () => {
     expect(JSON.stringify(result.providerResponse)).not.toContain("13800000000");
   });
 
-  it("uses the customer business template and contains only a Portal login instruction", async () => {
+  it("uses the customer business template without template variables", async () => {
     const sentRequests: Array<{
       templateCode?: string;
       templateParam?: string;
@@ -199,21 +197,74 @@ describe("AliyunSmsProvider", () => {
       phone: "13900000000",
       purpose: "CUSTOMER_HANDOVER_ESIGN_READY",
       templateCode: "SMS_CUSTOMER_READY",
-      templateParams: {
-        instruction: "Log in to Portal."
-      }
+      templateParams: {}
     });
 
     expect(sentRequests).toEqual([
       expect.objectContaining({
         templateCode: "SMS_CUSTOMER_READY",
-        templateParam: JSON.stringify({ instruction: "Log in to Portal." })
+        templateParam: JSON.stringify({})
       })
     ]);
   });
 });
 
 describe("SmsService business templates", () => {
+  it("sends the approved Field assignment template with the full plate as name", async () => {
+    const harness = createBusinessSmsHarness();
+
+    await harness.service.sendStage2FieldAssigned({
+      idempotencyKey: "field-assigned:work-order-1:event-1",
+      phone: "13900001111",
+      plateNo: "沪DGU580"
+    });
+
+    expect(harness.provider.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phone: "13900001111",
+        purpose: "FIELD_HANDOVER_ASSIGNED",
+        templateCode: "SMS_FIELD_ASSIGNED",
+        templateParams: { name: "沪DGU580" }
+      })
+    );
+  });
+
+  it.each(["", " ", "沪A12345678901234567890"])(
+    "rejects invalid assignment plate %j before calling the provider",
+    async (plateNo) => {
+      const harness = createBusinessSmsHarness();
+
+      await expect(harness.service.sendStage2FieldAssigned({
+        idempotencyKey: "field-assigned:work-order-1:event-1",
+        phone: "13900001111",
+        plateNo
+      })).rejects.toThrow("FIELD_HANDOVER_PLATE_NO_INVALID");
+      expect(harness.provider.sendTemplate).not.toHaveBeenCalled();
+    }
+  );
+
+  it("sends both approved eSign templates without variables", async () => {
+    const harness = createBusinessSmsHarness();
+
+    await harness.service.sendStage2FieldReady({
+      idempotencyKey: "field-ready:work-order-1:2",
+      phone: "13900001111"
+    });
+    await harness.service.sendStage2CustomerReady({
+      idempotencyKey: "customer-ready:task-1:transaction-1",
+      phone: "13800002222"
+    });
+
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ templateParams: {} })
+    );
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ templateParams: {} })
+    );
+  });
+
   it("commits a SENDING reservation before invoking the provider", async () => {
     const harness = createBusinessSmsHarness({
       onSend: (logs) => {
@@ -381,7 +432,7 @@ describe("SmsService business templates", () => {
       templateParams: providerInput?.templateParams
     });
 
-    expect(serialized).toContain("Log in to Portal.");
+    expect(providerInput?.templateParams).toEqual({});
     for (const forbidden of [
       "task-token-secret",
       "https://provider.example/sign",
@@ -530,6 +581,7 @@ function createBusinessSmsHarness(options: {
   const service = new SmsService(
     new ConfigService({
       ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_CUSTOMER_READY",
+      ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE: "SMS_FIELD_ASSIGNED",
       ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_FIELD_READY",
       FIELD_OPERATOR_SMS_ENABLED: "true",
       FIELD_OPERATOR_SMS_PROVIDER: "mock",

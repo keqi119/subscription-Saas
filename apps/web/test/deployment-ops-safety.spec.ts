@@ -91,6 +91,60 @@ describe("Deployment operations safety", () => {
     expect(nginx).not.toContain("127.0.0.1:3001");
     expect(nginx).not.toContain("proxy_set_header Host app.subauto.keybox.cloud;");
   });
+
+  it("pins the three approved Stage 2 SMS templates for Staging only", () => {
+    const requiredStaging = [
+      "FIELD_OPERATOR_SMS_ENABLED=true",
+      "FIELD_OPERATOR_SMS_PROVIDER=aliyun",
+      "ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE=SMS_511185078",
+      "ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510815118",
+      "ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE=SMS_510795093"
+    ];
+    for (const file of [
+      ".env.staging.example",
+      ".env.staging.images.example"
+    ]) {
+      const environment = read(file);
+      for (const line of requiredStaging) {
+        expect(environment).toContain(line);
+      }
+      expect(environment).toContain("PORTAL_SMS_ENABLED=true");
+      expect(environment).toContain("PORTAL_SMS_PROVIDER=aliyun");
+    }
+
+    for (const file of [
+      ".env.example",
+      "apps/api/.env.example",
+      "apps/api/.env.production.example"
+    ]) {
+      const environment = read(file);
+      expect(environment).toContain("FIELD_OPERATOR_SMS_ENABLED=false");
+      expect(environment).not.toContain("FIELD_OPERATOR_SMS_ENABLED=true");
+      expect(environment).not.toMatch(/ALIYUN_SMS_ACCESS_KEY_ID=LTAI/i);
+      expect(environment).not.toMatch(/ALIYUN_SMS_ACCESS_KEY_SECRET=[A-Za-z0-9]{16,}/i);
+    }
+  });
+
+  it("documents worker-off migration, one-worker recovery, and menu verification only", () => {
+    const runbook = read("docs/stage2-field-esign-rollout-runbook.md");
+    const workerOff = runbook.indexOf("STAGE2_HANDOVER_WORKER_ENABLED=false");
+    const migrate = runbook.indexOf("prisma migrate deploy", workerOff);
+    const dryRun = runbook.indexOf("--dry-run", migrate);
+    const workerOn = runbook.indexOf("STAGE2_HANDOVER_WORKER_ENABLED=true", dryRun);
+
+    expect(workerOff).toBeGreaterThanOrEqual(0);
+    expect(migrate).toBeGreaterThan(workerOff);
+    expect(dryRun).toBeGreaterThan(migrate);
+    expect(workerOn).toBeGreaterThan(dryRun);
+    expect(runbook).toContain("STAGE2_HANDOVER_WORKER_CONCURRENCY=1");
+    expect(runbook).toContain("ORD20260731173351SMF2");
+    expect(runbook).toContain("SMS_511185078");
+    expect(runbook).toContain("SMS_510815118");
+    expect(runbook).toContain("SMS_510795093");
+    expect(runbook).toContain("/field/handover");
+    expect(runbook).toMatch(/verification-only/i);
+    expect(runbook).toMatch(/do not (change|update).*menu/i);
+  });
 });
 
 function read(file: string) {

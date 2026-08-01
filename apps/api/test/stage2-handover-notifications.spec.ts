@@ -159,9 +159,7 @@ describe("Stage 2 handover notifications", () => {
       phone: "13800000000",
       purpose: "FIELD_HANDOVER_ESIGN_READY",
       templateCode: "SMS_FIELD_READY",
-      templateParams: {
-        instruction: "Log in to Field."
-      }
+      templateParams: {}
     });
     expect(harness.notificationRecords).toHaveLength(0);
   });
@@ -177,9 +175,87 @@ describe("Stage 2 handover notifications", () => {
     expect(harness.smsProvider.sendTemplate).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey:
-          "field-notify:00000000-0000-4000-8000-000000000003:1"
+          "field-notify:00000000-0000-4000-8000-000000000003:2"
       })
     );
+  });
+
+  it("notifies the currently assigned external operator with the vehicle plate", async () => {
+    const harness = createHarness({ notificationStage: "ASSIGNED" });
+    const job = assignmentJob();
+
+    await expect(harness.workflow.handle(job)).resolves.toMatchObject({
+      kind: "COMPLETED",
+      result: {
+        sms: {
+          status: SmsSendStatus.SENT
+        }
+      }
+    });
+
+    expect(harness.smsProvider.sendTemplate).toHaveBeenCalledWith({
+      idempotencyKey:
+        "field-assigned:00000000-0000-4000-8000-000000000003:assignment-event-1",
+      phone: "13800000000",
+      purpose: "FIELD_HANDOVER_ASSIGNED",
+      templateCode: "SMS_FIELD_ASSIGNED",
+      templateParams: {
+        name: "沪DGU580"
+      }
+    });
+  });
+
+  it("recomputes the assignment SMS business key for a recovery job", async () => {
+    const harness = createHarness({ notificationStage: "ASSIGNED" });
+    const job = assignmentJob();
+    job.idempotencyKey = "recovery:dead-letter-assignment";
+
+    await harness.workflow.handle(job);
+
+    expect(harness.smsProvider.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey:
+          "field-assigned:00000000-0000-4000-8000-000000000003:assignment-event-1"
+      })
+    );
+  });
+
+  it("completes a superseded assignment notification without sending SMS", async () => {
+    const harness = createHarness({ notificationStage: "ASSIGNED" });
+    harness.workOrder.events = [{
+      createdAt: new Date("2026-07-27T09:00:00.000Z"),
+      eventType: "EXTERNAL_OPERATOR_ASSIGNED",
+      id: "assignment-event-2"
+    }];
+
+    await expect(harness.workflow.handle(assignmentJob())).resolves.toEqual({
+      kind: "COMPLETED",
+      result: {
+        skipped: "ASSIGNMENT_SUPERSEDED"
+      }
+    });
+    expect(harness.smsProvider.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a current assignment without a recipient phone", async () => {
+    const harness = createHarness({ notificationStage: "ASSIGNED" });
+    harness.workOrder.externalOperatorPhone = null;
+    harness.workOrder.fieldOperatorPhone = null;
+
+    await expect(harness.workflow.handle(assignmentJob())).rejects.toThrow(
+      "FIELD_HANDOVER_RECIPIENT_MISSING"
+    );
+    expect(harness.smsProvider.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a current assignment without a vehicle plate", async () => {
+    const harness = createHarness({ notificationStage: "ASSIGNED" });
+    harness.workOrder.order.vehicle.plateNo = null;
+
+    await expect(harness.workflow.handle(assignmentJob())).rejects.toThrow(
+      "FIELD_HANDOVER_PLATE_NO_MISSING"
+    );
+    expect(harness.smsProvider.sendTemplate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -234,6 +310,7 @@ describe("Stage 2 handover notifications", () => {
 
     expect(harness.workflow.supportedJobTypes).toEqual([
       VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
+      VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
       VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
       VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY,
       VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
@@ -246,7 +323,7 @@ describe("Stage 2 handover notifications", () => {
 
 function createHarness(options: {
   failFirstInApp?: boolean;
-  notificationStage?: "CUSTOMER_READY" | "FIELD_READY";
+  notificationStage?: "ASSIGNED" | "CUSTOMER_READY" | "FIELD_READY";
   smsResults?: Array<{
     errorCode?: string;
     errorMessage?: string;
@@ -452,6 +529,7 @@ function createHarness(options: {
   };
   const config = new ConfigService({
     ALIYUN_SMS_CUSTOMER_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_CUSTOMER_READY",
+    ALIYUN_SMS_FIELD_HANDOVER_ASSIGNED_TEMPLATE_CODE: "SMS_FIELD_ASSIGNED",
     ALIYUN_SMS_FIELD_HANDOVER_ESIGN_READY_TEMPLATE_CODE: "SMS_FIELD_READY",
     FIELD_OPERATOR_SMS_ENABLED: "true",
     FIELD_OPERATOR_SMS_PROVIDER: "mock",
@@ -492,7 +570,7 @@ function createHarness(options: {
 }
 
 function notificationWorkOrder(
-  notificationStage: "CUSTOMER_READY" | "FIELD_READY"
+  notificationStage: "ASSIGNED" | "CUSTOMER_READY" | "FIELD_READY"
 ) {
   const manifestDigest = "a".repeat(64);
   const sourcePdfHash = "b".repeat(64);
@@ -500,7 +578,7 @@ function notificationWorkOrder(
   const handover = {
     archiveStatus: "NOT_STARTED",
     archivedAt: null as Date | null,
-    artifactVersion: 1,
+    artifactVersion: 2,
     deletedAt: null,
     handoverContract: {
       contractSnapshot: {
@@ -511,7 +589,7 @@ function notificationWorkOrder(
         handoverId: "00000000-0000-4000-8000-000000000020",
         orderId: "order-1",
         stage2HandoverPdfArtifact: {
-          artifactVersion: 1,
+          artifactVersion: 2,
           fileId: "00000000-0000-4000-8000-000000000030",
           sourcePdfHash
         },
@@ -534,7 +612,7 @@ function notificationWorkOrder(
           id: "00000000-0000-4000-8000-000000000010",
           orderId: "order-1",
           requestSnapshot: {
-            artifactVersion: 1,
+            artifactVersion: 2,
             contractId: "contract-stage2-1",
             documentType: "DELIVERY_HANDOVER",
             handoverId: "00000000-0000-4000-8000-000000000020",
@@ -601,11 +679,20 @@ function notificationWorkOrder(
   return {
     customerConfirmedAt: confirmedAt,
     customerObjectedAt: null,
-    fieldOperatorPhone: "13800000000",
+    events: [
+      {
+        createdAt: new Date("2026-07-27T08:00:00.000Z"),
+        eventType: "EXTERNAL_OPERATOR_ASSIGNED",
+        id: "assignment-event-1"
+      }
+    ],
+    externalOperatorPhone: "13800000000" as string | null,
+    fieldOperatorPhone: "13800000000" as string | null,
     handover,
     handoverId: handover.id,
     handoverType: "DELIVERY_OUTBOUND",
     id: "00000000-0000-4000-8000-000000000003",
+    operatorType: "EXTERNAL",
     order: {
       customer: {
         id: "customer-1",
@@ -615,9 +702,12 @@ function notificationWorkOrder(
       customerId: "customer-1",
       id: "order-1",
       vehicle: {
+        id: "vehicle-1",
+        plateNo: "沪DGU580" as string | null,
         licensePlate: "沪A12345",
         vin: "VIN-SENSITIVE-001"
-      }
+      },
+      vehicleId: "vehicle-1"
     },
     orderId: "order-1",
     reviewAttempts: [
@@ -635,7 +725,11 @@ function notificationWorkOrder(
         workOrderId: "00000000-0000-4000-8000-000000000003"
       }
     ],
-    status: customerReady ? "SIGNING" : "CUSTOMER_CONFIRMED"
+    status: notificationStage === "ASSIGNED"
+      ? "ASSIGNED"
+      : customerReady
+        ? "SIGNING"
+        : "CUSTOMER_CONFIRMED"
   };
 }
 
@@ -655,12 +749,24 @@ function customerJob(): ClaimedStage2WorkflowJob {
 function fieldJob(): ClaimedStage2WorkflowJob {
   return claimedJob({
     handoverId: "00000000-0000-4000-8000-000000000020",
-    idempotencyKey: "field-notify:00000000-0000-4000-8000-000000000003:1",
+    idempotencyKey: "field-notify:00000000-0000-4000-8000-000000000003:2",
     jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
     payload: {
-      artifactVersion: 1,
+      artifactVersion: 2,
       manifestHash: `sha256:${"a".repeat(64)}`,
       sourcePdfHash: "b".repeat(64)
+    }
+  });
+}
+
+function assignmentJob(): ClaimedStage2WorkflowJob {
+  return claimedJob({
+    handoverId: "00000000-0000-4000-8000-000000000020",
+    idempotencyKey:
+      "field-assigned:00000000-0000-4000-8000-000000000003:assignment-event-1",
+    jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+    payload: {
+      assignmentEventId: "assignment-event-1"
     }
   });
 }

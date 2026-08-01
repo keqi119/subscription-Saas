@@ -123,6 +123,7 @@ export interface QuerySignerStatusInput {
 }
 
 export interface ESignProviderSignerStatusResult {
+  providerRecordAbsent?: boolean;
   resultCode?: string;
   resultDescription?: string;
   status: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";

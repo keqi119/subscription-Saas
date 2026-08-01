@@ -730,6 +730,9 @@ export class FadadaESignProvider implements ESignProvider {
       transactionId: input.providerTransactionId
     });
     const response = {
+      ...(isFadadaSigningRecordAbsent(result)
+        ? { providerRecordAbsent: true }
+        : {}),
       resultCode: result.resultCode,
       resultDescription: result.resultDesc
     };
@@ -822,6 +825,24 @@ export class FadadaESignProvider implements ESignProvider {
 
     return account?.providerCustomerId ?? undefined;
   }
+}
+
+function isFadadaSigningRecordAbsent(result: {
+  providerContractId?: string;
+  providerCustomerId?: string;
+  providerTransactionId?: string;
+  resultCode?: string;
+  resultDesc?: string;
+  status: "SIGNED" | "SIGNING" | "FAILED" | "UNKNOWN";
+}) {
+  return (
+    result.status === "UNKNOWN" &&
+    !result.resultCode &&
+    result.resultDesc?.trim() === "签署记录为空" &&
+    !result.providerContractId &&
+    !result.providerCustomerId &&
+    !result.providerTransactionId
+  );
 }
 
 function requireStage2SourcePdfHash(value: string | undefined) {

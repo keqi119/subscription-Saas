@@ -123,6 +123,11 @@ describe("Deployment operations safety", () => {
       expect(environment).not.toMatch(/ALIYUN_SMS_ACCESS_KEY_ID=LTAI/i);
       expect(environment).not.toMatch(/ALIYUN_SMS_ACCESS_KEY_SECRET=[A-Za-z0-9]{16,}/i);
     }
+
+    const production = read("apps/api/.env.production.example");
+    expect(production).toContain("PORTAL_SMS_PROVIDER=aliyun");
+    expect(production).toContain("FIELD_OPERATOR_SMS_PROVIDER=aliyun");
+    expect(production).toContain("FIELD_OPERATOR_SMS_ENABLED=false");
   });
 
   it("documents worker-off migration, one-worker recovery, and menu verification only", () => {
@@ -137,6 +142,10 @@ describe("Deployment operations safety", () => {
     expect(dryRun).toBeGreaterThan(migrate);
     expect(workerOn).toBeGreaterThan(dryRun);
     expect(runbook).toContain("STAGE2_HANDOVER_WORKER_CONCURRENCY=1");
+    expect(runbook).toContain(
+      "export COMPOSE_FILE=docker-compose.staging.images.example.yml"
+    );
+    expect(runbook).toContain("export ENV_FILE=.env.staging.images");
     expect(runbook).toContain("ORD20260731173351SMF2");
     expect(runbook).toContain("SMS_511185078");
     expect(runbook).toContain("SMS_510815118");
@@ -144,6 +153,15 @@ describe("Deployment operations safety", () => {
     expect(runbook).toContain("/field/handover");
     expect(runbook).toMatch(/verification-only/i);
     expect(runbook).toMatch(/do not (change|update).*menu/i);
+
+    const composeCommands = runbook
+      .split(/\r?\n/)
+      .filter((line) => line.trimStart().startsWith("docker compose "));
+    expect(composeCommands.length).toBeGreaterThan(0);
+    for (const command of composeCommands) {
+      expect(command).toContain("-p subauto-staging");
+      expect(command).toContain('--env-file "$ENV_FILE"');
+    }
   });
 });
 

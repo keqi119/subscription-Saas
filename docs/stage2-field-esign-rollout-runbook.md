@@ -80,7 +80,8 @@ records.
 Set the Compose file used by the Staging host:
 
 ```bash
-export COMPOSE_FILE=docker-compose.staging.images.yml
+export COMPOSE_FILE=docker-compose.staging.images.example.yml
+export ENV_FILE=.env.staging.images
 ```
 
 ## Staging Rollout
@@ -96,8 +97,8 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    This is the release image's `prisma migrate deploy` step:
 
    ```bash
-   docker compose -p subauto-staging -f "$COMPOSE_FILE" pull api
-   docker compose -p subauto-staging -f "$COMPOSE_FILE" run --rm --no-deps \
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
      --workdir /app/apps/api --entrypoint /app/apps/api/node_modules/.bin/prisma api \
      migrate deploy --schema prisma/schema.prisma
    ```
@@ -113,7 +114,7 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    and retain the dry-run report:
 
    ```bash
-   docker compose -p subauto-staging -f "$COMPOSE_FILE" run --rm --no-deps \
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" run --rm --no-deps \
      --volume "$PWD/scripts:/app/scripts:ro" \
      --entrypoint node api \
      /app/scripts/stage2-handover-workflow-backfill.mjs --dry-run \
@@ -133,8 +134,8 @@ export COMPOSE_FILE=docker-compose.staging.images.yml
    Recreate the API service again and confirm its health:
 
    ```bash
-   docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api
-   docker compose -f "$COMPOSE_FILE" ps api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps --force-recreate api
+   docker compose -p subauto-staging --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps api
    ```
 
 6. In Admin Web, open current acceptance order `ORD20260731173351SMF2` and

@@ -24,8 +24,8 @@
 | STG2-001 | 主合同签署及交接前账单支付完成后，订单工作台未给出“推进车辆交接”的明确下一步 | 操作人员需自行查找车辆交接模块，流程容易中断 | 工作台缺少面向当前案件状态的下一步动作提示 | 待修复 |
 | STG2-002 | 完成交付准备、生成现场交接环节并指派外部 Field 人员后，未收到通知短信 | 外部交接人员无法自动接续流程 | 现有持久化通知只覆盖源 PDF/电子签就绪阶段；需新增指派通知任务并使用已审核模板 `SMS_511185078`，变量 `name` 取当前车辆车牌号 | 待修复 |
 | STG2-003 | 微信服务号内没有 Staging Field 现场交接入口 | 即使短信到达，Field 人员仍缺少稳定的任务入口 | 用户已在公众号增加 `/field/handover`；本轮只验证跳转、Field 登录和任务可见性，不再修改菜单 | 已配置/待回归 |
-| STG2-004 | 从相册选择 `IMG_0203.mov` 上传车辆环绕视频，前端仅提示“上传失败，请检查网络后重试” | 高质量原片无法上传，且错误提示误导为网络问题 | 约 191.6 MiB 的请求两次被 Staging Nginx 20 MiB 请求体限制以 HTTP 413 拒绝；应用/API 设计上限为 300 MiB | 代码已修复/待 Staging 网关与实机回归 |
-| STG2-005 | 使用“现场录像”后，摄像头输出像素极低，无法形成有效车辆证据 | 视频虽可上传，但无法清晰识别车身外观、损伤等验收要素 | 当前原生文件采集方案不能控制录像质量；iOS 微信内置浏览器实际生成 480×360 视频 | 代码已修复/待 Staging 实机回归 |
+| STG2-004 | 从相册选择 `IMG_0203.mov` 上传车辆环绕视频，前端仅提示“上传失败，请检查网络后重试” | 高质量原片无法上传，且错误提示误导为网络问题 | 约 191.6 MiB 的请求两次被 Staging Nginx 20 MiB 请求体限制以 HTTP 413 拒绝；应用/API 设计上限为 300 MiB | 已部署 Staging/待原片实机复验 |
+| STG2-005 | 使用“现场录像”后，摄像头输出像素极低，无法形成有效车辆证据 | 视频虽可上传，但无法清晰识别车身外观、损伤等验收要素 | 当前原生文件采集方案不能控制录像质量；iOS 微信内置浏览器实际生成 480×360 视频 | 已部署 Staging/待清晰度实机复验 |
 | STG2-006 | Field 提交且客户确认后，交接确认单已生成，但电子签按钮置灰；订单工作台只显示“处理中”且无下一步 | Stage 2 无法发起电子签，验收流程阻塞 | PDF 版本门禁与当前生成版本不一致；Field 短信配置缺失导致通知任务持续失败；工作台对重试中任务缺少可操作提示 | 阻塞/待修复 |
 | STG2-007 | 交接确认单的“随车证件”和“随车工具”显示内部键 `item1`；车况项目大多为空，Field 已填写的车钥匙和行驶证未正确呈现 | 客户签署的交接单不能准确反映现场验收事实，关键交付物缺乏有效书面确认 | Field 自由文本被包装成内部键，PDF 只读取键不读取值；PDF 多个车况栏位无对应 Field 采集字段 | 阻塞/待修复 |
 
@@ -84,10 +84,23 @@ STG2-005 属于移动端采集方案的设计缺口和 iOS 微信 WebView 兼容
 - 通过临时 SSH 转发只读核对真实 Staging PostgreSQL：发现 73 个迁移，数据库 schema 为最新状态。
 - 本批代码没有 Prisma schema 或数据库迁移，也不改变历史交接证据和已签署文档。
 
+### Staging 部署证据（2026-08-02）
+
+- Draft PR：`#249`；部署提交：`f46d81159cd3fde9c82b26dffe63ee58f6409122`；PR `quality-gate` 已通过。
+- API 镜像：`ghcr.io/keqi119/subscription-api:Staging-20260802-f46d811`，OCI digest `sha256:298b9887abc68c2b66d2560ffe469a2fd139d28d93a1c9e49cdede8b0e63645b`，运行平台 image ID `sha256:c4d20089fe5d7266c45515cff083b7285aac3d574ab97d63dc50132377420586`。
+- Web 镜像：`ghcr.io/keqi119/subscription-web:Staging-20260802-f46d811`，OCI digest `sha256:15023ae68a54bb21f2956c7435f102528862f9fae9889af276d2f5c402013bc6`，运行平台 image ID `sha256:6ac3b7728f13fdc0a2da73da5c7a278a349faaf3cd4882cef7f4a61508ae4751`。
+- Staging API Nginx 已生效：`client_max_body_size 320m`、`client_body_timeout 1200s`、`proxy_request_buffering off`、读写上游超时 `1200s`；`nginx -t` 成功。Admin 仍为 `20m/300s`。
+- Nginx 回滚备份：`/www/server/panel/vhost/nginx/staging-api.subauto.keybox.cloud.conf.bak.20260802015647`。
+- 镜像环境回滚备份：`/opt/subscription-saas/.env.staging.images.bak.20260802023243`；上一版 API 为 `Staging-20260801-50f2fcc`，Web 为 `Staging-20260801-e2ece01`。
+- 新 API/Web 容器均为 healthy；API health、Field 入口、Portal 入口均返回 HTTP 200；部署后 10 分钟日志未发现新的 ERROR/FATAL。
+- 22 MiB 无业务副作用 POST 探针已穿过 API Nginx 并由上游返回 HTTP 404，而非旧限制产生的 413，证明旧 20 MiB 网关门槛已移除。
+- 部署产物包含“系统相机”录制指引和照片“现场拍摄”，不再包含“现场录像”。
+- Staging PostgreSQL 容器 ID `3162dd6d95c7982ddfbe037058b32ae234e6dca3328de1a72863e4836488bdc8` 未变；Production API、Web、PostgreSQL 基线 ID 均未变。
+
 ### 尚待完成
 
-- Staging 实际 API Nginx 仍需由 20 MiB 调整为批准的 320 MiB，并启用 1200 秒请求/上游超时及请求流式转发；变更后需校验配置并确认 Admin 入口仍保持原限制。
-- 新镜像及网关配置部署后，需在目标 iPhone/微信版本使用 `IMG_0203.mov` 验证高质量相册视频全链路上传，并验证 480×360 环绕视频被明确拒绝。
+- 需在目标 iPhone/微信版本使用 `IMG_0203.mov` 验证约 191.6 MiB 高质量相册视频全链路上传。
+- 需在真实 Field 登录态验证 480×360 环绕视频被明确拒绝且不产生证据附件，以及 720p/1080p 视频被接受并在 Field/Admin 显示实际分辨率。
 - GPS 地图定位未包含在本发布候选中。未来扩展采用独立 `locationProof` 与短时 `evidenceSession`，将定位事实和视频文件通过会话绑定，而不是依赖 Web 端直接录像能力。
 
 ## 后续改进计划

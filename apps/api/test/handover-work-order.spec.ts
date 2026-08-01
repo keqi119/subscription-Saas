@@ -512,22 +512,31 @@ describe("HandoverWorkOrderService", () => {
       blockingReasons: [],
       items: [
         {
-          allowedMediaTypes: ["PHOTO"],
-          evidenceType: "VEHICLE_FRONT",
+          allowedMediaTypes: ["VIDEO"],
+          evidenceType: "WALKAROUND_VIDEO",
           fileRequired: true,
           files: [
             {
               file: {
                 id: "file-1",
-                mimeType: "image/jpeg",
-                objectKey: "oss/internal/evidence.jpg",
-                originalName: "front.jpg",
+                mimeType: "video/quicktime",
+                objectKey: "oss/internal/walkaround.mov",
+                originalName: "walkaround.mov",
                 sizeBytes: 1024
               },
               fileId: "file-1",
               id: "evidence-file-1",
-              mediaType: "PHOTO",
-              objectKey: "oss/internal/evidence.jpg",
+              mediaType: "VIDEO",
+              metadata: {
+                detectedCodec: "h264",
+                sourceSha256: `sha256:${"a".repeat(64)}`,
+                videoBitRateBps: 8_000_000,
+                videoFrameRate: 30,
+                videoHeightPx: 1080,
+                videoQualityStatus: "PASSED",
+                videoWidthPx: 1920
+              },
+              objectKey: "oss/internal/walkaround.mov",
               uploadedAt: harness.now,
               uploadedBy: { id: "user-admin" }
             }
@@ -578,15 +587,20 @@ describe("HandoverWorkOrderService", () => {
         {
           file: {
             id: "file-1",
-            mimeType: "image/jpeg",
-            originalName: "front.jpg",
+            mimeType: "video/quicktime",
+            originalName: "walkaround.mov",
             sizeBytes: 1024
           },
-          mediaType: "PHOTO"
+          mediaType: "VIDEO",
+          metadata: {
+            videoHeightPx: 1080,
+            videoQualityStatus: "PASSED",
+            videoWidthPx: 1920
+          }
         }
       ]
     });
-    expect(JSON.stringify(detail)).not.toContain("oss/internal/evidence.jpg");
+    expect(JSON.stringify(detail)).not.toMatch(/oss\/internal|sourceSha256|detectedCodec/);
 
     await expect(
       harness.service.getFieldAccessibleWorkOrder("work-order-visible", "13900000000")

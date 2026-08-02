@@ -161,10 +161,49 @@ describe("VehicleMileageService", () => {
       where: { vehicleId }
     });
   });
+
+  it("voids only the latest reading and restores the preceding vehicle projection", async () => {
+    const current = readingRow({ id: "reading-current", mileageKm: 300 });
+    const previous = readingRow({ id: "reading-previous", mileageKm: 200 });
+    const harness = createHarness({
+      findFirstRows: [current, current, previous]
+    });
+    const voidedAt = new Date("2026-10-01T01:00:00.000Z");
+
+    await expect(
+      harness.service.voidReadingAndRestoreProjection(harness.transaction, {
+        actorId,
+        readingId: current.id,
+        reason: "wrong reading",
+        vehicleId,
+        voidedAt
+      })
+    ).resolves.toBe(previous);
+
+    expect(harness.tx.vehicleMileageReading.update).toHaveBeenCalledWith({
+      data: {
+        status: VehicleMileageReadingStatus.VOIDED,
+        updatedBy: actorId,
+        voidedAt,
+        voidedBy: actorId,
+        voidReason: "wrong reading"
+      },
+      where: { id: current.id }
+    });
+    expect(harness.tx.vehicle.update).toHaveBeenCalledWith({
+      data: {
+        currentMileageKm: 200,
+        salePriceReinitRequiredAt: voidedAt,
+        updatedBy: actorId
+      },
+      where: { id: vehicleId }
+    });
+  });
 });
 
 function createHarness(options: {
   existing?: ReturnType<typeof readingRow> | null;
+  findFirstRows?: ReturnType<typeof readingRow>[];
   latest?: ReturnType<typeof readingRow> | null;
   rows?: ReturnType<typeof readingRow>[];
 } = {}) {
@@ -187,7 +226,13 @@ function createHarness(options: {
         updatedAt: new Date(),
         ...data
       })),
-      findFirst: vi.fn(async () => options.latest ?? null),
+      findFirst: options.findFirstRows
+        ? vi.fn()
+            .mockResolvedValueOnce(options.findFirstRows[0] ?? null)
+            .mockResolvedValueOnce(options.findFirstRows[1] ?? null)
+            .mockResolvedValueOnce(options.findFirstRows[2] ?? null)
+        : vi.fn(async () => options.latest ?? null),
+      update: vi.fn(),
       findUnique: vi.fn(async () => options.existing ?? null)
     }
   };

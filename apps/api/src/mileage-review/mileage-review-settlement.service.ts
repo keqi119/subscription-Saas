@@ -60,6 +60,14 @@ export interface SettleMileageReviewInput {
   userId: string;
 }
 
+export interface VoidMileageReviewInput {
+  expectedLockVersion: number;
+  reason: string;
+  reviewId: string;
+  userId: string;
+  voidedAt?: Date;
+}
+
 @Injectable()
 export class MileageReviewSettlementService {
   constructor(
@@ -203,6 +211,160 @@ export class MileageReviewSettlementService {
 
         await this.createNextReview(tx, review, reading.id, confirmedAt, input.userId);
         return this.findSettledReview(tx, review.id);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  voidAndReopenReview(input: VoidMileageReviewInput) {
+    const voidedAt = input.voidedAt ?? new Date();
+    const reason = input.reason.trim();
+    if (!reason) {
+      throw new BadRequestException("Mileage review void reason is required.");
+    }
+    if (
+      !Number.isSafeInteger(input.expectedLockVersion) ||
+      input.expectedLockVersion < 0
+    ) {
+      throw new BadRequestException("Mileage review lock version is invalid.");
+    }
+
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "order_mileage_review" WHERE "id" = ${input.reviewId}::uuid FOR UPDATE`
+        );
+        const review = await tx.orderMileageReview.findUnique({
+          include: settlementReviewInclude,
+          where: { id: input.reviewId }
+        });
+        if (!review || review.deletedAt) {
+          throw new NotFoundException("Mileage review not found.");
+        }
+        if (
+          review.status !== OrderMileageReviewStatus.CONFIRMED ||
+          review.lockVersion !== input.expectedLockVersion
+        ) {
+          throw new ConflictException(
+            "Mileage review was changed or is not confirmed."
+          );
+        }
+
+        const laterConfirmedCount = await tx.orderMileageReview.count({
+          where: {
+            cycleNo: { gt: review.cycleNo },
+            deletedAt: null,
+            orderId: review.orderId,
+            status: OrderMileageReviewStatus.CONFIRMED
+          }
+        });
+        if (laterConfirmedCount > 0) {
+          throw new BadRequestException(
+            "A later confirmed mileage review prevents this rollback."
+          );
+        }
+
+        const bill = review.overMileageBillId
+          ? await tx.receivableBill.findUnique({
+              where: { id: review.overMileageBillId }
+            })
+          : null;
+        if (
+          bill &&
+          (bill.paidAmount > 0n ||
+            bill.billStatus === BillStatus.PARTIALLY_PAID ||
+            bill.billStatus === BillStatus.PAID)
+        ) {
+          throw new BadRequestException(
+            "A paid or partially paid over-mileage bill prevents this rollback."
+          );
+        }
+
+        await this.restoreEntitlement(tx, review, input.userId);
+        if (bill) {
+          await tx.receivableBill.update({
+            data: {
+              billStatus: BillStatus.CANCELLED,
+              cancelledAt: voidedAt,
+              remainingAmount: 0n,
+              updatedBy: input.userId
+            },
+            where: { id: bill.id }
+          });
+        }
+        if (!review.mileageReadingId) {
+          throw new ConflictException(
+            "Confirmed mileage review is missing its mileage reading."
+          );
+        }
+        await this.vehicleMileageService.voidReadingAndRestoreProjection(tx, {
+          actorId: input.userId,
+          readingId: review.mileageReadingId,
+          reason,
+          vehicleId: review.vehicleId,
+          voidedAt
+        });
+
+        await tx.orderMileageReview.updateMany({
+          data: {
+            deletedAt: voidedAt,
+            updatedBy: input.userId
+          },
+          where: {
+            cycleNo: { gt: review.cycleNo },
+            deletedAt: null,
+            orderId: review.orderId,
+            status: {
+              not: OrderMileageReviewStatus.CONFIRMED
+            }
+          }
+        });
+        await tx.orderMileageReview.update({
+          data: {
+            calculationSnapshot: toJsonValue({
+              ...jsonRecord(review.calculationSnapshot),
+              void: {
+                reason,
+                voidedAt: voidedAt.toISOString(),
+                voidedBy: input.userId
+              }
+            }),
+            lockVersion: { increment: 1 },
+            status: OrderMileageReviewStatus.VOIDED,
+            updatedBy: input.userId,
+            voidReason: reason,
+            voidedAt,
+            voidedBy: input.userId
+          },
+          where: { id: review.id }
+        });
+
+        const replacement = await tx.orderMileageReview.create({
+          data: {
+            baselineMileageKm: review.baselineMileageKm,
+            baselineReadingId: review.baselineReadingId,
+            calculationSnapshot: toJsonValue({
+              reopenedAt: voidedAt.toISOString(),
+              reopenedBy: input.userId,
+              replacesReviewId: review.id
+            }),
+            createdBy: input.userId,
+            cycleNo: review.cycleNo,
+            dueAt: review.dueAt,
+            orderId: review.orderId,
+            periodEnd: review.periodEnd,
+            periodStart: review.periodStart,
+            scheduledReviewAt: review.scheduledReviewAt,
+            status: OrderMileageReviewStatus.PENDING_SUBMISSION,
+            updatedBy: input.userId,
+            vehicleId: review.vehicleId,
+            version: review.version + 1
+          }
+        });
+        return {
+          replacementReview: await this.findSettledReview(tx, replacement.id),
+          voidedReview: await this.findSettledReview(tx, review.id)
+        };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );
@@ -459,6 +621,54 @@ export class MileageReviewSettlementService {
           version: 1
         }
       }
+    });
+  }
+
+  private async restoreEntitlement(
+    tx: Prisma.TransactionClient,
+    review: SettlementReview,
+    userId: string
+  ) {
+    if (!review.entitlementGrantId || review.allowanceKm === null) {
+      throw new ConflictException(
+        "Confirmed mileage review is missing its entitlement settlement."
+      );
+    }
+    const grant = await tx.orderEntitlementGrant.findUnique({
+      where: { id: review.entitlementGrantId }
+    });
+    if (!grant) {
+      throw new ConflictException("Mileage entitlement grant is unavailable.");
+    }
+    let restoredUsed = decimalToSafeMileage(grant.usedAmount, "Used mileage");
+    if (review.entitlementUsageId) {
+      const usage = await tx.orderEntitlementUsage.findUnique({
+        where: { id: review.entitlementUsageId }
+      });
+      if (!usage || usage.usageStatus !== EntitlementUsageStatus.CONFIRMED) {
+        throw new ConflictException("Mileage entitlement usage is unavailable.");
+      }
+      const used = decimalToSafeMileage(usage.usedAmount, "Usage mileage");
+      restoredUsed -= used;
+      if (restoredUsed < 0) {
+        throw new ConflictException("Mileage entitlement usage cannot be restored.");
+      }
+      await tx.orderEntitlementUsage.update({
+        data: {
+          usageStatus: EntitlementUsageStatus.CANCELLED,
+          updatedBy: userId
+        },
+        where: { id: usage.id }
+      });
+    }
+    await tx.orderEntitlementGrant.update({
+      data: {
+        remainingAmount: new Prisma.Decimal(review.allowanceKm),
+        status: EntitlementGrantStatus.ACTIVE,
+        updatedBy: userId,
+        usedAmount: new Prisma.Decimal(restoredUsed)
+      },
+      where: { id: grant.id }
     });
   }
 }

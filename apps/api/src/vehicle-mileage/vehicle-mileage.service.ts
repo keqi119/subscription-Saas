@@ -105,6 +105,76 @@ export class VehicleMileageService {
     return reading;
   }
 
+  async voidReadingAndRestoreProjection(
+    tx: Prisma.TransactionClient,
+    input: {
+      actorId: string;
+      reason: string;
+      readingId: string;
+      vehicleId: string;
+      voidedAt: Date;
+    }
+  ) {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${input.vehicleId}::uuid FOR UPDATE`
+    );
+    const reading = await tx.vehicleMileageReading.findFirst({
+      where: {
+        id: input.readingId,
+        status: VehicleMileageReadingStatus.ACTIVE,
+        vehicleId: input.vehicleId
+      }
+    });
+    if (!reading) {
+      throw new NotFoundException("Active mileage reading was not found.");
+    }
+    const latest = await tx.vehicleMileageReading.findFirst({
+      orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }],
+      where: {
+        status: VehicleMileageReadingStatus.ACTIVE,
+        vehicleId: input.vehicleId
+      }
+    });
+    if (latest?.id !== reading.id) {
+      throw new ConflictException(
+        "A later active mileage reading prevents this rollback."
+      );
+    }
+    const previous = await tx.vehicleMileageReading.findFirst({
+      orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }],
+      where: {
+        id: { not: reading.id },
+        status: VehicleMileageReadingStatus.ACTIVE,
+        vehicleId: input.vehicleId
+      }
+    });
+    if (!previous) {
+      throw new ConflictException(
+        "The preceding active mileage reading is unavailable."
+      );
+    }
+
+    await tx.vehicleMileageReading.update({
+      data: {
+        status: VehicleMileageReadingStatus.VOIDED,
+        updatedBy: input.actorId,
+        voidedAt: input.voidedAt,
+        voidedBy: input.actorId,
+        voidReason: input.reason
+      },
+      where: { id: reading.id }
+    });
+    await tx.vehicle.update({
+      data: {
+        currentMileageKm: previous.mileageKm,
+        salePriceReinitRequiredAt: input.voidedAt,
+        updatedBy: input.actorId
+      },
+      where: { id: input.vehicleId }
+    });
+    return previous;
+  }
+
   listVehicleReadings(vehicleId: string) {
     return this.prisma.vehicleMileageReading.findMany({
       include: {

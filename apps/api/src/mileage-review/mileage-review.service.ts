@@ -506,17 +506,21 @@ export class MileageReviewService {
     );
   }
 
-  voidAndReopenReview(
+  async voidAndReopenReview(
     id: string,
     dto: VoidMileageReviewDto,
     user: RequestUser
-  ): never {
-    void id;
-    void dto;
-    void user;
-    throw new BadRequestException(
-      "Mileage review void and reopen is not available yet."
-    );
+  ) {
+    const result = await this.getSettlementService().voidAndReopenReview({
+      expectedLockVersion: dto.lockVersion,
+      reason: dto.reason,
+      reviewId: id,
+      userId: user.id
+    });
+    return {
+      replacementReview: toMileageReviewView(result.replacementReview),
+      voidedReview: toMileageReviewView(result.voidedReview)
+    };
   }
 
   private async findReviewOrThrow(id: string) {

@@ -5,6 +5,7 @@ import {
   DepositTransactionStatus,
   DepositTransactionType,
   EntitlementUnit,
+  OrderMileageReviewStatus,
   OrderStatus,
   Prisma
 } from "@prisma/client";
@@ -73,6 +74,27 @@ const portalOrderInclude = {
       usedAmount: true
     },
     where: { deletedAt: null }
+  },
+  mileageReviews: {
+    orderBy: [
+      { cycleNo: "desc" as const },
+      { version: "desc" as const },
+      { createdAt: "desc" as const }
+    ],
+    select: {
+      cycleNo: true,
+      dueAt: true,
+      id: true,
+      lockVersion: true,
+      overMileageBillId: true,
+      scheduledReviewAt: true,
+      status: true
+    },
+    take: 1,
+    where: {
+      deletedAt: null,
+      status: { not: OrderMileageReviewStatus.VOIDED }
+    }
   },
   productVersion: {
     include: {
@@ -217,6 +239,7 @@ export class PortalBillingService {
       this.buildOrderDepositSummary(order.id, currentCustomer.customerId),
       this.buildOrderEntitlementSummary(order.id, currentCustomer.customerId)
     ]);
+    const mileageReviewSummary = toMileageReviewSummary(order);
 
     return {
       ...toPortalOrderListItem(order),
@@ -225,7 +248,13 @@ export class PortalBillingService {
       depositSummary,
       deliverySummary: toDeliverySummary(order),
       entitlementSummary,
-      nextAction: resolveOrderNextAction(order, billSummary.remainingAmount),
+      mileageReviewSummary,
+      nextAction: resolveOrderNextAction(
+        order,
+        billSummary.remainingAmount,
+        mileageReviewSummary
+      ),
+      nextActionTarget: toMileageReviewNextActionTarget(mileageReviewSummary),
       order: toOrderSummary(order),
       subscriptionPlanSummary: toSubscriptionPlanSummary(order),
       vehicleSummary: toVehicleSummary(order)
@@ -572,7 +601,11 @@ function resolvePaymentStatus(bills: PortalOrder["receivableBills"]) {
   return "PENDING";
 }
 
-function resolveOrderNextAction(order: PortalOrder, remainingAmount: number) {
+function resolveOrderNextAction(
+  order: PortalOrder,
+  remainingAmount: number,
+  mileageReviewSummary: ReturnType<typeof toMileageReviewSummary>
+) {
   const contract = toContractSummary(order);
   if (contract && contract.contractStatus !== ContractStatus.SIGNED && contract.contractStatus !== ContractStatus.ARCHIVED) {
     return "SIGN_CONTRACT";
@@ -583,10 +616,50 @@ function resolveOrderNextAction(order: PortalOrder, remainingAmount: number) {
   if (WAIT_DELIVERY_ORDER_STATUSES.has(order.orderStatus)) {
     return "WAIT_DELIVERY";
   }
+  if (mileageReviewSummary?.hasAction) {
+    return "SUBMIT_MILEAGE_REVIEW";
+  }
   if (order.entitlementGrants.length > 0) {
     return "VIEW_ENTITLEMENTS";
   }
   return "NONE";
+}
+
+function toMileageReviewSummary(order: PortalOrder) {
+  const review = order.mileageReviews[0];
+  if (!review) {
+    return null;
+  }
+  const hasAction =
+    order.orderStatus === OrderStatus.ACTIVE &&
+    (review.status === OrderMileageReviewStatus.PENDING_SUBMISSION ||
+      review.status === OrderMileageReviewStatus.RETURNED);
+  return {
+    actionUrl: hasAction ? `/portal/mileage-reviews/${review.id}` : null,
+    currentReviewId: review.id,
+    cycleNo: review.cycleNo,
+    dueAt: toIsoDateTime(review.dueAt),
+    hasAction,
+    lockVersion: review.lockVersion,
+    overdue:
+      review.status === OrderMileageReviewStatus.PENDING_SUBMISSION &&
+      Date.now() > review.dueAt.getTime(),
+    overMileageBillId: review.overMileageBillId,
+    scheduledReviewAt: toIsoDateTime(review.scheduledReviewAt),
+    status: review.status
+  };
+}
+
+function toMileageReviewNextActionTarget(
+  summary: ReturnType<typeof toMileageReviewSummary>
+) {
+  if (!summary?.hasAction || !summary.actionUrl) {
+    return null;
+  }
+  return {
+    label: "提交里程复核",
+    url: summary.actionUrl
+  };
 }
 
 function toBillListItem(bill: Prisma.ReceivableBillGetPayload<{

@@ -1,5 +1,9 @@
 import { ConflictException, Injectable } from "@nestjs/common";
-import { OrderMileageReviewStatus, Prisma } from "@prisma/client";
+import {
+  OrderMileageReviewStatus,
+  OrderStatus,
+  Prisma
+} from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { MileageReviewTransaction } from "./mileage-review.types";
@@ -85,6 +89,17 @@ export class MileageReviewRepository {
     });
   }
 
+  findByIdForCustomer(id: string, customerId: string) {
+    return this.prisma.orderMileageReview.findFirst({
+      include: mileageReviewInclude,
+      where: {
+        deletedAt: null,
+        id,
+        order: { customerId }
+      }
+    });
+  }
+
   async list(input: {
     orderId?: string;
     page: number;
@@ -93,6 +108,34 @@ export class MileageReviewRepository {
   }) {
     const where = {
       deletedAt: null,
+      orderId: input.orderId,
+      status: input.status
+    } satisfies Prisma.OrderMileageReviewWhereInput;
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.orderMileageReview.findMany({
+        include: mileageReviewInclude,
+        orderBy: [{ scheduledReviewAt: "desc" }, { createdAt: "desc" }],
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+        where
+      }),
+      this.prisma.orderMileageReview.count({ where })
+    ]);
+    return { items, total };
+  }
+
+  async listForCustomer(
+    customerId: string,
+    input: {
+      orderId?: string;
+      page: number;
+      pageSize: number;
+      status?: OrderMileageReviewStatus;
+    }
+  ) {
+    const where = {
+      deletedAt: null,
+      order: { customerId },
       orderId: input.orderId,
       status: input.status
     } satisfies Prisma.OrderMileageReviewWhereInput;
@@ -120,11 +163,29 @@ export class MileageReviewRepository {
     });
   }
 
+  findEvidenceForCustomer(
+    id: string,
+    reviewId: string,
+    customerId: string
+  ) {
+    return this.prisma.orderMileageReviewEvidence.findFirst({
+      include: { file: true },
+      where: {
+        deletedAt: null,
+        id,
+        reviewId,
+        review: { order: { customerId } }
+      }
+    });
+  }
+
   updateReview(input: {
+    customerId?: string;
     data: Prisma.OrderMileageReviewUncheckedUpdateManyInput;
     expectedLockVersion: number;
     expectedStatuses: OrderMileageReviewStatus[];
     id: string;
+    requireActiveOrder?: boolean;
   }) {
     return this.prisma.$transaction(async (tx) => {
       await updateReviewGuard(tx, input);
@@ -156,19 +217,54 @@ export class MileageReviewRepository {
     });
   }
 
-  softDeleteEvidence(input: {
-    actorId: string;
-    evidenceId: string;
+  attachPortalEvidence(input: {
+    customerId: string;
+    evidenceData: Omit<
+      Prisma.OrderMileageReviewEvidenceUncheckedCreateInput,
+      "fileId"
+    >;
     expectedLockVersion: number;
     expectedStatuses: OrderMileageReviewStatus[];
+    fileData: Prisma.FileObjectUncheckedCreateInput;
     id: string;
   }) {
     return this.prisma.$transaction(async (tx) => {
       await updateReviewGuard(tx, {
+        customerId: input.customerId,
         data: {},
         expectedLockVersion: input.expectedLockVersion,
         expectedStatuses: input.expectedStatuses,
-        id: input.id
+        id: input.id,
+        requireActiveOrder: true
+      });
+      const file = await tx.fileObject.create({ data: input.fileData });
+      await tx.orderMileageReviewEvidence.create({
+        data: { ...input.evidenceData, fileId: file.id }
+      });
+      return tx.orderMileageReview.findUniqueOrThrow({
+        include: mileageReviewInclude,
+        where: { id: input.id }
+      });
+    });
+  }
+
+  softDeleteEvidence(input: {
+    actorId: string;
+    customerId?: string;
+    evidenceId: string;
+    expectedLockVersion: number;
+    expectedStatuses: OrderMileageReviewStatus[];
+    id: string;
+    requireActiveOrder?: boolean;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await updateReviewGuard(tx, {
+        customerId: input.customerId,
+        data: {},
+        expectedLockVersion: input.expectedLockVersion,
+        expectedStatuses: input.expectedStatuses,
+        id: input.id,
+        requireActiveOrder: input.requireActiveOrder
       });
       const deleted = await tx.orderMileageReviewEvidence.updateMany({
         data: {
@@ -178,7 +274,10 @@ export class MileageReviewRepository {
         where: {
           deletedAt: null,
           id: input.evidenceId,
-          reviewId: input.id
+          reviewId: input.id,
+          review: input.customerId
+            ? { order: { customerId: input.customerId } }
+            : undefined
         }
       });
       if (deleted.count !== 1) {
@@ -197,10 +296,12 @@ export class MileageReviewRepository {
 async function updateReviewGuard(
   tx: MileageReviewTransaction,
   input: {
+    customerId?: string;
     data: Prisma.OrderMileageReviewUncheckedUpdateManyInput;
     expectedLockVersion: number;
     expectedStatuses: OrderMileageReviewStatus[];
     id: string;
+    requireActiveOrder?: boolean;
   }
 ) {
   const updated = await tx.orderMileageReview.updateMany({
@@ -212,6 +313,14 @@ async function updateReviewGuard(
       deletedAt: null,
       id: input.id,
       lockVersion: input.expectedLockVersion,
+      order: input.customerId
+        ? {
+            customerId: input.customerId,
+            orderStatus: input.requireActiveOrder
+              ? OrderStatus.ACTIVE
+              : undefined
+          }
+        : undefined,
       status: { in: input.expectedStatuses }
     }
   });

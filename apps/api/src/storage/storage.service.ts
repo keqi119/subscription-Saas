@@ -85,6 +85,24 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putMileageReviewEvidence(
+    input: Omit<UploadObjectInput, "key"> & {
+      customerId: string;
+      reviewId: string;
+    }
+  ): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildMileageReviewEvidenceKey(
+      input.customerId,
+      input.reviewId,
+      input.originalName ?? "evidence.jpg"
+    );
+    return this.putPrivateObject(key, input);
+  }
+
   getCustomerProfileMaterialStream(
     bucket: string,
     objectKey: string
@@ -436,6 +454,18 @@ export class StorageService {
     const now = new Date();
     const year = String(now.getUTCFullYear());
     return `customer-profile-materials/${sanitizeKeyPart(customerId)}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
+  }
+
+  private buildMileageReviewEvidenceKey(
+    customerId: string,
+    reviewId: string,
+    originalName: string
+  ) {
+    const now = new Date();
+    const year = String(now.getUTCFullYear());
+    return `mileage-reviews/${sanitizeKeyPart(customerId)}/${sanitizeKeyPart(
+      reviewId
+    )}/${year}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
   private buildServiceCaseAttachmentKey(serviceCaseId: string, originalName: string) {

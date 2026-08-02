@@ -6,6 +6,7 @@ import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.m
 import { ESignModule } from "../esign/esign.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { NotificationModule } from "../notification/notification.module";
+import { MileageReviewModule } from "../mileage-review/mileage-review.module";
 import { PortalNotificationController } from "../notification/notification.controller";
 import { PaymentModule } from "../payment/payment.module";
 import { PrismaModule } from "../prisma/prisma.module";
@@ -28,6 +29,8 @@ import { PortalController } from "./portal.controller";
 import { PortalESignOnboardingController } from "./portal-esign-onboarding.controller";
 import { PortalHandoverReviewController } from "./portal-handover-review.controller";
 import { PortalHandoverReviewService } from "./portal-handover-review.service";
+import { PortalMileageReviewController } from "./portal-mileage-review.controller";
+import { PortalMileageReviewService } from "./portal-mileage-review.service";
 import { PortalPaymentController } from "./portal-payment.controller";
 import { PortalOrderDocumentController } from "./portal-order-document.controller";
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
@@ -47,6 +50,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalOrderDocumentController,
     PortalPaymentController,
     PortalHandoverReviewController,
+    PortalMileageReviewController,
     PortalProfileMaterialController,
     PortalServiceCaseController,
     PortalWechatCallbackController,
@@ -61,6 +65,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     DeliveryEvidenceModule,
     ESignModule,
     HandoverWorkOrderModule,
+    MileageReviewModule,
     NotificationModule,
     PaymentModule,
     PrismaModule,
@@ -77,6 +82,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalBillingService,
     PortalCatalogService,
     PortalHandoverReviewService,
+    PortalMileageReviewService,
     PortalProfileService,
     PortalProfileMaterialService
   ]

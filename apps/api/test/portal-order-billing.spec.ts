@@ -11,6 +11,7 @@ import {
   EntitlementUsageSource,
   EntitlementUsageStatus,
   OrderSource,
+  OrderMileageReviewStatus,
   OrderStatus,
   Prisma,
 } from "@prisma/client";
@@ -98,6 +99,44 @@ describe("portal billing and entitlement center", () => {
         status: "NONE"
       })
     );
+  });
+
+  it("points an active customer to the current mileage review when submission is due", async () => {
+    const harness = createPortalBillingHarness();
+    const order = harness.orders[0]!;
+    order.orderStatus = OrderStatus.ACTIVE;
+    order.receivableBills = [];
+    order.mileageReviews = [
+      {
+        cycleNo: 1,
+        dueAt: new Date("2026-08-03T04:00:00.000Z"),
+        id: "review_a1",
+        lockVersion: 0,
+        overMileageBillId: null,
+        scheduledReviewAt: new Date("2026-08-02T04:00:00.000Z"),
+        status: OrderMileageReviewStatus.PENDING_SUBMISSION
+      }
+    ];
+
+    const result = await harness.service.getOrder(
+      "order_a",
+      harness.currentCustomer("customer_a")
+    );
+
+    expect(result).toMatchObject({
+      mileageReviewSummary: {
+        actionUrl: "/portal/mileage-reviews/review_a1",
+        currentReviewId: "review_a1",
+        cycleNo: 1,
+        hasAction: true,
+        status: OrderMileageReviewStatus.PENDING_SUBMISSION
+      },
+      nextAction: "SUBMIT_MILEAGE_REVIEW",
+      nextActionTarget: {
+        label: "提交里程复核",
+        url: "/portal/mileage-reviews/review_a1"
+      }
+    });
   });
 
   it("lists only the current customer's entitlement grants and usage records", async () => {
@@ -231,11 +270,12 @@ function createPortalBillingHarness(
       } as never;
     },
     now,
+    orders,
     service: new PortalBillingService(prisma as never)
   };
 }
 
-function makeOrder(input: Partial<AnyRecord>) {
+function makeOrder(input: Partial<AnyRecord>): AnyRecord {
   const customerId = input.customerId ?? "customer_a";
   return {
     actualDeliveryAt: null,
@@ -260,6 +300,7 @@ function makeOrder(input: Partial<AnyRecord>) {
     legacyVehicleModelSnapshot: input.legacyVehicleModelSnapshot ?? TEST_MODEL_CODES.ET5,
     legacyVehicleModelCodeSnapshot: input.legacyVehicleModelCodeSnapshot ?? TEST_MODEL_CODES.ET5,
     mileageLimitKm: 1500,
+    mileageReviews: [],
     modelDefinitionIdSnapshot: input.modelDefinitionIdSnapshot ?? "model-et5",
     modelDisplayNameSnapshot: input.modelDisplayNameSnapshot ?? "Frozen Portal ET5",
     monthlyFeeAmount: 39900n,

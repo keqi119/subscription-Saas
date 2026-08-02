@@ -7,6 +7,7 @@ import {
 import {
   MileageReviewSubmissionSource,
   OrderMileageReviewStatus,
+  OrderStatus,
   Prisma,
   VehicleMileageReadingStatus,
   VehicleMileageSourceType
@@ -109,7 +110,7 @@ export class MileageReviewService {
       status: query.status
     });
     return {
-      items: result.items.map(toMileageReviewView),
+      items: result.items.map((item) => toMileageReviewView(item)),
       page,
       pageSize,
       total: result.total
@@ -118,6 +119,193 @@ export class MileageReviewService {
 
   async getReview(id: string) {
     return toMileageReviewView(await this.findReviewOrThrow(id));
+  }
+
+  async listCustomerReviews(
+    customerId: string,
+    query: MileageReviewListQueryDto
+  ) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const result = await this.repository.listForCustomer(customerId, {
+      orderId: query.orderId,
+      page,
+      pageSize,
+      status: query.status
+    });
+    return {
+      items: result.items.map((item) =>
+        toMileageReviewView(item, "/api/portal/mileage-reviews")
+      ),
+      page,
+      pageSize,
+      total: result.total
+    };
+  }
+
+  async getCustomerReview(id: string, customerId: string) {
+    return toMileageReviewView(
+      await this.findCustomerReviewOrThrow(id, customerId),
+      "/api/portal/mileage-reviews"
+    );
+  }
+
+  async saveCustomerDraft(
+    id: string,
+    dto: {
+      lockVersion: number;
+      readingAt: string;
+      submittedMileageKm: number;
+    },
+    customerId: string
+  ) {
+    const review = await this.findCustomerReviewOrThrow(id, customerId);
+    assertCustomerReviewWritable(review);
+    assertEditableReview(review.status);
+    if (
+      !Number.isSafeInteger(dto.submittedMileageKm) ||
+      dto.submittedMileageKm < review.baselineMileageKm
+    ) {
+      throw new BadRequestException(
+        "Submitted mileage cannot be lower than the confirmed baseline."
+      );
+    }
+    const updated = await this.repository.updateReview({
+      customerId,
+      data: {
+        readingAt: parseReviewDate(dto.readingAt, "readingAt"),
+        submissionSource: MileageReviewSubmissionSource.PORTAL,
+        submittedByCustomerId: customerId,
+        submittedByUserId: null,
+        submittedMileageKm: dto.submittedMileageKm,
+        updatedBy: customerId
+      },
+      expectedLockVersion: dto.lockVersion,
+      expectedStatuses: editableStatuses(),
+      id,
+      requireActiveOrder: true
+    });
+    return toMileageReviewView(updated, "/api/portal/mileage-reviews");
+  }
+
+  async attachCustomerEvidence(
+    id: string,
+    input: {
+      bucket: string;
+      capturedAt?: string;
+      lockVersion: number;
+      metadata?: Record<string, unknown>;
+      mimeType: string;
+      objectKey: string;
+      originalName: string;
+      sizeBytes: bigint;
+    },
+    customerId: string
+  ) {
+    const review = await this.findCustomerReviewOrThrow(id, customerId);
+    assertCustomerReviewWritable(review);
+    assertEditableReview(review.status);
+    assertPrivateImageFile(input);
+    await this.assertEvidenceReadable(input);
+    const updated = await this.repository.attachPortalEvidence({
+      customerId,
+      evidenceData: {
+        capturedAt: input.capturedAt
+          ? parseReviewDate(input.capturedAt, "capturedAt")
+          : null,
+        createdBy: customerId,
+        metadata: safeMetadata(input.metadata),
+        reviewId: id,
+        submissionSource: MileageReviewSubmissionSource.PORTAL,
+        updatedBy: customerId,
+        uploadedByCustomerId: customerId,
+        uploadedByUserId: null
+      },
+      expectedLockVersion: input.lockVersion,
+      expectedStatuses: editableStatuses(),
+      fileData: {
+        bucket: input.bucket,
+        mimeType: input.mimeType,
+        objectKey: input.objectKey,
+        originalName: input.originalName,
+        sizeBytes: input.sizeBytes,
+        uploadedBy: null
+      },
+      id
+    });
+    return toMileageReviewView(updated, "/api/portal/mileage-reviews");
+  }
+
+  async removeCustomerEvidence(
+    id: string,
+    evidenceId: string,
+    dto: MileageReviewVersionDto,
+    customerId: string
+  ) {
+    const review = await this.findCustomerReviewOrThrow(id, customerId);
+    assertCustomerReviewWritable(review);
+    assertEditableReview(review.status);
+    return toMileageReviewView(
+      await this.repository.softDeleteEvidence({
+        actorId: customerId,
+        customerId,
+        evidenceId,
+        expectedLockVersion: dto.lockVersion,
+        expectedStatuses: editableStatuses(),
+        id,
+        requireActiveOrder: true
+      }),
+      "/api/portal/mileage-reviews"
+    );
+  }
+
+  async submitCustomerReview(
+    id: string,
+    dto: MileageReviewVersionDto,
+    customerId: string
+  ) {
+    const review = await this.findCustomerReviewOrThrow(id, customerId);
+    assertCustomerReviewWritable(review);
+    assertEditableReview(review.status);
+    if (review.submittedMileageKm === null || !review.readingAt) {
+      throw new BadRequestException(
+        "Mileage and reading time must be saved before submission."
+      );
+    }
+    await this.assertAtLeastOneReadableEvidence(review);
+    const updated = await this.repository.updateReview({
+      customerId,
+      data: {
+        status: OrderMileageReviewStatus.PENDING_REVIEW,
+        submissionSource: MileageReviewSubmissionSource.PORTAL,
+        submittedAt: new Date(),
+        submittedByCustomerId: customerId,
+        submittedByUserId: null,
+        updatedBy: customerId
+      },
+      expectedLockVersion: dto.lockVersion,
+      expectedStatuses: editableStatuses(),
+      id,
+      requireActiveOrder: true
+    });
+    return toMileageReviewView(updated, "/api/portal/mileage-reviews");
+  }
+
+  async getCustomerEvidenceObject(
+    id: string,
+    evidenceId: string,
+    customerId: string
+  ) {
+    await this.findCustomerReviewOrThrow(id, customerId);
+    const evidence = await this.repository.findEvidenceForCustomer(
+      evidenceId,
+      id,
+      customerId
+    );
+    if (!evidence) {
+      throw new NotFoundException("Mileage review evidence not found.");
+    }
+    return this.downloadEvidence(evidence.file);
   }
 
   async saveAdminDraft(
@@ -217,16 +405,26 @@ export class MileageReviewService {
     if (!evidence) {
       throw new NotFoundException("Mileage review evidence not found.");
     }
-    assertPrivateImageFile(evidence.file);
+    return this.downloadEvidence(evidence.file);
+  }
+
+  private async downloadEvidence(file: {
+    bucket: string;
+    mimeType: string | null;
+    objectKey: string;
+    originalName: string;
+    sizeBytes: bigint;
+  }) {
+    assertPrivateImageFile(file);
     try {
       const downloaded = await this.getStorageService().getObject(
-        evidence.file.bucket,
-        evidence.file.objectKey
+        file.bucket,
+        file.objectKey
       );
       return {
         ...downloaded,
-        mimeType: downloaded.contentType ?? evidence.file.mimeType,
-        originalName: evidence.file.originalName
+        mimeType: downloaded.contentType ?? file.mimeType,
+        originalName: file.originalName
       };
     } catch {
       throw new NotFoundException("Mileage review evidence object is unavailable.");
@@ -315,6 +513,14 @@ export class MileageReviewService {
 
   private async findReviewOrThrow(id: string) {
     const review = await this.repository.findById(id);
+    if (!review || review.deletedAt) {
+      throw new NotFoundException("Mileage review not found.");
+    }
+    return review;
+  }
+
+  private async findCustomerReviewOrThrow(id: string, customerId: string) {
+    const review = await this.repository.findByIdForCustomer(id, customerId);
     if (!review || review.deletedAt) {
       throw new NotFoundException("Mileage review not found.");
     }
@@ -413,6 +619,14 @@ function assertEditableReview(status: OrderMileageReviewStatus) {
   }
 }
 
+function assertCustomerReviewWritable(review: MileageReviewRecord) {
+  if (review.order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException(
+      "Final-order mileage review history is read-only."
+    );
+  }
+}
+
 function parseReviewDate(value: string, field: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -455,14 +669,17 @@ function safeMetadata(value?: Record<string, unknown>): Prisma.InputJsonObject |
   return JSON.parse(serialized) as Prisma.InputJsonObject;
 }
 
-function toMileageReviewView(review: MileageReviewRecord) {
+function toMileageReviewView(
+  review: MileageReviewRecord,
+  routePrefix = "/api/mileage-reviews"
+) {
   const { evidence, ...rest } = review;
   return {
     ...(serializeForApi(rest) as Record<string, unknown>),
     lockVersion: review.lockVersion,
     evidence: evidence.map((item) => {
       const { file, ...evidenceRest } = item;
-      const route = `/api/mileage-reviews/${encodeURIComponent(
+      const route = `${routePrefix}/${encodeURIComponent(
         review.id
       )}/evidence/${encodeURIComponent(item.id)}`;
       return {

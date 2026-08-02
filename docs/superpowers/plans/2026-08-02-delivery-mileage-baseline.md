@@ -216,19 +216,19 @@ confirmationDefaults: {
 }
 ```
 
-- [ ] **Step 1: Add failing delivery-check tests**
+- [x] **Step 1: Add failing delivery-check tests**
 
 Use a completed handover with `completedAt` and its outbound Field work order with `handoverMileageKm`; assert `getDeliveryCheck` returns the exact values and source identifiers. Add missing-time and missing-mileage cases that keep confirmation blocked with explicit reasons.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- order-delivery.spec.ts`
 
-- [ ] **Step 3: Implement default resolution**
+- [x] **Step 3: Implement default resolution**
 
 Resolve the active Stage 2 handover and corresponding `VehicleHandoverWorkOrder` by order/handover id. Extend `buildDeliveryCheck` without changing existing readiness fields. Never fall back to server time or vehicle master mileage when Stage 2/Field source is absent.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- order-delivery.spec.ts

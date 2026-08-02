@@ -20,6 +20,7 @@ import {
   SalePriceStatus,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
+  VehicleHandoverType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +29,53 @@ import { DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION } from "../src/d
 import { OrderService } from "../src/order/order.service";
 
 describe("vehicle delivery handover workflow", () => {
+  it("returns Stage 2 completion and Field mileage as delivery confirmation defaults", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      confirmationDefaults: {
+        deliveredAt: string;
+        deliveredAtSource: string;
+        fieldWorkOrderId: string;
+        handoverMileageKm: number;
+        handoverMileageSource: string;
+        stage2HandoverId: string;
+      } | null;
+    };
+
+    expect(check.confirmationDefaults).toEqual({
+      deliveredAt: "2026-06-09T04:10:00.000Z",
+      deliveredAtSource: "STAGE2_COMPLETED_AT",
+      fieldWorkOrderId: "work-order-1",
+      handoverMileageKm: 10100,
+      handoverMileageSource: "FIELD_WORK_ORDER",
+      stage2HandoverId: "handover-1"
+    });
+  });
+
+  it("keeps delivery confirmation blocked when the Field work order has no mileage", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.handoverMileageKm = null;
+
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      blockingReasons: string[];
+      canConfirmDelivery: boolean;
+      confirmationDefaults: unknown;
+    };
+
+    expect(check.confirmationDefaults).toBeNull();
+    expect(check.canConfirmDelivery).toBe(false);
+    expect(check.blockingReasons).toContain("Field 现场交接里程尚未填写");
+  });
+
   it("rejects prepare and confirm when the contract is not signed", async () => {
     const harness = createDeliveryHarness();
     harness.state.contractStatus = ContractStatus.GENERATED;
@@ -968,6 +1016,7 @@ function createDeliveryHarness() {
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
     handover: Record<string, unknown> | null;
+    handoverMileageKm: number | null;
     gateLockOrder: string[];
     gateLockRowCounts: Map<string, number>;
     transactionGateSnapshot: null | {
@@ -1011,6 +1060,7 @@ function createDeliveryHarness() {
     gateLockOrder: [],
     gateLockRowCounts: new Map(),
     handover: null,
+    handoverMileageKm: 10100,
     insurancePolicies: [
       {
         deletedAt: null,
@@ -1134,6 +1184,20 @@ function createDeliveryHarness() {
     return state.delivery ? { ...state.delivery, customer: { id: customerId, mobile: "13800000000", name: "测试客户" }, vehicle: buildVehicle() } : null;
   }
 
+  function buildWorkOrder() {
+    return {
+      createdAt: now,
+      deletedAt: null,
+      handoverId: "handover-1",
+      handoverMileageKm: state.handoverMileageKm,
+      handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+      id: "work-order-1",
+      orderId,
+      updatedAt: now,
+      vehicleDeliveryId: "delivery-1"
+    };
+  }
+
   function readTransactionGateState() {
     return state.transactionIsolationLevel === "Serializable" &&
       state.transactionGateSnapshot
@@ -1245,6 +1309,9 @@ function createDeliveryHarness() {
       findFirst: vi.fn(
         async () => readTransactionGateState().handover
       )
+    },
+    vehicleHandoverWorkOrder: {
+      findFirst: vi.fn(async () => buildWorkOrder())
     }
   };
 
@@ -1272,6 +1339,9 @@ function createDeliveryHarness() {
     },
     vehicleDelivery: {
       findUnique: vi.fn(async () => buildDelivery())
+    },
+    vehicleHandoverWorkOrder: {
+      findFirst: vi.fn(async () => buildWorkOrder())
     }
   };
   const auditService = {

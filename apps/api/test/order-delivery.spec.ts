@@ -20,6 +20,8 @@ import {
   SalePriceStatus,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
+  VehicleHandoverType,
+  VehicleMileageSourceType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +30,53 @@ import { DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION } from "../src/d
 import { OrderService } from "../src/order/order.service";
 
 describe("vehicle delivery handover workflow", () => {
+  it("returns Stage 2 completion and Field mileage as delivery confirmation defaults", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      confirmationDefaults: {
+        deliveredAt: string;
+        deliveredAtSource: string;
+        fieldWorkOrderId: string;
+        handoverMileageKm: number;
+        handoverMileageSource: string;
+        stage2HandoverId: string;
+      } | null;
+    };
+
+    expect(check.confirmationDefaults).toEqual({
+      deliveredAt: "2026-06-09T04:10:00.000Z",
+      deliveredAtSource: "STAGE2_COMPLETED_AT",
+      fieldWorkOrderId: "work-order-1",
+      handoverMileageKm: 10100,
+      handoverMileageSource: "FIELD_WORK_ORDER",
+      stage2HandoverId: "handover-1"
+    });
+  });
+
+  it("keeps delivery confirmation blocked when the Field work order has no mileage", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.handoverMileageKm = null;
+
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      blockingReasons: string[];
+      canConfirmDelivery: boolean;
+      confirmationDefaults: unknown;
+    };
+
+    expect(check.confirmationDefaults).toBeNull();
+    expect(check.canConfirmDelivery).toBe(false);
+    expect(check.blockingReasons).toContain("Field 现场交接里程尚未填写");
+  });
+
   it("rejects prepare and confirm when the contract is not signed", async () => {
     const harness = createDeliveryHarness();
     harness.state.contractStatus = ContractStatus.GENERATED;
@@ -796,7 +845,7 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.state.delivery?.remark).toBe("改约");
   });
 
-  it("confirm-delivery completes delivery, activates the order, leases the vehicle, and writes audit logs", async () => {
+  it("confirm-delivery persists the submitted values, appends the baseline, activates the order, and leases the vehicle", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
 
@@ -821,13 +870,113 @@ describe("vehicle delivery handover workflow", () => {
 
     expect(delivery.deliveryStatus).toBe(DeliveryStatus.DELIVERED);
     expect(delivery.handoverMileageKm).toBe(28500);
-    expect(delivery.deliveredAt).toBe("2026-06-10T04:00:00.000Z");
+    expect(delivery.deliveredAt).toBe("2026-06-10T03:00:00.000Z");
     expect(harness.state.orderStatus).toBe(OrderStatus.ACTIVE);
-    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T04:00:00.000Z");
+    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T03:00:00.000Z");
+    expect(harness.state.vehicleCurrentMileageKm).toBe(28500);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.LEASED);
+    expect(harness.vehicleMileageService.appendConfirmedReading).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        confirmedBy: harness.user.id,
+        mileageKm: 28500,
+        orderId: harness.orderId,
+        recordedAt: new Date("2026-06-10T03:00:00.000Z"),
+        sourceRecordId: "delivery-1",
+        sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+        vehicleId: harness.vehicleId
+      })
+    );
+    expect(harness.mileageReviewService.createFirstReview).toHaveBeenCalledWith(
+      harness.tx,
+      {
+        actualDeliveryAt: new Date("2026-06-10T03:00:00.000Z"),
+        actorId: harness.user.id,
+        deliveryReadingId: "mileage-reading-1",
+        orderId: harness.orderId,
+        vehicleId: harness.vehicleId
+      }
+    );
+    const mileageInput = harness.vehicleMileageService.appendConfirmedReading.mock.calls[0]?.[1];
+    expect(mileageInput?.evidenceSnapshot).toEqual({
+      authoritativeDefaults: {
+        deliveredAt: "2026-06-09T04:10:00.000Z",
+        deliveredAtSource: "STAGE2_COMPLETED_AT",
+        fieldWorkOrderId: "work-order-1",
+        handoverMileageKm: 10100,
+        handoverMileageSource: "FIELD_WORK_ORDER",
+        stage2HandoverId: "handover-1"
+      },
+      finalValues: {
+        deliveredAt: "2026-06-10T03:00:00.000Z",
+        handoverMileageKm: 28500
+      },
+      manuallyAdjusted: {
+        deliveredAt: true,
+        handoverMileageKm: true
+      }
+    });
 
     const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
     expect(auditEntityTypes).toEqual(expect.arrayContaining(["subscription_order", "vehicle_delivery", "vehicle"]));
+  });
+
+  it.each([
+    ["before the order was created", "2026-06-05T11:00:00+08:00"],
+    ["in the future", "2099-06-10T11:00:00+08:00"]
+  ])("rejects a delivery time %s", async (_label, deliveredAt) => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        { ...validConfirmDto(), deliveredAt },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow();
+
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(harness.vehicleMileageService.appendConfirmedReading).not.toHaveBeenCalled();
+  });
+
+  it("rejects a delivery mileage below the latest confirmed vehicle reading", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.vehicleCurrentMileageKm = 12000;
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        { ...validConfirmDto(), handoverMileageKm: 11000 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("cannot be below");
+
+    expect(harness.state.actualDeliveryAt).toBeNull();
+  });
+
+  it("does not apply delivery state changes when first mileage review creation fails", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.mileageReviewService.createFirstReview.mockRejectedValueOnce(
+      new Error("review create failed")
+    );
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("review create failed");
+
+    expect(harness.tx.vehicleDelivery.update).not.toHaveBeenCalled();
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
   it("rejects repeated confirm-delivery", async () => {
@@ -967,7 +1116,9 @@ function createDeliveryHarness() {
     insurancePolicies: Array<Record<string, unknown>>;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
+    vehicleCurrentMileageKm: number;
     handover: Record<string, unknown> | null;
+    handoverMileageKm: number | null;
     gateLockOrder: string[];
     gateLockRowCounts: Map<string, number>;
     transactionGateSnapshot: null | {
@@ -1011,6 +1162,7 @@ function createDeliveryHarness() {
     gateLockOrder: [],
     gateLockRowCounts: new Map(),
     handover: null,
+    handoverMileageKm: 10100,
     insurancePolicies: [
       {
         deletedAt: null,
@@ -1033,6 +1185,7 @@ function createDeliveryHarness() {
     transactionGateSnapshot: null,
     transactionIsolationLevel: null,
     vehicleStatus: VehicleStatus.RESERVED,
+    vehicleCurrentMileageKm: 10000,
     workOrderObjected: false
   };
   state.handover = buildHandoverRecord({ orderId, user });
@@ -1042,6 +1195,7 @@ function createDeliveryHarness() {
       brand: "NIO",
       createdAt: now,
       currentSalePriceAmount: 10000000n,
+      currentMileageKm: state.vehicleCurrentMileageKm,
       deletedAt: null,
       id: vehicleId,
       insurancePolicies: state.insurancePolicies,
@@ -1132,6 +1286,20 @@ function createDeliveryHarness() {
 
   function buildDelivery() {
     return state.delivery ? { ...state.delivery, customer: { id: customerId, mobile: "13800000000", name: "测试客户" }, vehicle: buildVehicle() } : null;
+  }
+
+  function buildWorkOrder() {
+    return {
+      createdAt: now,
+      deletedAt: null,
+      handoverId: "handover-1",
+      handoverMileageKm: state.handoverMileageKm,
+      handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+      id: "work-order-1",
+      orderId,
+      updatedAt: now,
+      vehicleDeliveryId: "delivery-1"
+    };
   }
 
   function readTransactionGateState() {
@@ -1245,6 +1413,9 @@ function createDeliveryHarness() {
       findFirst: vi.fn(
         async () => readTransactionGateState().handover
       )
+    },
+    vehicleHandoverWorkOrder: {
+      findFirst: vi.fn(async () => buildWorkOrder())
     }
   };
 
@@ -1272,6 +1443,9 @@ function createDeliveryHarness() {
     },
     vehicleDelivery: {
       findUnique: vi.fn(async () => buildDelivery())
+    },
+    vehicleHandoverWorkOrder: {
+      findFirst: vi.fn(async () => buildWorkOrder())
     }
   };
   const auditService = {
@@ -1339,6 +1513,21 @@ function createDeliveryHarness() {
       }
     })
   };
+  const vehicleMileageService = {
+    appendConfirmedReading: vi.fn(async (_db, input) => {
+      if (input.mileageKm < state.vehicleCurrentMileageKm) {
+        throw new Error("Vehicle mileage cannot be below the latest confirmed reading.");
+      }
+      state.vehicleCurrentMileageKm = input.mileageKm;
+      return {
+        id: "mileage-reading-1",
+        ...input
+      };
+    })
+  };
+  const mileageReviewService = {
+    createFirstReview: vi.fn(async () => ({ id: "mileage-review-1" }))
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
@@ -1346,7 +1535,9 @@ function createDeliveryHarness() {
     undefined,
     undefined,
     deliveryEvidenceService as never,
-    handoverWorkOrderService as never
+    handoverWorkOrderService as never,
+    vehicleMileageService as never,
+    mileageReviewService as never
   );
 
   return {
@@ -1355,13 +1546,15 @@ function createDeliveryHarness() {
     customerId,
     deliveryEvidenceService,
     handoverWorkOrderService,
+    mileageReviewService,
     orderId,
     prisma,
     service,
     state,
     tx,
     user,
-    vehicleId
+    vehicleId,
+    vehicleMileageService
   };
 }
 

@@ -37,6 +37,8 @@ import {
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleDamageLevel,
+  VehicleHandoverType,
+  VehicleMileageSourceType,
   VehicleReturnStatus,
   VehicleReturnType,
   VehicleStatus
@@ -77,6 +79,8 @@ import {
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { MileageReviewService } from "../mileage-review/mileage-review.service";
+import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import {
   ArchiveContractDto,
@@ -326,6 +330,20 @@ type ContractPdfPreview = {
   stream: Readable;
 };
 
+type DeliveryConfirmationDefaults = {
+  deliveredAt: string;
+  deliveredAtSource: "STAGE2_COMPLETED_AT";
+  fieldWorkOrderId: string;
+  handoverMileageKm: number;
+  handoverMileageSource: "FIELD_WORK_ORDER";
+  stage2HandoverId: string;
+};
+
+type DeliveryConfirmationDefaultsResolution = {
+  blockingReasons: string[];
+  defaults: DeliveryConfirmationDefaults | null;
+};
+
 @Injectable()
 export class OrderService {
   constructor(
@@ -335,7 +353,9 @@ export class OrderService {
     @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly storageService?: StorageService,
     @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService,
-    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService
+    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
+    @Optional() private readonly vehicleMileageService?: VehicleMileageService,
+    @Optional() private readonly mileageReviewService?: MileageReviewService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1591,13 +1611,19 @@ export class OrderService {
       }),
       findActiveDeliveryHandover(this.prisma, id)
     ]);
+    const confirmationDefaults = await resolveDeliveryConfirmationDefaults(
+      this.prisma,
+      id,
+      handover
+    );
     const evidenceReadiness = await this.getDeliveryConfirmationReadiness(id, handover?.id ?? null);
     return buildDeliveryCheck(
       order,
       delivery && !delivery.deletedAt ? delivery : null,
       undefined,
       handover,
-      evidenceReadiness
+      evidenceReadiness,
+      confirmationDefaults
     );
   }
 
@@ -1751,14 +1777,27 @@ export class OrderService {
     assertNoActiveOrderChange(beforeOrder);
     assertOrderNotDelivered(beforeOrder);
 
-    const deliveredAt = new Date();
+    const deliveredAt = parseDateTime(dto.deliveredAt, "deliveredAt");
+    assertDeliveryConfirmationValues(beforeOrder, dto, deliveredAt);
     const beforeDelivery = await this.prisma.vehicleDelivery.findUnique({
       include: deliveryInclude,
       where: { orderId: id }
     });
     const handover = await findActiveDeliveryHandover(this.prisma, id);
+    const confirmationDefaults = await resolveDeliveryConfirmationDefaults(
+      this.prisma,
+      id,
+      handover
+    );
     const evidenceReadiness = await this.getDeliveryConfirmationReadiness(id, handover?.id ?? null);
-    assertCanConfirmDelivery(beforeOrder, beforeDelivery, deliveredAt, handover, evidenceReadiness);
+    assertCanConfirmDelivery(
+      beforeOrder,
+      beforeDelivery,
+      deliveredAt,
+      handover,
+      evidenceReadiness,
+      confirmationDefaults
+    );
     await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
     const result = await this.prisma.$transaction(async (tx) => {
@@ -1773,6 +1812,7 @@ export class OrderService {
       ensureCanAccessOrder(orderBefore, user);
       assertNoActiveOrderChange(orderBefore);
       assertOrderNotDelivered(orderBefore);
+      assertDeliveryConfirmationValues(orderBefore, dto, deliveredAt);
 
       const deliveryBefore = await tx.vehicleDelivery.findUnique({
         include: deliveryInclude,
@@ -1788,12 +1828,19 @@ export class OrderService {
           currentHandover?.id ?? null,
           tx
         );
+      const currentConfirmationDefaults =
+        await resolveDeliveryConfirmationDefaults(
+          tx,
+          id,
+          currentHandover
+        );
       assertCanConfirmDelivery(
         orderBefore,
         deliveryBefore,
         deliveredAt,
         currentHandover,
-        currentEvidenceReadiness
+        currentEvidenceReadiness,
+        currentConfirmationDefaults
       );
       await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(
         id,
@@ -1819,6 +1866,43 @@ export class OrderService {
       if (occupiedByOtherOrderCount > 0) {
         throw new BadRequestException("车辆已被其他订单占用，不能交付。");
       }
+
+      const authoritativeDefaults = currentConfirmationDefaults.defaults;
+      if (!authoritativeDefaults) {
+        throw new BadRequestException("交付确认缺少 Stage 2 签署时间或 Field 现场里程。");
+      }
+
+      const deliveryReading = await this.getVehicleMileageService().appendConfirmedReading(tx, {
+        confirmedBy: user.id,
+        evidenceSnapshot: {
+          authoritativeDefaults,
+          finalValues: {
+            deliveredAt: deliveredAt.toISOString(),
+            handoverMileageKm: dto.handoverMileageKm
+          },
+          manuallyAdjusted: {
+            deliveredAt:
+              deliveredAt.getTime() !==
+              new Date(authoritativeDefaults.deliveredAt).getTime(),
+            handoverMileageKm:
+              dto.handoverMileageKm !==
+              authoritativeDefaults.handoverMileageKm
+          }
+        },
+        mileageKm: dto.handoverMileageKm,
+        orderId: id,
+        recordedAt: deliveredAt,
+        sourceRecordId: deliveryBefore!.id,
+        sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+        vehicleId: orderBefore.vehicleId!
+      });
+      await this.getMileageReviewService().createFirstReview(tx, {
+        actualDeliveryAt: deliveredAt,
+        actorId: user.id,
+        deliveryReadingId: deliveryReading.id,
+        orderId: id,
+        vehicleId: orderBefore.vehicleId!
+      });
 
       const delivery = await tx.vehicleDelivery.update({
         data: {
@@ -2000,6 +2084,22 @@ export class OrderService {
         throw new BadRequestException("车辆状态不是已出租，不能退车。");
       }
 
+      await this.getVehicleMileageService().appendConfirmedReading(tx, {
+        confirmedBy: user.id,
+        evidenceSnapshot: {
+          damageFound,
+          maintenanceRequired: dto.maintenanceRequired ?? false,
+          returnType,
+          returnedAt: returnedAt.toISOString()
+        },
+        mileageKm: dto.returnMileageKm,
+        orderId: id,
+        recordedAt: returnedAt,
+        sourceRecordId: beforeReturn!.id,
+        sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+        vehicleId: beforeOrder.vehicleId!
+      });
+
       const vehicleReturn = await tx.vehicleReturn.update({
         data: {
           batteryCheckedConfirmed: dto.batteryCheckedConfirmed,
@@ -2066,8 +2166,6 @@ export class OrderService {
 
       const vehicleAfter = await tx.vehicle.update({
         data: {
-          currentMileageKm: dto.returnMileageKm,
-          salePriceReinitRequiredAt: new Date(),
           status: nextVehicleStatus,
           updatedBy: user.id
         },
@@ -2749,6 +2847,20 @@ export class OrderService {
 
   private getDeliveryEvidenceService() {
     return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
+  }
+
+  private getVehicleMileageService() {
+    if (!this.vehicleMileageService) {
+      throw new Error("Vehicle mileage service is unavailable.");
+    }
+    return this.vehicleMileageService;
+  }
+
+  private getMileageReviewService() {
+    if (!this.mileageReviewService) {
+      throw new Error("Mileage review service is unavailable.");
+    }
+    return this.mileageReviewService;
   }
 
   private async getDeliveryConfirmationReadiness(
@@ -3840,6 +3952,22 @@ function assertOrderNotDelivered(order: OrderWithDetails) {
   }
 }
 
+function assertDeliveryConfirmationValues(
+  order: OrderWithDetails,
+  dto: ConfirmDeliveryDto,
+  deliveredAt: Date
+) {
+  if (!Number.isSafeInteger(dto.handoverMileageKm) || dto.handoverMileageKm < 0) {
+    throw new BadRequestException("交付里程必须是非负整数。");
+  }
+  if (deliveredAt.getTime() < order.createdAt.getTime()) {
+    throw new BadRequestException("实际交付时间不能早于订单创建时间。");
+  }
+  if (deliveredAt.getTime() > Date.now()) {
+    throw new BadRequestException("实际交付时间不能晚于当前时间。");
+  }
+}
+
 function assertCanPrepareDelivery(order: OrderWithDetails, scheduledAt: Date | null) {
   const check = buildDeliveryCheck(order, null, scheduledAt ?? undefined);
   if (!check.canPrepareDelivery) {
@@ -3851,12 +3979,61 @@ function findActiveDeliveryHandover(prisma: PrismaService, orderId: string) {
   return findDeliveryHandoverForConfirmation(prisma, orderId);
 }
 
+async function resolveDeliveryConfirmationDefaults(
+  db: Prisma.TransactionClient | PrismaService,
+  orderId: string,
+  handover: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null
+): Promise<DeliveryConfirmationDefaultsResolution> {
+  if (!handover) {
+    return { blockingReasons: [], defaults: null };
+  }
+  if (!handover.completedAt) {
+    return {
+      blockingReasons: ["Stage 2 交接单尚未完成双方签署"],
+      defaults: null
+    };
+  }
+
+  const fieldWorkOrder = await db.vehicleHandoverWorkOrder.findFirst({
+    orderBy: { createdAt: "desc" },
+    select: {
+      handoverMileageKm: true,
+      id: true
+    },
+    where: {
+      deletedAt: null,
+      handoverId: handover.id,
+      handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+      orderId
+    }
+  });
+  if (!fieldWorkOrder || fieldWorkOrder.handoverMileageKm === null) {
+    return {
+      blockingReasons: ["Field 现场交接里程尚未填写"],
+      defaults: null
+    };
+  }
+
+  return {
+    blockingReasons: [],
+    defaults: {
+      deliveredAt: handover.completedAt.toISOString(),
+      deliveredAtSource: "STAGE2_COMPLETED_AT",
+      fieldWorkOrderId: fieldWorkOrder.id,
+      handoverMileageKm: fieldWorkOrder.handoverMileageKm,
+      handoverMileageSource: "FIELD_WORK_ORDER",
+      stage2HandoverId: handover.id
+    }
+  };
+}
+
 function assertCanConfirmDelivery(
   order: OrderWithDetails,
   delivery: DeliveryWithDetails | null,
   deliveredAt: Date,
   handover: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null,
-  evidenceReadiness: DeliveryEvidenceReadiness
+  evidenceReadiness: DeliveryEvidenceReadiness,
+  confirmationDefaults?: DeliveryConfirmationDefaultsResolution
 ) {
   if (!delivery || delivery.deletedAt) {
     throw new BadRequestException("请先准备交付。");
@@ -3868,7 +4045,14 @@ function assertCanConfirmDelivery(
     throw new BadRequestException("请先准备交付。");
   }
 
-  const check = buildDeliveryCheck(order, delivery, deliveredAt, handover, evidenceReadiness);
+  const check = buildDeliveryCheck(
+    order,
+    delivery,
+    deliveredAt,
+    handover,
+    evidenceReadiness,
+    confirmationDefaults
+  );
   if (!check.insuranceValid) {
     throw new BadRequestException(DELIVERY_INSURANCE_INVALID_MESSAGE);
   }
@@ -3917,7 +4101,8 @@ function buildDeliveryCheck(
   delivery: DeliveryWithDetails | null,
   targetAt?: Date,
   handover?: Awaited<ReturnType<typeof findActiveDeliveryHandover>> | null,
-  evidenceReadiness?: DeliveryEvidenceReadiness
+  evidenceReadiness?: DeliveryEvidenceReadiness,
+  confirmationDefaults?: DeliveryConfirmationDefaultsResolution
 ) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
@@ -3968,6 +4153,7 @@ function buildDeliveryCheck(
       canPrepareDelivery: false,
       contractSigned,
       currentSalePriceInitialized,
+      confirmationDefaults: confirmationDefaults?.defaults ?? null,
       deliveryStatus: delivery?.deliveryStatus ?? null,
       depositRequired,
       depositRequiredAmount: Number(depositRequiredAmount),
@@ -4046,6 +4232,9 @@ function buildDeliveryCheck(
   if (!handoverEvidenceReady) {
     confirmBlockingReasons.push(...(evidenceReadiness?.blockingReasons ?? ["交付证据尚未全部上传并审核通过。"]));
   }
+  if (confirmationDefaults) {
+    confirmBlockingReasons.push(...confirmationDefaults.blockingReasons);
+  }
 
   return {
     alreadyDelivered,
@@ -4054,6 +4243,7 @@ function buildDeliveryCheck(
     canPrepareDelivery: prepareBlockingReasons.length === 0,
     contractSigned,
     currentSalePriceInitialized,
+    confirmationDefaults: confirmationDefaults?.defaults ?? null,
     deliveryStatus: delivery?.deliveryStatus ?? null,
     depositRequired,
     depositRequiredAmount: Number(depositRequiredAmount),

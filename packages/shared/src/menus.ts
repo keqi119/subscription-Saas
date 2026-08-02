@@ -197,6 +197,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         permissionCode: PermissionCode.CONTRACT_VIEW
       },
       {
+        code: "orders.mileage_reviews",
+        icon: "dashboard",
+        label: "里程复核",
+        path: "/mileage-reviews",
+        permissionCode: PermissionCode.MILEAGE_REVIEW_VIEW
+      },
+      {
         code: "orders.contract_templates",
         icon: "file",
         label: "合同模板",

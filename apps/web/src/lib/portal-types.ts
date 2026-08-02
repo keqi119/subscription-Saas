@@ -735,7 +735,23 @@ export interface PortalOrderDetail extends PortalOrderListItem {
     exhaustedGrantCount: number;
     grantCount: number;
   };
+  mileageReviewSummary: null | {
+    actionUrl: string | null;
+    currentReviewId: string;
+    cycleNo: number;
+    dueAt: string | null;
+    hasAction: boolean;
+    lockVersion: number;
+    overdue: boolean;
+    overMileageBillId: string | null;
+    scheduledReviewAt: string | null;
+    status: string;
+  };
   nextAction: string;
+  nextActionTarget: null | {
+    label: string;
+    url: string;
+  };
   order: {
     actualDeliveryAt: string | null;
     actualReturnAt: string | null;

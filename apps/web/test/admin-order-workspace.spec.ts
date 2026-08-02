@@ -683,6 +683,23 @@ describe("admin order detail workspace migration", () => {
     expect(source.match(/key=\{`\$\{reason\}-\$\{index\}`\}/g)).toHaveLength(2);
   });
 
+  it("loads authoritative delivery defaults and shows manual adjustment state", () => {
+    const source = readFileSync(orderPagePath, "utf8");
+    const openModal = sourceBetween(
+      source,
+      "async function openConfirmDeliveryModal()",
+      "function closeConfirmDeliveryModal()"
+    );
+
+    expect(source).toContain("confirmationDefaults?: DeliveryConfirmationDefaults | null;");
+    expect(openModal).toContain("apiFetch<DeliveryCheck>(`/orders/${order.id}/delivery-check`)");
+    expect(openModal).toContain("nextDeliveryCheck.confirmationDefaults");
+    expect(source).toContain("getDeliveryConfirmationAdjustmentState");
+    expect(source).toContain("deliveryConfirmationSourceHints.deliveredAt");
+    expect(source).toContain("deliveryConfirmationSourceHints.handoverMileageKm");
+    expect(source).toContain("已人工调整");
+  });
+
   it("maps all seven active bodies without mounting inactive domain content", () => {
     const source = readFileSync(orderPagePath, "utf8");
     const renderer = sourceBetween(

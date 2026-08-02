@@ -92,6 +92,11 @@ const permissionRows = [
   ["order_change:approve", "审批订单变更", "order", "change_approve"],
   ["order_change:reject", "拒绝订单变更", "order", "change_reject"],
   ["order_change:execute", "执行订单变更", "order", "change_execute"],
+  ["mileage_review:view", "查看里程复核", "mileage_review", "view"],
+  ["mileage_review:submit", "提交里程复核", "mileage_review", "submit"],
+  ["mileage_review:confirm", "确认里程复核", "mileage_review", "confirm"],
+  ["mileage_review:return", "退回里程复核", "mileage_review", "return"],
+  ["mileage_review:void", "作废重开里程复核", "mileage_review", "void"],
   ["service_case:view", "查看服务工单", "service_case", "view"],
   ["service_case:manage", "处理服务工单", "service_case", "manage"],
   ["delivery:view", "查看车辆交付", "delivery", "view"],
@@ -163,6 +168,7 @@ permissionRows.push(
   ["vehicle:initialize_sale_price", "初始化车辆销售价", "vehicle", "initialize_sale_price"],
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
+  ["vehicle_mileage:view", "查看车辆里程档案", "vehicle_mileage", "view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
@@ -256,6 +262,7 @@ const menuRows = [
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
+  ["orders.mileage_reviews", "里程复核", "/mileage-reviews", "dashboard", 25, "mileage_review:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
   ["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"],
   ["reports", "经营看板", "/reports", "dashboard", 75, null, null],
@@ -618,7 +625,7 @@ const productPackageViewPermissions = [
   "subscription_plan:view"
 ];
 
-const vehicleViewPermissions = ["vehicle:view", "vehicle:history_view"];
+const vehicleViewPermissions = ["vehicle:view", "vehicle:history_view", "vehicle_mileage:view"];
 
 const vehicleManagementPermissions = [
   ...vehicleViewPermissions,
@@ -657,6 +664,18 @@ const vehicleValuationReviewManagementPermissions = [
   "vehicle_valuation_review:approve"
 ];
 const fleetOpsReadPermissions = ["fleet_ops:read"];
+const mileageReviewViewPermissions = ["mileage_review:view"];
+const mileageReviewSubmitPermissions = [
+  "mileage_review:view",
+  "mileage_review:submit"
+];
+const mileageReviewManagementPermissions = [
+  "mileage_review:view",
+  "mileage_review:submit",
+  "mileage_review:confirm",
+  "mileage_review:return",
+  "mileage_review:void"
+];
 const vehicleMenuCodes = ["vehicles", "vehicles.assets"];
 const vehicleModelMenuCodes = ["vehicles.model_definitions"];
 const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"];
@@ -666,6 +685,7 @@ const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"];
 const residualMarketMenuCodes = ["vehicles.residual_market"];
 const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"];
 const fleetOpsMenuCodes = ["vehicles.fleet_ops"];
+const mileageReviewMenuCodes = ["orders.mileage_reviews"];
 
 const capitalStructureViewPermissions = ["capital_structure:view"];
 
@@ -813,6 +833,7 @@ async function main() {
       ...insuranceClaimViewPermissions,
       ...quoteManagementPermissions,
       "order:view",
+      ...mileageReviewViewPermissions,
       "order:create",
       "order_change:view",
       "order_change:create",
@@ -837,6 +858,7 @@ async function main() {
       "quotes",
       "orders",
       "orders.subscription",
+      ...mileageReviewMenuCodes,
       "orders.contracts",
       ...serviceCaseMenuCodes,
       ...notificationMenuCodes
@@ -864,6 +886,7 @@ async function main() {
       ...fleetOpsReadPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      ...mileageReviewManagementPermissions,
       ...entitlementOperationPermissions,
       ...reportViewPermissions,
       ...reportAssetPermissions,
@@ -899,6 +922,7 @@ async function main() {
       "quotes",
       "orders",
       "orders.subscription",
+      ...mileageReviewMenuCodes,
       "orders.review",
       "orders.contracts",
       "orders.contract_templates",
@@ -972,6 +996,9 @@ async function main() {
         ...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions),
         "quote:view",
         "order:view",
+        ...(roleCode === "AS"
+          ? mileageReviewSubmitPermissions
+          : mileageReviewViewPermissions),
         ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "FI" ? collectionManagementPermissions : []),
         ...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions),
@@ -994,6 +1021,7 @@ async function main() {
         "quotes",
         "orders",
         "orders.subscription",
+        ...mileageReviewMenuCodes,
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
         ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes] : []),
@@ -1037,6 +1065,7 @@ async function main() {
       ...residualModelRunViewPermissions,
       "quote:view",
       ...orderManagementPermissions,
+      ...mileageReviewManagementPermissions,
       ...financeViewPermissions,
       ...entitlementViewPermissions,
       ...serviceCaseViewPermissions,
@@ -1059,6 +1088,7 @@ async function main() {
       "quotes",
       "orders",
       "orders.subscription",
+      ...mileageReviewMenuCodes,
       "orders.review",
       "orders.contracts",
       "orders.contract_templates",
@@ -1121,6 +1151,11 @@ async function seedNotificationTemplates(adminUserId) {
     ["SERVICE_CASE_UPDATE_IN_APP", "IN_APP", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度。"],
     ["SERVICE_CASE_UPDATE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度，点击查看。"]
   ];
+
+  rows.push(
+    ["MILEAGE_REVIEW_DUE_IN_APP", "IN_APP", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请提交当前累计里程和仪表盘照片。"],
+    ["MILEAGE_REVIEW_DUE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请点击进入并提交里程资料。"]
+  );
 
   for (const [templateCode, channel, templateType, title, content] of rows) {
     await prisma.notificationTemplate.upsert({

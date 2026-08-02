@@ -62,4 +62,21 @@ describe("buildPortalApplicationNextActionCard", () => {
       )
     ).toBeNull();
   });
+
+  it("keeps My Application guidance actionable for a due mileage review", () => {
+    expect(
+      buildPortalApplicationNextActionCard(
+        progress("SUBMIT_MILEAGE_REVIEW", "ACTIVE", {
+          label: "提交本月里程",
+          url: "/portal/mileage-reviews/review-1"
+        }),
+        "订单已交付"
+      )
+    ).toEqual({
+      label: "提交本月里程",
+      message: "本月里程复核待提交，请填写累计里程并上传仪表盘照片。",
+      tone: "warning",
+      url: "/portal/mileage-reviews/review-1"
+    });
+  });
 });

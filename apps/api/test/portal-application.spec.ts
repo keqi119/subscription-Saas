@@ -9,6 +9,7 @@ import {
   MaterialStatus,
   MonthlyFeeMode,
   OrderReviewStatus,
+  OrderMileageReviewStatus,
   OrderStatus,
   PlanConfirmStatus,
   Prisma,
@@ -442,6 +443,46 @@ describe("PortalApplicationService", () => {
       );
     }
   );
+
+  it("continues My Application guidance into an active mileage review", async () => {
+    const { service } = createPortalApplicationFixture({
+      application: readyFinalPlanApplication({
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        orders: [
+          {
+            contractId: "contract-1",
+            deletedAt: null,
+            handoverWorkOrders: [],
+            id: "order-1",
+            mileageReviews: [
+              {
+                id: "review-1",
+                status: OrderMileageReviewStatus.PENDING_SUBMISSION
+              }
+            ],
+            orderNo: "ORD202608020001",
+            orderStatus: OrderStatus.ACTIVE
+          }
+        ]
+      })
+    });
+
+    const progress = await service.getApplicationProgress(
+      "application-1",
+      currentCustomer("customer-1")
+    );
+
+    expect(progress).toEqual(
+      expect.objectContaining({
+        nextAction: "SUBMIT_MILEAGE_REVIEW",
+        nextActionTarget: {
+          label: "提交本月里程",
+          url: "/portal/mileage-reviews/review-1"
+        },
+        overallStatus: "ACTIVE"
+      })
+    );
+  });
 
   it.each([
     [

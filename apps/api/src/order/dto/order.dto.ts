@@ -193,14 +193,12 @@ export class PrepareDeliveryDto {
 }
 
 export class ConfirmDeliveryDto {
-  @IsOptional()
   @IsInt()
   @Min(0)
-  handoverMileageKm?: number;
+  handoverMileageKm!: number;
 
-  @IsOptional()
   @IsDateString()
-  deliveredAt?: string;
+  deliveredAt!: string;
 
   @IsOptional()
   @IsString()

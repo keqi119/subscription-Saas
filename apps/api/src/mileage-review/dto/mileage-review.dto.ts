@@ -7,6 +7,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  MaxLength,
   Max,
   Min
 } from "class-validator";
@@ -72,6 +73,12 @@ export class MileageReviewVersionDto {
   @IsInt()
   @Min(0)
   lockVersion!: number;
+}
+
+export class ConfirmMileageReviewDto extends MileageReviewVersionDto {
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey!: string;
 }
 
 export class ReturnMileageReviewDto extends MileageReviewVersionDto {

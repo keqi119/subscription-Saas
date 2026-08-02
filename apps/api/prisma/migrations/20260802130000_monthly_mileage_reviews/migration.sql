@@ -101,7 +101,10 @@ CREATE TABLE "order_mileage_review" (
       "over_mileage_amount" IS NOT NULL AND
       "mileage_reading_id" IS NOT NULL AND
       "entitlement_grant_id" IS NOT NULL AND
-      "entitlement_usage_id" IS NOT NULL AND
+      (
+        ("consumed_allowance_km" > 0 AND "entitlement_usage_id" IS NOT NULL) OR
+        ("consumed_allowance_km" = 0 AND "entitlement_usage_id" IS NULL)
+      ) AND
       "calculation_snapshot" IS NOT NULL AND
       (
         ("over_mileage_km" > 0 AND "over_mileage_bill_id" IS NOT NULL) OR

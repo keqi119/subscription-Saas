@@ -18,6 +18,7 @@ import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   AttachMileageReviewEvidenceDto,
+  ConfirmMileageReviewDto,
   MileageReviewListQueryDto,
   MileageReviewVersionDto,
   ReturnMileageReviewDto,
@@ -146,7 +147,7 @@ export class MileageReviewController {
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_CONFIRM)
   confirmReview(
     @Param("id") id: string,
-    @Body() dto: MileageReviewVersionDto,
+    @Body() dto: ConfirmMileageReviewDto,
     @Req() request: AuthenticatedRequest
   ) {
     return this.mileageReviewService.confirmReview(id, dto, request.user);

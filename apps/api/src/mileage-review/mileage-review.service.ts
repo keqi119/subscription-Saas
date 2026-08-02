@@ -23,6 +23,7 @@ import {
 } from "./mileage-review.repository";
 import {
   AttachMileageReviewEvidenceDto,
+  ConfirmMileageReviewDto,
   MileageReviewListQueryDto,
   MileageReviewVersionDto,
   ReturnMileageReviewDto,
@@ -33,13 +34,16 @@ import {
   CreateFirstMileageReviewInput,
   MileageReviewTransaction
 } from "./mileage-review.types";
+import { MileageReviewSettlementService } from "./mileage-review-settlement.service";
 
 @Injectable()
 export class MileageReviewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repository: MileageReviewRepository,
-    @Optional() private readonly storageService?: StorageService
+    @Optional() private readonly storageService?: StorageService,
+    @Optional()
+    private readonly settlementService?: MileageReviewSettlementService
   ) {}
 
   async createFirstReview(
@@ -485,16 +489,20 @@ export class MileageReviewService {
     );
   }
 
-  confirmReview(
+  async confirmReview(
     id: string,
-    dto: MileageReviewVersionDto,
+    dto: ConfirmMileageReviewDto,
     user: RequestUser
-  ): never {
-    void id;
-    void dto;
-    void user;
-    throw new BadRequestException(
-      "Mileage review settlement is not available yet."
+  ) {
+    const review = await this.findReviewOrThrow(id);
+    await this.assertAtLeastOneReadableEvidence(review);
+    return toMileageReviewView(
+      await this.getSettlementService().settleReview({
+        expectedLockVersion: dto.lockVersion,
+        idempotencyKey: dto.idempotencyKey,
+        reviewId: id,
+        userId: user.id
+      })
     );
   }
 
@@ -583,6 +591,13 @@ export class MileageReviewService {
       throw new Error("Storage service is unavailable.");
     }
     return this.storageService;
+  }
+
+  private getSettlementService() {
+    if (!this.settlementService) {
+      throw new Error("Mileage review settlement service is unavailable.");
+    }
+    return this.settlementService;
   }
 }
 

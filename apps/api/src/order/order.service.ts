@@ -4001,7 +4001,6 @@ async function resolveDeliveryConfirmationDefaults(
       id: true
     },
     where: {
-      deletedAt: null,
       handoverId: handover.id,
       handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
       orderId

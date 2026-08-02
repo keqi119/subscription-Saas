@@ -58,6 +58,27 @@ describe("vehicle delivery handover workflow", () => {
     });
   });
 
+  it("returns delivery confirmation defaults when Prisma validates the Field work-order filter", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.rejectUnsupportedWorkOrderWhereFields = true;
+
+    const check = (await harness.service.getDeliveryCheck(
+      harness.orderId,
+      harness.user
+    )) as {
+      confirmationDefaults: {
+        fieldWorkOrderId: string;
+        handoverMileageKm: number;
+      } | null;
+    };
+
+    expect(check.confirmationDefaults).toMatchObject({
+      fieldWorkOrderId: "work-order-1",
+      handoverMileageKm: 10100
+    });
+  });
+
   it("keeps delivery confirmation blocked when the Field work order has no mileage", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
@@ -1119,6 +1140,7 @@ function createDeliveryHarness() {
     vehicleCurrentMileageKm: number;
     handover: Record<string, unknown> | null;
     handoverMileageKm: number | null;
+    rejectUnsupportedWorkOrderWhereFields: boolean;
     gateLockOrder: string[];
     gateLockRowCounts: Map<string, number>;
     transactionGateSnapshot: null | {
@@ -1182,6 +1204,7 @@ function createDeliveryHarness() {
       }
     ],
     orderStatus: OrderStatus.PENDING_PAYMENT,
+    rejectUnsupportedWorkOrderWhereFields: false,
     transactionGateSnapshot: null,
     transactionIsolationLevel: null,
     vehicleStatus: VehicleStatus.RESERVED,
@@ -1415,7 +1438,15 @@ function createDeliveryHarness() {
       )
     },
     vehicleHandoverWorkOrder: {
-      findFirst: vi.fn(async () => buildWorkOrder())
+      findFirst: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) => {
+        if (
+          state.rejectUnsupportedWorkOrderWhereFields &&
+          Object.hasOwn(where ?? {}, "deletedAt")
+        ) {
+          throw new Error("Unknown argument `deletedAt`");
+        }
+        return buildWorkOrder();
+      })
     }
   };
 
@@ -1445,7 +1476,15 @@ function createDeliveryHarness() {
       findUnique: vi.fn(async () => buildDelivery())
     },
     vehicleHandoverWorkOrder: {
-      findFirst: vi.fn(async () => buildWorkOrder())
+      findFirst: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) => {
+        if (
+          state.rejectUnsupportedWorkOrderWhereFields &&
+          Object.hasOwn(where ?? {}, "deletedAt")
+        ) {
+          throw new Error("Unknown argument `deletedAt`");
+        }
+        return buildWorkOrder();
+      })
     }
   };
   const auditService = {

@@ -13,6 +13,7 @@ const SAFE_BLOCKER_MESSAGES: Record<Stage2PortalESignBlockerCode, string> = {
 export interface PortalHandoverESignDisplay {
   blockers: string[];
   description: string;
+  signedDocumentPreviewUrl: string | null;
   statusLabel: string;
   statusTone: string;
 }
@@ -31,8 +32,9 @@ export function buildPortalHandoverESignView(
     status.signedArtifactAvailable
   ) {
     return {
-      blockers,
+      blockers: [],
       description: "车辆交接确认单已完成双方签署并归档。",
+      signedDocumentPreviewUrl: status.signedDocumentPreviewUrl,
       statusLabel: "签署已完成",
       statusTone: "success"
     };
@@ -48,6 +50,7 @@ export function buildPortalHandoverESignView(
         status.archiveStatus === "FAILED"
           ? "双方已完成签署，签署文件仍在处理中。"
           : "双方已完成签署，正在准备归档文件。",
+      signedDocumentPreviewUrl: null,
       statusLabel: "平台盖章处理中",
       statusTone: "processing"
     };
@@ -57,6 +60,7 @@ export function buildPortalHandoverESignView(
     return {
       blockers,
       description: "您已完成签署，正在等待平台签署。",
+      signedDocumentPreviewUrl: null,
       statusLabel: "平台盖章处理中",
       statusTone: "processing"
     };
@@ -72,6 +76,7 @@ export function buildPortalHandoverESignView(
       description: status.capability.canStartSigning
         ? "请核对状态后进入电子签署页面。"
         : "签署任务正在准备，请稍后刷新。",
+      signedDocumentPreviewUrl: null,
       statusLabel: "待客户签署",
       statusTone: status.capability.canStartSigning ? "warning" : "default"
     };
@@ -83,6 +88,7 @@ export function buildPortalHandoverESignView(
         ? blockers
         : [SAFE_BLOCKER_MESSAGES.STAGE2_SIGNING_NOT_AVAILABLE],
       description: "当前签署任务暂不可用，请稍后刷新。",
+      signedDocumentPreviewUrl: null,
       statusLabel: "签署暂不可用",
       statusTone: "default"
     };
@@ -91,6 +97,7 @@ export function buildPortalHandoverESignView(
   return {
     blockers,
     description: "客户确认完成后，工作人员将发起车辆交接确认单签署。",
+    signedDocumentPreviewUrl: null,
     statusLabel: "等待经办人发起签署",
     statusTone: "default"
   };

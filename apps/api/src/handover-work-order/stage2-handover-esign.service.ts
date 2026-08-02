@@ -292,6 +292,7 @@ export interface Stage2PortalESignView {
   platformSigner: Stage2PortalESignSignerView;
   ready: boolean;
   signedArtifactAvailable: boolean;
+  signedDocumentPreviewUrl: string | null;
   signingStage: typeof ESignSigningStage.STAGE2_DELIVERY_HANDOVER;
   status: ESignTaskStatus | null;
   taskId: string | null;
@@ -449,9 +450,15 @@ export class Stage2HandoverESignService {
       readiness,
       customerId
     );
+    const signedArtifactAvailable = hasCompleteStage2HandoverArchive(
+      workOrder.handover
+    );
     return {
       archiveStatus: workOrder.handover?.archiveStatus ?? null,
-      blockers: canStartSigning ? [] : toPortalBlockers(readiness.blockers),
+      blockers:
+        canStartSigning || signedArtifactAvailable
+          ? []
+          : toPortalBlockers(readiness.blockers),
       capability: {
         canStartSigning
       },
@@ -470,9 +477,10 @@ export class Stage2HandoverESignService {
         PLATFORM_SLOT_ID
       ),
       ready: readiness.ready,
-      signedArtifactAvailable: hasCompleteStage2HandoverArchive(
-        workOrder.handover
-      ),
+      signedArtifactAvailable,
+      signedDocumentPreviewUrl: signedArtifactAvailable
+        ? `/api/portal/handover-reviews/${encodeURIComponent(workOrder.id)}/esign/signed-document/preview`
+        : null,
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       status: task?.taskStatus ?? null,
       taskId: task?.id ?? null,

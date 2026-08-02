@@ -1,4 +1,11 @@
-import { BadRequestException, ExecutionContext, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ExecutionContext,
+  NotFoundException,
+  StreamableFile,
+  UnauthorizedException
+} from "@nestjs/common";
+import { Readable } from "node:stream";
 import { ConfigService } from "@nestjs/config";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
 import {
@@ -230,6 +237,82 @@ describe("Portal handover review API", () => {
         }
       ).previewEvidenceFile("work-order-1", "evidence-file-1", currentCustomer("customer-other"))
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("streams an archived signed handover PDF only for its owning customer", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    const signedPdf = {
+      filename: "车辆交接确认单-已签署.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 2048,
+      stream: Readable.from(["signed-pdf"])
+    };
+    const downloadSignedPdf = vi
+      .spyOn(harness.handoverWorkOrderService, "downloadStage2SignedHandoverPdf")
+      .mockResolvedValue(signedPdf);
+    const service = harness.service as PortalHandoverReviewService & {
+      previewSignedDocument: (
+        id: string,
+        currentCustomer: CurrentCustomer
+      ) => Promise<typeof signedPdf>;
+    };
+
+    await expect(
+      service.previewSignedDocument(
+        "work-order-1",
+        currentCustomer("customer-1")
+      )
+    ).resolves.toMatchObject({
+      filename: "车辆交接确认单-已签署.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 2048
+    });
+    await expect(
+      service.previewSignedDocument(
+        "work-order-1",
+        currentCustomer("customer-other")
+      )
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(downloadSignedPdf).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the signed handover PDF preview with inline response headers", async () => {
+    const previewSignedDocument = vi.fn(async () => ({
+      filename: "车辆交接确认单-已签署.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 2048,
+      stream: Readable.from(["signed-pdf"])
+    }));
+    const controller = new PortalHandoverReviewController({
+      previewSignedDocument
+    } as never) as PortalHandoverReviewController & {
+      previewSignedDocument: (
+        id: string,
+        currentCustomer: CurrentCustomer,
+        response: { setHeader: (name: string, value: string) => void }
+      ) => Promise<StreamableFile>;
+    };
+    const response = {
+      setHeader: vi.fn()
+    };
+
+    const file = await controller.previewSignedDocument(
+      "work-order-1",
+      currentCustomer("customer-1"),
+      response
+    );
+
+    expect(file).toBeInstanceOf(StreamableFile);
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Type",
+      "application/pdf"
+    );
+    expect(response.setHeader).toHaveBeenCalledWith("Content-Length", "2048");
+    expect(response.setHeader).toHaveBeenCalledWith(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent("车辆交接确认单-已签署.pdf")}`
+    );
   });
 
   it("does not allow a customer to read another customer's review", async () => {

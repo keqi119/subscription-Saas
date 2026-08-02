@@ -2901,6 +2901,57 @@ describe("Stage2HandoverESignService", () => {
     });
   });
 
+  it("clears signing blockers and exposes the signed preview after authoritative archive", async () => {
+    const harness = createHarness();
+    const task = makeTask({
+      customerStatus: ESignSignerStatus.SIGNED,
+      platformStatus: ESignSignerStatus.SIGNED,
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    task.completedAt = NOW;
+    attachPortalTask(harness, task);
+    Object.assign(harness.state.workOrder.handover, {
+      archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+      signedDocumentFileId: "signed-file-1",
+      signedObjectKey: "private/stage2/signed.pdf",
+      signedPdfHash: "c".repeat(64),
+      status: DeliveryHandoverStatus.ARCHIVED
+    });
+    harness.readiness.getReadiness.mockResolvedValueOnce({
+      blockers: [
+        {
+          code: "ACTIVE_ESIGN_TASK_CONFLICT",
+          message: "the completed signing task remains current"
+        }
+      ],
+      ready: false,
+      state: {
+        esignTaskId: task.id,
+        esignTaskStatus: task.taskStatus,
+        handoverContractId: "contract-stage2-1",
+        handoverId: "handover-1",
+        handoverStatus: DeliveryHandoverStatus.ARCHIVED,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        workOrderId: "work-order-1",
+        workOrderStatus: "PLATFORM_SEALED"
+      }
+    });
+
+    const status = await harness.service.getPortalStatus(
+      "work-order-1",
+      "customer-1"
+    );
+
+    expect(status).toMatchObject({
+      blockers: [],
+      capability: { canStartSigning: false },
+      signedArtifactAvailable: true,
+      signedDocumentPreviewUrl:
+        "/api/portal/handover-reviews/work-order-1/esign/signed-document/preview"
+    });
+  });
+
   it("rejects status when the customer signer has the wrong role", async () => {
     const harness = createHarness();
     const task = makeTask();
@@ -3071,6 +3122,7 @@ describe("Stage2HandoverESignService", () => {
       },
       ready: false,
       signedArtifactAvailable: false,
+      signedDocumentPreviewUrl: null,
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       status: ESignTaskStatus.WAITING_CUSTOMER,
       taskId: "stage2-task-1",

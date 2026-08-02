@@ -10,7 +10,8 @@ describe("mileage review workspaces", () => {
     const source = read("apps/web/src/app/mileage-reviews/page.tsx");
 
     expect(source).toContain('apiFetch<MileageReviewPage>("/mileage-reviews');
-    expect(source).toContain("sortMileageReviewQueue");
+    expect(source).toContain('params.set("overdue", "true")');
+    expect(source).toContain("showSizeChanger: true");
     expect(source).toContain("逾期待提交");
     expect(source).toContain("待后台复核");
     expect(source).toContain("已确认");
@@ -30,6 +31,10 @@ describe("mileage review workspaces", () => {
     expect(source).toContain("validateMileageReviewSubmission");
     expect(source).toContain("overMileageBillId");
     expect(source).toContain("previewUrl");
+    expect(source).toContain("/evidence/upload");
+    expect(source).toContain('accept="image/jpeg,image/png,image/webp"');
+    expect(source).toContain('permissions.has("mileage_review:confirm")');
+    expect(source).toContain('permissions.has("mileage_review:submit")');
     expect(source).toContain("lockVersion");
   });
 
@@ -41,7 +46,7 @@ describe("mileage review workspaces", () => {
     expect(listSource).toContain("getPortalMileageReviewGuidance");
     expect(listSource).not.toContain("<Table");
     expect(detailSource).toContain('accept="image/*"');
-    expect(detailSource).toContain("capture=\"environment\"");
+    expect(detailSource).toContain('capture="environment"');
     expect(detailSource).toContain("/portal/mileage-reviews/${params.id}/evidence");
     expect(detailSource).toContain("validateMileageReviewSubmission");
     expect(detailSource).toContain("overMileageBillHref");
@@ -54,7 +59,7 @@ describe("mileage review workspaces", () => {
     const portalOrder = read("apps/web/src/app/portal/orders/[id]/page.tsx");
     const adminOrder = read("apps/web/src/app/orders/[id]/page.tsx");
 
-    expect(portalHome).toContain('/portal/mileage-reviews');
+    expect(portalHome).toContain("/portal/mileage-reviews");
     expect(portalHome).toContain("月度里程复核");
     expect(portalOrder).toContain("mileageReviewSummary");
     expect(portalOrder).toContain("SUBMIT_MILEAGE_REVIEW");

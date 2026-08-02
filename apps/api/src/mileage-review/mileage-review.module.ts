@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 
+import { AuthModule } from "../auth/auth.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { NotificationModule } from "../notification/notification.module";
 import { StorageModule } from "../storage/storage.module";
@@ -13,7 +14,13 @@ import { MileageReviewWorker } from "./mileage-review.worker";
 @Module({
   controllers: [MileageReviewController],
   exports: [MileageReviewService],
-  imports: [NotificationModule, PrismaModule, StorageModule, VehicleMileageModule],
+  imports: [
+    AuthModule,
+    NotificationModule,
+    PrismaModule,
+    StorageModule,
+    VehicleMileageModule
+  ],
   providers: [
     MileageReviewRepository,
     MileageReviewService,

@@ -5,27 +5,30 @@ import {
   OrderMileageReviewStatus,
   OrderStatus
 } from "@prisma/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MileageReviewService } from "../src/mileage-review/mileage-review.service";
 import { PortalMileageReviewService } from "../src/portal/portal-mileage-review.service";
 
 describe("Portal mileage review workflow", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-30T04:30:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("lists and reads only reviews owned by the current customer", async () => {
     const harness = createHarness();
 
-    const list = await harness.portalService.listReviews(
-      harness.customer("customer-a"),
-      {}
-    );
+    const list = await harness.portalService.listReviews(harness.customer("customer-a"), {});
     expect(list.total).toBe(1);
     expect(list.items[0]).toMatchObject({ id: "review-1", orderId: "order-1" });
 
     await expect(
-      harness.portalService.getReview(
-        "review-1",
-        harness.customer("customer-b")
-      )
+      harness.portalService.getReview("review-1", harness.customer("customer-b"))
     ).rejects.toThrow("Mileage review not found.");
   });
 
@@ -34,10 +37,7 @@ describe("Portal mileage review workflow", () => {
     harness.review.order.orderStatus = OrderStatus.COMPLETED;
 
     await expect(
-      harness.portalService.getReview(
-        "review-1",
-        harness.customer("customer-a")
-      )
+      harness.portalService.getReview("review-1", harness.customer("customer-a"))
     ).resolves.toMatchObject({ id: "review-1" });
     await expect(
       harness.portalService.saveDraft(
@@ -66,6 +66,28 @@ describe("Portal mileage review workflow", () => {
         harness.customer("customer-a")
       )
     ).rejects.toThrow("Submitted mileage cannot be lower");
+    await expect(
+      harness.portalService.saveDraft(
+        "review-1",
+        {
+          lockVersion: 0,
+          readingAt: "2099-01-01T00:00:00.000Z",
+          submittedMileageKm: 29_100
+        },
+        harness.customer("customer-a")
+      )
+    ).rejects.toThrow("outside the allowed review window");
+    await expect(
+      harness.portalService.saveDraft(
+        "review-1",
+        {
+          lockVersion: 0,
+          readingAt: "2026-10-01T04:30:00.000Z",
+          submittedMileageKm: 29_100
+        },
+        harness.customer("customer-a")
+      )
+    ).rejects.toThrow("outside the allowed review window");
 
     harness.review.status = OrderMileageReviewStatus.PENDING_REVIEW;
     await expect(
@@ -92,6 +114,22 @@ describe("Portal mileage review workflow", () => {
         harness.customer("customer-a")
       )
     ).rejects.toThrow("Mileage review evidence must be an image.");
+    await expect(
+      harness.portalService.uploadEvidence(
+        "review-1",
+        { lockVersion: 0 },
+        [upload("image/svg+xml", "active.svg", Buffer.from("<svg><script/></svg>"))],
+        harness.customer("customer-a")
+      )
+    ).rejects.toThrow("JPEG, PNG, or WebP");
+    await expect(
+      harness.portalService.uploadEvidence(
+        "review-1",
+        { lockVersion: 0 },
+        [upload("image/jpeg", "spoofed.jpg", Buffer.from("<svg><script/></svg>"))],
+        harness.customer("customer-a")
+      )
+    ).rejects.toThrow("content does not match");
 
     const result = await harness.portalService.uploadEvidence(
       "review-1",
@@ -106,10 +144,8 @@ describe("Portal mileage review workflow", () => {
 
     expect(result.evidence).toContainEqual(
       expect.objectContaining({
-        downloadUrl:
-          "/api/portal/mileage-reviews/review-1/evidence/evidence-1/download",
-        previewUrl:
-          "/api/portal/mileage-reviews/review-1/evidence/evidence-1/preview"
+        downloadUrl: "/api/portal/mileage-reviews/review-1/evidence/evidence-1/download",
+        previewUrl: "/api/portal/mileage-reviews/review-1/evidence/evidence-1/preview"
       })
     );
     const serialized = JSON.stringify(result);
@@ -195,6 +231,7 @@ function createHarness() {
     status: OrderMileageReviewStatus;
   } = {
     baselineMileageKm: 28_500,
+    baselineReading: { recordedAt: new Date("2026-08-31T04:30:00.000Z") },
     deletedAt: null,
     dueAt: new Date("2026-10-01T04:30:00.000Z"),
     evidence: [],
@@ -219,31 +256,33 @@ function createHarness() {
   };
   let evidenceSequence = 0;
   const repository = {
-    attachPortalEvidence: vi.fn(async ({
-      customerId,
-      evidenceData,
-      expectedLockVersion,
-      fileData
-    }: {
-      customerId: string;
-      evidenceData: Record<string, unknown>;
-      expectedLockVersion: number;
-      fileData: Record<string, unknown>;
-    }) => {
-      assertOwned(customerId, true);
-      assertVersion(expectedLockVersion);
-      evidenceSequence += 1;
-      const file = { ...fileData, id: `file-${evidenceSequence}` };
-      review.evidence.push({
-        ...evidenceData,
-        deletedAt: null,
-        file,
-        fileId: file.id,
-        id: `evidence-${evidenceSequence}`
-      });
-      review.lockVersion += 1;
-      return review;
-    }),
+    attachPortalEvidence: vi.fn(
+      async ({
+        customerId,
+        evidenceData,
+        expectedLockVersion,
+        fileData
+      }: {
+        customerId: string;
+        evidenceData: Record<string, unknown>;
+        expectedLockVersion: number;
+        fileData: Record<string, unknown>;
+      }) => {
+        assertOwned(customerId, true);
+        assertVersion(expectedLockVersion);
+        evidenceSequence += 1;
+        const file = { ...fileData, id: `file-${evidenceSequence}` };
+        review.evidence.push({
+          ...evidenceData,
+          deletedAt: null,
+          file,
+          fileId: file.id,
+          id: `evidence-${evidenceSequence}`
+        });
+        review.lockVersion += 1;
+        return review;
+      }
+    ),
     findById: vi.fn(async () => review),
     findByIdForCustomer: vi.fn(async (id: string, customerId: string) =>
       id === review.id && review.order.customerId === customerId ? review : null
@@ -254,37 +293,39 @@ function createHarness() {
       total: review.order.customerId === customerId ? 1 : 0
     })),
     softDeleteEvidence: vi.fn(),
-    updateReview: vi.fn(async ({
-      customerId,
-      data,
-      expectedLockVersion,
-      expectedStatuses,
-      requireActiveOrder
-    }: {
-      customerId?: string;
-      data: Record<string, unknown>;
-      expectedLockVersion: number;
-      expectedStatuses: OrderMileageReviewStatus[];
-      requireActiveOrder?: boolean;
-    }) => {
-      if (customerId) {
-        assertOwned(customerId, requireActiveOrder);
+    updateReview: vi.fn(
+      async ({
+        customerId,
+        data,
+        expectedLockVersion,
+        expectedStatuses,
+        requireActiveOrder
+      }: {
+        customerId?: string;
+        data: Record<string, unknown>;
+        expectedLockVersion: number;
+        expectedStatuses: OrderMileageReviewStatus[];
+        requireActiveOrder?: boolean;
+      }) => {
+        if (customerId) {
+          assertOwned(customerId, requireActiveOrder);
+        }
+        assertVersion(expectedLockVersion);
+        if (!expectedStatuses.includes(review.status)) {
+          throw new Error("Mileage review is not editable in its current status.");
+        }
+        Object.assign(review, data);
+        review.lockVersion += 1;
+        return review;
       }
-      assertVersion(expectedLockVersion);
-      if (!expectedStatuses.includes(review.status)) {
-        throw new Error("Mileage review is not editable in its current status.");
-      }
-      Object.assign(review, data);
-      review.lockVersion += 1;
-      return review;
-    })
+    )
   };
   const storageService = {
     deleteObject: vi.fn(async () => undefined),
     getObject: vi.fn(async () => ({
       contentLength: 1024,
       contentType: "image/jpeg",
-      stream: Readable.from(Buffer.from("image"))
+      stream: Readable.from(jpegBuffer())
     })),
     putMileageReviewEvidence: vi.fn(async () => ({
       bucket: "application-materials",
@@ -334,7 +375,10 @@ function createHarness() {
   }
 }
 
-function upload(mimetype: string, originalname: string) {
-  const buffer = Buffer.from("test-image");
+function upload(mimetype: string, originalname: string, buffer = jpegBuffer()) {
   return { buffer, mimetype, originalname, size: buffer.length };
+}
+
+function jpegBuffer() {
+  return Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 }

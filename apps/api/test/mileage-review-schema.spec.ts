@@ -10,6 +10,13 @@ const migrationPath = join(
   "prisma/migrations/20260802130000_monthly_mileage_reviews/migration.sql"
 );
 const migration = existsSync(migrationPath) ? readFileSync(migrationPath, "utf8") : "";
+const zeroRateMigrationPath = join(
+  apiRoot,
+  "prisma/migrations/20260803010000_mileage_review_zero_rate/migration.sql"
+);
+const zeroRateMigration = existsSync(zeroRateMigrationPath)
+  ? readFileSync(zeroRateMigrationPath, "utf8")
+  : "";
 
 function prismaBlock(kind: "enum" | "model", name: string) {
   const match = schema.match(new RegExp(`${kind} ${name} \\{([\\s\\S]*?)\\n\\}`));
@@ -20,12 +27,8 @@ function prismaBlock(kind: "enum" | "model", name: string) {
 describe("monthly mileage review persistence contract", () => {
   it("defines the approved workflow and submission-source enums", () => {
     expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("SCHEDULED");
-    expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain(
-      "PENDING_SUBMISSION"
-    );
-    expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain(
-      "PENDING_REVIEW"
-    );
+    expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("PENDING_SUBMISSION");
+    expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("PENDING_REVIEW");
     expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("RETURNED");
     expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("CONFIRMED");
     expect(prismaBlock("enum", "OrderMileageReviewStatus")).toContain("VOIDED");
@@ -105,9 +108,7 @@ describe("monthly mileage review persistence contract", () => {
   it("connects review records to every owning aggregate", () => {
     expect(prismaBlock("model", "SubscriptionOrder")).toContain("mileageReviews");
     expect(prismaBlock("model", "Vehicle")).toContain("mileageReviews");
-    expect(prismaBlock("model", "VehicleMileageReading")).toContain(
-      "baselineForMileageReviews"
-    );
+    expect(prismaBlock("model", "VehicleMileageReading")).toContain("baselineForMileageReviews");
     expect(prismaBlock("model", "VehicleMileageReading")).toContain("mileageReview");
     expect(prismaBlock("model", "OrderEntitlementGrant")).toContain("mileageReviews");
     expect(prismaBlock("model", "OrderEntitlementUsage")).toContain("mileageReview");
@@ -123,7 +124,7 @@ describe("monthly mileage review persistence contract", () => {
 
   it("enforces one active version and one active file link at the database layer", () => {
     expect(migration).not.toBe("");
-    expect(migration).toContain('ALTER TYPE "bill_type" ADD VALUE \'OVER_MILEAGE\'');
+    expect(migration).toContain("ALTER TYPE \"bill_type\" ADD VALUE 'OVER_MILEAGE'");
     expect(migration).toContain('CREATE TABLE "order_mileage_review"');
     expect(migration).toContain('CREATE TABLE "order_mileage_review_evidence"');
     expect(migration).toMatch(
@@ -132,13 +133,21 @@ describe("monthly mileage review persistence contract", () => {
     expect(migration).toMatch(
       /CREATE UNIQUE INDEX "order_mileage_review_evidence_active_file_key"[\s\S]+WHERE "deleted_at" IS NULL/
     );
-    expect(migration).toContain(
-      '"period_start" TIMESTAMPTZ(6) NOT NULL'
-    );
+    expect(migration).toContain('"period_start" TIMESTAMPTZ(6) NOT NULL');
     expect(migration).toContain('"over_mileage_amount" BIGINT');
     expect(migration).toContain('"metadata" JSONB');
     expect(migration).toContain(
       'REFERENCES "file_object"("id") ON DELETE RESTRICT ON UPDATE CASCADE'
+    );
+  });
+
+  it("allows positive overage kilometers without a bill when the configured rate is zero", () => {
+    expect(zeroRateMigration).toContain('DROP CONSTRAINT "order_mileage_review_confirmed_state"');
+    expect(zeroRateMigration).toContain(
+      '("over_mileage_amount" > 0 AND "over_mileage_bill_id" IS NOT NULL)'
+    );
+    expect(zeroRateMigration).toContain(
+      '("over_mileage_amount" = 0 AND "over_mileage_bill_id" IS NULL)'
     );
   });
 });

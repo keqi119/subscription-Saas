@@ -3,18 +3,23 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   Post,
   Put,
   Query,
   Req,
   StreamableFile,
+  UploadedFiles,
+  UseInterceptors,
   UseGuards
 } from "@nestjs/common";
+import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
+import type { UploadedMaterialFile } from "../customer/customer.service";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   AttachMileageReviewEvidenceDto,
@@ -23,6 +28,7 @@ import {
   MileageReviewVersionDto,
   ReturnMileageReviewDto,
   SaveAdminMileageReviewDraftDto,
+  UploadAdminMileageReviewEvidenceDto,
   VoidMileageReviewDto
 } from "./dto/mileage-review.dto";
 import { MileageReviewService } from "./mileage-review.service";
@@ -40,10 +46,7 @@ export class MileageReviewController {
 
   @Get("orders/:orderId/mileage-reviews")
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_VIEW)
-  listOrderReviews(
-    @Param("orderId") orderId: string,
-    @Query() query: MileageReviewListQueryDto
-  ) {
+  listOrderReviews(@Param("orderId") orderId: string, @Query() query: MileageReviewListQueryDto) {
     return this.mileageReviewService.listReviews({ ...query, orderId });
   }
 
@@ -54,15 +57,10 @@ export class MileageReviewController {
   }
 
   @Get("mileage-reviews/:id/evidence/:evidenceId/preview")
+  @Header("X-Content-Type-Options", "nosniff")
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_VIEW)
-  async previewEvidence(
-    @Param("id") id: string,
-    @Param("evidenceId") evidenceId: string
-  ) {
-    const file = await this.mileageReviewService.getEvidenceObject(
-      id,
-      evidenceId
-    );
+  async previewEvidence(@Param("id") id: string, @Param("evidenceId") evidenceId: string) {
+    const file = await this.mileageReviewService.getEvidenceObject(id, evidenceId);
     return new StreamableFile(file.stream, {
       disposition: contentDisposition("inline", file.originalName),
       length: file.contentLength,
@@ -71,15 +69,10 @@ export class MileageReviewController {
   }
 
   @Get("mileage-reviews/:id/evidence/:evidenceId/download")
+  @Header("X-Content-Type-Options", "nosniff")
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_VIEW)
-  async downloadEvidence(
-    @Param("id") id: string,
-    @Param("evidenceId") evidenceId: string
-  ) {
-    const file = await this.mileageReviewService.getEvidenceObject(
-      id,
-      evidenceId
-    );
+  async downloadEvidence(@Param("id") id: string, @Param("evidenceId") evidenceId: string) {
+    const file = await this.mileageReviewService.getEvidenceObject(id, evidenceId);
     return new StreamableFile(file.stream, {
       disposition: contentDisposition("attachment", file.originalName),
       length: file.contentLength,
@@ -107,6 +100,18 @@ export class MileageReviewController {
     return this.mileageReviewService.attachEvidence(id, dto, request.user);
   }
 
+  @Post("mileage-reviews/:id/evidence/upload")
+  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 20 * 1024 * 1024 } }))
+  @RequirePermissions(PermissionCode.MILEAGE_REVIEW_SUBMIT)
+  uploadEvidence(
+    @Param("id") id: string,
+    @Body() dto: UploadAdminMileageReviewEvidenceDto,
+    @UploadedFiles() files: UploadedMaterialFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.mileageReviewService.uploadAdminEvidence(id, dto, files, request.user);
+  }
+
   @Delete("mileage-reviews/:id/evidence/:evidenceId")
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_SUBMIT)
   removeEvidence(
@@ -115,12 +120,7 @@ export class MileageReviewController {
     @Body() dto: MileageReviewVersionDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.mileageReviewService.removeEvidence(
-      id,
-      evidenceId,
-      dto,
-      request.user
-    );
+    return this.mileageReviewService.removeEvidence(id, evidenceId, dto, request.user);
   }
 
   @Post("mileage-reviews/:id/submit")
@@ -160,17 +160,10 @@ export class MileageReviewController {
     @Body() dto: VoidMileageReviewDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.mileageReviewService.voidAndReopenReview(
-      id,
-      dto,
-      request.user
-    );
+    return this.mileageReviewService.voidAndReopenReview(id, dto, request.user);
   }
 }
 
-function contentDisposition(
-  mode: "attachment" | "inline",
-  originalName: string
-) {
+function contentDisposition(mode: "attachment" | "inline", originalName: string) {
   return `${mode}; filename*=UTF-8''${encodeURIComponent(originalName)}`;
 }

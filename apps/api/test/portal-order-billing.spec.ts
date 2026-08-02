@@ -13,7 +13,7 @@ import {
   OrderSource,
   OrderMileageReviewStatus,
   OrderStatus,
-  Prisma,
+  Prisma
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -63,9 +63,9 @@ describe("portal billing and entitlement center", () => {
   it("rejects bill detail access for another customer's bill", async () => {
     const harness = createPortalBillingHarness();
 
-    await expect(harness.service.getBill("bill_b1", harness.currentCustomer("customer_a"))).rejects.toThrow(
-      "账单不存在或不属于当前客户"
-    );
+    await expect(
+      harness.service.getBill("bill_b1", harness.currentCustomer("customer_a"))
+    ).rejects.toThrow("账单不存在或不属于当前客户");
   });
 
   it("summarizes only the current customer's deposit ledgers", async () => {
@@ -83,10 +83,7 @@ describe("portal billing and entitlement center", () => {
   it("serializes order detail when no confirmed deposit ledger exists", async () => {
     const harness = createPortalBillingHarness({ ledgers: [] });
 
-    const result = await harness.service.getOrder(
-      "order_a",
-      harness.currentCustomer("customer_a")
-    );
+    const result = await harness.service.getOrder("order_a", harness.currentCustomer("customer_a"));
 
     expect(() => JSON.stringify(result)).not.toThrow();
     expect(result.depositSummary).toEqual(
@@ -118,10 +115,7 @@ describe("portal billing and entitlement center", () => {
       }
     ];
 
-    const result = await harness.service.getOrder(
-      "order_a",
-      harness.currentCustomer("customer_a")
-    );
+    const result = await harness.service.getOrder("order_a", harness.currentCustomer("customer_a"));
 
     expect(result).toMatchObject({
       mileageReviewSummary: {
@@ -139,11 +133,45 @@ describe("portal billing and entitlement center", () => {
     });
   });
 
+  it("keeps a payable monthly-rent bill ahead of an overdue mileage submission", async () => {
+    const harness = createPortalBillingHarness();
+    const order = harness.orders[0]!;
+    order.orderStatus = OrderStatus.ACTIVE;
+    order.mileageReviews = [
+      {
+        cycleNo: 1,
+        dueAt: new Date("2026-08-01T04:00:00.000Z"),
+        id: "review_a1",
+        lockVersion: 0,
+        overMileageBillId: null,
+        scheduledReviewAt: new Date("2026-07-31T04:00:00.000Z"),
+        status: OrderMileageReviewStatus.PENDING_SUBMISSION
+      }
+    ];
+
+    const result = await harness.service.getOrder("order_a", harness.currentCustomer("customer_a"));
+
+    expect(result).toMatchObject({
+      mileageReviewSummary: {
+        currentReviewId: "review_a1",
+        hasAction: true
+      },
+      nextAction: "PAY_BILL",
+      nextActionTarget: null
+    });
+  });
+
   it("lists only the current customer's entitlement grants and usage records", async () => {
     const harness = createPortalBillingHarness();
 
-    const grants = await harness.service.listEntitlements(harness.currentCustomer("customer_a"), {});
-    const usages = await harness.service.listEntitlementUsages(harness.currentCustomer("customer_a"), {});
+    const grants = await harness.service.listEntitlements(
+      harness.currentCustomer("customer_a"),
+      {}
+    );
+    const usages = await harness.service.listEntitlementUsages(
+      harness.currentCustomer("customer_a"),
+      {}
+    );
 
     expect(grants.total).toBe(2);
     expect(grants.items.map((item) => item.orderNo)).toEqual(["ORD-A", "ORD-A"]);
@@ -153,9 +181,7 @@ describe("portal billing and entitlement center", () => {
   });
 });
 
-function createPortalBillingHarness(
-  overrides: { ledgers?: AnyRecord[] } = {}
-) {
+function createPortalBillingHarness(overrides: { ledgers?: AnyRecord[] } = {}) {
   const now = new Date("2026-06-18T00:00:00Z");
   const orders = [
     makeOrder({
@@ -179,7 +205,13 @@ function createPortalBillingHarness(
       paidAmount: 2000n,
       remainingAmount: 0n
     }),
-    makeBill({ billNo: "BIL-B1", customerId: "customer_b", id: "bill_b1", orderId: "order_b", remainingAmount: 3000n })
+    makeBill({
+      billNo: "BIL-B1",
+      customerId: "customer_b",
+      id: "bill_b1",
+      orderId: "order_b",
+      remainingAmount: 3000n
+    })
   ];
   const ledgers = overrides.ledgers ?? [
     makeDepositLedger({
@@ -211,40 +243,61 @@ function createPortalBillingHarness(
   ];
   const grants = [
     makeGrant({ id: "grant_a1", orderId: "order_a", usages: [usages[0]!] }),
-    makeGrant({ id: "grant_a2", orderId: "order_a", totalAmount: null, remainingAmount: null, unit: EntitlementUnit.TEXT }),
-    makeGrant({ customerId: "customer_b", id: "grant_b1", orderId: "order_b", usages: [usages[1]!] })
+    makeGrant({
+      id: "grant_a2",
+      orderId: "order_a",
+      totalAmount: null,
+      remainingAmount: null,
+      unit: EntitlementUnit.TEXT
+    }),
+    makeGrant({
+      customerId: "customer_b",
+      id: "grant_b1",
+      orderId: "order_b",
+      usages: [usages[1]!]
+    })
   ];
 
   attachRelations(orders, bills, grants);
 
   const prisma = {
     depositLedger: {
-      count: vi.fn(async ({ where }: AnyRecord) => ledgers.filter((item) => matches(item, where)).length),
+      count: vi.fn(
+        async ({ where }: AnyRecord) => ledgers.filter((item) => matches(item, where)).length
+      ),
       findMany: vi.fn(async ({ where }: AnyRecord) =>
         ledgers.filter((item) => matches(item, where)).map((item) => includeOrder(item, orders))
       )
     },
     orderEntitlementGrant: {
-      count: vi.fn(async ({ where }: AnyRecord) => grants.filter((item) => matches(item, where)).length),
+      count: vi.fn(
+        async ({ where }: AnyRecord) => grants.filter((item) => matches(item, where)).length
+      ),
       findMany: vi.fn(async ({ where }: AnyRecord) =>
         grants.filter((item) => matches(item, where)).map((item) => includeOrder(item, orders))
       )
     },
     orderEntitlementUsage: {
-      count: vi.fn(async ({ where }: AnyRecord) => usages.filter((item) => matches(item, where)).length),
+      count: vi.fn(
+        async ({ where }: AnyRecord) => usages.filter((item) => matches(item, where)).length
+      ),
       findMany: vi.fn(async ({ where }: AnyRecord) =>
-        usages.filter((item) => matches(item, where)).map((item) => ({
-          ...includeOrder(item, orders),
-          grant: {
-            entitlementName: "月度洗车",
-            grantNo: "EG-A1",
-            id: item.grantId
-          }
-        }))
+        usages
+          .filter((item) => matches(item, where))
+          .map((item) => ({
+            ...includeOrder(item, orders),
+            grant: {
+              entitlementName: "月度洗车",
+              grantNo: "EG-A1",
+              id: item.grantId
+            }
+          }))
       )
     },
     receivableBill: {
-      count: vi.fn(async ({ where }: AnyRecord) => bills.filter((item) => matches(item, where)).length),
+      count: vi.fn(
+        async ({ where }: AnyRecord) => bills.filter((item) => matches(item, where)).length
+      ),
       findFirst: vi.fn(async ({ where }: AnyRecord) => {
         const bill = bills.find((item) => matches(item, where));
         return bill ? includeBillDetail(bill, orders) : null;
@@ -254,8 +307,12 @@ function createPortalBillingHarness(
       )
     },
     subscriptionOrder: {
-      count: vi.fn(async ({ where }: AnyRecord) => orders.filter((item) => matches(item, where)).length),
-      findFirst: vi.fn(async ({ where }: AnyRecord) => orders.find((item) => matches(item, where)) ?? null),
+      count: vi.fn(
+        async ({ where }: AnyRecord) => orders.filter((item) => matches(item, where)).length
+      ),
+      findFirst: vi.fn(
+        async ({ where }: AnyRecord) => orders.find((item) => matches(item, where)) ?? null
+      ),
       findMany: vi.fn(async ({ where }: AnyRecord) => orders.filter((item) => matches(item, where)))
     }
   };
@@ -391,7 +448,8 @@ function makeGrant(input: Partial<AnyRecord>) {
     grantSource: input.grantSource ?? EntitlementGrantSource.ORDER_START,
     id: input.id ?? "grant_a1",
     orderId,
-    remainingAmount: input.remainingAmount === undefined ? new Prisma.Decimal(2) : input.remainingAmount,
+    remainingAmount:
+      input.remainingAmount === undefined ? new Prisma.Decimal(2) : input.remainingAmount,
     remark: input.remark ?? null,
     status: input.status ?? EntitlementGrantStatus.ACTIVE,
     totalAmount: input.totalAmount === undefined ? new Prisma.Decimal(2) : input.totalAmount,

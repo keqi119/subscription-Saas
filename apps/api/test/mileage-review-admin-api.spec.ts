@@ -1,21 +1,43 @@
 import { Readable } from "node:stream";
 
-import {
-  MileageReviewSubmissionSource,
-  OrderMileageReviewStatus
-} from "@prisma/client";
+import { MileageReviewSubmissionSource, OrderMileageReviewStatus } from "@prisma/client";
 import { PermissionCode, SYSTEM_MENUS } from "@subscription-saas/shared";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  REQUIRED_PERMISSIONS_KEY
-} from "../src/auth/auth.decorators";
+import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { MileageReviewController } from "../src/mileage-review/mileage-review.controller";
 import { MileageReviewService } from "../src/mileage-review/mileage-review.service";
 
 describe("admin mileage review API", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-30T04:30:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("passes overdue filtering and pagination to the database queue", async () => {
+    const harness = createHarness();
+
+    await harness.service.listReviews({
+      overdue: true,
+      page: 3,
+      pageSize: 25
+    });
+
+    expect(harness.repository.list).toHaveBeenCalledWith({
+      orderId: undefined,
+      overdue: true,
+      page: 3,
+      pageSize: 25,
+      status: undefined
+    });
+  });
+
   it("defines separate permissions and protects every workflow action", () => {
     expect(PermissionCode.MILEAGE_REVIEW_VIEW).toBe("mileage_review:view");
     expect(PermissionCode.MILEAGE_REVIEW_SUBMIT).toBe("mileage_review:submit");
@@ -25,24 +47,13 @@ describe("admin mileage review API", () => {
 
     expect(permissionFor("listReviews")).toEqual([PermissionCode.MILEAGE_REVIEW_VIEW]);
     expect(permissionFor("getReview")).toEqual([PermissionCode.MILEAGE_REVIEW_VIEW]);
-    expect(permissionFor("saveAdminDraft")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_SUBMIT
-    ]);
-    expect(permissionFor("attachEvidence")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_SUBMIT
-    ]);
-    expect(permissionFor("submitReview")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_SUBMIT
-    ]);
-    expect(permissionFor("returnReview")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_RETURN
-    ]);
-    expect(permissionFor("confirmReview")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_CONFIRM
-    ]);
-    expect(permissionFor("voidAndReopenReview")).toEqual([
-      PermissionCode.MILEAGE_REVIEW_VOID
-    ]);
+    expect(permissionFor("saveAdminDraft")).toEqual([PermissionCode.MILEAGE_REVIEW_SUBMIT]);
+    expect(permissionFor("attachEvidence")).toEqual([PermissionCode.MILEAGE_REVIEW_SUBMIT]);
+    expect(permissionFor("uploadEvidence")).toEqual([PermissionCode.MILEAGE_REVIEW_SUBMIT]);
+    expect(permissionFor("submitReview")).toEqual([PermissionCode.MILEAGE_REVIEW_SUBMIT]);
+    expect(permissionFor("returnReview")).toEqual([PermissionCode.MILEAGE_REVIEW_RETURN]);
+    expect(permissionFor("confirmReview")).toEqual([PermissionCode.MILEAGE_REVIEW_CONFIRM]);
+    expect(permissionFor("voidAndReopenReview")).toEqual([PermissionCode.MILEAGE_REVIEW_VOID]);
   });
 
   it("registers the queue under order center and seeds its access rows", () => {
@@ -105,12 +116,24 @@ describe("admin mileage review API", () => {
     const harness = createHarness();
 
     await expect(
+      harness.service.attachEvidence("review-1", { fileId: "pdf-1", lockVersion: 0 }, harness.user)
+    ).rejects.toThrow("Mileage review evidence must be an image.");
+    await expect(
+      harness.service.attachEvidence("review-1", { fileId: "svg-1", lockVersion: 0 }, harness.user)
+    ).rejects.toThrow("JPEG, PNG, or WebP");
+
+    harness.storageService.getObject.mockResolvedValueOnce({
+      contentLength: 21,
+      contentType: "image/jpeg",
+      stream: Readable.from(Buffer.from("<svg><script/></svg>"))
+    });
+    await expect(
       harness.service.attachEvidence(
         "review-1",
-        { fileId: "pdf-1", lockVersion: 0 },
+        { fileId: "image-1", lockVersion: 0 },
         harness.user
       )
-    ).rejects.toThrow("Mileage review evidence must be an image.");
+    ).rejects.toThrow("Evidence file cannot be read from private storage.");
 
     harness.files[0]!.uploadedBy = "user-2";
     await expect(
@@ -136,19 +159,15 @@ describe("admin mileage review API", () => {
     expect(result.lockVersion).toBe(1);
     expect(result.evidence).toContainEqual(
       expect.objectContaining({
-        downloadUrl:
-          "/api/mileage-reviews/review-1/evidence/evidence-1/download",
+        downloadUrl: "/api/mileage-reviews/review-1/evidence/evidence-1/download",
         mimeType: "image/jpeg",
-        previewUrl:
-          "/api/mileage-reviews/review-1/evidence/evidence-1/preview"
+        previewUrl: "/api/mileage-reviews/review-1/evidence/evidence-1/preview"
       })
     );
     expect(JSON.stringify(result)).not.toContain("application-materials");
     expect(JSON.stringify(result)).not.toContain("private/image-1.jpg");
 
-    harness.storageService.getObject.mockRejectedValueOnce(
-      new Error("object missing")
-    );
+    harness.storageService.getObject.mockRejectedValueOnce(new Error("object missing"));
     harness.review.lockVersion = 2;
     await expect(
       harness.service.attachEvidence(
@@ -157,6 +176,42 @@ describe("admin mileage review API", () => {
         harness.user
       )
     ).rejects.toThrow("Evidence file cannot be read from private storage.");
+  });
+
+  it("uploads admin evidence directly to private storage", async () => {
+    const harness = createHarness();
+    const file = {
+      buffer: jpegBuffer(),
+      fieldname: "file",
+      mimetype: "image/jpeg",
+      originalname: "odometer.jpg",
+      size: jpegBuffer().length
+    };
+
+    const result = await harness.service.uploadAdminEvidence(
+      "review-1",
+      {
+        capturedAt: "2026-09-30T04:19:00.000Z",
+        lockVersion: 0
+      },
+      [file] as never,
+      harness.user
+    );
+
+    expect(harness.storageService.putAdminMileageReviewEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType: "image/jpeg",
+        originalName: "odometer.jpg",
+        reviewId: "review-1",
+        userId: harness.user.id
+      })
+    );
+    expect(result.evidence).toHaveLength(1);
+    expect(result.evidence[0]).toMatchObject({
+      mimeType: "image/jpeg",
+      originalName: "odometer.jpg",
+      submissionSource: MileageReviewSubmissionSource.ADMIN
+    });
   });
 
   it("requires evidence before submit and supports return for correction", async () => {
@@ -172,11 +227,7 @@ describe("admin mileage review API", () => {
     );
 
     await expect(
-      harness.service.submitReview(
-        "review-1",
-        { lockVersion: 1 },
-        harness.user
-      )
+      harness.service.submitReview("review-1", { lockVersion: 1 }, harness.user)
     ).rejects.toThrow("At least one readable image evidence file is required.");
 
     await harness.service.attachEvidence(
@@ -211,10 +262,7 @@ describe("admin mileage review API", () => {
 });
 
 function permissionFor(method: keyof MileageReviewController) {
-  return Reflect.getMetadata(
-    REQUIRED_PERMISSIONS_KEY,
-    MileageReviewController.prototype[method]
-  );
+  return Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, MileageReviewController.prototype[method]);
 }
 
 function createHarness() {
@@ -253,6 +301,15 @@ function createHarness() {
       originalName: "file.pdf",
       sizeBytes: 512n,
       uploadedBy: user.id
+    },
+    {
+      bucket: "application-materials",
+      id: "svg-1",
+      mimeType: "image/svg+xml",
+      objectKey: "private/active.svg",
+      originalName: "active.svg",
+      sizeBytes: 128n,
+      uploadedBy: user.id
     }
   ];
   const review: Record<string, unknown> & {
@@ -262,6 +319,7 @@ function createHarness() {
     status: OrderMileageReviewStatus;
   } = {
     baselineMileageKm: 28_500,
+    baselineReading: { recordedAt: new Date("2026-08-31T04:30:00.000Z") },
     cycleNo: 1,
     deletedAt: null,
     dueAt: new Date("2026-10-01T04:30:00.000Z"),
@@ -285,8 +343,38 @@ function createHarness() {
   };
   let evidenceSequence = 0;
   const repository = {
+    attachAdminUploadedEvidence: vi.fn(
+      async ({
+        evidenceData,
+        expectedLockVersion,
+        fileData
+      }: {
+        evidenceData: Record<string, unknown>;
+        expectedLockVersion: number;
+        fileData: Record<string, unknown>;
+      }) => {
+        assertVersion(expectedLockVersion);
+        evidenceSequence += 1;
+        const uploadedFile = {
+          ...fileData,
+          id: `uploaded-file-${evidenceSequence}`
+        };
+        review.evidence.push({
+          ...evidenceData,
+          deletedAt: null,
+          file: uploadedFile,
+          fileId: uploadedFile.id,
+          id: `evidence-${evidenceSequence}`
+        });
+        review.lockVersion += 1;
+        return review;
+      }
+    ),
     attachEvidence: vi.fn(
-      async ({ data, expectedLockVersion }: {
+      async ({
+        data,
+        expectedLockVersion
+      }: {
         data: Record<string, unknown> & { fileId: string };
         expectedLockVersion: number;
       }) => {
@@ -307,7 +395,11 @@ function createHarness() {
     list: vi.fn(async () => ({ items: [review], total: 1 })),
     softDeleteEvidence: vi.fn(),
     updateReview: vi.fn(
-      async ({ data, expectedLockVersion, expectedStatuses }: {
+      async ({
+        data,
+        expectedLockVersion,
+        expectedStatuses
+      }: {
         data: Record<string, unknown>;
         expectedLockVersion: number;
         expectedStatuses: OrderMileageReviewStatus[];
@@ -323,10 +415,16 @@ function createHarness() {
     )
   };
   const storageService = {
+    deleteObject: vi.fn(async () => undefined),
     getObject: vi.fn(async () => ({
       contentLength: 1024,
       contentType: "image/jpeg",
-      stream: Readable.from(Buffer.from("image"))
+      stream: Readable.from(jpegBuffer())
+    })),
+    putAdminMileageReviewEvidence: vi.fn(async () => ({
+      bucket: "application-materials",
+      objectKey: "mileage-reviews/admin-user-1/review-1/odometer.jpg",
+      stored: {}
     }))
   };
   const service = new MileageReviewService(
@@ -349,4 +447,8 @@ function createHarness() {
       throw new Error("Mileage review was changed by another request.");
     }
   }
+}
+
+function jpegBuffer() {
+  return Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
 }

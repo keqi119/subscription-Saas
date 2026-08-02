@@ -103,6 +103,24 @@ export class StorageService {
     return this.putPrivateObject(key, input);
   }
 
+  async putAdminMileageReviewEvidence(
+    input: Omit<UploadObjectInput, "key"> & {
+      reviewId: string;
+      userId: string;
+    }
+  ): Promise<{
+    bucket: string;
+    objectKey: string;
+    stored: StoredObject;
+  }> {
+    const key = this.buildMileageReviewEvidenceKey(
+      `admin-${input.userId}`,
+      input.reviewId,
+      input.originalName ?? "evidence.jpg"
+    );
+    return this.putPrivateObject(key, input);
+  }
+
   getCustomerProfileMaterialStream(
     bucket: string,
     objectKey: string

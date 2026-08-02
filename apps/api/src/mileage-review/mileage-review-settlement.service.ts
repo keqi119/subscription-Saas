@@ -26,10 +26,13 @@ import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.servic
 import { buildMileageReviewCycle } from "./mileage-review.calendar";
 import { calculateMileageSettlement } from "./mileage-review.calculator";
 import { mileageReviewInclude } from "./mileage-review.repository";
+import { isSupportedRasterMimeType } from "./mileage-review-evidence";
+import { assertMileageReviewTimestamp } from "./mileage-review-time";
 
 const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
 
 const settlementReviewInclude = {
+  baselineReading: { select: { recordedAt: true } },
   evidence: {
     include: { file: true },
     where: { deletedAt: null }
@@ -98,7 +101,7 @@ export class MileageReviewSettlementService {
           }
           throw new ConflictException("Mileage review is already confirmed.");
         }
-        assertConfirmable(review, input.expectedLockVersion);
+        assertConfirmable(review, input.expectedLockVersion, confirmedAt);
 
         const unresolvedPriorCycles = await tx.orderMileageReview.count({
           where: {
@@ -106,17 +109,12 @@ export class MileageReviewSettlementService {
             deletedAt: null,
             orderId: review.orderId,
             status: {
-              notIn: [
-                OrderMileageReviewStatus.CONFIRMED,
-                OrderMileageReviewStatus.VOIDED
-              ]
+              notIn: [OrderMileageReviewStatus.CONFIRMED, OrderMileageReviewStatus.VOIDED]
             }
           }
         });
         if (unresolvedPriorCycles > 0) {
-          throw new BadRequestException(
-            "Prior mileage review cycles must be confirmed first."
-          );
+          throw new BadRequestException("Prior mileage review cycles must be confirmed first.");
         }
 
         const grant = await this.findOrCreateMileageGrant(tx, review, input.userId);
@@ -140,23 +138,20 @@ export class MileageReviewSettlementService {
           input.userId
         );
 
-        const reading = await this.vehicleMileageService.appendConfirmedReading(
-          tx,
-          {
-            confirmedBy: input.userId,
-            evidenceSnapshot: toJsonValue({
-              evidenceIds: review.evidence.map((item) => item.id),
-              mileageReviewId: review.id,
-              version: review.version
-            }),
-            mileageKm: review.submittedMileageKm!,
-            orderId: review.orderId,
-            recordedAt: review.readingAt!,
-            sourceRecordId: `${review.id}:v${review.version}`,
-            sourceType: VehicleMileageSourceType.MONTHLY_REVIEW,
-            vehicleId: review.vehicleId
-          }
-        );
+        const reading = await this.vehicleMileageService.appendConfirmedReading(tx, {
+          confirmedBy: input.userId,
+          evidenceSnapshot: toJsonValue({
+            evidenceIds: review.evidence.map((item) => item.id),
+            mileageReviewId: review.id,
+            version: review.version
+          }),
+          mileageKm: review.submittedMileageKm!,
+          orderId: review.orderId,
+          recordedAt: review.readingAt!,
+          sourceRecordId: `${review.id}:v${review.version}`,
+          sourceType: VehicleMileageSourceType.MONTHLY_REVIEW,
+          vehicleId: review.vehicleId
+        });
 
         const bill = await this.createOverMileageBill(
           tx,
@@ -222,10 +217,7 @@ export class MileageReviewSettlementService {
     if (!reason) {
       throw new BadRequestException("Mileage review void reason is required.");
     }
-    if (
-      !Number.isSafeInteger(input.expectedLockVersion) ||
-      input.expectedLockVersion < 0
-    ) {
+    if (!Number.isSafeInteger(input.expectedLockVersion) || input.expectedLockVersion < 0) {
       throw new BadRequestException("Mileage review lock version is invalid.");
     }
 
@@ -245,9 +237,7 @@ export class MileageReviewSettlementService {
           review.status !== OrderMileageReviewStatus.CONFIRMED ||
           review.lockVersion !== input.expectedLockVersion
         ) {
-          throw new ConflictException(
-            "Mileage review was changed or is not confirmed."
-          );
+          throw new ConflictException("Mileage review was changed or is not confirmed.");
         }
 
         const laterConfirmedCount = await tx.orderMileageReview.count({
@@ -259,9 +249,7 @@ export class MileageReviewSettlementService {
           }
         });
         if (laterConfirmedCount > 0) {
-          throw new BadRequestException(
-            "A later confirmed mileage review prevents this rollback."
-          );
+          throw new BadRequestException("A later confirmed mileage review prevents this rollback.");
         }
 
         const bill = review.overMileageBillId
@@ -293,9 +281,7 @@ export class MileageReviewSettlementService {
           });
         }
         if (!review.mileageReadingId) {
-          throw new ConflictException(
-            "Confirmed mileage review is missing its mileage reading."
-          );
+          throw new ConflictException("Confirmed mileage review is missing its mileage reading.");
         }
         await this.vehicleMileageService.voidReadingAndRestoreProjection(tx, {
           actorId: input.userId,
@@ -382,16 +368,21 @@ export class MileageReviewSettlementService {
     review: SettlementReview,
     userId: string
   ) {
+    const entitlementPeriod = reviewEntitlementPeriod(review);
     const existing = await tx.orderEntitlementGrant.findFirst({
       orderBy: { createdAt: "desc" },
       where: {
         deletedAt: null,
         entitlementType: EntitlementType.MILEAGE,
-        grantPeriodEnd: { gte: toBusinessDate(review.periodEnd) },
-        grantPeriodStart: { lte: toBusinessDate(review.periodStart) },
+        grantPeriodEnd: { gte: entitlementPeriod.periodEnd },
+        grantPeriodStart: { lte: entitlementPeriod.periodStart },
         orderId: review.orderId,
         status: {
-          in: [EntitlementGrantStatus.ACTIVE, EntitlementGrantStatus.EXHAUSTED]
+          in: [
+            EntitlementGrantStatus.ACTIVE,
+            EntitlementGrantStatus.EXHAUSTED,
+            EntitlementGrantStatus.EXPIRED
+          ]
         },
         unit: EntitlementUnit.KM
       }
@@ -417,9 +408,7 @@ export class MileageReviewSettlementService {
           customerId: review.order.customerId,
           orderId: review.orderId,
           periodEnd: null,
-          periodStart: toBusinessDate(
-            review.order.actualDeliveryAt ?? review.periodStart
-          ),
+          periodStart: toBusinessDate(review.order.actualDeliveryAt ?? review.periodStart),
           snapshot: toJsonValue({
             backfilledBy: "MILEAGE_REVIEW_SETTLEMENT",
             mileageReviewId: review.id
@@ -438,8 +427,8 @@ export class MileageReviewSettlementService {
         entitlementName: "月里程额度",
         entitlementType: EntitlementType.MILEAGE,
         grantNo: createBusinessNo("EG"),
-        grantPeriodEnd: toBusinessDate(review.periodEnd),
-        grantPeriodStart: toBusinessDate(review.periodStart),
+        grantPeriodEnd: entitlementPeriod.periodEnd,
+        grantPeriodStart: entitlementPeriod.periodStart,
         grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
         orderId: review.orderId,
         remainingAmount: allowance,
@@ -506,9 +495,7 @@ export class MileageReviewSettlementService {
       data: {
         remainingAmount: new Prisma.Decimal(0),
         status:
-          unusedAllowanceKm > 0
-            ? EntitlementGrantStatus.EXPIRED
-            : EntitlementGrantStatus.EXHAUSTED,
+          unusedAllowanceKm > 0 ? EntitlementGrantStatus.EXPIRED : EntitlementGrantStatus.EXHAUSTED,
         updatedBy: userId,
         usedAmount: new Prisma.Decimal(existingUsed + consumedAllowanceKm)
       },
@@ -536,18 +523,17 @@ export class MileageReviewSettlementService {
         existing.orderId !== review.orderId ||
         existing.amount !== amount
       ) {
-        throw new ConflictException(
-          "Over-mileage bill idempotency key is already in use."
-        );
+        throw new ConflictException("Over-mileage bill idempotency key is already in use.");
       }
       return existing;
     }
+    const entitlementPeriod = reviewEntitlementPeriod(review);
     return tx.receivableBill.create({
       data: {
         amount,
         billNo: createBusinessNo("BIL"),
-        billPeriodEnd: toBusinessDate(review.periodEnd),
-        billPeriodStart: toBusinessDate(review.periodStart),
+        billPeriodEnd: entitlementPeriod.periodEnd,
+        billPeriodStart: entitlementPeriod.periodStart,
         billStatus: BillStatus.PENDING,
         billType: BillType.OVER_MILEAGE,
         createdBy: userId,
@@ -587,8 +573,15 @@ export class MileageReviewSettlementService {
       actualDeliveryAt: review.order.actualDeliveryAt,
       cycleNo
     });
-    return tx.orderMileageReview.upsert({
-      create: {
+    const existing = await tx.orderMileageReview.findFirst({
+      orderBy: { version: "desc" },
+      where: { cycleNo, orderId: review.orderId }
+    });
+    if (existing && !existing.deletedAt) {
+      return existing;
+    }
+    return tx.orderMileageReview.create({
+      data: {
         baselineMileageKm: review.submittedMileageKm!,
         baselineReadingId,
         calculationSnapshot: toJsonValue({
@@ -611,15 +604,7 @@ export class MileageReviewSettlementService {
             : OrderMileageReviewStatus.SCHEDULED,
         updatedBy: userId,
         vehicleId: review.vehicleId,
-        version: 1
-      },
-      update: {},
-      where: {
-        orderId_cycleNo_version: {
-          cycleNo,
-          orderId: review.orderId,
-          version: 1
-        }
+        version: (existing?.version ?? 0) + 1
       }
     });
   }
@@ -673,14 +658,9 @@ export class MileageReviewSettlementService {
   }
 }
 
-function assertSettlementInput(
-  input: SettleMileageReviewInput,
-  confirmedAt: Date
-) {
+function assertSettlementInput(input: SettleMileageReviewInput, confirmedAt: Date) {
   if (!input.idempotencyKey.trim() || input.idempotencyKey.length > 128) {
-    throw new BadRequestException(
-      "Mileage review confirmation idempotency key is required."
-    );
+    throw new BadRequestException("Mileage review confirmation idempotency key is required.");
   }
   if (!Number.isSafeInteger(input.expectedLockVersion) || input.expectedLockVersion < 0) {
     throw new BadRequestException("Mileage review lock version is invalid.");
@@ -692,7 +672,8 @@ function assertSettlementInput(
 
 function assertConfirmable(
   review: SettlementReview,
-  expectedLockVersion: number
+  expectedLockVersion: number,
+  confirmedAt: Date
 ) {
   if (
     review.status !== OrderMileageReviewStatus.PENDING_REVIEW ||
@@ -710,21 +691,13 @@ function assertConfirmable(
   ) {
     throw new BadRequestException("Mileage review submission is incomplete.");
   }
-  if (
-    !review.evidence.some((item) =>
-      item.file.mimeType?.startsWith("image/")
-    )
-  ) {
-    throw new BadRequestException(
-      "At least one image evidence file is required for confirmation."
-    );
+  assertMileageReviewTimestamp(review, review.readingAt, confirmedAt);
+  if (!review.evidence.some((item) => isSupportedRasterMimeType(item.file.mimeType))) {
+    throw new BadRequestException("At least one image evidence file is required for confirmation.");
   }
 }
 
-function decimalToSafeMileage(
-  value: Prisma.Decimal | null,
-  label: string
-) {
+function decimalToSafeMileage(value: Prisma.Decimal | null, label: string) {
   const number = value?.toNumber();
   if (number === undefined || !Number.isSafeInteger(number) || number < 0) {
     throw new BadRequestException(`${label} must be a non-negative integer.`);
@@ -734,9 +707,7 @@ function decimalToSafeMileage(
 
 function confirmationKey(value: Prisma.JsonValue | null) {
   const confirmation = jsonRecord(jsonRecord(value).confirmation);
-  return typeof confirmation.idempotencyKey === "string"
-    ? confirmation.idempotencyKey
-    : null;
+  return typeof confirmation.idempotencyKey === "string" ? confirmation.idempotencyKey : null;
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {
@@ -747,6 +718,16 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 
 function toBusinessDate(value: Date) {
   return new Date(`${value.toISOString().slice(0, 10)}T00:00:00.000Z`);
+}
+
+function reviewEntitlementPeriod(
+  review: Pick<SettlementReview, "periodStart" | "scheduledReviewAt">
+) {
+  const periodStart = toBusinessDate(review.periodStart);
+  const nextPeriodStart = toBusinessDate(review.scheduledReviewAt);
+  const periodEnd = new Date(nextPeriodStart);
+  periodEnd.setUTCDate(periodEnd.getUTCDate() - 1);
+  return { periodEnd, periodStart };
 }
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {

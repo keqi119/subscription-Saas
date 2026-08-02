@@ -1,9 +1,5 @@
 import { ConflictException, Injectable } from "@nestjs/common";
-import {
-  OrderMileageReviewStatus,
-  OrderStatus,
-  Prisma
-} from "@prisma/client";
+import { OrderMileageReviewStatus, OrderStatus, Prisma } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { MileageReviewTransaction } from "./mileage-review.types";
@@ -101,6 +97,7 @@ export class MileageReviewRepository {
   }
 
   async list(input: {
+    overdue?: boolean;
     orderId?: string;
     page: number;
     pageSize: number;
@@ -108,13 +105,16 @@ export class MileageReviewRepository {
   }) {
     const where = {
       deletedAt: null,
+      dueAt: input.overdue ? { lt: new Date() } : undefined,
       orderId: input.orderId,
-      status: input.status
+      status: input.overdue ? OrderMileageReviewStatus.PENDING_SUBMISSION : input.status
     } satisfies Prisma.OrderMileageReviewWhereInput;
     const [items, total] = await this.prisma.$transaction([
       this.prisma.orderMileageReview.findMany({
         include: mileageReviewInclude,
-        orderBy: [{ scheduledReviewAt: "desc" }, { createdAt: "desc" }],
+        orderBy: input.overdue
+          ? [{ dueAt: "asc" }, { createdAt: "asc" }]
+          : [{ scheduledReviewAt: "desc" }, { createdAt: "desc" }],
         skip: (input.page - 1) * input.pageSize,
         take: input.pageSize,
         where
@@ -163,11 +163,7 @@ export class MileageReviewRepository {
     });
   }
 
-  findEvidenceForCustomer(
-    id: string,
-    reviewId: string,
-    customerId: string
-  ) {
+  findEvidenceForCustomer(id: string, reviewId: string, customerId: string) {
     return this.prisma.orderMileageReviewEvidence.findFirst({
       include: { file: true },
       where: {
@@ -219,10 +215,7 @@ export class MileageReviewRepository {
 
   attachPortalEvidence(input: {
     customerId: string;
-    evidenceData: Omit<
-      Prisma.OrderMileageReviewEvidenceUncheckedCreateInput,
-      "fileId"
-    >;
+    evidenceData: Omit<Prisma.OrderMileageReviewEvidenceUncheckedCreateInput, "fileId">;
     expectedLockVersion: number;
     expectedStatuses: OrderMileageReviewStatus[];
     fileData: Prisma.FileObjectUncheckedCreateInput;
@@ -236,6 +229,31 @@ export class MileageReviewRepository {
         expectedStatuses: input.expectedStatuses,
         id: input.id,
         requireActiveOrder: true
+      });
+      const file = await tx.fileObject.create({ data: input.fileData });
+      await tx.orderMileageReviewEvidence.create({
+        data: { ...input.evidenceData, fileId: file.id }
+      });
+      return tx.orderMileageReview.findUniqueOrThrow({
+        include: mileageReviewInclude,
+        where: { id: input.id }
+      });
+    });
+  }
+
+  attachAdminUploadedEvidence(input: {
+    evidenceData: Omit<Prisma.OrderMileageReviewEvidenceUncheckedCreateInput, "fileId">;
+    expectedLockVersion: number;
+    expectedStatuses: OrderMileageReviewStatus[];
+    fileData: Prisma.FileObjectUncheckedCreateInput;
+    id: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await updateReviewGuard(tx, {
+        data: {},
+        expectedLockVersion: input.expectedLockVersion,
+        expectedStatuses: input.expectedStatuses,
+        id: input.id
       });
       const file = await tx.fileObject.create({ data: input.fileData });
       await tx.orderMileageReviewEvidence.create({
@@ -275,15 +293,11 @@ export class MileageReviewRepository {
           deletedAt: null,
           id: input.evidenceId,
           reviewId: input.id,
-          review: input.customerId
-            ? { order: { customerId: input.customerId } }
-            : undefined
+          review: input.customerId ? { order: { customerId: input.customerId } } : undefined
         }
       });
       if (deleted.count !== 1) {
-        throw new ConflictException(
-          "Mileage review evidence is missing or already removed."
-        );
+        throw new ConflictException("Mileage review evidence is missing or already removed.");
       }
       return tx.orderMileageReview.findUniqueOrThrow({
         include: mileageReviewInclude,
@@ -316,17 +330,13 @@ async function updateReviewGuard(
       order: input.customerId
         ? {
             customerId: input.customerId,
-            orderStatus: input.requireActiveOrder
-              ? OrderStatus.ACTIVE
-              : undefined
+            orderStatus: input.requireActiveOrder ? OrderStatus.ACTIVE : undefined
           }
         : undefined,
       status: { in: input.expectedStatuses }
     }
   });
   if (updated.count !== 1) {
-    throw new ConflictException(
-      "Mileage review was changed by another request."
-    );
+    throw new ConflictException("Mileage review was changed by another request.");
   }
 }

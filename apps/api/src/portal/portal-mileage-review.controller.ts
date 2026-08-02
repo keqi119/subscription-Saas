@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Param,
   Post,
   Put,
@@ -29,9 +30,7 @@ import { PortalMileageReviewService } from "./portal-mileage-review.service";
 @Controller("portal/mileage-reviews")
 @UseGuards(CustomerAuthGuard)
 export class PortalMileageReviewController {
-  constructor(
-    private readonly mileageReviewService: PortalMileageReviewService
-  ) {}
+  constructor(private readonly mileageReviewService: PortalMileageReviewService) {}
 
   @Get()
   listReviews(
@@ -42,10 +41,7 @@ export class PortalMileageReviewController {
   }
 
   @Get(":id")
-  getReview(
-    @Param("id") id: string,
-    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
-  ) {
+  getReview(@Param("id") id: string, @CurrentPortalCustomer() currentCustomer: CurrentCustomer) {
     return this.mileageReviewService.getReview(id, currentCustomer);
   }
 
@@ -66,12 +62,7 @@ export class PortalMileageReviewController {
     @UploadedFiles() files: UploadedMaterialFile[] | undefined,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
-    return this.mileageReviewService.uploadEvidence(
-      id,
-      dto,
-      files,
-      currentCustomer
-    );
+    return this.mileageReviewService.uploadEvidence(id, dto, files, currentCustomer);
   }
 
   @Delete(":id/evidence/:evidenceId")
@@ -81,12 +72,7 @@ export class PortalMileageReviewController {
     @Body() dto: PortalMileageReviewVersionDto,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
-    return this.mileageReviewService.removeEvidence(
-      id,
-      evidenceId,
-      dto,
-      currentCustomer
-    );
+    return this.mileageReviewService.removeEvidence(id, evidenceId, dto, currentCustomer);
   }
 
   @Post(":id/submit")
@@ -99,16 +85,13 @@ export class PortalMileageReviewController {
   }
 
   @Get(":id/evidence/:evidenceId/preview")
+  @Header("X-Content-Type-Options", "nosniff")
   async previewEvidence(
     @Param("id") id: string,
     @Param("evidenceId") evidenceId: string,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
-    const file = await this.mileageReviewService.getEvidenceObject(
-      id,
-      evidenceId,
-      currentCustomer
-    );
+    const file = await this.mileageReviewService.getEvidenceObject(id, evidenceId, currentCustomer);
     return new StreamableFile(file.stream, {
       disposition: contentDisposition("inline", file.originalName),
       length: file.contentLength,
@@ -117,16 +100,13 @@ export class PortalMileageReviewController {
   }
 
   @Get(":id/evidence/:evidenceId/download")
+  @Header("X-Content-Type-Options", "nosniff")
   async downloadEvidence(
     @Param("id") id: string,
     @Param("evidenceId") evidenceId: string,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
-    const file = await this.mileageReviewService.getEvidenceObject(
-      id,
-      evidenceId,
-      currentCustomer
-    );
+    const file = await this.mileageReviewService.getEvidenceObject(id, evidenceId, currentCustomer);
     return new StreamableFile(file.stream, {
       disposition: contentDisposition("attachment", file.originalName),
       length: file.contentLength,

@@ -2,6 +2,10 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 
 import { UploadedMaterialFile } from "../customer/customer.service";
 import { MileageReviewService } from "../mileage-review/mileage-review.service";
+import {
+  detectRasterMimeType,
+  isSupportedRasterMimeType
+} from "../mileage-review/mileage-review-evidence";
 import { StorageService } from "../storage/storage.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -20,33 +24,16 @@ export class PortalMileageReviewService {
     private readonly storageService: StorageService
   ) {}
 
-  listReviews(
-    currentCustomer: CurrentCustomer,
-    query: PortalMileageReviewListQueryDto
-  ) {
-    return this.mileageReviewService.listCustomerReviews(
-      currentCustomer.customerId,
-      query
-    );
+  listReviews(currentCustomer: CurrentCustomer, query: PortalMileageReviewListQueryDto) {
+    return this.mileageReviewService.listCustomerReviews(currentCustomer.customerId, query);
   }
 
   getReview(id: string, currentCustomer: CurrentCustomer) {
-    return this.mileageReviewService.getCustomerReview(
-      id,
-      currentCustomer.customerId
-    );
+    return this.mileageReviewService.getCustomerReview(id, currentCustomer.customerId);
   }
 
-  saveDraft(
-    id: string,
-    dto: SavePortalMileageReviewDraftDto,
-    currentCustomer: CurrentCustomer
-  ) {
-    return this.mileageReviewService.saveCustomerDraft(
-      id,
-      dto,
-      currentCustomer.customerId
-    );
+  saveDraft(id: string, dto: SavePortalMileageReviewDraftDto, currentCustomer: CurrentCustomer) {
+    return this.mileageReviewService.saveCustomerDraft(id, dto, currentCustomer.customerId);
   }
 
   async uploadEvidence(
@@ -62,15 +49,22 @@ export class PortalMileageReviewService {
     if (!file.mimetype?.startsWith("image/")) {
       throw new BadRequestException("Mileage review evidence must be an image.");
     }
-    if (file.size <= 0 || file.size > MAX_EVIDENCE_BYTES) {
+    if (!isSupportedRasterMimeType(file.mimetype)) {
+      throw new BadRequestException("Mileage review evidence must be a JPEG, PNG, or WebP image.");
+    }
+    const detectedMimeType = detectRasterMimeType(file.buffer);
+    if (detectedMimeType !== file.mimetype) {
       throw new BadRequestException(
-        "Mileage review evidence image must not exceed 20 MB."
+        "Mileage review evidence content does not match its image type."
       );
+    }
+    if (file.size <= 0 || file.size > MAX_EVIDENCE_BYTES) {
+      throw new BadRequestException("Mileage review evidence image must not exceed 20 MB.");
     }
     const metadata = parseMetadata(dto.metadata);
     const stored = await this.storageService.putMileageReviewEvidence({
       buffer: file.buffer,
-      contentType: file.mimetype,
+      contentType: detectedMimeType,
       customerId: currentCustomer.customerId,
       originalName: file.originalname,
       reviewId: id
@@ -84,7 +78,7 @@ export class PortalMileageReviewService {
           capturedAt: dto.capturedAt,
           lockVersion: dto.lockVersion,
           metadata,
-          mimeType: file.mimetype,
+          mimeType: detectedMimeType,
           objectKey: stored.objectKey,
           originalName: file.originalname,
           sizeBytes: BigInt(file.size)
@@ -113,23 +107,11 @@ export class PortalMileageReviewService {
     );
   }
 
-  submitReview(
-    id: string,
-    dto: PortalMileageReviewVersionDto,
-    currentCustomer: CurrentCustomer
-  ) {
-    return this.mileageReviewService.submitCustomerReview(
-      id,
-      dto,
-      currentCustomer.customerId
-    );
+  submitReview(id: string, dto: PortalMileageReviewVersionDto, currentCustomer: CurrentCustomer) {
+    return this.mileageReviewService.submitCustomerReview(id, dto, currentCustomer.customerId);
   }
 
-  getEvidenceObject(
-    id: string,
-    evidenceId: string,
-    currentCustomer: CurrentCustomer
-  ) {
+  getEvidenceObject(id: string, evidenceId: string, currentCustomer: CurrentCustomer) {
     return this.mileageReviewService.getCustomerEvidenceObject(
       id,
       evidenceId,

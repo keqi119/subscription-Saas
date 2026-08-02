@@ -26,7 +26,11 @@ import {
   buildCustomerIdentityProfileReadiness,
   type CustomerIdentityProfileReadiness
 } from "../customer/customer-identity-readiness";
-import { CustomerService, MaterialPreview, UploadedMaterialFile } from "../customer/customer.service";
+import {
+  CustomerService,
+  MaterialPreview,
+  UploadedMaterialFile
+} from "../customer/customer.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
@@ -72,13 +76,20 @@ const portalApplicationInclude = {
       },
       id: true,
       mileageReviews: {
-        orderBy: { scheduledReviewAt: "desc" as const },
+        orderBy: [
+          { cycleNo: "desc" as const },
+          { version: "desc" as const },
+          { createdAt: "desc" as const }
+        ],
         select: {
           id: true,
           status: true
         },
         take: 1,
-        where: { deletedAt: null }
+        where: {
+          deletedAt: null,
+          status: { not: OrderMileageReviewStatus.VOIDED }
+        }
       },
       orderNo: true,
       orderStatus: true
@@ -138,7 +149,9 @@ export class PortalApplicationService {
       this.getProfileIdentityReadiness(currentCustomer.customerId)
     ]);
     if (!profileReadiness.complete) {
-      assertCustomerIdentityProfileReady(await this.getProfileIdentitySource(currentCustomer.customerId));
+      assertCustomerIdentityProfileReady(
+        await this.getProfileIdentitySource(currentCustomer.customerId)
+      );
     }
     const result = await this.customerService.createSelfServiceApplication(
       {
@@ -197,7 +210,9 @@ export class PortalApplicationService {
 
   async getApplication(id: string, currentCustomer: CurrentCustomer) {
     const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
-    const materialCompleteness = await this.getProfileMaterialCompleteness(currentCustomer.customerId);
+    const materialCompleteness = await this.getProfileMaterialCompleteness(
+      currentCustomer.customerId
+    );
     return toPortalApplicationDetail(application, materialCompleteness);
   }
 
@@ -420,7 +435,11 @@ export class PortalApplicationService {
     return toPortalFinalPlanView(updated);
   }
 
-  async cancelApplication(id: string, currentCustomer: CurrentCustomer, context: PortalRequestContext) {
+  async cancelApplication(
+    id: string,
+    currentCustomer: CurrentCustomer,
+    context: PortalRequestContext
+  ) {
     const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
 
     if (!PORTAL_CUSTOMER_MUTABLE_APPLICATION_STATUSES.includes(application.status)) {
@@ -555,7 +574,11 @@ export class PortalApplicationService {
         data: {
           actionType: ApplicationActionType.UPLOAD_MATERIAL_FILE,
           applicationId: id,
-          comment: buildPortalMaterialActionComment(dto.materialType, materialFiles.map((file) => file.fileName), dto.remark),
+          comment: buildPortalMaterialActionComment(
+            dto.materialType,
+            materialFiles.map((file) => file.fileName),
+            dto.remark
+          ),
           createdBy: operator.id,
           materialFileId: materialFiles[0]?.id,
           materialGroupId: materialGroup.id,
@@ -874,7 +897,8 @@ function toPortalApplicationDetail(
 ) {
   return {
     ...toPortalApplicationListItem(application),
-    canCancel: PORTAL_CUSTOMER_MUTABLE_APPLICATION_STATUSES.includes(application.status) &&
+    canCancel:
+      PORTAL_CUSTOMER_MUTABLE_APPLICATION_STATUSES.includes(application.status) &&
       application.orders.length === 0,
     finalDepositAmount:
       application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
@@ -924,16 +948,15 @@ function toPortalApplicationPrecheck(
     missingProfileFields: profileReadiness.missingFields,
     missingMaterials: materialCompleteness.missingMaterials,
     profileComplete: profileReadiness.complete,
-    warnings: materialCompleteness.complete
-      ? []
-      : ["为加快审核，建议先补充身份证和驾驶证资料。"]
+    warnings: materialCompleteness.complete ? [] : ["为加快审核，建议先补充身份证和驾驶证资料。"]
   };
 }
 
 function toPortalApplicationProgress(application: PortalApplication) {
   const nextAction = resolvePortalNextAction(application);
   const steps = buildPortalProgressSteps(application);
-  const currentStep = steps.find((step) => step.status === "CURRENT")?.key ??
+  const currentStep =
+    steps.find((step) => step.status === "CURRENT")?.key ??
     steps.find((step) => step.status === "FAILED")?.key ??
     [...steps].reverse().find((step) => step.status === "DONE")?.key ??
     "SUBMITTED";
@@ -1042,28 +1065,97 @@ function buildPortalProgressSteps(application: PortalApplication) {
 
   if (application.status === ApplicationStatus.CANCELLED) {
     return [
-      buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
+      buildProgressStep(
+        "SUBMITTED",
+        "已提交",
+        "DONE",
+        application.submittedAt ?? application.createdAt
+      ),
       buildProgressStep("CANCELLED", "已取消", "CURRENT", application.updatedAt, "申请已取消。")
     ];
   }
 
   if (application.status === ApplicationStatus.REJECTED) {
     return [
-      buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
-      buildProgressStep("REJECTED", "已拒绝", "FAILED", application.updatedAt, application.rejectedReason ?? "申请未通过。")
+      buildProgressStep(
+        "SUBMITTED",
+        "已提交",
+        "DONE",
+        application.submittedAt ?? application.createdAt
+      ),
+      buildProgressStep(
+        "REJECTED",
+        "已拒绝",
+        "FAILED",
+        application.updatedAt,
+        application.rejectedReason ?? "申请未通过。"
+      )
     ];
   }
 
   return [
-    buildProgressStep("SUBMITTED", "已提交", "DONE", application.submittedAt ?? application.createdAt),
-    buildProgressStep("MATERIAL_REVIEW", "材料审核", materialStatus, null, buildMaterialStepMessage(application)),
-    buildProgressStep("CREDIT_REVIEW", "信用审核", creditStatus, null, "平台正在审核您的资质与信用情况。"),
-    buildProgressStep("DEPOSIT_CONFIRM", "押金确认", depositStatus, null, "押金金额将根据审核结果最终确认。"),
-    buildProgressStep("PRODUCT_REVIEW", "产品方案审核", productStatus, null, "平台正在确认订阅套餐与周期。"),
-    buildProgressStep("VEHICLE_REVIEW", "车辆库存审核", vehicleStatus, null, "平台正在确认车辆库存占用。"),
-    buildProgressStep("FINAL_PLAN", "最终方案确认", finalPlanStatus, application.finalPlanConfirmedAt, buildFinalPlanStepMessage(application)),
-    buildProgressStep("ORDER", "生成正式订单", orderStatus, null, "最终方案确认后，由平台生成正式订单。"),
-    buildProgressStep("CONTRACT", "待签约", contractStatus, null, "正式订单生成后进入合同签署流程。"),
+    buildProgressStep(
+      "SUBMITTED",
+      "已提交",
+      "DONE",
+      application.submittedAt ?? application.createdAt
+    ),
+    buildProgressStep(
+      "MATERIAL_REVIEW",
+      "材料审核",
+      materialStatus,
+      null,
+      buildMaterialStepMessage(application)
+    ),
+    buildProgressStep(
+      "CREDIT_REVIEW",
+      "信用审核",
+      creditStatus,
+      null,
+      "平台正在审核您的资质与信用情况。"
+    ),
+    buildProgressStep(
+      "DEPOSIT_CONFIRM",
+      "押金确认",
+      depositStatus,
+      null,
+      "押金金额将根据审核结果最终确认。"
+    ),
+    buildProgressStep(
+      "PRODUCT_REVIEW",
+      "产品方案审核",
+      productStatus,
+      null,
+      "平台正在确认订阅套餐与周期。"
+    ),
+    buildProgressStep(
+      "VEHICLE_REVIEW",
+      "车辆库存审核",
+      vehicleStatus,
+      null,
+      "平台正在确认车辆库存占用。"
+    ),
+    buildProgressStep(
+      "FINAL_PLAN",
+      "最终方案确认",
+      finalPlanStatus,
+      application.finalPlanConfirmedAt,
+      buildFinalPlanStepMessage(application)
+    ),
+    buildProgressStep(
+      "ORDER",
+      "生成正式订单",
+      orderStatus,
+      null,
+      "最终方案确认后，由平台生成正式订单。"
+    ),
+    buildProgressStep(
+      "CONTRACT",
+      "待签约",
+      contractStatus,
+      null,
+      "正式订单生成后进入合同签署流程。"
+    ),
     buildProgressStep("PAYMENT", "待支付", paymentStatus, null, "合同签署后开放线上支付。"),
     buildProgressStep("DELIVERY", "待交付", deliveryStatus, null, "支付完成后安排交付。"),
     buildProgressStep("ACTIVE", "在租中", activeStatus, null)
@@ -1076,7 +1168,7 @@ function buildProgressStep(
   status: "DONE" | "CURRENT" | "FAILED" | "PENDING",
   time?: Date | null,
   message?: string
-  ) {
+) {
   return {
     key,
     label,
@@ -1090,7 +1182,10 @@ function resolvePortalNextAction(application: PortalApplication) {
   if (application.status === ApplicationStatus.CANCELLED) {
     return "CANCELLED";
   }
-  if (application.status === ApplicationStatus.REJECTED || application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
+  if (
+    application.status === ApplicationStatus.REJECTED ||
+    application.planConfirmStatus === PlanConfirmStatus.REJECTED
+  ) {
     return "REJECTED";
   }
   if (
@@ -1100,7 +1195,10 @@ function resolvePortalNextAction(application: PortalApplication) {
   ) {
     return "UPLOAD_MATERIAL";
   }
-  if (isPortalFinalPlanReady(application) && application.planConfirmStatus === PlanConfirmStatus.PENDING) {
+  if (
+    isPortalFinalPlanReady(application) &&
+    application.planConfirmStatus === PlanConfirmStatus.PENDING
+  ) {
     return "CONFIRM_FINAL_PLAN";
   }
   if (application.planConfirmStatus === PlanConfirmStatus.CONFIRMED) {
@@ -1223,7 +1321,15 @@ function resolvePortalOverallStatus(application: PortalApplication, nextAction: 
   return application.status === ApplicationStatus.APPROVED ? "APPROVED" : "UNDER_REVIEW";
 }
 
-type PortalOrderStage = "NONE" | "ORDER" | "CONTRACT" | "PAYMENT" | "DELIVERY" | "ACTIVE" | "COMPLETED" | "FAILED";
+type PortalOrderStage =
+  | "NONE"
+  | "ORDER"
+  | "CONTRACT"
+  | "PAYMENT"
+  | "DELIVERY"
+  | "ACTIVE"
+  | "COMPLETED"
+  | "FAILED";
 
 const PORTAL_ORDER_STAGE_BY_STATUS = {
   [OrderStatus.PENDING_REVIEW]: "ORDER",
@@ -1245,9 +1351,7 @@ function findActivePortalOrder(application: PortalApplication) {
   return application.orders.find((order) => !order.deletedAt);
 }
 
-function findActionableMileageReview(
-  order: PortalApplication["orders"][number] | undefined
-) {
+function findActionableMileageReview(order: PortalApplication["orders"][number] | undefined) {
   if (order?.orderStatus !== OrderStatus.ACTIVE) {
     return null;
   }
@@ -1259,7 +1363,9 @@ function findActionableMileageReview(
     : null;
 }
 
-function resolvePortalOrderStage(order: PortalApplication["orders"][number] | undefined): PortalOrderStage {
+function resolvePortalOrderStage(
+  order: PortalApplication["orders"][number] | undefined
+): PortalOrderStage {
   return order ? PORTAL_ORDER_STAGE_BY_STATUS[order.orderStatus] : "NONE";
 }
 
@@ -1283,7 +1389,7 @@ function mapDepositStepStatus(status: DepositStatus, reachable: boolean) {
   if (status === DepositStatus.REJECTED) {
     return "FAILED" as const;
   }
-  return reachable ? "CURRENT" as const : "PENDING" as const;
+  return reachable ? ("CURRENT" as const) : ("PENDING" as const);
 }
 
 function mapFinalPlanStepStatus(application: PortalApplication, reachable: boolean) {
@@ -1296,7 +1402,7 @@ function mapFinalPlanStepStatus(application: PortalApplication, reachable: boole
   if (isPortalFinalPlanReady(application)) {
     return "CURRENT" as const;
   }
-  return reachable ? "CURRENT" as const : "PENDING" as const;
+  return reachable ? ("CURRENT" as const) : ("PENDING" as const);
 }
 
 function mapOrderStepStatus(orderStage: PortalOrderStage, reachable: boolean) {
@@ -1309,7 +1415,7 @@ function mapOrderStepStatus(orderStage: PortalOrderStage, reachable: boolean) {
   if (orderStage !== "NONE") {
     return "DONE" as const;
   }
-  return reachable ? "CURRENT" as const : "PENDING" as const;
+  return reachable ? ("CURRENT" as const) : ("PENDING" as const);
 }
 
 function mapContractStepStatus(orderStage: PortalOrderStage) {
@@ -1385,7 +1491,9 @@ function buildFinalPlanStepMessage(application: PortalApplication) {
     return buildConfirmedApplicationStageMessage(application);
   }
   if (application.planConfirmStatus === PlanConfirmStatus.REJECTED) {
-    return application.rejectedReason ? `您已拒绝最终方案：${application.rejectedReason}` : "您已拒绝最终方案。";
+    return application.rejectedReason
+      ? `您已拒绝最终方案：${application.rejectedReason}`
+      : "您已拒绝最终方案。";
   }
   if (isPortalFinalPlanReady(application)) {
     return "请确认最终签约方案。";
@@ -1394,10 +1502,12 @@ function buildFinalPlanStepMessage(application: PortalApplication) {
 }
 
 function isPortalFinalPlanReady(application: PortalApplication) {
-  return Boolean(application.finalPlanSnapshot) &&
+  return (
+    Boolean(application.finalPlanSnapshot) &&
     application.status === ApplicationStatus.APPROVED &&
     application.depositStatus === DepositStatus.CONFIRMED &&
-    application.finalDepositAmount !== null;
+    application.finalDepositAmount !== null
+  );
 }
 
 function assertPortalFinalPlanPending(application: PortalApplication) {
@@ -1431,7 +1541,8 @@ function withPortalFinalPlanDecision(
   return {
     ...base,
     customerDecision: decision,
-    finalPlanConfirmedAt: stringOrNull(decision.finalPlanConfirmedAt) ?? stringOrNull(base.finalPlanConfirmedAt),
+    finalPlanConfirmedAt:
+      stringOrNull(decision.finalPlanConfirmedAt) ?? stringOrNull(base.finalPlanConfirmedAt),
     planConfirmStatus: planConfirmStatus ?? base.planConfirmStatus
   } as Prisma.InputJsonValue;
 }
@@ -1462,7 +1573,11 @@ function buildFinalPlanChanges(
       message: "最终车辆与您提交审核时选择的意向车辆不同，请仔细核对。"
     });
   }
-  if (intent.plan.id && finalPlan.subscriptionPlanId && intent.plan.id !== finalPlan.subscriptionPlanId) {
+  if (
+    intent.plan.id &&
+    finalPlan.subscriptionPlanId &&
+    intent.plan.id !== finalPlan.subscriptionPlanId
+  ) {
     changes.push({
       field: "subscriptionPlan",
       label: "订阅套餐",
@@ -1573,7 +1688,8 @@ function parseIntentSnapshot(snapshot: Prisma.JsonValue) {
     series: stringOrNull(vehicleSnapshot.series)
   };
   const plan = {
-    depositDescription: stringOrNull(intent.depositDescription) ?? "押金金额将根据审核结果最终确认。",
+    depositDescription:
+      stringOrNull(intent.depositDescription) ?? "押金金额将根据审核结果最终确认。",
     id: stringOrNull(intent.subscriptionPlanId),
     monthlyFeeAmount: numberOrNull(pricing.monthlyFeeAmount),
     monthlyFeeDescription:
@@ -1597,7 +1713,9 @@ function buildSnapshotVehicleDisplayName(vehicleSnapshot: Record<string, unknown
     stringOrNull(vehicleSnapshot.brand),
     stringOrNull(vehicleSnapshot.series),
     stringOrNull(vehicleSnapshot.model)
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function buildApplicationNextStepHint(application: PortalApplication) {
@@ -1636,7 +1754,9 @@ function buildConfirmedApplicationStageMessage(application: PortalApplication) {
     case "DELIVERY":
       return "订单已完成签约支付，等待车辆交付。";
     case "ACTIVE":
-      return order?.orderStatus === OrderStatus.SUSPENDED ? "订阅服务当前已暂停。" : "订阅服务进行中。";
+      return order?.orderStatus === OrderStatus.SUSPENDED
+        ? "订阅服务当前已暂停。"
+        : "订阅服务进行中。";
     case "COMPLETED":
       return "订阅流程已结束。";
     case "FAILED":
@@ -1665,7 +1785,7 @@ function normalizeOptionalText(value?: string) {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 

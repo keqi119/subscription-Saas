@@ -240,6 +240,11 @@ export class PortalBillingService {
       this.buildOrderEntitlementSummary(order.id, currentCustomer.customerId)
     ]);
     const mileageReviewSummary = toMileageReviewSummary(order);
+    const nextAction = resolveOrderNextAction(
+      order,
+      billSummary.remainingAmount,
+      mileageReviewSummary
+    );
 
     return {
       ...toPortalOrderListItem(order),
@@ -249,12 +254,11 @@ export class PortalBillingService {
       deliverySummary: toDeliverySummary(order),
       entitlementSummary,
       mileageReviewSummary,
-      nextAction: resolveOrderNextAction(
-        order,
-        billSummary.remainingAmount,
-        mileageReviewSummary
-      ),
-      nextActionTarget: toMileageReviewNextActionTarget(mileageReviewSummary),
+      nextAction,
+      nextActionTarget:
+        nextAction === "SUBMIT_MILEAGE_REVIEW"
+          ? toMileageReviewNextActionTarget(mileageReviewSummary)
+          : null,
       order: toOrderSummary(order),
       subscriptionPlanSummary: toSubscriptionPlanSummary(order),
       vehicleSummary: toVehicleSummary(order)
@@ -317,7 +321,10 @@ export class PortalBillingService {
     return buildDepositOverview(ledgers);
   }
 
-  async listDepositTransactions(currentCustomer: CurrentCustomer, query: PortalDepositTransactionsQueryDto) {
+  async listDepositTransactions(
+    currentCustomer: CurrentCustomer,
+    query: PortalDepositTransactionsQueryDto
+  ) {
     const { page, pageSize, skip } = resolvePagination(query);
     const where: Prisma.DepositLedgerWhereInput = {
       customerId: currentCustomer.customerId,
@@ -370,7 +377,10 @@ export class PortalBillingService {
     return paged(items.map(toEntitlementGrantItem), total, page, pageSize);
   }
 
-  async listEntitlementUsages(currentCustomer: CurrentCustomer, query: PortalEntitlementUsagesQueryDto) {
+  async listEntitlementUsages(
+    currentCustomer: CurrentCustomer,
+    query: PortalEntitlementUsagesQueryDto
+  ) {
     const { page, pageSize, skip } = resolvePagination(query);
     const where: Prisma.OrderEntitlementUsageWhereInput = {
       customerId: currentCustomer.customerId,
@@ -399,7 +409,10 @@ export class PortalBillingService {
     const payableBills = order.receivableBills.filter(isBillPayable);
     const totalAmount = order.receivableBills.reduce((sum, bill) => sum + bill.amount, 0n);
     const paidAmount = order.receivableBills.reduce((sum, bill) => sum + bill.paidAmount, 0n);
-    const remainingAmount = order.receivableBills.reduce((sum, bill) => sum + bill.remainingAmount, 0n);
+    const remainingAmount = order.receivableBills.reduce(
+      (sum, bill) => sum + bill.remainingAmount,
+      0n
+    );
 
     return {
       bills: order.receivableBills.map((bill) => ({
@@ -431,8 +444,10 @@ export class PortalBillingService {
         transactionStatus: DepositTransactionStatus.CONFIRMED
       }
     });
-    return buildDepositOverview(ledgers).accounts[0] ??
-      toPlainDepositAccount(emptyDepositAccount(orderId));
+    return (
+      buildDepositOverview(ledgers).accounts[0] ??
+      toPlainDepositAccount(emptyDepositAccount(orderId))
+    );
   }
 
   private async buildOrderEntitlementSummary(orderId: string, customerId: string) {
@@ -511,12 +526,18 @@ function toVehicleSummary(order: PortalOrder) {
     return null;
   }
   const summary = {
-    batteryCapacityKwh: vehicle.batteryCapacityKwh === null ? null : Number(vehicle.batteryCapacityKwh),
+    batteryCapacityKwh:
+      vehicle.batteryCapacityKwh === null ? null : Number(vehicle.batteryCapacityKwh),
     batteryUsageType: vehicle.batteryUsageType,
     brand: vehicle.brand,
     city: vehicle.assetLocation,
     currentMileageKm: vehicle.currentMileageKm,
-    displayName: [vehicle.brand, vehicle.series, vehicle.model, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
+    displayName: [
+      vehicle.brand,
+      vehicle.series,
+      vehicle.model,
+      vehicle.modelYear ? `${vehicle.modelYear}款` : null
+    ]
       .filter(Boolean)
       .join(" "),
     id: vehicle.id,
@@ -535,20 +556,25 @@ function toVehicleSummary(order: PortalOrder) {
 }
 
 function toSubscriptionPlanSummary(order: PortalOrder) {
-  const snapshot = toRecord(order.finalPlanSnapshot)
-    ?? toRecord(order.customerSelectedSnapshot)
-    ?? toRecord(order.quoteSnapshot);
-  const planSnapshot = toRecord(snapshot?.subscriptionPlan)
-    ?? toRecord(snapshot?.plan)
-    ?? toRecord(snapshot?.subscriptionPlanSnapshot)
-    ?? snapshot;
+  const snapshot =
+    toRecord(order.finalPlanSnapshot) ??
+    toRecord(order.customerSelectedSnapshot) ??
+    toRecord(order.quoteSnapshot);
+  const planSnapshot =
+    toRecord(snapshot?.subscriptionPlan) ??
+    toRecord(snapshot?.plan) ??
+    toRecord(snapshot?.subscriptionPlanSnapshot) ??
+    snapshot;
 
   return {
     mileageLimitKm: order.mileageLimitKm,
     monthlyFeeAmount: Number(order.monthlyFeeAmount),
     overMileageFeeAmount: Number(order.overMileageFeeAmount),
     periodMonths: order.periodMonths,
-    planName: stringOrNull(planSnapshot?.planName) ?? stringOrNull(planSnapshot?.name) ?? order.productVersion.product.name,
+    planName:
+      stringOrNull(planSnapshot?.planName) ??
+      stringOrNull(planSnapshot?.name) ??
+      order.productVersion.product.name,
     productName: order.productVersion.product.name
   };
 }
@@ -589,7 +615,11 @@ function resolvePaymentStatus(bills: PortalOrder["receivableBills"]) {
   if (bills.length === 0) {
     return "NONE";
   }
-  if (bills.every((bill) => bill.billStatus === BillStatus.PAID || bill.billStatus === BillStatus.CANCELLED)) {
+  if (
+    bills.every(
+      (bill) => bill.billStatus === BillStatus.PAID || bill.billStatus === BillStatus.CANCELLED
+    )
+  ) {
     return "PAID";
   }
   if (bills.some((bill) => bill.billStatus === BillStatus.OVERDUE && bill.remainingAmount > 0n)) {
@@ -607,7 +637,11 @@ function resolveOrderNextAction(
   mileageReviewSummary: ReturnType<typeof toMileageReviewSummary>
 ) {
   const contract = toContractSummary(order);
-  if (contract && contract.contractStatus !== ContractStatus.SIGNED && contract.contractStatus !== ContractStatus.ARCHIVED) {
+  if (
+    contract &&
+    contract.contractStatus !== ContractStatus.SIGNED &&
+    contract.contractStatus !== ContractStatus.ARCHIVED
+  ) {
     return "SIGN_CONTRACT";
   }
   if (remainingAmount > 0) {
@@ -650,9 +684,7 @@ function toMileageReviewSummary(order: PortalOrder) {
   };
 }
 
-function toMileageReviewNextActionTarget(
-  summary: ReturnType<typeof toMileageReviewSummary>
-) {
+function toMileageReviewNextActionTarget(summary: ReturnType<typeof toMileageReviewSummary>) {
   if (!summary?.hasAction || !summary.actionUrl) {
     return null;
   }
@@ -662,9 +694,11 @@ function toMileageReviewNextActionTarget(
   };
 }
 
-function toBillListItem(bill: Prisma.ReceivableBillGetPayload<{
-  include: { order: { select: { id: true; orderNo: true; orderStatus: true } } };
-}>) {
+function toBillListItem(
+  bill: Prisma.ReceivableBillGetPayload<{
+    include: { order: { select: { id: true; orderNo: true; orderStatus: true } } };
+  }>
+) {
   return {
     amount: Number(bill.amount),
     billId: bill.id,
@@ -726,16 +760,23 @@ function buildDepositOverview(ledgers: DepositLedgerRow[]) {
   };
 
   for (const ledger of ledgers) {
-    const account = accounts.get(ledger.orderId) ?? emptyDepositAccount(ledger.orderId, ledger.order.orderNo);
+    const account =
+      accounts.get(ledger.orderId) ?? emptyDepositAccount(ledger.orderId, ledger.order.orderNo);
     applyDepositAmount(account, ledger.transactionType, ledger.amount);
     account.lastTransactionAt = toIsoDateTime(ledger.occurredAt);
     account.orderStatus = ledger.order.orderStatus;
-    account.remainingAmount = account.collectedAmount - account.deductedAmount - account.refundedAmount - account.frozenAmount + account.releasedAmount;
+    account.remainingAmount =
+      account.collectedAmount -
+      account.deductedAmount -
+      account.refundedAmount -
+      account.frozenAmount +
+      account.releasedAmount;
     accounts.set(ledger.orderId, account);
     applyDepositTotal(totals, ledger.transactionType, ledger.amount);
   }
 
-  const availableAmount = totals.totalCollectedAmount -
+  const availableAmount =
+    totals.totalCollectedAmount -
     totals.totalDeductedAmount -
     totals.totalRefundedAmount -
     totals.totalFrozenAmount +
@@ -767,7 +808,11 @@ function emptyDepositAccount(orderId: string, orderNo: string | null = null) {
   };
 }
 
-function applyDepositAmount(account: ReturnType<typeof emptyDepositAccount>, type: DepositTransactionType, amount: bigint) {
+function applyDepositAmount(
+  account: ReturnType<typeof emptyDepositAccount>,
+  type: DepositTransactionType,
+  amount: bigint
+) {
   if (type === DepositTransactionType.COLLECT) {
     account.collectedAmount += amount;
   } else if (type === DepositTransactionType.DEDUCT) {
@@ -779,7 +824,8 @@ function applyDepositAmount(account: ReturnType<typeof emptyDepositAccount>, typ
   } else if (type === DepositTransactionType.RELEASE) {
     account.releasedAmount += amount;
   }
-  account.status = account.remainingAmount > 0n || type === DepositTransactionType.COLLECT ? "ACTIVE" : "NONE";
+  account.status =
+    account.remainingAmount > 0n || type === DepositTransactionType.COLLECT ? "ACTIVE" : "NONE";
 }
 
 function applyDepositTotal(
@@ -807,11 +853,8 @@ function applyDepositTotal(
 }
 
 function toPlainDepositAccount(account: ReturnType<typeof emptyDepositAccount>) {
-  const status = account.remainingAmount > 0n
-    ? "ACTIVE"
-    : account.collectedAmount > 0n
-      ? "SETTLED"
-      : "NONE";
+  const status =
+    account.remainingAmount > 0n ? "ACTIVE" : account.collectedAmount > 0n ? "SETTLED" : "NONE";
   return {
     collectedAmount: Number(account.collectedAmount),
     deductedAmount: Number(account.deductedAmount),

@@ -30,6 +30,20 @@ describe("mileage review settlement", () => {
         usedAmount: new Prisma.Decimal(1_500)
       })
     });
+    expect(harness.tx.orderEntitlementGrant.findFirst).toHaveBeenCalledWith({
+      orderBy: { createdAt: "desc" },
+      where: expect.objectContaining({
+        grantPeriodEnd: { gte: new Date("2026-09-29T00:00:00.000Z") },
+        grantPeriodStart: { lte: new Date("2026-08-31T00:00:00.000Z") },
+        status: {
+          in: [
+            EntitlementGrantStatus.ACTIVE,
+            EntitlementGrantStatus.EXHAUSTED,
+            EntitlementGrantStatus.EXPIRED
+          ]
+        }
+      })
+    });
     expect(harness.tx.orderEntitlementGrant.update).toHaveBeenCalledWith({
       data: expect.objectContaining({
         remainingAmount: new Prisma.Decimal(0),
@@ -67,9 +81,9 @@ describe("mileage review settlement", () => {
       }),
       where: { id: "review-1" }
     });
-    expect(harness.tx.orderMileageReview.upsert).toHaveBeenCalledWith(
+    expect(harness.tx.orderMileageReview.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           baselineMileageKm: 3_000,
           baselineReadingId: "reading-2",
           cycleNo: 2,
@@ -100,6 +114,29 @@ describe("mileage review settlement", () => {
         overMileageAmount: 0n,
         overMileageBillId: null,
         overMileageKm: 0
+      }),
+      where: { id: "review-1" }
+    });
+  });
+
+  it("confirms positive overage without a bill when the configured rate is zero", async () => {
+    const harness = createHarness({ overMileageFeeAmount: 0n });
+
+    await harness.service.settleReview({
+      confirmedAt: harness.confirmedAt,
+      expectedLockVersion: 3,
+      idempotencyKey: "confirm-review-zero-rate",
+      reviewId: "review-1",
+      userId: "user-1"
+    });
+
+    expect(harness.tx.receivableBill.create).not.toHaveBeenCalled();
+    expect(harness.tx.orderMileageReview.update).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        overMileageAmount: 0n,
+        overMileageBillId: null,
+        overMileageFeeAmount: 0n,
+        overMileageKm: 500
       }),
       where: { id: "review-1" }
     });
@@ -144,11 +181,31 @@ describe("mileage review settlement", () => {
     expect(harness.tx.receivableBill.create).not.toHaveBeenCalled();
     expect(harness.tx.orderMileageReview.update).not.toHaveBeenCalled();
   });
+
+  it("rejects a reading timestamp that could poison future mileage ordering", async () => {
+    const harness = createHarness({
+      readingAt: new Date("2099-01-01T00:00:00.000Z")
+    });
+
+    await expect(
+      harness.service.settleReview({
+        confirmedAt: harness.confirmedAt,
+        expectedLockVersion: 3,
+        idempotencyKey: "future-reading",
+        reviewId: "review-1",
+        userId: "user-1"
+      })
+    ).rejects.toThrow("outside the allowed review window");
+
+    expect(harness.vehicleMileageService.appendConfirmedReading).not.toHaveBeenCalled();
+  });
 });
 
 function createHarness(
   overrides: {
     calculationSnapshot?: Record<string, unknown>;
+    overMileageFeeAmount?: bigint;
+    readingAt?: Date;
     status?: OrderMileageReviewStatus;
     submittedMileageKm?: number;
   } = {}
@@ -157,9 +214,11 @@ function createHarness(
   const review = {
     baselineMileageKm: 1_000,
     baselineReadingId: "reading-1",
+    baselineReading: { recordedAt: new Date("2026-08-31T04:30:00.000Z") },
     calculationSnapshot: overrides.calculationSnapshot ?? {},
     cycleNo: 1,
     deletedAt: null,
+    dueAt: new Date("2026-10-01T04:30:00.000Z"),
     evidence: [{ deletedAt: null, file: { mimeType: "image/jpeg" }, id: "ev-1" }],
     id: "review-1",
     lockVersion: 3,
@@ -170,14 +229,15 @@ function createHarness(
       mileageLimitKm: 1_500,
       orderNo: "ORD-1",
       orderStatus: OrderStatus.ACTIVE,
-      overMileageFeeAmount: 100n,
+      overMileageFeeAmount: overrides.overMileageFeeAmount ?? 100n,
       periodMonths: 12
     },
     orderId: "order-1",
     periodEnd: new Date("2026-09-30T04:29:59.999Z"),
     periodStart: new Date("2026-08-31T04:30:00.000Z"),
-    readingAt: confirmedAt,
+    readingAt: overrides.readingAt ?? confirmedAt,
     status: overrides.status ?? OrderMileageReviewStatus.PENDING_REVIEW,
+    scheduledReviewAt: new Date("2026-09-30T04:30:00.000Z"),
     submittedMileageKm: overrides.submittedMileageKm ?? 3_000,
     vehicleId: "vehicle-1",
     version: 1
@@ -213,13 +273,11 @@ function createHarness(
     },
     orderMileageReview: {
       count: vi.fn(async () => 0),
-      findUnique: vi
-        .fn()
-        .mockResolvedValueOnce(review)
-        .mockResolvedValue(confirmedReview),
+      create: vi.fn(async () => ({ id: "review-2" })),
+      findFirst: vi.fn(async () => null),
+      findUnique: vi.fn().mockResolvedValueOnce(review).mockResolvedValue(confirmedReview),
       findUniqueOrThrow: vi.fn(async () => confirmedReview),
-      update: vi.fn(async () => confirmedReview),
-      upsert: vi.fn(async () => ({ id: "review-2" }))
+      update: vi.fn(async () => confirmedReview)
     },
     receivableBill: {
       create: vi.fn(async () => ({ id: "bill-1" })),
@@ -227,9 +285,7 @@ function createHarness(
     }
   };
   const prisma = {
-    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx)
-    )
+    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx))
   };
   const vehicleMileageService = {
     appendConfirmedReading: vi.fn(async () => ({ id: "reading-2" }))
@@ -237,10 +293,7 @@ function createHarness(
 
   return {
     confirmedAt,
-    service: new MileageReviewSettlementService(
-      prisma as never,
-      vehicleMileageService as never
-    ),
+    service: new MileageReviewSettlementService(prisma as never, vehicleMileageService as never),
     tx,
     vehicleMileageService
   };

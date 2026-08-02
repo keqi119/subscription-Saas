@@ -23,9 +23,7 @@ describe("MileageReviewWorker", () => {
 
     const result = await harness.worker.runOnce(harness.asOf);
 
-    expect(harness.mileageReviewService.activateDueReviews).toHaveBeenCalledWith(
-      harness.asOf
-    );
+    expect(harness.mileageReviewService.activateDueReviews).toHaveBeenCalledWith(harness.asOf);
     expect(harness.notificationService.notifyMileageReviewDue).toHaveBeenCalledWith({
       customerId: "customer-1",
       cycleNo: 1,
@@ -55,31 +53,72 @@ describe("MileageReviewWorker", () => {
     });
     expect(harness.mileageReviewService.activateDueReviews).toHaveBeenCalledTimes(1);
   });
+
+  it("notifies never-attempted reviews before retrying failed reviews and excludes today's successes", async () => {
+    const harness = createHarness({
+      events: [
+        { aggregateId: "review-failed", eventStatus: "FAILED" },
+        { aggregateId: "review-sent", eventStatus: "PROCESSED" }
+      ],
+      reviews: [review("review-fresh"), review("review-failed"), review("review-sent")]
+    });
+
+    await harness.worker.runOnce(harness.asOf);
+
+    expect(
+      harness.notificationService.notifyMileageReviewDue.mock.calls.map(([input]) => input.reviewId)
+    ).toEqual(["review-fresh", "review-failed"]);
+    expect(harness.prisma.notificationEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ eventType: "MILEAGE_REVIEW_DUE" })
+      })
+    );
+  });
 });
 
-function createHarness(options: { enabled?: boolean } = {}) {
+function createHarness(
+  options: {
+    enabled?: boolean;
+    events?: Array<{ aggregateId: string; eventStatus: string }>;
+    reviews?: ReturnType<typeof review>[];
+  } = {}
+) {
   const asOf = new Date("2026-08-02T16:30:00.000Z");
   const config = new ConfigService({
-    MILEAGE_REVIEW_WORKER_ENABLED:
-      options.enabled === false ? "false" : "true",
+    MILEAGE_REVIEW_WORKER_ENABLED: options.enabled === false ? "false" : "true",
     MILEAGE_REVIEW_WORKER_POLL_INTERVAL_MS: "60000"
   });
   const mileageReviewService = {
     activateDueReviews: vi.fn(async () => ({ activatedCount: 1 }))
   };
   const notificationService = {
-    notifyMileageReviewDue: vi.fn(async () => [])
+    notifyMileageReviewDue: vi.fn(
+      async (input: {
+        customerId: string;
+        cycleNo: number;
+        idempotencyKey: string;
+        orderNo: string;
+        reviewId: string;
+      }) => {
+        void input;
+        return [];
+      }
+    )
   };
+  const reviews = options.reviews ?? [review("review-1")];
   const prisma = {
+    notificationEvent: {
+      findMany: vi.fn(async () => options.events ?? [])
+    },
     orderMileageReview: {
-      findMany: vi.fn(async () => [
-        {
-          cycleNo: 1,
-          id: "review-1",
-          order: { customerId: "customer-1", orderNo: "ORD-1" },
-          status: OrderMileageReviewStatus.PENDING_SUBMISSION
-        }
-      ])
+      findMany: vi.fn(async ({ where }: { where: { id?: { in?: string[]; notIn?: string[] } } }) =>
+        reviews.filter((item) => {
+          if (where.id?.in && !where.id.in.includes(item.id)) {
+            return false;
+          }
+          return !where.id?.notIn?.includes(item.id);
+        })
+      )
     }
   };
   return {
@@ -91,6 +130,19 @@ function createHarness(options: { enabled?: boolean } = {}) {
       mileageReviewService as never,
       notificationService as never,
       prisma as never
-    )
+    ),
+    prisma
+  };
+}
+
+function review(id: string) {
+  return {
+    cycleNo: 1,
+    id,
+    order: {
+      customerId: id === "review-1" ? "customer-1" : `customer-${id}`,
+      orderNo: id === "review-1" ? "ORD-1" : `ORD-${id}`
+    },
+    status: OrderMileageReviewStatus.PENDING_SUBMISSION
   };
 }

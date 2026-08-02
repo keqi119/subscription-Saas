@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-  Optional
-} from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import {
   MileageReviewSubmissionSource,
   OrderMileageReviewStatus,
@@ -14,13 +9,11 @@ import {
 } from "@prisma/client";
 
 import { RequestUser } from "../auth/auth.types";
+import type { UploadedMaterialFile } from "../customer/customer.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { buildMileageReviewCycle } from "./mileage-review.calendar";
-import {
-  MileageReviewRecord,
-  MileageReviewRepository
-} from "./mileage-review.repository";
+import { MileageReviewRecord, MileageReviewRepository } from "./mileage-review.repository";
 import {
   AttachMileageReviewEvidenceDto,
   ConfirmMileageReviewDto,
@@ -30,11 +23,16 @@ import {
   SaveAdminMileageReviewDraftDto,
   VoidMileageReviewDto
 } from "./dto/mileage-review.dto";
-import {
-  CreateFirstMileageReviewInput,
-  MileageReviewTransaction
-} from "./mileage-review.types";
+import { CreateFirstMileageReviewInput, MileageReviewTransaction } from "./mileage-review.types";
 import { MileageReviewSettlementService } from "./mileage-review-settlement.service";
+import {
+  detectRasterMimeType,
+  isSupportedRasterMimeType,
+  readRasterHeader
+} from "./mileage-review-evidence";
+import { assertMileageReviewTimestamp } from "./mileage-review-time";
+
+const MAX_EVIDENCE_BYTES = 20 * 1024 * 1024;
 
 @Injectable()
 export class MileageReviewService {
@@ -46,14 +44,8 @@ export class MileageReviewService {
     private readonly settlementService?: MileageReviewSettlementService
   ) {}
 
-  async createFirstReview(
-    tx: MileageReviewTransaction,
-    input: CreateFirstMileageReviewInput
-  ) {
-    const baseline = await this.repository.findMileageReading(
-      tx,
-      input.deliveryReadingId
-    );
+  async createFirstReview(tx: MileageReviewTransaction, input: CreateFirstMileageReviewInput) {
+    const baseline = await this.repository.findMileageReading(tx, input.deliveryReadingId);
     if (
       !baseline ||
       baseline.status !== VehicleMileageReadingStatus.ACTIVE ||
@@ -61,9 +53,7 @@ export class MileageReviewService {
       baseline.orderId !== input.orderId ||
       baseline.vehicleId !== input.vehicleId
     ) {
-      throw new BadRequestException(
-        "Delivery baseline mileage reading is invalid."
-      );
+      throw new BadRequestException("Delivery baseline mileage reading is invalid.");
     }
 
     const cycle = buildMileageReviewCycle({
@@ -108,6 +98,7 @@ export class MileageReviewService {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const result = await this.repository.list({
+      overdue: query.overdue,
       orderId: query.orderId,
       page,
       pageSize,
@@ -125,10 +116,7 @@ export class MileageReviewService {
     return toMileageReviewView(await this.findReviewOrThrow(id));
   }
 
-  async listCustomerReviews(
-    customerId: string,
-    query: MileageReviewListQueryDto
-  ) {
+  async listCustomerReviews(customerId: string, query: MileageReviewListQueryDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
     const result = await this.repository.listForCustomer(customerId, {
@@ -138,9 +126,7 @@ export class MileageReviewService {
       status: query.status
     });
     return {
-      items: result.items.map((item) =>
-        toMileageReviewView(item, "/api/portal/mileage-reviews")
-      ),
+      items: result.items.map((item) => toMileageReviewView(item, "/api/portal/mileage-reviews")),
       page,
       pageSize,
       total: result.total
@@ -174,10 +160,12 @@ export class MileageReviewService {
         "Submitted mileage cannot be lower than the confirmed baseline."
       );
     }
+    const readingAt = parseReviewDate(dto.readingAt, "readingAt");
+    assertMileageReviewTimestamp(review, readingAt);
     const updated = await this.repository.updateReview({
       customerId,
       data: {
-        readingAt: parseReviewDate(dto.readingAt, "readingAt"),
+        readingAt,
         submissionSource: MileageReviewSubmissionSource.PORTAL,
         submittedByCustomerId: customerId,
         submittedByUserId: null,
@@ -211,12 +199,14 @@ export class MileageReviewService {
     assertEditableReview(review.status);
     assertPrivateImageFile(input);
     await this.assertEvidenceReadable(input);
+    const capturedAt = input.capturedAt ? parseReviewDate(input.capturedAt, "capturedAt") : null;
+    if (capturedAt) {
+      assertMileageReviewTimestamp(review, capturedAt);
+    }
     const updated = await this.repository.attachPortalEvidence({
       customerId,
       evidenceData: {
-        capturedAt: input.capturedAt
-          ? parseReviewDate(input.capturedAt, "capturedAt")
-          : null,
+        capturedAt,
         createdBy: customerId,
         metadata: safeMetadata(input.metadata),
         reviewId: id,
@@ -263,18 +253,12 @@ export class MileageReviewService {
     );
   }
 
-  async submitCustomerReview(
-    id: string,
-    dto: MileageReviewVersionDto,
-    customerId: string
-  ) {
+  async submitCustomerReview(id: string, dto: MileageReviewVersionDto, customerId: string) {
     const review = await this.findCustomerReviewOrThrow(id, customerId);
     assertCustomerReviewWritable(review);
     assertEditableReview(review.status);
     if (review.submittedMileageKm === null || !review.readingAt) {
-      throw new BadRequestException(
-        "Mileage and reading time must be saved before submission."
-      );
+      throw new BadRequestException("Mileage and reading time must be saved before submission.");
     }
     await this.assertAtLeastOneReadableEvidence(review);
     const updated = await this.repository.updateReview({
@@ -295,28 +279,16 @@ export class MileageReviewService {
     return toMileageReviewView(updated, "/api/portal/mileage-reviews");
   }
 
-  async getCustomerEvidenceObject(
-    id: string,
-    evidenceId: string,
-    customerId: string
-  ) {
+  async getCustomerEvidenceObject(id: string, evidenceId: string, customerId: string) {
     await this.findCustomerReviewOrThrow(id, customerId);
-    const evidence = await this.repository.findEvidenceForCustomer(
-      evidenceId,
-      id,
-      customerId
-    );
+    const evidence = await this.repository.findEvidenceForCustomer(evidenceId, id, customerId);
     if (!evidence) {
       throw new NotFoundException("Mileage review evidence not found.");
     }
     return this.downloadEvidence(evidence.file);
   }
 
-  async saveAdminDraft(
-    id: string,
-    dto: SaveAdminMileageReviewDraftDto,
-    user: RequestUser
-  ) {
+  async saveAdminDraft(id: string, dto: SaveAdminMileageReviewDraftDto, user: RequestUser) {
     const review = await this.findReviewOrThrow(id);
     assertEditableReview(review.status);
     if (
@@ -328,6 +300,7 @@ export class MileageReviewService {
       );
     }
     const readingAt = parseReviewDate(dto.readingAt, "readingAt");
+    assertMileageReviewTimestamp(review, readingAt);
     const updated = await this.repository.updateReview({
       data: {
         readingAt,
@@ -344,11 +317,7 @@ export class MileageReviewService {
     return toMileageReviewView(updated);
   }
 
-  async attachEvidence(
-    id: string,
-    dto: AttachMileageReviewEvidenceDto,
-    user: RequestUser
-  ) {
+  async attachEvidence(id: string, dto: AttachMileageReviewEvidenceDto, user: RequestUser) {
     const review = await this.findReviewOrThrow(id);
     assertEditableReview(review.status);
     const file = await this.repository.findFile(dto.fileId);
@@ -356,18 +325,18 @@ export class MileageReviewService {
       throw new NotFoundException("Evidence file does not exist.");
     }
     if (file.uploadedBy !== user.id) {
-      throw new BadRequestException(
-        "Evidence file is not owned by the current operator."
-      );
+      throw new BadRequestException("Evidence file is not owned by the current operator.");
     }
     assertPrivateImageFile(file);
     await this.assertEvidenceReadable(file);
 
+    const capturedAt = dto.capturedAt ? parseReviewDate(dto.capturedAt, "capturedAt") : null;
+    if (capturedAt) {
+      assertMileageReviewTimestamp(review, capturedAt);
+    }
     const updated = await this.repository.attachEvidence({
       data: {
-        capturedAt: dto.capturedAt
-          ? parseReviewDate(dto.capturedAt, "capturedAt")
-          : null,
+        capturedAt,
         createdBy: user.id,
         fileId: file.id,
         metadata: safeMetadata(dto.metadata),
@@ -382,6 +351,73 @@ export class MileageReviewService {
       id
     });
     return toMileageReviewView(updated);
+  }
+
+  async uploadAdminEvidence(
+    id: string,
+    dto: { capturedAt?: string; lockVersion: number },
+    files: UploadedMaterialFile[] | undefined,
+    user: RequestUser
+  ) {
+    const review = await this.findReviewOrThrow(id);
+    assertEditableReview(review.status);
+    const file = (files ?? []).find((item) => item.buffer?.length);
+    if (!file) {
+      throw new BadRequestException("Mileage review evidence image is required.");
+    }
+    if (!isSupportedRasterMimeType(file.mimetype)) {
+      throw new BadRequestException("Mileage review evidence must be a JPEG, PNG, or WebP image.");
+    }
+    const detectedMimeType = detectRasterMimeType(file.buffer);
+    if (detectedMimeType !== file.mimetype) {
+      throw new BadRequestException(
+        "Mileage review evidence content does not match its image type."
+      );
+    }
+    if (file.size <= 0 || file.size > MAX_EVIDENCE_BYTES) {
+      throw new BadRequestException("Mileage review evidence image must not exceed 20 MB.");
+    }
+    const capturedAt = dto.capturedAt ? parseReviewDate(dto.capturedAt, "capturedAt") : null;
+    if (capturedAt) {
+      assertMileageReviewTimestamp(review, capturedAt);
+    }
+    const storageService = this.getStorageService();
+    const stored = await storageService.putAdminMileageReviewEvidence({
+      buffer: file.buffer,
+      contentType: detectedMimeType,
+      originalName: file.originalname,
+      reviewId: id,
+      userId: user.id
+    });
+    try {
+      const updated = await this.repository.attachAdminUploadedEvidence({
+        evidenceData: {
+          capturedAt,
+          createdBy: user.id,
+          metadata: {},
+          reviewId: id,
+          submissionSource: MileageReviewSubmissionSource.ADMIN,
+          updatedBy: user.id,
+          uploadedByCustomerId: null,
+          uploadedByUserId: user.id
+        },
+        expectedLockVersion: dto.lockVersion,
+        expectedStatuses: editableStatuses(),
+        fileData: {
+          bucket: stored.bucket,
+          mimeType: detectedMimeType,
+          objectKey: stored.objectKey,
+          originalName: file.originalname,
+          sizeBytes: BigInt(file.size),
+          uploadedBy: user.id
+        },
+        id
+      });
+      return toMileageReviewView(updated);
+    } catch (error) {
+      await storageService.deleteObject(stored.bucket, stored.objectKey).catch(() => undefined);
+      throw error;
+    }
   }
 
   async removeEvidence(
@@ -421,10 +457,7 @@ export class MileageReviewService {
   }) {
     assertPrivateImageFile(file);
     try {
-      const downloaded = await this.getStorageService().getObject(
-        file.bucket,
-        file.objectKey
-      );
+      const downloaded = await this.getStorageService().getObject(file.bucket, file.objectKey);
       return {
         ...downloaded,
         mimeType: downloaded.contentType ?? file.mimeType,
@@ -435,17 +468,11 @@ export class MileageReviewService {
     }
   }
 
-  async submitReview(
-    id: string,
-    dto: MileageReviewVersionDto,
-    user: RequestUser
-  ) {
+  async submitReview(id: string, dto: MileageReviewVersionDto, user: RequestUser) {
     const review = await this.findReviewOrThrow(id);
     assertEditableReview(review.status);
     if (review.submittedMileageKm === null || !review.readingAt) {
-      throw new BadRequestException(
-        "Mileage and reading time must be saved before submission."
-      );
+      throw new BadRequestException("Mileage and reading time must be saved before submission.");
     }
     await this.assertAtLeastOneReadableEvidence(review);
     const updated = await this.repository.updateReview({
@@ -464,11 +491,7 @@ export class MileageReviewService {
     return toMileageReviewView(updated);
   }
 
-  async returnReview(
-    id: string,
-    dto: ReturnMileageReviewDto,
-    user: RequestUser
-  ) {
+  async returnReview(id: string, dto: ReturnMileageReviewDto, user: RequestUser) {
     const reason = dto.reason.trim();
     if (!reason) {
       throw new BadRequestException("Return reason is required.");
@@ -489,11 +512,7 @@ export class MileageReviewService {
     );
   }
 
-  async confirmReview(
-    id: string,
-    dto: ConfirmMileageReviewDto,
-    user: RequestUser
-  ) {
+  async confirmReview(id: string, dto: ConfirmMileageReviewDto, user: RequestUser) {
     const review = await this.findReviewOrThrow(id);
     await this.assertAtLeastOneReadableEvidence(review);
     return toMileageReviewView(
@@ -506,11 +525,7 @@ export class MileageReviewService {
     );
   }
 
-  async voidAndReopenReview(
-    id: string,
-    dto: VoidMileageReviewDto,
-    user: RequestUser
-  ) {
+  async voidAndReopenReview(id: string, dto: VoidMileageReviewDto, user: RequestUser) {
     const result = await this.getSettlementService().voidAndReopenReview({
       expectedLockVersion: dto.lockVersion,
       reason: dto.reason,
@@ -539,16 +554,12 @@ export class MileageReviewService {
     return review;
   }
 
-  private async assertAtLeastOneReadableEvidence(
-    review: MileageReviewRecord
-  ) {
+  private async assertAtLeastOneReadableEvidence(review: MileageReviewRecord) {
     const evidence = review.evidence.filter(
-      (item) => !item.deletedAt && item.file.mimeType?.startsWith("image/")
+      (item) => !item.deletedAt && isSupportedRasterMimeType(item.file.mimeType)
     );
     if (evidence.length === 0) {
-      throw new BadRequestException(
-        "At least one readable image evidence file is required."
-      );
+      throw new BadRequestException("At least one readable image evidence file is required.");
     }
     for (const item of evidence) {
       try {
@@ -558,9 +569,7 @@ export class MileageReviewService {
         // Continue until at least one attached image can be read.
       }
     }
-    throw new BadRequestException(
-      "At least one readable image evidence file is required."
-    );
+    throw new BadRequestException("At least one readable image evidence file is required.");
   }
 
   private async assertEvidenceReadable(file: {
@@ -570,23 +579,14 @@ export class MileageReviewService {
     sizeBytes: bigint;
   }) {
     try {
-      const downloaded = await this.getStorageService().getObject(
-        file.bucket,
-        file.objectKey
-      );
-      const readableType = downloaded.contentType ?? file.mimeType;
-      if (
-        !readableType?.startsWith("image/") ||
-        downloaded.contentLength === 0
-      ) {
-        downloaded.stream.destroy();
+      const downloaded = await this.getStorageService().getObject(file.bucket, file.objectKey);
+      const header = await readRasterHeader(downloaded.stream);
+      const detectedType = detectRasterMimeType(header);
+      if (downloaded.contentLength === 0 || detectedType !== file.mimeType) {
         throw new Error("not a readable image");
       }
-      downloaded.stream.destroy();
     } catch {
-      throw new BadRequestException(
-        "Evidence file cannot be read from private storage."
-      );
+      throw new BadRequestException("Evidence file cannot be read from private storage.");
     }
   }
 
@@ -624,25 +624,18 @@ function assertValidAsOf(value: Date) {
 }
 
 function editableStatuses(): OrderMileageReviewStatus[] {
-  return [
-    OrderMileageReviewStatus.PENDING_SUBMISSION,
-    OrderMileageReviewStatus.RETURNED
-  ];
+  return [OrderMileageReviewStatus.PENDING_SUBMISSION, OrderMileageReviewStatus.RETURNED];
 }
 
 function assertEditableReview(status: OrderMileageReviewStatus) {
   if (!editableStatuses().includes(status)) {
-    throw new BadRequestException(
-      "Mileage review is not editable in its current status."
-    );
+    throw new BadRequestException("Mileage review is not editable in its current status.");
   }
 }
 
 function assertCustomerReviewWritable(review: MileageReviewRecord) {
   if (review.order.orderStatus !== OrderStatus.ACTIVE) {
-    throw new BadRequestException(
-      "Final-order mileage review history is read-only."
-    );
+    throw new BadRequestException("Final-order mileage review history is read-only.");
   }
 }
 
@@ -661,9 +654,10 @@ function assertPrivateImageFile(file: {
   sizeBytes: bigint;
 }) {
   if (!file.mimeType?.startsWith("image/")) {
-    throw new BadRequestException(
-      "Mileage review evidence must be an image."
-    );
+    throw new BadRequestException("Mileage review evidence must be an image.");
+  }
+  if (!isSupportedRasterMimeType(file.mimeType)) {
+    throw new BadRequestException("Mileage review evidence must be a JPEG, PNG, or WebP image.");
   }
   if (
     !file.bucket.trim() ||
@@ -688,10 +682,7 @@ function safeMetadata(value?: Record<string, unknown>): Prisma.InputJsonObject |
   return JSON.parse(serialized) as Prisma.InputJsonObject;
 }
 
-function toMileageReviewView(
-  review: MileageReviewRecord,
-  routePrefix = "/api/mileage-reviews"
-) {
+function toMileageReviewView(review: MileageReviewRecord, routePrefix = "/api/mileage-reviews") {
   const { evidence, ...rest } = review;
   return {
     ...(serializeForApi(rest) as Record<string, unknown>),
@@ -706,9 +697,7 @@ function toMileageReviewView(
         downloadUrl: `${route}/download`,
         mimeType: file.mimeType,
         originalName: file.originalName,
-        previewUrl: file.mimeType?.startsWith("image/")
-          ? `${route}/preview`
-          : null,
+        previewUrl: isSupportedRasterMimeType(file.mimeType) ? `${route}/preview` : null,
         sizeBytes: file.sizeBytes.toString()
       };
     })
@@ -727,10 +716,7 @@ function serializeForApi(value: unknown): unknown {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [
-        key,
-        serializeForApi(nested)
-      ])
+      Object.entries(value).map(([key, nested]) => [key, serializeForApi(nested)])
     );
   }
   return value;

@@ -1,7 +1,8 @@
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import { OrderMileageReviewStatus } from "@prisma/client";
 import {
   IsEnum,
+  IsBoolean,
   IsInt,
   IsISO8601,
   IsObject,
@@ -20,6 +21,11 @@ export class MileageReviewListQueryDto {
   @IsOptional()
   @IsEnum(OrderMileageReviewStatus)
   status?: OrderMileageReviewStatus;
+
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  overdue?: boolean;
 
   @IsOptional()
   @Type(() => Number)
@@ -61,6 +67,17 @@ export class AttachMileageReviewEvidenceDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, unknown>;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  lockVersion!: number;
+}
+
+export class UploadAdminMileageReviewEvidenceDto {
+  @IsOptional()
+  @IsISO8601()
+  capturedAt?: string;
 
   @Type(() => Number)
   @IsInt()

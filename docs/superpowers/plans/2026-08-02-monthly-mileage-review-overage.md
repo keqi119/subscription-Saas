@@ -158,19 +158,19 @@ git commit -m "feat: start mileage reviews from delivery"
 - `POST /mileage-reviews/:id/confirm`
 - `POST /mileage-reviews/:id/void-reopen`
 
-- [ ] **Step 1: Write failing permission and API tests**
+- [x] **Step 1: Write failing permission and API tests**
 
 Cover `mileage_review:view|submit|confirm|return|void`, status transitions, optimistic `lockVersion`, evidence ownership/readability/MIME checks, missing evidence rejection, and admin submission source.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- mileage-review-admin-api.spec.ts`
 
-- [ ] **Step 3: Implement APIs and menu seed**
+- [x] **Step 3: Implement APIs and menu seed**
 
 Add `/mileage-reviews` under the order center menu. Evidence attachment must accept only active private image `FileObject` rows and store safe metadata; API responses expose preview/download routes, never bucket/object keys.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- mileage-review-admin-api.spec.ts

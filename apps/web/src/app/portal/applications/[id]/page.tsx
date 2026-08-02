@@ -33,6 +33,7 @@ import {
   PORTAL_PROGRESS_STATUS_LABELS,
   STATUS_LABELS
 } from "../../../../constants/labels";
+import { buildPortalApplicationNextActionCard } from "../../../../lib/portal-application-next-action-view-model";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalApplicationDetail,
@@ -258,6 +259,7 @@ export default function PortalApplicationDetailPage() {
   const canConfirmFinalPlan = finalPlan?.finalPlanStatus === "PENDING_CONFIRM" &&
     progress?.nextAction === "CONFIRM_FINAL_PLAN";
   const canRejectFinalPlan = canConfirmFinalPlan;
+  const nextActionCard = buildPortalApplicationNextActionCard(progress, application.nextStepHint);
 
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
@@ -283,7 +285,17 @@ export default function PortalApplicationDetailPage() {
               <Tag>{PORTAL_NEXT_ACTION_LABELS[progress?.nextAction ?? "WAIT_REVIEW"] ?? progress?.nextAction}</Tag>
             </Space>
           </Flex>
-          <Alert message={application.nextStepHint} showIcon style={{ marginTop: 16 }} type="info" />
+          <Alert
+            action={nextActionCard ? (
+              <Button onClick={() => router.push(nextActionCard.url)} type="link">
+                {nextActionCard.label}
+              </Button>
+            ) : undefined}
+            message={nextActionCard?.message ?? application.nextStepHint}
+            showIcon
+            style={{ marginTop: 16 }}
+            type={nextActionCard?.tone ?? "info"}
+          />
           {!application.materialComplete && application.missingMaterials.length > 0 ? (
             <Alert
               action={

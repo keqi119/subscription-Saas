@@ -20,6 +20,8 @@ import {
   SubscriptionPlanStatus,
   UserStatus,
   VehicleBatteryUsageType,
+  VehicleHandoverType,
+  VehicleHandoverWorkOrderStatus,
   VehicleStatus
 } from "@prisma/client";
 import { BadRequestException, NotFoundException } from "@nestjs/common";
@@ -438,6 +440,90 @@ describe("PortalApplicationService", () => {
           expect.objectContaining({ key: expectedStep, status: expectedStepStatus })
         ])
       );
+    }
+  );
+
+  it.each([
+    [
+      OrderStatus.PENDING_CONTRACT,
+      "contract-1",
+      [],
+      { label: "去签署合同", url: "/portal/contracts/contract-1" }
+    ],
+    [
+      OrderStatus.PENDING_PAYMENT,
+      null,
+      [],
+      { label: "去支付", url: "/portal/bills?orderId=order-1" }
+    ],
+    [
+      OrderStatus.ACTIVE,
+      null,
+      [],
+      { label: "查看已交付订单", url: "/portal/orders/order-1" }
+    ]
+  ])(
+    "returns a concrete portal action target for formal order status %s",
+    async (orderStatus, contractId, handoverWorkOrders, expectedTarget) => {
+      const { service } = createPortalApplicationFixture({
+        application: readyFinalPlanApplication({
+          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          orders: [
+            {
+              contractId,
+              deletedAt: null,
+              handoverWorkOrders,
+              id: "order-1",
+              orderNo: "ORD202608020001",
+              orderStatus
+            }
+          ]
+        })
+      });
+
+      const progress = await service.getApplicationProgress("application-1", currentCustomer("customer-1"));
+
+      expect(progress.nextActionTarget).toEqual(expectedTarget);
+    }
+  );
+
+  it.each([
+    [
+      VehicleHandoverWorkOrderStatus.ASSIGNED,
+      { label: "查看交付进度", url: "/portal/orders/order-1" }
+    ],
+    [
+      VehicleHandoverWorkOrderStatus.CUSTOMER_REVIEWING,
+      { label: "处理车辆交接", url: "/portal/handover-reviews/handover-1" }
+    ]
+  ])(
+    "uses the customer-visible handover target for delivery status %s",
+    async (handoverStatus, expectedTarget) => {
+      const { service } = createPortalApplicationFixture({
+        application: readyFinalPlanApplication({
+          planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+          orders: [
+            {
+              contractId: "contract-1",
+              deletedAt: null,
+              handoverWorkOrders: [
+                {
+                  handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+                  id: "handover-1",
+                  status: handoverStatus
+                }
+              ],
+              id: "order-1",
+              orderNo: "ORD202608020001",
+              orderStatus: OrderStatus.PENDING_DELIVERY
+            }
+          ]
+        })
+      });
+
+      const progress = await service.getApplicationProgress("application-1", currentCustomer("customer-1"));
+
+      expect(progress.nextActionTarget).toEqual(expectedTarget);
     }
   );
 

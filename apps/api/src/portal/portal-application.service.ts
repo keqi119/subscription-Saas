@@ -13,7 +13,9 @@ import {
   OrderStatus,
   PlanConfirmStatus,
   Prisma,
-  UserStatus
+  UserStatus,
+  VehicleHandoverType,
+  VehicleHandoverWorkOrderStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -55,7 +57,18 @@ const portalApplicationInclude = {
   orders: {
     orderBy: { createdAt: "desc" as const },
     select: {
+      contractId: true,
       deletedAt: true,
+      handoverWorkOrders: {
+        orderBy: { createdAt: "desc" as const },
+        select: {
+          handoverType: true,
+          id: true,
+          status: true
+        },
+        take: 1,
+        where: { handoverType: VehicleHandoverType.DELIVERY_OUTBOUND }
+      },
       id: true,
       orderNo: true,
       orderStatus: true
@@ -921,6 +934,7 @@ function toPortalApplicationProgress(application: PortalApplication) {
     currentStep,
     materialSupplementHints: buildMaterialSupplementHints(application),
     nextAction,
+    nextActionTarget: resolvePortalNextActionTarget(application),
     overallStatus: resolvePortalOverallStatus(application, nextAction),
     steps
   };
@@ -1098,6 +1112,62 @@ function resolvePortalNextAction(application: PortalApplication) {
     }
   }
   return "WAIT_REVIEW";
+}
+
+const PORTAL_VISIBLE_HANDOVER_STATUSES = new Set<VehicleHandoverWorkOrderStatus>([
+  VehicleHandoverWorkOrderStatus.EVIDENCE_SUBMITTED,
+  VehicleHandoverWorkOrderStatus.CUSTOMER_REVIEWING,
+  VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+  VehicleHandoverWorkOrderStatus.CUSTOMER_OBJECTED,
+  VehicleHandoverWorkOrderStatus.SIGNING,
+  VehicleHandoverWorkOrderStatus.CUSTOMER_SIGNED,
+  VehicleHandoverWorkOrderStatus.PLATFORM_SEALED,
+  VehicleHandoverWorkOrderStatus.FIELD_COMPLETED,
+  VehicleHandoverWorkOrderStatus.OPS_REVIEW_PENDING,
+  VehicleHandoverWorkOrderStatus.OPS_REVIEWED
+]);
+
+function resolvePortalNextActionTarget(application: PortalApplication) {
+  if (application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED) {
+    return null;
+  }
+
+  const order = findActivePortalOrder(application);
+  if (!order) {
+    return null;
+  }
+  const orderId = encodeURIComponent(order.id);
+
+  switch (resolvePortalOrderStage(order)) {
+    case "ORDER":
+      return { label: "查看订单进度", url: `/portal/orders/${orderId}` };
+    case "CONTRACT":
+      return {
+        label: "去签署合同",
+        url: order.contractId
+          ? `/portal/contracts/${encodeURIComponent(order.contractId)}`
+          : "/portal/contracts"
+      };
+    case "PAYMENT":
+      return { label: "去支付", url: `/portal/bills?orderId=${orderId}` };
+    case "DELIVERY": {
+      const handoverWorkOrder = order.handoverWorkOrders?.[0];
+      if (handoverWorkOrder && PORTAL_VISIBLE_HANDOVER_STATUSES.has(handoverWorkOrder.status)) {
+        return {
+          label: "处理车辆交接",
+          url: `/portal/handover-reviews/${encodeURIComponent(handoverWorkOrder.id)}`
+        };
+      }
+      return { label: "查看交付进度", url: `/portal/orders/${orderId}` };
+    }
+    case "ACTIVE":
+    case "COMPLETED":
+      return { label: "查看已交付订单", url: `/portal/orders/${orderId}` };
+    case "FAILED":
+      return { label: "查看订单", url: `/portal/orders/${orderId}` };
+    case "NONE":
+      return null;
+  }
 }
 
 function resolvePortalOverallStatus(application: PortalApplication, nextAction: string) {

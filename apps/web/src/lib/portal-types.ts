@@ -357,8 +357,14 @@ export interface PortalApplicationProgress {
   currentStep: string;
   materialSupplementHints: PortalApplicationMaterialSupplementHint[];
   nextAction: string;
+  nextActionTarget: PortalApplicationNextActionTarget | null;
   overallStatus: string;
   steps: PortalApplicationProgressStep[];
+}
+
+export interface PortalApplicationNextActionTarget {
+  label: string;
+  url: string;
 }
 
 export interface PortalApplicationProgressStep {

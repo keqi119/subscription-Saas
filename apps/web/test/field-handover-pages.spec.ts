@@ -165,6 +165,16 @@ describe("field handover H5 pages", () => {
     expect(captureOverviewIndex).toBeGreaterThan(-1);
     expect(reviewGuidanceIndex).toBeLessThan(captureOverviewIndex);
   });
+
+  it("keeps form controls below the opaque sticky submit bar", () => {
+    const source = read(detailPagePath);
+
+    expect(source).toContain('background: "#f5f8fc"');
+    expect(source).toContain('borderTop: "1px solid #d9e2ef"');
+    expect(source).toContain("boxShadow:");
+    expect(source).toContain("calc(104px + env(safe-area-inset-bottom))");
+    expect(source).toContain("zIndex: 20");
+  });
 });
 
 describe("field handover upload batch gates", () => {

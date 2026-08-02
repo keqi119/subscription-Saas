@@ -712,7 +712,8 @@ export default function FieldHandoverTaskDetailPage() {
       style={{
         background: "#f5f8fc",
         minHeight: "100vh",
-        padding: "max(22px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom))"
+        padding:
+          "max(22px, env(safe-area-inset-top)) 16px calc(104px + env(safe-area-inset-bottom))"
       }}
     >
       <Modal
@@ -1450,10 +1451,13 @@ const uploadRecoveryStyle: CSSProperties = {
 };
 
 const submitBarStyle: CSSProperties = {
-  background: "rgba(245, 248, 252, 0.94)",
+  background: "#f5f8fc",
+  borderTop: "1px solid #d9e2ef",
   bottom: 0,
+  boxShadow: "0 -8px 18px rgba(15, 23, 42, 0.08)",
   padding: "8px 0 max(8px, env(safe-area-inset-bottom))",
-  position: "sticky"
+  position: "sticky",
+  zIndex: 20
 };
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {

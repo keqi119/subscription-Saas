@@ -84,6 +84,7 @@ import {
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
+  loadAdminStage2HandoverESignWithInitialAssignmentPolling,
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2WorkflowJob,
   runAdminStage2WorkflowRecovery,
@@ -5034,7 +5035,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     setHandoverESignLoading((current) => ({ ...current, [id]: true }));
     setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
     try {
-      const status = await loadAdminStage2HandoverESign(id);
+      const status = await loadAdminStage2HandoverESignWithInitialAssignmentPolling(id);
       setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
     } catch (error) {
       setHandoverESignErrors((current) => ({

@@ -116,19 +116,19 @@ git commit -m "feat: calculate monthly mileage review cycles"
 - `activateDueReviews(asOf)` moves due tasks to `PENDING_SUBMISSION` and sets no business estimates.
 - `deriveOverdue` is response-time logic: pending submission plus `now > dueAt`.
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Assert first cycle creation in the delivery transaction, duplicate delivery retry idempotency, due activation, overdue derivation, and no mutation before scheduled time.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- mileage-review-lifecycle.spec.ts order-delivery.spec.ts`
 
-- [ ] **Step 3: Implement repository and service**
+- [x] **Step 3: Implement repository and service**
 
 Use source reading as baseline, store cycle snapshot, and create the review in the same delivery transaction. Delivery confirmation must roll back if review creation fails.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- mileage-review-lifecycle.spec.ts order-delivery.spec.ts

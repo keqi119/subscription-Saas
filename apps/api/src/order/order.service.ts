@@ -79,6 +79,7 @@ import {
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { MileageReviewService } from "../mileage-review/mileage-review.service";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import {
@@ -353,7 +354,8 @@ export class OrderService {
     @Optional() private readonly storageService?: StorageService,
     @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService,
     @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
-    @Optional() private readonly vehicleMileageService?: VehicleMileageService
+    @Optional() private readonly vehicleMileageService?: VehicleMileageService,
+    @Optional() private readonly mileageReviewService?: MileageReviewService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1870,7 +1872,7 @@ export class OrderService {
         throw new BadRequestException("交付确认缺少 Stage 2 签署时间或 Field 现场里程。");
       }
 
-      await this.getVehicleMileageService().appendConfirmedReading(tx, {
+      const deliveryReading = await this.getVehicleMileageService().appendConfirmedReading(tx, {
         confirmedBy: user.id,
         evidenceSnapshot: {
           authoritativeDefaults,
@@ -1892,6 +1894,13 @@ export class OrderService {
         recordedAt: deliveredAt,
         sourceRecordId: deliveryBefore!.id,
         sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+        vehicleId: orderBefore.vehicleId!
+      });
+      await this.getMileageReviewService().createFirstReview(tx, {
+        actualDeliveryAt: deliveredAt,
+        actorId: user.id,
+        deliveryReadingId: deliveryReading.id,
+        orderId: id,
         vehicleId: orderBefore.vehicleId!
       });
 
@@ -2845,6 +2854,13 @@ export class OrderService {
       throw new Error("Vehicle mileage service is unavailable.");
     }
     return this.vehicleMileageService;
+  }
+
+  private getMileageReviewService() {
+    if (!this.mileageReviewService) {
+      throw new Error("Mileage review service is unavailable.");
+    }
+    return this.mileageReviewService;
   }
 
   private async getDeliveryConfirmationReadiness(

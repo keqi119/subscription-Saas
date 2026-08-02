@@ -887,6 +887,16 @@ describe("vehicle delivery handover workflow", () => {
         vehicleId: harness.vehicleId
       })
     );
+    expect(harness.mileageReviewService.createFirstReview).toHaveBeenCalledWith(
+      harness.tx,
+      {
+        actualDeliveryAt: new Date("2026-06-10T03:00:00.000Z"),
+        actorId: harness.user.id,
+        deliveryReadingId: "mileage-reading-1",
+        orderId: harness.orderId,
+        vehicleId: harness.vehicleId
+      }
+    );
     const mileageInput = harness.vehicleMileageService.appendConfirmedReading.mock.calls[0]?.[1];
     expect(mileageInput?.evidenceSnapshot).toEqual({
       authoritativeDefaults: {
@@ -946,6 +956,27 @@ describe("vehicle delivery handover workflow", () => {
     ).rejects.toThrow("cannot be below");
 
     expect(harness.state.actualDeliveryAt).toBeNull();
+  });
+
+  it("does not apply delivery state changes when first mileage review creation fails", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.mileageReviewService.createFirstReview.mockRejectedValueOnce(
+      new Error("review create failed")
+    );
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("review create failed");
+
+    expect(harness.tx.vehicleDelivery.update).not.toHaveBeenCalled();
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
   it("rejects repeated confirm-delivery", async () => {
@@ -1494,6 +1525,9 @@ function createDeliveryHarness() {
       };
     })
   };
+  const mileageReviewService = {
+    createFirstReview: vi.fn(async () => ({ id: "mileage-review-1" }))
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
@@ -1502,7 +1536,8 @@ function createDeliveryHarness() {
     undefined,
     deliveryEvidenceService as never,
     handoverWorkOrderService as never,
-    vehicleMileageService as never
+    vehicleMileageService as never,
+    mileageReviewService as never
   );
 
   return {
@@ -1511,6 +1546,7 @@ function createDeliveryHarness() {
     customerId,
     deliveryEvidenceService,
     handoverWorkOrderService,
+    mileageReviewService,
     orderId,
     prisma,
     service,

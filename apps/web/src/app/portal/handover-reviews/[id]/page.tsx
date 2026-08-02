@@ -4,6 +4,7 @@ import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
   EditOutlined,
+  EyeOutlined,
   ExclamationCircleOutlined,
   ReloadOutlined
 } from "@ant-design/icons";
@@ -487,6 +488,22 @@ export default function PortalHandoverReviewDetailPage() {
               {esignDisplay.blockers.map((blocker) => (
                 <Alert key={blocker} message={blocker} showIcon type="info" />
               ))}
+              {esignDisplay.signedDocumentPreviewUrl ? (
+                <Button
+                  block
+                  href={
+                    buildPortalHandoverReviewFileUrl(
+                      esignDisplay.signedDocumentPreviewUrl
+                    ) ?? undefined
+                  }
+                  icon={<EyeOutlined />}
+                  rel="noreferrer"
+                  size="large"
+                  target="_blank"
+                >
+                  查看已签署交接确认单
+                </Button>
+              ) : null}
               {workflowDisplay?.canStartSigning ? (
                 <Button
                   block

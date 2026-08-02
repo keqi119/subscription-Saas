@@ -125,6 +125,14 @@ export class PortalHandoverReviewService {
     );
   }
 
+  async previewSignedDocument(
+    id: string,
+    currentCustomer: CurrentCustomer
+  ) {
+    await this.findOwnedReviewOrThrow(id, currentCustomer.customerId);
+    return this.handoverWorkOrderService.downloadStage2SignedHandoverPdf(id);
+  }
+
   async previewEvidenceFile(id: string, evidenceFileId: string, currentCustomer: CurrentCustomer) {
     await this.findVisibleReviewOrThrow(id, currentCustomer.customerId);
     return this.handoverWorkOrderService.previewEvidenceFile(id, evidenceFileId);

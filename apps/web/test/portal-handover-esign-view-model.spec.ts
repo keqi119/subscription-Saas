@@ -133,6 +133,29 @@ describe("Portal Stage 2 handover eSign view model", () => {
     expect(JSON.stringify(view)).not.toMatch(/FADADA|appId|transaction/i);
   });
 
+  it("suppresses obsolete signing blockers and exposes the signed PDF in the archived state", () => {
+    const signedDocumentPreviewUrl =
+      "/api/portal/handover-reviews/review-1/esign/signed-document/preview";
+    const view = buildPortalHandoverESignView(
+      createStatus({
+        archiveStatus: "ARCHIVED",
+        blockers: [
+          {
+            code: "STAGE2_SIGNING_NOT_AVAILABLE",
+            message: "Stage 2 signing is not currently available."
+          }
+        ],
+        signedArtifactAvailable: true,
+        signedDocumentPreviewUrl,
+        status: "COMPLETED",
+        taskId: "task-1"
+      } as never)
+    );
+
+    expect(view.blockers).toEqual([]);
+    expect(view).toMatchObject({ signedDocumentPreviewUrl });
+  });
+
   it("accepts HTTPS provider redirects without embedded credentials", () => {
     expect(validatePortalHandoverSigningRedirect("https://provider.example/sign?id=1")).toBe(
       "https://provider.example/sign?id=1"
@@ -199,6 +222,7 @@ function createStatus(
     },
     ready: false,
     signedArtifactAvailable: false,
+    signedDocumentPreviewUrl: null,
     signingStage: "STAGE2_DELIVERY_HANDOVER",
     status: null,
     taskId: null,

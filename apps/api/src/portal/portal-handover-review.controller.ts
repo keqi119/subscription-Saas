@@ -47,6 +47,20 @@ export class PortalHandoverReviewController {
     );
   }
 
+  @Get(":id/esign/signed-document/preview")
+  async previewSignedDocument(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.portalHandoverReviewService.previewSignedDocument(
+      id,
+      currentCustomer
+    );
+    setEvidenceFileHeaders(response, preview, "inline");
+    return new StreamableFile(preview.stream);
+  }
+
   @Get(":id/evidence-files/:evidenceFileId/preview")
   async previewEvidenceFile(
     @Param("id") id: string,

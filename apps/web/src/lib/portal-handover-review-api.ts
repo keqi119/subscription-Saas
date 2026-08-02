@@ -219,6 +219,7 @@ export interface Stage2PortalESignView {
   platformSigner: Stage2PortalESignSignerView;
   ready: boolean;
   signedArtifactAvailable: boolean;
+  signedDocumentPreviewUrl: string | null;
   signingStage: "STAGE2_DELIVERY_HANDOVER";
   status: Stage2PortalESignTaskStatus | null;
   taskId: string | null;

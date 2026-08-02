@@ -328,7 +328,7 @@ git commit -m "feat: surface delivery mileage sources and history"
 **Files:**
 - Modify: `docs/superpowers/specs/2026-08-02-delivery-mileage-baseline-monthly-review-design.md` only if implementation evidence clarifies a non-behavioral detail.
 
-- [ ] **Step 1: Run migration/schema gates**
+- [x] **Step 1: Run migration/schema gates**
 
 ```powershell
 pnpm prisma:validate
@@ -336,20 +336,22 @@ pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
 pnpm --filter @subscription-saas/web exec tsc --noEmit -p tsconfig.json
 ```
 
-- [ ] **Step 2: Run focused regression suite**
+- [x] **Step 2: Run focused regression suite**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- vehicle-mileage-schema.spec.ts vehicle-mileage.spec.ts vehicle-mileage-integration.spec.ts order-delivery.spec.ts order-return.spec.ts vehicle-sale-price.spec.ts vehicle-depreciation.spec.ts
 pnpm --filter @subscription-saas/web test -- vehicle-mileage-view-model.spec.ts admin-order-workspace.spec.ts
 ```
 
-- [ ] **Step 3: Inspect migration against an empty and populated database**
+- [x] **Step 3: Inspect migration against an empty and populated database**
 
 Apply the migration to a disposable database, confirm every existing non-deleted vehicle has exactly one active reading and `currentMileageKm` is unchanged, then create a fresh vehicle and confirm initialization does not duplicate.
 
 - [ ] **Step 4: Manual API/UI acceptance**
 
 On a controlled Staging order, verify the dialog defaults to signed Stage 2 time and Field mileage, manual edits persist, delivery creates the baseline, vehicle timeline matches the projection, and residual-value reads the updated projection. Verify a return confirmation appends a later record.
+
+This check is intentionally deferred until the full Stage B release candidate is deployed, so the same synthetic order can verify both the delivery baseline and the first monthly review without mutating a real customer order.
 
 - [ ] **Step 5: Final Stage A commit**
 

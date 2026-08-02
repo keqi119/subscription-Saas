@@ -31,7 +31,7 @@
 - Add model `VehicleMileageReading` with relations to `Vehicle`, optional `SubscriptionOrder`, previous reading, confirmer, and voider.
 - Enforce unique `(sourceType, sourceRecordId)` and indexes on `(vehicleId, status, recordedAt)` and `(orderId, recordedAt)`.
 
-- [ ] **Step 1: Write the failing schema test**
+- [x] **Step 1: Write the failing schema test**
 
 Assert that the Prisma schema contains the two enums, the required model fields, the source uniqueness constraint, and relations from `Vehicle` and `SubscriptionOrder`.
 
@@ -41,13 +41,13 @@ expect(schema).toContain("@@unique([sourceType, sourceRecordId])");
 expect(schema).toContain("mileageReadings VehicleMileageReading[]");
 ```
 
-- [ ] **Step 2: Run the test to verify RED**
+- [x] **Step 2: Run the test to verify RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- vehicle-mileage-schema.spec.ts`
 
 Expected: FAIL because the ledger does not exist.
 
-- [ ] **Step 3: Add the Prisma model and migration**
+- [x] **Step 3: Add the Prisma model and migration**
 
 Use these source values: `VEHICLE_INITIALIZATION`, `LEGACY_MIGRATION`, `DELIVERY_BASELINE`, `MONTHLY_REVIEW`, `RETURN_CONFIRMATION`, `MANUAL_CORRECTION`; use statuses `ACTIVE` and `VOIDED`. Store `sourceRecordId` as `VarChar(128)`, `recordedAt`/confirmation/void timestamps as `Timestamptz(6)`, and evidence/audit snapshots as JSON.
 
@@ -56,14 +56,14 @@ The migration must create the schema first, then backfill one reading per non-de
 ```sql
 INSERT INTO "vehicle_mileage_readings" (...)
 SELECT gen_random_uuid(), v."id", 'LEGACY_MIGRATION', v."id",
-       COALESCE(v."updated_at", v."created_at"), v."current_mileage_km", 0,
+       COALESCE(v."updated_at", v."created_at"), v."current_mileage_km", v."current_mileage_km",
        'ACTIVE', jsonb_build_object('migration', '20260802100000'), v."created_at", v."updated_at"
 FROM "vehicles" v
 WHERE v."deleted_at" IS NULL
 ON CONFLICT ("source_type", "source_record_id") DO NOTHING;
 ```
 
-- [ ] **Step 4: Validate schema and migration**
+- [x] **Step 4: Validate schema and migration**
 
 Run:
 
@@ -74,7 +74,7 @@ pnpm --filter @subscription-saas/api test -- vehicle-mileage-schema.spec.ts
 
 Expected: both commands exit 0.
 
-- [ ] **Step 5: Commit the schema slice**
+- [x] **Step 5: Commit the schema slice**
 
 ```powershell
 git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260802100000_vehicle_mileage_readings/migration.sql apps/api/test/vehicle-mileage-schema.spec.ts

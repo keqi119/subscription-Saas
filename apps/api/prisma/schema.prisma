@@ -1314,6 +1314,24 @@ enum VehicleStatus {
   @@map("vehicle_status")
 }
 
+enum VehicleMileageSourceType {
+  VEHICLE_INITIALIZATION
+  LEGACY_MIGRATION
+  DELIVERY_BASELINE
+  MONTHLY_REVIEW
+  RETURN_CONFIRMATION
+  MANUAL_CORRECTION
+
+  @@map("vehicle_mileage_source_type")
+}
+
+enum VehicleMileageReadingStatus {
+  ACTIVE
+  VOIDED
+
+  @@map("vehicle_mileage_reading_status")
+}
+
 enum VehicleBatteryUsageType {
   BUYOUT
   BAAS
@@ -1905,6 +1923,8 @@ model User {
   confirmedQuotes          SubscriptionQuote[]        @relation("QuoteConfirmer")
   approvedContractVersions ContractVersion[]          @relation("ContractVersionApprover")
   approvedOrderChanges     OrderChange[]              @relation("OrderChangeApprover")
+  confirmedMileageReadings VehicleMileageReading[]    @relation("VehicleMileageReadingConfirmer")
+  voidedMileageReadings    VehicleMileageReading[]    @relation("VehicleMileageReadingVoider")
 
   @@index([status])
   @@map("user")
@@ -2914,6 +2934,7 @@ model Vehicle {
   residualForecasts             VehicleResidualForecast[]
   residualModelRunOutputs       ResidualModelRunOutput[]
   valuationReviews              VehicleValuationReview[]
+  mileageReadings               VehicleMileageReading[]
   createdAt                     DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                   @map("created_by") @db.Uuid
@@ -2926,6 +2947,43 @@ model Vehicle {
   @@index([nextSalePriceReviewAt])
   @@index([salePriceReinitRequiredAt])
   @@map("vehicle")
+}
+
+model VehicleMileageReading {
+  id                   String                      @id @default(uuid()) @db.Uuid
+  vehicleId            String                      @map("vehicle_id") @db.Uuid
+  vehicle              Vehicle                     @relation(fields: [vehicleId], references: [id])
+  orderId              String?                     @map("order_id") @db.Uuid
+  order                SubscriptionOrder?          @relation(fields: [orderId], references: [id])
+  sourceType           VehicleMileageSourceType    @map("source_type")
+  sourceRecordId       String                      @map("source_record_id") @db.VarChar(128)
+  recordedAt           DateTime                    @map("recorded_at") @db.Timestamptz(6)
+  mileageKm            Int                         @map("mileage_km")
+  previousReadingId    String?                     @map("previous_reading_id") @db.Uuid
+  previousReading      VehicleMileageReading?      @relation("VehicleMileageReadingChain", fields: [previousReadingId], references: [id])
+  nextReadings         VehicleMileageReading[]     @relation("VehicleMileageReadingChain")
+  deltaKm              Int                         @map("delta_km")
+  status               VehicleMileageReadingStatus @default(ACTIVE)
+  evidenceSnapshot     Json?                       @map("evidence_snapshot")
+  confirmedBy          String?                     @map("confirmed_by") @db.Uuid
+  confirmer            User?                       @relation("VehicleMileageReadingConfirmer", fields: [confirmedBy], references: [id])
+  confirmedAt          DateTime?                   @map("confirmed_at") @db.Timestamptz(6)
+  voidedBy             String?                     @map("voided_by") @db.Uuid
+  voider               User?                       @relation("VehicleMileageReadingVoider", fields: [voidedBy], references: [id])
+  voidedAt             DateTime?                   @map("voided_at") @db.Timestamptz(6)
+  voidReason           String?                     @map("void_reason") @db.Text
+  createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?                     @map("created_by") @db.Uuid
+  updatedBy            String?                     @map("updated_by") @db.Uuid
+
+  @@unique([sourceType, sourceRecordId])
+  @@index([vehicleId, status, recordedAt])
+  @@index([orderId, recordedAt])
+  @@index([previousReadingId])
+  @@index([confirmedBy])
+  @@index([voidedBy])
+  @@map("vehicle_mileage_reading")
 }
 
 model VehicleModelDefinition {
@@ -4265,6 +4323,7 @@ model SubscriptionOrder {
   insuranceClaims            InsuranceClaim[]
   billingSchedule            BillingSchedule?
   automationJobs             SubscriptionAutomationJob[]
+  mileageReadings            VehicleMileageReading[]
   createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?               @map("created_by") @db.Uuid

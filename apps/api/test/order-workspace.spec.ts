@@ -389,6 +389,58 @@ describe("OrderWorkspaceResolver", () => {
     );
   });
 
+  it.each(["GENERATED", "SIGNING"])(
+    "treats a normal %s contract as actionable instead of blocked",
+    (status) => {
+      expect(
+        new OrderWorkspaceResolver().resolveContract({
+          contracts: [
+            {
+              id: "stage1-contract",
+              status,
+              tasks: [],
+              updatedAt: "2026-08-02T07:16:12.000Z"
+            }
+          ]
+        })
+      ).toEqual(
+        expect.objectContaining({
+          actionCode: "contract.sign",
+          blocking: false,
+          state: "ACTION_REQUIRED",
+          targetRecordId: "stage1-contract"
+        })
+      );
+    }
+  );
+
+  it("keeps a failed contract signing workflow blocked for recovery", () => {
+    expect(
+      new OrderWorkspaceResolver().resolveContract({
+        contracts: [
+          {
+            id: "stage1-contract",
+            status: "SIGNING",
+            tasks: [
+              {
+                taskStatus: "FAILED",
+                updatedAt: "2026-08-02T07:18:12.000Z"
+              }
+            ],
+            updatedAt: "2026-08-02T07:16:12.000Z"
+          }
+        ]
+      })
+    ).toEqual(
+      expect.objectContaining({
+        actionCode: "contract.retry_signing",
+        blocking: true,
+        reasonCode: "CONTRACT_SIGNATURE_FAILED",
+        state: "FAILED"
+      })
+    );
+  });
+
   it("treats Stage 2 as complete when both required signers signed even if archival is pending", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: AS_OF,

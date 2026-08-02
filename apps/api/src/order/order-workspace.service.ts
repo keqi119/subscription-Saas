@@ -205,8 +205,7 @@ export class OrderWorkspaceResolver {
       contract.status === "SIGNING" ? "CONTRACT_SIGNATURE_PENDING" : "CONTRACT_SIGNATURE_REQUIRED",
       actionCode,
       contract.id,
-      contract.updatedAt,
-      true
+      contract.updatedAt
     );
   }
 

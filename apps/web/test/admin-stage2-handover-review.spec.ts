@@ -39,6 +39,10 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("已登记收款，待核销");
     expect(source).toContain("0 元押金，自动满足");
     expect(source).toContain("/vehicle-insurance-policies");
+    expect(source).toContain("fieldReceipt");
+    expect(source).toContain("Field 已接收任务");
+    expect(source).toContain("Field 尚未打开任务");
+    expect(source).toContain("首次打开：");
     expect(source).not.toMatch(/accessTokenHash|objectKey|bucket|signingUrl|idCard|fullPhone|raw DTO/i);
   });
 

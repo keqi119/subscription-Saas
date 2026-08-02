@@ -1,7 +1,7 @@
 "use client";
 
 import { LogoutOutlined, RightOutlined, UnorderedListOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Empty, Flex, Spin, Tag, Typography } from "antd";
+import { Alert, App, Button, Empty, Flex, Spin, Tabs, Tag, Typography } from "antd";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
@@ -54,6 +54,78 @@ export default function FieldHandoverTasksPage() {
     } finally {
       router.replace("/field/handover");
     }
+  }
+
+  const taskViews = tasks.map((task) => ({
+    card: buildFieldHandoverTaskCard(task),
+    task
+  }));
+  const activeTasks = taskViews.filter(({ card }) => card.taskGroup === "ACTIVE");
+  const endedTasks = taskViews.filter(({ card }) => card.taskGroup === "ENDED");
+
+  function renderTaskGroup(
+    items: typeof taskViews,
+    emptyDescription: string
+  ) {
+    if (items.length === 0) {
+      return (
+        <Empty
+          description={emptyDescription}
+          style={{ background: "#fff", borderRadius: 8, padding: "36px 12px" }}
+        />
+      );
+    }
+
+    return (
+      <Flex gap={12} vertical>
+        {items.map(({ card, task }) => (
+          <article
+            key={card.id}
+            style={{
+              background: "#fff",
+              border: "1px solid #dde5f0",
+              borderRadius: 8,
+              boxShadow: "0 8px 22px rgba(31, 71, 112, 0.06)",
+              padding: 16
+            }}
+          >
+            <Flex align="flex-start" justify="space-between" style={{ gap: 12 }}>
+              <div>
+                <Typography.Text strong style={{ display: "block", fontSize: 16 }}>
+                  {card.title}
+                </Typography.Text>
+                <Typography.Text style={{ color: "#607086" }}>{card.handoverTypeLabel}</Typography.Text>
+              </div>
+              <Tag color={card.statusColor} style={{ marginInlineEnd: 0 }}>
+                {card.statusLabel}
+              </Tag>
+            </Flex>
+
+            <Flex gap={8} style={{ color: "#374151", marginTop: 12 }} vertical>
+              <InfoRow label="预约时间" value={card.scheduledAtText} />
+              <InfoRow label="交接地点" value={card.deliveryLocationText} />
+              <InfoRow label="车辆" value={card.vehicleText} />
+              <InfoRow label="车牌" value={card.plateText} />
+              <InfoRow label="VIN" value={card.vinText} />
+              <InfoRow label="客户" value={card.customerText} />
+              <InfoRow label="资料" value={card.evidenceText} />
+            </Flex>
+
+            <Button
+              block
+              icon={<RightOutlined />}
+              iconPosition="end"
+              onClick={() => router.push(`/field/handover/tasks/${task.id}`)}
+              size="large"
+              style={{ marginTop: 14 }}
+              type={card.taskGroup === "ACTIVE" ? "primary" : "default"}
+            >
+              查看任务
+            </Button>
+          </article>
+        ))}
+      </Flex>
+    );
   }
 
   return (
@@ -121,57 +193,21 @@ export default function FieldHandoverTasksPage() {
         ) : null}
 
         {!loading && !errorMessage && tasks.length > 0 ? (
-          <Flex gap={12} vertical>
-            {tasks.map((task) => {
-              const card = buildFieldHandoverTaskCard(task);
-              return (
-                <article
-                  key={card.id}
-                  style={{
-                    background: "#fff",
-                    border: "1px solid #dde5f0",
-                    borderRadius: 8,
-                    boxShadow: "0 8px 22px rgba(31, 71, 112, 0.06)",
-                    padding: 16
-                  }}
-                >
-                  <Flex align="flex-start" justify="space-between" style={{ gap: 12 }}>
-                    <div>
-                      <Typography.Text strong style={{ display: "block", fontSize: 16 }}>
-                        {card.title}
-                      </Typography.Text>
-                      <Typography.Text style={{ color: "#607086" }}>{card.handoverTypeLabel}</Typography.Text>
-                    </div>
-                    <Tag color="blue" style={{ marginInlineEnd: 0 }}>
-                      {card.statusLabel}
-                    </Tag>
-                  </Flex>
-
-                  <Flex gap={8} style={{ color: "#374151", marginTop: 12 }} vertical>
-                    <InfoRow label="预约时间" value={card.scheduledAtText} />
-                    <InfoRow label="交接地点" value={card.deliveryLocationText} />
-                    <InfoRow label="车辆" value={card.vehicleText} />
-                    <InfoRow label="车牌" value={card.plateText} />
-                    <InfoRow label="VIN" value={card.vinText} />
-                    <InfoRow label="客户" value={card.customerText} />
-                    <InfoRow label="资料" value={card.evidenceText} />
-                  </Flex>
-
-                  <Button
-                    block
-                    icon={<RightOutlined />}
-                    iconPosition="end"
-                    onClick={() => router.push(`/field/handover/tasks/${task.id}`)}
-                    size="large"
-                    style={{ marginTop: 14 }}
-                    type="primary"
-                  >
-                    查看任务
-                  </Button>
-                </article>
-              );
-            })}
-          </Flex>
+          <Tabs
+            defaultActiveKey="active"
+            items={[
+              {
+                children: renderTaskGroup(activeTasks, "暂无活动中任务"),
+                key: "active",
+                label: `活动中 (${activeTasks.length})`
+              },
+              {
+                children: renderTaskGroup(endedTasks, "暂无已结束任务"),
+                key: "ended",
+                label: `已结束 (${endedTasks.length})`
+              }
+            ]}
+          />
         ) : null}
       </section>
     </main>

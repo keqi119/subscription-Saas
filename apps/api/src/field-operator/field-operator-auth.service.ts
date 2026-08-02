@@ -270,11 +270,30 @@ export class FieldOperatorAuthService {
   }
 
   recordTaskViewed(current: CurrentFieldOperator, workOrderId: string, context: FieldOperatorRequestContext) {
-    return this.writeAudit(FieldOperatorAuditEventType.TASK_VIEWED, {
-      context,
-      phone: current.phone,
-      sessionId: current.sessionId,
-      workOrderId
+    const openedAt = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const initialized = await tx.vehicleHandoverWorkOrder.updateMany({
+        data: {
+          firstAccessedAt: openedAt,
+          lastAccessedAt: openedAt
+        },
+        where: {
+          firstAccessedAt: null,
+          id: workOrderId
+        }
+      });
+      if (initialized.count === 0) {
+        await tx.vehicleHandoverWorkOrder.update({
+          data: { lastAccessedAt: openedAt },
+          where: { id: workOrderId }
+        });
+      }
+      await this.writeAudit(FieldOperatorAuditEventType.TASK_VIEWED, {
+        context,
+        phone: current.phone,
+        sessionId: current.sessionId,
+        workOrderId
+      }, tx);
     });
   }
 
@@ -368,9 +387,10 @@ export class FieldOperatorAuthService {
       phone?: string | null;
       sessionId?: string | null;
       workOrderId?: string | null;
-    }
+    },
+    db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    await this.prisma.fieldOperatorAuditLog.create({
+    await db.fieldOperatorAuditLog.create({
       data: {
         eventType,
         ipHash: hashContextValue(input.context?.ipAddress),

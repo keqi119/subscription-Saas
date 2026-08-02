@@ -9,6 +9,7 @@ import {
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
+  loadAdminStage2HandoverESignWithInitialAssignmentPolling,
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2HandoverArchive,
   retryAdminStage2PlatformSeal,
@@ -440,18 +441,26 @@ describe("Admin Stage 2 handover eSign display", () => {
 
 describe("Admin Stage 2 workflow timeline and recovery", () => {
   it.each([
-    ["PENDING", "等待系统重试", "2026-08-01T06:10:00.000Z"],
-    ["PROCESSING", "系统正在处理", null]
+    ["PENDING", 0, null, "交接任务通知发送中", null],
+    [
+      "PENDING",
+      1,
+      "SMS_PROVIDER_NOT_CONFIGURED",
+      "等待系统重试",
+      "2026-08-01T06:10:00.000Z"
+    ],
+    ["PROCESSING", 0, null, "交接任务通知发送中", null]
   ] as const)(
     "shows safe assignment notification detail for %s",
-    (jobStatus, expectedDetail, availableAt) => {
+    (jobStatus, attemptCount, lastErrorCode, expectedDetail, availableAt) => {
       const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
         workflowJobs: [
           workflowJob({
+            attemptCount,
             availableAt,
             jobStatus,
             jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
-            lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED"
+            lastErrorCode
           })
         ]
       }));
@@ -470,6 +479,101 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
       expect(step?.detail).not.toMatch(/13900001111|provider response/i);
     }
   );
+
+  it("labels a completed assignment notification as sent", () => {
+    const display = getAdminStage2HandoverWorkflowDisplay(esignStatus({
+      workflowJobs: [
+        workflowJob({
+          attemptCount: 0,
+          jobStatus: "COMPLETED",
+          jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+          lastErrorCode: null
+        })
+      ]
+    }));
+    const assignment = display.steps.find(
+      ({ key }) => key === "FIELD_ASSIGNMENT_NOTIFICATION"
+    );
+
+    expect(assignment).toMatchObject({
+      detail: "交接任务通知已发送",
+      label: "交接任务通知已发送",
+      state: "complete"
+    });
+  });
+
+  it("briefly polls an initial assignment notification until it reaches a terminal state", async () => {
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(
+        esignStatus({
+          workflowJobs: [
+            workflowJob({
+              attemptCount: 0,
+              jobStatus: "PENDING",
+              jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED"
+            })
+          ]
+        })
+      )
+      .mockResolvedValueOnce(
+        esignStatus({
+          workflowJobs: [
+            workflowJob({
+              attemptCount: 0,
+              jobStatus: "PROCESSING",
+              jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED"
+            })
+          ]
+        })
+      )
+      .mockResolvedValueOnce(
+        esignStatus({
+          workflowJobs: [
+            workflowJob({
+              attemptCount: 0,
+              jobStatus: "COMPLETED",
+              jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED"
+            })
+          ]
+        })
+      );
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    const result = await loadAdminStage2HandoverESignWithInitialAssignmentPolling(
+      "work-order",
+      { intervalMs: 0, load, maxReads: 3, wait }
+    );
+
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(result.workflowJobs?.[0]?.jobStatus).toBe("COMPLETED");
+  });
+
+  it("does not continuously poll a delayed retry", async () => {
+    const retryStatus = esignStatus({
+      workflowJobs: [
+        workflowJob({
+          attemptCount: 1,
+          availableAt: "2026-08-01T06:10:00.000Z",
+          jobStatus: "PENDING",
+          jobType: "NOTIFY_FIELD_HANDOVER_ASSIGNED",
+          lastErrorCode: "SMS_PROVIDER_NOT_CONFIGURED"
+        })
+      ]
+    });
+    const load = vi.fn().mockResolvedValue(retryStatus);
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    const result = await loadAdminStage2HandoverESignWithInitialAssignmentPolling(
+      "work-order",
+      { intervalMs: 0, load, maxReads: 3, wait }
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(wait).not.toHaveBeenCalled();
+    expect(result).toBe(retryStatus);
+  });
 
   it("keeps ready eSign available when the Field-ready notification is pending or dead", () => {
     for (const jobStatus of ["PENDING", "DEAD_LETTER"] as const) {
@@ -768,6 +872,12 @@ describe("Admin Stage 2 workflow timeline and recovery", () => {
     expect(source).toContain('"data-workspace-record": workOrder.id');
     expect(source).toContain("Stage2HandoverWorkflowCell");
     expect(source).toContain("getAdminStage2HandoverWorkflowDisplay");
+    expect(source).toContain(
+      "loadAdminStage2HandoverESignWithInitialAssignmentPolling"
+    );
+    expect(source).not.toContain(
+      "const status = await loadAdminStage2HandoverESign(id)"
+    );
     expect(source).toContain("step.detail");
     expect(source).toContain("display.recoveries.map");
     expect(source).toContain(

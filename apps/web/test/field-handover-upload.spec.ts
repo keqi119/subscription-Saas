@@ -145,13 +145,15 @@ describe("field handover evidence upload validation", () => {
     ]);
   });
 
-  it("guides video operators to the system camera and keeps photo-only copy empty", () => {
-    const guidance = getFieldEvidenceUploadGuidance(["VIDEO"]);
+  it("shows video-quality guidance only for the walkaround item", () => {
+    const guidance = getFieldEvidenceUploadGuidance(["VIDEO"], "WALKAROUND_VIDEO");
     expect(guidance).toContain("系统相机");
     expect(guidance).toContain("720p");
     expect(guidance).toContain("300MB");
-    expect(getFieldEvidenceUploadGuidance(["PHOTO", "VIDEO"])).toContain("系统相机");
-    expect(getFieldEvidenceUploadGuidance(["PHOTO"])).toBeNull();
+    expect(
+      getFieldEvidenceUploadGuidance(["PHOTO", "VIDEO"], "WHEEL_CLOSEUP_FRONT_LEFT")
+    ).toBeNull();
+    expect(getFieldEvidenceUploadGuidance(["PHOTO"], "INTERIOR_FRONT")).toBeNull();
   });
 
   it("detects mobile devices from browser signals and defaults SSR to desktop", () => {

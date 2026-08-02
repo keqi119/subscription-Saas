@@ -51,6 +51,7 @@ export interface FieldHandoverWorkOrderListItem {
   orderNo?: string | null;
   scheduledAt?: string | null;
   status?: string | null;
+  taskGroup?: "ACTIVE" | "ENDED";
   vehicle?: FieldHandoverVehicleSummary | null;
 }
 

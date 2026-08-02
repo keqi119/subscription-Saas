@@ -217,6 +217,28 @@ export function loadAdminStage2HandoverESign(id: string) {
   });
 }
 
+export async function loadAdminStage2HandoverESignWithInitialAssignmentPolling(
+  id: string,
+  options: {
+    intervalMs?: number;
+    load?: (id: string) => Promise<AdminStage2HandoverESignStatus>;
+    maxReads?: number;
+    wait?: (milliseconds: number) => Promise<void>;
+  } = {}
+) {
+  const load = options.load ?? loadAdminStage2HandoverESign;
+  const maxReads = Math.max(1, Math.min(10, Math.trunc(options.maxReads ?? 5)));
+  const intervalMs = Math.max(0, Math.min(5_000, Math.trunc(options.intervalMs ?? 750)));
+  const wait = options.wait ?? waitForWorkflowPoll;
+  let status = await load(id);
+
+  for (let readCount = 1; readCount < maxReads && shouldPollInitialAssignment(status); readCount += 1) {
+    await wait(intervalMs);
+    status = await load(id);
+  }
+  return status;
+}
+
 export function startAdminStage2HandoverESign(
   id: string,
   input: AdminStage2HandoverFallbackInput
@@ -381,6 +403,7 @@ export function getAdminStage2HandoverWorkflowDisplay(
     deliveryConfirmationAvailable: signingComplete,
     recoveries,
     steps: WORKFLOW_STEP_KEYS.map((key) => {
+      const currentJob = currentJobByStep.get(key) ?? null;
       const state = completed[key]
         ? "complete"
         : errorSteps.has(key)
@@ -391,11 +414,11 @@ export function getAdminStage2HandoverWorkflowDisplay(
       return {
         detail: getWorkflowStepDetail(
           key,
-          currentJobByStep.get(key) ?? null,
+          currentJob,
           customerConfirmationComplete
         ),
         key,
-        label: workflowStepLabel(key, state, status),
+        label: workflowStepLabel(key, state, status, currentJob),
         state
       };
     })
@@ -757,6 +780,9 @@ function getWorkflowStepDetail(
   }
   switch (job.jobStatus) {
     case "PENDING": {
+      if (key === "FIELD_ASSIGNMENT_NOTIFICATION" && job.attemptCount === 0) {
+        return "交接任务通知发送中";
+      }
       const availableAt = safeWorkflowTimestamp(job.availableAt);
       return appendWorkflowErrorCode(
         `等待系统重试，下次运行：${availableAt ?? "待调度"}`,
@@ -764,12 +790,14 @@ function getWorkflowStepDetail(
       );
     }
     case "PROCESSING":
-      return "系统正在处理";
+      return key === "FIELD_ASSIGNMENT_NOTIFICATION"
+        ? "交接任务通知发送中"
+        : "系统正在处理";
     case "DEAD_LETTER":
       return appendWorkflowErrorCode("系统重试已用尽", errorCode);
     case "COMPLETED":
       return key === "FIELD_ASSIGNMENT_NOTIFICATION"
-        ? "交接任务通知已完成"
+        ? "交接任务通知已发送"
         : null;
     case "CANCELLED":
       return "任务已取消";
@@ -793,14 +821,18 @@ function safeWorkflowTimestamp(value: string | null | undefined) {
 function workflowStepLabel(
   key: AdminStage2HandoverWorkflowStepKey,
   state: AdminStage2HandoverWorkflowStep["state"],
-  status?: AdminStage2HandoverESignStatus | null
+  status?: AdminStage2HandoverESignStatus | null,
+  job?: AdminStage2HandoverWorkflowJob | null
 ) {
   if (state === "complete") {
     return {
       ARCHIVE: "签署文件已归档",
       CUSTOMER_CONFIRMATION: "客户已确认",
       CUSTOMER_SIGNATURE: "客户已签署",
-      FIELD_ASSIGNMENT_NOTIFICATION: "交接任务通知已处理",
+      FIELD_ASSIGNMENT_NOTIFICATION:
+        job?.jobStatus === "COMPLETED"
+          ? "交接任务通知已发送"
+          : "交接任务通知已处理",
       FIELD_INITIATION: "经办人已发起签署",
       PLATFORM_SEAL: "平台已盖章",
       SOURCE_PDF: "交接确认单已生成"
@@ -825,7 +857,12 @@ function workflowStepLabel(
           : "等待签署文件归档",
       CUSTOMER_CONFIRMATION: "等待客户确认",
       CUSTOMER_SIGNATURE: "待客户签署",
-      FIELD_ASSIGNMENT_NOTIFICATION: "等待交接任务通知",
+      FIELD_ASSIGNMENT_NOTIFICATION:
+        job &&
+        job.attemptCount === 0 &&
+        ["PENDING", "PROCESSING"].includes(job.jobStatus)
+          ? "交接任务通知发送中"
+          : "等待交接任务通知",
       FIELD_INITIATION: "等待经办人发起签署",
       PLATFORM_SEAL: "平台盖章处理中",
       SOURCE_PDF: "交接确认单生成中"
@@ -840,6 +877,27 @@ function workflowStepLabel(
     PLATFORM_SEAL: "等待平台盖章",
     SOURCE_PDF: "等待生成交接确认单"
   }[key];
+}
+
+function shouldPollInitialAssignment(status: AdminStage2HandoverESignStatus) {
+  const currentJobs = getAuthoritativeCurrentWorkflowJobs(status.workflowJobs ?? []);
+  if (!currentJobs.valid) {
+    return false;
+  }
+  const assignmentJob = currentJobs.jobs.find(
+    (job) => job.jobType === "NOTIFY_FIELD_HANDOVER_ASSIGNED"
+  );
+  return Boolean(
+    assignmentJob &&
+    assignmentJob.attemptCount === 0 &&
+    ["PENDING", "PROCESSING"].includes(assignmentJob.jobStatus)
+  );
+}
+
+function waitForWorkflowPoll(milliseconds: number) {
+  return new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, milliseconds);
+  });
 }
 
 function formatBlockers(blockers: readonly AdminStage2HandoverESignBlocker[]) {

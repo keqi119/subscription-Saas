@@ -54,6 +54,11 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("logoutFieldHandover");
     expect(source).toContain('router.replace("/field/handover")');
     expect(source).toContain("/field/handover/tasks/${task.id}");
+    expect(source).toContain("活动中");
+    expect(source).toContain("已结束");
+    expect(source).toContain("activeTasks");
+    expect(source).toContain("endedTasks");
+    expect(source).toContain("card.statusColor");
     expect(source).not.toContain("/portal/login");
     expect(source).not.toContain("/login");
     expect(source).not.toMatch(
@@ -73,6 +78,7 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("removeFieldHandoverEvidenceFile");
     expect(source).toContain("validateFieldEvidenceFile");
     expect(source).toContain("import { EvidenceUploadControls }");
+    expect(source).toContain("evidenceType={item.evidenceType}");
     expect(source).toContain("export default function");
     expect(source.match(/^export (?!default)/gm)).toBeNull();
     expect(uploadControlsSource).toContain("buildFieldEvidenceUploadInputContracts");

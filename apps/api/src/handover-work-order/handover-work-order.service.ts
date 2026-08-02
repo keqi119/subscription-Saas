@@ -26,6 +26,7 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
+  FieldOperatorAuditEventType,
   Prisma,
   UserStatus,
   VehicleHandoverAdminReviewStatus,
@@ -85,13 +86,27 @@ import {
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
-const FIELD_HIDDEN_WORK_ORDER_STATUSES = [
+const FIELD_ENDED_WORK_ORDER_STATUSES = [
   "VOIDED",
   "FAILED",
   "CANCELLED",
   "FIELD_COMPLETED",
   "OPS_REVIEWED"
 ] as const;
+const FIELD_ENDED_WORK_ORDER_STATUS_SET = new Set<string>(FIELD_ENDED_WORK_ORDER_STATUSES);
+const FIELD_ACTIVE_STATUS_PRIORITY = new Map<string, number>([
+  ["ASSIGNED", 0],
+  ["FIELD_IN_PROGRESS", 0],
+  ["CUSTOMER_OBJECTED", 1],
+  ["DRAFT", 1],
+  ["EVIDENCE_SUBMITTED", 2],
+  ["CUSTOMER_REVIEWING", 2],
+  ["CUSTOMER_CONFIRMED", 2],
+  ["SIGNING", 2],
+  ["CUSTOMER_SIGNED", 2],
+  ["PLATFORM_SEALED", 2],
+  ["OPS_REVIEW_PENDING", 3]
+]);
 const READY_FOR_STAGE2_STATUSES = [
   "CUSTOMER_CONFIRMED",
   "SIGNING",
@@ -201,11 +216,13 @@ export interface WorkOrderRecord {
   fieldOperatorPhone?: string | null;
   fieldStartedAt?: Date | null;
   fieldSubmittedAt?: Date | null;
+  firstAccessedAt?: Date | null;
   fuelLevelText?: string | null;
   handoverId?: string | null;
   handoverMileageKm?: number | null;
   handoverType?: string | null;
   id: string;
+  lastAccessedAt?: Date | null;
   metadata?: unknown;
   noVisibleDamageDeclared?: boolean | null;
   operatorType?: string | null;
@@ -214,6 +231,7 @@ export interface WorkOrderRecord {
   reviewVersion?: number | null;
   scheduledAt?: Date | null;
   status: string;
+  updatedAt?: Date | null;
 }
 
 export interface EvidenceFileStreamResult {
@@ -502,13 +520,8 @@ export class HandoverWorkOrderService {
   async listFieldAccessibleWorkOrders(phone: string) {
     const normalizedPhone = normalizeFieldOperatorPhone(phone);
     const workOrders = await this.prisma.vehicleHandoverWorkOrder.findMany({
-      orderBy: [
-        { scheduledAt: "asc" },
-        { createdAt: "desc" }
-      ],
       where: {
-        fieldOperatorPhone: normalizedPhone,
-        status: { notIn: [...FIELD_HIDDEN_WORK_ORDER_STATUSES] }
+        fieldOperatorPhone: normalizedPhone
       }
     });
 
@@ -3241,7 +3254,8 @@ export class HandoverWorkOrderService {
       events,
       readiness,
       stage2Pdf,
-      workflowJobs
+      workflowJobs,
+      fieldReceipt
     ] = await Promise.all([
         this.getOrderOrThrow(workOrder.orderId),
         this.deliveryEvidenceService.getChecklist({
@@ -3252,7 +3266,8 @@ export class HandoverWorkOrderService {
         this.listEvents(workOrder.id),
         this.getReadiness(workOrder.id),
         this.getStage2HandoverPdf(workOrder.id),
-        this.listSafeStage2WorkflowJobs(workOrder.id)
+        this.listSafeStage2WorkflowJobs(workOrder.id),
+        this.getFieldTaskReceipt(workOrder)
       ]);
 
     return {
@@ -3268,6 +3283,7 @@ export class HandoverWorkOrderService {
       evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
       events: events.map(toSafeHandoverEvent),
       fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
+      fieldReceipt,
       fieldSubmittedAt: workOrder.fieldSubmittedAt,
       handoverId: workOrder.handoverId,
       handoverType: workOrder.handoverType,
@@ -3294,6 +3310,28 @@ export class HandoverWorkOrderService {
         vinSuffix: suffix(order.vehicle?.vin, 6)
       },
       workflowJobs
+    };
+  }
+
+  private async getFieldTaskReceipt(workOrder: WorkOrderRecord) {
+    let firstOpenedAt = workOrder.firstAccessedAt ?? null;
+    let lastOpenedAt = workOrder.lastAccessedAt ?? null;
+    if (!firstOpenedAt || !lastOpenedAt) {
+      const historicalViews = await this.prisma.fieldOperatorAuditLog.aggregate({
+        _max: { createdAt: true },
+        _min: { createdAt: true },
+        where: {
+          eventType: FieldOperatorAuditEventType.TASK_VIEWED,
+          workOrderId: workOrder.id
+        }
+      });
+      firstOpenedAt ??= historicalViews._min.createdAt;
+      lastOpenedAt ??= historicalViews._max.createdAt;
+    }
+    return {
+      firstOpenedAt,
+      lastOpenedAt,
+      status: firstOpenedAt ? "OPENED" as const : "NOT_OPENED" as const
     };
   }
 
@@ -3840,6 +3878,7 @@ export class HandoverWorkOrderService {
       orderNo: order.orderNo,
       scheduledAt: workOrder.scheduledAt,
       status: workOrder.status,
+      taskGroup: isFieldEndedWorkOrder(workOrder) ? "ENDED" : "ACTIVE",
       vehicle: {
         brand: order.vehicle?.brand ?? null,
         model: order.vehicle?.model ?? null,
@@ -3871,6 +3910,7 @@ export class HandoverWorkOrderService {
       orderNo: order.orderNo,
       scheduledAt: workOrder.scheduledAt,
       status: workOrder.status,
+      taskGroup: isFieldEndedWorkOrder(workOrder) ? "ENDED" : "ACTIVE",
       vehicle: {
         brand: order.vehicle?.brand ?? null,
         model: order.vehicle?.model ?? null,
@@ -4274,22 +4314,47 @@ function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: st
   if (!workOrder || workOrder.fieldOperatorPhone !== phone) {
     return false;
   }
-  if (FIELD_HIDDEN_WORK_ORDER_STATUSES.includes(workOrder.status as typeof FIELD_HIDDEN_WORK_ORDER_STATUSES[number])) {
-    return false;
-  }
   return true;
 }
 
 function compareFieldWorkOrders(left: WorkOrderRecord, right: WorkOrderRecord) {
+  const leftEnded = isFieldEndedWorkOrder(left);
+  const rightEnded = isFieldEndedWorkOrder(right);
+  if (leftEnded !== rightEnded) {
+    return leftEnded ? 1 : -1;
+  }
+
+  if (leftEnded && rightEnded) {
+    const updatedDifference =
+      (right.updatedAt?.getTime() ?? 0) - (left.updatedAt?.getTime() ?? 0);
+    if (updatedDifference !== 0) {
+      return updatedDifference;
+    }
+  } else {
+    const priorityDifference =
+      (FIELD_ACTIVE_STATUS_PRIORITY.get(left.status) ?? 4) -
+      (FIELD_ACTIVE_STATUS_PRIORITY.get(right.status) ?? 4);
+    if (priorityDifference !== 0) {
+      return priorityDifference;
+    }
+  }
+
+  const leftCreated = left.createdAt?.getTime() ?? 0;
+  const rightCreated = right.createdAt?.getTime() ?? 0;
+  if (leftCreated !== rightCreated) {
+    return rightCreated - leftCreated;
+  }
+
   const leftScheduled = left.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
   const rightScheduled = right.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
   if (leftScheduled !== rightScheduled) {
     return leftScheduled - rightScheduled;
   }
+  return left.id.localeCompare(right.id);
+}
 
-  const leftCreated = left.createdAt?.getTime() ?? 0;
-  const rightCreated = right.createdAt?.getTime() ?? 0;
-  return rightCreated - leftCreated;
+function isFieldEndedWorkOrder(workOrder: WorkOrderRecord) {
+  return FIELD_ENDED_WORK_ORDER_STATUS_SET.has(workOrder.status);
 }
 
 function summarizeEvidenceChecklist(checklist: unknown) {

@@ -35,19 +35,19 @@
 - Add optimistic `lockVersion Int @default(0)` and unique `(orderId, cycleNo, version)`.
 - Add a partial unique SQL index allowing only one non-voided version per order/cycle.
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Assert model fields, relations, enum values, overage bill enum, source uniqueness, evidence indexes, and the partial unique migration index.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- mileage-review-schema.spec.ts`
 
-- [ ] **Step 3: Implement schema and migration**
+- [x] **Step 3: Implement schema and migration**
 
 Persist `periodStart`, `periodEnd`, `scheduledReviewAt`, `dueAt`, `readingAt`, submitted/reviewed/void timestamps as `Timestamptz(6)`; monetary values as `BigInt`; snapshots and metadata as JSON. Evidence has soft-delete fields and FK to `FileObject`.
 
-- [ ] **Step 4: Validate and commit**
+- [x] **Step 4: Validate and commit**
 
 ```powershell
 pnpm prisma:validate

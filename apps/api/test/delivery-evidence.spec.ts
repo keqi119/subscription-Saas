@@ -40,6 +40,25 @@ describe("DeliveryEvidenceService", () => {
     ].sort());
   });
 
+  it("returns checklist rows in the configured capture order even when database rows are unordered", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
+    harness.state.items.reverse();
+
+    const checklist = await harness.service.getChecklist({
+      handoverId: harness.handoverId,
+      orderId: harness.orderId
+    });
+    const evidenceTypes = checklist.items.map((item) => item.evidenceType);
+
+    expect(evidenceTypes).toEqual(
+      DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.map((definition) => definition.evidenceType)
+    );
+    expect(evidenceTypes.indexOf(DeliveryEvidenceType.WALKAROUND_VIDEO)).toBeLessThan(
+      evidenceTypes.indexOf(DeliveryEvidenceType.DAMAGE_STATIC_CLOSEUP)
+    );
+  });
+
   it("allows multiple damage close-up evidence entries while singleton items stay unique", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);

@@ -1169,6 +1169,7 @@ export default function FieldHandoverTaskDetailPage() {
                               allowedMediaTypes={allowedMediaTypes}
                               disabled={!canRetry || actionLoading === "submit"}
                               environment={uploadEnvironment}
+                              evidenceType={item.evidenceType}
                               id={`${item.id}-reselect`}
                               label="重新选择"
                               multiple={item.allowsMultiple}
@@ -1203,6 +1204,7 @@ export default function FieldHandoverTaskDetailPage() {
                             !canStartUpload || !captureView.canEdit || actionLoading === "submit"
                           }
                           environment={uploadEnvironment}
+                          evidenceType={item.evidenceType}
                           id={item.id}
                           multiple={item.allowsMultiple}
                           onFiles={(files) => void uploadEvidence(item.id, files)}

@@ -171,9 +171,12 @@ export function buildFieldEvidenceUploadInputContracts(
 }
 
 export function getFieldEvidenceUploadGuidance(
-  allowedMediaTypes: FieldEvidenceMediaType[]
+  allowedMediaTypes: FieldEvidenceMediaType[],
+  evidenceType?: string | null
 ): string | null {
-  return allowedMediaTypes.includes("VIDEO") ? FIELD_VIDEO_LIBRARY_GUIDANCE : null;
+  return evidenceType === "WALKAROUND_VIDEO" && allowedMediaTypes.includes("VIDEO")
+    ? FIELD_VIDEO_LIBRARY_GUIDANCE
+    : null;
 }
 
 export function buildFieldEvidenceUploadRetryDisplay(

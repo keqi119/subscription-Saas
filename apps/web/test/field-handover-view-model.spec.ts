@@ -104,6 +104,14 @@ describe("field handover view model", () => {
     expect(capture.fieldFactsStatus).toBe("现场信息：已完整");
     expect(capture.damageStateLabel).toBe("损伤状态：无可见损伤");
     expect(capture.canEdit).toBe(true);
+    expect(capture.evidenceItems.map((item) => item.evidenceType)).toEqual(
+      sampleEvidenceItems({ noVisibleDamageDeclared: true }).map((item) => item.evidenceType)
+    );
+    expect(
+      capture.evidenceItems.findIndex((item) => item.evidenceType === "WALKAROUND_VIDEO")
+    ).toBeLessThan(
+      capture.evidenceItems.findIndex((item) => item.evidenceType === "DAMAGE_STATIC_CLOSEUP")
+    );
     expect(capture.evidenceItems[0]).toMatchObject({
       allowsMultiple: false,
       requiredText: "必传",
@@ -139,6 +147,12 @@ describe("field handover view model", () => {
     ).toMatchObject({
       allowsMultiple: true,
       uploadLabel: "继续添加"
+    });
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "WHEEL_CLOSEUP_FRONT_LEFT")
+    ).toMatchObject({
+      uploadAccept: "image/*,video/*",
+      uploadLabel: "替换资料"
     });
     expect(JSON.stringify(capture)).not.toMatch(
       /esign|pdf|signingUrl|objectKey|token|cookie|deposit|payment/i

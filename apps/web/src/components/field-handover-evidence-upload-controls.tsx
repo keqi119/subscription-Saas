@@ -22,6 +22,7 @@ export interface EvidenceUploadControlsProps {
   allowedMediaTypes: FieldEvidenceMediaType[];
   disabled: boolean;
   environment: FieldEvidenceUploadEnvironment;
+  evidenceType?: string;
   id: string;
   label?: string;
   multiple: boolean;
@@ -33,6 +34,7 @@ export function EvidenceUploadControls({
   allowedMediaTypes,
   disabled,
   environment,
+  evidenceType,
   id,
   label = "资料上传",
   multiple,
@@ -48,7 +50,7 @@ export function EvidenceUploadControls({
     Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>
   >({});
   const [chooserOpen, setChooserOpen] = useState(false);
-  const guidance = getFieldEvidenceUploadGuidance(allowedMediaTypes);
+  const guidance = getFieldEvidenceUploadGuidance(allowedMediaTypes, evidenceType);
 
   function selectContract(contract: FieldEvidenceUploadInputContract) {
     inputRefs.current[contract.key]?.click();

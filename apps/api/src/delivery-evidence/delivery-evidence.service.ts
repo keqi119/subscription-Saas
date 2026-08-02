@@ -216,6 +216,9 @@ export const DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS: EvidenceDefinition[] = [
 const DEFINITION_BY_TYPE = new Map(
   DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.map((definition) => [definition.evidenceType, definition])
 );
+const DEFINITION_ORDER_BY_TYPE = new Map(
+  DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.map((definition, index) => [definition.evidenceType, index])
+);
 
 const REQUIRED_FILE_EVIDENCE_DEFINITIONS = DELIVERY_EVIDENCE_CHECKLIST_DEFINITIONS.filter(
   (definition) => definition.isRequired
@@ -822,19 +825,28 @@ export class DeliveryEvidenceService {
     };
   }
 
-  private findScopedItems(scope: {
+  private async findScopedItems(scope: {
     handoverId: string | null;
     orderId: string;
   }, db: DeliveryEvidenceDb = this.prisma) {
-    return db.vehicleDeliveryEvidenceItem.findMany({
+    const items = await db.vehicleDeliveryEvidenceItem.findMany({
       include: evidenceItemInclude,
-      orderBy: [{ evidenceType: "asc" }, { createdAt: "asc" }],
+      orderBy: { createdAt: "asc" },
       where: {
         orderId: scope.orderId,
         ...(scope.handoverId
           ? { OR: [{ handoverId: null }, { handoverId: scope.handoverId }] }
           : {})
       }
+    });
+    return items.sort((left, right) => {
+      const orderDifference =
+        (DEFINITION_ORDER_BY_TYPE.get(left.evidenceType) ?? Number.MAX_SAFE_INTEGER) -
+        (DEFINITION_ORDER_BY_TYPE.get(right.evidenceType) ?? Number.MAX_SAFE_INTEGER);
+      if (orderDifference !== 0) {
+        return orderDifference;
+      }
+      return left.createdAt.getTime() - right.createdAt.getTime();
     });
   }
 

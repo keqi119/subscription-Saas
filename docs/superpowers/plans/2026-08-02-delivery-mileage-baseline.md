@@ -113,27 +113,27 @@ appendConfirmedReading(
 ): Promise<VehicleMileageReading>;
 ```
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Cover initialization with zero/positive mileage, delivery append, duplicate source idempotency, mileage regression rejection, atomic projection update, and list ordering. Assert a source collision with different values is rejected rather than silently reused.
 
-- [ ] **Step 2: Run the tests to verify RED**
+- [x] **Step 2: Run the tests to verify RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- vehicle-mileage.spec.ts`
 
 Expected: FAIL because the module is absent.
 
-- [ ] **Step 3: Implement append and query behavior**
+- [x] **Step 3: Implement append and query behavior**
 
 Inside `appendConfirmedReading`, lock the vehicle and latest active reading using `SELECT ... FOR UPDATE`, validate non-negative integer and non-regression, create the reading, and update `vehicle.currentMileageKm` plus `salePriceReinitRequiredAt` in the same transaction. `VEHICLE_INITIALIZATION` and `LEGACY_MIGRATION` may opt out of the residual recalculation marker.
 
 Expose `GET /vehicles/:id/mileage-readings` behind new permission `vehicle_mileage:view`; return newest first with source, cumulative mileage, delta, recorded time, related order, and status. Do not expose mutable endpoints.
 
-- [ ] **Step 4: Register permission and module**
+- [x] **Step 4: Register permission and module**
 
 Add `PermissionCode.VEHICLE_MILEAGE_VIEW = "vehicle_mileage:view"`, seed it for system administrator and vehicle/order operational roles, import `VehicleMileageModule` from `AppModule`, and export `VehicleMileageService` for `VehicleModule` and `OrderModule`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run:
 
@@ -144,7 +144,7 @@ pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the service slice**
+- [x] **Step 6: Commit the service slice**
 
 ```powershell
 git add apps/api/src/vehicle-mileage apps/api/src/app.module.ts packages/shared/src/auth.ts apps/api/prisma/seed.mjs apps/api/test/vehicle-mileage.spec.ts

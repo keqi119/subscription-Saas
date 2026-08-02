@@ -163,6 +163,7 @@ permissionRows.push(
   ["vehicle:initialize_sale_price", "初始化车辆销售价", "vehicle", "initialize_sale_price"],
   ["vehicle:review_sale_price", "复核车辆销售价", "vehicle", "review_sale_price"],
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
+  ["vehicle_mileage:view", "查看车辆里程档案", "vehicle_mileage", "view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
@@ -618,7 +619,7 @@ const productPackageViewPermissions = [
   "subscription_plan:view"
 ];
 
-const vehicleViewPermissions = ["vehicle:view", "vehicle:history_view"];
+const vehicleViewPermissions = ["vehicle:view", "vehicle:history_view", "vehicle_mileage:view"];
 
 const vehicleManagementPermissions = [
   ...vehicleViewPermissions,

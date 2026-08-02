@@ -10,6 +10,7 @@ import {
   DepositStatus,
   MaterialStatus,
   OrderReviewStatus,
+  OrderMileageReviewStatus,
   OrderStatus,
   PlanConfirmStatus,
   Prisma,
@@ -70,6 +71,15 @@ const portalApplicationInclude = {
         where: { handoverType: VehicleHandoverType.DELIVERY_OUTBOUND }
       },
       id: true,
+      mileageReviews: {
+        orderBy: { scheduledReviewAt: "desc" as const },
+        select: {
+          id: true,
+          status: true
+        },
+        take: 1,
+        where: { deletedAt: null }
+      },
       orderNo: true,
       orderStatus: true
     },
@@ -1106,6 +1116,9 @@ function resolvePortalNextAction(application: PortalApplication) {
       case "DELIVERY":
         return "WAIT_DELIVERY";
       case "ACTIVE":
+        return findActionableMileageReview(findActivePortalOrder(application))
+          ? "SUBMIT_MILEAGE_REVIEW"
+          : "NONE";
       case "COMPLETED":
       case "FAILED":
         return "NONE";
@@ -1160,7 +1173,16 @@ function resolvePortalNextActionTarget(application: PortalApplication) {
       }
       return { label: "查看交付进度", url: `/portal/orders/${orderId}` };
     }
-    case "ACTIVE":
+    case "ACTIVE": {
+      const mileageReview = findActionableMileageReview(order);
+      if (mileageReview) {
+        return {
+          label: "提交本月里程",
+          url: `/portal/mileage-reviews/${encodeURIComponent(mileageReview.id)}`
+        };
+      }
+      return { label: "查看已交付订单", url: `/portal/orders/${orderId}` };
+    }
     case "COMPLETED":
       return { label: "查看已交付订单", url: `/portal/orders/${orderId}` };
     case "FAILED":
@@ -1221,6 +1243,20 @@ const PORTAL_ORDER_STAGE_BY_STATUS = {
 
 function findActivePortalOrder(application: PortalApplication) {
   return application.orders.find((order) => !order.deletedAt);
+}
+
+function findActionableMileageReview(
+  order: PortalApplication["orders"][number] | undefined
+) {
+  if (order?.orderStatus !== OrderStatus.ACTIVE) {
+    return null;
+  }
+  const review = order?.mileageReviews?.[0];
+  return review &&
+    (review.status === OrderMileageReviewStatus.PENDING_SUBMISSION ||
+      review.status === OrderMileageReviewStatus.RETURNED)
+    ? review
+    : null;
 }
 
 function resolvePortalOrderStage(order: PortalApplication["orders"][number] | undefined): PortalOrderStage {

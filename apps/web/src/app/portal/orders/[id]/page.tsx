@@ -119,7 +119,17 @@ export default function PortalOrderDetailPage() {
               <Tag>{labelOf(STATUS_LABELS, order.paymentStatus)}</Tag>
             </Space>
           </Flex>
-          <Alert message={nextActionText(order.nextAction)} showIcon style={{ marginTop: 16 }} type="info" />
+          <Alert
+            action={order.nextActionTarget ? (
+              <Button onClick={() => router.push(order.nextActionTarget!.url)} size="small" type="primary">
+                {order.nextActionTarget.label}
+              </Button>
+            ) : undefined}
+            message={nextActionText(order.nextAction)}
+            showIcon
+            style={{ marginTop: 16 }}
+            type={order.nextAction === "SUBMIT_MILEAGE_REVIEW" ? "warning" : "info"}
+          />
         </section>
 
         <section style={sectionStyle}>
@@ -139,6 +149,25 @@ export default function PortalOrderDetailPage() {
             ]}
           />
         </section>
+
+        {order.mileageReviewSummary ? (
+          <section style={sectionStyle}>
+            <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>月度里程复核</Typography.Title>
+                <Typography.Text type="secondary">
+                  第 {order.mileageReviewSummary.cycleNo} 期 · {order.mileageReviewSummary.overdue ? "已逾期" : order.mileageReviewSummary.status}
+                </Typography.Text>
+              </div>
+              <Button
+                onClick={() => router.push(order.mileageReviewSummary?.actionUrl ?? `/portal/mileage-reviews/${order.mileageReviewSummary?.currentReviewId}`)}
+                type={order.mileageReviewSummary.hasAction ? "primary" : "default"}
+              >
+                {order.mileageReviewSummary.hasAction ? "提交里程资料" : "查看复核记录"}
+              </Button>
+            </Flex>
+          </section>
+        ) : null}
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -293,6 +322,7 @@ function nextActionText(value: string) {
     NONE: "当前暂无待办事项。",
     PAY_BILL: "存在待支付账单，请完成支付。",
     SIGN_CONTRACT: "合同待签署，请先完成签约。",
+    SUBMIT_MILEAGE_REVIEW: "本月里程复核待提交，请填写累计里程并上传仪表盘照片。",
     VIEW_ENTITLEMENTS: "订单已进入履约，可查看权益余额。",
     WAIT_DELIVERY: "平台正在安排车辆交付。"
   };

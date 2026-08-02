@@ -7034,6 +7034,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       };
   const workspaceOverflowActions: OrderWorkspaceHeaderAction[] = [];
   if (order) {
+    if (permissions.has("mileage_review:view")) {
+      workspaceOverflowActions.push({
+        key: "mileage-reviews",
+        label: "查看里程复核",
+        onClick: () => router.push(`/mileage-reviews?orderId=${encodeURIComponent(order.id)}`)
+      });
+    }
     workspaceOverflowActions.push({
       disabled: !applyChangeAvailability.allowed,
       key: "apply-change",

@@ -55,6 +55,14 @@ export interface NotifyBillLifecycleInput extends NotifyCustomerInput {
   idempotencyKey: string;
 }
 
+export interface NotifyMileageReviewDueInput {
+  customerId: string;
+  cycleNo: number;
+  idempotencyKey: string;
+  orderNo: string;
+  reviewId: string;
+}
+
 const TEMPLATE_CODE_BY_EVENT: Partial<
   Record<
     NotificationEventType,
@@ -103,6 +111,10 @@ const TEMPLATE_CODE_BY_EVENT: Partial<
   [NotificationEventType.BILL_OVERDUE]: {
     inApp: "PAYMENT_PENDING_IN_APP",
     wechat: "PAYMENT_PENDING_WECHAT"
+  },
+  [NotificationEventType.MILEAGE_REVIEW_DUE]: {
+    inApp: "MILEAGE_REVIEW_DUE_IN_APP",
+    wechat: "MILEAGE_REVIEW_DUE_WECHAT"
   }
 };
 
@@ -118,6 +130,7 @@ const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<
   [NotificationType.BILL_OVERDUE]: NotificationTemplateType.BILL_OVERDUE,
   [NotificationType.SERVICE_CASE_UPDATE]: NotificationTemplateType.SERVICE_CASE_UPDATE,
   [NotificationType.RESCUE_UPDATE]: NotificationTemplateType.RESCUE_UPDATE,
+  [NotificationType.MILEAGE_REVIEW_DUE]: NotificationTemplateType.MILEAGE_REVIEW_DUE,
   [NotificationType.SYSTEM]: NotificationTemplateType.SYSTEM
 };
 
@@ -127,7 +140,8 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.FINAL_PLAN_PENDING]: "WECHAT_TEMPLATE_FINAL_PLAN_PENDING",
   [NotificationTemplateType.PAYMENT_PENDING]: "WECHAT_TEMPLATE_PAYMENT_PENDING",
   [NotificationTemplateType.RESCUE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
-  [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE"
+  [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
+  [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE"
 };
 
 const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {
@@ -244,6 +258,72 @@ export class NotificationService {
 
     if (incomplete) {
       throw new Error("BILL_NOTIFICATION_INCOMPLETE");
+    }
+    return records;
+  }
+
+  async notifyMileageReviewDue(input: NotifyMileageReviewDueInput) {
+    const notification: NotifyCustomerInput = {
+      aggregateId: input.reviewId,
+      aggregateType: "OrderMileageReview",
+      content: `订单 ${input.orderNo} 的第 ${input.cycleNo} 期里程复核已到期，请提交当前累计里程和仪表盘照片。`,
+      customerId: input.customerId,
+      data: {
+        aggregateNo: input.orderNo,
+        cycleNo: input.cycleNo,
+        status: "PENDING_SUBMISSION"
+      },
+      eventType: NotificationEventType.MILEAGE_REVIEW_DUE,
+      notificationType: NotificationType.MILEAGE_REVIEW_DUE,
+      title: "月度里程复核待提交",
+      url: `/portal/mileage-reviews/${encodeURIComponent(input.reviewId)}`
+    };
+    const records = await this.createNotificationRecords(
+      notification,
+      input.idempotencyKey
+    );
+    if (records.length === 0) {
+      return records;
+    }
+
+    const eventId = lifecycleNotificationEventId(
+      "mileage-review",
+      input.idempotencyKey
+    );
+    const now = new Date();
+    const incomplete = records.some(
+      (record) =>
+        record.notificationStatus !== NotificationStatus.SENT &&
+        record.notificationStatus !== NotificationStatus.READ &&
+        record.notificationStatus !== NotificationStatus.SKIPPED
+    );
+    const event = await this.prisma.notificationEvent.findUnique({
+      where: { id: eventId }
+    });
+    const eventData = {
+      aggregateId: input.reviewId,
+      aggregateType: "OrderMileageReview",
+      customerId: input.customerId,
+      eventStatus: incomplete
+        ? NotificationEventStatus.FAILED
+        : NotificationEventStatus.PROCESSED,
+      eventType: NotificationEventType.MILEAGE_REVIEW_DUE,
+      lastError: incomplete ? "MILEAGE_REVIEW_NOTIFICATION_INCOMPLETE" : null,
+      notificationId: records[0]!.id,
+      processedAt: now
+    };
+    if (event) {
+      await this.prisma.notificationEvent.update({
+        data: { ...eventData, attempts: { increment: 1 } },
+        where: { id: event.id }
+      });
+    } else {
+      await this.prisma.notificationEvent.create({
+        data: { ...eventData, attempts: 1, id: eventId }
+      });
+    }
+    if (incomplete) {
+      throw new Error("MILEAGE_REVIEW_NOTIFICATION_INCOMPLETE");
     }
     return records;
   }
@@ -1291,8 +1371,12 @@ function billNotificationNo(idempotencyKey: string, channel: "IN_APP" | "WECHAT"
 }
 
 function billNotificationEventId(idempotencyKey: string) {
+  return lifecycleNotificationEventId("bill", idempotencyKey);
+}
+
+function lifecycleNotificationEventId(namespace: string, idempotencyKey: string) {
   const hex = createHash("sha256")
-    .update(`bill-notification-event:${idempotencyKey}`)
+    .update(`${namespace}-notification-event:${idempotencyKey}`)
     .digest("hex")
     .slice(0, 32)
     .split("");

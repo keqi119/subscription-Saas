@@ -1152,6 +1152,11 @@ async function seedNotificationTemplates(adminUserId) {
     ["SERVICE_CASE_UPDATE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度，点击查看。"]
   ];
 
+  rows.push(
+    ["MILEAGE_REVIEW_DUE_IN_APP", "IN_APP", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请提交当前累计里程和仪表盘照片。"],
+    ["MILEAGE_REVIEW_DUE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请点击进入并提交里程资料。"]
+  );
+
   for (const [templateCode, channel, templateType, title, content] of rows) {
     await prisma.notificationTemplate.upsert({
       create: {

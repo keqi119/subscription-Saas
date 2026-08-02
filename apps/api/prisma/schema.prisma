@@ -855,6 +855,7 @@ enum NotificationTemplateType {
   RESCUE_UPDATE
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
+  MILEAGE_REVIEW_DUE
   SYSTEM
 
   @@map("notification_template_type")
@@ -879,6 +880,7 @@ enum NotificationType {
   RESCUE_UPDATE
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
+  MILEAGE_REVIEW_DUE
   SYSTEM
 
   @@map("notification_type")
@@ -909,6 +911,7 @@ enum NotificationEventType {
   RESCUE_UPDATED
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
+  MILEAGE_REVIEW_DUE
 
   @@map("notification_event_type")
 }

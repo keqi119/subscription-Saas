@@ -54,6 +54,33 @@ describe("NotificationAdminController", () => {
 });
 
 describe("NotificationService", () => {
+  it("reuses the same mileage reminder records and event for a local reminder day", async () => {
+    const harness = createNotificationHarness();
+    const input = {
+      customerId: "customer-a",
+      cycleNo: 1,
+      idempotencyKey:
+        "mileage-review:00000000-0000-4000-8000-000000000010:due:2026-08-03",
+      orderNo: "ORD-1",
+      reviewId: "00000000-0000-4000-8000-000000000010"
+    };
+
+    const first = await harness.service.notifyMileageReviewDue(input);
+    const second = await harness.service.notifyMileageReviewDue(input);
+
+    expect(first.map((record) => record.id)).toEqual(
+      second.map((record) => record.id)
+    );
+    expect(harness.records).toHaveLength(2);
+    expect(harness.events).toHaveLength(1);
+    expect(harness.records[0]).toMatchObject({
+      channel: NotificationChannel.IN_APP,
+      notificationStatus: NotificationStatus.SENT,
+      notificationType: NotificationType.MILEAGE_REVIEW_DUE,
+      url: "https://app.subauto.keybox.cloud/portal/mileage-reviews/00000000-0000-4000-8000-000000000010"
+    });
+  });
+
   it("reuses the same bill lifecycle records and event across worker retries", async () => {
     const harness = createNotificationHarness();
     const input = {
@@ -807,6 +834,16 @@ function createTemplates() {
       "SERVICE_CASE_UPDATE_WECHAT",
       NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
       NotificationTemplateType.SERVICE_CASE_UPDATE
+    ],
+    [
+      "MILEAGE_REVIEW_DUE_IN_APP",
+      NotificationChannel.IN_APP,
+      NotificationTemplateType.MILEAGE_REVIEW_DUE
+    ],
+    [
+      "MILEAGE_REVIEW_DUE_WECHAT",
+      NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+      NotificationTemplateType.MILEAGE_REVIEW_DUE
     ]
   ] as const;
 

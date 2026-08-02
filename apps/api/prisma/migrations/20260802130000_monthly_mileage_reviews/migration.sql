@@ -1,5 +1,8 @@
 -- ExtendEnum
 ALTER TYPE "bill_type" ADD VALUE 'OVER_MILEAGE';
+ALTER TYPE "notification_template_type" ADD VALUE 'MILEAGE_REVIEW_DUE';
+ALTER TYPE "notification_type" ADD VALUE 'MILEAGE_REVIEW_DUE';
+ALTER TYPE "notification_event_type" ADD VALUE 'MILEAGE_REVIEW_DUE';
 
 -- CreateEnum
 CREATE TYPE "order_mileage_review_status" AS ENUM (

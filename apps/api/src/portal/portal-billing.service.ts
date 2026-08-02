@@ -402,7 +402,8 @@ export class PortalBillingService {
         transactionStatus: DepositTransactionStatus.CONFIRMED
       }
     });
-    return buildDepositOverview(ledgers).accounts[0] ?? emptyDepositAccount(orderId);
+    return buildDepositOverview(ledgers).accounts[0] ??
+      toPlainDepositAccount(emptyDepositAccount(orderId));
   }
 
   private async buildOrderEntitlementSummary(orderId: string, customerId: string) {

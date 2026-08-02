@@ -79,6 +79,27 @@ describe("portal billing and entitlement center", () => {
     expect(result.accounts[0]?.orderNo).toBe("ORD-A");
   });
 
+  it("serializes order detail when no confirmed deposit ledger exists", async () => {
+    const harness = createPortalBillingHarness({ ledgers: [] });
+
+    const result = await harness.service.getOrder(
+      "order_a",
+      harness.currentCustomer("customer_a")
+    );
+
+    expect(() => JSON.stringify(result)).not.toThrow();
+    expect(result.depositSummary).toEqual(
+      expect.objectContaining({
+        collectedAmount: 0,
+        deductedAmount: 0,
+        frozenAmount: 0,
+        refundedAmount: 0,
+        remainingAmount: 0,
+        status: "NONE"
+      })
+    );
+  });
+
   it("lists only the current customer's entitlement grants and usage records", async () => {
     const harness = createPortalBillingHarness();
 
@@ -93,7 +114,9 @@ describe("portal billing and entitlement center", () => {
   });
 });
 
-function createPortalBillingHarness() {
+function createPortalBillingHarness(
+  overrides: { ledgers?: AnyRecord[] } = {}
+) {
   const now = new Date("2026-06-18T00:00:00Z");
   const orders = [
     makeOrder({
@@ -119,7 +142,7 @@ function createPortalBillingHarness() {
     }),
     makeBill({ billNo: "BIL-B1", customerId: "customer_b", id: "bill_b1", orderId: "order_b", remainingAmount: 3000n })
   ];
-  const ledgers = [
+  const ledgers = overrides.ledgers ?? [
     makeDepositLedger({
       amount: 100000n,
       balanceAfter: 100000n,

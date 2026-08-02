@@ -28,10 +28,12 @@ import {
   Modal,
   Select,
   Space,
+  Spin,
   Switch,
   Table,
   Tabs,
   Tag,
+  Timeline,
   Typography,
   Upload
 } from "antd";
@@ -87,6 +89,10 @@ import {
 } from "../../lib/action-guards";
 import { API_BASE_URL, apiFetch, ApiError } from "../../lib/api";
 import type { AuthMeResponse } from "../../lib/auth";
+import {
+  buildVehicleMileageTimelineItem,
+  type VehicleMileageReadingView
+} from "../../lib/vehicle-mileage-view-model";
 import {
   formatPercentFromBps,
   formatRatio,
@@ -154,6 +160,12 @@ interface Vehicle {
   status: string;
   vehicleNo: string;
   vin?: string | null;
+}
+
+interface VehicleMileageReading extends VehicleMileageReadingView {
+  confirmedAt?: string | null;
+  confirmedBy?: string | null;
+  previousReadingId?: string | null;
 }
 
 interface VehicleInsurancePolicySummary {
@@ -268,7 +280,7 @@ interface CreateVehicleValues {
   vin: string;
 }
 
-type EditVehicleValues = CreateVehicleValues;
+type EditVehicleValues = Omit<CreateVehicleValues, "currentMileageKm">;
 
 interface InitializeSalePriceValues {
   currentSalePriceAmountYuan: number;
@@ -1079,6 +1091,9 @@ export default function VehiclesPage() {
   const [dueReviews, setDueReviews] = useState<Vehicle[]>([]);
   const [editingCapitalEvent, setEditingCapitalEvent] = useState<CapitalEvent | null>(null);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [mileageHistoryLoading, setMileageHistoryLoading] = useState(false);
+  const [mileageHistoryReadings, setMileageHistoryReadings] = useState<VehicleMileageReading[]>([]);
+  const [mileageHistoryVehicle, setMileageHistoryVehicle] = useState<Vehicle | null>(null);
   const [financingInstruments, setFinancingInstruments] = useState<FinancingInstrumentSummary[]>([]);
   const [financingInstrumentsLoading, setFinancingInstrumentsLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1137,6 +1152,7 @@ export default function VehiclesPage() {
   const canViewResidualForecast = permissions.has("residual_forecast:view");
   const canGenerateResidualForecast = permissions.has("residual_forecast:generate");
   const canViewValuationReview = permissions.has("vehicle_valuation_review:view");
+  const canViewVehicleMileage = permissions.has("vehicle_mileage:view");
   const canCreateValuationReview = permissions.has("vehicle_valuation_review:create");
   const vehicleModelDefinitionOptions = useMemo(
     () =>
@@ -1840,7 +1856,6 @@ export default function VehiclesPage() {
       batteryCapacityKwh: vehicle.batteryCapacityKwh,
       batteryUsageType: (vehicle.batteryUsageType ?? "BUYOUT") as "BUYOUT" | "BAAS",
       brand: vehicle.brand,
-      currentMileageKm: vehicle.currentMileageKm,
       model: vehicle.model,
       modelDefinitionId: vehicle.modelDefinitionId ?? null,
       modelYear: vehicle.modelYear,
@@ -1864,7 +1879,6 @@ export default function VehiclesPage() {
       batteryCapacityKwh: values.batteryCapacityKwh,
       batteryUsageType: values.batteryUsageType,
       brand: values.brand,
-      currentMileageKm: values.currentMileageKm ?? 0,
       latestRegistrationDate: values.latestRegistrationDate?.format("YYYY-MM-DD"),
       model: values.model,
       modelYear: values.modelYear,
@@ -1892,6 +1906,22 @@ export default function VehiclesPage() {
       await loadData();
     } catch (error) {
       void message.error(getErrorMessage(error));
+    }
+  }
+
+  async function openMileageHistory(vehicle: Vehicle) {
+    setMileageHistoryVehicle(vehicle);
+    setMileageHistoryReadings([]);
+    setMileageHistoryLoading(true);
+    try {
+      const readings = await apiFetch<VehicleMileageReading[]>(
+        `/vehicles/${vehicle.id}/mileage-readings`
+      );
+      setMileageHistoryReadings(readings);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    } finally {
+      setMileageHistoryLoading(false);
     }
   }
 
@@ -2428,6 +2458,14 @@ export default function VehiclesPage() {
                 { label: "备注", children: detailVehicle.remark ?? "-" }
               ]}
             />
+            {canViewVehicleMileage ? (
+              <Button
+                icon={<HistoryOutlined />}
+                onClick={() => void openMileageHistory(detailVehicle)}
+              >
+                查看里程档案
+              </Button>
+            ) : null}
             <VehicleInsuranceDocumentsBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleBaasSummaryBlock permissions={permissions} vehicle={detailVehicle} />
             <VehicleDepreciationSummaryBlock permissions={permissions} vehicle={detailVehicle} />
@@ -2498,6 +2536,53 @@ export default function VehiclesPage() {
           </Space>
         ) : null}
       </Modal>
+
+      <Drawer
+        destroyOnHidden
+        onClose={() => {
+          setMileageHistoryVehicle(null);
+          setMileageHistoryReadings([]);
+        }}
+        open={Boolean(mileageHistoryVehicle)}
+        title={
+          mileageHistoryVehicle
+            ? `${mileageHistoryVehicle.vehicleNo} 里程档案`
+            : "里程档案"
+        }
+        width={620}
+      >
+        <Spin spinning={mileageHistoryLoading}>
+          {mileageHistoryReadings.length === 0 && !mileageHistoryLoading ? (
+            <Empty description="暂无里程记录" />
+          ) : (
+            <Timeline
+              items={mileageHistoryReadings.map((reading) => {
+                const item = buildVehicleMileageTimelineItem(reading);
+                return {
+                  color: item.color,
+                  children: (
+                    <Space orientation="vertical" size={4}>
+                      <Space wrap>
+                        <Typography.Text strong>{item.sourceLabel}</Typography.Text>
+                        <Tag color={item.statusColor}>{item.statusLabel}</Tag>
+                      </Space>
+                      <Typography.Text>
+                        累计里程 {item.mileageText}，本次变化 {item.deltaText}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        记录时间：{formatDateTime(item.recordedAt)}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        关联单据：{item.orderText ?? item.sourceRecordId}
+                      </Typography.Text>
+                    </Space>
+                  )
+                };
+              })}
+            />
+          )}
+        </Spin>
+      </Drawer>
 
       <ResidualForecastGenerateModal
         curveOptions={residualCurveOptions}
@@ -2920,9 +3005,13 @@ export default function VehiclesPage() {
             style={{ marginBottom: 16 }}
             type="info"
           />
-          <Form.Item label="当前里程" name="currentMileageKm">
-            <InputNumber min={0} style={{ width: "100%" }} />
-          </Form.Item>
+          <Alert
+            description="当前里程只能通过里程流程单据更新。"
+            message={`当前里程：${editingVehicle?.currentMileageKm.toLocaleString("zh-CN") ?? "-"} km`}
+            showIcon
+            style={{ marginBottom: 16 }}
+            type="info"
+          />
           <Form.Item label="资产位置" name="assetLocation">
             <Input maxLength={128} />
           </Form.Item>

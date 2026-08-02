@@ -302,19 +302,19 @@ git commit -m "refactor: record return mileage through ledger"
 - Create: `apps/web/test/vehicle-mileage-view-model.spec.ts`
 - Modify: `apps/web/test/admin-order-workspace.spec.ts`
 
-- [ ] **Step 1: Write failing view-model/UI tests**
+- [x] **Step 1: Write failing view-model/UI tests**
 
 Assert the delivery form uses `confirmationDefaults`, renders both source labels, and marks fields as manually adjusted only after the operator changes them. Assert an existing vehicle form renders current mileage read-only and the timeline maps all source/status labels.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/web test -- vehicle-mileage-view-model.spec.ts admin-order-workspace.spec.ts`
 
-- [ ] **Step 3: Implement the UI**
+- [x] **Step 3: Implement the UI**
 
 Populate the modal only after `/orders/:id/delivery-check` resolves. Show `Stage 2 双方签署完成时间` and `Field 现场交接里程` under the controls. Keep both fields editable and send ISO time plus integer mileage. On vehicle edit, remove the mileage input; on vehicle create, retain initial mileage. Add a mileage timeline drawer backed by `GET /vehicles/:id/mileage-readings`.
 
-- [ ] **Step 4: Run GREEN, lint/typecheck, and commit**
+- [x] **Step 4: Run GREEN, lint/typecheck, and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/web test -- vehicle-mileage-view-model.spec.ts admin-order-workspace.spec.ts

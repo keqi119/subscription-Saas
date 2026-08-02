@@ -78,6 +78,11 @@ import {
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
 import { formatFieldEvidenceVideoQuality } from "../../../lib/field-handover-video-quality";
 import {
+  getDeliveryConfirmationAdjustmentState,
+  getDeliveryConfirmationSourceHints,
+  type DeliveryConfirmationDefaults
+} from "../../../lib/vehicle-mileage-view-model";
+import {
   createAdminStage2DeliveryConfirmationController,
   createAdminStage2DeliveryVerifier,
   getAdminStage2HandoverESignDisplay,
@@ -280,6 +285,7 @@ interface DeliveryCheck {
   blockingReasons: string[];
   canConfirmDelivery: boolean;
   canPrepareDelivery: boolean;
+  confirmationDefaults?: DeliveryConfirmationDefaults | null;
   contractSigned: boolean;
   currentSalePriceInitialized: boolean;
   deliveryStatus?: string | null;
@@ -4600,9 +4606,21 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const resourcePromisesRef = useRef(new Map<string, Promise<void>>());
   const orderRef = useRef<OrderDetail | null>(null);
   const paymentAmountYuan = Form.useWatch("paymentAmountYuan", paymentForm);
+  const confirmDeliveryAtValue = Form.useWatch("deliveredAt", confirmDeliveryForm);
+  const confirmDeliveryMileageValue = Form.useWatch("handoverMileageKm", confirmDeliveryForm);
   const writeOffEnabled = Form.useWatch("writeOffEnabled", paymentForm);
   const writeOffItems = Form.useWatch("writeOffItems", paymentForm);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const deliveryConfirmationAdjustments = getDeliveryConfirmationAdjustmentState(
+    {
+      deliveredAt: confirmDeliveryAtValue?.toISOString(),
+      handoverMileageKm: confirmDeliveryMileageValue
+    },
+    deliveryCheck?.confirmationDefaults
+  );
+  const deliveryConfirmationSourceHints = getDeliveryConfirmationSourceHints(
+    deliveryCheck?.confirmationDefaults
+  );
   const stage2DeliveryVerifier = useMemo(
     () =>
       createAdminStage2DeliveryVerifier({
@@ -6028,19 +6046,29 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     if (!order) {
       return;
     }
-    await stage2DeliveryConfirmationController.run({
-      boundary: "MODAL_OPEN",
-      onAllowed: () => {
-        confirmDeliveryForm.setFieldsValue({
-          deliveredAt: dayjs(),
-          handoverMileageKm:
-            order.vehicle?.currentMileageKm ?? undefined,
-          remark: delivery?.remark ?? undefined
-        });
-        setConfirmDeliveryModalOpen(true);
-      },
-      orderId: order.id
-    });
+    try {
+      await stage2DeliveryConfirmationController.run({
+        boundary: "MODAL_OPEN",
+        onAllowed: async () => {
+          const nextDeliveryCheck = await apiFetch<DeliveryCheck>(`/orders/${order.id}/delivery-check`);
+          setDeliveryCheck(nextDeliveryCheck);
+          const defaults = nextDeliveryCheck.confirmationDefaults;
+          if (!defaults) {
+            void message.warning(nextDeliveryCheck.blockingReasons[0] ?? "交付确认默认值尚未就绪");
+            return;
+          }
+          confirmDeliveryForm.setFieldsValue({
+            deliveredAt: dayjs(defaults.deliveredAt),
+            handoverMileageKm: defaults.handoverMileageKm,
+            remark: delivery?.remark ?? undefined
+          });
+          setConfirmDeliveryModalOpen(true);
+        },
+        orderId: order.id
+      });
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
   }
 
   function closeConfirmDeliveryModal() {
@@ -6688,7 +6716,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           onAllowed: () =>
             apiFetch(`/orders/${order.id}/confirm-delivery`, {
               body: JSON.stringify({
-                deliveredAt: values.deliveredAt?.toISOString(),
+                deliveredAt: values.deliveredAt!.toISOString(),
                 handoverMileageKm: values.handoverMileageKm,
                 remark: values.remark
               }),
@@ -8270,11 +8298,35 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           title="确认交付"
         >
           <Form form={confirmDeliveryForm} layout="vertical">
-            <Form.Item label="实际交付时间" name="deliveredAt" rules={[{ required: true, message: "请选择实际交付时间" }]}>
+            <Form.Item
+              extra={
+                <Space size={6}>
+                  <Typography.Text type="secondary">
+                    {deliveryConfirmationSourceHints.deliveredAt}
+                  </Typography.Text>
+                  {deliveryConfirmationAdjustments.deliveredAt ? <Tag color="orange">已人工调整</Tag> : null}
+                </Space>
+              }
+              label="实际交付时间"
+              name="deliveredAt"
+              rules={[{ required: true, message: "请选择实际交付时间" }]}
+            >
               <DatePicker showTime style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label="交付里程" name="handoverMileageKm" rules={[{ required: true, message: "请填写交付里程" }]}>
-              <InputNumber min={0} addonAfter="km" style={{ width: "100%" }} />
+            <Form.Item
+              extra={
+                <Space size={6}>
+                  <Typography.Text type="secondary">
+                    {deliveryConfirmationSourceHints.handoverMileageKm}
+                  </Typography.Text>
+                  {deliveryConfirmationAdjustments.handoverMileageKm ? <Tag color="orange">已人工调整</Tag> : null}
+                </Space>
+              }
+              label="交付里程"
+              name="handoverMileageKm"
+              rules={[{ required: true, message: "请填写交付里程" }]}
+            >
+              <InputNumber min={0} precision={0} addonAfter="km" style={{ width: "100%" }} />
             </Form.Item>
             <Form.Item label="备注" name="remark">
               <Input.TextArea rows={3} />

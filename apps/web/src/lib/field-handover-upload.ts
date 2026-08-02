@@ -59,6 +59,8 @@ const SAFE_VIDEO_MIME_TYPES = new Set([
 const MOBILE_USER_AGENT_PATTERN =
   /android|avantgo|blackberry|iemobile|ip(?:ad|hone|od)|mobile|opera mini|windows phone/i;
 const MOBILE_UPLOAD_MAX_VIEWPORT_WIDTH = 768;
+const FIELD_VIDEO_LIBRARY_GUIDANCE =
+  "请先使用手机系统相机以 720p 或更高画质录制完整车辆环绕视频，再从相册选择上传。单个视频不超过 300MB。";
 
 export function detectFieldEvidenceUploadEnvironment(
   signals: FieldEvidenceUploadEnvironmentSignals = {}
@@ -152,15 +154,6 @@ export function buildFieldEvidenceUploadInputContracts(
       multiple: false
     });
   }
-  if (environment === "MOBILE" && allowedMediaTypes.includes("VIDEO")) {
-    contracts.push({
-      accept: "video/*",
-      capture: "environment",
-      key: "video-capture",
-      label: "现场录像",
-      multiple: false
-    });
-  }
   if (allowedMediaTypes.length > 0) {
     contracts.push({
       accept: [
@@ -175,6 +168,12 @@ export function buildFieldEvidenceUploadInputContracts(
     });
   }
   return contracts;
+}
+
+export function getFieldEvidenceUploadGuidance(
+  allowedMediaTypes: FieldEvidenceMediaType[]
+): string | null {
+  return allowedMediaTypes.includes("VIDEO") ? FIELD_VIDEO_LIBRARY_GUIDANCE : null;
 }
 
 export function buildFieldEvidenceUploadRetryDisplay(

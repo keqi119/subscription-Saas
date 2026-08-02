@@ -76,6 +76,7 @@ import {
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
 import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
+import { formatFieldEvidenceVideoQuality } from "../../../lib/field-handover-video-quality";
 import {
   createAdminStage2DeliveryConfirmationController,
   createAdminStage2DeliveryVerifier,
@@ -323,6 +324,7 @@ interface HandoverEvidenceFile {
   evidenceFileId?: string | null;
   id?: string | null;
   mediaType?: string | null;
+  metadata?: Record<string, unknown> | null;
   previewAvailable?: boolean | null;
   previewUrl?: string | null;
   sizeBytes?: number | string | null;
@@ -3214,31 +3216,46 @@ function Stage2HandoverReviewDetailModal({
                       </Space>
                       {(item.files ?? []).length > 0 ? (
                         <Space size={[8, 6]} wrap>
-                          {(item.files ?? []).map((file) => (
-                            <Space key={file.evidenceFileId || file.id || file.displayName || "file"} size={4} wrap>
-                              <Typography.Text type="secondary">
-                                {file.displayName ?? "资料文件"} / {formatEvidenceFileSize(file.sizeBytes)}
-                              </Typography.Text>
-                              {file.previewAvailable && file.previewUrl ? (
-                                <Typography.Link
-                                  href={buildAdminHandoverFileUrl(file.previewUrl) ?? undefined}
-                                  rel="noreferrer"
-                                  target="_blank"
-                                >
-                                  预览
-                                </Typography.Link>
-                              ) : null}
-                              {file.downloadUrl ? (
-                                <Typography.Link
-                                  href={buildAdminHandoverFileUrl(file.downloadUrl) ?? undefined}
-                                  rel="noreferrer"
-                                  target="_blank"
-                                >
-                                  下载/打开
-                                </Typography.Link>
-                              ) : null}
-                            </Space>
-                          ))}
+                          {(item.files ?? []).map((file) => {
+                            const videoQualityText = formatFieldEvidenceVideoQuality(
+                              file.mediaType,
+                              file.metadata
+                            );
+                            return (
+                              <Space
+                                key={file.evidenceFileId || file.id || file.displayName || "file"}
+                                size={4}
+                                wrap
+                              >
+                                <Typography.Text type="secondary">
+                                  {file.displayName ?? "资料文件"} / {formatEvidenceFileSize(file.sizeBytes)}
+                                </Typography.Text>
+                                {videoQualityText ? (
+                                  <Typography.Text type="secondary">
+                                    {videoQualityText}
+                                  </Typography.Text>
+                                ) : null}
+                                {file.previewAvailable && file.previewUrl ? (
+                                  <Typography.Link
+                                    href={buildAdminHandoverFileUrl(file.previewUrl) ?? undefined}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    预览
+                                  </Typography.Link>
+                                ) : null}
+                                {file.downloadUrl ? (
+                                  <Typography.Link
+                                    href={buildAdminHandoverFileUrl(file.downloadUrl) ?? undefined}
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    下载/打开
+                                  </Typography.Link>
+                                ) : null}
+                              </Space>
+                            );
+                          })}
                         </Space>
                       ) : null}
                       {item.rejectionReason ? <Typography.Text type="danger">{item.rejectionReason}</Typography.Text> : null}

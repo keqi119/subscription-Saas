@@ -108,6 +108,11 @@ describe("field handover view model", () => {
     expect(
       capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")
     ).toMatchObject({
+      files: [
+        expect.objectContaining({
+          videoQualityText: "视频清晰度：1920×1080（符合环绕视频最低要求）"
+        })
+      ],
       uploadAccept: "video/*"
     });
     expect(
@@ -178,6 +183,28 @@ describe("field handover view model", () => {
     expect(view.showSaveAction).toBe(false);
     expect(view.showSubmitAction).toBe(false);
     expect(view.evidenceItems.every((item) => item.showUpload === false)).toBe(true);
+  });
+
+  it("labels historical video quality without inventing dimensions and ignores photo metadata", () => {
+    const detail = sampleDetail();
+    const items = sampleEvidenceItems({ noVisibleDamageDeclared: true });
+    const walkaround = items.find((item) => item.evidenceType === "WALKAROUND_VIDEO")!;
+    const photo = items.find((item) => item.evidenceType === "VEHICLE_FRONT")!;
+    walkaround.files[0]!.metadata = { artifactVersion: 1 };
+    photo.files[0]!.metadata = { videoHeightPx: 1080, videoWidthPx: 1920 };
+    const capture = buildFieldEvidenceCaptureView({
+      ...detail,
+      evidenceChecklist: { blockingReasons: [], items, ready: false }
+    });
+
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "WALKAROUND_VIDEO")
+        ?.files[0]?.videoQualityText
+    ).toBe("视频清晰度：历史资料未记录");
+    expect(
+      capture.evidenceItems.find((item) => item.evidenceType === "VEHICLE_FRONT")
+        ?.files[0]?.videoQualityText
+    ).toBeNull();
   });
 
   it("preserves a local facts draft during upload reconciliation refresh", () => {
@@ -341,6 +368,7 @@ function sampleEvidenceItems(options: {
   return titles.map(([evidenceType, title, allowedMediaTypes], index) => {
     const isDamageCloseup = evidenceType === "DAMAGE_STATIC_CLOSEUP";
     const isNoDamage = evidenceType === "NO_VISIBLE_DAMAGE_DECLARATION";
+    const isVideo = evidenceType === "WALKAROUND_VIDEO";
     const hasFile =
       !isNoDamage &&
       (!isDamageCloseup || (options.damageDeclared && !options.missingDamageCloseup));
@@ -354,14 +382,22 @@ function sampleEvidenceItems(options: {
       files: hasFile
         ? [
             {
-              displayName: `${index}.jpg`,
+              displayName: `${index}.${isVideo ? "mov" : "jpg"}`,
               evidenceFileId: `evidence-file-${index}`,
               file: {
                 id: `file-${index}`,
-                mimeType: "image/jpeg",
-                originalName: `${index}.jpg`,
+                mimeType: isVideo ? "video/quicktime" : "image/jpeg",
+                originalName: `${index}.${isVideo ? "mov" : "jpg"}`,
                 sizeBytes: 1000
               },
+              mediaType: isVideo ? "VIDEO" : "PHOTO",
+              metadata: isVideo
+                ? {
+                    videoHeightPx: 1080,
+                    videoQualityStatus: "PASSED",
+                    videoWidthPx: 1920
+                  }
+                : null,
               previewUrl: `/api/field/handover/work-orders/work-order-1/evidence-files/evidence-file-${index}/preview`
             }
           ]

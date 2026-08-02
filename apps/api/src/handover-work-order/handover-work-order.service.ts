@@ -40,6 +40,7 @@ import {
 } from "../delivery-evidence/delivery-evidence.service";
 import {
   DeliveryHandoverEvidenceArtifactService,
+  getDeliveryEvidenceVideoQualityPublicMessage,
   isDeliveryEvidenceArtifactProcessingError,
   PreparedDeliveryEvidenceArtifacts
 } from "../delivery-handover/delivery-handover-evidence-artifact.service";
@@ -612,6 +613,10 @@ export class HandoverWorkOrderService {
           mediaType
         });
       } catch (error) {
+        const qualityMessage = getDeliveryEvidenceVideoQualityPublicMessage(error);
+        if (qualityMessage) {
+          throw new UnprocessableEntityException(qualityMessage);
+        }
         if (isDeliveryEvidenceArtifactProcessingError(error)) {
           throw new UnprocessableEntityException(
             "资料文件处理失败，请重新选择文件后重试。"
@@ -879,7 +884,8 @@ export class HandoverWorkOrderService {
           path: sourcePath,
           size: actualSizeBytes
         },
-        mediaType
+        mediaType,
+        qualityPolicy: "LEGACY_REPAIR"
       });
       const derivatives: Array<{
         derivative: PreparedDeliveryEvidenceArtifacts["derivatives"][number];
@@ -4338,6 +4344,7 @@ function toSafeEvidenceItem(item: Record<string, unknown>, routeBase?: string) {
 function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
   const linkedFile = readRecord(file, "file");
   const evidenceFileId = readString(file, "id");
+  const mediaType = readString(file, "mediaType");
   const mimeType = linkedFile ? readNullableString(linkedFile, "mimeType") : null;
   const displayName = linkedFile ? readNullableString(linkedFile, "originalName") : null;
   const sizeBytes = linkedFile ? readNumberLike(linkedFile, "sizeBytes") : null;
@@ -4358,12 +4365,39 @@ function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
     id: readString(file, "id"),
     lifecycleStatus: readString(file, "lifecycleStatus"),
     mimeType,
-    mediaType: readString(file, "mediaType"),
+    mediaType,
+    metadata: mediaType === "VIDEO"
+      ? toSafeEvidenceVideoQualityMetadata(readUnknown(file, "metadata"))
+      : null,
     previewAvailable,
     previewUrl: routeBase && evidenceFileId && previewAvailable ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/preview` : null,
     sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
+}
+
+function toSafeEvidenceVideoQualityMetadata(metadata: unknown) {
+  const record = asRecord(metadata);
+  if (!record) {
+    return null;
+  }
+  const videoHeightPx = toPositiveSafeInteger(record.videoHeightPx);
+  const videoWidthPx = toPositiveSafeInteger(record.videoWidthPx);
+  const videoQualityStatus = record.videoQualityStatus === "PASSED" ? "PASSED" : null;
+  if (!videoHeightPx && !videoWidthPx && !videoQualityStatus) {
+    return null;
+  }
+  return {
+    videoHeightPx,
+    videoQualityStatus,
+    videoWidthPx
+  };
+}
+
+function toPositiveSafeInteger(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
 }
 
 function getChecklistItems(checklist: unknown) {

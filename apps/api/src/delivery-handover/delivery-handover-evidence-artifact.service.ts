@@ -9,6 +9,8 @@ import { spawn } from "node:child_process";
 
 export const STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED =
   "STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED";
+export const STAGE2_WALKAROUND_VIDEO_RESOLUTION_TOO_LOW =
+  "STAGE2_WALKAROUND_VIDEO_RESOLUTION_TOO_LOW";
 
 const PHOTO_MAX_BYTES = 400 * 1024;
 const VIDEO_FRAME_MAX_BYTES = 200 * 1024;
@@ -16,6 +18,7 @@ const DEFAULT_PROCESS_TIMEOUT_MS = 120_000;
 const DEFAULT_PROCESS_CONCURRENCY = 2;
 const DEFAULT_PROCESS_QUEUE_LIMIT = 8;
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
+const MIN_WALKAROUND_VIDEO_SHORT_EDGE_PX = 720;
 const JPEG_PROFILES = [
   { longEdge: 1600, quality: 5 },
   { longEdge: 1280, quality: 7 },
@@ -40,7 +43,12 @@ export interface DeliveryEvidenceArtifactMetadata {
   processingStatus: "READY";
   sourceSha256: string;
   sourceSizeBytes: number;
+  videoBitRateBps: number | null;
   videoDurationMs: number | null;
+  videoFrameRate: number | null;
+  videoHeightPx: number | null;
+  videoQualityStatus: "PASSED" | null;
+  videoWidthPx: number | null;
 }
 
 export interface PreparedDeliveryEvidenceDerivative {
@@ -61,6 +69,7 @@ export interface PrepareDeliveryEvidenceUploadInput {
   evidenceType: string;
   file: DeliveryEvidenceArtifactUploadFile;
   mediaType: DeliveryEvidenceArtifactMediaType;
+  qualityPolicy?: "ENFORCE_CURRENT" | "LEGACY_REPAIR";
 }
 
 export type DeliveryEvidenceCommandRunner = (
@@ -68,6 +77,18 @@ export type DeliveryEvidenceCommandRunner = (
   args: string[],
   timeoutMs?: number
 ) => Promise<{ stderr: string; stdout: string }>;
+
+export class DeliveryEvidenceVideoQualityError extends Error {
+  constructor(
+    readonly widthPx: number | null,
+    readonly heightPx: number | null
+  ) {
+    super(
+      `${STAGE2_WALKAROUND_VIDEO_RESOLUTION_TOO_LOW}: ${buildVideoQualityPublicMessage(widthPx, heightPx)}`
+    );
+    this.name = "DeliveryEvidenceVideoQualityError";
+  }
+}
 
 @Injectable()
 export class DeliveryHandoverEvidenceArtifactService {
@@ -123,7 +144,8 @@ export class DeliveryHandoverEvidenceArtifactService {
             directory,
             input.file.originalname,
             input.evidenceType,
-            declaredMimeType
+            declaredMimeType,
+            input.qualityPolicy ?? "ENFORCE_CURRENT"
           );
       completed = true;
       let cleaned = false;
@@ -145,7 +167,13 @@ export class DeliveryHandoverEvidenceArtifactService {
           processingStatus: "READY",
           sourceSha256,
           sourceSizeBytes: sourceStat.size,
-          videoDurationMs: prepared.videoDurationMs
+          videoBitRateBps: "videoBitRateBps" in prepared ? prepared.videoBitRateBps : null,
+          videoDurationMs: prepared.videoDurationMs,
+          videoFrameRate: "videoFrameRate" in prepared ? prepared.videoFrameRate : null,
+          videoHeightPx: "videoHeightPx" in prepared ? prepared.videoHeightPx : null,
+          videoQualityStatus:
+            "videoQualityStatus" in prepared ? prepared.videoQualityStatus : null,
+          videoWidthPx: "videoWidthPx" in prepared ? prepared.videoWidthPx : null
         }
       };
     } catch (error) {
@@ -190,7 +218,8 @@ export class DeliveryHandoverEvidenceArtifactService {
     directory: string,
     originalName: string,
     evidenceType: string,
-    declaredMimeType: string
+    declaredMimeType: string,
+    qualityPolicy: "ENFORCE_CURRENT" | "LEGACY_REPAIR"
   ) {
     const probe = await this.run(
       this.configService?.get<string>("FFPROBE_PATH")?.trim() || "ffprobe",
@@ -200,13 +229,21 @@ export class DeliveryHandoverEvidenceArtifactService {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=codec_name,codec_type:format=duration,format_name",
+        "stream=codec_name,codec_type,width,height,avg_frame_rate,r_frame_rate,bit_rate:format=duration,format_name,bit_rate",
         "-of",
         "json",
         sourcePath
       ]
     );
     const parsed = parseProbeOutput(probe.stdout, originalName, declaredMimeType);
+    const enforceWalkaroundQuality =
+      evidenceType === "WALKAROUND_VIDEO" && qualityPolicy !== "LEGACY_REPAIR";
+    if (
+      enforceWalkaroundQuality &&
+      !meetsWalkaroundMinimum(parsed.widthPx, parsed.heightPx)
+    ) {
+      throw new DeliveryEvidenceVideoQualityError(parsed.widthPx, parsed.heightPx);
+    }
     const percentages = framePercentagesForEvidence(evidenceType);
     const derivatives: PreparedDeliveryEvidenceDerivative[] = [];
 
@@ -233,7 +270,12 @@ export class DeliveryHandoverEvidenceArtifactService {
       derivatives,
       detectedCodec: parsed.detectedCodec,
       detectedMimeType: parsed.detectedMimeType,
-      videoDurationMs: parsed.durationMs
+      videoBitRateBps: parsed.bitRateBps,
+      videoDurationMs: parsed.durationMs,
+      videoFrameRate: parsed.frameRate,
+      videoHeightPx: parsed.heightPx,
+      videoQualityStatus: enforceWalkaroundQuality ? "PASSED" as const : null,
+      videoWidthPx: parsed.widthPx
     };
   }
 
@@ -369,9 +411,16 @@ function parseProbeOutput(stdout: string, originalName: string, declaredMimeType
   }
   const detectedMimeType = detectVideoMimeType(formatName, originalName, declaredMimeType);
   return {
+    bitRateBps:
+      positiveSafeInteger(videoStream.bit_rate) ?? positiveSafeInteger(format?.bit_rate),
     detectedCodec,
     detectedMimeType,
-    durationMs: Math.round(durationSeconds * 1000)
+    durationMs: Math.round(durationSeconds * 1000),
+    frameRate:
+      positiveRational(videoStream.avg_frame_rate) ??
+      positiveRational(videoStream.r_frame_rate),
+    heightPx: positiveSafeInteger(videoStream.height),
+    widthPx: positiveSafeInteger(videoStream.width)
   };
 }
 
@@ -554,8 +603,17 @@ export function isDeliveryEvidenceArtifactProcessingError(error: unknown): boole
     && error.message.startsWith(STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED);
 }
 
+export function getDeliveryEvidenceVideoQualityPublicMessage(error: unknown): string | null {
+  return error instanceof DeliveryEvidenceVideoQualityError
+    ? buildVideoQualityPublicMessage(error.widthPx, error.heightPx)
+    : null;
+}
+
 function normalizeProcessingError(error: unknown) {
-  if (isDeliveryEvidenceArtifactProcessingError(error)) {
+  if (
+    error instanceof DeliveryEvidenceVideoQualityError ||
+    isDeliveryEvidenceArtifactProcessingError(error)
+  ) {
     return error;
   }
   const message = error instanceof Error ? error.message : "unknown media processing failure";
@@ -564,6 +622,50 @@ function normalizeProcessingError(error: unknown) {
 
 function fail(message: string): never {
   throw new Error(`${STAGE2_EVIDENCE_ARTIFACT_PROCESSING_FAILED}: ${message}`);
+}
+
+function buildVideoQualityPublicMessage(
+  widthPx: number | null,
+  heightPx: number | null
+) {
+  return widthPx && heightPx
+    ? `车辆环绕视频清晰度不足，检测到 ${widthPx}×${heightPx}，请使用系统相机以 720p 或更高画质重新录制后上传。`
+    : "车辆环绕视频清晰度不足，无法识别视频分辨率，请使用系统相机以 720p 或更高画质重新录制后上传。";
+}
+
+function meetsWalkaroundMinimum(widthPx: number | null, heightPx: number | null) {
+  return Boolean(
+    widthPx &&
+    heightPx &&
+    Math.min(widthPx, heightPx) >= MIN_WALKAROUND_VIDEO_SHORT_EDGE_PX
+  );
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function positiveRational(value: unknown): number | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const [numeratorText, denominatorText, ...rest] = value.split("/");
+  if (rest.length > 0) {
+    return null;
+  }
+  const numerator = Number(numeratorText);
+  const denominator = denominatorText === undefined ? 1 : Number(denominatorText);
+  if (
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    numerator <= 0 ||
+    denominator <= 0
+  ) {
+    return null;
+  }
+  const parsed = numerator / denominator;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function asRecord(value: unknown) {

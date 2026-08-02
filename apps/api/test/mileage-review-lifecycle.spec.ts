@@ -172,7 +172,16 @@ function createHarness() {
   let lastCreate: Record<string, unknown> | null = null;
   const delegates = {
     orderMileageReview: {
-      updateMany: vi.fn(async ({ data, where }: Record<string, any>) => {
+      updateMany: vi.fn(async ({ data, where }: {
+        data: {
+          lockVersion: { increment: number };
+          status: OrderMileageReviewStatus;
+        };
+        where: {
+          scheduledReviewAt: { lte: Date };
+          status: OrderMileageReviewStatus;
+        };
+      }) => {
         let count = 0;
         for (const review of reviews) {
           const scheduledReviewAt = review.scheduledReviewAt as Date;
@@ -188,7 +197,20 @@ function createHarness() {
         }
         return { count };
       }),
-      upsert: vi.fn(async ({ create, where }: Record<string, any>) => {
+      upsert: vi.fn(async ({ create, where }: {
+        create: Record<string, unknown> & {
+          cycleNo: number;
+          orderId: string;
+          version: number;
+        };
+        where: {
+          orderId_cycleNo_version: {
+            cycleNo: number;
+            orderId: string;
+            version: number;
+          };
+        };
+      }) => {
         const key = where.orderId_cycleNo_version;
         const existing = reviews.find(
           (review) =>
@@ -217,7 +239,7 @@ function createHarness() {
       })
     },
     vehicleMileageReading: {
-      findUnique: vi.fn(async ({ where }: Record<string, any>) =>
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         where.id === reading.id ? reading : null
       )
     }

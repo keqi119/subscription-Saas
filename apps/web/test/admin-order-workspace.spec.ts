@@ -160,6 +160,7 @@ describe("admin order workspace navigation model", () => {
     ["entitlement.activate", { label: "激活权益", icon: "ThunderboltOutlined" }],
     ["entitlement.reconcile", { label: "核对权益", icon: "SyncOutlined" }],
     ["service.resolve", { label: "处理服务工单", icon: "ToolOutlined" }],
+    ["finance.generate_initial_bills", { label: "生成初始账单", icon: "FileAddOutlined" }],
     ["finance.collect", { label: "发起收款", icon: "PayCircleOutlined" }],
     ["finance.refund_deposit", { label: "退还押金", icon: "RollbackOutlined" }],
     ["finance.deduct_deposit", { label: "扣减押金", icon: "MinusCircleOutlined" }],

@@ -38,6 +38,9 @@ const STATE_PRIORITY: Record<OrderWorkspaceState, number> = {
 const ATTENTION_STATES = new Set<OrderWorkspaceState>(["BLOCKED", "ACTION_REQUIRED", "FAILED"]);
 const NON_ACTIONABLE_STATES = new Set<OrderWorkspaceState>(["COMPLETED", "NOT_STARTED", "UNAVAILABLE"]);
 const HANDOVER_SIGNING_START_GRACE_MS = 15 * 60 * 1000;
+const FINANCE_FINAL_ORDER_STATUSES = new Set(["CANCELLED", "COMPLETED", "REJECTED", "TERMINATED"]);
+const INITIAL_BILL_TYPES = new Set(["DEPOSIT", "FIRST_MONTHLY_FEE"]);
+const SIGNED_CONTRACT_STATUSES = new Set(["ARCHIVED", "SIGNED"]);
 
 type WorkspaceAccess = Record<OrderWorkspaceGuideCategory, { view: boolean; action: boolean }>;
 
@@ -120,6 +123,15 @@ export type FinanceWorkspaceFacts = {
     transactionType: string;
     updatedAt: string;
   }>;
+  initialBilling?: {
+    contractStatus: string | null;
+    existingBillTypes: string[];
+    firstMonthlyFeeAmount: bigint | null;
+    orderId: string;
+    orderStatus: string;
+    requiredDepositAmount: bigint | null;
+    updatedAt: string | null;
+  } | null;
   paymentOrders: Array<{ id: string; status: string; updatedAt: string }>;
   receivableBills: Array<{
     billStatus: string;
@@ -205,8 +217,7 @@ export class OrderWorkspaceResolver {
       contract.status === "SIGNING" ? "CONTRACT_SIGNATURE_PENDING" : "CONTRACT_SIGNATURE_REQUIRED",
       actionCode,
       contract.id,
-      contract.updatedAt,
-      true
+      contract.updatedAt
     );
   }
 
@@ -396,7 +407,20 @@ export class OrderWorkspaceResolver {
   }
 
   resolveFinanceContributor(facts: FinanceWorkspaceFacts): WorkspaceContributorResult {
+    const initialBillingRequired = requiresInitialBillGeneration(facts.initialBilling);
     const candidates = [
+      ...(initialBillingRequired && facts.initialBilling
+        ? [
+            guideItem(
+              "finance",
+              "ACTION_REQUIRED",
+              "FINANCE_INITIAL_BILLS_REQUIRED",
+              "finance.generate_initial_bills",
+              facts.initialBilling.orderId,
+              facts.initialBilling.updatedAt
+            )
+          ]
+        : []),
       ...facts.paymentOrders.map((payment) =>
         guideItem(
           "finance",
@@ -779,7 +803,7 @@ export class OrderWorkspaceService {
 
   private async loadFinance(orderId: string, asOf: string, user: RequestUser) {
     const permissions = new Set(user.permissions);
-    const [receivableBills, paymentOrders, depositEntries, collectionCases] = await Promise.all([
+    const [receivableBills, paymentOrders, depositEntries, collectionCases, initialBillingOrder] = await Promise.all([
       permissions.has(PermissionCode.BILLING_VIEW)
         ? this.prisma.receivableBill.findMany({
             orderBy: [{ dueDate: "asc" }, { id: "asc" }],
@@ -815,7 +839,30 @@ export class OrderWorkspaceService {
             take: 25,
             where: { caseStatus: { in: ["ACTIVE", "PAUSED"] }, deletedAt: null, orderId }
           })
-        : []
+        : [],
+      permissions.has(PermissionCode.BILLING_VIEW)
+        ? this.prisma.subscriptionOrder.findUnique({
+            select: {
+              contract: { select: { status: true, updatedAt: true } },
+              depositAmount: true,
+              finalDepositAmount: true,
+              id: true,
+              monthlyFeeAmount: true,
+              orderStatus: true,
+              receivableBills: {
+                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                select: { billType: true },
+                take: 10,
+                where: {
+                  billStatus: { not: "CANCELLED" },
+                  billType: { in: ["DEPOSIT", "FIRST_MONTHLY_FEE"] },
+                  deletedAt: null
+                }
+              }
+            },
+            where: { id: orderId }
+          })
+        : null
     ]);
     return this.resolver.resolveFinanceContributor({
       asOf,
@@ -830,6 +877,17 @@ export class OrderWorkspaceService {
         transactionType: entry.transactionType,
         updatedAt: entry.occurredAt.toISOString()
       })),
+      initialBilling: initialBillingOrder
+        ? {
+            contractStatus: initialBillingOrder.contract?.status ?? null,
+            existingBillTypes: initialBillingOrder.receivableBills.map((bill) => bill.billType),
+            firstMonthlyFeeAmount: initialBillingOrder.monthlyFeeAmount,
+            orderId: initialBillingOrder.id,
+            orderStatus: initialBillingOrder.orderStatus,
+            requiredDepositAmount: initialBillingOrder.finalDepositAmount ?? initialBillingOrder.depositAmount,
+            updatedAt: initialBillingOrder.contract?.updatedAt.toISOString() ?? null
+          }
+        : null,
       paymentOrders: paymentOrders.map((payment) => ({
         id: payment.id,
         status: payment.paymentStatus,
@@ -949,6 +1007,7 @@ const ACTION_PERMISSION: Record<string, PermissionCode> = {
   "contract.sign": PermissionCode.CONTRACT_SIGN,
   "entitlement.activate": PermissionCode.ENTITLEMENT_GENERATE,
   "entitlement.reconcile": PermissionCode.ENTITLEMENT_ADJUST,
+  "finance.generate_initial_bills": PermissionCode.BILLING_GENERATE,
   "finance.collect": PermissionCode.PAYMENT_CREATE,
   "finance.deduct_deposit": PermissionCode.DEPOSIT_LEDGER_DEDUCT,
   "finance.refund_deposit": PermissionCode.DEPOSIT_LEDGER_REFUND,
@@ -969,4 +1028,24 @@ export function filterWorkspaceActionByPermission(
   }
   const permission = ACTION_PERMISSION[item.actionCode];
   return permission && user.permissions.includes(permission) ? item : { ...item, actionCode: null };
+}
+
+function requiresInitialBillGeneration(facts: FinanceWorkspaceFacts["initialBilling"]) {
+  if (
+    !facts ||
+    !SIGNED_CONTRACT_STATUSES.has(facts.contractStatus ?? "") ||
+    FINANCE_FINAL_ORDER_STATUSES.has(facts.orderStatus) ||
+    facts.requiredDepositAmount === null ||
+    facts.requiredDepositAmount < 0n ||
+    facts.firstMonthlyFeeAmount === null ||
+    facts.firstMonthlyFeeAmount <= 0n
+  ) {
+    return false;
+  }
+
+  const existingTypes = new Set(facts.existingBillTypes.filter((type) => INITIAL_BILL_TYPES.has(type)));
+  return (
+    !existingTypes.has("FIRST_MONTHLY_FEE") ||
+    (facts.requiredDepositAmount > 0n && !existingTypes.has("DEPOSIT"))
+  );
 }

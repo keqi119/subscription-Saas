@@ -1,14 +1,13 @@
 "use client";
 
-import { ArrowLeftOutlined, FileTextOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { App, Button, Empty, Flex, List, Space, Tag, Typography } from "antd";
-import dayjs from "dayjs";
+import { ArrowLeftOutlined } from "@ant-design/icons";
+import { App, Button, Empty, Flex, List, Typography } from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
-import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import { PortalBillListItem, PortalPagedResponse, PortalPaymentOrder } from "../../../lib/portal-types";
+import { PortalBillCard } from "./portal-bill-card";
 
 function PortalBillsContent() {
   const router = useRouter();
@@ -71,51 +70,14 @@ function PortalBillsContent() {
           loading={loading}
           locale={{ emptyText: <Empty description="暂无账单" /> }}
           renderItem={(bill) => (
-            <List.Item
-              actions={[
-                bill.canPay ? (
-                  <Button
-                    icon={<PayCircleOutlined />}
-                    key="pay"
-                    loading={payingBillId === bill.billId}
-                    onClick={() => void payBill(bill)}
-                    type="link"
-                  >
-                    去支付
-                  </Button>
-                ) : null,
-                <Button key="detail" onClick={() => router.push(`/portal/bills/${bill.billId}`)} type="link">
-                  查看详情
-                </Button>
-              ].filter(Boolean)}
-              style={{
-                background: "#ffffff",
-                border: "1px solid #e5eaf2",
-                borderRadius: 8,
-                marginBottom: 12,
-                padding: 16
-              }}
-            >
-              <List.Item.Meta
-                avatar={<FileTextOutlined style={{ color: "#1677ff", fontSize: 26, marginTop: 4 }} />}
-                description={
-                  <Space direction="vertical" size={8}>
-                    <Typography.Text type="secondary">
-                      订单 {bill.orderNo} · 到期 {formatTime(bill.dueDate)}
-                    </Typography.Text>
-                    <Typography.Text type="secondary">
-                      应付 {formatMoney(bill.amount)} · 待付 {formatMoney(bill.remainingAmount)}
-                    </Typography.Text>
-                    <Space size={[6, 6]} wrap>
-                      <Tag color={bill.canPay ? "orange" : "green"}>{labelOf(BILL_STATUS_LABELS, bill.billStatus)}</Tag>
-                      <Tag>{labelOf(BILL_TYPE_LABELS, bill.billType)}</Tag>
-                    </Space>
-                  </Space>
-                }
-                title={<Typography.Text strong>{bill.billNo}</Typography.Text>}
-              />
-            </List.Item>
+            <PortalBillCard
+              bill={bill}
+              onDetails={(item) => router.push(`/portal/bills/${item.billId}`)}
+              onPay={(item) => void payBill(item)}
+              paying={payingBillId === bill.billId}
+            />
           )}
+          split={false}
         />
       </section>
     </main>
@@ -136,14 +98,4 @@ export default function PortalBillsPage() {
       <PortalBillsContent />
     </Suspense>
   );
-}
-
-function formatMoney(amount?: number | null) {
-  return amount === null || amount === undefined
-    ? "-"
-    : `${(amount / 100).toLocaleString("zh-CN", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} 元`;
-}
-
-function formatTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD") : "-";
 }

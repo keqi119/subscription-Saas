@@ -389,6 +389,58 @@ describe("OrderWorkspaceResolver", () => {
     );
   });
 
+  it.each(["GENERATED", "SIGNING"])(
+    "treats a normal %s contract as actionable instead of blocked",
+    (status) => {
+      expect(
+        new OrderWorkspaceResolver().resolveContract({
+          contracts: [
+            {
+              id: "stage1-contract",
+              status,
+              tasks: [],
+              updatedAt: "2026-08-02T07:16:12.000Z"
+            }
+          ]
+        })
+      ).toEqual(
+        expect.objectContaining({
+          actionCode: "contract.sign",
+          blocking: false,
+          state: "ACTION_REQUIRED",
+          targetRecordId: "stage1-contract"
+        })
+      );
+    }
+  );
+
+  it("keeps a failed contract signing workflow blocked for recovery", () => {
+    expect(
+      new OrderWorkspaceResolver().resolveContract({
+        contracts: [
+          {
+            id: "stage1-contract",
+            status: "SIGNING",
+            tasks: [
+              {
+                taskStatus: "FAILED",
+                updatedAt: "2026-08-02T07:18:12.000Z"
+              }
+            ],
+            updatedAt: "2026-08-02T07:16:12.000Z"
+          }
+        ]
+      })
+    ).toEqual(
+      expect.objectContaining({
+        actionCode: "contract.retry_signing",
+        blocking: true,
+        reasonCode: "CONTRACT_SIGNATURE_FAILED",
+        state: "FAILED"
+      })
+    );
+  });
+
   it("treats Stage 2 as complete when both required signers signed even if archival is pending", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: AS_OF,
@@ -556,6 +608,120 @@ describe("OrderWorkspaceResolver", () => {
         updatedAt: "2026-07-27T00:00:00.000Z"
       })
     );
+  });
+
+  it("requires initial bill generation after the authoritative contract is signed", () => {
+    const item = new OrderWorkspaceResolver().resolveFinance({
+      asOf: AS_OF,
+      collectionCases: [],
+      depositEntries: [],
+      initialBilling: {
+        contractStatus: "SIGNED",
+        existingBillTypes: [],
+        firstMonthlyFeeAmount: 1n,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        requiredDepositAmount: 5000n,
+        updatedAt: "2026-08-02T07:19:21.000Z"
+      },
+      paymentOrders: [],
+      receivableBills: []
+    });
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "finance.generate_initial_bills",
+        reasonCode: "FINANCE_INITIAL_BILLS_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: "order-1",
+        updatedAt: "2026-08-02T07:19:21.000Z"
+      })
+    );
+  });
+
+  it("does not require a deposit bill for a zero-deposit order", () => {
+    const item = new OrderWorkspaceResolver().resolveFinance({
+      asOf: AS_OF,
+      collectionCases: [],
+      depositEntries: [],
+      initialBilling: {
+        contractStatus: "ARCHIVED",
+        existingBillTypes: ["FIRST_MONTHLY_FEE"],
+        firstMonthlyFeeAmount: 1n,
+        orderId: "order-1",
+        orderStatus: "PENDING_DELIVERY",
+        requiredDepositAmount: 0n,
+        updatedAt: "2026-08-02T07:19:21.000Z"
+      },
+      paymentOrders: [],
+      receivableBills: []
+    });
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: null,
+        reasonCode: "FINANCE_NO_ACTION_DUE",
+        state: "COMPLETED"
+      })
+    );
+  });
+
+  it("still requires a missing positive deposit bill when the first monthly bill exists", () => {
+    const item = new OrderWorkspaceResolver().resolveFinance({
+      asOf: AS_OF,
+      collectionCases: [],
+      depositEntries: [],
+      initialBilling: {
+        contractStatus: "SIGNED",
+        existingBillTypes: ["FIRST_MONTHLY_FEE"],
+        firstMonthlyFeeAmount: 1n,
+        orderId: "order-1",
+        orderStatus: "PENDING_PAYMENT",
+        requiredDepositAmount: 5000n,
+        updatedAt: "2026-08-02T07:19:21.000Z"
+      },
+      paymentOrders: [],
+      receivableBills: []
+    });
+
+    expect(item.actionCode).toBe("finance.generate_initial_bills");
+  });
+
+  it("prioritizes initial billing ahead of handover preparation", () => {
+    const resolver = new OrderWorkspaceResolver();
+    const summary = resolveWith(
+      [
+        resolver.resolveHandover({
+          asOf: AS_OF,
+          canPrepareDelivery: true,
+          deliveryStatus: "READY",
+          workOrders: []
+        }),
+        resolver.resolveFinance({
+          asOf: AS_OF,
+          collectionCases: [],
+          depositEntries: [],
+          initialBilling: {
+            contractStatus: "SIGNED",
+            existingBillTypes: [],
+            firstMonthlyFeeAmount: 1n,
+            orderId: "order-1",
+            orderStatus: "PENDING_DELIVERY",
+            requiredDepositAmount: 0n,
+            updatedAt: "2026-08-02T07:19:21.000Z"
+          },
+          paymentOrders: [],
+          receivableBills: []
+        })
+      ],
+      adminAccess()
+    );
+
+    expect(summary.primaryAction).toEqual({
+      actionCode: "finance.generate_initial_bills",
+      targetRecordId: "order-1",
+      targetTab: "finance"
+    });
   });
 
   it("uses oldest required timestamp and record ID for mixed pending and approved changes", () => {
@@ -1448,6 +1614,7 @@ describe("OrderWorkspaceService", () => {
     ["entitlement.activate", PermissionCode.ENTITLEMENT_GENERATE, PermissionCode.ENTITLEMENT_ADJUST],
     ["entitlement.reconcile", PermissionCode.ENTITLEMENT_ADJUST, PermissionCode.ENTITLEMENT_GENERATE],
     ["service.resolve", PermissionCode.SERVICE_CASE_MANAGE, PermissionCode.SERVICE_CASE_VIEW],
+    ["finance.generate_initial_bills", PermissionCode.BILLING_GENERATE, PermissionCode.PAYMENT_CREATE],
     ["finance.collect", PermissionCode.PAYMENT_CREATE, PermissionCode.BILLING_GENERATE],
     ["finance.refund_deposit", PermissionCode.DEPOSIT_LEDGER_REFUND, PermissionCode.DEPOSIT_LEDGER_DEDUCT],
     ["finance.deduct_deposit", PermissionCode.DEPOSIT_LEDGER_DEDUCT, PermissionCode.DEPOSIT_LEDGER_REFUND],
@@ -1582,9 +1749,23 @@ describe("OrderWorkspaceService", () => {
 
   it("degrades one failed contributor while keeping all other visible categories available", async () => {
     const prisma = workspacePrisma();
-    prisma.subscriptionOrder.findUnique.mockImplementation(async (args: { select?: { contractId?: boolean } }) => {
+    prisma.subscriptionOrder.findUnique.mockImplementation(async (args: { select?: { contractId?: boolean; receivableBills?: unknown } }) => {
       if (args.select?.contractId) {
         throw new Error("contract database unavailable");
+      }
+      if (args.select?.receivableBills) {
+        return {
+          contract: {
+            status: "SIGNED",
+            updatedAt: new Date("2026-07-28T09:00:00.000Z")
+          },
+          depositAmount: 0n,
+          finalDepositAmount: 0n,
+          id: "order-1",
+          monthlyFeeAmount: 320000n,
+          orderStatus: "PENDING_DELIVERY",
+          receivableBills: [{ billType: "FIRST_MONTHLY_FEE" }]
+        };
       }
       return workspaceOrderRecord();
     });
@@ -1702,6 +1883,80 @@ describe("OrderWorkspaceService", () => {
     expect(prisma.depositLedger.findMany).not.toHaveBeenCalled();
     expect(prisma.collectionCase.findMany).not.toHaveBeenCalled();
     expect(summary.guidance.find(({ category }) => category === "finance")?.actionCode).toBeNull();
+  });
+
+  it("loads signed-contract initial billing facts and recommends bill generation", async () => {
+    const prisma = workspacePrisma();
+    prisma.subscriptionOrder.findUnique.mockImplementation(
+      async (args: {
+        select?: {
+          contractId?: boolean;
+          receivableBills?: unknown;
+        };
+      }) => {
+        if (args.select?.contractId) {
+          return authoritativeContractRecord();
+        }
+        if (args.select?.receivableBills) {
+          return {
+            contract: {
+              status: "SIGNED",
+              updatedAt: new Date("2026-08-02T07:19:21.000Z")
+            },
+            depositAmount: 0n,
+            finalDepositAmount: 0n,
+            id: "order-1",
+            monthlyFeeAmount: 1n,
+            orderStatus: "PENDING_DELIVERY",
+            receivableBills: []
+          };
+        }
+        return workspaceOrderRecord();
+      }
+    );
+
+    const summary = await workspaceService(prisma).getSummary(
+      "order-1",
+      workspaceUser([
+        PermissionCode.ORDER_VIEW,
+        PermissionCode.BILLING_VIEW,
+        PermissionCode.BILLING_GENERATE
+      ])
+    );
+
+    expect(prisma.subscriptionOrder.findUnique).toHaveBeenCalledWith({
+      select: {
+        contract: { select: { status: true, updatedAt: true } },
+        depositAmount: true,
+        finalDepositAmount: true,
+        id: true,
+        monthlyFeeAmount: true,
+        orderStatus: true,
+        receivableBills: {
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { billType: true },
+          take: 10,
+          where: {
+            billStatus: { not: "CANCELLED" },
+            billType: { in: ["DEPOSIT", "FIRST_MONTHLY_FEE"] },
+            deletedAt: null
+          }
+        }
+      },
+      where: { id: "order-1" }
+    });
+    expect(summary.guidance.find(({ category }) => category === "finance")).toEqual(
+      expect.objectContaining({
+        actionCode: "finance.generate_initial_bills",
+        reasonCode: "FINANCE_INITIAL_BILLS_REQUIRED",
+        targetRecordId: "order-1"
+      })
+    );
+    expect(summary.primaryAction).toEqual({
+      actionCode: "finance.generate_initial_bills",
+      targetRecordId: "order-1",
+      targetTab: "finance"
+    });
   });
 
   it.each([
@@ -2635,7 +2890,24 @@ function workspacePrisma() {
     },
     subscriptionOrder: {
       findUnique: vi.fn().mockImplementation(async (args: { select?: { contractId?: boolean } }) => {
-        return args.select?.contractId ? authoritativeContractRecord() : workspaceOrderRecord();
+        if (args.select?.contractId) {
+          return authoritativeContractRecord();
+        }
+        if ((args.select as { receivableBills?: unknown } | undefined)?.receivableBills) {
+          return {
+            contract: {
+              status: "SIGNED",
+              updatedAt: new Date("2026-07-28T09:00:00.000Z")
+            },
+            depositAmount: 0n,
+            finalDepositAmount: 0n,
+            id: "order-1",
+            monthlyFeeAmount: 320000n,
+            orderStatus: "PENDING_DELIVERY",
+            receivableBills: [{ billType: "FIRST_MONTHLY_FEE" }]
+          };
+        }
+        return workspaceOrderRecord();
       })
     },
     vehicleHandoverWorkOrder: {

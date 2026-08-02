@@ -8,6 +8,7 @@ import { ESignModule } from "../esign/esign.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
 import { StorageModule } from "../storage/storage.module";
+import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module";
 import { OrderController } from "./order.controller";
 import { OrderWorkspaceResolver, OrderWorkspaceService } from "./order-workspace.service";
 import { OrderService } from "./order.service";
@@ -22,7 +23,8 @@ import { OrderService } from "./order.service";
     ESignModule,
     HandoverWorkOrderModule,
     ServiceCaseModule,
-    StorageModule
+    StorageModule,
+    VehicleMileageModule
   ],
   providers: [OrderService, OrderWorkspaceResolver, OrderWorkspaceService]
 })

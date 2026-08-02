@@ -21,6 +21,7 @@ import {
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
   VehicleHandoverType,
+  VehicleMileageSourceType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -844,7 +845,7 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.state.delivery?.remark).toBe("改约");
   });
 
-  it("confirm-delivery completes delivery, activates the order, leases the vehicle, and writes audit logs", async () => {
+  it("confirm-delivery persists the submitted values, appends the baseline, activates the order, and leases the vehicle", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
 
@@ -869,13 +870,82 @@ describe("vehicle delivery handover workflow", () => {
 
     expect(delivery.deliveryStatus).toBe(DeliveryStatus.DELIVERED);
     expect(delivery.handoverMileageKm).toBe(28500);
-    expect(delivery.deliveredAt).toBe("2026-06-10T04:00:00.000Z");
+    expect(delivery.deliveredAt).toBe("2026-06-10T03:00:00.000Z");
     expect(harness.state.orderStatus).toBe(OrderStatus.ACTIVE);
-    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T04:00:00.000Z");
+    expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T03:00:00.000Z");
+    expect(harness.state.vehicleCurrentMileageKm).toBe(28500);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.LEASED);
+    expect(harness.vehicleMileageService.appendConfirmedReading).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        confirmedBy: harness.user.id,
+        mileageKm: 28500,
+        orderId: harness.orderId,
+        recordedAt: new Date("2026-06-10T03:00:00.000Z"),
+        sourceRecordId: "delivery-1",
+        sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+        vehicleId: harness.vehicleId
+      })
+    );
+    const mileageInput = harness.vehicleMileageService.appendConfirmedReading.mock.calls[0]?.[1];
+    expect(mileageInput?.evidenceSnapshot).toEqual({
+      authoritativeDefaults: {
+        deliveredAt: "2026-06-09T04:10:00.000Z",
+        deliveredAtSource: "STAGE2_COMPLETED_AT",
+        fieldWorkOrderId: "work-order-1",
+        handoverMileageKm: 10100,
+        handoverMileageSource: "FIELD_WORK_ORDER",
+        stage2HandoverId: "handover-1"
+      },
+      finalValues: {
+        deliveredAt: "2026-06-10T03:00:00.000Z",
+        handoverMileageKm: 28500
+      },
+      manuallyAdjusted: {
+        deliveredAt: true,
+        handoverMileageKm: true
+      }
+    });
 
     const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
     expect(auditEntityTypes).toEqual(expect.arrayContaining(["subscription_order", "vehicle_delivery", "vehicle"]));
+  });
+
+  it.each([
+    ["before the order was created", "2026-06-05T11:00:00+08:00"],
+    ["in the future", "2099-06-10T11:00:00+08:00"]
+  ])("rejects a delivery time %s", async (_label, deliveredAt) => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        { ...validConfirmDto(), deliveredAt },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow();
+
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(harness.vehicleMileageService.appendConfirmedReading).not.toHaveBeenCalled();
+  });
+
+  it("rejects a delivery mileage below the latest confirmed vehicle reading", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    harness.state.vehicleCurrentMileageKm = 12000;
+
+    await expect(
+      harness.service.confirmDelivery(
+        harness.orderId,
+        { ...validConfirmDto(), handoverMileageKm: 11000 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("cannot be below");
+
+    expect(harness.state.actualDeliveryAt).toBeNull();
   });
 
   it("rejects repeated confirm-delivery", async () => {
@@ -1015,6 +1085,7 @@ function createDeliveryHarness() {
     insurancePolicies: Array<Record<string, unknown>>;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
+    vehicleCurrentMileageKm: number;
     handover: Record<string, unknown> | null;
     handoverMileageKm: number | null;
     gateLockOrder: string[];
@@ -1083,6 +1154,7 @@ function createDeliveryHarness() {
     transactionGateSnapshot: null,
     transactionIsolationLevel: null,
     vehicleStatus: VehicleStatus.RESERVED,
+    vehicleCurrentMileageKm: 10000,
     workOrderObjected: false
   };
   state.handover = buildHandoverRecord({ orderId, user });
@@ -1092,6 +1164,7 @@ function createDeliveryHarness() {
       brand: "NIO",
       createdAt: now,
       currentSalePriceAmount: 10000000n,
+      currentMileageKm: state.vehicleCurrentMileageKm,
       deletedAt: null,
       id: vehicleId,
       insurancePolicies: state.insurancePolicies,
@@ -1409,6 +1482,18 @@ function createDeliveryHarness() {
       }
     })
   };
+  const vehicleMileageService = {
+    appendConfirmedReading: vi.fn(async (_db, input) => {
+      if (input.mileageKm < state.vehicleCurrentMileageKm) {
+        throw new Error("Vehicle mileage cannot be below the latest confirmed reading.");
+      }
+      state.vehicleCurrentMileageKm = input.mileageKm;
+      return {
+        id: "mileage-reading-1",
+        ...input
+      };
+    })
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
@@ -1416,7 +1501,8 @@ function createDeliveryHarness() {
     undefined,
     undefined,
     deliveryEvidenceService as never,
-    handoverWorkOrderService as never
+    handoverWorkOrderService as never,
+    vehicleMileageService as never
   );
 
   return {
@@ -1431,7 +1517,8 @@ function createDeliveryHarness() {
     state,
     tx,
     user,
-    vehicleId
+    vehicleId,
+    vehicleMileageService
   };
 }
 

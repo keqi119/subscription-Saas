@@ -247,19 +247,19 @@ git commit -m "feat: expose signed delivery defaults"
 - `ConfirmDeliveryDto.deliveredAt` and `handoverMileageKm` become required.
 - The transaction creates one `DELIVERY_BASELINE` reading with source record `VehicleDelivery.id` and stores source/default/final values in `evidenceSnapshot`.
 
-- [ ] **Step 1: Add failing confirmation tests**
+- [x] **Step 1: Add failing confirmation tests**
 
 Freeze time and prove a submitted `deliveredAt` is persisted instead of `new Date()`. Assert delivery, order, vehicle projection, and mileage reading commit together. Cover invalid future/before-order time, mileage regression, duplicate confirmation, and manual override snapshots.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- order-delivery.spec.ts vehicle-mileage.spec.ts`
 
-- [ ] **Step 3: Implement the atomic confirmation**
+- [x] **Step 3: Implement the atomic confirmation**
 
 Parse `dto.deliveredAt`, reload Stage 2 and Field defaults inside the transaction, validate the supplied values, update delivery/order, call `appendConfirmedReading`, and transition vehicle to `LEASED`. Do not issue a separate direct mileage update.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- order-delivery.spec.ts vehicle-mileage.spec.ts

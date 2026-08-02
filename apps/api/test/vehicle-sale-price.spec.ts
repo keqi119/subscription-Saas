@@ -997,7 +997,8 @@ function makeService() {
     prisma,
     service: new VehicleService(
       auditService as unknown as AuditService,
-      prisma as unknown as PrismaService
+      prisma as unknown as PrismaService,
+      { appendConfirmedReading: vi.fn() } as never
     )
   };
 }

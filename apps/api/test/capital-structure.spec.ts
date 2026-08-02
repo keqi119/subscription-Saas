@@ -762,7 +762,11 @@ function createVehicleCapitalHarness(seed: {
   return {
     auditService,
     prisma,
-    service: new VehicleService(auditService as never, prisma as never),
+    service: new VehicleService(
+      auditService as never,
+      prisma as never,
+      { appendConfirmedReading: vi.fn() } as never
+    ),
     state
   };
 }

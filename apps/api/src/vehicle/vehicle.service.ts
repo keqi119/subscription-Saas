@@ -12,6 +12,7 @@ import {
   VehicleCapitalEventStatus,
   VehicleCapitalEventType,
   VehicleDepreciationMethod,
+  VehicleMileageSourceType,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -26,6 +27,7 @@ import {
 } from "../common/vehicle-insurance-coverage";
 import { requireActiveVehicleModelDefinition } from "../common/vehicle-model-resolver";
 import { PrismaService } from "../prisma/prisma.service";
+import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { buildVehicleAssetCostProfilePreview } from "./asset-cost-profile-calculation";
 import {
   CancelVehicleCapitalEventDto,
@@ -122,7 +124,8 @@ const OCCUPIED_STATUSES = new Set<VehicleStatus>([
 export class VehicleService {
   constructor(
     private readonly auditService: AuditService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    private readonly vehicleMileageService: VehicleMileageService
   ) {}
 
   async listVehicles() {
@@ -199,7 +202,8 @@ export class VehicleService {
       this.prisma,
       dto,
       user.id,
-      modelIdentity.modelDefinitionId
+      modelIdentity.modelDefinitionId,
+      this.vehicleMileageService
     );
 
     await this.auditService.write({
@@ -226,6 +230,9 @@ export class VehicleService {
     user: RequestUser,
     context: RequestContext
   ) {
+    if (dto.currentMileageKm !== undefined) {
+      throw new BadRequestException("车辆创建后只能通过里程流程单据更新当前里程。");
+    }
     const before = await this.findVehicleOrThrow(id);
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
@@ -797,18 +804,36 @@ async function createVehicleWithRetry(
   prisma: PrismaService,
   dto: CreateVehicleDto,
   operatorId: string,
-  modelDefinitionId: string
+  modelDefinitionId: string,
+  vehicleMileageService: VehicleMileageService
 ) {
   try {
-    return await withUniqueBusinessNoRetry(() => prisma.vehicle.create({
-      data: {
-        ...createVehicleData(dto, modelDefinitionId),
-        createdBy: operatorId,
-        updatedBy: operatorId,
-        vehicleNo: createBusinessNo("VEH")
-      },
-      include: vehicleInclude
-    }));
+    return await withUniqueBusinessNoRetry(() =>
+      prisma.$transaction(async (tx) => {
+        const vehicle = await tx.vehicle.create({
+          data: {
+            ...createVehicleData(dto, modelDefinitionId),
+            createdBy: operatorId,
+            updatedBy: operatorId,
+            vehicleNo: createBusinessNo("VEH")
+          },
+          include: vehicleInclude
+        });
+        await vehicleMileageService.appendConfirmedReading(tx, {
+          confirmedBy: operatorId,
+          evidenceSnapshot: {
+            initializedByVehicleCreate: true
+          },
+          mileageKm: dto.currentMileageKm ?? 0,
+          orderId: null,
+          recordedAt: vehicle.createdAt,
+          sourceRecordId: vehicle.id,
+          sourceType: VehicleMileageSourceType.VEHICLE_INITIALIZATION,
+          vehicleId: vehicle.id
+        });
+        return vehicle;
+      })
+    );
   } catch (error) {
     throwVehicleUniqueError(error);
   }
@@ -865,7 +890,6 @@ function updateVehicleData(
   assignIfDefined(data, "batteryUsageType", dto.batteryUsageType);
   assignIfDefined(data, "acquisitionMode", dto.acquisitionMode);
   assignIfDefined(data, "brand", dto.brand);
-  assignIfDefined(data, "currentMileageKm", dto.currentMileageKm);
   assignIfDefined(data, "latestRegistrationDate", parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"));
   assignIfDefined(data, "model", dto.model);
   assignIfDefined(data, "modelYear", dto.modelYear);

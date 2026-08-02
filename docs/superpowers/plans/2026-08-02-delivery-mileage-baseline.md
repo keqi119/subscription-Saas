@@ -164,23 +164,23 @@ git commit -m "feat: centralize vehicle mileage projection updates"
 - `UpdateVehicleDto.currentMileageKm` remains parseable so the service can return a precise business error, but is never written.
 - Vehicle creation returns only after both vehicle and `VEHICLE_INITIALIZATION` reading commit.
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 Assert create produces exactly one initialization reading and a matching projection. Assert PATCH with `currentMileageKm` throws `车辆创建后只能通过里程流程单据更新当前里程。`, while an unrelated vehicle edit still succeeds.
 
-- [ ] **Step 2: Run the tests to verify RED**
+- [x] **Step 2: Run the tests to verify RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- vehicle-mileage-integration.spec.ts`
 
-- [ ] **Step 3: Refactor create into one transaction**
+- [x] **Step 3: Refactor create into one transaction**
 
 Change the retry helper so `vehicle.create` and `createInitializationReading` share the same transaction client. Preserve business-number retry and existing audit behavior.
 
-- [ ] **Step 4: Reject direct updates explicitly**
+- [x] **Step 4: Reject direct updates explicitly**
 
 At the start of `updateVehicle`, reject when `dto.currentMileageKm !== undefined`; remove `assignIfDefined(data, "currentMileageKm", ...)` from `updateVehicleData`.
 
-- [ ] **Step 5: Verify tests and typecheck**
+- [x] **Step 5: Verify tests and typecheck**
 
 Run:
 
@@ -189,7 +189,7 @@ pnpm --filter @subscription-saas/api test -- vehicle-mileage-integration.spec.ts
 pnpm --filter @subscription-saas/api exec tsc --noEmit -p tsconfig.json
 ```
 
-- [ ] **Step 6: Commit the integration slice**
+- [x] **Step 6: Commit the integration slice**
 
 ```powershell
 git add apps/api/src/vehicle apps/api/test/vehicle-mileage-integration.spec.ts

@@ -282,7 +282,7 @@ describe("HandoverWorkOrderService", () => {
     );
   });
 
-  it("lists active work orders by canonical phone regardless of legacy token state with safe summaries", async () => {
+  it("lists active tasks newest-first before ended history regardless of legacy token state", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(
       {
@@ -295,6 +295,7 @@ describe("HandoverWorkOrderService", () => {
         fieldOperatorPhone: "13800000000",
         id: "work-order-visible-late",
         operatorType: "EXTERNAL",
+        createdAt: new Date("2026-07-23T01:00:00.000Z"),
         scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
         status: "ASSIGNED"
       },
@@ -308,6 +309,7 @@ describe("HandoverWorkOrderService", () => {
         fieldOperatorPhone: "13800000000",
         id: "work-order-visible-early",
         operatorType: "EXTERNAL",
+        createdAt: new Date("2026-07-22T01:00:00.000Z"),
         scheduledAt: new Date("2026-07-22T02:00:00.000Z"),
         status: "FIELD_IN_PROGRESS"
       },
@@ -346,17 +348,19 @@ describe("HandoverWorkOrderService", () => {
         fieldOperatorPhone: "13800000000",
         id: "work-order-completed",
         operatorType: "EXTERNAL",
-        status: "FIELD_COMPLETED"
+        status: "FIELD_COMPLETED",
+        updatedAt: new Date("2026-07-24T08:00:00.000Z")
       }
     );
 
     const list = await harness.service.listFieldAccessibleWorkOrders("+86 138-0000-0000");
 
     expect(list.map((item) => item.id)).toEqual([
-      "work-order-visible-early",
       "work-order-visible-late",
+      "work-order-visible-early",
       "work-order-expired",
-      "work-order-revoked"
+      "work-order-revoked",
+      "work-order-completed"
     ]);
     expect(list[0]).toMatchObject({
       customer: {
@@ -380,7 +384,7 @@ describe("HandoverWorkOrderService", () => {
     expect(serialized).not.toContain("oss/internal/evidence.jpg");
   });
 
-  it("returns an empty field work-order list when no active task is assigned to the phone", async () => {
+  it("keeps completed, reviewed, cancelled, voided, and failed tasks available as read-only history", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(
       {
@@ -399,7 +403,8 @@ describe("HandoverWorkOrderService", () => {
         fieldOperatorPhone: "13800000000",
         id: "work-order-cancelled",
         operatorType: "EXTERNAL",
-        status: "CANCELLED"
+        status: "CANCELLED",
+        updatedAt: new Date("2026-07-23T08:00:00.000Z")
       },
       {
         ...baseWorkOrder(harness),
@@ -408,11 +413,48 @@ describe("HandoverWorkOrderService", () => {
         fieldOperatorPhone: "13800000000",
         id: "work-order-ops-reviewed",
         operatorType: "EXTERNAL",
-        status: "OPS_REVIEWED"
+        status: "OPS_REVIEWED",
+        updatedAt: new Date("2026-07-24T08:00:00.000Z")
+      },
+      {
+        ...baseWorkOrder(harness),
+        externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
+        id: "work-order-failed",
+        operatorType: "EXTERNAL",
+        status: "FAILED",
+        updatedAt: new Date("2026-07-22T08:00:00.000Z")
+      },
+      {
+        ...baseWorkOrder(harness),
+        externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
+        id: "work-order-voided",
+        operatorType: "EXTERNAL",
+        status: "VOIDED",
+        updatedAt: new Date("2026-07-21T08:00:00.000Z")
+      },
+      {
+        ...baseWorkOrder(harness),
+        externalOperatorPhone: "13800000000",
+        fieldOperatorPhone: "13800000000",
+        id: "work-order-field-completed",
+        operatorType: "EXTERNAL",
+        status: "FIELD_COMPLETED",
+        updatedAt: new Date("2026-07-20T08:00:00.000Z")
       }
     );
 
-    await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
+    await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([
+      expect.objectContaining({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED", taskGroup: "ENDED" }),
+      expect.objectContaining({ id: "work-order-cancelled", status: "CANCELLED", taskGroup: "ENDED" }),
+      expect.objectContaining({ id: "work-order-failed", status: "FAILED", taskGroup: "ENDED" }),
+      expect.objectContaining({ id: "work-order-voided", status: "VOIDED", taskGroup: "ENDED" }),
+      expect.objectContaining({ id: "work-order-field-completed", status: "FIELD_COMPLETED", taskGroup: "ENDED" })
+    ]);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder("work-order-ops-reviewed", "13800000000")
+    ).resolves.toMatchObject({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED" });
   });
 
   it("denies stale internal snapshots after the assigned user is disabled or deleted", async () => {

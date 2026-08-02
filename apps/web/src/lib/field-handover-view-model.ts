@@ -17,6 +17,8 @@ export interface FieldHandoverTaskCardView {
   plateText: string;
   scheduledAtText: string;
   statusLabel: string;
+  statusColor?: string;
+  taskGroup: "ACTIVE" | "ENDED";
   title: string;
   vehicleText: string;
   vinText: string;
@@ -138,6 +140,33 @@ const LOCKED_WORK_ORDER_STATUSES = new Set([
   "CANCELLED"
 ]);
 
+const ENDED_WORK_ORDER_STATUSES = new Set([
+  "FIELD_COMPLETED",
+  "OPS_REVIEWED",
+  "VOIDED",
+  "FAILED",
+  "CANCELLED"
+]);
+
+const WORK_ORDER_STATUS_COLORS: Record<string, string> = {
+  ASSIGNED: "blue",
+  CANCELLED: "default",
+  CUSTOMER_CONFIRMED: "purple",
+  CUSTOMER_OBJECTED: "magenta",
+  CUSTOMER_REVIEWING: "purple",
+  CUSTOMER_SIGNED: "geekblue",
+  DRAFT: "default",
+  EVIDENCE_SUBMITTED: "gold",
+  FAILED: "red",
+  FIELD_COMPLETED: "green",
+  FIELD_IN_PROGRESS: "cyan",
+  OPS_REVIEW_PENDING: "orange",
+  OPS_REVIEWED: "green",
+  PLATFORM_SEALED: "geekblue",
+  SIGNING: "geekblue",
+  VOIDED: "default"
+};
+
 export function formatFieldHandoverType(value: null | string | undefined) {
   if (!value) {
     return "-";
@@ -152,6 +181,14 @@ export function formatFieldWorkOrderStatus(value: null | string | undefined) {
   return WORK_ORDER_STATUS_LABELS[value] ?? value;
 }
 
+export function getFieldHandoverTaskGroup(value: null | string | undefined): "ACTIVE" | "ENDED" {
+  return value && ENDED_WORK_ORDER_STATUSES.has(value) ? "ENDED" : "ACTIVE";
+}
+
+export function getFieldWorkOrderStatusColor(value: null | string | undefined) {
+  return value ? WORK_ORDER_STATUS_COLORS[value] : undefined;
+}
+
 export function buildFieldHandoverTaskCard(task: FieldHandoverWorkOrderListItem): FieldHandoverTaskCardView {
   return {
     customerText: joinNonEmpty([task.customer?.displayName, task.customer?.mobileMasked]) || "-",
@@ -161,7 +198,9 @@ export function buildFieldHandoverTaskCard(task: FieldHandoverWorkOrderListItem)
     id: task.id,
     plateText: task.vehicle?.plateMasked || "-",
     scheduledAtText: formatDateTime(task.scheduledAt),
+    statusColor: getFieldWorkOrderStatusColor(task.status),
     statusLabel: formatFieldWorkOrderStatus(task.status),
+    taskGroup: task.taskGroup ?? getFieldHandoverTaskGroup(task.status),
     title: task.orderNo || "交接任务",
     vehicleText: joinVehicleText(task.vehicle?.brand, task.vehicle?.model),
     vinText: task.vehicle?.vinSuffix ? `VIN 后六位 ${task.vehicle.vinSuffix}` : "-"

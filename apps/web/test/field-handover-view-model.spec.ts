@@ -6,6 +6,8 @@ import {
   buildFieldHandoverTaskCard,
   formatFieldHandoverType,
   formatFieldWorkOrderStatus,
+  getFieldHandoverTaskGroup,
+  getFieldWorkOrderStatusColor,
   getFieldHandoverSubmitBlockers,
   resolveFieldHandoverFactsAfterRefresh,
   validateFieldHandoverFactsInput
@@ -29,6 +31,14 @@ describe("field handover view model", () => {
     expect(formatFieldHandoverType("RETURN_INBOUND")).toBe("退租入库");
     expect(formatFieldWorkOrderStatus("OPS_REVIEW_PENDING")).toBe("运营复核中");
     expect(formatFieldWorkOrderStatus("UNKNOWN_STATUS")).toBe("UNKNOWN_STATUS");
+    expect(getFieldHandoverTaskGroup("OPS_REVIEW_PENDING")).toBe("ACTIVE");
+    expect(getFieldHandoverTaskGroup("FIELD_COMPLETED")).toBe("ENDED");
+    expect(getFieldHandoverTaskGroup("FAILED")).toBe("ENDED");
+    expect(getFieldWorkOrderStatusColor("ASSIGNED")).toBe("blue");
+    expect(getFieldWorkOrderStatusColor("FIELD_IN_PROGRESS")).toBe("cyan");
+    expect(getFieldWorkOrderStatusColor("OPS_REVIEW_PENDING")).toBe("orange");
+    expect(getFieldWorkOrderStatusColor("OPS_REVIEWED")).toBe("green");
+    expect(getFieldWorkOrderStatusColor("FAILED")).toBe("red");
   });
 
   it("builds a mobile task card from safe DTO fields only", () => {
@@ -46,6 +56,8 @@ describe("field handover view model", () => {
     expect(card.title).toBe("ORD-FIELD-001");
     expect(card.statusLabel).toBe("运营复核中");
     expect(card.handoverTypeLabel).toBe("交付出库");
+    expect(card.taskGroup).toBe("ACTIVE");
+    expect(card.statusColor).toBe("orange");
     expect(card.vehicleText).toBe("Tesla Model 3");
     expect(card.evidenceText).toBe("资料 2/6，必传 4，已通过 1");
     expect(JSON.stringify(card)).toContain("139****1111");

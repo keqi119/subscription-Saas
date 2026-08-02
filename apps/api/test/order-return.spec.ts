@@ -9,6 +9,7 @@ import {
   VehicleDamageLevel,
   VehicleDamageResponsibleParty,
   VehicleDamageType,
+  VehicleMileageSourceType,
   VehicleReturnStatus,
   VehicleReturnType,
   VehicleStatus
@@ -103,6 +104,18 @@ describe("vehicle return inspection workflow", () => {
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RETURNED);
     expect(harness.state.vehicleCurrentMileageKm).toBe(32000);
     expect(harness.state.salePriceReinitRequiredAt).toBeInstanceOf(Date);
+    expect(harness.vehicleMileageService.appendConfirmedReading).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        confirmedBy: harness.user.id,
+        mileageKm: 32000,
+        orderId: harness.orderId,
+        recordedAt: new Date("2026-06-20T03:00:00.000Z"),
+        sourceRecordId: "return-1",
+        sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+        vehicleId: harness.vehicleId
+      })
+    );
 
     const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
     expect(auditEntityTypes).toEqual(expect.arrayContaining(["subscription_order", "vehicle_return", "vehicle"]));
@@ -134,6 +147,24 @@ describe("vehicle return inspection workflow", () => {
     );
 
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.MAINTENANCE);
+  });
+
+  it("rejects mileage below the latest active ledger reading even when it exceeds the old delivery row", async () => {
+    const harness = createReturnHarness();
+    harness.state.returnRecord = buildReadyReturn(harness);
+    harness.state.vehicleCurrentMileageKm = 31000;
+
+    await expect(
+      harness.service.confirmReturn(
+        harness.orderId,
+        validConfirmReturnDto({ returnMileageKm: 30000 }),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("cannot be below");
+
+    expect(harness.state.actualReturnAt).toBeNull();
+    expect(harness.state.vehicleCurrentMileageKm).toBe(31000);
   });
 
   it("confirm-return records damage and moves the vehicle to MAINTENANCE for medium or severe damage", async () => {
@@ -435,9 +466,43 @@ function createReturnHarness() {
       void entry;
     })
   };
-  const service = new OrderService(auditService as never, prisma as never);
+  const vehicleMileageService = {
+    appendConfirmedReading: vi.fn(async (_db, input) => {
+      if (input.mileageKm < state.vehicleCurrentMileageKm) {
+        throw new Error("Vehicle mileage cannot be below the latest confirmed reading.");
+      }
+      state.vehicleCurrentMileageKm = input.mileageKm;
+      state.salePriceReinitRequiredAt = new Date();
+      return {
+        id: "return-mileage-reading-1",
+        ...input
+      };
+    })
+  };
+  const service = new OrderService(
+    auditService as never,
+    prisma as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    vehicleMileageService as never
+  );
 
-  return { auditService, context, customerId, orderId, prisma, service, state, tx, user, vehicleId };
+  return {
+    auditService,
+    context,
+    customerId,
+    orderId,
+    prisma,
+    service,
+    state,
+    tx,
+    user,
+    vehicleId,
+    vehicleMileageService
+  };
 }
 
 function buildReadyReturn(

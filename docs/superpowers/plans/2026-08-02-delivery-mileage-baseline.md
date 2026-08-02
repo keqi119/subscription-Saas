@@ -273,19 +273,19 @@ git commit -m "feat: persist delivery mileage baseline"
 - Modify: `apps/api/src/order/order.service.ts`
 - Modify: `apps/api/test/order-return.spec.ts`
 
-- [ ] **Step 1: Add failing return tests**
+- [x] **Step 1: Add failing return tests**
 
 Assert confirmation creates a `RETURN_CONFIRMATION` reading sourced by `VehicleReturn.id`, updates the projection, and rejects a value below the latest active ledger reading even if the old delivery row is lower.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- order-return.spec.ts`
 
-- [ ] **Step 3: Replace the direct write**
+- [x] **Step 3: Replace the direct write**
 
 Call `appendConfirmedReading` inside the existing return transaction, then update only vehicle status in the order service. Preserve damage, audit, and order-completion logic.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- order-return.spec.ts vehicle-mileage.spec.ts

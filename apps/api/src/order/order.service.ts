@@ -2075,6 +2075,22 @@ export class OrderService {
         throw new BadRequestException("车辆状态不是已出租，不能退车。");
       }
 
+      await this.getVehicleMileageService().appendConfirmedReading(tx, {
+        confirmedBy: user.id,
+        evidenceSnapshot: {
+          damageFound,
+          maintenanceRequired: dto.maintenanceRequired ?? false,
+          returnType,
+          returnedAt: returnedAt.toISOString()
+        },
+        mileageKm: dto.returnMileageKm,
+        orderId: id,
+        recordedAt: returnedAt,
+        sourceRecordId: beforeReturn!.id,
+        sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+        vehicleId: beforeOrder.vehicleId!
+      });
+
       const vehicleReturn = await tx.vehicleReturn.update({
         data: {
           batteryCheckedConfirmed: dto.batteryCheckedConfirmed,
@@ -2141,8 +2157,6 @@ export class OrderService {
 
       const vehicleAfter = await tx.vehicle.update({
         data: {
-          currentMileageKm: dto.returnMileageKm,
-          salePriceReinitRequiredAt: new Date(),
           status: nextVehicleStatus,
           updatedBy: user.id
         },

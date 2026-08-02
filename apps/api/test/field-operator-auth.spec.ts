@@ -211,6 +211,48 @@ describe("FieldOperatorAuthService", () => {
     });
     expect(JSON.stringify(session)).not.toContain(login.token);
   });
+
+  it("records authenticated task receipt atomically while preserving the first-opened time", async () => {
+    vi.useFakeTimers();
+    try {
+      const { prisma, service } = createFieldAuthFixture();
+      prisma.workOrders.push({
+        firstAccessedAt: null,
+        id: "work-order-1",
+        lastAccessedAt: null
+      });
+      const current = {
+        operatorType: null,
+        phone: "13800000000",
+        sessionId: "session-1"
+      };
+      const firstOpenedAt = new Date("2026-08-02T07:52:52.000Z");
+      const lastOpenedAt = new Date("2026-08-02T08:03:46.000Z");
+
+      vi.setSystemTime(firstOpenedAt);
+      await service.recordTaskViewed(current, "work-order-1", requestContext());
+      vi.setSystemTime(lastOpenedAt);
+      await service.recordTaskViewed(current, "work-order-1", requestContext());
+
+      expect(prisma.workOrders[0]).toMatchObject({
+        firstAccessedAt: firstOpenedAt,
+        lastAccessedAt: lastOpenedAt
+      });
+      expect(prisma.auditLogs).toHaveLength(2);
+      expect(prisma.auditLogs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventType: FieldOperatorAuditEventType.TASK_VIEWED,
+            phone: "13800000000",
+            sessionId: "session-1",
+            workOrderId: "work-order-1"
+          })
+        ])
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("FieldOperatorAuthGuard", () => {
@@ -466,6 +508,7 @@ class FakePrismaService {
   readonly otps: FakeOtp[] = [];
   readonly sessions: FakeSession[] = [];
   readonly smsLogs: FakeSmsSendLog[] = [];
+  readonly workOrders: FakeWorkOrder[] = [];
 
   readonly fieldOperatorOtp = {
     create: vi.fn(async ({ data }: { data: Partial<FakeOtp> }) => {
@@ -564,6 +607,34 @@ class FakePrismaService {
     })
   };
 
+  readonly vehicleHandoverWorkOrder = {
+    update: vi.fn(async ({ data, where }: { data: Partial<FakeWorkOrder>; where: { id: string } }) => {
+      const workOrder = this.workOrders.find((item) => item.id === where.id);
+      if (!workOrder) {
+        throw new Error("Work order not found");
+      }
+      applyUpdate(workOrder, data);
+      return workOrder;
+    }),
+    updateMany: vi.fn(async ({
+      data,
+      where
+    }: {
+      data: Partial<FakeWorkOrder>;
+      where: { firstAccessedAt?: null; id: string };
+    }) => {
+      const records = this.workOrders.filter(
+        (item) =>
+          item.id === where.id &&
+          (where.firstAccessedAt === undefined || item.firstAccessedAt === where.firstAccessedAt)
+      );
+      for (const workOrder of records) {
+        applyUpdate(workOrder, data);
+      }
+      return { count: records.length };
+    })
+  };
+
   readonly smsSendLog = {
     create: vi.fn(async ({ data }: { data: Partial<FakeSmsSendLog> }) => {
       const log: FakeSmsSendLog = {
@@ -634,6 +705,12 @@ interface FakeAuditLog {
   sessionId: string | null;
   userAgentHash: string | null;
   workOrderId: string | null;
+}
+
+interface FakeWorkOrder {
+  firstAccessedAt: Date | null;
+  id: string;
+  lastAccessedAt: Date | null;
 }
 
 interface FakeSmsSendLog {

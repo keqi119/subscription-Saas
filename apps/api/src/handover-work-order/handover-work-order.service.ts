@@ -26,6 +26,7 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
+  FieldOperatorAuditEventType,
   Prisma,
   UserStatus,
   VehicleHandoverAdminReviewStatus,
@@ -201,11 +202,13 @@ export interface WorkOrderRecord {
   fieldOperatorPhone?: string | null;
   fieldStartedAt?: Date | null;
   fieldSubmittedAt?: Date | null;
+  firstAccessedAt?: Date | null;
   fuelLevelText?: string | null;
   handoverId?: string | null;
   handoverMileageKm?: number | null;
   handoverType?: string | null;
   id: string;
+  lastAccessedAt?: Date | null;
   metadata?: unknown;
   noVisibleDamageDeclared?: boolean | null;
   operatorType?: string | null;
@@ -3241,7 +3244,8 @@ export class HandoverWorkOrderService {
       events,
       readiness,
       stage2Pdf,
-      workflowJobs
+      workflowJobs,
+      fieldReceipt
     ] = await Promise.all([
         this.getOrderOrThrow(workOrder.orderId),
         this.deliveryEvidenceService.getChecklist({
@@ -3252,7 +3256,8 @@ export class HandoverWorkOrderService {
         this.listEvents(workOrder.id),
         this.getReadiness(workOrder.id),
         this.getStage2HandoverPdf(workOrder.id),
-        this.listSafeStage2WorkflowJobs(workOrder.id)
+        this.listSafeStage2WorkflowJobs(workOrder.id),
+        this.getFieldTaskReceipt(workOrder)
       ]);
 
     return {
@@ -3268,6 +3273,7 @@ export class HandoverWorkOrderService {
       evidenceProgress: summarizeEvidenceChecklist(evidenceChecklist),
       events: events.map(toSafeHandoverEvent),
       fieldResubmissionRequested: isFieldResubmissionRequested(workOrder),
+      fieldReceipt,
       fieldSubmittedAt: workOrder.fieldSubmittedAt,
       handoverId: workOrder.handoverId,
       handoverType: workOrder.handoverType,
@@ -3294,6 +3300,28 @@ export class HandoverWorkOrderService {
         vinSuffix: suffix(order.vehicle?.vin, 6)
       },
       workflowJobs
+    };
+  }
+
+  private async getFieldTaskReceipt(workOrder: WorkOrderRecord) {
+    let firstOpenedAt = workOrder.firstAccessedAt ?? null;
+    let lastOpenedAt = workOrder.lastAccessedAt ?? null;
+    if (!firstOpenedAt || !lastOpenedAt) {
+      const historicalViews = await this.prisma.fieldOperatorAuditLog.aggregate({
+        _max: { createdAt: true },
+        _min: { createdAt: true },
+        where: {
+          eventType: FieldOperatorAuditEventType.TASK_VIEWED,
+          workOrderId: workOrder.id
+        }
+      });
+      firstOpenedAt ??= historicalViews._min.createdAt;
+      lastOpenedAt ??= historicalViews._max.createdAt;
+    }
+    return {
+      firstOpenedAt,
+      lastOpenedAt,
+      status: firstOpenedAt ? "OPENED" as const : "NOT_OPENED" as const
     };
   }
 

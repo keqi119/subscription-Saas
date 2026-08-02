@@ -388,6 +388,11 @@ interface HandoverWorkOrderSummary {
   deliveryLocation?: string | null;
   evidenceProgress?: { approved?: number | null; required?: number | null; total?: number | null; uploaded?: number | null } | null;
   events?: HandoverEvent[];
+  fieldReceipt?: {
+    firstOpenedAt?: string | null;
+    lastOpenedAt?: string | null;
+    status?: "NOT_OPENED" | "OPENED";
+  } | null;
   fieldResubmissionRequested?: boolean | null;
   fieldSubmittedAt?: string | null;
   handoverId?: string | null;
@@ -2714,6 +2719,16 @@ function Stage2HandoverWorkflowCell({
         <Typography.Text strong>交接签署流程</Typography.Text>
         {loading ? <Spin size="small" /> : null}
       </Space>
+      {workOrder.fieldReceipt?.status === "OPENED" ? (
+        <Space size={6} wrap>
+          <Tag color="green">Field 已接收任务</Tag>
+          <Typography.Text style={{ fontSize: 12 }} type="secondary">
+            首次打开：{formatTime(workOrder.fieldReceipt.firstOpenedAt)}
+          </Typography.Text>
+        </Space>
+      ) : (
+        <Tag>Field 尚未打开任务</Tag>
+      )}
       <Timeline
         items={display.steps.map((step) => ({
           content: (

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
 import {
   ContractStatus,
+  FieldOperatorAuditEventType,
   UserStatus,
   VehicleHandoverEventType,
   VehicleHandoverWorkflowJobType
@@ -504,6 +505,46 @@ describe("HandoverWorkOrderService", () => {
     expect(JSON.stringify(projectedJob)).not.toMatch(
       /13900001111|PRIVATE-H2|private provider detail|secret-task/i
     );
+  });
+
+  it("projects authenticated Field task receipt and falls back to historical view audits", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const firstOpenedAt = new Date("2026-08-02T07:52:52.000Z");
+    const lastOpenedAt = new Date("2026-08-02T08:03:46.000Z");
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      firstAccessedAt: firstOpenedAt,
+      lastAccessedAt: lastOpenedAt
+    });
+
+    const [persistedSummary] = await harness.service.listByOrder(harness.orderId);
+    expect(persistedSummary?.fieldReceipt).toEqual({
+      firstOpenedAt,
+      lastOpenedAt,
+      status: "OPENED"
+    });
+
+    harness.state.workOrders[0]!.firstAccessedAt = null;
+    harness.state.workOrders[0]!.lastAccessedAt = null;
+    harness.state.fieldOperatorAuditLogs.push(
+      {
+        createdAt: firstOpenedAt,
+        eventType: FieldOperatorAuditEventType.TASK_VIEWED,
+        workOrderId: "work-order-1"
+      },
+      {
+        createdAt: lastOpenedAt,
+        eventType: FieldOperatorAuditEventType.TASK_VIEWED,
+        workOrderId: "work-order-1"
+      }
+    );
+
+    const [historicalSummary] = await harness.service.listByOrder(harness.orderId);
+    expect(historicalSummary?.fieldReceipt).toEqual({
+      firstOpenedAt,
+      lastOpenedAt,
+      status: "OPENED"
+    });
   });
 
   it("returns safe field task detail only for the assigned phone", async () => {
@@ -1972,6 +2013,7 @@ function createHandoverWorkOrderHarness() {
     evidenceItems: [] as Array<Record<string, unknown>>,
     evidenceFiles: [] as Array<Record<string, unknown>>,
     events: [] as Array<Record<string, unknown>>,
+    fieldOperatorAuditLogs: [] as Array<Record<string, unknown>>,
     fileObjects: [] as Array<Record<string, unknown>>,
     reviewAttempts: [] as Array<Record<string, unknown>>,
     workOrders: [] as Array<Record<string, unknown>>,
@@ -1996,6 +2038,23 @@ function createHandoverWorkOrderHarness() {
     })
   };
   const prisma = {
+    fieldOperatorAuditLog: {
+      aggregate: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const rows = state.fieldOperatorAuditLogs.filter(
+          (row) =>
+            row.workOrderId === where.workOrderId &&
+            row.eventType === where.eventType
+        );
+        const createdTimes = rows
+          .map((row) => row.createdAt)
+          .filter((value): value is Date => value instanceof Date)
+          .sort((left, right) => left.getTime() - right.getTime());
+        return {
+          _max: { createdAt: createdTimes.at(-1) ?? null },
+          _min: { createdAt: createdTimes[0] ?? null }
+        };
+      })
+    },
     subscriptionOrder: {
       findFirst: vi.fn(async () => state.order),
       findUnique: vi.fn(async () => state.order)

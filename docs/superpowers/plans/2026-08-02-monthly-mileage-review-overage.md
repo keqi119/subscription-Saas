@@ -80,19 +80,19 @@ export function calculateMileageSettlement(input: {
 }): MileageSettlement;
 ```
 
-- [ ] **Step 1: Write failing calendar/calculation tests**
+- [x] **Step 1: Write failing calendar/calculation tests**
 
 Cover Jan 29/30/31, Feb leap/non-leap, Aug 31 to Sep 30 and Oct 31, UTC-to-Shanghai date boundary, period-end semantics, 24-hour due window, zero usage, within allowance, exact allowance, and overage amount in cents.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `pnpm --filter @subscription-saas/api test -- mileage-review-calendar.spec.ts mileage-review-calculator.spec.ts`
 
-- [ ] **Step 3: Implement pure functions**
+- [x] **Step 3: Implement pure functions**
 
 Anchor each cycle directly to the original delivery local date, not the prior clamped date. Reject unsafe integers, negative values, and mileage regression. Use `bigint` for money.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api test -- mileage-review-calendar.spec.ts mileage-review-calculator.spec.ts

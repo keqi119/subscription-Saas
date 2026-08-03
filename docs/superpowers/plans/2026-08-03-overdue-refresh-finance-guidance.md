@@ -246,4 +246,3 @@ Report the branch, commits, changed files, exact test/gate results, migration st
 2. Before 2026-08-08, verify bill `BIL202608030253554RWU` appears in the finance tab as waiting/non-blocking with collection entry.
 3. Verify dry run on 2026-08-08 still finds no overdue bill.
 4. Verify formal refresh on 2026-08-09 succeeds and creates/updates the collection case without HTTP 500.
-

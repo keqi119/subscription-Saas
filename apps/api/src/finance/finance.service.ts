@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import {
   AuditAction,
   BillStatus,
@@ -950,6 +951,8 @@ export class FinanceService {
       };
     }
 
+    const refreshAuditEntityId = randomUUID();
+
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
         await lockSubscriptionOrders(
@@ -1063,51 +1066,60 @@ export class FinanceService {
           }
         }
 
+        await this.auditService.write(
+          {
+            action: AuditAction.UPDATE,
+            after: {
+              asOfDate: toIsoDate(asOfDate),
+              billIds: updatedBills.map((bill) => bill.id),
+              dryRun,
+              overdueBillCount: overdueBills.length
+            },
+            entityId: refreshAuditEntityId,
+            entityType: "overdue_refresh",
+            ipAddress: context.ipAddress,
+            module: "collection",
+            operatorId: user.id,
+            userAgent: context.userAgent
+          },
+          tx
+        );
+
+        for (const collectionCase of createdCases) {
+          await this.auditService.write(
+            {
+              action: AuditAction.CREATE,
+              after: toCollectionCaseView(collectionCase),
+              entityId: collectionCase.id,
+              entityType: "collection_case",
+              ipAddress: context.ipAddress,
+              module: "collection",
+              operatorId: user.id,
+              userAgent: context.userAgent
+            },
+            tx
+          );
+        }
+
+        for (const collectionCase of updatedCases) {
+          await this.auditService.write(
+            {
+              action: AuditAction.UPDATE,
+              after: toCollectionCaseView(collectionCase),
+              entityId: collectionCase.id,
+              entityType: "collection_case",
+              ipAddress: context.ipAddress,
+              module: "collection",
+              operatorId: user.id,
+              userAgent: context.userAgent
+            },
+            tx
+          );
+        }
+
         return { createdCases, linkedCaseBills, updatedBills, updatedCases };
       })
     );
-
-    await this.auditService.write({
-      action: AuditAction.UPDATE,
-      after: {
-        asOfDate: toIsoDate(asOfDate),
-        billIds: result.updatedBills.map((bill) => bill.id),
-        dryRun,
-        overdueBillCount: overdueBills.length
-      },
-      entityId: `overdue-refresh-${toIsoDate(asOfDate)}`,
-      entityType: "overdue_refresh",
-      ipAddress: context.ipAddress,
-      module: "collection",
-      operatorId: user.id,
-      userAgent: context.userAgent
-    });
-
-    for (const collectionCase of result.createdCases) {
-      await this.auditService.write({
-        action: AuditAction.CREATE,
-        after: toCollectionCaseView(collectionCase),
-        entityId: collectionCase.id,
-        entityType: "collection_case",
-        ipAddress: context.ipAddress,
-        module: "collection",
-        operatorId: user.id,
-        userAgent: context.userAgent
-      });
-    }
-
-    for (const collectionCase of result.updatedCases) {
-      await this.auditService.write({
-        action: AuditAction.UPDATE,
-        after: toCollectionCaseView(collectionCase),
-        entityId: collectionCase.id,
-        entityType: "collection_case",
-        ipAddress: context.ipAddress,
-        module: "collection",
-        operatorId: user.id,
-        userAgent: context.userAgent
-      });
-    }
 
     return {
       asOfDate: toIsoDate(asOfDate),

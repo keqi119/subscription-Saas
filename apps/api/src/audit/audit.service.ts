@@ -15,12 +15,14 @@ interface WriteAuditLogInput {
   userAgent?: string;
 }
 
+type AuditWriteClient = Pick<Prisma.TransactionClient, "auditLog">;
+
 @Injectable()
 export class AuditService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async write(input: WriteAuditLogInput) {
-    await this.prisma.auditLog.create({
+  async write(input: WriteAuditLogInput, client: AuditWriteClient = this.prisma) {
+    await client.auditLog.create({
       data: {
         action: input.action,
         afterSnapshot: toJsonSnapshot(input.after),

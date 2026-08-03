@@ -610,6 +610,34 @@ describe("OrderWorkspaceResolver", () => {
     );
   });
 
+  it("keeps a future-due unsettled bill visible as non-blocking payment guidance", () => {
+    const item = new OrderWorkspaceResolver().resolveFinance({
+      asOf: "2026-08-03T03:00:00.000Z",
+      collectionCases: [],
+      depositEntries: [],
+      paymentOrders: [],
+      receivableBills: [
+        {
+          billStatus: "PENDING",
+          dueDate: "2026-08-08T02:53:54.784Z",
+          id: "future-bill",
+          updatedAt: "2026-08-03T02:53:55.032Z"
+        }
+      ]
+    } as never);
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        actionCode: "finance.collect",
+        blocking: false,
+        reasonCode: "FINANCE_PAYMENT_NOT_DUE",
+        state: "WAITING_EXTERNAL",
+        targetRecordId: "future-bill",
+        updatedAt: "2026-08-03T02:53:55.032Z"
+      })
+    );
+  });
+
   it("requires initial bill generation after the authoritative contract is signed", () => {
     const item = new OrderWorkspaceResolver().resolveFinance({
       asOf: AS_OF,

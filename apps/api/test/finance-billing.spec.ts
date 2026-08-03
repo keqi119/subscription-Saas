@@ -1101,6 +1101,47 @@ describe("overdue collection backend loop", () => {
     ]);
   });
 
+  it("uses a UUID refresh audit id and writes refresh audits through the transaction client", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+
+    await harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context);
+
+    const refreshAuditCall = harness.auditService.write.mock.calls.find(
+      ([entry]) => entry.entityType === "overdue_refresh"
+    );
+    const collectionCaseAuditCalls = harness.auditService.write.mock.calls.filter(
+      ([entry]) => entry.entityType === "collection_case"
+    );
+
+    expect(refreshAuditCall?.[0]).toEqual(
+      expect.objectContaining({
+        entityId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        )
+      })
+    );
+    expect(refreshAuditCall?.[1]).toBe(harness.transactionClient);
+    expect(collectionCaseAuditCalls).not.toHaveLength(0);
+    for (const auditCall of collectionCaseAuditCalls) {
+      expect(auditCall[1]).toBe(harness.transactionClient);
+    }
+  });
+
+  it("rolls back overdue mutations when an in-transaction audit write fails", async () => {
+    const harness = createFinanceHarness();
+    addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    harness.auditService.write.mockRejectedValueOnce(new Error("audit failed"));
+
+    await expect(
+      harness.service.refreshOverdueBills({ asOfDate: "2026-06-06" }, harness.user, harness.context)
+    ).rejects.toThrow("audit failed");
+
+    expect(harness.state.bills[0]?.billStatus).toBe(BillStatus.PENDING);
+    expect(harness.state.collectionCases).toHaveLength(0);
+    expect(harness.state.collectionCaseBills).toHaveLength(0);
+  });
+
   it("calculates D1-D5 collection levels by natural overdue days", async () => {
     const harness = createFinanceHarness();
     addReceivableBill(harness, { dueDate: dateOnly("2026-06-05") });
@@ -1772,11 +1813,35 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
 
   const prisma = {
     ...client,
-    $transaction: vi.fn(async (callback) => callback(client))
+    $transaction: vi.fn(async (callback) => {
+      const snapshot = structuredClone(state);
+      try {
+        return await callback(client);
+      } catch (error) {
+        state.automationJobs.splice(0, state.automationJobs.length, ...snapshot.automationJobs);
+        state.bills.splice(0, state.bills.length, ...snapshot.bills);
+        state.collectionActions.splice(0, state.collectionActions.length, ...snapshot.collectionActions);
+        state.collectionCaseBills.splice(0, state.collectionCaseBills.length, ...snapshot.collectionCaseBills);
+        state.collectionCases.splice(0, state.collectionCases.length, ...snapshot.collectionCases);
+        state.depositLedgers.splice(0, state.depositLedgers.length, ...snapshot.depositLedgers);
+        Object.assign(state.order, snapshot.order);
+        state.orders.splice(
+          0,
+          state.orders.length,
+          ...snapshot.orders.map((order) => (order.id === state.order.id ? state.order : order))
+        );
+        state.payments.splice(0, state.payments.length, ...snapshot.payments);
+        state.returnDamages.splice(0, state.returnDamages.length, ...snapshot.returnDamages);
+        state.vehicleReturn = snapshot.vehicleReturn;
+        state.writeOffs.splice(0, state.writeOffs.length, ...snapshot.writeOffs);
+        throw error;
+      }
+    })
   };
   const auditService = {
-    write: vi.fn(async (entry: Record<string, unknown>) => {
+    write: vi.fn(async (entry: Record<string, unknown>, transactionClient?: unknown) => {
       void entry;
+      void transactionClient;
     })
   };
   const service = new FinanceService(auditService as never, prisma as never);
@@ -1804,6 +1869,7 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
     prisma,
     service,
     state,
+    transactionClient: client,
     user
   };
 

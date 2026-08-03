@@ -451,13 +451,13 @@ export class OrderWorkspaceResolver {
         const due = bill.billStatus === "OVERDUE" || Date.parse(bill.dueDate) <= Date.parse(facts.asOf);
         return guideItem(
           "finance",
-          due ? "ACTION_REQUIRED" : "COMPLETED",
+          due ? "ACTION_REQUIRED" : "WAITING_EXTERNAL",
           due
             ? bill.billStatus === "OVERDUE"
               ? "FINANCE_PAYMENT_OVERDUE"
               : "FINANCE_PAYMENT_DUE"
             : "FINANCE_PAYMENT_NOT_DUE",
-          due ? "finance.collect" : null,
+          "finance.collect",
           bill.id,
           due ? bill.dueDate : bill.updatedAt
         );

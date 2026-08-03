@@ -678,13 +678,33 @@ describe("billing finance minimum backend loop", () => {
     activateMonthlyOrder(harness);
 
     const result = await harness.service.generateMonthlyRentBills(
-      { billingDate: "2026-07-09" },
+      { billingDate: "2026-07-06" },
       harness.user,
       harness.context
     );
 
     expect(result).toMatchObject({ generatedCount: 0, skippedCount: 1 });
     expect(result.items[0]).toMatchObject({ action: "SKIPPED_NOT_DUE" });
+  });
+
+  it("batch generation opens on D-3 like the recurring billing schedule", async () => {
+    const harness = createFinanceHarness({
+      actualDeliveryAt: new Date("2026-08-02T03:03:59.594Z"),
+      orderStatus: OrderStatus.ACTIVE
+    });
+
+    const result = await harness.service.generateMonthlyRentBills(
+      { billingDate: "2026-08-30", dryRun: true },
+      harness.user,
+      harness.context
+    );
+
+    expect(result).toMatchObject({ generatedCount: 1, skippedCount: 0 });
+    expect(result.items[0]).toMatchObject({
+      action: "DRY_RUN_GENERATE",
+      periodEnd: "2026-10-01",
+      periodStart: "2026-09-02"
+    });
   });
 
   it("batch generation skips an existing monthly rent bill for the billing date", async () => {

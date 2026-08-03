@@ -46,6 +46,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { BillingAutomationService } from "../billing-automation/billing-automation.service";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
 import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
@@ -80,6 +81,7 @@ import {
 } from "../delivery-handover/delivery-handover.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { MileageReviewService } from "../mileage-review/mileage-review.service";
+import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import {
@@ -355,7 +357,8 @@ export class OrderService {
     @Optional() private readonly deliveryEvidenceService?: DeliveryEvidenceService,
     @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
     @Optional() private readonly vehicleMileageService?: VehicleMileageService,
-    @Optional() private readonly mileageReviewService?: MileageReviewService
+    @Optional() private readonly mileageReviewService?: MileageReviewService,
+    @Optional() private readonly billingAutomationService?: BillingAutomationService
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -1928,12 +1931,28 @@ export class OrderService {
         data: { status: VehicleStatus.LEASED, updatedBy: user.id },
         where: { id: orderBefore.vehicleId! }
       });
+      const { existing: leaseBefore, lease: leaseAfter } =
+        await activateLeaseRecord(tx, {
+          activatedAt: deliveredAt,
+          actorId: user.id,
+          orderId: id
+        });
+      if (!this.billingAutomationService) {
+        throw new Error("Billing automation service is unavailable.");
+      }
+      await this.billingAutomationService.ensureActiveSchedule(
+        tx,
+        id,
+        deliveredAt
+      );
 
       return {
         delivery,
         deliveryBefore,
         order,
         orderBefore,
+        leaseAfter,
+        leaseBefore,
         vehicleAfter,
         vehicleBefore
       };
@@ -1966,6 +1985,19 @@ export class OrderService {
       entityType: "vehicle",
       ipAddress: context.ipAddress,
       module: "vehicle",
+      operatorId: user.id,
+      userAgent: context.userAgent
+    });
+    await this.auditService.write({
+      action: result.leaseBefore ? AuditAction.UPDATE : AuditAction.CREATE,
+      after: toJsonValue(result.leaseAfter),
+      before: result.leaseBefore
+        ? toJsonValue(result.leaseBefore)
+        : undefined,
+      entityId: result.leaseAfter.id,
+      entityType: "lease",
+      ipAddress: context.ipAddress,
+      module: "lease",
       operatorId: user.id,
       userAgent: context.userAgent
     });

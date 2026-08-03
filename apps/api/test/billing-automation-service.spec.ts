@@ -82,6 +82,80 @@ describe("BillingAutomationService", () => {
     );
   });
 
+  it("previews and repairs a delivered active order that is missing its lease and schedule", async () => {
+    const harness = createHarness();
+    harness.order.lease = null;
+
+    const preview = await harness.service.reconcileSchedules({
+      dryRun: true
+    });
+
+    expect(preview).toMatchObject({
+      createdCount: 1,
+      eligibleCount: 1,
+      items: [
+        {
+          action: "WOULD_CREATE",
+          leaseAction: "WOULD_ACTIVATE",
+          leaseStatus: null,
+          orderId: harness.order.id
+        }
+      ]
+    });
+    expect(harness.order.lease).toBeNull();
+    expect(harness.schedules).toHaveLength(0);
+
+    const applied = await harness.service.reconcileSchedules({
+      dryRun: false
+    });
+
+    expect(applied.items).toEqual([
+      expect.objectContaining({
+        action: "CREATED",
+        leaseAction: "ACTIVATED",
+        leaseStatus: LeaseStatus.ACTIVE
+      })
+    ]);
+    expect(harness.order.lease).toMatchObject({
+      activatedAt: harness.order.actualDeliveryAt,
+      deletedAt: null,
+      orderId: harness.order.id,
+      status: LeaseStatus.ACTIVE
+    });
+    expect(harness.schedules).toHaveLength(1);
+    expect(harness.audits).toEqual([
+      expect.objectContaining({
+        action: "CREATE",
+        entityType: "lease",
+        module: "billing"
+      })
+    ]);
+  });
+
+  it("repairs a missing lease without replacing an existing schedule", async () => {
+    const harness = createHarness();
+    await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    const scheduleId = harness.schedules[0]?.id;
+    harness.order.lease = null;
+
+    const result = await harness.service.reconcileSchedules({
+      dryRun: false
+    });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        action: "EXISTING",
+        leaseAction: "ACTIVATED"
+      })
+    ]);
+    expect(harness.schedules).toHaveLength(1);
+    expect(harness.schedules[0]?.id).toBe(scheduleId);
+  });
+
   it("uses the same quote fallback for reconciliation preview as actual billing", async () => {
     const harness = createHarness();
     harness.order.monthlyFeeAmount = 0n;
@@ -416,9 +490,22 @@ function createHarness() {
     endDate: new Date("2027-06-09T00:00:00.000Z"),
     id: randomUUID(),
     lease: {
+      activatedAt: new Date("2026-06-10T02:00:00.000Z"),
+      createdAt: new Date("2026-06-10T02:00:00.000Z"),
       deletedAt: null,
-      status: LeaseStatus.ACTIVE
-    },
+      id: randomUUID(),
+      orderId: "",
+      status: LeaseStatus.ACTIVE,
+      updatedAt: new Date("2026-06-10T02:00:00.000Z")
+    } as {
+      activatedAt: Date | null;
+      createdAt: Date;
+      deletedAt: Date | null;
+      id: string;
+      orderId: string;
+      status: LeaseStatus;
+      updatedAt: Date;
+    } | null,
     orderNo: "ORD-1",
     orderStatus: OrderStatus.ACTIVE,
     monthlyFeeAmount: 300000n,
@@ -427,6 +514,7 @@ function createHarness() {
     },
     quoteSnapshot: null
   };
+  order.lease!.orderId = order.id;
   const schedules: Array<Record<string, unknown>> = [];
   const bills: Array<Record<string, unknown>> = [];
   const jobs = new Map<string, Record<string, unknown>>();
@@ -500,6 +588,32 @@ function createHarness() {
         schedules.push(created);
         return created;
       }
+    },
+    lease: {
+      async create({ data }: { data: Record<string, unknown> }) {
+        const created = {
+          activatedAt: null,
+          createdAt: now,
+          deletedAt: null,
+          id: randomUUID(),
+          orderId: order.id,
+          status: LeaseStatus.NOT_ACTIVE,
+          updatedAt: now,
+          ...data
+        } as NonNullable<typeof order.lease>;
+        order.lease = created;
+        return created;
+      },
+      async findUnique() {
+        return order.lease;
+      },
+      async update({ data }: { data: Record<string, unknown> }) {
+        if (!order.lease) {
+          throw new Error("Lease not found");
+        }
+        Object.assign(order.lease, data, { updatedAt: now });
+        return order.lease;
+      }
     }
   };
   const prisma = {
@@ -526,7 +640,15 @@ function createHarness() {
       }
     },
     subscriptionOrder: {
-      async findMany() {
+      async findMany({ where }: { where?: Record<string, unknown> } = {}) {
+        if (
+          where?.lease &&
+          (!order.lease ||
+            order.lease.deletedAt ||
+            order.lease.status !== LeaseStatus.ACTIVE)
+        ) {
+          return [];
+        }
         return [
           {
             ...order,

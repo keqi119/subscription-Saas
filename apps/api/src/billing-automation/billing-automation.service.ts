@@ -15,6 +15,7 @@ import {
   MonthlyRentAutomationCycleInput,
   resolveMonthlyRentAmountWithSource
 } from "../finance/finance.service";
+import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   BillingCycle,
@@ -92,6 +93,7 @@ export class BillingAutomationService {
     const orders = await this.prisma.subscriptionOrder.findMany({
       include: {
         billingSchedule: true,
+        lease: true,
         quote: {
           select: {
             monthlyFeeAmount: true
@@ -118,12 +120,6 @@ export class BillingAutomationService {
       where: {
         actualDeliveryAt: { not: null },
         deletedAt: null,
-        lease: {
-          is: {
-            deletedAt: null,
-            status: LeaseStatus.ACTIVE
-          }
-        },
         orderStatus: OrderStatus.ACTIVE
       }
     });
@@ -134,6 +130,8 @@ export class BillingAutomationService {
       basisBillId: string | null;
       basisPeriodStart: string | null;
       monthlyRentAmount: number | null;
+      leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
+      leaseStatus: LeaseStatus | null;
       nextCycleNo: number;
       nextGenerateAt: string;
       nextPeriodEnd: string;
@@ -145,10 +143,43 @@ export class BillingAutomationService {
 
     for (const order of orders) {
       const amount = reconciliationAmount(order);
+      const leaseNeedsActivation =
+        !order.lease ||
+        Boolean(order.lease.deletedAt) ||
+        order.lease.status !== LeaseStatus.ACTIVE;
+      const leasePreview = {
+        leaseAction: leaseNeedsActivation
+          ? "WOULD_ACTIVATE" as const
+          : "NONE" as const,
+        leaseStatus: order.lease?.status ?? null
+      };
       if (order.billingSchedule) {
+        let leaseResult: {
+          leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
+          leaseStatus: LeaseStatus | null;
+        } = leasePreview;
+        if (!input.dryRun && leaseNeedsActivation) {
+          const repaired = await this.prisma.$transaction(async (tx) => {
+            const activation = await activateLeaseRecord(tx, {
+              activatedAt: order.actualDeliveryAt!,
+              orderId: order.id
+            });
+            await writeLeaseReconciliationAudit(
+              tx,
+              activation.existing,
+              activation.lease
+            );
+            return activation.lease;
+          });
+          leaseResult = {
+            leaseAction: "ACTIVATED",
+            leaseStatus: repaired.status
+          };
+        }
         items.push({
           action: "EXISTING",
           ...amount,
+          ...leaseResult,
           baselineReason: "EXISTING_SCHEDULE",
           basisBillId: order.billingSchedule.lastGeneratedBillId,
           basisPeriodStart: null,
@@ -186,6 +217,7 @@ export class BillingAutomationService {
         items.push({
           action: "WOULD_CREATE",
           ...itemFacts,
+          ...leasePreview,
           orderId: order.id,
           orderNo: order.orderNo,
           scheduleId: null
@@ -193,20 +225,36 @@ export class BillingAutomationService {
         continue;
       }
 
-      const schedule = await this.prisma.$transaction((tx) =>
-        this.ensureScheduleAtCycle(
+      const applied = await this.prisma.$transaction(async (tx) => {
+        let leaseStatus = order.lease?.status ?? null;
+        if (leaseNeedsActivation) {
+          const activation = await activateLeaseRecord(tx, {
+            activatedAt: order.actualDeliveryAt!,
+            orderId: order.id
+          });
+          await writeLeaseReconciliationAudit(
+            tx,
+            activation.existing,
+            activation.lease
+          );
+          leaseStatus = activation.lease.status;
+        }
+        const schedule = await this.ensureScheduleAtCycle(
           tx,
           order.id,
           baseline.cycle,
           completed
-        )
-      );
+        );
+        return { leaseStatus, schedule };
+      });
       items.push({
         action: "CREATED",
         ...itemFacts,
+        leaseAction: leaseNeedsActivation ? "ACTIVATED" : "NONE",
+        leaseStatus: applied.leaseStatus,
         orderId: order.id,
         orderNo: order.orderNo,
-        scheduleId: schedule.id
+        scheduleId: applied.schedule.id
       });
     }
 
@@ -218,6 +266,10 @@ export class BillingAutomationService {
       eligibleCount: orders.length,
       existingCount: items.filter((item) => item.action === "EXISTING")
         .length,
+      leaseActivationCount: items.filter((item) =>
+        item.leaseAction === "ACTIVATED" ||
+        item.leaseAction === "WOULD_ACTIVATE"
+      ).length,
       items
     };
   }
@@ -510,6 +562,54 @@ export class BillingAutomationService {
       throw classifyExecutionError(error);
     }
   }
+}
+
+async function writeLeaseReconciliationAudit(
+  tx: Pick<Prisma.TransactionClient, "auditLog">,
+  before: {
+    activatedAt: Date | null;
+    deletedAt: Date | null;
+    id: string;
+    orderId: string;
+    status: LeaseStatus;
+  } | null,
+  after: {
+    activatedAt: Date | null;
+    deletedAt: Date | null;
+    id: string;
+    orderId: string;
+    status: LeaseStatus;
+  }
+) {
+  await tx.auditLog.create({
+    data: {
+      action: before ? AuditAction.UPDATE : AuditAction.CREATE,
+      afterSnapshot: leaseReconciliationSnapshot(after),
+      beforeSnapshot: before
+        ? leaseReconciliationSnapshot(before)
+        : undefined,
+      entityId: after.id,
+      entityType: "lease",
+      module: "billing",
+      operatorId: null
+    }
+  });
+}
+
+function leaseReconciliationSnapshot(lease: {
+  activatedAt: Date | null;
+  deletedAt: Date | null;
+  orderId: string;
+  status: LeaseStatus;
+}) {
+  return {
+    activatedAt: lease.activatedAt?.toISOString() ?? null,
+    actorType: "SYSTEM",
+    deletedAt: lease.deletedAt?.toISOString() ?? null,
+    orderId: lease.orderId,
+    reason: "BILLING_SCHEDULE_RECONCILIATION",
+    status: lease.status
+  };
 }
 
 function reconciliationBaseline(

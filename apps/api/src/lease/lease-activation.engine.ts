@@ -32,6 +32,7 @@ import {
   LeaseActivationWarningCondition,
   LeaseStatusView
 } from "./lease-activation.types";
+import { activateLeaseRecord } from "./lease-activation.persistence";
 
 const LEASE_ACTIVATION_REJECTED_REASON = "MISSING_LEASE_ACTIVATION_CONDITIONS";
 
@@ -147,9 +148,6 @@ export class LeaseActivationEngine {
 
     const { existing, lease } = await this.prisma.$transaction(
       async (tx) => {
-        const existing = await tx.lease.findUnique({
-          where: { orderId }
-        });
         const order = await tx.subscriptionOrder.findUnique({
           select: {
             actualDeliveryAt: true,
@@ -162,25 +160,11 @@ export class LeaseActivationEngine {
           throw new BadRequestException("DELIVERY_CONFIRMED");
         }
         const activatedAt = order.actualDeliveryAt;
-        const lease =
-          existing && !existing.deletedAt
-            ? await tx.lease.update({
-                data: {
-                  activatedAt,
-                  status: LeaseStatus.ACTIVE,
-                  updatedBy: user?.id
-                },
-                where: { id: existing.id }
-              })
-            : await tx.lease.create({
-                data: {
-                  activatedAt,
-                  createdBy: user?.id,
-                  orderId,
-                  status: LeaseStatus.ACTIVE,
-                  updatedBy: user?.id
-                }
-              });
+        const { existing, lease } = await activateLeaseRecord(tx, {
+          activatedAt,
+          actorId: user?.id,
+          orderId
+        });
         if (!this.billingAutomationService) {
           throw new Error("Billing automation service is unavailable.");
         }
@@ -194,9 +178,9 @@ export class LeaseActivationEngine {
     );
 
     await this.auditService.write({
-      action: existing && !existing.deletedAt ? AuditAction.UPDATE : AuditAction.CREATE,
+      action: existing ? AuditAction.UPDATE : AuditAction.CREATE,
       after: toLeaseView(lease),
-      before: existing && !existing.deletedAt ? toLeaseView(existing) : undefined,
+      before: existing ? toLeaseView(existing) : undefined,
       entityId: lease.id,
       entityType: "lease",
       ipAddress: context?.ipAddress,

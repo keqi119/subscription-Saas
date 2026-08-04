@@ -13,7 +13,8 @@ import {
   PayCircleOutlined,
   ProfileOutlined,
   SafetyOutlined,
-  ToolOutlined
+  ToolOutlined,
+  WalletOutlined
 } from "@ant-design/icons";
 import { App, Button, Flex, List, Tag, Typography } from "antd";
 import { useRouter } from "next/navigation";
@@ -38,12 +39,21 @@ const portalEntries = [
   { href: "/portal/handover-reviews", icon: <AuditOutlined />, title: "车辆交接确认" },
   { href: "/portal/mileage-reviews", icon: <DashboardOutlined />, title: "月度里程复核" },
   { href: "/portal/bills", icon: <FileTextOutlined />, title: "我的账单" },
+  { href: "/portal/auto-debit", icon: <WalletOutlined />, title: "自动扣款" },
   { href: "/portal/payment-orders", icon: <PayCircleOutlined />, title: "支付记录" },
   { href: "/portal/notifications", icon: <MessageOutlined />, title: "消息通知" },
   { href: "/portal/deposit", icon: <SafetyOutlined />, title: "我的押金" },
   { href: "/portal/entitlements", icon: <GiftOutlined />, title: "我的权益" },
-  { href: "/portal/service-cases/new?type=ACCIDENT_REPORT", icon: <AlertOutlined />, title: "事故报案" },
-  { href: "/portal/service-cases/new?type=RESCUE_REQUEST", icon: <ToolOutlined />, title: "救援申请" }
+  {
+    href: "/portal/service-cases/new?type=ACCIDENT_REPORT",
+    icon: <AlertOutlined />,
+    title: "事故报案"
+  },
+  {
+    href: "/portal/service-cases/new?type=RESCUE_REQUEST",
+    icon: <ToolOutlined />,
+    title: "救援申请"
+  }
 ];
 
 export default function PortalHomePage() {

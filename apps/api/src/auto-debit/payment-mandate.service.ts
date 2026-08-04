@@ -54,6 +54,13 @@ export class PaymentMandateService {
     private readonly audit: AuditService
   ) {}
 
+  getPortalAvailability() {
+    return {
+      enabled: this.config.enabled,
+      provider: this.config.enabled ? "WECHAT_AUTO_DEBIT" : null
+    };
+  }
+
   async createPortalMandate(
     orderId: string,
     customer: CurrentCustomer,
@@ -65,12 +72,7 @@ export class PaymentMandateService {
       customer.customerId,
       customer.customerAccountId
     );
-    await this.writeAudit(
-      AuditAction.CREATE,
-      pending,
-      customer.customerAccountId,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, pending, customer.customerAccountId, context);
 
     let updated: MandateRecord;
     try {
@@ -78,39 +80,21 @@ export class PaymentMandateService {
         customerId: customer.customerId,
         mandateNo: pending.mandateNo,
         orderId,
-        providerTemplateId:
-          pending.providerTemplateId ?? "mock-auto-debit-template"
+        providerTemplateId: pending.providerTemplateId ?? "mock-auto-debit-template"
       });
       updated = await this.persistProviderResult(pending, result, {
         updatedBy: customer.customerAccountId
       });
     } catch (error) {
-      const failed = await this.failPendingMandate(
-        pending.id,
-        error,
-        customer.customerAccountId
-      );
-      await this.writeAudit(
-        AuditAction.UPDATE,
-        failed,
-        customer.customerAccountId,
-        context
-      );
+      const failed = await this.failPendingMandate(pending.id, error, customer.customerAccountId);
+      await this.writeAudit(AuditAction.UPDATE, failed, customer.customerAccountId, context);
       throw new ServiceUnavailableException("支付授权服务暂不可用，请稍后重试。");
     }
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      updated,
-      customer.customerAccountId,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, updated, customer.customerAccountId, context);
     return portalMandate(updated);
   }
 
-  async listPortalMandates(
-    query: { orderId?: string },
-    customer: CurrentCustomer
-  ) {
+  async listPortalMandates(query: { orderId?: string }, customer: CurrentCustomer) {
     const records = await this.prisma.paymentMandate.findMany({
       orderBy: { createdAt: "desc" },
       where: {
@@ -136,17 +120,8 @@ export class PaymentMandateService {
     return records.map(portalAttempt);
   }
 
-  async revokePortalMandate(
-    id: string,
-    customer: CurrentCustomer,
-    context: PortalRequestContext
-  ) {
-    return this.revokeMandate(
-      id,
-      customer.customerId,
-      customer.customerAccountId,
-      context
-    );
+  async revokePortalMandate(id: string, customer: CurrentCustomer, context: PortalRequestContext) {
+    return this.revokeMandate(id, customer.customerId, customer.customerAccountId, context);
   }
 
   async listAdminMandates(query: AdminMandateQueryDto) {
@@ -210,11 +185,7 @@ export class PaymentMandateService {
     });
   }
 
-  private async createPendingMandate(
-    orderId: string,
-    customerId: string,
-    actorId: string
-  ) {
+  private async createPendingMandate(orderId: string, customerId: string, actorId: string) {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const order = await tx.subscriptionOrder.findFirst({
@@ -285,8 +256,7 @@ export class PaymentMandateService {
           responseSnapshot: toJson(result.providerSnapshot),
           signedAt: result.signedAt,
           status: nextStatus,
-          suspendedAt:
-            nextStatus === PaymentMandateStatus.SUSPENDED ? now : null,
+          suspendedAt: nextStatus === PaymentMandateStatus.SUSPENDED ? now : null,
           revokedAt: nextStatus === PaymentMandateStatus.REVOKED ? now : null,
           updatedBy: actor.updatedBy
         },
@@ -297,11 +267,7 @@ export class PaymentMandateService {
           select: { dueDate: true, id: true, orderId: true },
           where: {
             billStatus: {
-              in: [
-                BillStatus.PENDING,
-                BillStatus.PARTIALLY_PAID,
-                BillStatus.OVERDUE
-              ]
+              in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
             },
             deletedAt: null,
             orderId: current.orderId,
@@ -350,13 +316,7 @@ export class PaymentMandateService {
     const updated = await this.persistProviderResult(current, result, {
       updatedBy: actorId
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      updated,
-      actorId,
-      context,
-      auditMetadata
-    );
+    await this.writeAudit(AuditAction.UPDATE, updated, actorId, context, auditMetadata);
     return customerId ? portalMandate(updated) : adminMandate(updated);
   }
 
@@ -396,10 +356,7 @@ export class PaymentMandateService {
   }
 }
 
-export function assertMandateTransition(
-  current: PaymentMandateStatus,
-  next: PaymentMandateStatus
-) {
+export function assertMandateTransition(current: PaymentMandateStatus, next: PaymentMandateStatus) {
   if (current === next) {
     return;
   }
@@ -487,9 +444,7 @@ function auditMandate(record: MandateRecord) {
 }
 
 function providerType(config: AutoDebitConfig) {
-  return config.provider === "mock"
-    ? PaymentProviderType.MOCK
-    : PaymentProviderType.WECHAT_PAY;
+  return config.provider === "mock" ? PaymentProviderType.MOCK : PaymentProviderType.WECHAT_PAY;
 }
 
 function maskReference(value: string | null) {

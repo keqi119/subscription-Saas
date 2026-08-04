@@ -15,14 +15,31 @@ import {
   PAYMENT_ORDER_STATUS_LABELS,
   labelOf
 } from "../../../../constants/labels";
-import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
-import { PortalBillDetail, PortalPaymentOrder } from "../../../../lib/portal-types";
+import { buildPortalAutoDebitView } from "../../../../lib/portal-auto-debit-view-model";
+import {
+  getPortalAutoDebitAvailability,
+  getPortalDebitAttempts,
+  getPortalPaymentMandates,
+  PortalApiError,
+  portalApiFetch
+} from "../../../../lib/portal-api";
+import {
+  PortalAutoDebitAvailability,
+  PortalBillDetail,
+  PortalDebitAttempt,
+  PortalPaymentMandate,
+  PortalPaymentOrder
+} from "../../../../lib/portal-types";
+import { PortalAutoDebitStatusCard } from "../../auto-debit/auto-debit-status-card";
 
 export default function PortalBillDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
   const [bill, setBill] = useState<PortalBillDetail>();
+  const [availability, setAvailability] = useState<PortalAutoDebitAvailability>();
+  const [mandates, setMandates] = useState<PortalPaymentMandate[]>([]);
+  const [attempts, setAttempts] = useState<PortalDebitAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
 
@@ -32,10 +49,21 @@ export default function PortalBillDetailPage() {
     }
     setLoading(true);
     try {
-      setBill(await portalApiFetch<PortalBillDetail>(`/portal/bills/${params.id}`));
+      const nextBill = await portalApiFetch<PortalBillDetail>(`/portal/bills/${params.id}`);
+      const [nextAvailability, nextMandates, nextAttempts] = await Promise.all([
+        getPortalAutoDebitAvailability(),
+        getPortalPaymentMandates(nextBill.orderId),
+        getPortalDebitAttempts({ billId: nextBill.billId })
+      ]);
+      setBill(nextBill);
+      setAvailability(nextAvailability);
+      setMandates(nextMandates);
+      setAttempts(nextAttempts);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
-        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/bills/${params.id}`)}`);
+        router.replace(
+          `/portal/login?redirect=${encodeURIComponent(`/portal/bills/${params.id}`)}`
+        );
         return;
       }
       void message.error(error instanceof PortalApiError ? error.message : "无法加载账单详情");
@@ -84,6 +112,15 @@ export default function PortalBillDetailPage() {
     );
   }
 
+  const autoDebit = availability
+    ? buildPortalAutoDebitView({
+        attempt: attempts[0],
+        availability,
+        bill,
+        mandate: mandates[0]
+      })
+    : null;
+
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
       <section style={{ margin: "0 auto", maxWidth: 900 }}>
@@ -103,14 +140,26 @@ export default function PortalBillDetailPage() {
               <Typography.Text type="secondary">订单 {bill.orderNo}</Typography.Text>
             </div>
             <Space size={[6, 6]} wrap>
-              <Tag color={bill.canPay ? "orange" : "green"}>{labelOf(BILL_STATUS_LABELS, bill.billStatus)}</Tag>
+              <Tag color={bill.canPay ? "orange" : "green"}>
+                {labelOf(BILL_STATUS_LABELS, bill.billStatus)}
+              </Tag>
               <Tag>{labelOf(BILL_TYPE_LABELS, bill.billType)}</Tag>
             </Space>
           </Flex>
         </section>
 
+        {autoDebit ? (
+          <PortalAutoDebitStatusCard model={autoDebit} onPay={() => void payBill()} />
+        ) : null}
+
         <section style={sectionStyle}>
-          <Flex align="center" justify="space-between" gap={12} style={{ marginBottom: 12 }} wrap="wrap">
+          <Flex
+            align="center"
+            justify="space-between"
+            gap={12}
+            style={{ marginBottom: 12 }}
+            wrap="wrap"
+          >
             <Typography.Title level={4} style={{ margin: 0 }}>
               账单详情
             </Typography.Title>
@@ -143,14 +192,26 @@ export default function PortalBillDetailPage() {
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             支付单
           </Typography.Title>
-          <Table columns={paymentOrderColumns} dataSource={bill.paymentOrders} pagination={false} rowKey="paymentOrderId" size="small" />
+          <Table
+            columns={paymentOrderColumns}
+            dataSource={bill.paymentOrders}
+            pagination={false}
+            rowKey="paymentOrderId"
+            size="small"
+          />
         </section>
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             核销记录
           </Typography.Title>
-          <Table columns={writeOffColumns} dataSource={bill.writeOffs} pagination={false} rowKey="writeOffId" size="small" />
+          <Table
+            columns={writeOffColumns}
+            dataSource={bill.writeOffs}
+            pagination={false}
+            rowKey="writeOffId"
+            size="small"
+          />
         </section>
       </section>
     </main>

@@ -1,13 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  Req,
-  UseGuards
-} from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import type { Request } from "express";
 
 import { CustomerAuthGuard } from "../portal/portal-auth.guard";
@@ -25,6 +16,11 @@ import { PaymentMandateService } from "./payment-mandate.service";
 export class PortalAutoDebitController {
   constructor(private readonly service: PaymentMandateService) {}
 
+  @Get("availability")
+  availability() {
+    return this.service.getPortalAvailability();
+  }
+
   @Get("mandates")
   listMandates(
     @Query() query: PortalMandateQueryDto,
@@ -39,11 +35,7 @@ export class PortalAutoDebitController {
     @CurrentPortalCustomer() customer: CurrentCustomer,
     @Req() request: Request
   ) {
-    return this.service.createPortalMandate(
-      dto.orderId,
-      customer,
-      requestContext(request)
-    );
+    return this.service.createPortalMandate(dto.orderId, customer, requestContext(request));
   }
 
   @Post("mandates/:id/revoke")
@@ -52,11 +44,7 @@ export class PortalAutoDebitController {
     @CurrentPortalCustomer() customer: CurrentCustomer,
     @Req() request: Request
   ) {
-    return this.service.revokePortalMandate(
-      id,
-      customer,
-      requestContext(request)
-    );
+    return this.service.revokePortalMandate(id, customer, requestContext(request));
   }
 
   @Get("attempts")

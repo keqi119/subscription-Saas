@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from "vitest";
 import { PortalAutoDebitController } from "../src/auto-debit/portal-auto-debit.controller";
 
 describe("PortalAutoDebitController", () => {
+  it("exposes availability without leaking Staging mock controls", async () => {
+    const service = {
+      getPortalAvailability: vi.fn().mockReturnValue({
+        enabled: false,
+        provider: null
+      })
+    };
+    const controller = new PortalAutoDebitController(service as never);
+
+    const result = controller.availability();
+
+    expect(result).toEqual({ enabled: false, provider: null });
+    expect(result).not.toHaveProperty("mockEnabled");
+    expect(result).not.toHaveProperty("environment");
+  });
+
   it("delegates mandate creation with the authenticated customer", async () => {
     const service = {
       createPortalMandate: vi.fn().mockResolvedValue({ id: "mandate-1" })

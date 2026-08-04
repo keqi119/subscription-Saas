@@ -1,4 +1,11 @@
-export const PORTAL_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
+import type {
+  PortalAutoDebitAvailability,
+  PortalDebitAttempt,
+  PortalPaymentMandate
+} from "./portal-types";
+
+export const PORTAL_API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
 
 export class PortalApiError extends Error {
   constructor(
@@ -35,6 +42,41 @@ export async function portalApiFetch<T>(path: string, init?: RequestInit): Promi
 
   const text = await response.text();
   return text ? (JSON.parse(text) as T) : (null as T);
+}
+
+export function getPortalAutoDebitAvailability() {
+  return portalApiFetch<PortalAutoDebitAvailability>("/portal/auto-debit/availability");
+}
+
+export function getPortalPaymentMandates(orderId?: string) {
+  const query = orderId ? `?orderId=${encodeURIComponent(orderId)}` : "";
+  return portalApiFetch<PortalPaymentMandate[]>(`/portal/auto-debit/mandates${query}`);
+}
+
+export function getPortalDebitAttempts(filters?: { billId?: string; orderId?: string }) {
+  const params = new URLSearchParams();
+  if (filters?.billId) {
+    params.set("billId", filters.billId);
+  }
+  if (filters?.orderId) {
+    params.set("orderId", filters.orderId);
+  }
+  const query = params.size ? `?${params.toString()}` : "";
+  return portalApiFetch<PortalDebitAttempt[]>(`/portal/auto-debit/attempts${query}`);
+}
+
+export function createPortalPaymentMandate(orderId: string) {
+  return portalApiFetch<PortalPaymentMandate>("/portal/auto-debit/mandates", {
+    body: JSON.stringify({ orderId }),
+    method: "POST"
+  });
+}
+
+export function revokePortalPaymentMandate(mandateId: string) {
+  return portalApiFetch<PortalPaymentMandate>(
+    `/portal/auto-debit/mandates/${encodeURIComponent(mandateId)}/revoke`,
+    { method: "POST" }
+  );
 }
 
 async function readPortalErrorMessage(response: Response) {

@@ -67,6 +67,73 @@ describe("Deployment operations safety", () => {
     }
   });
 
+  it("pins parsed auto debit defaults without coupling the billing worker or active payment", () => {
+    const staging = parseEnvironment(read(".env.staging.images.example"));
+    const production = parseEnvironment(read(".env.production.images.example"));
+
+    expect(staging).toMatchObject({
+      APP_ENV: "staging",
+      AUTO_DEBIT_ENABLED: "true",
+      BILLING_AUTOMATION_WORKER_ENABLED: "true",
+      PAYMENT_MANDATE_MOCK_ENABLED: "true",
+      PAYMENT_MANDATE_PROVIDER: "mock",
+      PAYMENT_PROVIDER: "mock"
+    });
+    expect(production).toMatchObject({
+      APP_ENV: "production",
+      AUTO_DEBIT_ENABLED: "false",
+      BILLING_AUTOMATION_WORKER_ENABLED: "true",
+      PAYMENT_MANDATE_MOCK_ENABLED: "false",
+      PAYMENT_MANDATE_PROVIDER: "disabled",
+      PAYMENT_PROVIDER: "wechat_pay"
+    });
+  });
+
+  it("passes explicit auto debit defaults from both image Compose files", () => {
+    const staging = parseComposeEnvironment(
+      read("docker-compose.staging.images.example.yml")
+    );
+    const production = parseComposeEnvironment(
+      read("docker-compose.production.images.example.yml")
+    );
+
+    expect(staging).toMatchObject({
+      AUTO_DEBIT_ENABLED: "true",
+      PAYMENT_MANDATE_MOCK_ENABLED: "true",
+      PAYMENT_MANDATE_PROVIDER: "mock"
+    });
+    expect(production).toMatchObject({
+      AUTO_DEBIT_ENABLED: "false",
+      PAYMENT_MANDATE_MOCK_ENABLED: "false",
+      PAYMENT_MANDATE_PROVIDER: "disabled"
+    });
+  });
+
+  it("documents the fixed release order and complete Stage 1B acceptance operations", () => {
+    const deployment = read("docs/deployment.md");
+    const runbook = read("docs/operations/stage1b-auto-debit-runbook.zh-CN.md");
+    const migration = deployment.indexOf("prisma:migrate:deploy", deployment.indexOf("镜像发布固定顺序"));
+    const healthy = deployment.indexOf("healthy", migration);
+    const publicHealth = deployment.indexOf("staging-api.subauto.keybox.cloud/api/health", healthy);
+    const acceptance = runbook.match(
+      /## 4\. Staging 十项人工验收\n\n([\s\S]*?)\n\n## 5\./
+    )?.[1] ?? "";
+
+    expect(migration).toBeGreaterThanOrEqual(0);
+    expect(healthy).toBeGreaterThan(migration);
+    expect(publicHealth).toBeGreaterThan(healthy);
+    expect(acceptance.match(/^\d+\./gm)).toHaveLength(10);
+    expect(runbook).toContain("STAGING MOCK，不会发生真实扣款");
+    expect(runbook).toContain("UNKNOWN");
+    expect(runbook).toContain("死信");
+    expect(runbook).toContain("人工扣款");
+    expect(runbook).toContain("未分配收款");
+    expect(runbook).toContain("WECHAT_AUTO_RENEW_TEMPLATE_ID");
+    expect(runbook).toContain(
+      "../superpowers/specs/assets/2026-08-04-stage1b-wechat-auto-debit-portal-flow-long.png"
+    );
+  });
+
   it("routes staging WeChat OAuth through the authorized Portal domain", () => {
     const nginx = read("nginx/staging-app-wechat-oauth.example.conf");
 
@@ -178,4 +245,29 @@ describe("Deployment operations safety", () => {
 
 function read(file: string) {
   return readFileSync(join(repoRoot, file), "utf8");
+}
+
+function parseEnvironment(source: string) {
+  return Object.fromEntries(
+    source
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separator = line.indexOf("=");
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      })
+  );
+}
+
+function parseComposeEnvironment(source: string) {
+  const result: Record<string, string> = {};
+  const apiEnvironment = source.match(/\n  api:\n[\s\S]*?\n    environment:\n([\s\S]*?)\n    ports:/)?.[1] ?? "";
+  for (const line of apiEnvironment.split(/\r?\n/)) {
+    const match = /^      ([A-Z0-9_]+): \$\{\1:-([^}]*)\}$/.exec(line);
+    if (match) {
+      result[match[1]] = match[2];
+    }
+  }
+  return result;
 }

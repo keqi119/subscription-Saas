@@ -284,6 +284,44 @@ describe("DebitAttemptService", () => {
     expect(harness.provider.submitDebit).not.toHaveBeenCalled();
     expect(harness.paymentOrder.paymentStatus).toBe(PaymentOrderStatus.PAID);
   });
+
+  it.each([
+    [PaymentMandateStatus.REVOKED, {}],
+    [PaymentMandateStatus.SUSPENDED, {}],
+    [PaymentMandateStatus.EXPIRED, {}],
+    [
+      PaymentMandateStatus.ACTIVE,
+      { requestSnapshot: { revokeRequestedAt: "2026-08-05T01:00:00.000Z" } }
+    ]
+  ])(
+    "cancels recovery instead of resubmitting when mandate is %s or revocation is pending",
+    async (status, mandateOverride) => {
+      const harness = createHarness({
+        attemptStatus: DebitAttemptStatus.UNKNOWN,
+        mandate: { ...mandateOverride, status }
+      });
+      harness.provider.queryDebit.mockResolvedValueOnce({
+        confirmedAmount: 0n,
+        errorCode: "PROVIDER_TRANSACTION_NOT_FOUND",
+        providerOutTradeNo: "AUTO-DEBIT-1",
+        providerSnapshot: { kind: "mock-query", status: "FAILED_RETRYABLE" },
+        providerTransactionId: "",
+        status: "FAILED_RETRYABLE"
+      });
+
+      await expect(
+        harness.service.queryDebitAttempt(queryJob())
+      ).resolves.toMatchObject({
+        action: "RESOLVED",
+        status: DebitAttemptStatus.CANCELLED
+      });
+
+      expect(harness.provider.submitDebit).not.toHaveBeenCalled();
+      expect(harness.paymentOrder.paymentStatus).toBe(
+        PaymentOrderStatus.CANCELLED
+      );
+    }
+  );
 });
 
 function createHarness(
@@ -313,6 +351,7 @@ function createHarness(
           orderId: "order-1",
           provider: "MOCK",
           providerMandateId: "mock-mandate-1",
+          requestSnapshot: {},
           responseSnapshot: { kind: "mock-mandate" },
           status: PaymentMandateStatus.ACTIVE,
           ...options.mandate

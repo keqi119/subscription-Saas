@@ -159,48 +159,89 @@ export class DebitAttemptService {
       };
     }>
   ) {
-    if (!attempt.mandate.providerMandateId) {
-      throw configurationError("Active mandate provider reference is missing.");
+    const candidate = await this.prisma.debitAttempt.findUnique({
+      select: { mandateId: true, paymentOrderId: true },
+      where: { id: attempt.id }
+    });
+    if (!candidate) {
+      throw configurationError("Debit attempt is missing.");
     }
-    const prepared = await this.withLockedAttempt(
-      attempt.id,
-      async (tx, current, paymentOrder) => {
-        if (
-          current.status === DebitAttemptStatus.SUCCEEDED ||
-          paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
-          !UNRESOLVED_ATTEMPT_STATUSES.has(current.status)
-        ) {
-          return null;
-        }
-        return tx.debitAttempt.update({
+    const prepared = await this.prisma.$transaction(async (tx) => {
+      await lockRow(tx, "payment_mandate", candidate.mandateId);
+      await lockPaymentOrder(tx, candidate.paymentOrderId);
+      await lockDebitAttempt(tx, attempt.id);
+      const [current, paymentOrder, mandate] = await Promise.all([
+        tx.debitAttempt.findUnique({ where: { id: attempt.id } }),
+        tx.paymentOrder.findUnique({ where: { id: candidate.paymentOrderId } }),
+        tx.paymentMandate.findUnique({ where: { id: candidate.mandateId } })
+      ]);
+      if (!current || !paymentOrder || !mandate) {
+        throw configurationError("Debit attempt recovery state is missing.");
+      }
+      if (
+        current.status === DebitAttemptStatus.SUCCEEDED ||
+        paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
+        !UNRESOLVED_ATTEMPT_STATUSES.has(current.status)
+      ) {
+        return { attempt: current, kind: "resolved" as const };
+      }
+      if (
+        mandate.status !== PaymentMandateStatus.ACTIVE ||
+        revocationRequested(mandate.requestSnapshot) ||
+        !mandate.providerMandateId
+      ) {
+        const now = new Date();
+        const cancelled = await tx.debitAttempt.update({
           data: {
-            errorSnapshot: Prisma.JsonNull,
-            lastErrorCode: null,
-            lastErrorMessage: null,
-            status: DebitAttemptStatus.SUBMITTING,
-            submittedAt: new Date()
+            cancelledAt: now,
+            errorSnapshot: toJson({ code: "MANDATE_NOT_ACTIVE" }),
+            lastErrorCode: "MANDATE_NOT_ACTIVE",
+            lastErrorMessage: "Payment mandate is not active for debit recovery.",
+            resolvedAt: now,
+            status: DebitAttemptStatus.CANCELLED
           },
           where: { id: current.id }
         });
+        await tx.paymentOrder.update({
+          data: {
+            cancelledAt: now,
+            errorSnapshot: toJson({ code: "MANDATE_NOT_ACTIVE" }),
+            paymentStatus: PaymentOrderStatus.CANCELLED
+          },
+          where: { id: current.paymentOrderId }
+        });
+        return { attempt: cancelled, kind: "resolved" as const };
       }
-    );
-    if (!prepared) {
-      const current = await this.prisma.debitAttempt.findUniqueOrThrow({
-        where: { id: attempt.id }
+      const submitting = await tx.debitAttempt.update({
+        data: {
+          errorSnapshot: Prisma.JsonNull,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          status: DebitAttemptStatus.SUBMITTING,
+          submittedAt: new Date()
+        },
+        where: { id: current.id }
       });
       return {
+        attempt: submitting,
+        kind: "submit" as const,
+        providerMandateId: mandate.providerMandateId
+      };
+    });
+    if (prepared.kind === "resolved") {
+      return {
         action: "RESOLVED",
-        attemptId: current.id,
-        status: current.status
+        attemptId: prepared.attempt.id,
+        status: prepared.attempt.status
       };
     }
     let result: DebitProviderResult;
     try {
       result = await this.provider.submitDebit({
-        amount: prepared.requestedAmount,
+        amount: prepared.attempt.requestedAmount,
         currency: "CNY",
-        providerMandateId: attempt.mandate.providerMandateId,
-        providerOutTradeNo: prepared.providerOutTradeNo,
+        providerMandateId: prepared.providerMandateId,
+        providerOutTradeNo: prepared.attempt.providerOutTradeNo,
         subject: `Auto debit ${attempt.bill.billNo}`
       });
     } catch {
@@ -211,7 +252,7 @@ export class DebitAttemptService {
         status: unknown.status
       };
     }
-    const updated = await this.persistProviderResult(prepared.id, result);
+    const updated = await this.persistProviderResult(prepared.attempt.id, result);
     return {
       action: UNRESOLVED_ATTEMPT_STATUSES.has(updated.status)
         ? "PENDING_QUERY"
@@ -683,6 +724,15 @@ function providerSnapshot(value: Prisma.JsonValue | null): ProviderSnapshot {
     throw configurationError("Debit attempt provider snapshot is missing.");
   }
   return value as ProviderSnapshot;
+}
+
+function revocationRequested(value: Prisma.JsonValue | null) {
+  return Boolean(
+    value &&
+      !Array.isArray(value) &&
+      typeof value === "object" &&
+      typeof value.revokeRequestedAt === "string"
+  );
 }
 
 async function lockPaymentOrder(

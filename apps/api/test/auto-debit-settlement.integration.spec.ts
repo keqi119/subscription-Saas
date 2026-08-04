@@ -289,6 +289,61 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     }
   }, 15_000);
 
+  it("does not resubmit a missing provider transaction after the mandate is revoked", async () => {
+    const ids = settlementIds();
+    const finance = new FinanceService(new AuditService(prisma), prisma);
+    let submitCount = 0;
+    const provider = processingProvider({
+      onSubmit: () => {
+        submitCount += 1;
+      },
+      queryDebitNotFound: true
+    });
+    const service = new DebitAttemptService(prisma, provider, finance);
+
+    try {
+      await seedSettlementFixture(
+        prisma,
+        ids,
+        uniqueNo("PYOA"),
+        uniqueNo("PYOB")
+      );
+      await resetFixtureForDebitSubmission(prisma, ids);
+
+      await service.submitBillDebit(
+        claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
+      );
+      const attempt = await prisma.debitAttempt.findFirstOrThrow({
+        where: { billId: ids.bill }
+      });
+      await prisma.paymentMandate.update({
+        data: { revokedAt: new Date(), status: "REVOKED" },
+        where: { id: ids.mandate }
+      });
+
+      await expect(
+        service.queryDebitAttempt(
+          claimedQueryJob(ids.bill, ids.order, attempt.id)
+        )
+      ).resolves.toMatchObject({
+        action: "RESOLVED",
+        status: DebitAttemptStatus.CANCELLED
+      });
+
+      expect(submitCount).toBe(1);
+      await expect(
+        prisma.debitAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+      ).resolves.toMatchObject({ status: DebitAttemptStatus.CANCELLED });
+      await expect(
+        prisma.paymentOrder.findUniqueOrThrow({
+          where: { id: attempt.paymentOrderId }
+        })
+      ).resolves.toMatchObject({ paymentStatus: PaymentOrderStatus.CANCELLED });
+    } finally {
+      await cleanupSettlementFixture(prisma, ids);
+    }
+  }, 15_000);
+
   it("does not reactivate a mandate when sync finishes after revoke", async () => {
     const ids = settlementIds();
     const queryGate = deferred<void>();
@@ -379,6 +434,8 @@ function deferred<T>() {
 }
 
 function processingProvider(options: {
+  onSubmit?: () => void;
+  queryDebitNotFound?: boolean;
   queryGate?: ReturnType<typeof deferred<void>>;
   queryStarted?: ReturnType<typeof deferred<void>>;
   submitGate?: ReturnType<typeof deferred<void>>;
@@ -389,6 +446,19 @@ function processingProvider(options: {
       throw new Error("not used");
     },
     async queryDebit(input): Promise<DebitProviderResult> {
+      if (options.queryDebitNotFound) {
+        return {
+          confirmedAmount: 0n,
+          errorCode: "PROVIDER_TRANSACTION_NOT_FOUND",
+          providerOutTradeNo: input.providerOutTradeNo,
+          providerSnapshot: {
+            kind: "integration-query",
+            status: "FAILED_RETRYABLE"
+          },
+          providerTransactionId: "",
+          status: "FAILED_RETRYABLE"
+        };
+      }
       return {
         confirmedAmount: 1n,
         providerOutTradeNo: input.providerOutTradeNo,
@@ -416,6 +486,7 @@ function processingProvider(options: {
       };
     },
     async submitDebit(input): Promise<DebitProviderResult> {
+      options.onSubmit?.();
       options.submitStarted?.resolve();
       await options.submitGate?.promise;
       return {

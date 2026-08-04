@@ -170,11 +170,15 @@ export class DebitAttemptService {
       await lockRow(tx, "payment_mandate", candidate.mandateId);
       await lockPaymentOrder(tx, candidate.paymentOrderId);
       await lockDebitAttempt(tx, attempt.id);
-      const [current, paymentOrder, mandate] = await Promise.all([
-        tx.debitAttempt.findUnique({ where: { id: attempt.id } }),
-        tx.paymentOrder.findUnique({ where: { id: candidate.paymentOrderId } }),
-        tx.paymentMandate.findUnique({ where: { id: candidate.mandateId } })
-      ]);
+      const mandate = await tx.paymentMandate.findUnique({
+        where: { id: candidate.mandateId }
+      });
+      const paymentOrder = await tx.paymentOrder.findUnique({
+        where: { id: candidate.paymentOrderId }
+      });
+      const current = await tx.debitAttempt.findUnique({
+        where: { id: attempt.id }
+      });
       if (!current || !paymentOrder || !mandate) {
         throw configurationError("Debit attempt recovery state is missing.");
       }

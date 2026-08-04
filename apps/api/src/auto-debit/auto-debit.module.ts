@@ -1,6 +1,8 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 
+import { AuditModule } from "../audit/audit.module";
+import { AuthModule } from "../auth/auth.module";
 import { AutoDebitConfig, readAutoDebitConfig } from "./auto-debit.config";
 import {
   AUTO_DEBIT_CONFIG,
@@ -8,11 +10,19 @@ import {
   MANDATE_DEBIT_PROVIDER
 } from "./auto-debit-provider";
 import { MockAutoDebitProvider } from "./mock-auto-debit.provider";
+import { AutoDebitController } from "./auto-debit.controller";
+import { PaymentMandateService } from "./payment-mandate.service";
 
 @Module({
-  exports: [AUTO_DEBIT_CONFIG, MANDATE_DEBIT_PROVIDER],
-  imports: [ConfigModule],
+  controllers: [AutoDebitController],
+  exports: [
+    AUTO_DEBIT_CONFIG,
+    MANDATE_DEBIT_PROVIDER,
+    PaymentMandateService
+  ],
+  imports: [AuditModule, AuthModule, ConfigModule],
   providers: [
+    PaymentMandateService,
     {
       inject: [ConfigService],
       provide: AUTO_DEBIT_CONFIG,

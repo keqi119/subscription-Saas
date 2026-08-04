@@ -42,8 +42,7 @@ describe("portal payment foundation", () => {
     expect(result.paymentChannel).toBe(PaymentChannel.MOCK);
     expect(result.amount).toBe(139900);
     expect(result.cashierUrl).toContain("/portal/payment-orders/");
-    expect(harness.financeService.createPayment).not.toHaveBeenCalled();
-    expect(harness.financeService.writeOffPayment).not.toHaveBeenCalled();
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
   });
 
   it("rejects payment order creation with another customer's bill", async () => {
@@ -77,8 +76,7 @@ describe("portal payment foundation", () => {
 
     expect(paid.paymentStatus).toBe(PaymentOrderStatus.PAID);
     expect(repeated.paymentStatus).toBe(PaymentOrderStatus.PAID);
-    expect(harness.financeService.createPayment).toHaveBeenCalledTimes(1);
-    expect(harness.financeService.writeOffPayment).toHaveBeenCalledTimes(1);
+    expect(harness.financeService.settlePaymentOrder).toHaveBeenCalledTimes(1);
     expect(harness.state.bills.find((bill) => bill.id === "bill_deposit")?.billStatus).toBe(BillStatus.PAID);
     expect(harness.state.bills.find((bill) => bill.id === "bill_first_month")?.remainingAmount).toBe(0n);
     expect(harness.state.depositLedgers).toHaveLength(1);
@@ -103,8 +101,7 @@ describe("portal payment foundation", () => {
 
     expect(first.handled).toBe(true);
     expect(second.handled).toBe(true);
-    expect(harness.financeService.createPayment).toHaveBeenCalledTimes(1);
-    expect(harness.financeService.writeOffPayment).toHaveBeenCalledTimes(1);
+    expect(harness.financeService.settlePaymentOrder).toHaveBeenCalledTimes(1);
     expect(harness.state.callbacks.filter((callback) => callback.handled)).toHaveLength(2);
   });
 
@@ -224,8 +221,7 @@ describe("portal payment foundation", () => {
     expect(harness.state.callbacks[0]?.errorMessage).toBe("WECHATPAY_SERIAL_NOT_CONFIGURED");
     expect(harness.state.paymentOrders.find((item) => item.id === paymentOrder.id)?.paymentStatus)
       .toBe(PaymentOrderStatus.PENDING);
-    expect(harness.financeService.createPayment).not.toHaveBeenCalled();
-    expect(harness.financeService.writeOffPayment).not.toHaveBeenCalled();
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
   });
 
   it("lists only payment orders owned by the current customer", async () => {
@@ -413,6 +409,55 @@ function createPaymentHarness(options: {
         }
       }
       return { paymentId };
+    }),
+    settlePaymentOrder: vi.fn(async (input: AnyRecord) => {
+      const paymentOrder = state.paymentOrders.find(
+        (item) => item.id === input.paymentOrderId
+      )!;
+      if (paymentOrder.paymentStatus === PaymentOrderStatus.PAID) {
+        return { idempotent: true, paymentOrderId: paymentOrder.id };
+      }
+      const paymentRecord = await financeService.createPayment({
+        customerId: paymentOrder.customerId,
+        orderId: paymentOrder.orderId,
+        paymentAmount: Number(input.paidAmount)
+      });
+      await financeService.writeOffPayment(paymentRecord.id, {
+        items: paymentOrder.items.map((item: AnyRecord) => {
+          const bill = state.bills.find(
+            (candidate) => candidate.id === item.billId
+          )!;
+          return {
+            billId: item.billId,
+            writeOffAmount: Number(
+              item.amount < bill.remainingAmount
+                ? item.amount
+                : bill.remainingAmount
+            )
+          };
+        })
+      });
+      Object.assign(paymentOrder, {
+        paidAmount: input.paidAmount,
+        paidAt: input.paidAt,
+        paymentRecordId: paymentRecord.id,
+        paymentStatus: PaymentOrderStatus.PAID,
+        providerTradeNo:
+          input.providerTradeNo ?? paymentOrder.providerTradeNo,
+        providerTransactionId:
+          input.providerTransactionId ?? paymentOrder.providerTransactionId
+      });
+      if (input.callbackLogId) {
+        const callback = state.callbacks.find(
+          (item) => item.id === input.callbackLogId
+        );
+        Object.assign(callback!, {
+          handled: true,
+          handledAt: input.paidAt,
+          paymentOrderId: paymentOrder.id
+        });
+      }
+      return { idempotent: false, paymentOrderId: paymentOrder.id };
     })
   };
 

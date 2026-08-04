@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 
 import { AuditModule } from "../audit/audit.module";
 import { AuthModule } from "../auth/auth.module";
+import { FinanceModule } from "../finance/finance.module";
 import { AutoDebitConfig, readAutoDebitConfig } from "./auto-debit.config";
 import {
   AUTO_DEBIT_CONFIG,
@@ -25,7 +26,7 @@ import { PaymentMandateService } from "./payment-mandate.service";
     AutoDebitScheduler,
     PaymentMandateService
   ],
-  imports: [AuditModule, AuthModule, ConfigModule],
+  imports: [AuditModule, AuthModule, ConfigModule, FinanceModule],
   providers: [
     AutoDebitHandlers,
     AutoDebitScheduler,

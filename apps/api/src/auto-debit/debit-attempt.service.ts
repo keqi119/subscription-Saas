@@ -13,6 +13,7 @@ import {
 import { createHash } from "node:crypto";
 
 import { createBusinessNo } from "../common/business-number";
+import { FinanceService } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   BillingAutomationError,
@@ -37,7 +38,8 @@ export class DebitAttemptService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(MANDATE_DEBIT_PROVIDER)
-    private readonly provider: MandateDebitProvider
+    private readonly provider: MandateDebitProvider,
+    private readonly finance: FinanceService
   ) {}
 
   async submitBillDebit(job: ClaimedBillingAutomationJob) {
@@ -130,6 +132,14 @@ export class DebitAttemptService {
 
     if (providerTransactionMissing(result)) {
       return this.resubmitKnownMissing(attempt);
+    }
+    if (result.providerOutTradeNo !== attempt.providerOutTradeNo) {
+      const unknown = await this.persistUnknown(attempt.id);
+      return {
+        action: "PENDING_QUERY",
+        attemptId: unknown.id,
+        status: unknown.status
+      };
     }
 
     const updated = await this.persistProviderResult(attempt.id, result);
@@ -334,18 +344,49 @@ export class DebitAttemptService {
     });
   }
 
-  private persistProviderResult(attemptId: string, result: DebitProviderResult) {
-    return this.prisma.$transaction(async (tx) => {
-      const current = await tx.debitAttempt.findUnique({
-        where: { id: attemptId }
+  private async persistProviderResult(
+    attemptId: string,
+    result: DebitProviderResult
+  ) {
+    const current = await this.prisma.debitAttempt.findUnique({
+      where: { id: attemptId }
+    });
+    if (!current) {
+      throw configurationError("Debit attempt is missing.");
+    }
+    if (!UNRESOLVED_ATTEMPT_STATUSES.has(current.status)) {
+      return current;
+    }
+    const status = attemptStatus(result, current.retrySlot);
+    if (status === DebitAttemptStatus.SUCCEEDED) {
+      if (result.confirmedAmount !== current.requestedAmount) {
+        return this.prisma.$transaction((tx) =>
+          this.persistAmountMismatch(tx, current, result)
+        );
+      }
+      const resolvedAt = result.resolvedAt ?? new Date();
+      await this.finance.settlePaymentOrder({
+        callbackPayload: result.providerSnapshot,
+        debitAttempt: {
+          confirmedAmount: result.confirmedAmount,
+          id: current.id,
+          providerTransactionId: result.providerTransactionId,
+          resolvedAt,
+          responseSnapshot: result.providerSnapshot
+        },
+        eventType: "AUTO_DEBIT_SUCCESS",
+        operatorId: null,
+        paidAmount: result.confirmedAmount,
+        paidAt: resolvedAt,
+        paymentOrderId: current.paymentOrderId,
+        providerTradeNo: current.providerOutTradeNo,
+        providerTransactionId: result.providerTransactionId
       });
-      if (!current) {
-        throw configurationError("Debit attempt is missing.");
-      }
-      if (!UNRESOLVED_ATTEMPT_STATUSES.has(current.status)) {
-        return current;
-      }
-      const status = attemptStatus(result, current.retrySlot);
+      return this.prisma.debitAttempt.findUniqueOrThrow({
+        where: { id: current.id }
+      });
+    }
+    return this.prisma.$transaction(async (tx) => {
       const terminal = !UNRESOLVED_ATTEMPT_STATUSES.has(status);
       const now = new Date();
       const attempt = await tx.debitAttempt.update({
@@ -387,6 +428,41 @@ export class DebitAttemptService {
       }
       return attempt;
     });
+  }
+
+  private async persistAmountMismatch(
+    tx: Prisma.TransactionClient,
+    current: Prisma.DebitAttemptGetPayload<Record<string, never>>,
+    result: DebitProviderResult
+  ) {
+    const errorSnapshot = toJson({
+      code: "DEBIT_AMOUNT_MISMATCH",
+      confirmedAmount: result.confirmedAmount.toString(),
+      requestedAmount: current.requestedAmount.toString()
+    });
+    const attempt = await tx.debitAttempt.update({
+      data: {
+        confirmedAmount: result.confirmedAmount,
+        errorSnapshot,
+        lastErrorCode: "DEBIT_AMOUNT_MISMATCH",
+        lastErrorMessage: "Confirmed debit amount does not match request.",
+        providerTransactionId: result.providerTransactionId,
+        resolvedAt: result.resolvedAt ?? new Date(),
+        responseSnapshot: toJson(result.providerSnapshot),
+        status: DebitAttemptStatus.FAILED_FINAL
+      },
+      where: { id: current.id }
+    });
+    await tx.paymentOrder.update({
+      data: {
+        errorSnapshot,
+        paymentStatus: PaymentOrderStatus.FAILED,
+        providerTransactionId: result.providerTransactionId,
+        responseSnapshot: toJson(result.providerSnapshot)
+      },
+      where: { id: current.paymentOrderId }
+    });
+    return attempt;
   }
 }
 

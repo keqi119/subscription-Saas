@@ -10,7 +10,6 @@ import {
   AuditAction,
   BillStatus,
   PaymentChannel,
-  PaymentMethod,
   PaymentOrderStatus,
   PaymentProviderType,
   Prisma,
@@ -20,7 +19,6 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
-import { CreatePaymentDto, WriteOffPaymentDto } from "../finance/dto/finance.dto";
 import { FinanceService } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
@@ -423,78 +421,24 @@ export class PaymentOrderService {
 
     const operator = await this.resolveFinanceOperator(paymentOrder.customerId);
     const paidAt = options.paidAt ?? new Date();
-    let paymentRecordId = paymentOrder.paymentRecordId;
-
-    if (!paymentRecordId) {
-      const createPaymentDto: CreatePaymentDto = {
-        customerId: paymentOrder.customerId!,
-        orderId: paymentOrder.orderId!,
-        payerAccount: options.providerTransactionId ?? options.providerTradeNo,
-        payerName: "客户线上支付",
-        paymentAmount: Number(paymentOrder.amount),
-        paymentMethod: mapPaymentMethod(paymentOrder.paymentChannel),
-        paymentProofUrls: [],
-        receivedAt: paidAt.toISOString(),
-        remark: `线上支付单 ${paymentOrder.paymentOrderNo}`
-      };
-      const paymentRecord = await this.financeService.createPayment(createPaymentDto, operator, context);
-      paymentRecordId = paymentRecord.id;
-
-      const writeOffDto: WriteOffPaymentDto = {
-        items: paymentOrder.items.map((item) => ({
-          billId: item.billId,
-          writeOffAmount: Number(item.amount)
-        })),
-        remark: `线上支付单 ${paymentOrder.paymentOrderNo} 自动核销`
-      };
-      await this.financeService.writeOffPayment(paymentRecord.id, writeOffDto, operator, context);
-    }
-
-    const updated = await this.prisma.paymentOrder.update({
-      data: {
-        callbackSnapshot: options.callbackPayload === undefined ? undefined : toJsonValue(options.callbackPayload),
-        paidAmount: paymentOrder.amount,
-        paidAt,
-        paymentRecordId,
-        paymentStatus: PaymentOrderStatus.PAID,
-        providerTradeNo: options.providerTradeNo ?? paymentOrder.providerTradeNo,
-        providerTransactionId: options.providerTransactionId ?? paymentOrder.providerTransactionId,
-        updatedBy: operator.id
-      },
-      include: paymentOrderInclude,
-      where: { id: paymentOrder.id }
-    });
-
-    if (options.callbackLogId) {
-      await this.markCallbackHandled(options.callbackLogId, paymentOrder.id);
-    } else {
-      await this.prisma.paymentCallbackLog.create({
-        data: {
-          eventType: options.eventType,
-          handled: true,
-          handledAt: paidAt,
-          payload: options.callbackPayload === undefined ? undefined : toJsonValue(options.callbackPayload),
-          paymentOrderId: paymentOrder.id,
-          provider: paymentOrder.provider,
-          providerTradeNo: options.providerTradeNo ?? paymentOrder.providerTradeNo,
-          providerTransactionId: options.providerTransactionId,
-          verified: true
-        }
-      });
-    }
-
-    await this.auditService.write({
-      action: AuditAction.UPDATE,
-      after: toPaymentOrderView(updated),
-      before: toPaymentOrderView(paymentOrder),
-      entityId: updated.id,
-      entityType: "payment_order",
+    await this.financeService.settlePaymentOrder({
+      callbackLogId: options.callbackLogId,
+      callbackPayload: options.callbackPayload,
+      eventType: options.eventType,
       ipAddress: context.ipAddress,
-      module: "payment",
       operatorId: operator.id,
+      paidAmount,
+      paidAt,
+      paymentOrderId: paymentOrder.id,
+      providerTradeNo:
+        options.providerTradeNo ?? paymentOrder.providerTradeNo ?? undefined,
+      providerTransactionId:
+        options.providerTransactionId ??
+        paymentOrder.providerTransactionId ??
+        undefined,
       userAgent: context.userAgent
     });
-
+    const updated = await this.findPaymentOrderOrThrow(paymentOrder.id);
     return toPaymentOrderView(updated);
   }
 
@@ -813,16 +757,6 @@ function buildPaymentSubject(bills: PayableBill[]) {
 
 function buildPaymentDescription(bills: PayableBill[]) {
   return bills.map((bill) => `${bill.billNo}/${bill.billType}`).join(", ");
-}
-
-function mapPaymentMethod(channel: PaymentChannel) {
-  if (channel === PaymentChannel.ALIPAY_H5) {
-    return PaymentMethod.ALIPAY;
-  }
-  if (channel === PaymentChannel.BANK_TRANSFER) {
-    return PaymentMethod.BANK_TRANSFER;
-  }
-  return PaymentMethod.WECHAT;
 }
 
 function parseProviderType(provider: string) {

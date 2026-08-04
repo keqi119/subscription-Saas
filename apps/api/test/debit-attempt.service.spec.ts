@@ -127,6 +127,20 @@ describe("DebitAttemptService", () => {
     );
   });
 
+  it("rejects a successful provider result with the wrong amount", async () => {
+    const harness = createHarness({
+      confirmedAmount: 99n,
+      providerStatus: "SUCCEEDED"
+    });
+
+    await expect(harness.service.submitBillDebit(submitJob())).resolves.toMatchObject({
+      action: "RESOLVED",
+      status: DebitAttemptStatus.FAILED_FINAL
+    });
+
+    expect(harness.finance.settlePaymentOrder).not.toHaveBeenCalled();
+  });
+
   it("queries an unresolved attempt without creating another attempt", async () => {
     const harness = createHarness({ attemptStatus: DebitAttemptStatus.UNKNOWN });
 
@@ -138,6 +152,12 @@ describe("DebitAttemptService", () => {
 
     expect(harness.provider.queryDebit).toHaveBeenCalledWith(
       expect.objectContaining({ providerOutTradeNo: "AUTO-DEBIT-1" })
+    );
+    expect(harness.finance.settlePaymentOrder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        debitAttempt: expect.objectContaining({ id: "attempt-1" }),
+        paymentOrderId: "payment-order-1"
+      })
     );
     expect(harness.prisma.debitAttempt.create).not.toHaveBeenCalled();
   });
@@ -165,8 +185,9 @@ describe("DebitAttemptService", () => {
 function createHarness(
   options: {
     attemptStatus?: DebitAttemptStatus;
+    confirmedAmount?: bigint;
     mandate?: Record<string, unknown> | null;
-    providerStatus?: "PROCESSING" | "FAILED_RETRYABLE";
+    providerStatus?: "PROCESSING" | "SUCCEEDED" | "FAILED_RETRYABLE";
     remainingAmount?: bigint;
   } = {}
 ) {
@@ -218,6 +239,12 @@ function createHarness(
         return attempt;
       }),
       findUnique: vi.fn(async () => attempt),
+      findUniqueOrThrow: vi.fn(async () => {
+        if (!attempt) {
+          throw new Error("attempt missing");
+        }
+        return attempt;
+      }),
       update: vi.fn(async ({ data }) => {
         attempt = { ...attempt!, ...data };
         return attempt;
@@ -251,7 +278,10 @@ function createHarness(
     queryMandate: vi.fn(),
     revokeMandate: vi.fn(),
     submitDebit: vi.fn().mockImplementation(async (input) => ({
-      confirmedAmount: 0n,
+      confirmedAmount:
+        options.providerStatus === "SUCCEEDED"
+          ? options.confirmedAmount ?? 100n
+          : 0n,
       errorCode:
         options.providerStatus === "FAILED_RETRYABLE"
           ? "INSUFFICIENT_FUNDS"
@@ -263,9 +293,28 @@ function createHarness(
     })),
     verifyCallback: vi.fn()
   };
-  const service = new DebitAttemptService(prisma as never, provider);
+  const finance = {
+    settlePaymentOrder: vi.fn(async (input: { paidAmount: bigint }) => {
+      attempt = {
+        ...attempt!,
+        confirmedAmount: input.paidAmount,
+        status: DebitAttemptStatus.SUCCEEDED
+      };
+      Object.assign(paymentOrder, {
+        paidAmount: input.paidAmount,
+        paymentStatus: PaymentOrderStatus.PAID
+      });
+      return { paymentOrderId: paymentOrder.id };
+    })
+  };
+  const service = new DebitAttemptService(
+    prisma as never,
+    provider,
+    finance as never
+  );
 
   return {
+    finance,
     prisma,
     provider: {
       queryDebit: vi.mocked(provider.queryDebit),

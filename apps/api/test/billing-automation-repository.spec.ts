@@ -151,6 +151,16 @@ describe("BillingAutomationRepository", () => {
         id: randomUUID(),
         jobType:
           SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+      }),
+      automationJob({
+        billId: settledBillId,
+        id: randomUUID(),
+        jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
+      }),
+      automationJob({
+        billId: settledBillId,
+        id: randomUUID(),
+        jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
       })
     ];
     const db = updateManyHarness(rows);
@@ -160,7 +170,7 @@ describe("BillingAutomationRepository", () => {
       [settledBillId]
     );
 
-    expect(cancelled).toBe(1);
+    expect(cancelled).toBe(3);
     expect(rows[0]?.jobStatus).toBe(
       SubscriptionAutomationJobStatus.CANCELLED
     );
@@ -169,6 +179,12 @@ describe("BillingAutomationRepository", () => {
     );
     expect(rows[2]?.jobStatus).toBe(
       SubscriptionAutomationJobStatus.PENDING
+    );
+    expect(rows[3]?.jobStatus).toBe(
+      SubscriptionAutomationJobStatus.CANCELLED
+    );
+    expect(rows[4]?.jobStatus).toBe(
+      SubscriptionAutomationJobStatus.CANCELLED
     );
   });
 

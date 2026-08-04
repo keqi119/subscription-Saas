@@ -440,6 +440,12 @@ export class FinanceService {
         }
 
         await cancelPendingBillAutomationJobs(tx, settledBillIds);
+        await this.reconcileCollectionCasesAfterSettlement(
+          tx,
+          billIds,
+          input.paidAt,
+          input.operatorId
+        );
         if (input.debitAttempt) {
           const debitAttempt = await tx.debitAttempt.findUnique({
             select: { paymentOrderId: true },
@@ -575,6 +581,119 @@ export class FinanceService {
         };
       })
     );
+  }
+
+  private async reconcileCollectionCasesAfterSettlement(
+    tx: Prisma.TransactionClient,
+    billIds: string[],
+    settledAt: Date,
+    actorId: string | null
+  ) {
+    if (billIds.length === 0) {
+      return;
+    }
+    const collectionCases = await tx.collectionCase.findMany({
+      include: {
+        bills: {
+          include: {
+            bill: {
+              select: {
+                billStatus: true,
+                deletedAt: true,
+                id: true,
+                remainingAmount: true
+              }
+            }
+          },
+          where: { deletedAt: null }
+        }
+      },
+      where: {
+        bills: {
+          some: {
+            billId: { in: billIds },
+            deletedAt: null
+          }
+        },
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        deletedAt: null
+      }
+    });
+
+    for (const collectionCase of collectionCases) {
+      const activeCaseBills = collectionCase.bills.filter(
+        (item) => !item.bill.deletedAt
+      );
+      for (const caseBill of activeCaseBills) {
+        if (caseBill.overdueAmount !== caseBill.bill.remainingAmount) {
+          await tx.collectionCaseBill.update({
+            data: { overdueAmount: caseBill.bill.remainingAmount },
+            where: { id: caseBill.id }
+          });
+        }
+      }
+      const totalOverdueAmount = activeCaseBills.reduce(
+        (sum, item) => sum + item.bill.remainingAmount,
+        0n
+      );
+      if (totalOverdueAmount > 0n) {
+        await tx.collectionCase.update({
+          data: {
+            totalOverdueAmount,
+            updatedBy: actorId ?? undefined
+          },
+          where: { id: collectionCase.id }
+        });
+        continue;
+      }
+
+      const updatedCase = await tx.collectionCase.update({
+        data: {
+          caseStatus: CollectionCaseStatus.CLOSED,
+          closedAt: settledAt,
+          closeReason: "PAYMENT_SETTLED",
+          nextFollowUpAt: null,
+          totalOverdueAmount: 0n,
+          updatedBy: actorId ?? undefined
+        },
+        where: { id: collectionCase.id }
+      });
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: CollectionActionResult.SUCCESS,
+          actionType: CollectionActionType.CLOSE,
+          caseId: collectionCase.id,
+          contactMethod: ContactMethod.SYSTEM,
+          content: "PAYMENT_SETTLED",
+          createdBy: actorId ?? undefined,
+          customerId: collectionCase.customerId,
+          orderId: collectionCase.orderId
+        }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: toCollectionCaseView(updatedCase),
+          before: toCollectionCaseView(collectionCase),
+          entityId: collectionCase.id,
+          entityType: "collection_case",
+          module: "collection",
+          operatorId: actorId ?? undefined
+        },
+        tx
+      );
+      await this.auditService.write(
+        {
+          action: AuditAction.CREATE,
+          after: toCollectionActionView(action),
+          entityId: action.id,
+          entityType: "collection_action",
+          module: "collection",
+          operatorId: actorId ?? undefined
+        },
+        tx
+      );
+    }
   }
 
   async generateInitialBills(orderId: string, user: RequestUser, context: RequestContext) {

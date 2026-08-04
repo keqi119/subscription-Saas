@@ -21,7 +21,10 @@ describe("AutoDebitHandlers", () => {
         status: DebitAttemptStatus.PROCESSING
       })
     };
-    const handlers = new AutoDebitHandlers(service as unknown as DebitAttemptService);
+    const handlers = new AutoDebitHandlers(
+      service as unknown as DebitAttemptService,
+      { notifyAutoDebitFailure: vi.fn() } as never
+    );
     const submit = job(SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT);
     const query = job(SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT);
 
@@ -43,7 +46,10 @@ describe("AutoDebitHandlers", () => {
       }),
       submitBillDebit: vi.fn()
     };
-    const handlers = new AutoDebitHandlers(service as unknown as DebitAttemptService);
+    const handlers = new AutoDebitHandlers(
+      service as unknown as DebitAttemptService,
+      { notifyAutoDebitFailure: vi.fn() } as never
+    );
 
     await expect(
       handlers.handle(job(SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT))

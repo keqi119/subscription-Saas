@@ -125,6 +125,17 @@ describe("DebitAttemptService", () => {
         data: expect.objectContaining({ paymentStatus: PaymentOrderStatus.FAILED })
       })
     );
+    expect(harness.prisma.subscriptionAutomationJob.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          billId: "bill-1",
+          idempotencyKey: "debit-failure:attempt-1",
+          jobType: SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE,
+          orderId: "order-1",
+          payload: { debitAttemptId: "attempt-1" }
+        })
+      })
+    );
   });
 
   it("rejects a successful provider result with the wrong amount", async () => {

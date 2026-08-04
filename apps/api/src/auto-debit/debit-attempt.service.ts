@@ -425,6 +425,8 @@ export class DebitAttemptService {
       });
       if (UNRESOLVED_ATTEMPT_STATUSES.has(status)) {
         await enqueueQueryJob(tx, attempt);
+      } else if (status === DebitAttemptStatus.FAILED_FINAL) {
+        await enqueueFailureNoticeJob(tx, attempt);
       }
       return attempt;
     });
@@ -462,6 +464,7 @@ export class DebitAttemptService {
       },
       where: { id: current.paymentOrderId }
     });
+    await enqueueFailureNoticeJob(tx, attempt);
     return attempt;
   }
 }
@@ -556,6 +559,23 @@ async function enqueueQueryJob(
     },
     update: {},
     where: { idempotencyKey: `debit-query:${attempt.id}` }
+  });
+}
+
+async function enqueueFailureNoticeJob(
+  tx: Pick<Prisma.TransactionClient, "subscriptionAutomationJob">,
+  attempt: Prisma.DebitAttemptGetPayload<Record<string, never>>
+) {
+  return tx.subscriptionAutomationJob.upsert({
+    create: {
+      billId: attempt.billId,
+      idempotencyKey: `debit-failure:${attempt.id}`,
+      jobType: SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE,
+      orderId: attempt.orderId,
+      payload: { debitAttemptId: attempt.id }
+    },
+    update: {},
+    where: { idempotencyKey: `debit-failure:${attempt.id}` }
   });
 }
 

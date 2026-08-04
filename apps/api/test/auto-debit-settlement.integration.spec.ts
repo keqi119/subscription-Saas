@@ -1,5 +1,10 @@
 import {
   BillStatus,
+  CollectionActionResult,
+  CollectionActionType,
+  CollectionCaseStatus,
+  CollectionLevel,
+  ContactMethod,
   DebitAttemptStatus,
   DebitRetrySlot,
   PaymentChannel,
@@ -42,6 +47,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
       application: randomUUID(),
       attempt: randomUUID(),
       bill: randomUUID(),
+      collectionCase: randomUUID(),
       customer: randomUUID(),
       order: randomUUID(),
       mandate: randomUUID(),
@@ -81,13 +87,15 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
         })
       ]);
 
-      const [bill, attempt, paymentOrders, payments, writeOffs, jobs] = await Promise.all([
+      const [bill, attempt, paymentOrders, payments, writeOffs, jobs, collectionCase, collectionActions] = await Promise.all([
         prisma.receivableBill.findUniqueOrThrow({ where: { id: ids.bill } }),
         prisma.debitAttempt.findUniqueOrThrow({ where: { id: ids.attempt } }),
         prisma.paymentOrder.findMany({ where: { id: { in: [ids.paymentOrderA, ids.paymentOrderB] } } }),
         prisma.paymentRecord.findMany({ where: { orderId: ids.order } }),
         prisma.paymentWriteOff.findMany({ where: { billId: ids.bill } }),
-        prisma.subscriptionAutomationJob.findMany({ where: { billId: ids.bill } })
+        prisma.subscriptionAutomationJob.findMany({ where: { billId: ids.bill } }),
+        prisma.collectionCase.findUniqueOrThrow({ where: { id: ids.collectionCase } }),
+        prisma.collectionAction.findMany({ where: { caseId: ids.collectionCase } })
       ]);
       expect(bill).toMatchObject({
         billStatus: BillStatus.PAID,
@@ -110,6 +118,18 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
       expect(
         jobs.every((item) => item.jobStatus === SubscriptionAutomationJobStatus.CANCELLED)
       ).toBe(true);
+      expect(collectionCase).toMatchObject({
+        caseStatus: CollectionCaseStatus.CLOSED,
+        closeReason: "PAYMENT_SETTLED",
+        totalOverdueAmount: 0n
+      });
+      expect(collectionActions).toEqual([
+        expect.objectContaining({
+          actionResult: CollectionActionResult.SUCCESS,
+          actionType: CollectionActionType.CLOSE,
+          contactMethod: ContactMethod.SYSTEM
+        })
+      ]);
 
       await finance.settlePaymentOrder({
         operatorId: null,
@@ -136,6 +156,7 @@ async function seedSettlementFixture(
     application: string;
     attempt: string;
     bill: string;
+    collectionCase: string;
     customer: string;
     order: string;
     mandate: string;
@@ -188,6 +209,28 @@ async function seedSettlementFixture(
         orderId: ids.order,
         paidAmount: 0n,
         remainingAmount: 1n
+      }
+    });
+    await tx.collectionCase.create({
+      data: {
+        bills: {
+          create: {
+            billId: ids.bill,
+            customerId: ids.customer,
+            orderId: ids.order,
+            overdueAmount: 1n,
+            overdueDays: 5
+          }
+        },
+        caseNo: uniqueNo("COL"),
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        collectionLevel: CollectionLevel.D2,
+        customerId: ids.customer,
+        id: ids.collectionCase,
+        latestDueDate: new Date("2026-08-05T00:00:00.000Z"),
+        maxOverdueDays: 5,
+        orderId: ids.order,
+        totalOverdueAmount: 1n
       }
     });
     for (const [id, paymentOrderNo] of [
@@ -259,6 +302,7 @@ async function cleanupSettlementFixture(
   prisma: PrismaService,
   ids: {
     bill: string;
+    collectionCase: string;
     customer: string;
     mandate: string;
     order: string;
@@ -271,6 +315,13 @@ async function cleanupSettlementFixture(
     select: { id: true },
     where: { orderId: ids.order }
   });
+  const collectionActions = await prisma.collectionAction.findMany({
+    select: { id: true },
+    where: { caseId: ids.collectionCase }
+  });
+  await prisma.collectionAction.deleteMany({ where: { caseId: ids.collectionCase } });
+  await prisma.collectionCaseBill.deleteMany({ where: { caseId: ids.collectionCase } });
+  await prisma.collectionCase.deleteMany({ where: { id: ids.collectionCase } });
   const writeOffs = await prisma.paymentWriteOff.findMany({
     select: { id: true },
     where: { paymentId: { in: payments.map((item) => item.id) } }
@@ -291,7 +342,9 @@ async function cleanupSettlementFixture(
           ...paymentOrderIds,
           ...payments.map((item) => item.id),
           ...writeOffs.map((item) => item.id),
-          ids.bill
+          ...collectionActions.map((item) => item.id),
+          ids.bill,
+          ids.collectionCase
         ]
       }
     }

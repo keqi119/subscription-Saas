@@ -20,7 +20,8 @@ export class BillingAutomationHandlers {
     SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
     SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
     SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-    SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
+    SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
+    SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE
   ] as const;
 
   constructor(
@@ -42,6 +43,7 @@ export class BillingAutomationHandlers {
         return this.sendBillNotice(job, "OVERDUE");
       case SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT:
       case SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT:
+      case SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE:
         return this.autoDebitHandlers.handle(job);
       default:
         throw new Error("Unsupported billing automation job type.");

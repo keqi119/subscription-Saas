@@ -63,6 +63,17 @@ describe("auto debit deployment safety", () => {
     expect(production.BILLING_AUTOMATION_WORKER_ENABLED).toBe("true");
     expect(production.PAYMENT_PROVIDER).toBe("wechat_pay");
   });
+
+  it("serializes the PostgreSQL settlement integration with other database suites", () => {
+    const vitestConfig = readFileSync(
+      join(repoRoot, "apps/api/vitest.config.ts"),
+      "utf8"
+    );
+
+    expect(vitestConfig).toContain(
+      '"test/auto-debit-settlement.integration.spec.ts"'
+    );
+  });
 });
 
 function readEnvironment(file: string) {

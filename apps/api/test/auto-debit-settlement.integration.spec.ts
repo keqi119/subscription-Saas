@@ -147,7 +147,7 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
     } finally {
       await cleanupSettlementFixture(prisma, ids);
     }
-  });
+  }, 15_000);
 });
 
 async function seedSettlementFixture(

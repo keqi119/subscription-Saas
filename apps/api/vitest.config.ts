@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 const databaseTestFiles = [
+  "test/auto-debit-settlement.integration.spec.ts",
   "test/billing-automation.integration.spec.ts",
   "test/mileage-review-e2e.spec.ts",
   "test/sms.integration.spec.ts",

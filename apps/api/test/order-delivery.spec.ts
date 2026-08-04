@@ -1,5 +1,6 @@
 import {
   ApplicationStatus,
+  BillingScheduleStatus,
   BusinessType,
   ContractStatus,
   DeliveryHandoverArchiveStatus,
@@ -14,6 +15,7 @@ import {
   ESignSigningStage,
   ESignSlotId,
   ESignTaskStatus,
+  LeaseStatus,
   OrderStatus,
   ProductStatus,
   QuoteStatus,
@@ -26,6 +28,7 @@ import {
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
+import { buildInitialBillingCycle } from "../src/billing-automation/billing-automation.calendar";
 import { DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION } from "../src/delivery-handover/delivery-handover.service";
 import { OrderService } from "../src/order/order.service";
 
@@ -896,6 +899,21 @@ describe("vehicle delivery handover workflow", () => {
     expect(harness.state.actualDeliveryAt?.toISOString()).toBe("2026-06-10T03:00:00.000Z");
     expect(harness.state.vehicleCurrentMileageKm).toBe(28500);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.LEASED);
+    expect(harness.state.lease).toMatchObject({
+      activatedAt: new Date("2026-06-10T03:00:00.000Z"),
+      deletedAt: null,
+      orderId: harness.orderId,
+      status: LeaseStatus.ACTIVE
+    });
+    expect(harness.state.billingSchedules).toEqual([
+      expect.objectContaining({
+        nextGenerateAt: new Date("2026-07-07T00:00:00.000Z"),
+        nextPeriodEnd: new Date("2026-08-09T00:00:00.000Z"),
+        nextPeriodStart: new Date("2026-07-10T00:00:00.000Z"),
+        orderId: harness.orderId,
+        status: BillingScheduleStatus.ACTIVE
+      })
+    ]);
     expect(harness.vehicleMileageService.appendConfirmedReading).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
@@ -1135,6 +1153,8 @@ function createDeliveryHarness() {
     fileObjects: Array<Record<string, unknown>>;
     finalDepositAmount: bigint | null;
     insurancePolicies: Array<Record<string, unknown>>;
+    lease: Record<string, unknown> | null;
+    billingSchedules: Array<Record<string, unknown>>;
     orderStatus: OrderStatus;
     vehicleStatus: VehicleStatus;
     vehicleCurrentMileageKm: number;
@@ -1203,6 +1223,8 @@ function createDeliveryHarness() {
         policyType: VehicleInsurancePolicyType.COMMERCIAL
       }
     ],
+    lease: null,
+    billingSchedules: [],
     orderStatus: OrderStatus.PENDING_PAYMENT,
     rejectUnsupportedWorkOrderWhereFields: false,
     transactionGateSnapshot: null,
@@ -1447,6 +1469,26 @@ function createDeliveryHarness() {
         }
         return buildWorkOrder();
       })
+    },
+    lease: {
+      create: vi.fn(async ({ data }) => {
+        state.lease = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: "lease-1",
+          updatedAt: now
+        };
+        return state.lease;
+      }),
+      findUnique: vi.fn(async () => state.lease),
+      update: vi.fn(async ({ data }) => {
+        if (!state.lease) {
+          throw new Error("Lease not found");
+        }
+        applyDefined(state.lease, data);
+        return state.lease;
+      })
     }
   };
 
@@ -1567,6 +1609,32 @@ function createDeliveryHarness() {
   const mileageReviewService = {
     createFirstReview: vi.fn(async () => ({ id: "mileage-review-1" }))
   };
+  const billingAutomationService = {
+    ensureActiveSchedule: vi.fn(async (_db, targetOrderId, actualDeliveryAt) => {
+      const existing = harnessSchedule(targetOrderId);
+      if (existing) {
+        return existing;
+      }
+      const cycle = buildInitialBillingCycle(actualDeliveryAt);
+      const schedule = {
+        id: "billing-schedule-1",
+        nextCycleNo: cycle.cycleNo,
+        nextGenerateAt: cycle.generateAt,
+        nextPeriodEnd: cycle.periodEnd,
+        nextPeriodStart: cycle.periodStart,
+        orderId: targetOrderId,
+        status: BillingScheduleStatus.ACTIVE,
+        timezone: "Asia/Shanghai"
+      };
+      state.billingSchedules.push(schedule);
+      return schedule;
+    })
+  };
+  function harnessSchedule(targetOrderId: string) {
+    return state.billingSchedules.find(
+      (schedule) => schedule.orderId === targetOrderId
+    );
+  }
   const service = new OrderService(
     auditService as never,
     prisma as never,
@@ -1576,11 +1644,13 @@ function createDeliveryHarness() {
     deliveryEvidenceService as never,
     handoverWorkOrderService as never,
     vehicleMileageService as never,
-    mileageReviewService as never
+    mileageReviewService as never,
+    billingAutomationService as never
   );
 
   return {
     auditService,
+    billingAutomationService,
     context,
     customerId,
     deliveryEvidenceService,

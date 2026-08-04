@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
 import { AuthModule } from "../auth/auth.module";
+import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { ESignModule } from "../esign/esign.module";
@@ -19,6 +20,7 @@ import { OrderService } from "./order.service";
   imports: [
     AuditModule,
     AuthModule,
+    BillingAutomationModule,
     ContractModule,
     DeliveryEvidenceModule,
     ESignModule,

@@ -646,7 +646,10 @@ export class FinanceService {
         });
       }
 
-      if (period.start.getTime() > billingDate.getTime()) {
+      const generationOpensAt = new Date(
+        period.start.getTime() - 3 * MS_PER_DAY
+      );
+      if (generationOpensAt.getTime() > billingDate.getTime()) {
         const existingCurrentPeriod = findMonthlyRentBillCoveringDate(monthlyBills, billingDate);
 
         return monthlyRentBatchItem(baseItem, dryRun ? "DRY_RUN_SKIP" : existingCurrentPeriod ? "SKIPPED_EXISTING" : "SKIPPED_NOT_DUE", {

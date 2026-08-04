@@ -103,6 +103,7 @@ interface ReconcileResult {
   dryRun: boolean;
   eligibleCount: number;
   existingCount: number;
+  leaseActivationCount: number;
   items: ReconcileItem[];
 }
 
@@ -112,6 +113,8 @@ interface ReconcileItem {
   baselineReason: string;
   basisBillId: string | null;
   basisPeriodStart: string | null;
+  leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
+  leaseStatus: string | null;
   monthlyRentAmount: number | null;
   nextCycleNo: number;
   nextGenerateAt: string;
@@ -401,6 +404,26 @@ export default function MonthlyRentAutomationPage() {
         })[value],
       title: "协调结果",
       width: 100
+    },
+    {
+      dataIndex: "leaseAction",
+      render: (value: ReconcileItem["leaseAction"], record) => {
+        const view = {
+          ACTIVATED: { color: "green", label: "已恢复租约" },
+          NONE: { color: "default", label: "租约正常" },
+          WOULD_ACTIVATE: { color: "blue", label: "预计恢复租约" }
+        }[value];
+        return (
+          <Space orientation="vertical" size={0}>
+            <Tag color={view.color}>{view.label}</Tag>
+            <Typography.Text type="secondary">
+              {record.leaseStatus ?? "缺失"}
+            </Typography.Text>
+          </Space>
+        );
+      },
+      title: "租约状态",
+      width: 140
     },
     {
       render: (_, record) =>
@@ -730,7 +753,9 @@ export default function MonthlyRentAutomationPage() {
                 }
                 description={`符合条件 ${reconcileResult.eligibleCount} 单；已有计划 ${reconcileResult.existingCount} 单；${
                   reconcileResult.dryRun ? "预计新增" : "实际新增"
-                } ${reconcileResult.createdCount} 单。`}
+                } ${reconcileResult.createdCount} 单；${
+                  reconcileResult.dryRun ? "预计恢复租约" : "实际恢复租约"
+                } ${reconcileResult.leaseActivationCount} 单。`}
                 showIcon
                 type={reconcileResult.dryRun ? "info" : "success"}
               />
@@ -739,7 +764,7 @@ export default function MonthlyRentAutomationPage() {
                 dataSource={reconcileResult.items}
                 pagination={{ pageSize: 10 }}
                 rowKey="orderId"
-                scroll={{ x: 1130 }}
+                scroll={{ x: 1270 }}
                 size="small"
               />
             </Space>

@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import {
   AuditAction,
+  BillStatus,
   OrderStatus,
   PaymentMandateStatus,
   PaymentProviderType,
@@ -20,6 +21,7 @@ import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.typ
 import { PrismaService } from "../prisma/prisma.service";
 import { AdminMandateQueryDto } from "./auto-debit.dto";
 import { AutoDebitConfig } from "./auto-debit.config";
+import { AutoDebitScheduler } from "./auto-debit.scheduler";
 import {
   AUTO_DEBIT_CONFIG,
   MandateDebitProvider,
@@ -48,6 +50,7 @@ export class PaymentMandateService {
     private readonly provider: MandateDebitProvider,
     @Inject(AUTO_DEBIT_CONFIG)
     private readonly config: AutoDebitConfig,
+    private readonly scheduler: AutoDebitScheduler,
     private readonly audit: AuditService
   ) {}
 
@@ -262,25 +265,48 @@ export class PaymentMandateService {
     const nextStatus = result.status as PaymentMandateStatus;
     assertMandateTransition(current.status, nextStatus);
     const now = new Date();
-    return this.prisma.paymentMandate.update({
-      data: {
-        effectiveAt: result.effectiveAt,
-        errorSnapshot:
-          result.errorCode || result.errorMessage
-            ? toJson({ code: result.errorCode, message: result.errorMessage })
-            : Prisma.JsonNull,
-        expiresAt: result.expiresAt,
-        lastSyncedAt: now,
-        providerMandateId: result.providerMandateId,
-        responseSnapshot: toJson(result.providerSnapshot),
-        signedAt: result.signedAt,
-        status: nextStatus,
-        suspendedAt:
-          nextStatus === PaymentMandateStatus.SUSPENDED ? now : null,
-        revokedAt: nextStatus === PaymentMandateStatus.REVOKED ? now : null,
-        updatedBy: actor.updatedBy
-      },
-      where: { id: current.id }
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.paymentMandate.update({
+        data: {
+          effectiveAt: result.effectiveAt,
+          errorSnapshot:
+            result.errorCode || result.errorMessage
+              ? toJson({ code: result.errorCode, message: result.errorMessage })
+              : Prisma.JsonNull,
+          expiresAt: result.expiresAt,
+          lastSyncedAt: now,
+          providerMandateId: result.providerMandateId,
+          responseSnapshot: toJson(result.providerSnapshot),
+          signedAt: result.signedAt,
+          status: nextStatus,
+          suspendedAt:
+            nextStatus === PaymentMandateStatus.SUSPENDED ? now : null,
+          revokedAt: nextStatus === PaymentMandateStatus.REVOKED ? now : null,
+          updatedBy: actor.updatedBy
+        },
+        where: { id: current.id }
+      });
+      if (nextStatus === PaymentMandateStatus.ACTIVE) {
+        const bills = await tx.receivableBill.findMany({
+          select: { dueDate: true, id: true, orderId: true },
+          where: {
+            billStatus: {
+              in: [
+                BillStatus.PENDING,
+                BillStatus.PARTIALLY_PAID,
+                BillStatus.OVERDUE
+              ]
+            },
+            deletedAt: null,
+            orderId: current.orderId,
+            remainingAmount: { gt: 0n }
+          }
+        });
+        for (const bill of bills) {
+          await this.scheduler.enqueueFutureForBill(tx, bill, now);
+        }
+      }
+      return updated;
     });
   }
 

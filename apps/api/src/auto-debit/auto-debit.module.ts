@@ -11,6 +11,7 @@ import {
 } from "./auto-debit-provider";
 import { MockAutoDebitProvider } from "./mock-auto-debit.provider";
 import { AutoDebitController } from "./auto-debit.controller";
+import { AutoDebitScheduler } from "./auto-debit.scheduler";
 import { PaymentMandateService } from "./payment-mandate.service";
 
 @Module({
@@ -18,10 +19,12 @@ import { PaymentMandateService } from "./payment-mandate.service";
   exports: [
     AUTO_DEBIT_CONFIG,
     MANDATE_DEBIT_PROVIDER,
+    AutoDebitScheduler,
     PaymentMandateService
   ],
   imports: [AuditModule, AuthModule, ConfigModule],
   providers: [
+    AutoDebitScheduler,
     PaymentMandateService,
     {
       inject: [ConfigService],

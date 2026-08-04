@@ -9,6 +9,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 import {
   billingSourceKey,
   buildBillingCycleForDelivery
@@ -233,6 +234,14 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
         prisma,
         { enqueue } as never,
         finance as never,
+        new AutoDebitScheduler({
+          enabled: true,
+          environment: "staging",
+          mockEnabled: true,
+          provider: "mock",
+          runTime: "09:00",
+          wechatTemplateId: null
+        }),
         () => cycle.generateAt
       );
 
@@ -384,6 +393,14 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
             }
           })
         ).resolves.toBe(1);
+        await expect(
+          prisma.subscriptionAutomationJob.count({
+            where: {
+              jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+              orderId: ids.order
+            }
+          })
+        ).resolves.toBe(3);
         expect(finance.generateMonthlyRentBillForCycle).toHaveBeenCalledTimes(1);
       } finally {
         const bills = await prisma.receivableBill

@@ -9,6 +9,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
+import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
 
 describe("BillingAutomationService", () => {
@@ -292,7 +293,10 @@ describe("BillingAutomationService", () => {
     });
     expect([...harness.jobs.values()].map((item) => item.jobType)).toEqual([
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
-      SubscriptionAutomationJobType.MARK_BILL_OVERDUE
+      SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
+      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
     ]);
     expect(harness.audits).toEqual([
       expect.objectContaining({
@@ -614,6 +618,28 @@ function createHarness() {
         Object.assign(order.lease, data, { updatedAt: now });
         return order.lease;
       }
+    },
+    subscriptionAutomationJob: {
+      async upsert({
+        create,
+        where
+      }: {
+        create: Record<string, unknown>;
+        where: { idempotencyKey: string };
+      }) {
+        const existing = jobs.get(where.idempotencyKey);
+        if (existing) {
+          return existing;
+        }
+        const created = {
+          attemptCount: 0,
+          id: randomUUID(),
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          ...create
+        };
+        jobs.set(where.idempotencyKey, created);
+        return created;
+      }
     }
   };
   const prisma = {
@@ -715,6 +741,7 @@ function createHarness() {
           customerId: order.customerId,
           id: randomUUID(),
           orderId: input.orderId,
+          dueDate: input.periodStart,
           periodEnd: input.periodEnd,
           periodStart: input.periodStart,
           sourceKey: input.sourceKey
@@ -725,10 +752,19 @@ function createHarness() {
     ),
     markBillOverdueForAutomation: vi.fn()
   };
+  const autoDebitScheduler = new AutoDebitScheduler({
+    enabled: true,
+    environment: "staging",
+    mockEnabled: true,
+    provider: "mock",
+    runTime: "09:00",
+    wechatTemplateId: null
+  });
   const service = new BillingAutomationService(
     prisma as never,
     repository as never,
     finance as never,
+    autoDebitScheduler,
     () => now
   );
 

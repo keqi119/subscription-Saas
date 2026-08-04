@@ -47,6 +47,11 @@ describe("PaymentMandateService", () => {
         operatorId: "account-1"
       })
     );
+    expect(harness.scheduler.enqueueFutureForBill).toHaveBeenCalledWith(
+      harness.prisma,
+      expect.objectContaining({ id: "bill-1", orderId: "order-1" }),
+      expect.any(Date)
+    );
   });
 
   it("does not let a customer create a mandate for another customer's order", async () => {
@@ -208,6 +213,15 @@ function createHarness(
         return mandate;
       })
     },
+    receivableBill: {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          dueDate: new Date("2026-08-05T00:00:00.000Z"),
+          id: "bill-1",
+          orderId: "order-1"
+        }
+      ])
+    },
     subscriptionOrder: {
       findFirst: vi.fn().mockResolvedValue({
         customerId: "customer-1",
@@ -218,6 +232,7 @@ function createHarness(
     }
   };
   const audit = { write: vi.fn().mockResolvedValue(undefined) };
+  const scheduler = { enqueueFutureForBill: vi.fn().mockResolvedValue([]) };
   const config = {
     enabled: true,
     environment: "staging",
@@ -230,6 +245,7 @@ function createHarness(
     prisma as never,
     provider,
     config,
+    scheduler as never,
     audit as never
   );
 
@@ -237,6 +253,7 @@ function createHarness(
     audit,
     prisma,
     provider: providerSpies,
+    scheduler,
     service
   };
 }

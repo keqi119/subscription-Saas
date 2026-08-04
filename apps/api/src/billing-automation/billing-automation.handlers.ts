@@ -8,6 +8,7 @@ import {
 
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { AutoDebitHandlers } from "../auto-debit/auto-debit.handlers";
 import { BillingAutomationService } from "./billing-automation.service";
 import { ClaimedBillingAutomationJob } from "./billing-automation.types";
 
@@ -17,13 +18,16 @@ export class BillingAutomationHandlers {
     SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
     SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
     SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-    SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+    SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
+    SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+    SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
   ] as const;
 
   constructor(
     private readonly service: BillingAutomationService,
     private readonly prisma: PrismaService,
-    private readonly notificationService: NotificationService
+    private readonly notificationService: NotificationService,
+    private readonly autoDebitHandlers: AutoDebitHandlers
   ) {}
 
   async handle(job: ClaimedBillingAutomationJob) {
@@ -36,6 +40,9 @@ export class BillingAutomationHandlers {
         return normalizeOverdueResult(await this.service.markScheduledBillOverdue(job));
       case SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE:
         return this.sendBillNotice(job, "OVERDUE");
+      case SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT:
+      case SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT:
+        return this.autoDebitHandlers.handle(job);
       default:
         throw new Error("Unsupported billing automation job type.");
     }

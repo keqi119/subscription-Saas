@@ -52,7 +52,9 @@ describe("BillingAutomationWorker", () => {
       SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
       SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
+      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
     ]);
   });
 
@@ -112,6 +114,33 @@ describe("BillingAutomationWorker", () => {
       retryable: false
     });
     expect(harness.repository.reschedule).not.toHaveBeenCalled();
+  });
+
+  it("reschedules a provider query that is still unresolved", async () => {
+    const job = claimedJob({
+      jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
+    });
+    const error = new BillingAutomationError({
+      code: "AUTO_DEBIT_QUERY_PENDING",
+      message: "Debit result is still pending provider confirmation.",
+      retryable: true
+    });
+    const harness = createWorkerHarness({ error, jobs: [job] });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.reschedule).toHaveBeenCalledWith(
+      job.id,
+      job.leaseToken,
+      {
+        delayMs: 60_000,
+        error: {
+          code: "AUTO_DEBIT_QUERY_PENDING",
+          message: "Debit result is still pending provider confirmation.",
+          retryable: true
+        }
+      }
+    );
   });
 
   it("returns a claimed generation job to pending without consuming an attempt when paused", async () => {
@@ -228,7 +257,8 @@ describe("BillingAutomationHandlers", () => {
     const handlers = new BillingAutomationHandlers(
       service as unknown as BillingAutomationService,
       prisma as unknown as PrismaService,
-      notification as unknown as NotificationService
+      notification as unknown as NotificationService,
+      { handle: vi.fn() } as never
     );
     const job = claimedJob({
       idempotencyKey: `bill-due-notice:${bill.id}`,
@@ -287,7 +317,9 @@ function createWorkerHarness(
       SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
       SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
+      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
     ]
   };
   const config = new ConfigService({

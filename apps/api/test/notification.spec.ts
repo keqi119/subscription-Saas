@@ -29,6 +29,14 @@ afterEach(() => {
 });
 
 describe("NotificationModule", () => {
+  it("exposes the auto debit failure notification contract", () => {
+    expect(NotificationTemplateType.AUTO_DEBIT_FAILURE).toBe(
+      "AUTO_DEBIT_FAILURE"
+    );
+    expect(NotificationType.AUTO_DEBIT_FAILURE).toBe("AUTO_DEBIT_FAILURE");
+    expect(NotificationEventType.AUTO_DEBIT_FAILED).toBe("AUTO_DEBIT_FAILED");
+  });
+
   it("compiles with its admin guard dependencies", async () => {
     process.env.CUSTOMER_JWT_SECRET ??= "notification-module-test-secret";
     process.env.DATABASE_URL ??=

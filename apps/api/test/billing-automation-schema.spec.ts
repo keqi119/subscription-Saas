@@ -112,7 +112,11 @@ describe("billing automation persistence contract", () => {
       "GENERATE_MONTHLY_RENT_BILL",
       "SEND_BILL_DUE_NOTICE",
       "MARK_BILL_OVERDUE",
-      "SEND_BILL_OVERDUE_NOTICE"
+      "SEND_BILL_OVERDUE_NOTICE",
+      "SUBMIT_BILL_DEBIT",
+      "QUERY_DEBIT_ATTEMPT",
+      "SEND_DEBIT_FAILURE_NOTICE",
+      "SYNC_PAYMENT_MANDATE"
     ]);
   });
 });

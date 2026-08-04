@@ -131,6 +131,7 @@ const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<
   [NotificationType.SERVICE_CASE_UPDATE]: NotificationTemplateType.SERVICE_CASE_UPDATE,
   [NotificationType.RESCUE_UPDATE]: NotificationTemplateType.RESCUE_UPDATE,
   [NotificationType.MILEAGE_REVIEW_DUE]: NotificationTemplateType.MILEAGE_REVIEW_DUE,
+  [NotificationType.AUTO_DEBIT_FAILURE]: NotificationTemplateType.AUTO_DEBIT_FAILURE,
   [NotificationType.SYSTEM]: NotificationTemplateType.SYSTEM
 };
 
@@ -141,7 +142,8 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.PAYMENT_PENDING]: "WECHAT_TEMPLATE_PAYMENT_PENDING",
   [NotificationTemplateType.RESCUE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
   [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
-  [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE"
+  [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE",
+  [NotificationTemplateType.AUTO_DEBIT_FAILURE]: "WECHAT_TEMPLATE_AUTO_DEBIT_FAILURE"
 };
 
 const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {

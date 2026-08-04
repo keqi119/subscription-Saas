@@ -194,8 +194,10 @@ export class PaymentOrderService {
     const { page, pageSize, skip } = resolvePagination(query);
     const where: Prisma.PaymentOrderWhereInput = {
       customerId: currentCustomer.customerId,
+      debitAttempt: { is: null },
       deletedAt: null,
       orderId: query.orderId,
+      paymentChannel: { not: PaymentChannel.WECHAT_AUTO_DEBIT },
       paymentStatus: query.paymentStatus
     };
     const [paymentOrders, total] = await Promise.all([
@@ -445,7 +447,13 @@ export class PaymentOrderService {
   private async findPortalPaymentOrderOrThrow(id: string, customerId: string) {
     const paymentOrder = await this.prisma.paymentOrder.findFirst({
       include: paymentOrderInclude,
-      where: { customerId, deletedAt: null, id }
+      where: {
+        customerId,
+        debitAttempt: { is: null },
+        deletedAt: null,
+        id,
+        paymentChannel: { not: PaymentChannel.WECHAT_AUTO_DEBIT }
+      }
     });
     if (!paymentOrder) {
       throw new NotFoundException("支付单不存在。");
@@ -495,6 +503,7 @@ export class PaymentOrderService {
       orderBy: { createdAt: "desc" },
       where: {
         customerId,
+        debitAttempt: { is: null },
         deletedAt: null,
         paymentChannel,
         paymentStatus: { in: REUSABLE_PAYMENT_ORDER_STATUSES }
@@ -718,9 +727,6 @@ function toPaymentOrderView(
     paymentRecord: paymentOrder.paymentRecord,
     paymentStatus: paymentOrder.paymentStatus,
     provider: paymentOrder.provider,
-    providerPrepayId: paymentOrder.providerPrepayId,
-    providerTradeNo: paymentOrder.providerTradeNo,
-    providerTransactionId: paymentOrder.providerTransactionId,
     requiresWechatBinding: extra.requiresWechatBinding ?? false,
     subject: paymentOrder.subject,
     wechatAuthUrl: extra.wechatAuthUrl,

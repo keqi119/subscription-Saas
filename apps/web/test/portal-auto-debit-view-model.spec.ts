@@ -10,7 +10,7 @@ import type {
 describe("portal auto debit view model", () => {
   it("shows a closed product state without exposing mock controls", () => {
     const view = buildPortalAutoDebitView({
-      availability: { enabled: false, provider: null }
+      availability: { enabled: false, mode: "DISABLED", provider: null }
     });
 
     expect(view).toMatchObject({
@@ -25,7 +25,7 @@ describe("portal auto debit view model", () => {
   it("offers enrollment and active-payment fallback before authorization", () => {
     expect(
       buildPortalAutoDebitView({
-        availability: { enabled: true, provider: "WECHAT_AUTO_DEBIT" },
+        availability: { enabled: true, mode: "LIVE", provider: "WECHAT_AUTO_DEBIT" },
         bill: payableBill
       })
     ).toMatchObject({
@@ -38,7 +38,7 @@ describe("portal auto debit view model", () => {
   it("shows the next debit date for an active mandate", () => {
     expect(
       buildPortalAutoDebitView({
-        availability: { enabled: true, provider: "WECHAT_AUTO_DEBIT" },
+        availability: { enabled: true, mode: "LIVE", provider: "WECHAT_AUTO_DEBIT" },
         bill: payableBill,
         mandate: activeMandate
       })
@@ -52,7 +52,7 @@ describe("portal auto debit view model", () => {
 
   it("keeps active payment available while the provider result is uncertain", () => {
     const view = buildPortalAutoDebitView({
-      availability: { enabled: true, provider: "WECHAT_AUTO_DEBIT" },
+      availability: { enabled: true, mode: "LIVE", provider: "WECHAT_AUTO_DEBIT" },
       attempt: attempt("UNKNOWN", "DUE"),
       bill: payableBill,
       mandate: activeMandate
@@ -74,7 +74,7 @@ describe("portal auto debit view model", () => {
   it("distinguishes retryable and final failures while preserving payment fallback", () => {
     expect(
       buildPortalAutoDebitView({
-        availability: { enabled: true, provider: "WECHAT_AUTO_DEBIT" },
+        availability: { enabled: true, mode: "LIVE", provider: "WECHAT_AUTO_DEBIT" },
         attempt: attempt("FAILED_RETRYABLE", "DUE"),
         bill: payableBill,
         mandate: activeMandate
@@ -86,7 +86,7 @@ describe("portal auto debit view model", () => {
     });
     expect(
       buildPortalAutoDebitView({
-        availability: { enabled: true, provider: "WECHAT_AUTO_DEBIT" },
+        availability: { enabled: true, mode: "LIVE", provider: "WECHAT_AUTO_DEBIT" },
         attempt: attempt("FAILED_FINAL", "D3"),
         bill: payableBill,
         mandate: activeMandate

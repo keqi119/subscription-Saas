@@ -1,6 +1,7 @@
 import {
   ConflictException,
-  NotFoundException
+  NotFoundException,
+  ServiceUnavailableException
 } from "@nestjs/common";
 import { PaymentMandateStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -131,6 +132,33 @@ describe("PaymentMandateService", () => {
     );
   });
 
+  it("does not reactivate a mandate revoked while provider sync was in flight", async () => {
+    const harness = createHarness({ status: PaymentMandateStatus.ACTIVE });
+    const revoked = {
+      ...await harness.prisma.paymentMandate.findUnique({ where: { id: "mandate-1" } }),
+      revokedAt: new Date("2026-08-04T01:00:00.000Z"),
+      status: PaymentMandateStatus.REVOKED
+    };
+    harness.prisma.paymentMandate.findUnique
+      .mockResolvedValueOnce({ ...revoked, status: PaymentMandateStatus.ACTIVE })
+      .mockResolvedValueOnce(revoked);
+
+    await expect(
+      harness.service.syncAdminMandate(
+        "mandate-1",
+        { reason: "并发状态核对" },
+        adminUser,
+        {}
+      )
+    ).resolves.toMatchObject({ status: PaymentMandateStatus.REVOKED });
+
+    expect(harness.prisma.paymentMandate.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: PaymentMandateStatus.ACTIVE })
+      })
+    );
+  });
+
   it("revokes without deleting mandate history", async () => {
     const harness = createHarness({ status: PaymentMandateStatus.ACTIVE });
 
@@ -149,6 +177,37 @@ describe("PaymentMandateService", () => {
           status: PaymentMandateStatus.REVOKED
         }),
         where: { id: "mandate-1" }
+      })
+    );
+  });
+
+  it("persists revoke intent and an unknown result when the provider call fails", async () => {
+    const harness = createHarness({ status: PaymentMandateStatus.ACTIVE });
+    harness.provider.revokeMandate.mockRejectedValueOnce(
+      new Error("provider timeout")
+    );
+
+    await expect(
+      harness.service.revokeAdminMandate(
+        "mandate-1",
+        { reason: "客户要求解约" },
+        adminUser,
+        {}
+      )
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+    const stored = await harness.prisma.paymentMandate.findUnique({
+      where: { id: "mandate-1" }
+    });
+    expect(stored?.requestSnapshot).toMatchObject({
+      revokeRequestedBy: adminUser.id
+    });
+    expect(stored?.errorSnapshot).toMatchObject({
+      code: "MANDATE_REVOKE_RESULT_UNKNOWN"
+    });
+    expect(harness.audit.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({ operation: "REVOKE_RESULT_UNKNOWN" })
       })
     );
   });
@@ -204,14 +263,15 @@ function createHarness(
       signedAt: "2026-08-04T00:00:00.000Z",
       status: options.status ?? PaymentMandateStatus.ACTIVE
     },
-    revokedAt: null,
+    revokedAt: null as Date | null,
     signedAt: new Date("2026-08-04T00:00:00.000Z"),
-    status: options.status ?? PaymentMandateStatus.ACTIVE,
+    status: (options.status ?? PaymentMandateStatus.ACTIVE) as PaymentMandateStatus,
     suspendedAt: null,
     updatedAt: new Date("2026-08-04T00:00:00.000Z"),
     updatedBy: null
   };
   const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([{ id: "mandate-1" }]),
     $transaction: vi.fn(async (operation: (client: unknown) => unknown) =>
       operation(prisma)
     ),
@@ -230,10 +290,23 @@ function createHarness(
       }),
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn(async () => mandate),
+      findUnique: vi.fn(async (args?: unknown) => {
+        void args;
+        return mandate;
+      }),
       update: vi.fn(async ({ data }) => {
         mandate = { ...mandate, ...data, updatedAt: new Date() };
         return mandate;
+      }),
+      updateMany: vi.fn(async ({ data, where }) => {
+        if (where.status && typeof where.status === "string" && mandate.status !== where.status) {
+          return { count: 0 };
+        }
+        if (where.status?.notIn?.includes(mandate.status)) {
+          return { count: 0 };
+        }
+        mandate = { ...mandate, ...data, updatedAt: new Date() };
+        return { count: 1 };
       })
     },
     receivableBill: {

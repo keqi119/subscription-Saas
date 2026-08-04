@@ -14,7 +14,6 @@ import {
   getPortalAutoDebitAvailability,
   getPortalDebitAttempts,
   getPortalPaymentMandates,
-  PORTAL_API_BASE_URL,
   PortalApiError,
   portalApiFetch,
   revokePortalPaymentMandate
@@ -179,7 +178,7 @@ export default function PortalAutoDebitPage() {
           <SafetyCertificateOutlined style={{ color: "#1677ff", fontSize: 32 }} />
         </div>
 
-        {isStagingPortal() ? (
+        {availability?.mode === "SIMULATION" ? (
           <Alert
             message="STAGING MOCK，不会发生真实扣款"
             showIcon
@@ -248,8 +247,4 @@ function selectPayableBill(bills: PortalBillListItem[]) {
     bills[0] ??
     null
   );
-}
-
-function isStagingPortal() {
-  return PORTAL_API_BASE_URL.includes("staging-");
 }

@@ -239,6 +239,8 @@ Mock 支持：
 - `SEND_DEBIT_FAILURE_NOTICE`；
 - `SYNC_PAYMENT_MANDATE`。
 
+其中 `SYNC_PAYMENT_MANDATE` 是真实渠道接入后的耐久化同步预留类型；当前商户能力尚未开通，本批 Staging Mock 不创建该任务，授权状态同步通过带权限和原因审计的 Admin 操作执行。真实微信适配器接入时必须同时实现该任务的 Worker handler，不能只开启枚举或配置。
+
 D-3 创建账单的事务同时插入三次扣款任务和 D+5 逾期任务。重复生成、重复调度和 Worker 重启不能产生重复事实。
 
 现有人工“逾期刷新”可以在到期次日处理，不修改；自动化任务继续按 D+5 执行。

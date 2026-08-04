@@ -57,6 +57,11 @@ export class PaymentMandateService {
   getPortalAvailability() {
     return {
       enabled: this.config.enabled,
+      mode: !this.config.enabled
+        ? "DISABLED"
+        : this.config.provider === "mock"
+          ? "SIMULATION"
+          : "LIVE",
       provider: this.config.enabled ? "WECHAT_AUTO_DEBIT" : null
     };
   }
@@ -240,9 +245,19 @@ export class PaymentMandateService {
     actor: { updatedBy: string }
   ) {
     const nextStatus = result.status as PaymentMandateStatus;
-    assertMandateTransition(current.status, nextStatus);
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
+      await lockMandate(tx, current.id);
+      const locked = await tx.paymentMandate.findUnique({
+        where: { id: current.id }
+      });
+      if (!locked) {
+        throw new NotFoundException("支付授权不存在。");
+      }
+      if (TERMINAL_MANDATE_STATUSES.has(locked.status)) {
+        return locked;
+      }
+      assertMandateTransition(locked.status, nextStatus);
       const updated = await tx.paymentMandate.update({
         data: {
           effectiveAt: result.effectiveAt,
@@ -270,7 +285,7 @@ export class PaymentMandateService {
               in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
             },
             deletedAt: null,
-            orderId: current.orderId,
+            orderId: locked.orderId,
             remainingAmount: { gt: 0n }
           }
         });
@@ -283,15 +298,16 @@ export class PaymentMandateService {
   }
 
   private async failPendingMandate(id: string, error: unknown, updatedBy: string) {
-    return this.prisma.paymentMandate.update({
+    await this.prisma.paymentMandate.updateMany({
       data: {
         errorSnapshot: toJson({ message: safeErrorMessage(error) }),
         lastSyncedAt: new Date(),
         status: PaymentMandateStatus.FAILED,
         updatedBy
       },
-      where: { id }
+      where: { id, status: PaymentMandateStatus.PENDING }
     });
+    return this.findMandateOrThrow(id);
   }
 
   private async revokeMandate(
@@ -302,22 +318,90 @@ export class PaymentMandateService {
     auditMetadata?: Record<string, unknown>
   ) {
     this.ensureEnabled();
-    const current = await this.findMandateOrThrow(id, customerId);
+    const current = await this.persistRevocationIntent(
+      id,
+      customerId,
+      actorId
+    );
     if (current.status === PaymentMandateStatus.REVOKED) {
       return customerId ? portalMandate(current) : adminMandate(current);
     }
-    if (TERMINAL_MANDATE_STATUSES.has(current.status)) {
-      throw new ConflictException("该支付授权已终止，不能重复解约。");
-    }
-    const result = await this.provider.revokeMandate({
-      providerMandateId: requiredProviderMandateId(current.providerMandateId),
-      providerSnapshot: providerSnapshot(current.responseSnapshot)
+    await this.writeAudit(AuditAction.UPDATE, current, actorId, context, {
+      ...(auditMetadata ?? {}),
+      operation: "REVOKE_REQUESTED"
     });
+    let result: MandateProviderResult;
+    try {
+      result = await this.provider.revokeMandate({
+        providerMandateId: requiredProviderMandateId(current.providerMandateId),
+        providerSnapshot: providerSnapshot(current.responseSnapshot)
+      });
+    } catch (error) {
+      const failed = await this.persistRevocationFailure(id, error, actorId);
+      await this.writeAudit(AuditAction.UPDATE, failed, actorId, context, {
+        ...(auditMetadata ?? {}),
+        operation: "REVOKE_RESULT_UNKNOWN"
+      });
+      throw new ServiceUnavailableException("支付授权解约结果暂不明确，请稍后同步状态。");
+    }
     const updated = await this.persistProviderResult(current, result, {
       updatedBy: actorId
     });
     await this.writeAudit(AuditAction.UPDATE, updated, actorId, context, auditMetadata);
     return customerId ? portalMandate(updated) : adminMandate(updated);
+  }
+
+  private persistRevocationIntent(
+    id: string,
+    customerId: string | undefined,
+    actorId: string
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await lockMandate(tx, id);
+      const current = await tx.paymentMandate.findUnique({ where: { id } });
+      if (!current || (customerId && current.customerId !== customerId)) {
+        throw new NotFoundException("支付授权不存在。");
+      }
+      if (current.status === PaymentMandateStatus.REVOKED) {
+        return current;
+      }
+      if (TERMINAL_MANDATE_STATUSES.has(current.status)) {
+        throw new ConflictException("该支付授权已终止，不能重复解约。");
+      }
+      return tx.paymentMandate.update({
+        data: {
+          requestSnapshot: toJson({
+            ...snapshotObject(current.requestSnapshot),
+            revokeRequestedAt: new Date().toISOString(),
+            revokeRequestedBy: actorId
+          }),
+          updatedBy: actorId
+        },
+        where: { id }
+      });
+    });
+  }
+
+  private async persistRevocationFailure(
+    id: string,
+    error: unknown,
+    updatedBy: string
+  ) {
+    await this.prisma.paymentMandate.updateMany({
+      data: {
+        errorSnapshot: toJson({
+          code: "MANDATE_REVOKE_RESULT_UNKNOWN",
+          message: safeErrorMessage(error)
+        }),
+        lastSyncedAt: new Date(),
+        updatedBy
+      },
+      where: {
+        id,
+        status: { notIn: [...TERMINAL_MANDATE_STATUSES] }
+      }
+    });
+    return this.findMandateOrThrow(id);
   }
 
   private async findMandateOrThrow(id: string, customerId?: string) {
@@ -387,6 +471,21 @@ export function assertMandateTransition(current: PaymentMandateStatus, next: Pay
 }
 
 type MandateRecord = Prisma.PaymentMandateGetPayload<Record<string, never>>;
+
+async function lockMandate(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  id: string
+) {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "payment_mandate" WHERE "id" = ${id}::uuid FOR UPDATE
+  `);
+}
+
+function snapshotObject(value: Prisma.JsonValue | null) {
+  return value && !Array.isArray(value) && typeof value === "object"
+    ? value
+    : {};
+}
 
 function portalMandate(record: MandateRecord) {
   return {

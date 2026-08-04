@@ -93,7 +93,9 @@ describe("portal payment foundation", () => {
 
     const payload = {
       eventType: "mock.payment.success",
-      providerTradeNo: paymentOrder.providerTradeNo,
+      providerTradeNo: harness.state.paymentOrders.find(
+        (item) => item.id === paymentOrder.id
+      )?.providerTradeNo,
       providerTransactionId: "mock_txn_callback_1"
     };
     const first = await harness.service.handleCallback("mock", payload);
@@ -245,6 +247,56 @@ describe("portal payment foundation", () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0]?.customerId).toBe("customer_a");
     expect(result.items[0]?.amount).toBe(1000);
+  });
+
+  it("hides debit-backed payment orders and rejects Portal mock settlement", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_auto_debit", remainingAmount: 1000n });
+    const paymentOrder = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_auto_debit"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const stored = harness.state.paymentOrders.find((item) => item.id === paymentOrder.id)!;
+    stored.debitAttempt = { id: "attempt-1" };
+    stored.paymentChannel = PaymentChannel.WECHAT_AUTO_DEBIT;
+
+    const listed = await harness.service.listPortalPaymentOrders(
+      harness.currentCustomer("customer_a"),
+      {}
+    );
+
+    expect(listed.items).toHaveLength(0);
+    await expect(
+      harness.service.mockPay(
+        paymentOrder.id,
+        harness.currentCustomer("customer_a"),
+        harness.context
+      )
+    ).rejects.toThrow("支付单不存在");
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
+  });
+
+  it("never exposes provider transaction references in Portal payment DTOs", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_private_refs", remainingAmount: 1000n });
+    const created = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_private_refs"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const stored = harness.state.paymentOrders.find((item) => item.id === created.id)!;
+    stored.providerTradeNo = "private-trade-reference";
+    stored.providerTransactionId = "private-transaction-reference";
+
+    const result = await harness.service.getPortalPaymentOrder(
+      created.id,
+      harness.currentCustomer("customer_a")
+    );
+
+    expect(result).not.toHaveProperty("providerTradeNo");
+    expect(result).not.toHaveProperty("providerTransactionId");
+    expect(JSON.stringify(result)).not.toContain("private-transaction-reference");
   });
 });
 
@@ -581,10 +633,23 @@ function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
   if (where.paymentStatus && !where.paymentStatus.in && paymentOrder.paymentStatus !== where.paymentStatus) {
     return false;
   }
-  if (where.paymentChannel && paymentOrder.paymentChannel !== where.paymentChannel) {
+  if (
+    where.paymentChannel?.not &&
+    paymentOrder.paymentChannel === where.paymentChannel.not
+  ) {
+    return false;
+  }
+  if (
+    where.paymentChannel &&
+    typeof where.paymentChannel === "string" &&
+    paymentOrder.paymentChannel !== where.paymentChannel
+  ) {
     return false;
   }
   if (where.orderId && paymentOrder.orderId !== where.orderId) {
+    return false;
+  }
+  if (where.debitAttempt?.is === null && paymentOrder.debitAttempt) {
     return false;
   }
   return true;

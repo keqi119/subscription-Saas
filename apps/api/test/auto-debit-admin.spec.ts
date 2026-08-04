@@ -81,6 +81,15 @@ describe("AutoDebitAdminService", () => {
   it("creates one manual debit job only for an unpaid bill with an active mandate", async () => {
     const harness = createHarness();
     harness.attempt.status = DebitAttemptStatus.FAILED_FINAL;
+    harness.jobs.push({
+      ...harness.job,
+      completedAt: null,
+      id: "00000000-0000-4000-8000-000000000299",
+      idempotencyKey: `debit:${harness.bill.id}:D1`,
+      jobStatus: SubscriptionAutomationJobStatus.PENDING,
+      jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      payload: { billId: harness.bill.id, retrySlot: DebitRetrySlot.D1 }
+    });
 
     const result = await harness.service.requestManualDebit(
       harness.bill.id,
@@ -101,6 +110,12 @@ describe("AutoDebitAdminService", () => {
           billId: harness.bill.id,
           retrySlot: DebitRetrySlot.MANUAL
         })
+      })
+    );
+    expect(harness.jobs).toContainEqual(
+      expect.objectContaining({
+        idempotencyKey: `debit:${harness.bill.id}:D1`,
+        jobStatus: SubscriptionAutomationJobStatus.CANCELLED
       })
     );
   });
@@ -160,6 +175,23 @@ describe("AutoDebitAdminService", () => {
     expect(harness.audits.at(-1)).toMatchObject({
       after: expect.objectContaining({ reason: "订单改为主动支付" })
     });
+  });
+
+  it("does not cancel a non-auto-debit billing job", async () => {
+    const harness = createHarness();
+    harness.job.jobStatus = SubscriptionAutomationJobStatus.PENDING;
+    harness.job.jobType = SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL;
+
+    await expect(
+      harness.service.cancelJob(
+        harness.job.id,
+        { reason: "越权取消" },
+        testUser(),
+        testContext()
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(harness.job.jobStatus).toBe(SubscriptionAutomationJobStatus.PENDING);
   });
 });
 
@@ -222,7 +254,7 @@ function createHarness(options: { environment?: string } = {}) {
     id: "00000000-0000-4000-8000-000000000206",
     idempotencyKey: `debit-query:${attempt.id}`,
     jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER as SubscriptionAutomationJobStatus,
-    jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
+    jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT as SubscriptionAutomationJobType,
     orderId: bill.orderId,
     payload: { debitAttemptId: attempt.id }
   };
@@ -254,7 +286,8 @@ function createHarness(options: { environment?: string } = {}) {
               item.idempotencyKey === where.idempotencyKey ||
               (item.billId === where.billId &&
                 item.jobType === where.jobType &&
-                where.jobStatus?.in.includes(item.jobStatus))
+                (where.jobStatus?.in?.includes(item.jobStatus) ||
+                  where.jobStatus === item.jobStatus))
           ) ?? null
       ),
       findUnique: vi.fn(async ({ where }) => jobs.find((item) => item.id === where.id) ?? null),
@@ -274,12 +307,17 @@ function createHarness(options: { environment?: string } = {}) {
         return current;
       }),
       updateMany: vi.fn(async ({ data, where }) => {
-        const current = jobs.find(
-          (item) => item.id === where.id && item.jobStatus === where.jobStatus
-        );
-        if (!current) return { count: 0 };
-        Object.assign(current, data);
-        return { count: 1 };
+        const matches = jobs.filter((item) => {
+          if (where.id && item.id !== where.id) return false;
+          if (where.billId && item.billId !== where.billId) return false;
+          if (where.jobType?.in && !where.jobType.in.includes(item.jobType)) return false;
+          if (where.jobType && typeof where.jobType === "string" && item.jobType !== where.jobType) return false;
+          if (where.jobStatus?.in && !where.jobStatus.in.includes(item.jobStatus)) return false;
+          if (where.jobStatus && typeof where.jobStatus === "string" && item.jobStatus !== where.jobStatus) return false;
+          return true;
+        });
+        for (const current of matches) Object.assign(current, data);
+        return { count: matches.length };
       })
     }
   };

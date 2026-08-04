@@ -7,6 +7,7 @@ describe("PortalAutoDebitController", () => {
     const service = {
       getPortalAvailability: vi.fn().mockReturnValue({
         enabled: false,
+        mode: "DISABLED",
         provider: null
       })
     };
@@ -14,7 +15,7 @@ describe("PortalAutoDebitController", () => {
 
     const result = controller.availability();
 
-    expect(result).toEqual({ enabled: false, provider: null });
+    expect(result).toEqual({ enabled: false, mode: "DISABLED", provider: null });
     expect(result).not.toHaveProperty("mockEnabled");
     expect(result).not.toHaveProperty("environment");
   });

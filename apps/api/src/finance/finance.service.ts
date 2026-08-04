@@ -293,7 +293,11 @@ export class FinanceService {
         }
         if (
           paymentOrder.paymentStatus !== PaymentOrderStatus.CREATED &&
-          paymentOrder.paymentStatus !== PaymentOrderStatus.PENDING
+          paymentOrder.paymentStatus !== PaymentOrderStatus.PENDING &&
+          !(
+            input.debitAttempt &&
+            paymentOrder.paymentStatus === PaymentOrderStatus.FAILED
+          )
         ) {
           throw new BadRequestException(
             "Current payment order status cannot be settled."
@@ -308,6 +312,24 @@ export class FinanceService {
           throw new BadRequestException(
             "Payment order is missing customer or order scope."
           );
+        }
+
+        const providerTransactionId =
+          input.providerTransactionId ?? paymentOrder.providerTransactionId;
+        if (providerTransactionId) {
+          const duplicateTransaction = await tx.paymentOrder.findFirst({
+            select: { id: true },
+            where: {
+              id: { not: paymentOrder.id },
+              provider: paymentOrder.provider,
+              providerTransactionId
+            }
+          });
+          if (duplicateTransaction) {
+            throw new BadRequestException(
+              "Provider transaction already belongs to another payment order."
+            );
+          }
         }
 
         const billIds = paymentOrder.items.map((item) => item.billId);

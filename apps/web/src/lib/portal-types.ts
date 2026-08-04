@@ -567,9 +567,6 @@ export interface PortalPaymentOrder {
   } | null;
   paymentStatus: string;
   provider: string;
-  providerPrepayId: string | null;
-  providerTradeNo: string | null;
-  providerTransactionId: string | null;
   requiresWechatBinding?: boolean;
   subject: string | null;
   wechatAuthUrl?: string;
@@ -874,6 +871,7 @@ export interface PortalBillDetail extends PortalBillListItem {
 
 export interface PortalAutoDebitAvailability {
   enabled: boolean;
+  mode: "DISABLED" | "LIVE" | "SIMULATION";
   provider: "WECHAT_AUTO_DEBIT" | null;
 }
 

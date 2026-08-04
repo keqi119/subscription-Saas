@@ -18,6 +18,14 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AuditService } from "../src/audit/audit.service";
+import { DebitAttemptService } from "../src/auto-debit/debit-attempt.service";
+import {
+  DebitProviderResult,
+  MandateDebitProvider,
+  MandateProviderResult
+} from "../src/auto-debit/auto-debit-provider";
+import { PaymentMandateService } from "../src/auto-debit/payment-mandate.service";
+import { ClaimedBillingAutomationJob } from "../src/billing-automation/billing-automation.types";
 import { FinanceService } from "../src/finance/finance.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
@@ -148,7 +156,325 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
       await cleanupSettlementFixture(prisma, ids);
     }
   }, 15_000);
+
+  it("allows only one payment order to claim the same provider transaction", async () => {
+    const ids = {
+      application: randomUUID(),
+      attempt: randomUUID(),
+      bill: randomUUID(),
+      collectionCase: randomUUID(),
+      customer: randomUUID(),
+      order: randomUUID(),
+      mandate: randomUUID(),
+      paymentOrderA: randomUUID(),
+      paymentOrderB: randomUUID(),
+      quote: randomUUID(),
+      vehicle: randomUUID()
+    };
+    const finance = new FinanceService(new AuditService(prisma), prisma);
+    const providerTransactionId = `shared-txn-${randomUUID()}`;
+
+    try {
+      await seedSettlementFixture(
+        prisma,
+        ids,
+        uniqueNo("PYOA"),
+        uniqueNo("PYOB")
+      );
+
+      const results = await Promise.allSettled(
+        [ids.paymentOrderA, ids.paymentOrderB].map((paymentOrderId) =>
+          finance.settlePaymentOrder({
+            operatorId: null,
+            paidAmount: 1n,
+            paidAt: new Date("2026-08-05T01:00:00.000Z"),
+            paymentOrderId,
+            providerTransactionId
+          })
+        )
+      );
+
+      expect(results.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((item) => item.status === "rejected")).toHaveLength(1);
+      await expect(
+        prisma.paymentOrder.count({ where: { providerTransactionId } })
+      ).resolves.toBe(1);
+      await expect(
+        prisma.paymentRecord.count({ where: { orderId: ids.order } })
+      ).resolves.toBe(1);
+    } finally {
+      await cleanupSettlementFixture(prisma, ids);
+    }
+  }, 15_000);
+
+  it("creates only one attempt when DUE and D+1 slots race", async () => {
+    const ids = settlementIds();
+    const finance = new FinanceService(new AuditService(prisma), prisma);
+    const provider = processingProvider();
+    const service = new DebitAttemptService(prisma, provider, finance);
+
+    try {
+      await seedSettlementFixture(
+        prisma,
+        ids,
+        uniqueNo("PYOA"),
+        uniqueNo("PYOB")
+      );
+      await resetFixtureForDebitSubmission(prisma, ids);
+
+      await Promise.all([
+        service.submitBillDebit(
+          claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
+        ),
+        service.submitBillDebit(
+          claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.D1)
+        )
+      ]);
+
+      await expect(
+        prisma.debitAttempt.count({ where: { billId: ids.bill } })
+      ).resolves.toBe(1);
+      await expect(
+        prisma.paymentOrder.count({
+          where: { debitAttempt: { isNot: null }, orderId: ids.order }
+        })
+      ).resolves.toBe(1);
+    } finally {
+      await cleanupSettlementFixture(prisma, ids);
+    }
+  }, 15_000);
+
+  it("keeps SUCCEEDED and PAID absorbing when a stale submit result arrives", async () => {
+    const ids = settlementIds();
+    const finance = new FinanceService(new AuditService(prisma), prisma);
+    const submitGate = deferred<void>();
+    const submitStarted = deferred<void>();
+    const provider = processingProvider({ submitGate, submitStarted });
+    const service = new DebitAttemptService(prisma, provider, finance);
+
+    try {
+      await seedSettlementFixture(
+        prisma,
+        ids,
+        uniqueNo("PYOA"),
+        uniqueNo("PYOB")
+      );
+      await resetFixtureForDebitSubmission(prisma, ids);
+
+      const staleSubmission = service.submitBillDebit(
+        claimedSubmitJob(ids.bill, ids.order, DebitRetrySlot.DUE)
+      );
+      await submitStarted.promise;
+      const attempt = await prisma.debitAttempt.findFirstOrThrow({
+        where: { billId: ids.bill }
+      });
+
+      await service.queryDebitAttempt(
+        claimedQueryJob(ids.bill, ids.order, attempt.id)
+      );
+      submitGate.resolve();
+      await staleSubmission;
+
+      await expect(
+        prisma.debitAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+      ).resolves.toMatchObject({ status: DebitAttemptStatus.SUCCEEDED });
+      await expect(
+        prisma.paymentOrder.findUniqueOrThrow({
+          where: { id: attempt.paymentOrderId }
+        })
+      ).resolves.toMatchObject({ paymentStatus: PaymentOrderStatus.PAID });
+    } finally {
+      submitGate.resolve();
+      await cleanupSettlementFixture(prisma, ids);
+    }
+  }, 15_000);
+
+  it("does not reactivate a mandate when sync finishes after revoke", async () => {
+    const ids = settlementIds();
+    const queryGate = deferred<void>();
+    const queryStarted = deferred<void>();
+    const provider = processingProvider({ queryGate, queryStarted });
+    const service = new PaymentMandateService(
+      prisma,
+      provider,
+      {
+        enabled: true,
+        environment: "staging",
+        mockEnabled: true,
+        provider: "mock",
+        runTime: "09:00",
+        wechatTemplateId: "mock-template"
+      },
+      { enqueueFutureForBill: async () => [] } as never,
+      new AuditService(prisma)
+    );
+    const admin = {
+      id: randomUUID(),
+      menus: [],
+      name: "Concurrency reviewer",
+      permissions: [],
+      roles: ["ADMIN"],
+      username: uniqueNo("ADM")
+    };
+
+    try {
+      await seedSettlementFixture(
+        prisma,
+        ids,
+        uniqueNo("PYOA"),
+        uniqueNo("PYOB")
+      );
+
+      const staleSync = service.syncAdminMandate(
+        ids.mandate,
+        { reason: "并发同步" },
+        admin,
+        {}
+      );
+      await queryStarted.promise;
+      await service.revokeAdminMandate(
+        ids.mandate,
+        { reason: "客户要求解约" },
+        admin,
+        {}
+      );
+      queryGate.resolve();
+      await expect(staleSync).resolves.toMatchObject({
+        status: "REVOKED"
+      });
+      await expect(
+        prisma.paymentMandate.findUniqueOrThrow({
+          where: { id: ids.mandate }
+        })
+      ).resolves.toMatchObject({ status: "REVOKED" });
+    } finally {
+      queryGate.resolve();
+      await cleanupSettlementFixture(prisma, ids);
+    }
+  }, 15_000);
 });
+
+function settlementIds() {
+  return {
+    application: randomUUID(),
+    attempt: randomUUID(),
+    bill: randomUUID(),
+    collectionCase: randomUUID(),
+    customer: randomUUID(),
+    order: randomUUID(),
+    mandate: randomUUID(),
+    paymentOrderA: randomUUID(),
+    paymentOrderB: randomUUID(),
+    quote: randomUUID(),
+    vehicle: randomUUID()
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function processingProvider(options: {
+  queryGate?: ReturnType<typeof deferred<void>>;
+  queryStarted?: ReturnType<typeof deferred<void>>;
+  submitGate?: ReturnType<typeof deferred<void>>;
+  submitStarted?: ReturnType<typeof deferred<void>>;
+} = {}): MandateDebitProvider {
+  return {
+    async createMandate(): Promise<MandateProviderResult> {
+      throw new Error("not used");
+    },
+    async queryDebit(input): Promise<DebitProviderResult> {
+      return {
+        confirmedAmount: 1n,
+        providerOutTradeNo: input.providerOutTradeNo,
+        providerSnapshot: { kind: "integration-query", status: "SUCCEEDED" },
+        providerTransactionId: `txn-${input.providerOutTradeNo}`,
+        resolvedAt: new Date("2026-08-05T01:00:00.000Z"),
+        status: "SUCCEEDED"
+      };
+    },
+    async queryMandate(input): Promise<MandateProviderResult> {
+      options.queryStarted?.resolve();
+      await options.queryGate?.promise;
+      return {
+        effectiveAt: new Date("2026-08-04T00:00:00.000Z"),
+        providerMandateId: input.providerMandateId,
+        providerSnapshot: { ...input.providerSnapshot, status: "ACTIVE" },
+        status: "ACTIVE"
+      };
+    },
+    async revokeMandate(input): Promise<MandateProviderResult> {
+      return {
+        providerMandateId: input.providerMandateId,
+        providerSnapshot: { ...input.providerSnapshot, status: "REVOKED" },
+        status: "REVOKED"
+      };
+    },
+    async submitDebit(input): Promise<DebitProviderResult> {
+      options.submitStarted?.resolve();
+      await options.submitGate?.promise;
+      return {
+        confirmedAmount: 0n,
+        providerOutTradeNo: input.providerOutTradeNo,
+        providerSnapshot: { kind: "integration-submit", status: "PROCESSING" },
+        providerTransactionId: `txn-${input.providerOutTradeNo}`,
+        status: "PROCESSING"
+      };
+    },
+    async verifyCallback() {
+      return { payload: {}, verified: false };
+    }
+  };
+}
+
+function claimedSubmitJob(
+  billId: string,
+  orderId: string,
+  retrySlot: DebitRetrySlot
+): ClaimedBillingAutomationJob {
+  const now = new Date("2026-08-05T00:00:00.000Z");
+  return {
+    attemptCount: 1,
+    availableAt: now,
+    billId,
+    billingScheduleId: null,
+    cancelledAt: null,
+    completedAt: null,
+    createdAt: now,
+    id: randomUUID(),
+    idempotencyKey: `debit:${billId}:${retrySlot}`,
+    jobStatus: SubscriptionAutomationJobStatus.PROCESSING,
+    jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    leaseExpiresAt: new Date(now.getTime() + 120_000),
+    leaseToken: randomUUID(),
+    maxAttempts: 6,
+    orderId,
+    payload: { billId, retrySlot },
+    resultSnapshot: null,
+    startedAt: now,
+    updatedAt: now
+  };
+}
+
+function claimedQueryJob(
+  billId: string,
+  orderId: string,
+  debitAttemptId: string
+): ClaimedBillingAutomationJob {
+  return {
+    ...claimedSubmitJob(billId, orderId, DebitRetrySlot.DUE),
+    idempotencyKey: `debit-query:${debitAttemptId}`,
+    jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
+    payload: { debitAttemptId }
+  };
+}
 
 async function seedSettlementFixture(
   prisma: PrismaService,
@@ -262,6 +588,11 @@ async function seedSettlementFixture(
         provider: PaymentProviderType.MOCK,
         providerMandateId: `mandate-${ids.mandate}`,
         providerMode: "mock",
+        responseSnapshot: {
+          kind: "mock-mandate",
+          providerMandateId: `mandate-${ids.mandate}`,
+          status: "ACTIVE"
+        },
         status: "ACTIVE"
       }
     });
@@ -298,6 +629,24 @@ async function seedSettlementFixture(
   });
 }
 
+async function resetFixtureForDebitSubmission(
+  prisma: PrismaService,
+  ids: {
+    attempt: string;
+    paymentOrderA: string;
+    paymentOrderB: string;
+  }
+) {
+  const paymentOrderIds = [ids.paymentOrderA, ids.paymentOrderB];
+  await prisma.debitAttempt.deleteMany({ where: { id: ids.attempt } });
+  await prisma.paymentOrderItem.deleteMany({
+    where: { paymentOrderId: { in: paymentOrderIds } }
+  });
+  await prisma.paymentOrder.deleteMany({
+    where: { id: { in: paymentOrderIds } }
+  });
+}
+
 async function cleanupSettlementFixture(
   prisma: PrismaService,
   ids: {
@@ -310,7 +659,12 @@ async function cleanupSettlementFixture(
     paymentOrderB: string;
   }
 ) {
-  const paymentOrderIds = [ids.paymentOrderA, ids.paymentOrderB];
+  const paymentOrderIds = (
+    await prisma.paymentOrder.findMany({
+      select: { id: true },
+      where: { orderId: ids.order }
+    })
+  ).map((item) => item.id);
   const payments = await prisma.paymentRecord.findMany({
     select: { id: true },
     where: { orderId: ids.order }

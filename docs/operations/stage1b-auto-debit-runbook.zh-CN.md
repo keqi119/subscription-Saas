@@ -29,7 +29,7 @@ Production 只要选择 `mock` 就必须启动失败。选择 `wechat_auto_renew
 
 ## 4. Staging 十项人工验收
 
-1. 打开 Portal 自动扣款页，确认醒目显示 `STAGING MOCK，不会发生真实扣款`，并确认主动支付入口仍可使用。
+1. 打开 Portal 自动扣款页，确认页面依据 API 返回的 `SIMULATION` 模式醒目显示 `STAGING MOCK，不会发生真实扣款`，并确认主动支付入口仍可使用。
 2. 对一笔已起租、存在未结月租账单的订单创建授权，完成 Mock 签约并确认 Mandate 从 `PENDING` 进入 `ACTIVE`。
 3. 刷新 Portal 和 Admin，确认授权编号、订单、签约时间及状态来自持久化记录，重启 API 后记录仍存在。
 4. 在 D-3 运行协调预览和正式协调，确认同一账单只建立 D、D+1、D+3 三个扣款任务且幂等重跑不重复。
@@ -52,11 +52,19 @@ Production 只要选择 `mock` 就必须启动失败。选择 `wechat_auto_renew
 
 ### 5.3 人工扣款
 
-仅 `auto_debit:execute` 权限可操作，必须填写原因。执行前确认账单仍未结、存在 `ACTIVE` 授权，且没有同账单在途 Attempt；操作结果必须进入审计日志。
+仅 `auto_debit:execute` 权限可操作，必须填写原因。执行前确认账单仍未结、存在 `ACTIVE` 授权，且没有同账单在途 Attempt；系统会在同一事务中取消尚未执行的 D/D+1/D+3 扣款任务，再创建 `MANUAL` 任务。操作结果必须进入审计日志。
 
 ### 5.4 未分配收款
 
 主动支付与迟到代扣并发时，统一结算按实时 `remainingAmount` 核销，超出部分进入未分配收款。财务人员应核对渠道交易、PaymentRecord 和 WriteOff 后，按既有退款/调账流程处理，禁止扩大原账单核销金额。
+
+### 5.5 并发与终态保护
+
+- 同一账单存在 `CREATED/SUBMITTING/PROCESSING/UNKNOWN` Attempt 时，任何后续槽位只能查询原 Attempt；不得创建第二笔渠道扣款。
+- `SUCCEEDED` Attempt 与 `PAID` PaymentOrder 是吸收终态，迟到的处理中、未知或失败响应不得回退状态。
+- 同一支付渠道交易号只能归属一个 PaymentOrder；命中唯一冲突时停止结算并人工核对，不得复制收款记录。
+- Portal 不展示或操作自动扣款内部 PaymentOrder，也不返回渠道商户单号、渠道交易号；客户主动支付必须另建独立 PaymentOrder。
+- `REVOKED` 授权是吸收终态。解约请求先持久化意图；外部结果不明时保留错误快照，并通过 Admin 状态同步恢复，滞后同步不得重新激活授权。
 
 ## 6. 真实微信适配器启用前清单
 

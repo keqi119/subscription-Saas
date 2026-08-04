@@ -107,6 +107,24 @@ describe("auto debit persistence contract", () => {
     );
     expect(sql.trim().endsWith("COMMIT;")).toBe(true);
   });
+
+  it("claims each provider transaction for only one payment order", () => {
+    const sql = readFileSync(
+      resolve(
+        process.cwd(),
+        "prisma/migrations/20260804190000_provider_transaction_uniqueness/migration.sql"
+      ),
+      "utf8"
+    );
+
+    expect(sql).toContain(
+      'CREATE UNIQUE INDEX "payment_order_provider_transaction_id_key"'
+    );
+    expect(sql).toContain(
+      'ON "payment_order"("provider", "provider_transaction_id")'
+    );
+    expect(sql).toContain('WHERE "provider_transaction_id" IS NOT NULL');
+  });
 });
 
 function model(name: string) {

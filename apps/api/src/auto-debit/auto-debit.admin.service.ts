@@ -47,6 +47,13 @@ const OPEN_BILL_STATUSES = [
   BillStatus.OVERDUE
 ] as const;
 
+const AUTO_DEBIT_JOB_TYPES = [
+  SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+  SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
+  SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE,
+  SubscriptionAutomationJobType.SYNC_PAYMENT_MANDATE
+] as const;
+
 @Injectable()
 export class AutoDebitAdminService {
   constructor(
@@ -211,21 +218,31 @@ export class AutoDebitAdminService {
       if (unresolved) {
         throw new BadRequestException("The bill already has an unresolved debit attempt.");
       }
-      const pendingJob = await tx.subscriptionAutomationJob.findFirst({
+      const processingJob = await tx.subscriptionAutomationJob.findFirst({
         where: {
           billId: bill.id,
-          jobStatus: {
-            in: [
-              SubscriptionAutomationJobStatus.PENDING,
-              SubscriptionAutomationJobStatus.PROCESSING
-            ]
-          },
+          jobStatus: SubscriptionAutomationJobStatus.PROCESSING,
           jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
         }
       });
-      if (pendingJob) {
-        throw new BadRequestException("The bill already has a pending debit job.");
+      if (processingJob) {
+        throw new BadRequestException("The bill already has a running debit job.");
       }
+      const now = new Date();
+      await tx.subscriptionAutomationJob.updateMany({
+        data: {
+          cancelledAt: now,
+          completedAt: now,
+          jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+          lastErrorCode: "SUPERSEDED_BY_MANUAL_DEBIT",
+          lastErrorMessage: dto.reason
+        },
+        where: {
+          billId: bill.id,
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
+        }
+      });
       return tx.subscriptionAutomationJob.create({
         data: {
           billId: bill.id,
@@ -280,7 +297,8 @@ export class AutoDebitAdminService {
       },
       where: {
         id,
-        jobStatus: SubscriptionAutomationJobStatus.PENDING
+        jobStatus: SubscriptionAutomationJobStatus.PENDING,
+        jobType: { in: [...AUTO_DEBIT_JOB_TYPES] }
       }
     });
     if (updated.count !== 1) {

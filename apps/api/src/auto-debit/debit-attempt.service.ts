@@ -6,7 +6,6 @@ import {
   PaymentChannel,
   PaymentMandateStatus,
   PaymentOrderStatus,
-  PaymentProviderType,
   Prisma,
   SubscriptionAutomationJobType
 } from "@prisma/client";
@@ -163,32 +162,47 @@ export class DebitAttemptService {
     if (!attempt.mandate.providerMandateId) {
       throw configurationError("Active mandate provider reference is missing.");
     }
-    await this.prisma.debitAttempt.update({
-      data: {
-        errorSnapshot: Prisma.JsonNull,
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        status: DebitAttemptStatus.SUBMITTING,
-        submittedAt: new Date()
-      },
-      where: { id: attempt.id }
-    });
+    const prepared = await this.withLockedAttempt(
+      attempt.id,
+      async (tx, current, paymentOrder) => {
+        if (
+          current.status === DebitAttemptStatus.SUCCEEDED ||
+          paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
+          !UNRESOLVED_ATTEMPT_STATUSES.has(current.status)
+        ) {
+          return null;
+        }
+        return tx.debitAttempt.update({
+          data: {
+            errorSnapshot: Prisma.JsonNull,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            status: DebitAttemptStatus.SUBMITTING,
+            submittedAt: new Date()
+          },
+          where: { id: current.id }
+        });
+      }
+    );
+    if (!prepared) {
+      const current = await this.prisma.debitAttempt.findUniqueOrThrow({
+        where: { id: attempt.id }
+      });
+      return {
+        action: "RESOLVED",
+        attemptId: current.id,
+        status: current.status
+      };
+    }
+    let result: DebitProviderResult;
     try {
-      const result = await this.provider.submitDebit({
-        amount: attempt.requestedAmount,
+      result = await this.provider.submitDebit({
+        amount: prepared.requestedAmount,
         currency: "CNY",
         providerMandateId: attempt.mandate.providerMandateId,
-        providerOutTradeNo: attempt.providerOutTradeNo,
+        providerOutTradeNo: prepared.providerOutTradeNo,
         subject: `Auto debit ${attempt.bill.billNo}`
       });
-      const updated = await this.persistProviderResult(attempt.id, result);
-      return {
-        action: UNRESOLVED_ATTEMPT_STATUSES.has(updated.status)
-          ? "PENDING_QUERY"
-          : "RESOLVED",
-        attemptId: updated.id,
-        status: updated.status
-      };
     } catch {
       const unknown = await this.persistUnknown(attempt.id);
       return {
@@ -197,6 +211,14 @@ export class DebitAttemptService {
         status: unknown.status
       };
     }
+    const updated = await this.persistProviderResult(prepared.id, result);
+    return {
+      action: UNRESOLVED_ATTEMPT_STATUSES.has(updated.status)
+        ? "PENDING_QUERY"
+        : "RESOLVED",
+      attemptId: updated.id,
+      status: updated.status
+    };
   }
 
   private async prepareSubmission(
@@ -241,6 +263,25 @@ export class DebitAttemptService {
         return { kind: "skipped", reason: "DEBIT_ATTEMPT_ALREADY_RESOLVED" };
       }
 
+      const latestAttempt = await tx.debitAttempt.findFirst({
+        orderBy: { createdAt: "desc" },
+        where: { billId: bill.id }
+      });
+      if (latestAttempt) {
+        if (UNRESOLVED_ATTEMPT_STATUSES.has(latestAttempt.status)) {
+          await enqueueQueryJob(tx, latestAttempt);
+          return { attempt: latestAttempt, kind: "query" };
+        }
+        const canStartNextAttempt =
+          latestAttempt.status === DebitAttemptStatus.FAILED_RETRYABLE ||
+          (retrySlot === DebitRetrySlot.MANUAL &&
+            (latestAttempt.status === DebitAttemptStatus.FAILED_FINAL ||
+              latestAttempt.status === DebitAttemptStatus.CANCELLED));
+        if (!canStartNextAttempt) {
+          return { kind: "skipped", reason: "DEBIT_ATTEMPT_ALREADY_RESOLVED" };
+        }
+      }
+
       const mandate = await tx.paymentMandate.findFirst({
         orderBy: [{ effectiveAt: "desc" }, { createdAt: "desc" }],
         where: {
@@ -276,7 +317,7 @@ export class DebitAttemptService {
           },
           orderId: bill.orderId,
           paidAmount: 0n,
-          paymentChannel: channelForProvider(lockedMandate.provider),
+          paymentChannel: PaymentChannel.WECHAT_AUTO_DEBIT,
           paymentOrderNo: createBusinessNo("PAY"),
           paymentStatus: PaymentOrderStatus.PENDING,
           provider: lockedMandate.provider,
@@ -322,7 +363,14 @@ export class DebitAttemptService {
   }
 
   private persistUnknown(attemptId: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return this.withLockedAttempt(attemptId, async (tx, current, paymentOrder) => {
+      if (
+        current.status === DebitAttemptStatus.SUCCEEDED ||
+        paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
+        !UNRESOLVED_ATTEMPT_STATUSES.has(current.status)
+      ) {
+        return current;
+      }
       const attempt = await tx.debitAttempt.update({
         data: {
           errorSnapshot: toJson({ code: "PROVIDER_RESULT_UNKNOWN" }),
@@ -354,15 +402,13 @@ export class DebitAttemptService {
     if (!current) {
       throw configurationError("Debit attempt is missing.");
     }
-    if (!UNRESOLVED_ATTEMPT_STATUSES.has(current.status)) {
+    if (current.status === DebitAttemptStatus.SUCCEEDED) {
       return current;
     }
     const status = attemptStatus(result, current.retrySlot);
     if (status === DebitAttemptStatus.SUCCEEDED) {
       if (result.confirmedAmount !== current.requestedAmount) {
-        return this.prisma.$transaction((tx) =>
-          this.persistAmountMismatch(tx, current, result)
-        );
+        return this.persistAmountMismatch(current.id, result);
       }
       const resolvedAt = result.resolvedAt ?? new Date();
       await this.finance.settlePaymentOrder({
@@ -386,15 +432,22 @@ export class DebitAttemptService {
         where: { id: current.id }
       });
     }
-    return this.prisma.$transaction(async (tx) => {
+    return this.withLockedAttempt(attemptId, async (tx, locked, paymentOrder) => {
+      if (
+        locked.status === DebitAttemptStatus.SUCCEEDED ||
+        paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
+        !UNRESOLVED_ATTEMPT_STATUSES.has(locked.status)
+      ) {
+        return locked;
+      }
       const terminal = !UNRESOLVED_ATTEMPT_STATUSES.has(status);
       const now = new Date();
       const attempt = await tx.debitAttempt.update({
         data: {
           acceptedAt:
             status === DebitAttemptStatus.PROCESSING
-              ? current.acceptedAt ?? now
-              : current.acceptedAt,
+              ? locked.acceptedAt ?? now
+              : locked.acceptedAt,
           confirmedAmount: result.confirmedAmount,
           errorSnapshot:
             result.errorCode || result.errorMessage
@@ -407,7 +460,7 @@ export class DebitAttemptService {
           responseSnapshot: toJson(result.providerSnapshot),
           status
         },
-        where: { id: current.id }
+        where: { id: locked.id }
       });
       await tx.paymentOrder.update({
         data: {
@@ -421,7 +474,7 @@ export class DebitAttemptService {
           providerTransactionId: result.providerTransactionId,
           responseSnapshot: toJson(result.providerSnapshot)
         },
-        where: { id: current.paymentOrderId }
+        where: { id: locked.paymentOrderId }
       });
       if (UNRESOLVED_ATTEMPT_STATUSES.has(status)) {
         await enqueueQueryJob(tx, attempt);
@@ -433,39 +486,76 @@ export class DebitAttemptService {
   }
 
   private async persistAmountMismatch(
-    tx: Prisma.TransactionClient,
-    current: Prisma.DebitAttemptGetPayload<Record<string, never>>,
+    attemptId: string,
     result: DebitProviderResult
   ) {
-    const errorSnapshot = toJson({
-      code: "DEBIT_AMOUNT_MISMATCH",
-      confirmedAmount: result.confirmedAmount.toString(),
-      requestedAmount: current.requestedAmount.toString()
+    return this.withLockedAttempt(attemptId, async (tx, current, paymentOrder) => {
+      if (
+        current.status === DebitAttemptStatus.SUCCEEDED ||
+        paymentOrder.paymentStatus === PaymentOrderStatus.PAID ||
+        !UNRESOLVED_ATTEMPT_STATUSES.has(current.status)
+      ) {
+        return current;
+      }
+      const errorSnapshot = toJson({
+        code: "DEBIT_AMOUNT_MISMATCH",
+        confirmedAmount: result.confirmedAmount.toString(),
+        requestedAmount: current.requestedAmount.toString()
+      });
+      const attempt = await tx.debitAttempt.update({
+        data: {
+          confirmedAmount: result.confirmedAmount,
+          errorSnapshot,
+          lastErrorCode: "DEBIT_AMOUNT_MISMATCH",
+          lastErrorMessage: "Confirmed debit amount does not match request.",
+          providerTransactionId: result.providerTransactionId,
+          resolvedAt: result.resolvedAt ?? new Date(),
+          responseSnapshot: toJson(result.providerSnapshot),
+          status: DebitAttemptStatus.FAILED_FINAL
+        },
+        where: { id: current.id }
+      });
+      await tx.paymentOrder.update({
+        data: {
+          errorSnapshot,
+          paymentStatus: PaymentOrderStatus.FAILED,
+          providerTransactionId: result.providerTransactionId,
+          responseSnapshot: toJson(result.providerSnapshot)
+        },
+        where: { id: current.paymentOrderId }
+      });
+      await enqueueFailureNoticeJob(tx, attempt);
+      return attempt;
     });
-    const attempt = await tx.debitAttempt.update({
-      data: {
-        confirmedAmount: result.confirmedAmount,
-        errorSnapshot,
-        lastErrorCode: "DEBIT_AMOUNT_MISMATCH",
-        lastErrorMessage: "Confirmed debit amount does not match request.",
-        providerTransactionId: result.providerTransactionId,
-        resolvedAt: result.resolvedAt ?? new Date(),
-        responseSnapshot: toJson(result.providerSnapshot),
-        status: DebitAttemptStatus.FAILED_FINAL
-      },
-      where: { id: current.id }
+  }
+
+  private async withLockedAttempt<T>(
+    attemptId: string,
+    operation: (
+      tx: Prisma.TransactionClient,
+      attempt: Prisma.DebitAttemptGetPayload<Record<string, never>>,
+      paymentOrder: Prisma.PaymentOrderGetPayload<Record<string, never>>
+    ) => Promise<T>
+  ) {
+    const candidate = await this.prisma.debitAttempt.findUnique({
+      select: { paymentOrderId: true },
+      where: { id: attemptId }
     });
-    await tx.paymentOrder.update({
-      data: {
-        errorSnapshot,
-        paymentStatus: PaymentOrderStatus.FAILED,
-        providerTransactionId: result.providerTransactionId,
-        responseSnapshot: toJson(result.providerSnapshot)
-      },
-      where: { id: current.paymentOrderId }
+    if (!candidate) {
+      throw configurationError("Debit attempt is missing.");
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await lockPaymentOrder(tx, candidate.paymentOrderId);
+      await lockDebitAttempt(tx, attemptId);
+      const [attempt, paymentOrder] = await Promise.all([
+        tx.debitAttempt.findUnique({ where: { id: attemptId } }),
+        tx.paymentOrder.findUnique({ where: { id: candidate.paymentOrderId } })
+      ]);
+      if (!attempt || !paymentOrder) {
+        throw configurationError("Debit attempt payment state is missing.");
+      }
+      return operation(tx, attempt, paymentOrder);
     });
-    await enqueueFailureNoticeJob(tx, attempt);
-    return attempt;
   }
 }
 
@@ -588,17 +678,29 @@ function buildProviderOutTradeNo(idempotencyKey: string) {
   return `ADT${digest}`;
 }
 
-function channelForProvider(provider: PaymentProviderType) {
-  return provider === PaymentProviderType.MOCK
-    ? PaymentChannel.MOCK
-    : PaymentChannel.WECHAT_AUTO_DEBIT;
-}
-
 function providerSnapshot(value: Prisma.JsonValue | null): ProviderSnapshot {
   if (!value || Array.isArray(value) || typeof value !== "object") {
     throw configurationError("Debit attempt provider snapshot is missing.");
   }
   return value as ProviderSnapshot;
+}
+
+async function lockPaymentOrder(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  id: string
+) {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "payment_order" WHERE "id" = ${id}::uuid FOR UPDATE
+  `);
+}
+
+async function lockDebitAttempt(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  id: string
+) {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "debit_attempt" WHERE "id" = ${id}::uuid FOR UPDATE
+  `);
 }
 
 async function lockRow(

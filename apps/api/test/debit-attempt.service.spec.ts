@@ -2,6 +2,7 @@ import {
   BillStatus,
   DebitAttemptStatus,
   DebitRetrySlot,
+  PaymentChannel,
   PaymentMandateStatus,
   PaymentOrderStatus,
   SubscriptionAutomationJobStatus,
@@ -58,6 +59,34 @@ describe("DebitAttemptService", () => {
     );
   });
 
+  it("reuses an unresolved DUE attempt when the D+1 slot starts", async () => {
+    const harness = createHarness({ attemptStatus: DebitAttemptStatus.UNKNOWN });
+
+    await expect(
+      harness.service.submitBillDebit(submitJob(DebitRetrySlot.D1))
+    ).resolves.toMatchObject({
+      action: "QUERY_ENQUEUED",
+      attemptId: "attempt-1"
+    });
+
+    expect(harness.prisma.debitAttempt.create).not.toHaveBeenCalled();
+    expect(harness.provider.submitDebit).not.toHaveBeenCalled();
+  });
+
+  it("does not downgrade a successful attempt or paid order on a stale unknown result", async () => {
+    const harness = createHarness({ attemptStatus: DebitAttemptStatus.SUCCEEDED });
+    harness.paymentOrder.paymentStatus = PaymentOrderStatus.PAID;
+    harness.provider.queryDebit.mockRejectedValueOnce(new Error("late socket reset"));
+
+    await expect(harness.service.queryDebitAttempt(queryJob())).resolves.toMatchObject({
+      action: "RESOLVED",
+      status: DebitAttemptStatus.SUCCEEDED
+    });
+
+    expect(harness.prisma.debitAttempt.update).not.toHaveBeenCalled();
+    expect(harness.paymentOrder.paymentStatus).toBe(PaymentOrderStatus.PAID);
+  });
+
   it("persists PROCESSING and creates one durable query job after provider acceptance", async () => {
     const harness = createHarness();
 
@@ -71,6 +100,13 @@ describe("DebitAttemptService", () => {
         data: expect.objectContaining({
           retrySlot: DebitRetrySlot.DUE,
           status: DebitAttemptStatus.SUBMITTING
+        })
+      })
+    );
+    expect(harness.prisma.paymentOrder.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          paymentChannel: PaymentChannel.WECHAT_AUTO_DEBIT
         })
       })
     );
@@ -138,6 +174,34 @@ describe("DebitAttemptService", () => {
     );
   });
 
+  it("allows an operator-requested MANUAL attempt after final failure", async () => {
+    const harness = createHarness({
+      attemptStatus: DebitAttemptStatus.FAILED_FINAL
+    });
+
+    await expect(
+      harness.service.submitBillDebit(submitJob(DebitRetrySlot.MANUAL))
+    ).resolves.toMatchObject({ action: "SUBMITTED" });
+
+    expect(harness.prisma.debitAttempt.create).toHaveBeenCalledTimes(1);
+    expect(harness.provider.submitDebit).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let D+3 continue after a final failure", async () => {
+    const harness = createHarness({
+      attemptStatus: DebitAttemptStatus.FAILED_FINAL
+    });
+
+    await expect(
+      harness.service.submitBillDebit(submitJob(DebitRetrySlot.D3))
+    ).resolves.toEqual({
+      action: "SKIPPED",
+      reason: "DEBIT_ATTEMPT_ALREADY_RESOLVED"
+    });
+
+    expect(harness.prisma.debitAttempt.create).not.toHaveBeenCalled();
+  });
+
   it("rejects a successful provider result with the wrong amount", async () => {
     const harness = createHarness({
       confirmedAmount: 99n,
@@ -191,6 +255,35 @@ describe("DebitAttemptService", () => {
     );
     expect(harness.prisma.debitAttempt.create).not.toHaveBeenCalled();
   });
+
+  it("does not resubmit a merchant order that became successful after a stale not-found query", async () => {
+    const harness = createHarness({ attemptStatus: DebitAttemptStatus.UNKNOWN });
+    const succeeded = attemptRecord(DebitAttemptStatus.SUCCEEDED);
+    harness.paymentOrder.paymentStatus = PaymentOrderStatus.PAID;
+    harness.provider.queryDebit.mockResolvedValueOnce({
+      confirmedAmount: 0n,
+      errorCode: "PROVIDER_TRANSACTION_NOT_FOUND",
+      providerOutTradeNo: "AUTO-DEBIT-1",
+      providerSnapshot: { kind: "stale-query", status: "FAILED_RETRYABLE" },
+      providerTransactionId: "",
+      status: "FAILED_RETRYABLE"
+    });
+    harness.prisma.debitAttempt.findUnique
+      .mockResolvedValueOnce(attemptRecord(DebitAttemptStatus.UNKNOWN))
+      .mockResolvedValueOnce(attemptRecord(DebitAttemptStatus.UNKNOWN))
+      .mockResolvedValueOnce(succeeded);
+    harness.prisma.debitAttempt.findUniqueOrThrow.mockResolvedValueOnce(succeeded);
+
+    await expect(
+      harness.service.queryDebitAttempt(queryJob())
+    ).resolves.toMatchObject({
+      action: "RESOLVED",
+      status: DebitAttemptStatus.SUCCEEDED
+    });
+
+    expect(harness.provider.submitDebit).not.toHaveBeenCalled();
+    expect(harness.paymentOrder.paymentStatus).toBe(PaymentOrderStatus.PAID);
+  });
 });
 
 function createHarness(
@@ -232,7 +325,7 @@ function createHarness(
     id: "payment-order-1",
     paidAmount: 0n,
     paymentOrderNo: "PAY-1",
-    paymentStatus: PaymentOrderStatus.PENDING
+    paymentStatus: PaymentOrderStatus.PENDING as PaymentOrderStatus
   };
   const prisma = {
     $transaction: vi.fn(async (operation: (tx: unknown) => unknown) =>
@@ -249,7 +342,27 @@ function createHarness(
         };
         return attempt;
       }),
-      findUnique: vi.fn(async () => attempt),
+      findFirst: vi.fn(async ({ where }) => {
+        if (!attempt || (where.billId && where.billId !== attempt.billId)) {
+          return null;
+        }
+        if (where.status?.in && !where.status.in.includes(attempt.status)) {
+          return null;
+        }
+        return attempt;
+      }),
+      findUnique: vi.fn(async ({ where }) => {
+        if (!attempt) {
+          return null;
+        }
+        if (where.id && where.id !== attempt.id) {
+          return null;
+        }
+        if (where.idempotencyKey && where.idempotencyKey !== attempt.idempotencyKey) {
+          return null;
+        }
+        return attempt;
+      }),
       findUniqueOrThrow: vi.fn(async () => {
         if (!attempt) {
           throw new Error("attempt missing");
@@ -267,7 +380,18 @@ function createHarness(
     },
     paymentOrder: {
       create: vi.fn().mockResolvedValue(paymentOrder),
-      update: vi.fn(async ({ data }) => Object.assign(paymentOrder, data))
+      findUnique: vi.fn(async () => paymentOrder),
+      update: vi.fn(async ({ data }) => Object.assign(paymentOrder, data)),
+      updateMany: vi.fn(async ({ data, where }) => {
+        if (
+          where.paymentStatus?.not === PaymentOrderStatus.PAID &&
+          paymentOrder.paymentStatus === PaymentOrderStatus.PAID
+        ) {
+          return { count: 0 };
+        }
+        Object.assign(paymentOrder, data);
+        return { count: 1 };
+      })
     },
     receivableBill: {
       findUnique: vi.fn().mockResolvedValue(bill)
@@ -331,6 +455,7 @@ function createHarness(
       queryDebit: vi.mocked(provider.queryDebit),
       submitDebit: vi.mocked(provider.submitDebit)
     },
+    paymentOrder,
     service
   };
 }

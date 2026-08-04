@@ -103,9 +103,32 @@ describe("PaymentMandateService", () => {
     const harness = createHarness({ status: PaymentMandateStatus.REVOKED });
 
     await expect(
-      harness.service.syncAdminMandate("mandate-1", adminUser, {})
+      harness.service.syncAdminMandate(
+        "mandate-1",
+        { reason: "人工核对授权" },
+        adminUser,
+        {}
+      )
     ).rejects.toBeInstanceOf(ConflictException);
     expect(harness.provider.queryMandate).not.toHaveBeenCalled();
+  });
+
+  it("includes the operator reason when an admin synchronizes a mandate", async () => {
+    const harness = createHarness({ status: PaymentMandateStatus.ACTIVE });
+
+    await harness.service.syncAdminMandate(
+      "mandate-1",
+      { reason: "客户反馈授权已恢复" },
+      adminUser,
+      {}
+    );
+
+    expect(harness.audit.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({ reason: "客户反馈授权已恢复" }),
+        operatorId: adminUser.id
+      })
+    );
   });
 
   it("revokes without deleting mandate history", async () => {

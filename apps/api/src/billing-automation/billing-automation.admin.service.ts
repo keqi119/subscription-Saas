@@ -3,6 +3,9 @@ import {
   AuditAction,
   BillingSchedule,
   BillingScheduleStatus,
+  DebitAttemptStatus,
+  PaymentMandateStatus,
+  Prisma,
   SubscriptionAutomationJob,
   SubscriptionAutomationJobStatus
 } from "@prisma/client";
@@ -24,7 +27,15 @@ export class BillingAutomationAdminService {
   ) {}
 
   async summary() {
-    const [scheduleGroups, jobGroups, nextSchedule, oldestPendingJob] = await Promise.all([
+    const [
+      scheduleGroups,
+      jobGroups,
+      nextSchedule,
+      oldestPendingJob,
+      mandateGroups,
+      attemptGroups,
+      unallocatedRows
+    ] = await Promise.all([
       this.prisma.billingSchedule.groupBy({
         _count: { _all: true },
         by: ["status"]
@@ -49,11 +60,75 @@ export class BillingAutomationAdminService {
         where: {
           jobStatus: SubscriptionAutomationJobStatus.PENDING
         }
-      })
+      }),
+      this.prisma.paymentMandate.groupBy({
+        _count: { _all: true },
+        by: ["status"]
+      }),
+      this.prisma.debitAttempt.groupBy({
+        _count: { _all: true },
+        by: ["status"]
+      }),
+      this.prisma.$queryRaw<
+        Array<{ paymentCount: bigint; unallocatedAmount: bigint }>
+      >(Prisma.sql`
+        WITH "allocated" AS (
+          SELECT
+            "payment_id",
+            COALESCE(SUM("write_off_amount"), 0)::bigint AS "amount"
+          FROM "payment_write_off"
+          WHERE "deleted_at" IS NULL
+          GROUP BY "payment_id"
+        )
+        SELECT
+          COUNT(*) FILTER (
+            WHERE "payment_record"."payment_amount" > COALESCE("allocated"."amount", 0)
+          )::bigint AS "paymentCount",
+          COALESCE(SUM(
+            GREATEST(
+              "payment_record"."payment_amount" - COALESCE("allocated"."amount", 0),
+              0
+            )
+          ), 0)::bigint AS "unallocatedAmount"
+        FROM "payment_record"
+        LEFT JOIN "allocated" ON "allocated"."payment_id" = "payment_record"."id"
+        WHERE "payment_record"."deleted_at" IS NULL
+          AND "payment_record"."payment_status" = 'CONFIRMED'
+      `)
     ]);
 
+    const mandates = countByEnum(
+      Object.values(PaymentMandateStatus),
+      mandateGroups,
+      "status"
+    );
+    const attempts = countByEnum(
+      Object.values(DebitAttemptStatus),
+      attemptGroups,
+      "status"
+    );
+    const jobs = countByEnum(
+      Object.values(SubscriptionAutomationJobStatus),
+      jobGroups,
+      "jobStatus"
+    );
+    const unallocated = unallocatedRows[0] ?? {
+      paymentCount: 0n,
+      unallocatedAmount: 0n
+    };
+
     return {
-      jobs: countByEnum(Object.values(SubscriptionAutomationJobStatus), jobGroups, "jobStatus"),
+      autoDebit: {
+        attempts,
+        deadLetterCount: jobs.DEAD_LETTER,
+        mandates,
+        unallocatedPayments: {
+          amount: unallocated.unallocatedAmount.toString(),
+          count: Number(unallocated.paymentCount)
+        },
+        unknownCount: attempts.UNKNOWN
+      },
+      jobs,
       nextSchedule: nextSchedule
         ? {
             ...nextSchedule,

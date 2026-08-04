@@ -13,6 +13,7 @@ import {
 } from "./auto-debit-provider";
 import { MockAutoDebitProvider } from "./mock-auto-debit.provider";
 import { AutoDebitController } from "./auto-debit.controller";
+import { AutoDebitAdminService } from "./auto-debit.admin.service";
 import { AutoDebitHandlers } from "./auto-debit.handlers";
 import { AutoDebitScheduler } from "./auto-debit.scheduler";
 import { DebitAttemptService } from "./debit-attempt.service";
@@ -24,11 +25,13 @@ import { PaymentMandateService } from "./payment-mandate.service";
     AUTO_DEBIT_CONFIG,
     MANDATE_DEBIT_PROVIDER,
     AutoDebitHandlers,
+    AutoDebitAdminService,
     AutoDebitScheduler,
     PaymentMandateService
   ],
   imports: [AuditModule, AuthModule, ConfigModule, FinanceModule, NotificationModule],
   providers: [
+    AutoDebitAdminService,
     AutoDebitHandlers,
     AutoDebitScheduler,
     DebitAttemptService,

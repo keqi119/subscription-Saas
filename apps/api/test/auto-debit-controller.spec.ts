@@ -15,6 +15,19 @@ describe("AutoDebitController permissions", () => {
     expect(permissionFor("revokeMandate")).toEqual([
       PermissionCode.AUTO_DEBIT_MANAGE
     ]);
+    expect(permissionFor("listAttempts")).toEqual([
+      PermissionCode.AUTO_DEBIT_VIEW
+    ]);
+    for (const handler of [
+      "queryAttempt",
+      "requestManualDebit",
+      "cancelJob",
+      "setMockNextResult"
+    ] as const) {
+      expect(permissionFor(handler)).toEqual([
+        PermissionCode.AUTO_DEBIT_EXECUTE
+      ]);
+    }
   });
 });
 

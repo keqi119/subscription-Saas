@@ -2,14 +2,18 @@ import {
   DebitAttemptStatus,
   PaymentMandateStatus
 } from "@prisma/client";
-import { Type } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   IsEnum,
   IsInt,
+  IsIn,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
   Max,
+  MaxLength,
+  Matches,
   Min
 } from "class-validator";
 
@@ -90,4 +94,22 @@ export class AdminDebitAttemptQueryDto {
   @IsOptional()
   @IsEnum(DebitAttemptStatus)
   status?: DebitAttemptStatus;
+}
+
+export class AutoDebitActionReasonDto {
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/\S/)
+  @MaxLength(255)
+  reason!: string;
+}
+
+export class SetMockDebitResultDto extends AutoDebitActionReasonDto {
+  @IsIn(["SUCCEEDED", "FAILED_RETRYABLE", "FAILED_FINAL", "UNKNOWN"])
+  nextResult!:
+    | "SUCCEEDED"
+    | "FAILED_RETRYABLE"
+    | "FAILED_FINAL"
+    | "UNKNOWN";
 }

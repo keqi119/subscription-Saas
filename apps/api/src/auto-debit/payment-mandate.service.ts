@@ -177,6 +177,7 @@ export class PaymentMandateService {
 
   async syncAdminMandate(
     id: string,
+    action: { reason: string },
     user: RequestUser,
     context: RequestContext
   ) {
@@ -192,16 +193,21 @@ export class PaymentMandateService {
     const updated = await this.persistProviderResult(current, result, {
       updatedBy: user.id
     });
-    await this.writeAudit(AuditAction.UPDATE, updated, user.id, context);
+    await this.writeAudit(AuditAction.UPDATE, updated, user.id, context, {
+      reason: action.reason
+    });
     return adminMandate(updated);
   }
 
   async revokeAdminMandate(
     id: string,
+    action: { reason: string },
     user: RequestUser,
     context: RequestContext
   ) {
-    return this.revokeMandate(id, undefined, user.id, context);
+    return this.revokeMandate(id, undefined, user.id, context, {
+      reason: action.reason
+    });
   }
 
   private async createPendingMandate(
@@ -326,7 +332,8 @@ export class PaymentMandateService {
     id: string,
     customerId: string | undefined,
     actorId: string,
-    context: RequestContext | PortalRequestContext
+    context: RequestContext | PortalRequestContext,
+    auditMetadata?: Record<string, unknown>
   ) {
     this.ensureEnabled();
     const current = await this.findMandateOrThrow(id, customerId);
@@ -343,7 +350,13 @@ export class PaymentMandateService {
     const updated = await this.persistProviderResult(current, result, {
       updatedBy: actorId
     });
-    await this.writeAudit(AuditAction.UPDATE, updated, actorId, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      updated,
+      actorId,
+      context,
+      auditMetadata
+    );
     return customerId ? portalMandate(updated) : adminMandate(updated);
   }
 
@@ -367,11 +380,12 @@ export class PaymentMandateService {
     action: AuditAction,
     mandate: MandateRecord,
     operatorId: string,
-    context: RequestContext | PortalRequestContext
+    context: RequestContext | PortalRequestContext,
+    metadata?: Record<string, unknown>
   ) {
     return this.audit.write({
       action,
-      after: auditMandate(mandate),
+      after: { ...auditMandate(mandate), ...(metadata ?? {}) },
       entityId: mandate.id,
       entityType: "payment_mandate",
       ipAddress: context.ipAddress,

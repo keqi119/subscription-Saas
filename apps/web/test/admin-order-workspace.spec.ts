@@ -188,6 +188,7 @@ describe("admin order workspace permission contract", () => {
     ["entitlement:view", ["overview", "entitlement"]],
     ["service_case:view", ["overview", "service"]],
     ["billing:view", ["overview", "finance"]],
+    ["auto_debit:view", ["overview", "finance"]],
     ["payment:view", ["overview", "finance"]],
     ["deposit_ledger:view", ["overview", "finance"]],
     ["collection:view", ["overview", "finance"]],
@@ -223,6 +224,10 @@ describe("admin order workspace permission contract", () => {
     [
       ["billing:generate"],
       [{ href: "/billing/monthly-rent", label: "月租账单模块" }]
+    ],
+    [
+      ["auto_debit:view"],
+      [{ href: "/billing/monthly-rent", label: "月租账单与自动扣款" }]
     ],
     [
       ["collection:view"],
@@ -718,6 +723,9 @@ describe("admin order detail workspace migration", () => {
     expect(renderer).toContain("<ServiceCasesPanel");
     expect(renderer).toContain('case "finance":');
     expect(renderer).toContain("<FinancePanel");
+    expect(renderer).toContain("<OrderAutoDebitTracePanel");
+    expect(source).toContain("/billing/automation/mandates?page=1&pageSize=100&orderNo=");
+    expect(source).toContain("/billing/automation/attempts?page=1&pageSize=100&orderId=");
     expect(renderer).toContain('case "change":');
     expect(renderer).toContain("changes={changes}");
     expect(source).toContain("slots={{ [activeTab]: renderActiveWorkspaceTab() }}");

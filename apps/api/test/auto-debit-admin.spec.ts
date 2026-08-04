@@ -12,13 +12,31 @@ import { validate } from "class-validator";
 import { describe, expect, it, vi } from "vitest";
 
 import { AutoDebitAdminService } from "../src/auto-debit/auto-debit.admin.service";
-import {
-  AutoDebitActionReasonDto,
-  SetMockDebitResultDto
-} from "../src/auto-debit/auto-debit.dto";
+import { AutoDebitActionReasonDto, SetMockDebitResultDto } from "../src/auto-debit/auto-debit.dto";
 import { MockAutoDebitProvider } from "../src/auto-debit/mock-auto-debit.provider";
 
 describe("AutoDebitAdminService", () => {
+  it("loads the PaymentOrder to PaymentRecord to WriteOff trace for operators", async () => {
+    const harness = createHarness();
+    harness.findAttempts.mockResolvedValueOnce([]);
+
+    await harness.service.listAttempts({ page: 1, pageSize: 20 });
+
+    expect(harness.findAttempts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({
+          paymentOrder: expect.objectContaining({
+            select: expect.objectContaining({
+              paymentRecord: expect.objectContaining({
+                select: expect.objectContaining({ writeOffs: expect.any(Object) })
+              })
+            })
+          })
+        })
+      })
+    );
+  });
+
   it("requeues provider query for UNKNOWN attempts and records the operator reason", async () => {
     const harness = createHarness();
 
@@ -157,9 +175,7 @@ describe("auto debit admin DTOs", () => {
       reason: "invalid"
     });
     await expect(validate(dto)).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ property: "nextResult" })
-      ])
+      expect.arrayContaining([expect.objectContaining({ property: "nextResult" })])
     );
   });
 });
@@ -205,24 +221,22 @@ function createHarness(options: { environment?: string } = {}) {
     completedAt: new Date("2026-08-06T01:01:00.000Z") as Date | null,
     id: "00000000-0000-4000-8000-000000000206",
     idempotencyKey: `debit-query:${attempt.id}`,
-    jobStatus:
-      SubscriptionAutomationJobStatus.DEAD_LETTER as SubscriptionAutomationJobStatus,
+    jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER as SubscriptionAutomationJobStatus,
     jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
     orderId: bill.orderId,
     payload: { debitAttemptId: attempt.id }
   };
   jobs.push(job);
+  const findAttempts = vi.fn().mockResolvedValue([attempt]);
   const prisma = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: bill.id }]),
-    $transaction: vi.fn(async (operation: (tx: unknown) => unknown) =>
-      operation(prisma)
-    ),
+    $transaction: vi.fn(async (operation: (tx: unknown) => unknown) => operation(prisma)),
     debitAttempt: {
       count: vi.fn().mockResolvedValue(0),
       findFirst: vi.fn(async ({ where }) =>
         where.status?.in.includes(attempt.status) ? attempt : null
       ),
-      findMany: vi.fn().mockResolvedValue([attempt]),
+      findMany: findAttempts,
       findUnique: vi.fn().mockResolvedValue(attempt),
       update: vi.fn(async ({ data }) => Object.assign(attempt, data))
     },
@@ -233,18 +247,17 @@ function createHarness(options: { environment?: string } = {}) {
       findUnique: vi.fn().mockResolvedValue(bill)
     },
     subscriptionAutomationJob: {
-      findFirst: vi.fn(async ({ where }) =>
-        jobs.find(
-          (item) =>
-            item.idempotencyKey === where.idempotencyKey ||
-            (item.billId === where.billId &&
-              item.jobType === where.jobType &&
-              where.jobStatus?.in.includes(item.jobStatus))
-        ) ?? null
+      findFirst: vi.fn(
+        async ({ where }) =>
+          jobs.find(
+            (item) =>
+              item.idempotencyKey === where.idempotencyKey ||
+              (item.billId === where.billId &&
+                item.jobType === where.jobType &&
+                where.jobStatus?.in.includes(item.jobStatus))
+          ) ?? null
       ),
-      findUnique: vi.fn(async ({ where }) =>
-        jobs.find((item) => item.id === where.id) ?? null
-      ),
+      findUnique: vi.fn(async ({ where }) => jobs.find((item) => item.id === where.id) ?? null),
       create: vi.fn(async ({ data }) => {
         const created = {
           ...data,
@@ -283,7 +296,7 @@ function createHarness(options: { environment?: string } = {}) {
     },
     { write: vi.fn(async (input) => audits.push(input)) } as never
   );
-  return { attempt, audits, bill, job, jobs, service };
+  return { attempt, audits, bill, findAttempts, job, jobs, service };
 }
 
 function testUser() {

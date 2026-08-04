@@ -78,6 +78,21 @@ export class AutoDebitAdminService {
             select: {
               paymentOrderNo: true,
               paymentStatus: true,
+              paymentRecord: {
+                select: {
+                  paymentNo: true,
+                  paymentStatus: true,
+                  writeOffs: {
+                    orderBy: { writeOffAt: "asc" },
+                    select: {
+                      billId: true,
+                      writeOffAmount: true,
+                      writeOffAt: true
+                    },
+                    where: { deletedAt: null }
+                  }
+                }
+              },
               providerTransactionId: true
             }
           }
@@ -97,6 +112,18 @@ export class AutoDebitAdminService {
         bill: {
           ...item.bill,
           remainingAmount: item.bill.remainingAmount.toString()
+        },
+        paymentOrder: {
+          ...item.paymentOrder,
+          paymentRecord: item.paymentOrder.paymentRecord
+            ? {
+                ...item.paymentOrder.paymentRecord,
+                writeOffs: item.paymentOrder.paymentRecord.writeOffs.map((writeOff) => ({
+                  ...writeOff,
+                  writeOffAmount: writeOff.writeOffAmount.toString()
+                }))
+              }
+            : null
         }
       })),
       page,
@@ -285,7 +312,9 @@ export class AutoDebitAdminService {
       this.config.provider !== "mock" ||
       !(this.provider instanceof MockAutoDebitProvider)
     ) {
-      throw new ServiceUnavailableException("Mock debit controls are only available in Staging mock mode.");
+      throw new ServiceUnavailableException(
+        "Mock debit controls are only available in Staging mock mode."
+      );
     }
     const attempt = await this.prisma.debitAttempt.findUnique({ where: { id } });
     if (!attempt) {
@@ -298,10 +327,7 @@ export class AutoDebitAdminService {
       throw new BadRequestException("Only unresolved debit attempts accept a mock result.");
     }
     const snapshot = providerSnapshot(attempt.responseSnapshot ?? attempt.requestSnapshot);
-    const responseSnapshot = this.provider.withNextDebitResult(
-      snapshot,
-      dto.nextResult
-    );
+    const responseSnapshot = this.provider.withNextDebitResult(snapshot, dto.nextResult);
     const updated = await this.prisma.debitAttempt.update({
       data: { responseSnapshot: toJson(responseSnapshot), updatedBy: user.id },
       where: { id: attempt.id }
@@ -367,10 +393,7 @@ export class AutoDebitAdminService {
   }
 }
 
-async function lockBill(
-  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
-  billId: string
-) {
+async function lockBill(tx: Pick<Prisma.TransactionClient, "$queryRaw">, billId: string) {
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "receivable_bill" WHERE "id" = ${billId}::uuid FOR UPDATE
   `);

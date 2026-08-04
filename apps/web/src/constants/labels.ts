@@ -58,6 +58,26 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const PAYMENT_MANDATE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "已生效",
+  EXPIRED: "已过期",
+  FAILED: "授权失败",
+  PENDING: "待确认",
+  REVOKED: "已解约",
+  SUSPENDED: "已暂停"
+};
+
+export const DEBIT_ATTEMPT_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CREATED: "待提交",
+  FAILED_FINAL: "最终失败",
+  FAILED_RETRYABLE: "待重试",
+  PROCESSING: "处理中",
+  SUBMITTING: "提交中",
+  SUCCEEDED: "已成功",
+  UNKNOWN: "结果不明"
+};
+
 export const CUSTOMER_ACCOUNT_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "正常",
   DISABLED: "已禁用"

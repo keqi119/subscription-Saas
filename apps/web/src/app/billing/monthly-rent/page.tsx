@@ -21,6 +21,7 @@ import {
   Input,
   Modal,
   Row,
+  Select,
   Space,
   Statistic,
   Table,
@@ -38,14 +39,30 @@ import { actionAvailability } from "../../../lib/action-guards";
 import { apiFetch, ApiError } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 import {
+  autoDebitAttemptStatusView,
+  autoDebitMandateStatusView,
+  buildAutoDebitSummaryView,
   automationErrorText,
   formatAutomationDate,
   jobStatusView,
+  isAutoDebitJobType,
   jobTypeLabel,
   scheduleStatusView
 } from "../../../lib/billing-automation-view-model";
+import {
+  AutoDebitOperationsPanel,
+  type AdminAutoDebitAttempt,
+  type AdminPaymentMandate
+} from "./auto-debit-operations-panel";
 
 interface AutomationSummary {
+  autoDebit: {
+    attempts: Record<string, number>;
+    deadLetterCount: number;
+    mandates: Record<string, number>;
+    unallocatedPayments: { amount: string; count: number };
+    unknownCount: number;
+  };
   jobs: Record<string, number>;
   nextSchedule: {
     nextGenerateAt: string;
@@ -181,6 +198,10 @@ export default function MonthlyRentAutomationPage() {
   const [summary, setSummary] = useState<AutomationSummary | null>(null);
   const [schedules, setSchedules] = useState<BillingScheduleItem[]>([]);
   const [jobs, setJobs] = useState<BillingJobItem[]>([]);
+  const [mandates, setMandates] = useState<AdminPaymentMandate[]>([]);
+  const [debitAttempts, setDebitAttempts] = useState<AdminAutoDebitAttempt[]>([]);
+  const [mandateStatus, setMandateStatus] = useState<string>();
+  const [attemptStatus, setAttemptStatus] = useState<string>();
   const [schedulePage, setSchedulePage] = useState({
     current: 1,
     pageSize: 10,
@@ -198,7 +219,11 @@ export default function MonthlyRentAutomationPage() {
   const [manualResult, setManualResult] = useState<MonthlyRentBatchResult | null>(null);
 
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
-  const canView = permissions.has("billing:view") || permissions.has("billing:generate");
+  const canViewBilling = permissions.has("billing:view") || permissions.has("billing:generate");
+  const canViewAutoDebit = permissions.has("auto_debit:view");
+  const canExecuteAutoDebit = permissions.has("auto_debit:execute");
+  const canManageAutoDebit = permissions.has("auto_debit:manage");
+  const canView = canViewBilling || canViewAutoDebit;
   const generateAvailability = actionAvailability({
     allowed: canView,
     disabledReason: "当前账号无账单自动化操作权限",
@@ -210,20 +235,41 @@ export default function MonthlyRentAutomationPage() {
   const loadAutomation = useCallback(async () => {
     setAutomationLoading(true);
     try {
-      const [nextSummary, scheduleResult, jobResult] = await Promise.all([
-        apiFetch<AutomationSummary>("/billing/automation/summary"),
-        apiFetch<PageResult<BillingScheduleItem>>(
-          `/billing/automation/schedules?page=${schedulePage.current}&pageSize=${schedulePage.pageSize}`
-        ),
-        apiFetch<PageResult<BillingJobItem>>(
-          `/billing/automation/jobs?page=${jobPage.current}&pageSize=${jobPage.pageSize}${
-            showJobHistory ? "" : "&actionableOnly=true"
-          }`
-        )
-      ]);
+      const [nextSummary, scheduleResult, jobResult, mandateResult, attemptResult] =
+        await Promise.all([
+          apiFetch<AutomationSummary>("/billing/automation/summary"),
+          canViewBilling
+            ? apiFetch<PageResult<BillingScheduleItem>>(
+                `/billing/automation/schedules?page=${schedulePage.current}&pageSize=${schedulePage.pageSize}`
+              )
+            : emptyPage<BillingScheduleItem>(),
+          canViewBilling
+            ? apiFetch<PageResult<BillingJobItem>>(
+                `/billing/automation/jobs?page=${jobPage.current}&pageSize=${jobPage.pageSize}${
+                  showJobHistory ? "" : "&actionableOnly=true"
+                }`
+              )
+            : emptyPage<BillingJobItem>(),
+          canViewAutoDebit
+            ? apiFetch<PageResult<AdminPaymentMandate>>(
+                `/billing/automation/mandates?page=1&pageSize=50${
+                  mandateStatus ? `&status=${encodeURIComponent(mandateStatus)}` : ""
+                }`
+              )
+            : emptyPage<AdminPaymentMandate>(),
+          canViewAutoDebit
+            ? apiFetch<PageResult<AdminAutoDebitAttempt>>(
+                `/billing/automation/attempts?page=1&pageSize=50${
+                  attemptStatus ? `&status=${encodeURIComponent(attemptStatus)}` : ""
+                }`
+              )
+            : emptyPage<AdminAutoDebitAttempt>()
+        ]);
       setSummary(nextSummary);
       setSchedules(scheduleResult.items);
       setJobs(jobResult.items);
+      setMandates(mandateResult.items);
+      setDebitAttempts(attemptResult.items);
       setSchedulePage((current) => ({
         ...current,
         current: scheduleResult.page,
@@ -242,9 +288,13 @@ export default function MonthlyRentAutomationPage() {
       setAutomationLoading(false);
     }
   }, [
+    attemptStatus,
+    canViewAutoDebit,
+    canViewBilling,
     jobPage.current,
     jobPage.pageSize,
     message,
+    mandateStatus,
     schedulePage.current,
     schedulePage.pageSize,
     showJobHistory
@@ -361,6 +411,142 @@ export default function MonthlyRentAutomationPage() {
     });
   }
 
+  function confirmCancelJob(job: BillingJobItem) {
+    confirmReason("取消自动扣款任务", "请填写取消原因", async (reason) => {
+      setActionLoading(`cancel:${job.id}`);
+      try {
+        await apiFetch(`/billing/automation/jobs/${job.id}/cancel`, {
+          body: JSON.stringify({ reason }),
+          method: "POST"
+        });
+        void message.success("自动扣款任务已取消");
+        await loadAutomation();
+      } finally {
+        setActionLoading(null);
+      }
+    });
+  }
+
+  function confirmAttemptAction(
+    title: string,
+    attempt: AdminAutoDebitAttempt,
+    action: "query" | "debit"
+  ) {
+    confirmReason(title, "请填写操作原因", async (reason) => {
+      const key = `${action}:${attempt.id}`;
+      setActionLoading(key);
+      try {
+        await apiFetch(
+          action === "query"
+            ? `/billing/automation/attempts/${attempt.id}/query`
+            : `/billing/automation/bills/${attempt.billId}/debit`,
+          { body: JSON.stringify({ reason }), method: "POST" }
+        );
+        void message.success(action === "query" ? "扣款查询任务已提交" : "人工扣款任务已提交");
+        await loadAutomation();
+      } finally {
+        setActionLoading(null);
+      }
+    });
+  }
+
+  function confirmMandateAction(
+    title: string,
+    mandate: AdminPaymentMandate,
+    action: "sync" | "revoke"
+  ) {
+    confirmReason(title, "请填写操作原因", async (reason) => {
+      const key = `${action}:${mandate.id}`;
+      setActionLoading(key);
+      try {
+        await apiFetch(`/billing/automation/mandates/${mandate.id}/${action}`, {
+          body: JSON.stringify({ reason }),
+          method: "POST"
+        });
+        void message.success(action === "sync" ? "授权同步已完成" : "授权已关闭");
+        await loadAutomation();
+      } finally {
+        setActionLoading(null);
+      }
+    });
+  }
+
+  function confirmMockResult(attempt: AdminAutoDebitAttempt) {
+    let nextResult = "SUCCEEDED";
+    let reason = "";
+    modal.confirm({
+      cancelText: "取消",
+      content: (
+        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+          <Alert message="仅用于 Staging Mock 验收，不会发生真实扣款。" showIcon type="warning" />
+          <Select
+            defaultValue={nextResult}
+            onChange={(value) => {
+              nextResult = value;
+            }}
+            options={[
+              { label: "模拟成功", value: "SUCCEEDED" },
+              { label: "模拟可重试失败", value: "FAILED_RETRYABLE" },
+              { label: "模拟最终失败", value: "FAILED_FINAL" },
+              { label: "模拟结果不明", value: "UNKNOWN" }
+            ]}
+            style={{ width: "100%" }}
+          />
+          <Input.TextArea
+            onChange={(event) => {
+              reason = event.target.value;
+            }}
+            placeholder="请输入验收操作原因"
+            rows={3}
+          />
+        </Space>
+      ),
+      okText: "保存模拟结果",
+      onOk: async () => {
+        if (!reason.trim()) {
+          void message.error("请输入操作原因");
+          throw new Error("reason required");
+        }
+        await apiFetch(`/billing/automation/mock/attempts/${attempt.id}/next-result`, {
+          body: JSON.stringify({ nextResult, reason: reason.trim() }),
+          method: "POST"
+        });
+        void message.success("模拟结果已保存");
+        await loadAutomation();
+      },
+      title: "设置下一次 Mock 查询结果"
+    });
+  }
+
+  function confirmReason(
+    title: string,
+    placeholder: string,
+    onSubmit: (reason: string) => Promise<void>
+  ) {
+    let reason = "";
+    modal.confirm({
+      cancelText: "取消",
+      content: (
+        <Input.TextArea
+          onChange={(event) => {
+            reason = event.target.value;
+          }}
+          placeholder={placeholder}
+          rows={3}
+        />
+      ),
+      okText: "确认执行",
+      onOk: async () => {
+        if (!reason.trim()) {
+          void message.error("请输入操作原因");
+          throw new Error("reason required");
+        }
+        await onSubmit(reason.trim());
+      },
+      title
+    });
+  }
+
   async function submitManual(values: MonthlyRentBatchFormValues, dryRun: boolean) {
     if (!values.billingDate) {
       void message.error("请选择账单生成日期");
@@ -388,9 +574,7 @@ export default function MonthlyRentAutomationPage() {
   const reconcileColumns: ColumnsType<ReconcileItem> = [
     {
       dataIndex: "orderNo",
-      render: (value: string, record) => (
-        <Link href={`/orders/${record.orderId}`}>{value}</Link>
-      ),
+      render: (value: string, record) => <Link href={`/orders/${record.orderId}`}>{value}</Link>,
       title: "订单",
       width: 170
     },
@@ -416,9 +600,7 @@ export default function MonthlyRentAutomationPage() {
         return (
           <Space orientation="vertical" size={0}>
             <Tag color={view.color}>{view.label}</Tag>
-            <Typography.Text type="secondary">
-              {record.leaseStatus ?? "缺失"}
-            </Typography.Text>
+            <Typography.Text type="secondary">{record.leaseStatus ?? "缺失"}</Typography.Text>
           </Space>
         );
       },
@@ -602,6 +784,17 @@ export default function MonthlyRentAutomationPage() {
           >
             重试
           </ActionButton>
+        ) : record.jobStatus === "PENDING" &&
+          isAutoDebitJobType(record.jobType) &&
+          canExecuteAutoDebit ? (
+          <Button
+            danger
+            loading={actionLoading === `cancel:${record.id}`}
+            onClick={() => confirmCancelJob(record)}
+            size="small"
+          >
+            取消
+          </Button>
         ) : (
           "-"
         ),
@@ -642,6 +835,7 @@ export default function MonthlyRentAutomationPage() {
       width: 260
     }
   ];
+  const autoDebitSummary = buildAutoDebitSummaryView(summary?.autoDebit);
 
   return (
     <ProtectedShell>
@@ -658,7 +852,7 @@ export default function MonthlyRentAutomationPage() {
 
         {!loadingMe && !canView ? <Alert message="无账单查看权限" showIcon type="warning" /> : null}
 
-        <Row gutter={[12, 12]}>
+        {canViewBilling ? <Row gutter={[12, 12]}>
           <SummaryCard
             loading={automationLoading}
             title="账单计划"
@@ -680,9 +874,59 @@ export default function MonthlyRentAutomationPage() {
             value={summary?.jobs.DEAD_LETTER ?? 0}
             valueStyle={(summary?.jobs.DEAD_LETTER ?? 0) > 0 ? { color: "#cf1322" } : undefined}
           />
-        </Row>
+        </Row> : null}
 
-        <Card
+        {canViewAutoDebit ? (
+          <Row gutter={[12, 12]}>
+            <SummaryCard
+              loading={automationLoading}
+              title="有效授权"
+              value={autoDebitSummary.activeMandates}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="待确认授权"
+              value={autoDebitSummary.pendingMandates}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="扣款处理中"
+              value={autoDebitSummary.processingAttempts}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="结果不明"
+              value={autoDebitSummary.unknownAttempts}
+              valueStyle={
+                autoDebitSummary.unknownAttempts > 0
+                  ? { color: "#d48806" }
+                  : undefined
+              }
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="扣款失败"
+              value={autoDebitSummary.failedAttempts}
+              valueStyle={
+                autoDebitSummary.failedAttempts > 0
+                  ? { color: "#cf1322" }
+                  : undefined
+              }
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title={`未分配收款（${formatYuan(autoDebitSummary.unallocatedAmount)}）`}
+              value={autoDebitSummary.unallocatedCount}
+              valueStyle={
+                autoDebitSummary.unallocatedCount > 0
+                  ? { color: "#cf1322" }
+                  : undefined
+              }
+            />
+          </Row>
+        ) : null}
+
+        {canViewBilling ? <Card
           extra={
             <Space>
               <Button
@@ -740,11 +984,7 @@ export default function MonthlyRentAutomationPage() {
             size="small"
           />
           {reconcileResult ? (
-            <Space
-              orientation="vertical"
-              size={12}
-              style={{ marginTop: 16, width: "100%" }}
-            >
+            <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
               <Alert
                 message={
                   reconcileResult.dryRun
@@ -769,11 +1009,12 @@ export default function MonthlyRentAutomationPage() {
               />
             </Space>
           ) : null}
-        </Card>
+        </Card> : null}
 
-        <Card title="订单账单计划">
-          <Table
-            columns={scheduleColumns}
+        {canViewBilling ? (
+          <Card title="订单账单计划">
+            <Table
+              columns={scheduleColumns}
             dataSource={schedules}
             loading={automationLoading}
             onChange={(pagination) =>
@@ -791,13 +1032,15 @@ export default function MonthlyRentAutomationPage() {
             }}
             rowKey="id"
             scroll={{ x: 1260 }}
-            size="small"
-          />
-        </Card>
+              size="small"
+            />
+          </Card>
+        ) : null}
 
-        <Card
-          extra={
-            <Checkbox
+        {canViewBilling ? (
+          <Card
+            extra={
+              <Checkbox
               checked={showJobHistory}
               onChange={(event) => {
                 setShowJobHistory(event.target.checked);
@@ -828,13 +1071,74 @@ export default function MonthlyRentAutomationPage() {
             }}
             rowKey="id"
             scroll={{ x: 1300 }}
-            size="small"
-          />
-        </Card>
+              size="small"
+            />
+          </Card>
+        ) : null}
 
-        <Card title="应急兜底：人工批量生成">
-          <Space orientation="vertical" size={16} style={{ width: "100%" }}>
-            <Alert
+        {canViewAutoDebit ? (
+          <>
+            <Card size="small">
+              <Space wrap>
+                <Select
+                  allowClear
+                  onChange={setMandateStatus}
+                  options={["PENDING", "ACTIVE", "SUSPENDED", "REVOKED", "EXPIRED", "FAILED"].map(
+                    (value) => ({
+                      label: `授权：${autoDebitMandateStatusView(value).label}`,
+                      value
+                    })
+                  )}
+                  placeholder="筛选授权状态"
+                  style={{ minWidth: 180 }}
+                  value={mandateStatus}
+                />
+                <Select
+                  allowClear
+                  onChange={setAttemptStatus}
+                  options={[
+                    "CREATED",
+                    "SUBMITTING",
+                    "PROCESSING",
+                    "UNKNOWN",
+                    "SUCCEEDED",
+                    "FAILED_RETRYABLE",
+                    "FAILED_FINAL",
+                    "CANCELLED"
+                  ].map((value) => ({
+                    label: `扣款：${autoDebitAttemptStatusView(value).label}`,
+                    value
+                  }))}
+                  placeholder="筛选扣款状态"
+                  style={{ minWidth: 180 }}
+                  value={attemptStatus}
+                />
+                <Button icon={<ReloadOutlined />} onClick={() => void loadAutomation()}>
+                  刷新自动扣款
+                </Button>
+              </Space>
+            </Card>
+            <AutoDebitOperationsPanel
+              attempts={debitAttempts}
+              canExecute={canExecuteAutoDebit}
+              canManage={canManageAutoDebit}
+              loading={automationLoading}
+              mandates={mandates}
+              onManualDebit={(attempt) => confirmAttemptAction("发起人工扣款", attempt, "debit")}
+              onMockResult={confirmMockResult}
+              onQueryAttempt={(attempt) => confirmAttemptAction("查询扣款结果", attempt, "query")}
+              onRevokeMandate={(mandate) =>
+                confirmMandateAction("关闭自动扣款授权", mandate, "revoke")
+              }
+              onSyncMandate={(mandate) => confirmMandateAction("同步自动扣款授权", mandate, "sync")}
+            />
+          </>
+        ) : null}
+
+        {canViewBilling ? (
+          <Card title="应急兜底：人工批量生成">
+            <Space orientation="vertical" size={16} style={{ width: "100%" }}>
+              <Alert
               message="仅在 Worker 关闭或自动化异常尚未恢复时使用。请先试算；正式生成仍复用账单来源键，不会重复创建同一账期账单。"
               showIcon
               type="warning"
@@ -920,9 +1224,10 @@ export default function MonthlyRentAutomationPage() {
                   size="small"
                 />
               </>
-            ) : null}
-          </Space>
-        </Card>
+              ) : null}
+            </Space>
+          </Card>
+        ) : null}
       </Space>
 
       <Modal
@@ -987,6 +1292,10 @@ function SummaryCard({
 
 function sumCounts(counts?: Record<string, number>) {
   return counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
+}
+
+function emptyPage<T>(): Promise<PageResult<T>> {
+  return Promise.resolve({ items: [], page: 1, pageSize: 0, total: 0 });
 }
 
 function formatYuan(value?: unknown) {

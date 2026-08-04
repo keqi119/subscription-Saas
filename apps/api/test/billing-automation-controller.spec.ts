@@ -8,15 +8,23 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { validate } from "class-validator";
 import { describe, expect, it, vi } from "vitest";
 
-import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
+import {
+  REQUIRED_ANY_PERMISSIONS_KEY,
+  REQUIRED_PERMISSIONS_KEY
+} from "../src/auth/auth.decorators";
 import { BillingAutomationAdminService } from "../src/billing-automation/billing-automation.admin.service";
 import { BillingAutomationController } from "../src/billing-automation/billing-automation.controller";
 import { PauseBillingScheduleDto } from "../src/billing-automation/billing-automation.dto";
 
 describe("BillingAutomationController", () => {
-  it("uses billing view permission for all read endpoints", () => {
+  it("allows billing or auto-debit viewers to read summary while protecting billing detail", () => {
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_ANY_PERMISSIONS_KEY,
+        BillingAutomationController.prototype.summary
+      )
+    ).toEqual([PermissionCode.BILLING_VIEW, PermissionCode.AUTO_DEBIT_VIEW]);
     for (const handler of [
-      BillingAutomationController.prototype.summary,
       BillingAutomationController.prototype.listSchedules,
       BillingAutomationController.prototype.listJobs
     ]) {

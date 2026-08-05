@@ -51,6 +51,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
     this.nextMaintenanceAt = now + MAINTENANCE_INTERVAL_MS;
     try {
       await this.jobs.enqueueDueEnrollmentJobs(new Date(now));
+      await this.jobs.reconcileExecutingChanges();
     } catch (error) {
       this.nextMaintenanceAt = 0;
       throw error;
@@ -58,9 +59,10 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleClaimedJob(job: ClaimedBillingAutomationJob) {
+    let completed: boolean;
     try {
       const result = await this.jobs.handle(job);
-      await this.repository.complete(job.id, job.leaseToken, jsonValue(result));
+      completed = await this.repository.complete(job.id, job.leaseToken, jsonValue(result));
     } catch (error) {
       const failedAttempt = job.attemptCount + 1;
       const failure = {
@@ -69,7 +71,8 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
         retryable: true
       };
       if (failedAttempt >= job.maxAttempts) {
-        await this.repository.deadLetter(job.id, job.leaseToken, failure);
+        const deadLettered = await this.repository.deadLetter(job.id, job.leaseToken, failure);
+        if (deadLettered) await this.jobs.markManualTakeover(job, failure);
       } else {
         await this.repository.reschedule(job.id, job.leaseToken, {
           delayMs: retryDelayMs(job.attemptCount),
@@ -77,6 +80,18 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
         });
       }
       this.logger.warn({ errorCode: failure.code, jobId: job.id, jobType: job.jobType });
+      return;
+    }
+    if (completed) {
+      try {
+        await this.jobs.afterComplete(job);
+      } catch (error) {
+        this.logger.error({
+          error,
+          jobId: job.id,
+          operation: "SUBSCRIPTION_CHANGE_COMPLETION_RECONCILE"
+        });
+      }
     }
   }
 

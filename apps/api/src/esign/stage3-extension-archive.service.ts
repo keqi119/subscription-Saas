@@ -158,6 +158,24 @@ export class Stage3ExtensionArchiveService {
           subscriptionPlanId: quote.subscriptionPlanId
         }
       });
+      const activationIdempotencyKey =
+        `extension-activate:${segment.id}:${dateKey(segment.startDate)}`;
+      await tx.subscriptionAutomationJob.upsert({
+        create: {
+          availableAt: shanghaiStartOfDate(segment.startDate),
+          changeOrderId: change.id,
+          contractSegmentId: segment.id,
+          idempotencyKey: activationIdempotencyKey,
+          jobType: SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
+          orderId: change.orderId,
+          payload: {
+            segmentId: segment.id,
+            startDate: dateKey(segment.startDate)
+          }
+        },
+        update: {},
+        where: { idempotencyKey: activationIdempotencyKey }
+      });
       await tx.subscriptionChangeOrder.update({
         data: {
           status: SubscriptionChangeStatus.SCHEDULED,
@@ -373,4 +391,14 @@ async function lockArchiveRows(
 
 function addUtcDays(value: Date, days: number) {
   return new Date(value.getTime() + days * 86_400_000);
+}
+
+function dateKey(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function shanghaiStartOfDate(value: Date) {
+  return new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()) - 8 * 3_600_000
+  );
 }

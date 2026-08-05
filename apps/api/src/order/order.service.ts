@@ -3222,7 +3222,7 @@ type OrderEntitlementSnapshot = {
   sourceSnapshot: unknown;
 };
 
-type OrderEntitlementGrantInput = {
+export type OrderEntitlementGrantInput = {
   entitlementName: string;
   entitlementType: EntitlementType;
   remainingAmount: Prisma.Decimal | null;
@@ -3987,6 +3987,12 @@ function assertOrderNotDelivered(order: OrderWithDetails) {
   if (order.actualDeliveryAt || order.orderStatus === OrderStatus.ACTIVE) {
     throw new BadRequestException(DELIVERY_ALREADY_DONE_MESSAGE);
   }
+}
+
+export function buildEntitlementGrantInputsFromSnapshot(
+  snapshot: unknown
+): OrderEntitlementGrantInput[] {
+  return buildOrderEntitlementGrantInputs(normalizeEntitlementPackageSnapshot(snapshot));
 }
 
 function assertDeliveryConfirmationValues(

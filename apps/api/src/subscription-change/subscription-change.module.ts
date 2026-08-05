@@ -21,6 +21,7 @@ import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 
 @Module({
   controllers: [RenewalConsiderationController, SubscriptionChangeController],
@@ -29,6 +30,7 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
     SUBSCRIPTION_CHANGE_CONFIG,
     SubscriptionExtensionPricingService,
     SubscriptionExtensionContractService,
+    SubscriptionExtensionActivationService,
     SubscriptionExtensionService
   ],
   imports: [
@@ -48,6 +50,7 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
     SubscriptionChangeWorker,
     SubscriptionExtensionPricingService,
     SubscriptionExtensionContractService,
+    SubscriptionExtensionActivationService,
     SubscriptionExtensionService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,

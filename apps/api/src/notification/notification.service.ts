@@ -79,6 +79,15 @@ export interface NotifyRenewalReminderInAppInput {
   slot: "D30" | "D14" | "D3";
 }
 
+export interface NotifyExtensionEffectiveInAppInput {
+  changeOrderId: string;
+  contractedThrough: string;
+  customerId: string;
+  idempotencyKey: string;
+  orderNo: string;
+  segmentId: string;
+}
+
 const TEMPLATE_CODE_BY_EVENT: Partial<
   Record<
     NotificationEventType,
@@ -325,6 +334,38 @@ export class NotificationService {
           data: { ...eventData, attempts: 1, id: eventId }
         });
     return { event, record };
+  }
+
+  async notifyExtensionEffectiveInApp(input: NotifyExtensionEffectiveInAppInput) {
+    const notificationNo = extensionNotificationNo(input.idempotencyKey);
+    const existing = await this.prisma.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    if (existing) return existing;
+
+    return this.prisma.notificationRecord.create({
+      data: {
+        channel: NotificationChannel.IN_APP,
+        content: `订单 ${input.orderNo} 的续期协议已生效，当前履约期已延长至 ${input.contractedThrough}。`,
+        customerId: input.customerId,
+        notificationNo,
+        notificationStatus: NotificationStatus.SENT,
+        notificationType: NotificationType.SYSTEM,
+        payload: toJsonValue({
+          changeOrderId: input.changeOrderId,
+          contractedThrough: input.contractedThrough,
+          orderNo: input.orderNo,
+          segmentId: input.segmentId
+        }),
+        sentAt: new Date(),
+        templateCode: "SUBSCRIPTION_EXTENSION_EFFECTIVE_IN_APP",
+        title: "续期协议已生效",
+        url: normalizePortalUrl(
+          `/portal/subscription-changes/${encodeURIComponent(input.changeOrderId)}`,
+          this.portalBaseUrl
+        )
+      }
+    });
   }
 
   async notifyBillLifecycle(input: NotifyBillLifecycleInput) {
@@ -1692,6 +1733,10 @@ function billNotificationNo(
 
 function renewalNotificationNo(idempotencyKey: string) {
   return `RNW${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
+}
+
+function extensionNotificationNo(idempotencyKey: string) {
+  return `EXT${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
 }
 
 function billNotificationEventId(idempotencyKey: string) {

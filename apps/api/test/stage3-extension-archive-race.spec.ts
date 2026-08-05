@@ -48,6 +48,22 @@ describe("Stage3ExtensionArchiveService deadline arbitration", () => {
         ])
       })
     }));
+    expect((harness.tx.subscriptionAutomationJob as {
+      upsert: ReturnType<typeof vi.fn>;
+    }).upsert).toHaveBeenCalledWith({
+      create: expect.objectContaining({
+        availableAt: new Date("2026-09-02T16:00:00.000Z"),
+        changeOrderId: "change-1",
+        contractSegmentId: "segment-extension",
+        idempotencyKey: "extension-activate:segment-extension:2026-09-03",
+        jobType: "EXTENSION_SEGMENT_ACTIVATE",
+        orderId: "order-1"
+      }),
+      update: {},
+      where: {
+        idempotencyKey: "extension-activate:segment-extension:2026-09-03"
+      }
+    });
   });
 
   it("is idempotent for duplicate and out-of-order callbacks", async () => {
@@ -247,6 +263,10 @@ function archiveHarness(options: ArchiveHarnessOptions = {}) {
       updateMany: vi.fn(async () => ({ count: 3 }))
     },
     subscriptionAutomationJob: {
+      upsert: vi.fn(async ({ create }: { create: Record<string, unknown> }) => ({
+        ...create,
+        id: "job-activate"
+      })),
       updateMany: vi.fn(async () => ({ count: 4 }))
     },
     subscriptionChangeOrder: {

@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TYPE "subscription_change_type" AS ENUM ('EXTENSION');
 CREATE TYPE "subscription_change_status" AS ENUM (
   'DRAFT',
@@ -407,5 +405,3 @@ FOREIGN KEY ("contract_segment_id") REFERENCES "subscription_contract_segment"("
 ALTER TABLE "subscription_automation_job"
 ADD CONSTRAINT "subscription_automation_job_renewal_consideration_id_fkey"
 FOREIGN KEY ("renewal_consideration_id") REFERENCES "renewal_consideration"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
-COMMIT;

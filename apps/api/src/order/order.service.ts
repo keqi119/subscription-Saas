@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PermissionCode } from "@subscription-saas/shared";
 import {
@@ -2630,6 +2630,11 @@ export class OrderService {
 
   async createOrderChange(orderId: string, dto: CreateOrderChangeDto, user: RequestUser, context: RequestContext) {
     ensureUserPermission(user, PermissionCode.ORDER_CHANGE_CREATE);
+    if (dto.changeType === OrderChangeType.EXTENSION) {
+      throw new ConflictException(
+        "Contract extensions must be created through the V2 subscription-change workflow."
+      );
+    }
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
     ensureAllowedChangeType(dto.changeType);

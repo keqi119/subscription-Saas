@@ -6024,53 +6024,56 @@ model ContractESignCallbackLog {
 }
 
 model SubscriptionChangeOrder {
-  id                         String                        @id @default(uuid()) @db.Uuid
-  changeNo                   String                        @unique @map("change_no") @db.VarChar(64)
-  orderId                    String                        @map("order_id") @db.Uuid
-  order                      SubscriptionOrder             @relation(fields: [orderId], references: [id])
-  changeType                 SubscriptionChangeType        @default(EXTENSION) @map("change_type")
-  status                     SubscriptionChangeStatus      @default(DRAFT)
-  sourceSegmentId            String                        @map("source_segment_id") @db.Uuid
-  sourceSegment              SubscriptionContractSegment   @relation("SubscriptionChangeSourceSegment", fields: [sourceSegmentId], references: [id])
-  renewalConsiderationId     String?                       @unique @map("renewal_consideration_id") @db.Uuid
-  renewalConsideration       RenewalConsideration?         @relation("SubscriptionChangeOriginConsideration", fields: [renewalConsiderationId], references: [id])
-  linkedRenewalConsideration RenewalConsideration?         @relation("RenewalConsiderationChangeOrder")
-  extensionMonths            Int                           @map("extension_months")
-  pricingMode                SubscriptionChangePricingMode @map("pricing_mode")
-  currentQuoteId             String?                       @unique @map("current_quote_id") @db.Uuid
-  currentQuote               SubscriptionChangeQuote?      @relation("SubscriptionChangeCurrentQuote", fields: [currentQuoteId], references: [id])
-  confirmedQuoteId           String?                       @unique @map("confirmed_quote_id") @db.Uuid
-  confirmedQuote             SubscriptionChangeQuote?      @relation("SubscriptionChangeConfirmedQuote", fields: [confirmedQuoteId], references: [id])
-  contractId                 String?                       @unique @map("contract_id") @db.Uuid
-  contract                   Contract?                     @relation(fields: [contractId], references: [id])
-  targetStartDate            DateTime                      @map("target_start_date") @db.Date
-  targetEndDate              DateTime                      @map("target_end_date") @db.Date
-  completionDeadlineAt       DateTime                      @map("completion_deadline_at") @db.Timestamptz(6)
-  priceOverrideReason        String?                       @map("price_override_reason") @db.Text
-  priceOverrideApprovedBy    String?                       @map("price_override_approved_by") @db.Uuid
-  priceOverrideApprover      User?                         @relation("SubscriptionChangePriceOverrideApprover", fields: [priceOverrideApprovedBy], references: [id])
-  priceOverrideApprovedAt    DateTime?                     @map("price_override_approved_at") @db.Timestamptz(6)
-  cancelReason               String?                       @map("cancel_reason") @db.Text
-  failureCode                String?                       @map("failure_code") @db.VarChar(128)
-  failureMessage             String?                       @map("failure_message") @db.Text
-  manualTakeoverReason       String?                       @map("manual_takeover_reason") @db.Text
-  manualTakeoverBy           String?                       @map("manual_takeover_by") @db.Uuid
-  manualTakeoverUser         User?                         @relation("SubscriptionChangeManualTakeoverUser", fields: [manualTakeoverBy], references: [id])
-  manualTakeoverAt           DateTime?                     @map("manual_takeover_at") @db.Timestamptz(6)
-  version                    Int                           @default(0)
-  quotes                     SubscriptionChangeQuote[]     @relation("SubscriptionChangeQuotes")
-  targetSegment              SubscriptionContractSegment?  @relation("SubscriptionChangeTargetSegment")
-  automationJobs             SubscriptionAutomationJob[]
-  createdAt                  DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                  DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                  String?                       @map("created_by") @db.Uuid
-  updatedBy                  String?                       @map("updated_by") @db.Uuid
+  id                              String                        @id @default(uuid()) @db.Uuid
+  changeNo                        String                        @unique @map("change_no") @db.VarChar(64)
+  orderId                         String                        @map("order_id") @db.Uuid
+  order                           SubscriptionOrder             @relation(fields: [orderId], references: [id])
+  changeType                      SubscriptionChangeType        @default(EXTENSION) @map("change_type")
+  status                          SubscriptionChangeStatus      @default(DRAFT)
+  sourceSegmentId                 String                        @map("source_segment_id") @db.Uuid
+  sourceSegment                   SubscriptionContractSegment   @relation("SubscriptionChangeSourceSegment", fields: [sourceSegmentId], references: [id])
+  renewalConsiderationId          String?                       @unique @map("renewal_consideration_id") @db.Uuid
+  renewalConsideration            RenewalConsideration?         @relation("SubscriptionChangeOriginConsideration", fields: [renewalConsiderationId], references: [id])
+  linkedRenewalConsideration      RenewalConsideration?         @relation("RenewalConsiderationChangeOrder")
+  extensionMonths                 Int                           @map("extension_months")
+  pricingMode                     SubscriptionChangePricingMode @map("pricing_mode")
+  currentQuoteId                  String?                       @unique @map("current_quote_id") @db.Uuid
+  currentQuote                    SubscriptionChangeQuote?      @relation("SubscriptionChangeCurrentQuote", fields: [currentQuoteId], references: [id])
+  confirmedQuoteId                String?                       @unique @map("confirmed_quote_id") @db.Uuid
+  confirmedQuote                  SubscriptionChangeQuote?      @relation("SubscriptionChangeConfirmedQuote", fields: [confirmedQuoteId], references: [id])
+  contractId                      String?                       @unique @map("contract_id") @db.Uuid
+  contract                        Contract?                     @relation(fields: [contractId], references: [id])
+  targetStartDate                 DateTime                      @map("target_start_date") @db.Date
+  targetEndDate                   DateTime                      @map("target_end_date") @db.Date
+  completionDeadlineAt            DateTime                      @map("completion_deadline_at") @db.Timestamptz(6)
+  priceOverrideReason             String?                       @map("price_override_reason") @db.Text
+  priceOverrideApprovedBy         String?                       @map("price_override_approved_by") @db.Uuid
+  priceOverrideApprover           User?                         @relation("SubscriptionChangePriceOverrideApprover", fields: [priceOverrideApprovedBy], references: [id])
+  priceOverrideApprovedAt         DateTime?                     @map("price_override_approved_at") @db.Timestamptz(6)
+  customerConfirmationPublishedAt DateTime?                     @map("customer_confirmation_published_at") @db.Timestamptz(6)
+  customerConfirmationPublishedBy String?                       @map("customer_confirmation_published_by") @db.Uuid
+  cancelReason                    String?                       @map("cancel_reason") @db.Text
+  failureCode                     String?                       @map("failure_code") @db.VarChar(128)
+  failureMessage                  String?                       @map("failure_message") @db.Text
+  manualTakeoverReason            String?                       @map("manual_takeover_reason") @db.Text
+  manualTakeoverBy                String?                       @map("manual_takeover_by") @db.Uuid
+  manualTakeoverUser              User?                         @relation("SubscriptionChangeManualTakeoverUser", fields: [manualTakeoverBy], references: [id])
+  manualTakeoverAt                DateTime?                     @map("manual_takeover_at") @db.Timestamptz(6)
+  version                         Int                           @default(0)
+  quotes                          SubscriptionChangeQuote[]     @relation("SubscriptionChangeQuotes")
+  targetSegment                   SubscriptionContractSegment?  @relation("SubscriptionChangeTargetSegment")
+  automationJobs                  SubscriptionAutomationJob[]
+  createdAt                       DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                       DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                       String?                       @map("created_by") @db.Uuid
+  updatedBy                       String?                       @map("updated_by") @db.Uuid
 
   @@index([orderId, createdAt])
   @@index([sourceSegmentId])
   @@index([status])
   @@index([completionDeadlineAt])
   @@index([priceOverrideApprovedBy])
+  @@index([customerConfirmationPublishedAt])
   @@index([manualTakeoverBy])
   @@map("subscription_change_order")
 }
@@ -6114,6 +6117,23 @@ model SubscriptionChangeQuote {
   @@index([subscriptionPlanId])
   @@index([validUntil])
   @@map("subscription_change_quote")
+}
+
+model SubscriptionChangeCommand {
+  id             String    @id @default(uuid()) @db.Uuid
+  actorId        String    @map("actor_id") @db.Uuid
+  operation      String    @db.VarChar(64)
+  idempotencyKey String    @map("idempotency_key") @db.VarChar(128)
+  requestHash    String    @map("request_hash") @db.VarChar(64)
+  resourceType   String?   @map("resource_type") @db.VarChar(32)
+  resourceId     String?   @map("resource_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  @@unique([actorId, operation, idempotencyKey])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("subscription_change_command")
 }
 
 model SubscriptionContractSegment {

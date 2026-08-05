@@ -1,3 +1,5 @@
+import { HttpException, HttpStatus } from "@nestjs/common";
+
 export type ContractSegmentErrorCode =
   | "BASE_SEGMENT_SOURCE_INCOMPLETE"
   | "CONTRACT_SEGMENT_INVALID_DATE_RANGE"
@@ -13,5 +15,15 @@ export class ContractSegmentError extends Error {
     super(message);
     this.name = "ContractSegmentError";
     this.code = code;
+  }
+}
+
+export class SubscriptionChangeError extends HttpException {
+  constructor(
+    public readonly code: string,
+    message: string,
+    status: HttpStatus = HttpStatus.CONFLICT
+  ) {
+    super({ code, message }, status);
   }
 }

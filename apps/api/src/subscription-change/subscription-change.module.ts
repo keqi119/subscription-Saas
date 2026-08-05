@@ -4,6 +4,7 @@ import { AuditModule } from "../audit/audit.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
+import { ESignModule } from "../esign/esign.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
@@ -41,6 +42,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     BillingAutomationModule,
     ContractSegmentModule,
     ContractModule,
+    ESignModule,
     NotificationModule,
     PrismaModule,
     SmsModule,

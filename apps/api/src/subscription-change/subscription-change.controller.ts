@@ -14,6 +14,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
+import { ESignService } from "../esign/esign.service";
 import {
   ApproveSubscriptionExtensionPriceDto,
   CreateSubscriptionExtensionDto,
@@ -31,7 +32,8 @@ import { SubscriptionExtensionContractService } from "./subscription-extension-c
 export class SubscriptionChangeController {
   constructor(
     private readonly service: SubscriptionExtensionService,
-    @Optional() private readonly contractService?: SubscriptionExtensionContractService
+    @Optional() private readonly contractService?: SubscriptionExtensionContractService,
+    @Optional() private readonly esignService?: ESignService
   ) {}
 
   @Post(":id/contracts")
@@ -172,6 +174,46 @@ export class SubscriptionChangeController {
     ));
   }
 
+  @Post(":id/jobs/:jobId/retry")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE)
+  async retryAutomationJob(
+    @Param("id") id: string,
+    @Param("jobId") jobId: string,
+    @Body() dto: VersionedSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return apiSafe(await this.service.retryAutomationJob(
+      id,
+      jobId,
+      { ...dto, idempotencyKey },
+      request.user,
+      requestContext(request)
+    ));
+  }
+
+  @Post(":id/esign/start")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_ESIGN_RETRY)
+  async startESign(
+    @Param("id") id: string,
+    @Body() dto: VersionedSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.startOrRetryESign(id, dto, idempotencyKey, request);
+  }
+
+  @Post(":id/esign/retry")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_ESIGN_RETRY)
+  async retryESign(
+    @Param("id") id: string,
+    @Body() dto: VersionedSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.startOrRetryESign(id, dto, idempotencyKey, request);
+  }
+
   @Get("orders/:orderId")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async listForOrder(@Param("orderId") orderId: string, @Req() request: AuthenticatedRequest) {
@@ -188,6 +230,27 @@ export class SubscriptionChangeController {
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async get(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return apiSafe(await this.service.get(id, request.user));
+  }
+
+  private async startOrRetryESign(
+    id: string,
+    dto: VersionedSubscriptionChangeDto,
+    idempotencyKey: string | undefined,
+    request: AuthenticatedRequest
+  ) {
+    if (!this.esignService) {
+      throw new Error("SUBSCRIPTION_EXTENSION_ESIGN_SERVICE_MISSING");
+    }
+    return apiSafe(await this.service.startOrRetryESign(
+      id,
+      { ...dto, idempotencyKey },
+      request.user,
+      (contractId) => this.esignService!.createTaskForContract(
+        contractId,
+        request.user,
+        requestContext(request)
+      )
+    ));
   }
 }
 

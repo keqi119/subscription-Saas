@@ -1,10 +1,13 @@
 import {
   AuditAction,
   BusinessType,
+  ContractSegmentStatus,
   OrderStatus,
   SubscriptionChangePricingMode,
   SubscriptionChangeQuoteStatus,
   SubscriptionChangeStatus,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -197,6 +200,170 @@ describe("SubscriptionExtensionService", () => {
     expect(quote).toMatchObject({ id: "quote-replayed", revision: 2 });
     expect(harness.prisma.subscriptionChangeQuote.create).not.toHaveBeenCalled();
   });
+
+  it("requeues only a dead-lettered extension execution job and returns the change to EXECUTING", async () => {
+    const harness = changeHarness({ status: SubscriptionChangeStatus.MANUAL_TAKEOVER });
+
+    await harness.service.retryAutomationJob(
+      "change-1",
+      "job-1",
+      { idempotencyKey: "retry-job-1", version: 0 },
+      harness.submitter,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionAutomationJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attemptCount: 0,
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          leaseToken: null
+        }),
+        where: expect.objectContaining({
+          changeOrderId: "change-1",
+          id: "job-1",
+          jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER
+        })
+      })
+    );
+    expect(harness.prisma.subscriptionChangeOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          failureCode: null,
+          failureMessage: null,
+          status: SubscriptionChangeStatus.EXECUTING
+        })
+      })
+    );
+  });
+
+  it("rejects retry for a non-extension or non-dead-letter job", async () => {
+    const harness = changeHarness({
+      jobStatus: SubscriptionAutomationJobStatus.COMPLETED,
+      status: SubscriptionChangeStatus.MANUAL_TAKEOVER
+    });
+
+    await expect(
+      harness.service.retryAutomationJob(
+        "change-1",
+        "job-1",
+        { idempotencyKey: "retry-job-2", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "SUBSCRIPTION_CHANGE_JOB_NOT_RETRYABLE", status: 409 });
+  });
+
+  it("restores a failed segment activation to SCHEDULED so the activation transition remains valid", async () => {
+    const harness = changeHarness({
+      jobType: SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
+      status: SubscriptionChangeStatus.MANUAL_TAKEOVER
+    });
+
+    await harness.service.retryAutomationJob(
+      "change-1",
+      "job-1",
+      { idempotencyKey: "retry-activation", version: 0 },
+      harness.submitter,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionChangeOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: SubscriptionChangeStatus.SCHEDULED })
+      })
+    );
+  });
+
+  it("rejects retry unless the current manual takeover was caused by the same target-segment job", async () => {
+    const harness = changeHarness({
+      changeFailureCode: "DIFFERENT_FAILURE",
+      status: SubscriptionChangeStatus.MANUAL_TAKEOVER
+    });
+
+    await expect(
+      harness.service.retryAutomationJob(
+        "change-1",
+        "job-1",
+        { idempotencyKey: "retry-unrelated", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "SUBSCRIPTION_CHANGE_JOB_RETRY_NOT_ALLOWED", status: 409 });
+  });
+
+  it("rejects a dead-letter retry from FAILED instead of the worker-owned manual takeover state", async () => {
+    const harness = changeHarness({ status: SubscriptionChangeStatus.FAILED });
+
+    await expect(
+      harness.service.retryAutomationJob(
+        "change-1",
+        "job-1",
+        { idempotencyKey: "retry-failed-change", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "SUBSCRIPTION_CHANGE_JOB_RETRY_NOT_ALLOWED", status: 409 });
+  });
+
+  it("validates feature flag and deadline under the change-scoped e-sign command", async () => {
+    const disabled = changeHarness({ enabled: false, status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT });
+    const expired = changeHarness({
+      now: new Date("2026-09-02T16:00:00.000Z"),
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
+    const start = vi.fn(async () => ({ id: "task-1" }));
+
+    await expect(
+      disabled.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-disabled", version: 0 },
+        disabled.submitter,
+        start
+      )
+    ).rejects.toMatchObject({ code: "SUBSCRIPTION_EXTENSION_DISABLED" });
+    await expect(
+      expired.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-expired", version: 0 },
+        expired.submitter,
+        start
+      )
+    ).rejects.toMatchObject({ code: "EXTENSION_DEADLINE_PASSED", status: 409 });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("does not start e-sign after the change leaves its signing state", async () => {
+    const harness = changeHarness({ status: SubscriptionChangeStatus.CANCELLED });
+    const start = vi.fn(async () => ({ id: "task-1" }));
+
+    await expect(
+      harness.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-cancelled", version: 0 },
+        harness.submitter,
+        start
+      )
+    ).rejects.toMatchObject({ code: "SUBSCRIPTION_CHANGE_ESIGN_NOT_ALLOWED", status: 409 });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("returns job retry audit events in the subscription change timeline", async () => {
+    const harness = changeHarness();
+
+    await harness.service.timeline("change-1", harness.submitter);
+
+    expect(harness.prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          entityId: { in: expect.arrayContaining(["change-1", "job-1"]) },
+          entityType: {
+            in: expect.arrayContaining(["subscription_change_job_retry"])
+          }
+        }
+      })
+    );
+  });
 });
 
 interface HarnessOptions {
@@ -211,6 +378,12 @@ interface HarnessOptions {
   sourceEndDate?: Date;
   status?: SubscriptionChangeStatus;
   orderStatus?: OrderStatus;
+  jobStatus?: SubscriptionAutomationJobStatus;
+  jobType?: SubscriptionAutomationJobType;
+  changeFailureCode?: string | null;
+  jobContractSegmentId?: string | null;
+  jobErrorCode?: string | null;
+  targetSegmentStatus?: ContractSegmentStatus;
   vehicleStatus?: VehicleStatus;
 }
 
@@ -227,6 +400,8 @@ function changeHarness(options: HarnessOptions = {}) {
       "subscription_change:quote",
       "subscription_change:price_override_approve",
       "subscription_change:submit",
+      "subscription_change:esign_retry",
+      "subscription_change:execute",
       "subscription_change:cancel",
       "subscription_change:manual_takeover",
       "subscription_change:view"
@@ -241,6 +416,10 @@ function changeHarness(options: HarnessOptions = {}) {
       createdBy: submitter.id,
       customerConfirmationPublishedAt: null as Date | null,
       customerConfirmationPublishedBy: null as string | null,
+      failureCode: options.changeFailureCode === undefined
+        ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
+        : options.changeFailureCode,
+      failureMessage: "provider timeout",
       currentQuoteId: options.existingQuote ? "quote-1" : null,
       extensionMonths: 6,
       id: "change-1",
@@ -307,7 +486,10 @@ function changeHarness(options: HarnessOptions = {}) {
   };
   const prisma = {
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
-    auditLog: { create: vi.fn(async () => ({})) },
+    auditLog: {
+      create: vi.fn(async () => ({})),
+      findMany: vi.fn(async () => [])
+    },
     subscriptionChangeCommand: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: "command-1", ...data })),
       findUnique: vi.fn(async () => commands.replay),
@@ -318,10 +500,16 @@ function changeHarness(options: HarnessOptions = {}) {
       findFirst: vi.fn(async () => (options.activeChange ? state.change : null)),
       findUnique: vi.fn(async () => ({
         ...state.change,
+        automationJobs: [{ id: "job-1" }],
+        contract: { id: "contract-1", status: "ARCHIVED" },
         currentQuote: options.existingQuote ? state.quote : null,
         order,
         quotes: options.existingQuote ? [state.quote] : [],
-        sourceSegment
+        sourceSegment,
+        targetSegment: {
+          id: "segment-extension",
+          status: options.targetSegmentStatus ?? ContractSegmentStatus.ACTIVE
+        }
       })),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(state.change, data);
@@ -333,6 +521,22 @@ function changeHarness(options: HarnessOptions = {}) {
           sourceSegment
         };
       })
+    },
+    subscriptionAutomationJob: {
+      findUnique: vi.fn(async () => ({
+        changeOrderId: "change-1",
+        contractSegmentId: options.jobContractSegmentId === undefined
+          ? "segment-extension"
+          : options.jobContractSegmentId,
+        id: "job-1",
+        lastErrorCode: options.jobErrorCode === undefined
+          ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
+          : options.jobErrorCode,
+        lastErrorMessage: "provider timeout",
+        jobStatus: options.jobStatus ?? SubscriptionAutomationJobStatus.DEAD_LETTER,
+        jobType: options.jobType ?? SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME
+      })),
+      updateMany: vi.fn(async () => ({ count: 1 }))
     },
     subscriptionChangeQuote: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({

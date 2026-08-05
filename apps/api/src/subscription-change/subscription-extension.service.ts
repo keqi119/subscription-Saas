@@ -11,6 +11,8 @@ import {
   SubscriptionChangeQuoteStatus,
   SubscriptionChangeStatus,
   SubscriptionChangeType,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleStatus
 } from "@prisma/client";
 
@@ -51,7 +53,9 @@ const changeDetailInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclu
   currentQuote: true,
   order: { include: { vehicle: true } },
   quotes: { orderBy: { revision: "desc" } },
-  renewalConsideration: true,
+  renewalConsideration: {
+    include: { reminders: { orderBy: { scheduledAt: "asc" } } }
+  },
   sourceSegment: true,
   targetSegment: true
 });
@@ -525,20 +529,181 @@ export class SubscriptionExtensionService {
     });
   }
 
+  async retryAutomationJob(
+    id: string,
+    jobId: string,
+    input: VersionedCommandInput,
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    this.assertWriteEnabled();
+    assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE);
+    assertIdempotencyKey(input.idempotencyKey);
+    assertVersion(input.version);
+    const operation = `RETRY_AUTOMATION_JOB:${jobId}`;
+    const replay = await this.replayChange(operation, input.idempotencyKey!, actor.id, {
+      id,
+      jobId,
+      ...input
+    });
+    if (replay) return replay;
+
+    const requestHash = commandHash({ id, jobId, ...input });
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await reserveCommand(
+          tx,
+          actor.id,
+          operation,
+          input.idempotencyKey!,
+          requestHash
+        );
+        await lockChange(tx, id);
+        const change = await tx.subscriptionChangeOrder.findUnique({
+          include: changeDetailInclude,
+          where: { id }
+        });
+        if (!change) throw changeNotFound();
+        assertVersionMatches(change.version, input.version);
+        if (change.status !== SubscriptionChangeStatus.MANUAL_TAKEOVER) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_JOB_RETRY_NOT_ALLOWED",
+            "Only a worker-owned manual takeover can retry an extension execution job."
+          );
+        }
+
+        const job = await tx.subscriptionAutomationJob.findUnique({ where: { id: jobId } });
+        if (!job || job.changeOrderId !== id) {
+          throw new SubscriptionChangeError(
+            "SUBSCRIPTION_CHANGE_JOB_NOT_FOUND",
+            "The subscription change automation job was not found.",
+            HttpStatus.NOT_FOUND
+          );
+        }
+        if (
+          job.jobStatus !== SubscriptionAutomationJobStatus.DEAD_LETTER ||
+          !RETRYABLE_EXTENSION_JOB_TYPES.includes(job.jobType)
+        ) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_JOB_NOT_RETRYABLE",
+            "Only dead-lettered extension execution jobs can be retried."
+          );
+        }
+        if (
+          job.contractSegmentId !== change.targetSegment?.id ||
+          !job.lastErrorCode ||
+          change.failureCode !== job.lastErrorCode
+        ) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_JOB_RETRY_NOT_ALLOWED",
+            "The failed job does not match the current target-segment manual takeover."
+          );
+        }
+
+        const retried = await tx.subscriptionAutomationJob.updateMany({
+          data: {
+            attemptCount: 0,
+            availableAt: this.config.now(),
+            completedAt: null,
+            jobStatus: SubscriptionAutomationJobStatus.PENDING,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            resultSnapshot: Prisma.DbNull,
+            startedAt: null
+          },
+          where: {
+            changeOrderId: id,
+            id: jobId,
+            jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER
+          }
+        });
+        if (retried.count !== 1) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_JOB_RETRY_CONFLICT",
+            "The automation job changed before it could be retried."
+          );
+        }
+
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            failureCode: null,
+            failureMessage: null,
+            status:
+              job.jobType === SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE
+                ? SubscriptionChangeStatus.SCHEDULED
+                : SubscriptionChangeStatus.EXECUTING,
+            updatedBy: actor.id,
+            version: { increment: 1 }
+          },
+          include: changeDetailInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          auditInput(
+            AuditAction.UPDATE,
+            "subscription_change_job_retry",
+            jobId,
+            actor,
+            context,
+            job,
+            { ...job, jobStatus: SubscriptionAutomationJobStatus.PENDING }
+          ),
+          tx
+        );
+        await completeCommand(tx, command.id, "CHANGE", updated.id, this.config.now());
+        return updated;
+      }, serializableTransaction);
+    } catch (error) {
+      return this.resolveWriteConflict(
+        error,
+        operation,
+        input.idempotencyKey!,
+        actor.id,
+        { id, jobId, ...input }
+      );
+    }
+  }
+
   async get(id: string, actor: RequestUser) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     return this.findChangeOrThrow(id);
   }
 
+  async startOrRetryESign<T>(
+    id: string,
+    input: VersionedCommandInput,
+    actor: RequestUser,
+    start: (contractId: string) => Promise<T>
+  ): Promise<T> {
+    this.assertWriteEnabled();
+    assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_ESIGN_RETRY);
+    assertIdempotencyKey(input.idempotencyKey);
+    assertVersion(input.version);
+
+    const change = await this.findChangeOrThrow(id);
+    assertVersionMatches(change.version, input.version);
+    assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
+    if (change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT) {
+      throw stateConflict(
+        "SUBSCRIPTION_CHANGE_ESIGN_NOT_ALLOWED",
+        "The subscription change is not ready for e-sign."
+      );
+    }
+    if (!change.contract) {
+      throw stateConflict(
+        "SUBSCRIPTION_CHANGE_CONTRACT_MISSING",
+        "The subscription extension contract is missing."
+      );
+    }
+    return start(change.contract.id);
+  }
+
   async listForOrder(orderId: string, actor: RequestUser) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     return this.prisma.subscriptionChangeOrder.findMany({
-      include: {
-        confirmedQuote: true,
-        currentQuote: true,
-        sourceSegment: true,
-        targetSegment: true
-      },
+      include: changeDetailInclude,
       orderBy: { createdAt: "desc" },
       where: { orderId }
     });
@@ -547,12 +712,22 @@ export class SubscriptionExtensionService {
   async timeline(id: string, actor: RequestUser) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     const change = await this.findChangeOrThrow(id);
-    const entityIds = [change.id, ...change.quotes.map((quote) => quote.id)];
+    const entityIds = [
+      change.id,
+      ...change.quotes.map((quote) => quote.id),
+      ...change.automationJobs.map((job) => job.id)
+    ];
     return this.prisma.auditLog.findMany({
       orderBy: { createdAt: "asc" },
       where: {
         entityId: { in: entityIds },
-        entityType: { in: ["subscription_change_order", "subscription_change_quote"] }
+        entityType: {
+          in: [
+            "subscription_change_order",
+            "subscription_change_quote",
+            "subscription_change_job_retry"
+          ]
+        }
       }
     });
   }
@@ -682,6 +857,13 @@ export class SubscriptionExtensionService {
     }
   }
 }
+
+const RETRYABLE_EXTENSION_JOB_TYPES: SubscriptionAutomationJobType[] = [
+  SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
+  SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
+  SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
+  SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE
+];
 
 function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
   if (!change.order.vehicle) {

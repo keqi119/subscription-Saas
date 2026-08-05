@@ -5,6 +5,7 @@ import { AutoDebitModule } from "../auto-debit/auto-debit.module";
 import { AuthModule } from "../auth/auth.module";
 import { FinanceModule } from "../finance/finance.module";
 import { NotificationModule } from "../notification/notification.module";
+import { ContractSegmentModule } from "../subscription-change/contract-segment.module";
 import { BillingAutomationAdminService } from "./billing-automation.admin.service";
 import { BillingAutomationController } from "./billing-automation.controller";
 import { BillingAutomationHandlers } from "./billing-automation.handlers";
@@ -19,6 +20,7 @@ import { BillingAutomationWorker } from "./billing-automation.worker";
     AuditModule,
     AutoDebitModule,
     AuthModule,
+    ContractSegmentModule,
     FinanceModule,
     NotificationModule
   ],

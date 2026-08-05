@@ -4,20 +4,24 @@ import {
   BillingScheduleStatus,
   BillStatus,
   BillType,
+  ContractSegmentStatus,
+  ContractSegmentType,
   LeaseStatus,
   OrderStatus,
   Prisma,
-  SubscriptionAutomationJobType
+  SubscriptionAutomationJobType,
+  SubscriptionChangeStatus
 } from "@prisma/client";
 
 import {
   FinanceService,
-  MonthlyRentAutomationCycleInput,
-  resolveMonthlyRentAmountWithSource
+  MonthlyRentAutomationCycleInput
 } from "../finance/finance.service";
 import { AutoDebitScheduler } from "../auto-debit/auto-debit.scheduler";
 import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { PrismaService } from "../prisma/prisma.service";
+import { ContractSegmentService } from "../subscription-change/contract-segment.service";
+import { ContractSegmentError } from "../subscription-change/subscription-change.errors";
 import {
   BillingCycle,
   billingSourceKey,
@@ -52,6 +56,7 @@ export class BillingAutomationService {
     private readonly repository: BillingAutomationRepository,
     private readonly financeService: FinanceService,
     private readonly autoDebitScheduler: AutoDebitScheduler,
+    private readonly contractSegmentService: ContractSegmentService,
     @Optional()
     @Inject(BILLING_AUTOMATION_CLOCK)
     private readonly clock: BillingAutomationClock = () => new Date()
@@ -96,11 +101,6 @@ export class BillingAutomationService {
       include: {
         billingSchedule: true,
         lease: true,
-        quote: {
-          select: {
-            monthlyFeeAmount: true
-          }
-        },
         receivableBills: {
           orderBy: { billPeriodStart: "asc" },
           select: {
@@ -144,7 +144,8 @@ export class BillingAutomationService {
     }> = [];
 
     for (const order of orders) {
-      const amount = reconciliationAmount(order);
+      const effectiveServiceEndDate =
+        await this.contractSegmentService.resolveEffectiveServiceEndDate(order.id);
       const leaseNeedsActivation =
         !order.lease ||
         Boolean(order.lease.deletedAt) ||
@@ -156,6 +157,10 @@ export class BillingAutomationService {
         leaseStatus: order.lease?.status ?? null
       };
       if (order.billingSchedule) {
+        const amount = await this.reconciliationSegmentAmount(
+          order.id,
+          order.billingSchedule.nextPeriodStart
+        );
         let leaseResult: {
           leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
           leaseStatus: LeaseStatus | null;
@@ -200,9 +205,13 @@ export class BillingAutomationService {
         order.receivableBills,
         now
       );
+      const amount = await this.reconciliationSegmentAmount(
+        order.id,
+        baseline.cycle.periodStart
+      );
       const completed =
-        order.endDate instanceof Date &&
-        baseline.cycle.periodStart.getTime() > order.endDate.getTime();
+        effectiveServiceEndDate instanceof Date &&
+        baseline.cycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
       const itemFacts = {
         ...amount,
         baselineReason: baseline.reason,
@@ -310,13 +319,27 @@ export class BillingAutomationService {
     };
   }
 
+  private async reconciliationSegmentAmount(
+    orderId: string,
+    periodStart: Date
+  ) {
+    const segment = await this.contractSegmentService.resolveSegmentForPeriod(
+      orderId,
+      periodStart
+    );
+    return {
+      amountSource: "CONTRACT_SEGMENT",
+      monthlyRentAmount: Number(segment.monthlyFeeAmount)
+    };
+  }
+
   async generateScheduledMonthlyRent(job: ClaimedBillingAutomationJob) {
     if (!job.billingScheduleId || !job.orderId) {
       throw configurationError();
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const result = await this.prisma.$transaction(async (tx) => {
         const schedule = await tx.billingSchedule.findUnique({
           include: { order: { include: { lease: true } } },
           where: { id: job.billingScheduleId! }
@@ -351,9 +374,14 @@ export class BillingAutomationService {
           throw configurationError();
         }
         const generatedAt = this.clock();
+        const effectiveServiceEndDate =
+          await this.contractSegmentService.resolveEffectiveServiceEndDate(
+            schedule.orderId,
+            tx
+          );
         if (
-          schedule.order.endDate instanceof Date &&
-          cycle.periodStart.getTime() > schedule.order.endDate.getTime()
+          effectiveServiceEndDate instanceof Date &&
+          cycle.periodStart.getTime() > effectiveServiceEndDate.getTime()
         ) {
           const completedSchedule = await tx.billingSchedule.updateMany({
             data: {
@@ -393,9 +421,36 @@ export class BillingAutomationService {
           };
         }
 
+        let segment;
+        try {
+          segment = await this.contractSegmentService.resolveSegmentForPeriod(
+            schedule.orderId,
+            cycle.periodStart,
+            { db: tx, periodEnd: cycle.periodEnd }
+          );
+        } catch (error) {
+          if (
+            error instanceof ContractSegmentError &&
+            error.code === "BILLING_PERIOD_CROSSES_SEGMENT"
+          ) {
+            await this.moveCrossingPeriodToManualTakeover(tx, {
+              changeOrderId: error.context?.changeOrderId,
+              generatedAt,
+              jobId: job.id,
+              scheduleId: schedule.id,
+              scheduleVersion: schedule.version,
+              sourceKey
+            });
+            return { billingFailure: crossingSegmentError() } as const;
+          }
+          throw error;
+        }
+
         const financeInput: MonthlyRentAutomationCycleInput = {
           actorId: null,
+          contractSegmentId: segment.segmentId,
           cycleNo: cycle.cycleNo,
+          monthlyRentAmount: segment.monthlyFeeAmount,
           orderId: schedule.orderId,
           periodEnd: cycle.periodEnd,
           periodStart: cycle.periodStart,
@@ -408,9 +463,9 @@ export class BillingAutomationService {
           );
         const nextCycle = buildNextBillingCycle(cycle);
         const completed =
-          schedule.order.endDate instanceof Date &&
+          effectiveServiceEndDate instanceof Date &&
           nextCycle.periodStart.getTime() >
-            schedule.order.endDate.getTime();
+            effectiveServiceEndDate.getTime();
         const updated = await tx.billingSchedule.updateMany({
           data: completed
             ? {
@@ -480,6 +535,7 @@ export class BillingAutomationService {
             afterSnapshot: {
               actorType: "SYSTEM",
               billId: generated.bill.id,
+              contractSegmentId: segment.segmentId,
               jobId: job.id,
               sourceKey
             },
@@ -497,6 +553,10 @@ export class BillingAutomationService {
           sourceKey
         };
       });
+      if ("billingFailure" in result) {
+        throw result.billingFailure;
+      }
+      return result;
     } catch (error) {
       const classified = classifyExecutionError(error);
       if (
@@ -516,6 +576,144 @@ export class BillingAutomationService {
       }
       throw classified;
     }
+  }
+
+  async resumeForExtension(
+    orderId: string,
+    segmentId: string,
+    now = this.clock()
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const segment = await tx.subscriptionContractSegment.findUnique({
+        select: {
+          endDate: true,
+          id: true,
+          orderId: true,
+          segmentType: true,
+          status: true
+        },
+        where: { id: segmentId }
+      });
+      const schedule = await tx.billingSchedule.findUnique({
+        where: { orderId }
+      });
+      if (
+        !segment ||
+        segment.orderId !== orderId ||
+        segment.segmentType !== ContractSegmentType.EXTENSION ||
+        segment.status === ContractSegmentStatus.CANCELLED ||
+        !schedule ||
+        schedule.nextPeriodStart.getTime() > segment.endDate.getTime()
+      ) {
+        throw configurationError();
+      }
+      if (schedule.status === BillingScheduleStatus.ACTIVE) {
+        return schedule;
+      }
+      if (schedule.status !== BillingScheduleStatus.COMPLETED) {
+        throw configurationError();
+      }
+
+      const updated = await tx.billingSchedule.updateMany({
+        data: {
+          completedAt: null,
+          pauseReason: null,
+          status: BillingScheduleStatus.ACTIVE,
+          version: { increment: 1 }
+        },
+        where: {
+          id: schedule.id,
+          status: BillingScheduleStatus.COMPLETED,
+          version: schedule.version
+        }
+      });
+      if (updated.count !== 1) {
+        throw retryableExecutionError();
+      }
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            actorType: "SYSTEM",
+            contractSegmentId: segment.id,
+            reason: "EXTENSION_BILLING_CONTINUATION",
+            resumedAt: now
+          },
+          entityId: schedule.id,
+          entityType: "billing_schedule",
+          module: "billing",
+          operatorId: null
+        }
+      });
+      return tx.billingSchedule.findUniqueOrThrow({
+        where: { id: schedule.id }
+      });
+    });
+  }
+
+  private async moveCrossingPeriodToManualTakeover(
+    tx: Prisma.TransactionClient,
+    input: {
+      changeOrderId?: string;
+      generatedAt: Date;
+      jobId: string;
+      scheduleId: string;
+      scheduleVersion: number;
+      sourceKey: string;
+    }
+  ) {
+    const paused = await tx.billingSchedule.updateMany({
+      data: {
+        pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+        status: BillingScheduleStatus.PAUSED,
+        version: { increment: 1 }
+      },
+      where: {
+        id: input.scheduleId,
+        status: BillingScheduleStatus.ACTIVE,
+        version: input.scheduleVersion
+      }
+    });
+    if (paused.count !== 1) {
+      throw retryableExecutionError();
+    }
+    if (input.changeOrderId) {
+      await tx.subscriptionChangeOrder.updateMany({
+        data: {
+          failureCode: "BILLING_PERIOD_CROSSES_SEGMENT",
+          failureReason: "The monthly billing period crosses a contract segment boundary.",
+          manualTakeoverAt: input.generatedAt,
+          status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+          version: { increment: 1 }
+        },
+        where: {
+          id: input.changeOrderId,
+          status: {
+            in: [
+              SubscriptionChangeStatus.SCHEDULED,
+              SubscriptionChangeStatus.EXECUTING,
+              SubscriptionChangeStatus.COMPLETED
+            ]
+          }
+        }
+      });
+    }
+    await tx.auditLog.create({
+      data: {
+        action: AuditAction.UPDATE,
+        afterSnapshot: {
+          actorType: "SYSTEM",
+          changeOrderId: input.changeOrderId ?? null,
+          jobId: input.jobId,
+          reason: "BILLING_PERIOD_CROSSES_SEGMENT",
+          sourceKey: input.sourceKey
+        },
+        entityId: input.scheduleId,
+        entityType: "billing_schedule",
+        module: "billing",
+        operatorId: null
+      }
+    });
   }
 
   async markScheduledBillOverdue(job: ClaimedBillingAutomationJob) {
@@ -685,19 +883,6 @@ function cycleForPeriodStart(
   return null;
 }
 
-function reconciliationAmount(order: {
-  monthlyFeeAmount: bigint;
-  quote: { monthlyFeeAmount: bigint } | null;
-  quoteSnapshot: Prisma.JsonValue | null;
-}) {
-  const resolved = resolveMonthlyRentAmountWithSource(order);
-  return {
-    amountSource: resolved.amountSource,
-    monthlyRentAmount:
-      resolved.amount === null ? null : Number(resolved.amount)
-  };
-}
-
 function cycleAt(actualDeliveryAt: Date, cycleNo: number) {
   return buildBillingCycleForDelivery(actualDeliveryAt, cycleNo);
 }
@@ -740,6 +925,14 @@ function pausedScheduleError() {
     code: "BILLING_SCHEDULE_PAUSED",
     message: "Billing schedule is paused.",
     retryable: true
+  });
+}
+
+function crossingSegmentError() {
+  return new BillingAutomationError({
+    code: "BILLING_PERIOD_CROSSES_SEGMENT",
+    message: "The billing period crosses a contract segment boundary and requires manual takeover.",
+    retryable: false
   });
 }
 

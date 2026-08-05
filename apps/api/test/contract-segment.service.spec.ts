@@ -120,10 +120,29 @@ describe("ContractSegmentService", () => {
       startDate: BASE_START
     });
   });
+
+  it("rejects a billing period that crosses into the next contract segment", async () => {
+    const harness = createHarness({ existingBase: true, existingExtension: true });
+
+    await expect(
+      harness.service.resolveSegmentForPeriod(
+        "order-1",
+        date("2026-08-10"),
+        { periodEnd: date("2026-09-09") }
+      )
+    ).rejects.toMatchObject({
+      code: "BILLING_PERIOD_CROSSES_SEGMENT",
+      context: {
+        changeOrderId: "change-extension",
+        segmentId: "segment-base"
+      }
+    });
+  });
 });
 
 function createHarness(options?: {
   existingBase?: boolean;
+  existingExtension?: boolean;
   order?: Record<string, unknown>;
 }) {
   const base = {
@@ -153,6 +172,19 @@ function createHarness(options?: {
     startDate: BASE_START,
     status: ContractSegmentStatus.ACTIVE,
     subscriptionPlanId: "plan-1"
+  };
+  const extension = {
+    ...base,
+    endDate: date("2027-03-02"),
+    id: "segment-extension",
+    monthlyFeeAmount: 1_200n,
+    segmentNo: "SEG-EXTENSION-1",
+    segmentType: ContractSegmentType.EXTENSION,
+    sequenceNo: 2,
+    sourceChangeOrderId: "change-extension",
+    sourceContractId: "contract-extension",
+    startDate: date("2026-09-03"),
+    status: ContractSegmentStatus.SCHEDULED
   };
   let storedBase = options?.existingBase ? base : null;
   const order = deepMerge(
@@ -187,7 +219,11 @@ function createHarness(options?: {
       findFirst: vi.fn(async (args: Record<string, unknown>) => {
         const where = args.where as Record<string, unknown> | undefined;
         if (isRecord(where?.id) && "not" in where.id) return null;
-        if (where?.startDate || where?.endDate) return storedBase;
+        if (where?.startDate || where?.endDate) {
+          const startDate = where?.startDate as { gt?: Date; lte?: Date } | undefined;
+          if (startDate?.gt && options?.existingExtension) return extension;
+          return storedBase;
+        }
         return storedBase;
       }),
       findUnique: vi.fn(async () => storedBase)

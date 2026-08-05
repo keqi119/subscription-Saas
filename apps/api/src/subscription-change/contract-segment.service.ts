@@ -17,6 +17,16 @@ import { ContractSegmentTerms } from "./subscription-change.types";
 
 const DAY_MS = 86_400_000;
 
+type ContractSegmentReadDb = Pick<
+  Prisma.TransactionClient,
+  "subscriptionContractSegment" | "subscriptionOrder"
+>;
+
+interface ResolveSegmentForPeriodOptions {
+  db?: ContractSegmentReadDb;
+  periodEnd?: Date;
+}
+
 @Injectable()
 export class ContractSegmentService {
   constructor(private readonly prisma: PrismaService) {}
@@ -79,8 +89,11 @@ export class ContractSegmentService {
     });
   }
 
-  async resolveEffectiveServiceEndDate(orderId: string): Promise<Date | null> {
-    const segment = await this.prisma.subscriptionContractSegment.findFirst({
+  async resolveEffectiveServiceEndDate(
+    orderId: string,
+    db: ContractSegmentReadDb = this.prisma
+  ): Promise<Date | null> {
+    const segment = await db.subscriptionContractSegment.findFirst({
       orderBy: [{ endDate: "desc" }, { sequenceNo: "desc" }],
       select: { endDate: true },
       where: {
@@ -90,7 +103,7 @@ export class ContractSegmentService {
     });
     if (segment) return segment.endDate;
 
-    const order = await this.prisma.subscriptionOrder.findUnique({
+    const order = await db.subscriptionOrder.findUnique({
       select: { endDate: true },
       where: { id: orderId }
     });
@@ -99,10 +112,21 @@ export class ContractSegmentService {
 
   async resolveSegmentForPeriod(
     orderId: string,
-    periodStart: Date
+    periodStart: Date,
+    options: ResolveSegmentForPeriodOptions = {}
   ): Promise<ContractSegmentTerms> {
     assertDate(periodStart);
-    const segment = await this.prisma.subscriptionContractSegment.findFirst({
+    if (options.periodEnd) {
+      assertDate(options.periodEnd);
+      if (options.periodEnd.getTime() < periodStart.getTime()) {
+        throw new ContractSegmentError(
+          "CONTRACT_SEGMENT_INVALID_DATE_RANGE",
+          "Billing period end must not precede its start."
+        );
+      }
+    }
+    const db = options.db ?? this.prisma;
+    const segment = await db.subscriptionContractSegment.findFirst({
       orderBy: { sequenceNo: "desc" },
       where: {
         endDate: { gte: periodStart },
@@ -115,6 +139,31 @@ export class ContractSegmentService {
       throw new ContractSegmentError(
         "CONTRACT_SEGMENT_NOT_FOUND",
         "No effective contract segment contains the billing period start."
+      );
+    }
+    if (
+      options.periodEnd &&
+      options.periodEnd.getTime() > segment.endDate.getTime()
+    ) {
+      const nextSegment = await db.subscriptionContractSegment.findFirst({
+        orderBy: { startDate: "asc" },
+        select: { id: true, sourceChangeOrderId: true },
+        where: {
+          orderId,
+          startDate: {
+            gt: segment.endDate,
+            lte: options.periodEnd
+          },
+          status: { not: ContractSegmentStatus.CANCELLED }
+        }
+      });
+      throw new ContractSegmentError(
+        "BILLING_PERIOD_CROSSES_SEGMENT",
+        "The billing period crosses a contract segment boundary.",
+        {
+          changeOrderId: nextSegment?.sourceChangeOrderId ?? undefined,
+          segmentId: segment.id
+        }
       );
     }
 

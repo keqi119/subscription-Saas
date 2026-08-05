@@ -242,6 +242,18 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
           runTime: "09:00",
           wechatTemplateId: null
         }),
+        {
+          resolveEffectiveServiceEndDate: vi.fn(async () => new Date("2027-07-09T00:00:00.000Z")),
+          resolveSegmentForPeriod: vi.fn(async () => ({
+            endDate: new Date("2027-07-09T00:00:00.000Z"),
+            mileageLimitKm: 1_500,
+            monthlyFeeAmount: 300_000n,
+            overMileageFeeAmount: 100n,
+            planSnapshot: {},
+            segmentId: "segment-integration",
+            startDate: new Date("2026-07-10T00:00:00.000Z")
+          }))
+        } as never,
         () => cycle.generateAt
       );
 

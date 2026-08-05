@@ -53,7 +53,7 @@ describe("BillingAutomationService", () => {
       items: [
         {
           action: "WOULD_CREATE",
-          amountSource: "ORDER_MONTHLY_FEE",
+          amountSource: "CONTRACT_SEGMENT",
           basisBillId: null,
           monthlyRentAmount: 300000,
           nextCycleNo: 1,
@@ -157,7 +157,7 @@ describe("BillingAutomationService", () => {
     expect(harness.schedules[0]?.id).toBe(scheduleId);
   });
 
-  it("uses the same quote fallback for reconciliation preview as actual billing", async () => {
+  it("keeps reconciliation on immutable segment pricing when the order fallback changes", async () => {
     const harness = createHarness();
     harness.order.monthlyFeeAmount = 0n;
     harness.order.quoteSnapshot = null;
@@ -169,8 +169,8 @@ describe("BillingAutomationService", () => {
 
     expect(preview.items).toEqual([
       expect.objectContaining({
-        amountSource: "QUOTE_MONTHLY_FEE",
-        monthlyRentAmount: 288000
+        amountSource: "CONTRACT_SEGMENT",
+        monthlyRentAmount: 300000
       })
     ]);
   });
@@ -760,11 +760,24 @@ function createHarness() {
     runTime: "09:00",
     wechatTemplateId: null
   });
+  const segmentMonthlyFeeAmount = order.monthlyFeeAmount;
   const service = new BillingAutomationService(
     prisma as never,
     repository as never,
     finance as never,
     autoDebitScheduler,
+    {
+      resolveEffectiveServiceEndDate: vi.fn(async () => order.endDate),
+      resolveSegmentForPeriod: vi.fn(async () => ({
+        endDate: order.endDate,
+        mileageLimitKm: 1_500,
+        monthlyFeeAmount: segmentMonthlyFeeAmount,
+        overMileageFeeAmount: 100n,
+        planSnapshot: {},
+        segmentId: "segment-base",
+        startDate: new Date("2026-06-10T00:00:00.000Z")
+      }))
+    } as never,
     () => now
   );
 

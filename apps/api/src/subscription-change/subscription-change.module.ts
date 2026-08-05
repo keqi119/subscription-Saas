@@ -23,6 +23,7 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
   controllers: [RenewalConsiderationController, SubscriptionChangeController],
   exports: [
     RenewalConsiderationService,
+    SUBSCRIPTION_CHANGE_CONFIG,
     SubscriptionExtensionPricingService,
     SubscriptionExtensionService
   ],

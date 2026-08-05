@@ -15,6 +15,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
+import { SubscriptionChangeModule } from "../subscription-change/subscription-change.module";
 import { VehicleInsuranceModule } from "../vehicle-insurance/vehicle-insurance.module";
 import { WeChatModule } from "../wechat/wechat.module";
 import { PortalApplicationController } from "./portal-application.controller";
@@ -38,6 +39,12 @@ import { PortalOrderDocumentController } from "./portal-order-document.controlle
 import { PortalProfileMaterialController } from "./portal-profile-material.controller";
 import { PortalProfileMaterialService } from "./portal-profile-material.service";
 import { PortalProfileService } from "./portal-profile.service";
+import {
+  PortalContractSegmentController,
+  PortalRenewalController,
+  PortalSubscriptionChangeController
+} from "./portal-renewal.controller";
+import { PortalRenewalService } from "./portal-renewal.service";
 import { PortalServiceCaseController } from "./portal-service-case.controller";
 import { PortalWechatCallbackController, PortalWechatController } from "./portal-wechat.controller";
 
@@ -55,6 +62,9 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalHandoverReviewController,
     PortalMileageReviewController,
     PortalProfileMaterialController,
+    PortalRenewalController,
+    PortalSubscriptionChangeController,
+    PortalContractSegmentController,
     PortalServiceCaseController,
     PortalWechatCallbackController,
     PortalWechatController,
@@ -76,6 +86,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     ServiceCaseModule,
     SmsModule,
     StorageModule,
+    SubscriptionChangeModule,
     VehicleInsuranceModule,
     WeChatModule
   ],
@@ -87,8 +98,9 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalCatalogService,
     PortalHandoverReviewService,
     PortalMileageReviewService,
+    PortalProfileMaterialService,
     PortalProfileService,
-    PortalProfileMaterialService
+    PortalRenewalService
   ]
 })
 export class PortalModule {}

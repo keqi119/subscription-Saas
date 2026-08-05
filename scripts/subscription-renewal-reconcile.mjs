@@ -5,12 +5,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 const REMINDER_SLOTS = ["D30", "D14", "D3"];
-const CLOSED_CONSIDERATION_STATUSES = new Set([
-  "EXPIRY_CONFIRMED",
-  "EXTENDED",
-  "EXPIRED",
-  "CANCELLED"
-]);
 
 export function parseSubscriptionRenewalReconciliationMode(args) {
   if (args.length === 0 || (args.length === 1 && args[0] === "--dry-run")) {
@@ -62,7 +56,7 @@ export function buildSubscriptionRenewalReconciliationPlan(records, now = new Da
     }
     if (
       segment.renewalConsideration &&
-      CLOSED_CONSIDERATION_STATUSES.has(segment.renewalConsideration.status)
+      segment.renewalConsideration.status !== "PENDING_DECISION"
     ) {
       summary.existing += 1;
       continue;
@@ -123,11 +117,16 @@ export async function executeSubscriptionRenewalReconciliation({
   if (mode !== "apply") return { created: 0, mode, plan, reconciled: 0 };
 
   let created = 0;
+  let reconciled = 0;
   for (const candidate of plan.candidates) {
-    const result = await prisma.$transaction((tx) => applyCandidate(tx, candidate));
+    const result = await prisma.$transaction((tx) => applyCandidate(tx, candidate, now), {
+      isolationLevel: "Serializable"
+    });
+    if (result.skipped) continue;
+    reconciled += 1;
     if (result.created) created += 1;
   }
-  return { created, mode, plan, reconciled: plan.candidates.length };
+  return { created, mode, plan, reconciled };
 }
 
 export function inspectSubscriptionSegmentConsistency(records) {
@@ -240,7 +239,42 @@ export async function loadSubscriptionSegmentConsistencyRecords(prisma) {
   }));
 }
 
-async function applyCandidate(tx, candidate) {
+async function applyCandidate(tx, candidate, now) {
+  await lockCandidateRows(tx, candidate);
+  const segment = await tx.subscriptionContractSegment.findUnique({
+    select: {
+      endDate: true,
+      id: true,
+      order: { select: { orderStatus: true } },
+      orderId: true,
+      renewalConsideration: { select: { id: true, status: true } },
+      sequenceNo: true,
+      status: true
+    },
+    where: { id: candidate.segmentId }
+  });
+  if (
+    !segment ||
+    segment.orderId !== candidate.orderId ||
+    segment.status !== "ACTIVE" ||
+    segment.order.orderStatus !== "ACTIVE" ||
+    !validDate(segment.endDate) ||
+    now >= renewalSchedule(segment.endDate).completionDeadlineAt ||
+    (segment.renewalConsideration && segment.renewalConsideration.status !== "PENDING_DECISION")
+  ) {
+    return { created: false, skipped: true };
+  }
+  const laterExtension = await tx.subscriptionContractSegment.findFirst({
+    select: { id: true },
+    where: {
+      orderId: candidate.orderId,
+      segmentType: "EXTENSION",
+      sequenceNo: { gt: segment.sequenceNo },
+      status: { not: "CANCELLED" }
+    }
+  });
+  if (laterExtension) return { created: false, skipped: true };
+
   const before = await tx.renewalConsideration.findUnique({
     where: { segmentId: candidate.segmentId }
   });
@@ -277,7 +311,27 @@ async function applyCandidate(tx, candidate) {
   for (const job of candidate.jobs.filter((item) => item.slot === null)) {
     await upsertJob(tx, candidate, consideration.id, job);
   }
-  return { created: !before };
+  return { created: !before, skipped: false };
+}
+
+async function lockCandidateRows(tx, candidate) {
+  if (typeof tx.$queryRaw !== "function") return;
+  await tx.$queryRaw`
+    SELECT "id" FROM "renewal_consideration"
+    WHERE "segment_id" = ${candidate.segmentId}::uuid
+    FOR UPDATE
+  `;
+  await tx.$queryRaw`
+    SELECT "id" FROM "subscription_contract_segment"
+    WHERE "order_id" = ${candidate.orderId}::uuid
+    ORDER BY "sequence_no"
+    FOR UPDATE
+  `;
+  await tx.$queryRaw`
+    SELECT "id" FROM "subscription_order"
+    WHERE "id" = ${candidate.orderId}::uuid
+    FOR UPDATE
+  `;
 }
 
 async function upsertJob(tx, candidate, considerationId, job) {

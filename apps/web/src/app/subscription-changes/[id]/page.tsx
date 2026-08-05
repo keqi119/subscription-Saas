@@ -120,10 +120,7 @@ export default function SubscriptionChangeDetailPage() {
     void load();
   }, [load]);
 
-  const permissions = useMemo(
-    () => new Set(me?.user.permissions ?? []),
-    [me?.user.permissions]
-  );
+  const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me?.user.permissions]);
   const nextAction = change ? getSubscriptionChangeNextAction(change) : null;
   const availability = nextAction
     ? canRunSubscriptionChangeAction(nextAction.kind, permissions)
@@ -138,7 +135,8 @@ export default function SubscriptionChangeDetailPage() {
           const values = await quoteForm.validateFields();
           await createSubscriptionChangeQuote(change.id, {
             discountedMonthlyFeeAmount: values.discountedMonthlyFeeAmount?.trim() || undefined,
-            requestedVehicleBaseFeeAmount: values.requestedVehicleBaseFeeAmount?.trim() || undefined,
+            requestedVehicleBaseFeeAmount:
+              values.requestedVehicleBaseFeeAmount?.trim() || undefined,
             subscriptionPlanId: values.subscriptionPlanId?.trim() || undefined,
             version: change.version
           });
@@ -151,7 +149,7 @@ export default function SubscriptionChangeDetailPage() {
           await publishSubscriptionChangeQuote(change.id, change.version);
           break;
         case "GENERATE_CONTRACT":
-          await generateSubscriptionChangeContract(change.id);
+          await generateSubscriptionChangeContract(change.id, change.version);
           break;
         case "START_ESIGN":
           if (!change.contract) throw new Error("补充协议尚未生成");
@@ -220,7 +218,10 @@ export default function SubscriptionChangeDetailPage() {
   const canManual = permissions.has("subscription_change:manual_takeover");
   const canCancel = permissions.has("subscription_change:cancel");
   const cancellable = Boolean(
-    change && ["DRAFT", "QUOTED", "CUSTOMER_CONFIRMED", "SIGNING_OR_PAYMENT", "MANUAL_TAKEOVER"].includes(change.status)
+    change &&
+    ["DRAFT", "QUOTED", "CUSTOMER_CONFIRMED", "SIGNING_OR_PAYMENT", "MANUAL_TAKEOVER"].includes(
+      change.status
+    )
   );
 
   return (
@@ -232,7 +233,10 @@ export default function SubscriptionChangeDetailPage() {
               <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
                 刷新
               </Button>
-              <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/subscription-changes")}>
+              <Button
+                icon={<ArrowLeftOutlined />}
+                onClick={() => router.push("/subscription-changes")}
+              >
                 返回列表
               </Button>
             </Space>
@@ -247,7 +251,9 @@ export default function SubscriptionChangeDetailPage() {
               type="error"
             />
           ) : loading && !change ? (
-            <div style={{ padding: 48, textAlign: "center" }}><Spin /></div>
+            <div style={{ padding: 48, textAlign: "center" }}>
+              <Spin />
+            </div>
           ) : change ? (
             <ChangeOverview change={change} />
           ) : null}
@@ -260,26 +266,38 @@ export default function SubscriptionChangeDetailPage() {
                 description={nextAction.reason ?? availability.reason}
                 message={nextAction.label}
                 showIcon
-                type={nextAction.kind === "MANUAL" || nextAction.kind === "RETRY" ? "warning" : "info"}
+                type={
+                  nextAction.kind === "MANUAL" || nextAction.kind === "RETRY" ? "warning" : "info"
+                }
               />
               {nextAction.kind === "QUOTE" ? (
                 <Form<QuoteFormValues> form={quoteForm} layout="vertical">
                   <Form.Item
                     label="订阅套餐 ID"
                     name="subscriptionPlanId"
-                    rules={change.pricingMode === "CURRENT_VERSION" || change.pricingMode === "APPROVED_DISCOUNT"
-                      ? [{ required: true, message: "请选择当前有效订阅套餐" }]
-                      : undefined}
+                    rules={
+                      change.pricingMode === "CURRENT_VERSION" ||
+                      change.pricingMode === "APPROVED_DISCOUNT"
+                        ? [{ required: true, message: "请选择当前有效订阅套餐" }]
+                        : undefined
+                    }
                   >
                     <Input placeholder="当前有效套餐 UUID" />
                   </Form.Item>
                   {change.pricingMode === "APPROVED_DISCOUNT" ? (
-                    <Form.Item label="折后月费（分）" name="discountedMonthlyFeeAmount" rules={[{ required: true }]}>
+                    <Form.Item
+                      label="折后月费（分）"
+                      name="discountedMonthlyFeeAmount"
+                      rules={[{ required: true }]}
+                    >
                       <Input inputMode="numeric" />
                     </Form.Item>
                   ) : null}
                   {change.pricingMode === "CURRENT_VERSION" ? (
-                    <Form.Item label="申请车辆基础月费（分，可选）" name="requestedVehicleBaseFeeAmount">
+                    <Form.Item
+                      label="申请车辆基础月费（分，可选）"
+                      name="requestedVehicleBaseFeeAmount"
+                    >
                       <Input inputMode="numeric" />
                     </Form.Item>
                   ) : null}
@@ -303,7 +321,9 @@ export default function SubscriptionChangeDetailPage() {
                   </Button>
                 ) : null}
                 {cancellable && canCancel ? (
-                  <Button danger onClick={() => setReasonAction("CANCEL")}>取消变更</Button>
+                  <Button danger onClick={() => setReasonAction("CANCEL")}>
+                    取消变更
+                  </Button>
                 ) : null}
               </Space>
             </Space>
@@ -339,7 +359,13 @@ export default function SubscriptionChangeDetailPage() {
         onCancel={() => setReasonAction(null)}
         onOk={() => void submitReason()}
         open={reasonAction !== null}
-        title={reasonAction === "APPROVE" ? "审批价格例外" : reasonAction === "MANUAL" ? "人工接管" : "取消合同变更"}
+        title={
+          reasonAction === "APPROVE"
+            ? "审批价格例外"
+            : reasonAction === "MANUAL"
+              ? "人工接管"
+              : "取消合同变更"
+        }
       >
         <Form form={reasonForm} layout="vertical">
           <Form.Item label="原因" name="reason" rules={[{ required: true, message: "请填写原因" }]}>
@@ -358,9 +384,25 @@ export function ChangeOverview({ change }: { change: AdminSubscriptionChange }) 
       bordered
       column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
       items={[
-        { label: "订单", children: <Link href={`/orders/${change.orderId}?tab=change`}>{change.order.orderNo}</Link> },
-        { label: "状态", children: <Tag color={change.status === "COMPLETED" ? "green" : "blue"}>{SUBSCRIPTION_CHANGE_STATUS_LABELS[change.status] ?? change.status}</Tag> },
-        { label: "计价方式", children: SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[change.pricingMode] ?? change.pricingMode },
+        {
+          label: "订单",
+          children: (
+            <Link href={`/orders/${change.orderId}?tab=change`}>{change.order.orderNo}</Link>
+          )
+        },
+        {
+          label: "状态",
+          children: (
+            <Tag color={change.status === "COMPLETED" ? "green" : "blue"}>
+              {SUBSCRIPTION_CHANGE_STATUS_LABELS[change.status] ?? change.status}
+            </Tag>
+          )
+        },
+        {
+          label: "计价方式",
+          children:
+            SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[change.pricingMode] ?? change.pricingMode
+        },
         { label: "原合同到期日", children: formatDate(dates.originalEndDate) },
         { label: "拟续期至", children: formatDate(dates.proposedEndDate) },
         { label: "已签约至", children: formatDate(dates.contractedThrough) },
@@ -383,10 +425,19 @@ function PriceApprovalCard({ change }: { change: AdminSubscriptionChange }) {
           column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
           items={[
             { label: "当前报价", children: change.currentQuote?.quoteNo ?? "-" },
-            { label: "报价 revision", children: change.currentQuote ? `V${change.currentQuote.revision}` : "-" },
+            {
+              label: "报价 revision",
+              children: change.currentQuote ? `V${change.currentQuote.revision}` : "-"
+            },
             { label: "报价有效期", children: formatDateTime(change.currentQuote?.validUntil) },
-            { label: "基准月费", children: formatSubscriptionChangeMoney(approval.baselineMonthlyFeeAmount) },
-            { label: "拟议月费", children: formatSubscriptionChangeMoney(approval.proposedMonthlyFeeAmount) },
+            {
+              label: "基准月费",
+              children: formatSubscriptionChangeMoney(approval.baselineMonthlyFeeAmount)
+            },
+            {
+              label: "拟议月费",
+              children: formatSubscriptionChangeMoney(approval.proposedMonthlyFeeAmount)
+            },
             { label: "差额", children: formatSubscriptionChangeMoney(approval.differenceAmount) },
             { label: "例外原因", children: approval.reason ?? "-" },
             { label: "报价提交人", children: approval.createdBy ?? "-" },
@@ -394,12 +445,20 @@ function PriceApprovalCard({ change }: { change: AdminSubscriptionChange }) {
           ]}
           size="small"
         />
-      ) : <Typography.Text type="secondary">尚未生成正式报价</Typography.Text>}
+      ) : (
+        <Typography.Text type="secondary">尚未生成正式报价</Typography.Text>
+      )}
     </Card>
   );
 }
 
-function ContractCard({ change, esignTasks }: { change: AdminSubscriptionChange; esignTasks: AdminContractESignTask[] }) {
+function ContractCard({
+  change,
+  esignTasks
+}: {
+  change: AdminSubscriptionChange;
+  esignTasks: AdminContractESignTask[];
+}) {
   const contract = change.contract;
   return (
     <Card title="补充协议与电子签">
@@ -409,7 +468,10 @@ function ContractCard({ change, esignTasks }: { change: AdminSubscriptionChange;
             bordered
             column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
             items={[
-              { label: "合同编号", children: <Link href={`/contracts/${contract.id}`}>{contract.contractNo}</Link> },
+              {
+                label: "合同编号",
+                children: <Link href={`/contracts/${contract.id}`}>{contract.contractNo}</Link>
+              },
               { label: "合同状态", children: contract.status },
               { label: "归档时间", children: formatDateTime(contract.archivedAt) }
             ]}
@@ -429,7 +491,11 @@ function ContractCard({ change, esignTasks }: { change: AdminSubscriptionChange;
           <Table
             columns={[
               { dataIndex: "taskNo", title: "电子签任务" },
-              { dataIndex: "taskStatus", render: (value: string) => <Tag>{value}</Tag>, title: "状态" },
+              {
+                dataIndex: "taskStatus",
+                render: (value: string) => <Tag>{value}</Tag>,
+                title: "状态"
+              },
               { dataIndex: "failedAt", render: formatDateTime, title: "失败时间" },
               { dataIndex: "completedAt", render: formatDateTime, title: "完成时间" }
             ]}
@@ -439,7 +505,9 @@ function ContractCard({ change, esignTasks }: { change: AdminSubscriptionChange;
             size="small"
           />
         </Space>
-      ) : <Typography.Text type="secondary">补充协议尚未生成</Typography.Text>}
+      ) : (
+        <Typography.Text type="secondary">补充协议尚未生成</Typography.Text>
+      )}
     </Card>
   );
 }
@@ -458,10 +526,18 @@ function ReminderCard({
   const columns: ColumnsType<AdminRenewalReminder> = [
     { dataIndex: "slot", title: "提醒批次" },
     { dataIndex: "scheduledAt", render: formatDateTime, title: "计划时间" },
-    { dataIndex: "status", render: (value: string) => <Tag>{RENEWAL_REMINDER_STATUS_LABELS[value] ?? value}</Tag>, title: "总状态" },
+    {
+      dataIndex: "status",
+      render: (value: string) => <Tag>{RENEWAL_REMINDER_STATUS_LABELS[value] ?? value}</Tag>,
+      title: "总状态"
+    },
     { dataIndex: "inAppStatus", render: nullableTag, title: "站内信" },
     { dataIndex: "smsStatus", render: nullableTag, title: "短信" },
-    { dataIndex: "errorMessage", render: (value?: string | null) => value ?? "-", title: "失败原因" },
+    {
+      dataIndex: "errorMessage",
+      render: (value?: string | null) => value ?? "-",
+      title: "失败原因"
+    },
     {
       key: "action",
       render: (_value, reminder) =>
@@ -475,13 +551,23 @@ function ReminderCard({
           >
             重试提醒
           </Button>
-        ) : "-",
+        ) : (
+          "-"
+        ),
       title: "操作"
     }
   ];
   return (
     <Card title="提醒与渠道状态">
-      <Table columns={columns} dataSource={reminders} locale={{ emptyText: "无关联提醒" }} pagination={false} rowKey="id" scroll={{ x: 840 }} size="small" />
+      <Table
+        columns={columns}
+        dataSource={reminders}
+        locale={{ emptyText: "无关联提醒" }}
+        pagination={false}
+        rowKey="id"
+        scroll={{ x: 840 }}
+        size="small"
+      />
     </Card>
   );
 }
@@ -492,9 +578,19 @@ function AutomationJobCard({ change }: { change: AdminSubscriptionChange }) {
       <Table
         columns={[
           { dataIndex: "jobType", title: "任务" },
-          { dataIndex: "jobStatus", render: (value: string) => <Tag color={value === "DEAD_LETTER" ? "red" : undefined}>{value}</Tag>, title: "状态" },
+          {
+            dataIndex: "jobStatus",
+            render: (value: string) => (
+              <Tag color={value === "DEAD_LETTER" ? "red" : undefined}>{value}</Tag>
+            ),
+            title: "状态"
+          },
           { dataIndex: "attemptCount", title: "尝试次数" },
-          { dataIndex: "lastErrorMessage", render: (value?: string | null) => value ?? "-", title: "最近错误" }
+          {
+            dataIndex: "lastErrorMessage",
+            render: (value?: string | null) => value ?? "-",
+            title: "最近错误"
+          }
         ]}
         dataSource={change.automationJobs}
         locale={{ emptyText: "暂无自动任务" }}
@@ -503,14 +599,27 @@ function AutomationJobCard({ change }: { change: AdminSubscriptionChange }) {
         scroll={{ x: 760 }}
         size="small"
       />
-      {change.failureMessage ? <Alert message={change.failureMessage} showIcon style={{ marginTop: 12 }} type="error" /> : null}
-      {change.manualTakeoverReason ? <Alert message={`人工接管：${change.manualTakeoverReason}`} showIcon style={{ marginTop: 12 }} type="warning" /> : null}
+      {change.failureMessage ? (
+        <Alert message={change.failureMessage} showIcon style={{ marginTop: 12 }} type="error" />
+      ) : null}
+      {change.manualTakeoverReason ? (
+        <Alert
+          message={`人工接管：${change.manualTakeoverReason}`}
+          showIcon
+          style={{ marginTop: 12 }}
+          type="warning"
+        />
+      ) : null}
     </Card>
   );
 }
 
 function nullableTag(value?: string | null) {
-  return value ? <Tag color={value === "FAILED" || value === "CONFIG_MISSING" ? "red" : undefined}>{value}</Tag> : "-";
+  return value ? (
+    <Tag color={value === "FAILED" || value === "CONFIG_MISSING" ? "red" : undefined}>{value}</Tag>
+  ) : (
+    "-"
+  );
 }
 
 function formatDate(value?: string | null) {

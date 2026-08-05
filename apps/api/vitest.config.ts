@@ -10,6 +10,7 @@ const databaseTestFiles = [
   "test/stage2-handover-provider-reconciliation.integration.spec.ts",
   "test/stage2-handover-workflow.repository.spec.ts",
   "test/subscription-expiry-return.integration.spec.ts",
+  "test/subscription-change-migration.integration.spec.ts",
   "test/subscription-extension.integration.spec.ts"
 ];
 

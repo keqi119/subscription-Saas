@@ -46,12 +46,14 @@ describe("Stage 3 extension e-sign mapping", () => {
       username: "op"
     };
     const service = {
-      startOrRetryESign: vi.fn(async (
-        _id: string,
-        _input: unknown,
-        _user: unknown,
-        start: (contractId: string) => Promise<unknown>
-      ) => start("contract-1"))
+      startOrRetryESign: vi.fn(
+        async (
+          _id: string,
+          _input: unknown,
+          _user: unknown,
+          start: (contractId: string) => Promise<unknown>
+        ) => start("contract-1")
+      )
     };
     const esign = {
       createTaskForContract: vi.fn(async () => ({ id: "task-1", taskStatus: "WAITING_CUSTOMER" }))
@@ -63,28 +65,24 @@ describe("Stage 3 extension e-sign mapping", () => {
     );
 
     await expect(
-      controller.startESign(
-        "change-1",
-        { version: 3 },
-        "esign-command-1",
-        {
-          headers: { "user-agent": "vitest" },
-          ip: "127.0.0.1",
-          user
-        } as never
-      )
+      controller.startESign("change-1", { version: 3 }, "esign-command-1", {
+        headers: { "user-agent": "vitest" },
+        ip: "127.0.0.1",
+        user
+      } as never)
     ).resolves.toMatchObject({ id: "task-1" });
     expect(service.startOrRetryESign).toHaveBeenCalledWith(
       "change-1",
       { idempotencyKey: "esign-command-1", version: 3 },
       user,
+      expect.any(Function),
+      expect.any(Function),
       expect.any(Function)
     );
-    expect(esign.createTaskForContract).toHaveBeenCalledWith(
-      "contract-1",
-      user,
-      { ipAddress: "127.0.0.1", userAgent: "vitest" }
-    );
+    expect(esign.createTaskForContract).toHaveBeenCalledWith("contract-1", user, {
+      ipAddress: "127.0.0.1",
+      userAgent: "vitest"
+    });
   });
 
   it("does not start e-sign after the change leaves its signing state", async () => {
@@ -101,22 +99,17 @@ describe("Stage 3 extension e-sign mapping", () => {
     );
 
     await expect(
-      controller.retryESign(
-        "change-1",
-        { version: 0 },
-        "esign-command-2",
-        {
-          headers: {},
-          user: {
-            id: "op-1",
-            menus: [],
-            name: "Operator",
-            permissions: ["subscription_change:view", "subscription_change:esign_retry"],
-            roles: ["OP"],
-            username: "op"
-          }
-        } as never
-      )
+      controller.retryESign("change-1", { version: 0 }, "esign-command-2", {
+        headers: {},
+        user: {
+          id: "op-1",
+          menus: [],
+          name: "Operator",
+          permissions: ["subscription_change:view", "subscription_change:esign_retry"],
+          roles: ["OP"],
+          username: "op"
+        }
+      } as never)
     ).rejects.toMatchObject({ status: 409 });
     expect(esign.createTaskForContract).not.toHaveBeenCalled();
   });
@@ -146,11 +139,7 @@ describe("Stage 3 extension e-sign mapping", () => {
     } as never;
 
     await expect(
-      controller.previewGeneratedContract(
-        "contract-1",
-        currentCustomer,
-        response as never
-      )
+      controller.previewGeneratedContract("contract-1", currentCustomer, response as never)
     ).resolves.toBeDefined();
     expect(esign.getPortalGeneratedContractPreview).toHaveBeenCalledWith(
       "contract-1",
@@ -200,9 +189,8 @@ describe("Stage 3 extension e-sign mapping", () => {
         where: expect.objectContaining({ customerId: "customer-1", id: "contract-1" })
       })
     );
-    expect(artifactService.getContractPdfArtifact).toHaveBeenCalledWith(
-      "contract-1",
-      { requireGeneratedContractArtifact: true }
-    );
+    expect(artifactService.getContractPdfArtifact).toHaveBeenCalledWith("contract-1", {
+      requireGeneratedContractArtifact: true
+    });
   });
 });

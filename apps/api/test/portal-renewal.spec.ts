@@ -27,8 +27,28 @@ describe("PortalRenewalService", () => {
 
     expect(retry.changeOrderId).toBe(first.changeOrderId);
     expect(harness.prisma.subscriptionChangeOrder.create).toHaveBeenCalledTimes(1);
-    expect(harness.state.consideration.status).toBe(
-      RenewalConsiderationStatus.RENEWAL_REQUESTED
+    expect(harness.state.consideration.status).toBe(RenewalConsiderationStatus.RENEWAL_REQUESTED);
+  });
+
+  it("stops future renewal reminders after the customer chooses RENEW", async () => {
+    const harness = portalRenewalHarness();
+
+    await harness.service.decide(
+      "consideration-1",
+      { decision: RenewalDecision.RENEW, version: 0 },
+      harness.customer,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionAutomationJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ renewalConsiderationId: "consideration-1" })
+      })
+    );
+    expect(harness.prisma.renewalReminder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ renewalConsiderationId: "consideration-1" })
+      })
     );
   });
 
@@ -61,9 +81,7 @@ describe("PortalRenewalService", () => {
       harness.context
     );
 
-    expect(harness.state.consideration.status).toBe(
-      RenewalConsiderationStatus.EXPIRY_CONFIRMED
-    );
+    expect(harness.state.consideration.status).toBe(RenewalConsiderationStatus.EXPIRY_CONFIRMED);
     expect(harness.prisma.subscriptionAutomationJob.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ renewalConsiderationId: "consideration-1" })

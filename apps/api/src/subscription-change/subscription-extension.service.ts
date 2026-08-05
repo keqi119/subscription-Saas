@@ -20,10 +20,7 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import {
-  SUBSCRIPTION_CHANGE_CONFIG,
-  SubscriptionChangeConfig
-} from "./subscription-change.config";
+import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { ContractSegmentService } from "./contract-segment.service";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
@@ -45,6 +42,8 @@ const CANCELLABLE_STATUSES: SubscriptionChangeStatus[] = [
   SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
   SubscriptionChangeStatus.MANUAL_TAKEOVER
 ];
+
+const ESIGN_COMMAND_RECOVERY_MS = 2 * 60_000;
 
 const changeDetailInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclude>()({
   automationJobs: { orderBy: { createdAt: "desc" } },
@@ -104,11 +103,7 @@ export class SubscriptionExtensionService {
     private readonly config: SubscriptionChangeConfig
   ) {}
 
-  async createExtension(
-    input: CreateExtensionInput,
-    actor: RequestUser,
-    context: RequestContext
-  ) {
+  async createExtension(input: CreateExtensionInput, actor: RequestUser, context: RequestContext) {
     this.assertWriteEnabled();
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_CREATE);
     assertIdempotencyKey(input.idempotencyKey);
@@ -137,7 +132,10 @@ export class SubscriptionExtensionService {
       );
     }
     if (!order.vehicle) {
-      throw badRequest("ORDER_VEHICLE_REQUIRED", "A leased vehicle is required for extension pricing.");
+      throw badRequest(
+        "ORDER_VEHICLE_REQUIRED",
+        "A leased vehicle is required for extension pricing."
+      );
     }
     if (
       order.businessType !== BusinessType.SUBSCRIPTION ||
@@ -217,14 +215,28 @@ export class SubscriptionExtensionService {
           include: changeDetailInclude
         });
         await this.auditService.write(
-          auditInput(AuditAction.CREATE, "subscription_change_order", change.id, actor, context, undefined, change),
+          auditInput(
+            AuditAction.CREATE,
+            "subscription_change_order",
+            change.id,
+            actor,
+            context,
+            undefined,
+            change
+          ),
           tx
         );
         await completeCommand(tx, command.id, "CHANGE", change.id, this.config.now());
         return change;
       }, serializableTransaction);
     } catch (error) {
-      return this.resolveWriteConflict(error, "CREATE_EXTENSION", input.idempotencyKey!, actor.id, input);
+      return this.resolveWriteConflict(
+        error,
+        "CREATE_EXTENSION",
+        input.idempotencyKey!,
+        actor.id,
+        input
+      );
     }
   }
 
@@ -246,12 +258,10 @@ export class SubscriptionExtensionService {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_QUOTE);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
-    const replay = await this.replayQuote(
-      "CREATE_FORMAL_QUOTE",
-      input.idempotencyKey!,
-      actor.id,
-      { id, ...input }
-    );
+    const replay = await this.replayQuote("CREATE_FORMAL_QUOTE", input.idempotencyKey!, actor.id, {
+      id,
+      ...input
+    });
     if (replay) return replay;
 
     const requestHash = commandHash({ id, ...input });
@@ -338,14 +348,29 @@ export class SubscriptionExtensionService {
           });
         }
         await this.auditService.write(
-          auditInput(AuditAction.CREATE, "subscription_change_quote", quote.id, actor, context, latest, quote),
+          auditInput(
+            AuditAction.CREATE,
+            "subscription_change_quote",
+            quote.id,
+            actor,
+            context,
+            latest,
+            quote
+          ),
           tx
         );
         await completeCommand(tx, command.id, "QUOTE", quote.id, this.config.now());
         return quote;
       }, serializableTransaction);
     } catch (error) {
-      return this.resolveWriteConflict(error, "CREATE_FORMAL_QUOTE", input.idempotencyKey!, actor.id, { id, ...input }, "QUOTE");
+      return this.resolveWriteConflict(
+        error,
+        "CREATE_FORMAL_QUOTE",
+        input.idempotencyKey!,
+        actor.id,
+        { id, ...input },
+        "QUOTE"
+      );
     }
   }
 
@@ -359,45 +384,64 @@ export class SubscriptionExtensionService {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
-    return this.runChangeCommand("APPROVE_PRICE_OVERRIDE", id, input, actor, context, async (tx, change) => {
-      if (change.pricingMode === SubscriptionChangePricingMode.CURRENT_VERSION) {
-        throw badRequest(
-          "PRICE_OVERRIDE_NOT_REQUIRED",
-          "Current-version pricing does not require a price override approval."
+    return this.runChangeCommand(
+      "APPROVE_PRICE_OVERRIDE",
+      id,
+      input,
+      actor,
+      context,
+      async (tx, change) => {
+        if (change.pricingMode === SubscriptionChangePricingMode.CURRENT_VERSION) {
+          throw badRequest(
+            "PRICE_OVERRIDE_NOT_REQUIRED",
+            "Current-version pricing does not require a price override approval."
+          );
+        }
+        if (
+          !change.currentQuote ||
+          change.currentQuote.status !== SubscriptionChangeQuoteStatus.FORMAL
+        ) {
+          throw stateConflict(
+            "CURRENT_FORMAL_QUOTE_REQUIRED",
+            "A current formal quote is required before approving a price exception."
+          );
+        }
+        if (change.currentQuote.createdBy === actor.id) {
+          throw new SubscriptionChangeError(
+            "PRICE_OVERRIDE_SELF_APPROVAL_FORBIDDEN",
+            "The price override approver must differ from the extension submitter.",
+            HttpStatus.FORBIDDEN
+          );
+        }
+        const reason = normalizedReason(input.reason);
+        if (!reason)
+          throw badRequest("PRICE_OVERRIDE_REASON_REQUIRED", "Approval reason is required.");
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            priceOverrideApprovedAt: this.config.now(),
+            priceOverrideApprovedBy: actor.id,
+            priceOverrideReason: reason,
+            updatedBy: actor.id,
+            version: { increment: 1 }
+          },
+          include: changeDetailInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          auditInput(
+            AuditAction.APPROVE,
+            "subscription_change_order",
+            id,
+            actor,
+            context,
+            change,
+            updated
+          ),
+          tx
         );
+        return updated;
       }
-      if (!change.currentQuote || change.currentQuote.status !== SubscriptionChangeQuoteStatus.FORMAL) {
-        throw stateConflict(
-          "CURRENT_FORMAL_QUOTE_REQUIRED",
-          "A current formal quote is required before approving a price exception."
-        );
-      }
-      if (change.currentQuote.createdBy === actor.id) {
-        throw new SubscriptionChangeError(
-          "PRICE_OVERRIDE_SELF_APPROVAL_FORBIDDEN",
-          "The price override approver must differ from the extension submitter.",
-          HttpStatus.FORBIDDEN
-        );
-      }
-      const reason = normalizedReason(input.reason);
-      if (!reason) throw badRequest("PRICE_OVERRIDE_REASON_REQUIRED", "Approval reason is required.");
-      const updated = await tx.subscriptionChangeOrder.update({
-        data: {
-          priceOverrideApprovedAt: this.config.now(),
-          priceOverrideApprovedBy: actor.id,
-          priceOverrideReason: reason,
-          updatedBy: actor.id,
-          version: { increment: 1 }
-        },
-        include: changeDetailInclude,
-        where: { id }
-      });
-      await this.auditService.write(
-        auditInput(AuditAction.APPROVE, "subscription_change_order", id, actor, context, change, updated),
-        tx
-      );
-      return updated;
-    });
+    );
   }
 
   async submitCustomerConfirmation(
@@ -410,49 +454,62 @@ export class SubscriptionExtensionService {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_SUBMIT);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
-    return this.runChangeCommand("SUBMIT_CUSTOMER_CONFIRMATION", id, input, actor, context, async (tx, change) => {
-      if (change.status !== SubscriptionChangeStatus.QUOTED) {
-        throw stateConflict("CHANGE_NOT_READY_FOR_CUSTOMER", "Only a quoted change can be published to the customer.");
-      }
-      if (
-        change.pricingMode !== SubscriptionChangePricingMode.CURRENT_VERSION &&
-        (!change.priceOverrideApprovedBy || !change.priceOverrideApprovedAt)
-      ) {
-        throw stateConflict(
-          "PRICE_OVERRIDE_APPROVAL_REQUIRED",
-          "Original-price and discounted quotes require independent approval before customer publication."
+    return this.runChangeCommand(
+      "SUBMIT_CUSTOMER_CONFIRMATION",
+      id,
+      input,
+      actor,
+      context,
+      async (tx, change) => {
+        if (change.status !== SubscriptionChangeStatus.QUOTED) {
+          throw stateConflict(
+            "CHANGE_NOT_READY_FOR_CUSTOMER",
+            "Only a quoted change can be published to the customer."
+          );
+        }
+        if (
+          change.pricingMode !== SubscriptionChangePricingMode.CURRENT_VERSION &&
+          (!change.priceOverrideApprovedBy || !change.priceOverrideApprovedAt)
+        ) {
+          throw stateConflict(
+            "PRICE_OVERRIDE_APPROVAL_REQUIRED",
+            "Original-price and discounted quotes require independent approval before customer publication."
+          );
+        }
+        const quote = change.currentQuoteId
+          ? await tx.subscriptionChangeQuote.findUnique({ where: { id: change.currentQuoteId } })
+          : null;
+        if (
+          !quote ||
+          quote.status !== SubscriptionChangeQuoteStatus.FORMAL ||
+          quote.validUntil <= this.config.now()
+        ) {
+          throw stateConflict(
+            "CURRENT_QUOTE_NOT_PUBLISHABLE",
+            "The current formal quote is missing or expired."
+          );
+        }
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            customerConfirmationPublishedAt: this.config.now(),
+            customerConfirmationPublishedBy: actor.id,
+            updatedBy: actor.id,
+            version: { increment: 1 }
+          },
+          include: changeDetailInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          auditInput(AuditAction.UPDATE, "subscription_change_order", id, actor, context, change, {
+            ...updated,
+            publishedQuoteId: quote.id,
+            publishedQuoteRevision: quote.revision
+          }),
+          tx
         );
+        return updated;
       }
-      const quote = change.currentQuoteId
-        ? await tx.subscriptionChangeQuote.findUnique({ where: { id: change.currentQuoteId } })
-        : null;
-      if (
-        !quote ||
-        quote.status !== SubscriptionChangeQuoteStatus.FORMAL ||
-        quote.validUntil <= this.config.now()
-      ) {
-        throw stateConflict("CURRENT_QUOTE_NOT_PUBLISHABLE", "The current formal quote is missing or expired.");
-      }
-      const updated = await tx.subscriptionChangeOrder.update({
-        data: {
-          customerConfirmationPublishedAt: this.config.now(),
-          customerConfirmationPublishedBy: actor.id,
-          updatedBy: actor.id,
-          version: { increment: 1 }
-        },
-        include: changeDetailInclude,
-        where: { id }
-      });
-      await this.auditService.write(
-        auditInput(AuditAction.UPDATE, "subscription_change_order", id, actor, context, change, {
-          ...updated,
-          publishedQuoteId: quote.id,
-          publishedQuoteRevision: quote.revision
-        }),
-        tx
-      );
-      return updated;
-    });
+    );
   }
 
   async cancel(
@@ -466,8 +523,12 @@ export class SubscriptionExtensionService {
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
     return this.runChangeCommand("CANCEL_CHANGE", id, input, actor, context, async (tx, change) => {
+      assertNoContractGenerationInProgress(change);
       if (!CANCELLABLE_STATUSES.includes(change.status)) {
-        throw stateConflict("SUBSCRIPTION_CHANGE_NOT_CANCELLABLE", "The change can no longer be cancelled directly.");
+        throw stateConflict(
+          "SUBSCRIPTION_CHANGE_NOT_CANCELLABLE",
+          "The change can no longer be cancelled directly."
+        );
       }
       const reason = normalizedReason(input.reason);
       if (!reason) throw badRequest("CANCEL_REASON_REQUIRED", "A cancellation reason is required.");
@@ -482,7 +543,15 @@ export class SubscriptionExtensionService {
         where: { id }
       });
       await this.auditService.write(
-        auditInput(AuditAction.UPDATE, "subscription_change_order", id, actor, context, change, updated),
+        auditInput(
+          AuditAction.UPDATE,
+          "subscription_change_order",
+          id,
+          actor,
+          context,
+          change,
+          updated
+        ),
         tx
       );
       return updated;
@@ -495,38 +564,60 @@ export class SubscriptionExtensionService {
     actor: RequestUser,
     context: RequestContext
   ) {
-    this.assertWriteEnabled();
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_MANUAL_TAKEOVER);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
-    return this.runChangeCommand("MANUAL_TAKEOVER", id, input, actor, context, async (tx, change) => {
-      const finalStatuses: SubscriptionChangeStatus[] = [
-        SubscriptionChangeStatus.COMPLETED,
-        SubscriptionChangeStatus.CANCELLED
-      ];
-      if (finalStatuses.includes(change.status)) {
-        throw stateConflict("SUBSCRIPTION_CHANGE_FINAL", "A final change cannot enter manual takeover.");
+    return this.runChangeCommand(
+      "MANUAL_TAKEOVER",
+      id,
+      input,
+      actor,
+      context,
+      async (tx, change) => {
+        assertNoContractGenerationInProgress(change);
+        const finalStatuses: SubscriptionChangeStatus[] = [
+          SubscriptionChangeStatus.COMPLETED,
+          SubscriptionChangeStatus.CANCELLED
+        ];
+        if (finalStatuses.includes(change.status)) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_FINAL",
+            "A final change cannot enter manual takeover."
+          );
+        }
+        const reason = normalizedReason(input.reason);
+        if (!reason)
+          throw badRequest(
+            "MANUAL_TAKEOVER_REASON_REQUIRED",
+            "A manual takeover reason is required."
+          );
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            manualTakeoverAt: this.config.now(),
+            manualTakeoverBy: actor.id,
+            manualTakeoverReason: reason,
+            status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+            updatedBy: actor.id,
+            version: { increment: 1 }
+          },
+          include: changeDetailInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          auditInput(
+            AuditAction.UPDATE,
+            "subscription_change_order",
+            id,
+            actor,
+            context,
+            change,
+            updated
+          ),
+          tx
+        );
+        return updated;
       }
-      const reason = normalizedReason(input.reason);
-      if (!reason) throw badRequest("MANUAL_TAKEOVER_REASON_REQUIRED", "A manual takeover reason is required.");
-      const updated = await tx.subscriptionChangeOrder.update({
-        data: {
-          manualTakeoverAt: this.config.now(),
-          manualTakeoverBy: actor.id,
-          manualTakeoverReason: reason,
-          status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
-          updatedBy: actor.id,
-          version: { increment: 1 }
-        },
-        include: changeDetailInclude,
-        where: { id }
-      });
-      await this.auditService.write(
-        auditInput(AuditAction.UPDATE, "subscription_change_order", id, actor, context, change, updated),
-        tx
-      );
-      return updated;
-    });
+    );
   }
 
   async retryAutomationJob(
@@ -536,7 +627,6 @@ export class SubscriptionExtensionService {
     actor: RequestUser,
     context: RequestContext
   ) {
-    this.assertWriteEnabled();
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
@@ -656,13 +746,11 @@ export class SubscriptionExtensionService {
         return updated;
       }, serializableTransaction);
     } catch (error) {
-      return this.resolveWriteConflict(
-        error,
-        operation,
-        input.idempotencyKey!,
-        actor.id,
-        { id, jobId, ...input }
-      );
+      return this.resolveWriteConflict(error, operation, input.idempotencyKey!, actor.id, {
+        id,
+        jobId,
+        ...input
+      });
     }
   }
 
@@ -671,33 +759,113 @@ export class SubscriptionExtensionService {
     return this.findChangeOrThrow(id);
   }
 
-  async startOrRetryESign<T>(
+  async startOrRetryESign<T extends { id: string }>(
     id: string,
     input: VersionedCommandInput,
     actor: RequestUser,
-    start: (contractId: string) => Promise<T>
+    start: (contractId: string) => Promise<T>,
+    replay?: (taskId: string) => Promise<T>,
+    recover?: (contractId: string) => Promise<T | null>
   ): Promise<T> {
     this.assertWriteEnabled();
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_ESIGN_RETRY);
     assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
+    const operation = "START_OR_RETRY_ESIGN";
+    const commandInput = { id, ...input };
+    const existing = await this.findReplay(operation, input.idempotencyKey, actor.id, commandInput);
+    if (existing) {
+      return replayESignCommand(existing, {
+        actor,
+        changeId: id,
+        input,
+        now: this.config.now(),
+        prisma: this.prisma,
+        recover,
+        replay,
+        start
+      });
+    }
 
-    const change = await this.findChangeOrThrow(id);
-    assertVersionMatches(change.version, input.version);
-    assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
-    if (change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT) {
-      throw stateConflict(
-        "SUBSCRIPTION_CHANGE_ESIGN_NOT_ALLOWED",
-        "The subscription change is not ready for e-sign."
+    let reservation: { commandId: string; contractId: string };
+    try {
+      reservation = await this.prisma.$transaction(async (tx) => {
+        const command = await reserveCommand(
+          tx,
+          actor.id,
+          operation,
+          input.idempotencyKey!,
+          commandHash(commandInput)
+        );
+        await lockChange(tx, id);
+        const change = await tx.subscriptionChangeOrder.findUnique({
+          include: changeDetailInclude,
+          where: { id }
+        });
+        if (!change) throw changeNotFound();
+        assertVersionMatches(change.version, input.version);
+        assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
+        if (change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_ESIGN_NOT_ALLOWED",
+            "The subscription change is not ready for e-sign."
+          );
+        }
+        if (!change.contract) {
+          throw stateConflict(
+            "SUBSCRIPTION_CHANGE_CONTRACT_MISSING",
+            "The subscription extension contract is missing."
+          );
+        }
+        await tx.subscriptionChangeCommand.update({
+          data: {
+            resourceId: change.contract.id,
+            resourceType: "ESIGN_CONTRACT"
+          },
+          where: { id: command.id }
+        });
+        return { commandId: command.id, contractId: change.contract.id };
+      }, serializableTransaction);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const command = await this.findReplay(
+        operation,
+        input.idempotencyKey,
+        actor.id,
+        commandInput
       );
+      if (command) {
+        return replayESignCommand(command, {
+          actor,
+          changeId: id,
+          input,
+          now: this.config.now(),
+          prisma: this.prisma,
+          recover,
+          replay,
+          start
+        });
+      }
+      throw error;
     }
-    if (!change.contract) {
-      throw stateConflict(
-        "SUBSCRIPTION_CHANGE_CONTRACT_MISSING",
-        "The subscription extension contract is missing."
-      );
+
+    let task: T;
+    try {
+      task = await start(reservation.contractId);
+    } catch (error) {
+      await this.prisma.subscriptionChangeCommand
+        .delete({ where: { id: reservation.commandId } })
+        .catch(() => undefined);
+      throw error;
     }
-    return start(change.contract.id);
+    await completeCommand(
+      this.prisma,
+      reservation.commandId,
+      "ESIGN_TASK",
+      task.id,
+      this.config.now()
+    );
+    return task;
   }
 
   async listForOrder(orderId: string, actor: RequestUser) {
@@ -738,12 +906,12 @@ export class SubscriptionExtensionService {
     input: VersionedCommandInput,
     actor: RequestUser,
     context: RequestContext,
-    execute: (
-      tx: Prisma.TransactionClient,
-      change: ChangeDetail
-    ) => Promise<ChangeDetail>
+    execute: (tx: Prisma.TransactionClient, change: ChangeDetail) => Promise<ChangeDetail>
   ) {
-    const replay = await this.replayChange(operation, input.idempotencyKey!, actor.id, { id, ...input });
+    const replay = await this.replayChange(operation, input.idempotencyKey!, actor.id, {
+      id,
+      ...input
+    });
     if (replay) return replay;
     const requestHash = commandHash({ id, ...input });
     try {
@@ -768,7 +936,10 @@ export class SubscriptionExtensionService {
         return updated;
       }, serializableTransaction);
     } catch (error) {
-      return this.resolveWriteConflict(error, operation, input.idempotencyKey!, actor.id, { id, ...input });
+      return this.resolveWriteConflict(error, operation, input.idempotencyKey!, actor.id, {
+        id,
+        ...input
+      });
     }
   }
 
@@ -776,7 +947,10 @@ export class SubscriptionExtensionService {
     const command = await this.findReplay(operation, key, actorId, input);
     if (!command) return null;
     if (command.resourceType !== "CHANGE" || !command.resourceId) {
-      throw stateConflict("IDEMPOTENCY_COMMAND_IN_PROGRESS", "The idempotent command has not completed.");
+      throw stateConflict(
+        "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+        "The idempotent command has not completed."
+      );
     }
     return this.findChangeOrThrow(command.resourceId);
   }
@@ -785,12 +959,16 @@ export class SubscriptionExtensionService {
     const command = await this.findReplay(operation, key, actorId, input);
     if (!command) return null;
     if (command.resourceType !== "QUOTE" || !command.resourceId) {
-      throw stateConflict("IDEMPOTENCY_COMMAND_IN_PROGRESS", "The idempotent command has not completed.");
+      throw stateConflict(
+        "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+        "The idempotent command has not completed."
+      );
     }
     const quote = await this.prisma.subscriptionChangeQuote.findUnique({
       where: { id: command.resourceId }
     });
-    if (!quote) throw stateConflict("IDEMPOTENCY_RESOURCE_MISSING", "The prior command result is missing.");
+    if (!quote)
+      throw stateConflict("IDEMPOTENCY_RESOURCE_MISSING", "The prior command result is missing.");
     return quote;
   }
 
@@ -867,7 +1045,10 @@ const RETRYABLE_EXTENSION_JOB_TYPES: SubscriptionAutomationJobType[] = [
 
 function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
   if (!change.order.vehicle) {
-    throw badRequest("ORDER_VEHICLE_REQUIRED", "A leased vehicle is required for extension pricing.");
+    throw badRequest(
+      "ORDER_VEHICLE_REQUIRED",
+      "A leased vehicle is required for extension pricing."
+    );
   }
   return {
     asOf,
@@ -905,20 +1086,39 @@ function assertPricingSelection(
 
 function assertQuoteMutable(change: Pick<ChangeDetail, "confirmedQuoteId" | "status">) {
   if (change.confirmedQuoteId || change.status === SubscriptionChangeStatus.CUSTOMER_CONFIRMED) {
-    throw stateConflict("CONFIRMED_QUOTE_IMMUTABLE", "A customer-confirmed quote cannot be replaced.");
+    throw stateConflict(
+      "CONFIRMED_QUOTE_IMMUTABLE",
+      "A customer-confirmed quote cannot be replaced."
+    );
   }
   const quotableStatuses: SubscriptionChangeStatus[] = [
     SubscriptionChangeStatus.DRAFT,
     SubscriptionChangeStatus.QUOTED
   ];
   if (!quotableStatuses.includes(change.status)) {
-    throw stateConflict("SUBSCRIPTION_CHANGE_NOT_QUOTABLE", "The change is not in a quotable state.");
+    throw stateConflict(
+      "SUBSCRIPTION_CHANGE_NOT_QUOTABLE",
+      "The change is not in a quotable state."
+    );
+  }
+}
+
+function assertNoContractGenerationInProgress(change: ChangeDetail) {
+  if (change.contract?.status === "GENERATED" && !change.contract.fileId) {
+    throw stateConflict(
+      "CONTRACT_GENERATION_IN_PROGRESS",
+      "The reserved extension contract must finish rendering before this transition."
+    );
   }
 }
 
 function assertPermission(actor: RequestUser, permission: PermissionCode) {
   if (!actor.roles.includes("ADMIN") && !actor.permissions.includes(permission)) {
-    throw new SubscriptionChangeError("PERMISSION_DENIED", "Permission denied.", HttpStatus.FORBIDDEN);
+    throw new SubscriptionChangeError(
+      "PERMISSION_DENIED",
+      "Permission denied.",
+      HttpStatus.FORBIDDEN
+    );
   }
 }
 
@@ -936,7 +1136,10 @@ function assertVersion(value: number | undefined): asserts value is number {
 
 function assertVersionMatches(actual: number, expected: number) {
   if (actual !== expected) {
-    throw stateConflict("VERSION_CONFLICT", "The subscription change was updated by another request.");
+    throw stateConflict(
+      "VERSION_CONFLICT",
+      "The subscription change was updated by another request."
+    );
   }
 }
 
@@ -964,7 +1167,7 @@ async function reserveCommand(
 async function completeCommand(
   tx: Prisma.TransactionClient,
   commandId: string,
-  resourceType: "CHANGE" | "QUOTE",
+  resourceType: "CHANGE" | "QUOTE" | "ESIGN_TASK",
   resourceId: string,
   completedAt: Date
 ) {
@@ -972,6 +1175,101 @@ async function completeCommand(
     data: { completedAt, resourceId, resourceType },
     where: { id: commandId }
   });
+}
+
+async function replayESignCommand<T extends { id: string }>(
+  command: {
+    createdAt: Date;
+    id: string;
+    resourceId: string | null;
+    resourceType: string | null;
+  },
+  context: {
+    actor: RequestUser;
+    changeId: string;
+    input: VersionedCommandInput;
+    now: Date;
+    prisma: PrismaService;
+    recover?: (contractId: string) => Promise<T | null>;
+    replay?: (taskId: string) => Promise<T>;
+    start: (contractId: string) => Promise<T>;
+  }
+) {
+  if (command.resourceType === "ESIGN_TASK" && command.resourceId) {
+    if (!context.replay) {
+      throw stateConflict(
+        "IDEMPOTENCY_REPLAY_UNAVAILABLE",
+        "The prior e-sign task cannot be replayed through this caller."
+      );
+    }
+    return context.replay(command.resourceId);
+  }
+  if (
+    command.resourceType !== "ESIGN_CONTRACT" ||
+    !command.resourceId ||
+    context.now.getTime() - command.createdAt.getTime() < ESIGN_COMMAND_RECOVERY_MS
+  ) {
+    throw stateConflict(
+      "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+      "The idempotent e-sign command has not completed."
+    );
+  }
+
+  return context.prisma.$transaction(async (tx) => {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "subscription_change_command"
+      WHERE "id" = ${command.id}::uuid
+      FOR UPDATE
+    `);
+    const locked = await tx.subscriptionChangeCommand.findUnique({
+      where: { id: command.id }
+    });
+    if (!locked) {
+      throw stateConflict("IDEMPOTENCY_RESOURCE_MISSING", "The prior e-sign command is missing.");
+    }
+    if (locked.resourceType === "ESIGN_TASK" && locked.resourceId) {
+      if (!context.replay) {
+        throw stateConflict(
+          "IDEMPOTENCY_REPLAY_UNAVAILABLE",
+          "The prior e-sign task cannot be replayed through this caller."
+        );
+      }
+      return context.replay(locked.resourceId);
+    }
+    if (locked.resourceType !== "ESIGN_CONTRACT" || !locked.resourceId) {
+      throw stateConflict(
+        "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+        "The idempotent e-sign command has not completed."
+      );
+    }
+
+    const recovered = context.recover ? await context.recover(locked.resourceId) : null;
+    if (recovered) {
+      await completeCommand(tx, locked.id, "ESIGN_TASK", recovered.id, context.now);
+      return recovered;
+    }
+
+    await lockChange(tx, context.changeId);
+    const change = await tx.subscriptionChangeOrder.findUnique({
+      include: changeDetailInclude,
+      where: { id: context.changeId }
+    });
+    if (!change) throw changeNotFound();
+    assertVersionMatches(change.version, context.input.version);
+    assertBeforeDeadline(context.now, change.completionDeadlineAt);
+    if (
+      change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT ||
+      change.contract?.id !== locked.resourceId
+    ) {
+      throw stateConflict(
+        "SUBSCRIPTION_CHANGE_ESIGN_NOT_ALLOWED",
+        "The subscription change is not ready for e-sign recovery."
+      );
+    }
+    const task = await context.start(locked.resourceId);
+    await completeCommand(tx, locked.id, "ESIGN_TASK", task.id, context.now);
+    return task;
+  }, serializableTransaction);
 }
 
 async function lockChange(tx: Prisma.TransactionClient, id: string) {
@@ -1004,7 +1302,9 @@ function auditInput(
 }
 
 function commandHash(input: unknown) {
-  return createHash("sha256").update(JSON.stringify(canonical(input))).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(canonical(input)))
+    .digest("hex");
 }
 
 function canonical(value: unknown): unknown {
@@ -1074,9 +1374,7 @@ function changeNotFound() {
 }
 
 function isUniqueConstraintError(error: unknown) {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
-  );
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
 const serializableTransaction = {

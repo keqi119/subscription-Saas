@@ -21,6 +21,22 @@
    pnpm prisma:generate
    ```
 
+   Before `migrate:deploy`, run this read-only preflight on the restored copy and the target database:
+
+   ```sql
+   SELECT
+     contract_id,
+     array_agg(id ORDER BY created_at) AS task_ids,
+     array_agg(task_status ORDER BY created_at) AS task_statuses
+   FROM contract_esign_task
+   WHERE deleted_at IS NULL
+     AND task_status IN ('CREATED', 'WAITING_CUSTOMER', 'SIGNING', 'COMPLETED')
+   GROUP BY contract_id
+   HAVING COUNT(*) > 1;
+   ```
+
+   The query must return zero rows. Do not auto-delete, soft-delete, or rewrite duplicate tasks. If rows are returned, stop the rollout; the release owner must reconcile provider evidence and callbacks, record the single authoritative winner, and cancel every loser through an approved audited repair procedure. If no such procedure exists, ship and verify that repair before retrying the unique-index migration.
+
 3. 生产窗口执行同样的 `migrate:deploy`。迁移失败时停止发布并保留现场，不重置数据库。
 
 ## 2. 部署但保持功能关闭

@@ -25,6 +25,13 @@ describe("SubscriptionExtensionPricingService", () => {
     expect(result.monthlyFeeAmount).toBe(97_000n);
     expect(result.mileageLimitKm).toBe(1_800);
     expect(result.subscriptionPlanId).toBe("plan-current");
+    expect(result.planSnapshot).toMatchObject({
+      benefitPackage: {
+        benefitCount: 2,
+        benefitType: "WASH_CAR",
+        description: "每月 2 次洗车权益"
+      }
+    });
     expect(prisma.vehicle.findFirst).not.toHaveBeenCalled();
   });
 
@@ -104,10 +111,38 @@ describe("SubscriptionExtensionPricingService", () => {
       })
     ).resolves.toMatchObject({ monthlyFeeAmount: 97_000n });
   });
+
+  it("calculates rate-formula money exactly without floating-point floor loss", async () => {
+    const rate = { toNumber: () => 0.009, toString: () => "0.009" };
+    const capRate = { toNumber: () => 0.02, toString: () => "0.02" };
+    const service = new SubscriptionExtensionPricingService(
+      pricingPrisma({
+        monthlyFeeMode: MonthlyFeeMode.RATE_FORMULA,
+        monthlyFeeRate: rate,
+        vehiclePackageMonthlyFeeRate: capRate
+      }) as never
+    );
+
+    const result = await service.calculate({
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+      sourceSegment: sourceSegment(),
+      subscriptionPlanId: "plan-current",
+      vehicle: leasedVehicle({ currentSalePriceAmount: 3_000n })
+    });
+
+    expect(result.monthlyFeeAmount).toBe(17_027n);
+    expect(result.priceRuleSnapshot).toMatchObject({ vehicleBaseFeeAmount: "27" });
+  });
 });
 
 function pricingPrisma(
-  options: { effectiveTo?: Date | null; modelDefinitionId?: string } = {}
+  options: {
+    effectiveTo?: Date | null;
+    modelDefinitionId?: string;
+    monthlyFeeMode?: MonthlyFeeMode;
+    monthlyFeeRate?: { toNumber(): number; toString(): string };
+    vehiclePackageMonthlyFeeRate?: { toNumber(): number; toString(): string };
+  } = {}
 ) {
   const now = new Date("2026-08-05T04:00:00.000Z");
   const product = {
@@ -134,6 +169,9 @@ function pricingPrisma(
     baseMonthlyFeeAmount: 80_000n,
     benefitPackage: {
       ...component,
+      benefitCount: 2,
+      benefitType: "WASH_CAR",
+      description: "每月 2 次洗车权益",
       id: "benefit-current",
       packageName: "Benefit",
       priceAmount: 2_000n
@@ -160,8 +198,8 @@ function pricingPrisma(
       priceAmount: 10_000n
     },
     minPeriodMonths: 1,
-    monthlyFeeMode: MonthlyFeeMode.FIXED_AMOUNT,
-    monthlyFeeRate: { toNumber: () => 0.02 },
+    monthlyFeeMode: options.monthlyFeeMode ?? MonthlyFeeMode.FIXED_AMOUNT,
+    monthlyFeeRate: options.monthlyFeeRate ?? { toNumber: () => 0.02, toString: () => "0.02" },
     planName: "Current plan",
     planNo: "PLAN-CURRENT",
     product,
@@ -173,7 +211,10 @@ function pricingPrisma(
       ...component,
       id: "vehicle-package-current",
       modelDefinitionId: options.modelDefinitionId ?? "model-et5",
-      monthlyFeeRate: { toNumber: () => 0.03 },
+      monthlyFeeRate: options.vehiclePackageMonthlyFeeRate ?? {
+        toNumber: () => 0.03,
+        toString: () => "0.03"
+      },
       packageName: "Vehicle"
     }
   };
@@ -207,12 +248,13 @@ function sourceSegment() {
   } as never;
 }
 
-function leasedVehicle() {
+function leasedVehicle(overrides: Record<string, unknown> = {}) {
   return {
     currentSalePriceAmount: 20_000_000n,
     id: "vehicle-1",
     modelDefinitionId: "model-et5",
     purchasePriceAmount: 18_000_000n,
-    status: "LEASED"
+    status: "LEASED",
+    ...overrides
   };
 }

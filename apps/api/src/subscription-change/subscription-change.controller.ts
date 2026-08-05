@@ -40,16 +40,21 @@ export class SubscriptionChangeController {
   @RequirePermissions(PermissionCode.CONTRACT_GENERATE)
   async generateExtensionContract(
     @Param("id") id: string,
+    @Body() dto: VersionedSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
     if (!this.contractService) {
       throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
     }
-    return apiSafe(await this.contractService.generate(
-      id,
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.contractService.generate(
+        id,
+        { idempotencyKey, version: dto.version },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post("extensions")
@@ -59,16 +64,18 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.createExtension(
-      {
-        ...dto,
-        discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
-        idempotencyKey,
-        requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
-      },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.createExtension(
+        {
+          ...dto,
+          discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
+          idempotencyKey,
+          requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
+        },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/quotes/preview")
@@ -78,15 +85,17 @@ export class SubscriptionChangeController {
     @Body() dto: SubscriptionExtensionQuoteDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.previewQuote(
-      id,
-      {
-        ...dto,
-        discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
-        requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
-      },
-      request.user
-    ));
+    return apiSafe(
+      await this.service.previewQuote(
+        id,
+        {
+          ...dto,
+          discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
+          requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
+        },
+        request.user
+      )
+    );
   }
 
   @Post(":id/quotes")
@@ -97,17 +106,19 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.createFormalQuote(
-      id,
-      {
-        ...dto,
-        discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
-        idempotencyKey,
-        requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
-      },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.createFormalQuote(
+        id,
+        {
+          ...dto,
+          discountedMonthlyFeeAmount: optionalMoney(dto.discountedMonthlyFeeAmount),
+          idempotencyKey,
+          requestedVehicleBaseFeeAmount: optionalMoney(dto.requestedVehicleBaseFeeAmount)
+        },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/price-override/approve")
@@ -118,12 +129,14 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.approvePriceOverride(
-      id,
-      { ...dto, idempotencyKey },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.approvePriceOverride(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/submit-customer-confirmation")
@@ -134,12 +147,14 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.submitCustomerConfirmation(
-      id,
-      { ...dto, idempotencyKey },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.submitCustomerConfirmation(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/cancel")
@@ -150,12 +165,14 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.cancel(
-      id,
-      { ...dto, idempotencyKey },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.cancel(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/manual-takeover")
@@ -166,12 +183,14 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.manualTakeover(
-      id,
-      { ...dto, idempotencyKey },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.manualTakeover(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/jobs/:jobId/retry")
@@ -183,13 +202,15 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return apiSafe(await this.service.retryAutomationJob(
-      id,
-      jobId,
-      { ...dto, idempotencyKey },
-      request.user,
-      requestContext(request)
-    ));
+    return apiSafe(
+      await this.service.retryAutomationJob(
+        id,
+        jobId,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
   }
 
   @Post(":id/esign/start")
@@ -241,16 +262,21 @@ export class SubscriptionChangeController {
     if (!this.esignService) {
       throw new Error("SUBSCRIPTION_EXTENSION_ESIGN_SERVICE_MISSING");
     }
-    return apiSafe(await this.service.startOrRetryESign(
-      id,
-      { ...dto, idempotencyKey },
-      request.user,
-      (contractId) => this.esignService!.createTaskForContract(
-        contractId,
+    return apiSafe(
+      await this.service.startOrRetryESign(
+        id,
+        { ...dto, idempotencyKey },
         request.user,
-        requestContext(request)
+        (contractId) =>
+          this.esignService!.createTaskForContract(
+            contractId,
+            request.user,
+            requestContext(request)
+          ),
+        (taskId) => this.esignService!.getTask(taskId, request.user),
+        (contractId) => this.esignService!.findActiveTaskForContract(contractId, request.user)
       )
-    ));
+    );
   }
 }
 

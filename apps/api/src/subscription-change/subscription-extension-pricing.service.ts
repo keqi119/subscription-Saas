@@ -12,10 +12,7 @@ import {
 
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
-import {
-  ExtensionPricingInput,
-  ExtensionQuotePreview
-} from "./subscription-change.types";
+import { ExtensionPricingInput, ExtensionQuotePreview } from "./subscription-change.types";
 
 const currentPlanInclude = Prisma.validator<Prisma.SubscriptionPlanInclude>()({
   benefitPackage: true,
@@ -276,35 +273,31 @@ function addCalendarMonths(value: Date, months: number) {
   return new Date(Date.UTC(targetYear, targetMonth, Math.min(value.getUTCDate(), lastDay)));
 }
 
-function calculateVehicleBase(
-  plan: CurrentPlan,
-  salePrice: bigint,
-  requestedAmount?: bigint
-) {
-  const packageRate = decimalNumber(plan.vehiclePackage.monthlyFeeRate);
-  if (!Number.isFinite(packageRate) || packageRate <= 0) {
+function calculateVehicleBase(plan: CurrentPlan, salePrice: bigint, requestedAmount?: bigint) {
+  const packageRate = decimalRate(plan.vehiclePackage.monthlyFeeRate);
+  if (!packageRate || !packageRate.isFinite() || packageRate.lte(0)) {
     throw new SubscriptionChangeError(
       "VEHICLE_BASE_FEE_CAP_RATE_INVALID",
       "Vehicle package monthly-fee cap rate must be positive.",
       HttpStatus.BAD_REQUEST
     );
   }
-  const cap = BigInt(Math.floor(Number(salePrice) * packageRate));
+  const cap = multiplyMoneyByRateFloor(salePrice, packageRate);
   let amount: bigint;
   switch (plan.monthlyFeeMode) {
     case MonthlyFeeMode.FIXED_AMOUNT:
       amount = plan.baseMonthlyFeeAmount ?? 0n;
       break;
     case MonthlyFeeMode.RATE_FORMULA: {
-      const rate = decimalNumber(plan.monthlyFeeRate ?? plan.vehiclePackage.monthlyFeeRate);
-      if (!Number.isFinite(rate) || rate <= 0 || rate > packageRate) {
+      const rate = decimalRate(plan.monthlyFeeRate ?? plan.vehiclePackage.monthlyFeeRate);
+      if (!rate || !rate.isFinite() || rate.lte(0) || rate.gt(packageRate)) {
         throw new SubscriptionChangeError(
           "VEHICLE_BASE_FEE_RATE_INVALID",
           "Vehicle base monthly-fee rate must be positive and within the vehicle-package cap rate.",
           HttpStatus.BAD_REQUEST
         );
       }
-      amount = BigInt(Math.floor(Number(salePrice) * rate));
+      amount = multiplyMoneyByRateFloor(salePrice, rate);
       break;
     }
     case MonthlyFeeMode.MANUAL_QUOTE:
@@ -323,17 +316,29 @@ function calculateVehicleBase(
   return { amount, cap };
 }
 
-function decimalNumber(value: unknown) {
-  if (value && typeof value === "object" && "toNumber" in value) {
-    return (value as { toNumber(): number }).toNumber();
+function decimalRate(value: unknown) {
+  try {
+    const text =
+      value && typeof value === "object" && "toString" in value
+        ? (value as { toString(): string }).toString()
+        : String(value);
+    return new Prisma.Decimal(text);
+  } catch {
+    return null;
   }
-  return Number(value);
+}
+
+function multiplyMoneyByRateFloor(amount: bigint, rate: Prisma.Decimal) {
+  return BigInt(new Prisma.Decimal(amount.toString()).mul(rate).floor().toFixed(0));
 }
 
 function snapshotPackage(value: null | Record<string, unknown>) {
   if (!value) return null;
   const allowed = [
     "id",
+    "benefitCount",
+    "benefitType",
+    "description",
     "packageName",
     "packageNo",
     "priceAmount",

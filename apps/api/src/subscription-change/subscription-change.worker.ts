@@ -26,7 +26,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    if (this.isEnabled()) this.schedulePoll(0);
+    this.schedulePoll(0);
   }
 
   async onModuleDestroy() {
@@ -50,7 +50,9 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
     if (now < this.nextMaintenanceAt) return;
     this.nextMaintenanceAt = now + MAINTENANCE_INTERVAL_MS;
     try {
-      await this.jobs.enqueueDueEnrollmentJobs(new Date(now));
+      if (this.isPublicWriteEnabled()) {
+        await this.jobs.enqueueDueEnrollmentJobs(new Date(now));
+      }
       await this.jobs.reconcileExecutingChanges();
     } catch (error) {
       this.nextMaintenanceAt = 0;
@@ -67,7 +69,8 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
       const failedAttempt = job.attemptCount + 1;
       const failure = {
         code: "SUBSCRIPTION_CHANGE_JOB_FAILED",
-        message: error instanceof Error ? error.message.slice(0, 512) : "Subscription change job failed.",
+        message:
+          error instanceof Error ? error.message.slice(0, 512) : "Subscription change job failed.",
         retryable: true
       };
       if (failedAttempt >= job.maxAttempts) {
@@ -114,7 +117,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
     this.pollTimer.unref?.();
   }
 
-  private isEnabled() {
+  private isPublicWriteEnabled() {
     return this.config.get<string>("SUBSCRIPTION_EXTENSION_ENABLED") === "true";
   }
 

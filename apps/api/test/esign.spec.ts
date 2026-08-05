@@ -46,43 +46,48 @@ function unknownSignerStatusQuery() {
 describe("ESignService", () => {
   it("persists the dedicated Stage 3 identity and forces customer plus platform slots", async () => {
     const provider = stage1SlotProvider();
-    const { service, state } = createESignFixture(
-      { ESIGN_PROVIDER: "fadada" },
-      provider
-    );
+    const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
     state.contracts[0]!.subscriptionChange = { id: "change-extension-1" };
     state.contracts[0]!.order.contractId = "contract-original";
     state.contracts[0]!.order.orderStatus = OrderStatus.ACTIVE;
 
-    const result = await service.createTaskForContract(
-      "contract-1",
-      adminUser(),
-      requestContext()
-    );
+    const result = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
     expect(result).toMatchObject({
       documentType: "SUBSCRIPTION_EXTENSION_AGREEMENT",
       signingStage: "STAGE3_SUBSCRIPTION_EXTENSION"
     });
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      signingStage: "STAGE1_CONTRACT",
-      signingSlots: expect.arrayContaining([
-        expect.objectContaining({ signerRole: "CUSTOMER" }),
-        expect.objectContaining({ signerRole: "PLATFORM" })
-      ])
-    }));
-    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toHaveLength(2);
-    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toHaveLength(2);
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "PLATS1"
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signingStage: "STAGE1_CONTRACT",
+        signingSlots: expect.arrayContaining([
+          expect.objectContaining({ signerRole: "CUSTOMER" }),
+          expect.objectContaining({ signerRole: "PLATFORM" })
+        ])
+      })
+    );
+    expect(
+      state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)
+    ).toHaveLength(2);
+    expect(
+      state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toHaveLength(2);
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "PLATS1"
+      })
+    );
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.COMPLETED);
     expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNED);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.ACTIVE);
@@ -117,11 +122,14 @@ describe("ESignService", () => {
     state.contracts[0]!.order.orderStatus = OrderStatus.ACTIVE;
 
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
 
     expect(provider.autoSealTask).toHaveBeenCalledOnce();
     expect(state.tasks[0]).toMatchObject({
@@ -163,13 +171,15 @@ describe("ESignService", () => {
         rawResponse: { provider: "fadada" },
         signUrl: "https://sign.example.test/customer",
         signUrlExpiresAt,
-        signers: [{
-          customerId: "customer-1",
-          providerSignerId: "ESG-1-1",
-          signUrl: "https://sign.example.test/customer",
-          signUrlExpiresAt,
-          signerType: "CUSTOMER" as const
-        }]
+        signers: [
+          {
+            customerId: "customer-1",
+            providerSignerId: "ESG-1-1",
+            signUrl: "https://sign.example.test/customer",
+            signUrlExpiresAt,
+            signerType: "CUSTOMER" as const
+          }
+        ]
       })),
       getSignerUrl: vi.fn(),
       querySignerStatus: unknownSignerStatusQuery(),
@@ -212,9 +222,11 @@ describe("ESignService", () => {
 
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.not.objectContaining({
-      signingSlots: expect.anything()
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        signingSlots: expect.anything()
+      })
+    );
     expect(state.signers).toHaveLength(1);
     expect(state.signers[0]!.snapshot).not.toMatchObject({
       signingStage: "STAGE1_CONTRACT"
@@ -223,85 +235,125 @@ describe("ESignService", () => {
 
   it("creates Stage 1 slot rows from slot-capable provider results", async () => {
     const provider = stage1SlotProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_PROVIDER: "fadada",
-      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+      },
+      provider
+    );
 
     const result = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
     expect(result.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      signingStage: "STAGE1_CONTRACT",
-      signingSlots: expect.arrayContaining([
-        expect.objectContaining({ slotId: "STAGE1_BODY_CUSTOMER" }),
-        expect.objectContaining({ slotId: "STAGE1_BODY_PLATFORM" }),
-        expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_CUSTOMER" }),
-        expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_PLATFORM" })
-      ])
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signingStage: "STAGE1_CONTRACT",
+        signingSlots: expect.arrayContaining([
+          expect.objectContaining({ slotId: "STAGE1_BODY_CUSTOMER" }),
+          expect.objectContaining({ slotId: "STAGE1_BODY_PLATFORM" }),
+          expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_CUSTOMER" }),
+          expect.objectContaining({ slotId: "STAGE1_ATTACHMENT1_PLATFORM" })
+        ])
+      })
+    );
     expect(state.signers).toHaveLength(4);
-    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toHaveLength(2);
-    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toHaveLength(2);
+    expect(
+      state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)
+    ).toHaveLength(2);
+    expect(
+      state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toHaveLength(2);
     expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toHaveLength(2);
     expect(state.signers.filter((signer) => signer.providerSignerId === "PLATS1")).toHaveLength(2);
-    expect(state.signers.find((signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_BODY_CUSTOMER")).toMatchObject({
+    expect(
+      state.signers.find(
+        (signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_BODY_CUSTOMER"
+      )
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNING,
       signUrl: "https://sign.example.test/customer-stage1"
     });
-    expect(state.signers.find((signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_ATTACHMENT1_PLATFORM")).toMatchObject({
+    expect(
+      state.signers.find(
+        (signer) => readSnapshotField(signer.snapshot, "slotId") === "STAGE1_ATTACHMENT1_PLATFORM"
+      )
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.PENDING
     });
-    expect(state.signers.map((signer) => signer.snapshot)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        documentType: "CONTRACT_BODY",
-        keyword: "合同正文-订阅方签字",
-        providerActionType: "CUSTOMER_MANUAL_SIGN",
-        providerTransactionId: "CUSTS1",
-        signingStage: "STAGE1_CONTRACT",
-        slotId: "STAGE1_BODY_CUSTOMER"
-      }),
-      expect.objectContaining({
-        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
-        keyword: "附件1订阅方案-服务提供方盖章",
-        providerActionType: "PLATFORM_AUTO_SEAL",
-        providerTransactionId: "PLATS1",
-        signingStage: "STAGE1_CONTRACT",
-        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
-      })
-    ]));
+    expect(state.signers.map((signer) => signer.snapshot)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          documentType: "CONTRACT_BODY",
+          keyword: "合同正文-订阅方签字",
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerTransactionId: "CUSTS1",
+          signingStage: "STAGE1_CONTRACT",
+          slotId: "STAGE1_BODY_CUSTOMER"
+        }),
+        expect.objectContaining({
+          documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+          keyword: "附件1订阅方案-服务提供方盖章",
+          providerActionType: "PLATFORM_AUTO_SEAL",
+          providerTransactionId: "PLATS1",
+          signingStage: "STAGE1_CONTRACT",
+          slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+        })
+      ])
+    );
   });
 
   it("completes Stage 1 slot rows by provider transaction before completing the task", async () => {
     const provider = stage1SlotProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_PROVIDER: "fadada",
-      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+      },
+      provider
+    );
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const customerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
-    const customerSignedAt = state.signers.find((signer) => signer.providerSignerId === "CUSTS1")!.signedAt;
-    const duplicateCustomerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
+    const customerResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
+    const customerSignedAt = state.signers.find(
+      (signer) => signer.providerSignerId === "CUSTS1"
+    )!.signedAt;
+    const duplicateCustomerResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
 
     expect(customerResult).toMatchObject({ handled: true });
     expect(duplicateCustomerResult).toMatchObject({ handled: true });
-    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signedAt: customerSignedAt }),
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signedAt: customerSignedAt })
-    ]));
-    expect(state.signers.filter((signer) => signer.providerSignerId === "PLATS1")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING }),
-      expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING })
-    ]));
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.SIGNED,
+          signedAt: customerSignedAt
+        }),
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.SIGNED,
+          signedAt: customerSignedAt
+        })
+      ])
+    );
+    expect(state.signers.filter((signer) => signer.providerSignerId === "PLATS1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING }),
+        expect.objectContaining({ signerStatus: ESignSignerStatus.PENDING })
+      ])
+    );
     expect(state.tasks[0]).toMatchObject({
       completedAt: null,
       taskStatus: ESignTaskStatus.SIGNING
@@ -309,14 +361,19 @@ describe("ESignService", () => {
     expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
 
-    const platformResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "PLATS1"
-    }));
+    const platformResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "PLATS1"
+      })
+    );
 
     expect(platformResult).toMatchObject({ handled: true });
-    expect(state.signers.every((signer) => signer.signerStatus === ESignSignerStatus.SIGNED)).toBe(true);
+    expect(state.signers.every((signer) => signer.signerStatus === ESignSignerStatus.SIGNED)).toBe(
+      true
+    );
     expect(state.tasks[0]).toMatchObject({
       completedAt: expect.any(Date),
       taskStatus: ESignTaskStatus.COMPLETED
@@ -330,13 +387,21 @@ describe("ESignService", () => {
 
   it("completes Stage 2 handover slots without running Stage 1 order side effects", async () => {
     const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
-    const { prisma, service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, {
-      createSignTask: vi.fn(),
-      getSignerUrl: vi.fn(),
-      querySignerStatus: unknownSignerStatusQuery(),
-      verifyCallback: verifier.verifyCallback.bind(verifier)
-    });
-    const handoverContract = createContract("handover-contract-1", "customer-1", "order-1", "ORD-1");
+    const { prisma, service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada" },
+      {
+        createSignTask: vi.fn(),
+        getSignerUrl: vi.fn(),
+        querySignerStatus: unknownSignerStatusQuery(),
+        verifyCallback: verifier.verifyCallback.bind(verifier)
+      }
+    );
+    const handoverContract = createContract(
+      "handover-contract-1",
+      "customer-1",
+      "order-1",
+      "ORD-1"
+    );
     handoverContract.contractNo = "HDV-1";
     handoverContract.contractTitle = "车辆交付交接确认书";
     handoverContract.order.contractId = "contract-1";
@@ -430,11 +495,14 @@ describe("ESignService", () => {
       }
     );
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: "HDV-PROVIDER-1",
-      resultCode: "3000",
-      transactionId: "CUSTH1"
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: "HDV-PROVIDER-1",
+        resultCode: "3000",
+        transactionId: "CUSTH1"
+      })
+    );
 
     expect(state.tasks.find((task) => task.id === "stage2-task-1")).toMatchObject({
       completedAt: null,
@@ -442,11 +510,14 @@ describe("ESignService", () => {
     });
     expect(handoverContract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: "HDV-PROVIDER-1",
-      resultCode: "3000",
-      transactionId: "PLATH1"
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: "HDV-PROVIDER-1",
+        resultCode: "3000",
+        transactionId: "PLATH1"
+      })
+    );
 
     expect(state.tasks.find((task) => task.id === "stage2-task-1")).toMatchObject({
       completedAt: expect.any(Date),
@@ -545,30 +616,23 @@ describe("ESignService", () => {
     expect(harness.autoSealTask).not.toHaveBeenCalled();
     expect(
       harness.state.workflowJobs.filter(
-        (job) =>
-          job.jobType ===
-          VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
+        (job) => job.jobType === VehicleHandoverWorkflowJobType.AUTO_SEAL_PLATFORM
       )
     ).toEqual([
       expect.objectContaining({
         eSignTaskId: harness.task.id,
         handoverId: harness.handover.id,
-        idempotencyKey:
-          `platform-seal:${harness.task.id}:${harness.platformTransactionId}`,
+        idempotencyKey: `platform-seal:${harness.task.id}:${harness.platformTransactionId}`,
         jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
         payload: {
-          platformTransactionId:
-            harness.platformTransactionId
+          platformTransactionId: harness.platformTransactionId
         },
         workOrderId: "work-order-typed"
       })
     ]);
     expect(
       harness.state.workflowJobs.find(
-        (job) =>
-          job.jobType ===
-          VehicleHandoverWorkflowJobType
-            .RECONCILE_CUSTOMER_SIGNATURE
+        (job) => job.jobType === VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
       )
     ).toMatchObject({
       jobStatus: VehicleHandoverWorkflowJobStatus.CANCELLED
@@ -806,9 +870,7 @@ describe("ESignService", () => {
     });
     expect(harness.task.taskStatus).toBe(ESignTaskStatus.SIGNING);
     expect(harness.handover.status).toBe("PENDING_PLATFORM_SEAL");
-    expect(harness.stage1Contract.order.orderStatus).toBe(
-      OrderStatus.PENDING_DELIVERY
-    );
+    expect(harness.stage1Contract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
     expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
   });
 
@@ -861,9 +923,9 @@ describe("ESignService", () => {
       new Error("simulated callback transaction rollback")
     );
 
-    await expect(
-      harness.service.handleCallback("fadada", payload)
-    ).rejects.toThrow("simulated callback transaction rollback");
+    await expect(harness.service.handleCallback("fadada", payload)).rejects.toThrow(
+      "simulated callback transaction rollback"
+    );
 
     expect(harness.state.callbackLogs).toHaveLength(1);
     expect(harness.state.callbackLogs[0]).toMatchObject({
@@ -919,9 +981,7 @@ describe("ESignService", () => {
     );
     rejectFirstTransaction();
 
-    await expect(first).rejects.toThrow(
-      "simulated overlapping callback rollback"
-    );
+    await expect(first).rejects.toThrow("simulated overlapping callback rollback");
     expect(second).toMatchObject({
       handled: true,
       signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -1043,25 +1103,28 @@ describe("ESignService", () => {
           taskStatus: harness.stage1Task.taskStatus
         }
       };
-      const secondTransactionId = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
-        ? harness.platformTransactionId
-        : harness.customerTransactionId;
-      const otherSignerStatusBefore = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
-        ? harness.platformSigner.signerStatus
-        : harness.customerSigner.signerStatus;
+      const secondTransactionId =
+        firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+          ? harness.platformTransactionId
+          : harness.customerTransactionId;
+      const otherSignerStatusBefore =
+        firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+          ? harness.platformSigner.signerStatus
+          : harness.customerSigner.signerStatus;
 
-      await harness.service.handleCallback("fadada", fadadaCallbackPayload({
-        contractId: harness.providerContractId,
-        resultCode: "3000",
-        transactionId: harness[firstTransactionKey]
-      }));
+      await harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode: "3000",
+          transactionId: harness[firstTransactionKey]
+        })
+      );
 
-      const firstSigner = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
-        ? harness.customerSigner
-        : harness.platformSigner;
-      const otherSigner = firstSlot === "STAGE2_HANDOVER_CUSTOMER"
-        ? harness.platformSigner
-        : harness.customerSigner;
+      const firstSigner =
+        firstSlot === "STAGE2_HANDOVER_CUSTOMER" ? harness.customerSigner : harness.platformSigner;
+      const otherSigner =
+        firstSlot === "STAGE2_HANDOVER_CUSTOMER" ? harness.platformSigner : harness.customerSigner;
       expect(firstSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
       expect(otherSigner.signerStatus).toBe(otherSignerStatusBefore);
       expect(harness.task).toMatchObject({
@@ -1070,23 +1133,26 @@ describe("ESignService", () => {
       });
       expect(harness.handover).toMatchObject({
         completedAt: null,
-        status: firstSlot === "STAGE2_HANDOVER_CUSTOMER"
-          ? "PENDING_PLATFORM_SEAL"
-          : "PENDING_CUSTOMER_SIGNATURE"
+        status:
+          firstSlot === "STAGE2_HANDOVER_CUSTOMER"
+            ? "PENDING_PLATFORM_SEAL"
+            : "PENDING_CUSTOMER_SIGNATURE"
       });
       expect(harness.stage2Contract.status).toBe(ContractStatus.SIGNING);
 
-      await harness.service.handleCallback("fadada", fadadaCallbackPayload({
-        contractId: harness.providerContractId,
-        resultCode: "3000",
-        transactionId: secondTransactionId
-      }));
+      await harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode: "3000",
+          transactionId: secondTransactionId
+        })
+      );
       if (firstSlot === "STAGE2_HANDOVER_PLATFORM") {
         await harness.service.reconcilePlatformSigned({
           completedAt: new Date(),
           eSignTaskId: harness.task.id,
-          providerTransactionId:
-            harness.platformTransactionId,
+          providerTransactionId: harness.platformTransactionId,
           queryResult: {
             resultCode: "3000",
             status: "SIGNED"
@@ -1135,10 +1201,8 @@ describe("ESignService", () => {
       signingStage: "STAGE1_SUBSCRIPTION_CONTRACT"
     };
     harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
-    harness.customerSigner.providerSignerId =
-      harness.customerTransactionId;
-    harness.platformSigner.providerSignerId =
-      harness.platformTransactionId;
+    harness.customerSigner.providerSignerId = harness.customerTransactionId;
+    harness.platformSigner.providerSignerId = harness.platformTransactionId;
 
     await harness.service.handleCallback(
       "fadada",
@@ -1167,23 +1231,15 @@ describe("ESignService", () => {
       platformSignedAt: expect.any(Date),
       status: "SIGNED"
     });
-    expect(harness.stage1Contract.order.orderStatus).toBe(
-      OrderStatus.PENDING_DELIVERY
-    );
-    expect(
-      harness.prisma.subscriptionOrder.updateMany
-    ).not.toHaveBeenCalled();
-    expect(
-      harness.notificationService.notifyCustomer
-    ).not.toHaveBeenCalled();
+    expect(harness.stage1Contract.order.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+    expect(harness.prisma.subscriptionOrder.updateMany).not.toHaveBeenCalled();
+    expect(harness.notificationService.notifyCustomer).not.toHaveBeenCalled();
   });
 
   it("keeps an archived Stage 2 handover terminal after a repeated platform callback", async () => {
     const harness = createTypedStage2CallbackFixture();
-    const completedAt =
-      new Date("2026-07-28T02:05:00.000Z");
-    const archivedAt =
-      new Date("2026-07-28T02:10:00.000Z");
+    const completedAt = new Date("2026-07-28T02:05:00.000Z");
+    const archivedAt = new Date("2026-07-28T02:10:00.000Z");
     Object.assign(harness.customerSigner, {
       signedAt: new Date("2026-07-28T02:00:00.000Z"),
       signerStatus: ESignSignerStatus.SIGNED
@@ -1215,11 +1271,9 @@ describe("ESignService", () => {
       completedAt: archivedAt,
       eSignTaskId: harness.task.id,
       handoverId: harness.handover.id,
-      idempotencyKey:
-        `archive:${harness.task.id}:3`,
+      idempotencyKey: `archive:${harness.task.id}:3`,
       jobStatus: VehicleHandoverWorkflowJobStatus.COMPLETED,
-      jobType:
-        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF,
+      jobType: VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF,
       payload: {
         artifactVersion: 3
       },
@@ -1254,14 +1308,10 @@ describe("ESignService", () => {
     });
     expect(
       harness.state.workflowJobs.filter(
-        (job) =>
-          job.jobType ===
-          VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+        (job) => job.jobType === VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
       )
     ).toHaveLength(1);
-    expect(
-      harness.prisma.vehicleHandoverWorkflowJob.upsert
-    ).not.toHaveBeenCalled();
+    expect(harness.prisma.vehicleHandoverWorkflowJob.upsert).not.toHaveBeenCalled();
     expect(harness.state.callbackLogs).toHaveLength(1);
     expect(harness.state.callbackLogs[0]).toMatchObject({
       handled: true,
@@ -1280,46 +1330,48 @@ describe("ESignService", () => {
       releaseInitialTransactions = resolve;
     });
     const transactionOptions: unknown[] = [];
-    harness.prisma.$transaction.mockImplementation(
-      async (input: unknown, options?: unknown) => {
-        transactionOptions.push(options);
-        initialTransactionCount += 1;
-        const attempt = initialTransactionCount;
-        if (attempt <= 2) {
-          if (attempt === 2) {
-            releaseInitialTransactions();
-          }
-          await initialTransactionsReady;
-          if (attempt === 2) {
-            throw Object.assign(new Error("serialization conflict"), {
-              code: "P2034"
-            });
-          }
+    harness.prisma.$transaction.mockImplementation(async (input: unknown, options?: unknown) => {
+      transactionOptions.push(options);
+      initialTransactionCount += 1;
+      const attempt = initialTransactionCount;
+      if (attempt <= 2) {
+        if (attempt === 2) {
+          releaseInitialTransactions();
         }
-        return runTransaction(input);
+        await initialTransactionsReady;
+        if (attempt === 2) {
+          throw Object.assign(new Error("serialization conflict"), {
+            code: "P2034"
+          });
+        }
       }
-    );
+      return runTransaction(input);
+    });
 
     const [customerResult, platformResult] = await Promise.all([
-      harness.service.handleCallback("fadada", fadadaCallbackPayload({
-        contractId: harness.providerContractId,
-        resultCode: "3000",
-        transactionId: harness.customerTransactionId
-      })),
-      harness.service.handleCallback("fadada", fadadaCallbackPayload({
-        contractId: harness.providerContractId,
-        resultCode: "3000",
-        transactionId: harness.platformTransactionId
-      }))
+      harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode: "3000",
+          transactionId: harness.customerTransactionId
+        })
+      ),
+      harness.service.handleCallback(
+        "fadada",
+        fadadaCallbackPayload({
+          contractId: harness.providerContractId,
+          resultCode: "3000",
+          transactionId: harness.platformTransactionId
+        })
+      )
     ]);
 
     expect(customerResult).toMatchObject({ handled: true });
     expect(platformResult).toMatchObject({ handled: true });
     expect(initialTransactionCount).toBe(3);
     expect(transactionOptions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ isolationLevel: "Serializable" })
-      ])
+      expect.arrayContaining([expect.objectContaining({ isolationLevel: "Serializable" })])
     );
     expect(harness.customerSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
     expect(harness.platformSigner.signerStatus).toBe(ESignSignerStatus.SIGNED);
@@ -1343,10 +1395,13 @@ describe("ESignService", () => {
 
   it("keeps Stage 1 slot rows unchanged for unknown or mismatched callbacks", async () => {
     const provider = stage1SlotProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_PROVIDER: "fadada",
-      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+      },
+      provider
+    );
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
     const before = state.signers.map((signer) => ({
       providerSignerId: signer.providerSignerId,
@@ -1354,24 +1409,32 @@ describe("ESignService", () => {
       signerStatus: signer.signerStatus
     }));
 
-    const unknown = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "UNKNOWNS1"
-    }));
-    const mismatch = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: "different-provider-contract",
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
+    const unknown = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "UNKNOWNS1"
+      })
+    );
+    const mismatch = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: "different-provider-contract",
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
 
     expect(unknown).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
     expect(mismatch).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
-    expect(state.signers.map((signer) => ({
-      providerSignerId: signer.providerSignerId,
-      signedAt: signer.signedAt,
-      signerStatus: signer.signerStatus
-    }))).toEqual(before);
+    expect(
+      state.signers.map((signer) => ({
+        providerSignerId: signer.providerSignerId,
+        signedAt: signer.signedAt,
+        signerStatus: signer.signerStatus
+      }))
+    ).toEqual(before);
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
   });
@@ -1388,7 +1451,9 @@ describe("ESignService", () => {
       verifyCallback: vi.fn()
     };
     const preflightContractPdfArtifact = vi.fn(async () => {
-      throw new Error("CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED: generated contract artifact is required");
+      throw new Error(
+        "CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED: generated contract artifact is required"
+      );
     });
     const { service, state } = createESignFixture(
       { ESIGN_PROVIDER: "fadada", FADADA_ENABLED: "true" },
@@ -1396,14 +1461,17 @@ describe("ESignService", () => {
       { contractPdfArtifactService: { preflightContractPdfArtifact } }
     );
 
-    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
-      /CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED/
-    );
+    await expect(
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_GENERATED_REQUIRED/);
 
-    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
-      fadadaEnabled: true,
-      purpose: "FADADA_UPLOAD"
-    }));
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith(
+      "contract-1",
+      expect.objectContaining({
+        fadadaEnabled: true,
+        purpose: "FADADA_UPLOAD"
+      })
+    );
     expect(provider.createSignTask).not.toHaveBeenCalled();
     expect(state.tasks).toHaveLength(0);
     expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
@@ -1425,9 +1493,9 @@ describe("ESignService", () => {
       { providerAccounts: [] }
     );
 
-    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
-      /FADADA_CUSTOMER_SIGNING_NOT_READY/
-    );
+    await expect(
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ).rejects.toThrow(/FADADA_CUSTOMER_SIGNING_NOT_READY/);
 
     expect(provider.createSignTask).not.toHaveBeenCalled();
     expect(state.tasks).toHaveLength(0);
@@ -1455,9 +1523,9 @@ describe("ESignService", () => {
       { providerAccounts: [localOnlyAccount] }
     );
 
-    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
-      /FADADA_CERT_NOT_BOUND/
-    );
+    await expect(
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ).rejects.toThrow(/FADADA_CERT_NOT_BOUND/);
 
     expect(provider.createSignTask).not.toHaveBeenCalled();
     expect(state.tasks).toHaveLength(0);
@@ -1487,21 +1555,31 @@ describe("ESignService", () => {
       { contractPdfArtifactService: { preflightContractPdfArtifact } }
     );
 
-    await service.createTaskForContract("contract-1", adminUser(), requestContext(), approvedPlanRef());
+    await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext(),
+      approvedPlanRef()
+    );
 
-    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
-      enterpriseAutoSealEnabled: true,
-      fadadaEnabled: true,
-      purpose: "FADADA_UPLOAD",
-      requireGeneratedContractArtifact: true
-    }));
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith(
+      "contract-1",
+      expect.objectContaining({
+        enterpriseAutoSealEnabled: true,
+        fadadaEnabled: true,
+        purpose: "FADADA_UPLOAD",
+        requireGeneratedContractArtifact: true
+      })
+    );
     expect(provider.createSignTask).toHaveBeenCalledOnce();
   });
 
   it("requires Stage 1 slot coordinates before slot-aware provider calls", async () => {
     const provider = stage1SlotProvider();
     const preflightContractPdfArtifact = vi.fn(async () => {
-      throw new Error("CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING: generated slot coordinates are required");
+      throw new Error(
+        "CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING: generated slot coordinates are required"
+      );
     });
     const { service, state } = createESignFixture(
       {
@@ -1513,16 +1591,19 @@ describe("ESignService", () => {
       { contractPdfArtifactService: { preflightContractPdfArtifact } }
     );
 
-    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toThrow(
-      /CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING/
-    );
+    await expect(
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_SLOT_COORDINATES_MISSING/);
 
-    expect(preflightContractPdfArtifact).toHaveBeenCalledWith("contract-1", expect.objectContaining({
-      fadadaEnabled: true,
-      purpose: "FADADA_UPLOAD",
-      requireGeneratedContractArtifact: true,
-      requireStage1SlotCoordinates: true
-    }));
+    expect(preflightContractPdfArtifact).toHaveBeenCalledWith(
+      "contract-1",
+      expect.objectContaining({
+        fadadaEnabled: true,
+        purpose: "FADADA_UPLOAD",
+        requireGeneratedContractArtifact: true,
+        requireStage1SlotCoordinates: true
+      })
+    );
     expect(provider.createSignTask).not.toHaveBeenCalled();
     expect(state.tasks).toHaveLength(0);
     expect(state.contracts[0]!.status).toBe(ContractStatus.GENERATED);
@@ -1555,40 +1636,60 @@ describe("ESignService", () => {
 
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      signingSlotCoordinates: slotCoordinates
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signingSlotCoordinates: slotCoordinates
+      })
+    );
   });
 
   it("keeps Stage 1 task incomplete after customer-only coordinate transaction callback", async () => {
     const provider = stage1CustomerOnlyProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_PROVIDER: "fadada",
-      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+      },
+      provider
+    );
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const customerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
-    const duplicateResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
+    const customerResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
+    const duplicateResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
 
     expect(customerResult).toMatchObject({ handled: true });
     expect(duplicateResult).toMatchObject({ handled: true });
-    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED }),
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED })
-    ]));
-    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ providerSignerId: null, signerStatus: ESignSignerStatus.PENDING }),
-      expect.objectContaining({ providerSignerId: null, signerStatus: ESignSignerStatus.PENDING })
-    ]));
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED }),
+        expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED })
+      ])
+    );
+    expect(
+      state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerSignerId: null,
+          signerStatus: ESignSignerStatus.PENDING
+        }),
+        expect.objectContaining({ providerSignerId: null, signerStatus: ESignSignerStatus.PENDING })
+      ])
+    );
     expect(state.tasks[0]).toMatchObject({
       completedAt: null,
       taskStatus: ESignTaskStatus.SIGNING
@@ -1626,38 +1727,58 @@ describe("ESignService", () => {
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
     const platformTransactionId = buildTestTransactionId(state.tasks[0]!.taskNo, 2);
 
-    const customerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
-    const duplicateCustomerResult = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "CUSTS1"
-    }));
+    const customerResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
+    const duplicateCustomerResult = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "CUSTS1"
+      })
+    );
 
     expect(customerResult).toMatchObject({ handled: true });
     expect(duplicateCustomerResult).toMatchObject({ handled: true, idempotent: true });
     expect(provider.autoSealTask).toHaveBeenCalledOnce();
-    expect(provider.autoSealTask).toHaveBeenCalledWith(expect.objectContaining({
-      providerEnvelopeId: state.tasks[0]!.providerEnvelopeId,
-      signingSlotCoordinates: [
-        { pageNumber: 0, slotId: "STAGE1_BODY_PLATFORM", x: 521, y: 731 },
-        { pageNumber: 2, slotId: "STAGE1_ATTACHMENT1_PLATFORM", x: 523, y: 733 }
-      ],
-      signingStage: "STAGE1_CONTRACT",
-      taskId: state.tasks[0]!.id,
-      transactionId: platformTransactionId
-    }));
-    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED }),
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED })
-    ]));
-    expect(state.signers.filter((signer) => signer.providerSignerId === platformTransactionId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signerType: ESignSignerType.PLATFORM }),
-      expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED, signerType: ESignSignerType.PLATFORM })
-    ]));
+    expect(provider.autoSealTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerEnvelopeId: state.tasks[0]!.providerEnvelopeId,
+        signingSlotCoordinates: [
+          { pageNumber: 0, slotId: "STAGE1_BODY_PLATFORM", x: 521, y: 731 },
+          { pageNumber: 2, slotId: "STAGE1_ATTACHMENT1_PLATFORM", x: 523, y: 733 }
+        ],
+        signingStage: "STAGE1_CONTRACT",
+        taskId: state.tasks[0]!.id,
+        transactionId: platformTransactionId
+      })
+    );
+    expect(state.signers.filter((signer) => signer.providerSignerId === "CUSTS1")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED }),
+        expect.objectContaining({ signerStatus: ESignSignerStatus.SIGNED })
+      ])
+    );
+    expect(
+      state.signers.filter((signer) => signer.providerSignerId === platformTransactionId)
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.SIGNED,
+          signerType: ESignSignerType.PLATFORM
+        }),
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.SIGNED,
+          signerType: ESignSignerType.PLATFORM
+        })
+      ])
+    );
     expect(state.tasks[0]).toMatchObject({
       completedAt: expect.any(Date),
       taskStatus: ESignTaskStatus.COMPLETED
@@ -1675,12 +1796,14 @@ describe("ESignService", () => {
         providerEnvelopeId: input.taskNo,
         providerTaskId: `${input.taskNo}-1`,
         signUrl: "https://sign.example.test/customer",
-        signers: [{
-          customerId: "customer-1",
-          providerSignerId: `${input.taskNo}-customer`,
-          signUrl: "https://sign.example.test/customer",
-          signerType: "CUSTOMER" as const
-        }]
+        signers: [
+          {
+            customerId: "customer-1",
+            providerSignerId: `${input.taskNo}-customer`,
+            signUrl: "https://sign.example.test/customer",
+            signerType: "CUSTOMER" as const
+          }
+        ]
       })),
       getSignerUrl: vi.fn(),
       querySignerStatus: unknownSignerStatusQuery(),
@@ -1708,24 +1831,33 @@ describe("ESignService", () => {
         ]
       }
     });
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.not.objectContaining({
-      policy: expect.anything(),
-      sealAuthority: expect.anything()
-    }));
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      signers: [expect.objectContaining({
-        customerId: "customer-1",
-        signerType: "CUSTOMER"
-      })]
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        policy: expect.anything(),
+        sealAuthority: expect.anything()
+      })
+    );
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signers: [
+          expect.objectContaining({
+            customerId: "customer-1",
+            signerType: "CUSTOMER"
+          })
+        ]
+      })
+    );
   });
 
   it("creates a pending platform signer when enterprise auto seal is enabled", async () => {
     const provider = enterpriseAutoSealProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
-      ESIGN_PROVIDER: "fadada"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PROVIDER: "fadada"
+      },
+      provider
+    );
 
     const result = await service.createTaskForContract(
       "contract-1",
@@ -1734,30 +1866,37 @@ describe("ESignService", () => {
       approvedPlanRef()
     );
 
-    expect(result.signers).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        signerStatus: ESignSignerStatus.SIGNING,
-        signerType: ESignSignerType.CUSTOMER
-      }),
-      expect.objectContaining({
-        signerStatus: ESignSignerStatus.PENDING,
-        signerType: ESignSignerType.PLATFORM
-      })
-    ]));
+    expect(result.signers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.SIGNING,
+          signerType: ESignSignerType.CUSTOMER
+        }),
+        expect.objectContaining({
+          signerStatus: ESignSignerStatus.PENDING,
+          signerType: ESignSignerType.PLATFORM
+        })
+      ])
+    );
     expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      signers: [expect.objectContaining({ signerType: "CUSTOMER" })]
-    }));
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signers: [expect.objectContaining({ signerType: "CUSTOMER" })]
+      })
+    );
   });
 
   it("waits for platform auto seal before finalizing a Fadada customer callback", async () => {
     const provider = enterpriseAutoSealProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
-      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
-      ESIGN_PROVIDER: "fadada"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
+        ESIGN_PROVIDER: "fadada"
+      },
+      provider
+    );
     const task = await service.createTaskForContract(
       "contract-1",
       adminUser(),
@@ -1765,24 +1904,33 @@ describe("ESignService", () => {
       approvedPlanRef()
     );
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(result).toMatchObject({ handled: true });
     expect(provider.autoSealTask).toHaveBeenCalledOnce();
-    expect(provider.autoSealTask).toHaveBeenCalledWith(expect.objectContaining({
-      placement: {
-        keyword: "出租方盖章",
-        type: "KEYWORD"
-      }
-    }));
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+    expect(provider.autoSealTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placement: {
+          keyword: "出租方盖章",
+          type: "KEYWORD"
+        }
+      })
+    );
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNED
     });
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toMatchObject({
       providerSignerId: "ESG1S2",
       signerStatus: ESignSignerStatus.SIGNED
     });
@@ -1798,10 +1946,13 @@ describe("ESignService", () => {
 
   it("fails platform auto seal before provider call when the approved keyword is missing", async () => {
     const provider = enterpriseAutoSealProvider();
-    const { service, state } = createESignFixture({
-      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
-      ESIGN_PROVIDER: "fadada"
-    }, provider);
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PROVIDER: "fadada"
+      },
+      provider
+    );
     const task = await service.createTaskForContract(
       "contract-1",
       adminUser(),
@@ -1809,17 +1960,24 @@ describe("ESignService", () => {
       approvedPlanRef()
     );
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(provider.autoSealTask).not.toHaveBeenCalled();
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNED
     });
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.PENDING
     });
     expect(state.tasks[0]).toMatchObject({
@@ -1836,12 +1994,19 @@ describe("ESignService", () => {
   });
 
   it("keeps contract and order pending when platform auto seal fails", async () => {
-    const provider = enterpriseAutoSealProvider({ status: "FAILED", resultCode: "NO_SEAL", resultDescription: "seal missing" });
-    const { service, state } = createESignFixture({
-      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
-      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
-      ESIGN_PROVIDER: "fadada"
-    }, provider);
+    const provider = enterpriseAutoSealProvider({
+      status: "FAILED",
+      resultCode: "NO_SEAL",
+      resultDescription: "seal missing"
+    });
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
+        ESIGN_PROVIDER: "fadada"
+      },
+      provider
+    );
     const task = await service.createTaskForContract(
       "contract-1",
       adminUser(),
@@ -1849,16 +2014,23 @@ describe("ESignService", () => {
       approvedPlanRef()
     );
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toMatchObject({
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.CUSTOMER)
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.SIGNED
     });
-    expect(state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)).toMatchObject({
+    expect(
+      state.signers.find((signer) => signer.signerType === ESignSignerType.PLATFORM)
+    ).toMatchObject({
       signerStatus: ESignSignerStatus.PENDING
     });
     expect(state.tasks[0]).toMatchObject({
@@ -1874,11 +2046,14 @@ describe("ESignService", () => {
 
   it("does not duplicate platform auto seal or order advancement for duplicate callbacks", async () => {
     const provider = enterpriseAutoSealProvider();
-    const { prisma, service, state } = createESignFixture({
-      ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
-      ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
-      ESIGN_PROVIDER: "fadada"
-    }, provider);
+    const { prisma, service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PLATFORM_SEAL_KEYWORD: "出租方盖章",
+        ESIGN_PROVIDER: "fadada"
+      },
+      provider
+    );
     const task = await service.createTaskForContract(
       "contract-1",
       adminUser(),
@@ -1886,16 +2061,22 @@ describe("ESignService", () => {
       approvedPlanRef()
     );
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(provider.autoSealTask).toHaveBeenCalledTimes(1);
     expect(prisma.subscriptionOrder.updateMany).toHaveBeenCalledTimes(1);
@@ -1926,12 +2107,14 @@ describe("ESignService", () => {
         providerEnvelopeId: input.taskNo,
         providerTaskId: `${input.taskNo}-1`,
         signUrl: "https://sign.example.test/customer",
-        signers: [{
-          customerId: "customer-1",
-          providerSignerId: `${input.taskNo}-customer`,
-          signUrl: "https://sign.example.test/customer",
-          signerType: "CUSTOMER" as const
-        }]
+        signers: [
+          {
+            customerId: "customer-1",
+            providerSignerId: `${input.taskNo}-customer`,
+            signUrl: "https://sign.example.test/customer",
+            signerType: "CUSTOMER" as const
+          }
+        ]
       })),
       getSignerUrl: vi.fn(),
       querySignerStatus: unknownSignerStatusQuery(),
@@ -1949,17 +2132,21 @@ describe("ESignService", () => {
       toApprovedSigningPlanRef(plan)
     );
 
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
-      approvedSigningPlan: expect.objectContaining({
-        planHash: plan.hash,
-        signingPlanId: plan.planId
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvedSigningPlan: expect.objectContaining({
+          planHash: plan.hash,
+          signingPlanId: plan.planId
+        })
       })
-    }));
-    expect(provider.createSignTask).toHaveBeenCalledWith(expect.not.objectContaining({
-      authorities: expect.anything(),
-      policy: expect.anything(),
-      seal: expect.anything()
-    }));
+    );
+    expect(provider.createSignTask).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        authorities: expect.anything(),
+        policy: expect.anything(),
+        seal: expect.anything()
+      })
+    );
     expect(state.tasks[0]!.requestSnapshot).toMatchObject({
       enterpriseSigningPlan: {
         planHash: plan.hash,
@@ -1982,6 +2169,26 @@ describe("ESignService", () => {
     expect(state.tasks).toHaveLength(1);
   });
 
+  it("arbitrates concurrent starts for the same contract across different callers", async () => {
+    const provider = new MockESignProvider(
+      new ConfigService({
+        ESIGN_MOCK_ENABLED: "true",
+        ESIGN_SIGN_URL_EXPIRES_SECONDS: "1800"
+      })
+    );
+    const createSignTask = vi.spyOn(provider, "createSignTask");
+    const { service, state } = createESignFixture({}, provider);
+
+    const [first, second] = await Promise.all([
+      service.createTaskForContract("contract-1", adminUser(), requestContext()),
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ]);
+
+    expect(second.id).toBe(first.id);
+    expect(state.tasks).toHaveLength(1);
+    expect(createSignTask).toHaveBeenCalledOnce();
+  });
+
   it("lists and reads only contracts owned by the portal customer", async () => {
     const { service } = createESignFixture();
 
@@ -1989,20 +2196,16 @@ describe("ESignService", () => {
 
     expect(ownContracts).toHaveLength(1);
     expect(ownContracts[0]).toMatchObject({ id: "contract-1", orderNo: "ORD-1" });
-    await expect(service.getPortalContract("contract-2", currentCustomer("customer-1"))).rejects.toBeInstanceOf(
-      NotFoundException
-    );
+    await expect(
+      service.getPortalContract("contract-2", currentCustomer("customer-1"))
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("projects authoritative Stage 2 routing identity in portal contract list and detail responses", async () => {
     const harness = createTypedStage2CallbackFixture();
 
-    const contracts = await harness.service.listPortalContracts(
-      currentCustomer("customer-1")
-    );
-    const listItem = contracts.find(
-      (contract) => contract.id === harness.stage2Contract.id
-    );
+    const contracts = await harness.service.listPortalContracts(currentCustomer("customer-1"));
+    const listItem = contracts.find((contract) => contract.id === harness.stage2Contract.id);
     const detail = await harness.service.getPortalContract(
       harness.stage2Contract.id,
       currentCustomer("customer-1")
@@ -2028,11 +2231,7 @@ describe("ESignService", () => {
 
   it("does not classify a Portal contract as Stage 2 without an authoritative handover relation", async () => {
     const { service, state } = createESignFixture();
-    await service.createTaskForContract(
-      "contract-1",
-      adminUser(),
-      requestContext()
-    );
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
     Object.assign(state.tasks[0]!, {
       documentType: "DELIVERY_HANDOVER",
       signingStage: "STAGE2_DELIVERY_HANDOVER"
@@ -2068,10 +2267,7 @@ describe("ESignService", () => {
       workOrderId: null
     });
     await expect(
-      harness.service.startPortalSigning(
-        harness.stage2Contract.id,
-        currentCustomer("customer-1")
-      )
+      harness.service.startPortalSigning(harness.stage2Contract.id, currentCustomer("customer-1"))
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(harness.provider.getSignerUrl).not.toHaveBeenCalled();
   });
@@ -2079,7 +2275,8 @@ describe("ESignService", () => {
   it("exposes signed artifact availability without leaking storage object keys", async () => {
     const { service, state } = createESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
-    state.tasks[0]!.signedDocumentObjectKey = "contracts/contract-1/esign/fadada/signed/2026/secret.pdf";
+    state.tasks[0]!.signedDocumentObjectKey =
+      "contracts/contract-1/esign/fadada/signed/2026/secret.pdf";
     state.contracts[0]!.status = ContractStatus.SIGNED;
 
     const adminView = await service.getTask(task.id, adminUser());
@@ -2108,10 +2305,7 @@ describe("ESignService", () => {
     };
     Object.assign(harness.handover, completeArchive);
 
-    const archivedAdminView = await harness.service.getTask(
-      harness.task.id,
-      adminUser()
-    );
+    const archivedAdminView = await harness.service.getTask(harness.task.id, adminUser());
     const archivedPortalView = await harness.service.getPortalContract(
       harness.stage2Contract.id,
       currentCustomer("customer-1")
@@ -2166,10 +2360,7 @@ describe("ESignService", () => {
       status: "SIGNED"
     });
 
-    const adminView = await harness.service.getTask(
-      harness.task.id,
-      adminUser()
-    );
+    const adminView = await harness.service.getTask(harness.task.id, adminUser());
     const portalView = await harness.service.getPortalContract(
       harness.stage2Contract.id,
       currentCustomer("customer-1")
@@ -2198,8 +2389,7 @@ describe("ESignService", () => {
     const harness = createTypedStage2CallbackFixture();
     harness.task.documentType = "SUBSCRIPTION_CONTRACT";
     harness.task.signingStage = "STAGE1_SUBSCRIPTION_CONTRACT";
-    harness.task.signedDocumentObjectKey =
-      "contracts/generic/signed-should-not-promote.pdf";
+    harness.task.signedDocumentObjectKey = "contracts/generic/signed-should-not-promote.pdf";
     Object.assign(harness.handover, {
       archiveLastError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
       archiveStatus: "FAILED",
@@ -2209,10 +2399,7 @@ describe("ESignService", () => {
       status: "SIGNED"
     });
 
-    const adminView = await harness.service.getTask(
-      harness.task.id,
-      adminUser()
-    );
+    const adminView = await harness.service.getTask(harness.task.id, adminUser());
 
     expect(adminView).toMatchObject({
       archiveError: "STAGE2_HANDOVER_ARCHIVE_PROVIDER_FAILED",
@@ -2223,35 +2410,38 @@ describe("ESignService", () => {
       signingStage: "STAGE2_DELIVERY_HANDOVER",
       workOrderId: "work-order-typed"
     });
-    expect(JSON.stringify(adminView)).not.toContain(
-      harness.task.signedDocumentObjectKey
-    );
+    expect(JSON.stringify(adminView)).not.toContain(harness.task.signedDocumentObjectKey);
   });
 
   it("exposes safe Stage 1 signer slot metadata for Admin display grouping", async () => {
     const provider = stage1SlotProvider();
-    const { service } = createESignFixture({
-      ESIGN_PROVIDER: "fadada",
-      ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
-    }, provider);
+    const { service } = createESignFixture(
+      {
+        ESIGN_PROVIDER: "fadada",
+        ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true"
+      },
+      provider
+    );
 
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
     const adminView = await service.getTask(task.id, adminUser());
 
-    expect(adminView.signers).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        providerActionType: "CUSTOMER_MANUAL_SIGN",
-        providerSignerId: "CUSTS1",
-        signerType: ESignSignerType.CUSTOMER,
-        slotId: "STAGE1_BODY_CUSTOMER"
-      }),
-      expect.objectContaining({
-        providerActionType: "PLATFORM_AUTO_SEAL",
-        providerSignerId: "PLATS1",
-        signerType: ESignSignerType.PLATFORM,
-        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
-      })
-    ]));
+    expect(adminView.signers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerSignerId: "CUSTS1",
+          signerType: ESignSignerType.CUSTOMER,
+          slotId: "STAGE1_BODY_CUSTOMER"
+        }),
+        expect.objectContaining({
+          providerActionType: "PLATFORM_AUTO_SEAL",
+          providerSignerId: "PLATS1",
+          signerType: ESignSignerType.PLATFORM,
+          slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+        })
+      ])
+    );
     expect(adminView.signers[0]).not.toHaveProperty("signUrl");
     expect(adminView.signers[0]).not.toHaveProperty("signerIdNoMasked");
   });
@@ -2264,9 +2454,9 @@ describe("ESignService", () => {
 
     expect(result.mock).toBe(true);
     expect(result.signUrl).toContain("/portal/contracts/contract-1/sign?taskId=");
-    await expect(service.startPortalSigning("contract-1", currentCustomer("customer-2"))).rejects.toBeInstanceOf(
-      NotFoundException
-    );
+    await expect(
+      service.startPortalSigning("contract-1", currentCustomer("customer-2"))
+    ).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("returns an existing Fadada portal signing URL when local expiry is absent", async () => {
@@ -2326,9 +2516,9 @@ describe("ESignService", () => {
       readinessBlockingReason: "certificate binding is not provider-confirmed"
     });
 
-    await expect(service.startPortalSigning("contract-1", currentCustomer("customer-1"))).rejects.toThrow(
-      /FADADA_CERT_NOT_BOUND/
-    );
+    await expect(
+      service.startPortalSigning("contract-1", currentCustomer("customer-1"))
+    ).rejects.toThrow(/FADADA_CERT_NOT_BOUND/);
 
     expect(provider.getSignerUrl).not.toHaveBeenCalled();
   });
@@ -2337,7 +2527,11 @@ describe("ESignService", () => {
     const { service, state } = createESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.mockSignTask(task.id, currentCustomer("customer-1"), requestContext());
+    const result = await service.mockSignTask(
+      task.id,
+      currentCustomer("customer-1"),
+      requestContext()
+    );
 
     expect(result.task.taskStatus).toBe(ESignTaskStatus.COMPLETED);
     expect(state.signers[0]!.signerStatus).toBe(ESignSignerStatus.SIGNED);
@@ -2355,11 +2549,15 @@ describe("ESignService", () => {
       ESIGN_MOCK_ENABLED: "false",
       ESIGN_PROVIDER: "esign"
     });
-    const task = await createESignFixture().service.createTaskForContract("contract-1", adminUser(), requestContext());
-
-    await expect(service.mockSignTask(task.id, currentCustomer("customer-1"), requestContext())).rejects.toBeInstanceOf(
-      ForbiddenException
+    const task = await createESignFixture().service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
     );
+
+    await expect(
+      service.mockSignTask(task.id, currentCustomer("customer-1"), requestContext())
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it("handles completed callbacks idempotently", async () => {
@@ -2386,19 +2584,25 @@ describe("ESignService", () => {
   it("handles a valid Fadada 3000 callback idempotently", async () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
-    const first = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    const first = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
     const firstSignedAt = state.signers[0]!.signedAt;
     const firstCompletedAt = state.tasks[0]!.completedAt;
 
-    const second = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    const second = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(first).toMatchObject({ handled: true });
     expect(second).toMatchObject({ handled: true, idempotent: true });
@@ -2458,7 +2662,9 @@ describe("ESignService", () => {
     const { prisma, service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
     vi.clearAllMocks();
-    prisma.contractESignCallbackLog.create.mockRejectedValueOnce(new Error("callback log unavailable"));
+    prisma.contractESignCallbackLog.create.mockRejectedValueOnce(
+      new Error("callback log unavailable")
+    );
 
     const result = await service.handleCallback("fadada", {
       ...fadadaCallbackPayload({
@@ -2484,12 +2690,15 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3001",
-      resultDesc: "provider sign failed",
-      transactionId: task.providerTaskId
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3001",
+        resultDesc: "provider sign failed",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(result).toMatchObject({ handled: true, resultCode: "3001" });
     expect(state.tasks[0]).toMatchObject({
@@ -2510,12 +2719,15 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3003",
-      resultDesc: "customer rejected",
-      transactionId: task.providerTaskId
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3003",
+        resultDesc: "customer rejected",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(result).toMatchObject({ handled: true, resultCode: "3003" });
     expect(state.tasks[0]).toMatchObject({
@@ -2535,14 +2747,21 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3999",
-      resultDesc: "unknown result",
-      transactionId: task.providerTaskId
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3999",
+        resultDesc: "unknown result",
+        transactionId: task.providerTaskId
+      })
+    );
 
-    expect(result).toMatchObject({ handled: false, reason: "UNKNOWN_RESULT_CODE", resultCode: "3999" });
+    expect(result).toMatchObject({
+      handled: false,
+      reason: "UNKNOWN_RESULT_CODE",
+      resultCode: "3999"
+    });
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
     expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
     expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
@@ -2557,11 +2776,14 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: "unknown-contract",
-      resultCode: "3000",
-      transactionId: "unknown-transaction"
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: "unknown-contract",
+        resultCode: "3000",
+        transactionId: "unknown-transaction"
+      })
+    );
 
     expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.WAITING_CUSTOMER);
@@ -2582,11 +2804,14 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: "unknowntransaction"
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: "unknowntransaction"
+      })
+    );
 
     expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
     expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
@@ -2608,11 +2833,14 @@ describe("ESignService", () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
-    const result = await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: "different-provider-contract",
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    const result = await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: "different-provider-contract",
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(result).toMatchObject({ handled: false, reason: "TASK_NOT_FOUND" });
     expect(state.signers[0]!.signerStatus).not.toBe(ESignSignerStatus.SIGNED);
@@ -2633,23 +2861,32 @@ describe("ESignService", () => {
   it("does not downgrade completed Fadada tasks from later failure or rejection callbacks", async () => {
     const { service, state } = createFadadaESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: task.providerTaskId
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: task.providerTaskId
+      })
+    );
     const signedAt = state.contracts[0]!.signedAt;
 
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3001",
-      transactionId: task.providerTaskId
-    }));
-    await service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3003",
-      transactionId: task.providerTaskId
-    }));
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3001",
+        transactionId: task.providerTaskId
+      })
+    );
+    await service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3003",
+        transactionId: task.providerTaskId
+      })
+    );
 
     expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.COMPLETED);
     expect(state.signers[0]!.signerStatus).toBe(ESignSignerStatus.SIGNED);
@@ -2664,30 +2901,50 @@ describe("ESignService", () => {
 
   it("does not auto-upgrade failed or rejected Fadada tasks from later success callbacks", async () => {
     const failed = createFadadaESignFixture();
-    const failedTask = await failed.service.createTaskForContract("contract-1", adminUser(), requestContext());
-    await failed.service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: failed.state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3001",
-      transactionId: failedTask.providerTaskId
-    }));
-    await failed.service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: failed.state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: failedTask.providerTaskId
-    }));
+    const failedTask = await failed.service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+    await failed.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: failed.state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3001",
+        transactionId: failedTask.providerTaskId
+      })
+    );
+    await failed.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: failed.state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: failedTask.providerTaskId
+      })
+    );
 
     const rejected = createFadadaESignFixture();
-    const rejectedTask = await rejected.service.createTaskForContract("contract-1", adminUser(), requestContext());
-    await rejected.service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3003",
-      transactionId: rejectedTask.providerTaskId
-    }));
-    await rejected.service.handleCallback("fadada", fadadaCallbackPayload({
-      contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
-      resultCode: "3000",
-      transactionId: rejectedTask.providerTaskId
-    }));
+    const rejectedTask = await rejected.service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+    await rejected.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3003",
+        transactionId: rejectedTask.providerTaskId
+      })
+    );
+    await rejected.service.handleCallback(
+      "fadada",
+      fadadaCallbackPayload({
+        contractId: rejected.state.tasks[0]!.providerEnvelopeId!,
+        resultCode: "3000",
+        transactionId: rejectedTask.providerTaskId
+      })
+    );
 
     expect(failed.state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.FAILED);
     expect(failed.state.contracts[0]!.order.orderStatus).toBe(OrderStatus.PENDING_SIGN);
@@ -2700,15 +2957,17 @@ describe("ESignService", () => {
     const { service, state } = createESignFixture();
     state.contracts[0]!.status = ContractStatus.SIGNED;
 
-    await expect(service.createTaskForContract("contract-1", adminUser(), requestContext())).rejects.toBeInstanceOf(
-      BadRequestException
-    );
+    await expect(
+      service.createTaskForContract("contract-1", adminUser(), requestContext())
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
 
-function createTypedStage2CallbackFixture(options: {
-  customerProviderSignerId?: string;
-} = {}) {
+function createTypedStage2CallbackFixture(
+  options: {
+    customerProviderSignerId?: string;
+  } = {}
+) {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   const autoSealTask = vi.fn();
   const provider = {
@@ -2718,10 +2977,7 @@ function createTypedStage2CallbackFixture(options: {
     querySignerStatus: unknownSignerStatusQuery(),
     verifyCallback: verifier.verifyCallback.bind(verifier)
   };
-  const harness = createESignFixture(
-    { ESIGN_PROVIDER: "fadada" },
-    provider
-  );
+  const harness = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
   const stage1Contract = harness.state.contracts[0]!;
   stage1Contract.signedAt = new Date("2026-07-26T00:00:00.000Z");
   stage1Contract.status = ContractStatus.SIGNED;
@@ -2812,8 +3068,7 @@ function createTypedStage2CallbackFixture(options: {
     documentType: "DELIVERY_HANDOVER",
     id: "stage2-signer-customer-typed",
     providerActionType: "CUSTOMER_MANUAL_SIGN",
-    providerSignerId:
-      options.customerProviderSignerId ?? "LEGACY-CUSTOMER-ID",
+    providerSignerId: options.customerProviderSignerId ?? "LEGACY-CUSTOMER-ID",
     providerTransactionId: customerTransactionId,
     rejectReason: null,
     rejectedAt: null,
@@ -2877,11 +3132,9 @@ function createTypedStage2CallbackFixture(options: {
     completedAt: null,
     eSignTaskId: task.id,
     handoverId: handover.id,
-    idempotencyKey:
-      `customer-reconcile:${task.id}:${customerTransactionId}`,
+    idempotencyKey: `customer-reconcile:${task.id}:${customerTransactionId}`,
     jobStatus: VehicleHandoverWorkflowJobStatus.PENDING,
-    jobType:
-      VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
+    jobType: VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE,
     payload: {
       customerTransactionId
     },
@@ -2966,61 +3219,65 @@ function createESignFixture(
       return Promise.all(input as Array<Promise<unknown>>);
     }),
     auditLog: {
-      upsert: vi.fn(async ({
-        create,
-        update,
-        where
-      }: {
-        create: Record<string, unknown>;
-        update: Record<string, unknown>;
-        where: { id: string };
-      }) => {
-        const existing = state.auditLogs.find(
-          (auditLog) => auditLog.id === where.id
-        );
-        if (existing) {
-          Object.assign(existing, update);
-          return existing;
+      upsert: vi.fn(
+        async ({
+          create,
+          update,
+          where
+        }: {
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+          where: { id: string };
+        }) => {
+          const existing = state.auditLogs.find((auditLog) => auditLog.id === where.id);
+          if (existing) {
+            Object.assign(existing, update);
+            return existing;
+          }
+          const created = {
+            ...create,
+            id: where.id
+          };
+          state.auditLogs.push(created);
+          return created;
         }
-        const created = {
-          ...create,
-          id: where.id
-        };
-        state.auditLogs.push(created);
-        return created;
-      })
+      )
     },
     contract: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        const contract = state.contracts.find((item) =>
-          matchesWhere(item, where) &&
-          (where.customerId === undefined || item.customerId === where.customerId)
+        const contract = state.contracts.find(
+          (item) =>
+            matchesWhere(item, where) &&
+            (where.customerId === undefined || item.customerId === where.customerId)
         );
         return contract ? hydrateContract(state, contract) : null;
       }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         state.contracts
-          .filter((contract) =>
-            matchesWhere(contract, where) &&
-            (where.customerId === undefined || contract.customerId === where.customerId)
+          .filter(
+            (contract) =>
+              matchesWhere(contract, where) &&
+              (where.customerId === undefined || contract.customerId === where.customerId)
           )
           .map((contract) => hydrateContract(state, contract))
       ),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        const contract = state.contracts.find((item) => item.id === where.id);
-        if (!contract) {
-          throw new Error("contract not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const contract = state.contracts.find((item) => item.id === where.id);
+          if (!contract) {
+            throw new Error("contract not found");
+          }
+          Object.assign(contract, data);
+          return hydrateContract(state, contract);
         }
-        Object.assign(contract, data);
-        return hydrateContract(state, contract);
-      })
+      )
     },
     contractESignCallbackLog: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const payloadHash = (data.payloadHash as string | null | undefined) ?? null;
         const duplicate = payloadHash
-          ? state.callbackLogs.find((item) =>
-              item.provider === data.provider && item.payloadHash === payloadHash
+          ? state.callbackLogs.find(
+              (item) => item.provider === data.provider && item.payloadHash === payloadHash
             )
           : null;
         if (duplicate) {
@@ -3038,8 +3295,7 @@ function createESignFixture(
           payloadHash,
           provider: data.provider as ESignProviderType,
           providerTaskId: (data.providerTaskId as string | null | undefined) ?? null,
-          providerTransactionId:
-            (data.providerTransactionId as string | null | undefined) ?? null,
+          providerTransactionId: (data.providerTransactionId as string | null | undefined) ?? null,
           receivedAt: new Date(),
           taskId: (data.taskId as string | null | undefined) ?? null,
           verified: Boolean(data.verified)
@@ -3047,23 +3303,27 @@ function createESignFixture(
         state.callbackLogs.push(log);
         return log;
       }),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        const log = state.callbackLogs.find((item) => item.id === where.id);
-        if (!log) {
-          throw new Error("callback log not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const log = state.callbackLogs.find((item) => item.id === where.id);
+          if (!log) {
+            throw new Error("callback log not found");
+          }
+          Object.assign(log, data);
+          return log;
         }
-        Object.assign(log, data);
-        return log;
-      }),
+      ),
       findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         const composite = where.provider_payloadHash as
           | { payloadHash?: string; provider?: ESignProviderType }
           | undefined;
         if (composite?.payloadHash && composite.provider) {
-          return state.callbackLogs.find((item) =>
-            item.provider === composite.provider &&
-            item.payloadHash === composite.payloadHash
-          ) ?? null;
+          return (
+            state.callbackLogs.find(
+              (item) =>
+                item.provider === composite.provider && item.payloadHash === composite.payloadHash
+            ) ?? null
+          );
         }
         return null;
       })
@@ -3091,22 +3351,48 @@ function createESignFixture(
           task: task ? hydrateTask(state, task) : null
         };
       }),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        const signer = state.signers.find((item) => item.id === where.id);
-        if (!signer) {
-          throw new Error("signer not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const signer = state.signers.find((item) => item.id === where.id);
+          if (!signer) {
+            throw new Error("signer not found");
+          }
+          Object.assign(signer, data);
+          return signer;
         }
-        Object.assign(signer, data);
-        return signer;
-      }),
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        const rows = state.signers.filter((signer) => matchesWhere(signer, where));
-        rows.forEach((signer) => Object.assign(signer, data));
-        return { count: rows.length };
-      })
+      ),
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const rows = state.signers.filter((signer) => matchesWhere(signer, where));
+          rows.forEach((signer) => Object.assign(signer, data));
+          return { count: rows.length };
+        }
+      )
     },
     contractESignTask: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const duplicateActiveTask = state.tasks.some(
+          (task) =>
+            task.contractId === data.contractId &&
+            task.deletedAt === null &&
+            new Set<ESignTaskStatus>([
+              ESignTaskStatus.CREATED,
+              ESignTaskStatus.WAITING_CUSTOMER,
+              ESignTaskStatus.SIGNING,
+              ESignTaskStatus.COMPLETED
+            ]).has(task.taskStatus)
+        );
+        if (duplicateActiveTask) {
+          throw Object.assign(new Error("active contract e-sign task unique constraint"), {
+            code: "P2002"
+          });
+        }
         const task: FakeTask = {
           callbackSnapshot: null,
           cancelledAt: null,
@@ -3129,9 +3415,7 @@ function createESignFixture(
           documentType: (data.documentType as string | undefined) ?? "SUBSCRIPTION_CONTRACT",
           signUrl: null,
           signUrlExpiresAt: null,
-          signingStage:
-            (data.signingStage as string | undefined) ??
-            "STAGE1_SUBSCRIPTION_CONTRACT",
+          signingStage: (data.signingStage as string | undefined) ?? "STAGE1_SUBSCRIPTION_CONTRACT",
           signedDocumentObjectKey: null,
           startedAt: null,
           taskNo: data.taskNo as string,
@@ -3139,13 +3423,13 @@ function createESignFixture(
           updatedAt: new Date()
         };
         state.tasks.push(task);
-        const signerInputs = ((data.signers as { create?: Array<Record<string, unknown>> } | undefined)?.create ?? []);
+        const signerInputs =
+          (data.signers as { create?: Array<Record<string, unknown>> } | undefined)?.create ?? [];
         signerInputs.forEach((signerInput) => {
           state.signers.push({
             customerId: (signerInput.customerId as string | null | undefined) ?? null,
             deletedAt: null,
-            documentType:
-              (signerInput.documentType as string | null | undefined) ?? null,
+            documentType: (signerInput.documentType as string | null | undefined) ?? null,
             id: `signer-${state.signers.length + 1}`,
             providerActionType:
               (signerInput.providerActionType as string | null | undefined) ?? null,
@@ -3174,7 +3458,9 @@ function createESignFixture(
         return task ? hydrateTask(state, task) : null;
       }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.tasks.filter((task) => matchesWhere(task, where)).map((task) => hydrateTask(state, task))
+        state.tasks
+          .filter((task) => matchesWhere(task, where))
+          .map((task) => hydrateTask(state, task))
       ),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const task = state.tasks.find((item) => item.id === where.id);
@@ -3187,80 +3473,114 @@ function createESignFixture(
         }
         return hydrateTask(state, task);
       }),
-      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-        const task = state.tasks.find((item) => item.id === where.id);
-        if (!task) {
-          throw new Error("task not found");
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const task = state.tasks.find((item) => item.id === where.id);
+          if (!task) {
+            throw new Error("task not found");
+          }
+          Object.assign(task, data);
+          return hydrateTask(state, task);
         }
-        Object.assign(task, data);
-        return hydrateTask(state, task);
-      }),
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        const rows = state.tasks.filter((task) => matchesWhere(task, where));
-        rows.forEach((task) => Object.assign(task, data));
-        return { count: rows.length };
-      })
+      ),
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const rows = state.tasks.filter((task) => matchesWhere(task, where));
+          rows.forEach((task) => Object.assign(task, data));
+          return { count: rows.length };
+        }
+      )
     },
     customerESignProviderAccount: {
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.providerAccounts.find((account) => matchesWhere(account, where)) ?? null
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.providerAccounts.find((account) => matchesWhere(account, where)) ?? null
       )
     },
     subscriptionOrder: {
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        const rows = state.contracts
-          .map((contract) => contract.order)
-          .filter((order) => matchesWhere(order, where));
-        rows.forEach((order) => Object.assign(order, data));
-        return { count: rows.length };
-      })
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const rows = state.contracts
+            .map((contract) => contract.order)
+            .filter((order) => matchesWhere(order, where));
+          rows.forEach((order) => Object.assign(order, data));
+          return { count: rows.length };
+        }
+      )
     },
     vehicleDeliveryHandover: {
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.deliveryHandovers.find((handover) =>
-          matchesWhere(handover, where)
-        ) ?? null
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          state.deliveryHandovers.find((handover) => matchesWhere(handover, where)) ?? null
       ),
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        const rows = state.deliveryHandovers.filter((handover) => matchesWhere(handover, where));
-        rows.forEach((handover) => Object.assign(handover, data));
-        return { count: rows.length };
-      })
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const rows = state.deliveryHandovers.filter((handover) => matchesWhere(handover, where));
+          rows.forEach((handover) => Object.assign(handover, data));
+          return { count: rows.length };
+        }
+      )
     },
     vehicleHandoverWorkOrder: {
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.filter((workOrder) =>
-          matchesWhere(workOrder, where)
-        )
+        state.workOrders.filter((workOrder) => matchesWhere(workOrder, where))
       )
     },
     vehicleHandoverWorkflowJob: {
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        const rows = state.workflowJobs.filter((job) =>
-          matchesWhere(job, where)
-        );
-        rows.forEach((job) => Object.assign(job, data));
-        return { count: rows.length };
-      }),
-      upsert: vi.fn(async ({ create, where }: {
-        create: FakeWorkflowJob;
-        where: { idempotencyKey: string };
-      }) => {
-        const existing = state.workflowJobs.find(
-          (job) =>
-            job.idempotencyKey === where.idempotencyKey
-        );
-        if (existing) {
-          return existing;
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const rows = state.workflowJobs.filter((job) => matchesWhere(job, where));
+          rows.forEach((job) => Object.assign(job, data));
+          return { count: rows.length };
         }
-        const created = {
-          ...create,
-          completedAt: null,
-          jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
-        };
-        state.workflowJobs.push(created);
-        return created;
-      })
+      ),
+      upsert: vi.fn(
+        async ({
+          create,
+          where
+        }: {
+          create: FakeWorkflowJob;
+          where: { idempotencyKey: string };
+        }) => {
+          const existing = state.workflowJobs.find(
+            (job) => job.idempotencyKey === where.idempotencyKey
+          );
+          if (existing) {
+            return existing;
+          }
+          const created = {
+            ...create,
+            completedAt: null,
+            jobStatus: VehicleHandoverWorkflowJobStatus.PENDING
+          };
+          state.workflowJobs.push(created);
+          return created;
+        }
+      )
     }
   };
 
@@ -3298,9 +3618,7 @@ function createESignFixture(
 
 function hydrateContract(state: FakeState, contract: FakeContract) {
   const handover = state.deliveryHandovers.find(
-    (candidate) =>
-      candidate.handoverContractId === contract.id &&
-      !candidate.deletedAt
+    (candidate) => candidate.handoverContractId === contract.id && !candidate.deletedAt
   );
   return {
     ...contract,
@@ -3313,9 +3631,7 @@ function hydrateContract(state: FakeState, contract: FakeContract) {
     handoverDeliveryHandover: handover
       ? {
           ...handover,
-          workOrders: state.workOrders.filter(
-            (workOrder) => workOrder.handoverId === handover.id
-          )
+          workOrders: state.workOrders.filter((workOrder) => workOrder.handoverId === handover.id)
         }
       : null
   };
@@ -3327,9 +3643,7 @@ function hydrateTask(state: FakeState, task: FakeTask) {
     throw new Error("contract not found");
   }
   const deliveryHandover = state.deliveryHandovers.find(
-    (handover) =>
-      handover.handoverESignTaskId === task.id &&
-      !handover.deletedAt
+    (handover) => handover.handoverESignTaskId === task.id && !handover.deletedAt
   );
 
   return {
@@ -3350,7 +3664,12 @@ function hydrateTask(state: FakeState, task: FakeTask) {
   };
 }
 
-function createContract(id: string, customerId: string, orderId: string, orderNo: string): FakeContract {
+function createContract(
+  id: string,
+  customerId: string,
+  orderId: string,
+  orderNo: string
+): FakeContract {
   return {
     archivedAt: null,
     businessType: "SUBSCRIPTION",
@@ -3436,8 +3755,10 @@ function matchesWhere(row: Record<string, unknown>, where: Record<string, unknow
       return row.deletedAt === null;
     }
     if (expected && typeof expected === "object" && "in" in expected) {
-      return Array.isArray((expected as { in: unknown[] }).in) &&
-        (expected as { in: unknown[] }).in.includes(row[key]);
+      return (
+        Array.isArray((expected as { in: unknown[] }).in) &&
+        (expected as { in: unknown[] }).in.includes(row[key])
+      );
     }
     if (key === "providerCustomerId" && expected && typeof expected === "object") {
       const notValue = (expected as Record<string, unknown>).not;
@@ -3554,16 +3875,18 @@ function stage1CustomerOnlyProvider() {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   return {
     createSignTask: vi.fn(async (input) => {
-      const actions: ESignProviderActionResult[] = [{
-        coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
-        providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
-        providerSignerId: "CUSTS1",
-        providerTransactionId: "CUSTS1",
-        signerType: "CUSTOMER" as const,
-        signingStage: "STAGE1_CONTRACT" as const,
-        signUrl: "https://sign.example.test/customer-stage1",
-        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
-      }];
+      const actions: ESignProviderActionResult[] = [
+        {
+          coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
+          providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
+          providerSignerId: "CUSTS1",
+          providerTransactionId: "CUSTS1",
+          signerType: "CUSTOMER" as const,
+          signingStage: "STAGE1_CONTRACT" as const,
+          signUrl: "https://sign.example.test/customer-stage1",
+          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+        }
+      ];
       return {
         actions,
         providerEnvelopeId: input.taskNo,
@@ -3595,16 +3918,18 @@ function stage1CustomerThenPlatformAutoSealProvider() {
       status: "COMPLETED" as const
     })),
     createSignTask: vi.fn(async (input) => {
-      const actions: ESignProviderActionResult[] = [{
-        coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
-        providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
-        providerSignerId: "CUSTS1",
-        providerTransactionId: "CUSTS1",
-        signerType: "CUSTOMER" as const,
-        signingStage: "STAGE1_CONTRACT" as const,
-        signUrl: "https://sign.example.test/customer-stage1",
-        signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
-      }];
+      const actions: ESignProviderActionResult[] = [
+        {
+          coveredSlotIds: ["STAGE1_BODY_CUSTOMER", "STAGE1_ATTACHMENT1_CUSTOMER"],
+          providerActionType: "CUSTOMER_MANUAL_SIGN" as const,
+          providerSignerId: "CUSTS1",
+          providerTransactionId: "CUSTS1",
+          signerType: "CUSTOMER" as const,
+          signingStage: "STAGE1_CONTRACT" as const,
+          signUrl: "https://sign.example.test/customer-stage1",
+          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z")
+        }
+      ];
       return {
         actions,
         providerEnvelopeId: input.taskNo,
@@ -3634,13 +3959,15 @@ function createFadadaESignFixture() {
         rawResponse: { provider: "fadada" },
         signUrl: "https://sign.example.test/customer",
         signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-        signers: [{
-          customerId: "customer-1",
-          providerSignerId: transactionId,
-          signUrl: "https://sign.example.test/customer",
-          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-          signerType: "CUSTOMER" as const
-        }]
+        signers: [
+          {
+            customerId: "customer-1",
+            providerSignerId: transactionId,
+            signUrl: "https://sign.example.test/customer",
+            signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+            signerType: "CUSTOMER" as const
+          }
+        ]
       };
     }),
     getSignerUrl: vi.fn(),
@@ -3651,17 +3978,19 @@ function createFadadaESignFixture() {
   return createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
 }
 
-function enterpriseAutoSealProvider(result: {
-  providerSignerId?: string;
-  rawResponse?: unknown;
-  resultCode?: string;
-  resultDescription?: string;
-  status: "COMPLETED" | "FAILED" | "PENDING";
-} = {
-  providerSignerId: "ESG1S2",
-  rawResponse: { autoSeal: "ok" },
-  status: "COMPLETED"
-}) {
+function enterpriseAutoSealProvider(
+  result: {
+    providerSignerId?: string;
+    rawResponse?: unknown;
+    resultCode?: string;
+    resultDescription?: string;
+    status: "COMPLETED" | "FAILED" | "PENDING";
+  } = {
+    providerSignerId: "ESG1S2",
+    rawResponse: { autoSeal: "ok" },
+    status: "COMPLETED"
+  }
+) {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   return {
     autoSealTask: vi.fn(async () => result),
@@ -3673,13 +4002,15 @@ function enterpriseAutoSealProvider(result: {
         rawResponse: { provider: "fadada" },
         signUrl: "https://sign.example.test/customer",
         signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-        signers: [{
-          customerId: "customer-1",
-          providerSignerId: transactionId,
-          signUrl: "https://sign.example.test/customer",
-          signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
-          signerType: "CUSTOMER" as const
-        }]
+        signers: [
+          {
+            customerId: "customer-1",
+            providerSignerId: transactionId,
+            signUrl: "https://sign.example.test/customer",
+            signUrlExpiresAt: new Date("2026-01-02T03:34:05.000Z"),
+            signerType: "CUSTOMER" as const
+          }
+        ]
       };
     }),
     getSignerUrl: vi.fn(),
@@ -3765,7 +4096,9 @@ function approvedPlanRef(): ApprovedSigningPlanRef {
   };
 }
 
-function enterprisePolicyInput(overrides: Partial<SignaturePolicyEngineInput> = {}): SignaturePolicyEngineInput {
+function enterprisePolicyInput(
+  overrides: Partial<SignaturePolicyEngineInput> = {}
+): SignaturePolicyEngineInput {
   return {
     actor: {
       id: "user-admin",

@@ -83,27 +83,67 @@ export async function applySubscriptionSegmentBootstrapPlan(prisma, plan) {
     return { created: 0, existing: plan.summary.existing };
   }
 
-  return prisma.$transaction(async (tx) => {
-    const result = await tx.subscriptionContractSegment.createMany({
-      data: plan.candidates.map((candidate) => candidate.data),
-      skipDuplicates: true
-    });
-    const stored = await tx.subscriptionContractSegment.findMany({
-      where: { orderId: { in: plan.candidates.map((candidate) => candidate.orderId) } }
-    });
-    for (const candidate of plan.candidates) {
-      const winner = stored.find(
-        (segment) => segment.orderId === candidate.orderId && segment.sequenceNo === 1
-      );
-      if (!winner || !matchesBootstrapCandidate(winner, candidate.data)) {
-        throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_WRITE_CONFLICT:${candidate.orderId}`);
-      }
-    }
-    return {
-      created: result.count,
-      existing: plan.summary.existing + plan.candidates.length - result.count
-    };
-  });
+  let created = 0;
+  let existing = plan.summary.existing;
+  const candidates = [...plan.candidates].sort((left, right) =>
+    left.orderId.localeCompare(right.orderId)
+  );
+  for (const planned of candidates) {
+    const result = await prisma.$transaction(
+      async (tx) => {
+        await lockBootstrapSource(tx, planned.orderId);
+        const current = await tx.subscriptionOrder.findUnique({
+          include: {
+            contract: true,
+            contractSegments: {
+              orderBy: { sequenceNo: "asc" },
+              select: { id: true, segmentType: true, sequenceNo: true }
+            }
+          },
+          where: { id: planned.orderId }
+        });
+        if (!current) {
+          throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_STALE_PLAN:${planned.orderId}`);
+        }
+        const rebuilt = buildSubscriptionSegmentBootstrapPlan([current]);
+        if (rebuilt.summary.existing === 1) return { created: 0, existing: 1 };
+        const candidate = rebuilt.candidates[0];
+        if (!candidate || candidate.orderId !== planned.orderId) {
+          throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_STALE_PLAN:${planned.orderId}`);
+        }
+        const inserted = await tx.subscriptionContractSegment.createMany({
+          data: [candidate.data],
+          skipDuplicates: true
+        });
+        const stored = await tx.subscriptionContractSegment.findMany({
+          where: { orderId: { in: [candidate.orderId] } }
+        });
+        const winner = stored.find(
+          (segment) => segment.orderId === candidate.orderId && segment.sequenceNo === 1
+        );
+        if (!winner || !matchesBootstrapCandidate(winner, candidate.data)) {
+          throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_WRITE_CONFLICT:${candidate.orderId}`);
+        }
+        return { created: inserted.count, existing: inserted.count === 0 ? 1 : 0 };
+      },
+      { isolationLevel: "Serializable" }
+    );
+    created += result.created;
+    existing += result.existing;
+  }
+  return { created, existing };
+}
+
+async function lockBootstrapSource(tx, orderId) {
+  if (typeof tx.$queryRawUnsafe !== "function") return;
+  await tx.$queryRawUnsafe(
+    'SELECT "id" FROM "subscription_order" WHERE "id" = $1::uuid FOR UPDATE',
+    orderId
+  );
+  await tx.$queryRawUnsafe(
+    'SELECT "id" FROM "subscription_contract_segment" WHERE "order_id" = $1::uuid ORDER BY "sequence_no" FOR UPDATE',
+    orderId
+  );
 }
 
 function missingSourceFacts(order) {

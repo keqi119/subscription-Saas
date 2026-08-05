@@ -38,10 +38,62 @@ test("dry run never opens a write transaction", async () => {
   assert.equal(harness.transactionCount(), 0);
 });
 
-function createPrismaHarness() {
+test("apply locks and rebuilds each candidate from current source facts", async () => {
+  const planned = orderRecord();
+  const current = orderRecord();
+  current.monthlyFeeAmount = 99_000n;
+  current.finalPlanSnapshot = { subscriptionPlan: { planNo: "PLAN-CURRENT" } };
+  const harness = createPrismaHarness(current);
+
+  const result = await executeSubscriptionSegmentBootstrap({
+    mode: "apply",
+    prisma: harness.prisma,
+    records: [planned]
+  });
+
+  assert.equal(result.created, 1);
+  assert.equal(harness.rows.get("order-1:1").monthlyFeeAmount, 99_000n);
+  assert.deepEqual(harness.rows.get("order-1:1").planSnapshot, {
+    subscriptionPlan: { planNo: "PLAN-CURRENT" }
+  });
+});
+
+test("apply fails closed when a planned candidate is no longer eligible", async () => {
+  const current = orderRecord();
+  current.orderStatus = "CANCELLED";
+  const harness = createPrismaHarness(current);
+
+  await assert.rejects(
+    executeSubscriptionSegmentBootstrap({
+      mode: "apply",
+      prisma: harness.prisma,
+      records: [orderRecord()]
+    }),
+    /SUBSCRIPTION_SEGMENT_BOOTSTRAP_STALE_PLAN:order-1/
+  );
+  assert.equal(harness.rows.size, 0);
+});
+
+function createPrismaHarness(currentOrder = orderRecord()) {
   const rows = new Map();
   let transactions = 0;
   const tx = {
+    $queryRawUnsafe: async () => [],
+    subscriptionOrder: {
+      findUnique: async ({ where }) => {
+        if (where.id !== currentOrder.id) return null;
+        return {
+          ...structuredClone(currentOrder),
+          contractSegments: [...rows.values()]
+            .filter((row) => row.orderId === currentOrder.id)
+            .map((row) => ({
+              id: row.id ?? row.segmentNo,
+              segmentType: row.segmentType,
+              sequenceNo: row.sequenceNo
+            }))
+        };
+      }
+    },
     subscriptionContractSegment: {
       createMany: async ({ data }) => {
         let count = 0;

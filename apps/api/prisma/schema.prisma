@@ -6134,6 +6134,7 @@ model SubscriptionChangeCommand {
   resourceType   String?   @map("resource_type") @db.VarChar(32)
   resourceId     String?   @map("resource_id") @db.Uuid
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
 
   @@unique([actorId, operation, idempotencyKey])

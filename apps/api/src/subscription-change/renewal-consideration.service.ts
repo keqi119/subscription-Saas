@@ -22,10 +22,7 @@ import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { SmsService } from "../sms/sms.service";
 import { dateKey, renewalSchedule, shanghaiBusinessDate } from "./renewal-calendar";
-import {
-  SUBSCRIPTION_CHANGE_CONFIG,
-  SubscriptionChangeConfig
-} from "./subscription-change.config";
+import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 
 const reminderSlots = [
@@ -143,8 +140,7 @@ export class RenewalConsiderationService {
         const status = skippedLate
           ? RenewalReminderStatus.SKIPPED_LATE_ENROLLMENT
           : RenewalReminderStatus.PENDING;
-        const scheduledAt =
-          !skippedLate && originalScheduledAt < now ? now : originalScheduledAt;
+        const scheduledAt = !skippedLate && originalScheduledAt < now ? now : originalScheduledAt;
         const reminder = await tx.renewalReminder.upsert({
           create: {
             renewalConsiderationId: consideration.id,
@@ -210,81 +206,84 @@ export class RenewalConsiderationService {
     slot: RenewalReminderSlot,
     now = this.config.now()
   ) {
-    const consideration = await this.prisma.renewalConsideration.findUnique({
-      include: considerationDetailInclude,
-      where: { id: considerationId }
-    });
-    if (!consideration) throw notFound();
-    const reminder = consideration.reminders.find((item) => item.slot === slot);
-    if (!reminder) {
-      throw new SubscriptionChangeError(
-        "RENEWAL_REMINDER_NOT_FOUND",
-        "Renewal reminder was not found.",
-        HttpStatus.NOT_FOUND
-      );
-    }
-    const skippedStatus = skippedReminderStatus(consideration.status);
-    if (skippedStatus) {
-      return this.prisma.renewalReminder.update({
-        data: { status: skippedStatus },
+    return this.prisma.$transaction(async (tx) => {
+      await lockConsideration(tx, considerationId);
+      const consideration = await tx.renewalConsideration.findUnique({
+        include: considerationDetailInclude,
+        where: { id: considerationId }
+      });
+      if (!consideration) throw notFound();
+      const reminder = consideration.reminders.find((item) => item.slot === slot);
+      if (!reminder) {
+        throw new SubscriptionChangeError(
+          "RENEWAL_REMINDER_NOT_FOUND",
+          "Renewal reminder was not found.",
+          HttpStatus.NOT_FOUND
+        );
+      }
+      const skippedStatus = skippedReminderStatus(consideration.status);
+      if (skippedStatus) {
+        return tx.renewalReminder.update({
+          data: { status: skippedStatus },
+          where: { id: reminder.id }
+        });
+      }
+      if (reminder.status === RenewalReminderStatus.SENT) return reminder;
+      if (reminder.scheduledAt > now) return reminder;
+
+      const idempotencyKey = reminderJobKey(consideration.id, slot);
+      const daysRemaining = slotDays(slot);
+      const endDate = dateKey(consideration.segment.endDate);
+      const plateMasked = maskPlate(consideration.order.vehicle?.plateNo);
+      const portalPath = `/portal/renewals/${encodeURIComponent(consideration.id)}`;
+      const inApp = await this.notificationService.notifyRenewalReminderInApp({
+        considerationId: consideration.id,
+        customerId: consideration.order.customerId,
+        daysRemaining,
+        endDate,
+        idempotencyKey,
+        orderNo: consideration.order.orderNo,
+        plateMasked,
+        slot
+      });
+      const sms = await this.smsService.sendRenewalReminder({
+        daysRemaining,
+        endDate,
+        idempotencyKey,
+        orderNo: consideration.order.orderNo,
+        phone: consideration.order.customer.mobile,
+        plateNo: plateMasked,
+        portalPath,
+        slot
+      });
+      const inAppStatus = inApp.record.notificationStatus;
+      const sent =
+        (inAppStatus === NotificationStatus.SENT || inAppStatus === NotificationStatus.READ) &&
+        sms.sendStatus === SmsSendStatus.SENT;
+      return tx.renewalReminder.update({
+        data: {
+          channelResult: jsonValue({
+            inApp: { id: inApp.record.id, status: inAppStatus },
+            sms: {
+              errorCode: sms.errorCode ?? null,
+              id: sms.sendLogId ?? null,
+              status: sms.sendStatus
+            }
+          }),
+          errorCode: sent ? null : (sms.errorCode ?? "SMS_SEND_FAILED"),
+          errorMessage: sent ? null : (sms.errorMessage ?? "Renewal SMS delivery failed."),
+          failedAt: sent ? null : now,
+          inAppStatus,
+          notificationEventId: inApp.event.id,
+          sentAt: sent ? now : null,
+          smsSendLogId: sms.sendLogId,
+          smsStatus: sms.sendStatus,
+          status: sent ? RenewalReminderStatus.SENT : RenewalReminderStatus.FAILED,
+          templateCodeSnapshot: sms.templateCode
+        },
         where: { id: reminder.id }
       });
-    }
-    if (reminder.status === RenewalReminderStatus.SENT) return reminder;
-    if (reminder.scheduledAt > now) return reminder;
-
-    const idempotencyKey = reminderJobKey(consideration.id, slot);
-    const daysRemaining = slotDays(slot);
-    const endDate = dateKey(consideration.segment.endDate);
-    const plateMasked = maskPlate(consideration.order.vehicle?.plateNo);
-    const portalPath = `/portal/renewals/${encodeURIComponent(consideration.id)}`;
-    const inApp = await this.notificationService.notifyRenewalReminderInApp({
-      considerationId: consideration.id,
-      customerId: consideration.order.customerId,
-      daysRemaining,
-      endDate,
-      idempotencyKey,
-      orderNo: consideration.order.orderNo,
-      plateMasked,
-      slot
-    });
-    const sms = await this.smsService.sendRenewalReminder({
-      daysRemaining,
-      endDate,
-      idempotencyKey,
-      orderNo: consideration.order.orderNo,
-      phone: consideration.order.customer.mobile,
-      plateNo: plateMasked,
-      portalPath,
-      slot
-    });
-    const inAppStatus = inApp.record.notificationStatus;
-    const sent =
-      (inAppStatus === NotificationStatus.SENT || inAppStatus === NotificationStatus.READ) &&
-      sms.sendStatus === SmsSendStatus.SENT;
-    return this.prisma.renewalReminder.update({
-      data: {
-        channelResult: jsonValue({
-          inApp: { id: inApp.record.id, status: inAppStatus },
-          sms: {
-            errorCode: sms.errorCode ?? null,
-            id: sms.sendLogId ?? null,
-            status: sms.sendStatus
-          }
-        }),
-        errorCode: sent ? null : sms.errorCode ?? "SMS_SEND_FAILED",
-        errorMessage: sent ? null : sms.errorMessage ?? "Renewal SMS delivery failed.",
-        failedAt: sent ? null : now,
-        inAppStatus,
-        notificationEventId: inApp.event.id,
-        sentAt: sent ? now : null,
-        smsSendLogId: sms.sendLogId,
-        smsStatus: sms.sendStatus,
-        status: sent ? RenewalReminderStatus.SENT : RenewalReminderStatus.FAILED,
-        templateCodeSnapshot: sms.templateCode
-      },
-      where: { id: reminder.id }
-    });
+    }, serializableTransaction);
   }
 
   async retryReminder(
@@ -325,9 +324,7 @@ export class RenewalConsiderationService {
     const pageSize = query.pageSize ?? 20;
     const where: Prisma.RenewalConsiderationWhereInput = {
       status: query.status,
-      ...(query.smsFailed
-        ? { reminders: { some: { smsStatus: SmsSendStatus.FAILED } } }
-        : {})
+      ...(query.smsFailed ? { reminders: { some: { smsStatus: SmsSendStatus.FAILED } } } : {})
     };
     const [items, total] = await Promise.all([
       this.prisma.renewalConsideration.findMany({
@@ -400,10 +397,7 @@ function reminderJobType(slot: RenewalReminderSlot) {
   }
 }
 
-function latestApplicableReminderIndex(
-  reminders: Record<"D30" | "D14" | "D3", Date>,
-  now: Date
-) {
+function latestApplicableReminderIndex(reminders: Record<"D30" | "D14" | "D3", Date>, now: Date) {
   let result = -1;
   reminderSlots.forEach((slot, index) => {
     if (reminders[slot] <= now) result = index;
@@ -412,7 +406,11 @@ function latestApplicableReminderIndex(
 }
 
 function skippedReminderStatus(status: RenewalConsiderationStatus) {
-  if (status === RenewalConsiderationStatus.EXPIRY_CONFIRMED) {
+  if (
+    status === RenewalConsiderationStatus.RENEWAL_REQUESTED ||
+    status === RenewalConsiderationStatus.EXPIRY_CONFIRMED ||
+    status === RenewalConsiderationStatus.EXTENSION_IN_PROGRESS
+  ) {
     return RenewalReminderStatus.SKIPPED_DECIDED;
   }
   if (status === RenewalConsiderationStatus.EXTENDED) {
@@ -451,7 +449,11 @@ function jsonValue(value: unknown) {
 
 function assertPermission(actor: RequestUser, permission: PermissionCode) {
   if (!actor.roles.includes("ADMIN") && !actor.permissions.includes(permission)) {
-    throw new SubscriptionChangeError("PERMISSION_DENIED", "Permission denied.", HttpStatus.FORBIDDEN);
+    throw new SubscriptionChangeError(
+      "PERMISSION_DENIED",
+      "Permission denied.",
+      HttpStatus.FORBIDDEN
+    );
   }
 }
 
@@ -462,3 +464,14 @@ function notFound() {
     HttpStatus.NOT_FOUND
   );
 }
+
+async function lockConsideration(tx: Prisma.TransactionClient, id: string) {
+  if (typeof tx.$queryRaw !== "function") return;
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM "renewal_consideration" WHERE "id" = ${id}::uuid FOR UPDATE`
+  );
+}
+
+const serializableTransaction = {
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+};

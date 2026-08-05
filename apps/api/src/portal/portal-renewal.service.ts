@@ -128,7 +128,8 @@ export class PortalRenewalService {
             }
           }
         });
-        if (active) throw new ConflictException("The order already has an active subscription change.");
+        if (active)
+          throw new ConflictException("The order already has an active subscription change.");
         const extensionMonths = Math.max(1, consideration.order.periodMonths);
         const targetStartDate = addUtcDays(consideration.segment.endDate, 1);
         const targetEndDate = addUtcDays(addCalendarMonths(targetStartDate, extensionMonths), -1);
@@ -164,9 +165,7 @@ export class PortalRenewalService {
         },
         where: { id }
       });
-      if (input.decision === RenewalDecision.EXPIRE) {
-        await cancelMarketingReminders(tx, id, this.config.now());
-      }
+      await cancelMarketingReminders(tx, id, this.config.now());
       const updated = await findOwnedConsideration(tx, id, currentCustomer.customerId);
       if (!updated) throw hiddenNotFound();
       await this.auditService.write(
@@ -523,9 +522,13 @@ function portalAudit(
 async function lockRow(tx: Prisma.TransactionClient, table: string, id: string) {
   if (typeof tx.$queryRaw !== "function") return;
   if (table === "renewal_consideration") {
-    await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "renewal_consideration" WHERE "id" = ${id}::uuid FOR UPDATE`);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "renewal_consideration" WHERE "id" = ${id}::uuid FOR UPDATE`
+    );
   } else {
-    await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "subscription_change_order" WHERE "id" = ${id}::uuid FOR UPDATE`);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "subscription_change_order" WHERE "id" = ${id}::uuid FOR UPDATE`
+    );
   }
 }
 
@@ -535,7 +538,9 @@ function assertVersion(actual: number, expected: number) {
 
 function assertBeforeDeadline(now: Date, deadline: Date) {
   if (now >= deadline) {
-    throw new ConflictException("The renewal deadline has passed; the order must proceed to return.");
+    throw new ConflictException(
+      "The renewal deadline has passed; the order must proceed to return."
+    );
   }
 }
 

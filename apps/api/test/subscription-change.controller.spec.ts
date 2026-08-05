@@ -51,7 +51,12 @@ describe("SubscriptionChangeController", () => {
       user: user()
     } as never;
 
-    await controller.generateExtensionContract("change-1", request);
+    await controller.generateExtensionContract(
+      "change-1",
+      { version: 3 },
+      "contract-command-1",
+      request
+    );
 
     expect(
       Reflect.getMetadata(
@@ -61,6 +66,7 @@ describe("SubscriptionChangeController", () => {
     ).toEqual([PermissionCode.CONTRACT_GENERATE]);
     expect(contractService.generate).toHaveBeenCalledWith(
       "change-1",
+      { idempotencyKey: "contract-command-1", version: 3 },
       user(),
       { ipAddress: "127.0.0.1", userAgent: "vitest" }
     );
@@ -74,9 +80,7 @@ describe("SubscriptionChangeController", () => {
 
     const result = await controller.get("change-1", { user: user() } as never);
 
-    expect(JSON.stringify(result)).toBe(
-      '{"monthlyFeeAmount":"97000","nested":{"amount":"125"}}'
-    );
+    expect(JSON.stringify(result)).toBe('{"monthlyFeeAmount":"97000","nested":{"amount":"125"}}');
   });
 
   it("accepts only digit-string money values and non-negative versions", async () => {

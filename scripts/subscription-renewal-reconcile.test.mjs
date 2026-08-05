@@ -60,6 +60,23 @@ test("skips a source segment that already has a future extension", () => {
   assert.equal(plan.summary.alreadyExtended, 1);
 });
 
+test("does not plan reminders after a customer has already chosen renewal", () => {
+  const plan = buildSubscriptionRenewalReconciliationPlan(
+    [
+      segmentRecord({
+        renewalConsideration: {
+          id: "consideration-1",
+          status: "RENEWAL_REQUESTED"
+        }
+      })
+    ],
+    new Date("2026-08-29T04:00:00.000Z")
+  );
+
+  assert.equal(plan.candidates.length, 0);
+  assert.equal(plan.summary.existing, 1);
+});
+
 test("reconciliation defaults to dry run and requires --apply for writes", () => {
   assert.equal(parseSubscriptionRenewalReconciliationMode([]), "dry-run");
   assert.equal(parseSubscriptionRenewalReconciliationMode(["--dry-run"]), "dry-run");
@@ -88,6 +105,44 @@ test("apply is transactional, idempotent, and only enqueues work without sending
   assert.equal(harness.transactionCount(), 2);
 });
 
+test("apply revalidates a stale plan after a concurrent renewal decision", async () => {
+  const harness = createPrismaHarness({ considerationStatus: "RENEWAL_REQUESTED" });
+
+  const result = await executeSubscriptionRenewalReconciliation({
+    mode: "apply",
+    now: new Date("2026-08-29T04:00:00.000Z"),
+    prisma: harness.prisma,
+    records: [segmentRecord()]
+  });
+
+  assert.equal(result.created, 0);
+  assert.equal(result.reconciled, 0);
+  assert.equal(harness.reminders.size, 0);
+  assert.equal(harness.jobs.size, 0);
+});
+
+test("apply skips stale candidates after concurrent archive or expiry", async (t) => {
+  for (const scenario of [
+    { laterExtension: { id: "segment-extension" }, name: "archived extension" },
+    { name: "completed source segment", segmentStatus: "COMPLETED" },
+    { name: "order pending return", orderStatus: "PENDING_RETURN" }
+  ]) {
+    await t.test(scenario.name, async () => {
+      const harness = createPrismaHarness(scenario);
+      const result = await executeSubscriptionRenewalReconciliation({
+        mode: "apply",
+        now: new Date("2026-08-29T04:00:00.000Z"),
+        prisma: harness.prisma,
+        records: [segmentRecord()]
+      });
+
+      assert.equal(result.reconciled, 0);
+      assert.equal(harness.reminders.size, 0);
+      assert.equal(harness.jobs.size, 0);
+    });
+  }
+});
+
 function segmentRecord(overrides = {}) {
   return {
     endDate: new Date("2026-09-02T00:00:00.000Z"),
@@ -102,12 +157,25 @@ function segmentRecord(overrides = {}) {
   };
 }
 
-function createPrismaHarness() {
+function createPrismaHarness({
+  considerationStatus = null,
+  laterExtension = null,
+  orderStatus = "ACTIVE",
+  segmentStatus = "ACTIVE"
+} = {}) {
   const considerations = new Map();
   const reminders = new Map();
   const jobs = new Map();
+  if (considerationStatus) {
+    considerations.set("segment-base", {
+      id: "consideration-existing",
+      segmentId: "segment-base",
+      status: considerationStatus
+    });
+  }
   let transactions = 0;
   const tx = {
+    $queryRaw: async () => [],
     renewalConsideration: {
       findUnique: async ({ where }) => considerations.get(where.segmentId) ?? null,
       upsert: async ({ create, where }) => {
@@ -137,6 +205,18 @@ function createPrismaHarness() {
         jobs.set(where.idempotencyKey, row);
         return row;
       }
+    },
+    subscriptionContractSegment: {
+      findFirst: async () => laterExtension,
+      findUnique: async () => ({
+        endDate: new Date("2026-09-02T00:00:00.000Z"),
+        id: "segment-base",
+        order: { orderStatus },
+        orderId: "order-1",
+        renewalConsideration: considerations.get("segment-base") ?? null,
+        sequenceNo: 1,
+        status: segmentStatus
+      })
     }
   };
   return {

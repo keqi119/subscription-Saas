@@ -9,7 +9,10 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
-import { billingSourceKey, buildBillingCycleForDelivery } from "../src/billing-automation/billing-automation.calendar";
+import {
+  billingSourceKey,
+  buildBillingCycleForDelivery
+} from "../src/billing-automation/billing-automation.calendar";
 import { ContractSegmentError } from "../src/subscription-change/subscription-change.errors";
 
 describe("BillingAutomationService contract segment billing", () => {
@@ -63,9 +66,10 @@ describe("BillingAutomationService contract segment billing", () => {
   it("completes the schedule without a bill after the effective segment end", async () => {
     const harness = createHarness({ effectiveEndDate: date("2026-07-09") });
 
-    await expect(
-      harness.service.generateScheduledMonthlyRent(harness.job)
-    ).resolves.toMatchObject({ completed: true, created: false });
+    await expect(harness.service.generateScheduledMonthlyRent(harness.job)).resolves.toMatchObject({
+      completed: true,
+      created: false
+    });
 
     expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
     expect(harness.schedule.status).toBe(BillingScheduleStatus.COMPLETED);
@@ -74,16 +78,13 @@ describe("BillingAutomationService contract segment billing", () => {
   it("pauses billing and moves the extension to manual takeover when a cycle crosses segments", async () => {
     const harness = createHarness({
       effectiveEndDate: date("2027-03-02"),
-      segmentError: new ContractSegmentError(
-        "BILLING_PERIOD_CROSSES_SEGMENT",
-        "crosses segment",
-        { changeOrderId: "change-extension", segmentId: "segment-base" }
-      )
+      segmentError: new ContractSegmentError("BILLING_PERIOD_CROSSES_SEGMENT", "crosses segment", {
+        changeOrderId: "change-extension",
+        segmentId: "segment-base"
+      })
     });
 
-    await expect(
-      harness.service.generateScheduledMonthlyRent(harness.job)
-    ).rejects.toMatchObject({
+    await expect(harness.service.generateScheduledMonthlyRent(harness.job)).rejects.toMatchObject({
       code: "BILLING_PERIOD_CROSSES_SEGMENT",
       retryable: false
     });
@@ -94,6 +95,7 @@ describe("BillingAutomationService contract segment billing", () => {
     });
     expect(harness.change).toMatchObject({
       failureCode: "BILLING_PERIOD_CROSSES_SEGMENT",
+      failureMessage: "The monthly billing period crosses a contract segment boundary.",
       status: SubscriptionChangeStatus.MANUAL_TAKEOVER
     });
   });
@@ -130,12 +132,14 @@ describe("BillingAutomationService contract segment billing", () => {
   });
 });
 
-function createHarness(options: {
-  effectiveEndDate?: Date;
-  scheduleStatus?: BillingScheduleStatus;
-  segment?: ReturnType<typeof segmentTerms>;
-  segmentError?: ContractSegmentError;
-} = {}) {
+function createHarness(
+  options: {
+    effectiveEndDate?: Date;
+    scheduleStatus?: BillingScheduleStatus;
+    segment?: ReturnType<typeof segmentTerms>;
+    segmentError?: ContractSegmentError;
+  } = {}
+) {
   const now = date("2026-07-07");
   const actualDeliveryAt = new Date("2026-06-10T02:00:00.000Z");
   const cycle = buildBillingCycleForDelivery(actualDeliveryAt, 1);
@@ -166,7 +170,7 @@ function createHarness(options: {
   };
   const change = {
     failureCode: null as string | null,
-    failureReason: null as string | null,
+    failureMessage: null as string | null,
     id: "change-extension",
     manualTakeoverAt: null as Date | null,
     status: SubscriptionChangeStatus.SCHEDULED
@@ -204,7 +208,9 @@ function createHarness(options: {
     }
   };
   const prisma = {
-    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)),
+    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+      operation(tx)
+    ),
     billingSchedule: {
       findUnique: vi.fn(async () => schedule)
     },
@@ -228,8 +234,8 @@ function createHarness(options: {
     }))
   };
   const segmentService = {
-    resolveEffectiveServiceEndDate: vi.fn(async () =>
-      options.effectiveEndDate ?? date("2027-03-02")
+    resolveEffectiveServiceEndDate: vi.fn(
+      async () => options.effectiveEndDate ?? date("2027-03-02")
     ),
     resolveSegmentForPeriod: vi.fn(async () => {
       if (options.segmentError) throw options.segmentError;
@@ -256,12 +262,14 @@ function createHarness(options: {
   return { change, cycle, finance, job, order, prisma, schedule, service, tx };
 }
 
-function segmentTerms(overrides: Partial<{
-  endDate: Date;
-  monthlyFeeAmount: bigint;
-  segmentId: string;
-  startDate: Date;
-}> = {}) {
+function segmentTerms(
+  overrides: Partial<{
+    endDate: Date;
+    monthlyFeeAmount: bigint;
+    segmentId: string;
+    startDate: Date;
+  }> = {}
+) {
   return {
     endDate: date("2026-09-02"),
     mileageLimitKm: 1_500,

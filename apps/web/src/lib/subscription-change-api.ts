@@ -176,12 +176,14 @@ function commandHeaders() {
   return { "Idempotency-Key": crypto.randomUUID() };
 }
 
-export function listRenewalConsiderations(input: {
-  page?: number;
-  pageSize?: number;
-  smsFailed?: boolean;
-  status?: string;
-} = {}) {
+export function listRenewalConsiderations(
+  input: {
+    page?: number;
+    pageSize?: number;
+    smsFailed?: boolean;
+    status?: string;
+  } = {}
+) {
   const query = new URLSearchParams();
   if (input.page) query.set("page", String(input.page));
   if (input.pageSize) query.set("pageSize", String(input.pageSize));
@@ -243,10 +245,14 @@ export function publishSubscriptionChangeQuote(id: string, version: number) {
   );
 }
 
-export function generateSubscriptionChangeContract(id: string) {
+export function generateSubscriptionChangeContract(id: string, version: number) {
   return apiFetch<AdminSubscriptionChangeContract>(
     `/subscription-changes/${encodeURIComponent(id)}/contracts`,
-    { method: "POST" }
+    {
+      body: JSON.stringify({ version }),
+      headers: commandHeaders(),
+      method: "POST"
+    }
   );
 }
 

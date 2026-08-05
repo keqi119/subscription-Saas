@@ -19,12 +19,16 @@ describe("SubscriptionExtensionService", () => {
   it.each([undefined, "1", "TRUE", "True", "false"])(
     "keeps the feature disabled for non-exact flag value %s",
     (value) => {
-      expect(loadSubscriptionChangeConfig({ SUBSCRIPTION_EXTENSION_ENABLED: value }).enabled).toBe(false);
+      expect(loadSubscriptionChangeConfig({ SUBSCRIPTION_EXTENSION_ENABLED: value }).enabled).toBe(
+        false
+      );
     }
   );
 
   it("enables the feature only for the exact lowercase string true", () => {
-    expect(loadSubscriptionChangeConfig({ SUBSCRIPTION_EXTENSION_ENABLED: "true" }).enabled).toBe(true);
+    expect(loadSubscriptionChangeConfig({ SUBSCRIPTION_EXTENSION_ENABLED: "true" }).enabled).toBe(
+      true
+    );
   });
 
   it("fails closed when the feature flag is not the exact string true", async () => {
@@ -33,6 +37,54 @@ describe("SubscriptionExtensionService", () => {
     await expect(
       harness.service.createExtension(createInput(), harness.submitter, harness.context)
     ).rejects.toMatchObject({ code: "SUBSCRIPTION_EXTENSION_DISABLED" });
+  });
+
+  it("allows manual takeover while new extension writes are disabled", async () => {
+    const harness = changeHarness({
+      enabled: false,
+      status: SubscriptionChangeStatus.EXECUTING
+    });
+
+    await expect(
+      harness.service.manualTakeover(
+        "change-1",
+        { idempotencyKey: "takeover-disabled-1", reason: "rollback operations", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).resolves.toMatchObject({ status: SubscriptionChangeStatus.MANUAL_TAKEOVER });
+  });
+
+  it("does not cancel a change while its reserved contract is rendering", async () => {
+    const harness = changeHarness({
+      contractRendering: true,
+      status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED
+    });
+
+    await expect(
+      harness.service.cancel(
+        "change-1",
+        { idempotencyKey: "cancel-rendering-1", reason: "customer request", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "CONTRACT_GENERATION_IN_PROGRESS", status: 409 });
+  });
+
+  it("does not enter manual takeover while its reserved contract is rendering", async () => {
+    const harness = changeHarness({
+      contractRendering: true,
+      status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED
+    });
+
+    await expect(
+      harness.service.manualTakeover(
+        "change-1",
+        { idempotencyKey: "takeover-rendering-1", reason: "operator request", version: 0 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "CONTRACT_GENERATION_IN_PROGRESS", status: 409 });
   });
 
   it("rejects creation when the order already has an active V2 change", async () => {
@@ -307,7 +359,10 @@ describe("SubscriptionExtensionService", () => {
   });
 
   it("validates feature flag and deadline under the change-scoped e-sign command", async () => {
-    const disabled = changeHarness({ enabled: false, status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT });
+    const disabled = changeHarness({
+      enabled: false,
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
     const expired = changeHarness({
       now: new Date("2026-09-02T16:00:00.000Z"),
       status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
@@ -348,6 +403,102 @@ describe("SubscriptionExtensionService", () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it("reserves and replays an e-sign command without starting a second provider task", async () => {
+    const harness = changeHarness({
+      persistCommands: true,
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
+    const start = vi.fn(async () => ({ id: "task-1" }));
+    const replay = vi.fn(async (taskId: string) => ({ id: taskId }));
+    const input = { idempotencyKey: "esign-once", version: 0 };
+
+    await expect(
+      harness.service.startOrRetryESign("change-1", input, harness.submitter, start, replay)
+    ).resolves.toEqual({ id: "task-1" });
+    await expect(
+      harness.service.startOrRetryESign("change-1", input, harness.submitter, start, replay)
+    ).resolves.toEqual({ id: "task-1" });
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledWith("task-1");
+  });
+
+  it("recovers a stale e-sign command after a crash between provider start and completion", async () => {
+    const harness = changeHarness({
+      esignRecoveryCommand: true,
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
+    const recover = vi.fn(async () => ({ id: "task-recovered" }));
+
+    await expect(
+      harness.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-recover", version: 0 },
+        harness.submitter,
+        recover,
+        vi.fn()
+      )
+    ).resolves.toEqual({ id: "task-recovered" });
+
+    expect(recover).toHaveBeenCalledWith("contract-1");
+    expect(harness.prisma.subscriptionChangeCommand.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          resourceId: "task-recovered",
+          resourceType: "ESIGN_TASK"
+        })
+      })
+    );
+  });
+
+  it("serializes concurrent stale e-sign recovery under the command row lock", async () => {
+    const harness = changeHarness({
+      esignRecoveryCommand: true,
+      serializeTransactions: true,
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
+    const start = vi.fn(async () => ({ id: "task-recovered" }));
+    const replay = vi.fn(async (taskId: string) => ({ id: taskId }));
+    const recoverExisting = vi.fn(async () => null);
+    const run = () =>
+      harness.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-recover", version: 0 },
+        harness.submitter,
+        start,
+        replay,
+        recoverExisting
+      );
+
+    await expect(Promise.all([run(), run()])).resolves.toEqual([
+      { id: "task-recovered" },
+      { id: "task-recovered" }
+    ]);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledWith("task-recovered");
+  });
+
+  it("does not start a missing provider task when stale recovery occurs after the deadline", async () => {
+    const harness = changeHarness({
+      esignRecoveryCommand: true,
+      now: new Date("2026-09-02T16:00:00.000Z"),
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT
+    });
+    const start = vi.fn(async () => ({ id: "task-too-late" }));
+
+    await expect(
+      harness.service.startOrRetryESign(
+        "change-1",
+        { idempotencyKey: "esign-recover", version: 0 },
+        harness.submitter,
+        start,
+        vi.fn(),
+        vi.fn(async () => null)
+      )
+    ).rejects.toMatchObject({ code: "EXTENSION_DEADLINE_PASSED", status: 409 });
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("returns job retry audit events in the subscription change timeline", async () => {
     const harness = changeHarness();
 
@@ -370,14 +521,18 @@ interface HarnessOptions {
   activeChange?: boolean;
   businessType?: BusinessType;
   confirmedQuoteId?: string | null;
+  contractRendering?: boolean;
   enabled?: boolean;
+  esignRecoveryCommand?: boolean;
   existingQuote?: boolean;
   now?: Date;
   pricingMode?: SubscriptionChangePricingMode;
   replayCommand?: boolean;
+  serializeTransactions?: boolean;
   sourceEndDate?: Date;
   status?: SubscriptionChangeStatus;
   orderStatus?: OrderStatus;
+  persistCommands?: boolean;
   jobStatus?: SubscriptionAutomationJobStatus;
   jobType?: SubscriptionAutomationJobType;
   changeFailureCode?: string | null;
@@ -416,9 +571,10 @@ function changeHarness(options: HarnessOptions = {}) {
       createdBy: submitter.id,
       customerConfirmationPublishedAt: null as Date | null,
       customerConfirmationPublishedBy: null as string | null,
-      failureCode: options.changeFailureCode === undefined
-        ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
-        : options.changeFailureCode,
+      failureCode:
+        options.changeFailureCode === undefined
+          ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
+          : options.changeFailureCode,
       failureMessage: "provider timeout",
       currentQuoteId: options.existingQuote ? "quote-1" : null,
       extensionMonths: 6,
@@ -473,35 +629,107 @@ function changeHarness(options: HarnessOptions = {}) {
     }
   };
   const commands = {
-    replay: options.replayCommand
+    replay: options.esignRecoveryCommand
       ? {
           actorId: submitter.id,
-          idempotencyKey: "quote-replay",
-          operation: "CREATE_FORMAL_QUOTE",
-          requestHash: expect.any(String),
-          resourceId: "quote-replayed",
-          resourceType: "QUOTE"
+          createdAt: new Date(now.getTime() - 10 * 60_000),
+          id: "command-esign-recover",
+          idempotencyKey: "esign-recover",
+          operation: "START_OR_RETRY_ESIGN",
+          resourceId: "contract-1",
+          resourceType: "ESIGN_CONTRACT"
         }
-      : null
+      : options.replayCommand
+        ? {
+            actorId: submitter.id,
+            idempotencyKey: "quote-replay",
+            operation: "CREATE_FORMAL_QUOTE",
+            requestHash: expect.any(String),
+            resourceId: "quote-replayed",
+            resourceType: "QUOTE"
+          }
+        : null
   };
+  const persistedCommands = new Map<string, Record<string, unknown>>();
+  const commandKey = (data: Record<string, unknown>) =>
+    `${String(data.actorId)}:${String(data.operation)}:${String(data.idempotencyKey)}`;
+  let transactionTail = Promise.resolve();
   const prisma = {
-    $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
+    $queryRaw: vi.fn(async () => []),
+    $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => {
+      if (!options.serializeTransactions) return operation(prisma);
+      let release: () => void = () => {};
+      const previous = transactionTail;
+      transactionTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await operation(prisma);
+      } finally {
+        release();
+      }
+    }),
     auditLog: {
       create: vi.fn(async () => ({})),
       findMany: vi.fn(async () => [])
     },
     subscriptionChangeCommand: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: "command-1", ...data })),
-      findUnique: vi.fn(async () => commands.replay),
-      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: "command-1", ...data }))
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (!options.persistCommands) return { id: "command-1", ...data };
+        const key = commandKey(data);
+        if (persistedCommands.has(key)) {
+          throw Object.assign(new Error("duplicate command"), { code: "P2002" });
+        }
+        const row = {
+          createdAt: now,
+          id: `command-${persistedCommands.size + 1}`,
+          ...data
+        };
+        persistedCommands.set(key, row);
+        return row;
+      }),
+      delete: vi.fn(async ({ where }: { where: { id: string } }) => {
+        for (const [key, row] of persistedCommands) {
+          if (row.id === where.id) persistedCommands.delete(key);
+        }
+        return {};
+      }),
+      findUnique: vi.fn(
+        async ({ where }: { where?: Record<string, Record<string, unknown>> } = {}) => {
+          if (!options.persistCommands) return commands.replay;
+          const identity = where?.actorId_operation_idempotencyKey;
+          return identity ? (persistedCommands.get(commandKey(identity)) ?? null) : null;
+        }
+      ),
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          if (!options.persistCommands) {
+            const replayCommand = commands.replay as Record<string, unknown> | null;
+            if (options.esignRecoveryCommand && replayCommand?.id === where.id) {
+              Object.assign(replayCommand, data);
+            }
+            return { id: "command-1", ...data };
+          }
+          for (const row of persistedCommands.values()) {
+            if (row.id === where.id) Object.assign(row, data);
+          }
+          return { id: where.id, ...data };
+        }
+      )
     },
     subscriptionChangeOrder: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ ...state.change, ...data })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...state.change,
+        ...data
+      })),
       findFirst: vi.fn(async () => (options.activeChange ? state.change : null)),
       findUnique: vi.fn(async () => ({
         ...state.change,
         automationJobs: [{ id: "job-1" }],
-        contract: { id: "contract-1", status: "ARCHIVED" },
+        contract: options.contractRendering
+          ? { fileId: null, id: "contract-rendering", status: "GENERATED" }
+          : { fileId: "file-1", id: "contract-1", status: "ARCHIVED" },
         currentQuote: options.existingQuote ? state.quote : null,
         order,
         quotes: options.existingQuote ? [state.quote] : [],
@@ -525,13 +753,15 @@ function changeHarness(options: HarnessOptions = {}) {
     subscriptionAutomationJob: {
       findUnique: vi.fn(async () => ({
         changeOrderId: "change-1",
-        contractSegmentId: options.jobContractSegmentId === undefined
-          ? "segment-extension"
-          : options.jobContractSegmentId,
+        contractSegmentId:
+          options.jobContractSegmentId === undefined
+            ? "segment-extension"
+            : options.jobContractSegmentId,
         id: "job-1",
-        lastErrorCode: options.jobErrorCode === undefined
-          ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
-          : options.jobErrorCode,
+        lastErrorCode:
+          options.jobErrorCode === undefined
+            ? "SUBSCRIPTION_CHANGE_JOB_FAILED"
+            : options.jobErrorCode,
         lastErrorMessage: "provider timeout",
         jobStatus: options.jobStatus ?? SubscriptionAutomationJobStatus.DEAD_LETTER,
         jobType: options.jobType ?? SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME

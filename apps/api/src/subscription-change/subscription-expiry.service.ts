@@ -53,10 +53,11 @@ export class SubscriptionExpiryService {
 
   async expireSegment(
     segmentId: string,
-    now = new Date()
+    nowOverride?: Date
   ): Promise<{ outcome: "EXPIRED" | "EXTENDED" | "DUPLICATE"; returnId?: string }> {
     const decision = await runSerializableTransaction(this.prisma, async (tx) => {
       await lockExpiryRows(tx, segmentId);
+      const decisionAt = nowOverride ?? (await readDatabaseClock(tx));
       const segment = await tx.subscriptionContractSegment.findUnique({
         where: { id: segmentId }
       });
@@ -67,7 +68,7 @@ export class SubscriptionExpiryService {
         );
       }
       const deadline = shanghaiStartOfDate(addUtcDays(segment.endDate, 1));
-      if (now.getTime() < deadline.getTime()) {
+      if (decisionAt.getTime() < deadline.getTime()) {
         throw new SubscriptionChangeError(
           "SUBSCRIPTION_EXPIRY_NOT_DUE",
           "The contract segment has not reached its expiry deadline."
@@ -147,7 +148,7 @@ export class SubscriptionExpiryService {
 
       if (segment.status === ContractSegmentStatus.ACTIVE) {
         await tx.subscriptionContractSegment.updateMany({
-          data: { completedAt: now, status: ContractSegmentStatus.COMPLETED },
+          data: { completedAt: decisionAt, status: ContractSegmentStatus.COMPLETED },
           where: { id: segment.id, status: ContractSegmentStatus.ACTIVE }
         });
       }
@@ -164,7 +165,8 @@ export class SubscriptionExpiryService {
         await tx.subscriptionChangeOrder.updateMany({
           data: {
             failureCode: "EXTENSION_DEADLINE_MISSED",
-            failureMessage: "The extension agreement was not archived before the completion deadline.",
+            failureMessage:
+              "The extension agreement was not archived before the completion deadline.",
             status: SubscriptionChangeStatus.FAILED,
             version: { increment: 1 }
           },
@@ -212,8 +214,7 @@ export class SubscriptionExpiryService {
         (schedule.status === BillingScheduleStatus.ACTIVE ||
           schedule.status === BillingScheduleStatus.PAUSED)
       ) {
-        const hasEarnedCycle =
-          schedule.nextPeriodStart.getTime() <= segment.endDate.getTime();
+        const hasEarnedCycle = schedule.nextPeriodStart.getTime() <= segment.endDate.getTime();
         await tx.billingSchedule.updateMany({
           data: hasEarnedCycle
             ? {
@@ -223,7 +224,7 @@ export class SubscriptionExpiryService {
                 version: { increment: 1 }
               }
             : {
-                completedAt: now,
+                completedAt: decisionAt,
                 pauseReason: null,
                 status: BillingScheduleStatus.COMPLETED,
                 version: { increment: 1 }
@@ -241,8 +242,8 @@ export class SubscriptionExpiryService {
       });
       await tx.subscriptionAutomationJob.updateMany({
         data: {
-          cancelledAt: now,
-          completedAt: now,
+          cancelledAt: decisionAt,
+          completedAt: decisionAt,
           jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
           leaseExpiresAt: null,
           leaseToken: null
@@ -261,8 +262,8 @@ export class SubscriptionExpiryService {
       });
       await tx.subscriptionAutomationJob.updateMany({
         data: {
-          cancelledAt: now,
-          completedAt: now,
+          cancelledAt: decisionAt,
+          completedAt: decisionAt,
           jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
           leaseExpiresAt: null,
           leaseToken: null
@@ -280,20 +281,23 @@ export class SubscriptionExpiryService {
           payload: { path: ["periodStart"], gt: dateKey(segment.endDate) }
         }
       });
-      await this.auditService.write({
-        action: AuditAction.UPDATE,
-        after: {
-          changeOrderId: change?.id ?? null,
-          leaseStatus: LeaseStatus.RETURN_DUE,
-          orderStatus: OrderStatus.PENDING_RETURN,
-          outcome: "EXPIRED",
-          returnId: vehicleReturn.id,
-          segmentStatus: ContractSegmentStatus.COMPLETED
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: {
+            changeOrderId: change?.id ?? null,
+            leaseStatus: LeaseStatus.RETURN_DUE,
+            orderStatus: OrderStatus.PENDING_RETURN,
+            outcome: "EXPIRED",
+            returnId: vehicleReturn.id,
+            segmentStatus: ContractSegmentStatus.COMPLETED
+          },
+          entityId: segment.id,
+          entityType: "subscription_contract_segment",
+          module: "subscription_change"
         },
-        entityId: segment.id,
-        entityType: "subscription_contract_segment",
-        module: "subscription_change"
-      }, tx);
+        tx
+      );
 
       return {
         considerationId: consideration?.id ?? null,
@@ -405,6 +409,20 @@ async function lockExpiryRows(tx: Prisma.TransactionClient, segmentId: string) {
     WHERE segment."id" = ${segmentId}::uuid
     FOR UPDATE OF vehicle_return
   `);
+}
+
+async function readDatabaseClock(tx: Prisma.TransactionClient) {
+  const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
+    SELECT clock_timestamp() AS "now"
+  `);
+  const now = rows[0]?.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new SubscriptionChangeError(
+      "SUBSCRIPTION_EXPIRY_CLOCK_UNAVAILABLE",
+      "The database clock is unavailable for expiry arbitration."
+    );
+  }
+  return now;
 }
 
 function addUtcDays(value: Date, days: number) {

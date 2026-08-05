@@ -1,7 +1,4 @@
-import {
-  SubscriptionAutomationJobStatus,
-  SubscriptionAutomationJobType
-} from "@prisma/client";
+import { SubscriptionAutomationJobStatus, SubscriptionAutomationJobType } from "@prisma/client";
 import { Logger } from "@nestjs/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,7 +11,43 @@ describe("SubscriptionChangeWorker", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("starts while the public extension flag is disabled so existing jobs can drain", async () => {
+    vi.useFakeTimers();
+    const repository = {
+      claimDue: vi.fn(async () => []),
+      complete: vi.fn(),
+      deadLetter: vi.fn(),
+      reschedule: vi.fn()
+    };
+    const jobs = {
+      afterComplete: vi.fn(),
+      enqueueDueEnrollmentJobs: vi.fn(async () => 0),
+      handle: vi.fn(),
+      markManualTakeover: vi.fn(),
+      reconcileExecutingChanges: vi.fn(async () => 0),
+      supportedJobTypes: []
+    };
+    const worker = new SubscriptionChangeWorker(
+      repository as never,
+      jobs as never,
+      {
+        get: vi.fn((key: string) =>
+          key === "SUBSCRIPTION_EXTENSION_ENABLED" ? "false" : undefined
+        )
+      } as never
+    );
+
+    worker.onModuleInit();
+    await vi.advanceTimersByTimeAsync(0);
+    await worker.onModuleDestroy();
+
+    expect(repository.claimDue).toHaveBeenCalledOnce();
+    expect(jobs.enqueueDueEnrollmentJobs).not.toHaveBeenCalled();
+    expect(jobs.reconcileExecutingChanges).toHaveBeenCalledOnce();
   });
 
   it("completes a claimed reminder only once across duplicate polls", async () => {

@@ -20,10 +20,7 @@ describe("SubscriptionExpiryService", () => {
     const harness = createExpiryHarness();
 
     await expect(
-      harness.service.expireSegment(
-        "segment-active",
-        new Date("2026-09-02T16:00:00.000Z")
-      )
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
     ).resolves.toEqual({ outcome: "EXPIRED", returnId: "return-1" });
 
     expect(harness.state.segment.status).toBe(ContractSegmentStatus.COMPLETED);
@@ -68,6 +65,24 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.notifications.notifyRenewalExpiryInApp).toHaveBeenCalledTimes(1);
   });
 
+  it("arbitrates expiry with the locked database clock instead of the process clock", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-02T15:50:00.000Z"));
+    try {
+      const harness = createExpiryHarness({
+        databaseNow: new Date("2026-09-02T16:00:00.000Z")
+      });
+
+      await expect(harness.service.expireSegment("segment-active")).resolves.toEqual({
+        outcome: "EXPIRED",
+        returnId: "return-1"
+      });
+      expect(harness.state.segment.completedAt).toEqual(new Date("2026-09-02T16:00:00.000Z"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("expires an unanswered consideration even when there is no active renewal attempt", async () => {
     const harness = createExpiryHarness({
       changeStatus: SubscriptionChangeStatus.CANCELLED,
@@ -75,10 +90,7 @@ describe("SubscriptionExpiryService", () => {
     });
 
     await expect(
-      harness.service.expireSegment(
-        "segment-active",
-        new Date("2026-09-02T16:00:00.000Z")
-      )
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
     ).resolves.toEqual({ outcome: "EXPIRED", returnId: "return-1" });
 
     expect(harness.state.consideration.status).toBe(RenewalConsiderationStatus.EXPIRED);
@@ -91,10 +103,7 @@ describe("SubscriptionExpiryService", () => {
       changeStatus: SubscriptionChangeStatus.MANUAL_TAKEOVER
     });
 
-    await harness.service.expireSegment(
-      "segment-active",
-      new Date("2026-09-02T16:00:00.000Z")
-    );
+    await harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"));
 
     expect(harness.state.change).toMatchObject({
       failureCode: "EXTENSION_DEADLINE_MISSED",
@@ -107,10 +116,7 @@ describe("SubscriptionExpiryService", () => {
       nextPeriodStart: new Date("2026-08-02T00:00:00.000Z")
     });
 
-    await harness.service.expireSegment(
-      "segment-active",
-      new Date("2026-09-02T16:00:00.000Z")
-    );
+    await harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"));
 
     expect(harness.state.schedule.status).toBe(BillingScheduleStatus.ACTIVE);
     expect(harness.cancelledJobsWhere[1]).toMatchObject({
@@ -129,10 +135,7 @@ describe("SubscriptionExpiryService", () => {
     });
 
     await expect(
-      harness.service.expireSegment(
-        "segment-active",
-        new Date("2026-09-02T16:00:00.000Z")
-      )
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
     ).resolves.toEqual({ outcome: "EXTENDED" });
 
     expect(harness.state.order.orderStatus).toBe(OrderStatus.ACTIVE);
@@ -180,6 +183,7 @@ function createExpiryHarness(
   options: {
     changeStatus?: SubscriptionChangeStatus;
     considerationStatus?: RenewalConsiderationStatus;
+    databaseNow?: Date;
     nextSegment?: Record<string, unknown> | null;
     nextPeriodStart?: Date;
   } = {}
@@ -231,7 +235,11 @@ function createExpiryHarness(
   });
   const receivableBillCreate = vi.fn();
   const tx = {
-    $queryRaw: vi.fn().mockResolvedValue([{ id: "locked" }]),
+    $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
+      query.strings?.join(" ").includes("clock_timestamp")
+        ? [{ now: options.databaseNow ?? new Date("2026-09-02T16:00:00.000Z") }]
+        : [{ id: "locked" }]
+    ),
     billingSchedule: {
       findUnique: vi.fn(async () => state.schedule),
       updateMany: vi.fn(async ({ data }) => {

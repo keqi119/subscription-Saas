@@ -67,6 +67,8 @@ function job(jobType: SubscriptionAutomationJobType) {
     availableAt: now,
     billId: "bill-1",
     billingScheduleId: null,
+    changeOrderId: null,
+    contractSegmentId: null,
     cancelledAt: null,
     completedAt: null,
     createdAt: now,
@@ -81,6 +83,7 @@ function job(jobType: SubscriptionAutomationJobType) {
     maxAttempts: 6,
     orderId: "order-1",
     payload: null,
+    renewalConsiderationId: null,
     resultSnapshot: null,
     startedAt: now,
     updatedAt: now

@@ -292,6 +292,7 @@ enum OrderStatus {
   PENDING_DELIVERY
   ACTIVE
   SUSPENDED
+  PENDING_RETURN
   TERMINATED
   COMPLETED
   CANCELLED
@@ -440,6 +441,17 @@ enum SubscriptionAutomationJobType {
   QUERY_DEBIT_ATTEMPT
   SEND_DEBIT_FAILURE_NOTICE
   SYNC_PAYMENT_MANDATE
+  RENEWAL_CONSIDERATION_ENROLL
+  RENEWAL_REMINDER_D30
+  RENEWAL_REMINDER_D14
+  RENEWAL_REMINDER_D3
+  RENEWAL_EXPIRY_PROCESS
+  RENEWAL_RETURN_OVERDUE_D1
+  EXTENSION_SEGMENT_ACTIVATE
+  EXTENSION_BILLING_RESUME
+  EXTENSION_ENTITLEMENT_RENEW
+  EXTENSION_INSURANCE_VALIDATION
+  EXTENSION_EFFECTIVE_NOTICE
 
   @@map("subscription_automation_job_type")
 }
@@ -452,6 +464,101 @@ enum SubscriptionAutomationJobStatus {
   CANCELLED
 
   @@map("subscription_automation_job_status")
+}
+
+enum SubscriptionChangeType {
+  EXTENSION
+
+  @@map("subscription_change_type")
+}
+
+enum SubscriptionChangeStatus {
+  DRAFT
+  QUOTED
+  CUSTOMER_CONFIRMED
+  SIGNING_OR_PAYMENT
+  SCHEDULED
+  EXECUTING
+  COMPLETED
+  CANCELLED
+  FAILED
+  MANUAL_TAKEOVER
+
+  @@map("subscription_change_status")
+}
+
+enum SubscriptionChangePricingMode {
+  CURRENT_VERSION
+  ORIGINAL_PRICE
+  APPROVED_DISCOUNT
+
+  @@map("subscription_change_pricing_mode")
+}
+
+enum SubscriptionChangeQuoteStatus {
+  DRAFT
+  FORMAL
+  SUPERSEDED
+  CUSTOMER_CONFIRMED
+  CUSTOMER_REJECTED
+  EXPIRED
+
+  @@map("subscription_change_quote_status")
+}
+
+enum ContractSegmentType {
+  BASE
+  EXTENSION
+
+  @@map("contract_segment_type")
+}
+
+enum ContractSegmentStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+  CANCELLED
+
+  @@map("contract_segment_status")
+}
+
+enum RenewalConsiderationStatus {
+  PENDING_DECISION
+  RENEWAL_REQUESTED
+  EXPIRY_CONFIRMED
+  EXTENSION_IN_PROGRESS
+  EXTENDED
+  EXPIRED
+  CANCELLED
+
+  @@map("renewal_consideration_status")
+}
+
+enum RenewalDecision {
+  RENEW
+  EXPIRE
+
+  @@map("renewal_decision")
+}
+
+enum RenewalReminderSlot {
+  D30
+  D14
+  D3
+
+  @@map("renewal_reminder_slot")
+}
+
+enum RenewalReminderStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED_DECIDED
+  SKIPPED_EXTENDED
+  SKIPPED_LATE_ENROLLMENT
+  CANCELLED
+
+  @@map("renewal_reminder_status")
 }
 
 enum PaymentMethod {
@@ -622,6 +729,7 @@ enum LeaseStatus {
   NOT_ACTIVE
   READY
   ACTIVE
+  RETURN_DUE
 
   @@map("lease_status")
 }
@@ -895,6 +1003,9 @@ enum NotificationTemplateType {
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
   AUTO_DEBIT_FAILURE
+  RENEWAL_REMINDER
+  RENEWAL_EXPIRY_RETURN
+  RENEWAL_RETURN_OVERDUE
   SYSTEM
 
   @@map("notification_template_type")
@@ -921,6 +1032,9 @@ enum NotificationType {
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
   AUTO_DEBIT_FAILURE
+  RENEWAL_REMINDER
+  RENEWAL_EXPIRY_RETURN
+  RENEWAL_RETURN_OVERDUE
   SYSTEM
 
   @@map("notification_type")
@@ -953,6 +1067,11 @@ enum NotificationEventType {
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
   AUTO_DEBIT_FAILED
+  RENEWAL_REMINDER_D30
+  RENEWAL_REMINDER_D14
+  RENEWAL_REMINDER_D3
+  RENEWAL_EXPIRED
+  RENEWAL_RETURN_OVERDUE_D1
 
   @@map("notification_event_type")
 }
@@ -990,6 +1109,7 @@ enum ContractVersionStatus {
 enum ContractTemplateType {
   SUBSCRIPTION_STANDARD
   DELIVERY_HANDOVER
+  SUBSCRIPTION_EXTENSION
 
   @@map("contract_template_type")
 }
@@ -1290,6 +1410,7 @@ enum ESignTaskStatus {
 enum ESignSigningStage {
   STAGE1_SUBSCRIPTION_CONTRACT
   STAGE2_DELIVERY_HANDOVER
+  STAGE3_SUBSCRIPTION_EXTENSION
 
   @@map("esign_signing_stage")
 }
@@ -1299,6 +1420,7 @@ enum ESignDocumentType {
   CONTRACT_BODY
   ATTACHMENT1_SUBSCRIPTION_PLAN
   DELIVERY_HANDOVER
+  SUBSCRIPTION_EXTENSION_AGREEMENT
 
   @@map("esign_document_type")
 }
@@ -1986,6 +2108,8 @@ model User {
   confirmedQuotes                             SubscriptionQuote[]            @relation("QuoteConfirmer")
   approvedContractVersions                    ContractVersion[]              @relation("ContractVersionApprover")
   approvedOrderChanges                        OrderChange[]                  @relation("OrderChangeApprover")
+  approvedSubscriptionChanges                 SubscriptionChangeOrder[]      @relation("SubscriptionChangePriceOverrideApprover")
+  takenOverSubscriptionChanges                SubscriptionChangeOrder[]      @relation("SubscriptionChangeManualTakeoverUser")
   confirmedMileageReadings                    VehicleMileageReading[]        @relation("VehicleMileageReadingConfirmer")
   voidedMileageReadings                       VehicleMileageReading[]        @relation("VehicleMileageReadingVoider")
   submittedMileageReviews                     OrderMileageReview[]           @relation("MileageReviewSubmittedByUser")
@@ -2288,6 +2412,7 @@ model SmsSendLog {
   errorCode          String?                         @map("error_code") @db.VarChar(128)
   errorMessage       String?                         @map("error_message") @db.Text
   verificationCodeId String?                         @map("verification_code_id") @db.Uuid
+  renewalReminders   RenewalReminder[]
   createdAt          DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([phone])
@@ -2698,24 +2823,26 @@ model DepositRule {
 }
 
 model Product {
-  id                String              @id @default(uuid()) @db.Uuid
-  productNo         String              @unique @map("product_no") @db.VarChar(64)
-  name              String              @db.VarChar(128)
-  productType       ProductType         @default(SUBSCRIPTION) @map("product_type")
-  status            ProductStatus       @default(DRAFT)
-  description       String?             @db.Text
-  versions          ProductVersion[]
-  orders            SubscriptionOrder[]
-  vehiclePackages   VehiclePackage[]
-  mileagePackages   MileagePackage[]
-  energyPackages    EnergyPackage[]
-  benefitPackages   BenefitPackage[]
-  subscriptionPlans SubscriptionPlan[]
-  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy         String?             @map("created_by") @db.Uuid
-  updatedBy         String?             @map("updated_by") @db.Uuid
-  deletedAt         DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  id                           String                        @id @default(uuid()) @db.Uuid
+  productNo                    String                        @unique @map("product_no") @db.VarChar(64)
+  name                         String                        @db.VarChar(128)
+  productType                  ProductType                   @default(SUBSCRIPTION) @map("product_type")
+  status                       ProductStatus                 @default(DRAFT)
+  description                  String?                       @db.Text
+  versions                     ProductVersion[]
+  orders                       SubscriptionOrder[]
+  vehiclePackages              VehiclePackage[]
+  mileagePackages              MileagePackage[]
+  energyPackages               EnergyPackage[]
+  benefitPackages              BenefitPackage[]
+  subscriptionPlans            SubscriptionPlan[]
+  subscriptionChangeQuotes     SubscriptionChangeQuote[]
+  subscriptionContractSegments SubscriptionContractSegment[]
+  createdAt                    DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                    String?                       @map("created_by") @db.Uuid
+  updatedBy                    String?                       @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?                     @map("deleted_at") @db.Timestamptz(6)
 
   @@index([productType])
   @@index([status])
@@ -2723,29 +2850,31 @@ model Product {
 }
 
 model ProductVersion {
-  id                String               @id @default(uuid()) @db.Uuid
-  productId         String               @map("product_id") @db.Uuid
-  product           Product              @relation(fields: [productId], references: [id])
-  versionNo         String               @map("version_no") @db.VarChar(32)
-  effectiveFrom     DateTime             @map("effective_from") @db.Date
-  effectiveTo       DateTime?            @map("effective_to") @db.Date
-  status            ProductVersionStatus @default(DRAFT)
-  approvedBy        String?              @map("approved_by") @db.Uuid
-  approver          User?                @relation("ProductVersionApprover", fields: [approvedBy], references: [id])
-  approvedAt        DateTime?            @map("approved_at") @db.Timestamptz(6)
-  priceRules        ProductPriceRule[]
-  vehiclePackages   VehiclePackage[]
-  mileagePackages   MileagePackage[]
-  energyPackages    EnergyPackage[]
-  benefitPackages   BenefitPackage[]
-  subscriptionPlans SubscriptionPlan[]
-  quotes            SubscriptionQuote[]
-  orders            SubscriptionOrder[]
-  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy         String?              @map("created_by") @db.Uuid
-  updatedBy         String?              @map("updated_by") @db.Uuid
-  deletedAt         DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  id                           String                        @id @default(uuid()) @db.Uuid
+  productId                    String                        @map("product_id") @db.Uuid
+  product                      Product                       @relation(fields: [productId], references: [id])
+  versionNo                    String                        @map("version_no") @db.VarChar(32)
+  effectiveFrom                DateTime                      @map("effective_from") @db.Date
+  effectiveTo                  DateTime?                     @map("effective_to") @db.Date
+  status                       ProductVersionStatus          @default(DRAFT)
+  approvedBy                   String?                       @map("approved_by") @db.Uuid
+  approver                     User?                         @relation("ProductVersionApprover", fields: [approvedBy], references: [id])
+  approvedAt                   DateTime?                     @map("approved_at") @db.Timestamptz(6)
+  priceRules                   ProductPriceRule[]
+  vehiclePackages              VehiclePackage[]
+  mileagePackages              MileagePackage[]
+  energyPackages               EnergyPackage[]
+  benefitPackages              BenefitPackage[]
+  subscriptionPlans            SubscriptionPlan[]
+  quotes                       SubscriptionQuote[]
+  orders                       SubscriptionOrder[]
+  subscriptionChangeQuotes     SubscriptionChangeQuote[]
+  subscriptionContractSegments SubscriptionContractSegment[]
+  createdAt                    DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                    String?                       @map("created_by") @db.Uuid
+  updatedBy                    String?                       @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?                     @map("deleted_at") @db.Timestamptz(6)
 
   @@unique([productId, versionNo])
   @@index([productId])
@@ -2877,39 +3006,41 @@ model BenefitPackage {
 }
 
 model SubscriptionPlan {
-  id                   String                    @id @default(uuid()) @db.Uuid
-  planNo               String                    @unique @map("plan_no") @db.VarChar(64)
-  planName             String                    @map("plan_name") @db.VarChar(128)
-  productId            String                    @map("product_id") @db.Uuid
-  product              Product                   @relation(fields: [productId], references: [id])
-  productVersionId     String                    @map("product_version_id") @db.Uuid
-  productVersion       ProductVersion            @relation(fields: [productVersionId], references: [id])
-  vehiclePackageId     String                    @map("vehicle_package_id") @db.Uuid
-  vehiclePackage       VehiclePackage            @relation(fields: [vehiclePackageId], references: [id])
-  mileagePackageId     String                    @map("mileage_package_id") @db.Uuid
-  mileagePackage       MileagePackage            @relation(fields: [mileagePackageId], references: [id])
-  energyPackageId      String                    @map("energy_package_id") @db.Uuid
-  energyPackage        EnergyPackage             @relation(fields: [energyPackageId], references: [id])
-  benefitPackageId     String?                   @map("benefit_package_id") @db.Uuid
-  benefitPackage       BenefitPackage?           @relation(fields: [benefitPackageId], references: [id])
-  monthlyFeeMode       MonthlyFeeMode            @default(MANUAL_QUOTE) @map("monthly_fee_mode")
-  baseMonthlyFeeAmount BigInt?                   @map("base_monthly_fee_amount")
-  monthlyFeeRate       Decimal                   @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
-  monthlyFeeCapRate    Decimal?                  @map("monthly_fee_cap_rate") @db.Decimal(8, 6)
-  minPeriodMonths      Int                       @map("min_period_months")
-  maxPeriodMonths      Int                       @map("max_period_months")
-  status               SubscriptionPlanStatus    @default(DRAFT)
-  effectiveFrom        DateTime                  @map("effective_from") @db.Date
-  effectiveTo          DateTime?                 @map("effective_to") @db.Date
-  remark               String?                   @db.Text
-  quotes               SubscriptionQuote[]
-  vehicleListingPlans  VehicleListingPlan[]
-  entitlementAccounts  OrderEntitlementAccount[]
-  createdAt            DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt            DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy            String?                   @map("created_by") @db.Uuid
-  updatedBy            String?                   @map("updated_by") @db.Uuid
-  deletedAt            DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+  id                           String                        @id @default(uuid()) @db.Uuid
+  planNo                       String                        @unique @map("plan_no") @db.VarChar(64)
+  planName                     String                        @map("plan_name") @db.VarChar(128)
+  productId                    String                        @map("product_id") @db.Uuid
+  product                      Product                       @relation(fields: [productId], references: [id])
+  productVersionId             String                        @map("product_version_id") @db.Uuid
+  productVersion               ProductVersion                @relation(fields: [productVersionId], references: [id])
+  vehiclePackageId             String                        @map("vehicle_package_id") @db.Uuid
+  vehiclePackage               VehiclePackage                @relation(fields: [vehiclePackageId], references: [id])
+  mileagePackageId             String                        @map("mileage_package_id") @db.Uuid
+  mileagePackage               MileagePackage                @relation(fields: [mileagePackageId], references: [id])
+  energyPackageId              String                        @map("energy_package_id") @db.Uuid
+  energyPackage                EnergyPackage                 @relation(fields: [energyPackageId], references: [id])
+  benefitPackageId             String?                       @map("benefit_package_id") @db.Uuid
+  benefitPackage               BenefitPackage?               @relation(fields: [benefitPackageId], references: [id])
+  monthlyFeeMode               MonthlyFeeMode                @default(MANUAL_QUOTE) @map("monthly_fee_mode")
+  baseMonthlyFeeAmount         BigInt?                       @map("base_monthly_fee_amount")
+  monthlyFeeRate               Decimal                       @default(0.035000) @map("monthly_fee_rate") @db.Decimal(8, 6)
+  monthlyFeeCapRate            Decimal?                      @map("monthly_fee_cap_rate") @db.Decimal(8, 6)
+  minPeriodMonths              Int                           @map("min_period_months")
+  maxPeriodMonths              Int                           @map("max_period_months")
+  status                       SubscriptionPlanStatus        @default(DRAFT)
+  effectiveFrom                DateTime                      @map("effective_from") @db.Date
+  effectiveTo                  DateTime?                     @map("effective_to") @db.Date
+  remark                       String?                       @db.Text
+  quotes                       SubscriptionQuote[]
+  vehicleListingPlans          VehicleListingPlan[]
+  entitlementAccounts          OrderEntitlementAccount[]
+  subscriptionChangeQuotes     SubscriptionChangeQuote[]
+  subscriptionContractSegments SubscriptionContractSegment[]
+  createdAt                    DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                    String?                       @map("created_by") @db.Uuid
+  updatedBy                    String?                       @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?                     @map("deleted_at") @db.Timestamptz(6)
 
   @@index([productId])
   @@index([productVersionId])
@@ -4489,6 +4620,9 @@ model SubscriptionOrder {
   entitlementUsages          OrderEntitlementUsage[]
   contracts                  Contract[]                     @relation("OrderContracts")
   changes                    OrderChange[]
+  subscriptionChanges        SubscriptionChangeOrder[]
+  contractSegments           SubscriptionContractSegment[]
+  renewalConsiderations      RenewalConsideration[]
   revenueRightAssignments    RevenueRightAssignment[]
   insuranceClaims            InsuranceClaim[]
   billingSchedule            BillingSchedule?
@@ -4695,66 +4829,75 @@ model BillingSchedule {
 }
 
 model SubscriptionAutomationJob {
-  id                String                          @id @default(uuid()) @db.Uuid
-  billingScheduleId String?                         @map("billing_schedule_id") @db.Uuid
-  billingSchedule   BillingSchedule?                @relation(fields: [billingScheduleId], references: [id])
-  orderId           String?                         @map("order_id") @db.Uuid
-  order             SubscriptionOrder?              @relation(fields: [orderId], references: [id])
-  billId            String?                         @map("bill_id") @db.Uuid
-  bill              ReceivableBill?                 @relation(fields: [billId], references: [id])
-  jobType           SubscriptionAutomationJobType   @map("job_type")
-  jobStatus         SubscriptionAutomationJobStatus @default(PENDING) @map("job_status")
-  idempotencyKey    String                          @unique @map("idempotency_key") @db.VarChar(256)
-  availableAt       DateTime                        @default(now()) @map("available_at") @db.Timestamptz(6)
-  attemptCount      Int                             @default(0) @map("attempt_count")
-  maxAttempts       Int                             @default(6) @map("max_attempts")
-  leaseToken        String?                         @map("lease_token") @db.Uuid
-  leaseExpiresAt    DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
-  payload           Json?
-  resultSnapshot    Json?                           @map("result_snapshot")
-  lastErrorCode     String?                         @map("last_error_code") @db.VarChar(128)
-  lastErrorMessage  String?                         @map("last_error_message") @db.VarChar(512)
-  startedAt         DateTime?                       @map("started_at") @db.Timestamptz(6)
-  completedAt       DateTime?                       @map("completed_at") @db.Timestamptz(6)
-  cancelledAt       DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
-  createdAt         DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                     String                          @id @default(uuid()) @db.Uuid
+  billingScheduleId      String?                         @map("billing_schedule_id") @db.Uuid
+  billingSchedule        BillingSchedule?                @relation(fields: [billingScheduleId], references: [id])
+  orderId                String?                         @map("order_id") @db.Uuid
+  order                  SubscriptionOrder?              @relation(fields: [orderId], references: [id])
+  billId                 String?                         @map("bill_id") @db.Uuid
+  bill                   ReceivableBill?                 @relation(fields: [billId], references: [id])
+  changeOrderId          String?                         @map("change_order_id") @db.Uuid
+  changeOrder            SubscriptionChangeOrder?        @relation(fields: [changeOrderId], references: [id])
+  contractSegmentId      String?                         @map("contract_segment_id") @db.Uuid
+  contractSegment        SubscriptionContractSegment?    @relation(fields: [contractSegmentId], references: [id])
+  renewalConsiderationId String?                         @map("renewal_consideration_id") @db.Uuid
+  renewalConsideration   RenewalConsideration?           @relation(fields: [renewalConsiderationId], references: [id])
+  jobType                SubscriptionAutomationJobType   @map("job_type")
+  jobStatus              SubscriptionAutomationJobStatus @default(PENDING) @map("job_status")
+  idempotencyKey         String                          @unique @map("idempotency_key") @db.VarChar(256)
+  availableAt            DateTime                        @default(now()) @map("available_at") @db.Timestamptz(6)
+  attemptCount           Int                             @default(0) @map("attempt_count")
+  maxAttempts            Int                             @default(6) @map("max_attempts")
+  leaseToken             String?                         @map("lease_token") @db.Uuid
+  leaseExpiresAt         DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
+  payload                Json?
+  resultSnapshot         Json?                           @map("result_snapshot")
+  lastErrorCode          String?                         @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage       String?                         @map("last_error_message") @db.VarChar(512)
+  startedAt              DateTime?                       @map("started_at") @db.Timestamptz(6)
+  completedAt            DateTime?                       @map("completed_at") @db.Timestamptz(6)
+  cancelledAt            DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
+  createdAt              DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([jobStatus, availableAt])
   @@index([billingScheduleId, createdAt])
   @@index([orderId, createdAt])
   @@index([billId, createdAt])
+  @@index([changeOrderId, createdAt])
+  @@index([contractSegmentId, createdAt])
+  @@index([renewalConsiderationId, createdAt])
   @@index([leaseExpiresAt])
   @@map("subscription_automation_job")
 }
 
 model PaymentMandate {
-  id                    String               @id @default(uuid()) @db.Uuid
-  mandateNo             String               @unique @map("mandate_no") @db.VarChar(64)
-  customerId            String               @map("customer_id") @db.Uuid
-  customer              Customer             @relation(fields: [customerId], references: [id])
-  orderId               String               @map("order_id") @db.Uuid
-  order                 SubscriptionOrder    @relation(fields: [orderId], references: [id])
-  provider              PaymentProviderType
-  providerMandateId     String?              @map("provider_mandate_id") @db.VarChar(128)
-  providerTemplateId    String?              @map("provider_template_id") @db.VarChar(128)
-  providerMode          String               @map("provider_mode") @db.VarChar(64)
-  status                PaymentMandateStatus @default(PENDING)
-  signedAt              DateTime?            @map("signed_at") @db.Timestamptz(6)
-  effectiveAt           DateTime?            @map("effective_at") @db.Timestamptz(6)
-  suspendedAt           DateTime?            @map("suspended_at") @db.Timestamptz(6)
-  revokedAt             DateTime?            @map("revoked_at") @db.Timestamptz(6)
-  expiresAt             DateTime?            @map("expires_at") @db.Timestamptz(6)
-  lastSyncedAt          DateTime?            @map("last_synced_at") @db.Timestamptz(6)
-  requestSnapshot       Json?                @map("request_snapshot")
-  responseSnapshot      Json?                @map("response_snapshot")
-  callbackSnapshot      Json?                @map("callback_snapshot")
-  errorSnapshot         Json?                @map("error_snapshot")
-  debitAttempts         DebitAttempt[]
-  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy             String?              @map("created_by") @db.Uuid
-  updatedBy             String?              @map("updated_by") @db.Uuid
+  id                 String               @id @default(uuid()) @db.Uuid
+  mandateNo          String               @unique @map("mandate_no") @db.VarChar(64)
+  customerId         String               @map("customer_id") @db.Uuid
+  customer           Customer             @relation(fields: [customerId], references: [id])
+  orderId            String               @map("order_id") @db.Uuid
+  order              SubscriptionOrder    @relation(fields: [orderId], references: [id])
+  provider           PaymentProviderType
+  providerMandateId  String?              @map("provider_mandate_id") @db.VarChar(128)
+  providerTemplateId String?              @map("provider_template_id") @db.VarChar(128)
+  providerMode       String               @map("provider_mode") @db.VarChar(64)
+  status             PaymentMandateStatus @default(PENDING)
+  signedAt           DateTime?            @map("signed_at") @db.Timestamptz(6)
+  effectiveAt        DateTime?            @map("effective_at") @db.Timestamptz(6)
+  suspendedAt        DateTime?            @map("suspended_at") @db.Timestamptz(6)
+  revokedAt          DateTime?            @map("revoked_at") @db.Timestamptz(6)
+  expiresAt          DateTime?            @map("expires_at") @db.Timestamptz(6)
+  lastSyncedAt       DateTime?            @map("last_synced_at") @db.Timestamptz(6)
+  requestSnapshot    Json?                @map("request_snapshot")
+  responseSnapshot   Json?                @map("response_snapshot")
+  callbackSnapshot   Json?                @map("callback_snapshot")
+  errorSnapshot      Json?                @map("error_snapshot")
+  debitAttempts      DebitAttempt[]
+  createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?              @map("created_by") @db.Uuid
+  updatedBy          String?              @map("updated_by") @db.Uuid
 
   @@index([customerId, createdAt])
   @@index([orderId, status])
@@ -4764,39 +4907,39 @@ model PaymentMandate {
 }
 
 model DebitAttempt {
-  id                      String             @id @default(uuid()) @db.Uuid
-  debitAttemptNo          String             @unique @map("debit_attempt_no") @db.VarChar(64)
-  mandateId               String             @map("mandate_id") @db.Uuid
-  mandate                 PaymentMandate     @relation(fields: [mandateId], references: [id])
-  billId                  String             @map("bill_id") @db.Uuid
-  bill                    ReceivableBill     @relation(fields: [billId], references: [id])
-  orderId                 String             @map("order_id") @db.Uuid
-  order                   SubscriptionOrder  @relation(fields: [orderId], references: [id])
-  customerId              String             @map("customer_id") @db.Uuid
-  customer                Customer           @relation(fields: [customerId], references: [id])
-  paymentOrderId          String             @unique @map("payment_order_id") @db.Uuid
-  paymentOrder            PaymentOrder       @relation(fields: [paymentOrderId], references: [id])
-  retrySlot               DebitRetrySlot     @map("retry_slot")
-  status                  DebitAttemptStatus @default(CREATED)
-  requestedAmount         BigInt             @map("requested_amount")
-  confirmedAmount         BigInt             @default(0) @map("confirmed_amount")
-  idempotencyKey          String             @unique @map("idempotency_key") @db.VarChar(256)
-  providerOutTradeNo      String             @unique @map("provider_out_trade_no") @db.VarChar(128)
-  providerTransactionId   String?            @map("provider_transaction_id") @db.VarChar(128)
-  submittedAt             DateTime?          @map("submitted_at") @db.Timestamptz(6)
-  acceptedAt              DateTime?          @map("accepted_at") @db.Timestamptz(6)
-  resolvedAt              DateTime?          @map("resolved_at") @db.Timestamptz(6)
-  cancelledAt             DateTime?          @map("cancelled_at") @db.Timestamptz(6)
-  requestSnapshot         Json?              @map("request_snapshot")
-  responseSnapshot        Json?              @map("response_snapshot")
-  callbackSnapshot        Json?              @map("callback_snapshot")
-  errorSnapshot           Json?              @map("error_snapshot")
-  lastErrorCode           String?            @map("last_error_code") @db.VarChar(128)
-  lastErrorMessage        String?            @map("last_error_message") @db.VarChar(512)
-  createdAt               DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt               DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy               String?            @map("created_by") @db.Uuid
-  updatedBy               String?            @map("updated_by") @db.Uuid
+  id                    String             @id @default(uuid()) @db.Uuid
+  debitAttemptNo        String             @unique @map("debit_attempt_no") @db.VarChar(64)
+  mandateId             String             @map("mandate_id") @db.Uuid
+  mandate               PaymentMandate     @relation(fields: [mandateId], references: [id])
+  billId                String             @map("bill_id") @db.Uuid
+  bill                  ReceivableBill     @relation(fields: [billId], references: [id])
+  orderId               String             @map("order_id") @db.Uuid
+  order                 SubscriptionOrder  @relation(fields: [orderId], references: [id])
+  customerId            String             @map("customer_id") @db.Uuid
+  customer              Customer           @relation(fields: [customerId], references: [id])
+  paymentOrderId        String             @unique @map("payment_order_id") @db.Uuid
+  paymentOrder          PaymentOrder       @relation(fields: [paymentOrderId], references: [id])
+  retrySlot             DebitRetrySlot     @map("retry_slot")
+  status                DebitAttemptStatus @default(CREATED)
+  requestedAmount       BigInt             @map("requested_amount")
+  confirmedAmount       BigInt             @default(0) @map("confirmed_amount")
+  idempotencyKey        String             @unique @map("idempotency_key") @db.VarChar(256)
+  providerOutTradeNo    String             @unique @map("provider_out_trade_no") @db.VarChar(128)
+  providerTransactionId String?            @map("provider_transaction_id") @db.VarChar(128)
+  submittedAt           DateTime?          @map("submitted_at") @db.Timestamptz(6)
+  acceptedAt            DateTime?          @map("accepted_at") @db.Timestamptz(6)
+  resolvedAt            DateTime?          @map("resolved_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  requestSnapshot       Json?              @map("request_snapshot")
+  responseSnapshot      Json?              @map("response_snapshot")
+  callbackSnapshot      Json?              @map("callback_snapshot")
+  errorSnapshot         Json?              @map("error_snapshot")
+  lastErrorCode         String?            @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage      String?            @map("last_error_message") @db.VarChar(512)
+  createdAt             DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?            @map("created_by") @db.Uuid
+  updatedBy             String?            @map("updated_by") @db.Uuid
 
   @@index([mandateId, status])
   @@index([billId, status])
@@ -5236,22 +5379,23 @@ model NotificationRecord {
 }
 
 model NotificationEvent {
-  id             String                  @id @default(uuid()) @db.Uuid
-  notificationId String?                 @map("notification_id") @db.Uuid
-  notification   NotificationRecord?     @relation(fields: [notificationId], references: [id])
-  eventType      NotificationEventType   @map("event_type")
-  aggregateType  String?                 @map("aggregate_type") @db.VarChar(64)
-  aggregateId    String?                 @map("aggregate_id") @db.Uuid
-  customerId     String?                 @map("customer_id") @db.Uuid
-  customer       Customer?               @relation(fields: [customerId], references: [id])
-  payload        Json?
-  eventStatus    NotificationEventStatus @default(PENDING) @map("event_status")
-  attempts       Int                     @default(0)
-  lastError      String?                 @map("last_error") @db.Text
-  nextRunAt      DateTime?               @map("next_run_at") @db.Timestamptz(6)
-  processedAt    DateTime?               @map("processed_at") @db.Timestamptz(6)
-  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id               String                  @id @default(uuid()) @db.Uuid
+  notificationId   String?                 @map("notification_id") @db.Uuid
+  notification     NotificationRecord?     @relation(fields: [notificationId], references: [id])
+  eventType        NotificationEventType   @map("event_type")
+  aggregateType    String?                 @map("aggregate_type") @db.VarChar(64)
+  aggregateId      String?                 @map("aggregate_id") @db.Uuid
+  customerId       String?                 @map("customer_id") @db.Uuid
+  customer         Customer?               @relation(fields: [customerId], references: [id])
+  payload          Json?
+  eventStatus      NotificationEventStatus @default(PENDING) @map("event_status")
+  attempts         Int                     @default(0)
+  lastError        String?                 @map("last_error") @db.Text
+  nextRunAt        DateTime?               @map("next_run_at") @db.Timestamptz(6)
+  processedAt      DateTime?               @map("processed_at") @db.Timestamptz(6)
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  renewalReminders RenewalReminder[]
 
   @@index([eventType])
   @@index([aggregateType, aggregateId])
@@ -5734,30 +5878,32 @@ model ContractVersion {
 }
 
 model Contract {
-  id                       String                    @id @default(uuid()) @db.Uuid
-  contractNo               String                    @unique @map("contract_no") @db.VarChar(64)
-  orderId                  String                    @map("order_id") @db.Uuid
-  order                    SubscriptionOrder         @relation("OrderContracts", fields: [orderId], references: [id])
-  currentForOrder          SubscriptionOrder?        @relation("OrderContract")
-  customerId               String                    @map("customer_id") @db.Uuid
-  customer                 Customer                  @relation(fields: [customerId], references: [id])
-  businessType             BusinessType              @default(SUBSCRIPTION) @map("business_type")
-  contractVersionId        String                    @map("contract_version_id") @db.Uuid
-  contractVersion          ContractVersion           @relation(fields: [contractVersionId], references: [id])
-  contractTitle            String                    @map("contract_title") @db.VarChar(128)
-  contractSnapshot         Json                      @map("contract_snapshot")
-  status                   ContractStatus            @default(GENERATED)
-  signedAt                 DateTime?                 @map("signed_at") @db.Timestamptz(6)
-  archivedAt               DateTime?                 @map("archived_at") @db.Timestamptz(6)
-  fileId                   String?                   @map("file_id") @db.Uuid
+  id                       String                        @id @default(uuid()) @db.Uuid
+  contractNo               String                        @unique @map("contract_no") @db.VarChar(64)
+  orderId                  String                        @map("order_id") @db.Uuid
+  order                    SubscriptionOrder             @relation("OrderContracts", fields: [orderId], references: [id])
+  currentForOrder          SubscriptionOrder?            @relation("OrderContract")
+  customerId               String                        @map("customer_id") @db.Uuid
+  customer                 Customer                      @relation(fields: [customerId], references: [id])
+  businessType             BusinessType                  @default(SUBSCRIPTION) @map("business_type")
+  contractVersionId        String                        @map("contract_version_id") @db.Uuid
+  contractVersion          ContractVersion               @relation(fields: [contractVersionId], references: [id])
+  contractTitle            String                        @map("contract_title") @db.VarChar(128)
+  contractSnapshot         Json                          @map("contract_snapshot")
+  status                   ContractStatus                @default(GENERATED)
+  signedAt                 DateTime?                     @map("signed_at") @db.Timestamptz(6)
+  archivedAt               DateTime?                     @map("archived_at") @db.Timestamptz(6)
+  fileId                   String?                       @map("file_id") @db.Uuid
   esignTasks               ContractESignTask[]
-  stage1DeliveryHandovers  VehicleDeliveryHandover[] @relation("DeliveryHandoverStage1Contract")
-  handoverDeliveryHandover VehicleDeliveryHandover?  @relation("DeliveryHandoverContract")
-  createdAt                DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                String?                   @map("created_by") @db.Uuid
-  updatedBy                String?                   @map("updated_by") @db.Uuid
-  deletedAt                DateTime?                 @map("deleted_at") @db.Timestamptz(6)
+  stage1DeliveryHandovers  VehicleDeliveryHandover[]     @relation("DeliveryHandoverStage1Contract")
+  handoverDeliveryHandover VehicleDeliveryHandover?      @relation("DeliveryHandoverContract")
+  subscriptionChange       SubscriptionChangeOrder?
+  contractSegments         SubscriptionContractSegment[]
+  createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                       @map("created_by") @db.Uuid
+  updatedBy                String?                       @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                     @map("deleted_at") @db.Timestamptz(6)
 
   @@index([orderId])
   @@index([customerId])
@@ -5875,6 +6021,207 @@ model ContractESignCallbackLog {
   @@index([eventType])
   @@index([receivedAt])
   @@map("contract_esign_callback_log")
+}
+
+model SubscriptionChangeOrder {
+  id                         String                        @id @default(uuid()) @db.Uuid
+  changeNo                   String                        @unique @map("change_no") @db.VarChar(64)
+  orderId                    String                        @map("order_id") @db.Uuid
+  order                      SubscriptionOrder             @relation(fields: [orderId], references: [id])
+  changeType                 SubscriptionChangeType        @default(EXTENSION) @map("change_type")
+  status                     SubscriptionChangeStatus      @default(DRAFT)
+  sourceSegmentId            String                        @map("source_segment_id") @db.Uuid
+  sourceSegment              SubscriptionContractSegment   @relation("SubscriptionChangeSourceSegment", fields: [sourceSegmentId], references: [id])
+  renewalConsiderationId     String?                       @unique @map("renewal_consideration_id") @db.Uuid
+  renewalConsideration       RenewalConsideration?         @relation("SubscriptionChangeOriginConsideration", fields: [renewalConsiderationId], references: [id])
+  linkedRenewalConsideration RenewalConsideration?         @relation("RenewalConsiderationChangeOrder")
+  extensionMonths            Int                           @map("extension_months")
+  pricingMode                SubscriptionChangePricingMode @map("pricing_mode")
+  currentQuoteId             String?                       @unique @map("current_quote_id") @db.Uuid
+  currentQuote               SubscriptionChangeQuote?      @relation("SubscriptionChangeCurrentQuote", fields: [currentQuoteId], references: [id])
+  confirmedQuoteId           String?                       @unique @map("confirmed_quote_id") @db.Uuid
+  confirmedQuote             SubscriptionChangeQuote?      @relation("SubscriptionChangeConfirmedQuote", fields: [confirmedQuoteId], references: [id])
+  contractId                 String?                       @unique @map("contract_id") @db.Uuid
+  contract                   Contract?                     @relation(fields: [contractId], references: [id])
+  targetStartDate            DateTime                      @map("target_start_date") @db.Date
+  targetEndDate              DateTime                      @map("target_end_date") @db.Date
+  completionDeadlineAt       DateTime                      @map("completion_deadline_at") @db.Timestamptz(6)
+  priceOverrideReason        String?                       @map("price_override_reason") @db.Text
+  priceOverrideApprovedBy    String?                       @map("price_override_approved_by") @db.Uuid
+  priceOverrideApprover      User?                         @relation("SubscriptionChangePriceOverrideApprover", fields: [priceOverrideApprovedBy], references: [id])
+  priceOverrideApprovedAt    DateTime?                     @map("price_override_approved_at") @db.Timestamptz(6)
+  cancelReason               String?                       @map("cancel_reason") @db.Text
+  failureCode                String?                       @map("failure_code") @db.VarChar(128)
+  failureMessage             String?                       @map("failure_message") @db.Text
+  manualTakeoverReason       String?                       @map("manual_takeover_reason") @db.Text
+  manualTakeoverBy           String?                       @map("manual_takeover_by") @db.Uuid
+  manualTakeoverUser         User?                         @relation("SubscriptionChangeManualTakeoverUser", fields: [manualTakeoverBy], references: [id])
+  manualTakeoverAt           DateTime?                     @map("manual_takeover_at") @db.Timestamptz(6)
+  version                    Int                           @default(0)
+  quotes                     SubscriptionChangeQuote[]     @relation("SubscriptionChangeQuotes")
+  targetSegment              SubscriptionContractSegment?  @relation("SubscriptionChangeTargetSegment")
+  automationJobs             SubscriptionAutomationJob[]
+  createdAt                  DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                  String?                       @map("created_by") @db.Uuid
+  updatedBy                  String?                       @map("updated_by") @db.Uuid
+
+  @@index([orderId, createdAt])
+  @@index([sourceSegmentId])
+  @@index([status])
+  @@index([completionDeadlineAt])
+  @@index([priceOverrideApprovedBy])
+  @@index([manualTakeoverBy])
+  @@map("subscription_change_order")
+}
+
+model SubscriptionChangeQuote {
+  id                   String                        @id @default(uuid()) @db.Uuid
+  quoteNo              String                        @unique @map("quote_no") @db.VarChar(64)
+  changeOrderId        String                        @map("change_order_id") @db.Uuid
+  changeOrder          SubscriptionChangeOrder       @relation("SubscriptionChangeQuotes", fields: [changeOrderId], references: [id])
+  revision             Int
+  status               SubscriptionChangeQuoteStatus @default(DRAFT)
+  pricingMode          SubscriptionChangePricingMode @map("pricing_mode")
+  productId            String?                       @map("product_id") @db.Uuid
+  product              Product?                      @relation(fields: [productId], references: [id])
+  productVersionId     String?                       @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion?               @relation(fields: [productVersionId], references: [id])
+  subscriptionPlanId   String?                       @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan     SubscriptionPlan?             @relation(fields: [subscriptionPlanId], references: [id])
+  monthlyFeeAmount     BigInt                        @map("monthly_fee_amount")
+  depositAmount        BigInt                        @default(0) @map("deposit_amount")
+  mileageLimitKm       Int                           @map("mileage_limit_km")
+  overMileageFeeAmount BigInt                        @map("over_mileage_fee_amount")
+  energyLimitKwh       Int?                          @map("energy_limit_kwh")
+  energyLimitCount     Int?                          @map("energy_limit_count")
+  planSnapshot         Json                          @map("plan_snapshot")
+  priceRuleSnapshot    Json                          @map("price_rule_snapshot")
+  quoteSnapshot        Json                          @map("quote_snapshot")
+  validUntil           DateTime                      @map("valid_until") @db.Timestamptz(6)
+  formalizedAt         DateTime?                     @map("formalized_at") @db.Timestamptz(6)
+  confirmedAt          DateTime?                     @map("confirmed_at") @db.Timestamptz(6)
+  rejectedAt           DateTime?                     @map("rejected_at") @db.Timestamptz(6)
+  currentForChange     SubscriptionChangeOrder?      @relation("SubscriptionChangeCurrentQuote")
+  confirmedForChange   SubscriptionChangeOrder?      @relation("SubscriptionChangeConfirmedQuote")
+  createdAt            DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy            String?                       @map("created_by") @db.Uuid
+
+  @@unique([changeOrderId, revision])
+  @@index([changeOrderId, status])
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([subscriptionPlanId])
+  @@index([validUntil])
+  @@map("subscription_change_quote")
+}
+
+model SubscriptionContractSegment {
+  id                   String                      @id @default(uuid()) @db.Uuid
+  segmentNo            String                      @unique @map("segment_no") @db.VarChar(64)
+  orderId              String                      @map("order_id") @db.Uuid
+  order                SubscriptionOrder           @relation(fields: [orderId], references: [id])
+  segmentType          ContractSegmentType         @map("segment_type")
+  sequenceNo           Int                         @map("sequence_no")
+  status               ContractSegmentStatus       @default(SCHEDULED)
+  startDate            DateTime                    @map("start_date") @db.Date
+  endDate              DateTime                    @map("end_date") @db.Date
+  sourceContractId     String?                     @map("source_contract_id") @db.Uuid
+  sourceContract       Contract?                   @relation(fields: [sourceContractId], references: [id])
+  sourceChangeOrderId  String?                     @unique @map("source_change_order_id") @db.Uuid
+  sourceChangeOrder    SubscriptionChangeOrder?    @relation("SubscriptionChangeTargetSegment", fields: [sourceChangeOrderId], references: [id])
+  sourceChanges        SubscriptionChangeOrder[]   @relation("SubscriptionChangeSourceSegment")
+  productId            String?                     @map("product_id") @db.Uuid
+  product              Product?                    @relation(fields: [productId], references: [id])
+  productVersionId     String?                     @map("product_version_id") @db.Uuid
+  productVersion       ProductVersion?             @relation(fields: [productVersionId], references: [id])
+  subscriptionPlanId   String?                     @map("subscription_plan_id") @db.Uuid
+  subscriptionPlan     SubscriptionPlan?           @relation(fields: [subscriptionPlanId], references: [id])
+  monthlyFeeAmount     BigInt                      @map("monthly_fee_amount")
+  mileageLimitKm       Int                         @map("mileage_limit_km")
+  overMileageFeeAmount BigInt                      @map("over_mileage_fee_amount")
+  energyLimitKwh       Int?                        @map("energy_limit_kwh")
+  energyLimitCount     Int?                        @map("energy_limit_count")
+  planSnapshot         Json                        @map("plan_snapshot")
+  quoteSnapshot        Json                        @map("quote_snapshot")
+  contractSnapshot     Json                        @map("contract_snapshot")
+  activatedAt          DateTime?                   @map("activated_at") @db.Timestamptz(6)
+  completedAt          DateTime?                   @map("completed_at") @db.Timestamptz(6)
+  cancelledAt          DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  renewalConsideration RenewalConsideration?
+  automationJobs       SubscriptionAutomationJob[]
+  createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy            String?                     @map("created_by") @db.Uuid
+
+  @@unique([orderId, sequenceNo])
+  @@index([orderId, startDate, endDate])
+  @@index([sourceContractId])
+  @@index([productId])
+  @@index([productVersionId])
+  @@index([subscriptionPlanId])
+  @@index([status])
+  @@map("subscription_contract_segment")
+}
+
+model RenewalConsideration {
+  id                   String                      @id @default(uuid()) @db.Uuid
+  considerationNo      String                      @unique @map("consideration_no") @db.VarChar(64)
+  orderId              String                      @map("order_id") @db.Uuid
+  order                SubscriptionOrder           @relation(fields: [orderId], references: [id])
+  segmentId            String                      @unique @map("segment_id") @db.Uuid
+  segment              SubscriptionContractSegment @relation(fields: [segmentId], references: [id])
+  status               RenewalConsiderationStatus  @default(PENDING_DECISION)
+  decision             RenewalDecision?
+  decidedAt            DateTime?                   @map("decided_at") @db.Timestamptz(6)
+  changeOrderId        String?                     @unique @map("change_order_id") @db.Uuid
+  changeOrder          SubscriptionChangeOrder?    @relation("RenewalConsiderationChangeOrder", fields: [changeOrderId], references: [id])
+  originatedChange     SubscriptionChangeOrder?    @relation("SubscriptionChangeOriginConsideration")
+  considerationStartAt DateTime                    @map("consideration_start_at") @db.Timestamptz(6)
+  completionDeadlineAt DateTime                    @map("completion_deadline_at") @db.Timestamptz(6)
+  expiredAt            DateTime?                   @map("expired_at") @db.Timestamptz(6)
+  cancelledAt          DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  version              Int                         @default(0)
+  reminders            RenewalReminder[]
+  automationJobs       SubscriptionAutomationJob[]
+  createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy            String?                     @map("created_by") @db.Uuid
+  updatedBy            String?                     @map("updated_by") @db.Uuid
+
+  @@index([orderId, status])
+  @@index([considerationStartAt])
+  @@index([completionDeadlineAt])
+  @@map("renewal_consideration")
+}
+
+model RenewalReminder {
+  id                     String                @id @default(uuid()) @db.Uuid
+  renewalConsiderationId String                @map("renewal_consideration_id") @db.Uuid
+  renewalConsideration   RenewalConsideration  @relation(fields: [renewalConsiderationId], references: [id])
+  slot                   RenewalReminderSlot
+  status                 RenewalReminderStatus @default(PENDING)
+  scheduledAt            DateTime              @map("scheduled_at") @db.Timestamptz(6)
+  notificationEventId    String?               @map("notification_event_id") @db.Uuid
+  notificationEvent      NotificationEvent?    @relation(fields: [notificationEventId], references: [id])
+  smsSendLogId           String?               @map("sms_send_log_id") @db.Uuid
+  smsSendLog             SmsSendLog?           @relation(fields: [smsSendLogId], references: [id])
+  templateCodeSnapshot   String?               @map("template_code_snapshot") @db.VarChar(128)
+  inAppStatus            NotificationStatus?   @map("in_app_status")
+  smsStatus              SmsSendStatus?        @map("sms_status")
+  channelResult          Json?                 @map("channel_result")
+  errorCode              String?               @map("error_code") @db.VarChar(128)
+  errorMessage           String?               @map("error_message") @db.Text
+  sentAt                 DateTime?             @map("sent_at") @db.Timestamptz(6)
+  failedAt               DateTime?             @map("failed_at") @db.Timestamptz(6)
+  cancelledAt            DateTime?             @map("cancelled_at") @db.Timestamptz(6)
+  createdAt              DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([renewalConsiderationId, slot])
+  @@index([status, scheduledAt])
+  @@index([notificationEventId])
+  @@index([smsSendLogId])
+  @@map("renewal_reminder")
 }
 
 model OrderChange {

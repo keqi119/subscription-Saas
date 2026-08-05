@@ -24,3 +24,25 @@ describe("Fleet Ops shared permissions", () => {
     }
   });
 });
+
+describe("subscription change shared permissions", () => {
+  it("defines the approved V2 contract change permissions", () => {
+    const permissions = PermissionCode as Record<string, string>;
+
+    expect(permissions.SUBSCRIPTION_CHANGE_VIEW).toBe("subscription_change:view");
+    expect(permissions.SUBSCRIPTION_CHANGE_CREATE).toBe("subscription_change:create");
+    expect(permissions.SUBSCRIPTION_CHANGE_QUOTE).toBe("subscription_change:quote");
+    expect(permissions.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE).toBe(
+      "subscription_change:price_override_approve"
+    );
+    expect(permissions.SUBSCRIPTION_CHANGE_SUBMIT).toBe("subscription_change:submit");
+    expect(permissions.SUBSCRIPTION_CHANGE_ESIGN_RETRY).toBe(
+      "subscription_change:esign_retry"
+    );
+    expect(permissions.SUBSCRIPTION_CHANGE_EXECUTE).toBe("subscription_change:execute");
+    expect(permissions.SUBSCRIPTION_CHANGE_MANUAL_TAKEOVER).toBe(
+      "subscription_change:manual_takeover"
+    );
+    expect(permissions.SUBSCRIPTION_CHANGE_CANCEL).toBe("subscription_change:cancel");
+  });
+});

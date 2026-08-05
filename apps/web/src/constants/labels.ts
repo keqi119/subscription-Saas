@@ -40,6 +40,7 @@ export const STATUS_LABELS: Record<string, string> = {
   PENDING_DELIVERY: "待交付",
   PENDING_INITIALIZE: "待初始化",
   PENDING_PAYMENT: "待付款",
+  PENDING_RETURN: "待退车",
   PENDING_REVIEW: "待订单审核",
   PENDING_SIGN: "待签署",
   PENDING_VEHICLE: "待分车",
@@ -48,6 +49,7 @@ export const STATUS_LABELS: Record<string, string> = {
   RESERVED: "签约锁定（待交付）",
   RETIRED: "已退役",
   RETURNED: "已退回",
+  RETURN_DUE: "到期待退车",
   REVIEW_RESERVED: "审核占用",
   REVIEW_DUE: "待复核",
   SIGNED: "已签署",
@@ -157,6 +159,9 @@ export const NOTIFICATION_TEMPLATE_TYPE_LABELS: Record<string, string> = {
   FINAL_PLAN_PENDING: "最终方案待确认",
   MATERIAL_REQUIRED: "待补件",
   PAYMENT_PENDING: "待支付",
+  RENEWAL_EXPIRY_RETURN: "到期退车",
+  RENEWAL_REMINDER: "续订提醒",
+  RENEWAL_RETURN_OVERDUE: "逾期未退车",
   RESCUE_UPDATE: "救援进度",
   SERVICE_CASE_UPDATE: "服务工单进度",
   SYSTEM: "系统通知"
@@ -175,6 +180,9 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   FINAL_PLAN_PENDING: "最终方案待确认",
   MATERIAL_REQUIRED: "待补件",
   PAYMENT_PENDING: "待支付",
+  RENEWAL_EXPIRY_RETURN: "到期退车",
+  RENEWAL_REMINDER: "续订提醒",
+  RENEWAL_RETURN_OVERDUE: "逾期未退车",
   RESCUE_UPDATE: "救援进度",
   SERVICE_CASE_UPDATE: "服务工单进度",
   SYSTEM: "系统通知"
@@ -630,12 +638,79 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   PENDING_CUSTOMER_CONFIRMATION: "待客户确认",
   PENDING_DELIVERY: "待交付",
   PENDING_PAYMENT: "待付款",
+  PENDING_RETURN: "待退车",
   PENDING_REVIEW: "待审核",
   PENDING_SIGN: "待签署",
   PENDING_VEHICLE: "待车辆确认",
   REJECTED: "已拒绝",
   SUSPENDED: "暂停履约",
   TERMINATED: "已终止"
+};
+
+export const SUBSCRIPTION_CHANGE_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  COMPLETED: "已完成",
+  CUSTOMER_CONFIRMED: "客户已确认报价",
+  DRAFT: "草稿",
+  EXECUTING: "生效处理中",
+  FAILED: "处理失败",
+  MANUAL_TAKEOVER: "人工接管",
+  QUOTED: "已正式报价",
+  SCHEDULED: "已签约待生效",
+  SIGNING_OR_PAYMENT: "签约处理中"
+};
+
+export const SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS: Record<string, string> = {
+  APPROVED_DISCOUNT: "已审批折扣",
+  CURRENT_VERSION: "当前版本价格",
+  ORIGINAL_PRICE: "原合同价格"
+};
+
+export const SUBSCRIPTION_CHANGE_QUOTE_STATUS_LABELS: Record<string, string> = {
+  CUSTOMER_CONFIRMED: "客户已确认",
+  CUSTOMER_REJECTED: "客户已拒绝",
+  DRAFT: "草稿",
+  EXPIRED: "已过期",
+  FORMAL: "正式报价",
+  SUPERSEDED: "已被新版本替代"
+};
+
+export const CONTRACT_SEGMENT_TYPE_LABELS: Record<string, string> = {
+  BASE: "原合同",
+  EXTENSION: "续期补充协议"
+};
+
+export const CONTRACT_SEGMENT_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "履约中",
+  CANCELLED: "已取消",
+  COMPLETED: "已履约完成",
+  SCHEDULED: "待生效"
+};
+
+export const RENEWAL_CONSIDERATION_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  EXPIRED: "已到期",
+  EXPIRY_CONFIRMED: "客户选择到期结束",
+  EXTENDED: "续订已完成",
+  EXTENSION_IN_PROGRESS: "续订办理中",
+  PENDING_DECISION: "待客户决定",
+  RENEWAL_REQUESTED: "客户已申请续订"
+};
+
+export const RENEWAL_REMINDER_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  FAILED: "发送失败",
+  PENDING: "待发送",
+  SENT: "已发送",
+  SKIPPED_DECIDED: "客户已决定，已跳过",
+  SKIPPED_EXTENDED: "续订已完成，已跳过",
+  SKIPPED_LATE_ENROLLMENT: "进入考虑期过晚，已跳过"
+};
+
+export const CONTRACT_TEMPLATE_TYPE_LABELS: Record<string, string> = {
+  DELIVERY_HANDOVER: "车辆交接确认单",
+  SUBSCRIPTION_EXTENSION: "订阅续期补充协议",
+  SUBSCRIPTION_STANDARD: "标准订阅合同"
 };
 
 export const APPLICATION_SOURCE_LABELS: Record<string, string> = {
@@ -1196,6 +1271,7 @@ export const MODULE_LABELS: Record<string, string> = {
   vehicle_return: "退车验收",
   order: "订单中心",
   order_change: "订单变更",
+  subscription_change: "合同变更",
   product: "产品中心",
   quote: "报价中心",
   residual_curve: "残值曲线",
@@ -1260,6 +1336,15 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "order_change:execute": "执行订单变更",
   "order_change:reject": "拒绝订单变更",
   "order_change:view": "查看订单变更",
+  "subscription_change:cancel": "取消合同变更",
+  "subscription_change:create": "创建合同变更",
+  "subscription_change:esign_retry": "重试合同变更电子签",
+  "subscription_change:execute": "执行合同变更",
+  "subscription_change:manual_takeover": "人工接管合同变更",
+  "subscription_change:price_override_approve": "审批合同变更价格例外",
+  "subscription_change:quote": "生成合同变更报价",
+  "subscription_change:submit": "提交合同变更",
+  "subscription_change:view": "查看合同变更",
   "permission:view": "查看权限",
   "payment:create": "登记收款",
   "payment:view": "查看收款记录",
@@ -1462,6 +1547,7 @@ export const MENU_LABELS: Record<string, string> = {
   "orders.notifications": "通知中心",
   "orders.review": "旧版订单审核",
   "orders.subscription": "订阅订单",
+  "orders.subscription_changes": "合同变更中心",
   products: "产品中心",
   quotes: "订阅报价",
   reports: "经营看板",

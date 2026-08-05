@@ -1341,6 +1341,7 @@ const PORTAL_ORDER_STAGE_BY_STATUS = {
   [OrderStatus.PENDING_DELIVERY]: "DELIVERY",
   [OrderStatus.ACTIVE]: "ACTIVE",
   [OrderStatus.SUSPENDED]: "ACTIVE",
+  [OrderStatus.PENDING_RETURN]: "ACTIVE",
   [OrderStatus.TERMINATED]: "COMPLETED",
   [OrderStatus.COMPLETED]: "COMPLETED",
   [OrderStatus.CANCELLED]: "FAILED",

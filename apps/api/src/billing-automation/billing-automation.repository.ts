@@ -38,11 +38,14 @@ export class BillingAutomationRepository {
         availableAt: input.availableAt,
         billId: input.billId,
         billingScheduleId: input.billingScheduleId,
+        changeOrderId: input.changeOrderId,
+        contractSegmentId: input.contractSegmentId,
         idempotencyKey: input.idempotencyKey,
         jobType: input.jobType,
         maxAttempts: input.maxAttempts ?? 6,
         orderId: input.orderId,
-        payload: input.payload
+        payload: input.payload,
+        renewalConsiderationId: input.renewalConsiderationId
       },
       update: {},
       where: { idempotencyKey: input.idempotencyKey }

@@ -364,6 +364,8 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
           availableAt: cycle.generateAt,
           billId: null,
           billingScheduleId: ids.schedule,
+          changeOrderId: null,
+          contractSegmentId: null,
           cancelledAt: null,
           completedAt: null,
           createdAt: cycle.generateAt,
@@ -378,6 +380,7 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
           maxAttempts: 6,
           orderId: ids.order,
           payload: null,
+          renewalConsiderationId: null,
           resultSnapshot: null,
           startedAt: cycle.generateAt,
           updatedAt: cycle.generateAt

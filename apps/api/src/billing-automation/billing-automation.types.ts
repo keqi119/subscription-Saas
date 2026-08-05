@@ -13,11 +13,14 @@ export interface EnqueueBillingAutomationJobInput {
   availableAt?: Date;
   billId?: string;
   billingScheduleId?: string;
+  changeOrderId?: string;
+  contractSegmentId?: string;
   idempotencyKey: string;
   jobType: SubscriptionAutomationJobType;
   maxAttempts?: number;
   orderId?: string;
   payload?: Prisma.InputJsonValue;
+  renewalConsiderationId?: string;
 }
 
 export type ClaimedBillingAutomationJob = Omit<

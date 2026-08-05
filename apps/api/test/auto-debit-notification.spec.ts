@@ -277,6 +277,8 @@ function failureNoticeJob(): ClaimedBillingAutomationJob {
     availableAt: now,
     billId: "00000000-0000-4000-8000-000000000103",
     billingScheduleId: null,
+    changeOrderId: null,
+    contractSegmentId: null,
     cancelledAt: null,
     completedAt: null,
     createdAt: now,
@@ -291,6 +293,7 @@ function failureNoticeJob(): ClaimedBillingAutomationJob {
     maxAttempts: 6,
     orderId: "00000000-0000-4000-8000-000000000107",
     payload: { debitAttemptId: "00000000-0000-4000-8000-000000000101" },
+    renewalConsiderationId: null,
     resultSnapshot: null,
     startedAt: now,
     updatedAt: now

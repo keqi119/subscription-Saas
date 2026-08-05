@@ -31,12 +31,14 @@ describe("contract version form", () => {
     });
   });
 
-  it("exposes stable Admin labels for both supported template types", () => {
+  it("exposes stable Admin labels for all supported template types", () => {
     expect(CONTRACT_TEMPLATE_TYPE_OPTIONS).toEqual([
       { label: "标准订阅合同", value: "SUBSCRIPTION_STANDARD" },
-      { label: "车辆交接确认单", value: "DELIVERY_HANDOVER" }
+      { label: "车辆交接确认单", value: "DELIVERY_HANDOVER" },
+      { label: "订阅续期补充协议", value: "SUBSCRIPTION_EXTENSION" }
     ]);
     expect(labelContractTemplateType("DELIVERY_HANDOVER")).toBe("车辆交接确认单");
+    expect(labelContractTemplateType("SUBSCRIPTION_EXTENSION")).toBe("订阅续期补充协议");
     expect(labelContractTemplateType("UNKNOWN")).toBe("UNKNOWN");
   });
 });

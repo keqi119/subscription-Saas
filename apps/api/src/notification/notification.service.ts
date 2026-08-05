@@ -68,6 +68,17 @@ export interface NotifyAutoDebitFailureInput {
   idempotencyKey: string;
 }
 
+export interface NotifyRenewalReminderInAppInput {
+  considerationId: string;
+  customerId: string;
+  daysRemaining: number;
+  endDate: string;
+  idempotencyKey: string;
+  orderNo: string;
+  plateMasked: string;
+  slot: "D30" | "D14" | "D3";
+}
+
 const TEMPLATE_CODE_BY_EVENT: Partial<
   Record<
     NotificationEventType,
@@ -222,6 +233,98 @@ export class NotificationService {
       this.logger.warn(`Notification event ${event.id} failed: ${errorMessage(error)}`);
       return [];
     }
+  }
+
+  async notifyRenewalReminderInApp(input: NotifyRenewalReminderInAppInput) {
+    const notificationNo = renewalNotificationNo(input.idempotencyKey);
+    const existing = await this.prisma.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    const now = new Date();
+    const content = `订单 ${input.orderNo} 的当前合同将于 ${input.endDate} 到期，请在到期前完成续订或确认到期退车。`;
+    const record =
+      existing &&
+      (existing.notificationStatus === NotificationStatus.SENT ||
+        existing.notificationStatus === NotificationStatus.READ)
+        ? existing
+        : existing
+          ? await this.prisma.notificationRecord.update({
+              data: {
+                content,
+                errorMessage: null,
+                failedAt: null,
+                notificationStatus: NotificationStatus.SENT,
+                payload: toJsonValue({
+                  daysRemaining: input.daysRemaining,
+                  endDate: input.endDate,
+                  orderNo: input.orderNo,
+                  plateMasked: input.plateMasked,
+                  slot: input.slot
+                }),
+                sentAt: now,
+                title: "合同续订提醒",
+                url: normalizePortalUrl(
+                  `/portal/renewals/${encodeURIComponent(input.considerationId)}`,
+                  this.portalBaseUrl
+                )
+              },
+              where: { id: existing.id }
+            })
+          : await this.prisma.notificationRecord.create({
+              data: {
+                channel: NotificationChannel.IN_APP,
+                content,
+                customerId: input.customerId,
+                notificationNo,
+                notificationStatus: NotificationStatus.SENT,
+                notificationType: NotificationType.RENEWAL_REMINDER,
+                payload: toJsonValue({
+                  daysRemaining: input.daysRemaining,
+                  endDate: input.endDate,
+                  orderNo: input.orderNo,
+                  plateMasked: input.plateMasked,
+                  slot: input.slot
+                }),
+                sentAt: now,
+                templateCode: `RENEWAL_REMINDER_${input.slot}_IN_APP`,
+                title: "合同续订提醒",
+                url: normalizePortalUrl(
+                  `/portal/renewals/${encodeURIComponent(input.considerationId)}`,
+                  this.portalBaseUrl
+                )
+              }
+            });
+
+    const eventId = lifecycleNotificationEventId("renewal", input.idempotencyKey);
+    const eventType =
+      input.slot === "D30"
+        ? NotificationEventType.RENEWAL_REMINDER_D30
+        : input.slot === "D14"
+          ? NotificationEventType.RENEWAL_REMINDER_D14
+          : NotificationEventType.RENEWAL_REMINDER_D3;
+    const eventData = {
+      aggregateId: input.considerationId,
+      aggregateType: "RenewalConsideration",
+      customerId: input.customerId,
+      eventStatus: NotificationEventStatus.PROCESSED,
+      eventType,
+      lastError: null,
+      notificationId: record.id,
+      payload: toJsonValue({ slot: input.slot }),
+      processedAt: now
+    };
+    const existingEvent = await this.prisma.notificationEvent.findUnique({
+      where: { id: eventId }
+    });
+    const event = existingEvent
+      ? await this.prisma.notificationEvent.update({
+          data: { ...eventData, attempts: { increment: 1 } },
+          where: { id: eventId }
+        })
+      : await this.prisma.notificationEvent.create({
+          data: { ...eventData, attempts: 1, id: eventId }
+        });
+    return { event, record };
   }
 
   async notifyBillLifecycle(input: NotifyBillLifecycleInput) {
@@ -1585,6 +1688,10 @@ function billNotificationNo(
     .update(`${idempotencyKey}:${channel}`)
     .digest("hex")
     .slice(0, 61)}`;
+}
+
+function renewalNotificationNo(idempotencyKey: string) {
+  return `RNW${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
 }
 
 function billNotificationEventId(idempotencyKey: string) {

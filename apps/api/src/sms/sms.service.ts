@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import {
   CustomerVerificationCodePurpose,
   Prisma,
+  RenewalReminderSlot,
   SmsProviderType,
   SmsSendStatus
 } from "@prisma/client";
@@ -42,6 +43,19 @@ interface SendBusinessSmsInput {
 
 interface SendStage2FieldAssignedInput extends SendBusinessSmsInput {
   plateNo: string;
+}
+
+export interface SendRenewalReminderInput extends SendBusinessSmsInput {
+  daysRemaining: number;
+  endDate: string;
+  orderNo: string;
+  plateNo: string;
+  portalPath: string;
+  slot: RenewalReminderSlot;
+}
+
+export interface RenewalSmsSendResult extends SmsSendResult {
+  templateCode?: string;
 }
 
 @Injectable()
@@ -115,6 +129,39 @@ export class SmsService {
       ),
       templateParams: {}
     });
+  }
+
+  async sendRenewalReminder(
+    input: SendRenewalReminderInput
+  ): Promise<RenewalSmsSendResult> {
+    const environmentKey = renewalTemplateEnvironmentKey(input.slot);
+    const templateCode = this.configService.get<string>(environmentKey)?.trim();
+    if (!templateCode || templateCode === "<CHANGE_ME>") {
+      return {
+        errorCode: "CONFIG_MISSING",
+        errorMessage: `${environmentKey} is not configured.`,
+        provider: this.getProviderName(),
+        sendStatus: SmsSendStatus.FAILED,
+        success: false
+      };
+    }
+    const result = await this.sendBusinessTemplate({
+      enabled: this.isSmsEnabled("PORTAL_SMS_ENABLED"),
+      input: {
+        idempotencyKey: input.idempotencyKey,
+        phone: input.phone
+      },
+      purpose: `RENEWAL_REMINDER_${input.slot}`,
+      templateCode,
+      templateParams: {
+        daysRemaining: String(input.daysRemaining),
+        endDate: input.endDate,
+        orderNo: input.orderNo,
+        plateNo: input.plateNo,
+        portalPath: input.portalPath
+      }
+    });
+    return { ...result, templateCode };
   }
 
   private async sendCode(input: {
@@ -400,6 +447,17 @@ export class SmsService {
       throw new Error(`${key} is required for business SMS.`);
     }
     return value;
+  }
+}
+
+function renewalTemplateEnvironmentKey(slot: RenewalReminderSlot) {
+  switch (slot) {
+    case RenewalReminderSlot.D30:
+      return "RENEWAL_REMINDER_D30_TEMPLATE_CODE";
+    case RenewalReminderSlot.D14:
+      return "RENEWAL_REMINDER_D14_TEMPLATE_CODE";
+    case RenewalReminderSlot.D3:
+      return "RENEWAL_REMINDER_D3_TEMPLATE_CODE";
   }
 }
 

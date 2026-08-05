@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 describe("subscription change migrations", () => {
   it.each([
     "20260805120000_stage1b_contract_extension_renewal",
-    "20260805143000_subscription_change_command_idempotency"
+    "20260805143000_subscription_change_command_idempotency",
+    "20260805150000_renewal_sms_purposes"
   ])("lets Prisma own the transaction boundary for %s", (migration) => {
     const sql = readFileSync(
       join(process.cwd(), "prisma", "migrations", migration, "migration.sql"),

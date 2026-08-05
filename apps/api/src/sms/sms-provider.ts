@@ -7,7 +7,12 @@ export type SmsCodePurpose =
 export type SmsTemplatePurpose =
   | "FIELD_HANDOVER_ASSIGNED"
   | "FIELD_HANDOVER_ESIGN_READY"
-  | "CUSTOMER_HANDOVER_ESIGN_READY";
+  | "CUSTOMER_HANDOVER_ESIGN_READY"
+  | "RENEWAL_REMINDER_D30"
+  | "RENEWAL_REMINDER_D14"
+  | "RENEWAL_REMINDER_D3"
+  | "RENEWAL_EXPIRY_RETURN"
+  | "RENEWAL_RETURN_OVERDUE_D1";
 export type SmsProviderName = "aliyun" | "mock";
 export type SmsProviderAcceptance = "ACCEPTED" | "REJECTED" | "UNKNOWN";
 

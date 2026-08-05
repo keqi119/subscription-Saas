@@ -62,6 +62,32 @@ describe("NotificationAdminController", () => {
 });
 
 describe("NotificationService", () => {
+  it("creates one idempotent in-app renewal reminder without depending on external channels", async () => {
+    const harness = createNotificationHarness();
+    const input = {
+      considerationId: "00000000-0000-4000-8000-000000000020",
+      customerId: "customer-a",
+      daysRemaining: 30,
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-reminder:00000000-0000-4000-8000-000000000020:D30",
+      orderNo: "ORD-RENEW-1",
+      plateMasked: "*****81",
+      slot: "D30" as const
+    };
+
+    const first = await harness.service.notifyRenewalReminderInApp(input);
+    const second = await harness.service.notifyRenewalReminderInApp(input);
+
+    expect(first.record.id).toBe(second.record.id);
+    expect(first.record).toMatchObject({
+      channel: NotificationChannel.IN_APP,
+      notificationStatus: NotificationStatus.SENT,
+      notificationType: NotificationType.RENEWAL_REMINDER,
+      url: "https://app.subauto.keybox.cloud/portal/renewals/00000000-0000-4000-8000-000000000020"
+    });
+    expect(harness.provider.send).not.toHaveBeenCalled();
+  });
+
   it("reuses the same mileage reminder records and event for a local reminder day", async () => {
     const harness = createNotificationHarness();
     const input = {

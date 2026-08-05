@@ -2,8 +2,12 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 
 const args = parseArgs(process.argv.slice(2));
-const apiBaseUrl = normalizeApiBaseUrl(process.env.SMOKE_API_BASE_URL ?? process.env.API_BASE_URL ?? "http://localhost:3001/api");
-const webBaseUrl = process.env.SMOKE_WEB_BASE_URL ? stripTrailingSlash(process.env.SMOKE_WEB_BASE_URL) : null;
+const apiBaseUrl = normalizeApiBaseUrl(
+  process.env.SMOKE_API_BASE_URL ?? process.env.API_BASE_URL ?? "http://localhost:3001/api"
+);
+const webBaseUrl = process.env.SMOKE_WEB_BASE_URL
+  ? stripTrailingSlash(process.env.SMOKE_WEB_BASE_URL)
+  : null;
 const username = process.env.SMOKE_ADMIN_USERNAME ?? process.env.SMOKE_USERNAME ?? "admin";
 const password = process.env.SMOKE_ADMIN_PASSWORD ?? process.env.SMOKE_PASSWORD ?? "Admin@123456";
 
@@ -17,7 +21,9 @@ const authenticatedEndpoints = [
   "/reports/asset-profitability/summary",
   "/users",
   "/roles",
-  "/audit-logs"
+  "/audit-logs",
+  "/renewal-considerations?page=1&pageSize=1",
+  "/contract-versions"
 ];
 
 const baseWebRoutes = [
@@ -28,7 +34,9 @@ const baseWebRoutes = [
   "/reports",
   "/reports/asset-profitability",
   "/residual-market",
-  "/vehicle-valuation-reviews"
+  "/vehicle-valuation-reviews",
+  "/renewal-considerations",
+  "/subscription-changes"
 ];
 
 let failures = 0;
@@ -97,12 +105,42 @@ async function runScenarioChecks(scenario, cookie) {
 }
 
 async function runMainlineScenarioChecks(scenario, cookie) {
-  await assertOptionalScenarioGet("mainline customer", scenario.customerId, `/customers/${scenario.customerId}`, cookie);
-  await assertOptionalScenarioGet("mainline application", scenario.applicationId, `/applications/${scenario.applicationId}`, cookie);
-  await assertOptionalScenarioGet("mainline vehicle", scenario.vehicleId, `/vehicles/${scenario.vehicleId}`, cookie);
-  await assertOptionalScenarioGet("mainline quote", scenario.quoteId, `/quotes/${scenario.quoteId}`, cookie);
-  await assertOptionalScenarioGet("mainline order", scenario.orderId, `/orders/${scenario.orderId}`, cookie);
-  await assertOptionalScenarioGet("mainline contract", scenario.contractId, `/contracts/${scenario.contractId}`, cookie);
+  await assertOptionalScenarioGet(
+    "mainline customer",
+    scenario.customerId,
+    `/customers/${scenario.customerId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "mainline application",
+    scenario.applicationId,
+    `/applications/${scenario.applicationId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "mainline vehicle",
+    scenario.vehicleId,
+    `/vehicles/${scenario.vehicleId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "mainline quote",
+    scenario.quoteId,
+    `/quotes/${scenario.quoteId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "mainline order",
+    scenario.orderId,
+    `/orders/${scenario.orderId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "mainline contract",
+    scenario.contractId,
+    `/contracts/${scenario.contractId}`,
+    cookie
+  );
 
   if (webBaseUrl) {
     for (const route of ["/applications", "/orders", "/contracts", "/vehicles"]) {
@@ -112,9 +150,24 @@ async function runMainlineScenarioChecks(scenario, cookie) {
 }
 
 async function runResidualScenarioChecks(scenario, cookie) {
-  await assertOptionalScenarioGet("residual vehicle", scenario.vehicleId, `/vehicles/${scenario.vehicleId}`, cookie);
-  await assertOptionalScenarioGet("residual curve", scenario.curveId, `/residual-market/curves/${scenario.curveId}`, cookie);
-  await assertOptionalScenarioGet("residual forecast", scenario.forecastId, `/residual-market/vehicle-forecasts/${scenario.forecastId}`, cookie);
+  await assertOptionalScenarioGet(
+    "residual vehicle",
+    scenario.vehicleId,
+    `/vehicles/${scenario.vehicleId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "residual curve",
+    scenario.curveId,
+    `/residual-market/curves/${scenario.curveId}`,
+    cookie
+  );
+  await assertOptionalScenarioGet(
+    "residual forecast",
+    scenario.forecastId,
+    `/residual-market/vehicle-forecasts/${scenario.forecastId}`,
+    cookie
+  );
   await assertOptionalScenarioGet(
     "residual valuation review",
     scenario.valuationReviewId,
@@ -123,7 +176,11 @@ async function runResidualScenarioChecks(scenario, cookie) {
   );
 
   if (webBaseUrl) {
-    for (const route of ["/residual-market", "/vehicle-valuation-reviews", "/reports/asset-profitability"]) {
+    for (const route of [
+      "/residual-market",
+      "/vehicle-valuation-reviews",
+      "/reports/asset-profitability"
+    ]) {
       await runCheck(`WEB residual ${route}`, () => assertWebRoute(route));
     }
   }

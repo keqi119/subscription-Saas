@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AutoDebitModule } from "../auto-debit/auto-debit.module";
 import { AuthModule } from "../auth/auth.module";
 import { FinanceModule } from "../finance/finance.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -16,6 +17,7 @@ import { BillingAutomationWorker } from "./billing-automation.worker";
   exports: [BillingAutomationRepository, BillingAutomationService],
   imports: [
     AuditModule,
+    AutoDebitModule,
     AuthModule,
     FinanceModule,
     NotificationModule

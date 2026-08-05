@@ -130,6 +130,11 @@ import type {
   PortalPagedResponse,
   PortalServiceCase
 } from "../../../lib/portal-types";
+import {
+  OrderAutoDebitTracePanel,
+  type AdminAutoDebitAttempt,
+  type AdminPaymentMandate
+} from "../../billing/monthly-rent/auto-debit-operations-panel";
 
 interface OrderWorkspaceSummary {
   asOf: string;
@@ -215,6 +220,13 @@ interface FinanceSummary {
   totalPaidAmount?: number | null;
   totalReceivableAmount?: number | null;
   unallocatedReceiptAmount?: number | null;
+}
+
+interface PageResult<T> {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
 }
 
 interface ReceivableBillRow {
@@ -4570,6 +4582,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [expiringEntitlements, setExpiringEntitlements] = useState(false);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
+  const [autoDebitMandates, setAutoDebitMandates] = useState<AdminPaymentMandate[]>([]);
+  const [autoDebitAttempts, setAutoDebitAttempts] = useState<AdminAutoDebitAttempt[]>([]);
   const [generatingEntitlements, setGeneratingEntitlements] = useState(false);
   const [generatingDamageFeeBill, setGeneratingDamageFeeBill] = useState(false);
   const [generatingBills, setGeneratingBills] = useState(false);
@@ -4649,6 +4663,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const roles = useMemo(() => new Set(me?.user.roles ?? []), [me]);
   const hasCustomerViewPermission = permissions.has("customer:view");
   const hasBillingViewPermission = permissions.has("billing:view");
+  const hasAutoDebitViewPermission = permissions.has("auto_debit:view");
   const hasPaymentWriteOffPermission = permissions.has("payment:write_off");
   const hasDeliveryViewPermission = permissions.has("delivery:view");
   const hasReturnViewPermission = permissions.has("vehicle_return:view");
@@ -5300,19 +5315,42 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const loadFinanceDomain = useCallback(
     async (force: boolean) => {
       const loads: Promise<void>[] = [];
-      if (hasBillingViewPermission) {
+      if (hasBillingViewPermission || hasAutoDebitViewPermission) {
         setFinanceLoading(true);
         loads.push(
           loadWorkspaceResource("finance", force, async () => {
             try {
-              const [nextFinanceSummary, nextBills] = await Promise.all([
-                apiFetch<FinanceSummary>(
-                  `/orders/${orderId}/finance-summary`
-                ),
-                apiFetch<ReceivableBillRow[]>(`/orders/${orderId}/bills`)
-              ]);
-              setFinanceSummary(nextFinanceSummary);
-              setReceivableBills(nextBills);
+              const requests: Promise<void>[] = [];
+              if (hasBillingViewPermission) {
+                requests.push(
+                  Promise.all([
+                    apiFetch<FinanceSummary>(`/orders/${orderId}/finance-summary`),
+                    apiFetch<ReceivableBillRow[]>(`/orders/${orderId}/bills`)
+                  ]).then(([nextFinanceSummary, nextBills]) => {
+                    setFinanceSummary(nextFinanceSummary);
+                    setReceivableBills(nextBills);
+                  })
+                );
+              }
+              if (hasAutoDebitViewPermission) {
+                const orderNo = orderRef.current?.orderNo;
+                requests.push(
+                  Promise.all([
+                    orderNo
+                      ? apiFetch<PageResult<AdminPaymentMandate>>(
+                          `/billing/automation/mandates?page=1&pageSize=100&orderNo=${encodeURIComponent(orderNo)}`
+                        )
+                      : Promise.resolve({ items: [], page: 1, pageSize: 100, total: 0 }),
+                    apiFetch<PageResult<AdminAutoDebitAttempt>>(
+                      `/billing/automation/attempts?page=1&pageSize=100&orderId=${encodeURIComponent(orderId)}`
+                    )
+                  ]).then(([mandates, attempts]) => {
+                    setAutoDebitMandates(mandates.items);
+                    setAutoDebitAttempts(attempts.items);
+                  })
+                );
+              }
+              await Promise.all(requests);
             } finally {
               setFinanceLoading(false);
             }
@@ -5332,6 +5370,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       }
     },
     [
+      hasAutoDebitViewPermission,
       hasBillingViewPermission,
       hasDepositSettlementViewPermission,
       loadDepositSettlementDomain,
@@ -7299,6 +7338,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               links={getOrderWorkspaceFinanceLinks(permissions)}
               resolvedRecordIds={getOrderWorkspaceRecordIds(
                 ...receivableBills.map((bill) => bill.id),
+                ...autoDebitAttempts.map((attempt) => attempt.id),
                 ...(depositSettlement?.depositLedgers ?? []).map(
                   (ledger) => ledger.id
                 )
@@ -7320,6 +7360,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 onOpenPayment={openPaymentModal}
                 paymentAvailability={paymentAvailability}
                 summary={financeSummary}
+              />
+            ) : null}
+            {hasAutoDebitViewPermission ? (
+              <OrderAutoDebitTracePanel
+                attempts={autoDebitAttempts}
+                loading={financeLoading}
+                mandates={autoDebitMandates}
               />
             ) : null}
             {hasDepositSettlementViewPermission ? (

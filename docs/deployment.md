@@ -125,6 +125,36 @@ prisma db push
 pnpm prisma:generate
 ```
 
+### 6.1 镜像发布固定顺序
+
+镜像部署必须固定执行“拉取镜像并启动数据库 → 使用新 API 镜像执行数据库迁移 → 启动 API/Web → 等待容器 healthy → 公网健康检查”。不得在 migration 尚未完成时直接切换 API 流量。
+
+服务器示例（在 `/opt/subscription-saas` 执行，按环境替换 env/compose/project）：
+
+```bash
+export ENV_FILE=.env.staging.images
+export COMPOSE_FILE=docker-compose.staging.images.example.yml
+export COMPOSE_PROJECT=subauto-staging
+
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d postgres
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" pull api web
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" run --rm --no-deps api pnpm --filter @subscription-saas/api prisma:migrate:deploy
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d api web
+
+timeout 180 sh -c 'until [ "$(docker inspect --format={{.State.Health.Status}} subauto-staging-api-1 2>/dev/null)" = healthy ] && [ "$(docker inspect --format={{.State.Health.Status}} subauto-staging-web-1 2>/dev/null)" = healthy ]; do sleep 3; done'
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" ps
+```
+
+本机公网检查：
+
+```powershell
+Invoke-WebRequest https://staging-api.subauto.keybox.cloud/api/health -UseBasicParsing
+Invoke-WebRequest https://staging-api.subauto.keybox.cloud/api/esign/callback/fadada -Method OPTIONS -UseBasicParsing
+Invoke-WebRequest https://staging-app.subauto.keybox.cloud/portal -UseBasicParsing
+```
+
+若 migration、healthy 等待或任一公网检查失败，发布即失败；保留旧镜像引用并按回滚原则处理，不继续人工验收。
+
 ## 7. Seed 策略
 
 默认 seed：

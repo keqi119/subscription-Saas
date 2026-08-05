@@ -125,6 +125,9 @@ permissionRows.push(
 permissionRows.push(
   ["billing:view", "查看应收账单", "billing", "view"],
   ["billing:generate", "生成应收账单", "billing", "generate"],
+  ["auto_debit:view", "查看自动扣款", "auto_debit", "view"],
+  ["auto_debit:manage", "管理自动扣款", "auto_debit", "manage"],
+  ["auto_debit:execute", "执行自动扣款", "auto_debit", "execute"],
   ["payment:view", "查看收款记录", "payment", "view"],
   ["payment:create", "登记收款", "payment", "create"],
   ["payment:write_off", "收款核销", "payment", "write_off"],
@@ -549,6 +552,9 @@ const orderManagementPermissions = [
 const financeManagementPermissions = [
   "billing:view",
   "billing:generate",
+  "auto_debit:view",
+  "auto_debit:manage",
+  "auto_debit:execute",
   "payment:view",
   "payment:create",
   "payment:write_off",
@@ -557,7 +563,12 @@ const financeManagementPermissions = [
   "deposit_ledger:refund"
 ];
 
-const financeViewPermissions = ["billing:view", "payment:view", "deposit_ledger:view"];
+const financeViewPermissions = [
+  "billing:view",
+  "auto_debit:view",
+  "payment:view",
+  "deposit_ledger:view"
+];
 
 const collectionManagementPermissions = [
   "collection:view",
@@ -1154,7 +1165,10 @@ async function seedNotificationTemplates(adminUserId) {
 
   rows.push(
     ["MILEAGE_REVIEW_DUE_IN_APP", "IN_APP", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请提交当前累计里程和仪表盘照片。"],
-    ["MILEAGE_REVIEW_DUE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请点击进入并提交里程资料。"]
+    ["MILEAGE_REVIEW_DUE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请点击进入并提交里程资料。"],
+    ["AUTO_DEBIT_FAILURE_IN_APP", "IN_APP", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请及时查看并完成主动支付。"],
+    ["AUTO_DEBIT_FAILURE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请点击查看并完成支付。"],
+    ["AUTO_DEBIT_FAILURE_SMS", "SMS", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请及时登录平台完成支付。"]
   );
 
   for (const [templateCode, channel, templateType, title, content] of rows) {

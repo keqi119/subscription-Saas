@@ -15,6 +15,7 @@ import {
   MonthlyRentAutomationCycleInput,
   resolveMonthlyRentAmountWithSource
 } from "../finance/finance.service";
+import { AutoDebitScheduler } from "../auto-debit/auto-debit.scheduler";
 import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -50,6 +51,7 @@ export class BillingAutomationService {
     private readonly prisma: PrismaService,
     private readonly repository: BillingAutomationRepository,
     private readonly financeService: FinanceService,
+    private readonly autoDebitScheduler: AutoDebitScheduler,
     @Optional()
     @Inject(BILLING_AUTOMATION_CLOCK)
     private readonly clock: BillingAutomationClock = () => new Date()
@@ -465,6 +467,11 @@ export class BillingAutomationService {
             billId: generated.bill.id
           }
         });
+        await this.autoDebitScheduler.enqueueForBill(
+          tx,
+          generated.bill,
+          schedule.id
+        );
         await tx.auditLog.create({
           data: {
             action: generated.created

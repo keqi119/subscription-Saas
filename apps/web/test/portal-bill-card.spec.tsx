@@ -24,12 +24,7 @@ const payableBill: PortalBillListItem = {
 describe("PortalBillCard", () => {
   it("keeps long bill and order identifiers in dedicated mobile-safe regions", () => {
     const html = renderToStaticMarkup(
-      <PortalBillCard
-        bill={payableBill}
-        onDetails={vi.fn()}
-        onPay={vi.fn()}
-        paying={false}
-      />
+      <PortalBillCard bill={payableBill} onDetails={vi.fn()} onPay={vi.fn()} paying={false} />
     );
 
     expect(html).toContain('data-testid="portal-bill-card"');
@@ -59,5 +54,31 @@ describe("PortalBillCard", () => {
     expect(html).not.toContain("去支付");
     expect(html).toContain("查看详情");
     expect(html).toContain("已收款");
+  });
+
+  it("shows auto debit progress without removing active payment", () => {
+    const html = renderToStaticMarkup(
+      <PortalBillCard
+        autoDebit={{
+          canEnroll: false,
+          canPay: true,
+          canRevoke: true,
+          description: "系统正在确认本次扣款结果。",
+          helper: "主动支付始终可用。",
+          nextActionAt: null,
+          state: "PROCESSING",
+          title: "扣款结果确认中",
+          tone: "info"
+        }}
+        bill={payableBill}
+        onDetails={vi.fn()}
+        onPay={vi.fn()}
+        paying={false}
+      />
+    );
+
+    expect(html).toContain("扣款结果确认中");
+    expect(html).toContain("主动支付始终可用");
+    expect(html).toContain("去支付");
   });
 });

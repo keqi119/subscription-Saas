@@ -54,6 +54,7 @@ const ORDER_WORKSPACE_TAB_PERMISSIONS = {
   contract: ["contract:view"],
   entitlement: ["entitlement:view"],
   finance: [
+    "auto_debit:view",
     "billing:view",
     "payment:view",
     "deposit_ledger:view",
@@ -69,19 +70,6 @@ const ORDER_WORKSPACE_TAB_PERMISSIONS = {
 const ORDER_WORKSPACE_PERMISSION_TAB_ORDER = ORDER_WORKSPACE_TAB_KEYS.filter(
   (tab): tab is Exclude<OrderWorkspaceTabKey, "overview"> => tab !== "overview"
 );
-
-const ORDER_WORKSPACE_FINANCE_LINKS = [
-  {
-    href: "/billing/monthly-rent",
-    label: "月租账单模块",
-    permission: "billing:generate"
-  },
-  {
-    href: "/billing/collections",
-    label: "逾期催收模块",
-    permission: "collection:view"
-  }
-] as const;
 
 const STATE_PRESENTATIONS = {
   BLOCKED: { label: "已阻塞", color: "red" },
@@ -304,9 +292,22 @@ export function getOrderWorkspaceFinanceLinks(
 ): Array<{ href: string; label: string }> {
   const permissionSet =
     permissions instanceof Set ? permissions : new Set(permissions);
-  return ORDER_WORKSPACE_FINANCE_LINKS.filter(({ permission }) =>
-    permissionSet.has(permission)
-  ).map(({ href, label }) => ({ href, label }));
+  const links: Array<{ href: string; label: string }> = [];
+  if (
+    permissionSet.has("billing:generate") ||
+    permissionSet.has("auto_debit:view")
+  ) {
+    links.push({
+      href: "/billing/monthly-rent",
+      label: permissionSet.has("auto_debit:view")
+        ? "月租账单与自动扣款"
+        : "月租账单模块"
+    });
+  }
+  if (permissionSet.has("collection:view")) {
+    links.push({ href: "/billing/collections", label: "逾期催收模块" });
+  }
+  return links;
 }
 
 export function createOrderWorkspaceConfirmScope<

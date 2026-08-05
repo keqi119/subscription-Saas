@@ -434,10 +434,7 @@ export interface PortalContractListItem {
   id: string;
   orderNo: string;
   signedAt: string | null;
-  signingStage:
-    | "STAGE1_SUBSCRIPTION_CONTRACT"
-    | "STAGE2_DELIVERY_HANDOVER"
-    | null;
+  signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" | "STAGE2_DELIVERY_HANDOVER" | null;
   signStatus: string | null;
   workOrderId: string | null;
 }
@@ -465,10 +462,7 @@ export interface PortalContractESignTask {
   id: string;
   provider: string;
   signers: PortalContractESignSigner[];
-  signingStage:
-    | "STAGE1_SUBSCRIPTION_CONTRACT"
-    | "STAGE2_DELIVERY_HANDOVER"
-    | null;
+  signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" | "STAGE2_DELIVERY_HANDOVER" | null;
   signUrlExpiresAt: string | null;
   taskNo: string;
   taskStatus: string;
@@ -573,9 +567,6 @@ export interface PortalPaymentOrder {
   } | null;
   paymentStatus: string;
   provider: string;
-  providerPrepayId: string | null;
-  providerTradeNo: string | null;
-  providerTransactionId: string | null;
   requiresWechatBinding?: boolean;
   subject: string | null;
   wechatAuthUrl?: string;
@@ -876,6 +867,60 @@ export interface PortalBillDetail extends PortalBillListItem {
     writeOffAt: string | null;
     writeOffId: string;
   }>;
+}
+
+export interface PortalAutoDebitAvailability {
+  enabled: boolean;
+  mode: "DISABLED" | "LIVE" | "SIMULATION";
+  provider: "WECHAT_AUTO_DEBIT" | null;
+}
+
+export type PortalPaymentMandateStatus =
+  | "PENDING"
+  | "ACTIVE"
+  | "SUSPENDED"
+  | "REVOKED"
+  | "EXPIRED"
+  | "FAILED";
+
+export interface PortalPaymentMandate {
+  effectiveAt: string | null;
+  expiresAt: string | null;
+  id: string;
+  mandateNo: string;
+  orderId: string;
+  provider: string;
+  providerMode: string;
+  providerReference: string | null;
+  revokedAt: string | null;
+  signedAt: string | null;
+  status: PortalPaymentMandateStatus;
+}
+
+export type PortalDebitAttemptStatus =
+  | "CREATED"
+  | "SUBMITTING"
+  | "PROCESSING"
+  | "UNKNOWN"
+  | "SUCCEEDED"
+  | "FAILED_RETRYABLE"
+  | "FAILED_FINAL"
+  | "CANCELLED";
+
+export type PortalDebitRetrySlot = "DUE" | "D1" | "D3" | "MANUAL";
+
+export interface PortalDebitAttempt {
+  acceptedAt: string | null;
+  billId: string;
+  confirmedAmount: string;
+  createdAt: string;
+  debitAttemptNo: string;
+  id: string;
+  orderId: string;
+  requestedAmount: string;
+  resolvedAt: string | null;
+  retrySlot: PortalDebitRetrySlot;
+  status: PortalDebitAttemptStatus;
 }
 
 export interface PortalDepositOverview {

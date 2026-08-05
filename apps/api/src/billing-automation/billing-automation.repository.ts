@@ -19,7 +19,10 @@ import {
 const SETTLED_BILL_JOB_TYPES = [
   SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
   SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-  SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+  SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
+  SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+  SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
+  SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE
 ] as const;
 
 @Injectable()

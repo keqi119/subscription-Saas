@@ -58,6 +58,26 @@ export const STATUS_LABELS: Record<string, string> = {
   UNDER_REVIEW: "审批中"
 };
 
+export const PAYMENT_MANDATE_STATUS_LABELS: Record<string, string> = {
+  ACTIVE: "已生效",
+  EXPIRED: "已过期",
+  FAILED: "授权失败",
+  PENDING: "待确认",
+  REVOKED: "已解约",
+  SUSPENDED: "已暂停"
+};
+
+export const DEBIT_ATTEMPT_STATUS_LABELS: Record<string, string> = {
+  CANCELLED: "已取消",
+  CREATED: "待提交",
+  FAILED_FINAL: "最终失败",
+  FAILED_RETRYABLE: "待重试",
+  PROCESSING: "处理中",
+  SUBMITTING: "提交中",
+  SUCCEEDED: "已成功",
+  UNKNOWN: "结果不明"
+};
+
 export const CUSTOMER_ACCOUNT_STATUS_LABELS: Record<string, string> = {
   ACTIVE: "正常",
   DISABLED: "已禁用"
@@ -1162,6 +1182,7 @@ export const ORDER_CHANGE_TYPE_LABELS: Record<string, string> = {
 export const MODULE_LABELS: Record<string, string> = {
   application: "进件管理",
   audit_log: "操作日志",
+  auto_debit: "自动扣款",
   billing: "应收账单",
   collection: "催收管理",
   contract: "合同管理",
@@ -1195,6 +1216,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "application:submit": "提交进件",
   "application:view": "查看进件",
   "audit_log:view": "查看操作日志",
+  "auto_debit:execute": "执行自动扣款",
+  "auto_debit:manage": "管理自动扣款",
+  "auto_debit:view": "查看自动扣款",
   "billing:generate": "生成应收账单",
   "billing:view": "查看应收账单",
   "collection:action_create": "新增催收动作",
@@ -1316,6 +1340,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "application:submit": "允许提交进件",
   "application:view": "允许查看进件列表和详情",
   "audit_log:view": "允许查看操作日志",
+  "auto_debit:execute": "允许发起人工扣款、任务重试和结果查询",
+  "auto_debit:manage": "允许同步、暂停和解除支付授权",
+  "auto_debit:view": "允许查看支付授权、扣款尝试和异常状态",
   "billing:generate": "允许为订单生成初始应收账单",
   "billing:view": "允许查看订单财务概览和应收账单",
   "collection:action_create": "允许新增催收跟进动作",

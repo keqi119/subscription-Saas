@@ -1,0 +1,94 @@
+.page {
+  background: #f6f8fb;
+  min-height: 100vh;
+  padding: 24px 16px 44px;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 900px;
+  min-width: 0;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  margin-bottom: 14px;
+  min-width: 0;
+  padding: 18px;
+}
+
+.statusHeader,
+.actions,
+.pageHeader {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.titleGroup {
+  min-width: 0;
+}
+
+.description,
+.helper,
+.identifier {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.helper {
+  color: #64748b;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.nextAction {
+  background: #f8fafc;
+  border-radius: 8px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.actions {
+  justify-content: flex-start;
+  margin-top: 14px;
+}
+
+.actions :global(.ant-btn) {
+  max-width: 100%;
+}
+
+.orderGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+
+.attemptList {
+  display: grid;
+  gap: 10px;
+}
+
+.attemptItem {
+  border-bottom: 1px solid #edf0f5;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding: 16px 12px 32px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .actions :global(.ant-btn) {
+    flex: 1 1 140px;
+  }
+}

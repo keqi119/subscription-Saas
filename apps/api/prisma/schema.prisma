@@ -436,6 +436,10 @@ enum SubscriptionAutomationJobType {
   SEND_BILL_DUE_NOTICE
   MARK_BILL_OVERDUE
   SEND_BILL_OVERDUE_NOTICE
+  SUBMIT_BILL_DEBIT
+  QUERY_DEBIT_ATTEMPT
+  SEND_DEBIT_FAILURE_NOTICE
+  SYNC_PAYMENT_MANDATE
 
   @@map("subscription_automation_job_type")
 }
@@ -481,6 +485,7 @@ enum PaymentProviderType {
 enum PaymentChannel {
   MOCK
   WECHAT_JSAPI
+  WECHAT_AUTO_DEBIT
   WECHAT_H5
   ALIPAY_H5
   BANK_TRANSFER
@@ -498,6 +503,39 @@ enum PaymentOrderStatus {
   EXPIRED
 
   @@map("payment_order_status")
+}
+
+enum PaymentMandateStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REVOKED
+  EXPIRED
+  FAILED
+
+  @@map("payment_mandate_status")
+}
+
+enum DebitAttemptStatus {
+  CREATED
+  SUBMITTING
+  PROCESSING
+  UNKNOWN
+  SUCCEEDED
+  FAILED_RETRYABLE
+  FAILED_FINAL
+  CANCELLED
+
+  @@map("debit_attempt_status")
+}
+
+enum DebitRetrySlot {
+  DUE
+  D1
+  D3
+  MANUAL
+
+  @@map("debit_retry_slot")
 }
 
 enum DepositTransactionType {
@@ -856,6 +894,7 @@ enum NotificationTemplateType {
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
+  AUTO_DEBIT_FAILURE
   SYSTEM
 
   @@map("notification_template_type")
@@ -881,6 +920,7 @@ enum NotificationType {
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
+  AUTO_DEBIT_FAILURE
   SYSTEM
 
   @@map("notification_type")
@@ -912,6 +952,7 @@ enum NotificationEventType {
   HANDOVER_ESIGN_PENDING
   HANDOVER_ESIGN_READY
   MILEAGE_REVIEW_DUE
+  AUTO_DEBIT_FAILED
 
   @@map("notification_event_type")
 }
@@ -2112,6 +2153,8 @@ model Customer {
   receivableBills         ReceivableBill[]
   paymentRecords          PaymentRecord[]
   paymentOrders           PaymentOrder[]
+  paymentMandates         PaymentMandate[]
+  debitAttempts           DebitAttempt[]
   paymentWriteOffs        PaymentWriteOff[]
   depositLedgers          DepositLedger[]
   collectionCases         CollectionCase[]
@@ -4433,6 +4476,8 @@ model SubscriptionOrder {
   receivableBills            ReceivableBill[]
   paymentRecords             PaymentRecord[]
   paymentOrders              PaymentOrder[]
+  paymentMandates            PaymentMandate[]
+  debitAttempts              DebitAttempt[]
   paymentWriteOffs           PaymentWriteOff[]
   depositLedgers             DepositLedger[]
   collectionCases            CollectionCase[]
@@ -4602,6 +4647,7 @@ model ReceivableBill {
   remark                          String?                     @db.Text
   writeOffs                       PaymentWriteOff[]
   paymentOrderItems               PaymentOrderItem[]
+  debitAttempts                   DebitAttempt[]
   depositLedgers                  DepositLedger[]
   collectionCaseBills             CollectionCaseBill[]
   revenueRightAssignments         RevenueRightAssignment[]
@@ -4682,6 +4728,85 @@ model SubscriptionAutomationJob {
   @@map("subscription_automation_job")
 }
 
+model PaymentMandate {
+  id                    String               @id @default(uuid()) @db.Uuid
+  mandateNo             String               @unique @map("mandate_no") @db.VarChar(64)
+  customerId            String               @map("customer_id") @db.Uuid
+  customer              Customer             @relation(fields: [customerId], references: [id])
+  orderId               String               @map("order_id") @db.Uuid
+  order                 SubscriptionOrder    @relation(fields: [orderId], references: [id])
+  provider              PaymentProviderType
+  providerMandateId     String?              @map("provider_mandate_id") @db.VarChar(128)
+  providerTemplateId    String?              @map("provider_template_id") @db.VarChar(128)
+  providerMode          String               @map("provider_mode") @db.VarChar(64)
+  status                PaymentMandateStatus @default(PENDING)
+  signedAt              DateTime?            @map("signed_at") @db.Timestamptz(6)
+  effectiveAt           DateTime?            @map("effective_at") @db.Timestamptz(6)
+  suspendedAt           DateTime?            @map("suspended_at") @db.Timestamptz(6)
+  revokedAt             DateTime?            @map("revoked_at") @db.Timestamptz(6)
+  expiresAt             DateTime?            @map("expires_at") @db.Timestamptz(6)
+  lastSyncedAt          DateTime?            @map("last_synced_at") @db.Timestamptz(6)
+  requestSnapshot       Json?                @map("request_snapshot")
+  responseSnapshot      Json?                @map("response_snapshot")
+  callbackSnapshot      Json?                @map("callback_snapshot")
+  errorSnapshot         Json?                @map("error_snapshot")
+  debitAttempts         DebitAttempt[]
+  createdAt             DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy             String?              @map("created_by") @db.Uuid
+  updatedBy             String?              @map("updated_by") @db.Uuid
+
+  @@index([customerId, createdAt])
+  @@index([orderId, status])
+  @@index([provider, providerMandateId])
+  @@index([status, lastSyncedAt])
+  @@map("payment_mandate")
+}
+
+model DebitAttempt {
+  id                      String             @id @default(uuid()) @db.Uuid
+  debitAttemptNo          String             @unique @map("debit_attempt_no") @db.VarChar(64)
+  mandateId               String             @map("mandate_id") @db.Uuid
+  mandate                 PaymentMandate     @relation(fields: [mandateId], references: [id])
+  billId                  String             @map("bill_id") @db.Uuid
+  bill                    ReceivableBill     @relation(fields: [billId], references: [id])
+  orderId                 String             @map("order_id") @db.Uuid
+  order                   SubscriptionOrder  @relation(fields: [orderId], references: [id])
+  customerId              String             @map("customer_id") @db.Uuid
+  customer                Customer           @relation(fields: [customerId], references: [id])
+  paymentOrderId          String             @unique @map("payment_order_id") @db.Uuid
+  paymentOrder            PaymentOrder       @relation(fields: [paymentOrderId], references: [id])
+  retrySlot               DebitRetrySlot     @map("retry_slot")
+  status                  DebitAttemptStatus @default(CREATED)
+  requestedAmount         BigInt             @map("requested_amount")
+  confirmedAmount         BigInt             @default(0) @map("confirmed_amount")
+  idempotencyKey          String             @unique @map("idempotency_key") @db.VarChar(256)
+  providerOutTradeNo      String             @unique @map("provider_out_trade_no") @db.VarChar(128)
+  providerTransactionId   String?            @map("provider_transaction_id") @db.VarChar(128)
+  submittedAt             DateTime?          @map("submitted_at") @db.Timestamptz(6)
+  acceptedAt              DateTime?          @map("accepted_at") @db.Timestamptz(6)
+  resolvedAt              DateTime?          @map("resolved_at") @db.Timestamptz(6)
+  cancelledAt             DateTime?          @map("cancelled_at") @db.Timestamptz(6)
+  requestSnapshot         Json?              @map("request_snapshot")
+  responseSnapshot        Json?              @map("response_snapshot")
+  callbackSnapshot        Json?              @map("callback_snapshot")
+  errorSnapshot           Json?              @map("error_snapshot")
+  lastErrorCode           String?            @map("last_error_code") @db.VarChar(128)
+  lastErrorMessage        String?            @map("last_error_message") @db.VarChar(512)
+  createdAt               DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy               String?            @map("created_by") @db.Uuid
+  updatedBy               String?            @map("updated_by") @db.Uuid
+
+  @@index([mandateId, status])
+  @@index([billId, status])
+  @@index([orderId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@index([providerTransactionId])
+  @@map("debit_attempt")
+}
+
 model PaymentRecord {
   id               String            @id @default(uuid()) @db.Uuid
   paymentNo        String            @unique @map("payment_no") @db.VarChar(64)
@@ -4751,6 +4876,7 @@ model PaymentOrder {
   deletedAt             DateTime?            @map("deleted_at") @db.Timestamptz(6)
   items                 PaymentOrderItem[]
   callbacks             PaymentCallbackLog[]
+  debitAttempt          DebitAttempt?
 
   @@index([customerId])
   @@index([orderId])

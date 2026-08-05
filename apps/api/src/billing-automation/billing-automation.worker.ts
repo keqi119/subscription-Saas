@@ -180,6 +180,13 @@ export function sanitizeBillingAutomationError(error: unknown): BillingAutomatio
         retryable: true
       };
     }
+    if (error.code === "AUTO_DEBIT_QUERY_PENDING") {
+      return {
+        code: "AUTO_DEBIT_QUERY_PENDING",
+        message: "Debit result is still pending provider confirmation.",
+        retryable: true
+      };
+    }
   }
   return genericExecutionError();
 }

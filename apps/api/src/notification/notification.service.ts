@@ -63,11 +63,17 @@ export interface NotifyMileageReviewDueInput {
   reviewId: string;
 }
 
+export interface NotifyAutoDebitFailureInput {
+  attemptId: string;
+  idempotencyKey: string;
+}
+
 const TEMPLATE_CODE_BY_EVENT: Partial<
   Record<
     NotificationEventType,
     {
       inApp: string;
+      sms?: string;
       wechat: string;
     }
   >
@@ -115,6 +121,11 @@ const TEMPLATE_CODE_BY_EVENT: Partial<
   [NotificationEventType.MILEAGE_REVIEW_DUE]: {
     inApp: "MILEAGE_REVIEW_DUE_IN_APP",
     wechat: "MILEAGE_REVIEW_DUE_WECHAT"
+  },
+  [NotificationEventType.AUTO_DEBIT_FAILED]: {
+    inApp: "AUTO_DEBIT_FAILURE_IN_APP",
+    sms: "AUTO_DEBIT_FAILURE_SMS",
+    wechat: "AUTO_DEBIT_FAILURE_WECHAT"
   }
 };
 
@@ -131,6 +142,7 @@ const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<
   [NotificationType.SERVICE_CASE_UPDATE]: NotificationTemplateType.SERVICE_CASE_UPDATE,
   [NotificationType.RESCUE_UPDATE]: NotificationTemplateType.RESCUE_UPDATE,
   [NotificationType.MILEAGE_REVIEW_DUE]: NotificationTemplateType.MILEAGE_REVIEW_DUE,
+  [NotificationType.AUTO_DEBIT_FAILURE]: NotificationTemplateType.AUTO_DEBIT_FAILURE,
   [NotificationType.SYSTEM]: NotificationTemplateType.SYSTEM
 };
 
@@ -141,7 +153,8 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.PAYMENT_PENDING]: "WECHAT_TEMPLATE_PAYMENT_PENDING",
   [NotificationTemplateType.RESCUE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
   [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
-  [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE"
+  [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE",
+  [NotificationTemplateType.AUTO_DEBIT_FAILURE]: "WECHAT_TEMPLATE_AUTO_DEBIT_FAILURE"
 };
 
 const SERVICE_CASE_STATUS_TEXT: Record<string, string> = {
@@ -324,6 +337,90 @@ export class NotificationService {
     }
     if (incomplete) {
       throw new Error("MILEAGE_REVIEW_NOTIFICATION_INCOMPLETE");
+    }
+    return records;
+  }
+
+  async notifyAutoDebitFailure(input: NotifyAutoDebitFailureInput) {
+    const attempt = await this.prisma.debitAttempt.findUnique({
+      include: {
+        bill: {
+          select: {
+            billNo: true,
+            id: true,
+            order: { select: { orderNo: true } }
+          }
+        }
+      },
+      where: { id: input.attemptId }
+    });
+    if (!attempt || attempt.status !== "FAILED_FINAL") {
+      return [];
+    }
+
+    const notification: NotifyCustomerInput = {
+      aggregateId: attempt.id,
+      aggregateType: "DebitAttempt",
+      content: `账单 ${attempt.bill.billNo} 自动扣款失败，请及时完成主动支付。`,
+      customerId: attempt.customerId,
+      data: {
+        aggregateNo: attempt.bill.billNo,
+        billId: attempt.bill.id,
+        errorCode: attempt.lastErrorCode,
+        orderNo: attempt.bill.order.orderNo,
+        status: attempt.status
+      },
+      eventType: NotificationEventType.AUTO_DEBIT_FAILED,
+      notificationType: NotificationType.AUTO_DEBIT_FAILURE,
+      title: "自动扣款失败",
+      url: `/portal/bills/${encodeURIComponent(attempt.bill.id)}`
+    };
+    const records = await this.createNotificationRecords(
+      notification,
+      input.idempotencyKey
+    );
+    if (records.length === 0) {
+      return records;
+    }
+
+    const eventId = lifecycleNotificationEventId(
+      "auto-debit-failure",
+      input.idempotencyKey
+    );
+    const now = new Date();
+    const incomplete = records.some(
+      (record) =>
+        record.notificationStatus !== NotificationStatus.SENT &&
+        record.notificationStatus !== NotificationStatus.READ &&
+        record.notificationStatus !== NotificationStatus.SKIPPED
+    );
+    const event = await this.prisma.notificationEvent.findUnique({
+      where: { id: eventId }
+    });
+    const eventData = {
+      aggregateId: attempt.id,
+      aggregateType: "DebitAttempt",
+      customerId: attempt.customerId,
+      eventStatus: incomplete
+        ? NotificationEventStatus.FAILED
+        : NotificationEventStatus.PROCESSED,
+      eventType: NotificationEventType.AUTO_DEBIT_FAILED,
+      lastError: incomplete ? "AUTO_DEBIT_FAILURE_NOTIFICATION_INCOMPLETE" : null,
+      notificationId: records[0]!.id,
+      processedAt: now
+    };
+    if (event) {
+      await this.prisma.notificationEvent.update({
+        data: { ...eventData, attempts: { increment: 1 } },
+        where: { id: event.id }
+      });
+    } else {
+      await this.prisma.notificationEvent.create({
+        data: { ...eventData, attempts: 1, id: eventId }
+      });
+    }
+    if (incomplete) {
+      throw new Error("AUTO_DEBIT_FAILURE_NOTIFICATION_INCOMPLETE");
     }
     return records;
   }
@@ -610,9 +707,10 @@ export class NotificationService {
     if (!templateCodes) {
       throw new Error(`Notification event type ${input.eventType} is not configured.`);
     }
-    const [inAppTemplate, wechatTemplate] = await Promise.all([
+    const [inAppTemplate, wechatTemplate, smsTemplate] = await Promise.all([
       this.findTemplate(templateCodes.inApp),
-      this.findTemplate(templateCodes.wechat)
+      this.findTemplate(templateCodes.wechat),
+      templateCodes.sms ? this.findTemplate(templateCodes.sms) : null
     ]);
     const data = {
       aggregateId: input.aggregateId,
@@ -686,9 +784,125 @@ export class NotificationService {
             url: normalizePortalUrl(input.url, this.portalBaseUrl)
           });
 
-    return [inApp, wechat].filter(
+    const sms = templateCodes.sms
+      ? await this.createSmsRecord({
+          account,
+          content: input.content,
+          customerId: input.customerId,
+          data,
+          notificationNo: idempotencyKey
+            ? billNotificationNo(idempotencyKey, "SMS")
+            : undefined,
+          notificationType: input.notificationType,
+          recipientPhone: account?.phone ?? customer.mobile,
+          template: smsTemplate,
+          templateCode: templateCodes.sms,
+          title: input.title,
+          url: normalizePortalUrl(input.url, this.portalBaseUrl)
+        })
+      : null;
+
+    return [inApp, wechat, sms].filter(
       (record): record is NonNullable<typeof record> => record !== null
     );
+  }
+
+  private async createSmsRecord(input: {
+    account: { id: string; phone: string; wechatOpenId: string | null } | null;
+    content: string;
+    customerId: string;
+    data: Record<string, unknown>;
+    notificationNo?: string;
+    notificationType: NotificationType;
+    recipientPhone: string;
+    template: Prisma.NotificationTemplateGetPayload<Record<string, never>> | null;
+    templateCode: string;
+    title: string;
+    url: string | null;
+  }) {
+    const existing = input.notificationNo
+      ? await this.prisma.notificationRecord.findUnique({
+          where: { notificationNo: input.notificationNo }
+        })
+      : null;
+    if (
+      existing &&
+      (existing.notificationStatus === NotificationStatus.SENT ||
+        existing.notificationStatus === NotificationStatus.READ ||
+        existing.notificationStatus === NotificationStatus.SKIPPED)
+    ) {
+      return existing;
+    }
+
+    const configuredTemplateCode = this.configService
+      .get<string>("ALIYUN_SMS_AUTO_DEBIT_FAILURE_TEMPLATE_CODE")
+      ?.trim();
+    if (!configuredTemplateCode || configuredTemplateCode === "<CHANGE_ME>") {
+      return this.createRecord({
+        channel: NotificationChannel.SMS,
+        content: input.content,
+        customerAccountId: input.account?.id,
+        customerId: input.customerId,
+        errorMessage: "CHANNEL_NOT_CONFIGURED",
+        existingRecordId: existing?.id,
+        notificationNo: input.notificationNo,
+        payload: input.data,
+        recipientPhone: input.recipientPhone,
+        status: NotificationStatus.SKIPPED,
+        template: input.template,
+        templateCode: input.templateCode,
+        title: input.title,
+        type: input.notificationType,
+        url: input.url
+      });
+    }
+    if (this.providerMode !== "mock") {
+      return this.createRecord({
+        channel: NotificationChannel.SMS,
+        content: input.content,
+        customerAccountId: input.account?.id,
+        customerId: input.customerId,
+        errorMessage: "CHANNEL_PROVIDER_NOT_CONFIGURED",
+        existingRecordId: existing?.id,
+        notificationNo: input.notificationNo,
+        payload: input.data,
+        recipientPhone: input.recipientPhone,
+        status: NotificationStatus.SKIPPED,
+        template: input.template,
+        templateCode: configuredTemplateCode,
+        title: input.title,
+        type: input.notificationType,
+        url: input.url
+      });
+    }
+
+    const result = await this.provider.send({
+      channel: NotificationChannel.SMS,
+      content: input.content,
+      data: input.data,
+      providerTemplateId: configuredTemplateCode,
+      recipientPhone: input.recipientPhone,
+      templateCode: configuredTemplateCode,
+      title: input.title,
+      url: input.url
+    });
+    return this.createRecord({
+      channel: NotificationChannel.SMS,
+      content: input.content,
+      customerAccountId: input.account?.id,
+      customerId: input.customerId,
+      existingRecordId: existing?.id,
+      notificationNo: input.notificationNo,
+      payload: input.data,
+      recipientPhone: input.recipientPhone,
+      result,
+      status: result.success ? NotificationStatus.SENT : NotificationStatus.FAILED,
+      template: input.template,
+      templateCode: configuredTemplateCode,
+      title: input.title,
+      type: input.notificationType,
+      url: input.url
+    });
   }
 
   private async reconcileStage2CustomerReady(
@@ -1363,7 +1577,10 @@ function stage2NotificationNo(idempotencyKey: string) {
   return `HESR${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 60)}`;
 }
 
-function billNotificationNo(idempotencyKey: string, channel: "IN_APP" | "WECHAT") {
+function billNotificationNo(
+  idempotencyKey: string,
+  channel: "IN_APP" | "SMS" | "WECHAT"
+) {
   return `BLN${createHash("sha256")
     .update(`${idempotencyKey}:${channel}`)
     .digest("hex")

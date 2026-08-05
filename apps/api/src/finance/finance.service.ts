@@ -15,7 +15,11 @@ import {
   DepositLedger,
   DepositTransactionStatus,
   DepositTransactionType,
+  DebitAttemptStatus,
   OrderStatus,
+  PaymentChannel,
+  PaymentMethod,
+  PaymentOrderStatus,
   PaymentRecord,
   PaymentStatus,
   PaymentWriteOff,
@@ -208,12 +212,511 @@ interface CollectionCasePlan {
   totalOverdueAmount: bigint;
 }
 
+export interface SettlePaymentOrderInput {
+  callbackLogId?: string;
+  callbackPayload?: unknown;
+  debitAttempt?: {
+    confirmedAmount: bigint;
+    id: string;
+    providerTransactionId: string;
+    resolvedAt: Date;
+    responseSnapshot: unknown;
+  };
+  eventType?: string;
+  ipAddress?: string;
+  operatorId: string | null;
+  paidAmount: bigint;
+  paidAt: Date;
+  paymentOrderId: string;
+  providerTradeNo?: string;
+  providerTransactionId?: string;
+  userAgent?: string;
+}
+
 @Injectable()
 export class FinanceService {
   constructor(
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService
   ) {}
+
+  async settlePaymentOrder(input: SettlePaymentOrderInput) {
+    if (input.paidAmount <= 0n) {
+      throw new BadRequestException("Payment amount must be positive.");
+    }
+    return withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        await lockPaymentOrder(tx, input.paymentOrderId);
+        const paymentOrder = await tx.paymentOrder.findUnique({
+          include: {
+            items: {
+              orderBy: { createdAt: "asc" },
+              where: { deletedAt: null }
+            }
+          },
+          where: { id: input.paymentOrderId }
+        });
+        if (!paymentOrder || paymentOrder.deletedAt) {
+          throw new NotFoundException("Payment order does not exist.");
+        }
+        if (paymentOrder.paymentStatus === PaymentOrderStatus.PAID) {
+          if (input.callbackLogId) {
+            await tx.paymentCallbackLog.update({
+              data: {
+                handled: true,
+                handledAt: input.paidAt,
+                paymentOrderId: paymentOrder.id
+              },
+              where: { id: input.callbackLogId }
+            });
+          }
+          const existingWriteOffs = paymentOrder.paymentRecordId
+            ? await tx.paymentWriteOff.findMany({
+                select: { writeOffAmount: true },
+                where: {
+                  deletedAt: null,
+                  paymentId: paymentOrder.paymentRecordId
+                }
+              })
+            : [];
+          const allocatedAmount = existingWriteOffs.reduce(
+            (sum, item) => sum + item.writeOffAmount,
+            0n
+          );
+          return {
+            allocatedAmount,
+            idempotent: true,
+            paymentOrderId: paymentOrder.id,
+            paymentRecordId: paymentOrder.paymentRecordId,
+            unallocatedAmount: paymentOrder.paidAmount - allocatedAmount
+          };
+        }
+        if (
+          paymentOrder.paymentStatus !== PaymentOrderStatus.CREATED &&
+          paymentOrder.paymentStatus !== PaymentOrderStatus.PENDING &&
+          !(
+            input.debitAttempt &&
+            paymentOrder.paymentStatus === PaymentOrderStatus.FAILED
+          )
+        ) {
+          throw new BadRequestException(
+            "Current payment order status cannot be settled."
+          );
+        }
+        if (input.paidAmount !== paymentOrder.amount) {
+          throw new BadRequestException(
+            "Payment amount does not match the payment order."
+          );
+        }
+        if (!paymentOrder.customerId || !paymentOrder.orderId) {
+          throw new BadRequestException(
+            "Payment order is missing customer or order scope."
+          );
+        }
+
+        const providerTransactionId =
+          input.providerTransactionId ?? paymentOrder.providerTransactionId;
+        if (providerTransactionId) {
+          const duplicateTransaction = await tx.paymentOrder.findFirst({
+            select: { id: true },
+            where: {
+              id: { not: paymentOrder.id },
+              provider: paymentOrder.provider,
+              providerTransactionId
+            }
+          });
+          if (duplicateTransaction) {
+            throw new BadRequestException(
+              "Provider transaction already belongs to another payment order."
+            );
+          }
+        }
+
+        const billIds = paymentOrder.items.map((item) => item.billId);
+        await lockReceivableBills(tx, billIds);
+        const bills = await tx.receivableBill.findMany({
+          where: { deletedAt: null, id: { in: billIds } }
+        });
+        const billById = new Map(bills.map((bill) => [bill.id, bill]));
+        const payment = await tx.paymentRecord.create({
+          data: {
+            createdBy: input.operatorId ?? undefined,
+            customerId: paymentOrder.customerId,
+            orderId: paymentOrder.orderId,
+            payerAccount:
+              input.providerTransactionId ?? input.providerTradeNo,
+            payerName: "Customer online payment",
+            paymentAmount: input.paidAmount,
+            paymentMethod: paymentMethodForChannel(
+              paymentOrder.paymentChannel
+            ),
+            paymentNo: createBusinessNo("PAY"),
+            paymentProofUrls: toJsonValue([]),
+            paymentStatus: PaymentStatus.CONFIRMED,
+            receivedAt: input.paidAt,
+            remark: `Online payment order ${paymentOrder.paymentOrderNo}`,
+            updatedBy: input.operatorId ?? undefined
+          }
+        });
+
+        let availableAmount = input.paidAmount;
+        let allocatedAmount = 0n;
+        const createdWriteOffs: PaymentWriteOffRecord[] = [];
+        const settledBillIds: string[] = [];
+        for (const item of paymentOrder.items) {
+          const bill = billById.get(item.billId);
+          if (!bill || bill.billStatus === BillStatus.CANCELLED) {
+            continue;
+          }
+          if (
+            bill.customerId !== paymentOrder.customerId ||
+            bill.orderId !== paymentOrder.orderId
+          ) {
+            throw new BadRequestException(BILL_PAYMENT_SCOPE_MISMATCH_MESSAGE);
+          }
+          const writeOffAmount = calculateWriteOffAmount(
+            item.amount,
+            bill.remainingAmount,
+            availableAmount
+          );
+          if (writeOffAmount <= 0n) {
+            continue;
+          }
+          const nextRemainingAmount = bill.remainingAmount - writeOffAmount;
+          const nextPaidAmount = bill.paidAmount + writeOffAmount;
+          const nextBillStatus =
+            nextRemainingAmount === 0n
+              ? BillStatus.PAID
+              : BillStatus.PARTIALLY_PAID;
+          const updatedBill = await tx.receivableBill.update({
+            data: {
+              billStatus: nextBillStatus,
+              paidAmount: nextPaidAmount,
+              paidAt:
+                nextBillStatus === BillStatus.PAID
+                  ? input.paidAt
+                  : bill.paidAt,
+              remainingAmount: nextRemainingAmount,
+              updatedBy: input.operatorId ?? undefined
+            },
+            where: { id: bill.id }
+          });
+          const writeOff = await tx.paymentWriteOff.create({
+            data: {
+              billId: bill.id,
+              createdBy: input.operatorId ?? undefined,
+              customerId: paymentOrder.customerId,
+              orderId: paymentOrder.orderId,
+              paymentId: payment.id,
+              remark: `Payment order ${paymentOrder.paymentOrderNo} automatic write-off`,
+              writeOffAmount,
+              writeOffAt: input.paidAt
+            }
+          });
+          createdWriteOffs.push(writeOff);
+          availableAmount -= writeOffAmount;
+          allocatedAmount += writeOffAmount;
+          billById.set(bill.id, updatedBill);
+          if (updatedBill.remainingAmount === 0n) {
+            settledBillIds.push(updatedBill.id);
+          }
+          if (
+            updatedBill.billType === BillType.DEPOSIT &&
+            updatedBill.billStatus === BillStatus.PAID
+          ) {
+            const existingCollectLedger = await tx.depositLedger.findFirst({
+              where: {
+                billId: updatedBill.id,
+                deletedAt: null,
+                transactionType: DepositTransactionType.COLLECT
+              }
+            });
+            if (!existingCollectLedger) {
+              const previousBalance = await calculateDepositBalance(
+                tx,
+                paymentOrder.customerId,
+                paymentOrder.orderId
+              );
+              await tx.depositLedger.create({
+                data: {
+                  amount: updatedBill.paidAmount,
+                  balanceAfter: previousBalance + updatedBill.paidAmount,
+                  billId: updatedBill.id,
+                  createdBy: input.operatorId ?? undefined,
+                  customerId: paymentOrder.customerId,
+                  ledgerNo: createBusinessNo("DPL"),
+                  occurredAt: input.paidAt,
+                  orderId: paymentOrder.orderId,
+                  paymentId: payment.id,
+                  remark: `Payment order ${paymentOrder.paymentOrderNo} deposit collection`,
+                  snapshot: toJsonValue({
+                    paymentNo: payment.paymentNo,
+                    writeOffAmount: writeOffAmount.toString()
+                  }),
+                  transactionStatus: DepositTransactionStatus.CONFIRMED,
+                  transactionType: DepositTransactionType.COLLECT
+                }
+              });
+            }
+          }
+        }
+
+        await cancelPendingBillAutomationJobs(tx, settledBillIds);
+        await this.reconcileCollectionCasesAfterSettlement(
+          tx,
+          billIds,
+          input.paidAt,
+          input.operatorId
+        );
+        if (input.debitAttempt) {
+          const debitAttempt = await tx.debitAttempt.findUnique({
+            select: { paymentOrderId: true },
+            where: { id: input.debitAttempt.id }
+          });
+          if (debitAttempt?.paymentOrderId !== paymentOrder.id) {
+            throw new BadRequestException(
+              "Debit attempt does not belong to the payment order."
+            );
+          }
+          await tx.debitAttempt.update({
+            data: {
+              confirmedAmount: input.debitAttempt.confirmedAmount,
+              errorSnapshot: Prisma.JsonNull,
+              lastErrorCode: null,
+              lastErrorMessage: null,
+              providerTransactionId:
+                input.debitAttempt.providerTransactionId,
+              resolvedAt: input.debitAttempt.resolvedAt,
+              responseSnapshot: toJsonValue(
+                input.debitAttempt.responseSnapshot
+              ),
+              status: DebitAttemptStatus.SUCCEEDED
+            },
+            where: { id: input.debitAttempt.id }
+          });
+        }
+        const updatedPaymentOrder = await tx.paymentOrder.update({
+          data: {
+            callbackSnapshot:
+              input.callbackPayload === undefined
+                ? undefined
+                : toJsonValue(input.callbackPayload),
+            paidAmount: input.paidAmount,
+            paidAt: input.paidAt,
+            paymentRecordId: payment.id,
+            paymentStatus: PaymentOrderStatus.PAID,
+            providerTradeNo:
+              input.providerTradeNo ?? paymentOrder.providerTradeNo,
+            providerTransactionId:
+              input.providerTransactionId ??
+              paymentOrder.providerTransactionId,
+            updatedBy: input.operatorId ?? undefined
+          },
+          where: { id: paymentOrder.id }
+        });
+        if (input.callbackLogId) {
+          await tx.paymentCallbackLog.update({
+            data: {
+              handled: true,
+              handledAt: input.paidAt,
+              paymentOrderId: paymentOrder.id
+            },
+            where: { id: input.callbackLogId }
+          });
+        } else if (
+          input.callbackPayload !== undefined ||
+          input.eventType !== undefined
+        ) {
+          await tx.paymentCallbackLog.create({
+            data: {
+              eventType: input.eventType,
+              handled: true,
+              handledAt: input.paidAt,
+              payload:
+                input.callbackPayload === undefined
+                  ? undefined
+                  : toJsonValue(input.callbackPayload),
+              paymentOrderId: paymentOrder.id,
+              provider: paymentOrder.provider,
+              providerTradeNo:
+                input.providerTradeNo ?? paymentOrder.providerTradeNo,
+              providerTransactionId: input.providerTransactionId,
+              verified: true
+            }
+          });
+        }
+        await this.auditService.write(
+          {
+            action: AuditAction.UPDATE,
+            after: {
+              allocatedAmount: allocatedAmount.toString(),
+              paymentRecordId: payment.id,
+              paymentStatus: updatedPaymentOrder.paymentStatus,
+              unallocatedAmount: availableAmount.toString()
+            },
+            before: { paymentStatus: paymentOrder.paymentStatus },
+            entityId: updatedPaymentOrder.id,
+            entityType: "payment_order",
+            ipAddress: input.ipAddress,
+            module: "payment",
+            operatorId: input.operatorId ?? undefined,
+            userAgent: input.userAgent
+          },
+          tx
+        );
+        await this.auditService.write(
+          {
+            action: AuditAction.CREATE,
+            after: {
+              paymentAmount: payment.paymentAmount.toString(),
+              paymentNo: payment.paymentNo
+            },
+            entityId: payment.id,
+            entityType: "payment_record",
+            module: "payment",
+            operatorId: input.operatorId ?? undefined
+          },
+          tx
+        );
+        for (const writeOff of createdWriteOffs) {
+          await this.auditService.write(
+            {
+              action: AuditAction.CREATE,
+              after: {
+                billId: writeOff.billId,
+                writeOffAmount: writeOff.writeOffAmount.toString()
+              },
+              entityId: writeOff.id,
+              entityType: "payment_write_off",
+              module: "payment",
+              operatorId: input.operatorId ?? undefined
+            },
+            tx
+          );
+        }
+        return {
+          allocatedAmount,
+          idempotent: false,
+          paymentOrderId: updatedPaymentOrder.id,
+          paymentRecordId: payment.id,
+          unallocatedAmount: availableAmount
+        };
+      })
+    );
+  }
+
+  private async reconcileCollectionCasesAfterSettlement(
+    tx: Prisma.TransactionClient,
+    billIds: string[],
+    settledAt: Date,
+    actorId: string | null
+  ) {
+    if (billIds.length === 0) {
+      return;
+    }
+    const collectionCases = await tx.collectionCase.findMany({
+      include: {
+        bills: {
+          include: {
+            bill: {
+              select: {
+                billStatus: true,
+                deletedAt: true,
+                id: true,
+                remainingAmount: true
+              }
+            }
+          },
+          where: { deletedAt: null }
+        }
+      },
+      where: {
+        bills: {
+          some: {
+            billId: { in: billIds },
+            deletedAt: null
+          }
+        },
+        caseStatus: CollectionCaseStatus.ACTIVE,
+        deletedAt: null
+      }
+    });
+
+    for (const collectionCase of collectionCases) {
+      const activeCaseBills = collectionCase.bills.filter(
+        (item) => !item.bill.deletedAt
+      );
+      for (const caseBill of activeCaseBills) {
+        if (caseBill.overdueAmount !== caseBill.bill.remainingAmount) {
+          await tx.collectionCaseBill.update({
+            data: { overdueAmount: caseBill.bill.remainingAmount },
+            where: { id: caseBill.id }
+          });
+        }
+      }
+      const totalOverdueAmount = activeCaseBills.reduce(
+        (sum, item) => sum + item.bill.remainingAmount,
+        0n
+      );
+      if (totalOverdueAmount > 0n) {
+        await tx.collectionCase.update({
+          data: {
+            totalOverdueAmount,
+            updatedBy: actorId ?? undefined
+          },
+          where: { id: collectionCase.id }
+        });
+        continue;
+      }
+
+      const updatedCase = await tx.collectionCase.update({
+        data: {
+          caseStatus: CollectionCaseStatus.CLOSED,
+          closedAt: settledAt,
+          closeReason: "PAYMENT_SETTLED",
+          nextFollowUpAt: null,
+          totalOverdueAmount: 0n,
+          updatedBy: actorId ?? undefined
+        },
+        where: { id: collectionCase.id }
+      });
+      const action = await tx.collectionAction.create({
+        data: {
+          actionResult: CollectionActionResult.SUCCESS,
+          actionType: CollectionActionType.CLOSE,
+          caseId: collectionCase.id,
+          contactMethod: ContactMethod.SYSTEM,
+          content: "PAYMENT_SETTLED",
+          createdBy: actorId ?? undefined,
+          customerId: collectionCase.customerId,
+          orderId: collectionCase.orderId
+        }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: toCollectionCaseView(updatedCase),
+          before: toCollectionCaseView(collectionCase),
+          entityId: collectionCase.id,
+          entityType: "collection_case",
+          module: "collection",
+          operatorId: actorId ?? undefined
+        },
+        tx
+      );
+      await this.auditService.write(
+        {
+          action: AuditAction.CREATE,
+          after: toCollectionActionView(action),
+          entityId: action.id,
+          entityType: "collection_action",
+          module: "collection",
+          operatorId: actorId ?? undefined
+        },
+        tx
+      );
+    }
+  }
 
   async generateInitialBills(orderId: string, user: RequestUser, context: RequestContext) {
     const order = await this.findOrderOrThrow(orderId);
@@ -2739,6 +3242,45 @@ async function lockReceivableBills(
     ORDER BY "id"
     FOR UPDATE
   `);
+}
+
+async function lockPaymentOrder(
+  tx: Prisma.TransactionClient,
+  paymentOrderId: string
+) {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id"
+    FROM "payment_order"
+    WHERE "id" = ${paymentOrderId}::uuid
+    FOR UPDATE
+  `);
+}
+
+function paymentMethodForChannel(channel: PaymentChannel) {
+  if (channel === PaymentChannel.ALIPAY_H5) {
+    return PaymentMethod.ALIPAY;
+  }
+  if (channel === PaymentChannel.BANK_TRANSFER) {
+    return PaymentMethod.BANK_TRANSFER;
+  }
+  return PaymentMethod.WECHAT;
+}
+
+export function calculateWriteOffAmount(
+  itemAmount: bigint,
+  billRemainingAmount: bigint,
+  paymentRemainingAmount: bigint
+) {
+  if (
+    itemAmount < 0n ||
+    billRemainingAmount < 0n ||
+    paymentRemainingAmount < 0n
+  ) {
+    throw new RangeError("Settlement amounts cannot be negative.");
+  }
+  return [itemAmount, billRemainingAmount, paymentRemainingAmount].reduce(
+    (minimum, value) => (value < minimum ? value : minimum)
+  );
 }
 
 async function lockSubscriptionOrders(

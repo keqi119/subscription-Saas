@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 
-import { RequirePermissions } from "../auth/auth.decorators";
+import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import { BillingAutomationAdminService } from "./billing-automation.admin.service";
@@ -18,7 +18,7 @@ export class BillingAutomationController {
   constructor(private readonly service: BillingAutomationAdminService) {}
 
   @Get("summary")
-  @RequirePermissions(PermissionCode.BILLING_VIEW)
+  @RequireAnyPermissions(PermissionCode.BILLING_VIEW, PermissionCode.AUTO_DEBIT_VIEW)
   summary() {
     return this.service.summary();
   }

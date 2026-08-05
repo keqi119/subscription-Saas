@@ -538,7 +538,13 @@ export class FadadaESignProvider implements ESignProvider {
         !isExpired(signer.signUrlExpiresAt) &&
         !signer.task.deletedAt &&
         signer.task.provider === ESignProviderType.FADADA &&
-        signer.task.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT"
+        (
+          signer.task.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" ||
+          (
+            signer.task.signingStage === "STAGE3_SUBSCRIPTION_EXTENSION" &&
+            signer.task.documentType === "SUBSCRIPTION_EXTENSION_AGREEMENT"
+          )
+        )
       ) {
         return {
           expiresAt: signer.signUrlExpiresAt ?? undefined,

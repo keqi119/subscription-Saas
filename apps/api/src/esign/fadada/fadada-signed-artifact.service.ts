@@ -2,7 +2,8 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -30,6 +31,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { CurrentCustomer } from "../../portal/portal-auth.types";
 import { StorageService } from "../../storage/storage.service";
+import { Stage3ExtensionArchiveService } from "../stage3-extension-archive.service";
 import { FadadaApiClient } from "./fadada-api.client";
 import { loadFadadaConfig } from "./fadada.config";
 import { FadadaHttpClient } from "./fadada-http-client";
@@ -122,7 +124,8 @@ export class FadadaSignedArtifactService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService,
-    private readonly configService: ConfigService
+    private readonly configService: ConfigService,
+    @Optional() private readonly stage3ArchiveService?: Stage3ExtensionArchiveService
   ) {}
 
   async archiveSignedContract(input: { force?: boolean; taskId: string }): Promise<{
@@ -147,6 +150,7 @@ export class FadadaSignedArtifactService {
     this.assertArchiveableTask(task, Boolean(input.force));
 
     if (task.signedDocumentObjectKey && !input.force) {
+      await this.finalizeStage3IfApplicable(task);
       return {
         archived: false,
         evidenceObjectKey: task.evidenceObjectKey,
@@ -226,12 +230,34 @@ export class FadadaSignedArtifactService {
       },
       where: { id: task.id }
     });
+    await this.finalizeStage3IfApplicable(task);
 
     return {
       archived: true,
       evidenceObjectKey: task.evidenceObjectKey,
       signedPdfObjectKey: stored.objectKey
     };
+  }
+
+  private async finalizeStage3IfApplicable(task: SignedArtifactTask) {
+    if (
+      task.signingStage !== ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION ||
+      task.documentType !== ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT
+    ) {
+      return;
+    }
+    if (!this.stage3ArchiveService || !task.completedAt) {
+      throw new BadRequestException({
+        code: "STAGE3_EXTENSION_ARCHIVE_SERVICE_REQUIRED",
+        message: "Stage 3 finalization and the provider completion time are required."
+      });
+    }
+    await this.stage3ArchiveService.finalizeArchivedContract({
+      completedAt: task.completedAt,
+      contractId: task.contractId,
+      source: "RECONCILE",
+      taskId: task.id
+    });
   }
 
   async archiveSignedStage2Handover(input: { actorId?: string; taskId: string }): Promise<{
@@ -787,7 +813,8 @@ export class FadadaSignedArtifactService {
     if (
       !task ||
       task.contract.customerId !== currentCustomer.customerId ||
-      task.contract.status !== ContractStatus.SIGNED
+      task.contract.status !== ContractStatus.SIGNED &&
+      task.contract.status !== ContractStatus.ARCHIVED
     ) {
       throw new NotFoundException("Signed contract not found.");
     }

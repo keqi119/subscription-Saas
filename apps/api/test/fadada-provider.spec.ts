@@ -607,6 +607,39 @@ describe("Fadada provider B2-A flow", () => {
     });
   });
 
+  it("returns a persisted customer URL for a Stage 3 extension using the Stage 1 provider protocol", async () => {
+    const prisma = {
+      contractESignSigner: {
+        findFirst: vi.fn(async () => ({
+          providerSignerId: "ESG3S1",
+          signUrl: "https://sign.example.test/extension-customer",
+          signUrlExpiresAt: new Date(Date.now() + 60_000),
+          task: {
+            deletedAt: null,
+            documentType: "SUBSCRIPTION_EXTENSION_AGREEMENT",
+            provider: ESignProviderType.FADADA,
+            signingStage: "STAGE3_SUBSCRIPTION_EXTENSION"
+          }
+        }))
+      }
+    };
+    const provider = new FadadaESignProvider(
+      loadFadadaConfig(configService()),
+      undefined,
+      undefined,
+      prisma as never
+    );
+
+    await expect(provider.getSignerUrl({
+      providerTaskId: "ESG3S1",
+      signingStage: "STAGE1_CONTRACT",
+      taskId: "task-extension-1"
+    })).resolves.toMatchObject({
+      rawResponse: { source: "LOCAL_SIGNER_URL" },
+      signUrl: "https://sign.example.test/extension-customer"
+    });
+  });
+
   it("allows stored signer URLs without a local expiry for legacy Fadada tasks", async () => {
     const prisma = {
       contractESignSigner: {

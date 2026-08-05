@@ -44,6 +44,96 @@ function unknownSignerStatusQuery() {
 }
 
 describe("ESignService", () => {
+  it("persists the dedicated Stage 3 identity and forces customer plus platform slots", async () => {
+    const provider = stage1SlotProvider();
+    const { service, state } = createESignFixture(
+      { ESIGN_PROVIDER: "fadada" },
+      provider
+    );
+    state.contracts[0]!.subscriptionChange = { id: "change-extension-1" };
+    state.contracts[0]!.order.contractId = "contract-original";
+    state.contracts[0]!.order.orderStatus = OrderStatus.ACTIVE;
+
+    const result = await service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+
+    expect(result).toMatchObject({
+      documentType: "SUBSCRIPTION_EXTENSION_AGREEMENT",
+      signingStage: "STAGE3_SUBSCRIPTION_EXTENSION"
+    });
+    expect(provider.createSignTask).toHaveBeenCalledWith(expect.objectContaining({
+      signingStage: "STAGE1_CONTRACT",
+      signingSlots: expect.arrayContaining([
+        expect.objectContaining({ signerRole: "CUSTOMER" }),
+        expect.objectContaining({ signerRole: "PLATFORM" })
+      ])
+    }));
+    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.CUSTOMER)).toHaveLength(2);
+    expect(state.signers.filter((signer) => signer.signerType === ESignSignerType.PLATFORM)).toHaveLength(2);
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "PLATS1"
+    }));
+    expect(state.tasks[0]!.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNED);
+    expect(state.contracts[0]!.order.orderStatus).toBe(OrderStatus.ACTIVE);
+  });
+
+  it("auto seals a Stage 3 extension after the customer signs even when the Stage 1 rollout flag is off", async () => {
+    const provider = stage1CustomerThenPlatformAutoSealProvider();
+    const preflightContractPdfArtifact = vi.fn(async () => ({
+      slotCoordinates: stage1SlotCoordinates(),
+      preflight: {
+        enterpriseAutoSealEnabled: true,
+        fadadaEnabled: true,
+        generatedContractArtifact: true,
+        maxBytes: 20 * 1024 * 1024,
+        purpose: "FADADA_UPLOAD",
+        source: "CONTRACT_FILE",
+        stage1SlotCoordinatesVerified: true,
+        textExtractionVerified: false
+      }
+    }));
+    const { service, state } = createESignFixture(
+      {
+        ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+        ESIGN_PROVIDER: "fadada",
+        FADADA_ENABLED: "true"
+      },
+      provider,
+      { contractPdfArtifactService: { preflightContractPdfArtifact } }
+    );
+    state.contracts[0]!.subscriptionChange = { id: "change-extension-1" };
+    state.contracts[0]!.order.contractId = "contract-original";
+    state.contracts[0]!.order.orderStatus = OrderStatus.ACTIVE;
+
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    await service.handleCallback("fadada", fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: "CUSTS1"
+    }));
+
+    expect(provider.autoSealTask).toHaveBeenCalledOnce();
+    expect(state.tasks[0]).toMatchObject({
+      completedAt: expect.any(Date),
+      taskStatus: ESignTaskStatus.COMPLETED
+    });
+    expect(state.contracts[0]!.order).toMatchObject({
+      contractId: "contract-original",
+      orderStatus: OrderStatus.ACTIVE
+    });
+  });
+
   it("creates a mock e-sign task for a generated contract", async () => {
     const { service, state } = createESignFixture();
 

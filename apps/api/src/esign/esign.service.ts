@@ -96,7 +96,8 @@ const contractForESignInclude = {
       quote: { select: { id: true, quoteNo: true } },
       vehicle: true
     }
-  }
+  },
+  subscriptionChange: { select: { id: true } }
 } satisfies Prisma.ContractInclude;
 
 const esignTaskInclude = {
@@ -183,6 +184,25 @@ const STAGE1_MULTI_SLOT_ENABLED_ENV = "ESIGN_STAGE1_MULTI_SLOT_ENABLED";
 const PLATFORM_SEAL_KEYWORD_ENV = "ESIGN_PLATFORM_SEAL_KEYWORD";
 const FADADA_CUSTOMER_SIGNING_NOT_READY = "FADADA_CUSTOMER_SIGNING_NOT_READY";
 const STAGE1_SIGNING_STAGE: ESignSigningStage = "STAGE1_CONTRACT";
+
+export function resolveContractESignProfile(contract: {
+  subscriptionChange?: { id: string } | null;
+}) {
+  if (contract.subscriptionChange) {
+    return {
+      documentType: PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT,
+      forceMultiSlot: true,
+      providerSigningStage: STAGE1_SIGNING_STAGE,
+      signingStage: PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION
+    } as const;
+  }
+  return {
+    documentType: PrismaESignDocumentType.SUBSCRIPTION_CONTRACT,
+    forceMultiSlot: false,
+    providerSigningStage: STAGE1_SIGNING_STAGE,
+    signingStage: PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT
+  } as const;
+}
 type Stage2SignedReconciliationInput = {
   completedAt: Date;
   eSignTaskId: string;
@@ -261,6 +281,7 @@ export class ESignService {
   ) {
     const contract = await this.findContractForESign(contractId);
     this.assertContractCanStartESign(contract);
+    const esignProfile = resolveContractESignProfile(contract);
 
     const existingTask = contract.esignTasks.find((task) =>
       ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
@@ -286,7 +307,7 @@ export class ESignService {
       requestSnapshotInput.enterpriseSigningPlan = toEnterpriseSigningPlanSnapshot(approvedSigningPlan);
     }
     const enterpriseAutoSealEnabled = this.isEnterpriseAutoSealEnabled();
-    const stage1MultiSlotEnabled = this.isStage1MultiSlotEnabled();
+    const stage1MultiSlotEnabled = this.isStage1MultiSlotEnabled() || esignProfile.forceMultiSlot;
     if (enterpriseAutoSealEnabled) {
       requestSnapshotInput.enterpriseAutoSeal = { enabled: true };
     }
@@ -295,6 +316,13 @@ export class ESignService {
         enabled: true,
         signingStage: STAGE1_SIGNING_STAGE,
         slotIds: STAGE1_SIGNING_SLOTS.map((slot) => slot.slotId)
+      };
+    }
+    if (esignProfile.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION) {
+      requestSnapshotInput.extensionSigning = {
+        changeOrderId: contract.subscriptionChange!.id,
+        documentType: esignProfile.documentType,
+        signingStage: esignProfile.signingStage
       };
     }
     const platformStep = findPlatformSigningStep(approvedSigningPlan);
@@ -334,10 +362,12 @@ export class ESignService {
           contractId: contract.id,
           createdBy: user.id,
           customerId: contract.customerId,
+          documentType: esignProfile.documentType,
           documentName,
           orderId: contract.orderId,
           provider: this.providerType,
           requestSnapshot,
+          signingStage: esignProfile.signingStage,
           signers: {
             create: signerCreates
           },
@@ -371,7 +401,7 @@ export class ESignService {
                 y: coordinate.y
               })),
               signingSlots,
-              signingStage: STAGE1_SIGNING_STAGE
+              signingStage: esignProfile.providerSigningStage
             }
           : {}),
         taskId: task.id,
@@ -646,7 +676,7 @@ export class ESignService {
         "车辆交接确认单必须从交接复核页面发起签署。"
       );
     }
-    const task = findCurrentPortalStage1SigningTask(contract);
+    const task = findCurrentPortalCustomerSigningTask(contract);
 
     if (!task) {
       throw new BadRequestException("合同尚未发起电子签，请等待平台处理。");
@@ -664,7 +694,7 @@ export class ESignService {
         contractId: contract.id,
         providerTaskId: task.providerTaskId ?? task.taskNo,
         redirectUrl: this.buildPortalContractUrl(contract.id),
-        signingStage: "STAGE1_CONTRACT",
+        signingStage: resolveProviderSigningStage(task),
         taskId: task.id
       });
       signUrl = refreshed.signUrl;
@@ -2393,7 +2423,7 @@ export class ESignService {
       userAgent: options.context?.userAgent
     });
 
-    if (isStage2HandoverTask(finalResult)) {
+    if (isStage2HandoverTask(finalResult) || isStage3ExtensionTask(finalResult)) {
       return finalResult;
     }
 
@@ -2678,7 +2708,7 @@ export class ESignService {
 
   private requiresStage1PlatformAutoSeal(task: ESignTaskWithDetails) {
     return isStage1SlotAwareTask(task) &&
-      this.isStage1MultiSlotEnabled() &&
+      (this.isStage1MultiSlotEnabled() || isStage3ExtensionTask(task)) &&
       this.isEnterpriseAutoSealEnabled() &&
       task.taskStatus !== ESignTaskStatus.COMPLETED &&
       hasAllStage1CustomerSlotsSigned(task) &&
@@ -3092,7 +3122,7 @@ export class ESignService {
     if (!contract.order || contract.order.deletedAt) {
       throw new BadRequestException("合同所属订单无效。");
     }
-    if (contract.order.contractId !== contract.id) {
+    if (!contract.subscriptionChange && contract.order.contractId !== contract.id) {
       throw new BadRequestException("当前合同不是订单的当前有效合同。");
     }
   }
@@ -3175,15 +3205,33 @@ function findCurrentPortalSigningTask(contract: ContractForESign) {
   );
 }
 
-function findCurrentPortalStage1SigningTask(contract: ContractForESign) {
+function findCurrentPortalCustomerSigningTask(contract: ContractForESign) {
   return contract.esignTasks.find(
     (task) =>
       ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus) &&
-      task.signingStage ===
-        PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT &&
-      task.documentType ===
-        PrismaESignDocumentType.SUBSCRIPTION_CONTRACT
+      (
+        (
+          task.signingStage === PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT &&
+          task.documentType === PrismaESignDocumentType.SUBSCRIPTION_CONTRACT
+        ) ||
+        (
+          task.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION &&
+          task.documentType === PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT
+        )
+      )
   );
+}
+
+function resolveProviderSigningStage(task: {
+  signingStage: PrismaESignSigningStage;
+}): ESignSigningStage {
+  if (
+    task.signingStage === PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT ||
+    task.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION
+  ) {
+    return STAGE1_SIGNING_STAGE;
+  }
+  return "STAGE2_DELIVERY_HANDOVER";
 }
 
 function ensureTaskOwnedByCustomer(task: ESignTaskWithDetails, customerId: string) {
@@ -3360,6 +3408,11 @@ function isStage1SlotAwareTask(task: ESignTaskWithDetails) {
 
 function isStage2HandoverTask(task: ESignTaskWithDetails) {
   return hasAuthoritativeStage2HandoverRelation(task.deliveryHandover);
+}
+
+function isStage3ExtensionTask(task: ESignTaskWithDetails) {
+  return task.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION &&
+    task.documentType === PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT;
 }
 
 function firstSignerSignedAt(task: ESignTaskWithDetails, signerType: ESignSignerType) {
@@ -3750,8 +3803,16 @@ function toPortalContractDetail(contract: ContractForESign) {
     ...toPortalContractListItem(contract),
     canSign: Boolean(
       task &&
-      identity.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
-      identity.documentType === "SUBSCRIPTION_CONTRACT" &&
+      (
+        (
+          identity.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
+          identity.documentType === "SUBSCRIPTION_CONTRACT"
+        ) ||
+        (
+          identity.signingStage === "STAGE3_SUBSCRIPTION_EXTENSION" &&
+          identity.documentType === "SUBSCRIPTION_EXTENSION_AGREEMENT"
+        )
+      ) &&
       PORTAL_SIGNABLE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
     ),
     customer: {
@@ -3819,6 +3880,16 @@ function getPortalContractSigningIdentity(contract: ContractForESign) {
     return {
       documentType: "SUBSCRIPTION_CONTRACT" as const,
       signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" as const,
+      workOrderId: null
+    };
+  }
+  if (
+    task?.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION &&
+    task.documentType === PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT
+  ) {
+    return {
+      documentType: "SUBSCRIPTION_EXTENSION_AGREEMENT" as const,
+      signingStage: "STAGE3_SUBSCRIPTION_EXTENSION" as const,
       workOrderId: null
     };
   }

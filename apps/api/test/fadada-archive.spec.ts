@@ -26,6 +26,28 @@ import { RequestUser } from "../src/auth/auth.types";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
 
 describe("FadadaSignedArtifactService", () => {
+  it("hands a retained Stage 3 signed PDF to atomic extension finalization", async () => {
+    const stage3ArchiveService = {
+      finalizeArchivedContract: vi.fn(async () => ({
+        outcome: "SCHEDULED" as const,
+        segmentId: "segment-extension"
+      }))
+    };
+    const { service, state } = createFixture({}, stage3ArchiveService);
+    state.task.signingStage = ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION;
+    state.task.documentType = ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT;
+
+    await service.archiveSignedContract({ taskId: state.task.id });
+
+    expect(stage3ArchiveService.finalizeArchivedContract).toHaveBeenCalledWith({
+      completedAt: state.task.completedAt,
+      contractId: state.task.contractId,
+      source: "RECONCILE",
+      taskId: state.task.id
+    });
+    expect(state.task.signedDocumentObjectKey).toBeTruthy();
+  });
+
   it("requires a completed Fadada task before archiving signed artifacts", async () => {
     const { service, state } = createFixture();
     state.task.taskStatus = ESignTaskStatus.WAITING_CUSTOMER;
@@ -1050,9 +1072,10 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
     prisma: never,
     storageService: never,
     configService: ConfigService,
-    private readonly testApiClient: FadadaSignedArtifactApi
+    private readonly testApiClient: FadadaSignedArtifactApi,
+    stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> }
   ) {
-    super(prisma, storageService, configService);
+    super(prisma, storageService, configService, stage3ArchiveService as never);
   }
 
   protected override getApiClient(): FadadaSignedArtifactApi {
@@ -1060,7 +1083,10 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
   }
 }
 
-function createFixture(env: Record<string, string> = {}) {
+function createFixture(
+  env: Record<string, string> = {},
+  stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> }
+) {
   const state = {
     contract: {
       contractNo: "CON-1",
@@ -1122,7 +1148,7 @@ function createFixture(env: Record<string, string> = {}) {
       contractId: "contract-1",
       customerId: "customer-1",
       deletedAt: null as Date | null,
-      documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT,
+      documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT as ESignDocumentType,
       documentName: "Subscription Contract",
       errorSnapshot: null as unknown,
       evidenceObjectKey: null as string | null,
@@ -1134,7 +1160,7 @@ function createFixture(env: Record<string, string> = {}) {
       requestSnapshot: null as unknown,
       responseSnapshot: null as unknown,
       signedDocumentObjectKey: null as string | null,
-      signingStage: ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT,
+      signingStage: ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT as ESignSigningStage,
       taskNo: "ESG-1",
       taskStatus: ESignTaskStatus.COMPLETED as ESignTaskStatus
     }
@@ -1298,7 +1324,8 @@ function createFixture(env: Record<string, string> = {}) {
       FADADA_ENV: "sandbox",
       ...env
     }),
-    apiClient
+    apiClient,
+    stage3ArchiveService
   );
 
   return { apiClient, prisma, service, state, storageService };

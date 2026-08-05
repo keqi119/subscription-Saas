@@ -26,6 +26,7 @@ import { RevenueRightModule } from "./revenue-right/revenue-right.module";
 import { RiskModule } from "./risk/risk.module";
 import { ServiceCaseModule } from "./service-case/service-case.module";
 import { SystemModule } from "./system/system.module";
+import { SubscriptionChangeModule } from "./subscription-change/subscription-change.module";
 import { VehicleAssetPoolModule } from "./vehicle-asset-pool/vehicle-asset-pool.module";
 import { VehicleBaasModule } from "./vehicle-baas/vehicle-baas.module";
 import { VehicleDepreciationModule } from "./vehicle-depreciation/vehicle-depreciation.module";
@@ -64,6 +65,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
     RiskModule,
     ServiceCaseModule,
     SystemModule,
+    SubscriptionChangeModule,
     VehicleAssetPoolModule,
     VehicleBaasModule,
     VehicleDepreciationModule,

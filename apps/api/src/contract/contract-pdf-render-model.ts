@@ -76,6 +76,16 @@ export interface ContractPdfSubscriberPartyInfo {
   subscriberWechat: ContractPdfValue;
 }
 
+export interface ContractPdfExtensionTerms {
+  confirmedQuoteNo: ContractPdfValue;
+  extensionEndDate: ContractPdfValue;
+  extensionStartDate: ContractPdfValue;
+  monthlyFeeAmount: ContractPdfValue;
+  originalContractNo: ContractPdfValue;
+  originalEndDate: ContractPdfValue;
+  planSnapshot: unknown;
+}
+
 export type ContractPdfStage1SigningSlotOccurrences = Record<ContractPdfSigningSlotId, number>;
 
 export interface ContractPdfRenderDiagnostics {
@@ -89,11 +99,13 @@ export interface ContractPdfRenderDiagnostics {
 }
 
 export interface ContractPdfRenderModel {
+  agreementKind?: "SUBSCRIPTION_EXTENSION" | "SUBSCRIPTION_STANDARD";
   appendix: ContractPdfAppendix;
   contentTemplate: string;
   contractId: string;
   contractNo: string;
   generatedAt: Date | string;
+  extensionTerms?: ContractPdfExtensionTerms;
   orderNo: string;
   /**
    * Legacy two-anchor compatibility metadata. Stage 1 PDF generation must use

@@ -3,9 +3,11 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
+import { ContractModule } from "../contract/contract.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
+import { VehicleInsuranceModule } from "../vehicle-insurance/vehicle-insurance.module";
 import { ContractSegmentModule } from "./contract-segment.module";
 import { RenewalConsiderationController } from "./renewal-consideration.controller";
 import { RenewalConsiderationService } from "./renewal-consideration.service";
@@ -17,6 +19,7 @@ import { SubscriptionChangeController } from "./subscription-change.controller";
 import { SubscriptionChangeJobService } from "./subscription-change-job.service";
 import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
+import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 
 @Module({
@@ -25,6 +28,7 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
     RenewalConsiderationService,
     SUBSCRIPTION_CHANGE_CONFIG,
     SubscriptionExtensionPricingService,
+    SubscriptionExtensionContractService,
     SubscriptionExtensionService
   ],
   imports: [
@@ -32,15 +36,18 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
     AuthModule,
     BillingAutomationModule,
     ContractSegmentModule,
+    ContractModule,
     NotificationModule,
     PrismaModule,
-    SmsModule
+    SmsModule,
+    VehicleInsuranceModule
   ],
   providers: [
     RenewalConsiderationService,
     SubscriptionChangeJobService,
     SubscriptionChangeWorker,
     SubscriptionExtensionPricingService,
+    SubscriptionExtensionContractService,
     SubscriptionExtensionService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,

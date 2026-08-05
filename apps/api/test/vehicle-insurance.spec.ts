@@ -10,6 +10,29 @@ import { describe, expect, it, vi } from "vitest";
 import { VehicleInsuranceService } from "../src/vehicle-insurance/vehicle-insurance.service";
 
 describe("VehicleInsuranceService policy and document management", () => {
+  it("accepts a target end date only when compulsory and commercial policies both cover it", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleInsurancePolicy.findMany.mockResolvedValueOnce([
+      coveragePolicy(VehicleInsurancePolicyType.COMPULSORY_TRAFFIC),
+      coveragePolicy(VehicleInsurancePolicyType.COMMERCIAL)
+    ] as never);
+
+    await expect(
+      service.assertVehicleCoveredThrough("vehicle-1", new Date("2027-03-02T00:00:00.000Z"))
+    ).resolves.toMatchObject({ covered: true });
+  });
+
+  it("rejects an extension end date when either required policy is missing", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleInsurancePolicy.findMany.mockResolvedValueOnce([
+      coveragePolicy(VehicleInsurancePolicyType.COMPULSORY_TRAFFIC)
+    ] as never);
+
+    await expect(
+      service.assertVehicleCoveredThrough("vehicle-1", new Date("2027-03-02T00:00:00.000Z"))
+    ).rejects.toMatchObject({ code: "VEHICLE_INSURANCE_COVERAGE_INSUFFICIENT" });
+  });
+
   it("creates compulsory and commercial policies with independent periods", async () => {
     const { prisma, service, user } = createHarness();
 
@@ -210,6 +233,17 @@ function createHarness() {
   };
 
   return { prisma, service, storageService, user };
+}
+
+function coveragePolicy(policyType: VehicleInsurancePolicyType) {
+  return {
+    deletedAt: null,
+    effectiveFrom: new Date("2026-03-03T00:00:00.000Z"),
+    effectiveTo: new Date("2027-03-02T00:00:00.000Z"),
+    id: `policy-${policyType}`,
+    policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+    policyType
+  };
 }
 
 function uploadFile(originalname: string, mimetype: string) {

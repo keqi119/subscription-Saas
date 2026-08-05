@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Headers,
+  Optional,
   Param,
   Post,
   Req,
@@ -23,11 +24,31 @@ import {
   VersionedSubscriptionChangeDto
 } from "./subscription-change.dto";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 
 @Controller("subscription-changes")
 @UseGuards(AuthGuard, PermissionsGuard)
 export class SubscriptionChangeController {
-  constructor(private readonly service: SubscriptionExtensionService) {}
+  constructor(
+    private readonly service: SubscriptionExtensionService,
+    @Optional() private readonly contractService?: SubscriptionExtensionContractService
+  ) {}
+
+  @Post(":id/contracts")
+  @RequirePermissions(PermissionCode.CONTRACT_GENERATE)
+  async generateExtensionContract(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    if (!this.contractService) {
+      throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
+    }
+    return apiSafe(await this.contractService.generate(
+      id,
+      request.user,
+      requestContext(request)
+    ));
+  }
 
   @Post("extensions")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_CREATE)

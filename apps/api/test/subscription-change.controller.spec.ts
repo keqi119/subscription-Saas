@@ -41,6 +41,31 @@ describe("SubscriptionChangeController", () => {
     ).toEqual([PermissionCode.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE]);
   });
 
+  it("protects extension agreement generation and forwards request context", async () => {
+    const service = {};
+    const contractService = { generate: vi.fn(async () => ({ id: "contract-extension" })) };
+    const controller = new SubscriptionChangeController(service as never, contractService as never);
+    const request = {
+      headers: { "user-agent": "vitest" },
+      ip: "127.0.0.1",
+      user: user()
+    } as never;
+
+    await controller.generateExtensionContract("change-1", request);
+
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        SubscriptionChangeController.prototype.generateExtensionContract
+      )
+    ).toEqual([PermissionCode.CONTRACT_GENERATE]);
+    expect(contractService.generate).toHaveBeenCalledWith(
+      "change-1",
+      user(),
+      { ipAddress: "127.0.0.1", userAgent: "vitest" }
+    );
+  });
+
   it("serializes BigInt amounts in HTTP responses as digit strings", async () => {
     const service = {
       get: vi.fn(async () => ({ monthlyFeeAmount: 97_000n, nested: { amount: 125n } }))

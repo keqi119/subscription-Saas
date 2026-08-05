@@ -82,6 +82,29 @@ const CJK_STAGE1_SIGNING_SLOTS: ContractPdfSigningSlot[] = [
 ];
 
 describe("ContractPdfRendererService", () => {
+  it("renders an extension agreement title and immutable renewal references", async () => {
+    const { textCalls } = await renderWithFakePdfKit(createAsciiModel({
+      agreementKind: "SUBSCRIPTION_EXTENSION",
+      extensionTerms: {
+        confirmedQuoteNo: "SCQ202608050001",
+        extensionEndDate: "2027-03-02",
+        extensionStartDate: "2026-09-03",
+        monthlyFeeAmount: "97000",
+        originalContractNo: "CON202602020001",
+        originalEndDate: "2026-09-02",
+        planSnapshot: { planCode: "PLAN-EXTENSION" }
+      }
+    }));
+    const visibleText = textCalls.map((call) => call.text).join("\n");
+
+    expect(visibleText).toContain("汽车订阅服务续订补充协议");
+    expect(visibleText).toContain("原合同编号: CON202602020001");
+    expect(visibleText).toContain("原合同到期日: 2026-09-02");
+    expect(visibleText).toContain("续期起始日: 2026-09-03");
+    expect(visibleText).toContain("续期结束日: 2027-03-02");
+    expect(visibleText).toContain("客户确认报价: SCQ202608050001");
+  });
+
   it("renders localized Stage 1 PDF title, metadata, and section headings", async () => {
     const { textCalls } = await renderWithFakePdfKit(createAsciiModel());
     const visibleText = textCalls.map((call) => call.text).join("\n");

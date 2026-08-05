@@ -307,6 +307,58 @@ describe("BillingAutomationService", () => {
     ]);
   });
 
+  it("generates an earned catch-up cycle after expiry moved the order to return due", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.order.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.order.lease!.status = LeaseStatus.RETURN_DUE;
+    harness.order.endDate = new Date("2026-07-10T00:00:00.000Z");
+
+    const result = await harness.service.generateScheduledMonthlyRent(
+      claimedJob({
+        billingScheduleId: schedule.id,
+        idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+        orderId: harness.order.id
+      })
+    );
+
+    expect(result).toMatchObject({ created: true });
+    expect(harness.finance.generateMonthlyRentBillForCycle).toHaveBeenCalledTimes(1);
+    expect(harness.schedules[0]).toMatchObject({
+      status: BillingScheduleStatus.COMPLETED
+    });
+  });
+
+  it("still generates an earned catch-up cycle after return confirmation completed the order", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.order.orderStatus = OrderStatus.COMPLETED;
+    harness.order.lease!.status = LeaseStatus.COMPLETED;
+    harness.order.endDate = new Date("2026-07-10T00:00:00.000Z");
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).resolves.toMatchObject({ created: true });
+
+    expect(harness.schedules[0]).toMatchObject({
+      status: BillingScheduleStatus.COMPLETED
+    });
+  });
+
   it("does not advance the schedule when finance rejects bill generation", async () => {
     const harness = createHarness();
     const schedule = await harness.service.ensureActiveSchedule(
@@ -511,7 +563,7 @@ function createHarness() {
       updatedAt: Date;
     } | null,
     orderNo: "ORD-1",
-    orderStatus: OrderStatus.ACTIVE,
+    orderStatus: OrderStatus.ACTIVE as OrderStatus,
     monthlyFeeAmount: 300000n,
     quote: {
       monthlyFeeAmount: 300000n

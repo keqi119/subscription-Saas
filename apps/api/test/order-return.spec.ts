@@ -3,6 +3,7 @@ import {
   BusinessType,
   ContractStatus,
   DepositStatus,
+  LeaseStatus,
   OrderStatus,
   ProductStatus,
   QuoteStatus,
@@ -53,6 +54,36 @@ describe("vehicle return inspection workflow", () => {
     expect(harness.tx.vehicleReturn.create).toHaveBeenCalledTimes(1);
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({ action: "CREATE", entityType: "vehicle_return" })
+    );
+  });
+
+  it("allows an expiry-created PENDING return to continue through the normal return workflow", async () => {
+    const harness = createReturnHarness();
+    harness.state.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.state.returnRecord = {
+      ...buildReadyReturn(harness),
+      returnStatus: VehicleReturnStatus.PENDING
+    };
+
+    await harness.service.prepareReturn(
+      harness.orderId,
+      validPrepareReturnDto(),
+      harness.user,
+      harness.context
+    );
+    await harness.service.confirmReturn(
+      harness.orderId,
+      validConfirmReturnDto(),
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.orderStatus).toBe(OrderStatus.COMPLETED);
+    expect(harness.state.leaseStatus).toBe(LeaseStatus.COMPLETED);
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RETURNED);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ entityType: "lease", module: "lease" }),
+      harness.tx
     );
   });
 
@@ -119,6 +150,23 @@ describe("vehicle return inspection workflow", () => {
 
     const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
     expect(auditEntityTypes).toEqual(expect.arrayContaining(["subscription_order", "vehicle_return", "vehicle"]));
+  });
+
+  it("rolls back return completion when the lease terminal transition loses its race", async () => {
+    const harness = createReturnHarness();
+    harness.state.returnRecord = buildReadyReturn(harness);
+    harness.state.leaseUpdateCount = 0;
+
+    await expect(
+      harness.service.confirmReturn(
+        harness.orderId,
+        validConfirmReturnDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("租约状态已变化");
+
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });
 
   it("confirm-return terminates the order for early termination", async () => {
@@ -262,6 +310,8 @@ function createReturnHarness() {
     actualDeliveryAt: Date | null;
     actualReturnAt: Date | null;
     createdDamages: Array<Record<string, unknown>>;
+    leaseStatus: LeaseStatus;
+    leaseUpdateCount: number;
     orderStatus: OrderStatus;
     returnRecord: Record<string, unknown> | null;
     salePriceReinitRequiredAt: Date | null;
@@ -271,6 +321,8 @@ function createReturnHarness() {
     actualDeliveryAt: new Date("2026-06-10T03:00:00.000Z"),
     actualReturnAt: null,
     createdDamages: [],
+    leaseStatus: LeaseStatus.ACTIVE,
+    leaseUpdateCount: 1,
     orderStatus: OrderStatus.ACTIVE,
     returnRecord: null,
     salePriceReinitRequiredAt: null,
@@ -363,6 +415,20 @@ function createReturnHarness() {
   }
 
   const tx = {
+    lease: {
+      findUnique: vi.fn(async () => ({
+        activatedAt: state.actualDeliveryAt,
+        id: "lease-1",
+        orderId,
+        status: state.leaseStatus,
+        updatedBy: user.id
+      })),
+      updateMany: vi.fn(async ({ data }) => {
+        if (state.leaseUpdateCount !== 1) return { count: state.leaseUpdateCount };
+        state.leaseStatus = data.status;
+        return { count: 1 };
+      })
+    },
     subscriptionOrder: {
       update: vi.fn(async ({ data }) => {
         applyDefined(state, {

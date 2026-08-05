@@ -54,6 +54,13 @@ export interface SendRenewalReminderInput extends SendBusinessSmsInput {
   slot: RenewalReminderSlot;
 }
 
+export interface SendRenewalLifecycleInput extends SendBusinessSmsInput {
+  endDate: string;
+  orderNo: string;
+  plateNo: string;
+  portalPath: string;
+}
+
 export interface RenewalSmsSendResult extends SmsSendResult {
   templateCode?: string;
 }
@@ -155,6 +162,65 @@ export class SmsService {
       templateCode,
       templateParams: {
         daysRemaining: String(input.daysRemaining),
+        endDate: input.endDate,
+        orderNo: input.orderNo,
+        plateNo: input.plateNo,
+        portalPath: input.portalPath
+      }
+    });
+    return { ...result, templateCode };
+  }
+
+  async sendRenewalExpiryReturn(
+    input: SendRenewalLifecycleInput
+  ): Promise<RenewalSmsSendResult> {
+    return this.sendRenewalLifecycle(input, {
+      daysRemaining: "0",
+      environmentKey: "RENEWAL_EXPIRY_RETURN_TEMPLATE_CODE",
+      purpose: "RENEWAL_EXPIRY_RETURN"
+    });
+  }
+
+  async sendRenewalReturnOverdueD1(
+    input: SendRenewalLifecycleInput
+  ): Promise<RenewalSmsSendResult> {
+    return this.sendRenewalLifecycle(input, {
+      daysRemaining: "-1",
+      environmentKey: "RENEWAL_RETURN_OVERDUE_D1_TEMPLATE_CODE",
+      purpose: "RENEWAL_RETURN_OVERDUE_D1"
+    });
+  }
+
+  private async sendRenewalLifecycle(
+    input: SendRenewalLifecycleInput,
+    options: {
+      daysRemaining: string;
+      environmentKey:
+        | "RENEWAL_EXPIRY_RETURN_TEMPLATE_CODE"
+        | "RENEWAL_RETURN_OVERDUE_D1_TEMPLATE_CODE";
+      purpose: "RENEWAL_EXPIRY_RETURN" | "RENEWAL_RETURN_OVERDUE_D1";
+    }
+  ): Promise<RenewalSmsSendResult> {
+    const templateCode = this.configService.get<string>(options.environmentKey)?.trim();
+    if (!templateCode || templateCode === "<CHANGE_ME>") {
+      return {
+        errorCode: "CONFIG_MISSING",
+        errorMessage: `${options.environmentKey} is not configured.`,
+        provider: this.getProviderName(),
+        sendStatus: SmsSendStatus.FAILED,
+        success: false
+      };
+    }
+    const result = await this.sendBusinessTemplate({
+      enabled: this.isSmsEnabled("PORTAL_SMS_ENABLED"),
+      input: {
+        idempotencyKey: input.idempotencyKey,
+        phone: input.phone
+      },
+      purpose: options.purpose,
+      templateCode,
+      templateParams: {
+        daysRemaining: options.daysRemaining,
         endDate: input.endDate,
         orderNo: input.orderNo,
         plateNo: input.plateNo,

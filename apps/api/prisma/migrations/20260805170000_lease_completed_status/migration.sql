@@ -1,0 +1,1 @@
+ALTER TYPE "lease_status" ADD VALUE 'COMPLETED';

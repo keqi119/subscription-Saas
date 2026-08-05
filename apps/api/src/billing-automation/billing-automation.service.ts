@@ -347,16 +347,24 @@ export class BillingAutomationService {
         if (schedule?.status === BillingScheduleStatus.PAUSED) {
           throw pausedScheduleError();
         }
+        const activePerformance =
+          schedule?.order.orderStatus === OrderStatus.ACTIVE &&
+          schedule.order.lease?.status === LeaseStatus.ACTIVE;
+        const expiryCatchUp =
+          schedule?.order.orderStatus === OrderStatus.PENDING_RETURN &&
+          schedule.order.lease?.status === LeaseStatus.RETURN_DUE;
+        const returnedCatchUp =
+          schedule?.order.orderStatus === OrderStatus.COMPLETED &&
+          schedule.order.lease?.status === LeaseStatus.COMPLETED;
         if (
           !schedule ||
           schedule.status !== BillingScheduleStatus.ACTIVE ||
           schedule.orderId !== job.orderId ||
           schedule.order.deletedAt ||
-          schedule.order.orderStatus !== OrderStatus.ACTIVE ||
           !schedule.order.actualDeliveryAt ||
           !schedule.order.lease ||
           schedule.order.lease.deletedAt ||
-          schedule.order.lease.status !== LeaseStatus.ACTIVE
+          (!activePerformance && !expiryCatchUp && !returnedCatchUp)
         ) {
           throw configurationError();
         }

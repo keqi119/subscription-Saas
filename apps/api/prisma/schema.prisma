@@ -735,6 +735,7 @@ enum LeaseStatus {
   READY
   ACTIVE
   RETURN_DUE
+  COMPLETED
 
   @@map("lease_status")
 }

@@ -17,6 +17,7 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
+import { runSerializableTransaction } from "../common/serializable-transaction";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "../subscription-change/subscription-change.errors";
 
@@ -75,7 +76,7 @@ export class Stage3ExtensionArchiveService {
   ): Promise<FinalizeStage3ExtensionResult> {
     assertValidInput(input);
 
-    return this.prisma.$transaction(async (tx) => {
+    return runSerializableTransaction(this.prisma, async (tx) => {
       await lockArchiveRows(tx, input.contractId, input.taskId);
       const change = await tx.subscriptionChangeOrder.findUnique({
         include: extensionArchiveInclude,
@@ -207,7 +208,7 @@ export class Stage3ExtensionArchiveService {
         });
       }
       await tx.subscriptionAutomationJob.updateMany({
-        data: { status: SubscriptionAutomationJobStatus.CANCELLED },
+        data: { jobStatus: SubscriptionAutomationJobStatus.CANCELLED },
         where: {
           jobType: { in: CANCELLED_RENEWAL_JOB_TYPES },
           OR: [
@@ -216,7 +217,7 @@ export class Stage3ExtensionArchiveService {
               ? [{ renewalConsiderationId: change.renewalConsiderationId }]
               : [])
           ],
-          status: {
+          jobStatus: {
             in: [
               SubscriptionAutomationJobStatus.PENDING,
               SubscriptionAutomationJobStatus.PROCESSING
@@ -242,7 +243,7 @@ export class Stage3ExtensionArchiveService {
       }, tx);
 
       return { outcome: "SCHEDULED", segmentId: segment.id };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 }
 

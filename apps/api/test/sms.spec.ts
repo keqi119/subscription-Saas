@@ -263,6 +263,67 @@ describe("SmsService business templates", () => {
     );
   });
 
+  it("sends expiry and D+1 return lifecycle templates with auditable variables", async () => {
+    const harness = createBusinessSmsHarness({
+      config: {
+        RENEWAL_EXPIRY_RETURN_TEMPLATE_CODE: "SMS_RENEWAL_EXPIRY",
+        RENEWAL_RETURN_OVERDUE_D1_TEMPLATE_CODE: "SMS_RENEWAL_RETURN_D1"
+      }
+    });
+    const common = {
+      endDate: "2026-09-02",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/orders/order-1"
+    };
+
+    await harness.service.sendRenewalExpiryReturn({
+      ...common,
+      idempotencyKey: "renewal-expiry:order-1:sms"
+    });
+    await harness.service.sendRenewalReturnOverdueD1({
+      ...common,
+      idempotencyKey: "renewal-return-d1:order-1:sms"
+    });
+
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        purpose: "RENEWAL_EXPIRY_RETURN",
+        templateCode: "SMS_RENEWAL_EXPIRY",
+        templateParams: expect.objectContaining({ daysRemaining: "0" })
+      })
+    );
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        purpose: "RENEWAL_RETURN_OVERDUE_D1",
+        templateCode: "SMS_RENEWAL_RETURN_D1",
+        templateParams: expect.objectContaining({ daysRemaining: "-1" })
+      })
+    );
+  });
+
+  it("exposes missing expiry template configuration without calling the provider", async () => {
+    const harness = createBusinessSmsHarness();
+
+    const result = await harness.service.sendRenewalExpiryReturn({
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-expiry:order-1:sms",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/orders/order-1"
+    });
+
+    expect(result).toMatchObject({
+      errorCode: "CONFIG_MISSING",
+      sendStatus: SmsSendStatus.FAILED
+    });
+    expect(harness.provider.sendTemplate).not.toHaveBeenCalled();
+  });
+
   it("sends the approved Field assignment template with the full plate as name", async () => {
     const harness = createBusinessSmsHarness();
 

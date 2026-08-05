@@ -21,6 +21,7 @@ import {
   EntitlementUnit,
   EntitlementUsageSource,
   EntitlementUsageStatus,
+  LeaseStatus,
   MonthlyFeeMode,
   OrderChangeStatus,
   OrderChangeType,
@@ -2196,6 +2197,39 @@ export class OrderService {
         where: { id }
       });
 
+      const leaseBefore = await tx.lease.findUnique({ where: { orderId: id } });
+      if (
+        !leaseBefore ||
+        (leaseBefore.status !== LeaseStatus.ACTIVE &&
+          leaseBefore.status !== LeaseStatus.RETURN_DUE)
+      ) {
+        throw new BadRequestException("租约状态不允许完成退车。");
+      }
+      const completedLease = await tx.lease.updateMany({
+        data: {
+          status: LeaseStatus.COMPLETED,
+          updatedBy: user.id
+        },
+        where: {
+          orderId: id,
+          status: { in: [LeaseStatus.ACTIVE, LeaseStatus.RETURN_DUE] }
+        }
+      });
+      if (completedLease.count !== 1) {
+        throw new ConflictException("租约状态已变化，请刷新后重试。");
+      }
+      await this.auditService.write({
+        action: AuditAction.UPDATE,
+        after: { ...leaseBefore, status: LeaseStatus.COMPLETED, updatedBy: user.id },
+        before: leaseBefore,
+        entityId: leaseBefore.id,
+        entityType: "lease",
+        ipAddress: context.ipAddress,
+        module: "lease",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      }, tx);
+
       const vehicleAfter = await tx.vehicle.update({
         data: {
           status: nextVehicleStatus,
@@ -4309,6 +4343,34 @@ function buildDeliveryCheck(
 
 function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDetails | null) {
   const vehicle = order.vehicle;
+  const eligibility = buildReturnEligibility(order, vehicleReturn);
+  return {
+    ...eligibility,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    orderStatus: order.orderStatus,
+    returnId: vehicleReturn?.id ?? null,
+    returnStatus: vehicleReturn?.returnStatus ?? null,
+    returnUpdatedAt: vehicleReturn?.updatedAt ?? null,
+    vehicleId: order.vehicleId,
+    vehicleStatus: vehicle?.status ?? null
+  };
+}
+
+export function buildReturnEligibility(
+  order: {
+    actualDeliveryAt?: Date | null;
+    actualReturnAt?: Date | null;
+    orderStatus: OrderStatus;
+    vehicle?: { deletedAt?: Date | null; id: string; status: VehicleStatus } | null;
+    vehicleId?: string | null;
+  },
+  vehicleReturn: {
+    returnStatus: VehicleReturnStatus;
+    returnedAt?: Date | null;
+  } | null
+) {
+  const vehicle = order.vehicle;
   const alreadyReturned = Boolean(
     order.actualReturnAt ||
       vehicleReturn?.returnStatus === VehicleReturnStatus.CONFIRMED ||
@@ -4321,19 +4383,17 @@ function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDeta
       blockingReasons: [RETURN_ALREADY_DONE_MESSAGE],
       canConfirmReturn: false,
       canPrepareReturn: false,
-      orderId: order.id,
-      orderNo: order.orderNo,
-      orderStatus: order.orderStatus,
-      returnStatus: vehicleReturn?.returnStatus ?? null,
-      vehicleId: order.vehicleId,
-      vehicleStatus: vehicle?.status ?? null
     };
   }
 
   const prepareBlockingReasons: string[] = [];
   const confirmBlockingReasons: string[] = [];
 
-  if (order.orderStatus !== OrderStatus.ACTIVE || !order.actualDeliveryAt) {
+  if (
+    (order.orderStatus !== OrderStatus.ACTIVE &&
+      order.orderStatus !== OrderStatus.PENDING_RETURN) ||
+    !order.actualDeliveryAt
+  ) {
     prepareBlockingReasons.push("订单尚未起租，不能退车");
   }
   if (!order.vehicleId || !vehicle || vehicle.deletedAt) {
@@ -4354,12 +4414,6 @@ function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDeta
     blockingReasons: confirmBlockingReasons,
     canConfirmReturn: confirmBlockingReasons.length === 0,
     canPrepareReturn: prepareBlockingReasons.length === 0,
-    orderId: order.id,
-    orderNo: order.orderNo,
-    orderStatus: order.orderStatus,
-    returnStatus: vehicleReturn?.returnStatus ?? null,
-    vehicleId: order.vehicleId,
-    vehicleStatus: vehicle?.status ?? null
   };
 }
 

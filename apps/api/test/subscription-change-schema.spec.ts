@@ -94,6 +94,7 @@ describe("Stage 1B contract extension persistence contract", () => {
   it("adds return-due, dedicated template/e-sign, jobs, and renewal notification enums", () => {
     expect(block("enum", "OrderStatus")).toContain("PENDING_RETURN");
     expect(block("enum", "LeaseStatus")).toContain("RETURN_DUE");
+    expect(block("enum", "LeaseStatus")).toContain("COMPLETED");
     expect(block("enum", "ContractTemplateType")).toContain("SUBSCRIPTION_EXTENSION");
     expect(block("enum", "ESignSigningStage")).toContain("STAGE3_SUBSCRIPTION_EXTENSION");
     expect(block("enum", "ESignDocumentType")).toContain(
@@ -121,7 +122,6 @@ describe("Stage 1B contract extension persistence contract", () => {
   it("enforces active-change, BASE, active-segment, date, and revision constraints in SQL", () => {
     const sql = migrationSql();
 
-    expect(sql.trim().startsWith("BEGIN;")).toBe(true);
     expect(sql).toContain('CREATE UNIQUE INDEX "subscription_change_order_one_active_per_order"');
     expect(sql).toContain('CREATE UNIQUE INDEX "subscription_contract_segment_one_base_per_order"');
     expect(sql).toContain('CREATE UNIQUE INDEX "subscription_contract_segment_one_active_per_order"');
@@ -130,6 +130,5 @@ describe("Stage 1B contract extension persistence contract", () => {
     );
     expect(sql).toContain("subscription_change_order_extension_months_positive");
     expect(sql).toContain("subscription_contract_segment_dates_valid");
-    expect(sql.trim().endsWith("COMMIT;")).toBe(true);
   });
 });

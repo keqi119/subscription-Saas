@@ -11,7 +11,8 @@ import {
   NotificationStatus,
   NotificationTemplateStatus,
   NotificationTemplateType,
-  NotificationType
+  NotificationType,
+  SmsSendStatus
 } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -86,6 +87,63 @@ describe("NotificationService", () => {
       url: "https://app.subauto.keybox.cloud/portal/renewals/00000000-0000-4000-8000-000000000020"
     });
     expect(harness.provider.send).not.toHaveBeenCalled();
+  });
+
+  it("creates one expiry and one D+1 return notice with order detail links across retries", async () => {
+    const harness = createNotificationHarness();
+    const expiryInput = {
+      considerationId: "consideration-1",
+      customerId: "customer-a",
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-expiry:segment-1:2026-09-02",
+      orderId: "order-a",
+      orderNo: "ORD-RENEW-1",
+      phone: "13800000000",
+      plateNo: "沪A12345",
+      returnId: "return-1"
+    };
+    const overdueInput = {
+      customerId: "customer-a",
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-return-overdue:order-a:2026-09-02:D1",
+      orderId: "order-a",
+      orderNo: "ORD-RENEW-1",
+      phone: "13800000000",
+      plateNo: "沪A12345",
+      returnId: "return-1"
+    };
+
+    const firstExpiry = await harness.service.notifyRenewalExpiryInApp(expiryInput);
+    const secondExpiry = await harness.service.notifyRenewalExpiryInApp(expiryInput);
+    const firstOverdue = await harness.service.notifyRenewalReturnOverdueInApp(overdueInput);
+    const secondOverdue = await harness.service.notifyRenewalReturnOverdueInApp(overdueInput);
+
+    expect(firstExpiry.created).toBe(true);
+    expect(secondExpiry).toEqual({ created: false, record: firstExpiry.record });
+    expect(firstOverdue.created).toBe(true);
+    expect(secondOverdue).toEqual({ created: false, record: firstOverdue.record });
+    expect(harness.records).toHaveLength(6);
+    expect(firstExpiry.record).toMatchObject({
+      notificationType: NotificationType.RENEWAL_EXPIRY_RETURN,
+      url: "https://app.subauto.keybox.cloud/portal/orders/order-a"
+    });
+    expect(firstOverdue.record).toMatchObject({
+      notificationType: NotificationType.RENEWAL_RETURN_OVERDUE,
+      url: "https://app.subauto.keybox.cloud/portal/orders/order-a"
+    });
+    expect(harness.records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        customerId: null,
+        notificationType: NotificationType.RENEWAL_EXPIRY_RETURN
+      }),
+      expect.objectContaining({
+        channel: NotificationChannel.SMS,
+        notificationStatus: NotificationStatus.SENT,
+        recipientPhone: "13800000000"
+      })
+    ]));
+    expect(harness.smsService.sendRenewalExpiryReturn).toHaveBeenCalledTimes(1);
+    expect(harness.smsService.sendRenewalReturnOverdueD1).toHaveBeenCalledTimes(1);
   });
 
   it("reuses the same mileage reminder records and event for a local reminder day", async () => {
@@ -663,6 +721,16 @@ function createNotificationHarness(
       }
     )
   };
+  const smsResult = {
+    provider: "mock" as const,
+    sendStatus: SmsSendStatus.SENT,
+    success: true,
+    templateCode: "SMS_RENEWAL"
+  };
+  const smsService = {
+    sendRenewalExpiryReturn: vi.fn(async () => smsResult),
+    sendRenewalReturnOverdueD1: vi.fn(async () => smsResult)
+  };
   const prisma = {
     $transaction: vi.fn((input: Promise<unknown>[] | ((tx: any) => Promise<unknown>)) =>
       typeof input === "function" ? input(prisma) : Promise.all(input)
@@ -772,7 +840,8 @@ function createNotificationHarness(
       ...options.config
     }),
     provider,
-    prisma as any
+    prisma as any,
+    smsService as any
   );
 
   return {
@@ -800,6 +869,7 @@ function createNotificationHarness(
     provider,
     records,
     service,
+    smsService,
     templates
   };
 }

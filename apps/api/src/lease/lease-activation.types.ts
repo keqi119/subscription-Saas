@@ -31,6 +31,6 @@ export interface LeaseStatusView {
   leaseId: string | null;
   missingConditions: LeaseActivationCondition[];
   orderId: string;
-  status: "NOT_ACTIVE" | "READY" | "ACTIVE" | "RETURN_DUE";
+  status: "NOT_ACTIVE" | "READY" | "ACTIVE" | "RETURN_DUE" | "COMPLETED";
   warningConditions?: LeaseActivationWarningCondition[];
 }

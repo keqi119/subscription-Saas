@@ -331,6 +331,69 @@ describe("OrderWorkspaceResolver", () => {
     });
   });
 
+  it("guides an expired subscription into normal return preparation", () => {
+    const item = new OrderWorkspaceResolver().resolveHandover({
+      asOf: AS_OF,
+      canPrepareDelivery: false,
+      deliveryStatus: null,
+      returnCheck: {
+        canConfirmReturn: false,
+        canPrepareReturn: true,
+        orderId: "order-1",
+        orderStatus: "PENDING_RETURN",
+        returnId: "return-1",
+        returnStatus: "PENDING",
+        updatedAt: "2026-09-03T00:00:00.000Z"
+      },
+      workOrders: []
+    } as never);
+
+    expect(item).toMatchObject({
+      actionCode: "handover.prepare_return",
+      reasonCode: "RETURN_PREPARATION_REQUIRED",
+      state: "ACTION_REQUIRED",
+      targetRecordId: "return-1",
+      targetTab: "handover"
+    });
+    expect(
+      filterWorkspaceActionByPermission(
+        item,
+        workspaceUser([PermissionCode.VEHICLE_RETURN_PREPARE])
+      ).actionCode
+    ).toBe("handover.prepare_return");
+  });
+
+  it("guides a prepared expired subscription into return confirmation", () => {
+    const item = new OrderWorkspaceResolver().resolveHandover({
+      asOf: AS_OF,
+      canPrepareDelivery: false,
+      deliveryStatus: null,
+      returnCheck: {
+        canConfirmReturn: true,
+        canPrepareReturn: true,
+        orderId: "order-1",
+        orderStatus: "PENDING_RETURN",
+        returnId: "return-1",
+        returnStatus: "READY",
+        updatedAt: "2026-09-03T01:00:00.000Z"
+      },
+      workOrders: []
+    } as never);
+
+    expect(item).toMatchObject({
+      actionCode: "handover.confirm_return",
+      reasonCode: "RETURN_CONFIRMATION_REQUIRED",
+      state: "ACTION_REQUIRED",
+      targetRecordId: "return-1"
+    });
+    expect(
+      filterWorkspaceActionByPermission(
+        item,
+        workspaceUser([PermissionCode.VEHICLE_RETURN_CONFIRM])
+      ).actionCode
+    ).toBe("handover.confirm_return");
+  });
+
   it("does not reset the signing-start timer when unrelated work-order updates occur", () => {
     const item = new OrderWorkspaceResolver().resolveHandover({
       asOf: "2026-07-28T10:00:00.000Z",
@@ -2238,6 +2301,47 @@ describe("OrderWorkspaceService", () => {
       state: "ACTION_REQUIRED",
       targetRecordId: null
     });
+  });
+
+  it("loads authoritative return readiness before offering expiry return actions", async () => {
+    const prisma = workspacePrisma();
+    prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValue([]);
+    const user = workspaceUser([
+      PermissionCode.ORDER_VIEW,
+      PermissionCode.VEHICLE_RETURN_VIEW,
+      PermissionCode.VEHICLE_RETURN_PREPARE
+    ]);
+    const getReturnCheck = vi.fn().mockResolvedValue({
+      canConfirmReturn: false,
+      canPrepareReturn: true,
+      orderId: "order-1",
+      orderStatus: "PENDING_RETURN",
+      returnId: "return-1",
+      returnStatus: "PENDING",
+      returnUpdatedAt: new Date("2026-09-03T00:00:00.000Z")
+    });
+    const service = new OrderWorkspaceService(
+      prisma as never,
+      {
+        getOrder: vi.fn().mockResolvedValue({ id: "order-1" }),
+        getReturnCheck
+      } as never,
+      new OrderWorkspaceResolver(),
+      {} as never
+    );
+
+    const summary = await service.getSummary("order-1", user);
+
+    expect(getReturnCheck).toHaveBeenCalledWith("order-1", user);
+    expect(summary.guidance).toContainEqual(
+      expect.objectContaining({
+        actionCode: "handover.prepare_return",
+        reasonCode: "RETURN_PREPARATION_REQUIRED",
+        state: "ACTION_REQUIRED",
+        targetRecordId: "return-1",
+        updatedAt: "2026-09-03T00:00:00.000Z"
+      })
+    );
   });
 
   it("boundedly loads all delivery and return work orders and signer rows", async () => {

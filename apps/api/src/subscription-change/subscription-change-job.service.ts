@@ -12,6 +12,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { shanghaiBusinessDate } from "./renewal-calendar";
 import { RenewalConsiderationService } from "./renewal-consideration.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
+import { SubscriptionExpiryService } from "./subscription-expiry.service";
 
 @Injectable()
 export class SubscriptionChangeJobService {
@@ -20,6 +21,8 @@ export class SubscriptionChangeJobService {
     SubscriptionAutomationJobType.RENEWAL_REMINDER_D30,
     SubscriptionAutomationJobType.RENEWAL_REMINDER_D14,
     SubscriptionAutomationJobType.RENEWAL_REMINDER_D3,
+    SubscriptionAutomationJobType.RENEWAL_EXPIRY_PROCESS,
+    SubscriptionAutomationJobType.RENEWAL_RETURN_OVERDUE_D1,
     SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
     SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
     SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
@@ -30,7 +33,8 @@ export class SubscriptionChangeJobService {
     private readonly prisma: PrismaService,
     private readonly repository: BillingAutomationRepository,
     private readonly considerations: RenewalConsiderationService,
-    private readonly activation: SubscriptionExtensionActivationService
+    private readonly activation: SubscriptionExtensionActivationService,
+    private readonly expiry: SubscriptionExpiryService
   ) {}
 
   async enqueueDueEnrollmentJobs(now = new Date()) {
@@ -69,6 +73,14 @@ export class SubscriptionChangeJobService {
         return this.dispatch(job, RenewalReminderSlot.D14);
       case SubscriptionAutomationJobType.RENEWAL_REMINDER_D3:
         return this.dispatch(job, RenewalReminderSlot.D3);
+      case SubscriptionAutomationJobType.RENEWAL_EXPIRY_PROCESS:
+        return job.contractSegmentId
+          ? this.expiry.expireSegment(job.contractSegmentId)
+          : { action: "SKIPPED", reason: "CONTRACT_SEGMENT_ID_MISSING" };
+      case SubscriptionAutomationJobType.RENEWAL_RETURN_OVERDUE_D1:
+        return job.orderId
+          ? this.expiry.flagOverdueReturn(job.orderId)
+          : { action: "SKIPPED", reason: "ORDER_ID_MISSING" };
       case SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE:
         return job.contractSegmentId
           ? this.activation.activate(job.contractSegmentId)

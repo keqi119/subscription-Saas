@@ -22,6 +22,7 @@ import { SubscriptionExtensionPricingService } from "./subscription-extension-pr
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
+import { SubscriptionExpiryService } from "./subscription-expiry.service";
 
 @Module({
   controllers: [RenewalConsiderationController, SubscriptionChangeController],
@@ -31,6 +32,7 @@ import { SubscriptionExtensionActivationService } from "./subscription-extension
     SubscriptionExtensionPricingService,
     SubscriptionExtensionContractService,
     SubscriptionExtensionActivationService,
+    SubscriptionExpiryService,
     SubscriptionExtensionService
   ],
   imports: [
@@ -51,6 +53,7 @@ import { SubscriptionExtensionActivationService } from "./subscription-extension
     SubscriptionExtensionPricingService,
     SubscriptionExtensionContractService,
     SubscriptionExtensionActivationService,
+    SubscriptionExpiryService,
     SubscriptionExtensionService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,

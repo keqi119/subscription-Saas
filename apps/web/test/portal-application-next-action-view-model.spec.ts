@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildPortalApplicationNextActionCard } from "../src/lib/portal-application-next-action-view-model";
+import * as applicationViewModel from "../src/lib/portal-application-next-action-view-model";
 import type { PortalApplicationProgress } from "../src/lib/portal-types";
 
 function progress(
@@ -78,5 +79,16 @@ describe("buildPortalApplicationNextActionCard", () => {
       tone: "warning",
       url: "/portal/mileage-reviews/review-1"
     });
+  });
+
+  it("keeps renewal guidance alongside an existing application action", () => {
+    const merge = (applicationViewModel as typeof applicationViewModel & {
+      mergePortalApplicationGuidance?: <T>(primary: T | null, renewal: T | null) => T[];
+    }).mergePortalApplicationGuidance;
+    expect(merge).toBeTypeOf("function");
+
+    const primary = { label: "去支付", message: "待支付", tone: "warning", url: "/portal/bills" } as const;
+    const renewal = { label: "处理续订", message: "D-30", tone: "info", url: "/portal/renewals/r1" } as const;
+    expect(merge!(primary, renewal)).toEqual([renewal, primary]);
   });
 });

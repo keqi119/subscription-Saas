@@ -3,7 +3,8 @@ import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { RequestMethod } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
-import { resolveContractESignProfile } from "../src/esign/esign.service";
+import { ESignService, resolveContractESignProfile } from "../src/esign/esign.service";
+import { PortalContractController } from "../src/portal/portal-contract.controller";
 import { SubscriptionChangeController } from "../src/subscription-change/subscription-change.controller";
 
 describe("Stage 3 extension e-sign mapping", () => {
@@ -118,5 +119,90 @@ describe("Stage 3 extension e-sign mapping", () => {
       )
     ).rejects.toMatchObject({ status: 409 });
     expect(esign.createTaskForContract).not.toHaveBeenCalled();
+  });
+
+  it("exposes the customer-scoped generated extension PDF preview", async () => {
+    const handler = PortalContractController.prototype.previewGeneratedContract;
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      "contracts/:id/generated-document/preview"
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(RequestMethod.GET);
+
+    const esign = {
+      getPortalGeneratedContractPreview: vi.fn(async () => ({
+        buffer: Buffer.from("%PDF-1.4 extension"),
+        contentType: "application/pdf",
+        filename: "extension.pdf",
+        sizeBytes: 18
+      }))
+    };
+    const response = { setHeader: vi.fn() };
+    const controller = new PortalContractController(esign as never, {} as never);
+    const currentCustomer = {
+      accountStatus: "ACTIVE",
+      customerAccountId: "account-1",
+      customerId: "customer-1",
+      phone: "13800000000"
+    } as never;
+
+    await expect(
+      controller.previewGeneratedContract(
+        "contract-1",
+        currentCustomer,
+        response as never
+      )
+    ).resolves.toBeDefined();
+    expect(esign.getPortalGeneratedContractPreview).toHaveBeenCalledWith(
+      "contract-1",
+      currentCustomer
+    );
+    expect(response.setHeader).toHaveBeenCalledWith("Content-Type", "application/pdf");
+    expect(response.setHeader).toHaveBeenCalledWith("Content-Length", "18");
+  });
+
+  it("checks portal ownership before reading the generated PDF artifact", async () => {
+    const prisma = {
+      contract: {
+        findFirst: vi.fn(async () => ({ id: "contract-1" }))
+      }
+    };
+    const artifactService = {
+      getContractPdfArtifact: vi.fn(async () => ({
+        buffer: Buffer.from("%PDF-1.4 extension"),
+        contentType: "application/pdf",
+        fileName: "extension.pdf",
+        size: 18
+      }))
+    };
+    const service = new ESignService(
+      {} as never,
+      {} as never,
+      {} as never,
+      prisma as never,
+      undefined,
+      artifactService as never
+    );
+
+    await expect(
+      service.getPortalGeneratedContractPreview("contract-1", {
+        accountStatus: "ACTIVE",
+        customerAccountId: "account-1",
+        customerId: "customer-1",
+        phone: "13800000000"
+      } as never)
+    ).resolves.toMatchObject({
+      contentType: "application/pdf",
+      filename: "extension.pdf",
+      sizeBytes: 18
+    });
+    expect(prisma.contract.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ customerId: "customer-1", id: "contract-1" })
+      })
+    );
+    expect(artifactService.getContractPdfArtifact).toHaveBeenCalledWith(
+      "contract-1",
+      { requireGeneratedContractArtifact: true }
+    );
   });
 });

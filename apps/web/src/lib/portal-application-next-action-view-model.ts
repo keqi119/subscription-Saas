@@ -31,3 +31,7 @@ export function buildPortalApplicationNextActionCard(
     url: progress.nextActionTarget.url
   };
 }
+
+export function mergePortalApplicationGuidance<T>(primary: T | null, renewal: T | null): T[] {
+  return [renewal, primary].filter((item): item is T => item !== null);
+}

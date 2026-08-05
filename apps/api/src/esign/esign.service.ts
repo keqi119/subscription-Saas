@@ -668,6 +668,28 @@ export class ESignService {
     return toPortalContractDetail(contract);
   }
 
+  async getPortalGeneratedContractPreview(
+    id: string,
+    currentCustomer: CurrentCustomer
+  ) {
+    await this.findPortalContractOrThrow(id, currentCustomer.customerId);
+    if (!this.contractPdfArtifactService) {
+      throw new Error(
+        "CONTRACT_PDF_ARTIFACT_REQUIRED: contract PDF artifact service is unavailable"
+      );
+    }
+
+    const artifact = await this.contractPdfArtifactService.getContractPdfArtifact(id, {
+      requireGeneratedContractArtifact: true
+    });
+    return {
+      buffer: artifact.buffer,
+      contentType: artifact.contentType,
+      filename: artifact.fileName,
+      sizeBytes: artifact.size
+    };
+  }
+
   async startPortalSigning(id: string, currentCustomer: CurrentCustomer) {
     const contract = await this.findPortalContractOrThrow(id, currentCustomer.customerId);
     const identity = getPortalContractSigningIdentity(contract);

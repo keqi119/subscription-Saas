@@ -24,6 +24,14 @@ export class SubscriptionJourneyHandlers {
     if (job.jobType === SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING) {
       return this.service.reconcileFadadaSigningJob(job);
     }
+    if (job.jobType === SubscriptionJourneyJobType.GENERATE_INITIAL_BILLS) {
+      return this.service.generateInitialBillsJob(job);
+    }
+    if (
+      job.jobType === SubscriptionJourneyJobType.EVALUATE_PAYMENT_SETTLEMENT
+    ) {
+      return this.service.evaluatePaymentSettlementJob(job);
+    }
     throw journeyError(
       "JOURNEY_HANDLER_NOT_READY",
       "The subscription journey handler is not ready."

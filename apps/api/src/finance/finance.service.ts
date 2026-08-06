@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional
+} from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import {
   AuditAction,
@@ -12,6 +18,7 @@ import {
   CollectionCaseStatus,
   CollectionLevel,
   ContactMethod,
+  ContractStatus,
   DepositLedger,
   DepositTransactionStatus,
   DepositTransactionType,
@@ -40,6 +47,7 @@ import {
 import { cancelPendingBillAutomationJobs } from "../billing-automation/billing-automation.repository";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
+import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 import {
   CloseCollectionCaseDto,
   CollectionCasesQueryDto,
@@ -92,9 +100,12 @@ const DEPOSIT_REFUND_OVER_BALANCE_MESSAGE = "退款金额不能超过可用保�
 const CHINA_TIME_OFFSET_MINUTES = 8 * 60;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const OVERDUE_BILL_STATUSES = [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE] as const;
+const INITIAL_BILLS_REQUIRE_ARCHIVED_CONTRACT_MESSAGE =
+  "Initial bills require an archived contract.";
 
 const financeOrderInclude = {
   application: { select: { applicationNo: true, id: true, salesUserId: true } },
+  contract: { select: { fileId: true, id: true, status: true } },
   customer: { select: { grade: true, id: true, mobile: true, name: true } },
   quote: { select: { id: true, monthlyFeeAmount: true, quoteNo: true, status: true } },
   vehicle: { select: { id: true, plateNo: true, vehicleNo: true, vin: true } }
@@ -239,7 +250,9 @@ export interface SettlePaymentOrderInput {
 export class FinanceService {
   constructor(
     private readonly auditService: AuditService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly journeySignal?: SubscriptionJourneySignalService
   ) {}
 
   async settlePaymentOrder(input: SettlePaymentOrderInput) {
@@ -596,6 +609,20 @@ export class FinanceService {
             tx
           );
         }
+        await this.journeySignal?.record(tx, {
+          eventKey: `payment-order:${updatedPaymentOrder.id}:settled`,
+          orderId: paymentOrder.orderId,
+          payload: {
+            allocatedAmount: allocatedAmount.toString(),
+            paymentOrderId: updatedPaymentOrder.id,
+            paymentRecordId: payment.id,
+            ...(providerTransactionId
+              ? { providerTransactionId }
+              : {}),
+            unallocatedAmount: availableAmount.toString()
+          },
+          type: "PAYMENT_SETTLED"
+        });
         return {
           allocatedAmount,
           idempotent: false,
@@ -723,96 +750,167 @@ export class FinanceService {
   async generateInitialBills(orderId: string, user: RequestUser, context: RequestContext) {
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrderFinance(order, user);
-    ensureOrderCanGenerateInitialBills(order);
-
-    const depositAmount = resolveRequiredDepositAmount(order);
-    if (depositAmount === null) {
-      throw new BadRequestException(MISSING_DEPOSIT_AMOUNT_MESSAGE);
-    }
-
-    const firstMonthlyFeeAmount = resolveFirstMonthlyFeeAmount(order);
-    if (firstMonthlyFeeAmount === null) {
-      throw new BadRequestException(MISSING_FIRST_MONTHLY_FEE_AMOUNT_MESSAGE);
-    }
-
     const result = await withUniqueBusinessNoRetry(() =>
-      this.prisma.$transaction(async (tx) => {
-        const existingBills = await tx.receivableBill.findMany({
-          orderBy: { createdAt: "asc" },
-          where: {
-            billStatus: { not: BillStatus.CANCELLED },
-            billType: { in: [...INITIAL_BILL_TYPES] },
-            deletedAt: null,
-            orderId
-          }
-        });
-        const existingTypes = new Set(existingBills.map((bill) => bill.billType));
-        const createdBills: ReceivableBillRecord[] = [];
-        const now = new Date();
-
-        if (depositAmount > 0n && !existingTypes.has(BillType.DEPOSIT)) {
-          createdBills.push(
-            await createInitialBill(tx, order, {
-              amount: depositAmount,
-              billType: BillType.DEPOSIT,
-              createdBy: user.id,
-              dueDate: now,
-              snapshot: {
-                amount: Number(depositAmount),
-                billType: BillType.DEPOSIT,
-                orderNo: order.orderNo,
-                source: "order.deposit"
-              }
-            })
-          );
-        }
-
-        if (!existingTypes.has(BillType.FIRST_MONTHLY_FEE)) {
-          const period = buildFirstMonthlyFeePeriod(order.startDate);
-          createdBills.push(
-            await createInitialBill(tx, order, {
-              amount: firstMonthlyFeeAmount,
-              billPeriodEnd: period?.end ?? null,
-              billPeriodStart: period?.start ?? null,
-              billType: BillType.FIRST_MONTHLY_FEE,
-              createdBy: user.id,
-              dueDate: now,
-              snapshot: {
-                amount: Number(firstMonthlyFeeAmount),
-                billType: BillType.FIRST_MONTHLY_FEE,
-                orderNo: order.orderNo,
-                source: "order.monthlyFee"
-              }
-            })
-          );
-        }
-
-        const bills = await tx.receivableBill.findMany({
-          orderBy: { createdAt: "asc" },
-          where: { deletedAt: null, orderId }
-        });
-
-        return { bills, createdBills };
-      })
+      this.prisma.$transaction((tx) =>
+        this.generateInitialBillsResultInTransaction(
+          tx,
+          orderId,
+          user.id,
+          `initial-billing:${orderId}`,
+          context
+        )
+      )
     );
-
-    for (const bill of result.createdBills) {
-      await this.auditService.write({
-        action: AuditAction.CREATE,
-        after: toBillView(bill),
-        entityId: bill.id,
-        entityType: "receivable_bill",
-        ipAddress: context.ipAddress,
-        module: "billing",
-        operatorId: user.id,
-        userAgent: context.userAgent
-      });
-    }
-
     return {
       bills: result.bills.map(toBillView),
       createdCount: result.createdBills.length
     };
+  }
+
+  async generateInitialBillsInTransaction(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    actorId: string,
+    sourceKey: string
+  ): Promise<ReceivableBill[]> {
+    const result = await this.generateInitialBillsResultInTransaction(
+      tx,
+      orderId,
+      actorId,
+      sourceKey
+    );
+    return result.bills;
+  }
+
+  async evaluateInitialBillSettlement(
+    tx: Prisma.TransactionClient,
+    orderId: string
+  ): Promise<{ paid: boolean; remainingAmount: bigint }> {
+    await lockSubscriptionOrders(tx, [orderId]);
+    const order = await tx.subscriptionOrder.findUnique({
+      include: financeOrderInclude,
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException(ORDER_NOT_FOUND_MESSAGE);
+    }
+    const amounts = resolveInitialBillAmounts(order);
+    let bills = await tx.receivableBill.findMany({
+      orderBy: { createdAt: "asc" },
+      where: activeInitialBillsWhere(orderId)
+    });
+    await lockReceivableBills(
+      tx,
+      bills.map(({ id }) => id)
+    );
+    bills = await tx.receivableBill.findMany({
+      orderBy: { createdAt: "asc" },
+      where: activeInitialBillsWhere(orderId)
+    });
+    assertInitialBillsCompatible(bills, amounts);
+    const billByType = new Map(bills.map((bill) => [bill.billType, bill]));
+    const required = [
+      ...(amounts.depositAmount > 0n
+        ? [{ amount: amounts.depositAmount, type: BillType.DEPOSIT }]
+        : []),
+      { amount: amounts.firstMonthlyFeeAmount, type: BillType.FIRST_MONTHLY_FEE }
+    ];
+    const remainingAmount = required.reduce((total, requirement) => {
+      const bill = billByType.get(requirement.type);
+      return total + (bill ? bill.remainingAmount : requirement.amount);
+    }, 0n);
+    const paid = required.every((requirement) => {
+      const bill = billByType.get(requirement.type);
+      return Boolean(bill && isBillSettled(bill));
+    });
+    return { paid, remainingAmount };
+  }
+
+  private async generateInitialBillsResultInTransaction(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    actorId: string,
+    sourceKey: string,
+    context: RequestContext = {}
+  ) {
+    await lockSubscriptionOrders(tx, [orderId]);
+    const order = await tx.subscriptionOrder.findUnique({
+      include: financeOrderInclude,
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException(ORDER_NOT_FOUND_MESSAGE);
+    }
+    ensureOrderCanGenerateInitialBills(order);
+    const amounts = resolveInitialBillAmounts(order);
+    const existingBills = await tx.receivableBill.findMany({
+      orderBy: { createdAt: "asc" },
+      where: activeInitialBillsWhere(orderId)
+    });
+    assertInitialBillsCompatible(existingBills, amounts);
+    const existingTypes = new Set(existingBills.map((bill) => bill.billType));
+    const createdBills: ReceivableBillRecord[] = [];
+    const now = new Date();
+
+    if (amounts.depositAmount > 0n && !existingTypes.has(BillType.DEPOSIT)) {
+      createdBills.push(
+        await createInitialBill(tx, order, {
+          amount: amounts.depositAmount,
+          billType: BillType.DEPOSIT,
+          createdBy: actorId,
+          dueDate: now,
+          snapshot: {
+            amount: Number(amounts.depositAmount),
+            billType: BillType.DEPOSIT,
+            orderNo: order.orderNo,
+            source: "order.finalPlanSnapshot"
+          },
+          sourceKey: `${sourceKey}:${BillType.DEPOSIT}`
+        })
+      );
+    }
+
+    if (!existingTypes.has(BillType.FIRST_MONTHLY_FEE)) {
+      const period = buildFirstMonthlyFeePeriod(order.startDate);
+      createdBills.push(
+        await createInitialBill(tx, order, {
+          amount: amounts.firstMonthlyFeeAmount,
+          billPeriodEnd: period?.end ?? null,
+          billPeriodStart: period?.start ?? null,
+          billType: BillType.FIRST_MONTHLY_FEE,
+          createdBy: actorId,
+          dueDate: now,
+          snapshot: {
+            amount: Number(amounts.firstMonthlyFeeAmount),
+            billType: BillType.FIRST_MONTHLY_FEE,
+            orderNo: order.orderNo,
+            source: "order.finalPlanSnapshot"
+          },
+          sourceKey: `${sourceKey}:${BillType.FIRST_MONTHLY_FEE}`
+        })
+      );
+    }
+
+    for (const bill of createdBills) {
+      await this.auditService.write(
+        {
+          action: AuditAction.CREATE,
+          after: toBillView(bill),
+          entityId: bill.id,
+          entityType: "receivable_bill",
+          ipAddress: context.ipAddress,
+          module: "billing",
+          operatorId: actorId,
+          userAgent: context.userAgent
+        },
+        tx
+      );
+    }
+    const bills = await tx.receivableBill.findMany({
+      orderBy: { createdAt: "asc" },
+      where: activeInitialBillsWhere(orderId)
+    });
+    return { bills, createdBills };
   }
 
   async generateNextMonthlyRentBill(orderId: string, user: RequestUser, context: RequestContext) {
@@ -2432,6 +2530,7 @@ async function createInitialBill(
     createdBy: string;
     dueDate: Date;
     snapshot: Record<string, unknown>;
+    sourceKey: string;
   }
 ) {
   return tx.receivableBill.create({
@@ -2448,6 +2547,7 @@ async function createInitialBill(
       orderId: order.id,
       paidAmount: 0n,
       remainingAmount: input.amount,
+      sourceKey: input.sourceKey,
       snapshot: toJsonValue(input.snapshot),
       updatedBy: input.createdBy
     }
@@ -2748,6 +2848,48 @@ function ensureOrderCanGenerateInitialBills(order: FinanceOrder) {
   if (FINAL_ORDER_STATUSES.has(order.orderStatus)) {
     throw new BadRequestException("订单已取消、终止或完成，不能生成应收账单");
   }
+  if (
+    !order.contract ||
+    order.contract.status !== ContractStatus.ARCHIVED ||
+    !order.contract.fileId
+  ) {
+    throw new BadRequestException(
+      INITIAL_BILLS_REQUIRE_ARCHIVED_CONTRACT_MESSAGE
+    );
+  }
+}
+
+function activeInitialBillsWhere(orderId: string) {
+  return {
+    billStatus: { not: BillStatus.CANCELLED },
+    billType: { in: [...INITIAL_BILL_TYPES] },
+    deletedAt: null,
+    orderId
+  } satisfies Prisma.ReceivableBillWhereInput;
+}
+
+function assertInitialBillsCompatible(
+  bills: ReceivableBillRecord[],
+  amounts: { depositAmount: bigint; firstMonthlyFeeAmount: bigint }
+) {
+  const expectedAmounts = new Map<BillType, bigint>([
+    [BillType.DEPOSIT, amounts.depositAmount],
+    [BillType.FIRST_MONTHLY_FEE, amounts.firstMonthlyFeeAmount]
+  ]);
+  for (const [billType, expectedAmount] of expectedAmounts) {
+    const matches = bills.filter((bill) => bill.billType === billType);
+    if (matches.length > 1) {
+      throw new BadRequestException(
+        `Multiple active ${billType} bills exist for this order.`
+      );
+    }
+    const existing = matches[0];
+    if (existing && existing.amount !== expectedAmount) {
+      throw new BadRequestException(
+        `The active ${billType} bill does not match the final plan snapshot.`
+      );
+    }
+  }
 }
 
 function activeDamageFeeBillWhere(orderId: string) {
@@ -2810,6 +2952,8 @@ function canViewAllFinanceOrders(user: RequestUser) {
 
 function resolveRequiredDepositAmount(order: FinanceOrder) {
   return pickNonNegativeAmount(
+    readSnapshotAmount(order.finalPlanSnapshot, ["depositAmount"]),
+    readSnapshotAmount(order.finalPlanSnapshot, ["pricing", "depositAmount"]),
     order.finalDepositAmount,
     order.depositAmount,
     readSnapshotAmount(order.quoteSnapshot, ["finalDepositAmount"]),
@@ -2820,10 +2964,24 @@ function resolveRequiredDepositAmount(order: FinanceOrder) {
 
 function resolveFirstMonthlyFeeAmount(order: FinanceOrder) {
   return pickPositiveAmount(
+    readSnapshotAmount(order.finalPlanSnapshot, ["pricing", "monthlyFeeAmount"]),
+    readSnapshotAmount(order.finalPlanSnapshot, ["monthlyFeeAmount"]),
     order.monthlyFeeAmount,
     readSnapshotAmount(order.quoteSnapshot, ["monthlyFeeAmount"]),
     readSnapshotAmount(order.quoteSnapshot, ["pricing", "monthlyFeeAmount"])
   );
+}
+
+function resolveInitialBillAmounts(order: FinanceOrder) {
+  const depositAmount = resolveRequiredDepositAmount(order);
+  if (depositAmount === null) {
+    throw new BadRequestException(MISSING_DEPOSIT_AMOUNT_MESSAGE);
+  }
+  const firstMonthlyFeeAmount = resolveFirstMonthlyFeeAmount(order);
+  if (firstMonthlyFeeAmount === null) {
+    throw new BadRequestException(MISSING_FIRST_MONTHLY_FEE_AMOUNT_MESSAGE);
+  }
+  return { depositAmount, firstMonthlyFeeAmount };
 }
 
 export function resolveMonthlyRentAmountWithSource(order: {

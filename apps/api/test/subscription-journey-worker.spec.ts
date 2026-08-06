@@ -293,7 +293,7 @@ describe("SubscriptionJourneyHandlers", () => {
     await expect(
       handlers.handle(
         claimedJob({
-          jobType: SubscriptionJourneyJobType.GENERATE_INITIAL_BILLS
+          jobType: SubscriptionJourneyJobType.DISPATCH_NOTIFICATION
         })
       )
     ).rejects.toMatchObject({

@@ -262,9 +262,10 @@ export class PaymentOrderService {
     rawBody?: Buffer
   ) {
     const providerType = parseProviderType(provider);
+    const sanitizedPayload = sanitizePaymentCallbackPayload(payload);
     const callbackLog = await this.prisma.paymentCallbackLog.create({
       data: {
-        payload: toJsonValue(payload),
+        payload: toJsonValue(sanitizedPayload),
         provider: providerType
       }
     });
@@ -306,7 +307,7 @@ export class PaymentOrderService {
 
       const completed = await this.completePaymentOrder(paymentOrder.id, {
         callbackLogId: callbackLog.id,
-        callbackPayload: payload,
+        callbackPayload: sanitizedPayload,
         eventType: result.eventType,
         paidAmount: result.paidAmount,
         paidAt: result.paidAt,
@@ -808,6 +809,61 @@ function toIsoDate(value?: Date | null) {
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+const SENSITIVE_CALLBACK_KEYS = new Set([
+  "associated_data",
+  "authorization",
+  "certificate",
+  "ciphertext",
+  "credential",
+  "nonce",
+  "openid",
+  "payer",
+  "private_key",
+  "secret",
+  "signature",
+  "token"
+]);
+
+function sanitizePaymentCallbackPayload(
+  value: unknown,
+  key = "",
+  depth = 0
+): unknown {
+  const normalizedKey = key.toLowerCase();
+  if (
+    SENSITIVE_CALLBACK_KEYS.has(normalizedKey) ||
+    normalizedKey.endsWith("_url") ||
+    normalizedKey.endsWith("url")
+  ) {
+    return "[REDACTED]";
+  }
+  if (depth >= 8) {
+    return "[TRUNCATED]";
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 50)
+      .map((item) => sanitizePaymentCallbackPayload(item, "", depth + 1));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizePaymentCallbackPayload(entryValue, entryKey, depth + 1)
+      ])
+    );
+  }
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  return String(value ?? "");
 }
 
 function getErrorMessage(error: unknown) {

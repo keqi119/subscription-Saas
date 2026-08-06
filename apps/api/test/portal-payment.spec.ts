@@ -45,6 +45,30 @@ describe("portal payment foundation", () => {
     expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
   });
 
+  it("reuses the same open payment order for the same customer bills", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_deposit", remainingAmount: 100000n });
+    harness.addBill({ id: "bill_first_month", remainingAmount: 39900n });
+    const request = {
+      billIds: ["bill_first_month", "bill_deposit"],
+      paymentChannel: PaymentChannel.MOCK
+    };
+
+    const first = await harness.service.createPortalPaymentOrder(
+      request,
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const second = await harness.service.createPortalPaymentOrder(
+      { ...request, billIds: [...request.billIds].reverse() },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+
+    expect(second.id).toBe(first.id);
+    expect(harness.state.paymentOrders).toHaveLength(1);
+  });
+
   it("rejects payment order creation with another customer's bill", async () => {
     const harness = createPaymentHarness();
     harness.addBill({ id: "bill_other", customerId: "customer_b", remainingAmount: 1000n });
@@ -107,6 +131,37 @@ describe("portal payment foundation", () => {
     expect(harness.state.callbacks.filter((callback) => callback.handled)).toHaveLength(2);
   });
 
+  it("does not regress a paid order when a late non-paid callback arrives", async () => {
+    const harness = createPaymentHarness();
+    harness.addBill({ id: "bill_monthly", remainingAmount: 29900n });
+    const paymentOrder = await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_monthly"], paymentChannel: PaymentChannel.MOCK },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const providerTradeNo = harness.state.paymentOrders.find(
+      (item) => item.id === paymentOrder.id
+    )?.providerTradeNo;
+
+    await harness.service.handleCallback("mock", {
+      eventType: "mock.payment.success",
+      providerTradeNo,
+      providerTransactionId: "mock_txn_callback_late_1"
+    });
+    const late = await harness.service.handleCallback("mock", {
+      eventType: "mock.payment.failed",
+      providerTradeNo,
+      providerTransactionId: "mock_txn_callback_late_1"
+    });
+
+    expect(late).toMatchObject({ handled: false, verified: true });
+    expect(
+      harness.state.paymentOrders.find((item) => item.id === paymentOrder.id)
+        ?.paymentStatus
+    ).toBe(PaymentOrderStatus.PAID);
+    expect(harness.financeService.settlePaymentOrder).toHaveBeenCalledTimes(1);
+  });
+
   it("returns a WeChat binding URL when JSAPI payment has no openid", async () => {
     const provider = {
       createPayment: vi.fn(),
@@ -114,6 +169,7 @@ describe("portal payment foundation", () => {
     };
     const harness = createPaymentHarness({
       config: {
+        AUTO_DEBIT_ENABLED: "false",
         PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
         PAYMENT_PROVIDER: "wechat_pay",
         WECHAT_PAY_ENABLED: "true"
@@ -177,6 +233,81 @@ describe("portal payment foundation", () => {
       amount: 1000n,
       openId: "openid_customer_a"
     }));
+    expect(harness.autoDebitMandateRepository.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("verifies WeChat callbacks without persisting raw encrypted payload fields", async () => {
+    const paidAt = new Date("2026-08-06T08:00:00.000Z");
+    const provider = {
+      createPayment: vi.fn(async () => ({
+        jsapiParams: {
+          appId: "wx_test_app",
+          nonceStr: "nonce",
+          package: "prepay_id=wx_prepay",
+          paySign: "signature",
+          signType: "RSA",
+          timeStamp: "1710000000"
+        },
+        providerPrepayId: "wx_prepay",
+        providerTradeNo: "wechat-order-1"
+      })),
+      verifyCallback: vi.fn(async () => ({
+        eventType: "TRANSACTION_SUCCESS",
+        paidAmount: 1000,
+        paidAt,
+        providerTradeNo: "wechat-order-1",
+        providerTransactionId: "wechat-transaction-1",
+        verified: true
+      }))
+    };
+    const harness = createPaymentHarness({
+      config: {
+        AUTO_DEBIT_ENABLED: "false",
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never,
+      wechatOpenId: "openid_customer_a"
+    });
+    harness.addBill({ id: "bill_wechat", remainingAmount: 1000n });
+    await harness.service.createPortalPaymentOrder(
+      { billIds: ["bill_wechat"] },
+      harness.currentCustomer("customer_a"),
+      harness.context
+    );
+    const rawPayload = {
+      id: "event-1",
+      resource: {
+        associated_data: "secret-associated-data",
+        ciphertext: "secret-ciphertext",
+        nonce: "secret-nonce"
+      },
+      summary: "payment success"
+    };
+
+    await expect(
+      harness.service.handleCallback("wechat-pay", rawPayload)
+    ).resolves.toMatchObject({ handled: true, verified: true });
+
+    const persisted = JSON.stringify(harness.state.callbacks[0]?.payload);
+    const financeInput = JSON.stringify(
+      harness.financeService.settlePaymentOrder.mock.calls[0]?.[0],
+      (_key, value) => (typeof value === "bigint" ? value.toString() : value)
+    );
+    for (const secret of [
+      "secret-associated-data",
+      "secret-ciphertext",
+      "secret-nonce"
+    ]) {
+      expect(persisted).not.toContain(secret);
+      expect(financeInput).not.toContain(secret);
+    }
+    expect(provider.verifyCallback).toHaveBeenCalledWith(
+      rawPayload,
+      undefined,
+      undefined
+    );
   });
 
   it("records WeChat callback verification errors without marking the payment paid", async () => {
@@ -322,6 +453,9 @@ function createPaymentHarness(options: {
   };
 
   const prisma = {
+    autoDebitMandate: {
+      findFirst: vi.fn(async () => null)
+    },
     customer: {
       findFirst: vi.fn(async () => ({ ownerUserId: "operator_1" }))
     },
@@ -545,6 +679,7 @@ function createPaymentHarness(options: {
   );
 
   return {
+    autoDebitMandateRepository: prisma.autoDebitMandate,
     addBill(input: Partial<AnyRecord>) {
       const orderId = input.orderId ?? "order_a";
       state.bills.push({

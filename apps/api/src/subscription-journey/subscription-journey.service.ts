@@ -2,7 +2,8 @@ import { Injectable, Optional } from "@nestjs/common";
 import {
   Prisma,
   SubscriptionJourneyJobType,
-  SubscriptionJourneyStepCode
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus
 } from "@prisma/client";
 
 import { journeyError } from "./subscription-journey.errors";
@@ -16,6 +17,7 @@ import {
 import { CustomerService } from "../customer/customer.service";
 import { ESignService } from "../esign/esign.service";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
+import { FinanceService } from "../finance/finance.service";
 import { OrderEntitlementService } from "../order/order-entitlement.service";
 import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -48,7 +50,8 @@ export class SubscriptionJourneyService {
     @Optional() private readonly orderService?: OrderService,
     @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
     @Optional() private readonly esignService?: ESignService,
-    @Optional() private readonly fadadaSignedArtifactService?: FadadaSignedArtifactService
+    @Optional() private readonly fadadaSignedArtifactService?: FadadaSignedArtifactService,
+    @Optional() private readonly financeService?: FinanceService
   ) {}
 
   async dispatchSignalOutbox(
@@ -169,8 +172,10 @@ export class SubscriptionJourneyService {
         current.id,
         current.currentStepCode,
         current.application.finalPlanRevision,
-        current.currentStepCode ===
-          SubscriptionJourneyStepCode.APPLICATION_VALIDATION &&
+        (current.currentStepCode ===
+          SubscriptionJourneyStepCode.APPLICATION_VALIDATION ||
+          current.currentStepCode ===
+            SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT) &&
           isRecord(outbox.payload) &&
           typeof outbox.payload.journeyVersion === "number"
           ? outbox.payload.journeyVersion
@@ -395,6 +400,108 @@ export class SubscriptionJourneyService {
     });
   }
 
+  async generateInitialBillsJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.financeService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey initial billing service is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const current = await this.readBillingJobContext(
+        tx,
+        job,
+        SubscriptionJourneyStepCode.INITIAL_BILLING
+      );
+      if (current.alreadyCompleted) {
+        return {
+          action: "INITIAL_BILLING_ALREADY_COMPLETED",
+          orderId: current.orderId
+        };
+      }
+      const bills = await this.financeService!.generateInitialBillsInTransaction(
+        tx,
+        current.orderId,
+        current.actorId,
+        job.sourceKey
+      );
+      const billIds = bills.map(({ id }) => id);
+      await this.repository.completeStep(tx, {
+        eventKey: `${job.sourceKey}:completed`,
+        expectedVersion: current.version,
+        journeyId: current.journeyId,
+        payload: { billIds, orderId: current.orderId },
+        stepId: current.stepId
+      });
+      return {
+        action: "INITIAL_BILLS_GENERATED",
+        billIds,
+        orderId: current.orderId
+      };
+    });
+  }
+
+  async evaluatePaymentSettlementJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.financeService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey payment settlement evaluator is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const current = await this.readBillingJobContext(
+        tx,
+        job,
+        SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT
+      );
+      if (current.alreadyCompleted) {
+        return {
+          action: "PAYMENT_SETTLEMENT_ALREADY_COMPLETED",
+          orderId: current.orderId
+        };
+      }
+      const settlement =
+        await this.financeService!.evaluateInitialBillSettlement(
+          tx,
+          current.orderId
+        );
+      if (settlement.paid) {
+        await this.repository.completeStep(tx, {
+          eventKey: `${job.sourceKey}:completed`,
+          expectedVersion: current.version,
+          journeyId: current.journeyId,
+          payload: { orderId: current.orderId },
+          stepId: current.stepId
+        });
+        return {
+          action: "INITIAL_BILLS_SETTLED",
+          orderId: current.orderId
+        };
+      }
+      const remainingAmount = settlement.remainingAmount.toString();
+      if (
+        current.stepStatus !== SubscriptionJourneyStepStatus.WAITING_CUSTOMER
+      ) {
+        await this.repository.waitForCustomer(tx, {
+          eventKey: `${job.sourceKey}:waiting`,
+          expectedVersion: current.version,
+          journeyId: current.journeyId,
+          payload: { orderId: current.orderId, remainingAmount },
+          stepId: current.stepId
+        });
+      }
+      return {
+        action: "WAITING_CUSTOMER_PAYMENT",
+        orderId: current.orderId,
+        remainingAmount
+      };
+    });
+  }
+
   async startFadadaSigningJob(
     job: ClaimedJourneyJob
   ): Promise<Prisma.InputJsonValue> {
@@ -465,6 +572,83 @@ export class SubscriptionJourneyService {
       action: "FADADA_ARTIFACT_ARCHIVED",
       contractId: current.contractId,
       taskId: task.id
+    };
+  }
+
+  private async readBillingJobContext(
+    tx: Tx,
+    job: ClaimedJourneyJob,
+    expectedStepCode: SubscriptionJourneyStepCode
+  ) {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_journey"
+      WHERE "id" = ${job.journeyId}
+      FOR UPDATE
+    `);
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: {
+        application: {
+          select: { finalPlanRevision: true, salesUserId: true }
+        },
+        steps: true
+      },
+      where: { id: job.journeyId }
+    });
+    if (!journey) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey was not found."
+      );
+    }
+    if (!journey.orderId) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey does not have an order."
+      );
+    }
+    const step = journey.steps.find(({ code }) => code === expectedStepCode);
+    if (!step || step.id !== job.stepId) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The billing job does not match its subscription journey step."
+      );
+    }
+    if (journey.currentStepCode !== expectedStepCode) {
+      if (step.status === SubscriptionJourneyStepStatus.COMPLETED) {
+        return {
+          actorId: journey.application.salesUserId,
+          alreadyCompleted: true,
+          journeyId: journey.id,
+          orderId: journey.orderId,
+          stepId: step.id,
+          stepStatus: step.status,
+          version: journey.version
+        };
+      }
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The subscription journey is not at the requested billing step."
+      );
+    }
+    const payload = isRecord(job.payload) ? job.payload : {};
+    if (
+      payload.orderId !== journey.orderId ||
+      payload.finalPlanRevision !== journey.application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The billing job targets a stale order or final-plan revision."
+      );
+    }
+    return {
+      actorId: journey.application.salesUserId,
+      alreadyCompleted: false,
+      journeyId: journey.id,
+      orderId: journey.orderId,
+      stepId: step.id,
+      stepStatus: journey.currentStepStatus,
+      version: journey.version
     };
   }
 

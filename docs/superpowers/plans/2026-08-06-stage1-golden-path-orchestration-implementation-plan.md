@@ -757,11 +757,11 @@ evaluateInitialBillSettlement(
 ): Promise<{ paid: boolean; remainingAmount: bigint }>;
 ```
 
-- [ ] **Step 1: Write failing initial-billing tests**
+- [x] **Step 1: Write failing initial-billing tests**
 
 Assert only an archived contract can generate deposit/first-period bills, retries reuse the existing bill source keys, amounts exactly match the final plan snapshot, and success advances to `CUSTOMER_JSAPI_PAYMENT` with `WAITING_CUSTOMER`.
 
-- [ ] **Step 2: Write failing JSAPI settlement authority tests**
+- [x] **Step 2: Write failing JSAPI settlement authority tests**
 
 Cover open PaymentOrder reuse, customer/order ownership, exact bill allocation, duplicate and out-of-order WeChat callbacks, partial payment, full settlement, overpayment handling under current finance policy, callback signature failure, and no raw callback leakage. Explicitly prove auto debit is irrelevant:
 
@@ -778,7 +778,7 @@ expect(await evaluateInitialBillSettlement(tx, order.id)).toEqual({
 expect(autoDebitMandateRepository.findFirst).not.toHaveBeenCalled();
 ```
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-payment.spec.ts test/finance-billing.spec.ts test/payment-settlement.spec.ts test/portal-payment.spec.ts
@@ -786,15 +786,15 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-p
 
 Expected: FAIL because transaction-scoped billing and journey settlement signals do not exist.
 
-- [ ] **Step 4: Extract transaction-scoped bill generation**
+- [x] **Step 4: Extract transaction-scoped bill generation**
 
 Keep `FinanceService.generateInitialBills` as a public wrapper. The inner method uses the caller transaction and stable bill source keys; journey handler writes bills, step/event/outbox and customer-wait state atomically. Do not synthesize a paid flag.
 
-- [ ] **Step 5: Publish settlement signals in the authoritative finance transaction**
+- [x] **Step 5: Publish settlement signals in the authoritative finance transaction**
 
 Import only `SubscriptionJourneySignalModule` into `FinanceModule`. After Payment, allocation and WriteOff persistence succeeds, write `PAYMENT_SETTLED` with the provider transaction/event key in that same transaction. The journey handler locks all initial bills and advances only when every required bill has zero remaining amount or status `PAID` as derived by existing finance rules.
 
-- [ ] **Step 6: Make focused tests GREEN**
+- [x] **Step 6: Make focused tests GREEN**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-payment.spec.ts test/finance-billing.spec.ts test/payment-settlement.spec.ts test/portal-payment.spec.ts
@@ -803,7 +803,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: tests and typecheck pass with `AUTO_DEBIT_ENABLED=false`.
 
-- [ ] **Step 7: Commit billing and JSAPI payment closure**
+- [x] **Step 7: Commit billing and JSAPI payment closure**
 
 ```powershell
 git add apps/api/src/finance apps/api/src/payment/payment-order.service.ts apps/api/src/subscription-journey/subscription-journey.handlers.ts apps/api/test/subscription-journey-payment.spec.ts apps/api/test/finance-billing.spec.ts apps/api/test/payment-settlement.spec.ts apps/api/test/portal-payment.spec.ts

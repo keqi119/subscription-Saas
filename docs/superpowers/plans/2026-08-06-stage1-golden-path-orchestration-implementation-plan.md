@@ -1151,7 +1151,7 @@ git commit -m "feat: show subscription journeys in admin workspace"
 - Consumes: customer ownership guards, exact plan revision, existing Fadada signing page, bill/payment pages and NotificationService.
 - Produces: customer-safe journey projection, one current-action card and idempotent official-account notifications.
 
-- [ ] **Step 1: Write failing Portal API ownership and redaction tests**
+- [x] **Step 1: Write failing Portal API ownership and redaction tests**
 
 Add:
 
@@ -1162,11 +1162,11 @@ GET /portal/subscription-journeys/by-order/:orderId
 
 Assert the authenticated customer can read only their own Journey. Projection contains current action, safe status, final plan revision, contract/order/bill links and customer-facing blocker text; it excludes internal notes, audit actors, retry stack/provider payload and other customer identifiers.
 
-- [ ] **Step 2: Write failing notification tests**
+- [x] **Step 2: Write failing notification tests**
 
 Send only on transitions requiring customer action: exact-plan confirmation, Fadada signature, JSAPI payment and handover appointment/evidence cooperation. Use event key plus customer plus template as idempotency key. In production, provider must be `wechat_official_account`; provider failure creates/retries `DISPATCH_NOTIFICATION` but does not roll back an already committed domain transition.
 
-- [ ] **Step 3: Write failing Portal view-model/page tests**
+- [x] **Step 3: Write failing Portal view-model/page tests**
 
 Assert one primary CTA at a time:
 
@@ -1182,7 +1182,7 @@ expect(nextAction({ step: "CUSTOMER_JSAPI_PAYMENT" }).href).toBe(`/portal/orders
 
 Also test waiting-internal, retry, exception-support and completed displays. The confirmation request sends the displayed `finalPlanRevision`.
 
-- [ ] **Step 4: Run all focused tests and confirm RED**
+- [x] **Step 4: Run all focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/portal-subscription-journey.spec.ts test/subscription-journey-notification.spec.ts
@@ -1191,15 +1191,15 @@ pnpm --filter @subscription-saas/web exec vitest run test/portal-journey-view-mo
 
 Expected: FAIL because Portal projection, notification adapter and next-action card do not exist.
 
-- [ ] **Step 5: Implement customer-safe API and notifications**
+- [x] **Step 5: Implement customer-safe API and notifications**
 
 Use existing customer session/ownership guards. Dispatch only sanitized template variables and store notification delivery state through existing `NotificationEvent`. Never send Fadada sign URL or payment credentials through notification text; link to authenticated Portal routes.
 
-- [ ] **Step 6: Implement the shared Portal next-action card**
+- [x] **Step 6: Implement the shared Portal next-action card**
 
 Embed the same small card in application, order and contract pages. Reuse existing contract-sign and bill/payment components; do not duplicate signing or JSAPI invocation. Poll/refetch only while a provider callback is expected, with bounded interval and page-visibility checks.
 
-- [ ] **Step 7: Make tests GREEN and commit**
+- [x] **Step 7: Make tests GREEN and commit**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/portal-subscription-journey.spec.ts test/subscription-journey-notification.spec.ts

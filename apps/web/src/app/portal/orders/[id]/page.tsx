@@ -17,6 +17,7 @@ import {
 } from "../../../../constants/labels";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import { PortalOrderDetail, PortalPaymentOrder, PortalVehicleDocument } from "../../../../lib/portal-types";
+import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
 
 export default function PortalOrderDetailPage() {
   const params = useParams<{ id: string }>();
@@ -106,6 +107,8 @@ export default function PortalOrderDetailPage() {
           <Button onClick={() => router.push("/portal")}>返回门户</Button>
         </Flex>
 
+        <PortalJourneyNextActionCard orderId={params.id} />
+
         <section style={sectionStyle}>
           <Flex align="flex-start" justify="space-between" gap={16} wrap="wrap">
             <div>
@@ -132,7 +135,7 @@ export default function PortalOrderDetailPage() {
           />
         </section>
 
-        <section style={sectionStyle}>
+        <section id="bills" style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             订单信息
           </Typography.Title>

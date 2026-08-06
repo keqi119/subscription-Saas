@@ -41,7 +41,9 @@ export interface NotifyCustomerInput {
   customerId: string;
   data?: Record<string, unknown>;
   eventType: NotificationEventType;
+  idempotencyKey?: string;
   notificationType: NotificationType;
+  requireWechatSuccess?: boolean;
   title: string;
   url?: string;
 }
@@ -139,6 +141,10 @@ const TEMPLATE_CODE_BY_EVENT: Partial<
     inApp: "PAYMENT_PENDING_IN_APP",
     wechat: "PAYMENT_PENDING_WECHAT"
   },
+  [NotificationEventType.HANDOVER_ESIGN_PENDING]: {
+    inApp: "HANDOVER_ESIGN_PENDING_IN_APP",
+    wechat: "HANDOVER_ESIGN_PENDING_WECHAT"
+  },
   [NotificationEventType.SERVICE_CASE_SUBMITTED]: {
     inApp: "SERVICE_CASE_UPDATE_IN_APP",
     wechat: "SERVICE_CASE_UPDATE_WECHAT"
@@ -182,6 +188,7 @@ const TEMPLATE_TYPE_BY_NOTIFICATION_TYPE: Partial<
   [NotificationType.FINAL_PLAN_PENDING]: NotificationTemplateType.FINAL_PLAN_PENDING,
   [NotificationType.CONTRACT_PENDING]: NotificationTemplateType.CONTRACT_PENDING,
   [NotificationType.PAYMENT_PENDING]: NotificationTemplateType.PAYMENT_PENDING,
+  [NotificationType.HANDOVER_ESIGN_PENDING]: NotificationTemplateType.HANDOVER_ESIGN_PENDING,
   [NotificationType.BILL_DUE]: NotificationTemplateType.BILL_DUE,
   [NotificationType.BILL_OVERDUE]: NotificationTemplateType.BILL_OVERDUE,
   [NotificationType.SERVICE_CASE_UPDATE]: NotificationTemplateType.SERVICE_CASE_UPDATE,
@@ -196,6 +203,7 @@ const WECHAT_TEMPLATE_ENV_BY_TYPE: Partial<Record<NotificationTemplateType, stri
   [NotificationTemplateType.CONTRACT_PENDING]: "WECHAT_TEMPLATE_CONTRACT_PENDING",
   [NotificationTemplateType.FINAL_PLAN_PENDING]: "WECHAT_TEMPLATE_FINAL_PLAN_PENDING",
   [NotificationTemplateType.PAYMENT_PENDING]: "WECHAT_TEMPLATE_PAYMENT_PENDING",
+  [NotificationTemplateType.HANDOVER_ESIGN_PENDING]: "WECHAT_TEMPLATE_APPLICATION_PROGRESS",
   [NotificationTemplateType.RESCUE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
   [NotificationTemplateType.SERVICE_CASE_UPDATE]: "WECHAT_TEMPLATE_SERVICE_CASE_UPDATE",
   [NotificationTemplateType.MILEAGE_REVIEW_DUE]: "WECHAT_TEMPLATE_MILEAGE_REVIEW_DUE",
@@ -246,7 +254,21 @@ export class NotificationService {
     });
 
     try {
-      const records = await this.createNotificationRecords(input);
+      const records = await this.createNotificationRecords(
+        input,
+        input.idempotencyKey
+      );
+      if (
+        input.requireWechatSuccess &&
+        !records.some(
+          (record) =>
+            record.channel === NotificationChannel.WECHAT_OFFICIAL_ACCOUNT &&
+            (record.notificationStatus === NotificationStatus.SENT ||
+              record.notificationStatus === NotificationStatus.READ)
+        )
+      ) {
+        throw new Error("WECHAT_OFFICIAL_ACCOUNT_DELIVERY_REQUIRED");
+      }
       await this.prisma.notificationEvent.update({
         data: {
           eventStatus: NotificationEventStatus.PROCESSED,

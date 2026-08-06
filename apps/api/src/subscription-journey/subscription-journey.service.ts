@@ -43,6 +43,7 @@ import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
+import { CurrentCustomer } from "../portal/portal-auth.types";
 import {
   DeliveryEvidenceDecisionDto,
   FinalPlanDecisionDto,
@@ -84,6 +85,37 @@ type AdminJourney = Prisma.SubscriptionJourneyGetPayload<{
   include: typeof adminJourneyInclude;
 }>;
 
+const portalJourneySelect = {
+  application: {
+    select: {
+      applicationNo: true,
+      customerId: true,
+      finalPlanRevision: true,
+      id: true
+    }
+  },
+  currentStepCode: true,
+  currentStepStatus: true,
+  id: true,
+  order: {
+    select: {
+      contractId: true,
+      id: true,
+      orderNo: true,
+      receivableBills: {
+        select: { billStatus: true, id: true },
+        where: { deletedAt: null }
+      }
+    }
+  },
+  status: true,
+  version: true
+} satisfies Prisma.SubscriptionJourneySelect;
+
+type PortalJourney = Prisma.SubscriptionJourneyGetPayload<{
+  select: typeof portalJourneySelect;
+}>;
+
 const JOB_TYPE_BY_STEP: Partial<
   Record<SubscriptionJourneyStepCode, SubscriptionJourneyJobType>
 > = {
@@ -100,6 +132,13 @@ const JOB_TYPE_BY_STEP: Partial<
   ORDER_AND_CONTRACT_CREATION:
     SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
 };
+
+const CUSTOMER_NOTIFICATION_STEPS = new Set<SubscriptionJourneyStepCode>([
+  SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+  SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+  SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT,
+  SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION
+]);
 
 @Injectable()
 export class SubscriptionJourneyService {
@@ -286,13 +325,23 @@ export class SubscriptionJourneyService {
   ): Promise<void> {
     if (!outbox.journeyId) return;
     const current = await this.readCurrentJourney(tx, outbox.journeyId);
+    if (
+      outbox.eventType !== SubscriptionJourneyEventType.STEP_COMPLETED ||
+      !CUSTOMER_NOTIFICATION_STEPS.has(current.currentStepCode)
+    ) {
+      return;
+    }
+    const sourcePayload = isRecord(outbox.payload) ? outbox.payload : {};
     await this.repository.enqueueJob(tx, {
       jobType: SubscriptionJourneyJobType.DISPATCH_NOTIFICATION,
       journeyId: current.id,
       payload: {
-        eventKey: outbox.eventKey,
-        eventType: outbox.eventType,
-        outboxId: outbox.id
+        eventKey:
+          typeof sourcePayload.eventKey === "string"
+            ? sourcePayload.eventKey
+            : outbox.eventKey,
+        finalPlanRevision: current.application.finalPlanRevision,
+        stepCode: current.currentStepCode
       },
       sourceKey: `journey:${current.id}:notification:${outbox.id}`,
       stepId: current.step.id
@@ -325,6 +374,20 @@ export class SubscriptionJourneyService {
 
   async getByOrder(orderId: string, user: RequestUser) {
     return this.readAdminJourney({ orderId }, user);
+  }
+
+  async getPortalByApplication(
+    applicationId: string,
+    currentCustomer: CurrentCustomer
+  ) {
+    return this.readPortalJourney(
+      { applicationId },
+      currentCustomer.customerId
+    );
+  }
+
+  async getPortalByOrder(orderId: string, currentCustomer: CurrentCustomer) {
+    return this.readPortalJourney({ orderId }, currentCustomer.customerId);
   }
 
   async listJourneys(
@@ -1281,6 +1344,20 @@ export class SubscriptionJourneyService {
     return toAdminJourneyProjection(journey, user);
   }
 
+  private async readPortalJourney(
+    where: { applicationId: string } | { orderId: string },
+    customerId: string
+  ) {
+    const journey = await this.requirePrisma().subscriptionJourney.findFirst({
+      select: portalJourneySelect,
+      where: { ...where, application: { customerId } }
+    });
+    if (!journey) {
+      throw new NotFoundException("订阅流程不存在或不属于当前客户。");
+    }
+    return toPortalJourneyProjection(journey);
+  }
+
   private async lockAdminJourney(
     tx: Tx,
     journeyId: string,
@@ -1846,6 +1923,132 @@ function toAdminJourneyProjection(journey: AdminJourney, user: RequestUser) {
     })),
     version: journey.version
   };
+}
+
+function toPortalJourneyProjection(journey: PortalJourney) {
+  const applicationHref = `/portal/applications/${encodeURIComponent(journey.application.id)}`;
+  const orderHref = journey.order
+    ? `/portal/orders/${encodeURIComponent(journey.order.id)}`
+    : null;
+  const contractHref = journey.order?.contractId
+    ? `/portal/contracts/${encodeURIComponent(journey.order.contractId)}`
+    : null;
+  const links = {
+    application: applicationHref,
+    bills: (journey.order?.receivableBills ?? []).map(
+      ({ id }) => `/portal/bills/${encodeURIComponent(id)}`
+    ),
+    contract: contractHref,
+    contractSign: contractHref ? `${contractHref}/sign` : null,
+    order: orderHref
+  };
+  return {
+    blockerText: portalBlockerText(journey),
+    currentStepCode: journey.currentStepCode,
+    currentStepStatus: journey.currentStepStatus,
+    finalPlanRevision: journey.application.finalPlanRevision,
+    id: journey.id,
+    links,
+    nextAction: portalJourneyNextAction(journey, links),
+    polling: {
+      enabled:
+        journey.status === SubscriptionJourneyStatus.RUNNING &&
+        journey.currentStepCode ===
+          SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+      intervalMs: 5_000,
+      maxAttempts: 24
+    },
+    status: journey.status,
+    version: journey.version
+  };
+}
+
+function portalJourneyNextAction(
+  journey: PortalJourney,
+  links: {
+    application: string;
+    contractSign: string | null;
+    order: string | null;
+  }
+) {
+  if (
+    journey.status === SubscriptionJourneyStatus.COMPLETED ||
+    journey.status === SubscriptionJourneyStatus.CANCELLED ||
+    journey.status === SubscriptionJourneyStatus.PAUSED ||
+    journey.status === SubscriptionJourneyStatus.RETRY_SCHEDULED
+  ) {
+    return null;
+  }
+  if (journey.status === SubscriptionJourneyStatus.EXCEPTION) {
+    const suffix = journey.order ? `?orderId=${encodeURIComponent(journey.order.id)}` : "";
+    return {
+      href: `/portal/service-cases/new${suffix}`,
+      label: "联系客户支持",
+      type: "CONTACT_SUPPORT"
+    };
+  }
+  if (
+    journey.currentStepCode ===
+      SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION &&
+    journey.currentStepStatus ===
+      SubscriptionJourneyStepStatus.WAITING_CUSTOMER
+  ) {
+    return {
+      href: links.application,
+      label: "确认最终方案",
+      type: "CONFIRM_FINAL_PLAN"
+    };
+  }
+  if (
+    journey.currentStepCode ===
+      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE &&
+    links.contractSign
+  ) {
+    return {
+      href: links.contractSign,
+      label: "完成电子签署",
+      type: "SIGN_CONTRACT"
+    };
+  }
+  if (
+    journey.currentStepCode ===
+      SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT &&
+    links.order
+  ) {
+    return {
+      href: `${links.order}#bills`,
+      label: "支付首期账单",
+      type: "PAY_INITIAL_BILLS"
+    };
+  }
+  if (
+    journey.currentStepCode ===
+      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION &&
+    links.order
+  ) {
+    return {
+      href: links.order,
+      label: "查看交付安排",
+      type: "COOPERATE_HANDOVER"
+    };
+  }
+  return null;
+}
+
+function portalBlockerText(journey: PortalJourney) {
+  if (journey.status === SubscriptionJourneyStatus.EXCEPTION) {
+    return "流程暂时受阻，请联系客户支持，我们会协助处理。";
+  }
+  if (journey.status === SubscriptionJourneyStatus.RETRY_SCHEDULED) {
+    return "系统正在自动重试，无需重复提交操作。";
+  }
+  if (journey.status === SubscriptionJourneyStatus.PAUSED) {
+    return "流程已暂停，请联系客户支持了解后续安排。";
+  }
+  if (journey.status === SubscriptionJourneyStatus.CANCELLED) {
+    return "该订阅流程已取消。";
+  }
+  return null;
 }
 
 function sanitizeJourneyPayload(value: unknown): Record<string, unknown> {

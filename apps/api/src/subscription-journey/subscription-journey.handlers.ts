@@ -1,15 +1,20 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import { Prisma, SubscriptionJourneyJobType } from "@prisma/client";
 
 import { journeyError } from "./subscription-journey.errors";
 import { SubscriptionJourneyService } from "./subscription-journey.service";
+import { SubscriptionJourneyNotificationService } from "./subscription-journey-notification.service";
 import { ClaimedJourneyJob } from "./subscription-journey.types";
 
 @Injectable()
 export class SubscriptionJourneyHandlers {
   readonly supportedJobTypes = Object.values(SubscriptionJourneyJobType);
 
-  constructor(private readonly service: SubscriptionJourneyService) {}
+  constructor(
+    private readonly service: SubscriptionJourneyService,
+    @Optional()
+    private readonly notificationService?: SubscriptionJourneyNotificationService
+  ) {}
 
   async handle(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (job.jobType === SubscriptionJourneyJobType.VALIDATE_APPLICATION) {
@@ -37,6 +42,12 @@ export class SubscriptionJourneyHandlers {
     }
     if (job.jobType === SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION) {
       return this.service.activateSubscriptionJob(job);
+    }
+    if (
+      job.jobType === SubscriptionJourneyJobType.DISPATCH_NOTIFICATION &&
+      this.notificationService
+    ) {
+      return this.notificationService.dispatch(job);
     }
     throw journeyError(
       "JOURNEY_HANDLER_NOT_READY",

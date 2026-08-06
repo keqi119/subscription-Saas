@@ -34,6 +34,8 @@ import {
   STATUS_LABELS
 } from "../../../../constants/labels";
 import { buildPortalApplicationNextActionCard } from "../../../../lib/portal-application-next-action-view-model";
+import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
+import { buildPortalFinalPlanConfirmationRequest } from "../../../../lib/portal-journey-view-model";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalApplicationDetail,
@@ -174,13 +176,17 @@ export default function PortalApplicationDetailPage() {
   }
 
   async function confirmFinalPlan() {
-    if (!params.id) {
+    if (!params.id || !finalPlan?.finalPlanRevision) {
+      void message.error("最终方案版本不可用，请刷新页面后重试");
       return;
     }
 
     try {
       setFinalPlanSubmitting(true);
-      await portalApiFetch(`/portal/applications/${params.id}/final-plan/confirm`, { method: "POST" });
+      await portalApiFetch(
+        `/portal/applications/${params.id}/final-plan/confirm`,
+        buildPortalFinalPlanConfirmationRequest(finalPlan.finalPlanRevision)
+      );
       void message.success("已确认最终方案，等待平台生成正式订单");
       await loadApplication();
     } catch (error) {
@@ -270,6 +276,8 @@ export default function PortalApplicationDetailPage() {
           </Button>
           <Button onClick={() => router.push("/portal/catalog")}>继续选车</Button>
         </Flex>
+
+        <PortalJourneyNextActionCard applicationId={params.id} />
 
         <section style={sectionStyle}>
           <Flex align="flex-start" justify="space-between" gap={16} wrap="wrap">

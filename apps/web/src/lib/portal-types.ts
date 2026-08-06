@@ -458,7 +458,8 @@ export interface PortalFinalPlan {
   applicationId: string;
   applicationNo: string;
   changes?: PortalFinalPlanChange[];
-  finalPlanStatus: "NOT_READY" | "PENDING_CONFIRM" | "CONFIRMED" | "REJECTED";
+    finalPlanStatus: "NOT_READY" | "PENDING_CONFIRM" | "CONFIRMED" | "REJECTED";
+    finalPlanRevision?: number;
   importantNotes?: string[];
   nextAction: string;
   order?: null | {

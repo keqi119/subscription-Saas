@@ -1,4 +1,9 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  UnauthorizedException
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { AuditAction, Prisma, UserStatus } from "@prisma/client";
 import { MenuItemDefinition } from "@subscription-saas/shared";
@@ -7,6 +12,7 @@ import jwt, { JwtPayload, SignOptions } from "jsonwebtoken";
 
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { ChangePasswordDto } from "./dto/change-password.dto";
 import { LoginDto } from "./dto/login.dto";
 import { AuthResult, RequestContext, RequestUser } from "./auth.types";
 
@@ -61,6 +67,71 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService
   ) {}
+
+  async changePassword(userId: string, dto: ChangePasswordDto, context: RequestContext) {
+    if (Buffer.byteLength(dto.newPassword, "utf8") > 72) {
+      throw new BadRequestException({
+        code: "PASSWORD_TOO_LONG",
+        message: "New password must not exceed 72 UTF-8 bytes."
+      });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      select: { deletedAt: true, id: true, passwordHash: true, status: true, username: true },
+      where: { id: userId }
+    });
+    if (!user || user.deletedAt || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException("Invalid access token.");
+    }
+
+    if (!(await bcrypt.compare(dto.currentPassword, user.passwordHash))) {
+      throw new BadRequestException({
+        code: "CURRENT_PASSWORD_INCORRECT",
+        message: "Current password is incorrect."
+      });
+    }
+    if (await bcrypt.compare(dto.newPassword, user.passwordHash)) {
+      throw new BadRequestException({
+        code: "PASSWORD_REUSE_NOT_ALLOWED",
+        message: "New password must be different from the current password."
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 12);
+    await this.prisma.$transaction(async (transaction) => {
+      const changed = await transaction.user.updateMany({
+        data: { passwordHash, updatedBy: user.id },
+        where: {
+          deletedAt: null,
+          id: user.id,
+          passwordHash: user.passwordHash,
+          status: UserStatus.ACTIVE
+        }
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException({
+          code: "PASSWORD_CHANGE_CONFLICT",
+          message: "Password state changed. Sign in again and retry."
+        });
+      }
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: { credential: "password", selfService: true },
+          before: { credential: "password" },
+          entityId: user.id,
+          entityType: "user",
+          ipAddress: context.ipAddress,
+          module: "system",
+          operatorId: user.id,
+          userAgent: context.userAgent
+        },
+        transaction
+      );
+    });
+
+    return { success: true as const };
+  }
 
   async login(dto: LoginDto, context: RequestContext): Promise<AuthResult> {
     const user = await this.prisma.user.findUnique({

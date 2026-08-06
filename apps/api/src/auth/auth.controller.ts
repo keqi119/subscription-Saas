@@ -3,11 +3,27 @@ import type { Request, Response } from "express";
 
 import { AuthGuard, AuthenticatedRequest } from "./auth.guard";
 import { AuthService } from "./auth.service";
+import { ChangePasswordDto } from "./dto/change-password.dto";
 import { LoginDto } from "./dto/login.dto";
 
 @Controller("auth")
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Post("change-password")
+  @UseGuards(AuthGuard)
+  async changePassword(
+    @Body() dto: ChangePasswordDto,
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const result = await this.authService.changePassword(request.user.id, dto, {
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"]
+    });
+    response.clearCookie("access_token");
+    return result;
+  }
 
   @Post("login")
   async login(

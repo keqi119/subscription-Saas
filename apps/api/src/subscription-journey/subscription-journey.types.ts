@@ -4,6 +4,7 @@ import type {
   SubscriptionJourneyJobType,
   SubscriptionJourneyManualDecision,
   SubscriptionJourneyManualTask,
+  SubscriptionJourneyOutbox,
   SubscriptionJourneyStep
 } from "@prisma/client";
 
@@ -96,6 +97,26 @@ export type ClaimedJourneyJob = Omit<
   leaseExpiresAt: Date;
   leaseToken: string;
 };
+
+export type ClaimedJourneyOutbox = Omit<
+  SubscriptionJourneyOutbox,
+  "leaseExpiresAt" | "leaseToken"
+> & {
+  leaseExpiresAt: Date;
+  leaseToken: string;
+};
+
+export interface JourneyOperationalMetrics {
+  lastEventAt: Date | null;
+  lastSuccessfulJobAt: Date | null;
+  oldestOpenExceptionAt: Date | null;
+  oldestPendingJobAt: Date | null;
+  oldestPendingOutboxAt: Date | null;
+  openExceptionCount: number;
+  pendingJobCount: number;
+  pendingOutboxCount: number;
+  workerHeartbeatAt: Date | null;
+}
 
 export type JourneyStepResult = SubscriptionJourneyStep;
 export type JourneyManualTaskResult = SubscriptionJourneyManualTask;

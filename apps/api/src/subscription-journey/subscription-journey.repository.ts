@@ -4,11 +4,12 @@ import {
   SubscriptionJourney,
   SubscriptionJourneyEventType,
   SubscriptionJourneyException,
+  SubscriptionJourneyExceptionStatus,
   SubscriptionJourneyJob,
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyManualTask,
   SubscriptionJourneyManualTaskStatus,
-  SubscriptionJourneyOutbox,
+  SubscriptionJourneyOutboxStatus,
   SubscriptionJourneyStatus,
   SubscriptionJourneyStep,
   SubscriptionJourneyStepCode,
@@ -29,6 +30,8 @@ import {
   EnqueueJourneyJobInput,
   JourneyFailure,
   JourneySignalInput,
+  ClaimedJourneyOutbox,
+  JourneyOperationalMetrics,
   OpenManualTaskInput,
   RecordJourneyExceptionInput,
   RescheduleJourneyJobInput,
@@ -36,10 +39,6 @@ import {
 } from "./subscription-journey.types";
 
 type Tx = Prisma.TransactionClient;
-type ClaimedOutbox = Omit<
-  SubscriptionJourneyOutbox,
-  "leaseExpiresAt" | "leaseToken"
-> & { leaseExpiresAt: Date; leaseToken: string };
 type LockedJourneyStep = {
   currentStepCode: SubscriptionJourneyStepCode;
   currentStepStatus: SubscriptionJourneyStepStatus;
@@ -409,9 +408,40 @@ export class SubscriptionJourneyRepository {
     tx: Tx,
     limit: number,
     leaseMs: number
-  ): Promise<ClaimedOutbox[]> {
+  ): Promise<ClaimedJourneyOutbox[]> {
+    return this.claimOutboxByMode(tx, limit, leaseMs, "all");
+  }
+
+  async claimSignalOutbox(
+    tx: Tx,
+    limit: number,
+    leaseMs: number
+  ): Promise<ClaimedJourneyOutbox[]> {
+    return this.claimOutboxByMode(tx, limit, leaseMs, "signal");
+  }
+
+  async claimNotificationOutbox(
+    tx: Tx,
+    limit: number,
+    leaseMs: number
+  ): Promise<ClaimedJourneyOutbox[]> {
+    return this.claimOutboxByMode(tx, limit, leaseMs, "notification");
+  }
+
+  private async claimOutboxByMode(
+    tx: Tx,
+    limit: number,
+    leaseMs: number,
+    mode: "all" | "notification" | "signal"
+  ): Promise<ClaimedJourneyOutbox[]> {
     if (!validClaim(limit, leaseMs)) return [];
     const leaseToken = randomUUID();
+    const typePredicate =
+      mode === "signal"
+        ? Prisma.sql`"aggregate_type" <> 'JOURNEY_NOTIFICATION'`
+        : mode === "notification"
+          ? Prisma.sql`"aggregate_type" = 'JOURNEY_NOTIFICATION'`
+          : Prisma.sql`TRUE`;
     const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT "id"
       FROM "subscription_journey_outbox"
@@ -419,6 +449,7 @@ export class SubscriptionJourneyRepository {
         ("status" = 'PENDING' AND "available_at" <= clock_timestamp())
         OR ("status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp())
       )
+        AND ${typePredicate}
       ORDER BY "available_at" ASC, "created_at" ASC
       LIMIT ${limit}
       FOR UPDATE SKIP LOCKED
@@ -436,12 +467,42 @@ export class SubscriptionJourneyRepository {
           ("status" = 'PENDING' AND "available_at" <= clock_timestamp())
           OR ("status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp())
         )
+        AND ${typePredicate}
     `);
     const rows = await tx.subscriptionJourneyOutbox.findMany({
       orderBy: [{ availableAt: "asc" }, { createdAt: "asc" }],
       where: { id: { in: ids }, leaseToken }
     });
     return rows.filter(hasLease);
+  }
+
+  async enqueueNotificationOutbox(
+    tx: Tx,
+    source: ClaimedJourneyOutbox
+  ): Promise<void> {
+    if (!source.journeyId) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey notification is missing its journey id."
+      );
+    }
+    const payload = safePayload({
+      eventKey: source.eventKey,
+      eventType: source.eventType,
+      sourceOutboxId: source.id
+    });
+    await tx.subscriptionJourneyOutbox.upsert({
+      create: {
+        aggregateId: source.journeyId,
+        aggregateType: "JOURNEY_NOTIFICATION",
+        eventKey: `journey-notification:${source.id}`,
+        eventType: source.eventType,
+        journeyId: source.journeyId,
+        payload
+      },
+      update: {},
+      where: { eventKey: `journey-notification:${source.id}` }
+    });
   }
 
   async completeJob(
@@ -458,12 +519,160 @@ export class SubscriptionJourneyRepository {
         lastErrorMessage: null,
         leaseExpiresAt: null,
         leaseToken: null,
-        payload: result,
         status: SubscriptionJourneyJobStatus.COMPLETED
       },
       where: processingLease(jobId, leaseToken, new Date())
     });
     requireLease(updated.count);
+  }
+
+  async completeOutbox(
+    tx: Tx,
+    outboxId: string,
+    leaseToken: string
+  ): Promise<void> {
+    const updated = await tx.subscriptionJourneyOutbox.updateMany({
+      data: {
+        deliveredAt: new Date(),
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyOutboxStatus.DELIVERED
+      },
+      where: processingOutboxLease(outboxId, leaseToken, new Date())
+    });
+    requireLease(updated.count);
+  }
+
+  async rescheduleOutbox(
+    tx: Tx,
+    outboxId: string,
+    leaseToken: string,
+    input: RescheduleJourneyJobInput
+  ): Promise<void> {
+    if (!Number.isSafeInteger(input.delayMs) || input.delayMs < 0) {
+      throw new RangeError("Journey retry delay must be a non-negative integer.");
+    }
+    const failure = safeFailure(input.error);
+    const updated = await tx.subscriptionJourneyOutbox.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        availableAt: new Date(Date.now() + input.delayMs),
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyOutboxStatus.PENDING
+      },
+      where: processingOutboxLease(outboxId, leaseToken, new Date())
+    });
+    requireLease(updated.count);
+  }
+
+  async deadLetterOutbox(
+    tx: Tx,
+    outboxId: string,
+    leaseToken: string,
+    error: JourneyFailure
+  ): Promise<void> {
+    const failure = safeFailure(error);
+    const updated = await tx.subscriptionJourneyOutbox.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyOutboxStatus.DEAD_LETTER
+      },
+      where: processingOutboxLease(outboxId, leaseToken, new Date())
+    });
+    requireLease(updated.count);
+  }
+
+  async readOperationalMetrics(tx: Tx): Promise<JourneyOperationalMetrics> {
+    const now = new Date();
+    const jobActivity = await tx.subscriptionJourneyJob.aggregate({
+      _max: { updatedAt: true }
+    });
+    const successfulJobs = await tx.subscriptionJourneyJob.aggregate({
+      _max: { completedAt: true },
+      where: { status: SubscriptionJourneyJobStatus.COMPLETED }
+    });
+    const lastEvent = await tx.subscriptionJourneyEvent.aggregate({
+      _max: { createdAt: true }
+    });
+    const outboxActivity = await tx.subscriptionJourneyOutbox.aggregate({
+      _max: { deliveredAt: true, updatedAt: true }
+    });
+    const pendingJobWhere: Prisma.SubscriptionJourneyJobWhereInput = {
+      OR: [
+        {
+          availableAt: { lte: now },
+          status: {
+            in: [
+              SubscriptionJourneyJobStatus.PENDING,
+              SubscriptionJourneyJobStatus.RETRY_SCHEDULED
+            ]
+          }
+        },
+        {
+          leaseExpiresAt: { lte: now },
+          status: SubscriptionJourneyJobStatus.PROCESSING
+        }
+      ]
+    };
+    const pendingOutboxWhere: Prisma.SubscriptionJourneyOutboxWhereInput = {
+      OR: [
+        {
+          availableAt: { lte: now },
+          status: SubscriptionJourneyOutboxStatus.PENDING
+        },
+        {
+          leaseExpiresAt: { lte: now },
+          status: SubscriptionJourneyOutboxStatus.PROCESSING
+        }
+      ]
+    };
+    const oldestPendingJob = await tx.subscriptionJourneyJob.findFirst({
+      orderBy: { availableAt: "asc" },
+      select: { availableAt: true },
+      where: pendingJobWhere
+    });
+    const oldestPendingOutbox = await tx.subscriptionJourneyOutbox.findFirst({
+      orderBy: { availableAt: "asc" },
+      select: { availableAt: true },
+      where: pendingOutboxWhere
+    });
+    const oldestOpenException = await tx.subscriptionJourneyException.findFirst({
+      orderBy: { firstOccurredAt: "asc" },
+      select: { firstOccurredAt: true },
+      where: { status: SubscriptionJourneyExceptionStatus.OPEN }
+    });
+    const pendingJobCount = await tx.subscriptionJourneyJob.count({
+      where: pendingJobWhere
+    });
+    const pendingOutboxCount = await tx.subscriptionJourneyOutbox.count({
+      where: pendingOutboxWhere
+    });
+    const openExceptionCount = await tx.subscriptionJourneyException.count({
+      where: { status: SubscriptionJourneyExceptionStatus.OPEN }
+    });
+    return {
+      lastEventAt: lastEvent._max.createdAt,
+      lastSuccessfulJobAt: successfulJobs._max.completedAt,
+      oldestOpenExceptionAt: oldestOpenException?.firstOccurredAt ?? null,
+      oldestPendingJobAt: oldestPendingJob?.availableAt ?? null,
+      oldestPendingOutboxAt: oldestPendingOutbox?.availableAt ?? null,
+      openExceptionCount,
+      pendingJobCount,
+      pendingOutboxCount,
+      workerHeartbeatAt: latestDate(
+        jobActivity._max.updatedAt,
+        outboxActivity._max.updatedAt
+      )
+    };
   }
 
   async rescheduleJob(
@@ -608,6 +817,26 @@ function processingLease(jobId: string, leaseToken: string, now: Date) {
     leaseToken,
     status: SubscriptionJourneyJobStatus.PROCESSING
   };
+}
+
+function processingOutboxLease(
+  outboxId: string,
+  leaseToken: string,
+  now: Date
+) {
+  return {
+    id: outboxId,
+    leaseExpiresAt: { gt: now },
+    leaseToken,
+    status: SubscriptionJourneyOutboxStatus.PROCESSING
+  };
+}
+
+function latestDate(...values: Array<Date | null>): Date | null {
+  return values.reduce<Date | null>((latest, value) => {
+    if (!value) return latest;
+    return !latest || value > latest ? value : latest;
+  }, null);
 }
 
 function requireLease(count: number) {

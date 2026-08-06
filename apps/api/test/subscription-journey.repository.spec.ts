@@ -1,3 +1,4 @@
+import { ConfigService } from "@nestjs/config";
 import {
   SubscriptionJourneyEventType,
   SubscriptionJourneyJobStatus,
@@ -9,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
+import { SubscriptionJourneyRuntimeConfig } from "../src/subscription-journey/subscription-journey.config";
 import { SubscriptionJourneySignalService } from "../src/subscription-journey/subscription-journey-signal.service";
 
 describe("SubscriptionJourneyRepository", () => {
@@ -136,7 +138,11 @@ describe("SubscriptionJourneyRepository", () => {
     const startedJourney = journey({ applicationId: "application-1" });
     const tx = {
       $queryRaw: vi.fn(async () => []),
+      application: {
+        findUnique: vi.fn(async () => ({ customerId: "customer-1" }))
+      },
       subscriptionJourney: {
+        findUnique: vi.fn(async () => null),
         upsert: vi.fn(async () => startedJourney)
       },
       subscriptionJourneyEvent: {
@@ -148,7 +154,8 @@ describe("SubscriptionJourneyRepository", () => {
       }
     };
     const service = new SubscriptionJourneySignalService(
-      new SubscriptionJourneyRepository()
+      new SubscriptionJourneyRepository(),
+      enabledJourneyConfig()
     ) as unknown as {
       record(tx: unknown, input: Record<string, unknown>): Promise<void>;
     };
@@ -195,7 +202,8 @@ describe("SubscriptionJourneyRepository", () => {
       }
     };
     const service = new SubscriptionJourneySignalService(
-      new SubscriptionJourneyRepository()
+      new SubscriptionJourneyRepository(),
+      enabledJourneyConfig()
     ) as unknown as {
       record(tx: unknown, input: Record<string, unknown>): Promise<void>;
     };
@@ -399,6 +407,125 @@ describe("SubscriptionJourneyRepository", () => {
     );
   });
 
+  it("keeps signal and notification outbox claims disjoint", async () => {
+    const queries: string[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async (query: { strings: readonly string[] }) => {
+        queries.push(query.strings.join(" "));
+        return [];
+      })
+    };
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.claimSignalOutbox(tx as never, 10, 120_000);
+    await repository.claimNotificationOutbox(tx as never, 10, 120_000);
+
+    expect(queries[0]).toContain(`"aggregate_type" <> 'JOURNEY_NOTIFICATION'`);
+    expect(queries[1]).toContain(`"aggregate_type" = 'JOURNEY_NOTIFICATION'`);
+  });
+
+  it.each(["completeOutbox", "rescheduleOutbox", "deadLetterOutbox"] as const)(
+    "requires an unexpired outbox lease for %s",
+    async (operation) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
+      const updateMany = vi.fn(async () => ({ count: 0 }));
+      const repository = new SubscriptionJourneyRepository();
+      const tx = { subscriptionJourneyOutbox: { updateMany } };
+
+      const result =
+        operation === "completeOutbox"
+          ? repository.completeOutbox(tx as never, "outbox-1", "lease-1")
+          : operation === "rescheduleOutbox"
+            ? repository.rescheduleOutbox(
+                tx as never,
+                "outbox-1",
+                "lease-1",
+                {
+                  delayMs: 1_000,
+                  error: {
+                    code: "TIMEOUT",
+                    message: "Timed out.",
+                    retryable: true
+                  }
+                }
+              )
+            : repository.deadLetterOutbox(
+                tx as never,
+                "outbox-1",
+                "lease-1",
+                {
+                  code: "FAILED",
+                  message: "Failed.",
+                  retryable: false
+                }
+              );
+
+      await expect(result).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            leaseExpiresAt: { gt: new Date("2026-08-06T00:00:00.000Z") }
+          })
+        })
+      );
+    }
+  );
+
+  it("derives worker activity and last success from persisted rows", async () => {
+    const jobActivityAt = new Date("2026-08-06T01:00:00.000Z");
+    const outboxActivityAt = new Date("2026-08-06T02:00:00.000Z");
+    const eventAt = new Date("2026-08-06T03:00:00.000Z");
+    const successfulJobAt = new Date("2026-08-06T00:30:00.000Z");
+    const jobAggregate = vi
+      .fn()
+      .mockResolvedValueOnce({ _max: { updatedAt: jobActivityAt } })
+      .mockResolvedValueOnce({ _max: { completedAt: successfulJobAt } });
+    const tx = {
+      subscriptionJourneyEvent: {
+        aggregate: vi.fn(async () => ({ _max: { createdAt: eventAt } }))
+      },
+      subscriptionJourneyException: {
+        count: vi.fn(async () => 2),
+        findFirst: vi.fn(async () => ({
+          firstOccurredAt: new Date("2026-08-05T23:00:00.000Z")
+        }))
+      },
+      subscriptionJourneyJob: {
+        aggregate: jobAggregate,
+        count: vi.fn(async () => 3),
+        findFirst: vi.fn(async () => ({
+          availableAt: new Date("2026-08-05T22:00:00.000Z")
+        }))
+      },
+      subscriptionJourneyOutbox: {
+        aggregate: vi.fn(async () => ({
+          _max: { deliveredAt: null, updatedAt: outboxActivityAt }
+        })),
+        count: vi.fn(async () => 4),
+        findFirst: vi.fn(async () => ({
+          availableAt: new Date("2026-08-05T21:00:00.000Z")
+        }))
+      }
+    };
+    const repository = new SubscriptionJourneyRepository();
+
+    const metrics = await repository.readOperationalMetrics(tx as never);
+
+    expect(jobAggregate).toHaveBeenNthCalledWith(2, {
+      _max: { completedAt: true },
+      where: { status: SubscriptionJourneyJobStatus.COMPLETED }
+    });
+    expect(metrics).toMatchObject({
+      lastEventAt: eventAt,
+      lastSuccessfulJobAt: successfulJobAt,
+      openExceptionCount: 2,
+      pendingJobCount: 3,
+      pendingOutboxCount: 4,
+      workerHeartbeatAt: outboxActivityAt
+    });
+  });
+
   it("requires the active lease token to complete a job", async () => {
     const tx = {
       subscriptionJourneyJob: {
@@ -412,6 +539,26 @@ describe("SubscriptionJourneyRepository", () => {
         ok: true
       })
     ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+  });
+
+  it("preserves the idempotency input payload when completing a job", async () => {
+    const updateMany = vi.fn(
+      async (input: { data: Record<string, unknown> }) => {
+        void input;
+        return { count: 1 };
+      }
+    );
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.completeJob(
+      { subscriptionJourneyJob: { updateMany } } as never,
+      "job-1",
+      "lease-1",
+      { resultId: "domain-result-1" }
+    );
+
+    const data = updateMany.mock.calls[0]![0].data;
+    expect(data).not.toHaveProperty("payload");
   });
 
   it.each(["completeJob", "rescheduleJob", "deadLetterJob"] as const)(
@@ -970,4 +1117,10 @@ function completeStepTransaction(
       })
     }
   };
+}
+
+function enabledJourneyConfig() {
+  return new SubscriptionJourneyRuntimeConfig(
+    new ConfigService({ SUBSCRIPTION_JOURNEY_ENABLED: "true" })
+  );
 }

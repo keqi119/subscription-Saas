@@ -1,8 +1,10 @@
 import { ConfigService } from "@nestjs/config";
 import {
   Prisma,
+  SubscriptionJourneyEventType,
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyJobType,
+  SubscriptionJourneyOutboxStatus,
   SubscriptionJourneyStepCode,
   SubscriptionJourneyStepStatus
 } from "@prisma/client";
@@ -218,6 +220,57 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
     expect(outboxCount).toBe(1);
     expect(journey.version).toBe(1);
   });
+
+  it("reclaims stale signal outbox separately from notification outbox", async () => {
+    const signal = await createOutbox(prisma, "signal-stale", {
+      aggregateType: "SUBSCRIPTION_JOURNEY",
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      leaseExpiresAt: new Date(),
+      leaseToken: `${FIXTURE_PREFIX}:stale-signal-lease`,
+      status: SubscriptionJourneyOutboxStatus.PROCESSING
+    });
+    const notification = await createOutbox(prisma, "notification-due", {
+      aggregateType: "JOURNEY_NOTIFICATION",
+      eventType: SubscriptionJourneyEventType.STEP_COMPLETED
+    });
+    await prisma.$executeRaw`
+      UPDATE "subscription_journey_outbox"
+      SET "lease_expires_at" = clock_timestamp() - interval '1 second'
+      WHERE "id" = ${signal.id}
+    `;
+    const persistedRows = await prisma.subscriptionJourneyOutbox.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        aggregateType: true,
+        availableAt: true,
+        id: true,
+        status: true
+      },
+      where: { id: { in: [signal.id, notification.id] } }
+    });
+    expect(persistedRows).toHaveLength(2);
+    expect(
+      persistedRows.find(({ id }) => id === notification.id)
+    ).toMatchObject({
+      aggregateType: "JOURNEY_NOTIFICATION",
+      status: SubscriptionJourneyOutboxStatus.PENDING
+    });
+
+    const [signals, notifications] = await Promise.all([
+      prisma.$transaction((tx) =>
+        repository.claimSignalOutbox(tx, 10, 120_000)
+      ),
+      prisma.$transaction((tx) =>
+        repository.claimNotificationOutbox(tx, 10, 120_000)
+      )
+    ]);
+
+    expect(signals.map(({ id }) => id)).toEqual([signal.id]);
+    expect(notifications.map(({ id }) => id)).toEqual([notification.id]);
+    expect(signals[0]?.leaseToken).not.toBe(
+      `${FIXTURE_PREFIX}:stale-signal-lease`
+    );
+  });
 });
 
 async function createFixture(prisma: PrismaService) {
@@ -283,6 +336,31 @@ function createJob(
       sourceKey: `${FIXTURE_PREFIX}:${label}`,
       status: SubscriptionJourneyJobStatus.PENDING,
       stepId: fixture.stepId,
+      ...overrides
+    }
+  });
+}
+
+function createOutbox(
+  prisma: PrismaService,
+  label: string,
+  overrides: Partial<{
+    aggregateType: string;
+    eventType: SubscriptionJourneyEventType;
+    leaseExpiresAt: Date | null;
+    leaseToken: string | null;
+    status: SubscriptionJourneyOutboxStatus;
+  }> = {}
+) {
+  return prisma.subscriptionJourneyOutbox.create({
+    data: {
+      aggregateId: fixture.journeyId,
+      aggregateType: "SUBSCRIPTION_JOURNEY",
+      availableAt: new Date("1900-01-01T00:00:00.000Z"),
+      eventKey: `${FIXTURE_PREFIX}:${label}`,
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      journeyId: fixture.journeyId,
+      payload: { fixture: FIXTURE_PREFIX },
       ...overrides
     }
   });

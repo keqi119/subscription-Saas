@@ -476,8 +476,6 @@ interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
 interface PrepareDeliveryFormValues {
   customerIdentityConfirmed?: boolean;
   deliveryLocation?: string;
-  depositReceivedConfirmed?: boolean;
-  firstMonthlyFeeReceivedConfirmed?: boolean;
   handoverDocumentsConfirmed?: boolean;
   insuranceValidConfirmed?: boolean;
   remark?: string;
@@ -6088,8 +6086,6 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     prepareDeliveryForm.setFieldsValue({
       customerIdentityConfirmed: delivery?.customerIdentityConfirmed ?? false,
       deliveryLocation: delivery?.deliveryLocation ?? undefined,
-      depositReceivedConfirmed: deliveryCheck?.depositRequired === false ? true : delivery?.depositReceivedConfirmed ?? false,
-      firstMonthlyFeeReceivedConfirmed: delivery?.firstMonthlyFeeReceivedConfirmed ?? false,
       handoverDocumentsConfirmed: delivery?.handoverDocumentsConfirmed ?? false,
       insuranceValidConfirmed: delivery?.insuranceValidConfirmed ?? false,
       remark: delivery?.remark ?? undefined,
@@ -6748,8 +6744,6 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         body: JSON.stringify({
           customerIdentityConfirmed: Boolean(values.customerIdentityConfirmed),
           deliveryLocation: values.deliveryLocation,
-          depositReceivedConfirmed: deliveryCheck?.depositRequired === false ? true : Boolean(values.depositReceivedConfirmed),
-          firstMonthlyFeeReceivedConfirmed: Boolean(values.firstMonthlyFeeReceivedConfirmed),
           handoverDocumentsConfirmed: Boolean(values.handoverDocumentsConfirmed),
           insuranceValidConfirmed: Boolean(values.insuranceValidConfirmed),
           remark: values.remark,
@@ -8385,15 +8379,6 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             </Form.Item>
             <Form.Item label="交付地点" name="deliveryLocation">
               <Input placeholder="静安旺旺大厦" />
-            </Form.Item>
-            {deliveryCheck?.depositRequired === false ? (
-              <Alert message="0 元押金，自动满足押金收取确认。" showIcon type="success" />
-            ) : null}
-            <Form.Item name="depositReceivedConfirmed" valuePropName="checked">
-              <Checkbox disabled={deliveryCheck?.depositRequired === false}>押金收取确认</Checkbox>
-            </Form.Item>
-            <Form.Item name="firstMonthlyFeeReceivedConfirmed" valuePropName="checked">
-              <Checkbox>首期月费收取确认</Checkbox>
             </Form.Item>
             <Form.Item name="insuranceValidConfirmed" valuePropName="checked">
               <Checkbox>保险人工核验</Checkbox>

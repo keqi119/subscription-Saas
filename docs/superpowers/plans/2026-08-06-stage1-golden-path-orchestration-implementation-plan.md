@@ -903,13 +903,21 @@ git commit -m "feat: orchestrate journey handover evidence"
 **Files:**
 
 - Modify: `apps/api/src/lease/lease-activation.engine.ts`
+- Modify: `apps/api/src/lease/lease-activation.types.ts`
 - Modify: `apps/api/src/lease/lease.module.ts`
+- Modify: `apps/api/src/order/delivery-confirmation-gate-lock.ts`
 - Modify: `apps/api/src/order/order.service.ts`
 - Modify: `apps/api/src/order/dto/order.dto.ts`
 - Modify: `apps/api/src/subscription-journey/subscription-journey.handlers.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.module.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.repository.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.service.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.types.ts`
 - Create: `apps/api/test/subscription-journey-activation.spec.ts`
+- Modify: `apps/api/test/subscription-journey.repository.spec.ts`
 - Modify: `apps/api/test/lease-activation.spec.ts`
 - Modify: `apps/api/test/order-delivery.spec.ts`
+- Modify: `apps/web/src/app/orders/[id]/page.tsx`
 
 **Interfaces:**
 
@@ -928,11 +936,11 @@ activateFromAuthoritativeHandover(
 ): Promise<SubscriptionActivationResult>;
 ```
 
-- [ ] **Step 1: Write failing authority-gate tests**
+- [x] **Step 1: Write failing authority-gate tests**
 
 Individually reject Contract `SIGNED` without archived PDF, any unpaid/partially paid required bill, manual money booleans without Payment/WriteOff, unapproved evidence, missing inspection, lapsed insurance, mismatched vehicle, and missing delivery mileage. Assert stable blocker codes and no partial writes.
 
-- [ ] **Step 2: Write failing atomic-success and retry tests**
+- [x] **Step 2: Write failing atomic-success and retry tests**
 
 On success assert one transaction produces:
 
@@ -951,7 +959,7 @@ expect(await countEvents(journey.id, "JOURNEY_COMPLETED")).toBe(1);
 
 Retry the activation job and assert all records remain singular. Force a write failure after Vehicle update and assert Order, Vehicle, Delivery, Lease, BillingSchedule, entitlements and Journey all roll back.
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-activation.spec.ts test/lease-activation.spec.ts test/order-delivery.spec.ts
@@ -959,15 +967,15 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-a
 
 Expected: FAIL because existing activation accepts `SIGNED`, assumes delivery already completed, and does not atomically update all aggregates.
 
-- [ ] **Step 4: Implement one authoritative transaction gate**
+- [x] **Step 4: Implement one authoritative transaction gate**
 
 Use row locks on Journey, Order, VehicleDelivery, Vehicle and Lease. Derive delivery facts from the approved Stage 2 work order/evidence. Require `Contract.status=ARCHIVED` and stored signed artifact. Derive money from bills/allocations/write-offs only. Call `ensureActiveSchedule` and `ensureInitialEntitlements` with the same transaction. Write sanitized AuditLog, `JOURNEY_COMPLETED` event and notification outbox before commit.
 
-- [ ] **Step 5: Harden the legacy delivery endpoint**
+- [x] **Step 5: Harden the legacy delivery endpoint**
 
 Remove `depositReceivedConfirmed` and `firstMonthlyFeeReceivedConfirmed` from new request DTO acceptance and frontend contract typing. Keep database fields readable for old records. Make `OrderService.confirmDelivery` delegate to the authoritative gate; for a Journey order, reject direct manual progression unless the caller uses an audited recovery action and all facts pass.
 
-- [ ] **Step 6: Make focused tests GREEN**
+- [x] **Step 6: Make focused tests GREEN**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-activation.spec.ts test/lease-activation.spec.ts test/order-delivery.spec.ts
@@ -976,7 +984,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: all focused tests/typecheck pass and failure injection proves atomic rollback.
 
-- [ ] **Step 7: Commit the activation authority boundary**
+- [x] **Step 7: Commit the activation authority boundary**
 
 ```powershell
 git add apps/api/src/lease apps/api/src/order apps/api/src/subscription-journey/subscription-journey.handlers.ts apps/api/test/subscription-journey-activation.spec.ts apps/api/test/lease-activation.spec.ts apps/api/test/order-delivery.spec.ts

@@ -6,6 +6,7 @@ import { OrderModule } from "../order/order.module";
 import { ESignModule } from "../esign/esign.module";
 import { FinanceModule } from "../finance/finance.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
+import { LeaseModule } from "../lease/lease.module";
 import { SubscriptionJourneyRuntimeConfig } from "./subscription-journey.config";
 import { SubscriptionJourneyHandlers } from "./subscription-journey.handlers";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
@@ -20,6 +21,7 @@ import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
     ESignModule,
     FinanceModule,
     HandoverWorkOrderModule,
+    LeaseModule,
     OrderModule,
     PrismaModule,
     SubscriptionJourneySignalModule

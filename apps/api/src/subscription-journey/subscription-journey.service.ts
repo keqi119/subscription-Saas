@@ -19,6 +19,7 @@ import { ESignService } from "../esign/esign.service";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { FinanceService } from "../finance/finance.service";
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { LeaseActivationEngine } from "../lease/lease-activation.engine";
 import { OrderEntitlementService } from "../order/order-entitlement.service";
 import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -53,7 +54,8 @@ export class SubscriptionJourneyService {
     @Optional() private readonly esignService?: ESignService,
     @Optional() private readonly fadadaSignedArtifactService?: FadadaSignedArtifactService,
     @Optional() private readonly financeService?: FinanceService,
-    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService
+    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
+    @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine
   ) {}
 
   async dispatchSignalOutbox(
@@ -566,6 +568,91 @@ export class SubscriptionJourneyService {
         orderId: current.orderId,
         vehicleDeliveryId: workOrder.vehicleDeliveryId ?? null,
         workOrderId: workOrder.id
+      };
+    });
+  }
+
+  async activateSubscriptionJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.leaseActivationEngine) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey activation service is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id"
+        FROM "subscription_journey"
+        WHERE "id" = ${job.journeyId}
+        FOR UPDATE
+      `);
+      const journey = await tx.subscriptionJourney.findUnique({
+        include: {
+          application: {
+            select: { finalPlanRevision: true, salesUserId: true }
+          },
+          steps: true
+        },
+        where: { id: job.journeyId }
+      });
+      if (!journey || !journey.orderId) {
+        throw journeyError(
+          "JOURNEY_NOT_FOUND",
+          "The subscription journey activation order was not found."
+        );
+      }
+      const step = journey.steps.find(
+        ({ code }) =>
+          code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+      );
+      if (!step || step.id !== job.stepId) {
+        throw journeyError(
+          "JOURNEY_INVALID_TRANSITION",
+          "The activation job does not match its subscription journey step."
+        );
+      }
+      if (journey.status === "COMPLETED" && step.status === "COMPLETED") {
+        return {
+          action: "SUBSCRIPTION_ALREADY_ACTIVATED",
+          orderId: journey.orderId
+        };
+      }
+      if (
+        journey.currentStepCode !==
+        SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+      ) {
+        throw journeyError(
+          "JOURNEY_INVALID_TRANSITION",
+          "The journey is not at authoritative activation."
+        );
+      }
+      const payload = isRecord(job.payload) ? job.payload : {};
+      if (
+        payload.orderId !== journey.orderId ||
+        payload.finalPlanRevision !== journey.application.finalPlanRevision
+      ) {
+        throw journeyError(
+          "FINAL_PLAN_REVISION_STALE",
+          "The activation job targets a stale order or final-plan revision."
+        );
+      }
+      const result =
+        await this.leaseActivationEngine!.activateFromAuthoritativeHandover(
+          tx,
+          {
+            actorId: journey.application.salesUserId,
+            journeyId: journey.id,
+            orderId: journey.orderId
+          }
+        );
+      return {
+        action: "SUBSCRIPTION_ACTIVATED",
+        deliveryId: result.deliveryId,
+        leaseId: result.leaseId,
+        orderId: result.orderId,
+        vehicleId: result.vehicleId
       };
     });
   }

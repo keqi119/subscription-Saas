@@ -25,6 +25,7 @@ import {
 } from "./subscription-journey-state-machine";
 import {
   CompleteJourneyStepInput,
+  CompleteJourneyActivationInput,
   DeadLetterJourneyJobInput,
   DecideManualTaskInput,
   EnqueueJourneyJobInput,
@@ -149,6 +150,53 @@ export class SubscriptionJourneyRepository {
       journeyId: input.journeyId,
       payload: eventPayload,
       sequence: input.expectedVersion + 1
+    });
+    return step;
+  }
+
+  async completeActivation(
+    tx: Tx,
+    input: CompleteJourneyActivationInput
+  ): Promise<SubscriptionJourneyStep> {
+    const eventBase = `journey:${input.journeyId}:activation`;
+    const payload = safePayload(input.payload ?? {});
+    const step = await this.completeStep(tx, {
+      eventKey: `${eventBase}:step`,
+      expectedVersion: input.expectedVersion,
+      journeyId: input.journeyId,
+      payload,
+      stepId: input.stepId
+    });
+    const completionEventKey = `${eventBase}:completed`;
+    await lockIdempotencyKey(tx, "journey-event", completionEventKey);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: completionEventKey }
+    });
+    const completionPayload = safePayload({
+      operation: "COMPLETE_JOURNEY",
+      payload,
+      stepId: input.stepId
+    });
+    if (duplicate) {
+      requireExactEvent(duplicate, {
+        eventType: SubscriptionJourneyEventType.JOURNEY_COMPLETED,
+        journeyId: input.journeyId,
+        payload: completionPayload
+      });
+      return step;
+    }
+    await this.updateJourneyVersion(
+      tx,
+      input.journeyId,
+      input.expectedVersion + 1,
+      { version: { increment: 1 } }
+    );
+    await this.writeEventAndOutbox(tx, {
+      eventKey: completionEventKey,
+      eventType: SubscriptionJourneyEventType.JOURNEY_COMPLETED,
+      journeyId: input.journeyId,
+      payload: completionPayload,
+      sequence: input.expectedVersion + 2
     });
     return step;
   }

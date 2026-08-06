@@ -34,6 +34,13 @@ export interface CompleteJourneyStepInput {
   stepId: string;
 }
 
+export interface CompleteJourneyActivationInput {
+  expectedVersion: number;
+  journeyId: string;
+  payload?: Prisma.InputJsonValue;
+  stepId: string;
+}
+
 export interface WaitForCustomerInput {
   eventKey: string;
   expectedVersion: number;

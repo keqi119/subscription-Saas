@@ -91,6 +91,7 @@ import {
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { MileageReviewService } from "../mileage-review/mileage-review.service";
 import { activateLeaseRecord } from "../lease/lease-activation.persistence";
+import { LeaseActivationEngine } from "../lease/lease-activation.engine";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
@@ -383,7 +384,8 @@ export class OrderService {
     @Optional() private readonly vehicleMileageService?: VehicleMileageService,
     @Optional() private readonly mileageReviewService?: MileageReviewService,
     @Optional() private readonly billingAutomationService?: BillingAutomationService,
-    @Optional() private readonly orderEntitlementService?: OrderEntitlementService
+    @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
+    @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine
   ) {}
 
   async listOrders(user: RequestUser) {
@@ -2077,6 +2079,43 @@ export class OrderService {
   }
 
   async confirmDelivery(
+    id: string,
+    _dto: ConfirmDeliveryDto,
+    user: RequestUser,
+    _context: RequestContext
+  ) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertOrderNotDelivered(beforeOrder);
+    const journey = await this.prisma.subscriptionJourney?.findUnique({
+      where: { orderId: id }
+    });
+    if (journey) {
+      throw new BadRequestException(
+        "JOURNEY_MANAGED_DELIVERY_REQUIRES_AUDITED_RECOVERY"
+      );
+    }
+    if (!this.leaseActivationEngine) {
+      return this.confirmDeliveryLegacy(id, _dto, user, _context);
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await this.leaseActivationEngine!.activateFromAuthoritativeHandover(tx, {
+        actorId: user.id,
+        orderId: id
+      });
+      const delivery = await tx.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      });
+      if (!delivery) {
+        throw new NotFoundException("Delivery not found.");
+      }
+      return toDeliveryView(delivery);
+    });
+  }
+
+  private async confirmDeliveryLegacy(
     id: string,
     dto: ConfirmDeliveryDto,
     user: RequestUser,
@@ -5047,13 +5086,9 @@ function buildPrepareDeliveryData(
 ) {
   const contractSignedConfirmed = isCurrentContractSigned(order);
   const depositReceivedConfirmed =
-    getRequiredDepositAmount(order) === 0n
-      ? true
-      : (dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false);
+    beforeDelivery?.depositReceivedConfirmed ?? false;
   const firstMonthlyFeeReceivedConfirmed =
-    dto.firstMonthlyFeeReceivedConfirmed ??
-    beforeDelivery?.firstMonthlyFeeReceivedConfirmed ??
-    false;
+    beforeDelivery?.firstMonthlyFeeReceivedConfirmed ?? false;
   const insuranceValidConfirmed =
     dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
   const vehiclePreparedConfirmed =
@@ -5083,8 +5118,6 @@ function buildPrepareDeliveryData(
     customerIdentityConfirmed,
     deliveryLocation,
     deliveryStatus: DeliveryStatus.READY,
-    depositReceivedConfirmed,
-    firstMonthlyFeeReceivedConfirmed,
     handoverDocumentsConfirmed,
     insuranceValidConfirmed,
     remark,

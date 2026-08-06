@@ -35,6 +35,9 @@ export class SubscriptionJourneyHandlers {
     if (job.jobType === SubscriptionJourneyJobType.CREATE_HANDOVER) {
       return this.service.createHandoverJob(job);
     }
+    if (job.jobType === SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION) {
+      return this.service.activateSubscriptionJob(job);
+    }
     throw journeyError(
       "JOURNEY_HANDLER_NOT_READY",
       "The subscription journey handler is not ready."

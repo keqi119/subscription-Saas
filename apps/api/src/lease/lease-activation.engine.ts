@@ -1,40 +1,72 @@
-import { BadRequestException, Inject, Injectable, NotFoundException, Optional } from "@nestjs/common";
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional
+} from "@nestjs/common";
 import {
   AuditAction,
   BillStatus,
   BillType,
   ContractStatus,
-  DeliveryHandoverArchiveStatus,
-  DeliveryHandoverStatus,
   DeliveryStatus,
+  EntitlementAccountStatus,
   Lease,
   LeaseStatus,
-  VehicleInspectionStatus
+  OrderStatus,
+  PaymentStatus,
+  Prisma,
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus,
+  VehicleHandoverOpsReviewStatus,
+  VehicleHandoverType,
+  VehicleHandoverWorkOrderStatus,
+  VehicleInspectionStatus,
+  VehicleMileageSourceType,
+  VehicleStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { BillingAutomationService } from "../billing-automation/billing-automation.service";
+import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
 import {
   DeliveryEvidenceReadiness,
   DeliveryEvidenceService
 } from "../delivery-evidence/delivery-evidence.service";
 import {
+  findDeliveryHandoverForConfirmation,
   isDeliveryHandoverArchived,
   isDeliveryHandoverSigned
 } from "../delivery-handover/delivery-handover.service";
+import { FinanceService } from "../finance/finance.service";
+import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
+import { MileageReviewService } from "../mileage-review/mileage-review.service";
+import { OrderEntitlementService } from "../order/order-entitlement.service";
+import { lockDeliveryConfirmationGateRows } from "../order/delivery-confirmation-gate-lock";
 import { PrismaService } from "../prisma/prisma.service";
+import { SubscriptionJourneyRepository } from "../subscription-journey/subscription-journey.repository";
+import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
+import { activateLeaseRecord } from "./lease-activation.persistence";
 import {
   LEASE_ACTIVATION_CLOCK,
   LeaseActivationClock,
   LeaseActivationCondition,
-  LeaseActivationResult,
-  LeaseActivationWarningCondition,
-  LeaseStatusView
+  LeaseActivationEvaluation,
+  LeaseStatusView,
+  SubscriptionActivationResult
 } from "./lease-activation.types";
-import { activateLeaseRecord } from "./lease-activation.persistence";
 
-const LEASE_ACTIVATION_REJECTED_REASON = "MISSING_LEASE_ACTIVATION_CONDITIONS";
+const LEASE_ACTIVATION_REJECTED_REASON =
+  "MISSING_LEASE_ACTIVATION_CONDITIONS";
+
+type Tx = Prisma.TransactionClient;
+
+type AuthorityFacts = Awaited<
+  ReturnType<LeaseActivationEngine["readAuthorityFacts"]>
+>;
 
 @Injectable()
 export class LeaseActivationEngine {
@@ -47,148 +79,242 @@ export class LeaseActivationEngine {
     @Optional()
     private readonly deliveryEvidenceService?: DeliveryEvidenceService,
     @Optional()
-    private readonly billingAutomationService?: BillingAutomationService
+    private readonly billingAutomationService?: BillingAutomationService,
+    @Optional()
+    private readonly financeService?: FinanceService,
+    @Optional()
+    private readonly handoverWorkOrderService?: HandoverWorkOrderService,
+    @Optional()
+    private readonly vehicleMileageService?: VehicleMileageService,
+    @Optional()
+    private readonly mileageReviewService?: MileageReviewService,
+    @Optional()
+    private readonly orderEntitlementService?: OrderEntitlementService,
+    @Optional()
+    private readonly journeyRepository?: SubscriptionJourneyRepository
   ) {}
 
-  async evaluate(orderId: string): Promise<LeaseActivationResult> {
-    const order = await this.prisma.subscriptionOrder.findUnique({
-      include: { contract: true },
-      where: { id: orderId }
-    });
-
-    if (!order || order.deletedAt) {
-      throw new NotFoundException("Order not found.");
-    }
-
-    const [bills, delivery, handover, inspection] = await Promise.all([
-      this.prisma.receivableBill.findMany({
-        orderBy: { createdAt: "asc" },
-        where: {
-          billStatus: { not: BillStatus.CANCELLED },
-          billType: { in: [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] },
-          deletedAt: null,
-          orderId
-        }
-      }),
-      this.prisma.vehicleDelivery.findUnique({ where: { orderId } }),
-      this.prisma.vehicleDeliveryHandover.findFirst({
-        orderBy: { createdAt: "desc" },
-        where: {
-          deletedAt: null,
-          orderId,
-          status: { notIn: [DeliveryHandoverStatus.CANCELLED, DeliveryHandoverStatus.FAILED] }
-        }
-      }),
-      this.prisma.vehicleInspection.findUnique({ where: { orderId } })
-    ]);
-
-    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
-      orderId,
-      handover?.id ?? null
+  async evaluate(orderId: string): Promise<LeaseActivationEvaluation> {
+    return this.prisma.$transaction((tx) =>
+      this.evaluateInTransaction(tx, orderId)
     );
-    const missingConditions: LeaseActivationCondition[] = [];
-    const warningConditions: LeaseActivationWarningCondition[] = [];
+  }
 
-    if (!order.contract || order.contract.deletedAt || order.contract.status !== ContractStatus.SIGNED) {
-      missingConditions.push("CONTRACT_SIGNED");
-    }
-
-    if (!isBillTypePaid(bills, BillType.DEPOSIT)) {
-      missingConditions.push("DEPOSIT_PAID");
-    }
-
-    if (!isBillTypePaid(bills, BillType.FIRST_MONTHLY_FEE)) {
-      missingConditions.push("FIRST_RENT_PAID");
-    }
-
-    if (!order.actualDeliveryAt || !delivery || delivery.deletedAt || delivery.deliveryStatus !== DeliveryStatus.DELIVERED) {
-      missingConditions.push("DELIVERY_CONFIRMED");
-    }
-
-    if (!isDeliveryHandoverSigned(handover)) {
-      missingConditions.push("HANDOVER_SIGNED_MISSING");
-    }
-
-    appendEvidenceMissingConditions(missingConditions, evidenceReadiness);
-
-    if (isDeliveryHandoverSigned(handover) && !isDeliveryHandoverArchived(handover)) {
-      warningConditions.push(
-        handover?.archiveStatus === DeliveryHandoverArchiveStatus.FAILED
-          ? "HANDOVER_ARCHIVE_FAILED"
-          : "HANDOVER_ARCHIVED_MISSING"
-      );
-    }
-
-    if (!inspection || inspection.deletedAt || inspection.status !== VehicleInspectionStatus.PASSED) {
-      missingConditions.push("INSPECTION_PASSED");
-    }
-
-    return {
-      canActivate: missingConditions.length === 0,
-      missingConditions,
-      ...(missingConditions.length > 0 ? { reason: LEASE_ACTIVATION_REJECTED_REASON } : {}),
-      ...(warningConditions.length > 0 ? { warningConditions } : {})
-    };
+  async evaluateInTransaction(
+    tx: Tx,
+    orderId: string
+  ): Promise<LeaseActivationEvaluation> {
+    await lockDeliveryConfirmationGateRows(tx, orderId);
+    const facts = await this.readAuthorityFacts(tx, orderId);
+    return this.evaluateFacts(facts);
   }
 
   async canActivate(orderId: string): Promise<boolean> {
     return (await this.evaluate(orderId)).canActivate;
   }
 
-  async activate(orderId: string, user?: RequestUser, context?: RequestContext) {
-    const result = await this.evaluate(orderId);
-
-    if (!result.canActivate) {
+  async activateFromAuthoritativeHandover(
+    tx: Tx,
+    input: { actorId: string; journeyId?: string; orderId: string }
+  ): Promise<SubscriptionActivationResult> {
+    await lockDeliveryConfirmationGateRows(tx, input.orderId);
+    const facts = await this.readAuthorityFacts(tx, input.orderId);
+    const evaluation = this.evaluateFacts(facts);
+    if (!evaluation.canActivate) {
+      throw new BadRequestException(evaluation);
+    }
+    if (!facts.delivery || !facts.handover || !facts.workOrder) {
       throw new BadRequestException({
         canActivate: false,
-        missingConditions: result.missingConditions,
-        reason: result.reason
+        missingConditions: ["DELIVERY_NOT_READY"],
+        reason: LEASE_ACTIVATION_REJECTED_REASON
       });
     }
+    const journey = facts.order.subscriptionJourney;
+    if (
+      input.journeyId &&
+      (!journey || journey.id !== input.journeyId)
+    ) {
+      throw new BadRequestException("JOURNEY_ORDER_MISMATCH");
+    }
 
-    const { existing, lease } = await this.prisma.$transaction(
-      async (tx) => {
-        const order = await tx.subscriptionOrder.findUnique({
-          select: {
-            actualDeliveryAt: true,
-            deletedAt: true,
-            id: true
-          },
-          where: { id: orderId }
-        });
-        if (!order || order.deletedAt || !order.actualDeliveryAt) {
-          throw new BadRequestException("DELIVERY_CONFIRMED");
-        }
-        const activatedAt = order.actualDeliveryAt;
-        const { existing, lease } = await activateLeaseRecord(tx, {
-          activatedAt,
-          actorId: user?.id,
-          orderId
-        });
-        if (!this.billingAutomationService) {
-          throw new Error("Billing automation service is unavailable.");
-        }
-        await this.billingAutomationService.ensureActiveSchedule(
-          tx,
-          orderId,
-          activatedAt
-        );
-        return { existing, lease };
-      }
+    const activatedAt = facts.handover.completedAt!;
+    const mileageKm = facts.workOrder.handoverMileageKm!;
+    const actorId = input.actorId;
+    const mileageService = this.requireDependency(
+      this.vehicleMileageService,
+      "Vehicle mileage service"
+    );
+    const mileageReviewService = this.requireDependency(
+      this.mileageReviewService,
+      "Mileage review service"
+    );
+    const billingAutomationService = this.requireDependency(
+      this.billingAutomationService,
+      "Billing automation service"
+    );
+    const entitlementService = this.requireDependency(
+      this.orderEntitlementService,
+      "Order entitlement service"
     );
 
-    await this.auditService.write({
-      action: existing ? AuditAction.UPDATE : AuditAction.CREATE,
-      after: toLeaseView(lease),
-      before: existing ? toLeaseView(existing) : undefined,
-      entityId: lease.id,
-      entityType: "lease",
-      ipAddress: context?.ipAddress,
-      module: "lease",
-      operatorId: user?.id,
-      userAgent: context?.userAgent
+    const deliveryReading = await mileageService.appendConfirmedReading(tx, {
+      confirmedBy: actorId,
+      evidenceSnapshot: {
+        handoverId: facts.handover.id,
+        manifestHash: facts.handover.manifestHash,
+        source: "APPROVED_STAGE2_HANDOVER",
+        workOrderId: facts.workOrder.id
+      },
+      mileageKm,
+      orderId: input.orderId,
+      recordedAt: activatedAt,
+      sourceRecordId: facts.delivery.id,
+      sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+      vehicleId: facts.order.vehicleId!
+    });
+    await mileageReviewService.createFirstReview(tx, {
+      actualDeliveryAt: activatedAt,
+      actorId,
+      deliveryReadingId: deliveryReading.id,
+      orderId: input.orderId,
+      vehicleId: facts.order.vehicleId!
     });
 
+    const delivery = await tx.vehicleDelivery.update({
+      data: {
+        deliveredAt: activatedAt,
+        deliveryStatus: DeliveryStatus.DELIVERED,
+        handoverMileageKm: mileageKm,
+        updatedBy: actorId
+      },
+      where: { id: facts.delivery.id }
+    });
+    const order = await tx.subscriptionOrder.update({
+      data: {
+        actualDeliveryAt: activatedAt,
+        orderStatus: OrderStatus.ACTIVE,
+        updatedBy: actorId
+      },
+      where: { id: input.orderId }
+    });
+    const vehicle = await tx.vehicle.update({
+      data: { status: VehicleStatus.LEASED, updatedBy: actorId },
+      where: { id: facts.order.vehicleId! }
+    });
+    const { existing: leaseBefore, lease } = await activateLeaseRecord(tx, {
+      activatedAt,
+      actorId,
+      orderId: input.orderId
+    });
+    await billingAutomationService.ensureActiveSchedule(
+      tx,
+      input.orderId,
+      activatedAt
+    );
+    await entitlementService.ensureInitialEntitlements(
+      tx,
+      input.orderId,
+      actorId
+    );
+    await tx.orderEntitlementAccount.updateMany({
+      data: {
+        accountStatus: EntitlementAccountStatus.ACTIVE,
+        updatedBy: actorId
+      },
+      where: {
+        deletedAt: null,
+        orderId: input.orderId
+      }
+    });
+
+    if (journey) {
+      const activationStep = journey.steps.find(
+        ({ code }) =>
+          code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+      );
+      if (!activationStep || !this.journeyRepository) {
+        throw new Error("Subscription journey activation is unavailable.");
+      }
+      if (journey.status !== SubscriptionJourneyStatus.COMPLETED) {
+        if (
+          journey.currentStepCode !==
+            SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
+          journey.currentStepStatus === SubscriptionJourneyStepStatus.COMPLETED
+        ) {
+          throw new BadRequestException("JOURNEY_ACTIVATION_STEP_MISMATCH");
+        }
+        await this.journeyRepository.completeActivation(tx, {
+          expectedVersion: journey.version,
+          journeyId: journey.id,
+          payload: {
+            deliveryId: delivery.id,
+            leaseId: lease.id,
+            orderId: order.id,
+            vehicleId: vehicle.id
+          },
+          stepId: activationStep.id
+        });
+      }
+    }
+
+    await this.auditService.write(
+      {
+        action: leaseBefore ? AuditAction.UPDATE : AuditAction.CREATE,
+        after: {
+          activatedAt: activatedAt.toISOString(),
+          deliveryId: delivery.id,
+          leaseId: lease.id,
+          orderId: order.id,
+          source: "AUTHORITATIVE_STAGE2_HANDOVER",
+          vehicleId: vehicle.id
+        },
+        before: leaseBefore
+          ? {
+              activatedAt: leaseBefore.activatedAt?.toISOString() ?? null,
+              leaseId: leaseBefore.id,
+              status: leaseBefore.status
+            }
+          : undefined,
+        entityId: lease.id,
+        entityType: "subscription_activation",
+        module: "lease",
+        operatorId: actorId
+      },
+      tx
+    );
+
+    return {
+      activatedAt: activatedAt.toISOString(),
+      deliveryId: delivery.id,
+      deliveryStatus: "DELIVERED",
+      journeyStatus: journey ? "COMPLETED" : null,
+      leaseId: lease.id,
+      leaseStatus: "ACTIVE",
+      orderId: order.id,
+      orderStatus: "ACTIVE",
+      vehicleId: vehicle.id,
+      vehicleStatus: "LEASED"
+    };
+  }
+
+  async activate(
+    orderId: string,
+    user?: RequestUser,
+    context?: RequestContext
+  ) {
+    void context;
+    const actorId = user?.id;
+    if (!actorId) {
+      throw new BadRequestException("ACTIVATION_ACTOR_REQUIRED");
+    }
+    const result = await this.prisma.$transaction((tx) =>
+      this.activateFromAuthoritativeHandover(tx, { actorId, orderId })
+    );
+    const lease = await this.prisma.lease.findUnique({
+      where: { id: result.leaseId }
+    });
+    if (!lease) throw new NotFoundException("Lease not found.");
     return toLeaseView(lease);
   }
 
@@ -197,7 +323,6 @@ export class LeaseActivationEngine {
       this.evaluate(orderId),
       this.prisma.lease.findUnique({ where: { orderId } })
     ]);
-
     if (lease && !lease.deletedAt) {
       return {
         activatedAt: toIsoDateTime(lease.activatedAt),
@@ -209,7 +334,6 @@ export class LeaseActivationEngine {
         warningConditions: result.warningConditions
       };
     }
-
     return {
       activatedAt: null,
       canActivate: result.canActivate,
@@ -221,17 +345,280 @@ export class LeaseActivationEngine {
     };
   }
 
+  async readAuthorityFacts(tx: Tx, orderId: string) {
+    const order = await tx.subscriptionOrder.findUnique({
+      include: {
+        contract: true,
+        subscriptionJourney: { include: { steps: true } },
+        vehicle: { include: { insurancePolicies: true } }
+      },
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException("Order not found.");
+    }
+    const [delivery, handover, inspection, bills] = await Promise.all([
+      tx.vehicleDelivery.findUnique({ where: { orderId } }),
+      findDeliveryHandoverForConfirmation(tx, orderId),
+      tx.vehicleInspection.findUnique({ where: { orderId } }),
+      tx.receivableBill.findMany({
+        include: {
+          writeOffs: {
+            include: { payment: { select: { paymentStatus: true } } },
+            where: { deletedAt: null }
+          }
+        },
+        orderBy: { createdAt: "asc" },
+        where: {
+          billStatus: { not: BillStatus.CANCELLED },
+          billType: { in: [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] },
+          deletedAt: null,
+          orderId
+        }
+      })
+    ]);
+    const [
+      contractFile,
+      workOrder,
+      evidenceReadiness,
+      settlement,
+      handoverAuthorityValid
+    ] =
+      await Promise.all([
+        order.contract?.fileId
+          ? tx.fileObject.findUnique({ where: { id: order.contract.fileId } })
+          : null,
+        tx.vehicleHandoverWorkOrder.findFirst({
+          orderBy: { createdAt: "desc" },
+          where: {
+            handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+            orderId
+          }
+        }),
+        this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+          orderId,
+          handover?.id ?? null,
+          undefined,
+          tx
+        ),
+        this.financeService
+          ? this.financeService.evaluateInitialBillSettlement(tx, orderId)
+          : Promise.resolve({
+              paid: true,
+              remainingAmount: 0n
+            }),
+        this.validateHandoverAuthority(tx, orderId, handover?.id ?? null)
+      ]);
+    return {
+      bills,
+      contractFile,
+      delivery,
+      evidenceReadiness,
+      handover,
+      handoverAuthorityValid,
+      inspection,
+      order,
+      settlement,
+      workOrder
+    };
+  }
+
+  private evaluateFacts(facts: AuthorityFacts): LeaseActivationEvaluation {
+    const missingConditions: LeaseActivationCondition[] = [];
+    const { order, delivery, handover, inspection, workOrder } = facts;
+    if (
+      !order.contract ||
+      order.contract.deletedAt ||
+      order.contract.status !== ContractStatus.ARCHIVED ||
+      !order.contract.archivedAt ||
+      !order.contract.fileId ||
+      !facts.contractFile
+    ) {
+      pushUnique(missingConditions, "CONTRACT_ARCHIVED_ARTIFACT_MISSING");
+    }
+
+    const requiredDeposit = order.finalDepositAmount ?? order.depositAmount;
+    if (
+      requiredDeposit > 0n &&
+      !isAuthoritativelySettled(
+        facts.bills,
+        BillType.DEPOSIT,
+        requiredDeposit
+      )
+    ) {
+      pushUnique(missingConditions, "DEPOSIT_PAYMENT_MISSING");
+    }
+    if (
+      !isAuthoritativelySettled(
+        facts.bills,
+        BillType.FIRST_MONTHLY_FEE,
+        order.monthlyFeeAmount
+      ) ||
+      !facts.settlement.paid
+    ) {
+      pushUnique(missingConditions, "FIRST_RENT_PAYMENT_MISSING");
+    }
+
+    const retryingCompletedActivation =
+      order.orderStatus === OrderStatus.ACTIVE &&
+      delivery?.deliveryStatus === DeliveryStatus.DELIVERED &&
+      order.vehicle?.status === VehicleStatus.LEASED;
+    if (
+      !delivery ||
+      delivery.deletedAt ||
+      (delivery.deliveryStatus !== DeliveryStatus.READY &&
+        delivery.deliveryStatus !== DeliveryStatus.DELIVERED)
+    ) {
+      pushUnique(missingConditions, "DELIVERY_NOT_READY");
+    }
+    if (
+      delivery &&
+      (!delivery.vehiclePreparedConfirmed ||
+        !delivery.vehiclePhotosConfirmed ||
+        !delivery.customerIdentityConfirmed ||
+        !delivery.handoverDocumentsConfirmed)
+    ) {
+      pushUnique(missingConditions, "DELIVERY_CHECKLIST_INCOMPLETE");
+    }
+    if (
+      !handover ||
+      !isDeliveryHandoverSigned(handover) ||
+      !isDeliveryHandoverArchived(handover) ||
+      !handover.archivedAt ||
+      !handover.signedDocumentFileId ||
+      !handover.signedDocumentFile ||
+      !handover.handoverContract ||
+      handover.handoverContract.status !== ContractStatus.ARCHIVED ||
+      handover.handoverContract.fileId !== handover.signedDocumentFileId
+    ) {
+      pushUnique(missingConditions, "HANDOVER_ARCHIVED_ARTIFACT_MISSING");
+    }
+    appendEvidenceMissingConditions(
+      missingConditions,
+      facts.evidenceReadiness
+    );
+    if (
+      !workOrder ||
+      !facts.handoverAuthorityValid ||
+      workOrder.status !== VehicleHandoverWorkOrderStatus.OPS_REVIEWED ||
+      workOrder.opsReviewStatus !== VehicleHandoverOpsReviewStatus.APPROVED ||
+      !sameManifest(workOrder.metadata, handover?.manifestHash)
+    ) {
+      pushUnique(missingConditions, "HANDOVER_EVIDENCE_NOT_APPROVED");
+    }
+    if (!workOrder || workOrder.handoverMileageKm === null) {
+      pushUnique(missingConditions, "DELIVERY_MILEAGE_MISSING");
+    }
+    const vehicleId = order.vehicleId;
+    if (
+      !vehicleId ||
+      !order.vehicle ||
+      order.vehicle.deletedAt ||
+      delivery?.vehicleId !== vehicleId ||
+      handover?.vehicleDeliveryId !== delivery?.id ||
+      workOrder?.vehicleDeliveryId !== delivery?.id ||
+      workOrder?.handoverId !== handover?.id
+    ) {
+      pushUnique(missingConditions, "VEHICLE_MISMATCH");
+    }
+    if (
+      order.vehicle &&
+      order.vehicle.status !== VehicleStatus.RESERVED &&
+      !retryingCompletedActivation
+    ) {
+      pushUnique(missingConditions, "VEHICLE_NOT_RESERVED");
+    }
+    const deliveryAt = handover?.completedAt ?? null;
+    if (
+      !deliveryAt ||
+      !order.vehicle ||
+      !resolveVehicleInsuranceCoverage(
+        order.vehicle.insurancePolicies,
+        deliveryAt
+      ).covered
+    ) {
+      pushUnique(missingConditions, "INSURANCE_NOT_COVERED");
+    }
+    if (
+      !inspection ||
+      inspection.deletedAt ||
+      inspection.status !== VehicleInspectionStatus.PASSED
+    ) {
+      pushUnique(missingConditions, "INSPECTION_PASSED");
+    }
+    return {
+      canActivate: missingConditions.length === 0,
+      missingConditions,
+      ...(missingConditions.length > 0
+        ? { reason: LEASE_ACTIVATION_REJECTED_REASON }
+        : {})
+    };
+  }
+
   private getDeliveryEvidenceService() {
-    return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
+    return (
+      this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma)
+    );
+  }
+
+  private async validateHandoverAuthority(
+    tx: Tx,
+    orderId: string,
+    handoverId: string | null
+  ) {
+    if (!this.handoverWorkOrderService) return true;
+    try {
+      await this.handoverWorkOrderService.assertDeliveryCanBeConfirmed(
+        orderId,
+        handoverId,
+        tx
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private requireDependency<T>(value: T | undefined, name: string): T {
+    if (!value) throw new Error(`${name} is unavailable.`);
+    return value;
   }
 }
 
-function isBillTypePaid(
-  bills: Array<{ billStatus: BillStatus; billType: BillType; remainingAmount: bigint }>,
-  billType: BillType
+function isAuthoritativelySettled(
+  bills: AuthorityFacts["bills"],
+  billType: BillType,
+  requiredAmount: bigint
 ) {
-  const typedBills = bills.filter((bill) => bill.billType === billType);
-  return typedBills.length > 0 && typedBills.every((bill) => bill.billStatus === BillStatus.PAID || bill.remainingAmount === 0n);
+  const bill = bills.find(
+    (candidate) =>
+      candidate.billType === billType && candidate.amount === requiredAmount
+  );
+  if (
+    !bill ||
+    bill.billStatus !== BillStatus.PAID ||
+    bill.remainingAmount !== 0n
+  ) {
+    return false;
+  }
+  const confirmedWriteOffAmount = bill.writeOffs.reduce(
+    (total, writeOff) =>
+      writeOff.payment.paymentStatus === PaymentStatus.CONFIRMED
+        ? total + writeOff.writeOffAmount
+        : total,
+    0n
+  );
+  return confirmedWriteOffAmount >= requiredAmount;
+}
+
+function sameManifest(metadata: Prisma.JsonValue, manifestHash?: string | null) {
+  return Boolean(
+    manifestHash &&
+      metadata &&
+      typeof metadata === "object" &&
+      !Array.isArray(metadata) &&
+      metadata.journeyEvidenceManifestHash === manifestHash
+  );
 }
 
 function toLeaseView(lease: Lease) {
@@ -253,29 +640,29 @@ function appendEvidenceMissingConditions(
   missingConditions: LeaseActivationCondition[],
   readiness: DeliveryEvidenceReadiness
 ) {
-  if (readiness.ready) {
-    return;
-  }
+  if (readiness.ready) return;
   for (const detail of readiness.blockingDetails) {
-    pushUnique(missingConditions, mapEvidenceBlockingCondition(detail));
+    if (
+      detail.code === "HANDOVER_EVIDENCE_REJECTED" ||
+      detail.code === "DAMAGE_EVIDENCE_REJECTED"
+    ) {
+      pushUnique(missingConditions, "HANDOVER_EVIDENCE_REJECTED");
+    } else if (
+      detail.code === "HANDOVER_EVIDENCE_REVIEW_PENDING" ||
+      detail.code === "DAMAGE_EVIDENCE_REVIEW_PENDING"
+    ) {
+      pushUnique(missingConditions, "HANDOVER_EVIDENCE_REVIEW_PENDING");
+    } else if (
+      detail.code === "DAMAGE_EVIDENCE_MISSING" ||
+      detail.code === "DAMAGE_STATE_CONFLICT"
+    ) {
+      pushUnique(missingConditions, "DAMAGE_EVIDENCE_MISSING");
+    } else {
+      pushUnique(missingConditions, "HANDOVER_EVIDENCE_MISSING");
+    }
   }
-}
-
-function mapEvidenceBlockingCondition(detail: DeliveryEvidenceReadiness["blockingDetails"][number]): LeaseActivationCondition {
-  if (detail.code === "HANDOVER_EVIDENCE_REJECTED" || detail.code === "DAMAGE_EVIDENCE_REJECTED") {
-    return "HANDOVER_EVIDENCE_REJECTED";
-  }
-  if (detail.code === "HANDOVER_EVIDENCE_REVIEW_PENDING" || detail.code === "DAMAGE_EVIDENCE_REVIEW_PENDING") {
-    return "HANDOVER_EVIDENCE_REVIEW_PENDING";
-  }
-  if (detail.code === "DAMAGE_EVIDENCE_MISSING" || detail.code === "DAMAGE_STATE_CONFLICT") {
-    return "DAMAGE_EVIDENCE_MISSING";
-  }
-  return "HANDOVER_EVIDENCE_MISSING";
 }
 
 function pushUnique<T>(items: T[], item: T) {
-  if (!items.includes(item)) {
-    items.push(item);
-  }
+  if (!items.includes(item)) items.push(item);
 }

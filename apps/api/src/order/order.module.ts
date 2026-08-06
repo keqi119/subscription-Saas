@@ -8,6 +8,7 @@ import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.m
 import { ESignModule } from "../esign/esign.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { MileageReviewModule } from "../mileage-review/mileage-review.module";
+import { LeaseModule } from "../lease/lease.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
 import { StorageModule } from "../storage/storage.module";
 import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module";
@@ -27,6 +28,7 @@ import { OrderEntitlementService } from "./order-entitlement.service";
     DeliveryEvidenceModule,
     ESignModule,
     HandoverWorkOrderModule,
+    LeaseModule,
     MileageReviewModule,
     ServiceCaseModule,
     StorageModule,

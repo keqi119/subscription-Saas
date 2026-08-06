@@ -161,14 +161,6 @@ export class PrepareDeliveryDto {
 
   @IsOptional()
   @IsBoolean()
-  depositReceivedConfirmed?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  firstMonthlyFeeReceivedConfirmed?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
   insuranceValidConfirmed?: boolean;
 
   @IsOptional()

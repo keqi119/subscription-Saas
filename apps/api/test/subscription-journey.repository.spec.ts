@@ -40,6 +40,35 @@ describe("SubscriptionJourneyRepository", () => {
     expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledTimes(1);
   });
 
+  it("writes one terminal JOURNEY_COMPLETED event and outbox row on activation retries", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+    });
+    const events = new Map<string, { journeyId: string }>();
+    const tx = completeStepTransaction(step, events);
+    const repository = new SubscriptionJourneyRepository();
+    const input = {
+      expectedVersion: 0,
+      journeyId: step.journeyId,
+      payload: { leaseId: "lease-1", orderId: "order-1" },
+      stepId: step.id
+    };
+
+    await repository.completeActivation(tx as never, input);
+    await repository.completeActivation(tx as never, input);
+
+    expect(
+      [...events.values()].filter(
+        (event) =>
+          (event as { eventType?: string }).eventType ===
+          SubscriptionJourneyEventType.JOURNEY_COMPLETED
+      )
+    ).toHaveLength(1);
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledTimes(2);
+    expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledTimes(2);
+  });
+
   it("creates one application journey and one durable start event for producer retries", async () => {
     const applicationId = randomUUID();
     const journeys = new Map<string, ReturnType<typeof journey>>();

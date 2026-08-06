@@ -40,7 +40,7 @@
 - Produces: guarded `POST /auth/change-password`, which clears `access_token` only after the service succeeds.
 - Produces error codes: `CURRENT_PASSWORD_INCORRECT`, `PASSWORD_REUSE_NOT_ALLOWED`, `PASSWORD_TOO_LONG`, and `PASSWORD_CHANGE_CONFLICT`.
 
-- [ ] **Step 1: Write failing service behavior tests with a stateful transaction harness**
+- [x] **Step 1: Write failing service behavior tests with a stateful transaction harness**
 
 Create `apps/api/test/auth-password-change.spec.ts`. Use the real `AuthService`, real `AuditService`, and real bcrypt comparisons. The fake Prisma boundary must mutate an in-memory user and append audit rows so assertions observe business state rather than mock existence.
 
@@ -251,7 +251,7 @@ function requestContext() {
 }
 ```
 
-- [ ] **Step 2: Run the service tests and confirm RED**
+- [x] **Step 2: Run the service tests and confirm RED**
 
 Run:
 
@@ -261,7 +261,7 @@ pnpm --filter @subscription-saas/api exec vitest run --project unit test/auth-pa
 
 Expected: FAIL because `AuthService.changePassword` does not exist. Do not proceed on a syntax, fixture, or import failure; correct the test until the missing behavior is the reason for RED.
 
-- [ ] **Step 3: Add DTO and minimal password-change service**
+- [x] **Step 3: Add DTO and minimal password-change service**
 
 Create `apps/api/src/auth/dto/change-password.dto.ts`:
 
@@ -348,13 +348,13 @@ async changePassword(userId: string, dto: ChangePasswordDto, context: RequestCon
 }
 ```
 
-- [ ] **Step 4: Run the service tests and confirm GREEN**
+- [x] **Step 4: Run the service tests and confirm GREEN**
 
 Run the Step 2 command again.
 
 Expected: all `AuthService.changePassword` cases PASS. If the conflict case leaks an audit row, fix the transaction harness or production ordering rather than weakening the assertion.
 
-- [ ] **Step 5: Add failing controller boundary tests**
+- [x] **Step 5: Add failing controller boundary tests**
 
 Extend `apps/api/test/auth-password-change.spec.ts` with these imports and controller tests:
 
@@ -415,13 +415,13 @@ it("protects the password endpoint with AuthGuard", () => {
 
 The production mutation caught by these tests is accepting a body-supplied user ID, clearing the Cookie before the service succeeds, or exposing the route without authentication.
 
-- [ ] **Step 6: Run controller tests and confirm RED**
+- [x] **Step 6: Run controller tests and confirm RED**
 
 Run the focused API test command again.
 
 Expected: FAIL because `AuthController.changePassword` is missing.
 
-- [ ] **Step 7: Implement the guarded controller endpoint**
+- [x] **Step 7: Implement the guarded controller endpoint**
 
 Import `ChangePasswordDto`, then add:
 
@@ -444,7 +444,7 @@ async changePassword(
 
 Do not add `PermissionsGuard` or `RequirePermissions`: this is a self-service authentication operation.
 
-- [ ] **Step 8: Run API GREEN checks**
+- [x] **Step 8: Run API GREEN checks**
 
 Run:
 
@@ -456,7 +456,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests, lint, and API typecheck all PASS.
 
-- [ ] **Step 9: Commit the API boundary**
+- [x] **Step 9: Commit the API boundary**
 
 ```powershell
 git add apps/api/src/auth/dto/change-password.dto.ts apps/api/src/auth/auth.service.ts apps/api/src/auth/auth.controller.ts apps/api/test/auth-password-change.spec.ts
@@ -482,7 +482,7 @@ git commit -m "feat: add self service password API"
 - Produces: `AccountActions({ userLabel, onChangePassword, onLogout })` visible to every authenticated user.
 - Produces: `ChangePasswordModal({ open, onCancel, onChanged })` that calls the API and reports success only after the server clears the Cookie.
 
-- [ ] **Step 1: Write failing password-rule and request-boundary tests**
+- [x] **Step 1: Write failing password-rule and request-boundary tests**
 
 Create `apps/web/test/admin-password-change.spec.tsx`:
 
@@ -567,7 +567,7 @@ describe("admin self password change", () => {
 
 If `apiFetch` merges headers into the second argument differently, keep the assertion focused on URL, method, credentials, and body rather than framework-owned header ordering.
 
-- [ ] **Step 2: Run Web tests and confirm RED**
+- [x] **Step 2: Run Web tests and confirm RED**
 
 Run:
 
@@ -577,7 +577,7 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-password-change.
 
 Expected: FAIL because the change-password library and account component do not exist.
 
-- [ ] **Step 3: Implement pure validation and API request functions**
+- [x] **Step 3: Implement pure validation and API request functions**
 
 Create `apps/web/src/lib/change-password.ts`:
 
@@ -646,7 +646,7 @@ export function changeAdminPassword(request: ChangePasswordRequest) {
 }
 ```
 
-- [ ] **Step 4: Implement the account actions component and confirm its render test turns GREEN**
+- [x] **Step 4: Implement the account actions component and confirm its render test turns GREEN**
 
 Create `apps/web/src/components/account-actions.tsx` with a visible user label and two real buttons:
 
@@ -677,7 +677,7 @@ export function AccountActions({
 
 Run the focused Web test. Expected: the account render and pure validation/request cases PASS; no modal behavior is claimed yet.
 
-- [ ] **Step 5: Add failing modal contract tests before creating the modal**
+- [x] **Step 5: Add failing modal contract tests before creating the modal**
 
 Extend the Web test with server rendering for an exported `ChangePasswordFormFields`:
 
@@ -743,7 +743,7 @@ These tests catch returning success before the server has cleared the Cookie or 
 
 Run the focused Web test and confirm RED because `ChangePasswordFormFields` and `submitPasswordChange` are missing.
 
-- [ ] **Step 6: Implement the modal and submission boundary**
+- [x] **Step 6: Implement the modal and submission boundary**
 
 Create `apps/web/src/components/change-password-modal.tsx`:
 
@@ -859,7 +859,7 @@ try {
 }
 ```
 
-- [ ] **Step 7: Integrate the modal into `ProtectedShell`**
+- [x] **Step 7: Integrate the modal into `ProtectedShell`**
 
 Modify `apps/web/src/components/protected-shell.tsx`:
 
@@ -871,7 +871,7 @@ Modify `apps/web/src/components/protected-shell.tsx`:
 - On `onChanged`, set `cachedAuthMe = null`, close the modal, and call `router.replace("/login")`.
 - Keep the existing logout function and its API call unchanged.
 
-- [ ] **Step 8: Run Web GREEN checks**
+- [x] **Step 8: Run Web GREEN checks**
 
 Run:
 
@@ -883,7 +883,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused Web tests, lint, and typecheck all PASS.
 
-- [ ] **Step 9: Commit the Admin UI**
+- [x] **Step 9: Commit the Admin UI**
 
 ```powershell
 git add apps/web/src/lib/change-password.ts apps/web/src/components/account-actions.tsx apps/web/src/components/change-password-modal.tsx apps/web/src/components/protected-shell.tsx apps/web/test/admin-password-change.spec.tsx
@@ -904,7 +904,7 @@ git commit -m "feat: add admin self password change"
 - Consumes: Task 1 API and Task 2 Admin UI.
 - Produces: evidence that the feature adds no migration/permission/seed change and preserves the existing authentication baseline.
 
-- [ ] **Step 1: Run focused cross-layer tests**
+- [x] **Step 1: Run focused cross-layer tests**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run --project unit test/auth-password-change.spec.ts test/auth-user.spec.ts test/auth-guard.spec.ts
@@ -913,7 +913,7 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-password-change.
 
 Expected: all focused API and Web tests PASS.
 
-- [ ] **Step 2: Run the repository quality gate against the dedicated local PostgreSQL database**
+- [x] **Step 2: Run the repository quality gate against the dedicated local PostgreSQL database**
 
 ```powershell
 $env:DATABASE_URL="postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public"
@@ -922,7 +922,7 @@ pnpm quality:gate
 
 Expected: lint, Prisma validation/generation, API/Web typechecks, all API tests, and migration status PASS with 84 migrations up to date.
 
-- [ ] **Step 3: Run the production build**
+- [x] **Step 3: Run the production build**
 
 ```powershell
 $env:DATABASE_URL="postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public"
@@ -931,7 +931,7 @@ pnpm build
 
 Expected: shared, Nest API, and Next.js Web builds all succeed. Restore `apps/web/next-env.d.ts` if Next.js rewrites only its generated route reference; do not commit that build artifact change.
 
-- [ ] **Step 4: Verify scope and security invariants**
+- [x] **Step 4: Verify scope and security invariants**
 
 ```powershell
 git diff --check origin/main..HEAD
@@ -947,7 +947,7 @@ Expected:
 - no Prisma schema/migration, seed, permission, or menu diff;
 - no plaintext fixture password outside tests and no password/hash in audit assertions.
 
-- [ ] **Step 5: Request independent code review and address only evidence-backed findings**
+- [x] **Step 5: Request independent code review and address only evidence-backed findings**
 
 Use `superpowers:requesting-code-review`. Review must explicitly examine:
 
@@ -960,11 +960,11 @@ Use `superpowers:requesting-code-review`. Review must explicitly examine:
 
 If a finding changes behavior, reproduce it with a failing test before editing production code.
 
-- [ ] **Step 6: Re-run completion verification after review changes**
+- [x] **Step 6: Re-run completion verification after review changes**
 
 Re-run Steps 1-4 after the last code change. Do not reuse earlier results.
 
-- [ ] **Step 7: Commit plan completion evidence**
+- [x] **Step 7: Commit plan completion evidence**
 
 Mark every completed checkbox in this plan, then run:
 

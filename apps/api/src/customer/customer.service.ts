@@ -1121,6 +1121,233 @@ export class CustomerService {
     };
   }
 
+  async createOrderFromApplicationInTransaction(
+    tx: Prisma.TransactionClient,
+    applicationId: string,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    void context;
+    await lockJourneyApplication(tx, applicationId);
+    const application = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!application || application.deletedAt) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The journey application was not found."
+      );
+    }
+    ensureCanAccessApplication(application, user);
+
+    const existingOrder = application.orders.find(
+      (order) => !order.deletedAt
+    );
+    if (existingOrder) {
+      const existing = await tx.subscriptionOrder.findUnique({
+        where: { id: existingOrder.id }
+      });
+      if (!existing) {
+        throw journeyError(
+          "JOURNEY_IDEMPOTENCY_CONFLICT",
+          "The journey application order reference is inconsistent."
+        );
+      }
+      return existing;
+    }
+
+    if (
+      application.finalPlanRevision < 1 ||
+      application.customerConfirmedPlanRevision !== application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The confirmed journey plan revision is stale."
+      );
+    }
+    if (
+      application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
+      !application.finalPlanConfirmedAt
+    ) {
+      throw journeyError(
+        "JOURNEY_CUSTOMER_PLAN_CONFIRMATION_REQUIRED",
+        "The exact journey plan revision must be confirmed before order creation."
+      );
+    }
+    if (!application.finalSubscriptionPlanId) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application has no final subscription plan."
+      );
+    }
+    if (
+      !application.finalVehicleId ||
+      application.softReservedVehicleId !== application.finalVehicleId
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The journey application has no allocated concrete vehicle."
+      );
+    }
+    const allocatedVehicle = await tx.vehicle.findUnique({
+      where: { id: application.finalVehicleId }
+    });
+    if (
+      !allocatedVehicle ||
+      allocatedVehicle.deletedAt ||
+      allocatedVehicle.status !== VehicleStatus.REVIEW_RESERVED
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The allocated journey vehicle is no longer reserved for review."
+      );
+    }
+
+    assertApplicationCanCreateOrder(application);
+    const finalDepositAmount = application.finalDepositAmount;
+    if (finalDepositAmount === null) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application has no confirmed deposit."
+      );
+    }
+    let details: ApplicationFinalPlanDetails;
+    try {
+      details = await loadApplicationFinalPlanDetails(tx, application);
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey subscription plan or its pricing facts are invalid."
+      );
+    }
+    if (
+      details.plan.product.productType !== ProductType.SUBSCRIPTION ||
+      details.vehicle.id !== application.finalVehicleId
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey final plan is not a subscription product."
+      );
+    }
+
+    const vehicleUpdate = await tx.vehicle.updateMany({
+      data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+      where: {
+        deletedAt: null,
+        id: details.vehicle.id,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
+    });
+    if (vehicleUpdate.count !== 1) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The allocated journey vehicle could not enter the order reservation."
+      );
+    }
+
+    const finalPlanSnapshot = (application.finalPlanSnapshot ??
+      details.finalPlanSnapshot) as Prisma.InputJsonValue;
+    const modelSnapshot = buildVehicleModelSnapshot(
+      toCanonicalModelIdentity(details.vehicle)
+    );
+    const quote = await tx.subscriptionQuote.create({
+      data: {
+        applicationId: application.id,
+        benefitPackageId: details.plan.benefitPackage?.id ?? null,
+        benefitPackagePriceAmount: details.benefitPackagePriceAmount,
+        confirmedAt: application.finalPlanConfirmedAt,
+        confirmedBy: user.id,
+        createdBy: user.id,
+        customerId: application.customerId,
+        customerSelectedSnapshot: application.customerSelectedSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        depositAmount: finalDepositAmount,
+        depositRuleSnapshot: application.depositRuleSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+        energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+        energyPackageId: details.plan.energyPackage.id,
+        energyPackagePriceAmount: details.energyPackagePriceAmount,
+        mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+        mileagePackageId: details.plan.mileagePackage.id,
+        mileagePackagePriceAmount: details.mileagePackagePriceAmount,
+        monthlyFeeAmount: details.monthlyFeeAmount,
+        monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
+        monthlyFeeRate: details.plan.monthlyFeeRate,
+        ...modelSnapshot,
+        overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+        packageSnapshot: details.packageSnapshot,
+        periodMonths: details.periodMonths,
+        productId: details.plan.productId,
+        productVersionId: details.plan.productVersionId,
+        quoteNo: createBusinessNo("QUO"),
+        riskResultId: null,
+        status: QuoteStatus.CONFIRMED,
+        subscriptionPlanId: details.plan.id,
+        updatedBy: user.id,
+        vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+        vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
+        vehicleId: details.vehicle.id,
+        vehiclePackageId: details.plan.vehiclePackage.id,
+        vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+        vehicleSalePriceAmount: details.vehicleSalePriceAmount,
+        vehicleSnapshot: details.vehicleSnapshot
+      }
+    });
+    const order = await tx.subscriptionOrder.create({
+      data: {
+        applicationId: application.id,
+        businessType: BusinessType.SUBSCRIPTION,
+        createdBy: user.id,
+        creditReviewStatus: OrderReviewStatus.APPROVED,
+        customerConfirmedAt: application.finalPlanConfirmedAt,
+        customerId: application.customerId,
+        customerSelectedSnapshot: application.customerSelectedSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        depositAmount: finalDepositAmount,
+        depositStatus: DepositStatus.CONFIRMED,
+        energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+        energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+        finalDepositAmount,
+        finalPlanConfirmedAt: application.finalPlanConfirmedAt,
+        finalPlanSnapshot,
+        mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+        monthlyFeeAmount: details.monthlyFeeAmount,
+        ...modelSnapshot,
+        orderNo: createBusinessNo("ORD"),
+        orderSource: mapApplicationSourceToOrderSource(
+          application.applicationSource
+        ),
+        orderStatus: OrderStatus.PENDING_CONTRACT,
+        overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+        periodMonths: details.periodMonths,
+        productId: details.plan.productId,
+        productReviewStatus: OrderReviewStatus.APPROVED,
+        productVersionId: details.plan.productVersionId,
+        quoteId: quote.id,
+        quoteSnapshot: finalPlanSnapshot,
+        riskResultId: null,
+        updatedBy: user.id,
+        vehicleId: details.vehicle.id,
+        vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      }
+    });
+    await createApplicationActionLog(tx, {
+      actionType: ApplicationActionType.APPROVE,
+      applicationId,
+      comment: `Journey order ${order.id} created`,
+      fromStatus: application.status,
+      operator: user,
+      toStatus: application.status
+    });
+    return order;
+  }
+
   async createApplication(dto: CreateApplicationDto, user: RequestUser, context: RequestContext) {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);

@@ -15,6 +15,9 @@ export class SubscriptionJourneyHandlers {
     if (job.jobType === SubscriptionJourneyJobType.VALIDATE_APPLICATION) {
       return this.service.validateApplicationJob(job);
     }
+    if (job.jobType === SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT) {
+      return this.service.createOrderAndContractJob(job);
+    }
     throw journeyError(
       "JOURNEY_HANDLER_NOT_READY",
       "The subscription journey handler is not ready."

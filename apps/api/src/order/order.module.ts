@@ -14,9 +14,11 @@ import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module"
 import { OrderController } from "./order.controller";
 import { OrderWorkspaceResolver, OrderWorkspaceService } from "./order-workspace.service";
 import { OrderService } from "./order.service";
+import { OrderEntitlementService } from "./order-entitlement.service";
 
 @Module({
   controllers: [OrderController],
+  exports: [OrderEntitlementService, OrderService],
   imports: [
     AuditModule,
     AuthModule,
@@ -30,6 +32,11 @@ import { OrderService } from "./order.service";
     StorageModule,
     VehicleMileageModule
   ],
-  providers: [OrderService, OrderWorkspaceResolver, OrderWorkspaceService]
+  providers: [
+    OrderEntitlementService,
+    OrderService,
+    OrderWorkspaceResolver,
+    OrderWorkspaceService
+  ]
 })
 export class OrderModule {}

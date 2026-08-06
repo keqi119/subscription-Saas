@@ -619,15 +619,15 @@ ensureInitialEntitlements(
 ): Promise<void>;
 ```
 
-- [ ] **Step 1: Write failing order/contract bootstrap tests**
+- [x] **Step 1: Write failing order/contract bootstrap tests**
 
 Assert customer-confirmed plan plus allocated vehicle creates one Quote, one SubscriptionOrder and one generated Contract, attaches `journey.orderId`, and advances to `FADADA_SIGNING_AND_ARCHIVE`. Retry the same source key and assert no duplicate quote/order/contract. Reject inactive template, missing concrete vehicle, stale plan revision and non-`SUBSCRIPTION` product.
 
-- [ ] **Step 2: Write failing transaction-capable entitlement tests**
+- [x] **Step 2: Write failing transaction-capable entitlement tests**
 
 Assert `ensureInitialEntitlements(tx, orderId, actorId)` uses the caller's transaction, is idempotent by order/entitlement type, and does not activate entitlements yet. The existing public endpoint may keep its wrapper, but it must delegate to this service.
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-order-contract.spec.ts test/order-entitlement.spec.ts test/order-contract.spec.ts
@@ -635,15 +635,15 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-o
 
 Expected: FAIL because transaction-scoped methods and journey handler are absent.
 
-- [ ] **Step 4: Extract transaction-scoped methods without changing legacy endpoints**
+- [x] **Step 4: Extract transaction-scoped methods without changing legacy endpoints**
 
 Refactor existing public methods into thin `$transaction` wrappers over the new methods. Preserve existing Quote snapshots and `ProductPriceRule` outcomes. Export `OrderService` and `OrderEntitlementService` from `OrderModule`; do not add Controller-to-Controller calls.
 
-- [ ] **Step 5: Implement idempotent journey bootstrap**
+- [x] **Step 5: Implement idempotent journey bootstrap**
 
 Within one transaction, lock Application/Journey, revalidate exact plan revision and vehicle reservation, create/reuse quote, order and draft/generated contract, attach order to journey, write event/outbox, and enqueue `START_FADADA_SIGNING`. Use source keys for deterministic retries. Do not call the external Fadada API while the database transaction is open.
 
-- [ ] **Step 6: Make tests GREEN and typecheck**
+- [x] **Step 6: Make tests GREEN and typecheck**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-order-contract.spec.ts test/order-entitlement.spec.ts test/order-contract.spec.ts
@@ -652,7 +652,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests and typecheck pass with legacy application endpoints unchanged for non-journey records.
 
-- [ ] **Step 7: Commit the order/contract bootstrap**
+- [x] **Step 7: Commit the order/contract bootstrap**
 
 ```powershell
 git add apps/api/src/customer/customer.service.ts apps/api/src/order apps/api/src/subscription-journey/subscription-journey.handlers.ts apps/api/test/subscription-journey-order-contract.spec.ts apps/api/test/order-entitlement.spec.ts apps/api/test/order-contract.spec.ts

@@ -109,8 +109,11 @@ describe("subscription journey application validation", () => {
 });
 
 describe("subscription journey application dispatch", () => {
-  it("routes only VALIDATE_APPLICATION to its implemented handler", async () => {
+  it("routes implemented validation and order bootstrap jobs", async () => {
     const service = {
+      createOrderAndContractJob: vi.fn(async () => ({
+        action: "ORDER_AND_CONTRACT_CREATED"
+      })),
       validateApplicationJob: vi.fn(async () => ({ action: "APPLICATION_VALIDATED" }))
     };
     const handlers = new SubscriptionJourneyHandlers(service as never);
@@ -124,7 +127,7 @@ describe("subscription journey application dispatch", () => {
           jobType: SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
         })
       )
-    ).rejects.toMatchObject({ code: "JOURNEY_HANDLER_NOT_READY" });
+    ).resolves.toEqual({ action: "ORDER_AND_CONTRACT_CREATED" });
   });
 
   it("opens exactly one FINAL_PLAN_DECISION task when dispatch is replayed", async () => {

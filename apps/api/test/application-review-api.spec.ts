@@ -747,6 +747,107 @@ describe("application self-service review APIs", () => {
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
   });
 
+  it("creates and reuses a journey order in the caller transaction", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1
+      }
+    });
+
+    const first = await harness.service.createOrderFromApplicationInTransaction(
+      harness.tx as never,
+      harness.application.id,
+      harness.user,
+      harness.context
+    );
+    const second = await harness.service.createOrderFromApplicationInTransaction(
+      harness.tx as never,
+      harness.application.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(first.id).toBe("order-1");
+    expect(second.id).toBe(first.id);
+    expect(harness.tx.subscriptionQuote.create).toHaveBeenCalledOnce();
+    expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledOnce();
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+  });
+
+  it("rejects a stale confirmed plan revision before journey order creation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 2
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a journey order without a concrete allocated vehicle", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1,
+        softReservedVehicleId: null
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-subscription product before journey order creation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1
+      },
+      plan: {
+        product: {
+          deletedAt: null,
+          id: "product-1",
+          name: "Rent to own",
+          productNo: "RTO001",
+          productType: ProductType.RENT_TO_OWN,
+          status: ProductStatus.ACTIVE
+        }
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_APPLICATION_PRODUCT_INVALID" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
   it("disallows duplicate order creation for an application", async () => {
     const harness = createApplicationReviewHarness({
       application: {
@@ -823,6 +924,7 @@ function createApplicationReviewHarness(overrides: {
   const vehicle = makeVehicle(now, { status: state.vehicleStatus, ...overrides.vehicle });
   state.vehicleStatus = vehicle.status;
   const plan = makePlan(now, overrides.plan);
+  let createdOrder: Record<string, unknown> | null = null;
 
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: state.application.id }]),
@@ -896,14 +998,29 @@ function createApplicationReviewHarness(overrides: {
     },
     subscriptionOrder: {
       count: vi.fn(async () => 0),
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...data,
-        createdAt: now,
-        deletedAt: null,
-        id: "order-1",
-        orderNo: "ORD202606050001",
-        updatedAt: now
-      }))
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        createdOrder = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: "order-1",
+          orderNo: "ORD202606050001",
+          updatedAt: now
+        };
+        state.application = makeApplication(now, {
+          ...state.application,
+          orders: [
+            {
+              deletedAt: null,
+              id: "order-1",
+              orderNo: "ORD202606050001",
+              orderStatus: data.orderStatus
+            }
+          ]
+        });
+        return createdOrder;
+      }),
+      findUnique: vi.fn(async () => createdOrder)
     },
     subscriptionJourney: {
       findUnique: vi.fn(async () =>

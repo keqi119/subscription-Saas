@@ -293,7 +293,7 @@ describe("SubscriptionJourneyHandlers", () => {
     await expect(
       handlers.handle(
         claimedJob({
-          jobType: SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
+          jobType: SubscriptionJourneyJobType.START_FADADA_SIGNING
         })
       )
     ).rejects.toMatchObject({

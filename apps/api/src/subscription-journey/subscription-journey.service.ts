@@ -14,6 +14,8 @@ import {
   JourneyOperationalMetrics
 } from "./subscription-journey.types";
 import { CustomerService } from "../customer/customer.service";
+import { OrderEntitlementService } from "../order/order-entitlement.service";
+import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
 
 type Tx = Prisma.TransactionClient;
@@ -40,7 +42,9 @@ export class SubscriptionJourneyService {
   constructor(
     private readonly repository: SubscriptionJourneyRepository,
     @Optional() private readonly prisma?: PrismaService,
-    @Optional() private readonly customerService?: CustomerService
+    @Optional() private readonly customerService?: CustomerService,
+    @Optional() private readonly orderService?: OrderService,
+    @Optional() private readonly orderEntitlementService?: OrderEntitlementService
   ) {}
 
   async dispatchSignalOutbox(
@@ -219,6 +223,126 @@ export class SubscriptionJourneyService {
       return {
         action: "APPLICATION_VALIDATED",
         applicationId: journey.applicationId
+      };
+    });
+  }
+
+  async createOrderAndContractJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (
+      !this.prisma ||
+      !this.customerService ||
+      !this.orderService ||
+      !this.orderEntitlementService
+    ) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey order bootstrap is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id"
+        FROM "subscription_journey"
+        WHERE "id" = ${job.journeyId}
+        FOR UPDATE
+      `);
+      const journey = await tx.subscriptionJourney.findUnique({
+        include: {
+          application: {
+            select: { finalPlanRevision: true, salesUserId: true }
+          },
+          steps: true
+        },
+        where: { id: job.journeyId }
+      });
+      if (!journey) {
+        throw journeyError(
+          "JOURNEY_NOT_FOUND",
+          "The subscription journey was not found."
+        );
+      }
+      if (
+        journey.currentStepCode !==
+        SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+      ) {
+        if (!journey.orderId) {
+          throw journeyError(
+            "JOURNEY_IDEMPOTENCY_CONFLICT",
+            "The journey advanced without an attached order."
+          );
+        }
+        return {
+          action: "ORDER_AND_CONTRACT_ALREADY_COMPLETED",
+          applicationId: journey.applicationId,
+          orderId: journey.orderId
+        };
+      }
+      const step = journey.steps.find(
+        ({ code }) =>
+          code === SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+      );
+      if (!step || step.id !== job.stepId) {
+        throw journeyError(
+          "JOURNEY_INVALID_TRANSITION",
+          "The order bootstrap job does not match the current journey step."
+        );
+      }
+      const requestedRevision = isRecord(job.payload)
+        ? job.payload.finalPlanRevision
+        : undefined;
+      if (
+        requestedRevision !== journey.application.finalPlanRevision ||
+        requestedRevision < 1
+      ) {
+        throw journeyError(
+          "FINAL_PLAN_REVISION_STALE",
+          "The order bootstrap job targets a stale final-plan revision."
+        );
+      }
+      const actor = {
+        id: journey.application.salesUserId,
+        menus: [],
+        name: "Journey Automation",
+        permissions: [],
+        roles: ["ADMIN"],
+        username: "subscription-journey-worker"
+      };
+      const context = {
+        ipAddress: "127.0.0.1",
+        userAgent: "subscription-journey-worker"
+      };
+      const order = await this.customerService!.createOrderFromApplicationInTransaction(
+        tx,
+        journey.applicationId,
+        actor,
+        context
+      );
+      await this.attachOrder(tx, journey.id, order.id);
+      const contract = await this.orderService!.createJourneyContractInTransaction(
+        tx,
+        order.id,
+        actor.id,
+        job.sourceKey
+      );
+      await this.orderEntitlementService!.ensureInitialEntitlements(
+        tx,
+        order.id,
+        actor.id
+      );
+      await this.repository.completeStep(tx, {
+        eventKey: `${job.sourceKey}:completed`,
+        expectedVersion: journey.version,
+        journeyId: journey.id,
+        payload: { contractId: contract.id, orderId: order.id },
+        stepId: step.id
+      });
+      return {
+        action: "ORDER_AND_CONTRACT_CREATED",
+        applicationId: journey.applicationId,
+        contractId: contract.id,
+        orderId: order.id
       };
     });
   }

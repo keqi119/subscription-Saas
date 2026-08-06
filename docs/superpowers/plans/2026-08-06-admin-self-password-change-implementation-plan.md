@@ -977,6 +977,6 @@ git log --oneline --decorate -6
 
 Expected: clean worktree on `feat/admin-self-password-change-20260806` with focused implementation commits after the design and plan commits.
 
-- [ ] **Step 8: Finish the branch without deploying staging**
+- [x] **Step 8: Finish the branch without deploying staging**
 
 Use `superpowers:finishing-a-development-branch` to offer local merge, Draft PR, or keep-as-is. Do not deploy to staging or rotate credentials again unless the user explicitly requests deployment after the branch is merged.

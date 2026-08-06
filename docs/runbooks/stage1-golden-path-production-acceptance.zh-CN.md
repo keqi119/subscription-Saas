@@ -157,6 +157,27 @@ DELIVERY_EVIDENCE_DECISION   = 1
 
 姓名、手机号、证件号、OpenID、密钥、证书、签署 URL、支付凭据和 provider raw payload 不得进入证据包。完整审计留在服务端受控系统，并按现有保留策略管理。
 
+### 10.1 自动化验收证据（生产执行前必过）
+
+生产变更单必须附上以下自动化证据；测试仅连接回环地址上的专用 PostgreSQL，外部法大大、对象存储和微信支付均使用确定性测试适配器，测试事务结束后回滚：
+
+```powershell
+pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-golden-path.e2e-spec.ts test/subscription-journey-failure-recovery.e2e-spec.ts
+pnpm --filter @subscription-saas/web exec vitest run test/subscription-journey-golden-path.spec.tsx
+pnpm release:check
+```
+
+自动化证据必须证明：
+
+- Portal `SELF_SERVICE` A 线与 Admin `SALES_ASSISTED` B 线执行相同的 11 个有序步骤，且各自只有三个内部人工决定；
+- 每条线只有一个 Order、Contract、Lease 和 BillingSchedule，合同含法大大签署/盖章/归档元数据，初始账单由 PaymentRecord 与 write-off 权威结清；
+- `PaymentMandate=0`、`DebitAttempt=0`，未使用委托代扣或人工“已收款”捷径；
+- 法大大启动/归档存储、账单、交接、激活前置条件的重试可恢复，重复支付回调不重复生成业务事实，过期 worker lease 可回收；
+- 死信原子投影为 Journey/Step `EXCEPTION`，后台 retry/pause/resume/cancel 受版本和权限约束，Portal/Admin 均不显示 provider/payment 原始错误；
+- Journey 订单不显示旧手工收款、直接合同归档或直接交付激活入口。
+
+该自动化结果不等同于生产验收，也不授权部署、迁移、启用 Journey/worker、写入 allowlist、真实签署、真实支付或退款。生产步骤仍须满足第 2～4 节前置条件并取得显式生产放量批准。
+
 ## 11. 阻断、恢复与回滚
 
 出现任一 blocker 时立即：

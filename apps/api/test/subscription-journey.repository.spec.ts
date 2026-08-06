@@ -4,7 +4,9 @@ import {
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyJobType,
   SubscriptionJourneyManualDecision,
-  SubscriptionJourneyStepCode
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -837,12 +839,35 @@ describe("SubscriptionJourneyRepository", () => {
   it("dead-letters under the lease and creates a composite-linked exception", async () => {
     const create = vi.fn(async (input) => ({ id: "exception-1", ...input.data }));
     const updateMany = vi.fn(async () => ({ count: 1 }));
+    const updateStep = vi.fn(async (input) => input.data);
+    const updateJourney = vi.fn(async () => ({ count: 1 }));
     const repository = new SubscriptionJourneyRepository();
 
     await repository.deadLetterJob(
       {
+        subscriptionJourney: {
+          findUnique: vi.fn(async () => ({
+            currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+            id: "journey-1",
+            status: SubscriptionJourneyStatus.RUNNING,
+            version: 0
+          })),
+          updateMany: updateJourney
+        },
         subscriptionJourneyException: { create },
-        subscriptionJourneyJob: { updateMany }
+        subscriptionJourneyEvent: { create: vi.fn(async (input) => input.data) },
+        subscriptionJourneyJob: { updateMany },
+        subscriptionJourneyOutbox: {
+          upsert: vi.fn(async (input) => input.create)
+        },
+        subscriptionJourneyStep: {
+          findUnique: vi.fn(async () => ({
+            code: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+            id: "step-1",
+            journeyId: "journey-1"
+          })),
+          update: updateStep
+        }
       } as never,
       {
         error: {
@@ -864,6 +889,23 @@ describe("SubscriptionJourneyRepository", () => {
         stepId: "step-1"
       })
     });
+    expect(updateStep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          lastErrorCode: "SIGNATURE_PROVIDER_FAILED",
+          status: SubscriptionJourneyStepStatus.EXCEPTION
+        })
+      })
+    );
+    expect(updateJourney).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
+          status: SubscriptionJourneyStatus.EXCEPTION
+        }),
+        where: { id: "journey-1", version: 0 }
+      })
+    );
   });
 
   it("rejects sensitive payload keys before persisting them", async () => {

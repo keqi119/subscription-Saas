@@ -1306,6 +1306,10 @@ git commit -m "ops: gate stage1 golden path production acceptance"
 - Create: `apps/api/test/subscription-journey-golden-path.e2e-spec.ts`
 - Create: `apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts`
 - Create: `apps/web/test/subscription-journey-golden-path.spec.tsx`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.repository.ts`
+- Modify: `apps/api/test/subscription-journey.repository.spec.ts`
+- Modify: `apps/api/vitest.config.ts`
+- Modify: `apps/web/src/lib/portal-journey-view-model.ts`
 - Modify: `docs/runbooks/stage1-golden-path-production-acceptance.zh-CN.md`
 
 **Interfaces:**
@@ -1313,9 +1317,9 @@ git commit -m "ops: gate stage1 golden path production acceptance"
 - Consumes: all prior tasks, a disposable local integration database for automated tests, and approved dedicated production acceptance assets for the final live run.
 - Produces: automated A/B parity proof, failure-recovery proof, complete regression evidence and a sanitized production acceptance checklist update.
 
-- [ ] **Step 1: Write the full failing A/B Golden Path integration test**
+- [x] **Step 1: Write the full failing A/B Golden Path integration test**
 
-Parameterize `source` over admin-assisted A and Portal B. Use real database rows and deterministic fake external adapters only in automated tests. Drive:
+Parameterize `source` over Portal self-service A and Admin-assisted B. Use real database rows and deterministic fake external adapters only in automated tests. Drive:
 
 ```text
 submit → validate → final plan decision → exact revision confirmation
@@ -1326,15 +1330,15 @@ submit → validate → final plan decision → exact revision confirmation
 
 Assert identical step sequences, three internal manual task types, one order/contract/lease/schedule, paid bill authority, archived PDF metadata, Journey completion, AuditLog coverage, and no auto-debit mandate/attempt.
 
-- [ ] **Step 2: Write the failing recovery matrix test**
+- [x] **Step 2: Write the failing recovery matrix test**
 
 Inject failures at Fadada start, Fadada archive storage, bill generation, payment callback duplication, handover creation, evidence rejection, activation prerequisite and worker lease expiry. Assert retry delay/classification, no duplicate business objects, open exception projection, manual retry/resume behavior, safe cancellation and recovery to completion where permitted.
 
-- [ ] **Step 3: Write the failing UI journey test**
+- [x] **Step 3: Write the failing UI journey test**
 
 Render representative Admin and Portal states from start through completion. Assert only the relevant action appears, permissions apply, raw provider/payment errors remain hidden, and Journey orders never expose legacy manual-paid or direct-activation buttons.
 
-- [ ] **Step 4: Run focused tests and make them GREEN**
+- [x] **Step 4: Run focused tests and make them GREEN**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-golden-path.e2e-spec.ts test/subscription-journey-failure-recovery.e2e-spec.ts
@@ -1343,7 +1347,7 @@ pnpm --filter @subscription-saas/web exec vitest run test/subscription-journey-g
 
 Expected: both A/B flows complete with the same ordered steps and all recovery assertions pass.
 
-- [ ] **Step 5: Run the full local quality and migration gate**
+- [x] **Step 5: Run the full local quality and migration gate**
 
 ```powershell
 git status --short --branch
@@ -1363,10 +1367,10 @@ pnpm release:check
 
 Expected: clean migration status; all tests, lint, typechecks, build and release checks pass. Record any unrelated pre-existing failure separately and do not claim completion until the Golden Path-specific suites pass.
 
-- [ ] **Step 6: Commit end-to-end proof**
+- [x] **Step 6: Commit end-to-end proof**
 
 ```powershell
-git add apps/api/test/subscription-journey-golden-path.e2e-spec.ts apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts apps/web/test/subscription-journey-golden-path.spec.tsx docs/runbooks/stage1-golden-path-production-acceptance.zh-CN.md
+git add apps/api/src/subscription-journey/subscription-journey.repository.ts apps/api/test/subscription-journey.repository.spec.ts apps/api/test/subscription-journey-golden-path.e2e-spec.ts apps/api/test/subscription-journey-failure-recovery.e2e-spec.ts apps/api/vitest.config.ts apps/web/src/lib/portal-journey-view-model.ts apps/web/test/subscription-journey-golden-path.spec.tsx docs/runbooks/stage1-golden-path-production-acceptance.zh-CN.md docs/superpowers/plans/2026-08-06-stage1-golden-path-orchestration-implementation-plan.md
 git commit -m "test: prove stage1 subscription golden path"
 ```
 

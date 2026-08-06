@@ -112,7 +112,9 @@ export function toPortalJourneyCardModel(
   if (journey.status === "EXCEPTION") {
     return {
       action: visibleAction(nextAction(journey)),
-      description: journey.blockerText ?? "流程暂时受阻，请联系客户支持。",
+      // Exception details are operator-only. Keep Portal copy constant even
+      // if an upstream projection accidentally includes a provider message.
+      description: "流程暂时受阻，请联系客户支持。",
       title: "需要协助",
       tone: "error"
     };
@@ -120,7 +122,7 @@ export function toPortalJourneyCardModel(
   if (journey.status === "RETRY_SCHEDULED") {
     return {
       action: null,
-      description: journey.blockerText ?? "系统正在自动重试，无需重复操作。",
+      description: "系统正在自动重试，无需重复操作。",
       title: "正在自动重试",
       tone: "warning"
     };

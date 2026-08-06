@@ -93,7 +93,9 @@ export class SubscriptionJourneyRepository {
         eventType: SubscriptionJourneyEventType.JOURNEY_STARTED,
         journeyId: journey.id,
         payload,
-        sequence: 1
+        // Journey versions begin at zero. Keep the start event aligned with
+        // that version so the first state transition can claim sequence 1.
+        sequence: 0
       },
       update: {},
       where: { eventKey }
@@ -618,7 +620,7 @@ export class SubscriptionJourneyRepository {
     input: RecordJourneyExceptionInput
   ): Promise<SubscriptionJourneyException> {
     const failure = safeFailure(input.error);
-    return tx.subscriptionJourneyException.create({
+    const exception = await tx.subscriptionJourneyException.create({
       data: {
         code: failure.code,
         jobId: input.jobId,
@@ -628,6 +630,52 @@ export class SubscriptionJourneyRepository {
         stepId: input.stepId
       }
     });
+    const journey = await tx.subscriptionJourney.findUnique({
+      where: { id: input.journeyId }
+    });
+    const step = await tx.subscriptionJourneyStep.findUnique({
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    if (
+      !journey ||
+      !step ||
+      journey.currentStepCode !== step.code ||
+      journey.status === SubscriptionJourneyStatus.COMPLETED ||
+      journey.status === SubscriptionJourneyStatus.CANCELLED
+    ) {
+      return exception;
+    }
+    await tx.subscriptionJourneyStep.update({
+      data: {
+        attemptCount: { increment: 1 },
+        lastErrorCode: failure.code,
+        status: SubscriptionJourneyStepStatus.EXCEPTION
+      },
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    await this.updateJourneyVersion(tx, input.journeyId, journey.version, {
+      currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
+      status: SubscriptionJourneyStatus.EXCEPTION,
+      version: { increment: 1 }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: `journey:${input.journeyId}:exception:${exception.id}`,
+      eventType: SubscriptionJourneyEventType.STEP_EXCEPTION,
+      journeyId: input.journeyId,
+      payload: safePayload({
+        errorCode: failure.code,
+        jobId: input.jobId ?? null,
+        operation: "RECORD_EXCEPTION",
+        retryable: failure.retryable,
+        stepId: input.stepId
+      }),
+      sequence: journey.version + 1
+    });
+    return exception;
   }
 
   async recordSignal(tx: Tx, input: JourneySignalInput): Promise<void> {

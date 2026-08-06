@@ -451,7 +451,9 @@ describe("billing finance minimum backend loop", () => {
     activateMonthlyOrder(harness);
     const input = {
       actorId: null,
+      contractSegmentId: "segment-extension-1",
       cycleNo: 1,
+      monthlyRentAmount: 880000n,
       orderId: harness.orderId,
       periodEnd: dateOnly("2026-08-09"),
       periodStart: dateOnly("2026-07-10"),
@@ -472,9 +474,13 @@ describe("billing finance minimum backend loop", () => {
     expect(second.bill.id).toBe(first.bill.id);
     expect(harness.state.bills).toHaveLength(1);
     expect(harness.state.bills[0]).toMatchObject({
+      amount: 880000n,
       billPeriodEnd: dateOnly("2026-08-09"),
       billPeriodStart: dateOnly("2026-07-10"),
       dueDate: dateOnly("2026-07-10"),
+      snapshot: expect.objectContaining({
+        contractSegmentId: "segment-extension-1"
+      }),
       sourceKey: "monthly-rent:order-1:2026-07-10"
     });
   });

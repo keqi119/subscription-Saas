@@ -53,7 +53,7 @@ describe("BillingAutomationService", () => {
       items: [
         {
           action: "WOULD_CREATE",
-          amountSource: "ORDER_MONTHLY_FEE",
+          amountSource: "CONTRACT_SEGMENT",
           basisBillId: null,
           monthlyRentAmount: 300000,
           nextCycleNo: 1,
@@ -157,7 +157,7 @@ describe("BillingAutomationService", () => {
     expect(harness.schedules[0]?.id).toBe(scheduleId);
   });
 
-  it("uses the same quote fallback for reconciliation preview as actual billing", async () => {
+  it("keeps reconciliation on immutable segment pricing when the order fallback changes", async () => {
     const harness = createHarness();
     harness.order.monthlyFeeAmount = 0n;
     harness.order.quoteSnapshot = null;
@@ -169,8 +169,8 @@ describe("BillingAutomationService", () => {
 
     expect(preview.items).toEqual([
       expect.objectContaining({
-        amountSource: "QUOTE_MONTHLY_FEE",
-        monthlyRentAmount: 288000
+        amountSource: "CONTRACT_SEGMENT",
+        monthlyRentAmount: 300000
       })
     ]);
   });
@@ -305,6 +305,58 @@ describe("BillingAutomationService", () => {
         operatorId: null
       })
     ]);
+  });
+
+  it("generates an earned catch-up cycle after expiry moved the order to return due", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.order.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.order.lease!.status = LeaseStatus.RETURN_DUE;
+    harness.order.endDate = new Date("2026-07-10T00:00:00.000Z");
+
+    const result = await harness.service.generateScheduledMonthlyRent(
+      claimedJob({
+        billingScheduleId: schedule.id,
+        idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+        orderId: harness.order.id
+      })
+    );
+
+    expect(result).toMatchObject({ created: true });
+    expect(harness.finance.generateMonthlyRentBillForCycle).toHaveBeenCalledTimes(1);
+    expect(harness.schedules[0]).toMatchObject({
+      status: BillingScheduleStatus.COMPLETED
+    });
+  });
+
+  it("still generates an earned catch-up cycle after return confirmation completed the order", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.order.orderStatus = OrderStatus.COMPLETED;
+    harness.order.lease!.status = LeaseStatus.COMPLETED;
+    harness.order.endDate = new Date("2026-07-10T00:00:00.000Z");
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).resolves.toMatchObject({ created: true });
+
+    expect(harness.schedules[0]).toMatchObject({
+      status: BillingScheduleStatus.COMPLETED
+    });
   });
 
   it("does not advance the schedule when finance rejects bill generation", async () => {
@@ -511,7 +563,7 @@ function createHarness() {
       updatedAt: Date;
     } | null,
     orderNo: "ORD-1",
-    orderStatus: OrderStatus.ACTIVE,
+    orderStatus: OrderStatus.ACTIVE as OrderStatus,
     monthlyFeeAmount: 300000n,
     quote: {
       monthlyFeeAmount: 300000n
@@ -760,11 +812,24 @@ function createHarness() {
     runTime: "09:00",
     wechatTemplateId: null
   });
+  const segmentMonthlyFeeAmount = order.monthlyFeeAmount;
   const service = new BillingAutomationService(
     prisma as never,
     repository as never,
     finance as never,
     autoDebitScheduler,
+    {
+      resolveEffectiveServiceEndDate: vi.fn(async () => order.endDate),
+      resolveSegmentForPeriod: vi.fn(async () => ({
+        endDate: order.endDate,
+        mileageLimitKm: 1_500,
+        monthlyFeeAmount: segmentMonthlyFeeAmount,
+        overMileageFeeAmount: 100n,
+        planSnapshot: {},
+        segmentId: "segment-base",
+        startDate: new Date("2026-06-10T00:00:00.000Z")
+      }))
+    } as never,
     () => now
   );
 
@@ -795,6 +860,8 @@ function claimedJob(
     availableAt: now,
     billId: null,
     billingScheduleId: null,
+    changeOrderId: null,
+    contractSegmentId: null,
     cancelledAt: null,
     completedAt: null,
     createdAt: now,
@@ -810,6 +877,7 @@ function claimedJob(
     maxAttempts: 6,
     orderId: null,
     payload: null,
+    renewalConsiderationId: null,
     resultSnapshot: null,
     startedAt: now,
     updatedAt: now,

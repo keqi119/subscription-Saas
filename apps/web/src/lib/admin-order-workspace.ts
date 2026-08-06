@@ -50,7 +50,7 @@ export type OrderWorkspaceActionCode =
 const ORDER_WORKSPACE_TAB_KEY_SET = new Set<string>(ORDER_WORKSPACE_TAB_KEYS);
 
 const ORDER_WORKSPACE_TAB_PERMISSIONS = {
-  change: ["order_change:view"],
+  change: ["order_change:view", "subscription_change:view"],
   contract: ["contract:view"],
   entitlement: ["entitlement:view"],
   finance: [

@@ -1,5 +1,5 @@
 import { ConfigService } from "@nestjs/config";
-import { SmsSendStatus } from "@prisma/client";
+import { RenewalReminderSlot, SmsSendStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { AliyunSmsClient, AliyunSmsProvider } from "../src/sms/aliyun-sms.provider";
@@ -210,6 +210,120 @@ describe("AliyunSmsProvider", () => {
 });
 
 describe("SmsService business templates", () => {
+  it("reports CONFIG_MISSING without calling the provider for an unconfigured renewal slot", async () => {
+    const harness = createBusinessSmsHarness();
+
+    const result = await harness.service.sendRenewalReminder({
+      daysRemaining: 30,
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-reminder:consideration-1:D30",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/renewals/consideration-1",
+      slot: RenewalReminderSlot.D30
+    });
+
+    expect(result).toMatchObject({
+      errorCode: "CONFIG_MISSING",
+      sendStatus: SmsSendStatus.FAILED,
+      success: false
+    });
+    expect(harness.provider.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it("sends all approved renewal reminder variables with the configured slot template", async () => {
+    const harness = createBusinessSmsHarness({
+      config: { RENEWAL_REMINDER_D14_TEMPLATE_CODE: "SMS_RENEWAL_D14" }
+    });
+
+    await harness.service.sendRenewalReminder({
+      daysRemaining: 14,
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-reminder:consideration-1:D14",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/renewals/consideration-1",
+      slot: RenewalReminderSlot.D14
+    });
+
+    expect(harness.provider.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        purpose: "RENEWAL_REMINDER_D14",
+        templateCode: "SMS_RENEWAL_D14",
+        templateParams: {
+          daysRemaining: "14",
+          endDate: "2026-09-02",
+          orderNo: "ORD-1",
+          plateNo: "沪***81",
+          portalPath: "/portal/renewals/consideration-1"
+        }
+      })
+    );
+  });
+
+  it("sends expiry and D+1 return lifecycle templates with auditable variables", async () => {
+    const harness = createBusinessSmsHarness({
+      config: {
+        RENEWAL_EXPIRY_RETURN_TEMPLATE_CODE: "SMS_RENEWAL_EXPIRY",
+        RENEWAL_RETURN_OVERDUE_D1_TEMPLATE_CODE: "SMS_RENEWAL_RETURN_D1"
+      }
+    });
+    const common = {
+      endDate: "2026-09-02",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/orders/order-1"
+    };
+
+    await harness.service.sendRenewalExpiryReturn({
+      ...common,
+      idempotencyKey: "renewal-expiry:order-1:sms"
+    });
+    await harness.service.sendRenewalReturnOverdueD1({
+      ...common,
+      idempotencyKey: "renewal-return-d1:order-1:sms"
+    });
+
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        purpose: "RENEWAL_EXPIRY_RETURN",
+        templateCode: "SMS_RENEWAL_EXPIRY",
+        templateParams: expect.objectContaining({ daysRemaining: "0" })
+      })
+    );
+    expect(harness.provider.sendTemplate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        purpose: "RENEWAL_RETURN_OVERDUE_D1",
+        templateCode: "SMS_RENEWAL_RETURN_D1",
+        templateParams: expect.objectContaining({ daysRemaining: "-1" })
+      })
+    );
+  });
+
+  it("exposes missing expiry template configuration without calling the provider", async () => {
+    const harness = createBusinessSmsHarness();
+
+    const result = await harness.service.sendRenewalExpiryReturn({
+      endDate: "2026-09-02",
+      idempotencyKey: "renewal-expiry:order-1:sms",
+      orderNo: "ORD-1",
+      phone: "13800000000",
+      plateNo: "沪***81",
+      portalPath: "/portal/orders/order-1"
+    });
+
+    expect(result).toMatchObject({
+      errorCode: "CONFIG_MISSING",
+      sendStatus: SmsSendStatus.FAILED
+    });
+    expect(harness.provider.sendTemplate).not.toHaveBeenCalled();
+  });
+
   it("sends the approved Field assignment template with the full plate as name", async () => {
     const harness = createBusinessSmsHarness();
 
@@ -463,6 +577,7 @@ function createConfig(overrides: Record<string, string> = {}) {
 }
 
 function createBusinessSmsHarness(options: {
+  config?: Record<string, string>;
   existingLog?: Record<string, unknown>;
   failFirstFinalization?: boolean;
   onSend?: (logs: Array<Record<string, unknown>>) => void;
@@ -586,7 +701,8 @@ function createBusinessSmsHarness(options: {
       FIELD_OPERATOR_SMS_ENABLED: "true",
       FIELD_OPERATOR_SMS_PROVIDER: "mock",
       PORTAL_SMS_ENABLED: "true",
-      PORTAL_SMS_PROVIDER: "mock"
+      PORTAL_SMS_PROVIDER: "mock",
+      ...(options.config ?? {})
     }),
     prisma as never,
     provider

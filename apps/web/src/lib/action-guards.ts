@@ -65,6 +65,30 @@ export interface ProductVersionPlanState {
   status?: string | null;
 }
 
+export type SubscriptionChangeGuardAction =
+  | "QUOTE"
+  | "APPROVE_PRICE"
+  | "WAIT_CUSTOMER"
+  | "GENERATE_CONTRACT"
+  | "START_ESIGN"
+  | "WAIT_ARCHIVE"
+  | "WAIT_EFFECTIVE"
+  | "RETRY"
+  | "MANUAL"
+  | "DONE";
+
+const SUBSCRIPTION_CHANGE_ACTION_PERMISSIONS: Partial<
+  Record<SubscriptionChangeGuardAction, string>
+> = {
+  APPROVE_PRICE: "subscription_change:price_override_approve",
+  GENERATE_CONTRACT: "contract:generate",
+  MANUAL: "subscription_change:manual_takeover",
+  QUOTE: "subscription_change:quote",
+  RETRY: "subscription_change:execute",
+  START_ESIGN: "subscription_change:esign_retry",
+  WAIT_CUSTOMER: "subscription_change:submit"
+};
+
 export function hasPermission(
   permissions: PermissionCollection,
   permission?: string | readonly string[]
@@ -108,6 +132,20 @@ export function actionAvailability({
     return { allowed: false, reason: disabledReason };
   }
 
+  return { allowed: true };
+}
+
+export function canRunSubscriptionChangeAction(
+  action: SubscriptionChangeGuardAction,
+  permissions: PermissionCollection
+): ActionAvailability {
+  const permission = SUBSCRIPTION_CHANGE_ACTION_PERMISSIONS[action];
+  if (!permission) {
+    return { allowed: false, reason: "当前步骤无需人工操作" };
+  }
+  if (!hasPermission(permissions, permission)) {
+    return { allowed: false, reason: "无合同变更操作权限" };
+  }
   return { allowed: true };
 }
 

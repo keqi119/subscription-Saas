@@ -119,7 +119,9 @@ describe("ContractPdfArtifactWriterService", () => {
       }
     });
     expect(result.diagnostics.slotCoordinates).toHaveLength(4);
-    expect(result.diagnostics.slotCoordinates.map((coordinate) => coordinate.slotId).sort()).toEqual([
+    expect(
+      result.diagnostics.slotCoordinates.map((coordinate) => coordinate.slotId).sort()
+    ).toEqual([
       "STAGE1_ATTACHMENT1_CUSTOMER",
       "STAGE1_ATTACHMENT1_PLATFORM",
       "STAGE1_BODY_CUSTOMER",
@@ -129,20 +131,22 @@ describe("ContractPdfArtifactWriterService", () => {
       signingStage: "STAGE1_CONTRACT",
       source: "GENERATED_CONTRACT_PDF"
     });
-    expect(result.diagnostics.slotCoordinates).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        documentType: "CONTRACT_BODY",
-        signerRole: "CUSTOMER",
-        signingStage: "STAGE1_CONTRACT",
-        slotId: "STAGE1_BODY_CUSTOMER"
-      }),
-      expect.objectContaining({
-        documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
-        signerRole: "PLATFORM",
-        signingStage: "STAGE1_CONTRACT",
-        slotId: "STAGE1_ATTACHMENT1_PLATFORM"
-      })
-    ]));
+    expect(result.diagnostics.slotCoordinates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          documentType: "CONTRACT_BODY",
+          signerRole: "CUSTOMER",
+          signingStage: "STAGE1_CONTRACT",
+          slotId: "STAGE1_BODY_CUSTOMER"
+        }),
+        expect.objectContaining({
+          documentType: "ATTACHMENT1_SUBSCRIPTION_PLAN",
+          signerRole: "PLATFORM",
+          signingStage: "STAGE1_CONTRACT",
+          slotId: "STAGE1_ATTACHMENT1_PLATFORM"
+        })
+      ])
+    );
   });
 
   it.each([
@@ -153,11 +157,13 @@ describe("ContractPdfArtifactWriterService", () => {
   ])("rejects missing %s slot before rendering or storage writes", async (_label, slotId) => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        signingSlots: STAGE1_SIGNING_SLOTS.filter((slot) => slot.slotId !== slotId)
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          signingSlots: STAGE1_SIGNING_SLOTS.filter((slot) => slot.slotId !== slotId)
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -167,11 +173,13 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects duplicate Stage 1 body platform slot before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        contentTemplate: "Synthetic non-legal text. 合同正文-服务提供方盖章 appears here too."
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          contentTemplate: "Synthetic non-legal text. 合同正文-服务提供方盖章 appears here too."
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -181,16 +189,20 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects duplicate Stage 1 attachment customer slot in appendix data before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        appendix: {
-          sections: [{
-            rows: [{ label: "Accidental slot duplicate", value: "附件1订阅方案-订阅方签字" }],
-            title: "Synthetic appendix"
-          }]
-        }
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          appendix: {
+            sections: [
+              {
+                rows: [{ label: "Accidental slot duplicate", value: "附件1订阅方案-订阅方签字" }],
+                title: "Synthetic appendix"
+              }
+            ]
+          }
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -200,15 +212,17 @@ describe("ContractPdfArtifactWriterService", () => {
   it("does not accept legacy signing anchor metadata as rendered Stage 1 slot text", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        signingAnchors: {
-          customerSignatureKeyword: "合同正文-订阅方签字",
-          platformSealKeyword: "合同正文-服务提供方盖章"
-        },
-        signingSlots: []
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          signingAnchors: {
+            customerSignatureKeyword: "合同正文-订阅方签字",
+            platformSealKeyword: "合同正文-服务提供方盖章"
+          },
+          signingSlots: []
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -218,16 +232,18 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects duplicate Stage 1 slot definitions before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        signingSlots: [
-          ...STAGE1_SIGNING_SLOTS,
-          {
-            ...STAGE1_SIGNING_SLOTS[0]!
-          }
-        ]
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          signingSlots: [
+            ...STAGE1_SIGNING_SLOTS,
+            {
+              ...STAGE1_SIGNING_SLOTS[0]!
+            }
+          ]
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -237,11 +253,15 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects an incomplete customer/platform slot pair before rendering or storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel({
-        signingSlots: STAGE1_SIGNING_SLOTS.filter((slot) => slot.slotId !== "STAGE1_ATTACHMENT1_PLATFORM")
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel({
+          signingSlots: STAGE1_SIGNING_SLOTS.filter(
+            (slot) => slot.slotId !== "STAGE1_ATTACHMENT1_PLATFORM"
+          )
+        })
       })
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -257,9 +277,11 @@ describe("ContractPdfArtifactWriterService", () => {
       }
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING/);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(/CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING/);
 
     expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -271,9 +293,11 @@ describe("ContractPdfArtifactWriterService", () => {
       rendererResult: { diagnostics: { hasLegalBody: false } }
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING);
 
     expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -285,9 +309,11 @@ describe("ContractPdfArtifactWriterService", () => {
       rendererResult: { diagnostics: { hasAppendix: false } }
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING);
 
     expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -297,13 +323,17 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects missing Stage 1 slot coordinates before storage writes", async () => {
     const { fileObjectCreate, renderer, storage, writer } = createWriter({
       rendererResult: {
-        slotCoordinates: createSlotCoordinates().filter((coordinate) => coordinate.slotId !== "STAGE1_BODY_CUSTOMER")
+        slotCoordinates: createSlotCoordinates().filter(
+          (coordinate) => coordinate.slotId !== "STAGE1_BODY_CUSTOMER"
+        )
       }
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING);
 
     expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -316,31 +346,38 @@ describe("ContractPdfArtifactWriterService", () => {
     ["out-of-range y", { y: 1132 }],
     ["invalid width", { width: 0 }],
     ["invalid height", { height: 0 }]
-  ])("rejects %s in Stage 1 slot coordinates before storage writes", async (_label, coordinateOverride) => {
-    const { fileObjectCreate, renderer, storage, writer } = createWriter({
-      rendererResult: {
-        slotCoordinates: createSlotCoordinates({
-          STAGE1_BODY_CUSTOMER: coordinateOverride
+  ])(
+    "rejects %s in Stage 1 slot coordinates before storage writes",
+    async (_label, coordinateOverride) => {
+      const { fileObjectCreate, renderer, storage, writer } = createWriter({
+        rendererResult: {
+          slotCoordinates: createSlotCoordinates({
+            STAGE1_BODY_CUSTOMER: coordinateOverride
+          })
+        }
+      });
+
+      await expect(
+        writer.writeGeneratedContractPdfArtifact({
+          renderModel: createModel()
         })
-      }
-    });
+      ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID);
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID);
-
-    expect(renderer.render).toHaveBeenCalledOnce();
-    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
-    expect(fileObjectCreate).not.toHaveBeenCalled();
-  });
+      expect(renderer.render).toHaveBeenCalledOnce();
+      expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+      expect(fileObjectCreate).not.toHaveBeenCalled();
+    }
+  );
 
   it("rejects protected contract statuses", async () => {
     const { renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      contractStatus: "SIGNED",
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        contractStatus: "SIGNED",
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -349,13 +386,40 @@ describe("ContractPdfArtifactWriterService", () => {
   it("rejects an existing contract file unless regeneration is explicitly allowed", async () => {
     const { renderer, storage, writer } = createWriter();
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      existingContractFileId: "existing-file-1",
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_EXISTING_FILE);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        existingContractFileId: "existing-file-1",
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_EXISTING_FILE);
 
     expect(renderer.render).not.toHaveBeenCalled();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+  });
+
+  it("recovers the existing deterministic object after a generation crash", async () => {
+    const existingFileObject = {
+      bucket: "application-materials",
+      id: "file-existing",
+      mimeType: "application/pdf",
+      objectKey: "contracts/contract-1/generated/CON-TEST-001.pdf",
+      originalName: "CON-TEST-001.pdf",
+      sizeBytes: 18n
+    };
+    const { fileObjectCreate, storage, writer } = createWriter({ existingFileObject });
+
+    const recovered = await writer.writeGeneratedContractPdfArtifact({
+      recoverExistingObject: true,
+      renderModel: createModel()
+    });
+
+    expect(recovered).toMatchObject({
+      fileId: "file-existing",
+      objectKey: existingFileObject.objectKey,
+      sizeBytes: 18
+    });
+    expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
+    expect(fileObjectCreate).not.toHaveBeenCalled();
   });
 
   it("enforces the 20MB-compatible maximum size before storage writes", async () => {
@@ -365,10 +429,12 @@ describe("ContractPdfArtifactWriterService", () => {
       }
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      maxBytes: 10,
-      renderModel: createModel()
-    })).rejects.toThrow(CONTRACT_PDF_ARTIFACT_TOO_LARGE);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        maxBytes: 10,
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(CONTRACT_PDF_ARTIFACT_TOO_LARGE);
 
     expect(renderer.render).toHaveBeenCalledOnce();
     expect(storage.putGeneratedContractPdfArtifact).not.toHaveBeenCalled();
@@ -381,9 +447,11 @@ describe("ContractPdfArtifactWriterService", () => {
       storageError
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(storageError);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(storageError);
 
     expect(storage.putGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
     expect(fileObjectCreate).not.toHaveBeenCalled();
@@ -395,9 +463,11 @@ describe("ContractPdfArtifactWriterService", () => {
       fileObjectCreateError: dbError
     });
 
-    await expect(writer.writeGeneratedContractPdfArtifact({
-      renderModel: createModel()
-    })).rejects.toThrow(dbError);
+    await expect(
+      writer.writeGeneratedContractPdfArtifact({
+        renderModel: createModel()
+      })
+    ).rejects.toThrow(dbError);
 
     expect(fileObjectCreate).toHaveBeenCalledOnce();
     expect(storage.deleteObject).toHaveBeenCalledWith(
@@ -433,21 +503,26 @@ describe("ContractPdfArtifactWriterService", () => {
     expect(stored.contentType).toBe("application/pdf");
     expect(stored.objectKey).toBe("contracts/contract-1/generated/CON_2026_Unsafe_Name.pdf");
     expect(stored.objectKey.length).toBeLessThanOrEqual(255);
-    expect(local.putObject).toHaveBeenCalledWith(expect.objectContaining({
-      key: "application-materials/contracts/contract-1/generated/CON_2026_Unsafe_Name.pdf"
-    }));
+    expect(local.putObject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: "application-materials/contracts/contract-1/generated/CON_2026_Unsafe_Name.pdf"
+      })
+    );
   });
 });
 
-function createWriter(options: {
-  fileObjectCreateError?: Error;
-  rendererResult?: {
-    buffer?: Buffer;
-    diagnostics?: Partial<ContractPdfRenderDiagnostics>;
-    slotCoordinates?: ReturnType<typeof createSlotCoordinates>;
-  };
-  storageError?: Error;
-} = {}) {
+function createWriter(
+  options: {
+    existingFileObject?: Record<string, unknown>;
+    fileObjectCreateError?: Error;
+    rendererResult?: {
+      buffer?: Buffer;
+      diagnostics?: Partial<ContractPdfRenderDiagnostics>;
+      slotCoordinates?: ReturnType<typeof createSlotCoordinates>;
+    };
+    storageError?: Error;
+  } = {}
+) {
   const rendererResult = {
     buffer: options.rendererResult?.buffer ?? Buffer.from("%PDF-synthetic-pdf"),
     contentType: "application/pdf" as const,
@@ -501,7 +576,7 @@ function createWriter(options: {
     },
     fileObject: {
       create: fileObjectCreate,
-      findFirst: vi.fn(async () => null)
+      findFirst: vi.fn(async () => options.existingFileObject ?? null)
     }
   };
 
@@ -510,12 +585,18 @@ function createWriter(options: {
     prisma,
     renderer,
     storage,
-    writer: new ContractPdfArtifactWriterService(renderer as never, storage as never, prisma as never)
+    writer: new ContractPdfArtifactWriterService(
+      renderer as never,
+      storage as never,
+      prisma as never
+    )
   };
 }
 
 function createSlotCoordinates(
-  overrides: Partial<Record<ContractPdfSigningSlot["slotId"], Partial<ContractPdfSigningSlotCoordinate>>> = {}
+  overrides: Partial<
+    Record<ContractPdfSigningSlot["slotId"], Partial<ContractPdfSigningSlotCoordinate>>
+  > = {}
 ): ContractPdfSigningSlotCoordinate[] {
   return STAGE1_SIGNING_SLOTS.map((slot, index) => ({
     coordinateSource: "PDFKIT_RENDERER" as const,
@@ -541,13 +622,15 @@ function createModel(
 ): ContractPdfRenderModel {
   return {
     appendix: {
-      sections: [{
-        rows: [
-          { label: "Order number", value: "ORD-TEST-001" },
-          { label: "Plan", value: "Synthetic monthly plan" }
-        ],
-        title: "Synthetic order snapshot appendix"
-      }]
+      sections: [
+        {
+          rows: [
+            { label: "Order number", value: "ORD-TEST-001" },
+            { label: "Plan", value: "Synthetic monthly plan" }
+          ],
+          title: "Synthetic order snapshot appendix"
+        }
+      ]
     },
     contentTemplate: "Synthetic non-legal contract body for artifact writer tests only.",
     contractId: "contract-1",

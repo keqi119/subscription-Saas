@@ -92,6 +92,7 @@ function buildDiagnostics(model: ContractPdfRenderModel): ContractPdfRenderDiagn
     model.templateName,
     model.templateVersion,
     model.contentTemplate,
+    ...buildExtensionTermsSearchableText(model),
     ...buildSigningSlotSearchableText(model.signingSlots),
     ...model.appendix.sections.flatMap((section) => [
       section.title,
@@ -196,11 +197,19 @@ async function renderPdf(
   }
 
   doc.info.Title = model.contractNo;
-  doc.info.Subject = "Stage 1 subscription contract signing artifact";
+  doc.info.Subject = model.agreementKind === "SUBSCRIPTION_EXTENSION"
+    ? "Subscription extension agreement signing artifact"
+    : "Stage 1 subscription contract signing artifact";
   doc.info.Keywords = "contract,esign";
 
-  writeTitle(doc, "汽车订阅服务合同");
+  writeTitle(
+    doc,
+    model.agreementKind === "SUBSCRIPTION_EXTENSION"
+      ? "汽车订阅服务续订补充协议"
+      : "汽车订阅服务合同"
+  );
   writeMetadata(doc, model);
+  writeExtensionReference(doc, model);
   writeSubscriberPartyInfo(doc, model.subscriberParty);
   writeSection(doc, "合同正文");
   writeParagraph(doc, buildStage1MainBodyText(model.contentTemplate));
@@ -238,6 +247,33 @@ function writeMetadata(doc: PDFKit.PDFDocument, model: ContractPdfRenderModel) {
   writeKeyValue(doc, "订单编号", model.orderNo);
   writeKeyValue(doc, "合同模板", `${model.templateName} ${model.templateVersion}`);
   writeKeyValue(doc, "生成时间", formatValue(model.generatedAt));
+}
+
+function writeExtensionReference(doc: PDFKit.PDFDocument, model: ContractPdfRenderModel) {
+  if (model.agreementKind !== "SUBSCRIPTION_EXTENSION" || !model.extensionTerms) {
+    return;
+  }
+
+  writeSection(doc, "续订补充协议关联信息");
+  writeKeyValue(doc, "原合同编号", formatValue(model.extensionTerms.originalContractNo));
+  writeKeyValue(doc, "原合同到期日", formatValue(model.extensionTerms.originalEndDate));
+  writeKeyValue(doc, "续期起始日", formatValue(model.extensionTerms.extensionStartDate));
+  writeKeyValue(doc, "续期结束日", formatValue(model.extensionTerms.extensionEndDate));
+  writeKeyValue(doc, "客户确认报价", formatValue(model.extensionTerms.confirmedQuoteNo));
+  writeKeyValue(doc, "续期月费（分）", formatValue(model.extensionTerms.monthlyFeeAmount));
+}
+
+function buildExtensionTermsSearchableText(model: ContractPdfRenderModel) {
+  if (!model.extensionTerms) return [];
+  return [
+    model.extensionTerms.originalContractNo,
+    model.extensionTerms.originalEndDate,
+    model.extensionTerms.extensionStartDate,
+    model.extensionTerms.extensionEndDate,
+    model.extensionTerms.confirmedQuoteNo,
+    model.extensionTerms.monthlyFeeAmount,
+    JSON.stringify(model.extensionTerms.planSnapshot)
+  ].map(formatValue);
 }
 
 function writeSubscriberPartyInfo(doc: PDFKit.PDFDocument, party: ContractPdfSubscriberPartyInfo | undefined) {

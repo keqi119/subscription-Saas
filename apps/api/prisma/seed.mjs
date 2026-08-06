@@ -92,6 +92,15 @@ const permissionRows = [
   ["order_change:approve", "审批订单变更", "order", "change_approve"],
   ["order_change:reject", "拒绝订单变更", "order", "change_reject"],
   ["order_change:execute", "执行订单变更", "order", "change_execute"],
+  ["subscription_change:view", "查看合同变更", "subscription_change", "view"],
+  ["subscription_change:create", "创建合同变更", "subscription_change", "create"],
+  ["subscription_change:quote", "生成合同变更报价", "subscription_change", "quote"],
+  ["subscription_change:price_override_approve", "审批合同变更价格例外", "subscription_change", "price_override_approve"],
+  ["subscription_change:submit", "提交合同变更", "subscription_change", "submit"],
+  ["subscription_change:esign_retry", "重试合同变更电子签", "subscription_change", "esign_retry"],
+  ["subscription_change:execute", "执行合同变更", "subscription_change", "execute"],
+  ["subscription_change:manual_takeover", "人工接管合同变更", "subscription_change", "manual_takeover"],
+  ["subscription_change:cancel", "取消合同变更", "subscription_change", "cancel"],
   ["mileage_review:view", "查看里程复核", "mileage_review", "view"],
   ["mileage_review:submit", "提交里程复核", "mileage_review", "submit"],
   ["mileage_review:confirm", "确认里程复核", "mileage_review", "confirm"],
@@ -265,6 +274,7 @@ const menuRows = [
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
+  ["orders.subscription_changes", "合同变更中心", "/subscription-changes", "contract", 22, "subscription_change:view", "orders"],
   ["orders.mileage_reviews", "里程复核", "/mileage-reviews", "dashboard", 25, "mileage_review:view", "orders"],
   ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
   ["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"],
@@ -547,6 +557,24 @@ const orderManagementPermissions = [
   "contract_template:create",
   "contract_template:update",
   "contract_template:activate"
+];
+
+const subscriptionChangeViewPermissions = ["subscription_change:view"];
+
+const subscriptionChangeOperationalPermissions = [
+  ...subscriptionChangeViewPermissions,
+  "subscription_change:create",
+  "subscription_change:quote",
+  "subscription_change:submit",
+  "subscription_change:esign_retry",
+  "subscription_change:execute",
+  "subscription_change:cancel"
+];
+
+const subscriptionChangeAdminPermissions = [
+  ...subscriptionChangeOperationalPermissions,
+  "subscription_change:price_override_approve",
+  "subscription_change:manual_takeover"
 ];
 
 const financeManagementPermissions = [
@@ -848,6 +876,7 @@ async function main() {
       "order:create",
       "order_change:view",
       "order_change:create",
+      ...subscriptionChangeViewPermissions,
       ...serviceCaseViewPermissions,
       ...notificationViewPermissions,
       ...entitlementViewPermissions,
@@ -869,6 +898,7 @@ async function main() {
       "quotes",
       "orders",
       "orders.subscription",
+      "orders.subscription_changes",
       ...mileageReviewMenuCodes,
       "orders.contracts",
       ...serviceCaseMenuCodes,
@@ -897,6 +927,7 @@ async function main() {
       ...fleetOpsReadPermissions,
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
+      ...subscriptionChangeOperationalPermissions,
       ...mileageReviewManagementPermissions,
       ...entitlementOperationPermissions,
       ...reportViewPermissions,
@@ -933,6 +964,7 @@ async function main() {
       "quotes",
       "orders",
       "orders.subscription",
+      "orders.subscription_changes",
       ...mileageReviewMenuCodes,
       "orders.review",
       "orders.contracts",
@@ -1020,6 +1052,7 @@ async function main() {
           : []),
         ...(roleCode === "AS" ? ["order:review", "order:reject"] : []),
         "order_change:view",
+        ...subscriptionChangeViewPermissions,
         "contract:view"
       ],
       [
@@ -1032,6 +1065,7 @@ async function main() {
         "quotes",
         "orders",
         "orders.subscription",
+        ...(roleCode === "AS" ? ["orders.subscription_changes"] : []),
         ...mileageReviewMenuCodes,
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",

@@ -60,6 +60,7 @@ import {
   SERVICE_CASE_STATUS_LABELS,
   SERVICE_CASE_TYPE_LABELS,
   STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_STATUS_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_DAMAGE_LEVEL_LABELS,
@@ -126,6 +127,15 @@ import {
   type OrderWorkspaceTabKey
 } from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
+import {
+  listSubscriptionChangesForOrder,
+  type AdminSubscriptionChange
+} from "../../../lib/subscription-change-api";
+import {
+  formatSubscriptionChangeMoney,
+  getSubscriptionChangeContractDates,
+  getSubscriptionChangeNextAction
+} from "../../../lib/subscription-change-view-model";
 import type {
   PortalPagedResponse,
   PortalServiceCase
@@ -4528,6 +4538,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [changeModalOpen, setChangeModalOpen] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
   const [changesLoaded, setChangesLoaded] = useState(false);
+  const [subscriptionChanges, setSubscriptionChanges] = useState<AdminSubscriptionChange[]>([]);
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
   const [deductDepositModalOpen, setDeductDepositModalOpen] = useState(false);
@@ -4670,6 +4681,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const hasDepositSettlementViewPermission = permissions.has("deposit_ledger:view");
   const hasEntitlementViewPermission = permissions.has("entitlement:view");
   const hasOrderChangeView = permissions.has("order_change:view");
+  const hasSubscriptionChangeView = permissions.has("subscription_change:view");
   const visibleTabs = useMemo(
     () => getVisibleOrderWorkspaceTabs(permissions),
     [permissions]
@@ -5155,18 +5167,29 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
 
   const loadChangesDomain = useCallback(
     async (force: boolean) => {
-      if (!hasOrderChangeView) {
+      if (!hasOrderChangeView && !hasSubscriptionChangeView) {
         return;
       }
       await loadWorkspaceResource("changes", force, async () => {
-        const nextChanges = await apiFetch<OrderChangeRow[]>(
-          `/orders/${orderId}/changes`
-        );
-        setChanges(nextChanges);
-        setChangesLoaded(true);
+        const [legacyChanges, extensionChanges] = await Promise.all([
+          hasOrderChangeView
+            ? apiFetch<OrderChangeRow[]>(`/orders/${orderId}/changes`)
+            : Promise.resolve([]),
+          hasSubscriptionChangeView
+            ? listSubscriptionChangesForOrder(orderId)
+            : Promise.resolve([])
+        ]);
+        setChanges(legacyChanges);
+        setSubscriptionChanges(extensionChanges);
+        setChangesLoaded(hasOrderChangeView);
       });
     },
-    [hasOrderChangeView, loadWorkspaceResource, orderId]
+    [
+      hasOrderChangeView,
+      hasSubscriptionChangeView,
+      loadWorkspaceResource,
+      orderId
+    ]
   );
 
   const loadDepositSettlementDomain = useCallback(
@@ -5543,6 +5566,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     setMe(null);
     setOrder(null);
     setSummary(null);
+    setSubscriptionChanges([]);
     setChangesLoaded(false);
     setDomainLoadStates(createWorkspaceDomainLoadStates());
     void loadWorkspaceShell();
@@ -7392,7 +7416,54 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       case "change":
         content = order ? (
           <>
-            <Space style={{ justifyContent: "flex-end", width: "100%" }}>
+            {hasSubscriptionChangeView ? (
+              <Card title="合同续订 / 协议延长">
+                <List
+                  dataSource={subscriptionChanges}
+                  locale={{ emptyText: "暂无 V2 协议延长记录" }}
+                  renderItem={(subscriptionChange) => {
+                    const dates = getSubscriptionChangeContractDates(subscriptionChange);
+                    const nextAction = getSubscriptionChangeNextAction(subscriptionChange);
+                    return (
+                      <List.Item
+                        actions={[
+                          <Link
+                            href={`/subscription-changes/${encodeURIComponent(subscriptionChange.id)}`}
+                            key="detail"
+                          >
+                            查看 / 处理
+                          </Link>
+                        ]}
+                        data-workspace-record={subscriptionChange.id}
+                      >
+                        <List.Item.Meta
+                          description={
+                            <Space orientation="vertical" size={2}>
+                              <Typography.Text type="secondary">
+                                原合同到期日 {formatDate(dates.originalEndDate)} · 已签约至 {formatDate(dates.contractedThrough)} · 拟续期至 {formatDate(dates.proposedEndDate)}
+                              </Typography.Text>
+                              <Typography.Text type="secondary">
+                                当前报价 {formatSubscriptionChangeMoney(subscriptionChange.currentQuote?.monthlyFeeAmount)} / 下一步：{nextAction.label}
+                              </Typography.Text>
+                            </Space>
+                          }
+                          title={
+                            <Space wrap>
+                              <Typography.Text strong>{subscriptionChange.changeNo}</Typography.Text>
+                              <Tag color={subscriptionChange.status === "COMPLETED" ? "green" : "blue"}>
+                                {SUBSCRIPTION_CHANGE_STATUS_LABELS[subscriptionChange.status] ?? subscriptionChange.status}
+                              </Tag>
+                            </Space>
+                          }
+                        />
+                      </List.Item>
+                    );
+                  }}
+                />
+              </Card>
+            ) : null}
+            {hasOrderChangeView ? (
+              <Space style={{ justifyContent: "flex-end", width: "100%" }}>
               <ActionButton
                 availability={applyChangeAvailability}
                 onClick={openChangeModal}
@@ -7400,8 +7471,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               >
                 申请变更方案
               </ActionButton>
-            </Space>
-            {activeOrderChange ? (
+              </Space>
+            ) : null}
+            {hasOrderChangeView && activeOrderChange ? (
               <Alert
                 action={
                   <Space wrap>
@@ -7487,7 +7559,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 type="info"
               />
             ) : null}
-            <Card title="订单变更记录">
+            {hasOrderChangeView ? <Card title="旧版订单变更记录">
               <Table
                 columns={changeColumns}
                 dataSource={changes}
@@ -7501,8 +7573,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 scroll={{ x: 1280 }}
                 size="small"
               />
-            </Card>
-            <OrderChangeSnapshots changes={changes} />
+            </Card> : null}
+            {hasOrderChangeView ? <OrderChangeSnapshots changes={changes} /> : null}
           </>
         ) : null;
         break;

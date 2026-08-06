@@ -183,6 +183,7 @@ describe("admin order workspace permission contract", () => {
   it.each([
     ["contract:view", ["overview", "contract"]],
     ["order_change:view", ["overview", "change"]],
+    ["subscription_change:view", ["overview", "change"]],
     ["delivery:view", ["overview", "handover"]],
     ["vehicle_return:view", ["overview", "handover"]],
     ["entitlement:view", ["overview", "entitlement"]],

@@ -4,20 +4,21 @@ import {
   BillingScheduleStatus,
   BillStatus,
   BillType,
+  ContractSegmentStatus,
+  ContractSegmentType,
   LeaseStatus,
   OrderStatus,
   Prisma,
-  SubscriptionAutomationJobType
+  SubscriptionAutomationJobType,
+  SubscriptionChangeStatus
 } from "@prisma/client";
 
-import {
-  FinanceService,
-  MonthlyRentAutomationCycleInput,
-  resolveMonthlyRentAmountWithSource
-} from "../finance/finance.service";
+import { FinanceService, MonthlyRentAutomationCycleInput } from "../finance/finance.service";
 import { AutoDebitScheduler } from "../auto-debit/auto-debit.scheduler";
 import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { PrismaService } from "../prisma/prisma.service";
+import { ContractSegmentService } from "../subscription-change/contract-segment.service";
+import { ContractSegmentError } from "../subscription-change/subscription-change.errors";
 import {
   BillingCycle,
   billingSourceKey,
@@ -30,20 +31,12 @@ import {
   toBillingBusinessDate
 } from "./billing-automation.calendar";
 import { BillingAutomationRepository } from "./billing-automation.repository";
-import {
-  BillingAutomationError,
-  ClaimedBillingAutomationJob
-} from "./billing-automation.types";
+import { BillingAutomationError, ClaimedBillingAutomationJob } from "./billing-automation.types";
 
-export const BILLING_AUTOMATION_CLOCK = Symbol(
-  "BILLING_AUTOMATION_CLOCK"
-);
+export const BILLING_AUTOMATION_CLOCK = Symbol("BILLING_AUTOMATION_CLOCK");
 export type BillingAutomationClock = () => Date;
 
-type BillingScheduleDb = Pick<
-  Prisma.TransactionClient,
-  "billingSchedule"
->;
+type BillingScheduleDb = Pick<Prisma.TransactionClient, "billingSchedule">;
 
 @Injectable()
 export class BillingAutomationService {
@@ -52,16 +45,13 @@ export class BillingAutomationService {
     private readonly repository: BillingAutomationRepository,
     private readonly financeService: FinanceService,
     private readonly autoDebitScheduler: AutoDebitScheduler,
+    private readonly contractSegmentService: ContractSegmentService,
     @Optional()
     @Inject(BILLING_AUTOMATION_CLOCK)
     private readonly clock: BillingAutomationClock = () => new Date()
   ) {}
 
-  async ensureActiveSchedule(
-    tx: BillingScheduleDb,
-    orderId: string,
-    actualDeliveryAt: Date
-  ) {
+  async ensureActiveSchedule(tx: BillingScheduleDb, orderId: string, actualDeliveryAt: Date) {
     const cycle = buildInitialBillingCycle(actualDeliveryAt);
     return this.ensureScheduleAtCycle(tx, orderId, cycle, false);
   }
@@ -80,9 +70,7 @@ export class BillingAutomationService {
         nextPeriodEnd: cycle.periodEnd,
         nextPeriodStart: cycle.periodStart,
         orderId,
-        status: completed
-          ? BillingScheduleStatus.COMPLETED
-          : BillingScheduleStatus.ACTIVE,
+        status: completed ? BillingScheduleStatus.COMPLETED : BillingScheduleStatus.ACTIVE,
         timezone: "Asia/Shanghai"
       },
       update: {},
@@ -96,11 +84,6 @@ export class BillingAutomationService {
       include: {
         billingSchedule: true,
         lease: true,
-        quote: {
-          select: {
-            monthlyFeeAmount: true
-          }
-        },
         receivableBills: {
           orderBy: { billPeriodStart: "asc" },
           select: {
@@ -144,18 +127,19 @@ export class BillingAutomationService {
     }> = [];
 
     for (const order of orders) {
-      const amount = reconciliationAmount(order);
+      const effectiveServiceEndDate =
+        await this.contractSegmentService.resolveEffectiveServiceEndDate(order.id);
       const leaseNeedsActivation =
-        !order.lease ||
-        Boolean(order.lease.deletedAt) ||
-        order.lease.status !== LeaseStatus.ACTIVE;
+        !order.lease || Boolean(order.lease.deletedAt) || order.lease.status !== LeaseStatus.ACTIVE;
       const leasePreview = {
-        leaseAction: leaseNeedsActivation
-          ? "WOULD_ACTIVATE" as const
-          : "NONE" as const,
+        leaseAction: leaseNeedsActivation ? ("WOULD_ACTIVATE" as const) : ("NONE" as const),
         leaseStatus: order.lease?.status ?? null
       };
       if (order.billingSchedule) {
+        const amount = await this.reconciliationSegmentAmount(
+          order.id,
+          order.billingSchedule.nextPeriodStart
+        );
         let leaseResult: {
           leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
           leaseStatus: LeaseStatus | null;
@@ -166,11 +150,7 @@ export class BillingAutomationService {
               activatedAt: order.actualDeliveryAt!,
               orderId: order.id
             });
-            await writeLeaseReconciliationAudit(
-              tx,
-              activation.existing,
-              activation.lease
-            );
+            await writeLeaseReconciliationAudit(tx, activation.existing, activation.lease);
             return activation.lease;
           });
           leaseResult = {
@@ -195,21 +175,16 @@ export class BillingAutomationService {
         });
         continue;
       }
-      const baseline = reconciliationBaseline(
-        order.actualDeliveryAt!,
-        order.receivableBills,
-        now
-      );
+      const baseline = reconciliationBaseline(order.actualDeliveryAt!, order.receivableBills, now);
+      const amount = await this.reconciliationSegmentAmount(order.id, baseline.cycle.periodStart);
       const completed =
-        order.endDate instanceof Date &&
-        baseline.cycle.periodStart.getTime() > order.endDate.getTime();
+        effectiveServiceEndDate instanceof Date &&
+        baseline.cycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
       const itemFacts = {
         ...amount,
         baselineReason: baseline.reason,
         basisBillId: baseline.basisBillId,
-        basisPeriodStart: baseline.basisPeriodStart
-          ? isoDate(baseline.basisPeriodStart)
-          : null,
+        basisPeriodStart: baseline.basisPeriodStart ? isoDate(baseline.basisPeriodStart) : null,
         nextCycleNo: baseline.cycle.cycleNo,
         nextGenerateAt: isoDate(baseline.cycle.generateAt),
         nextPeriodEnd: isoDate(baseline.cycle.periodEnd),
@@ -234,19 +209,10 @@ export class BillingAutomationService {
             activatedAt: order.actualDeliveryAt!,
             orderId: order.id
           });
-          await writeLeaseReconciliationAudit(
-            tx,
-            activation.existing,
-            activation.lease
-          );
+          await writeLeaseReconciliationAudit(tx, activation.existing, activation.lease);
           leaseStatus = activation.lease.status;
         }
-        const schedule = await this.ensureScheduleAtCycle(
-          tx,
-          order.id,
-          baseline.cycle,
-          completed
-        );
+        const schedule = await this.ensureScheduleAtCycle(tx, order.id, baseline.cycle, completed);
         return { leaseStatus, schedule };
       });
       items.push({
@@ -261,16 +227,14 @@ export class BillingAutomationService {
     }
 
     return {
-      createdCount: items.filter((item) =>
-        item.action === "CREATED" || item.action === "WOULD_CREATE"
+      createdCount: items.filter(
+        (item) => item.action === "CREATED" || item.action === "WOULD_CREATE"
       ).length,
       dryRun: input.dryRun,
       eligibleCount: orders.length,
-      existingCount: items.filter((item) => item.action === "EXISTING")
-        .length,
-      leaseActivationCount: items.filter((item) =>
-        item.leaseAction === "ACTIVATED" ||
-        item.leaseAction === "WOULD_ACTIVATE"
+      existingCount: items.filter((item) => item.action === "EXISTING").length,
+      leaseActivationCount: items.filter(
+        (item) => item.leaseAction === "ACTIVATED" || item.leaseAction === "WOULD_ACTIVATE"
       ).length,
       items
     };
@@ -289,12 +253,8 @@ export class BillingAutomationService {
       await this.repository.enqueue(this.prisma, {
         availableAt: schedule.nextGenerateAt,
         billingScheduleId: schedule.id,
-        idempotencyKey: billingSourceKey(
-          schedule.orderId,
-          schedule.nextPeriodStart
-        ),
-        jobType:
-          SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
+        idempotencyKey: billingSourceKey(schedule.orderId, schedule.nextPeriodStart),
+        jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
         orderId: schedule.orderId,
         payload: {
           cycleNo: schedule.nextCycleNo,
@@ -310,13 +270,21 @@ export class BillingAutomationService {
     };
   }
 
+  private async reconciliationSegmentAmount(orderId: string, periodStart: Date) {
+    const segment = await this.contractSegmentService.resolveSegmentForPeriod(orderId, periodStart);
+    return {
+      amountSource: "CONTRACT_SEGMENT",
+      monthlyRentAmount: Number(segment.monthlyFeeAmount)
+    };
+  }
+
   async generateScheduledMonthlyRent(job: ClaimedBillingAutomationJob) {
     if (!job.billingScheduleId || !job.orderId) {
       throw configurationError();
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const result = await this.prisma.$transaction(async (tx) => {
         const schedule = await tx.billingSchedule.findUnique({
           include: { order: { include: { lease: true } } },
           where: { id: job.billingScheduleId! }
@@ -324,36 +292,40 @@ export class BillingAutomationService {
         if (schedule?.status === BillingScheduleStatus.PAUSED) {
           throw pausedScheduleError();
         }
+        const activePerformance =
+          schedule?.order.orderStatus === OrderStatus.ACTIVE &&
+          schedule.order.lease?.status === LeaseStatus.ACTIVE;
+        const expiryCatchUp =
+          schedule?.order.orderStatus === OrderStatus.PENDING_RETURN &&
+          schedule.order.lease?.status === LeaseStatus.RETURN_DUE;
+        const returnedCatchUp =
+          schedule?.order.orderStatus === OrderStatus.COMPLETED &&
+          schedule.order.lease?.status === LeaseStatus.COMPLETED;
         if (
           !schedule ||
           schedule.status !== BillingScheduleStatus.ACTIVE ||
           schedule.orderId !== job.orderId ||
           schedule.order.deletedAt ||
-          schedule.order.orderStatus !== OrderStatus.ACTIVE ||
           !schedule.order.actualDeliveryAt ||
           !schedule.order.lease ||
           schedule.order.lease.deletedAt ||
-          schedule.order.lease.status !== LeaseStatus.ACTIVE
+          (!activePerformance && !expiryCatchUp && !returnedCatchUp)
         ) {
           throw configurationError();
         }
 
-        const cycle = cycleAt(
-          schedule.order.actualDeliveryAt,
-          schedule.nextCycleNo
-        );
+        const cycle = cycleAt(schedule.order.actualDeliveryAt, schedule.nextCycleNo);
         assertScheduleMatchesCycle(schedule, cycle);
-        const sourceKey = billingSourceKey(
-          schedule.orderId,
-          cycle.periodStart
-        );
+        const sourceKey = billingSourceKey(schedule.orderId, cycle.periodStart);
         if (job.idempotencyKey !== sourceKey) {
           throw configurationError();
         }
         const generatedAt = this.clock();
+        const effectiveServiceEndDate =
+          await this.contractSegmentService.resolveEffectiveServiceEndDate(schedule.orderId, tx);
         if (
-          schedule.order.endDate instanceof Date &&
-          cycle.periodStart.getTime() > schedule.order.endDate.getTime()
+          effectiveServiceEndDate instanceof Date &&
+          cycle.periodStart.getTime() > effectiveServiceEndDate.getTime()
         ) {
           const completedSchedule = await tx.billingSchedule.updateMany({
             data: {
@@ -393,24 +365,49 @@ export class BillingAutomationService {
           };
         }
 
+        let segment;
+        try {
+          segment = await this.contractSegmentService.resolveSegmentForPeriod(
+            schedule.orderId,
+            cycle.periodStart,
+            { db: tx, periodEnd: cycle.periodEnd }
+          );
+        } catch (error) {
+          if (
+            error instanceof ContractSegmentError &&
+            error.code === "BILLING_PERIOD_CROSSES_SEGMENT"
+          ) {
+            await this.moveCrossingPeriodToManualTakeover(tx, {
+              changeOrderId: error.context?.changeOrderId,
+              generatedAt,
+              jobId: job.id,
+              scheduleId: schedule.id,
+              scheduleVersion: schedule.version,
+              sourceKey
+            });
+            return { billingFailure: crossingSegmentError() } as const;
+          }
+          throw error;
+        }
+
         const financeInput: MonthlyRentAutomationCycleInput = {
           actorId: null,
+          contractSegmentId: segment.segmentId,
           cycleNo: cycle.cycleNo,
+          monthlyRentAmount: segment.monthlyFeeAmount,
           orderId: schedule.orderId,
           periodEnd: cycle.periodEnd,
           periodStart: cycle.periodStart,
           sourceKey
         };
-        const generated =
-          await this.financeService.generateMonthlyRentBillForCycle(
-            tx,
-            financeInput
-          );
+        const generated = await this.financeService.generateMonthlyRentBillForCycle(
+          tx,
+          financeInput
+        );
         const nextCycle = buildNextBillingCycle(cycle);
         const completed =
-          schedule.order.endDate instanceof Date &&
-          nextCycle.periodStart.getTime() >
-            schedule.order.endDate.getTime();
+          effectiveServiceEndDate instanceof Date &&
+          nextCycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
         const updated = await tx.billingSchedule.updateMany({
           data: completed
             ? {
@@ -444,8 +441,7 @@ export class BillingAutomationService {
           billId: generated.bill.id,
           billingScheduleId: schedule.id,
           idempotencyKey: dueNoticeJobKey(generated.bill.id),
-          jobType:
-            SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
+          jobType: SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
           orderId: schedule.orderId,
           payload: {
             billId: generated.bill.id,
@@ -456,10 +452,7 @@ export class BillingAutomationService {
           availableAt: cycle.overdueAt,
           billId: generated.bill.id,
           billingScheduleId: schedule.id,
-          idempotencyKey: overdueJobKey(
-            generated.bill.id,
-            cycle.dueDate
-          ),
+          idempotencyKey: overdueJobKey(generated.bill.id, cycle.dueDate),
           jobType: SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
           orderId: schedule.orderId,
           payload: {
@@ -467,19 +460,14 @@ export class BillingAutomationService {
             billId: generated.bill.id
           }
         });
-        await this.autoDebitScheduler.enqueueForBill(
-          tx,
-          generated.bill,
-          schedule.id
-        );
+        await this.autoDebitScheduler.enqueueForBill(tx, generated.bill, schedule.id);
         await tx.auditLog.create({
           data: {
-            action: generated.created
-              ? AuditAction.CREATE
-              : AuditAction.UPDATE,
+            action: generated.created ? AuditAction.CREATE : AuditAction.UPDATE,
             afterSnapshot: {
               actorType: "SYSTEM",
               billId: generated.bill.id,
+              contractSegmentId: segment.segmentId,
               jobId: job.id,
               sourceKey
             },
@@ -497,25 +485,159 @@ export class BillingAutomationService {
           sourceKey
         };
       });
+      if ("billingFailure" in result) {
+        throw result.billingFailure;
+      }
+      return result;
     } catch (error) {
       const classified = classifyExecutionError(error);
-      if (
-        classified.code === "BILLING_EXECUTION_ERROR" &&
-        job.billingScheduleId
-      ) {
-        const currentSchedule =
-          await this.prisma.billingSchedule
-            .findUnique({
-              select: { status: true },
-              where: { id: job.billingScheduleId }
-            })
-            .catch(() => null);
+      if (classified.code === "BILLING_EXECUTION_ERROR" && job.billingScheduleId) {
+        const currentSchedule = await this.prisma.billingSchedule
+          .findUnique({
+            select: { status: true },
+            where: { id: job.billingScheduleId }
+          })
+          .catch(() => null);
         if (currentSchedule?.status === BillingScheduleStatus.PAUSED) {
           throw pausedScheduleError();
         }
       }
       throw classified;
     }
+  }
+
+  async resumeForExtension(orderId: string, segmentId: string, now = this.clock()) {
+    return this.prisma.$transaction(async (tx) => {
+      const segment = await tx.subscriptionContractSegment.findUnique({
+        select: {
+          endDate: true,
+          id: true,
+          orderId: true,
+          segmentType: true,
+          status: true
+        },
+        where: { id: segmentId }
+      });
+      const schedule = await tx.billingSchedule.findUnique({
+        where: { orderId }
+      });
+      if (
+        !segment ||
+        segment.orderId !== orderId ||
+        segment.segmentType !== ContractSegmentType.EXTENSION ||
+        segment.status === ContractSegmentStatus.CANCELLED ||
+        !schedule ||
+        schedule.nextPeriodStart.getTime() > segment.endDate.getTime()
+      ) {
+        throw configurationError();
+      }
+      if (schedule.status === BillingScheduleStatus.ACTIVE) {
+        return schedule;
+      }
+      if (schedule.status !== BillingScheduleStatus.COMPLETED) {
+        throw configurationError();
+      }
+
+      const updated = await tx.billingSchedule.updateMany({
+        data: {
+          completedAt: null,
+          pauseReason: null,
+          status: BillingScheduleStatus.ACTIVE,
+          version: { increment: 1 }
+        },
+        where: {
+          id: schedule.id,
+          status: BillingScheduleStatus.COMPLETED,
+          version: schedule.version
+        }
+      });
+      if (updated.count !== 1) {
+        throw retryableExecutionError();
+      }
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            actorType: "SYSTEM",
+            contractSegmentId: segment.id,
+            reason: "EXTENSION_BILLING_CONTINUATION",
+            resumedAt: now
+          },
+          entityId: schedule.id,
+          entityType: "billing_schedule",
+          module: "billing",
+          operatorId: null
+        }
+      });
+      return tx.billingSchedule.findUniqueOrThrow({
+        where: { id: schedule.id }
+      });
+    });
+  }
+
+  private async moveCrossingPeriodToManualTakeover(
+    tx: Prisma.TransactionClient,
+    input: {
+      changeOrderId?: string;
+      generatedAt: Date;
+      jobId: string;
+      scheduleId: string;
+      scheduleVersion: number;
+      sourceKey: string;
+    }
+  ) {
+    const paused = await tx.billingSchedule.updateMany({
+      data: {
+        pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+        status: BillingScheduleStatus.PAUSED,
+        version: { increment: 1 }
+      },
+      where: {
+        id: input.scheduleId,
+        status: BillingScheduleStatus.ACTIVE,
+        version: input.scheduleVersion
+      }
+    });
+    if (paused.count !== 1) {
+      throw retryableExecutionError();
+    }
+    if (input.changeOrderId) {
+      await tx.subscriptionChangeOrder.updateMany({
+        data: {
+          failureCode: "BILLING_PERIOD_CROSSES_SEGMENT",
+          failureMessage: "The monthly billing period crosses a contract segment boundary.",
+          manualTakeoverAt: input.generatedAt,
+          status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+          version: { increment: 1 }
+        },
+        where: {
+          id: input.changeOrderId,
+          status: {
+            in: [
+              SubscriptionChangeStatus.SCHEDULED,
+              SubscriptionChangeStatus.EXECUTING,
+              SubscriptionChangeStatus.COMPLETED
+            ]
+          }
+        }
+      });
+    }
+    await tx.auditLog.create({
+      data: {
+        action: AuditAction.UPDATE,
+        afterSnapshot: {
+          actorType: "SYSTEM",
+          changeOrderId: input.changeOrderId ?? null,
+          jobId: input.jobId,
+          reason: "BILLING_PERIOD_CROSSES_SEGMENT",
+          sourceKey: input.sourceKey
+        },
+        entityId: input.scheduleId,
+        entityType: "billing_schedule",
+        module: "billing",
+        operatorId: null
+      }
+    });
   }
 
   async markScheduledBillOverdue(job: ClaimedBillingAutomationJob) {
@@ -525,16 +647,12 @@ export class BillingAutomationService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const result =
-          await this.financeService.markBillOverdueForAutomation(
-            tx,
-            job.billId!,
-            this.clock()
-          );
-        if (
-          result.action === "MARKED_OVERDUE" ||
-          result.action === "ALREADY_OVERDUE"
-        ) {
+        const result = await this.financeService.markBillOverdueForAutomation(
+          tx,
+          job.billId!,
+          this.clock()
+        );
+        if (result.action === "MARKED_OVERDUE" || result.action === "ALREADY_OVERDUE") {
           await tx.auditLog.create({
             data: {
               action: AuditAction.UPDATE,
@@ -554,8 +672,7 @@ export class BillingAutomationService {
             availableAt: this.clock(),
             billId: result.bill.id,
             idempotencyKey: overdueNoticeJobKey(result.bill.id),
-            jobType:
-              SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
+            jobType: SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
             orderId: job.orderId ?? undefined,
             payload: {
               billId: result.bill.id,
@@ -592,9 +709,7 @@ async function writeLeaseReconciliationAudit(
     data: {
       action: before ? AuditAction.UPDATE : AuditAction.CREATE,
       afterSnapshot: leaseReconciliationSnapshot(after),
-      beforeSnapshot: before
-        ? leaseReconciliationSnapshot(before)
-        : undefined,
+      beforeSnapshot: before ? leaseReconciliationSnapshot(before) : undefined,
       entityId: after.id,
       entityType: "lease",
       module: "billing",
@@ -639,10 +754,7 @@ function reconciliationBaseline(
     if (!(bill.billPeriodStart instanceof Date)) {
       continue;
     }
-    const matched = cycleForPeriodStart(
-      actualDeliveryAt,
-      bill.billPeriodStart
-    );
+    const matched = cycleForPeriodStart(actualDeliveryAt, bill.billPeriodStart);
     if (matched && (!basisCycle || matched.cycleNo > basisCycle.cycleNo)) {
       basisBillId = bill.id;
       basisCycle = matched;
@@ -666,14 +778,10 @@ function reconciliationBaseline(
   };
 }
 
-function cycleForPeriodStart(
-  actualDeliveryAt: Date,
-  periodStart: Date
-) {
+function cycleForPeriodStart(actualDeliveryAt: Date, periodStart: Date) {
   let cycle = buildInitialBillingCycle(actualDeliveryAt);
   for (let cycleNo = 1; cycleNo <= 1200; cycleNo += 1) {
-    const difference =
-      cycle.periodStart.getTime() - periodStart.getTime();
+    const difference = cycle.periodStart.getTime() - periodStart.getTime();
     if (difference === 0) {
       return cycle;
     }
@@ -683,19 +791,6 @@ function cycleForPeriodStart(
     cycle = buildNextBillingCycle(cycle);
   }
   return null;
-}
-
-function reconciliationAmount(order: {
-  monthlyFeeAmount: bigint;
-  quote: { monthlyFeeAmount: bigint } | null;
-  quoteSnapshot: Prisma.JsonValue | null;
-}) {
-  const resolved = resolveMonthlyRentAmountWithSource(order);
-  return {
-    amountSource: resolved.amountSource,
-    monthlyRentAmount:
-      resolved.amount === null ? null : Number(resolved.amount)
-  };
 }
 
 function cycleAt(actualDeliveryAt: Date, cycleNo: number) {
@@ -740,6 +835,14 @@ function pausedScheduleError() {
     code: "BILLING_SCHEDULE_PAUSED",
     message: "Billing schedule is paused.",
     retryable: true
+  });
+}
+
+function crossingSegmentError() {
+  return new BillingAutomationError({
+    code: "BILLING_PERIOD_CROSSES_SEGMENT",
+    message: "The billing period crosses a contract segment boundary and requires manual takeover.",
+    retryable: false
   });
 }
 

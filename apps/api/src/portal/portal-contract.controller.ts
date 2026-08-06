@@ -36,6 +36,25 @@ export class PortalContractController {
     return this.esignService.startPortalSigning(id, currentCustomer);
   }
 
+  @Get("contracts/:id/generated-document/preview")
+  async previewGeneratedContract(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.esignService.getPortalGeneratedContractPreview(
+      id,
+      currentCustomer
+    );
+    response.setHeader("Content-Type", preview.contentType);
+    response.setHeader("Content-Length", String(preview.sizeBytes));
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
+    return new StreamableFile(preview.buffer);
+  }
+
   @Get("contracts/:id/signed-document/preview")
   async previewSignedContract(
     @Param("id") id: string,

@@ -1,6 +1,7 @@
 import {
   ApplicationStatus,
   BusinessType,
+  ContractSegmentStatus,
   EntitlementAccountStatus,
   EntitlementGrantSource,
   EntitlementGrantStatus,
@@ -33,18 +34,30 @@ describe("order entitlement grant backend loop", () => {
     expect(result.account?.periodStart).toBe("2026-06-10T00:00:00.000Z");
     expect(result.account?.periodEnd).toBe("2026-07-09T00:00:00.000Z");
     expect(result.grants).toHaveLength(4);
-    expect(result.grants.map((grant) => [grant.entitlementType, grant.unit, grant.totalAmount])).toEqual([
+    expect(
+      result.grants.map((grant) => [grant.entitlementType, grant.unit, grant.totalAmount])
+    ).toEqual([
       [EntitlementType.MILEAGE, EntitlementUnit.KM, 1500],
       [EntitlementType.ENERGY, EntitlementUnit.KWH, 120],
       [EntitlementType.ENERGY, EntitlementUnit.TIMES, 4],
       [EntitlementType.BENEFIT, EntitlementUnit.TIMES, 2]
     ]);
-    expect(result.grants.every((grant) => grant.grantSource === EntitlementGrantSource.ORDER_START)).toBe(true);
-    expect(result.grants.every((grant) => grant.grantPeriodStart === "2026-06-10T00:00:00.000Z")).toBe(true);
-    expect(result.grants.every((grant) => grant.grantPeriodEnd === "2026-07-09T00:00:00.000Z")).toBe(true);
-    expect(result.grants.every((grant) => grant.status === EntitlementGrantStatus.ACTIVE)).toBe(true);
+    expect(
+      result.grants.every((grant) => grant.grantSource === EntitlementGrantSource.ORDER_START)
+    ).toBe(true);
+    expect(
+      result.grants.every((grant) => grant.grantPeriodStart === "2026-06-10T00:00:00.000Z")
+    ).toBe(true);
+    expect(
+      result.grants.every((grant) => grant.grantPeriodEnd === "2026-07-09T00:00:00.000Z")
+    ).toBe(true);
+    expect(result.grants.every((grant) => grant.status === EntitlementGrantStatus.ACTIVE)).toBe(
+      true
+    );
     expect(result.grants.every((grant) => grant.usedAmount === 0)).toBe(true);
-    expect(result.grants.map((grant) => grant.grantNo).every((grantNo) => grantNo.startsWith("EG"))).toBe(true);
+    expect(
+      result.grants.map((grant) => grant.grantNo).every((grantNo) => grantNo.startsWith("EG"))
+    ).toBe(true);
   });
 
   it("rejects non-ACTIVE orders", async () => {
@@ -119,7 +132,10 @@ describe("order entitlement grant backend loop", () => {
     const harness = createEntitlementHarness();
     await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
 
-    const result = (await harness.service.getOrderEntitlements(harness.orderId, harness.user)) as EntitlementResponse;
+    const result = (await harness.service.getOrderEntitlements(
+      harness.orderId,
+      harness.user
+    )) as EntitlementResponse;
 
     expect(result.account?.accountNo).toMatch(/^EA/);
     expect(result.grants).toHaveLength(4);
@@ -128,7 +144,10 @@ describe("order entitlement grant backend loop", () => {
   it("returns an empty entitlement response when the order has no account", async () => {
     const harness = createEntitlementHarness();
 
-    const result = (await harness.service.getOrderEntitlements(harness.orderId, harness.user)) as EntitlementResponse;
+    const result = (await harness.service.getOrderEntitlements(
+      harness.orderId,
+      harness.user
+    )) as EntitlementResponse;
 
     expect(result).toEqual({ account: null, grants: [] });
   });
@@ -139,7 +158,11 @@ describe("order entitlement grant backend loop", () => {
     await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
 
     expect(harness.auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "CREATE", entityType: "order_entitlement_account", module: "entitlement" })
+      expect.objectContaining({
+        action: "CREATE",
+        entityType: "order_entitlement_account",
+        module: "entitlement"
+      })
     );
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -224,8 +247,13 @@ describe("order entitlement grant backend loop", () => {
     expect(result.grant.status).toBe(EntitlementGrantStatus.ACTIVE);
     expect(harness.state.usages).toHaveLength(1);
 
-    const balance = (await harness.service.getOrderEntitlements(harness.orderId, harness.user)) as EntitlementResponse;
-    expect(balance.grants.find((grant) => grant.id === mileageGrant.id)?.latestUsageAt).toBe("2026-06-10T10:00:00.000Z");
+    const balance = (await harness.service.getOrderEntitlements(
+      harness.orderId,
+      harness.user
+    )) as EntitlementResponse;
+    expect(balance.grants.find((grant) => grant.id === mileageGrant.id)?.latestUsageAt).toBe(
+      "2026-06-10T10:00:00.000Z"
+    );
   });
 
   it("rejects entitlement consumption for non-ACTIVE orders", async () => {
@@ -255,11 +283,12 @@ describe("order entitlement grant backend loop", () => {
     ).rejects.toThrow("当前订单尚未生成权益账户，不能消耗权益。");
 
     const inactiveAccountHarness = createEntitlementHarness();
-    const inactiveAccountEntitlements = (await inactiveAccountHarness.service.generateOrderEntitlements(
-      inactiveAccountHarness.orderId,
-      inactiveAccountHarness.user,
-      inactiveAccountHarness.context
-    )) as EntitlementResponse;
+    const inactiveAccountEntitlements =
+      (await inactiveAccountHarness.service.generateOrderEntitlements(
+        inactiveAccountHarness.orderId,
+        inactiveAccountHarness.user,
+        inactiveAccountHarness.context
+      )) as EntitlementResponse;
     inactiveAccountHarness.state.accounts[0]!.accountStatus = EntitlementAccountStatus.SUSPENDED;
     await expect(
       inactiveAccountHarness.service.consumeOrderEntitlement(
@@ -479,7 +508,11 @@ describe("order entitlement grant backend loop", () => {
     expect(result.periodEnd).toBe("2026-08-09");
     expect(result.grantCount).toBe(4);
     expect(harness.state.grants).toHaveLength(8);
-    expect(harness.state.grants.slice(4).every((grant) => grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL)).toBe(true);
+    expect(
+      harness.state.grants
+        .slice(4)
+        .every((grant) => grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL)
+    ).toBe(true);
   });
 
   it("rejects monthly renewal when order, delivery, or active account prerequisites are missing", async () => {
@@ -560,6 +593,105 @@ describe("order entitlement grant backend loop", () => {
     expect(harness.state.grants).toHaveLength(12);
   });
 
+  it("uses the active extension segment snapshot for later monthly renewals", async () => {
+    const extensionSnapshot = buildPackageSnapshot({
+      benefitPackage: {
+        benefitCount: 5,
+        benefitType: "WASH_CAR",
+        description: "续期每月 5 次洗车权益",
+        packageName: "续期洗车权益包"
+      },
+      energyPackage: null,
+      mileagePackage: { monthlyMileageKm: 1800, overMileageFeeAmount: 80 }
+    });
+    const harness = createEntitlementHarness({
+      contractSegments: [
+        {
+          endDate: new Date("2026-07-09T00:00:00.000Z"),
+          id: "segment-base",
+          planSnapshot: { packageSnapshot: buildPackageSnapshot() },
+          sequenceNo: 1,
+          startDate: new Date("2026-06-10T00:00:00.000Z"),
+          status: ContractSegmentStatus.COMPLETED
+        },
+        {
+          endDate: new Date("2026-09-09T00:00:00.000Z"),
+          id: "segment-extension",
+          planSnapshot: { packageSnapshot: extensionSnapshot },
+          sequenceNo: 2,
+          startDate: new Date("2026-07-10T00:00:00.000Z"),
+          status: ContractSegmentStatus.ACTIVE
+        }
+      ]
+    });
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+
+    await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-07-10" },
+      harness.user,
+      harness.context
+    );
+    await harness.service.renewOrderMonthlyEntitlements(
+      harness.orderId,
+      { asOfDate: "2026-08-10" },
+      harness.user,
+      harness.context
+    );
+
+    const laterExtensionGrants = harness.state.grants.filter(
+      (grant) =>
+        grant.grantPeriodStart?.getTime() === new Date("2026-08-10T00:00:00.000Z").getTime()
+    );
+    expect(
+      laterExtensionGrants.map((grant) => [
+        grant.entitlementType,
+        grant.unit,
+        grant.totalAmount?.toNumber()
+      ])
+    ).toEqual([
+      [EntitlementType.MILEAGE, EntitlementUnit.KM, 1800],
+      [EntitlementType.BENEFIT, EntitlementUnit.TIMES, 5]
+    ]);
+  });
+
+  it("keeps a future scheduled extension as not due before its entitlement period", async () => {
+    const harness = createEntitlementHarness({
+      contractSegments: [
+        {
+          endDate: new Date("2026-07-09T00:00:00.000Z"),
+          id: "segment-base",
+          planSnapshot: { packageSnapshot: buildPackageSnapshot() },
+          sequenceNo: 1,
+          startDate: new Date("2026-06-10T00:00:00.000Z"),
+          status: ContractSegmentStatus.ACTIVE
+        },
+        {
+          endDate: new Date("2026-09-09T00:00:00.000Z"),
+          id: "segment-extension",
+          planSnapshot: {
+            packageSnapshot: buildPackageSnapshot({
+              mileagePackage: { monthlyMileageKm: 1800, overMileageFeeAmount: 80 }
+            })
+          },
+          sequenceNo: 2,
+          startDate: new Date("2026-07-10T00:00:00.000Z"),
+          status: ContractSegmentStatus.SCHEDULED
+        }
+      ]
+    });
+    await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
+
+    await expect(
+      harness.service.renewOrderMonthlyEntitlements(
+        harness.orderId,
+        { asOfDate: "2026-07-01" },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({ action: "SKIPPED_NOT_DUE", periodStart: "2026-07-10" });
+  });
+
   it("dry-runs batch monthly renewal without writing grants or audit logs", async () => {
     const harness = createEntitlementHarness();
     await harness.service.generateOrderEntitlements(harness.orderId, harness.user, harness.context);
@@ -580,7 +712,11 @@ describe("order entitlement grant backend loop", () => {
 
   it("batch monthly renewal writes due grants and reports single-order failures", async () => {
     const successHarness = createEntitlementHarness();
-    await successHarness.service.generateOrderEntitlements(successHarness.orderId, successHarness.user, successHarness.context);
+    await successHarness.service.generateOrderEntitlements(
+      successHarness.orderId,
+      successHarness.user,
+      successHarness.context
+    );
     successHarness.auditService.write.mockClear();
 
     const successResult = (await successHarness.service.generateMonthlyEntitlements(
@@ -593,7 +729,11 @@ describe("order entitlement grant backend loop", () => {
     expect(successResult.items[0]?.action).toBe("GENERATED");
     expect(successHarness.state.grants).toHaveLength(8);
     expect(successHarness.auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "CREATE", entityType: "order_entitlement_grant", module: "entitlement" })
+      expect.objectContaining({
+        action: "CREATE",
+        entityType: "order_entitlement_grant",
+        module: "entitlement"
+      })
     );
 
     const failedHarness = createEntitlementHarness();
@@ -639,7 +779,11 @@ describe("order entitlement grant backend loop", () => {
     expect(harness.state.grants[2]!.status).toBe(EntitlementGrantStatus.CANCELLED);
     expect(result.items.map((item) => item.grantId)).toContain(entitlements.grants[0]!.id);
     expect(harness.auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "UPDATE", entityType: "order_entitlement_grant", module: "entitlement" })
+      expect.objectContaining({
+        action: "UPDATE",
+        entityType: "order_entitlement_grant",
+        module: "entitlement"
+      })
     );
   });
 
@@ -692,7 +836,13 @@ describe("order entitlement grant backend loop", () => {
 });
 
 type EntitlementResponse = {
-  account: { accountNo: string; accountStatus: EntitlementAccountStatus; id: string; periodEnd: string; periodStart: string } | null;
+  account: {
+    accountNo: string;
+    accountStatus: EntitlementAccountStatus;
+    id: string;
+    periodEnd: string;
+    periodStart: string;
+  } | null;
   grants: Array<{
     entitlementName: string;
     entitlementType: EntitlementType;
@@ -743,7 +893,14 @@ type MonthlyRenewalBatchResponse = {
   dryRun: boolean;
   failedCount: number;
   generatedCount: number;
-  items: Array<{ action: string; grantCount: number; orderId: string; periodEnd: string | null; periodStart: string | null; reason: string }>;
+  items: Array<{
+    action: string;
+    grantCount: number;
+    orderId: string;
+    periodEnd: string | null;
+    periodStart: string | null;
+    reason: string;
+  }>;
   skippedCount: number;
 };
 
@@ -781,6 +938,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
   const state: {
     accounts: AccountRecord[];
     actualDeliveryAt: Date | null;
+    contractSegments: Array<Record<string, unknown>>;
     finalPlanSnapshot: unknown;
     grants: GrantRecord[];
     orderStatus: OrderStatus;
@@ -790,6 +948,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
   } = {
     accounts: [],
     actualDeliveryAt: new Date("2026-06-10T03:00:00.000Z"),
+    contractSegments: [],
     finalPlanSnapshot: { packageSnapshot: buildPackageSnapshot() },
     grants: [],
     orderStatus: OrderStatus.ACTIVE,
@@ -815,6 +974,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
       contract: null,
       contractId: null,
       contracts: [],
+      contractSegments: state.contractSegments,
       createdAt: now,
       createdBy: user.id,
       customer: { grade: "A", id: customerId, mobile: "13800000000", name: "测试客户" },
@@ -871,24 +1031,28 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
 
   function findAccount(args: { where?: Record<string, unknown> } = {}) {
     const where = args.where ?? {};
-    return state.accounts.find((account) => {
-      if (account.deletedAt) {
-        return false;
-      }
-      if (where.orderId && account.orderId !== where.orderId) {
-        return false;
-      }
-      if (where.accountStatus && account.accountStatus !== where.accountStatus) {
-        return false;
-      }
-      return true;
-    }) ?? null;
+    return (
+      state.accounts.find((account) => {
+        if (account.deletedAt) {
+          return false;
+        }
+        if (where.orderId && account.orderId !== where.orderId) {
+          return false;
+        }
+        if (where.accountStatus && account.accountStatus !== where.accountStatus) {
+          return false;
+        }
+        return true;
+      }) ?? null
+    );
   }
 
   function accountWithGrants(account: AccountRecord) {
     return {
       ...account,
-      grants: state.grants.filter((grant) => grant.accountId === account.id && !grant.deletedAt).map(grantWithUsages)
+      grants: state.grants
+        .filter((grant) => grant.accountId === account.id && !grant.deletedAt)
+        .map(grantWithUsages)
     };
   }
 
@@ -896,7 +1060,12 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
     return {
       ...grant,
       usages: state.usages
-        .filter((usage) => usage.grantId === grant.id && !usage.deletedAt && usage.usageStatus === EntitlementUsageStatus.CONFIRMED)
+        .filter(
+          (usage) =>
+            usage.grantId === grant.id &&
+            !usage.deletedAt &&
+            usage.usageStatus === EntitlementUsageStatus.CONFIRMED
+        )
         .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
         .slice(0, 1)
     };
@@ -904,46 +1073,57 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
 
   function findGrant(args: { where?: Record<string, unknown> } = {}) {
     const where = args.where ?? {};
-    return state.grants.find((grant) => {
-      if (grant.deletedAt) {
-        return false;
-      }
-      if (where.id && grant.id !== where.id) {
-        return false;
-      }
-      if (where.orderId && grant.orderId !== where.orderId) {
-        return false;
-      }
-      if (where.accountId && grant.accountId !== where.accountId) {
-        return false;
-      }
-      if (where.status && grant.status !== where.status) {
-        return false;
-      }
-      if (where.grantSource && grant.grantSource !== where.grantSource) {
-        return false;
-      }
-      if (where.entitlementName && grant.entitlementName !== where.entitlementName) {
-        return false;
-      }
-      if (where.entitlementType && grant.entitlementType !== where.entitlementType) {
-        return false;
-      }
-      if (where.unit && grant.unit !== where.unit) {
-        return false;
-      }
-      if (where.grantPeriodStart && !sameDate(grant.grantPeriodStart, where.grantPeriodStart as Date)) {
-        return false;
-      }
-      if (where.grantPeriodEnd && (!grant.grantPeriodEnd || !sameDate(grant.grantPeriodEnd, where.grantPeriodEnd as Date))) {
-        return false;
-      }
-      const remainingFilter = where.remainingAmount as { gte?: Prisma.Decimal } | undefined;
-      if (remainingFilter?.gte && (!grant.remainingAmount || grant.remainingAmount.lt(remainingFilter.gte))) {
-        return false;
-      }
-      return true;
-    }) ?? null;
+    return (
+      state.grants.find((grant) => {
+        if (grant.deletedAt) {
+          return false;
+        }
+        if (where.id && grant.id !== where.id) {
+          return false;
+        }
+        if (where.orderId && grant.orderId !== where.orderId) {
+          return false;
+        }
+        if (where.accountId && grant.accountId !== where.accountId) {
+          return false;
+        }
+        if (where.status && grant.status !== where.status) {
+          return false;
+        }
+        if (where.grantSource && grant.grantSource !== where.grantSource) {
+          return false;
+        }
+        if (where.entitlementName && grant.entitlementName !== where.entitlementName) {
+          return false;
+        }
+        if (where.entitlementType && grant.entitlementType !== where.entitlementType) {
+          return false;
+        }
+        if (where.unit && grant.unit !== where.unit) {
+          return false;
+        }
+        if (
+          where.grantPeriodStart &&
+          !sameDate(grant.grantPeriodStart, where.grantPeriodStart as Date)
+        ) {
+          return false;
+        }
+        if (
+          where.grantPeriodEnd &&
+          (!grant.grantPeriodEnd || !sameDate(grant.grantPeriodEnd, where.grantPeriodEnd as Date))
+        ) {
+          return false;
+        }
+        const remainingFilter = where.remainingAmount as { gte?: Prisma.Decimal } | undefined;
+        if (
+          remainingFilter?.gte &&
+          (!grant.remainingAmount || grant.remainingAmount.lt(remainingFilter.gte))
+        ) {
+          return false;
+        }
+        return true;
+      }) ?? null
+    );
   }
 
   function grantsMatchingWhere(where: Record<string, unknown>) {
@@ -955,7 +1135,10 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
         return false;
       }
       const periodEndWhere = where.grantPeriodEnd as { lt?: Date } | undefined;
-      if (periodEndWhere?.lt && (!grant.grantPeriodEnd || grant.grantPeriodEnd >= periodEndWhere.lt)) {
+      if (
+        periodEndWhere?.lt &&
+        (!grant.grantPeriodEnd || grant.grantPeriodEnd >= periodEndWhere.lt)
+      ) {
         return false;
       }
       return true;
@@ -987,11 +1170,18 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
     if (where.entitlementType && usage.entitlementType !== where.entitlementType) {
       return false;
     }
-    const usageStatusWhere = where.usageStatus as EntitlementUsageStatus | { not?: EntitlementUsageStatus } | undefined;
+    const usageStatusWhere = where.usageStatus as
+      | EntitlementUsageStatus
+      | { not?: EntitlementUsageStatus }
+      | undefined;
     if (typeof usageStatusWhere === "string" && usage.usageStatus !== usageStatusWhere) {
       return false;
     }
-    if (typeof usageStatusWhere === "object" && usageStatusWhere?.not && usage.usageStatus === usageStatusWhere.not) {
+    if (
+      typeof usageStatusWhere === "object" &&
+      usageStatusWhere?.not &&
+      usage.usageStatus === usageStatusWhere.not
+    ) {
       return false;
     }
     const occurredAtWhere = where.occurredAt as { gte?: Date; lte?: Date } | undefined;
@@ -1086,11 +1276,15 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
       })
     },
     orderEntitlementUsage: {
-      count: vi.fn(async ({ where }) => state.usages.filter((usage) => usageMatchesWhere(usage, where)).length),
-      findMany: vi.fn(async ({ skip = 0, take = 20, where }) => state.usages
-        .filter((usage) => usageMatchesWhere(usage, where))
-        .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
-        .slice(skip, skip + take))
+      count: vi.fn(
+        async ({ where }) => state.usages.filter((usage) => usageMatchesWhere(usage, where)).length
+      ),
+      findMany: vi.fn(async ({ skip = 0, take = 20, where }) =>
+        state.usages
+          .filter((usage) => usageMatchesWhere(usage, where))
+          .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())
+          .slice(skip, skip + take)
+      )
     },
     orderEntitlementGrant: {
       count: vi.fn(async ({ where }) => grantsMatchingWhere(where).length),

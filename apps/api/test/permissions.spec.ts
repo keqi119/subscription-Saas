@@ -2070,4 +2070,35 @@ describe("seed permission calibration", () => {
   function escapeRegExp(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
+
+  it("assigns the approved subscription change permissions and menu by role", () => {
+    const view = "subscription_change:view";
+    const operational = [
+      view,
+      "subscription_change:create",
+      "subscription_change:quote",
+      "subscription_change:submit",
+      "subscription_change:esign_retry",
+      "subscription_change:execute",
+      "subscription_change:cancel"
+    ];
+    const adminOnly = [
+      "subscription_change:price_override_approve",
+      "subscription_change:manual_takeover"
+    ];
+
+    for (const permission of [...operational, ...adminOnly]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+    for (const permission of operational) {
+      expect(roleHasPermission(rolePermissionArray("OP"), permission)).toBe(true);
+    }
+    for (const permission of adminOnly) {
+      expect(roleHasPermission(rolePermissionArray("OP"), permission)).toBe(false);
+    }
+    expect(roleHasPermission(rolePermissionArray("SA"), view)).toBe(true);
+    expect(roleHasPermission(roleLoopSource(["FI", "AS"]), view)).toBe(true);
+    expect(roleHasMenu(roleMenuArray("OP"), "orders.subscription_changes")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.subscription_changes")).toBe(true);
+  });
 });

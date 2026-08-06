@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash } from "node:crypto";
 import {
@@ -11,12 +11,14 @@ import {
   NotificationTemplateStatus,
   NotificationTemplateType,
   NotificationType,
-  Prisma
+  Prisma,
+  SmsSendStatus
 } from "@prisma/client";
 
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
+import { SmsService } from "../sms/sms.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
 import {
   AdminNotificationEventsQueryDto,
@@ -66,6 +68,49 @@ export interface NotifyMileageReviewDueInput {
 export interface NotifyAutoDebitFailureInput {
   attemptId: string;
   idempotencyKey: string;
+}
+
+export interface NotifyRenewalReminderInAppInput {
+  considerationId: string;
+  customerId: string;
+  daysRemaining: number;
+  endDate: string;
+  idempotencyKey: string;
+  orderNo: string;
+  plateMasked: string;
+  slot: "D30" | "D14" | "D3";
+}
+
+export interface NotifyExtensionEffectiveInAppInput {
+  changeOrderId: string;
+  contractedThrough: string;
+  customerId: string;
+  idempotencyKey: string;
+  orderNo: string;
+  segmentId: string;
+}
+
+export interface NotifyRenewalExpiryInAppInput {
+  considerationId?: string | null;
+  customerId: string;
+  endDate: string;
+  idempotencyKey: string;
+  orderId: string;
+  orderNo: string;
+  phone?: null | string;
+  plateNo?: null | string;
+  returnId: string;
+}
+
+export interface NotifyRenewalReturnOverdueInAppInput {
+  customerId: string;
+  endDate: string;
+  idempotencyKey: string;
+  orderId: string;
+  orderNo: string;
+  phone?: null | string;
+  plateNo?: null | string;
+  returnId: string;
 }
 
 const TEMPLATE_CODE_BY_EVENT: Partial<
@@ -183,7 +228,8 @@ export class NotificationService {
     private readonly configService: ConfigService,
     @Inject(NOTIFICATION_PROVIDER_CLIENT)
     private readonly provider: NotificationProvider,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    @Optional() private readonly smsService?: SmsService
   ) {}
 
   async notifyCustomer(input: NotifyCustomerInput) {
@@ -222,6 +268,173 @@ export class NotificationService {
       this.logger.warn(`Notification event ${event.id} failed: ${errorMessage(error)}`);
       return [];
     }
+  }
+
+  async notifyRenewalReminderInApp(input: NotifyRenewalReminderInAppInput) {
+    const notificationNo = renewalNotificationNo(input.idempotencyKey);
+    const existing = await this.prisma.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    const now = new Date();
+    const content = `订单 ${input.orderNo} 的当前合同将于 ${input.endDate} 到期，请在到期前完成续订或确认到期退车。`;
+    const record =
+      existing &&
+      (existing.notificationStatus === NotificationStatus.SENT ||
+        existing.notificationStatus === NotificationStatus.READ)
+        ? existing
+        : existing
+          ? await this.prisma.notificationRecord.update({
+              data: {
+                content,
+                errorMessage: null,
+                failedAt: null,
+                notificationStatus: NotificationStatus.SENT,
+                payload: toJsonValue({
+                  daysRemaining: input.daysRemaining,
+                  endDate: input.endDate,
+                  orderNo: input.orderNo,
+                  plateMasked: input.plateMasked,
+                  slot: input.slot
+                }),
+                sentAt: now,
+                title: "合同续订提醒",
+                url: normalizePortalUrl(
+                  `/portal/renewals/${encodeURIComponent(input.considerationId)}`,
+                  this.portalBaseUrl
+                )
+              },
+              where: { id: existing.id }
+            })
+          : await this.prisma.notificationRecord.create({
+              data: {
+                channel: NotificationChannel.IN_APP,
+                content,
+                customerId: input.customerId,
+                notificationNo,
+                notificationStatus: NotificationStatus.SENT,
+                notificationType: NotificationType.RENEWAL_REMINDER,
+                payload: toJsonValue({
+                  daysRemaining: input.daysRemaining,
+                  endDate: input.endDate,
+                  orderNo: input.orderNo,
+                  plateMasked: input.plateMasked,
+                  slot: input.slot
+                }),
+                sentAt: now,
+                templateCode: `RENEWAL_REMINDER_${input.slot}_IN_APP`,
+                title: "合同续订提醒",
+                url: normalizePortalUrl(
+                  `/portal/renewals/${encodeURIComponent(input.considerationId)}`,
+                  this.portalBaseUrl
+                )
+              }
+            });
+
+    const eventId = lifecycleNotificationEventId("renewal", input.idempotencyKey);
+    const eventType =
+      input.slot === "D30"
+        ? NotificationEventType.RENEWAL_REMINDER_D30
+        : input.slot === "D14"
+          ? NotificationEventType.RENEWAL_REMINDER_D14
+          : NotificationEventType.RENEWAL_REMINDER_D3;
+    const eventData = {
+      aggregateId: input.considerationId,
+      aggregateType: "RenewalConsideration",
+      customerId: input.customerId,
+      eventStatus: NotificationEventStatus.PROCESSED,
+      eventType,
+      lastError: null,
+      notificationId: record.id,
+      payload: toJsonValue({ slot: input.slot }),
+      processedAt: now
+    };
+    const existingEvent = await this.prisma.notificationEvent.findUnique({
+      where: { id: eventId }
+    });
+    const event = existingEvent
+      ? await this.prisma.notificationEvent.update({
+          data: { ...eventData, attempts: { increment: 1 } },
+          where: { id: eventId }
+        })
+      : await this.prisma.notificationEvent.create({
+          data: { ...eventData, attempts: 1, id: eventId }
+        });
+    return { event, record };
+  }
+
+  async notifyExtensionEffectiveInApp(input: NotifyExtensionEffectiveInAppInput) {
+    const notificationNo = extensionNotificationNo(input.idempotencyKey);
+    const existing = await this.prisma.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    if (existing) return existing;
+
+    return this.prisma.notificationRecord.create({
+      data: {
+        channel: NotificationChannel.IN_APP,
+        content: `订单 ${input.orderNo} 的续期协议已生效，当前履约期已延长至 ${input.contractedThrough}。`,
+        customerId: input.customerId,
+        notificationNo,
+        notificationStatus: NotificationStatus.SENT,
+        notificationType: NotificationType.SYSTEM,
+        payload: toJsonValue({
+          changeOrderId: input.changeOrderId,
+          contractedThrough: input.contractedThrough,
+          orderNo: input.orderNo,
+          segmentId: input.segmentId
+        }),
+        sentAt: new Date(),
+        templateCode: "SUBSCRIPTION_EXTENSION_EFFECTIVE_IN_APP",
+        title: "续期协议已生效",
+        url: normalizePortalUrl(
+          `/portal/subscription-changes/${encodeURIComponent(input.changeOrderId)}`,
+          this.portalBaseUrl
+        )
+      }
+    });
+  }
+
+  async notifyRenewalExpiryInApp(input: NotifyRenewalExpiryInAppInput) {
+    return this.createIdempotentRenewalLifecycleNotice({
+      content: `订单 ${input.orderNo} 已按合同到期，车辆进入退车办理流程。`,
+      customerId: input.customerId,
+      endDate: input.endDate,
+      idempotencyKey: input.idempotencyKey,
+      notificationType: NotificationType.RENEWAL_EXPIRY_RETURN,
+      orderId: input.orderId,
+      orderNo: input.orderNo,
+      phone: input.phone,
+      plateNo: input.plateNo,
+      payload: {
+        considerationId: input.considerationId ?? null,
+        endDate: input.endDate,
+        orderNo: input.orderNo,
+        returnId: input.returnId
+      },
+      templateCode: "RENEWAL_EXPIRY_RETURN_IN_APP",
+      title: "合同到期退车提醒",
+      url: `/portal/orders/${encodeURIComponent(input.orderId)}`,
+      smsKind: "EXPIRY"
+    });
+  }
+
+  async notifyRenewalReturnOverdueInApp(input: NotifyRenewalReturnOverdueInAppInput) {
+    return this.createIdempotentRenewalLifecycleNotice({
+      content: `订单 ${input.orderNo} 已到期且车辆尚未完成退回，请尽快联系运营人员办理。`,
+      customerId: input.customerId,
+      endDate: input.endDate,
+      idempotencyKey: input.idempotencyKey,
+      notificationType: NotificationType.RENEWAL_RETURN_OVERDUE,
+      orderId: input.orderId,
+      orderNo: input.orderNo,
+      phone: input.phone,
+      plateNo: input.plateNo,
+      payload: { orderNo: input.orderNo, returnId: input.returnId },
+      templateCode: "RENEWAL_RETURN_OVERDUE_IN_APP",
+      title: "车辆逾期未退提醒",
+      url: `/portal/orders/${encodeURIComponent(input.orderId)}`,
+      smsKind: "OVERDUE_D1"
+    });
   }
 
   async notifyBillLifecycle(input: NotifyBillLifecycleInput) {
@@ -273,6 +486,169 @@ export class NotificationService {
       throw new Error("BILL_NOTIFICATION_INCOMPLETE");
     }
     return records;
+  }
+
+  private async createIdempotentRenewalLifecycleNotice(input: {
+    content: string;
+    customerId: string;
+    endDate: string;
+    idempotencyKey: string;
+    notificationType: NotificationType;
+    orderId: string;
+    orderNo: string;
+    phone?: null | string;
+    plateNo?: null | string;
+    payload: Record<string, unknown>;
+    smsKind: "EXPIRY" | "OVERDUE_D1";
+    templateCode: string;
+    title: string;
+    url: string;
+  }) {
+    const customerNotice = await this.createRenewalLifecycleRecord(
+      `${input.idempotencyKey}:customer`,
+      {
+        channel: NotificationChannel.IN_APP,
+        content: input.content,
+        customerId: input.customerId,
+        notificationStatus: NotificationStatus.SENT,
+        notificationType: input.notificationType,
+        payload: toJsonValue(input.payload),
+        sentAt: new Date(),
+        templateCode: input.templateCode,
+        title: input.title,
+        url: normalizePortalUrl(input.url, this.portalBaseUrl)
+      }
+    );
+    const operationsNotice = await this.createRenewalLifecycleRecord(
+      `${input.idempotencyKey}:operations`,
+      {
+        channel: NotificationChannel.IN_APP,
+        content: `${input.content} 请运营人员跟进退车办理。`,
+        customerId: null,
+        notificationStatus: NotificationStatus.SENT,
+        notificationType: input.notificationType,
+        payload: toJsonValue({ ...input.payload, audience: "OPERATIONS" }),
+        sentAt: new Date(),
+        templateCode: `${input.templateCode}_OPERATIONS`,
+        title: `${input.title}（运营）`,
+        url: `/orders/${encodeURIComponent(input.orderId)}?tab=handover`
+      }
+    );
+    const smsNotice = await this.sendRenewalLifecycleSms(input);
+    return {
+      created: customerNotice.created || operationsNotice.created || smsNotice.created,
+      record: customerNotice.record
+    };
+  }
+
+  private async createRenewalLifecycleRecord(
+    idempotencyKey: string,
+    data: Omit<Prisma.NotificationRecordUncheckedCreateInput, "notificationNo">
+  ) {
+    const notificationNo = renewalLifecycleNotificationNo(idempotencyKey);
+    const existing = await this.prisma.notificationRecord.findUnique({
+      where: { notificationNo }
+    });
+    if (existing) return { created: false, record: existing };
+    try {
+      const record = await this.prisma.notificationRecord.create({
+        data: { ...data, notificationNo }
+      });
+      return { created: true, record };
+    } catch (error) {
+      if (!isUniqueConflict(error)) throw error;
+      const winner = await this.prisma.notificationRecord.findUnique({
+        where: { notificationNo }
+      });
+      if (!winner) throw error;
+      return { created: false, record: winner };
+    }
+  }
+
+  private async sendRenewalLifecycleSms(input: {
+    customerId: string;
+    endDate: string;
+    idempotencyKey: string;
+    notificationType: NotificationType;
+    orderNo: string;
+    phone?: null | string;
+    plateNo?: null | string;
+    smsKind: "EXPIRY" | "OVERDUE_D1";
+    title: string;
+    url: string;
+  }) {
+    const reserved = await this.createRenewalLifecycleRecord(
+      `${input.idempotencyKey}:sms`,
+      {
+        channel: NotificationChannel.SMS,
+        content: input.title,
+        customerId: input.customerId,
+        notificationStatus: NotificationStatus.PENDING,
+        notificationType: input.notificationType,
+        recipientPhone: input.phone ?? null,
+        templateCode:
+          input.smsKind === "EXPIRY"
+            ? "RENEWAL_EXPIRY_RETURN_TEMPLATE_CODE"
+            : "RENEWAL_RETURN_OVERDUE_D1_TEMPLATE_CODE",
+        title: input.title,
+        url: normalizePortalUrl(input.url, this.portalBaseUrl)
+      }
+    );
+    if (
+      reserved.record.notificationStatus === NotificationStatus.SENT ||
+      reserved.record.notificationStatus === NotificationStatus.SKIPPED ||
+      reserved.record.notificationStatus === NotificationStatus.PROCESSING
+    ) {
+      return reserved;
+    }
+    if (!input.phone || !this.smsService) {
+      await this.prisma.notificationRecord.update({
+        data: {
+          errorMessage: input.phone ? "SMS_SERVICE_UNAVAILABLE" : "CUSTOMER_PHONE_MISSING",
+          failedAt: new Date(),
+          notificationStatus: NotificationStatus.FAILED
+        },
+        where: { id: reserved.record.id }
+      });
+      return reserved;
+    }
+    const send = input.smsKind === "EXPIRY"
+      ? await this.smsService.sendRenewalExpiryReturn({
+          endDate: input.endDate,
+          idempotencyKey: `${input.idempotencyKey}:sms-send`,
+          orderNo: input.orderNo,
+          phone: input.phone,
+          plateNo: input.plateNo ?? "-",
+          portalPath: input.url
+        })
+      : await this.smsService.sendRenewalReturnOverdueD1({
+          endDate: input.endDate,
+          idempotencyKey: `${input.idempotencyKey}:sms-send`,
+          orderNo: input.orderNo,
+          phone: input.phone,
+          plateNo: input.plateNo ?? "-",
+          portalPath: input.url
+        });
+    const notificationStatus = notificationStatusFromSms(send.sendStatus);
+    await this.prisma.notificationRecord.update({
+      data: {
+        errorMessage: send.errorMessage ?? send.errorCode ?? null,
+        failedAt: notificationStatus === NotificationStatus.FAILED ? new Date() : null,
+        notificationStatus,
+        providerMessageId: send.providerMessageId ?? null,
+        providerResponse: toJsonValue({
+          errorCode: send.errorCode,
+          provider: send.provider,
+          providerRequestId: send.providerRequestId,
+          sendLogId: send.sendLogId,
+          sendStatus: send.sendStatus
+        }),
+        sentAt: notificationStatus === NotificationStatus.SENT ? new Date() : null,
+        templateCode: send.templateCode ?? reserved.record.templateCode
+      },
+      where: { id: reserved.record.id }
+    });
+    return reserved;
   }
 
   async notifyMileageReviewDue(input: NotifyMileageReviewDueInput) {
@@ -1587,6 +1963,18 @@ function billNotificationNo(
     .slice(0, 61)}`;
 }
 
+function renewalNotificationNo(idempotencyKey: string) {
+  return `RNW${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
+}
+
+function extensionNotificationNo(idempotencyKey: string) {
+  return `EXT${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
+}
+
+function renewalLifecycleNotificationNo(idempotencyKey: string) {
+  return `RLC${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 61)}`;
+}
+
 function billNotificationEventId(idempotencyKey: string) {
   return lifecycleNotificationEventId("bill", idempotencyKey);
 }
@@ -1610,4 +1998,18 @@ function isUniqueConflict(error: unknown) {
   return (
     typeof error === "object" && error !== null && (error as { code?: unknown }).code === "P2002"
   );
+}
+
+function notificationStatusFromSms(status: SmsSendStatus) {
+  switch (status) {
+    case SmsSendStatus.SENT:
+      return NotificationStatus.SENT;
+    case SmsSendStatus.SKIPPED:
+      return NotificationStatus.SKIPPED;
+    case SmsSendStatus.SENDING:
+    case SmsSendStatus.UNCERTAIN:
+      return NotificationStatus.PROCESSING;
+    case SmsSendStatus.FAILED:
+      return NotificationStatus.FAILED;
+  }
 }

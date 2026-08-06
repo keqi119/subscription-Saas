@@ -375,6 +375,78 @@ export interface PortalApplicationProgressStep {
   time: string | null;
 }
 
+export interface PortalRenewalSegment {
+  endDate: string;
+  id: string;
+  monthlyFeeAmount: string;
+  sequenceNo: number;
+  startDate: string;
+  status: string;
+}
+
+export interface PortalRenewalReminder {
+  scheduledAt: string;
+  slot: "D30" | "D14" | "D3" | string;
+  status: string;
+}
+
+export interface PortalRenewalConsideration {
+  changeOrderId: string | null;
+  completionDeadlineAt: string;
+  considerationStartAt: string;
+  decision: "RENEW" | "EXPIRE" | null;
+  decidedAt: string | null;
+  id: string;
+  nextAction: string;
+  order: {
+    id: string;
+    orderNo: string;
+    plateMasked: string | null;
+  };
+  reminders: PortalRenewalReminder[];
+  segment: PortalRenewalSegment;
+  status: string;
+  version: number;
+}
+
+export interface PortalRenewalQuote {
+  energyLimitCount?: number | null;
+  energyLimitKwh?: number | null;
+  id: string;
+  mileageLimitKm?: number;
+  monthlyFeeAmount: string;
+  overMileageFeeAmount?: string;
+  pricingMode?: string;
+  quoteNo: string;
+  revision: number;
+  status: string;
+  validUntil: string;
+}
+
+export interface PortalSubscriptionChange {
+  cancelReason: string | null;
+  completionDeadlineAt: string;
+  confirmedQuoteId: string | null;
+  contractId: string | null;
+  currentQuote: PortalRenewalQuote | null;
+  extensionMonths: number;
+  id: string;
+  orderId: string;
+  orderNo: string;
+  pricingMode: string;
+  quotes: PortalRenewalQuote[];
+  sourceSegment: PortalRenewalSegment;
+  status: string;
+  targetEndDate: string;
+  targetSegment: PortalRenewalSegment | null;
+  targetStartDate: string;
+  version: number;
+}
+
+export interface PortalRenewalDetail extends PortalRenewalConsideration {
+  change: PortalSubscriptionChange | null;
+}
+
 export interface PortalApplicationMaterialSupplementHint {
   materialGroupId: string;
   materialName: string;
@@ -429,12 +501,20 @@ export interface PortalContractListItem {
   contractNo: string;
   contractStatus: string;
   createdAt: string;
-  documentType: "DELIVERY_HANDOVER" | "SUBSCRIPTION_CONTRACT" | null;
+  documentType:
+    | "DELIVERY_HANDOVER"
+    | "SUBSCRIPTION_CONTRACT"
+    | "SUBSCRIPTION_EXTENSION_AGREEMENT"
+    | null;
   hasSignedDocument: boolean;
   id: string;
   orderNo: string;
   signedAt: string | null;
-  signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" | "STAGE2_DELIVERY_HANDOVER" | null;
+  signingStage:
+    | "STAGE1_SUBSCRIPTION_CONTRACT"
+    | "STAGE2_DELIVERY_HANDOVER"
+    | "STAGE3_SUBSCRIPTION_EXTENSION"
+    | null;
   signStatus: string | null;
   workOrderId: string | null;
 }
@@ -456,13 +536,21 @@ export interface PortalContractDetail extends PortalContractListItem {
 
 export interface PortalContractESignTask {
   completedAt: string | null;
-  documentType: "DELIVERY_HANDOVER" | "SUBSCRIPTION_CONTRACT" | null;
+  documentType:
+    | "DELIVERY_HANDOVER"
+    | "SUBSCRIPTION_CONTRACT"
+    | "SUBSCRIPTION_EXTENSION_AGREEMENT"
+    | null;
   hasEvidenceDocument: boolean;
   hasSignedDocument: boolean;
   id: string;
   provider: string;
   signers: PortalContractESignSigner[];
-  signingStage: "STAGE1_SUBSCRIPTION_CONTRACT" | "STAGE2_DELIVERY_HANDOVER" | null;
+  signingStage:
+    | "STAGE1_SUBSCRIPTION_CONTRACT"
+    | "STAGE2_DELIVERY_HANDOVER"
+    | "STAGE3_SUBSCRIPTION_EXTENSION"
+    | null;
   signUrlExpiresAt: string | null;
   taskNo: string;
   taskStatus: string;

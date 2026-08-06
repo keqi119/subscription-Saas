@@ -5,7 +5,8 @@ import {
   canCreateOrderFromApplication,
   canExecuteOrderChange,
   canGenerateApplicationQuote,
-  canGenerateContract
+  canGenerateContract,
+  canRunSubscriptionChangeAction
 } from "../src/lib/action-guards";
 
 describe("action guards", () => {
@@ -195,5 +196,32 @@ describe("action guards", () => {
         new Set(["order_change:execute"])
       )
     ).toEqual({ allowed: false, reason: "当前变更状态不允许执行" });
+  });
+
+  it.each([
+    ["QUOTE", "subscription_change:quote"],
+    ["APPROVE_PRICE", "subscription_change:price_override_approve"],
+    ["WAIT_CUSTOMER", "subscription_change:submit"],
+    ["GENERATE_CONTRACT", "contract:generate"],
+    ["START_ESIGN", "subscription_change:esign_retry"],
+    ["RETRY", "subscription_change:execute"],
+    ["MANUAL", "subscription_change:manual_takeover"]
+  ] as const)("gates the %s subscription-change action with %s", (kind, permission) => {
+    expect(canRunSubscriptionChangeAction(kind, new Set([permission]))).toEqual({ allowed: true });
+    expect(canRunSubscriptionChangeAction(kind, new Set())).toEqual({
+      allowed: false,
+      reason: "无合同变更操作权限"
+    });
+  });
+
+  it("never turns waiting or completed presentations into mutation buttons", () => {
+    expect(canRunSubscriptionChangeAction("WAIT_ARCHIVE", new Set(["subscription_change:execute"]))).toEqual({
+      allowed: false,
+      reason: "当前步骤无需人工操作"
+    });
+    expect(canRunSubscriptionChangeAction("DONE", new Set(["subscription_change:execute"]))).toEqual({
+      allowed: false,
+      reason: "当前步骤无需人工操作"
+    });
   });
 });

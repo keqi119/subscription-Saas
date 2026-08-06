@@ -87,6 +87,15 @@ export type HandoverWorkspaceFacts = {
   asOf: string;
   canPrepareDelivery: boolean;
   deliveryStatus: string | null;
+  returnCheck?: {
+    canConfirmReturn: boolean;
+    canPrepareReturn: boolean;
+    orderId: string;
+    orderStatus: string;
+    returnId: string | null;
+    returnStatus: string | null;
+    updatedAt: string | null;
+  } | null;
   workOrder?: HandoverWorkOrderFacts | null;
   workOrders?: HandoverWorkOrderFacts[];
 };
@@ -222,6 +231,39 @@ export class OrderWorkspaceResolver {
   }
 
   resolveHandover(facts: HandoverWorkspaceFacts): OrderWorkspaceGuideItem {
+    if (facts.returnCheck?.orderStatus === "PENDING_RETURN") {
+      const targetId = facts.returnCheck.returnId ?? facts.returnCheck.orderId;
+      if (facts.returnCheck.canConfirmReturn) {
+        return guideItem(
+          "handover",
+          "ACTION_REQUIRED",
+          "RETURN_CONFIRMATION_REQUIRED",
+          "handover.confirm_return",
+          targetId,
+          facts.returnCheck.updatedAt
+        );
+      }
+      if (facts.returnCheck.canPrepareReturn) {
+        return guideItem(
+          "handover",
+          "ACTION_REQUIRED",
+          "RETURN_PREPARATION_REQUIRED",
+          "handover.prepare_return",
+          targetId,
+          facts.returnCheck.updatedAt
+        );
+      }
+      return guideItem(
+        "handover",
+        "BLOCKED",
+        "RETURN_PROCESS_BLOCKED",
+        null,
+        targetId,
+        facts.returnCheck.updatedAt,
+        true
+      );
+    }
+
     const workOrders = facts.workOrders ?? (facts.workOrder ? [facts.workOrder] : []);
     if (workOrders.length === 0) {
       if (facts.canPrepareDelivery || facts.deliveryStatus === "READY") {
@@ -681,13 +723,17 @@ export class OrderWorkspaceService {
       handoverTypes.push("RETURN_INBOUND");
     }
 
-    const [deliveryCheck, workOrders] = await Promise.all([
+    const [deliveryCheck, returnCheck, workOrders] = await Promise.all([
       permissions.has(PermissionCode.DELIVERY_VIEW)
         ? this.orderService.getDeliveryCheck(orderId, user)
         : Promise.resolve({
             canPrepareDelivery: false,
             deliveryStatus: null
           }),
+      permissions.has(PermissionCode.VEHICLE_RETURN_VIEW) &&
+      typeof this.orderService.getReturnCheck === "function"
+        ? this.orderService.getReturnCheck(orderId, user)
+        : Promise.resolve(null),
       this.prisma.vehicleHandoverWorkOrder.findMany({
         orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
         select: {
@@ -724,6 +770,19 @@ export class OrderWorkspaceService {
       asOf,
       canPrepareDelivery: deliveryCheck.canPrepareDelivery,
       deliveryStatus: deliveryCheck.deliveryStatus,
+      ...(returnCheck
+        ? {
+            returnCheck: {
+              canConfirmReturn: returnCheck.canConfirmReturn,
+              canPrepareReturn: returnCheck.canPrepareReturn,
+              orderId: returnCheck.orderId,
+              orderStatus: returnCheck.orderStatus,
+              returnId: returnCheck.returnId,
+              returnStatus: returnCheck.returnStatus,
+              updatedAt: returnCheck.returnUpdatedAt?.toISOString() ?? null
+            }
+          }
+        : {}),
       workOrders: workOrders.map((workOrder) => ({
         assigned:
           workOrder.status !== "DRAFT" ||
@@ -1012,7 +1071,9 @@ const ACTION_PERMISSION: Record<string, PermissionCode> = {
   "finance.deduct_deposit": PermissionCode.DEPOSIT_LEDGER_DEDUCT,
   "finance.refund_deposit": PermissionCode.DEPOSIT_LEDGER_REFUND,
   "handover.assign": PermissionCode.DELIVERY_PREPARE,
+  "handover.confirm_return": PermissionCode.VEHICLE_RETURN_CONFIRM,
   "handover.prepare": PermissionCode.DELIVERY_PREPARE,
+  "handover.prepare_return": PermissionCode.VEHICLE_RETURN_PREPARE,
   "handover.follow_up_signing": PermissionCode.DELIVERY_CONFIRM,
   "handover.retry_signing": PermissionCode.DELIVERY_CONFIRM,
   "handover.start_signing": PermissionCode.DELIVERY_CONFIRM,

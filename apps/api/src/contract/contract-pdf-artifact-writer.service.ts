@@ -43,7 +43,9 @@ export class ContractPdfArtifactWriterService {
     private readonly prisma: PrismaService
   ) {}
 
-  async writeGeneratedContractPdfArtifact(input: ContractPdfArtifactWriteInput): Promise<ContractPdfArtifactWriteResult> {
+  async writeGeneratedContractPdfArtifact(
+    input: ContractPdfArtifactWriteInput
+  ): Promise<ContractPdfArtifactWriteResult> {
     validateContractStatus(input.contractStatus);
     validateExistingFile(input);
     const anchorOccurrences = validateAnchorUniqueness(input.renderModel);
@@ -56,6 +58,15 @@ export class ContractPdfArtifactWriterService {
     validateRenderDiagnostics(renderResult.diagnostics);
     const slotCoordinates = validateSlotCoordinates(renderResult.slotCoordinates ?? []);
     validateMaxBytes(renderResult.buffer, input.maxBytes ?? DEFAULT_MAX_BYTES);
+    const diagnostics: ContractPdfArtifactDiagnostics = {
+      anchorOccurrences,
+      renderDiagnostics: renderResult.diagnostics,
+      searchableTextPdfRequired: true,
+      signingStage: "STAGE1_CONTRACT",
+      slotCoordinates,
+      source: CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE,
+      textExtractionVerified: false
+    };
 
     const objectKey = buildGeneratedContractPdfObjectKey(input.renderModel, renderResult.fileName);
     const existingArtifact = await this.prisma.fileObject.findFirst({
@@ -64,7 +75,20 @@ export class ContractPdfArtifactWriterService {
       }
     });
     if (existingArtifact) {
-      throw new Error(`${CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS}: generated contract PDF object already exists`);
+      if (input.recoverExistingObject) {
+        return {
+          bucket: existingArtifact.bucket,
+          diagnostics,
+          fileId: existingArtifact.id,
+          mimeType: "application/pdf",
+          objectKey: existingArtifact.objectKey,
+          originalName: existingArtifact.originalName,
+          sizeBytes: Number(existingArtifact.sizeBytes)
+        };
+      }
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_STORAGE_OBJECT_EXISTS}: generated contract PDF object already exists`
+      );
     }
 
     const stored = await this.storageService.putGeneratedContractPdfArtifact({
@@ -87,16 +111,6 @@ export class ContractPdfArtifactWriterService {
           uploadedBy: input.uploadedBy ?? null
         }
       });
-      const diagnostics: ContractPdfArtifactDiagnostics = {
-        anchorOccurrences,
-        renderDiagnostics: renderResult.diagnostics,
-        searchableTextPdfRequired: true,
-        signingStage: "STAGE1_CONTRACT",
-        slotCoordinates,
-        source: CONTRACT_PDF_GENERATED_ARTIFACT_SOURCE,
-        textExtractionVerified: false
-      };
-
       return {
         bucket: stored.bucket,
         diagnostics,
@@ -115,7 +129,9 @@ export class ContractPdfArtifactWriterService {
 
 function validateContractStatus(status: string | undefined) {
   if (status && PROTECTED_CONTRACT_STATUSES.has(status)) {
-    throw new Error(`${CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS}: contract status ${status} cannot regenerate signing PDF`);
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_PROTECTED_STATUS}: contract status ${status} cannot regenerate signing PDF`
+    );
   }
 }
 
@@ -125,12 +141,18 @@ function validateExistingFile(input: ContractPdfArtifactWriteInput) {
   }
 }
 
-function validateAnchorUniqueness(model: ContractPdfRenderModel): ContractPdfArtifactAnchorOccurrences {
+function validateAnchorUniqueness(
+  model: ContractPdfRenderModel
+): ContractPdfArtifactAnchorOccurrences {
   const text = buildRenderModelSearchableText(model);
   validateStage1SigningSlotDefinitions(model.signingSlots);
   const occurrences = buildStage1SlotOccurrences(text, model.signingSlots);
 
-  if (STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some((slotId) => occurrences.stage1SigningSlots[slotId] !== 1)) {
+  if (
+    STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some(
+      (slotId) => occurrences.stage1SigningSlots[slotId] !== 1
+    )
+  ) {
     throw new Error(
       `${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: Stage 1 signing slots must appear exactly once in the render model`
     );
@@ -139,18 +161,34 @@ function validateAnchorUniqueness(model: ContractPdfRenderModel): ContractPdfArt
   return occurrences;
 }
 
-function validateRenderDiagnostics(diagnostics: ContractPdfArtifactDiagnostics["renderDiagnostics"]) {
+function validateRenderDiagnostics(
+  diagnostics: ContractPdfArtifactDiagnostics["renderDiagnostics"]
+) {
   if (!diagnostics.hasLegalBody) {
-    throw new Error(`${CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING}: renderer did not confirm legal body`);
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_LEGAL_BODY_MISSING}: renderer did not confirm legal body`
+    );
   }
   if (!diagnostics.hasAppendix) {
     throw new Error(`${CONTRACT_PDF_ARTIFACT_APPENDIX_MISSING}: renderer did not confirm appendix`);
   }
-  if (!diagnostics.hasPlatformSealKeyword || !diagnostics.hasCustomerSignatureKeyword || !diagnostics.hasStage1SigningSlots) {
-    throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 signing slots`);
+  if (
+    !diagnostics.hasPlatformSealKeyword ||
+    !diagnostics.hasCustomerSignatureKeyword ||
+    !diagnostics.hasStage1SigningSlots
+  ) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 signing slots`
+    );
   }
-  if (STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some((slotId) => diagnostics.stage1SigningSlotOccurrences[slotId] !== 1)) {
-    throw new Error(`${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 slots`);
+  if (
+    STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS.some(
+      (slotId) => diagnostics.stage1SigningSlotOccurrences[slotId] !== 1
+    )
+  ) {
+    throw new Error(
+      `${CONTRACT_PDF_ARTIFACT_RENDER_ANCHOR_MISSING}: renderer did not confirm Stage 1 slots`
+    );
   }
 }
 
@@ -162,11 +200,15 @@ function validateSlotCoordinates(
   for (const slotId of STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS) {
     const matchingCoordinates = coordinates.filter((coordinate) => coordinate.slotId === slotId);
     if (matchingCoordinates.length !== 1) {
-      throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING}: ${slotId} coordinate is required`);
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_MISSING}: ${slotId} coordinate is required`
+      );
     }
 
     const coordinate = matchingCoordinates[0]!;
-    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find((slot) => slot.slotId === slotId)!;
+    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find(
+      (slot) => slot.slotId === slotId
+    )!;
     if (
       coordinate.keyword !== expected.keyword ||
       coordinate.coordinateSource !== "PDFKIT_RENDERER" ||
@@ -180,7 +222,9 @@ function validateSlotCoordinates(
       !isFinitePositiveNumber(coordinate.pdfPageWidth) ||
       !isFinitePositiveNumber(coordinate.pdfPageHeight)
     ) {
-      throw new Error(`${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID}: ${slotId} coordinate is invalid`);
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_SLOT_COORDINATE_INVALID}: ${slotId} coordinate is invalid`
+      );
     }
 
     validated.push({
@@ -236,23 +280,32 @@ function validateStage1SigningSlotDefinitions(slots: ContractPdfSigningSlot[]) {
   for (const slotId of STAGE1_CONTRACT_PDF_REQUIRED_SLOT_IDS) {
     const matchingSlots = slots.filter((slot) => slot.slotId === slotId);
     if (matchingSlots.length !== 1) {
-      throw new Error(`${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} must appear exactly once`);
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} must appear exactly once`
+      );
     }
 
     const actual = matchingSlots[0]!;
-    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find((slot) => slot.slotId === slotId)!;
+    const expected = STAGE1_CONTRACT_PDF_SIGNING_SLOT_DEFINITIONS.find(
+      (slot) => slot.slotId === slotId
+    )!;
     if (
       actual.documentType !== expected.documentType ||
       actual.keyword !== expected.keyword ||
       actual.signerRole !== expected.signerRole ||
       actual.stage !== expected.stage
     ) {
-      throw new Error(`${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} does not match approved Stage 1 slot`);
+      throw new Error(
+        `${CONTRACT_PDF_ARTIFACT_ANCHOR_NOT_UNIQUE}: ${slotId} does not match approved Stage 1 slot`
+      );
     }
   }
 }
 
-function buildStage1SlotOccurrences(text: string, slots: ContractPdfSigningSlot[]): ContractPdfArtifactAnchorOccurrences {
+function buildStage1SlotOccurrences(
+  text: string,
+  slots: ContractPdfSigningSlot[]
+): ContractPdfArtifactAnchorOccurrences {
   return {
     stage1SigningSlots: {
       STAGE1_ATTACHMENT1_CUSTOMER: countOccurrences(
@@ -321,7 +374,11 @@ function sanitizeKeyPart(value: string) {
   return safe;
 }
 
-async function cleanupStoredObject(storageService: StorageService, bucket: string, objectKey: string) {
+async function cleanupStoredObject(
+  storageService: StorageService,
+  bucket: string,
+  objectKey: string
+) {
   try {
     await storageService.deleteObject(bucket, objectKey);
   } catch {

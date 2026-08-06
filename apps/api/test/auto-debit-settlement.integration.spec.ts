@@ -514,6 +514,8 @@ function claimedSubmitJob(
     availableAt: now,
     billId,
     billingScheduleId: null,
+    changeOrderId: null,
+    contractSegmentId: null,
     cancelledAt: null,
     completedAt: null,
     createdAt: now,
@@ -528,6 +530,7 @@ function claimedSubmitJob(
     maxAttempts: 6,
     orderId,
     payload: { billId, retrySlot },
+    renewalConsiderationId: null,
     resultSnapshot: null,
     startedAt: now,
     updatedAt: now

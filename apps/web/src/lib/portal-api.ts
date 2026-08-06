@@ -1,7 +1,10 @@
 import type {
   PortalAutoDebitAvailability,
   PortalDebitAttempt,
-  PortalPaymentMandate
+  PortalPaymentMandate,
+  PortalRenewalConsideration,
+  PortalRenewalSegment,
+  PortalSubscriptionChange
 } from "./portal-types";
 
 export const PORTAL_API_BASE_URL =
@@ -76,6 +79,58 @@ export function revokePortalPaymentMandate(mandateId: string) {
   return portalApiFetch<PortalPaymentMandate>(
     `/portal/auto-debit/mandates/${encodeURIComponent(mandateId)}/revoke`,
     { method: "POST" }
+  );
+}
+
+export function listPortalRenewals() {
+  return portalApiFetch<PortalRenewalConsideration[]>("/portal/renewal-considerations");
+}
+
+export function getPortalRenewal(id: string) {
+  return portalApiFetch<PortalRenewalConsideration>(
+    `/portal/renewal-considerations/${encodeURIComponent(id)}`
+  );
+}
+
+export function submitPortalRenewalDecision(
+  id: string,
+  input: { decision: "RENEW" | "EXPIRE"; version: number }
+) {
+  return portalApiFetch<PortalRenewalConsideration>(
+    `/portal/renewal-considerations/${encodeURIComponent(id)}/decision`,
+    { body: JSON.stringify(input), method: "POST" }
+  );
+}
+
+export function getPortalSubscriptionChange(id: string) {
+  return portalApiFetch<PortalSubscriptionChange>(
+    `/portal/subscription-changes/${encodeURIComponent(id)}`
+  );
+}
+
+export function confirmPortalRenewalQuote(
+  id: string,
+  input: { quoteId: string; revision: number; version: number }
+) {
+  return portalApiFetch<PortalSubscriptionChange>(
+    `/portal/subscription-changes/${encodeURIComponent(id)}/quote/confirm`,
+    { body: JSON.stringify(input), method: "POST" }
+  );
+}
+
+export function rejectPortalRenewalQuote(
+  id: string,
+  input: { quoteId: string; reason: string; revision: number; version: number }
+) {
+  return portalApiFetch<PortalSubscriptionChange>(
+    `/portal/subscription-changes/${encodeURIComponent(id)}/quote/reject`,
+    { body: JSON.stringify(input), method: "POST" }
+  );
+}
+
+export function listPortalContractSegments(orderId: string) {
+  return portalApiFetch<PortalRenewalSegment[]>(
+    `/portal/orders/${encodeURIComponent(orderId)}/contract-segments`
   );
 }
 

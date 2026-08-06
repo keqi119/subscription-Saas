@@ -21,6 +21,19 @@ import { describe, expect, it, vi } from "vitest";
 import { OrderService } from "../src/order/order.service";
 
 describe("pre-contract order change return-to-plan flow", () => {
+  it("routes legacy EXTENSION requests to the V2 subscription-change workflow", async () => {
+    const harness = createOrderChangeHarness({ changeStatus: null });
+
+    await expect(
+      harness.service.createOrderChange(
+        harness.orderId,
+        { changeType: OrderChangeType.EXTENSION, reason: "customer renewal" },
+        harness.saUser,
+        harness.context
+      )
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
   it("creates an order change when there is no active change", async () => {
     const harness = createOrderChangeHarness({ changeStatus: null });
 

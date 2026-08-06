@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const contractDetailPath = "apps/web/src/app/contracts/[id]/page.tsx";
+const portalContractDetailPath = "apps/web/src/app/portal/contracts/[id]/page.tsx";
 
 describe("contract detail e-sign display", () => {
   const source = read(contractDetailPath);
@@ -59,6 +60,21 @@ describe("contract detail e-sign display", () => {
     expect(eSignTaskSection).toContain("archiveStatus.actionLabel");
     expect(eSignTaskSection).toContain("openSignedContract(task.id)");
     expect(eSignTaskSection).toContain("archiveStatus.errorSummary");
+  });
+});
+
+describe("portal extension contract display", () => {
+  const source = read(portalContractDetailPath);
+
+  it("recognizes the Stage 3 extension agreement signing identity", () => {
+    expect(source).toContain("SUBSCRIPTION_EXTENSION_AGREEMENT");
+    expect(source).toContain("STAGE3_SUBSCRIPTION_EXTENSION");
+  });
+
+  it("shows both the original contract and supplemental agreement documents", () => {
+    expect(source).toContain("原订阅合同");
+    expect(source).toContain("续期补充协议");
+    expect(source).toContain("generated-document/preview");
   });
 });
 

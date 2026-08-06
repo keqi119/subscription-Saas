@@ -25,6 +25,7 @@ import {
 import { getPortalContractDestination } from "../../../../lib/portal-handover-review-view-model";
 import {
   PortalContractDetail,
+  PortalContractListItem,
   PortalFadadaOnboardingStatus,
   PortalPayableBill,
   PortalPaymentOrder,
@@ -43,6 +44,7 @@ export default function PortalContractDetailPage() {
   const { message } = App.useApp();
   const [realNameForm] = Form.useForm<RealNameFormValues>();
   const [contract, setContract] = useState<PortalContractDetail>();
+  const [originalContract, setOriginalContract] = useState<PortalContractListItem>();
   const [onboardingStatus, setOnboardingStatus] = useState<PortalFadadaOnboardingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
@@ -68,17 +70,38 @@ export default function PortalContractDetailPage() {
         return;
       }
       setContract(nextContract);
+      const extensionAgreement = isExtensionAgreement(nextContract);
+      const relatedContractsPromise = extensionAgreement
+        ? portalApiFetch<PortalContractListItem[]>("/portal/contracts").catch((error) => {
+            void message.warning(
+              error instanceof PortalApiError ? error.message : "无法加载原订阅合同"
+            );
+            return [];
+          })
+        : Promise.resolve([] as PortalContractListItem[]);
       if (!stage2Destination) {
         setOnboardingStatus(null);
+        setOriginalContract(undefined);
         return;
       }
-      const nextOnboardingStatus = await portalApiFetch<PortalFadadaOnboardingStatus>(
-        "/portal/esign-onboarding/status"
-      ).catch((error) => {
-        void message.warning(error instanceof PortalApiError ? error.message : "无法加载法大大认证状态");
-        return null;
-      });
+      const [nextOnboardingStatus, relatedContracts] = await Promise.all([
+        portalApiFetch<PortalFadadaOnboardingStatus>(
+          "/portal/esign-onboarding/status"
+        ).catch((error) => {
+          void message.warning(error instanceof PortalApiError ? error.message : "无法加载法大大认证状态");
+          return null;
+        }),
+        relatedContractsPromise
+      ]);
       setOnboardingStatus(nextOnboardingStatus);
+      setOriginalContract(
+        relatedContracts.find(
+          (candidate) =>
+            candidate.orderNo === nextContract.orderNo &&
+            candidate.documentType === "SUBSCRIPTION_CONTRACT" &&
+            candidate.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT"
+        )
+      );
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/contracts/${params.id}`)}`);
@@ -191,6 +214,17 @@ export default function PortalContractDetailPage() {
     }
     window.open(
       `${PORTAL_API_BASE_URL}/portal/contracts/${encodeURIComponent(contract.id)}/signed-document/preview`,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  }
+
+  function openGeneratedContract() {
+    if (!contract) {
+      return;
+    }
+    window.open(
+      `${PORTAL_API_BASE_URL}/portal/contracts/${encodeURIComponent(contract.id)}/generated-document/preview`,
       "_blank",
       "noopener,noreferrer"
     );
@@ -311,6 +345,43 @@ export default function PortalContractDetailPage() {
             ]}
           />
         </section>
+
+        {isExtensionAgreement(contract) ? (
+          <section style={sectionStyle}>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              合同文件
+            </Typography.Title>
+            <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+                <div>
+                  <Typography.Text strong>原订阅合同</Typography.Text>
+                  <br />
+                  <Typography.Text type="secondary">
+                    {originalContract?.contractNo ?? "原合同加载中或暂不可用"}
+                  </Typography.Text>
+                </div>
+                <Button
+                  disabled={!originalContract}
+                  onClick={() =>
+                    originalContract && router.push(`/portal/contracts/${originalContract.id}`)
+                  }
+                >
+                  查看原合同
+                </Button>
+              </Flex>
+              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+                <div>
+                  <Typography.Text strong>续期补充协议</Typography.Text>
+                  <br />
+                  <Typography.Text type="secondary">签署前请核对本次延长期限与费用。</Typography.Text>
+                </div>
+                <Button icon={<FileTextOutlined />} onClick={openGeneratedContract} type="primary">
+                  查看补充协议 PDF
+                </Button>
+              </Flex>
+            </Space>
+          </section>
+        ) : null}
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
@@ -455,6 +526,13 @@ export default function PortalContractDetailPage() {
 
 function formatTime(value?: string | null) {
   return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+}
+
+function isExtensionAgreement(contract: PortalContractListItem) {
+  return (
+    contract.documentType === "SUBSCRIPTION_EXTENSION_AGREEMENT" ||
+    contract.signingStage === "STAGE3_SUBSCRIPTION_EXTENSION"
+  );
 }
 
 const sectionStyle = {

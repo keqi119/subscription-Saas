@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 
 import { AuthModule } from "../auth/auth.module";
 import { PrismaModule } from "../prisma/prisma.module";
+import { SmsModule } from "../sms/sms.module";
 import { MockNotificationProvider } from "./mock-notification.provider";
 import { NotificationAdminController } from "./notification.controller";
 import { NOTIFICATION_PROVIDER_CLIENT } from "./notification.provider";
@@ -12,7 +13,7 @@ import { WeChatOfficialAccountProvider } from "./wechat-official-account.provide
 @Module({
   controllers: [NotificationAdminController],
   exports: [NotificationService],
-  imports: [AuthModule, PrismaModule],
+  imports: [AuthModule, PrismaModule, SmsModule],
   providers: [
     NotificationService,
     {

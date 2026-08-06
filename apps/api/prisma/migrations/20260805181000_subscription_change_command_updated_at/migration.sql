@@ -1,0 +1,2 @@
+ALTER TABLE "subscription_change_command"
+ADD COLUMN "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP;

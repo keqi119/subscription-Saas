@@ -11,6 +11,10 @@ import type { Readable } from "node:stream";
 
 import { RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import {
+  resolveVehicleInsuranceCoverage,
+  VehicleInsuranceCoverageResult
+} from "../common/vehicle-insurance-coverage";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import {
@@ -39,6 +43,19 @@ export interface VehicleDocumentPreview {
   mimeType?: string | null;
   sizeBytes: number;
   stream: Readable;
+}
+
+export class VehicleInsuranceCoverageError extends BadRequestException {
+  readonly code = "VEHICLE_INSURANCE_COVERAGE_INSUFFICIENT";
+
+  constructor(vehicleId: string, targetEndDate: Date) {
+    super({
+      code: "VEHICLE_INSURANCE_COVERAGE_INSUFFICIENT",
+      message: "Active compulsory and commercial insurance must both cover the target end date.",
+      targetEndDate: targetEndDate.toISOString().slice(0, 10),
+      vehicleId
+    });
+  }
 }
 
 const policyInclude = {
@@ -150,6 +167,34 @@ export class VehicleInsuranceService {
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService
   ) {}
+
+  async assertVehicleCoveredThrough(
+    vehicleId: string,
+    targetEndDate: Date
+  ): Promise<VehicleInsuranceCoverageResult> {
+    if (!(targetEndDate instanceof Date) || Number.isNaN(targetEndDate.getTime())) {
+      throw new BadRequestException("A valid insurance target end date is required");
+    }
+    const policies = await this.prisma.vehicleInsurancePolicy.findMany({
+      select: {
+        deletedAt: true,
+        effectiveFrom: true,
+        effectiveTo: true,
+        id: true,
+        policyStatus: true,
+        policyType: true
+      },
+      where: {
+        deletedAt: null,
+        vehicleId
+      }
+    });
+    const coverage = resolveVehicleInsuranceCoverage(policies, targetEndDate);
+    if (!coverage.covered) {
+      throw new VehicleInsuranceCoverageError(vehicleId, targetEndDate);
+    }
+    return coverage;
+  }
 
   async listPolicies(query: VehicleInsurancePoliciesQueryDto) {
     const { page, pageSize, skip } = resolvePagination(query);

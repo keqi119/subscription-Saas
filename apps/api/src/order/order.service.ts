@@ -1,6 +1,13 @@
 import type { Readable } from "node:stream";
 
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, Optional } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  Optional
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PermissionCode } from "@subscription-saas/shared";
 import {
@@ -8,6 +15,7 @@ import {
   ApplicationStatus,
   AuditAction,
   BusinessType,
+  ContractSegmentStatus,
   ContractStatus,
   ContractTemplateType,
   ContractVersionStatus,
@@ -21,6 +29,7 @@ import {
   EntitlementUnit,
   EntitlementUsageSource,
   EntitlementUsageStatus,
+  LeaseStatus,
   MonthlyFeeMode,
   OrderChangeStatus,
   OrderChangeType,
@@ -114,10 +123,8 @@ const DISALLOWED_CHANGE_TYPES = new Set<OrderChangeType>([
 ]);
 const CUSTOMER_ORDER_DEPOSIT_NOTICE =
   "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
-const CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE =
-  "该套餐需后台报价确认，暂不支持客户自助提交。";
-const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE =
-  "所选车辆当前不可租用，请重新选择车辆";
+const CUSTOMER_ORDER_MANUAL_QUOTE_MESSAGE = "该套餐需后台报价确认，暂不支持客户自助提交。";
+const CUSTOMER_ORDER_VEHICLE_UNAVAILABLE_MESSAGE = "所选车辆当前不可租用，请重新选择车辆";
 
 const CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV = "CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED";
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
@@ -150,8 +157,7 @@ const UNSIGNED_CONTRACT_STATUSES = new Set<ContractStatus>([
   ContractStatus.GENERATED,
   ContractStatus.SIGNING
 ]);
-const ORDER_FULFILLMENT_CHANGE_MESSAGE =
-  "当前订单已进入履约阶段，请走履约变更或合同变更流程。";
+const ORDER_FULFILLMENT_CHANGE_MESSAGE = "当前订单已进入履约阶段，请走履约变更或合同变更流程。";
 const ACTIVE_ORDER_CHANGE_MESSAGE =
   "当前订单存在进行中的变更申请，请先完成或取消变更后再继续操作。";
 const DUPLICATE_ACTIVE_ORDER_CHANGE_MESSAGE =
@@ -204,7 +210,16 @@ const subscriptionPlanInclude = {
   benefitPackage: { include: packageInclude },
   energyPackage: { include: packageInclude },
   mileagePackage: { include: packageInclude },
-  product: { select: { id: true, name: true, productNo: true, productType: true, status: true, deletedAt: true } },
+  product: {
+    select: {
+      id: true,
+      name: true,
+      productNo: true,
+      productType: true,
+      status: true,
+      deletedAt: true
+    }
+  },
   productVersion: {
     select: {
       deletedAt: true,
@@ -224,6 +239,7 @@ const orderInclude = {
   changes: { orderBy: { createdAt: "desc" as const }, where: { deletedAt: null } },
   contract: true,
   contracts: { orderBy: { createdAt: "desc" as const }, where: { deletedAt: null } },
+  contractSegments: { orderBy: { sequenceNo: "asc" as const } },
   customer: {
     select: {
       grade: true,
@@ -295,11 +311,17 @@ const entitlementAccountInclude = {
 type OrderWithDetails = Prisma.SubscriptionOrderGetPayload<{ include: typeof orderInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ContractWithDetails = Prisma.ContractGetPayload<{ include: typeof contractInclude }>;
-type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
+type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{
+  include: typeof subscriptionPlanInclude;
+}>;
 type DeliveryWithDetails = Prisma.VehicleDeliveryGetPayload<{ include: typeof deliveryInclude }>;
 type ReturnWithDetails = Prisma.VehicleReturnGetPayload<{ include: typeof returnInclude }>;
-type EntitlementAccountWithGrants = Prisma.OrderEntitlementAccountGetPayload<{ include: typeof entitlementAccountInclude }>;
-type EntitlementGrantWithUsageOverview = Prisma.OrderEntitlementGrantGetPayload<{ include: typeof entitlementGrantUsageOverviewInclude }>;
+type EntitlementAccountWithGrants = Prisma.OrderEntitlementAccountGetPayload<{
+  include: typeof entitlementAccountInclude;
+}>;
+type EntitlementGrantWithUsageOverview = Prisma.OrderEntitlementGrantGetPayload<{
+  include: typeof entitlementGrantUsageOverviewInclude;
+}>;
 type EntitlementUsageRecord = Prisma.OrderEntitlementUsageGetPayload<object>;
 type EntitlementRenewalAction =
   | "GENERATED"
@@ -365,7 +387,9 @@ export class OrderService {
     const orders = await this.prisma.subscriptionOrder.findMany({
       include: orderInclude,
       orderBy: { createdAt: "desc" },
-      where: canViewAllOrders(user) ? { deletedAt: null } : { application: { salesUserId: user.id }, deletedAt: null }
+      where: canViewAllOrders(user)
+        ? { deletedAt: null }
+        : { application: { salesUserId: user.id }, deletedAt: null }
     });
     return orders.map(toOrderView);
   }
@@ -432,70 +456,79 @@ export class OrderService {
     });
     const subscriptionPlanId = resolveSubscriptionPlanId(snapshot.packageSnapshot);
 
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const accountInTransaction = await tx.orderEntitlementAccount.findFirst({
-        include: entitlementAccountInclude,
-        orderBy: { createdAt: "desc" },
-        where: {
-          accountStatus: EntitlementAccountStatus.ACTIVE,
-          deletedAt: null,
-          orderId: id
-        }
-      });
-
-      if (accountInTransaction) {
-        return { account: accountInTransaction, created: false };
-      }
-
-      const account = await tx.orderEntitlementAccount.create({
-        data: {
-          accountNo: createBusinessNo("EA"),
-          accountStatus: EntitlementAccountStatus.ACTIVE,
-          createdBy: user.id,
-          customerId: order.customerId,
-          orderId: order.id,
-          periodEnd,
-          periodStart,
-          snapshot: accountSnapshot,
-          subscriptionPlanId,
-          updatedBy: user.id
-        }
-      });
-
-      for (const grant of grantInputs) {
-        await tx.orderEntitlementGrant.create({
-          data: {
-            accountId: account.id,
-            createdBy: user.id,
-            customerId: order.customerId,
-            entitlementName: grant.entitlementName,
-            entitlementType: grant.entitlementType,
-            grantNo: createBusinessNo("EG"),
-            grantPeriodEnd: periodEnd,
-            grantPeriodStart: periodStart,
-            grantSource: EntitlementGrantSource.ORDER_START,
-            orderId: order.id,
-            remainingAmount: grant.remainingAmount,
-            snapshot: grant.snapshot,
-            status: EntitlementGrantStatus.ACTIVE,
-            totalAmount: grant.totalAmount,
-            unit: grant.unit,
-            updatedBy: user.id,
-            usedAmount: grant.usedAmount
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const accountInTransaction = await tx.orderEntitlementAccount.findFirst({
+          include: entitlementAccountInclude,
+          orderBy: { createdAt: "desc" },
+          where: {
+            accountStatus: EntitlementAccountStatus.ACTIVE,
+            deletedAt: null,
+            orderId: id
           }
         });
-      }
 
-      const accountWithGrants = await tx.orderEntitlementAccount.findUniqueOrThrow({
-        include: entitlementAccountInclude,
-        where: { id: account.id }
-      });
+        if (accountInTransaction) {
+          return { account: accountInTransaction, created: false };
+        }
 
-      return { account: accountWithGrants, created: true };
-    }));
+        const account = await tx.orderEntitlementAccount.create({
+          data: {
+            accountNo: createBusinessNo("EA"),
+            accountStatus: EntitlementAccountStatus.ACTIVE,
+            createdBy: user.id,
+            customerId: order.customerId,
+            orderId: order.id,
+            periodEnd,
+            periodStart,
+            snapshot: accountSnapshot,
+            subscriptionPlanId,
+            updatedBy: user.id
+          }
+        });
+
+        for (const grant of grantInputs) {
+          await tx.orderEntitlementGrant.create({
+            data: {
+              accountId: account.id,
+              createdBy: user.id,
+              customerId: order.customerId,
+              entitlementName: grant.entitlementName,
+              entitlementType: grant.entitlementType,
+              grantNo: createBusinessNo("EG"),
+              grantPeriodEnd: periodEnd,
+              grantPeriodStart: periodStart,
+              grantSource: EntitlementGrantSource.ORDER_START,
+              orderId: order.id,
+              remainingAmount: grant.remainingAmount,
+              snapshot: grant.snapshot,
+              status: EntitlementGrantStatus.ACTIVE,
+              totalAmount: grant.totalAmount,
+              unit: grant.unit,
+              updatedBy: user.id,
+              usedAmount: grant.usedAmount
+            }
+          });
+        }
+
+        const accountWithGrants = await tx.orderEntitlementAccount.findUniqueOrThrow({
+          include: entitlementAccountInclude,
+          where: { id: account.id }
+        });
+
+        return { account: accountWithGrants, created: true };
+      })
+    );
 
     if (result.created) {
-      await this.writeEntitlementAudit(AuditAction.CREATE, "order_entitlement_account", result.account.id, result.account, user, context);
+      await this.writeEntitlementAudit(
+        AuditAction.CREATE,
+        "order_entitlement_account",
+        result.account.id,
+        result.account,
+        user,
+        context
+      );
       await this.writeEntitlementAudit(
         AuditAction.CREATE,
         "order_entitlement_grant",
@@ -536,7 +569,11 @@ export class OrderService {
 
     const createdGrants = await this.createMonthlyRenewalGrants(plan, user);
     const action = createdGrants.length > 0 ? "GENERATED" : "SKIPPED_EXISTING";
-    const response = toMonthlyRenewalResponse(plan, action, createdGrants.map((grant) => grant.id));
+    const response = toMonthlyRenewalResponse(
+      plan,
+      action,
+      createdGrants.map((grant) => grant.id)
+    );
 
     if (createdGrants.length > 0) {
       await this.writeEntitlementAudit(
@@ -561,7 +598,11 @@ export class OrderService {
     return response;
   }
 
-  async generateMonthlyEntitlements(dto: EntitlementMonthlyRenewalDto, user: RequestUser, context: RequestContext) {
+  async generateMonthlyEntitlements(
+    dto: EntitlementMonthlyRenewalDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const asOfDate = resolveEntitlementAsOfDate(dto.asOfDate);
     const dryRun = Boolean(dto.dryRun);
     const orders = await this.prisma.subscriptionOrder.findMany({
@@ -582,7 +623,11 @@ export class OrderService {
         if (plan.action === "GENERATED" && !dryRun) {
           const createdGrants = await this.createMonthlyRenewalGrants(plan, user);
           const action = createdGrants.length > 0 ? "GENERATED" : "SKIPPED_EXISTING";
-          const item = toMonthlyRenewalItem(plan, action, createdGrants.map((grant) => grant.id));
+          const item = toMonthlyRenewalItem(
+            plan,
+            action,
+            createdGrants.map((grant) => grant.id)
+          );
           items.push(item);
           if (createdGrants.length > 0) {
             generatedAuditItems.push({
@@ -696,139 +741,145 @@ export class OrderService {
     const scenario = optionalText(dto.scenario, 128);
     const remark = optionalText(dto.remark);
 
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const existingUsage = externalRefNo
-        ? await tx.orderEntitlementUsage.findFirst({
-            where: {
-              deletedAt: null,
-              externalRefNo,
-              grantId,
-              orderId: id,
-              usageStatus: { not: EntitlementUsageStatus.CANCELLED }
-            }
-          })
-        : null;
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const existingUsage = externalRefNo
+          ? await tx.orderEntitlementUsage.findFirst({
+              where: {
+                deletedAt: null,
+                externalRefNo,
+                grantId,
+                orderId: id,
+                usageStatus: { not: EntitlementUsageStatus.CANCELLED }
+              }
+            })
+          : null;
 
-      if (existingUsage) {
-        const existingGrant = await tx.orderEntitlementGrant.findFirst({
-          include: entitlementGrantUsageOverviewInclude,
-          where: { deletedAt: null, id: existingUsage.grantId, orderId: id }
+        if (existingUsage) {
+          const existingGrant = await tx.orderEntitlementGrant.findFirst({
+            include: entitlementGrantUsageOverviewInclude,
+            where: { deletedAt: null, id: existingUsage.grantId, orderId: id }
+          });
+          if (!existingGrant) {
+            throw new NotFoundException("权益发放记录不存在或不属于当前订单。");
+          }
+          return { created: false, grant: existingGrant, usage: existingUsage };
+        }
+
+        const activeAccount = await tx.orderEntitlementAccount.findFirst({
+          orderBy: { createdAt: "desc" },
+          where: {
+            accountStatus: EntitlementAccountStatus.ACTIVE,
+            deletedAt: null,
+            orderId: id
+          }
         });
-        if (!existingGrant) {
-          throw new NotFoundException("权益发放记录不存在或不属于当前订单。");
+        const account =
+          activeAccount ??
+          (await tx.orderEntitlementAccount.findFirst({
+            orderBy: { createdAt: "desc" },
+            where: { deletedAt: null, orderId: id }
+          }));
+        assertCanConsumeEntitlementAccount(account);
+
+        const grant = await tx.orderEntitlementGrant.findFirst({
+          where: {
+            accountId: account.id,
+            deletedAt: null,
+            id: grantId,
+            orderId: id
+          }
+        });
+        assertCanConsumeEntitlementGrant(grant);
+        assertGrantWithinConsumptionPeriod(grant, order, occurredAt);
+
+        const remainingAmount = requiredGrantRemainingAmount(grant);
+        if (usedAmount.gt(remainingAmount)) {
+          throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
         }
-        return { created: false, grant: existingGrant, usage: existingUsage };
-      }
 
-      const activeAccount = await tx.orderEntitlementAccount.findFirst({
-        orderBy: { createdAt: "desc" },
-        where: {
-          accountStatus: EntitlementAccountStatus.ACTIVE,
-          deletedAt: null,
-          orderId: id
+        const nextRemainingAmount = remainingAmount.minus(usedAmount);
+        if (nextRemainingAmount.lt(0)) {
+          throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
         }
-      });
-      const account = activeAccount ?? await tx.orderEntitlementAccount.findFirst({
-        orderBy: { createdAt: "desc" },
-        where: { deletedAt: null, orderId: id }
-      });
-      assertCanConsumeEntitlementAccount(account);
 
-      const grant = await tx.orderEntitlementGrant.findFirst({
-        where: {
-          accountId: account.id,
-          deletedAt: null,
-          id: grantId,
-          orderId: id
+        const currentUsedAmount = grant.usedAmount ?? new Prisma.Decimal(0);
+        const nextUsedAmount = currentUsedAmount.plus(usedAmount);
+        const nextStatus = nextRemainingAmount.equals(0)
+          ? EntitlementGrantStatus.EXHAUSTED
+          : EntitlementGrantStatus.ACTIVE;
+        const updateResult = await tx.orderEntitlementGrant.updateMany({
+          data: {
+            remainingAmount: nextRemainingAmount,
+            status: nextStatus,
+            updatedBy: user.id,
+            usedAmount: nextUsedAmount
+          },
+          where: {
+            deletedAt: null,
+            id: grant.id,
+            remainingAmount: { gte: usedAmount },
+            status: EntitlementGrantStatus.ACTIVE
+          }
+        });
+
+        if (updateResult.count !== 1) {
+          throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
         }
-      });
-      assertCanConsumeEntitlementGrant(grant);
-      assertGrantWithinConsumptionPeriod(grant, order, occurredAt);
 
-      const remainingAmount = requiredGrantRemainingAmount(grant);
-      if (usedAmount.gt(remainingAmount)) {
-        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
-      }
+        const usage = await tx.orderEntitlementUsage.create({
+          data: {
+            accountId: account.id,
+            createdBy: user.id,
+            customerId: order.customerId,
+            entitlementName: grant.entitlementName,
+            entitlementType: grant.entitlementType,
+            externalRefNo,
+            grantId: grant.id,
+            occurredAt,
+            orderId: order.id,
+            remark,
+            scenario,
+            snapshot: toJsonValue({
+              account: {
+                accountNo: account.accountNo,
+                accountStatus: account.accountStatus,
+                id: account.id
+              },
+              grant: {
+                entitlementName: grant.entitlementName,
+                entitlementType: grant.entitlementType,
+                grantNo: grant.grantNo,
+                id: grant.id,
+                remainingAmount: grant.remainingAmount,
+                status: grant.status,
+                totalAmount: grant.totalAmount,
+                unit: grant.unit,
+                usedAmount: grant.usedAmount
+              },
+              order: {
+                orderId: order.id,
+                orderNo: order.orderNo,
+                orderStatus: order.orderStatus
+              }
+            }),
+            unit: grant.unit,
+            updatedBy: user.id,
+            usageNo: createBusinessNo("EU"),
+            usageSource,
+            usageStatus: EntitlementUsageStatus.CONFIRMED,
+            usedAmount
+          }
+        });
 
-      const nextRemainingAmount = remainingAmount.minus(usedAmount);
-      if (nextRemainingAmount.lt(0)) {
-        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
-      }
+        const updatedGrant = await tx.orderEntitlementGrant.findUniqueOrThrow({
+          include: entitlementGrantUsageOverviewInclude,
+          where: { id: grant.id }
+        });
 
-      const currentUsedAmount = grant.usedAmount ?? new Prisma.Decimal(0);
-      const nextUsedAmount = currentUsedAmount.plus(usedAmount);
-      const nextStatus = nextRemainingAmount.equals(0) ? EntitlementGrantStatus.EXHAUSTED : EntitlementGrantStatus.ACTIVE;
-      const updateResult = await tx.orderEntitlementGrant.updateMany({
-        data: {
-          remainingAmount: nextRemainingAmount,
-          status: nextStatus,
-          updatedBy: user.id,
-          usedAmount: nextUsedAmount
-        },
-        where: {
-          deletedAt: null,
-          id: grant.id,
-          remainingAmount: { gte: usedAmount },
-          status: EntitlementGrantStatus.ACTIVE
-        }
-      });
-
-      if (updateResult.count !== 1) {
-        throw new BadRequestException("权益剩余额度不足，不能超额消耗。");
-      }
-
-      const usage = await tx.orderEntitlementUsage.create({
-        data: {
-          accountId: account.id,
-          createdBy: user.id,
-          customerId: order.customerId,
-          entitlementName: grant.entitlementName,
-          entitlementType: grant.entitlementType,
-          externalRefNo,
-          grantId: grant.id,
-          occurredAt,
-          orderId: order.id,
-          remark,
-          scenario,
-          snapshot: toJsonValue({
-            account: {
-              accountNo: account.accountNo,
-              accountStatus: account.accountStatus,
-              id: account.id
-            },
-            grant: {
-              entitlementName: grant.entitlementName,
-              entitlementType: grant.entitlementType,
-              grantNo: grant.grantNo,
-              id: grant.id,
-              remainingAmount: grant.remainingAmount,
-              status: grant.status,
-              totalAmount: grant.totalAmount,
-              unit: grant.unit,
-              usedAmount: grant.usedAmount
-            },
-            order: {
-              orderId: order.id,
-              orderNo: order.orderNo,
-              orderStatus: order.orderStatus
-            }
-          }),
-          unit: grant.unit,
-          updatedBy: user.id,
-          usageNo: createBusinessNo("EU"),
-          usageSource,
-          usageStatus: EntitlementUsageStatus.CONFIRMED,
-          usedAmount
-        }
-      });
-
-      const updatedGrant = await tx.orderEntitlementGrant.findUniqueOrThrow({
-        include: entitlementGrantUsageOverviewInclude,
-        where: { id: grant.id }
-      });
-
-      return { created: true, grant: updatedGrant, usage };
-    }));
+        return { created: true, grant: updatedGrant, usage };
+      })
+    );
 
     if (result.created) {
       await this.writeEntitlementAudit(
@@ -859,7 +910,11 @@ export class OrderService {
     };
   }
 
-  async listOrderEntitlementUsages(id: string, query: ListEntitlementUsagesQueryDto, user: RequestUser) {
+  async listOrderEntitlementUsages(
+    id: string,
+    query: ListEntitlementUsagesQueryDto,
+    user: RequestUser
+  ) {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);
 
@@ -907,7 +962,9 @@ export class OrderService {
       where: {
         deletedAt: null,
         orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
-        orderStatus: { in: [OrderStatus.PENDING_REVIEW, OrderStatus.PENDING_CUSTOMER_CONFIRMATION] },
+        orderStatus: {
+          in: [OrderStatus.PENDING_REVIEW, OrderStatus.PENDING_CUSTOMER_CONFIRMATION]
+        },
         ...(canViewAllOrders(user) ? {} : { application: { salesUserId: user.id } })
       }
     });
@@ -932,7 +989,13 @@ export class OrderService {
     assertNoActiveOrderChange(before);
 
     if (decision === OrderReviewStatus.REJECTED) {
-      return this.rejectCustomerOrder(id, { ...dto, status: OrderReviewStatus.REJECTED }, user, context, reviewType);
+      return this.rejectCustomerOrder(
+        id,
+        { ...dto, status: OrderReviewStatus.REJECTED },
+        user,
+        context,
+        reviewType
+      );
     }
 
     if (decision === OrderReviewStatus.NEED_MORE_INFO) {
@@ -946,7 +1009,15 @@ export class OrderService {
         include: orderInclude,
         where: { id }
       });
-      await this.writeAudit(AuditAction.UPDATE, "subscription_order", id, toOrderView(before), toOrderView(order), user, context);
+      await this.writeAudit(
+        AuditAction.UPDATE,
+        "subscription_order",
+        id,
+        toOrderView(before),
+        toOrderView(order),
+        user,
+        context
+      );
       return toOrderView(order);
     }
 
@@ -967,7 +1038,9 @@ export class OrderService {
         }
         const depositRule = await findActiveDepositRule(tx, dto.customerGrade);
         if (!depositRule) {
-          throw new BadRequestException(`No active deposit rule configured for grade ${dto.customerGrade}.`);
+          throw new BadRequestException(
+            `No active deposit rule configured for grade ${dto.customerGrade}.`
+          );
         }
         const depositRuleSnapshot = toJsonValue({
           customerGrade: dto.customerGrade,
@@ -1051,7 +1124,15 @@ export class OrderService {
         userAgent: context.userAgent
       });
     }
-    await this.writeAudit(AuditAction.UPDATE, "subscription_order", id, toOrderView(before), toOrderView(result.order), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      toOrderView(before),
+      toOrderView(result.order),
+      user,
+      context
+    );
     return toOrderView(result.order);
   }
 
@@ -1077,7 +1158,15 @@ export class OrderService {
       include: orderInclude,
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "subscription_order", id, toOrderView(before), toOrderView(order), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      toOrderView(before),
+      toOrderView(order),
+      user,
+      context
+    );
     return toOrderView(order);
   }
 
@@ -1163,7 +1252,11 @@ export class OrderService {
       let vehicleAfter = null;
       if (before.vehicleId) {
         vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
-        if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.REVIEW_RESERVED) {
+        if (
+          !vehicleBefore ||
+          vehicleBefore.deletedAt ||
+          vehicleBefore.status !== VehicleStatus.REVIEW_RESERVED
+        ) {
           throw new BadRequestException("订单车辆未处于审核占用状态，无法进入签约。");
         }
         vehicleAfter = await tx.vehicle.update({
@@ -1196,7 +1289,15 @@ export class OrderService {
       return { order, vehicleAfter, vehicleBefore };
     });
 
-    await this.writeAudit(AuditAction.APPROVE, "subscription_order", id, toOrderView(before), toOrderView(result.order), user, context);
+    await this.writeAudit(
+      AuditAction.APPROVE,
+      "subscription_order",
+      id,
+      toOrderView(before),
+      toOrderView(result.order),
+      user,
+      context
+    );
     if (result.vehicleBefore && result.vehicleAfter) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -1214,7 +1315,11 @@ export class OrderService {
     return toOrderView(result.order);
   }
 
-  async createCustomerOrder(dto: CreateCustomerOrderDto, user: RequestUser, context: RequestContext) {
+  async createCustomerOrder(
+    dto: CreateCustomerOrderDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const [customer, vehicle, plan] = await Promise.all([
       this.prisma.customer.findUnique({ where: { id: dto.customerId } }),
       this.prisma.vehicle.findUnique({
@@ -1248,7 +1353,10 @@ export class OrderService {
     if (!vehicleSalePriceAmount || vehicleSalePriceAmount <= 0n) {
       throw new BadRequestException("当前车辆销售价未初始化，无法下单");
     }
-    const vehicleBaseFeePricing = calculateCustomerOrderVehicleBaseFee(plan, vehicleSalePriceAmount);
+    const vehicleBaseFeePricing = calculateCustomerOrderVehicleBaseFee(
+      plan,
+      vehicleSalePriceAmount
+    );
     const vehicleBaseFeeAmount = vehicleBaseFeePricing.vehicleBaseFeeAmount;
     const vehicleBaseFeeCapAmount = vehicleBaseFeePricing.vehicleBaseFeeCapAmount;
 
@@ -1316,136 +1424,138 @@ export class OrderService {
       status: DepositStatus.PENDING_CONFIRM
     });
 
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
-      assertVehicleAvailableForCustomerOrder(vehicleBefore);
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
+        assertVehicleAvailableForCustomerOrder(vehicleBefore);
 
-      const application = await tx.application.create({
-        data: {
-          applicationNo: createBusinessNo("APP"),
-          createdBy: user.id,
-          customerId: customer.id,
-          intendedModel: modelCode,
-          intendedPeriodMonths: dto.periodMonths,
-          salesUserId: customer.ownerUserId ?? user.id,
-          status: ApplicationStatus.SUBMITTED,
-          submittedAt: now,
-          updatedBy: user.id
-        }
-      });
-
-      await tx.applicationActionLog.create({
-        data: {
-          actionType: ApplicationActionType.CREATE,
-          applicationId: application.id,
-          comment: "客户自助下单自动生成进件",
-          createdBy: user.id,
-          operatorId: user.id,
-          operatorName: user.name,
-          toStatus: ApplicationStatus.SUBMITTED,
-          updatedBy: user.id
-        }
-      });
-
-      if (customer.status === CustomerStatus.LEAD) {
-        await tx.customer.update({
-          data: { status: CustomerStatus.PENDING_APPLICATION, updatedBy: user.id },
-          where: { id: customer.id }
+        const application = await tx.application.create({
+          data: {
+            applicationNo: createBusinessNo("APP"),
+            createdBy: user.id,
+            customerId: customer.id,
+            intendedModel: modelCode,
+            intendedPeriodMonths: dto.periodMonths,
+            salesUserId: customer.ownerUserId ?? user.id,
+            status: ApplicationStatus.SUBMITTED,
+            submittedAt: now,
+            updatedBy: user.id
+          }
         });
-      }
 
-      const quote = await tx.subscriptionQuote.create({
-        data: {
-          applicationId: application.id,
-          benefitPackageId: plan.benefitPackage?.id ?? null,
-          benefitPackagePriceAmount,
-          createdBy: user.id,
-          customerId: customer.id,
+        await tx.applicationActionLog.create({
+          data: {
+            actionType: ApplicationActionType.CREATE,
+            applicationId: application.id,
+            comment: "客户自助下单自动生成进件",
+            createdBy: user.id,
+            operatorId: user.id,
+            operatorName: user.name,
+            toStatus: ApplicationStatus.SUBMITTED,
+            updatedBy: user.id
+          }
+        });
+
+        if (customer.status === CustomerStatus.LEAD) {
+          await tx.customer.update({
+            data: { status: CustomerStatus.PENDING_APPLICATION, updatedBy: user.id },
+            where: { id: customer.id }
+          });
+        }
+
+        const quote = (await tx.subscriptionQuote.create({
+          data: {
+            applicationId: application.id,
+            benefitPackageId: plan.benefitPackage?.id ?? null,
+            benefitPackagePriceAmount,
+            createdBy: user.id,
+            customerId: customer.id,
+            customerSelectedSnapshot,
+            depositAmount: 0n,
+            depositRuleSnapshot,
+            energyLimitCount: plan.energyPackage.monthlyEnergyCount,
+            energyLimitKwh: plan.energyPackage.monthlyEnergyKwh,
+            energyPackageId: plan.energyPackage.id,
+            energyPackagePriceAmount,
+            mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
+            mileagePackageId: plan.mileagePackage.id,
+            mileagePackagePriceAmount,
+            monthlyFeeAmount,
+            monthlyFeeCapAmount: vehicleBaseFeeCapAmount,
+            monthlyFeeRate: plan.monthlyFeeRate,
+            ...modelSnapshot,
+            overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
+            packageSnapshot,
+            periodMonths: dto.periodMonths,
+            productId: plan.productId,
+            productVersionId: plan.productVersionId,
+            quoteNo: createBusinessNo("QUO"),
+            riskResultId: null,
+            status: QuoteStatus.DRAFT,
+            subscriptionPlanId: plan.id,
+            updatedBy: user.id,
+            vehicleBaseFeeAmount,
+            vehicleBaseFeeCapAmount,
+            vehicleId: vehicle.id,
+            vehiclePackageId: plan.vehiclePackage.id,
+            vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
+            vehicleSalePriceAmount,
+            vehicleSnapshot
+          },
+          include: quoteInclude
+        })) as QuoteWithDetails;
+
+        const quoteSnapshot = toJsonValue({
+          ...(toPlain(quote) as Record<string, unknown>),
           customerSelectedSnapshot,
-          depositAmount: 0n,
-          depositRuleSnapshot,
-          energyLimitCount: plan.energyPackage.monthlyEnergyCount,
-          energyLimitKwh: plan.energyPackage.monthlyEnergyKwh,
-          energyPackageId: plan.energyPackage.id,
-          energyPackagePriceAmount,
-          mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
-          mileagePackageId: plan.mileagePackage.id,
-          mileagePackagePriceAmount,
-          monthlyFeeAmount,
-          monthlyFeeCapAmount: vehicleBaseFeeCapAmount,
-          monthlyFeeRate: plan.monthlyFeeRate,
-          ...modelSnapshot,
-          overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
-          packageSnapshot,
-          periodMonths: dto.periodMonths,
-          productId: plan.productId,
-          productVersionId: plan.productVersionId,
-          quoteNo: createBusinessNo("QUO"),
-          riskResultId: null,
-          status: QuoteStatus.DRAFT,
-          subscriptionPlanId: plan.id,
-          updatedBy: user.id,
-          vehicleBaseFeeAmount,
-          vehicleBaseFeeCapAmount,
-          vehicleId: vehicle.id,
-          vehiclePackageId: plan.vehiclePackage.id,
-          vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
-          vehicleSalePriceAmount,
-          vehicleSnapshot
-        },
-        include: quoteInclude
-      }) as QuoteWithDetails;
-
-      const quoteSnapshot = toJsonValue({
-        ...(toPlain(quote) as Record<string, unknown>),
-        customerSelectedSnapshot,
-        depositDescription: CUSTOMER_ORDER_DEPOSIT_NOTICE,
-        depositStatus: DepositStatus.PENDING_CONFIRM,
-        finalDepositAmount: null
-      });
-
-      const order = await tx.subscriptionOrder.create({
-        data: {
-          applicationId: application.id,
-          businessType: CURRENT_BUSINESS_TYPE,
-          createdBy: user.id,
-          creditReviewStatus: OrderReviewStatus.PENDING,
-          customerId: customer.id,
-          customerSelectedSnapshot,
-          depositAmount: 0n,
+          depositDescription: CUSTOMER_ORDER_DEPOSIT_NOTICE,
           depositStatus: DepositStatus.PENDING_CONFIRM,
-          energyLimitCount: plan.energyPackage.monthlyEnergyCount,
-          energyLimitKwh: plan.energyPackage.monthlyEnergyKwh,
-          finalDepositAmount: null,
-          mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
-          monthlyFeeAmount,
-          ...modelSnapshot,
-          orderNo: createBusinessNo("ORD"),
-          orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
-          orderStatus: OrderStatus.PENDING_REVIEW,
-          overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
-          periodMonths: dto.periodMonths,
-          productId: plan.productId,
-          productReviewStatus: OrderReviewStatus.PENDING,
-          productVersionId: plan.productVersionId,
-          quoteId: quote.id,
-          quoteSnapshot,
-          riskResultId: null,
-          updatedBy: user.id,
-          vehicleId: vehicle.id,
-          vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
-          vehicleReviewStatus: OrderReviewStatus.PENDING
-        },
-        include: orderInclude
-      }) as OrderWithDetails;
+          finalDepositAmount: null
+        });
 
-      const vehicleAfter = await tx.vehicle.update({
-        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: user.id },
-        where: { id: vehicle.id }
-      });
+        const order = (await tx.subscriptionOrder.create({
+          data: {
+            applicationId: application.id,
+            businessType: CURRENT_BUSINESS_TYPE,
+            createdBy: user.id,
+            creditReviewStatus: OrderReviewStatus.PENDING,
+            customerId: customer.id,
+            customerSelectedSnapshot,
+            depositAmount: 0n,
+            depositStatus: DepositStatus.PENDING_CONFIRM,
+            energyLimitCount: plan.energyPackage.monthlyEnergyCount,
+            energyLimitKwh: plan.energyPackage.monthlyEnergyKwh,
+            finalDepositAmount: null,
+            mileageLimitKm: plan.mileagePackage.monthlyMileageKm,
+            monthlyFeeAmount,
+            ...modelSnapshot,
+            orderNo: createBusinessNo("ORD"),
+            orderSource: OrderSource.CUSTOMER_SELF_SERVICE,
+            orderStatus: OrderStatus.PENDING_REVIEW,
+            overMileageFeeAmount: plan.mileagePackage.overMileageFeeAmount,
+            periodMonths: dto.periodMonths,
+            productId: plan.productId,
+            productReviewStatus: OrderReviewStatus.PENDING,
+            productVersionId: plan.productVersionId,
+            quoteId: quote.id,
+            quoteSnapshot,
+            riskResultId: null,
+            updatedBy: user.id,
+            vehicleId: vehicle.id,
+            vehiclePurchasePriceAmount: vehicle.purchasePriceAmount,
+            vehicleReviewStatus: OrderReviewStatus.PENDING
+          },
+          include: orderInclude
+        })) as OrderWithDetails;
 
-      return { application, order, quote, vehicleAfter, vehicleBefore };
-    }));
+        const vehicleAfter = await tx.vehicle.update({
+          data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: user.id },
+          where: { id: vehicle.id }
+        });
+
+        return { application, order, quote, vehicleAfter, vehicleBefore };
+      })
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -1467,7 +1577,15 @@ export class OrderService {
       operatorId: user.id,
       userAgent: context.userAgent
     });
-    await this.writeAudit(AuditAction.CREATE, "subscription_order", result.order.id, undefined, toOrderView(result.order), user, context);
+    await this.writeAudit(
+      AuditAction.CREATE,
+      "subscription_order",
+      result.order.id,
+      undefined,
+      toOrderView(result.order),
+      user,
+      context
+    );
     await this.auditService.write({
       action: AuditAction.UPDATE,
       after: toJsonValue(result.vehicleAfter),
@@ -1507,14 +1625,22 @@ export class OrderService {
     if (quote.productVersion.product.productType !== "SUBSCRIPTION") {
       throw new BadRequestException(RENT_TO_OWN_ORDER_NOT_OPEN_MESSAGE);
     }
-    if (quote.order && !quote.order.deletedAt && quote.order.orderStatus !== OrderStatus.CANCELLED) {
+    if (
+      quote.order &&
+      !quote.order.deletedAt &&
+      quote.order.orderStatus !== OrderStatus.CANCELLED
+    ) {
       throw new BadRequestException("该报价已生成订单，请勿重复创建。");
     }
 
     if (!quote.vehicleId) {
       throw new BadRequestException("已确认报价未绑定车辆，无法创建订单。");
     }
-    if (!quote.vehicle || quote.vehicle.deletedAt || quote.vehicle.status !== VehicleStatus.RESERVED) {
+    if (
+      !quote.vehicle ||
+      quote.vehicle.deletedAt ||
+      quote.vehicle.status !== VehicleStatus.RESERVED
+    ) {
       throw new BadRequestException("已确认报价绑定车辆未锁定，请重新确认报价。");
     }
 
@@ -1524,35 +1650,45 @@ export class OrderService {
       modelDefinitionId: quote.modelDefinitionIdSnapshot,
       modelDisplayName: quote.modelDisplayNameSnapshot
     });
-    const order = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionOrder.create({
-      data: {
-        applicationId: quote.applicationId,
-        businessType: CURRENT_BUSINESS_TYPE,
-        createdBy: user.id,
-        customerId: quote.customerId,
-        depositAmount: quote.depositAmount,
-        energyLimitCount: quote.energyLimitCount,
-        energyLimitKwh: quote.energyLimitKwh,
-        mileageLimitKm: quote.mileageLimitKm,
-        monthlyFeeAmount: quote.monthlyFeeAmount,
-        ...modelSnapshot,
-        orderNo: createBusinessNo("ORD"),
-        orderStatus: OrderStatus.PENDING_CONTRACT,
-        overMileageFeeAmount: quote.overMileageFeeAmount,
-        periodMonths: quote.periodMonths,
-        productId: quote.productId,
-        productVersionId: quote.productVersionId,
-        quoteId: quote.id,
-        quoteSnapshot,
-        riskResultId: quote.riskResultId,
-        updatedBy: user.id,
-        vehicleId: quote.vehicleId,
-        vehiclePurchasePriceAmount: quote.vehiclePurchasePriceAmount
-      },
-      include: orderInclude
-    }));
+    const order = await withUniqueBusinessNoRetry(() =>
+      this.prisma.subscriptionOrder.create({
+        data: {
+          applicationId: quote.applicationId,
+          businessType: CURRENT_BUSINESS_TYPE,
+          createdBy: user.id,
+          customerId: quote.customerId,
+          depositAmount: quote.depositAmount,
+          energyLimitCount: quote.energyLimitCount,
+          energyLimitKwh: quote.energyLimitKwh,
+          mileageLimitKm: quote.mileageLimitKm,
+          monthlyFeeAmount: quote.monthlyFeeAmount,
+          ...modelSnapshot,
+          orderNo: createBusinessNo("ORD"),
+          orderStatus: OrderStatus.PENDING_CONTRACT,
+          overMileageFeeAmount: quote.overMileageFeeAmount,
+          periodMonths: quote.periodMonths,
+          productId: quote.productId,
+          productVersionId: quote.productVersionId,
+          quoteId: quote.id,
+          quoteSnapshot,
+          riskResultId: quote.riskResultId,
+          updatedBy: user.id,
+          vehicleId: quote.vehicleId,
+          vehiclePurchasePriceAmount: quote.vehiclePurchasePriceAmount
+        },
+        include: orderInclude
+      })
+    );
 
-    await this.writeAudit(AuditAction.CREATE, "subscription_order", order.id, undefined, toOrderView(order), user, context);
+    await this.writeAudit(
+      AuditAction.CREATE,
+      "subscription_order",
+      order.id,
+      undefined,
+      toOrderView(order),
+      user,
+      context
+    );
     return toOrderView(order);
   }
 
@@ -1587,7 +1723,15 @@ export class OrderService {
       return { order, vehicleAfter, vehicleBefore };
     });
     const order = result.order;
-    await this.writeAudit(AuditAction.UPDATE, "subscription_order", id, { ...toOrderView(before), reason: dto.reason }, toOrderView(order), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "subscription_order",
+      id,
+      { ...toOrderView(before), reason: dto.reason },
+      toOrderView(order),
+      user,
+      context
+    );
     if (result.vehicleBefore && result.vehicleAfter) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -1657,7 +1801,11 @@ export class OrderService {
     return this.getDeliveryEvidenceService().initializeChecklist(id, handover?.id ?? null);
   }
 
-  async attachDeliveryEvidenceFile(itemId: string, dto: AttachDeliveryEvidenceFileDto, user: RequestUser) {
+  async attachDeliveryEvidenceFile(
+    itemId: string,
+    dto: AttachDeliveryEvidenceFileDto,
+    user: RequestUser
+  ) {
     await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
     void dto;
     throw new BadRequestException("该文件绑定入口已停用，请使用交接现场证据上传接口完成预处理。");
@@ -1668,7 +1816,11 @@ export class OrderService {
     return this.getDeliveryEvidenceService().approveEvidenceItem(itemId, user.id);
   }
 
-  async rejectDeliveryEvidenceItem(itemId: string, dto: RejectDeliveryEvidenceDto, user: RequestUser) {
+  async rejectDeliveryEvidenceItem(
+    itemId: string,
+    dto: RejectDeliveryEvidenceDto,
+    user: RequestUser
+  ) {
     await this.assertCanAccessDeliveryEvidenceItem(itemId, user);
     return this.getDeliveryEvidenceService().rejectEvidenceItem(itemId, user.id, dto.reason);
   }
@@ -1677,7 +1829,12 @@ export class OrderService {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);
     const handover = await findActiveDeliveryHandover(this.prisma, id);
-    return this.getDeliveryEvidenceService().declareNoVisibleDamage(id, user.id, handover?.id ?? null, dto.remark);
+    return this.getDeliveryEvidenceService().declareNoVisibleDamage(
+      id,
+      user.id,
+      handover?.id ?? null,
+      dto.remark
+    );
   }
 
   async addDamageCloseup(id: string, dto: AddDamageCloseupDto, user: RequestUser) {
@@ -1707,7 +1864,12 @@ export class OrderService {
     );
   }
 
-  async prepareDelivery(id: string, dto: PrepareDeliveryDto, user: RequestUser, context: RequestContext) {
+  async prepareDelivery(
+    id: string,
+    dto: PrepareDeliveryDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const beforeOrder = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(beforeOrder, user);
     assertNoActiveOrderChange(beforeOrder);
@@ -1722,11 +1884,20 @@ export class OrderService {
         where: { orderId: id }
       });
 
-      if (beforeDelivery?.deliveryStatus === DeliveryStatus.DELIVERED || beforeDelivery?.deliveredAt) {
+      if (
+        beforeDelivery?.deliveryStatus === DeliveryStatus.DELIVERED ||
+        beforeDelivery?.deliveredAt
+      ) {
         throw new BadRequestException(DELIVERY_ALREADY_DONE_MESSAGE);
       }
 
-      const deliveryData = buildPrepareDeliveryData(beforeOrder, dto, scheduledAt, user.id, beforeDelivery);
+      const deliveryData = buildPrepareDeliveryData(
+        beforeOrder,
+        dto,
+        scheduledAt,
+        user.id,
+        beforeDelivery
+      );
       const delivery = beforeDelivery
         ? await tx.vehicleDelivery.update({
             data: deliveryData,
@@ -1774,7 +1945,12 @@ export class OrderService {
     return toDeliveryView(result.delivery);
   }
 
-  async confirmDelivery(id: string, dto: ConfirmDeliveryDto, user: RequestUser, context: RequestContext) {
+  async confirmDelivery(
+    id: string,
+    dto: ConfirmDeliveryDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const beforeOrder = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(beforeOrder, user);
     assertNoActiveOrderChange(beforeOrder);
@@ -1803,162 +1979,156 @@ export class OrderService {
     );
     await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(id, handover?.id ?? null);
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      await lockDeliveryConfirmationGateRows(tx, id);
-      const orderBefore = await tx.subscriptionOrder.findUnique({
-        include: orderInclude,
-        where: { id }
-      });
-      if (!orderBefore || orderBefore.deletedAt) {
-        throw new NotFoundException("Order not found.");
-      }
-      ensureCanAccessOrder(orderBefore, user);
-      assertNoActiveOrderChange(orderBefore);
-      assertOrderNotDelivered(orderBefore);
-      assertDeliveryConfirmationValues(orderBefore, dto, deliveredAt);
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await lockDeliveryConfirmationGateRows(tx, id);
+        const orderBefore = await tx.subscriptionOrder.findUnique({
+          include: orderInclude,
+          where: { id }
+        });
+        if (!orderBefore || orderBefore.deletedAt) {
+          throw new NotFoundException("Order not found.");
+        }
+        ensureCanAccessOrder(orderBefore, user);
+        assertNoActiveOrderChange(orderBefore);
+        assertOrderNotDelivered(orderBefore);
+        assertDeliveryConfirmationValues(orderBefore, dto, deliveredAt);
 
-      const deliveryBefore = await tx.vehicleDelivery.findUnique({
-        include: deliveryInclude,
-        where: { orderId: id }
-      });
-      const currentHandover = await findDeliveryHandoverForConfirmation(
-        tx,
-        id
-      );
-      const currentEvidenceReadiness =
-        await this.getDeliveryConfirmationReadiness(
+        const deliveryBefore = await tx.vehicleDelivery.findUnique({
+          include: deliveryInclude,
+          where: { orderId: id }
+        });
+        const currentHandover = await findDeliveryHandoverForConfirmation(tx, id);
+        const currentEvidenceReadiness = await this.getDeliveryConfirmationReadiness(
           id,
           currentHandover?.id ?? null,
           tx
         );
-      const currentConfirmationDefaults =
-        await resolveDeliveryConfirmationDefaults(
+        const currentConfirmationDefaults = await resolveDeliveryConfirmationDefaults(
           tx,
           id,
           currentHandover
         );
-      assertCanConfirmDelivery(
-        orderBefore,
-        deliveryBefore,
-        deliveredAt,
-        currentHandover,
-        currentEvidenceReadiness,
-        currentConfirmationDefaults
-      );
-      await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(
-        id,
-        currentHandover?.id ?? null,
-        tx
-      );
-
-      const vehicleBefore = await tx.vehicle.findUnique({
-        where: { id: orderBefore.vehicleId! }
-      });
-      if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.RESERVED) {
-        throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
-      }
-
-      const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
-        where: {
-          deletedAt: null,
-          id: { not: orderBefore.id },
-          orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
-          vehicleId: orderBefore.vehicleId
-        }
-      });
-      if (occupiedByOtherOrderCount > 0) {
-        throw new BadRequestException("车辆已被其他订单占用，不能交付。");
-      }
-
-      const authoritativeDefaults = currentConfirmationDefaults.defaults;
-      if (!authoritativeDefaults) {
-        throw new BadRequestException("交付确认缺少 Stage 2 签署时间或 Field 现场里程。");
-      }
-
-      const deliveryReading = await this.getVehicleMileageService().appendConfirmedReading(tx, {
-        confirmedBy: user.id,
-        evidenceSnapshot: {
-          authoritativeDefaults,
-          finalValues: {
-            deliveredAt: deliveredAt.toISOString(),
-            handoverMileageKm: dto.handoverMileageKm
-          },
-          manuallyAdjusted: {
-            deliveredAt:
-              deliveredAt.getTime() !==
-              new Date(authoritativeDefaults.deliveredAt).getTime(),
-            handoverMileageKm:
-              dto.handoverMileageKm !==
-              authoritativeDefaults.handoverMileageKm
-          }
-        },
-        mileageKm: dto.handoverMileageKm,
-        orderId: id,
-        recordedAt: deliveredAt,
-        sourceRecordId: deliveryBefore!.id,
-        sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
-        vehicleId: orderBefore.vehicleId!
-      });
-      await this.getMileageReviewService().createFirstReview(tx, {
-        actualDeliveryAt: deliveredAt,
-        actorId: user.id,
-        deliveryReadingId: deliveryReading.id,
-        orderId: id,
-        vehicleId: orderBefore.vehicleId!
-      });
-
-      const delivery = await tx.vehicleDelivery.update({
-        data: {
+        assertCanConfirmDelivery(
+          orderBefore,
+          deliveryBefore,
           deliveredAt,
-          deliveryStatus: DeliveryStatus.DELIVERED,
-          handoverMileageKm: dto.handoverMileageKm,
-          remark: dto.remark,
-          updatedBy: user.id
-        },
-        include: deliveryInclude,
-        where: { id: deliveryBefore!.id }
-      });
-      const order = await tx.subscriptionOrder.update({
-        data: {
+          currentHandover,
+          currentEvidenceReadiness,
+          currentConfirmationDefaults
+        );
+        await this.handoverWorkOrderService?.assertDeliveryCanBeConfirmed(
+          id,
+          currentHandover?.id ?? null,
+          tx
+        );
+
+        const vehicleBefore = await tx.vehicle.findUnique({
+          where: { id: orderBefore.vehicleId! }
+        });
+        if (
+          !vehicleBefore ||
+          vehicleBefore.deletedAt ||
+          vehicleBefore.status !== VehicleStatus.RESERVED
+        ) {
+          throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
+        }
+
+        const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
+          where: {
+            deletedAt: null,
+            id: { not: orderBefore.id },
+            orderStatus: { notIn: VEHICLE_OCCUPYING_FINAL_STATUSES },
+            vehicleId: orderBefore.vehicleId
+          }
+        });
+        if (occupiedByOtherOrderCount > 0) {
+          throw new BadRequestException("车辆已被其他订单占用，不能交付。");
+        }
+
+        const authoritativeDefaults = currentConfirmationDefaults.defaults;
+        if (!authoritativeDefaults) {
+          throw new BadRequestException("交付确认缺少 Stage 2 签署时间或 Field 现场里程。");
+        }
+
+        const deliveryReading = await this.getVehicleMileageService().appendConfirmedReading(tx, {
+          confirmedBy: user.id,
+          evidenceSnapshot: {
+            authoritativeDefaults,
+            finalValues: {
+              deliveredAt: deliveredAt.toISOString(),
+              handoverMileageKm: dto.handoverMileageKm
+            },
+            manuallyAdjusted: {
+              deliveredAt:
+                deliveredAt.getTime() !== new Date(authoritativeDefaults.deliveredAt).getTime(),
+              handoverMileageKm: dto.handoverMileageKm !== authoritativeDefaults.handoverMileageKm
+            }
+          },
+          mileageKm: dto.handoverMileageKm,
+          orderId: id,
+          recordedAt: deliveredAt,
+          sourceRecordId: deliveryBefore!.id,
+          sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+          vehicleId: orderBefore.vehicleId!
+        });
+        await this.getMileageReviewService().createFirstReview(tx, {
           actualDeliveryAt: deliveredAt,
-          orderStatus: OrderStatus.ACTIVE,
-          updatedBy: user.id
-        },
-        include: orderInclude,
-        where: { id }
-      });
-      const vehicleAfter = await tx.vehicle.update({
-        data: { status: VehicleStatus.LEASED, updatedBy: user.id },
-        where: { id: orderBefore.vehicleId! }
-      });
-      const { existing: leaseBefore, lease: leaseAfter } =
-        await activateLeaseRecord(tx, {
+          actorId: user.id,
+          deliveryReadingId: deliveryReading.id,
+          orderId: id,
+          vehicleId: orderBefore.vehicleId!
+        });
+
+        const delivery = await tx.vehicleDelivery.update({
+          data: {
+            deliveredAt,
+            deliveryStatus: DeliveryStatus.DELIVERED,
+            handoverMileageKm: dto.handoverMileageKm,
+            remark: dto.remark,
+            updatedBy: user.id
+          },
+          include: deliveryInclude,
+          where: { id: deliveryBefore!.id }
+        });
+        const order = await tx.subscriptionOrder.update({
+          data: {
+            actualDeliveryAt: deliveredAt,
+            orderStatus: OrderStatus.ACTIVE,
+            updatedBy: user.id
+          },
+          include: orderInclude,
+          where: { id }
+        });
+        const vehicleAfter = await tx.vehicle.update({
+          data: { status: VehicleStatus.LEASED, updatedBy: user.id },
+          where: { id: orderBefore.vehicleId! }
+        });
+        const { existing: leaseBefore, lease: leaseAfter } = await activateLeaseRecord(tx, {
           activatedAt: deliveredAt,
           actorId: user.id,
           orderId: id
         });
-      if (!this.billingAutomationService) {
-        throw new Error("Billing automation service is unavailable.");
-      }
-      await this.billingAutomationService.ensureActiveSchedule(
-        tx,
-        id,
-        deliveredAt
-      );
+        if (!this.billingAutomationService) {
+          throw new Error("Billing automation service is unavailable.");
+        }
+        await this.billingAutomationService.ensureActiveSchedule(tx, id, deliveredAt);
 
-      return {
-        delivery,
-        deliveryBefore,
-        order,
-        orderBefore,
-        leaseAfter,
-        leaseBefore,
-        vehicleAfter,
-        vehicleBefore
-      };
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
-    });
+        return {
+          delivery,
+          deliveryBefore,
+          order,
+          orderBefore,
+          leaseAfter,
+          leaseBefore,
+          vehicleAfter,
+          vehicleBefore
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+      }
+    );
 
     await this.writeAudit(
       AuditAction.UPDATE,
@@ -1991,9 +2161,7 @@ export class OrderService {
     await this.auditService.write({
       action: result.leaseBefore ? AuditAction.UPDATE : AuditAction.CREATE,
       after: toJsonValue(result.leaseAfter),
-      before: result.leaseBefore
-        ? toJsonValue(result.leaseBefore)
-        : undefined,
+      before: result.leaseBefore ? toJsonValue(result.leaseBefore) : undefined,
       entityId: result.leaseAfter.id,
       entityType: "lease",
       ipAddress: context.ipAddress,
@@ -2012,7 +2180,10 @@ export class OrderService {
       include: returnInclude,
       where: { orderId: id }
     });
-    return buildReturnCheck(order, vehicleReturn && !vehicleReturn.deletedAt ? vehicleReturn : null);
+    return buildReturnCheck(
+      order,
+      vehicleReturn && !vehicleReturn.deletedAt ? vehicleReturn : null
+    );
   }
 
   async getReturn(id: string, user: RequestUser) {
@@ -2025,44 +2196,54 @@ export class OrderService {
     return vehicleReturn && !vehicleReturn.deletedAt ? toReturnView(vehicleReturn) : null;
   }
 
-  async prepareReturn(id: string, dto: PrepareReturnDto, user: RequestUser, context: RequestContext) {
+  async prepareReturn(
+    id: string,
+    dto: PrepareReturnDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const beforeOrder = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(beforeOrder, user);
     assertNoActiveOrderChange(beforeOrder);
     assertCanPrepareReturn(beforeOrder);
 
     const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const beforeReturn = await tx.vehicleReturn.findUnique({
-        include: returnInclude,
-        where: { orderId: id }
-      });
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const beforeReturn = await tx.vehicleReturn.findUnique({
+          include: returnInclude,
+          where: { orderId: id }
+        });
 
-      if (beforeReturn?.returnStatus === VehicleReturnStatus.CONFIRMED || beforeReturn?.returnedAt) {
-        throw new BadRequestException(RETURN_ALREADY_DONE_MESSAGE);
-      }
+        if (
+          beforeReturn?.returnStatus === VehicleReturnStatus.CONFIRMED ||
+          beforeReturn?.returnedAt
+        ) {
+          throw new BadRequestException(RETURN_ALREADY_DONE_MESSAGE);
+        }
 
-      const returnData = buildPrepareReturnData(dto, scheduledAt, user.id, beforeReturn);
-      const vehicleReturn = beforeReturn
-        ? await tx.vehicleReturn.update({
-            data: returnData,
-            include: returnInclude,
-            where: { id: beforeReturn.id }
-          })
-        : await tx.vehicleReturn.create({
-            data: {
-              ...returnData,
-              createdBy: user.id,
-              customerId: beforeOrder.customerId,
-              orderId: beforeOrder.id,
-              returnNo: createBusinessNo("RET"),
-              vehicleId: beforeOrder.vehicleId!
-            },
-            include: returnInclude
-          });
+        const returnData = buildPrepareReturnData(dto, scheduledAt, user.id, beforeReturn);
+        const vehicleReturn = beforeReturn
+          ? await tx.vehicleReturn.update({
+              data: returnData,
+              include: returnInclude,
+              where: { id: beforeReturn.id }
+            })
+          : await tx.vehicleReturn.create({
+              data: {
+                ...returnData,
+                createdBy: user.id,
+                customerId: beforeOrder.customerId,
+                orderId: beforeOrder.id,
+                returnNo: createBusinessNo("RET"),
+                vehicleId: beforeOrder.vehicleId!
+              },
+              include: returnInclude
+            });
 
-      return { beforeReturn, vehicleReturn };
-    }));
+        return { beforeReturn, vehicleReturn };
+      })
+    );
 
     await this.writeReturnAudit(
       result.beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
@@ -2075,7 +2256,12 @@ export class OrderService {
     return toReturnView(result.vehicleReturn);
   }
 
-  async confirmReturn(id: string, dto: ConfirmReturnDto, user: RequestUser, context: RequestContext) {
+  async confirmReturn(
+    id: string,
+    dto: ConfirmReturnDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const beforeOrder = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(beforeOrder, user);
     assertNoActiveOrderChange(beforeOrder);
@@ -2092,7 +2278,11 @@ export class OrderService {
     const delivery = await this.prisma.vehicleDelivery.findUnique({
       where: { orderId: id }
     });
-    if (delivery?.handoverMileageKm !== null && delivery?.handoverMileageKm !== undefined && dto.returnMileageKm < delivery.handoverMileageKm) {
+    if (
+      delivery?.handoverMileageKm !== null &&
+      delivery?.handoverMileageKm !== undefined &&
+      dto.returnMileageKm < delivery.handoverMileageKm
+    ) {
       throw new BadRequestException("退车里程不能小于交付里程。");
     }
 
@@ -2100,19 +2290,26 @@ export class OrderService {
     const returnType = dto.returnType ?? beforeReturn!.returnType;
     const hasMediumOrSevereDamage = damages.some(
       (damage) =>
-        damage.damageLevel === VehicleDamageLevel.MEDIUM || damage.damageLevel === VehicleDamageLevel.SEVERE
+        damage.damageLevel === VehicleDamageLevel.MEDIUM ||
+        damage.damageLevel === VehicleDamageLevel.SEVERE
     );
-    const nextVehicleStatus = dto.maintenanceRequired || hasMediumOrSevereDamage
-      ? VehicleStatus.MAINTENANCE
-      : VehicleStatus.RETURNED;
-    const nextOrderStatus = returnType === VehicleReturnType.EARLY_TERMINATION
-      ? OrderStatus.TERMINATED
-      : OrderStatus.COMPLETED;
+    const nextVehicleStatus =
+      dto.maintenanceRequired || hasMediumOrSevereDamage
+        ? VehicleStatus.MAINTENANCE
+        : VehicleStatus.RETURNED;
+    const nextOrderStatus =
+      returnType === VehicleReturnType.EARLY_TERMINATION
+        ? OrderStatus.TERMINATED
+        : OrderStatus.COMPLETED;
     const damageFound = dto.damageFound ?? damages.length > 0;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: beforeOrder.vehicleId! } });
-      if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.LEASED) {
+      if (
+        !vehicleBefore ||
+        vehicleBefore.deletedAt ||
+        vehicleBefore.status !== VehicleStatus.LEASED
+      ) {
         throw new BadRequestException("车辆状态不是已出租，不能退车。");
       }
 
@@ -2168,7 +2365,9 @@ export class OrderService {
               damageType: damage.damageType,
               description: damage.description,
               estimatedRepairAmount:
-                damage.estimatedRepairAmount === undefined ? null : BigInt(damage.estimatedRepairAmount),
+                damage.estimatedRepairAmount === undefined
+                  ? null
+                  : BigInt(damage.estimatedRepairAmount),
               orderId: beforeOrder.id,
               photoUrls: damage.photoUrls ? toJsonValue(damage.photoUrls) : undefined,
               responsibleParty: damage.responsibleParty ?? "UNKNOWN",
@@ -2196,6 +2395,41 @@ export class OrderService {
         where: { id }
       });
 
+      const leaseBefore = await tx.lease.findUnique({ where: { orderId: id } });
+      if (
+        !leaseBefore ||
+        (leaseBefore.status !== LeaseStatus.ACTIVE && leaseBefore.status !== LeaseStatus.RETURN_DUE)
+      ) {
+        throw new BadRequestException("租约状态不允许完成退车。");
+      }
+      const completedLease = await tx.lease.updateMany({
+        data: {
+          status: LeaseStatus.COMPLETED,
+          updatedBy: user.id
+        },
+        where: {
+          orderId: id,
+          status: { in: [LeaseStatus.ACTIVE, LeaseStatus.RETURN_DUE] }
+        }
+      });
+      if (completedLease.count !== 1) {
+        throw new ConflictException("租约状态已变化，请刷新后重试。");
+      }
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: { ...leaseBefore, status: LeaseStatus.COMPLETED, updatedBy: user.id },
+          before: leaseBefore,
+          entityId: leaseBefore.id,
+          entityType: "lease",
+          ipAddress: context.ipAddress,
+          module: "lease",
+          operatorId: user.id,
+          userAgent: context.userAgent
+        },
+        tx
+      );
+
       const vehicleAfter = await tx.vehicle.update({
         data: {
           status: nextVehicleStatus,
@@ -2204,7 +2438,13 @@ export class OrderService {
         where: { id: beforeOrder.vehicleId! }
       });
 
-      return { createdDamages, order, vehicleAfter, vehicleBefore, vehicleReturn: vehicleReturnAfterDamage };
+      return {
+        createdDamages,
+        order,
+        vehicleAfter,
+        vehicleBefore,
+        vehicleReturn: vehicleReturnAfterDamage
+      };
     });
 
     await this.writeAudit(
@@ -2260,7 +2500,9 @@ export class OrderService {
     if (before.orderStatus !== OrderStatus.PENDING_CONTRACT) {
       throw new BadRequestException("仅待生成合同的订单可以生成合同。");
     }
-    const existing = before.contracts.find((contract) => contract.status !== ContractStatus.CANCELLED);
+    const existing = before.contracts.find(
+      (contract) => contract.status !== ContractStatus.CANCELLED
+    );
     if (existing || before.contractId) {
       throw new BadRequestException("该订单已生成有效合同。");
     }
@@ -2288,7 +2530,67 @@ export class OrderService {
 
     const contract = this.isContractPdfArtifactGenerationEnabled()
       ? await this.generateContractWithPdfArtifact(before, template, contractSnapshot, user)
-      : await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      : await withUniqueBusinessNoRetry(() =>
+          this.prisma.$transaction(async (tx) => {
+            const created = await tx.contract.create({
+              data: {
+                businessType: BusinessType.SUBSCRIPTION,
+                contractNo: createBusinessNo("CON"),
+                contractSnapshot,
+                contractTitle: `${template.templateName} ${template.versionNo}`,
+                contractVersionId: template.id,
+                createdBy: user.id,
+                customerId: before.customerId,
+                orderId: before.id,
+                status: ContractStatus.GENERATED,
+                updatedBy: user.id
+              }
+            });
+            await tx.subscriptionOrder.update({
+              data: {
+                contractId: created.id,
+                orderStatus: OrderStatus.PENDING_SIGN,
+                updatedBy: user.id
+              },
+              where: { id: before.id }
+            });
+            return tx.contract.findUniqueOrThrow({
+              include: contractInclude,
+              where: { id: created.id }
+            });
+          })
+        );
+
+    await this.writeAudit(
+      AuditAction.CREATE,
+      "contract",
+      contract.id,
+      toOrderView(before),
+      toContractView(contract),
+      user,
+      context
+    );
+    return toContractView(contract);
+  }
+
+  private isContractPdfArtifactGenerationEnabled() {
+    return parseBooleanFlag(
+      this.configService?.get<string>(CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV)
+    );
+  }
+
+  private async generateContractWithPdfArtifact(
+    before: OrderWithDetails,
+    template: ContractWithDetails["contractVersion"],
+    contractSnapshot: Prisma.InputJsonValue,
+    user: RequestUser
+  ) {
+    if (!this.contractPdfArtifactWriter) {
+      throw new Error("CONTRACT_PDF_ARTIFACT_WRITER_MISSING: PDF artifact writer is not available");
+    }
+
+    const createdContract = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
         const created = await tx.contract.create({
           data: {
             businessType: BusinessType.SUBSCRIPTION,
@@ -2303,48 +2605,12 @@ export class OrderService {
             updatedBy: user.id
           }
         });
-        await tx.subscriptionOrder.update({
-          data: { contractId: created.id, orderStatus: OrderStatus.PENDING_SIGN, updatedBy: user.id },
-          where: { id: before.id }
+        return tx.contract.findUniqueOrThrow({
+          include: contractInclude,
+          where: { id: created.id }
         });
-        return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: created.id } });
-      }));
-
-    await this.writeAudit(AuditAction.CREATE, "contract", contract.id, toOrderView(before), toContractView(contract), user, context);
-    return toContractView(contract);
-  }
-
-  private isContractPdfArtifactGenerationEnabled() {
-    return parseBooleanFlag(this.configService?.get<string>(CONTRACT_PDF_ARTIFACT_GENERATION_ENABLED_ENV));
-  }
-
-  private async generateContractWithPdfArtifact(
-    before: OrderWithDetails,
-    template: ContractWithDetails["contractVersion"],
-    contractSnapshot: Prisma.InputJsonValue,
-    user: RequestUser
-  ) {
-    if (!this.contractPdfArtifactWriter) {
-      throw new Error("CONTRACT_PDF_ARTIFACT_WRITER_MISSING: PDF artifact writer is not available");
-    }
-
-    const createdContract = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const created = await tx.contract.create({
-        data: {
-          businessType: BusinessType.SUBSCRIPTION,
-          contractNo: createBusinessNo("CON"),
-          contractSnapshot,
-          contractTitle: `${template.templateName} ${template.versionNo}`,
-          contractVersionId: template.id,
-          createdBy: user.id,
-          customerId: before.customerId,
-          orderId: before.id,
-          status: ContractStatus.GENERATED,
-          updatedBy: user.id
-        }
-      });
-      return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: created.id } });
-    }));
+      })
+    );
 
     try {
       const artifact = await this.contractPdfArtifactWriter.writeGeneratedContractPdfArtifact({
@@ -2358,17 +2624,27 @@ export class OrderService {
       return await this.prisma.$transaction(async (tx) => {
         await tx.contract.update({
           data: {
-            contractSnapshot: buildContractSnapshotWithGeneratedPdfArtifact(createdContract.contractSnapshot, artifact),
+            contractSnapshot: buildContractSnapshotWithGeneratedPdfArtifact(
+              createdContract.contractSnapshot,
+              artifact
+            ),
             fileId: artifact.fileId,
             updatedBy: user.id
           },
           where: { id: createdContract.id }
         });
         await tx.subscriptionOrder.update({
-          data: { contractId: createdContract.id, orderStatus: OrderStatus.PENDING_SIGN, updatedBy: user.id },
+          data: {
+            contractId: createdContract.id,
+            orderStatus: OrderStatus.PENDING_SIGN,
+            updatedBy: user.id
+          },
           where: { id: before.id }
         });
-        return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id: createdContract.id } });
+        return tx.contract.findUniqueOrThrow({
+          include: contractInclude,
+          where: { id: createdContract.id }
+        });
       });
     } catch (error) {
       await this.cancelContractAfterPdfArtifactFailure(createdContract.id, user.id);
@@ -2400,9 +2676,7 @@ export class OrderService {
     }
     const orderScope: Prisma.SubscriptionOrderWhereInput = {
       deletedAt: null,
-      ...(canViewAllOrders(user)
-        ? {}
-        : { application: { salesUserId: user.id } })
+      ...(canViewAllOrders(user) ? {} : { application: { salesUserId: user.id } })
     };
 
     const contracts = await this.prisma.contract.findMany({
@@ -2439,7 +2713,10 @@ export class OrderService {
       throw new NotFoundException("Generated contract PDF file not found.");
     }
 
-    const storedObject = await this.storageService.getObject(fileObject.bucket, fileObject.objectKey);
+    const storedObject = await this.storageService.getObject(
+      fileObject.bucket,
+      fileObject.objectKey
+    );
     return {
       filename: fileObject.originalName,
       mimeType: fileObject.mimeType ?? storedObject.contentType,
@@ -2467,11 +2744,24 @@ export class OrderService {
       });
       return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id } });
     });
-    await this.writeAudit(AuditAction.APPROVE, "contract", id, toContractView(before), toContractView(contract), user, context);
+    await this.writeAudit(
+      AuditAction.APPROVE,
+      "contract",
+      id,
+      toContractView(before),
+      toContractView(contract),
+      user,
+      context
+    );
     return toContractView(contract);
   }
 
-  async archiveContract(id: string, dto: ArchiveContractDto, user: RequestUser, context: RequestContext) {
+  async archiveContract(
+    id: string,
+    dto: ArchiveContractDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const before = await this.findContractOrThrow(id);
     const order = await this.findOrderOrThrow(before.orderId);
     assertNoActiveOrderChange(order);
@@ -2479,11 +2769,24 @@ export class OrderService {
       throw new BadRequestException("仅已签署合同可以归档。");
     }
     const contract = await this.prisma.contract.update({
-      data: { archivedAt: new Date(), fileId: dto.fileId, status: ContractStatus.ARCHIVED, updatedBy: user.id },
+      data: {
+        archivedAt: new Date(),
+        fileId: dto.fileId,
+        status: ContractStatus.ARCHIVED,
+        updatedBy: user.id
+      },
       include: contractInclude,
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "contract", id, toContractView(before), toContractView(contract), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "contract",
+      id,
+      toContractView(before),
+      toContractView(contract),
+      user,
+      context
+    );
     return toContractView(contract);
   }
 
@@ -2500,14 +2803,20 @@ export class OrderService {
     if (before.status === ContractStatus.SIGNED) {
       throw new BadRequestException("已签署合同不能取消。");
     }
-    const cancellableStatuses: ContractStatus[] = [ContractStatus.GENERATED, ContractStatus.SIGNING];
+    const cancellableStatuses: ContractStatus[] = [
+      ContractStatus.GENERATED,
+      ContractStatus.SIGNING
+    ];
     if (!cancellableStatuses.includes(before.status)) {
       throw new BadRequestException("当前合同状态不允许取消。");
     }
     if (before.order.contractId !== before.id) {
       throw new BadRequestException("当前合同不是该订单的当前合同。");
     }
-    const cancellableOrderStatuses: OrderStatus[] = [OrderStatus.PENDING_SIGN, OrderStatus.PENDING_CONTRACT];
+    const cancellableOrderStatuses: OrderStatus[] = [
+      OrderStatus.PENDING_SIGN,
+      OrderStatus.PENDING_CONTRACT
+    ];
     if (!cancellableOrderStatuses.includes(before.order.orderStatus)) {
       throw new BadRequestException("当前订单状态不允许取消合同。");
     }
@@ -2523,7 +2832,15 @@ export class OrderService {
       });
       return tx.contract.findUniqueOrThrow({ include: contractInclude, where: { id } });
     });
-    await this.writeAudit(AuditAction.UPDATE, "contract", id, toContractView(before), toContractView(contract), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "contract",
+      id,
+      toContractView(before),
+      toContractView(contract),
+      user,
+      context
+    );
     return toContractView(contract);
   }
 
@@ -2539,7 +2856,11 @@ export class OrderService {
     return toContractVersionView(await this.findContractVersionOrThrow(id));
   }
 
-  async createContractVersion(dto: CreateContractVersionDto, user: RequestUser, context: RequestContext) {
+  async createContractVersion(
+    dto: CreateContractVersionDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     ensureSubscriptionBusinessType(dto.businessType);
     const version = await this.prisma.contractVersion.create({
       data: {
@@ -2555,28 +2876,61 @@ export class OrderService {
         versionNo: dto.versionNo
       }
     });
-    await this.writeAudit(AuditAction.CREATE, "contract_version", version.id, undefined, toContractVersionView(version), user, context);
+    await this.writeAudit(
+      AuditAction.CREATE,
+      "contract_version",
+      version.id,
+      undefined,
+      toContractVersionView(version),
+      user,
+      context
+    );
     return toContractVersionView(version);
   }
 
-  async updateContractVersion(id: string, dto: UpdateContractVersionDto, user: RequestUser, context: RequestContext) {
+  async updateContractVersion(
+    id: string,
+    dto: UpdateContractVersionDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const before = await this.findContractVersionOrThrow(id);
     const version = await this.prisma.contractVersion.update({
       data: {
         contentTemplate: dto.contentTemplate,
-        effectiveFrom: dto.effectiveFrom ? parseDateOnly(dto.effectiveFrom, "effectiveFrom") : undefined,
-        effectiveTo: dto.effectiveTo === undefined ? undefined : dto.effectiveTo ? parseDateOnly(dto.effectiveTo, "effectiveTo") : null,
+        effectiveFrom: dto.effectiveFrom
+          ? parseDateOnly(dto.effectiveFrom, "effectiveFrom")
+          : undefined,
+        effectiveTo:
+          dto.effectiveTo === undefined
+            ? undefined
+            : dto.effectiveTo
+              ? parseDateOnly(dto.effectiveTo, "effectiveTo")
+              : null,
         templateName: dto.templateName,
         updatedBy: user.id,
         versionNo: dto.versionNo
       },
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "contract_version", id, toContractVersionView(before), toContractVersionView(version), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "contract_version",
+      id,
+      toContractVersionView(before),
+      toContractVersionView(version),
+      user,
+      context
+    );
     return toContractVersionView(version);
   }
 
-  async setContractVersionStatus(id: string, status: ContractVersionStatus, user: RequestUser, context: RequestContext) {
+  async setContractVersionStatus(
+    id: string,
+    status: ContractVersionStatus,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     const before = await this.findContractVersionOrThrow(id);
     const version = await this.prisma.contractVersion.update({
       data: {
@@ -2587,7 +2941,15 @@ export class OrderService {
       },
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "contract_version", id, toContractVersionView(before), toContractVersionView(version), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "contract_version",
+      id,
+      toContractVersionView(before),
+      toContractVersionView(version),
+      user,
+      context
+    );
     return toContractVersionView(version);
   }
 
@@ -2621,15 +2983,22 @@ export class OrderService {
 
     return plans
       .filter(isSubscriptionPlanCurrentlyAvailableForOrder)
-      .filter(
-        (plan) =>
-          order.vehicle!.modelDefinitionId === plan.vehiclePackage.modelDefinitionId
-      )
+      .filter((plan) => order.vehicle!.modelDefinitionId === plan.vehiclePackage.modelDefinitionId)
       .map(toPlanChangeSubscriptionPlanView);
   }
 
-  async createOrderChange(orderId: string, dto: CreateOrderChangeDto, user: RequestUser, context: RequestContext) {
+  async createOrderChange(
+    orderId: string,
+    dto: CreateOrderChangeDto,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     ensureUserPermission(user, PermissionCode.ORDER_CHANGE_CREATE);
+    if (dto.changeType === OrderChangeType.EXTENSION) {
+      throw new ConflictException(
+        "Contract extensions must be created through the V2 subscription-change workflow."
+      );
+    }
     const order = await this.findOrderOrThrow(orderId);
     ensureCanAccessOrder(order, user);
     ensureAllowedChangeType(dto.changeType);
@@ -2651,14 +3020,31 @@ export class OrderService {
         updatedBy: user.id
       }
     });
-    await this.writeAudit(AuditAction.CREATE, "order_change", change.id, undefined, toOrderChangeAuditView(change), user, context);
+    await this.writeAudit(
+      AuditAction.CREATE,
+      "order_change",
+      change.id,
+      undefined,
+      toOrderChangeAuditView(change),
+      user,
+      context
+    );
     return toOrderChangeResponse(change, user);
   }
 
-  async setOrderChangeStatus(id: string, status: OrderChangeStatus, user: RequestUser, context: RequestContext) {
+  async setOrderChangeStatus(
+    id: string,
+    status: OrderChangeStatus,
+    user: RequestUser,
+    context: RequestContext
+  ) {
     if (status === OrderChangeStatus.APPROVED) {
       ensureUserPermission(user, PermissionCode.ORDER_CHANGE_APPROVE);
-    } else if (!user.roles.includes("ADMIN") && !user.permissions.includes(PermissionCode.ORDER_CHANGE_REJECT) && !user.permissions.includes(PermissionCode.ORDER_CHANGE_APPROVE)) {
+    } else if (
+      !user.roles.includes("ADMIN") &&
+      !user.permissions.includes(PermissionCode.ORDER_CHANGE_REJECT) &&
+      !user.permissions.includes(PermissionCode.ORDER_CHANGE_APPROVE)
+    ) {
       throw new ForbiddenException("Permission denied.");
     }
     const before = await this.prisma.orderChange.findUnique({
@@ -2676,7 +3062,15 @@ export class OrderService {
       data: { approvedAt: new Date(), approvedBy: user.id, status, updatedBy: user.id },
       where: { id }
     });
-    await this.writeAudit(status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    await this.writeAudit(
+      status === OrderChangeStatus.APPROVED ? AuditAction.APPROVE : AuditAction.REJECT,
+      "order_change",
+      id,
+      toOrderChangeAuditView(before),
+      toOrderChangeAuditView(change),
+      user,
+      context
+    );
     return toOrderChangeResponse(change, user);
   }
 
@@ -2702,7 +3096,15 @@ export class OrderService {
       },
       where: { id }
     });
-    await this.writeAudit(AuditAction.UPDATE, "order_change", id, toOrderChangeAuditView(before), toOrderChangeAuditView(change), user, context);
+    await this.writeAudit(
+      AuditAction.UPDATE,
+      "order_change",
+      id,
+      toOrderChangeAuditView(before),
+      toOrderChangeAuditView(change),
+      user,
+      context
+    );
     return toOrderChangeResponse(change, user);
   }
 
@@ -2754,7 +3156,8 @@ export class OrderService {
       if (
         vehicleBefore &&
         !vehicleBefore.deletedAt &&
-        (vehicleBefore.status === VehicleStatus.RESERVED || vehicleBefore.status === VehicleStatus.REVIEW_RESERVED)
+        (vehicleBefore.status === VehicleStatus.RESERVED ||
+          vehicleBefore.status === VehicleStatus.REVIEW_RESERVED)
       ) {
         const occupyingOrders = await tx.subscriptionOrder.count({
           where: {
@@ -2870,7 +3273,10 @@ export class OrderService {
   }
 
   private async findOrderOrThrow(id: string) {
-    const order = await this.prisma.subscriptionOrder.findUnique({ include: orderInclude, where: { id } });
+    const order = await this.prisma.subscriptionOrder.findUnique({
+      include: orderInclude,
+      where: { id }
+    });
     if (!order || order.deletedAt) {
       throw new NotFoundException("Order not found.");
     }
@@ -2900,12 +3306,13 @@ export class OrderService {
     handoverId?: string | null,
     db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const evidenceReadiness = await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
-      orderId,
-      handoverId ?? null,
-      undefined,
-      db
-    );
+    const evidenceReadiness =
+      await this.getDeliveryEvidenceService().validateEvidenceReadyForDeliveryConfirmation(
+        orderId,
+        handoverId ?? null,
+        undefined,
+        db
+      );
     if (!this.handoverWorkOrderService) {
       return evidenceReadiness;
     }
@@ -2950,25 +3357,38 @@ export class OrderService {
       throw new BadRequestException("当前订单缺少生效中的权益账户，不能续发。");
     }
 
-    const snapshot = resolveOrderEntitlementSnapshot(order);
-    const grantInputs = buildOrderEntitlementGrantInputs(snapshot.packageSnapshot);
-    if (grantInputs.length === 0) {
-      throw new BadRequestException("当前订单套餐快照缺少可生成权益的组件。");
-    }
-
     const latestCycleIndex = resolveLatestEntitlementCycleIndex(order, account);
     if (latestCycleIndex === null) {
       throw new BadRequestException("当前权益账户缺少首期权益，不能续发。");
     }
 
     const latestPeriod = resolveMonthlyEntitlementPeriod(order, latestCycleIndex);
-    const latestExistingGrants = findExistingMonthlyRenewalGrants(account, latestPeriod.periodStart, latestPeriod.periodEnd, grantInputs);
-    const latestPeriodCovered = latestCycleIndex > 0 && latestExistingGrants.length === grantInputs.length;
     const nextCycleIndex = latestCycleIndex + 1;
     const nextPeriod = resolveMonthlyEntitlementPeriod(order, nextCycleIndex);
+    const snapshot = resolveOrderEntitlementSnapshotForPeriod(
+      order,
+      nextPeriod.periodStart,
+      nextPeriod.periodStart > asOfDate
+    );
+    const grantInputs = buildOrderEntitlementGrantInputs(snapshot.packageSnapshot);
+    if (grantInputs.length === 0) {
+      throw new BadRequestException("当前订单套餐快照缺少可生成权益的组件。");
+    }
+    const latestExistingGrants = findExistingMonthlyRenewalGrants(
+      account,
+      latestPeriod.periodStart,
+      latestPeriod.periodEnd,
+      grantInputs
+    );
+    const latestPeriodCovered =
+      latestCycleIndex > 0 && latestExistingGrants.length === grantInputs.length;
 
     if (nextPeriod.periodStart > asOfDate) {
-      if (latestPeriodCovered && latestPeriod.periodStart <= asOfDate && asOfDate <= latestPeriod.periodEnd) {
+      if (
+        latestPeriodCovered &&
+        latestPeriod.periodStart <= asOfDate &&
+        asOfDate <= latestPeriod.periodEnd
+      ) {
         return {
           account,
           action: dryRun ? "DRY_RUN_SKIP" : "SKIPPED_EXISTING",
@@ -3001,8 +3421,15 @@ export class OrderService {
       };
     }
 
-    const existingGrants = findExistingMonthlyRenewalGrants(account, nextPeriod.periodStart, nextPeriod.periodEnd, grantInputs);
-    const missingGrantInputs = grantInputs.filter((grantInput) => !existingGrants.some((grant) => isSameEntitlementGrant(grant, grantInput)));
+    const existingGrants = findExistingMonthlyRenewalGrants(
+      account,
+      nextPeriod.periodStart,
+      nextPeriod.periodEnd,
+      grantInputs
+    );
+    const missingGrantInputs = grantInputs.filter(
+      (grantInput) => !existingGrants.some((grant) => isSameEntitlementGrant(grant, grantInput))
+    );
     if (missingGrantInputs.length === 0) {
       return {
         account,
@@ -3037,53 +3464,55 @@ export class OrderService {
   }
 
   private async createMonthlyRenewalGrants(plan: MonthlyRenewalPlan, user: RequestUser) {
-    return withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const createdGrants: Prisma.OrderEntitlementGrantGetPayload<object>[] = [];
+    return withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const createdGrants: Prisma.OrderEntitlementGrantGetPayload<object>[] = [];
 
-      for (const grant of plan.missingGrantInputs) {
-        const existingGrant = await tx.orderEntitlementGrant.findFirst({
-          where: {
-            accountId: plan.account.id,
-            deletedAt: null,
-            entitlementName: grant.entitlementName,
-            entitlementType: grant.entitlementType,
-            grantPeriodEnd: plan.periodEnd,
-            grantPeriodStart: plan.periodStart,
-            grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
-            orderId: plan.order.id,
-            unit: grant.unit
+        for (const grant of plan.missingGrantInputs) {
+          const existingGrant = await tx.orderEntitlementGrant.findFirst({
+            where: {
+              accountId: plan.account.id,
+              deletedAt: null,
+              entitlementName: grant.entitlementName,
+              entitlementType: grant.entitlementType,
+              grantPeriodEnd: plan.periodEnd,
+              grantPeriodStart: plan.periodStart,
+              grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
+              orderId: plan.order.id,
+              unit: grant.unit
+            }
+          });
+          if (existingGrant) {
+            continue;
           }
-        });
-        if (existingGrant) {
-          continue;
+
+          const createdGrant = await tx.orderEntitlementGrant.create({
+            data: {
+              accountId: plan.account.id,
+              createdBy: user.id,
+              customerId: plan.order.customerId,
+              entitlementName: grant.entitlementName,
+              entitlementType: grant.entitlementType,
+              grantNo: createBusinessNo("EG"),
+              grantPeriodEnd: plan.periodEnd,
+              grantPeriodStart: plan.periodStart,
+              grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
+              orderId: plan.order.id,
+              remainingAmount: grant.remainingAmount,
+              snapshot: grant.snapshot,
+              status: EntitlementGrantStatus.ACTIVE,
+              totalAmount: grant.totalAmount,
+              unit: grant.unit,
+              updatedBy: user.id,
+              usedAmount: grant.usedAmount
+            }
+          });
+          createdGrants.push(createdGrant);
         }
 
-        const createdGrant = await tx.orderEntitlementGrant.create({
-          data: {
-            accountId: plan.account.id,
-            createdBy: user.id,
-            customerId: plan.order.customerId,
-            entitlementName: grant.entitlementName,
-            entitlementType: grant.entitlementType,
-            grantNo: createBusinessNo("EG"),
-            grantPeriodEnd: plan.periodEnd,
-            grantPeriodStart: plan.periodStart,
-            grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
-            orderId: plan.order.id,
-            remainingAmount: grant.remainingAmount,
-            snapshot: grant.snapshot,
-            status: EntitlementGrantStatus.ACTIVE,
-            totalAmount: grant.totalAmount,
-            unit: grant.unit,
-            updatedBy: user.id,
-            usedAmount: grant.usedAmount
-          }
-        });
-        createdGrants.push(createdGrant);
-      }
-
-      return createdGrants;
-    }));
+        return createdGrants;
+      })
+    );
   }
 
   private async findActiveEntitlementAccount(orderId: string) {
@@ -3099,7 +3528,10 @@ export class OrderService {
   }
 
   private async findContractOrThrow(id: string) {
-    const contract = await this.prisma.contract.findUnique({ include: contractInclude, where: { id } });
+    const contract = await this.prisma.contract.findUnique({
+      include: contractInclude,
+      where: { id }
+    });
     if (!contract || contract.deletedAt) {
       throw new NotFoundException("Contract not found.");
     }
@@ -3217,7 +3649,7 @@ type OrderEntitlementSnapshot = {
   sourceSnapshot: unknown;
 };
 
-type OrderEntitlementGrantInput = {
+export type OrderEntitlementGrantInput = {
   entitlementName: string;
   entitlementType: EntitlementType;
   remainingAmount: Prisma.Decimal | null;
@@ -3249,7 +3681,9 @@ function parseBooleanFlag(value: string | null | undefined) {
 
 function assertStage1PartyBIdNumberPresent(order: OrderWithDetails) {
   if (!getStage1PartyBIdNumber(order)) {
-    throw new BadRequestException(`${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`);
+    throw new BadRequestException(
+      `${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`
+    );
   }
 }
 
@@ -3264,9 +3698,7 @@ function buildContractSnapshotCustomer(customer: OrderWithDetails["customer"]) {
     id: customer.id,
     mobile: customer.mobile,
     name: customer.name,
-    profile: customer.profile
-      ? { residenceAddress: customer.profile.residenceAddress }
-      : null
+    profile: customer.profile ? { residenceAddress: customer.profile.residenceAddress } : null
   };
 }
 
@@ -3277,7 +3709,9 @@ function buildContractPdfRenderModel(
 ): ContractPdfRenderModel {
   const subscriberIdNumber = getStage1PartyBIdNumber(order);
   if (!subscriberIdNumber) {
-    throw new BadRequestException(`${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`);
+    throw new BadRequestException(
+      `${STAGE1_PARTY_B_ID_NUMBER_MISSING}: 乙方证件号码缺失，请先完善客户身份信息`
+    );
   }
 
   return {
@@ -3292,7 +3726,10 @@ function buildContractPdfRenderModel(
         ]),
         buildAppendixSection("客户信息", [
           appendixRow("客户姓名", order.customer.name),
-          appendixRow("客户手机号", maskPhone(order.customer.mobile), { applied: true, reason: "phone_masked" })
+          appendixRow("客户手机号", maskPhone(order.customer.mobile), {
+            applied: true,
+            reason: "phone_masked"
+          })
         ]),
         buildAppendixSection("订阅方案摘要", [
           appendixRow("租期（月）", order.periodMonths),
@@ -3301,14 +3738,20 @@ function buildContractPdfRenderModel(
           appendixRow("里程额度（公里/月）", order.mileageLimitKm),
           appendixRow("能源额度（kWh/月）", order.energyLimitKwh),
           appendixRow("能源次数（次/月）", order.energyLimitCount),
-          appendixRow("超里程费（人民币元/公里）", formatMinorAmountAsYuan(order.overMileageFeeAmount)),
+          appendixRow(
+            "超里程费（人民币元/公里）",
+            formatMinorAmountAsYuan(order.overMileageFeeAmount)
+          ),
           appendixRow("报价编号", order.quote?.quoteNo)
         ]),
         buildAppendixSection("车辆摘要", [
           appendixRow("车辆编号", order.vehicle?.vehicleNo),
           appendixRow("品牌", order.vehicle?.brand),
           appendixRow("车型", order.vehicle?.model ?? order.modelDisplayNameSnapshot),
-          appendixRow("车牌号", maskPlate(order.vehicle?.plateNo), { applied: true, reason: "plate_masked" })
+          appendixRow("车牌号", maskPlate(order.vehicle?.plateNo), {
+            applied: true,
+            reason: "plate_masked"
+          })
         ])
       ]
     },
@@ -3333,7 +3776,10 @@ function buildContractPdfRenderModel(
   };
 }
 
-function buildAppendixSection(title: string, rows: Array<ContractPdfAppendixRow | null>): ContractPdfAppendixSection {
+function buildAppendixSection(
+  title: string,
+  rows: Array<ContractPdfAppendixRow | null>
+): ContractPdfAppendixSection {
   return {
     rows: rows.filter((row): row is ContractPdfAppendixRow => Boolean(row)),
     title
@@ -3520,6 +3966,31 @@ function resolveOrderEntitlementSnapshot(order: OrderWithDetails): OrderEntitlem
   };
 }
 
+function resolveOrderEntitlementSnapshotForPeriod(
+  order: OrderWithDetails,
+  periodStart: Date,
+  allowScheduled: boolean
+): OrderEntitlementSnapshot {
+  const segment = order.contractSegments.find(
+    (candidate) =>
+      candidate.status !== ContractSegmentStatus.CANCELLED &&
+      candidate.startDate <= periodStart &&
+      periodStart <= candidate.endDate
+  );
+  if (!segment) return resolveOrderEntitlementSnapshot(order);
+  if (
+    segment.status !== ContractSegmentStatus.ACTIVE &&
+    segment.status !== ContractSegmentStatus.COMPLETED &&
+    !(allowScheduled && segment.status === ContractSegmentStatus.SCHEDULED)
+  ) {
+    throw new BadRequestException("目标权益周期的合同分段尚未生效，不能续发。");
+  }
+  return {
+    packageSnapshot: normalizeEntitlementPackageSnapshot(segment.planSnapshot),
+    sourceSnapshot: segment.planSnapshot
+  };
+}
+
 function normalizeEntitlementPackageSnapshot(snapshot: unknown): OrderEntitlementPackageSnapshot {
   const record = asSnapshotRecord(snapshot) ?? {};
   const nestedPackageSnapshot = asSnapshotRecord(record.packageSnapshot);
@@ -3541,34 +4012,46 @@ function buildOrderEntitlementGrantInputs(
   packageSnapshot: OrderEntitlementPackageSnapshot
 ): OrderEntitlementGrantInput[] {
   const grants: OrderEntitlementGrantInput[] = [];
-  const monthlyMileageKm = numberField(packageSnapshot.mileagePackage, "monthlyMileageKm", "monthly_mileage_km");
+  const monthlyMileageKm = numberField(
+    packageSnapshot.mileagePackage,
+    "monthlyMileageKm",
+    "monthly_mileage_km"
+  );
   if (monthlyMileageKm !== null && monthlyMileageKm > 0) {
-    grants.push(amountGrant({
-      entitlementName: "月里程额度",
-      entitlementType: EntitlementType.MILEAGE,
-      snapshot: {
-        mileagePackage: packageSnapshot.mileagePackage,
-        overMileageFeeAmount: numberField(
-          packageSnapshot.mileagePackage,
-          "overMileageFeeAmount",
-          "over_mileage_fee_amount",
-          "excessMileageUnitPrice"
-        )
-      },
-      totalAmount: monthlyMileageKm,
-      unit: EntitlementUnit.KM
-    }));
+    grants.push(
+      amountGrant({
+        entitlementName: "月里程额度",
+        entitlementType: EntitlementType.MILEAGE,
+        snapshot: {
+          mileagePackage: packageSnapshot.mileagePackage,
+          overMileageFeeAmount: numberField(
+            packageSnapshot.mileagePackage,
+            "overMileageFeeAmount",
+            "over_mileage_fee_amount",
+            "excessMileageUnitPrice"
+          )
+        },
+        totalAmount: monthlyMileageKm,
+        unit: EntitlementUnit.KM
+      })
+    );
   }
 
-  const monthlyEnergyKwh = numberField(packageSnapshot.energyPackage, "monthlyEnergyKwh", "monthly_energy_kwh");
+  const monthlyEnergyKwh = numberField(
+    packageSnapshot.energyPackage,
+    "monthlyEnergyKwh",
+    "monthly_energy_kwh"
+  );
   if (monthlyEnergyKwh !== null && monthlyEnergyKwh > 0) {
-    grants.push(amountGrant({
-      entitlementName: "月补能额度",
-      entitlementType: EntitlementType.ENERGY,
-      snapshot: { energyPackage: packageSnapshot.energyPackage },
-      totalAmount: monthlyEnergyKwh,
-      unit: EntitlementUnit.KWH
-    }));
+    grants.push(
+      amountGrant({
+        entitlementName: "月补能额度",
+        entitlementType: EntitlementType.ENERGY,
+        snapshot: { energyPackage: packageSnapshot.energyPackage },
+        totalAmount: monthlyEnergyKwh,
+        unit: EntitlementUnit.KWH
+      })
+    );
   }
 
   const monthlyEnergyCount = numberField(
@@ -3578,17 +4061,23 @@ function buildOrderEntitlementGrantInputs(
     "monthlyEnergyTimes"
   );
   if (monthlyEnergyCount !== null && monthlyEnergyCount > 0) {
-    grants.push(amountGrant({
-      entitlementName: "月补能次数",
-      entitlementType: EntitlementType.ENERGY,
-      snapshot: { energyPackage: packageSnapshot.energyPackage },
-      totalAmount: monthlyEnergyCount,
-      unit: EntitlementUnit.TIMES
-    }));
+    grants.push(
+      amountGrant({
+        entitlementName: "月补能次数",
+        entitlementType: EntitlementType.ENERGY,
+        snapshot: { energyPackage: packageSnapshot.energyPackage },
+        totalAmount: monthlyEnergyCount,
+        unit: EntitlementUnit.TIMES
+      })
+    );
   }
 
   if (packageSnapshot.benefitPackage) {
-    const benefitCount = numberField(packageSnapshot.benefitPackage, "benefitCount", "benefit_count");
+    const benefitCount = numberField(
+      packageSnapshot.benefitPackage,
+      "benefitCount",
+      "benefit_count"
+    );
     const benefitType = stringField(packageSnapshot.benefitPackage, "benefitType", "benefit_type");
     const description = stringField(packageSnapshot.benefitPackage, "description");
     const packageName = stringField(packageSnapshot.benefitPackage, "packageName", "package_name");
@@ -3597,17 +4086,19 @@ function buildOrderEntitlementGrantInputs(
     );
 
     if (benefitCount !== null && benefitCount > 0) {
-      grants.push(amountGrant({
-        entitlementName,
-        entitlementType: EntitlementType.BENEFIT,
-        snapshot: {
-          benefitPackage: packageSnapshot.benefitPackage,
-          benefitType,
-          description
-        },
-        totalAmount: benefitCount,
-        unit: EntitlementUnit.TIMES
-      }));
+      grants.push(
+        amountGrant({
+          entitlementName,
+          entitlementType: EntitlementType.BENEFIT,
+          snapshot: {
+            benefitPackage: packageSnapshot.benefitPackage,
+            benefitType,
+            description
+          },
+          totalAmount: benefitCount,
+          unit: EntitlementUnit.TIMES
+        })
+      );
     } else {
       grants.push({
         entitlementName,
@@ -3648,17 +4139,29 @@ function amountGrant(input: {
 }
 
 function hasEntitlementPackageComponent(packageSnapshot: OrderEntitlementPackageSnapshot) {
-  return Boolean(packageSnapshot.mileagePackage || packageSnapshot.energyPackage || packageSnapshot.benefitPackage);
+  return Boolean(
+    packageSnapshot.mileagePackage ||
+    packageSnapshot.energyPackage ||
+    packageSnapshot.benefitPackage
+  );
 }
 
 function resolveSubscriptionPlanId(packageSnapshot: OrderEntitlementPackageSnapshot) {
   return packageSnapshot.subscriptionPlanId ?? stringField(packageSnapshot.subscriptionPlan, "id");
 }
 
-function resolveMonthlyEntitlementPeriod(order: OrderWithDetails, cycleIndex: number, fallbackStart?: Date) {
+function resolveMonthlyEntitlementPeriod(
+  order: OrderWithDetails,
+  cycleIndex: number,
+  fallbackStart?: Date
+) {
   const baseDate = fallbackStart ?? toBusinessDate(order.actualDeliveryAt!);
-  const periodStart = fallbackStart ? toBusinessDate(fallbackStart) : addMonthsClampedUtc(baseDate, cycleIndex);
-  const nextPeriodStart = fallbackStart ? addMonthsClampedUtc(periodStart, 1) : addMonthsClampedUtc(baseDate, cycleIndex + 1);
+  const periodStart = fallbackStart
+    ? toBusinessDate(fallbackStart)
+    : addMonthsClampedUtc(baseDate, cycleIndex);
+  const nextPeriodStart = fallbackStart
+    ? addMonthsClampedUtc(periodStart, 1)
+    : addMonthsClampedUtc(baseDate, cycleIndex + 1);
   return {
     periodEnd: addDaysUtc(nextPeriodStart, -1),
     periodStart
@@ -3669,19 +4172,27 @@ function resolveEntitlementAsOfDate(value?: string) {
   return toBusinessDate(value ? parseDateTime(value, "asOfDate") : new Date());
 }
 
-function resolveLatestEntitlementCycleIndex(order: OrderWithDetails, account: EntitlementAccountWithGrants) {
+function resolveLatestEntitlementCycleIndex(
+  order: OrderWithDetails,
+  account: EntitlementAccountWithGrants
+) {
   let latestCycleIndex: number | null = null;
   for (const grant of account.grants) {
-    if (grant.grantSource !== EntitlementGrantSource.ORDER_START && grant.grantSource !== EntitlementGrantSource.MONTHLY_RENEWAL) {
+    if (
+      grant.grantSource !== EntitlementGrantSource.ORDER_START &&
+      grant.grantSource !== EntitlementGrantSource.MONTHLY_RENEWAL
+    ) {
       continue;
     }
-    const cycleIndex = grant.grantSource === EntitlementGrantSource.ORDER_START
-      ? 0
-      : resolveCycleIndexByPeriodStart(order, grant.grantPeriodStart);
+    const cycleIndex =
+      grant.grantSource === EntitlementGrantSource.ORDER_START
+        ? 0
+        : resolveCycleIndexByPeriodStart(order, grant.grantPeriodStart);
     if (cycleIndex === null) {
       continue;
     }
-    latestCycleIndex = latestCycleIndex === null ? cycleIndex : Math.max(latestCycleIndex, cycleIndex);
+    latestCycleIndex =
+      latestCycleIndex === null ? cycleIndex : Math.max(latestCycleIndex, cycleIndex);
   }
   return latestCycleIndex;
 }
@@ -3708,36 +4219,44 @@ function findExistingMonthlyRenewalGrants(
   periodEnd: Date,
   grantInputs: OrderEntitlementGrantInput[]
 ) {
-  return account.grants.filter((grant) =>
-    grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL &&
-    dateKey(grant.grantPeriodStart) === dateKey(periodStart) &&
-    grant.grantPeriodEnd !== null &&
-    dateKey(grant.grantPeriodEnd) === dateKey(periodEnd) &&
-    grantInputs.some((grantInput) => isSameEntitlementGrant(grant, grantInput))
+  return account.grants.filter(
+    (grant) =>
+      grant.grantSource === EntitlementGrantSource.MONTHLY_RENEWAL &&
+      dateKey(grant.grantPeriodStart) === dateKey(periodStart) &&
+      grant.grantPeriodEnd !== null &&
+      dateKey(grant.grantPeriodEnd) === dateKey(periodEnd) &&
+      grantInputs.some((grantInput) => isSameEntitlementGrant(grant, grantInput))
   );
 }
 
 function isSameEntitlementGrant(
-  grant: Pick<EntitlementAccountWithGrants["grants"][number], "entitlementName" | "entitlementType" | "unit">,
+  grant: Pick<
+    EntitlementAccountWithGrants["grants"][number],
+    "entitlementName" | "entitlementType" | "unit"
+  >,
   grantInput: OrderEntitlementGrantInput
 ) {
-  return grant.entitlementType === grantInput.entitlementType &&
+  return (
+    grant.entitlementType === grantInput.entitlementType &&
     grant.entitlementName === grantInput.entitlementName &&
-    grant.unit === grantInput.unit;
+    grant.unit === grantInput.unit
+  );
 }
 
 function addMonthsClampedUtc(date: Date, months: number) {
-  const firstOfTargetMonth = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1));
-  const lastDayOfTargetMonth = new Date(Date.UTC(
-    firstOfTargetMonth.getUTCFullYear(),
-    firstOfTargetMonth.getUTCMonth() + 1,
-    0
-  )).getUTCDate();
-  return new Date(Date.UTC(
-    firstOfTargetMonth.getUTCFullYear(),
-    firstOfTargetMonth.getUTCMonth(),
-    Math.min(date.getUTCDate(), lastDayOfTargetMonth)
-  ));
+  const firstOfTargetMonth = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1)
+  );
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(firstOfTargetMonth.getUTCFullYear(), firstOfTargetMonth.getUTCMonth() + 1, 0)
+  ).getUTCDate();
+  return new Date(
+    Date.UTC(
+      firstOfTargetMonth.getUTCFullYear(),
+      firstOfTargetMonth.getUTCMonth(),
+      Math.min(date.getUTCDate(), lastDayOfTargetMonth)
+    )
+  );
 }
 
 function addDaysUtc(date: Date, days: number) {
@@ -3773,7 +4292,9 @@ function toMonthlyRenewalItem(
   grantIds: string[] = []
 ) {
   const action = overrideAction ?? plan.action;
-  const isExisting = action === "SKIPPED_EXISTING" || (action === "DRY_RUN_SKIP" && plan.reason !== "未到续发日期。");
+  const isExisting =
+    action === "SKIPPED_EXISTING" ||
+    (action === "DRY_RUN_SKIP" && plan.reason !== "未到续发日期。");
   return {
     accountId: plan.account.id,
     action,
@@ -3859,7 +4380,9 @@ function toEntitlementAccountView(account: EntitlementAccountWithGrants) {
   return toPlain(accountData) as Record<string, unknown>;
 }
 
-function toEntitlementGrantView(grant: EntitlementAccountWithGrants["grants"][number] | EntitlementGrantWithUsageOverview) {
+function toEntitlementGrantView(
+  grant: EntitlementAccountWithGrants["grants"][number] | EntitlementGrantWithUsageOverview
+) {
   const grantData = { ...grant } as Record<string, unknown>;
   const usages = Array.isArray(grantData.usages) ? grantData.usages : [];
   const latestUsage = usages[0] as { occurredAt?: Date | string | null } | undefined;
@@ -3984,6 +4507,12 @@ function assertOrderNotDelivered(order: OrderWithDetails) {
   }
 }
 
+export function buildEntitlementGrantInputsFromSnapshot(
+  snapshot: unknown
+): OrderEntitlementGrantInput[] {
+  return buildOrderEntitlementGrantInputs(normalizeEntitlementPackageSnapshot(snapshot));
+}
+
 function assertDeliveryConfirmationValues(
   order: OrderWithDetails,
   dto: ConfirmDeliveryDto,
@@ -4103,10 +4632,7 @@ function assertCanPrepareReturn(order: OrderWithDetails) {
   }
 }
 
-function assertCanConfirmReturn(
-  order: OrderWithDetails,
-  vehicleReturn: ReturnWithDetails | null
-) {
+function assertCanConfirmReturn(order: OrderWithDetails, vehicleReturn: ReturnWithDetails | null) {
   if (!vehicleReturn || vehicleReturn.deletedAt) {
     throw new BadRequestException(RETURN_READY_REQUIRED_MESSAGE);
   }
@@ -4137,18 +4663,23 @@ function buildDeliveryCheck(
 ) {
   const contractSigned = isCurrentContractSigned(order);
   const vehicle = order.vehicle;
-  const deliveryCheckAt = targetAt ?? delivery?.deliveredAt ?? delivery?.scheduledAt ?? order.startDate ?? order.createdAt;
+  const deliveryCheckAt =
+    targetAt ??
+    delivery?.deliveredAt ??
+    delivery?.scheduledAt ??
+    order.startDate ??
+    order.createdAt;
   const alreadyDelivered = Boolean(
     order.actualDeliveryAt ||
-      order.orderStatus === OrderStatus.ACTIVE ||
-      delivery?.deliveryStatus === DeliveryStatus.DELIVERED ||
-      delivery?.deliveredAt
+    order.orderStatus === OrderStatus.ACTIVE ||
+    delivery?.deliveryStatus === DeliveryStatus.DELIVERED ||
+    delivery?.deliveredAt
   );
   const currentSalePriceInitialized = Boolean(
     vehicle &&
-      vehicle.salePriceStatus === SalePriceStatus.EFFECTIVE &&
-      vehicle.currentSalePriceAmount &&
-      vehicle.currentSalePriceAmount > 0n
+    vehicle.salePriceStatus === SalePriceStatus.EFFECTIVE &&
+    vehicle.currentSalePriceAmount &&
+    vehicle.currentSalePriceAmount > 0n
   );
   const resolvedInsuranceCoverage = resolveVehicleInsuranceCoverage(
     vehicle?.insurancePolicies ?? [],
@@ -4163,7 +4694,9 @@ function buildDeliveryCheck(
   const depositRequiredAmount = getRequiredDepositAmount(order);
   const depositRequired = depositRequiredAmount > 0n;
   const depositReceivedConfirmed =
-    !depositRequired || (order.depositStatus === DepositStatus.CONFIRMED && Boolean(delivery?.depositReceivedConfirmed));
+    !depositRequired ||
+    (order.depositStatus === DepositStatus.CONFIRMED &&
+      Boolean(delivery?.depositReceivedConfirmed));
   const firstMonthlyFeeReceivedConfirmed = Boolean(delivery?.firstMonthlyFeeReceivedConfirmed);
   const vehiclePrepared = Boolean(delivery?.vehiclePreparedConfirmed);
   const vehiclePhotosConfirmed = Boolean(delivery?.vehiclePhotosConfirmed);
@@ -4261,7 +4794,9 @@ function buildDeliveryCheck(
     confirmBlockingReasons.push(DELIVERY_HANDOVER_NOT_READY_MESSAGE);
   }
   if (!handoverEvidenceReady) {
-    confirmBlockingReasons.push(...(evidenceReadiness?.blockingReasons ?? ["交付证据尚未全部上传并审核通过。"]));
+    confirmBlockingReasons.push(
+      ...(evidenceReadiness?.blockingReasons ?? ["交付证据尚未全部上传并审核通过。"])
+    );
   }
   if (confirmationDefaults) {
     confirmBlockingReasons.push(...confirmationDefaults.blockingReasons);
@@ -4298,10 +4833,38 @@ function buildDeliveryCheck(
 
 function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDetails | null) {
   const vehicle = order.vehicle;
+  const eligibility = buildReturnEligibility(order, vehicleReturn);
+  return {
+    ...eligibility,
+    orderId: order.id,
+    orderNo: order.orderNo,
+    orderStatus: order.orderStatus,
+    returnId: vehicleReturn?.id ?? null,
+    returnStatus: vehicleReturn?.returnStatus ?? null,
+    returnUpdatedAt: vehicleReturn?.updatedAt ?? null,
+    vehicleId: order.vehicleId,
+    vehicleStatus: vehicle?.status ?? null
+  };
+}
+
+export function buildReturnEligibility(
+  order: {
+    actualDeliveryAt?: Date | null;
+    actualReturnAt?: Date | null;
+    orderStatus: OrderStatus;
+    vehicle?: { deletedAt?: Date | null; id: string; status: VehicleStatus } | null;
+    vehicleId?: string | null;
+  },
+  vehicleReturn: {
+    returnStatus: VehicleReturnStatus;
+    returnedAt?: Date | null;
+  } | null
+) {
+  const vehicle = order.vehicle;
   const alreadyReturned = Boolean(
     order.actualReturnAt ||
-      vehicleReturn?.returnStatus === VehicleReturnStatus.CONFIRMED ||
-      vehicleReturn?.returnedAt
+    vehicleReturn?.returnStatus === VehicleReturnStatus.CONFIRMED ||
+    vehicleReturn?.returnedAt
   );
 
   if (alreadyReturned) {
@@ -4309,20 +4872,18 @@ function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDeta
       alreadyReturned,
       blockingReasons: [RETURN_ALREADY_DONE_MESSAGE],
       canConfirmReturn: false,
-      canPrepareReturn: false,
-      orderId: order.id,
-      orderNo: order.orderNo,
-      orderStatus: order.orderStatus,
-      returnStatus: vehicleReturn?.returnStatus ?? null,
-      vehicleId: order.vehicleId,
-      vehicleStatus: vehicle?.status ?? null
+      canPrepareReturn: false
     };
   }
 
   const prepareBlockingReasons: string[] = [];
   const confirmBlockingReasons: string[] = [];
 
-  if (order.orderStatus !== OrderStatus.ACTIVE || !order.actualDeliveryAt) {
+  if (
+    (order.orderStatus !== OrderStatus.ACTIVE &&
+      order.orderStatus !== OrderStatus.PENDING_RETURN) ||
+    !order.actualDeliveryAt
+  ) {
     prepareBlockingReasons.push("订单尚未起租，不能退车");
   }
   if (!order.vehicleId || !vehicle || vehicle.deletedAt) {
@@ -4342,13 +4903,7 @@ function buildReturnCheck(order: OrderWithDetails, vehicleReturn: ReturnWithDeta
     alreadyReturned,
     blockingReasons: confirmBlockingReasons,
     canConfirmReturn: confirmBlockingReasons.length === 0,
-    canPrepareReturn: prepareBlockingReasons.length === 0,
-    orderId: order.id,
-    orderNo: order.orderNo,
-    orderStatus: order.orderStatus,
-    returnStatus: vehicleReturn?.returnStatus ?? null,
-    vehicleId: order.vehicleId,
-    vehicleStatus: vehicle?.status ?? null
+    canPrepareReturn: prepareBlockingReasons.length === 0
   };
 }
 
@@ -4360,15 +4915,22 @@ function buildPrepareDeliveryData(
   beforeDelivery: DeliveryWithDetails | null
 ) {
   const contractSignedConfirmed = isCurrentContractSigned(order);
-  const depositReceivedConfirmed = getRequiredDepositAmount(order) === 0n
-    ? true
-    : dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false;
+  const depositReceivedConfirmed =
+    getRequiredDepositAmount(order) === 0n
+      ? true
+      : (dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false);
   const firstMonthlyFeeReceivedConfirmed =
-    dto.firstMonthlyFeeReceivedConfirmed ?? beforeDelivery?.firstMonthlyFeeReceivedConfirmed ?? false;
-  const insuranceValidConfirmed = dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
-  const vehiclePreparedConfirmed = dto.vehiclePreparedConfirmed ?? beforeDelivery?.vehiclePreparedConfirmed ?? false;
-  const vehiclePhotosConfirmed = dto.vehiclePhotosConfirmed ?? beforeDelivery?.vehiclePhotosConfirmed ?? false;
-  const customerIdentityConfirmed = dto.customerIdentityConfirmed ?? beforeDelivery?.customerIdentityConfirmed ?? false;
+    dto.firstMonthlyFeeReceivedConfirmed ??
+    beforeDelivery?.firstMonthlyFeeReceivedConfirmed ??
+    false;
+  const insuranceValidConfirmed =
+    dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
+  const vehiclePreparedConfirmed =
+    dto.vehiclePreparedConfirmed ?? beforeDelivery?.vehiclePreparedConfirmed ?? false;
+  const vehiclePhotosConfirmed =
+    dto.vehiclePhotosConfirmed ?? beforeDelivery?.vehiclePhotosConfirmed ?? false;
+  const customerIdentityConfirmed =
+    dto.customerIdentityConfirmed ?? beforeDelivery?.customerIdentityConfirmed ?? false;
   const handoverDocumentsConfirmed =
     dto.handoverDocumentsConfirmed ?? beforeDelivery?.handoverDocumentsConfirmed ?? false;
   const nextScheduledAt = scheduledAt ?? beforeDelivery?.scheduledAt ?? null;
@@ -4442,7 +5004,11 @@ function assertReturnChecklistConfirmed(dto: ConfirmReturnDto) {
 }
 
 function assertValidReturnMileage(returnMileageKm: number | undefined) {
-  if (typeof returnMileageKm !== "number" || !Number.isSafeInteger(returnMileageKm) || returnMileageKm < 0) {
+  if (
+    typeof returnMileageKm !== "number" ||
+    !Number.isSafeInteger(returnMileageKm) ||
+    returnMileageKm < 0
+  ) {
     throw new BadRequestException("退车里程必须是大于等于 0 的整数。");
   }
 }
@@ -4456,7 +5022,9 @@ function dateKey(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function getRequiredDepositAmount(order: Pick<OrderWithDetails, "depositAmount" | "finalDepositAmount">) {
+function getRequiredDepositAmount(
+  order: Pick<OrderWithDetails, "depositAmount" | "finalDepositAmount">
+) {
   return order.finalDepositAmount ?? order.depositAmount ?? 0n;
 }
 
@@ -4474,7 +5042,10 @@ function ensureUserPermission(user: RequestUser, permission: PermissionCode) {
   }
 }
 
-function ensureCanReviewOrderSection(user: RequestUser, reviewType: "credit" | "product" | "vehicle") {
+function ensureCanReviewOrderSection(
+  user: RequestUser,
+  reviewType: "credit" | "product" | "vehicle"
+) {
   if (user.roles.some((role) => ["ADMIN", "GM", "OP"].includes(role))) {
     return;
   }
@@ -4546,32 +5117,40 @@ function isActiveOrderChange(change: {
   if (change.deletedAt || change.executedAt) {
     return false;
   }
-  return change.status === OrderChangeStatus.PENDING || change.status === OrderChangeStatus.APPROVED;
+  return (
+    change.status === OrderChangeStatus.PENDING || change.status === OrderChangeStatus.APPROVED
+  );
 }
 
-function hasActiveOrderChange(order: { changes?: Array<{
-  deletedAt?: Date | null;
-  executedAt?: Date | null;
-  status: OrderChangeStatus;
-}> }) {
+function hasActiveOrderChange(order: {
+  changes?: Array<{
+    deletedAt?: Date | null;
+    executedAt?: Date | null;
+    status: OrderChangeStatus;
+  }>;
+}) {
   return order.changes?.some(isActiveOrderChange) ?? false;
 }
 
-function assertNoActiveOrderChange(order: { changes?: Array<{
-  deletedAt?: Date | null;
-  executedAt?: Date | null;
-  status: OrderChangeStatus;
-}> }) {
+function assertNoActiveOrderChange(order: {
+  changes?: Array<{
+    deletedAt?: Date | null;
+    executedAt?: Date | null;
+    status: OrderChangeStatus;
+  }>;
+}) {
   if (hasActiveOrderChange(order)) {
     throw new BadRequestException(ACTIVE_ORDER_CHANGE_MESSAGE);
   }
 }
 
-function assertNoDuplicateActiveOrderChange(order: { changes?: Array<{
-  deletedAt?: Date | null;
-  executedAt?: Date | null;
-  status: OrderChangeStatus;
-}> }) {
+function assertNoDuplicateActiveOrderChange(order: {
+  changes?: Array<{
+    deletedAt?: Date | null;
+    executedAt?: Date | null;
+    status: OrderChangeStatus;
+  }>;
+}) {
   if (hasActiveOrderChange(order)) {
     throw new BadRequestException(DUPLICATE_ACTIVE_ORDER_CHANGE_MESSAGE);
   }
@@ -4690,7 +5269,10 @@ function assertNoSignedCurrentContract(order: OrderWithDetails) {
   if (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.ARCHIVED) {
     throw new BadRequestException(ORDER_FULFILLMENT_CHANGE_MESSAGE);
   }
-  if (!UNSIGNED_CONTRACT_STATUSES.has(contract.status) && contract.status !== ContractStatus.CANCELLED) {
+  if (
+    !UNSIGNED_CONTRACT_STATUSES.has(contract.status) &&
+    contract.status !== ContractStatus.CANCELLED
+  ) {
     throw new BadRequestException("当前合同状态暂不支持退回重做方案。");
   }
 }
@@ -4712,7 +5294,12 @@ function isSubscriptionPlanCurrentlyAvailableForOrder(plan: SubscriptionPlanWith
 }
 
 function isSubscriptionPlanComponentsActiveForOrder(plan: SubscriptionPlanWithDetails) {
-  const packages = [plan.vehiclePackage, plan.mileagePackage, plan.energyPackage, plan.benefitPackage].filter(Boolean);
+  const packages = [
+    plan.vehiclePackage,
+    plan.mileagePackage,
+    plan.energyPackage,
+    plan.benefitPackage
+  ].filter(Boolean);
   return (
     plan.productVersion.productId === plan.product.id &&
     packages.every(
@@ -4728,7 +5315,10 @@ function isSubscriptionPlanComponentsActiveForOrder(plan: SubscriptionPlanWithDe
 
 function isDateInRangeForOrder(effectiveFrom: Date, effectiveTo: Date | null, today = new Date()) {
   const todayTime = dateOnlyTimeForOrder(today);
-  return dateOnlyTimeForOrder(effectiveFrom) <= todayTime && (!effectiveTo || dateOnlyTimeForOrder(effectiveTo) >= todayTime);
+  return (
+    dateOnlyTimeForOrder(effectiveFrom) <= todayTime &&
+    (!effectiveTo || dateOnlyTimeForOrder(effectiveTo) >= todayTime)
+  );
 }
 
 function dateOnlyTimeForOrder(date: Date) {
@@ -4737,15 +5327,20 @@ function dateOnlyTimeForOrder(date: Date) {
 
 function toPlanChangeSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
   return {
-    benefitDescription: plan.benefitPackage?.description ?? plan.benefitPackage?.packageName ?? null,
+    benefitDescription:
+      plan.benefitPackage?.description ?? plan.benefitPackage?.packageName ?? null,
     benefitPackagePriceAmount: plan.benefitPackage ? Number(plan.benefitPackage.priceAmount) : 0,
     energyPackagePriceAmount: Number(plan.energyPackage.priceAmount),
     maxPeriodMonths: plan.maxPeriodMonths,
     maxPurchasePriceAmount:
-      plan.vehiclePackage.maxPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.maxPurchasePriceAmount),
+      plan.vehiclePackage.maxPurchasePriceAmount === null
+        ? null
+        : Number(plan.vehiclePackage.maxPurchasePriceAmount),
     minPeriodMonths: plan.minPeriodMonths,
     minPurchasePriceAmount:
-      plan.vehiclePackage.minPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.minPurchasePriceAmount),
+      plan.vehiclePackage.minPurchasePriceAmount === null
+        ? null
+        : Number(plan.vehiclePackage.minPurchasePriceAmount),
     monthlyEnergyCount: plan.energyPackage.monthlyEnergyCount,
     monthlyEnergyKwh: plan.energyPackage.monthlyEnergyKwh,
     monthlyFeeCapRate: Number(plan.monthlyFeeCapRate ?? plan.monthlyFeeRate),
@@ -4824,7 +5419,11 @@ function assertSubscriptionPlanAvailableForCustomerOrder(
   }
 }
 
-function assertPeriodInRange(periodMonths: number, minPeriodMonths: number, maxPeriodMonths: number) {
+function assertPeriodInRange(
+  periodMonths: number,
+  minPeriodMonths: number,
+  maxPeriodMonths: number
+) {
   if (periodMonths < minPeriodMonths || periodMonths > maxPeriodMonths) {
     throw new BadRequestException("订阅周期不在套餐允许范围内");
   }
@@ -4841,12 +5440,17 @@ const VEHICLE_BATTERY_USAGE_TYPE_LABELS: Record<VehicleBatteryUsageType, string>
   [VehicleBatteryUsageType.BUYOUT]: "电池买断"
 };
 
-function calculateCustomerOrderVehicleBaseFee(plan: SubscriptionPlanWithDetails, vehicleSalePriceAmount: bigint) {
+function calculateCustomerOrderVehicleBaseFee(
+  plan: SubscriptionPlanWithDetails,
+  vehicleSalePriceAmount: bigint
+) {
   const vehiclePackageRate = Number(plan.vehiclePackage.monthlyFeeRate);
   if (!Number.isFinite(vehiclePackageRate) || vehiclePackageRate <= 0) {
     throw new BadRequestException("车型包车辆基础费上限率必须大于 0");
   }
-  const vehicleBaseFeeCapAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate));
+  const vehicleBaseFeeCapAmount = BigInt(
+    Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate)
+  );
   let fixedRate: number | null = null;
   let vehicleBaseFeeAmount: bigint;
 
@@ -4947,7 +5551,10 @@ function allReviewsApproved(statuses: {
   );
 }
 
-async function findActiveDepositRule(tx: Prisma.TransactionClient, grade: NonNullable<ReviewOrderDto["customerGrade"]>) {
+async function findActiveDepositRule(
+  tx: Prisma.TransactionClient,
+  grade: NonNullable<ReviewOrderDto["customerGrade"]>
+) {
   const now = new Date();
   return tx.depositRule.findFirst({
     orderBy: { effectiveFrom: "desc" },
@@ -5040,7 +5647,8 @@ function toQuoteAuditView(quote: QuoteWithDetails): Prisma.InputJsonValue {
 
 function toSubscriptionPlanSnapshot(plan: SubscriptionPlanWithDetails) {
   return {
-    baseMonthlyFeeAmount: plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
+    baseMonthlyFeeAmount:
+      plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
     benefitPackageId: plan.benefitPackageId,
     effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
     effectiveTo: plan.effectiveTo?.toISOString().slice(0, 10) ?? null,
@@ -5118,11 +5726,15 @@ function toContractView(contract: ContractWithDetails): Record<string, unknown> 
   return view;
 }
 
-function toContractVersionView(version: Prisma.ContractVersionGetPayload<object>): Record<string, unknown> {
+function toContractVersionView(
+  version: Prisma.ContractVersionGetPayload<object>
+): Record<string, unknown> {
   return toPlain(version) as Record<string, unknown>;
 }
 
-function toOrderChangeAuditView(change: Prisma.OrderChangeGetPayload<object>): Record<string, unknown> {
+function toOrderChangeAuditView(
+  change: Prisma.OrderChangeGetPayload<object>
+): Record<string, unknown> {
   return toPlain(change) as Record<string, unknown>;
 }
 
@@ -5130,10 +5742,7 @@ function toOrderChangeResponse(
   change: Prisma.OrderChangeGetPayload<object>,
   user: RequestUser
 ): Record<string, unknown> {
-  return projectOrderChangeView(
-    toOrderChangeAuditView(change),
-    new Set(user.permissions)
-  );
+  return projectOrderChangeView(toOrderChangeAuditView(change), new Set(user.permissions));
 }
 
 function buildContractSnapshotWithGeneratedPdfArtifact(
@@ -5157,7 +5766,9 @@ function buildContractSnapshotWithGeneratedPdfArtifact(
   });
 }
 
-function hasGeneratedContractPdfArtifact(contract: Pick<ContractWithDetails, "contractSnapshot" | "fileId">) {
+function hasGeneratedContractPdfArtifact(
+  contract: Pick<ContractWithDetails, "contractSnapshot" | "fileId">
+) {
   const snapshot = toPlain(contract.contractSnapshot);
   if (!isPlainRecord(snapshot)) {
     return false;

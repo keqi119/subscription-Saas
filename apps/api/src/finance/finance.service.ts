@@ -171,7 +171,9 @@ interface MonthlyRentPeriod {
 
 export interface MonthlyRentAutomationCycleInput {
   actorId: string | null;
+  contractSegmentId?: string;
   cycleNo: number;
+  monthlyRentAmount?: bigint;
   orderId: string;
   periodEnd: Date;
   periodStart: Date;
@@ -849,7 +851,7 @@ export class FinanceService {
     }
     ensureOrderCanGenerateMonthlyRentBill(order);
 
-    const monthlyRentAmount = resolveMonthlyRentAmount(order);
+    const monthlyRentAmount = input.monthlyRentAmount ?? resolveMonthlyRentAmount(order);
     if (monthlyRentAmount === null) {
       throw new BadRequestException(MISSING_MONTHLY_RENT_AMOUNT_MESSAGE);
     }
@@ -865,7 +867,10 @@ export class FinanceService {
       },
       input.actorId ?? undefined,
       "AUTOMATION",
-      input.sourceKey
+      input.sourceKey,
+      input.contractSegmentId
+        ? { contractSegmentId: input.contractSegmentId }
+        : undefined
     );
   }
 
@@ -2472,7 +2477,8 @@ async function createMonthlyRentBillForPeriodIfAbsent(
   period: MonthlyRentPeriod,
   userId: string | undefined,
   source: MonthlyRentBillSource,
-  sourceKey = billingSourceKey(order.id, period.start)
+  sourceKey = billingSourceKey(order.id, period.start),
+  billingContext?: { contractSegmentId: string }
 ) {
   const existingBill = await tx.receivableBill.findFirst({
     where: monthlyRentPeriodWhere(order.id, period)
@@ -2504,7 +2510,9 @@ async function createMonthlyRentBillForPeriodIfAbsent(
       paidAmount: 0n,
       remainingAmount: amount,
       sourceKey,
-      snapshot: toJsonValue(buildMonthlyRentBillSnapshot(order, period, amount, source)),
+      snapshot: toJsonValue(
+        buildMonthlyRentBillSnapshot(order, period, amount, source, billingContext)
+      ),
       updatedBy: userId
     }
   });
@@ -2579,11 +2587,15 @@ function buildMonthlyRentBillSnapshot(
   order: FinanceOrder,
   period: MonthlyRentPeriod,
   amount: bigint,
-  source: MonthlyRentBillSource
+  source: MonthlyRentBillSource,
+  billingContext?: { contractSegmentId: string }
 ) {
   return {
     amount: Number(amount),
     billType: BillType.MONTHLY_RENT,
+    ...(billingContext
+      ? { contractSegmentId: billingContext.contractSegmentId }
+      : {}),
     customer: {
       id: order.customerId,
       mobile: order.customer.mobile,

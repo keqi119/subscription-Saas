@@ -1,0 +1,43 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const repoRoot = join(__dirname, "..", "..", "..");
+const listPage = readFileSync(
+  join(repoRoot, "apps/web/src/app/subscription-changes/page.tsx"),
+  "utf8"
+);
+const detailPage = readFileSync(
+  join(repoRoot, "apps/web/src/app/subscription-changes/[id]/page.tsx"),
+  "utf8"
+);
+const orderPage = readFileSync(
+  join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx"),
+  "utf8"
+);
+
+describe("Admin subscription change pages", () => {
+  it("builds the center from renewal considerations with explicit retry/error and SMS failure filtering", () => {
+    expect(listPage).toContain("listRenewalConsiderations");
+    expect(listPage).toContain("smsFailed");
+    expect(listPage).toContain("重试加载");
+    expect(listPage).toContain("原合同到期日");
+    expect(listPage).toContain("已签约至");
+  });
+
+  it("renders price approval, reminder failures, PDF links and only defined recovery actions", () => {
+    expect(detailPage).toContain("getSubscriptionChangePriceApproval");
+    expect(detailPage).toContain("提醒与渠道状态");
+    expect(detailPage).toContain("generated-pdf/preview");
+    expect(detailPage).toContain("retrySubscriptionChangeJob");
+    expect(detailPage).toContain("人工接管");
+    expect(detailPage).not.toMatch(/修改状态|setStatus|status mutation/i);
+  });
+
+  it("keeps V2 contract extensions separate from legacy order changes in the order workspace", () => {
+    expect(orderPage).toContain("listSubscriptionChangesForOrder");
+    expect(orderPage).toContain("合同续订 / 协议延长");
+    expect(orderPage).toContain("旧版订单变更记录");
+    expect(orderPage).toContain("/subscription-changes/");
+  });
+});

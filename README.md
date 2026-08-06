@@ -523,6 +523,20 @@ B 线销售下单：AVAILABLE -> RESERVED
 8. 确认报价后检查车辆是否从 `AVAILABLE` 进入 `RESERVED`。
 9. 从报价生成订单，生成并签署合同。
 
+## 合同续期发布工具
+
+Stage 1B 合同延期/续订默认由 `SUBSCRIPTION_EXTENSION_ENABLED=false` 关闭。部署迁移后，先执行只读 BASE 分段预检，再显式应用，并运行只读续订一致性巡检：
+
+```text
+pnpm subscription-segments:bootstrap:dry-run
+pnpm subscription-segments:bootstrap:apply
+pnpm subscription-renewals:reconcile
+pnpm subscription-renewals:reconcile -- --apply
+pnpm subscription-extension:smoke
+```
+
+引导工具不会猜测缺失日期、合同或套餐事实，也不会发送短信；`--apply` 才会写入。完整发布、模板校验、staging smoke 和回滚步骤见 `docs/runbooks/stage1b-contract-extension-renewal-release.md`。
+
 ## Additional Docs
 
 - `docs/wechat-pay-certificate-rotation.md`: WeChat Pay platform certificate rotation runbook.

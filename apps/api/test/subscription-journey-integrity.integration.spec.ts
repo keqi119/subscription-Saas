@@ -129,12 +129,290 @@ const CATALOG_COLUMNS: Record<string, string[]> = {
   ]
 };
 
+const JOURNEY_INDEX_CATALOG = {
+  subscription_journey_application_id_key: ["subscription_journey", true, ["application_id"], null],
+  subscription_journey_event_created_at_idx: [
+    "subscription_journey_event",
+    false,
+    ["journey_id", "created_at"],
+    null
+  ],
+  subscription_journey_event_event_key_key: [
+    "subscription_journey_event",
+    true,
+    ["event_key"],
+    null
+  ],
+  subscription_journey_event_pkey: ["subscription_journey_event", true, ["id"], null],
+  subscription_journey_event_sequence_key: [
+    "subscription_journey_event",
+    true,
+    ["journey_id", "sequence"],
+    null
+  ],
+  subscription_journey_exception_job_id_idx: [
+    "subscription_journey_exception",
+    false,
+    ["job_id"],
+    null
+  ],
+  subscription_journey_exception_pkey: ["subscription_journey_exception", true, ["id"], null],
+  subscription_journey_exception_status_idx: [
+    "subscription_journey_exception",
+    false,
+    ["journey_id", "status", "last_occurred_at"],
+    null
+  ],
+  subscription_journey_exception_step_id_idx: [
+    "subscription_journey_exception",
+    false,
+    ["step_id"],
+    null
+  ],
+  subscription_journey_job_claim_idx: [
+    "subscription_journey_job",
+    false,
+    ["status", "available_at", "lease_expires_at"],
+    null
+  ],
+  subscription_journey_job_identity_key: [
+    "subscription_journey_job",
+    true,
+    ["id", "step_id", "journey_id"],
+    null
+  ],
+  subscription_journey_job_pkey: ["subscription_journey_job", true, ["id"], null],
+  subscription_journey_job_source_key_key: ["subscription_journey_job", true, ["source_key"], null],
+  subscription_journey_job_status_idx: [
+    "subscription_journey_job",
+    false,
+    ["journey_id", "status"],
+    null
+  ],
+  subscription_journey_job_step_id_idx: ["subscription_journey_job", false, ["step_id"], null],
+  subscription_journey_manual_task_pkey: ["subscription_journey_manual_task", true, ["id"], null],
+  subscription_journey_manual_task_status_idx: [
+    "subscription_journey_manual_task",
+    false,
+    ["journey_id", "status", "task_type"],
+    null
+  ],
+  subscription_journey_manual_task_step_id_idx: [
+    "subscription_journey_manual_task",
+    false,
+    ["step_id"],
+    null
+  ],
+  subscription_journey_open_manual_task_key: [
+    "subscription_journey_manual_task",
+    true,
+    ["journey_id", "task_type"],
+    "(status = 'OPEN'::subscription_journey_manual_task_status)"
+  ],
+  subscription_journey_order_id_idx: ["subscription_journey", false, ["order_id"], null],
+  subscription_journey_order_id_key: [
+    "subscription_journey",
+    true,
+    ["order_id"],
+    "(order_id IS NOT NULL)"
+  ],
+  subscription_journey_outbox_aggregate_idx: [
+    "subscription_journey_outbox",
+    false,
+    ["aggregate_type", "aggregate_id"],
+    null
+  ],
+  subscription_journey_outbox_claim_idx: [
+    "subscription_journey_outbox",
+    false,
+    ["status", "available_at", "lease_expires_at"],
+    null
+  ],
+  subscription_journey_outbox_event_key_key: [
+    "subscription_journey_outbox",
+    true,
+    ["event_key"],
+    null
+  ],
+  subscription_journey_outbox_journey_status_idx: [
+    "subscription_journey_outbox",
+    false,
+    ["journey_id", "status"],
+    null
+  ],
+  subscription_journey_outbox_pkey: ["subscription_journey_outbox", true, ["id"], null],
+  subscription_journey_pkey: ["subscription_journey", true, ["id"], null],
+  subscription_journey_status_step_idx: [
+    "subscription_journey",
+    false,
+    ["status", "current_step_code", "current_step_status"],
+    null
+  ],
+  subscription_journey_step_code_key: [
+    "subscription_journey_step",
+    true,
+    ["journey_id", "code"],
+    null
+  ],
+  subscription_journey_step_id_journey_id_key: [
+    "subscription_journey_step",
+    true,
+    ["id", "journey_id"],
+    null
+  ],
+  subscription_journey_step_pkey: ["subscription_journey_step", true, ["id"], null],
+  subscription_journey_step_status_idx: [
+    "subscription_journey_step",
+    false,
+    ["journey_id", "status"],
+    null
+  ]
+} as const;
+
+const JOURNEY_FOREIGN_KEY_CATALOG = {
+  subscription_journey_application_id_fkey: [
+    "subscription_journey",
+    ["application_id"],
+    "application",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_order_id_fkey: [
+    "subscription_journey",
+    ["order_id"],
+    "subscription_order",
+    ["id"],
+    "CASCADE",
+    "SET NULL"
+  ],
+  subscription_journey_step_journey_id_fkey: [
+    "subscription_journey_step",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_job_journey_id_fkey: [
+    "subscription_journey_job",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_job_step_id_fkey: [
+    "subscription_journey_job",
+    ["step_id"],
+    "subscription_journey_step",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_job_step_journey_fkey: [
+    "subscription_journey_job",
+    ["step_id", "journey_id"],
+    "subscription_journey_step",
+    ["id", "journey_id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_manual_task_journey_id_fkey: [
+    "subscription_journey_manual_task",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_manual_task_step_id_fkey: [
+    "subscription_journey_manual_task",
+    ["step_id"],
+    "subscription_journey_step",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_manual_task_step_journey_fkey: [
+    "subscription_journey_manual_task",
+    ["step_id", "journey_id"],
+    "subscription_journey_step",
+    ["id", "journey_id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_event_journey_id_fkey: [
+    "subscription_journey_event",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_exception_journey_id_fkey: [
+    "subscription_journey_exception",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_exception_step_id_fkey: [
+    "subscription_journey_exception",
+    ["step_id"],
+    "subscription_journey_step",
+    ["id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_exception_job_id_fkey: [
+    "subscription_journey_exception",
+    ["job_id"],
+    "subscription_journey_job",
+    ["id"],
+    "CASCADE",
+    "SET NULL"
+  ],
+  subscription_journey_exception_step_journey_fkey: [
+    "subscription_journey_exception",
+    ["step_id", "journey_id"],
+    "subscription_journey_step",
+    ["id", "journey_id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_exception_job_identity_fkey: [
+    "subscription_journey_exception",
+    ["job_id", "step_id", "journey_id"],
+    "subscription_journey_job",
+    ["id", "step_id", "journey_id"],
+    "CASCADE",
+    "RESTRICT"
+  ],
+  subscription_journey_outbox_journey_id_fkey: [
+    "subscription_journey_outbox",
+    ["journey_id"],
+    "subscription_journey",
+    ["id"],
+    "CASCADE",
+    "SET NULL"
+  ]
+} as const;
+
 describe("subscription journey migrated database and seeded RBAC", () => {
   beforeAll(async () => {
     await cleanupClient.connect();
     await cleanupClient.query(`CREATE DATABASE "${isolatedDatabaseName}"`);
 
-    const deploy = runCommand(["exec", "prisma", "migrate", "deploy", "--schema", "prisma/schema.prisma"]);
+    const deploy = runCommand([
+      "exec",
+      "prisma",
+      "migrate",
+      "deploy",
+      "--schema",
+      "prisma/schema.prisma"
+    ]);
     expect(deploy.status, deploy.output).toBe(0);
 
     await client.connect();
@@ -157,19 +435,55 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     await cleanupClient.end();
   });
 
+  it("accepts the CI loopback PostgreSQL URL on port 5432 without connecting to it", () => {
+    const parsed = new URL(
+      requiredDatabaseUrl(
+        "postgresql://ci_user:ci_password@localhost:5432/subscription_saas_test?schema=public"
+      )
+    );
+
+    expect({
+      database: parsed.pathname,
+      hostname: parsed.hostname,
+      port: parsed.port,
+      protocol: parsed.protocol
+    }).toEqual({
+      database: "/subscription_saas_test",
+      hostname: "127.0.0.1",
+      port: "5432",
+      protocol: "postgresql:"
+    });
+  });
+
+  it("rejects non-loopback and production-like database targets", () => {
+    expect(() =>
+      requiredDatabaseUrl(
+        "postgresql://ci_user:ci_password@db.internal:64321/subscription_saas_test"
+      )
+    ).toThrow("loopback PostgreSQL host");
+    expect(() =>
+      requiredDatabaseUrl(
+        "postgresql://ci_user:ci_password@127.0.0.1:15432/subscription_saas"
+      )
+    ).toThrow("test-only database name");
+  });
+
   it("migrates the exact journey columns, PostgreSQL types, and nullability", async () => {
     const result = await client.query<{
       column_name: string;
       is_nullable: string;
       table_name: string;
       udt_name: string;
-    }>(`
+    }>(
+      `
       SELECT table_name, column_name, udt_name, is_nullable
       FROM information_schema.columns
       WHERE table_schema = current_schema()
         AND table_name = ANY($1::text[])
       ORDER BY table_name, ordinal_position
-    `, [Object.keys(CATALOG_COLUMNS)]);
+    `,
+      [Object.keys(CATALOG_COLUMNS)]
+    );
 
     for (const [tableName, expected] of Object.entries(CATALOG_COLUMNS)) {
       expect(
@@ -181,38 +495,17 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     }
   });
 
-  it("migrates exact unique and claim index definitions", async () => {
-    const expected = {
-      subscription_journey_application_id_key: [true, ["application_id"], null],
-      subscription_journey_order_id_key: [true, ["order_id"], "(order_id IS NOT NULL)"],
-      subscription_journey_step_code_key: [true, ["journey_id", "code"], null],
-      subscription_journey_job_source_key_key: [true, ["source_key"], null],
-      subscription_journey_open_manual_task_key: [
-        true,
-        ["journey_id", "task_type"],
-        "(status = 'OPEN'::subscription_journey_manual_task_status)"
-      ],
-      subscription_journey_event_event_key_key: [true, ["event_key"], null],
-      subscription_journey_event_sequence_key: [true, ["journey_id", "sequence"], null],
-      subscription_journey_outbox_event_key_key: [true, ["event_key"], null],
-      subscription_journey_job_claim_idx: [
-        false,
-        ["status", "available_at", "lease_expires_at"],
-        null
-      ],
-      subscription_journey_outbox_claim_idx: [
-        false,
-        ["status", "available_at", "lease_expires_at"],
-        null
-      ]
-    } as const;
+  it("migrates the complete literal journey index catalog", async () => {
     const result = await client.query<{
       columns: string[];
       index_name: string;
       is_unique: boolean;
       predicate: string | null;
-    }>(`
+      table_name: string;
+    }>(
+      `
       SELECT index_class.relname AS index_name,
+             table_class.relname AS table_name,
              index_meta.indisunique AS is_unique,
              ARRAY(
                SELECT pg_get_indexdef(index_meta.indexrelid, position, true)
@@ -225,64 +518,26 @@ describe("subscription journey migrated database and seeded RBAC", () => {
       JOIN pg_class table_class ON table_class.oid = index_meta.indrelid
       JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
       WHERE namespace.nspname = current_schema()
-        AND index_class.relname = ANY($1::text[])
+        AND table_class.relname = ANY($1::text[])
       ORDER BY index_class.relname
-    `, [Object.keys(expected)]);
+    `,
+      [Object.keys(CATALOG_COLUMNS)]
+    );
 
-    expect(Object.fromEntries(result.rows.map((row) => [
-      row.index_name,
-      [row.is_unique, row.columns, row.predicate]
-    ]))).toEqual(expected);
+    expect(
+      Object.fromEntries(
+        result.rows.map((row) => [
+          row.index_name,
+          [row.table_name, row.is_unique, row.columns, row.predicate]
+        ])
+      )
+    ).toEqual(JOURNEY_INDEX_CATALOG);
   });
 
-  it("migrates composite candidate keys and journey-consistent foreign keys", async () => {
-    const expected = {
-      subscription_journey_step_id_journey_id_key: [
-        "u",
-        "subscription_journey_step",
-        ["id", "journey_id"],
-        null,
-        []
-      ],
-      subscription_journey_job_identity_key: [
-        "u",
-        "subscription_journey_job",
-        ["id", "step_id", "journey_id"],
-        null,
-        []
-      ],
-      subscription_journey_job_step_journey_fkey: [
-        "f",
-        "subscription_journey_job",
-        ["step_id", "journey_id"],
-        "subscription_journey_step",
-        ["id", "journey_id"]
-      ],
-      subscription_journey_manual_task_step_journey_fkey: [
-        "f",
-        "subscription_journey_manual_task",
-        ["step_id", "journey_id"],
-        "subscription_journey_step",
-        ["id", "journey_id"]
-      ],
-      subscription_journey_exception_step_journey_fkey: [
-        "f",
-        "subscription_journey_exception",
-        ["step_id", "journey_id"],
-        "subscription_journey_step",
-        ["id", "journey_id"]
-      ],
-      subscription_journey_exception_job_identity_fkey: [
-        "f",
-        "subscription_journey_exception",
-        ["job_id", "step_id", "journey_id"],
-        "subscription_journey_job",
-        ["id", "step_id", "journey_id"]
-      ]
-    };
-    const constraints = await constraintCatalog(Object.keys(expected));
+  it("migrates every original and composite journey foreign key exactly", async () => {
+    const constraints = await foreignKeyCatalog();
 
-    expect(constraints).toEqual(expected);
+    expect(constraints).toEqual(JOURNEY_FOREIGN_KEY_CATALOG);
   });
 
   it("rejects cross-journey step and job identities", async () => {
@@ -293,7 +548,12 @@ describe("subscription journey migrated database and seeded RBAC", () => {
         `INSERT INTO subscription_journey_job
           (id, journey_id, step_id, job_type, source_key, updated_at)
          VALUES ($1, $2, $3, 'VALIDATE_APPLICATION', $4, clock_timestamp())`,
-        [`invalid-job-${fixture.suffix}`, fixture.journeyB, fixture.stepA, `invalid-job-${fixture.suffix}`]
+        [
+          `invalid-job-${fixture.suffix}`,
+          fixture.journeyB,
+          fixture.stepA,
+          `invalid-job-${fixture.suffix}`
+        ]
       )
     ).rejects.toMatchObject({ code: "23503" });
     await expect(
@@ -317,12 +577,7 @@ describe("subscription journey migrated database and seeded RBAC", () => {
         `INSERT INTO subscription_journey_exception
           (id, journey_id, step_id, job_id, code, message, updated_at)
          VALUES ($1, $2, $3, $4, 'JOB_MISMATCH', 'safe', clock_timestamp())`,
-        [
-          `invalid-exception-job-${fixture.suffix}`,
-          fixture.journeyB,
-          fixture.stepB,
-          fixture.jobA
-        ]
+        [`invalid-exception-job-${fixture.suffix}`, fixture.journeyB, fixture.stepB, fixture.jobA]
       )
     ).rejects.toMatchObject({ code: "23503" });
   });
@@ -441,19 +696,34 @@ async function seedCounts() {
   );
 }
 
-async function constraintCatalog(names: string[]) {
+async function foreignKeyCatalog() {
   const result = await client.query<{
     columns: string[];
     constraint_name: string;
-    constraint_type: string;
+    delete_action: string;
     foreign_table: string | null;
     referenced_columns: string[];
     table_name: string;
-  }>(`
+    update_action: string;
+  }>(
+    `
     SELECT constraint_meta.conname AS constraint_name,
-           constraint_meta.contype::text AS constraint_type,
            table_class.relname AS table_name,
            foreign_class.relname AS foreign_table,
+           CASE constraint_meta.confupdtype
+             WHEN 'a' THEN 'NO ACTION'
+             WHEN 'r' THEN 'RESTRICT'
+             WHEN 'c' THEN 'CASCADE'
+             WHEN 'n' THEN 'SET NULL'
+             WHEN 'd' THEN 'SET DEFAULT'
+           END AS update_action,
+           CASE constraint_meta.confdeltype
+             WHEN 'a' THEN 'NO ACTION'
+             WHEN 'r' THEN 'RESTRICT'
+             WHEN 'c' THEN 'CASCADE'
+             WHEN 'n' THEN 'SET NULL'
+             WHEN 'd' THEN 'SET DEFAULT'
+           END AS delete_action,
            ARRAY(
              SELECT attribute.attname
              FROM unnest(constraint_meta.conkey) WITH ORDINALITY AS key(attnum, position)
@@ -475,20 +745,26 @@ async function constraintCatalog(names: string[]) {
     JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
     LEFT JOIN pg_class foreign_class ON foreign_class.oid = constraint_meta.confrelid
     WHERE namespace.nspname = current_schema()
-      AND constraint_meta.conname = ANY($1::text[])
+      AND constraint_meta.contype = 'f'
+      AND table_class.relname = ANY($1::text[])
     ORDER BY constraint_meta.conname
-  `, [names]);
+  `,
+    [Object.keys(CATALOG_COLUMNS)]
+  );
 
-  return Object.fromEntries(result.rows.map((row) => [
-    row.constraint_name,
-    [
-      row.constraint_type,
-      row.table_name,
-      row.columns,
-      row.foreign_table,
-      row.referenced_columns
-    ]
-  ]));
+  return Object.fromEntries(
+    result.rows.map((row) => [
+      row.constraint_name,
+      [
+        row.table_name,
+        row.columns,
+        row.foreign_table,
+        row.referenced_columns,
+        row.update_action,
+        row.delete_action
+      ]
+    ])
+  );
 }
 
 async function createJourneyFixture() {
@@ -513,14 +789,7 @@ async function createJourneyFixture() {
       (id, application_no, customer_id, sales_user_id, updated_at)
      VALUES ($1::uuid, $2, $3::uuid, $4::uuid, clock_timestamp()),
             ($5::uuid, $6, $3::uuid, $4::uuid, clock_timestamp())`,
-    [
-      applicationA,
-      `APP-JA-${suffix}`,
-      customerId,
-      userId,
-      applicationB,
-      `APP-JB-${suffix}`
-    ]
+    [applicationA, `APP-JA-${suffix}`, customerId, userId, applicationB, `APP-JB-${suffix}`]
   );
   await client.query(
     `INSERT INTO subscription_journey
@@ -548,9 +817,10 @@ async function createJourneyFixture() {
 
 function runCommand(args: string[]) {
   const executable = process.platform === "win32" ? process.execPath : "pnpm";
-  const commandArgs = process.platform === "win32"
-    ? [resolve(process.execPath, "..", "node_modules", "corepack", "dist", "pnpm.js"), ...args]
-    : args;
+  const commandArgs =
+    process.platform === "win32"
+      ? [resolve(process.execPath, "..", "node_modules", "corepack", "dist", "pnpm.js"), ...args]
+      : args;
   const result = spawnSync(executable, commandArgs, {
     cwd: apiRoot,
     encoding: "utf8",
@@ -566,13 +836,35 @@ function runCommand(args: string[]) {
   };
 }
 
-function requiredDatabaseUrl() {
-  const value = process.env.DATABASE_URL;
+function requiredDatabaseUrl(value = process.env.DATABASE_URL) {
   if (!value) throw new Error("DATABASE_URL is required for journey integration tests");
   const url = new URL(value);
-  if (url.port !== "55432") throw new Error("Journey integration tests require port 55432");
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("Journey integration tests require a PostgreSQL URL");
+  }
+  if (!isLoopbackHostname(url.hostname)) {
+    throw new Error("Journey integration tests require a loopback PostgreSQL host");
+  }
+  const databaseName = decodeURIComponent(url.pathname.slice(1));
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
+    throw new Error("Journey integration tests require a test-only database name");
+  }
   if (url.hostname === "localhost") url.hostname = "127.0.0.1";
   return url.toString();
+}
+
+function isLoopbackHostname(hostname: string) {
+  if (hostname === "localhost" || hostname === "[::1]") return true;
+  const octets = hostname.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => {
+      if (!/^\d{1,3}$/.test(octet)) return false;
+      const value = Number(octet);
+      return value >= 0 && value <= 255;
+    })
+  );
 }
 
 function withDatabase(value: string, databaseName: string) {

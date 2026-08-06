@@ -4,8 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { AccountActions } from "../src/components/account-actions";
 import {
   ChangePasswordFormFields,
+  performPasswordChange,
   submitPasswordChange
 } from "../src/components/change-password-modal";
+import { finishPasswordChangeSession } from "../src/components/protected-shell";
+import { ApiError } from "../src/lib/api";
 import {
   buildChangePasswordRequest,
   changeAdminPassword,
@@ -147,4 +150,71 @@ describe("admin self password change", () => {
       )
     ).rejects.toThrow("request failed");
   });
+
+  it("reports an API error without resetting or completing the modal flow", async () => {
+    const events: string[] = [];
+
+    await expect(
+      performPasswordChange(
+        {
+          confirmPassword: "NewSecret@123",
+          currentPassword: "Wrong@123",
+          newPassword: "NewSecret@123"
+        },
+        passwordEffects(events),
+        async () => {
+          throw new ApiError("当前密码不正确", 400, "CURRENT_PASSWORD_INCORRECT");
+        }
+      )
+    ).resolves.toBe(false);
+
+    expect(events).toEqual(["error:当前密码不正确"]);
+  });
+
+  it("runs reset, success message and completion only after the API resolves", async () => {
+    const events: string[] = [];
+    let release: ((value: { success: true }) => void) | undefined;
+    const pending = new Promise<{ success: true }>((resolve) => {
+      release = resolve;
+    });
+    const result = performPasswordChange(
+      {
+        confirmPassword: "NewSecret@123",
+        currentPassword: "Current@123",
+        newPassword: "NewSecret@123"
+      },
+      passwordEffects(events),
+      async () => pending
+    );
+
+    await Promise.resolve();
+    expect(events).toEqual([]);
+    release?.({ success: true });
+    await expect(result).resolves.toBe(true);
+    expect(events).toEqual([
+      "reset",
+      "success:密码已修改，请重新登录",
+      "changed"
+    ]);
+  });
+
+  it("closes the modal and redirects to login when the password flow completes", () => {
+    const events: string[] = [];
+
+    finishPasswordChangeSession(
+      { replace: (target: string) => events.push(`redirect:${target}`) } as never,
+      () => events.push("close")
+    );
+
+    expect(events).toEqual(["close", "redirect:/login"]);
+  });
 });
+
+function passwordEffects(events: string[]) {
+  return {
+    onChanged: () => events.push("changed"),
+    onError: (message: string) => events.push(`error:${message}`),
+    onReset: () => events.push("reset"),
+    onSuccess: (message: string) => events.push(`success:${message}`)
+  };
+}

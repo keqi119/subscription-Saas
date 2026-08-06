@@ -222,15 +222,22 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
       </Layout>
       <ChangePasswordModal
         onCancel={() => setChangePasswordOpen(false)}
-        onChanged={() => {
-          cachedAuthMe = null;
-          setChangePasswordOpen(false);
-          router.replace("/login");
-        }}
+        onChanged={() =>
+          finishPasswordChangeSession(router, () => setChangePasswordOpen(false))
+        }
         open={changePasswordOpen}
       />
     </>
   );
+}
+
+export function finishPasswordChangeSession(
+  router: Pick<ReturnType<typeof useRouter>, "replace">,
+  closeModal: () => void
+) {
+  cachedAuthMe = null;
+  closeModal();
+  router.replace("/login");
 }
 
 function readStoredOpenKeys() {

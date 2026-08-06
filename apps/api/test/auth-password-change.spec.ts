@@ -77,6 +77,19 @@ describe("AuthService.changePassword", () => {
     expect(harness.audits).toEqual([]);
   }, BCRYPT_TEST_TIMEOUT_MS);
 
+  it("accepts a historical current password above 72 UTF-8 bytes", async () => {
+    const currentPassword = "密".repeat(25);
+    const harness = await createHarness({ currentPassword });
+
+    await expect(
+      harness.service.changePassword(
+        harness.user.id,
+        { currentPassword, newPassword: "NewSecret@123" },
+        requestContext()
+      )
+    ).resolves.toEqual({ success: true });
+  }, BCRYPT_TEST_TIMEOUT_MS);
+
   it("atomically installs a cost-12 hash and writes one redacted self-service audit", async () => {
     const harness = await createHarness();
 
@@ -187,11 +200,13 @@ describe("AuthController.changePassword", () => {
   });
 });
 
-async function createHarness(options: { auditFails?: boolean; forceConflict?: boolean } = {}) {
+async function createHarness(
+  options: { auditFails?: boolean; currentPassword?: string; forceConflict?: boolean } = {}
+) {
   const user = {
     deletedAt: null as Date | null,
     id: "00000000-0000-4000-8000-000000000001",
-    passwordHash: await bcrypt.hash("Current@123", 12),
+    passwordHash: await bcrypt.hash(options.currentPassword ?? "Current@123", 12),
     status: UserStatus.ACTIVE as UserStatus,
     username: "admin"
   };

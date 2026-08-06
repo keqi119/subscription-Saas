@@ -13,12 +13,37 @@ import {
 } from "../lib/change-password";
 
 type PasswordRequest = (payload: ChangePasswordRequest) => Promise<{ success: true }>;
+type PasswordChangeEffects = {
+  onChanged: () => void;
+  onError: (message: string) => void;
+  onReset: () => void;
+  onSuccess: (message: string) => void;
+};
 
 export function submitPasswordChange(
   values: ChangePasswordFormValues,
   request: PasswordRequest = changeAdminPassword
 ) {
   return request(buildChangePasswordRequest(values));
+}
+
+export async function performPasswordChange(
+  values: ChangePasswordFormValues,
+  effects: PasswordChangeEffects,
+  request: PasswordRequest = changeAdminPassword
+) {
+  try {
+    await submitPasswordChange(values, request);
+    effects.onReset();
+    effects.onSuccess("密码已修改，请重新登录");
+    effects.onChanged();
+    return true;
+  } catch (error) {
+    if (error instanceof ChangePasswordValidationError || error instanceof ApiError) {
+      effects.onError(error.message);
+    }
+    return false;
+  }
 }
 
 export function ChangePasswordFormFields() {
@@ -56,14 +81,18 @@ export function ChangePasswordModal({
     setSubmitting(true);
     try {
       const values = await form.validateFields();
-      await submitPasswordChange(values);
-      form.resetFields();
-      void message.success("密码已修改，请重新登录");
-      onChanged();
-    } catch (error) {
-      if (error instanceof ChangePasswordValidationError || error instanceof ApiError) {
-        void message.error(error.message);
-      }
+      await performPasswordChange(values, {
+        onChanged,
+        onError: (errorMessage) => {
+          void message.error(errorMessage);
+        },
+        onReset: () => form.resetFields(),
+        onSuccess: (successMessage) => {
+          void message.success(successMessage);
+        }
+      });
+    } catch {
+      // Ant Design displays field validation failures inline.
     } finally {
       setSubmitting(false);
     }

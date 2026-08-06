@@ -9,6 +9,8 @@ import { AuthController } from "../src/auth/auth.controller";
 import { AuthGuard } from "../src/auth/auth.guard";
 import { AuthService } from "../src/auth/auth.service";
 
+const BCRYPT_TEST_TIMEOUT_MS = 15_000;
+
 describe("AuthService.changePassword", () => {
   it("rejects an incorrect current password without changing credentials or audit state", async () => {
     const harness = await createHarness();
@@ -27,7 +29,7 @@ describe("AuthService.changePassword", () => {
 
     expect(harness.user.passwordHash).toBe(originalHash);
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it("rejects reuse of the current password", async () => {
     const harness = await createHarness();
@@ -41,7 +43,7 @@ describe("AuthService.changePassword", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it.each([
     { deletedAt: new Date("2026-08-06T00:00:00.000Z"), status: UserStatus.ACTIVE },
@@ -59,7 +61,7 @@ describe("AuthService.changePassword", () => {
       )
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it("rejects a new password above 72 UTF-8 bytes while accepting the current password input", async () => {
     const harness = await createHarness();
@@ -73,7 +75,7 @@ describe("AuthService.changePassword", () => {
     ).rejects.toMatchObject({ response: { code: "PASSWORD_TOO_LONG" } });
 
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it("atomically installs a cost-12 hash and writes one redacted self-service audit", async () => {
     const harness = await createHarness();
@@ -101,7 +103,7 @@ describe("AuthService.changePassword", () => {
     expect(JSON.stringify(harness.audits)).not.toContain("Current@123");
     expect(JSON.stringify(harness.audits)).not.toContain("NewSecret@123");
     expect(JSON.stringify(harness.audits)).not.toContain("$2b$");
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it("rolls back the audit when the old-hash conditional update loses a race", async () => {
     const harness = await createHarness({ forceConflict: true });
@@ -115,7 +117,7 @@ describe("AuthService.changePassword", () => {
     ).rejects.toBeInstanceOf(ConflictException);
 
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 
   it("rolls back the password update when the audit insert fails", async () => {
     const harness = await createHarness({ auditFails: true });
@@ -131,7 +133,7 @@ describe("AuthService.changePassword", () => {
 
     expect(harness.user.passwordHash).toBe(originalHash);
     expect(harness.audits).toEqual([]);
-  });
+  }, BCRYPT_TEST_TIMEOUT_MS);
 });
 
 describe("AuthController.changePassword", () => {

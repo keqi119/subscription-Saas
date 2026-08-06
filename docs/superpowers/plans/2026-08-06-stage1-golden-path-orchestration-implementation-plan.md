@@ -1230,7 +1230,7 @@ git commit -m "feat: guide customers through subscription journeys"
 - Consumes: production environment variables, health/API endpoints, Fadada production preflight scripts, WeChat Pay/OA configuration and Journey metrics.
 - Produces: a secret-safe fail-closed preflight and a concrete production acceptance procedure using dedicated test assets.
 
-- [ ] **Step 1: Write failing preflight tests**
+- [x] **Step 1: Write failing preflight tests**
 
 Export a pure `validateStage1GoldenPathPreflight(env)` and test these blockers independently:
 
@@ -1243,7 +1243,7 @@ Export a pure `validateStage1GoldenPathPreflight(env)` and test these blockers i
 
 Assert output masks IDs/secrets and never prints values for names matching `SECRET`, `KEY`, `CERT`, `PASSWORD`, `OPENID` or `TOKEN`.
 
-- [ ] **Step 2: Run the preflight test and confirm RED**
+- [x] **Step 2: Run the preflight test and confirm RED**
 
 ```powershell
 node --test scripts/stage1-golden-path-production-preflight.test.mjs
@@ -1251,7 +1251,7 @@ node --test scripts/stage1-golden-path-production-preflight.test.mjs
 
 Expected: FAIL because the script does not exist.
 
-- [ ] **Step 3: Implement fail-closed configuration and script**
+- [x] **Step 3: Implement fail-closed configuration and script**
 
 Add scripts:
 
@@ -1264,7 +1264,7 @@ Add scripts:
 
 Production examples must show real provider names, `SUBSCRIPTION_JOURNEY_ENABLED=false` until rollout, worker disabled until migration/deploy succeeds, empty allowlists, `AUTO_DEBIT_ENABLED=false`, and no secret values. Compose passes every required Journey variable explicitly. The script validates configuration and read-only health/readiness endpoints only; it must not create customers, orders, contracts or payments.
 
-- [ ] **Step 4: Write the production acceptance runbook**
+- [x] **Step 4: Write the production acceptance runbook**
 
 The runbook must specify, in order:
 
@@ -1279,7 +1279,7 @@ The runbook must specify, in order:
 9. Export sanitized journey IDs, step timestamps, provider transaction references, bill/payment/write-off references, audit events and metric snapshots; retain server-side audit data, not PII in the runbook.
 10. On any blocker, disable new enrollment, leave workers available for already-enrolled safe recovery only, and follow the documented retry/cancel path.
 
-- [ ] **Step 5: Extend release checks and make tests GREEN**
+- [x] **Step 5: Extend release checks and make tests GREEN**
 
 Make `release-check.mjs` fail production-image configs that enable Journey with mock/sandbox providers or omit allowlists; also fail if Golden Path acceptance config enables auto debit.
 
@@ -1292,7 +1292,7 @@ pnpm release:check
 
 Expected: script tests and release check pass without contacting production.
 
-- [ ] **Step 6: Commit production safety artifacts**
+- [x] **Step 6: Commit production safety artifacts**
 
 ```powershell
 git add .env.example .env.production.example .env.production.images.example apps/api/.env.production.example docker-compose.production.images.example.yml package.json scripts/stage1-golden-path-production-preflight.mjs scripts/stage1-golden-path-production-preflight.test.mjs scripts/release-check.mjs docs/runbooks/stage1-golden-path-production-acceptance.zh-CN.md

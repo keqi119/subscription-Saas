@@ -37,6 +37,8 @@
     "fadada:test-signer:status": "node scripts/fadada-production-test-signer-realname.mjs --mode status",
     "fadada:production-test-signer-realname": "node scripts/fadada-production-test-signer-realname.mjs --mode preflight",
     "fadada:production-test-signer-realname:test": "node --test scripts/fadada-production-test-signer-realname.test.mjs",
+    "stage1:golden-path:preflight": "node scripts/stage1-golden-path-production-preflight.mjs",
+    "stage1:golden-path:preflight:test": "node --test scripts/stage1-golden-path-production-preflight.test.mjs",
     "stage2-handover-workflow:backfill:dry-run": "node scripts/stage2-handover-workflow-backfill.mjs --dry-run",
     "stage2-handover-workflow:backfill:apply": "node scripts/stage2-handover-workflow-backfill.mjs --apply",
     "stage2-handover-workflow:backfill:test": "node --test scripts/stage2-handover-workflow-backfill-core.test.mjs scripts/stage2-handover-workflow-backfill-apply.test.mjs scripts/stage2-handover-workflow-backfill-executor.test.mjs",

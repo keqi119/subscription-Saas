@@ -40,6 +40,7 @@ import {
   OrderWorkspace,
   type OrderWorkspaceTabBadge
 } from "../../../components/order-workspace/order-workspace";
+import { SubscriptionJourneyCard } from "../../../components/order-workspace/subscription-journey-card";
 import { ProtectedShell } from "../../../components/protected-shell";
 import {
   BILL_STATUS_LABELS,
@@ -76,7 +77,12 @@ import {
   canExecuteOrderChange,
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
-import { apiFetch, ApiError, API_BASE_URL } from "../../../lib/api";
+import {
+  apiFetch,
+  ApiError,
+  API_BASE_URL,
+  loadAdminJourneyByOrder
+} from "../../../lib/api";
 import { formatFieldEvidenceVideoQuality } from "../../../lib/field-handover-video-quality";
 import {
   getDeliveryConfirmationAdjustmentState,
@@ -127,6 +133,7 @@ import {
   type OrderWorkspaceTabKey
 } from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
+import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 import {
   listSubscriptionChangesForOrder,
   type AdminSubscriptionChange
@@ -2534,6 +2541,7 @@ function FinancePanel({
   generateMonthlyRentAvailability,
   generatingBills,
   generatingMonthlyRentBill,
+  journeyManaged,
   onGenerateInitialBills,
   onGenerateNextMonthlyRentBill,
   onOpenPayment,
@@ -2546,6 +2554,7 @@ function FinancePanel({
   generateMonthlyRentAvailability: ReturnType<typeof actionAvailability>;
   generatingBills: boolean;
   generatingMonthlyRentBill: boolean;
+  journeyManaged: boolean;
   onGenerateInitialBills: () => void;
   onGenerateNextMonthlyRentBill: () => void;
   onOpenPayment: () => void;
@@ -2594,14 +2603,16 @@ function FinancePanel({
     <Card
       extra={
         <Space wrap>
-          <ActionButton
-            availability={generateAvailability}
-            loading={generatingBills}
-            onClick={onGenerateInitialBills}
-            type="primary"
-          >
-            生成初始账单
-          </ActionButton>
+          {journeyManaged ? null : (
+            <ActionButton
+              availability={generateAvailability}
+              loading={generatingBills}
+              onClick={onGenerateInitialBills}
+              type="primary"
+            >
+              生成初始账单
+            </ActionButton>
+          )}
           <ActionButton
             availability={generateMonthlyRentAvailability}
             loading={generatingMonthlyRentBill}
@@ -2609,9 +2620,11 @@ function FinancePanel({
           >
             生成下一期月租账单
           </ActionButton>
-          <ActionButton availability={paymentAvailability} onClick={onOpenPayment}>
-            登记收款
-          </ActionButton>
+          {journeyManaged ? null : (
+            <ActionButton availability={paymentAvailability} onClick={onOpenPayment}>
+              登记收款
+            </ActionButton>
+          )}
         </Space>
       }
       title="财务 / 收款核销"
@@ -3369,6 +3382,7 @@ function DeliveryPanel({
   confirmAvailability,
   delivery,
   deliveryCheck,
+  journeyManaged,
   onOpenConfirm,
   onOpenPrepare,
   prepareAvailability
@@ -3376,6 +3390,7 @@ function DeliveryPanel({
   confirmAvailability: ReturnType<typeof actionAvailability>;
   delivery: VehicleDelivery | null;
   deliveryCheck: DeliveryCheck | null;
+  journeyManaged: boolean;
   onOpenConfirm: () => void;
   onOpenPrepare: () => void;
   prepareAvailability: ReturnType<typeof actionAvailability>;
@@ -3389,12 +3404,12 @@ function DeliveryPanel({
   const zeroDepositSatisfied = deliveryCheck?.depositRequired === false;
   const checklistItems: Array<{ help?: string; label: string; value?: boolean }> = [
     { label: "合同签署确认", value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned },
-    {
-      help: zeroDepositSatisfied ? "0 元押金，自动满足" : undefined,
-      label: "押金收取确认",
-      value: zeroDepositSatisfied || delivery?.depositReceivedConfirmed
-    },
-    { label: "首期月费收取确认", value: delivery?.firstMonthlyFeeReceivedConfirmed },
+    ...(delivery?.depositReceivedConfirmed === true
+      ? [{ help: "历史只读字段", label: "押金收取确认", value: true }]
+      : []),
+    ...(delivery?.firstMonthlyFeeReceivedConfirmed === true
+      ? [{ help: "历史只读字段", label: "首期月费收取确认", value: true }]
+      : []),
     { label: "保险人工核验", value: delivery?.insuranceValidConfirmed },
     { label: "车辆整备完成确认", value: delivery?.vehiclePreparedConfirmed },
     { label: "车辆照片确认", value: delivery?.vehiclePhotosConfirmed },
@@ -3409,9 +3424,11 @@ function DeliveryPanel({
           <ActionButton availability={prepareAvailability} onClick={onOpenPrepare} type="primary">
             准备交付
           </ActionButton>
-          <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
-            确认交付
-          </ActionButton>
+          {journeyManaged ? null : (
+            <ActionButton availability={confirmAvailability} onClick={onOpenConfirm} type="primary">
+              确认交付
+            </ActionButton>
+          )}
         </Space>
       }
       title="车辆交付"
@@ -4603,6 +4620,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     createWorkspaceDomainLoadStates
   );
   const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const [journey, setJourney] = useState<AdminSubscriptionJourney | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
@@ -5534,11 +5552,35 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     ]);
     if (authResult.status === "fulfilled") {
       setMe(authResult.value);
+      setAuthLoading(false);
+      if (authResult.value.user.permissions.includes("subscription_journey:view")) {
+        try {
+          setJourney(await loadAdminJourneyByOrder(orderId));
+        } catch {
+          setJourney(null);
+          void message.warning("订阅流程加载失败，订单工作台仍可继续使用");
+        }
+      } else {
+        setJourney(null);
+      }
     } else {
       setAuthError(getErrorMessage(authResult.reason));
+      setAuthLoading(false);
     }
-    setAuthLoading(false);
-  }, [loadWorkspaceSummary]);
+  }, [loadWorkspaceSummary, message, orderId]);
+
+  const refreshJourney = useCallback(async () => {
+    if (!me?.user.permissions.includes("subscription_journey:view")) {
+      setJourney(null);
+      return;
+    }
+    try {
+      setJourney(await loadAdminJourneyByOrder(orderId));
+    } catch {
+      setJourney(null);
+      void message.warning("订阅流程刷新失败，请稍后重试");
+    }
+  }, [me, message, orderId]);
 
   const retryWorkspaceSummary = useCallback(() => {
     void loadWorkspaceSummary();
@@ -5554,7 +5596,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       refreshSummary: loadWorkspaceSummary,
       refreshTab: (tab) => loadActiveWorkspaceTab(tab, true)
     });
-  }, [loadActiveWorkspaceTab, loadWorkspaceSummary]);
+    await refreshJourney();
+  }, [loadActiveWorkspaceTab, loadWorkspaceSummary, refreshJourney]);
 
   useEffect(() => {
     loadedDomainsRef.current.clear();
@@ -5562,6 +5605,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     resourcePromisesRef.current.clear();
     orderRef.current = null;
     setMe(null);
+    setJourney(null);
     setOrder(null);
     setSummary(null);
     setSubscriptionChanges([]);
@@ -7138,6 +7182,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       case "overview":
         content = order ? (
           <>
+            {journey ? (
+              <SubscriptionJourneyCard
+                journey={journey}
+                onChanged={loadOrder}
+                permissions={permissions}
+              />
+            ) : null}
             <OverviewLifecycleSummary order={order} />
             <ReviewPanel
               canConfirmFinalPlan={canConfirmFinalPlan}
@@ -7176,13 +7227,15 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               <Card
                 extra={
                   <Space wrap>
-                    <ActionButton
-                      availability={generateContractAvailability}
-                      onClick={generateContract}
-                      type="primary"
-                    >
-                      生成合同
-                    </ActionButton>
+                    {journey ? null : (
+                      <ActionButton
+                        availability={generateContractAvailability}
+                        onClick={generateContract}
+                        type="primary"
+                      >
+                        生成合同
+                      </ActionButton>
+                    )}
                     {order.contract ? (
                       <Button
                         onClick={() =>
@@ -7256,6 +7309,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 confirmAvailability={confirmDeliveryAvailability}
                 delivery={delivery}
                 deliveryCheck={deliveryCheck}
+                journeyManaged={Boolean(journey)}
                 onOpenConfirm={openConfirmDeliveryModal}
                 onOpenPrepare={openPrepareDeliveryModal}
                 prepareAvailability={prepareDeliveryAvailability}
@@ -7373,6 +7427,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 }
                 generatingBills={generatingBills}
                 generatingMonthlyRentBill={generatingMonthlyRentBill}
+                journeyManaged={Boolean(journey)}
                 onGenerateInitialBills={generateInitialBills}
                 onGenerateNextMonthlyRentBill={generateNextMonthlyRentBill}
                 onOpenPayment={openPaymentModal}

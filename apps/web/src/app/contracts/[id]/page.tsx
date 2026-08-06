@@ -28,8 +28,14 @@ import {
   buildAdminESignSignerGroups,
   getAdminESignArchiveStatus
 } from "../../../lib/admin-esign-display";
-import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
+import {
+  API_BASE_URL,
+  apiFetch,
+  ApiError,
+  loadAdminJourneyByOrder
+} from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
+import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 import {
   getFadadaBlockingMessage,
   getFadadaReadinessAvailability,
@@ -381,6 +387,7 @@ export default function ContractDetailPage() {
   const [onboardingStatus, setOnboardingStatus] = useState<FadadaOnboardingReadiness | null>(null);
   const [refreshingOnboarding, setRefreshingOnboarding] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const [journey, setJourney] = useState<AdminSubscriptionJourney | null>(null);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const signContractAvailability = useMemo(() => canSignContract(contract, permissions), [contract, permissions]);
   const createESignTaskAvailability = useMemo(() => {
@@ -408,6 +415,17 @@ export default function ContractDetailPage() {
       setESignTasks(nextESignTasks);
       setMe(nextMe);
       setOnboardingStatus(nextOnboardingStatus);
+      setLoading(false);
+      if (nextMe.user.permissions.includes("subscription_journey:view")) {
+        try {
+          setJourney(await loadAdminJourneyByOrder(nextContract.order.id));
+        } catch {
+          setJourney(null);
+          void message.warning("订阅流程加载失败，合同信息仍可继续查看");
+        }
+      } else {
+        setJourney(null);
+      }
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -539,26 +557,32 @@ export default function ContractDetailPage() {
                   查看待签署PDF
                 </Button>
               ) : null}
-              <ActionButton
-                availability={signContractAvailability}
-                onClick={() => transition("sign")}
-                type="primary"
-              >
-                签署
-              </ActionButton>
-              <ActionButton
-                availability={canArchiveContract(contract, permissions)}
-                onClick={() => transition("archive")}
-              >
-                归档
-              </ActionButton>
-              <ActionButton
-                availability={canCancelContract(contract, permissions)}
-                danger
-                onClick={() => transition("cancel")}
-              >
-                取消
-              </ActionButton>
+              {journey ? (
+                <Tag color="blue">订阅 Golden Path 托管</Tag>
+              ) : (
+                <>
+                  <ActionButton
+                    availability={signContractAvailability}
+                    onClick={() => transition("sign")}
+                    type="primary"
+                  >
+                    签署
+                  </ActionButton>
+                  <ActionButton
+                    availability={canArchiveContract(contract, permissions)}
+                    onClick={() => transition("archive")}
+                  >
+                    归档
+                  </ActionButton>
+                  <ActionButton
+                    availability={canCancelContract(contract, permissions)}
+                    danger
+                    onClick={() => transition("cancel")}
+                  >
+                    取消
+                  </ActionButton>
+                </>
+              )}
             </Space>
           ) : null}
         </Space>
@@ -594,14 +618,16 @@ export default function ContractDetailPage() {
         {!loading && contract ? (
           <Card
             extra={
-              <ActionButton
-                availability={createESignTaskAvailability}
-                loading={creatingESignTask}
-                onClick={createESignTask}
-                type="primary"
-              >
-                发起电子签
-              </ActionButton>
+              journey ? null : (
+                <ActionButton
+                  availability={createESignTaskAvailability}
+                  loading={creatingESignTask}
+                  onClick={createESignTask}
+                  type="primary"
+                >
+                  发起电子签
+                </ActionButton>
+              )
             }
             title="电子签任务"
           >
@@ -668,7 +694,7 @@ export default function ContractDetailPage() {
                       }
                       title={`${task.taskNo} · ${task.documentName ?? "合同电子签"}`}
                     />
-                    {archiveStatus.canArchive ? (
+                    {archiveStatus.canArchive && !journey ? (
                       <Button
                         disabled={!permissions.has("contract:archive")}
                         icon={<FileDoneOutlined />}

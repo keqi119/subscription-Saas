@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../../components/action-button";
 import { ProtectedShell } from "../../../components/protected-shell";
+import { ApplicationJourneyActions } from "../../../components/subscription-journey/application-journey-actions";
 import {
   APPLICATION_SOURCE_LABELS,
   DEPOSIT_STATUS_LABELS,
@@ -43,7 +44,12 @@ import {
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   labelOf
 } from "../../../constants/labels";
-import { API_BASE_URL, apiFetch, ApiError } from "../../../lib/api";
+import {
+  API_BASE_URL,
+  apiFetch,
+  ApiError,
+  loadAdminJourneyByApplication
+} from "../../../lib/api";
 import {
   actionAvailability,
   canCreateOrderFromApplication as getCreateOrderAvailability,
@@ -59,6 +65,7 @@ import {
   toNumber
 } from "../../../lib/application-snapshots";
 import type { AuthMeResponse } from "../../../lib/auth";
+import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 
 interface UserRef {
   id: string;
@@ -379,6 +386,7 @@ export default function ApplicationDetailPage() {
   const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const [journey, setJourney] = useState<AdminSubscriptionJourney | null>(null);
   const [materialFileList, setMaterialFileList] = useState<UploadFile[]>([]);
   const [materialReviewStatus, setMaterialReviewStatus] = useState<"APPROVED" | "NEED_MORE_INFO" | "REJECTED" | null>(null);
   const [materialReviewTarget, setMaterialReviewTarget] = useState<MaterialGroup | null>(null);
@@ -403,6 +411,17 @@ export default function ApplicationDetailPage() {
       ]);
       setDetail(nextDetail);
       setMe(nextMe);
+      setLoading(false);
+      if (nextMe.user.permissions.includes("subscription_journey:view")) {
+        try {
+          setJourney(await loadAdminJourneyByApplication(applicationId));
+        } catch {
+          setJourney(null);
+          void message.warning("订阅流程加载失败，原有进件信息仍可继续查看");
+        }
+      } else {
+        setJourney(null);
+      }
     } catch (error) {
       void message.error(getErrorMessage(error));
     } finally {
@@ -1079,14 +1098,16 @@ export default function ApplicationDetailPage() {
               >
                 拒绝
               </ActionButton>
-              <ActionButton
-                availability={createOrderFromApplicationAvailability}
-                loading={submitting}
-                onClick={createOrderFromApplication}
-                type="primary"
-              >
-                生成正式订单
-              </ActionButton>
+              {journey ? null : (
+                <ActionButton
+                  availability={createOrderFromApplicationAvailability}
+                  loading={submitting}
+                  onClick={createOrderFromApplication}
+                  type="primary"
+                >
+                  生成正式订单
+                </ActionButton>
+              )}
             </Space>
           ) : null}
         </Space>
@@ -1095,6 +1116,13 @@ export default function ApplicationDetailPage() {
           <Spin />
         ) : detail ? (
           <Space orientation="vertical" size={24} style={{ width: "100%" }}>
+            {journey ? (
+              <ApplicationJourneyActions
+                journey={journey}
+                onChanged={loadDetail}
+                permissions={permissions}
+              />
+            ) : null}
             <section>
               <Typography.Title level={5}>基础信息</Typography.Title>
               <Descriptions
@@ -1340,24 +1368,26 @@ export default function ApplicationDetailPage() {
                       type="warning"
                     />
                   ) : null}
-                  <Space wrap>
-                    <ActionButton
-                      availability={finalizeApplicationPlanAvailability}
-                      loading={submitting}
-                      onClick={finalizeApplicationPlan}
-                      type="primary"
-                    >
-                      生成最终方案并待客户确认
-                    </ActionButton>
-                    <ActionButton
-                      availability={createOrderFromApplicationAvailability}
-                      loading={submitting}
-                      onClick={createOrderFromApplication}
-                      type="primary"
-                    >
-                      生成正式订单
-                    </ActionButton>
-                  </Space>
+                  {journey ? null : (
+                    <Space wrap>
+                      <ActionButton
+                        availability={finalizeApplicationPlanAvailability}
+                        loading={submitting}
+                        onClick={finalizeApplicationPlan}
+                        type="primary"
+                      >
+                        生成最终方案并待客户确认
+                      </ActionButton>
+                      <ActionButton
+                        availability={createOrderFromApplicationAvailability}
+                        loading={submitting}
+                        onClick={createOrderFromApplication}
+                        type="primary"
+                      >
+                        生成正式订单
+                      </ActionButton>
+                    </Space>
+                  )}
                 </Space>
               ) : null}
             </section>

@@ -1085,15 +1085,15 @@ git commit -m "feat: expose journey operations and recovery api"
 - Consumes: Task 10 API projection and current application/order pages.
 - Produces: embedded journey timeline/status, three permission-aware decision actions, exception recovery, and the existing Orders-page exception filter.
 
-- [ ] **Step 1: Write failing view-model tests**
+- [x] **Step 1: Write failing view-model tests**
 
 Test Chinese labels/colors for every journey and step status, current-step summary, safe exception message mapping, three manual-task input shapes, customer-wait labels, next recommended operator action and unavailable-action reasons. Unknown backend codes display a safe generic label, never raw error text.
 
-- [ ] **Step 2: Write failing component and permission tests**
+- [x] **Step 2: Write failing component and permission tests**
 
 Render application/order components with no permission, view only, each decision permission, recover and cancel. Assert buttons are hidden/disabled correctly, stale-version `409` triggers refetch, retry confirmation names the failed step, and cancel requires an explicit reason. Assert no top-level navigation item is added.
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/subscription-journey-view-model.spec.ts test/subscription-journey-admin-ui.spec.tsx test/action-guards.spec.ts
@@ -1101,15 +1101,15 @@ pnpm --filter @subscription-saas/web exec vitest run test/subscription-journey-v
 
 Expected: FAIL because journey UI/view model does not exist.
 
-- [ ] **Step 4: Implement focused components and API client methods**
+- [x] **Step 4: Implement focused components and API client methods**
 
 Keep page changes limited to imports, query hooks and one card insertion. `application-journey-actions.tsx` owns final-plan and vehicle-allocation forms. The order-workspace card owns timeline/current state; exception actions are a separate component. Do not add journey state logic to the already-large page files.
 
-- [ ] **Step 5: Hide conflicting legacy progression on Journey records**
+- [x] **Step 5: Hide conflicting legacy progression on Journey records**
 
 For Journey-backed applications/orders, hide manual “create order”, “mark paid”, manual contract sign/archive and direct delivery activation actions. Non-journey records keep existing buttons. Show a read-only legacy delivery confirmation field only when old data exists; never offer new writes.
 
-- [ ] **Step 6: Implement Orders exception filter and make tests GREEN**
+- [x] **Step 6: Implement Orders exception filter and make tests GREEN**
 
 Read `journeyStatus=EXCEPTION` from the URL, pass it to the existing order query and show a removable filter chip. Reuse current table/page; do not create a separate exception page.
 
@@ -1120,7 +1120,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests/typecheck pass and the UI remains incremental.
 
-- [ ] **Step 7: Commit incremental Admin UI**
+- [x] **Step 7: Commit incremental Admin UI**
 
 ```powershell
 git add apps/web/src/lib/subscription-journey-view-model.ts apps/web/src/lib/api.ts apps/web/src/components/subscription-journey apps/web/src/components/order-workspace apps/web/src/app/applications/[id]/page.tsx apps/web/src/app/orders apps/web/test/subscription-journey-view-model.spec.ts apps/web/test/subscription-journey-admin-ui.spec.tsx apps/web/test/action-guards.spec.ts

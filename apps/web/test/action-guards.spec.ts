@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SYSTEM_MENUS } from "@subscription-saas/shared";
 
 import {
   actionAvailability,
@@ -6,7 +7,9 @@ import {
   canExecuteOrderChange,
   canGenerateApplicationQuote,
   canGenerateContract,
-  canRunSubscriptionChangeAction
+  canRunSubscriptionChangeAction,
+  canRunSubscriptionJourneyAction,
+  shouldHideLegacyJourneyAction
 } from "../src/lib/action-guards";
 
 describe("action guards", () => {
@@ -223,5 +226,41 @@ describe("action guards", () => {
       allowed: false,
       reason: "当前步骤无需人工操作"
     });
+  });
+
+  it.each([
+    ["FINAL_PLAN_DECISION", "subscription_journey:plan_decide"],
+    ["FINAL_VEHICLE_ALLOCATION", "subscription_journey:vehicle_allocate"],
+    ["DELIVERY_EVIDENCE_DECISION", "subscription_journey:delivery_evidence_decide"],
+    ["RETRY", "subscription_journey:recover"],
+    ["PAUSE", "subscription_journey:recover"],
+    ["RESUME", "subscription_journey:recover"],
+    ["CANCEL", "subscription_journey:cancel"]
+  ] as const)("gates Journey action %s with %s", (action, permission) => {
+    expect(canRunSubscriptionJourneyAction(action, [action], new Set([permission]))).toEqual({
+      allowed: true
+    });
+    expect(canRunSubscriptionJourneyAction(action, [action], new Set())).toEqual({
+      allowed: false,
+      reason: "无订阅流程操作权限"
+    });
+  });
+
+  it("hides only conflicting legacy progression for Journey-backed records", () => {
+    for (const action of [
+      "CREATE_ORDER",
+      "GENERATE_INITIAL_BILLS",
+      "REGISTER_INITIAL_PAYMENT",
+      "SIGN_OR_ARCHIVE_CONTRACT",
+      "CONFIRM_DELIVERY"
+    ] as const) {
+      expect(shouldHideLegacyJourneyAction(true, action)).toBe(true);
+      expect(shouldHideLegacyJourneyAction(false, action)).toBe(false);
+    }
+    expect(shouldHideLegacyJourneyAction(true, "GENERATE_MONTHLY_RENT")).toBe(false);
+  });
+
+  it("does not add a top-level Journey navigation page", () => {
+    expect(SYSTEM_MENUS.some((menu) => menu.code === "subscription_journeys")).toBe(false);
   });
 });

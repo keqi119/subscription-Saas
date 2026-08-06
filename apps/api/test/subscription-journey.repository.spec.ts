@@ -181,6 +181,7 @@ describe("SubscriptionJourneyRepository", () => {
       $queryRaw: vi.fn(async () => [{ acquired: true }]),
       subscriptionJourney: {
         findFirst: vi.fn(async () => currentJourney),
+        findUnique: vi.fn(async () => currentJourney),
         updateMany: vi.fn(async () => ({ count: 1 }))
       },
       subscriptionJourneyEvent: {

@@ -34,6 +34,7 @@ import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
+import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 import {
   hasAuthoritativeStage2HandoverRelation,
   hasCompleteStage2HandoverArchive
@@ -58,6 +59,7 @@ import {
 } from "./esign.provider";
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 import { FadadaCustomerReadinessService } from "./fadada-customer-readiness.service";
+import { loadFadadaConfig } from "./fadada/fadada.config";
 
 const contractForESignInclude = {
   customer: { select: { id: true, mobile: true, name: true } },
@@ -272,8 +274,124 @@ export class ESignService {
     private readonly prisma: PrismaService,
     @Optional() private readonly notificationService?: NotificationService,
     @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService,
-    @Optional() private readonly fadadaReadinessService?: FadadaCustomerReadinessService
+    @Optional() private readonly fadadaReadinessService?: FadadaCustomerReadinessService,
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService
   ) {}
+
+  async startJourneyFadadaSigning(contractId: string, actorId: string) {
+    this.assertJourneyFadadaProductionConfiguration();
+    return this.createTaskForContract(
+      contractId,
+      {
+        id: actorId,
+        menus: [],
+        name: "Journey Automation",
+        permissions: [],
+        roles: ["ADMIN"],
+        username: "subscription-journey-worker"
+      },
+      {
+        ipAddress: "127.0.0.1",
+        userAgent: "subscription-journey-worker"
+      }
+    );
+  }
+
+  async reconcileJourneyFadadaSigning(contractId: string, actorId: string) {
+    this.assertJourneyFadadaProductionConfiguration();
+    const task = await this.prisma.contractESignTask.findFirst({
+      include: esignTaskInclude,
+      orderBy: { createdAt: "desc" },
+      where: {
+        contractId,
+        deletedAt: null,
+        documentType: PrismaESignDocumentType.SUBSCRIPTION_CONTRACT,
+        provider: ESignProviderType.FADADA,
+        signingStage: PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT
+      }
+    });
+    if (!task) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_TASK_MISSING: no Stage 1 Fadada task exists for the contract"
+      );
+    }
+    if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+      return toESignTaskView(task);
+    }
+    if (BLOCKED_COMPLETE_ESIGN_TASK_STATUSES.includes(task.taskStatus)) {
+      throw new BadRequestException(
+        `JOURNEY_FADADA_TASK_TERMINAL: ${task.taskStatus}`
+      );
+    }
+    if (!task.providerEnvelopeId || !task.providerTaskId || !task.customerId) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_TASK_BINDING_INVALID: provider identifiers are incomplete"
+      );
+    }
+
+    await this.assertCustomerReadyForProviderSigning(task.customerId);
+    const providerAccount = await this.prisma.customerESignProviderAccount.findFirst({
+      select: { providerCustomerId: true },
+      where: {
+        customerId: task.customerId,
+        deletedAt: null,
+        provider: ESignProviderType.FADADA,
+        providerCustomerId: { not: null }
+      }
+    });
+    const providerCustomerId = providerAccount?.providerCustomerId;
+    if (!providerCustomerId) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_SIGNER_BINDING_INVALID: verified provider customer id is missing"
+      );
+    }
+
+    const pendingSigners = task.signers.filter(
+      (signer) =>
+        signer.signerStatus !== ESignSignerStatus.SIGNED &&
+        Boolean(signer.providerSignerId)
+    );
+    const checkedTransactions = new Set<string>();
+    let current = task;
+    for (const signer of pendingSigners) {
+      const providerTransactionId = signer.providerSignerId!;
+      if (checkedTransactions.has(providerTransactionId)) continue;
+      checkedTransactions.add(providerTransactionId);
+      const slotId =
+        (readSnapshotString(signer.snapshot, "slotId") as ESignSlotId | undefined) ??
+        "STAGE1_BODY_CUSTOMER";
+      const result = await this.provider.querySignerStatus({
+        contractId: task.providerEnvelopeId,
+        providerCustomerId:
+          signer.signerType === ESignSignerType.PLATFORM
+            ? loadFadadaConfig(this.configService).platformCustomerId!
+            : providerCustomerId,
+        providerTaskId: task.providerTaskId,
+        providerTransactionId,
+        signerId: signer.id,
+        slotId,
+        taskId: task.id
+      });
+      if (result.status === "FAILED") {
+        throw new BadRequestException(
+          `JOURNEY_FADADA_SIGNING_FAILED: ${result.resultCode ?? "unknown"}`
+        );
+      }
+      if (result.status !== "SIGNED") continue;
+      current = await this.completeTask(task.id, {
+        actorId,
+        callbackPayload: {
+          resultCode: result.resultCode,
+          source: "PROVIDER_QUERY"
+        },
+        eventType: "FADADA_QUERY_SIGNED",
+        providerTaskId: providerTransactionId,
+        source: "provider_callback"
+      });
+    }
+
+    return toESignTaskView(current);
+  }
 
   async createTaskForContract(
     contractId: string,
@@ -2322,6 +2440,7 @@ export class ESignService {
           orderStatus: OrderStatus.PENDING_SIGN
         }
       });
+      await this.recordStage1JourneyCompletion(tx, task);
       if (options.callbackLogId) {
         await tx.contractESignCallbackLog.update({
           data: {
@@ -2490,6 +2609,7 @@ export class ESignService {
         orderStatus: OrderStatus.PENDING_SIGN
       }
     });
+    await this.recordStage1JourneyCompletion(input.tx, signedTask);
     await this.recordCompletionCallback(input.tx, signedTask, input.options, input.now);
 
     return input.tx.contractESignTask.findUniqueOrThrow({
@@ -2945,6 +3065,7 @@ export class ESignService {
           orderStatus: OrderStatus.PENDING_SIGN
         }
       });
+      await this.recordStage1JourneyCompletion(tx, signedTask);
 
       return tx.contractESignTask.findUniqueOrThrow({
         include: esignTaskInclude,
@@ -3012,6 +3133,65 @@ export class ESignService {
         where: { id: task.id }
       });
     });
+  }
+
+  private async recordStage1JourneyCompletion(
+    tx: Prisma.TransactionClient,
+    task: ESignTaskWithDetails
+  ) {
+    if (
+      !this.journeySignal ||
+      task.signingStage !== PrismaESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT ||
+      task.documentType !== PrismaESignDocumentType.SUBSCRIPTION_CONTRACT
+    ) {
+      return;
+    }
+    await this.journeySignal.record(tx, {
+      eventKey: `fadada-task:${task.id}:completed`,
+      orderId: task.orderId ?? task.contract.orderId,
+      payload: {
+        contractId: task.contractId,
+        taskId: task.id
+      },
+      type: "FADADA_TASK_COMPLETED"
+    });
+  }
+
+  private assertJourneyFadadaProductionConfiguration() {
+    if (this.providerType !== ESignProviderType.FADADA) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_PRODUCTION_REQUIRED: ESIGN_PROVIDER must be fadada"
+      );
+    }
+    const config = loadFadadaConfig(this.configService);
+    if (!config.enabled || config.env !== "production") {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_PRODUCTION_REQUIRED: Fadada production mode must be enabled"
+      );
+    }
+    if (config.fullSigningSmokeEnabled) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_TEST_SIGNER_FORBIDDEN: smoke signer overrides are forbidden"
+      );
+    }
+    assertProductionHttpsUrl(config.baseUrl, "FADADA_BASE_URL");
+    const callbackBaseUrl = this.configService.get<string>("API_BASE_URL")?.trim();
+    if (!callbackBaseUrl) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_CALLBACK_REQUIRED: API_BASE_URL is required"
+      );
+    }
+    assertProductionHttpsUrl(callbackBaseUrl, "API_BASE_URL");
+    if (!config.platformCustomerId || !config.platformSignatureId) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_PLATFORM_SEAL_REQUIRED: platform customer and signature ids are required"
+      );
+    }
+    if (!this.isStage1MultiSlotEnabled() || !this.isEnterpriseAutoSealEnabled()) {
+      throw new BadRequestException(
+        "JOURNEY_FADADA_PLATFORM_SEAL_REQUIRED: Stage 1 multi-slot and enterprise auto-seal must be enabled"
+      );
+    }
   }
 
   private isEnterpriseAutoSealEnabled() {
@@ -3941,6 +4121,29 @@ function parseBoolean(value: string | undefined) {
 
 function trimTrailingSlash(value: string) {
   return value.replace(/\/+$/, "");
+}
+
+function assertProductionHttpsUrl(value: string, key: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new BadRequestException(
+      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must be a valid URL`
+    );
+  }
+  const hostname = url.hostname.toLowerCase();
+  const forbiddenHostname =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1" ||
+    hostname.endsWith(".local") ||
+    /(^|[.-])(sandbox|staging|test|dev)/.test(hostname);
+  if (url.protocol !== "https:" || forbiddenHostname) {
+    throw new BadRequestException(
+      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use a public production HTTPS host`
+    );
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -14,6 +14,8 @@ import {
   JourneyOperationalMetrics
 } from "./subscription-journey.types";
 import { CustomerService } from "../customer/customer.service";
+import { ESignService } from "../esign/esign.service";
+import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { OrderEntitlementService } from "../order/order-entitlement.service";
 import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -44,7 +46,9 @@ export class SubscriptionJourneyService {
     @Optional() private readonly prisma?: PrismaService,
     @Optional() private readonly customerService?: CustomerService,
     @Optional() private readonly orderService?: OrderService,
-    @Optional() private readonly orderEntitlementService?: OrderEntitlementService
+    @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
+    @Optional() private readonly esignService?: ESignService,
+    @Optional() private readonly fadadaSignedArtifactService?: FadadaSignedArtifactService
   ) {}
 
   async dispatchSignalOutbox(
@@ -94,6 +98,50 @@ export class SubscriptionJourneyService {
         stepId: current.step.id
       });
       return;
+    }
+    if (
+      current.currentStepCode ===
+      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
+    ) {
+      const payload = isRecord(outbox.payload) ? outbox.payload : {};
+      if (
+        outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
+        payload.signalType === "FADADA_ARTIFACT_ARCHIVED" &&
+        typeof payload.contractId === "string" &&
+        typeof payload.taskId === "string"
+      ) {
+        await this.repository.completeStep(tx, {
+          eventKey: `journey:${current.id}:step:FADADA_SIGNING_AND_ARCHIVE:contract:${payload.contractId}:archived`,
+          expectedVersion: current.version,
+          journeyId: current.id,
+          payload: {
+            contractId: payload.contractId,
+            taskId: payload.taskId
+          },
+          stepId: current.step.id
+        });
+        return;
+      }
+      if (
+        outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
+        payload.signalType === "FADADA_TASK_COMPLETED" &&
+        typeof payload.contractId === "string" &&
+        typeof payload.taskId === "string"
+      ) {
+        await this.repository.enqueueJob(tx, {
+          jobType: SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING,
+          journeyId: current.id,
+          maxAttempts: 100,
+          payload: {
+            contractId: payload.contractId,
+            orderId: current.orderId,
+            taskId: payload.taskId
+          },
+          sourceKey: `journey:${current.id}:step:FADADA_SIGNING_AND_ARCHIVE:task:${payload.taskId}:reconcile`,
+          stepId: current.step.id
+        });
+        return;
+      }
     }
     if (manualTaskTypeFor(current.currentStepCode)) {
       await this.repository.openManualTask(tx, {
@@ -345,6 +393,154 @@ export class SubscriptionJourneyService {
         orderId: order.id
       };
     });
+  }
+
+  async startFadadaSigningJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.esignService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey Fadada signer is not configured."
+      );
+    }
+    const current = await this.prisma.$transaction((tx) =>
+      this.readFadadaJobContext(tx, job)
+    );
+    const task = await this.esignService.startJourneyFadadaSigning(
+      current.contractId,
+      current.actorId
+    );
+    await this.prisma.$transaction((tx) =>
+      this.repository.enqueueJob(tx, {
+        availableAt: new Date(Date.now() + 300_000),
+        jobType: SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING,
+        journeyId: current.journeyId,
+        maxAttempts: 100,
+        payload: {
+          contractId: current.contractId,
+          orderId: current.orderId,
+          taskId: task.id
+        },
+        sourceKey: `journey:${current.journeyId}:step:FADADA_SIGNING_AND_ARCHIVE:task:${task.id}:reconcile`,
+        stepId: current.stepId
+      })
+    );
+    return {
+      action: "FADADA_SIGNING_STARTED",
+      contractId: current.contractId,
+      taskId: task.id,
+      taskStatus: task.taskStatus
+    };
+  }
+
+  async reconcileFadadaSigningJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.esignService || !this.fadadaSignedArtifactService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey Fadada reconciler is not configured."
+      );
+    }
+    const current = await this.prisma.$transaction((tx) =>
+      this.readFadadaJobContext(tx, job)
+    );
+    const task = await this.esignService.reconcileJourneyFadadaSigning(
+      current.contractId,
+      current.actorId
+    );
+    if (task.taskStatus !== "COMPLETED") {
+      throw journeyError(
+        "JOURNEY_FADADA_SIGNING_PENDING",
+        "The Fadada signing task has not completed.",
+        true
+      );
+    }
+    await this.fadadaSignedArtifactService.archiveSignedContract({
+      actorId: current.actorId,
+      taskId: task.id
+    });
+    return {
+      action: "FADADA_ARTIFACT_ARCHIVED",
+      contractId: current.contractId,
+      taskId: task.id
+    };
+  }
+
+  private async readFadadaJobContext(tx: Tx, job: ClaimedJourneyJob) {
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: {
+        application: {
+          select: { finalPlanRevision: true, salesUserId: true }
+        },
+        order: {
+          include: { contract: true }
+        },
+        steps: true
+      },
+      where: { id: job.journeyId }
+    });
+    if (!journey) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey was not found."
+      );
+    }
+    if (
+      journey.currentStepCode !==
+      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The journey is not waiting for Fadada signing and archive."
+      );
+    }
+    const step = journey.steps.find(
+      ({ code }) => code === SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
+    );
+    if (!step || step.id !== job.stepId) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The Fadada job does not match the current journey step."
+      );
+    }
+    const requestedRevision = isRecord(job.payload)
+      ? job.payload.finalPlanRevision
+      : undefined;
+    if (
+      requestedRevision !== undefined &&
+      requestedRevision !== journey.application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The Fadada job targets a stale final-plan revision."
+      );
+    }
+    const order = journey.order;
+    const contract = order?.contract;
+    if (!order || !contract || order.contractId !== contract.id) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The journey does not have its current contract."
+      );
+    }
+    if (
+      contract.status === "CANCELLED" ||
+      contract.status === "DRAFT"
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The journey contract is not signable."
+      );
+    }
+    return {
+      actorId: journey.application.salesUserId,
+      contractId: contract.id,
+      journeyId: journey.id,
+      orderId: order.id,
+      stepId: step.id
+    };
   }
 
   private async readCurrentJourney(tx: Tx, journeyId: string) {

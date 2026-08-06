@@ -676,11 +676,11 @@ git commit -m "feat: bootstrap journey orders and contracts"
 - Consumes: existing `ESignService.createTaskForContract`, `startPortalSigning`, verified Fadada callback parser, provider account/onboarding and signed-artifact storage.
 - Produces: journey-aware real signing start, reconciliation, Stage 1 archive finalization, and authoritative `Contract.status=ARCHIVED` signal.
 
-- [ ] **Step 1: Write failing fail-closed and idempotency tests**
+- [x] **Step 1: Write failing fail-closed and idempotency tests**
 
 Assert a journey cannot start with mock provider, sandbox/non-production Fadada base URL, missing provider account, unverified test signer, absent production callback URL, or unsigned contract. Assert repeated `START_FADADA_SIGNING` reuses the same `ContractESignTask` and provider transaction ID.
 
-- [ ] **Step 2: Write failing callback/archive authority tests**
+- [x] **Step 2: Write failing callback/archive authority tests**
 
 Cover invalid callback signature, duplicate callback, callback-before-worker race, signed-but-not-archived state, platform seal pending, artifact checksum/storage failure, and success:
 
@@ -691,7 +691,7 @@ expect(afterArchived.contract).toMatchObject({ status: "ARCHIVED", fileId: expec
 expect(signals).toContainEqual(expect.objectContaining({ type: "FADADA_ARTIFACT_ARCHIVED" }));
 ```
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-esign.spec.ts test/esign.spec.ts test/fadada-archive.spec.ts
@@ -699,15 +699,15 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-e
 
 Expected: FAIL because Stage 1 artifact archiving does not yet update Contract authority or publish journey signals.
 
-- [ ] **Step 4: Publish verified e-sign signals transactionally**
+- [x] **Step 4: Publish verified e-sign signals transactionally**
 
 Import `SubscriptionJourneySignalModule` into `ESignModule`. After callback authenticity and provider status are verified, persist task/contract state and `FADADA_TASK_COMPLETED` in the same transaction. Duplicate provider callbacks must return the prior result and not create new events.
 
-- [ ] **Step 5: Finalize signed artifact and archive Contract**
+- [x] **Step 5: Finalize signed artifact and archive Contract**
 
 Extend `FadadaSignedArtifactService.archiveSignedContract` for Stage 1 contracts: download via authenticated provider call, validate non-empty PDF/checksum, store file metadata, record platform seal completion, set `Contract.fileId` and `Contract.status=ARCHIVED`, audit, and write `FADADA_ARTIFACT_ARCHIVED` atomically. On partial external failure, retain the job for reconciliation; never mark archived from callback payload alone.
 
-- [ ] **Step 6: Implement start/reconcile handlers and make tests GREEN**
+- [x] **Step 6: Implement start/reconcile handlers and make tests GREEN**
 
 `START_FADADA_SIGNING` creates/reuses the task and customer sign URL. `RECONCILE_FADADA_SIGNING` queries at 5 minutes, 30 minutes, then 6-hour cadence until archive or terminal exception. Raw sign URLs are returned only to the authenticated contract customer and never placed in events/logs.
 
@@ -718,7 +718,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests and typecheck pass; only archived artifacts advance the journey.
 
-- [ ] **Step 7: Commit real e-sign orchestration**
+- [x] **Step 7: Commit real e-sign orchestration**
 
 ```powershell
 git add apps/api/src/esign apps/api/src/subscription-journey/subscription-journey.handlers.ts apps/api/test/subscription-journey-esign.spec.ts apps/api/test/esign.spec.ts apps/api/test/fadada-archive.spec.ts

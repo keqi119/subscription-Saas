@@ -72,6 +72,12 @@ export class SubscriptionJourneySignalService {
       });
       if (!existingJourney) return;
     }
+    if (input.orderId) {
+      const existingJourney = await tx.subscriptionJourney.findUnique({
+        where: { orderId: input.orderId }
+      });
+      if (!existingJourney) return;
+    }
     await this.repository.recordSignal(tx, input);
   }
 

@@ -9,7 +9,6 @@ import {
   FileOutlined,
   FileTextOutlined,
   KeyOutlined,
-  LogoutOutlined,
   MessageOutlined,
   ProfileOutlined,
   SafetyCertificateOutlined,
@@ -19,7 +18,7 @@ import {
   TeamOutlined,
   UserOutlined
 } from "@ant-design/icons";
-import { App, Button, Layout, Menu, Skeleton, Space, Tag, Tooltip, Typography } from "antd";
+import { App, Layout, Menu, Skeleton, Space, Tag, Typography } from "antd";
 import type { ItemType } from "antd/es/menu/interface";
 import { usePathname, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
@@ -31,6 +30,8 @@ import type { MenuItemDefinition } from "@subscription-saas/shared";
 import { localizeMenuLabel, ROLE_LABELS } from "../constants/labels";
 import { apiFetch, ApiError } from "../lib/api";
 import type { AuthMeResponse } from "../lib/auth";
+import { AccountActions } from "./account-actions";
+import { ChangePasswordModal } from "./change-password-modal";
 
 const { Content, Header, Sider } = Layout;
 
@@ -63,6 +64,7 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
   const { message } = App.useApp();
   const [me, setMe] = useState<AuthMeResponse | null>(() => cachedAuthMe);
   const [loading, setLoading] = useState(() => !cachedAuthMe);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [currentMenuKey, setCurrentMenuKey] = useState(pathname);
   const [openKeys, setOpenKeys] = useState<string[]>([]);
   const [openKeysRestored, setOpenKeysRestored] = useState(false);
@@ -169,54 +171,73 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
     return null;
   }
 
+  const userLabel = me.user.name
+    ? `${me.user.name} (${me.user.username})`
+    : me.user.username;
+
   return (
-    <Layout style={{ minHeight: "100vh" }}>
-      <Sider breakpoint="lg" collapsedWidth="0" width={248}>
-        <div style={{ color: "#fff", fontWeight: 700, padding: "20px 18px" }}>订阅运营中台</div>
-        <Menu
-          items={menuItems}
-          mode="inline"
-          onClick={({ key }) => navigateMenu(String(key))}
-          onOpenChange={updateOpenKeys}
-          openKeys={openKeys}
-          selectedKeys={[currentMenuKey, pathname]}
-          theme="dark"
-        />
-      </Sider>
-      <Layout>
-        <Header
-          style={{
-            alignItems: "center",
-            borderBottom: "1px solid #e5e7eb",
-            display: "flex",
-            height: 64,
-            justifyContent: "space-between",
-            padding: "0 24px"
-          }}
-        >
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            {PLATFORM_NAME}
-          </Typography.Title>
-          <Space>
-            {me.user.roles.map((role) => (
-              <Tag color="blue" key={role}>
-                {ROLE_LABELS[role] ?? role}
-              </Tag>
-            ))}
-            <Tooltip title="退出登录">
-              <Button
-                aria-label="退出登录"
-                icon={<LogoutOutlined />}
-                onClick={() => logout(router)}
-                type="text"
+    <>
+      <Layout style={{ minHeight: "100vh" }}>
+        <Sider breakpoint="lg" collapsedWidth="0" width={248}>
+          <div style={{ color: "#fff", fontWeight: 700, padding: "20px 18px" }}>订阅运营中台</div>
+          <Menu
+            items={menuItems}
+            mode="inline"
+            onClick={({ key }) => navigateMenu(String(key))}
+            onOpenChange={updateOpenKeys}
+            openKeys={openKeys}
+            selectedKeys={[currentMenuKey, pathname]}
+            theme="dark"
+          />
+        </Sider>
+        <Layout>
+          <Header
+            style={{
+              alignItems: "center",
+              borderBottom: "1px solid #e5e7eb",
+              display: "flex",
+              height: 64,
+              justifyContent: "space-between",
+              padding: "0 24px"
+            }}
+          >
+            <Typography.Title level={4} style={{ margin: 0 }}>
+              {PLATFORM_NAME}
+            </Typography.Title>
+            <Space>
+              {me.user.roles.map((role) => (
+                <Tag color="blue" key={role}>
+                  {ROLE_LABELS[role] ?? role}
+                </Tag>
+              ))}
+              <AccountActions
+                onChangePassword={() => setChangePasswordOpen(true)}
+                onLogout={() => void logout(router)}
+                userLabel={userLabel}
               />
-            </Tooltip>
-          </Space>
-        </Header>
-        <Content style={{ padding: 24 }}>{children}</Content>
+            </Space>
+          </Header>
+          <Content style={{ padding: 24 }}>{children}</Content>
+        </Layout>
       </Layout>
-    </Layout>
+      <ChangePasswordModal
+        onCancel={() => setChangePasswordOpen(false)}
+        onChanged={() =>
+          finishPasswordChangeSession(router, () => setChangePasswordOpen(false))
+        }
+        open={changePasswordOpen}
+      />
+    </>
   );
+}
+
+export function finishPasswordChangeSession(
+  router: Pick<ReturnType<typeof useRouter>, "replace">,
+  closeModal: () => void
+) {
+  cachedAuthMe = null;
+  closeModal();
+  router.replace("/login");
 }
 
 function readStoredOpenKeys() {

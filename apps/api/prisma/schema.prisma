@@ -4835,6 +4835,7 @@ model SubscriptionJourneyStep {
   exceptions    SubscriptionJourneyException[]
 
   @@unique([journeyId, code], map: "subscription_journey_step_code_key")
+  @@unique([id, journeyId], map: "subscription_journey_step_id_journey_id_key")
   @@index([journeyId, status], map: "subscription_journey_step_status_idx")
   @@map("subscription_journey_step")
 }
@@ -4844,7 +4845,7 @@ model SubscriptionJourneyJob {
   journeyId        String                         @map("journey_id")
   journey          SubscriptionJourney            @relation(fields: [journeyId], references: [id])
   stepId           String                         @map("step_id")
-  step             SubscriptionJourneyStep        @relation(fields: [stepId], references: [id])
+  step             SubscriptionJourneyStep        @relation(fields: [stepId, journeyId], references: [id, journeyId])
   jobType          SubscriptionJourneyJobType     @map("job_type")
   status           SubscriptionJourneyJobStatus   @default(PENDING)
   sourceKey        String                         @unique @map("source_key") @db.VarChar(128)
@@ -4861,6 +4862,7 @@ model SubscriptionJourneyJob {
   updatedAt        DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   exceptions       SubscriptionJourneyException[]
 
+  @@unique([id, stepId, journeyId], map: "subscription_journey_job_identity_key")
   @@index([status, availableAt, leaseExpiresAt], map: "subscription_journey_job_claim_idx")
   @@index([journeyId, status], map: "subscription_journey_job_status_idx")
   @@index([stepId], map: "subscription_journey_job_step_id_idx")
@@ -4872,7 +4874,7 @@ model SubscriptionJourneyManualTask {
   journeyId     String                              @map("journey_id")
   journey       SubscriptionJourney                 @relation(fields: [journeyId], references: [id])
   stepId        String                              @map("step_id")
-  step          SubscriptionJourneyStep             @relation(fields: [stepId], references: [id])
+  step          SubscriptionJourneyStep             @relation(fields: [stepId, journeyId], references: [id, journeyId])
   taskType      SubscriptionJourneyManualTaskType   @map("task_type")
   status        SubscriptionJourneyManualTaskStatus @default(OPEN)
   decision      SubscriptionJourneyManualDecision?
@@ -4911,9 +4913,9 @@ model SubscriptionJourneyException {
   journeyId       String                             @map("journey_id")
   journey         SubscriptionJourney                @relation(fields: [journeyId], references: [id])
   stepId          String                             @map("step_id")
-  step            SubscriptionJourneyStep            @relation(fields: [stepId], references: [id])
+  step            SubscriptionJourneyStep            @relation(fields: [stepId, journeyId], references: [id, journeyId])
   jobId           String?                            @map("job_id")
-  job             SubscriptionJourneyJob?            @relation(fields: [jobId], references: [id])
+  job             SubscriptionJourneyJob?            @relation(fields: [jobId, stepId, journeyId], references: [id, stepId, journeyId], onDelete: Restrict)
   status          SubscriptionJourneyExceptionStatus @default(OPEN)
   code            String                             @db.VarChar(64)
   message         String                             @db.Text

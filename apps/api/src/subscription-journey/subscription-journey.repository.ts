@@ -1,0 +1,608 @@
+import { Injectable } from "@nestjs/common";
+import {
+  Prisma,
+  SubscriptionJourney,
+  SubscriptionJourneyEventType,
+  SubscriptionJourneyException,
+  SubscriptionJourneyJob,
+  SubscriptionJourneyJobStatus,
+  SubscriptionJourneyManualTask,
+  SubscriptionJourneyManualTaskStatus,
+  SubscriptionJourneyOutbox,
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStep,
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus
+} from "@prisma/client";
+import { randomUUID } from "node:crypto";
+
+import { journeyError } from "./subscription-journey.errors";
+import { manualTaskTypeFor } from "./subscription-journey-state-machine";
+import {
+  CompleteJourneyStepInput,
+  DeadLetterJourneyJobInput,
+  DecideManualTaskInput,
+  EnqueueJourneyJobInput,
+  JourneyFailure,
+  JourneySignalInput,
+  OpenManualTaskInput,
+  RecordJourneyExceptionInput,
+  RescheduleJourneyJobInput,
+  WaitForCustomerInput
+} from "./subscription-journey.types";
+
+type Tx = Prisma.TransactionClient;
+type ClaimedOutbox = Omit<
+  SubscriptionJourneyOutbox,
+  "leaseExpiresAt" | "leaseToken"
+> & { leaseExpiresAt: Date; leaseToken: string };
+
+@Injectable()
+export class SubscriptionJourneyRepository {
+  async createOrGetForApplication(
+    tx: Tx,
+    applicationId: string,
+    eventKey: string
+  ): Promise<SubscriptionJourney> {
+    const payload = safePayload({ applicationId });
+    const journey = await tx.subscriptionJourney.upsert({
+      create: {
+        applicationId,
+        currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+        steps: {
+          create: {
+            code: SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+          }
+        }
+      },
+      update: {},
+      where: { applicationId }
+    });
+    await tx.subscriptionJourneyEvent.upsert({
+      create: {
+        eventKey,
+        eventType: SubscriptionJourneyEventType.JOURNEY_STARTED,
+        journeyId: journey.id,
+        payload,
+        sequence: 1
+      },
+      update: {},
+      where: { eventKey }
+    });
+    await this.writeOutbox(tx, {
+      aggregateId: applicationId,
+      aggregateType: "APPLICATION",
+      eventKey: `${eventKey}:outbox`,
+      eventType: SubscriptionJourneyEventType.JOURNEY_STARTED,
+      journeyId: journey.id,
+      payload
+    });
+    return journey;
+  }
+
+  async completeStep(
+    tx: Tx,
+    input: CompleteJourneyStepInput
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (duplicate) {
+      return this.readStep(tx, input.stepId, input.journeyId);
+    }
+
+    await this.advanceJourney(tx, input);
+    const step = await tx.subscriptionJourneyStep.update({
+      data: {
+        completedAt: new Date(),
+        status: SubscriptionJourneyStepStatus.COMPLETED
+      },
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.STEP_COMPLETED,
+      journeyId: input.journeyId,
+      payload: input.payload ?? {},
+      sequence: input.expectedVersion + 1
+    });
+    return step;
+  }
+
+  async waitForCustomer(
+    tx: Tx,
+    input: WaitForCustomerInput
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      currentStepCode: input.stepCode,
+      currentStepStatus: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+      status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
+      version: { increment: 1 }
+    });
+    const step = await tx.subscriptionJourneyStep.update({
+      data: {
+        status: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+        waitingAt: new Date()
+      },
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+      journeyId: input.journeyId,
+      payload: input.payload ?? {},
+      sequence: input.expectedVersion + 1
+    });
+    return step;
+  }
+
+  async openManualTask(
+    tx: Tx,
+    input: OpenManualTaskInput
+  ): Promise<SubscriptionJourneyManualTask> {
+    assertSafePayload(input.inputSnapshot);
+    const taskType = manualTaskTypeFor(input.stepCode);
+    if (!taskType) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "This journey step does not support a manual task."
+      );
+    }
+    try {
+      return await tx.subscriptionJourneyManualTask.create({
+        data: {
+          inputSnapshot: input.inputSnapshot,
+          journeyId: input.journeyId,
+          stepId: input.stepId,
+          taskType
+        }
+      });
+    } catch (error) {
+      if (isUniqueConflict(error)) {
+        throw journeyError(
+          "JOURNEY_MANUAL_TASK_ALREADY_OPEN",
+          "An open manual task already exists for this journey decision."
+        );
+      }
+      throw error;
+    }
+  }
+
+  async decideManualTask(
+    tx: Tx,
+    input: DecideManualTaskInput
+  ): Promise<SubscriptionJourneyManualTask> {
+    const updated = await tx.subscriptionJourneyManualTask.updateMany({
+      data: {
+        decidedAt: new Date(),
+        decidedBy: input.decidedBy,
+        decision: input.decision,
+        decisionNotes: safeText(input.decisionNotes),
+        status: SubscriptionJourneyManualTaskStatus.COMPLETED,
+        version: { increment: 1 }
+      },
+      where: {
+        id: input.taskId,
+        journeyId: input.journeyId,
+        status: SubscriptionJourneyManualTaskStatus.OPEN,
+        version: input.expectedVersion
+      }
+    });
+    if (updated.count !== 1) {
+      throw optimisticConflict();
+    }
+    const task = await tx.subscriptionJourneyManualTask.findFirst({
+      where: { id: input.taskId, journeyId: input.journeyId }
+    });
+    if (!task) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey manual task was not found."
+      );
+    }
+    return task;
+  }
+
+  async enqueueJob(
+    tx: Tx,
+    input: EnqueueJourneyJobInput
+  ): Promise<SubscriptionJourneyJob> {
+    assertSafePayload(input.payload);
+    return tx.subscriptionJourneyJob.upsert({
+      create: {
+        availableAt: input.availableAt,
+        jobType: input.jobType,
+        journeyId: input.journeyId,
+        maxAttempts: input.maxAttempts,
+        payload: input.payload,
+        sourceKey: input.sourceKey,
+        stepId: input.stepId
+      },
+      update: {},
+      where: { sourceKey: input.sourceKey }
+    });
+  }
+
+  async recordException(
+    tx: Tx,
+    input: RecordJourneyExceptionInput
+  ): Promise<SubscriptionJourneyException> {
+    const failure = safeFailure(input.error);
+    return tx.subscriptionJourneyException.create({
+      data: {
+        code: failure.code,
+        jobId: input.jobId,
+        journeyId: input.journeyId,
+        message: failure.message,
+        retryable: failure.retryable,
+        stepId: input.stepId
+      }
+    });
+  }
+
+  async recordSignal(tx: Tx, input: JourneySignalInput): Promise<void> {
+    assertSafePayload(input.payload);
+    const journey = await tx.subscriptionJourney.findFirst({
+      where: input.applicationId
+        ? { applicationId: input.applicationId }
+        : { orderId: input.orderId }
+    });
+    if (!journey) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey was not found."
+      );
+    }
+    const existing = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (existing) return;
+    await this.updateJourneyVersion(tx, journey.id, journey.version, {
+      version: { increment: 1 }
+    });
+    const sourcePayload = input.payload;
+    const payload = safePayload({
+      ...(sourcePayload &&
+      typeof sourcePayload === "object" &&
+      !Array.isArray(sourcePayload)
+        ? sourcePayload
+        : { value: sourcePayload ?? null }),
+      signalType: input.type
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      journeyId: journey.id,
+      payload,
+      sequence: journey.version + 1
+    });
+  }
+
+  async claimJobs(tx: Tx, limit: number, leaseMs: number) {
+    if (!validClaim(limit, leaseMs)) return [];
+    const leaseToken = randomUUID();
+    const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_journey_job"
+      WHERE (
+        ("status" IN ('PENDING', 'RETRY_SCHEDULED') AND "available_at" <= clock_timestamp())
+        OR ("status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp())
+      )
+      ORDER BY "available_at" ASC, "created_at" ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    `);
+    const ids = candidates.map(({ id }) => id);
+    if (ids.length === 0) return [];
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_job"
+      SET "status" = 'PROCESSING',
+          "lease_token" = ${leaseToken},
+          "lease_expires_at" = clock_timestamp() + (${leaseMs} * interval '1 millisecond'),
+          "updated_at" = clock_timestamp()
+      WHERE "id" IN (${Prisma.join(ids)})
+    `);
+    const rows = await tx.subscriptionJourneyJob.findMany({
+      orderBy: [{ availableAt: "asc" }, { createdAt: "asc" }],
+      where: { id: { in: ids }, leaseToken }
+    });
+    return rows.filter(hasLease);
+  }
+
+  async claimOutbox(
+    tx: Tx,
+    limit: number,
+    leaseMs: number
+  ): Promise<ClaimedOutbox[]> {
+    if (!validClaim(limit, leaseMs)) return [];
+    const leaseToken = randomUUID();
+    const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_journey_outbox"
+      WHERE (
+        ("status" = 'PENDING' AND "available_at" <= clock_timestamp())
+        OR ("status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp())
+      )
+      ORDER BY "available_at" ASC, "created_at" ASC
+      LIMIT ${limit}
+      FOR UPDATE SKIP LOCKED
+    `);
+    const ids = candidates.map(({ id }) => id);
+    if (ids.length === 0) return [];
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_outbox"
+      SET "status" = 'PROCESSING',
+          "lease_token" = ${leaseToken},
+          "lease_expires_at" = clock_timestamp() + (${leaseMs} * interval '1 millisecond'),
+          "updated_at" = clock_timestamp()
+      WHERE "id" IN (${Prisma.join(ids)})
+    `);
+    const rows = await tx.subscriptionJourneyOutbox.findMany({
+      orderBy: [{ availableAt: "asc" }, { createdAt: "asc" }],
+      where: { id: { in: ids }, leaseToken }
+    });
+    return rows.filter(hasLease);
+  }
+
+  async completeJob(
+    tx: Tx,
+    jobId: string,
+    leaseToken: string,
+    result?: Prisma.InputJsonValue
+  ): Promise<void> {
+    assertSafePayload(result);
+    const updated = await tx.subscriptionJourneyJob.updateMany({
+      data: {
+        completedAt: new Date(),
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        payload: result,
+        status: SubscriptionJourneyJobStatus.COMPLETED
+      },
+      where: processingLease(jobId, leaseToken)
+    });
+    requireLease(updated.count);
+  }
+
+  async rescheduleJob(
+    tx: Tx,
+    jobId: string,
+    leaseToken: string,
+    input: RescheduleJourneyJobInput
+  ): Promise<void> {
+    if (!Number.isSafeInteger(input.delayMs) || input.delayMs < 0) {
+      throw new RangeError("Journey retry delay must be a non-negative integer.");
+    }
+    const failure = safeFailure(input.error);
+    const updated = await tx.subscriptionJourneyJob.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        availableAt: new Date(Date.now() + input.delayMs),
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyJobStatus.RETRY_SCHEDULED
+      },
+      where: processingLease(jobId, leaseToken)
+    });
+    requireLease(updated.count);
+  }
+
+  async deadLetterJob(
+    tx: Tx,
+    input: DeadLetterJourneyJobInput
+  ): Promise<SubscriptionJourneyException> {
+    const failure = safeFailure(input.error);
+    const updated = await tx.subscriptionJourneyJob.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        completedAt: new Date(),
+        lastErrorCode: failure.code,
+        lastErrorMessage: failure.message,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyJobStatus.DEAD_LETTER
+      },
+      where: processingLease(input.jobId, input.leaseToken)
+    });
+    requireLease(updated.count);
+    return this.recordException(tx, { ...input, error: failure });
+  }
+
+  private async advanceJourney(tx: Tx, input: CompleteJourneyStepInput) {
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      completedAt: input.nextStepCode ? undefined : new Date(),
+      currentStepCode: input.nextStepCode ?? input.stepCode,
+      currentStepStatus: input.nextStepCode
+        ? SubscriptionJourneyStepStatus.PENDING
+        : SubscriptionJourneyStepStatus.COMPLETED,
+      status: input.nextStepCode
+        ? SubscriptionJourneyStatus.RUNNING
+        : SubscriptionJourneyStatus.COMPLETED,
+      version: { increment: 1 }
+    });
+  }
+
+  private async updateJourneyVersion(
+    tx: Tx,
+    journeyId: string,
+    expectedVersion: number,
+    data: Prisma.SubscriptionJourneyUpdateManyMutationInput
+  ) {
+    const updated = await tx.subscriptionJourney.updateMany({
+      data,
+      where: { id: journeyId, version: expectedVersion }
+    });
+    if (updated.count !== 1) throw optimisticConflict();
+  }
+
+  private async readStep(tx: Tx, stepId: string, journeyId: string) {
+    const step = await tx.subscriptionJourneyStep.findUnique({
+      where: { id_journeyId: { id: stepId, journeyId } }
+    });
+    if (!step) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey step was not found."
+      );
+    }
+    return step;
+  }
+
+  private async writeEventAndOutbox(
+    tx: Tx,
+    input: {
+      eventKey: string;
+      eventType: SubscriptionJourneyEventType;
+      journeyId: string;
+      payload: Prisma.InputJsonValue;
+      sequence: number;
+    }
+  ) {
+    const payload = safePayload(input.payload);
+    await tx.subscriptionJourneyEvent.create({ data: { ...input, payload } });
+    await this.writeOutbox(tx, {
+      aggregateId: input.journeyId,
+      aggregateType: "SUBSCRIPTION_JOURNEY",
+      eventKey: `${input.eventKey}:outbox`,
+      eventType: input.eventType,
+      journeyId: input.journeyId,
+      payload
+    });
+  }
+
+  private writeOutbox(
+    tx: Tx,
+    input: {
+      aggregateId: string;
+      aggregateType: string;
+      eventKey: string;
+      eventType: string;
+      journeyId: string;
+      payload: Prisma.InputJsonValue;
+    }
+  ) {
+    return tx.subscriptionJourneyOutbox.upsert({
+      create: input,
+      update: {},
+      where: { eventKey: input.eventKey }
+    });
+  }
+}
+
+function processingLease(jobId: string, leaseToken: string) {
+  return {
+    id: jobId,
+    leaseToken,
+    status: SubscriptionJourneyJobStatus.PROCESSING
+  };
+}
+
+function requireLease(count: number) {
+  if (count !== 1) {
+    throw journeyError(
+      "JOURNEY_LEASE_LOST",
+      "The subscription journey lease is no longer active.",
+      true
+    );
+  }
+}
+
+function validClaim(limit: number, leaseMs: number) {
+  return Number.isSafeInteger(limit) && limit > 0 && Number.isSafeInteger(leaseMs) && leaseMs > 0;
+}
+
+function hasLease<T extends { leaseExpiresAt: Date | null; leaseToken: string | null }>(
+  row: T
+): row is T & { leaseExpiresAt: Date; leaseToken: string } {
+  return row.leaseExpiresAt instanceof Date && typeof row.leaseToken === "string";
+}
+
+function optimisticConflict() {
+  return journeyError(
+    "JOURNEY_OPTIMISTIC_LOCK_CONFLICT",
+    "The subscription journey changed before this operation completed.",
+    true
+  );
+}
+
+function isUniqueConflict(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
+}
+
+const FORBIDDEN_KEYS = new Set([
+  "accesstoken",
+  "authorization",
+  "cookie",
+  "credential",
+  "credentials",
+  "password",
+  "privatekey",
+  "providertoken",
+  "refreshtoken",
+  "secret",
+  "token"
+]);
+
+export function assertSafePayload(value: unknown, seen = new Set<object>()): void {
+  if (value === null || value === undefined || typeof value !== "object") return;
+  if (seen.has(value)) {
+    throw journeyError(
+      "JOURNEY_SENSITIVE_PAYLOAD",
+      "Journey payload must be serializable and free of sensitive values."
+    );
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertSafePayload(item, seen));
+    seen.delete(value);
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    if (FORBIDDEN_KEYS.has(normalized)) {
+      throw journeyError(
+        "JOURNEY_SENSITIVE_PAYLOAD",
+        "Journey payload must not contain credentials or secrets."
+      );
+    }
+    assertSafePayload(item, seen);
+  }
+  seen.delete(value);
+}
+
+function safePayload(value: Prisma.InputJsonValue): Prisma.InputJsonValue {
+  assertSafePayload(value);
+  return value;
+}
+
+function safeFailure(error: JourneyFailure): JourneyFailure {
+  const code = error.code.toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
+  const message = safeText(error.message) ?? "Journey operation failed.";
+  return {
+    code: code || "JOURNEY_OPERATION_FAILED",
+    message: /(?:password|secret|token|authorization|cookie)\s*[:=]/i.test(message)
+      ? "Journey operation failed."
+      : message,
+    retryable: error.retryable
+  };
+}
+
+function safeText(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, 512) : undefined;
+}

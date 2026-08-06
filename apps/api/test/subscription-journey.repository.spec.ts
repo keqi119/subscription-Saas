@@ -171,6 +171,7 @@ describe("SubscriptionJourneyRepository", () => {
     const events = new Map<string, unknown>();
     const outbox = new Map<string, unknown>();
     const tx = {
+      $queryRaw: vi.fn(async () => [{ acquired: true }]),
       subscriptionJourney: {
         findFirst: vi.fn(async () => currentJourney),
         updateMany: vi.fn(async () => ({ count: 1 }))
@@ -615,6 +616,35 @@ describe("SubscriptionJourneyRepository", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           lastErrorCode: "PROVIDER_HTTP_500_BODY",
+          lastErrorMessage: "Journey operation failed."
+        })
+      })
+    );
+  });
+
+  it("does not persist a truncated raw JSON provider error", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.rescheduleJob(
+      { subscriptionJourneyJob: { updateMany } } as never,
+      "job-1",
+      "lease-1",
+      {
+        delayMs: 1_000,
+        error: {
+          code: "PROVIDER_HTTP_500",
+          message: JSON.stringify({
+            providerResponse: "x".repeat(800)
+          }),
+          retryable: true
+        }
+      }
+    );
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
           lastErrorMessage: "Journey operation failed."
         })
       })

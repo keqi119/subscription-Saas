@@ -119,6 +119,7 @@ export class SubscriptionJourneyRepository {
       input.stepId,
       input.payload
     );
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
     const duplicate = await tx.subscriptionJourneyEvent.findUnique({
       where: { eventKey: input.eventKey }
     });
@@ -163,6 +164,7 @@ export class SubscriptionJourneyRepository {
       input.stepId,
       input.payload
     );
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
     const duplicate = await tx.subscriptionJourneyEvent.findUnique({
       where: { eventKey: input.eventKey }
     });
@@ -324,6 +326,7 @@ export class SubscriptionJourneyRepository {
 
   async recordSignal(tx: Tx, input: JourneySignalInput): Promise<void> {
     assertSafePayload(input.payload);
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
     const journey = await tx.subscriptionJourney.findFirst({
       where: input.applicationId
         ? { applicationId: input.applicationId }
@@ -648,7 +651,10 @@ async function lockIdempotencyKey(
   key: string
 ): Promise<void> {
   await tx.$queryRaw(Prisma.sql`
-    SELECT pg_advisory_xact_lock(hashtextextended(${`${namespace}:${key}`}, 0))
+    SELECT
+      pg_advisory_xact_lock(
+        hashtextextended(${`${namespace}:${key}`}, 0)
+      ) IS NULL AS "acquired"
   `);
 }
 
@@ -836,12 +842,14 @@ function safePayload(value: Prisma.InputJsonValue): Prisma.InputJsonValue {
 
 function safeFailure(error: JourneyFailure): JourneyFailure {
   const code = error.code.toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
-  const message = safeText(error.message) ?? "Journey operation failed.";
+  const rawMessage = error.message.trim();
+  const message =
+    rawMessage && !unsafeText(rawMessage)
+      ? safeText(rawMessage)!
+      : "Journey operation failed.";
   return {
     code: code || "JOURNEY_OPERATION_FAILED",
-    message: unsafeText(message)
-      ? "Journey operation failed."
-      : message,
+    message,
     retryable: error.retryable
   };
 }
@@ -859,14 +867,7 @@ function unsafeText(value: string): boolean {
   }
   if (/\b1[3-9]\d{9}\b/.test(trimmed)) return true;
   if (/\b\d{13,19}\b/.test(trimmed)) return true;
-  if (/^\s*(?:\[|\{)/.test(trimmed)) {
-    try {
-      JSON.parse(trimmed);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  if (/^\s*(?:\[|\{)/.test(trimmed)) return true;
   return false;
 }
 

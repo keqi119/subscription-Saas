@@ -47,7 +47,7 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
   });
 
   afterEach(async () => {
-    await deleteTestJobs(prisma);
+    await resetFixture(prisma);
   });
 
   afterAll(async () => {
@@ -188,6 +188,36 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       ).resolves.toBe(0);
     }
   );
+
+  it("commits concurrent retries of the same domain signal exactly once", async () => {
+    const eventKey = `${FIXTURE_PREFIX}:signal:application-submitted`;
+    const signal = {
+      applicationId: fixture.applicationId,
+      eventKey,
+      payload: { source: "application-submit" },
+      type: "APPLICATION_SUBMITTED" as const
+    };
+
+    await expect(
+      Promise.all([
+        prisma.$transaction((tx) => repository.recordSignal(tx, signal)),
+        prisma.$transaction((tx) => repository.recordSignal(tx, signal))
+      ])
+    ).resolves.toEqual([undefined, undefined]);
+
+    const [eventCount, outboxCount, journey] = await Promise.all([
+      prisma.subscriptionJourneyEvent.count({ where: { eventKey } }),
+      prisma.subscriptionJourneyOutbox.count({
+        where: { eventKey: `${eventKey}:outbox` }
+      }),
+      prisma.subscriptionJourney.findUniqueOrThrow({
+        where: { id: fixture.journeyId }
+      })
+    ]);
+    expect(eventCount).toBe(1);
+    expect(outboxCount).toBe(1);
+    expect(journey.version).toBe(1);
+  });
 });
 
 async function createFixture(prisma: PrismaService) {
@@ -265,6 +295,27 @@ async function deleteTestJobs(prisma: PrismaService) {
   });
   await prisma.subscriptionJourneyJob.deleteMany({
     where: { sourceKey: { startsWith: `${FIXTURE_PREFIX}:` } }
+  });
+}
+
+async function resetFixture(prisma: PrismaService) {
+  assertFixturePrefix();
+  await deleteTestJobs(prisma);
+  await prisma.subscriptionJourneyOutbox.deleteMany({
+    where: {
+      eventKey: { startsWith: `${FIXTURE_PREFIX}:` },
+      journeyId: fixture.journeyId
+    }
+  });
+  await prisma.subscriptionJourneyEvent.deleteMany({
+    where: {
+      eventKey: { startsWith: `${FIXTURE_PREFIX}:` },
+      journeyId: fixture.journeyId
+    }
+  });
+  await prisma.subscriptionJourney.update({
+    data: { version: 0 },
+    where: { id: fixture.journeyId }
   });
 }
 

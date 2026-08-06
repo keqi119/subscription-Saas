@@ -190,6 +190,13 @@ export const SYSTEM_MENUS: MenuItemDefinition[] = [
         permissionCode: PermissionCode.ORDER_REVIEW
       },
       {
+        code: "orders.journey_exceptions",
+        icon: "audit",
+        label: "订阅旅程异常",
+        path: "/orders?journeyStatus=EXCEPTION",
+        permissionCode: PermissionCode.SUBSCRIPTION_JOURNEY_VIEW
+      },
+      {
         code: "orders.contracts",
         icon: "contract",
         label: "合同管理",

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { RequestMethod } from "@nestjs/common";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
-import { PermissionCode } from "@subscription-saas/shared";
+import { PermissionCode, SYSTEM_MENUS } from "@subscription-saas/shared";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -2100,5 +2100,64 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(roleLoopSource(["FI", "AS"]), view)).toBe(true);
     expect(roleHasMenu(roleMenuArray("OP"), "orders.subscription_changes")).toBe(true);
     expect(roleHasMenu(roleMenuArray("SA"), "orders.subscription_changes")).toBe(true);
+  });
+
+  it("assigns the approved subscription journey permissions and exception filter by role", () => {
+    const view = "subscription_journey:view";
+    const operational = [
+      view,
+      "subscription_journey:plan_decide",
+      "subscription_journey:vehicle_allocate",
+      "subscription_journey:delivery_evidence_decide",
+      "subscription_journey:recover"
+    ];
+    const cancel = "subscription_journey:cancel";
+
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VIEW).toBe(view);
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE).toBe(
+      "subscription_journey:plan_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE).toBe(
+      "subscription_journey:vehicle_allocate"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE).toBe(
+      "subscription_journey:delivery_evidence_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER).toBe("subscription_journey:recover");
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_CANCEL).toBe(cancel);
+
+    for (const permission of [...operational, cancel]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+    expect(seedSource).toContain("data: allPermissions.map((permission)");
+    expect(seedSource).toContain("roleId: adminRole.id");
+    expectRolePermissions("OP", operational);
+    expectRolePermissions("SA", [view]);
+    const assetRoleLoop = roleLoopSource(["FI", "AS"]);
+    expect(assetRoleLoop).toContain(
+      '...(roleCode === "AS" ? subscriptionJourneyViewPermissions : [])'
+    );
+    expect(roleHasPermission(rolePermissionArray("OP"), cancel)).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("SA"), cancel)).toBe(false);
+    expect(roleHasPermission(assetRoleLoop, cancel)).toBe(false);
+
+    const orders = SYSTEM_MENUS.find((menu) => menu.code === "orders");
+    const exceptionEntry = orders?.children?.find(
+      (menu) => menu.code === "orders.journey_exceptions"
+    );
+
+    expect(exceptionEntry).toMatchObject({
+      path: "/orders?journeyStatus=EXCEPTION",
+      permissionCode: PermissionCode.SUBSCRIPTION_JOURNEY_VIEW
+    });
+    expect(SYSTEM_MENUS.some((menu) => menu.code === "orders.journey_exceptions")).toBe(false);
+    expect(seedSource).toContain(
+      '["orders.journey_exceptions", "订阅旅程异常", "/orders?journeyStatus=EXCEPTION", "audit", 18, "subscription_journey:view", "orders"]'
+    );
+    expect(roleHasMenu(roleMenuArray("OP"), "orders.journey_exceptions")).toBe(true);
+    expect(roleHasMenu(roleMenuArray("SA"), "orders.journey_exceptions")).toBe(true);
+    expect(assetRoleLoop).toContain(
+      '...(roleCode === "AS" ? subscriptionJourneyExceptionMenuCodes : [])'
+    );
   });
 });

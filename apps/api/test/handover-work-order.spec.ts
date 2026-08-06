@@ -50,6 +50,107 @@ describe("HandoverWorkOrderService", () => {
     expect(replacement.id).toBe("work-order-2");
   });
 
+  it("creates or reuses one Journey handover only after authoritative prerequisites pass", async () => {
+    const harness = createHandoverWorkOrderHarness();
+
+    const first = await harness.service.createJourneyHandoverInTransaction(
+      harness.prisma as never,
+      harness.orderId,
+      harness.admin.id,
+      "journey:journey-1:step:HANDOVER_AND_STAGE2_CREATION:revision:1"
+    );
+    const duplicate = await harness.service.createJourneyHandoverInTransaction(
+      harness.prisma as never,
+      harness.orderId,
+      harness.admin.id,
+      "journey:journey-1:step:HANDOVER_AND_STAGE2_CREATION:revision:1"
+    );
+
+    expect(duplicate.id).toBe(first.id);
+    expect(harness.state.workOrders).toHaveLength(1);
+    expect(first).toMatchObject({
+      handoverId: "handover-1",
+      metadata: expect.objectContaining({
+        journeySourceKey:
+          "journey:journey-1:step:HANDOVER_AND_STAGE2_CREATION:revision:1"
+      }),
+      vehicleDeliveryId: "delivery-1"
+    });
+    expect(
+      harness.financeService.evaluateInitialBillSettlement
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not create a Journey handover for partial payment or incomplete delivery prerequisites", async () => {
+    const partial = createHandoverWorkOrderHarness();
+    partial.financeService.evaluateInitialBillSettlement.mockResolvedValueOnce({
+      paid: false,
+      remainingAmount: 100n
+    });
+    await expect(
+      partial.service.createJourneyHandoverInTransaction(
+        partial.prisma as never,
+        partial.orderId,
+        partial.admin.id,
+        "journey:journey-1:handover"
+      )
+    ).rejects.toThrow();
+    expect(partial.state.workOrders).toHaveLength(0);
+
+    for (const mutate of [
+      (harness: ReturnType<typeof createHandoverWorkOrderHarness>) => {
+        harness.state.order.contract.status = ContractStatus.SIGNED;
+      },
+      (harness: ReturnType<typeof createHandoverWorkOrderHarness>) => {
+        harness.state.order.vehicle.insurancePolicies = [];
+      },
+      (harness: ReturnType<typeof createHandoverWorkOrderHarness>) => {
+        harness.state.vehicleInspection.status = "PENDING";
+      }
+    ]) {
+      const harness = createHandoverWorkOrderHarness();
+      mutate(harness);
+      await expect(
+        harness.service.createJourneyHandoverInTransaction(
+          harness.prisma as never,
+          harness.orderId,
+          harness.admin.id,
+          "journey:journey-1:handover"
+        )
+      ).rejects.toThrow();
+      expect(harness.state.workOrders).toHaveLength(0);
+    }
+  });
+
+  it("creates the Stage 2 delivery record in the same Journey transaction when absent", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.prisma.vehicleDelivery.findUnique.mockResolvedValueOnce(null as never);
+
+    const workOrder = await harness.service.createJourneyHandoverInTransaction(
+      harness.prisma as never,
+      harness.orderId,
+      harness.admin.id,
+      "journey:journey-1:handover"
+    );
+
+    expect(harness.prisma.vehicleDelivery.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        customerId: "customer-1",
+        deliveryStatus: "PENDING",
+        orderId: harness.orderId,
+        vehicleId: "vehicle-1"
+      })
+    });
+    expect(harness.prisma.subscriptionOrder.update).toHaveBeenCalledWith({
+      data: {
+        orderStatus: "PENDING_DELIVERY",
+        updatedBy: harness.admin.id
+      },
+      where: { id: harness.orderId }
+    });
+    expect(workOrder.vehicleDeliveryId).toBe("delivery-1");
+  });
+
   it("maps serializable create conflicts to a retryable domain conflict", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.prisma.$transaction.mockRejectedValueOnce({ code: "P2034" });
@@ -1452,7 +1553,7 @@ describe("HandoverWorkOrderService", () => {
     );
   });
 
-  it("allows customer no-objection confirmation to unlock Stage 2 PDF/eSign while ops review remains non-blocking", async () => {
+  it("allows approval review without blocking Stage 2 but returns a rejection to evidence preparation", async () => {
     const harness = createReadyForCustomerReviewHarness();
 
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("客户尚未确认");
@@ -1478,7 +1579,12 @@ describe("HandoverWorkOrderService", () => {
     await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
 
     await harness.service.markOpsReviewRejected("work-order-1", harness.admin.id, "抽检后补材料");
-    await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
+    await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).rejects.toThrow();
+    expect(harness.state.workOrders[0]).toMatchObject({
+      customerConfirmedAt: null,
+      opsReviewStatus: "REJECTED",
+      status: "FIELD_IN_PROGRESS"
+    });
   });
 
   it("blocks ops review pending before post-signing work-order states", async () => {
@@ -1535,6 +1641,52 @@ describe("HandoverWorkOrderService", () => {
         status: "OPS_REVIEW_PENDING"
       });
     }
+  });
+
+  it("publishes readiness and decides the exact aggregate review in the same transaction", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    const manifestHash = (
+      await harness.service.getCurrentEvidencePackage("work-order-1")
+    ).manifestHash;
+    await harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      manifestHash
+    );
+    await harness.service.markCustomerSigned(
+      "work-order-1",
+      harness.now,
+      harness.admin.id
+    );
+
+    await harness.service.markOpsReviewPending(
+      "work-order-1",
+      harness.admin.id
+    );
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledWith(harness.prisma, {
+      handoverId: "handover-1",
+      manifestHash,
+      orderId: harness.orderId,
+      workOrderId: "work-order-1"
+    });
+
+    await harness.service.markOpsReviewApproved(
+      "work-order-1",
+      harness.admin.id,
+      "approved"
+    );
+    expect(
+      harness.journeySignal.completeHandoverEvidenceDecision
+    ).toHaveBeenCalledWith(harness.prisma, {
+      actorId: harness.admin.id,
+      decision: "APPROVED",
+      manifestHash,
+      notes: "approved",
+      orderId: harness.orderId,
+      workOrderId: "work-order-1"
+    });
   });
 
   it("blocks Stage 2 signing when the customer objects or the work order is cancelled", async () => {
@@ -1998,9 +2150,11 @@ function createHandoverWorkOrderHarness() {
     },
     order: {
       contract: {
+        archivedAt: new Date("2026-07-21T07:00:00.000Z"),
         deletedAt: null,
+        fileId: "file-contract-archived",
         id: "contract-stage1",
-        status: ContractStatus.SIGNED
+        status: ContractStatus.ARCHIVED as ContractStatus
       },
       contractId: "contract-stage1",
       customer: {
@@ -2014,15 +2168,36 @@ function createHandoverWorkOrderHarness() {
       id: orderId,
       monthlyFeeAmount: 399900n,
       orderNo: "ORD202607210001",
+      orderStatus: "PENDING_PAYMENT",
       vehicle: {
         brand: "Tesla",
         deletedAt: null,
         id: "vehicle-1",
+        insurancePolicies: [
+          {
+            deletedAt: null,
+            effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+            effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+            id: "insurance-compulsory",
+            policyStatus: "ACTIVE",
+            policyType: "COMPULSORY_TRAFFIC"
+          },
+          {
+            deletedAt: null,
+            effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+            effectiveTo: new Date("2026-12-31T00:00:00.000Z"),
+            id: "insurance-commercial",
+            policyStatus: "ACTIVE",
+            policyType: "COMMERCIAL"
+          }
+        ],
         model: "Model 3",
         plateNo: "沪A12345",
+        status: "RESERVED",
         vin: "LFPH3AC12N123888888"
       },
-      vehicleId: "vehicle-1"
+      vehicleId: "vehicle-1",
+      startDate: new Date("2026-07-22T00:00:00.000Z")
     },
     users: [
       {
@@ -2051,6 +2226,12 @@ function createHandoverWorkOrderHarness() {
       id: "delivery-1",
       orderId,
       scheduledAt: new Date("2026-07-22T02:00:00.000Z")
+    },
+    vehicleInspection: {
+      deletedAt: null,
+      id: "inspection-1",
+      orderId,
+      status: "PASSED"
     },
     evidenceItems: [] as Array<Record<string, unknown>>,
     evidenceFiles: [] as Array<Record<string, unknown>>,
@@ -2099,7 +2280,14 @@ function createHandoverWorkOrderHarness() {
     },
     subscriptionOrder: {
       findFirst: vi.fn(async () => state.order),
-      findUnique: vi.fn(async () => state.order)
+      findUnique: vi.fn(async () => state.order),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(state.order, data);
+        return state.order;
+      })
+    },
+    vehicleInspection: {
+      findUnique: vi.fn(async () => state.vehicleInspection)
     },
     user: {
       findFirst: vi.fn(async ({
@@ -2115,6 +2303,10 @@ function createHandoverWorkOrderHarness() {
       )
     },
     vehicleDelivery: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(state.vehicleDelivery, data);
+        return state.vehicleDelivery;
+      }),
       findUnique: vi.fn(async () => state.vehicleDelivery)
     },
     fileObject: {
@@ -2240,6 +2432,7 @@ function createHandoverWorkOrderHarness() {
           )
       )
     },
+    $queryRaw: vi.fn(async () => [{ id: orderId }]),
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {
         events: structuredClone(state.events),
@@ -2360,6 +2553,15 @@ function createHandoverWorkOrderHarness() {
       return job;
     })
   };
+  const financeService = {
+    evaluateInitialBillSettlement: vi.fn(async () => ({
+      paid: true,
+      remainingAmount: 0n
+    }))
+  };
+  const journeySignal = {
+    completeHandoverEvidenceDecision: vi.fn(async () => undefined)
+  };
   const service = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
@@ -2368,15 +2570,19 @@ function createHandoverWorkOrderHarness() {
     undefined,
     undefined,
     artifactService as never,
-    workflowRepository as never
+    workflowRepository as never,
+    financeService as never,
+    journeySignal as never
   );
 
   return {
     admin,
     artifactService,
     evidenceService,
+    financeService,
     handoverService,
     internalUser,
+    journeySignal,
     now,
     orderId,
     prisma,
@@ -2465,6 +2671,7 @@ function createEvidenceService() {
       return checklist;
     },
     initializeChecklist: vi.fn(async () => ({ items: [] })),
+    recordJourneyEvidenceReady: vi.fn(async () => undefined),
     removeEvidenceFile: vi.fn(async (itemId: string) => ({
       fileCount: 0,
       id: itemId,

@@ -818,8 +818,14 @@ git commit -m "feat: settle journey bills through jsapi payments"
 - Modify: `apps/api/src/handover-work-order/handover-work-order.service.ts`
 - Modify: `apps/api/src/delivery-evidence/delivery-evidence.module.ts`
 - Modify: `apps/api/src/delivery-evidence/delivery-evidence.service.ts`
+- Modify: `apps/api/src/delivery-handover/delivery-handover.service.ts`
 - Modify: `apps/api/src/subscription-journey/subscription-journey.handlers.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.module.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.repository.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey-signal.service.ts`
+- Modify: `apps/api/src/subscription-journey/subscription-journey.service.ts`
 - Create: `apps/api/test/subscription-journey-handover.spec.ts`
+- Modify: `apps/api/test/subscription-journey.repository.spec.ts`
 - Modify: `apps/api/test/handover-work-order.spec.ts`
 - Modify: `apps/api/test/delivery-evidence.spec.ts`
 
@@ -845,11 +851,11 @@ decideJourneyDeliveryEvidence(
 ): Promise<HandoverWorkOrder>;
 ```
 
-- [ ] **Step 1: Write failing handover bootstrap tests**
+- [x] **Step 1: Write failing handover bootstrap tests**
 
 Assert full bill settlement creates/reuses one Stage 2 delivery work order, links it to the Journey/order, and advances to `DELIVERY_EVIDENCE_DECISION` only after the existing evidence-readiness validator passes. Partial payment, unarchived contract, missing insurance/inspection prerequisites and duplicate signals must not create duplicate work orders.
 
-- [ ] **Step 2: Write failing third-decision tests**
+- [x] **Step 2: Write failing third-decision tests**
 
 Map the aggregate ops review to the single journey manual task. Item-level capture/upload/reconciliation remains evidence preparation, not another journey decision. On approval, write aggregate review plus manual-task completion atomically and enqueue activation. On rejection, return to evidence preparation, retain an auditable rejection event, and reopen at most one task after new evidence becomes ready.
 
@@ -862,7 +868,7 @@ expect(manualTasks.map((task) => task.taskType)).toEqual([
 expect(manualTasks.filter((task) => task.status === "OPEN")).toHaveLength(1);
 ```
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-handover.spec.ts test/handover-work-order.spec.ts test/delivery-evidence.spec.ts
@@ -870,11 +876,11 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-h
 
 Expected: FAIL because journey handover adapters/signals do not exist.
 
-- [ ] **Step 4: Add transaction-scoped handover adapters and signals**
+- [x] **Step 4: Add transaction-scoped handover adapters and signals**
 
 Import `SubscriptionJourneySignalModule` in `HandoverWorkOrderModule`. Refactor existing public operations to delegate to transaction-aware inner methods. Publish `HANDOVER_EVIDENCE_READY` only after the readiness validator passes and `HANDOVER_OPS_REVIEWED` in the same transaction as aggregate approval/rejection.
 
-- [ ] **Step 5: Implement journey handlers and make tests GREEN**
+- [x] **Step 5: Implement journey handlers and make tests GREEN**
 
 The creation handler must use a stable source key. The evidence handler must call existing Stage 2 validators rather than copy their rules. A rejection is not a technical exception and must not consume job retry attempts.
 
@@ -885,7 +891,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests/typecheck pass and the journey history contains exactly three internal manual decision types.
 
-- [ ] **Step 6: Commit Stage 2 handover orchestration**
+- [x] **Step 6: Commit Stage 2 handover orchestration**
 
 ```powershell
 git add apps/api/src/handover-work-order apps/api/src/delivery-evidence apps/api/src/subscription-journey/subscription-journey.handlers.ts apps/api/test/subscription-journey-handover.spec.ts apps/api/test/handover-work-order.spec.ts apps/api/test/delivery-evidence.spec.ts

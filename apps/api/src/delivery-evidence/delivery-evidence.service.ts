@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import {
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
@@ -10,6 +10,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 
 export const DELIVERY_EVIDENCE_NOT_READY_MESSAGE = "交付证据尚未全部上传并审核通过。";
 
@@ -244,7 +245,11 @@ type DeliveryEvidenceDb = Prisma.TransactionClient | PrismaService;
 
 @Injectable()
 export class DeliveryEvidenceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    private readonly journeySignal?: SubscriptionJourneySignalService
+  ) {}
 
   async initializeChecklist(
     orderId: string,
@@ -692,8 +697,16 @@ export class DeliveryEvidenceService {
     }, db);
   }
 
-  async validateEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
-    return this.validateEvidenceReady({ handoverId, orderId }, { mode: "OPS_REVIEW" });
+  async validateEvidenceReadyForOpsReview(
+    orderId: string,
+    handoverId?: string | null,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    return this.validateEvidenceReady(
+      { handoverId, orderId },
+      { mode: "OPS_REVIEW" },
+      db
+    );
   }
 
   async validateEvidenceReadyForStage2Pdf(
@@ -771,8 +784,44 @@ export class DeliveryEvidenceService {
     );
   }
 
-  async assertEvidenceReadyForOpsReview(orderId: string, handoverId?: string | null) {
-    assertDeliveryEvidenceReady(await this.validateEvidenceReadyForOpsReview(orderId, handoverId));
+  async assertEvidenceReadyForOpsReview(
+    orderId: string,
+    handoverId?: string | null,
+    db: DeliveryEvidenceDb = this.prisma
+  ) {
+    assertDeliveryEvidenceReady(
+      await this.validateEvidenceReadyForOpsReview(orderId, handoverId, db)
+    );
+  }
+
+  async recordJourneyEvidenceReady(
+    tx: Prisma.TransactionClient,
+    input: {
+      handoverId: string;
+      manifestHash: string;
+      orderId: string;
+      workOrderId: string;
+    }
+  ): Promise<void> {
+    await this.assertEvidenceReadyForOpsReview(
+      input.orderId,
+      input.handoverId,
+      tx
+    );
+    if (!this.journeySignal) {
+      throw new Error("Subscription journey evidence signaling is unavailable.");
+    }
+    await this.journeySignal.record(tx, {
+      eventKey:
+        `handover:${input.workOrderId}:ready:${input.manifestHash.slice(0, 16)}`,
+      orderId: input.orderId,
+      payload: {
+        handoverId: input.handoverId,
+        manifestHash: input.manifestHash,
+        workOrderId: input.workOrderId
+      },
+      type: "HANDOVER_EVIDENCE_READY"
+    });
   }
 
   private async validateEvidenceReady(scopeInput: ChecklistScopeInput, options?: {

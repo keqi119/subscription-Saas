@@ -129,6 +129,47 @@ describe("DeliveryEvidenceService", () => {
     }));
   });
 
+  it("publishes an exact Journey evidence-ready signal only after ops readiness passes", async () => {
+    const blocked = createDeliveryEvidenceHarness();
+
+    await expect(
+      blocked.service.recordJourneyEvidenceReady(blocked.prisma as never, {
+        handoverId: blocked.handoverId,
+        manifestHash: "a".repeat(64),
+        orderId: blocked.orderId,
+        workOrderId: "work-order-1"
+      })
+    ).rejects.toThrow();
+    expect(blocked.journeySignal.record).not.toHaveBeenCalled();
+
+    const ready = createDeliveryEvidenceHarness();
+    await approveRequiredFileEvidence(ready);
+    await ready.service.declareNoVisibleDamage(
+      ready.orderId,
+      ready.userId,
+      ready.handoverId,
+      "field confirmed"
+    );
+
+    await ready.service.recordJourneyEvidenceReady(ready.prisma as never, {
+      handoverId: ready.handoverId,
+      manifestHash: "a".repeat(64),
+      orderId: ready.orderId,
+      workOrderId: "work-order-1"
+    });
+
+    expect(ready.journeySignal.record).toHaveBeenCalledWith(ready.prisma, {
+      eventKey: "handover:work-order-1:ready:aaaaaaaaaaaaaaaa",
+      orderId: ready.orderId,
+      payload: {
+        handoverId: ready.handoverId,
+        manifestHash: "a".repeat(64),
+        workOrderId: "work-order-1"
+      },
+      type: "HANDOVER_EVIDENCE_READY"
+    });
+  });
+
   it("blocks readiness when evidence is rejected and requires re-upload or re-review", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);
@@ -621,7 +662,13 @@ function createDeliveryEvidenceHarness() {
     },
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(prisma))
   };
-  const service = new DeliveryEvidenceService(prisma as never);
+  const journeySignal = {
+    record: vi.fn(async () => undefined)
+  };
+  const service = new DeliveryEvidenceService(
+    prisma as never,
+    journeySignal as never
+  );
 
   const addFile = (originalName: string, mimeType: string) => {
     const file = {
@@ -695,6 +742,7 @@ function createDeliveryEvidenceHarness() {
       return item;
     },
     handoverId,
+    journeySignal,
     orderId,
     prepareArtifactMetadata,
     prisma,

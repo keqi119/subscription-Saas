@@ -418,6 +418,118 @@ export class SubscriptionJourneyRepository {
     return customerStep;
   }
 
+  async returnToHandoverEvidence(
+    tx: Tx,
+    input: {
+      decisionStepId: string;
+      eventKey: string;
+      expectedVersion: number;
+      journeyId: string;
+      payload: Prisma.InputJsonValue;
+    }
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    const eventPayload = safePayload({
+      operation: "REJECT_DELIVERY_EVIDENCE",
+      payload: input.payload,
+      stepId: input.decisionStepId
+    });
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (duplicate) {
+      requireExactEvent(duplicate, {
+        eventType: SubscriptionJourneyEventType.MANUAL_TASK_DECIDED,
+        journeyId: input.journeyId,
+        payload: eventPayload
+      });
+      const existing = await tx.subscriptionJourneyStep.findUnique({
+        where: {
+          journeyId_code: {
+            code: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+            journeyId: input.journeyId
+          }
+        }
+      });
+      if (!existing) {
+        throw journeyError(
+          "JOURNEY_NOT_FOUND",
+          "The handover evidence-preparation step was not found."
+        );
+      }
+      return existing;
+    }
+    const locked = await lockJourneyStep(
+      tx,
+      input.journeyId,
+      input.decisionStepId
+    );
+    validateCurrentStep(locked, input.expectedVersion);
+    if (
+      locked.stepCode !==
+      SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "Only a delivery-evidence rejection can return to handover preparation."
+      );
+    }
+    const handoverStep = await tx.subscriptionJourneyStep.upsert({
+      create: {
+        code: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+        journeyId: input.journeyId,
+        startedAt: new Date(),
+        status: SubscriptionJourneyStepStatus.RUNNING
+      },
+      update: {
+        completedAt: null,
+        startedAt: new Date(),
+        status: SubscriptionJourneyStepStatus.RUNNING,
+        waitingAt: null
+      },
+      where: {
+        journeyId_code: {
+          code: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+          journeyId: input.journeyId
+        }
+      }
+    });
+    await tx.subscriptionJourneyStep.update({
+      data: {
+        completedAt: null,
+        status: SubscriptionJourneyStepStatus.PENDING,
+        waitingAt: null
+      },
+      where: {
+        id_journeyId: {
+          id: input.decisionStepId,
+          journeyId: input.journeyId
+        }
+      }
+    });
+    await this.updateJourneyVersion(
+      tx,
+      input.journeyId,
+      input.expectedVersion,
+      {
+        currentStepCode:
+          SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+        currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+        status: SubscriptionJourneyStatus.RUNNING,
+        version: { increment: 1 }
+      }
+    );
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.MANUAL_TASK_DECIDED,
+      journeyId: input.journeyId,
+      payload: eventPayload,
+      sequence: input.expectedVersion + 1
+    });
+    return handoverStep;
+  }
+
   async enqueueJob(
     tx: Tx,
     input: EnqueueJourneyJobInput

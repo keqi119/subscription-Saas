@@ -24,11 +24,15 @@ import {
   ContractVersionStatus,
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
+  DeliveryStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   FieldOperatorAuditEventType,
   Prisma,
+  OrderStatus,
   UserStatus,
+  VehicleInspectionStatus,
+  VehicleStatus,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
   VehicleHandoverEventType,
@@ -39,6 +43,8 @@ import {
   DeliveryEvidenceFieldState,
   DeliveryEvidenceService
 } from "../delivery-evidence/delivery-evidence.service";
+import { createBusinessNo } from "../common/business-number";
+import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
 import {
   DeliveryHandoverEvidenceArtifactService,
   getDeliveryEvidenceVideoQualityPublicMessage,
@@ -73,6 +79,8 @@ import {
 } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import { FinanceService } from "../finance/finance.service";
+import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 import {
   hasStage2SourceArtifactState,
   normalizeStage2Sha256,
@@ -232,6 +240,7 @@ export interface WorkOrderRecord {
   scheduledAt?: Date | null;
   status: string;
   updatedAt?: Date | null;
+  vehicleDeliveryId?: string | null;
 }
 
 export interface EvidenceFileStreamResult {
@@ -351,7 +360,9 @@ export class HandoverWorkOrderService {
     @Optional() private readonly handoverPdfRenderer?: DeliveryHandoverPdfRendererService,
     @Optional() private readonly configService?: ConfigService,
     @Optional() private readonly evidenceArtifactService?: DeliveryHandoverEvidenceArtifactService,
-    @Optional() private readonly workflowRepository?: Stage2HandoverWorkflowRepository
+    @Optional() private readonly workflowRepository?: Stage2HandoverWorkflowRepository,
+    @Optional() private readonly financeService?: FinanceService,
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -383,6 +394,161 @@ export class HandoverWorkOrderService {
       return workOrder;
     });
     return created;
+  }
+
+  async createJourneyHandoverInTransaction(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    actorId: string,
+    sourceKey: string
+  ): Promise<WorkOrderRecord> {
+    if (!this.financeService || !this.deliveryHandoverService) {
+      throw new Error("Journey handover dependencies are unavailable.");
+    }
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_order"
+      WHERE "id" = ${orderId}::uuid
+      FOR UPDATE
+    `);
+    const settlement = await this.financeService.evaluateInitialBillSettlement(
+      tx,
+      orderId
+    );
+    if (!settlement.paid) {
+      throw new BadRequestException("Initial bills must be fully settled before handover creation.");
+    }
+    const order = await tx.subscriptionOrder.findUnique({
+      include: {
+        contract: true,
+        vehicle: { include: { insurancePolicies: true } }
+      },
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw new NotFoundException("订单不存在。");
+    }
+    if (
+      !order.contract ||
+      order.contract.deletedAt ||
+      order.contract.status !== ContractStatus.ARCHIVED ||
+      !order.contract.archivedAt ||
+      !order.contract.fileId
+    ) {
+      throw new BadRequestException("Stage 1 contract must have an archived PDF before handover creation.");
+    }
+    if (
+      !order.vehicleId ||
+      !order.vehicle ||
+      order.vehicle.deletedAt ||
+      order.vehicle.status !== VehicleStatus.RESERVED
+    ) {
+      throw new BadRequestException("A reserved vehicle is required before handover creation.");
+    }
+    const inspection = await tx.vehicleInspection.findUnique({
+      where: { orderId }
+    });
+    if (
+      !inspection ||
+      inspection.deletedAt ||
+      inspection.status !== VehicleInspectionStatus.PASSED
+    ) {
+      throw new BadRequestException("A passed vehicle inspection is required before handover creation.");
+    }
+    let delivery = await tx.vehicleDelivery.findUnique({ where: { orderId } });
+    const evaluationDate =
+      (delivery && !delivery.deletedAt ? delivery.scheduledAt : null) ??
+      order.startDate ??
+      new Date();
+    const insurance = resolveVehicleInsuranceCoverage(
+      order.vehicle.insurancePolicies,
+      evaluationDate
+    );
+    if (!insurance.covered) {
+      throw new BadRequestException("Valid compulsory and commercial insurance is required before handover creation.");
+    }
+    if (!delivery || delivery.deletedAt) {
+      delivery = await tx.vehicleDelivery.create({
+        data: {
+          createdBy: actorId,
+          customerId: order.customerId,
+          deliveryNo: createBusinessNo("DLV"),
+          deliveryStatus: DeliveryStatus.PENDING,
+          orderId,
+          scheduledAt: order.startDate,
+          updatedBy: actorId,
+          vehicleId: order.vehicleId
+        }
+      });
+      if (order.orderStatus !== OrderStatus.PENDING_DELIVERY) {
+        await tx.subscriptionOrder.update({
+          data: {
+            orderStatus: OrderStatus.PENDING_DELIVERY,
+            updatedBy: actorId
+          },
+          where: { id: orderId }
+        });
+      }
+    }
+    const handover = await this.deliveryHandoverService.getOrCreateDraftHandover(
+      orderId,
+      actorId,
+      tx
+    );
+    await this.deliveryEvidenceService.initializeChecklist(
+      orderId,
+      handover.id,
+      tx
+    );
+    const existing = await tx.vehicleHandoverWorkOrder.findFirst({
+      where: {
+        handoverType: "DELIVERY_OUTBOUND",
+        orderId,
+        status: { notIn: [...TERMINAL_WORK_ORDER_STATUSES] }
+      }
+    });
+    if (existing) {
+      if (
+        readMetadataString(existing.metadata, "journeySourceKey") &&
+        existing.handoverId === handover.id &&
+        existing.vehicleDeliveryId === delivery.id
+      ) {
+        return existing;
+      }
+      return this.updateWorkOrderVersioned(existing, {
+        handoverId: existing.handoverId ?? handover.id,
+        metadata: mergeMetadata(existing.metadata, {
+          journeySourceKey:
+            readMetadataString(existing.metadata, "journeySourceKey") ??
+            sourceKey
+        }),
+        vehicleDeliveryId: existing.vehicleDeliveryId ?? delivery.id
+      }, tx);
+    }
+    const workOrder = await tx.vehicleHandoverWorkOrder.create({
+      data: {
+        deliveryLocation: delivery.deliveryLocation,
+        handoverId: handover.id,
+        handoverType: "DELIVERY_OUTBOUND",
+        metadata: toJsonValue({ journeySourceKey: sourceKey }),
+        operatorType: "INTERNAL",
+        orderId,
+        scheduledAt: delivery.scheduledAt,
+        status: "DRAFT",
+        vehicleDeliveryId: delivery.id
+      }
+    });
+    await this.recordEvent(
+      workOrder,
+      VehicleHandoverEventType.WORK_ORDER_CREATED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.SYSTEM,
+        detail: { journeySourceKey: sourceKey }
+      },
+      tx
+    );
+    return workOrder;
   }
 
   async listByOrder(orderId: string) {
@@ -1707,55 +1873,140 @@ export class HandoverWorkOrderService {
   }
 
   async markOpsReviewPending(id: string, actorId?: string) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
-    assertCanMarkOpsReviewPending(workOrder);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      metadata: mergeMetadata(workOrder.metadata, { opsReviewRequestedBy: actorId ?? null }),
-      opsReviewStatus: "PENDING",
-      status: "OPS_REVIEW_PENDING"
-    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: { status: "PENDING" }
+    return this.runSerializableTransaction(async (tx) => {
+      const workOrder = await this.getWorkOrderOrThrow(id, tx);
+      assertCanMarkOpsReviewPending(workOrder);
+      const evidencePackage = await this.buildCurrentEvidencePackage(
+        workOrder,
+        undefined,
+        tx
+      );
+      const updated = await this.updateWorkOrderVersioned(workOrder, {
+        metadata: mergeMetadata(workOrder.metadata, {
+          journeyEvidenceManifestHash: evidencePackage.manifestHash,
+          opsReviewRequestedBy: actorId ?? null
+        }),
+        opsReviewStatus: "PENDING",
+        status: "OPS_REVIEW_PENDING"
+      }, tx);
+      await this.recordEvent(
+        updated,
+        VehicleHandoverEventType.OPS_REVIEW_UPDATED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: {
+            manifestHash: evidencePackage.manifestHash,
+            status: "PENDING"
+          }
+        },
+        tx
+      );
+      if (!updated.handoverId) {
+        throw new BadRequestException("交接工单尚未关联车辆交接记录。");
+      }
+      await this.deliveryEvidenceService.recordJourneyEvidenceReady(tx, {
+        handoverId: updated.handoverId,
+        manifestHash: evidencePackage.manifestHash,
+        orderId: updated.orderId,
+        workOrderId: updated.id
+      });
+      return updated;
     });
   }
 
   async markOpsReviewApproved(id: string, reviewerId: string, notes?: string | null) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
-    assertOpsReviewPending(workOrder);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      opsReviewNotes: normalizeOptionalText(notes),
-      opsReviewStatus: "APPROVED",
-      opsReviewedAt: new Date(),
-      opsReviewedBy: reviewerId,
-      status: "OPS_REVIEWED"
-    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
-      actorId: reviewerId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: {
-        notes: normalizeOptionalText(notes),
-        status: "APPROVED"
-      }
-    });
+    return this.runSerializableTransaction((tx) =>
+      this.decideJourneyDeliveryEvidence(
+        tx,
+        id,
+        "APPROVED",
+        reviewerId,
+        notes ?? undefined
+      )
+    );
   }
 
   async markOpsReviewRejected(id: string, reviewerId: string, notes?: string | null) {
-    const workOrder = await this.getWorkOrderOrThrow(id);
+    return this.runSerializableTransaction((tx) =>
+      this.decideJourneyDeliveryEvidence(
+        tx,
+        id,
+        "REJECTED",
+        reviewerId,
+        notes ?? undefined
+      )
+    );
+  }
+
+  async decideJourneyDeliveryEvidence(
+    tx: Prisma.TransactionClient,
+    workOrderId: string,
+    decision: "APPROVED" | "REJECTED",
+    actorId: string,
+    notes?: string
+  ): Promise<WorkOrderRecord> {
+    const workOrder = await this.getWorkOrderOrThrow(workOrderId, tx);
     assertOpsReviewPending(workOrder);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      opsReviewNotes: normalizeOptionalText(notes),
-      opsReviewStatus: "REJECTED",
+    const evidencePackage = await this.buildCurrentEvidencePackage(
+      workOrder,
+      undefined,
+      tx
+    );
+    const expectedManifestHash = readMetadataString(
+      workOrder.metadata,
+      "journeyEvidenceManifestHash"
+    );
+    if (
+      expectedManifestHash &&
+      expectedManifestHash !== evidencePackage.manifestHash
+    ) {
+      throw new BadRequestException(
+        "交付证据已发生变化，请重新发起运营复核。"
+      );
+    }
+    const normalizedNotes = normalizeOptionalText(notes);
+    const manifestHash = expectedManifestHash ?? evidencePackage.manifestHash;
+    const updated = await this.updateWorkOrderVersioned(workOrder, {
+      customerConfirmedAt:
+        decision === "REJECTED" ? null : workOrder.customerConfirmedAt,
+      metadata: mergeMetadata(workOrder.metadata, {
+        journeyEvidenceManifestHash: manifestHash,
+        ...(decision === "REJECTED"
+          ? { journeyRejectedManifestHash: manifestHash }
+          : {})
+      }),
+      opsReviewNotes: normalizedNotes,
+      opsReviewStatus: decision,
       opsReviewedAt: new Date(),
-      opsReviewedBy: reviewerId,
-      status: "OPS_REVIEWED"
-    }, VehicleHandoverEventType.OPS_REVIEW_UPDATED, {
-      actorId: reviewerId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: {
-        notes: normalizeOptionalText(notes),
-        status: "REJECTED"
-      }
-    });
+      opsReviewedBy: actorId,
+      status: decision === "REJECTED" ? "FIELD_IN_PROGRESS" : "OPS_REVIEWED"
+    }, tx);
+    await this.recordEvent(
+      updated,
+      VehicleHandoverEventType.OPS_REVIEW_UPDATED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: {
+          manifestHash,
+          notes: normalizedNotes,
+          status: decision
+        }
+      },
+      tx
+    );
+    if (this.journeySignal) {
+      await this.journeySignal.completeHandoverEvidenceDecision(tx, {
+        actorId,
+        decision,
+        manifestHash,
+        notes: normalizedNotes ?? undefined,
+        orderId: updated.orderId,
+        workOrderId: updated.id
+      });
+    }
+    return updated;
   }
 
   async voidOrCancel(id: string, status: Extract<WorkOrderStatus, "VOIDED" | "FAILED" | "CANCELLED">, actorId?: string, reason?: string | null) {

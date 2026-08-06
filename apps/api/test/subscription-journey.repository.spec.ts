@@ -370,6 +370,62 @@ describe("SubscriptionJourneyRepository", () => {
     expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledOnce();
   });
 
+  it("returns a rejected delivery decision to handover preparation without opening a duplicate task", async () => {
+    const decisionStep = journeyStep({
+      code: SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION,
+      id: "step-delivery-decision"
+    });
+    const tx = completeStepTransaction(
+      decisionStep,
+      new Map(),
+      { version: 11 } as never
+    );
+    const handoverStep = journeyStep({
+      code: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+      id: "step-handover"
+    });
+    tx.subscriptionJourneyStep.upsert = vi.fn(async () => handoverStep) as never;
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.returnToHandoverEvidence(tx as never, {
+      decisionStepId: decisionStep.id,
+      eventKey: "journey:journey-1:delivery-review:rejected",
+      expectedVersion: 11,
+      journeyId: decisionStep.journeyId,
+      payload: {
+        decision: SubscriptionJourneyManualDecision.REJECTED,
+        manifestHash: "a".repeat(64),
+        workOrderId: "work-order-1"
+      }
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        currentStepCode:
+          SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+        currentStepStatus: "RUNNING",
+        status: "RUNNING",
+        version: { increment: 1 }
+      },
+      where: { id: decisionStep.journeyId, version: 11 }
+    });
+    expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          completedAt: null,
+          status: "PENDING",
+          waitingAt: null
+        })
+      })
+    );
+    expect(tx.subscriptionJourneyManualTask.create).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventType: SubscriptionJourneyEventType.MANUAL_TASK_DECIDED
+      })
+    });
+  });
+
   it("skips a completed vehicle step after revised-plan reconfirmation", async () => {
     const step = journeyStep({
       code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION

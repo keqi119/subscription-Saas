@@ -5,6 +5,7 @@ import { PrismaModule } from "../prisma/prisma.module";
 import { OrderModule } from "../order/order.module";
 import { ESignModule } from "../esign/esign.module";
 import { FinanceModule } from "../finance/finance.module";
+import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { SubscriptionJourneyRuntimeConfig } from "./subscription-journey.config";
 import { SubscriptionJourneyHandlers } from "./subscription-journey.handlers";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
@@ -18,6 +19,7 @@ import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
     CustomerModule,
     ESignModule,
     FinanceModule,
+    HandoverWorkOrderModule,
     OrderModule,
     PrismaModule,
     SubscriptionJourneySignalModule

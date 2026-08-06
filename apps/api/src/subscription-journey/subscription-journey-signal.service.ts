@@ -142,6 +142,105 @@ export class SubscriptionJourneySignalService {
     });
   }
 
+  async completeHandoverEvidenceDecision(
+    tx: Prisma.TransactionClient,
+    input: {
+      actorId: string;
+      decision: SubscriptionJourneyManualDecision;
+      manifestHash: string;
+      notes?: string;
+      orderId: string;
+      workOrderId: string;
+    }
+  ): Promise<void> {
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: {
+        manualTasks: {
+          where: { status: SubscriptionJourneyManualTaskStatus.OPEN }
+        },
+        steps: true
+      },
+      where: { orderId: input.orderId }
+    });
+    if (!journey) return;
+    if (
+      journey.currentStepCode !==
+      SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The aggregate delivery-evidence decision does not match the current journey step."
+      );
+    }
+    const step = journey.steps.find(
+      ({ code }) =>
+        code === SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
+    );
+    const task = journey.manualTasks.find(({ stepId }) => stepId === step?.id);
+    if (!step || !task) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The open delivery-evidence decision task was not found."
+      );
+    }
+    const snapshot = readRecord(task.inputSnapshot);
+    if (
+      snapshot?.workOrderId !== input.workOrderId ||
+      snapshot?.manifestHash !== input.manifestHash
+    ) {
+      throw journeyError(
+        "JOURNEY_IDEMPOTENCY_CONFLICT",
+        "The aggregate delivery-evidence decision does not match the queued evidence snapshot."
+      );
+    }
+    const decision = input.decision;
+    const manifestKey = input.manifestHash.slice(0, 16);
+    await this.repository.recordSignal(tx, {
+      eventKey: `handover:${input.workOrderId}:ops:${decision.toLowerCase()}:${manifestKey}`,
+      orderId: input.orderId,
+      payload: {
+        decision,
+        manifestHash: input.manifestHash,
+        workOrderId: input.workOrderId
+      },
+      type: "HANDOVER_OPS_REVIEWED"
+    });
+    await this.repository.decideManualTask(tx, {
+      decidedBy: input.actorId,
+      decision,
+      decisionNotes: input.notes,
+      expectedVersion: task.version,
+      journeyId: journey.id,
+      taskId: task.id
+    });
+    const expectedVersion = journey.version + 1;
+    const eventKey =
+      `journey:${journey.id}:dr:${input.workOrderId}:` +
+      `${manifestKey.slice(0, 12)}:${decision === SubscriptionJourneyManualDecision.APPROVED ? "a" : "r"}`;
+    const payload = {
+      decision,
+      manifestHash: input.manifestHash,
+      workOrderId: input.workOrderId
+    } as Prisma.InputJsonValue;
+    if (decision === SubscriptionJourneyManualDecision.APPROVED) {
+      await this.repository.completeStep(tx, {
+        eventKey,
+        expectedVersion,
+        journeyId: journey.id,
+        payload,
+        stepId: step.id
+      });
+      return;
+    }
+    await this.repository.returnToHandoverEvidence(tx, {
+      decisionStepId: step.id,
+      eventKey,
+      expectedVersion,
+      journeyId: journey.id,
+      payload
+    });
+  }
+
   async requireCustomerReconfirmationAfterManualDecision(
     tx: Prisma.TransactionClient,
     input: {
@@ -211,4 +310,10 @@ export class SubscriptionJourneySignalService {
       vehicleStepId: vehicleStep.id
     });
   }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

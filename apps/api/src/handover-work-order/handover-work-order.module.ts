@@ -9,10 +9,12 @@ import { ESignModule } from "../esign/esign.module";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
+import { FinanceModule } from "../finance/finance.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
+import { SubscriptionJourneySignalModule } from "../subscription-journey/subscription-journey-signal.module";
 import {
   HandoverWorkOrderAdminController,
   HandoverWorkOrderFieldController
@@ -42,10 +44,12 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
     AuthModule,
     DeliveryEvidenceModule,
     ESignModule,
+    FinanceModule,
     NotificationModule,
     PrismaModule,
     SmsModule,
-    StorageModule
+    StorageModule,
+    SubscriptionJourneySignalModule
   ],
   providers: [
     DeliveryHandoverEvidenceArtifactService,

@@ -18,6 +18,7 @@ import { CustomerService } from "../customer/customer.service";
 import { ESignService } from "../esign/esign.service";
 import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artifact.service";
 import { FinanceService } from "../finance/finance.service";
+import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { OrderEntitlementService } from "../order/order-entitlement.service";
 import { OrderService } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
@@ -51,7 +52,8 @@ export class SubscriptionJourneyService {
     @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
     @Optional() private readonly esignService?: ESignService,
     @Optional() private readonly fadadaSignedArtifactService?: FadadaSignedArtifactService,
-    @Optional() private readonly financeService?: FinanceService
+    @Optional() private readonly financeService?: FinanceService,
+    @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService
   ) {}
 
   async dispatchSignalOutbox(
@@ -146,11 +148,43 @@ export class SubscriptionJourneyService {
         return;
       }
     }
+    if (
+      current.currentStepCode ===
+      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION
+    ) {
+      const payload = isRecord(outbox.payload) ? outbox.payload : {};
+      if (
+        outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
+        payload.signalType === "HANDOVER_EVIDENCE_READY" &&
+        typeof payload.handoverId === "string" &&
+        typeof payload.manifestHash === "string" &&
+        typeof payload.workOrderId === "string"
+      ) {
+        await this.repository.completeStep(tx, {
+          eventKey: `journey:${current.id}:handover:${payload.workOrderId}:ready`,
+          expectedVersion: current.version,
+          journeyId: current.id,
+          payload: {
+            handoverId: payload.handoverId,
+            manifestHash: payload.manifestHash,
+            workOrderId: payload.workOrderId
+          },
+          stepId: current.step.id
+        });
+        return;
+      }
+    }
     if (manualTaskTypeFor(current.currentStepCode)) {
+      const evidenceSnapshot =
+        current.currentStepCode ===
+        SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
+          ? readHandoverEvidenceSnapshot(outbox.payload)
+          : {};
       await this.repository.openManualTask(tx, {
         inputSnapshot: {
           applicationId: current.applicationId,
-          finalPlanRevision: current.application.finalPlanRevision
+          finalPlanRevision: current.application.finalPlanRevision,
+          ...evidenceSnapshot
         },
         journeyId: current.id,
         stepId: current.step.id
@@ -502,6 +536,40 @@ export class SubscriptionJourneyService {
     });
   }
 
+  async createHandoverJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.handoverWorkOrderService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey handover service is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const current = await this.readHandoverJobContext(tx, job);
+      if (current.alreadyCompleted) {
+        return {
+          action: "HANDOVER_ALREADY_COMPLETED",
+          orderId: current.orderId
+        };
+      }
+      const workOrder =
+        await this.handoverWorkOrderService!.createJourneyHandoverInTransaction(
+          tx,
+          current.orderId,
+          current.actorId,
+          job.sourceKey
+        );
+      return {
+        action: "HANDOVER_CREATED",
+        handoverId: workOrder.handoverId ?? null,
+        orderId: current.orderId,
+        vehicleDeliveryId: workOrder.vehicleDeliveryId ?? null,
+        workOrderId: workOrder.id
+      };
+    });
+  }
+
   async startFadadaSigningJob(
     job: ClaimedJourneyJob
   ): Promise<Prisma.InputJsonValue> {
@@ -652,6 +720,67 @@ export class SubscriptionJourneyService {
     };
   }
 
+  private async readHandoverJobContext(tx: Tx, job: ClaimedJourneyJob) {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_journey"
+      WHERE "id" = ${job.journeyId}
+      FOR UPDATE
+    `);
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: {
+        application: {
+          select: { finalPlanRevision: true, salesUserId: true }
+        },
+        steps: true
+      },
+      where: { id: job.journeyId }
+    });
+    if (!journey || !journey.orderId) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey handover order was not found."
+      );
+    }
+    const expectedStepCode =
+      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION;
+    const step = journey.steps.find(({ code }) => code === expectedStepCode);
+    if (!step || step.id !== job.stepId) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The handover job does not match its subscription journey step."
+      );
+    }
+    if (journey.currentStepCode !== expectedStepCode) {
+      if (step.status === SubscriptionJourneyStepStatus.COMPLETED) {
+        return {
+          actorId: journey.application.salesUserId,
+          alreadyCompleted: true,
+          orderId: journey.orderId
+        };
+      }
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The subscription journey is not at the handover step."
+      );
+    }
+    const payload = isRecord(job.payload) ? job.payload : {};
+    if (
+      payload.orderId !== journey.orderId ||
+      payload.finalPlanRevision !== journey.application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The handover job targets a stale order or final-plan revision."
+      );
+    }
+    return {
+      actorId: journey.application.salesUserId,
+      alreadyCompleted: false,
+      orderId: journey.orderId
+    };
+  }
+
   private async readFadadaJobContext(tx: Tx, job: ClaimedJourneyJob) {
     const journey = await tx.subscriptionJourney.findUnique({
       include: {
@@ -772,4 +901,31 @@ function stableStepSourceKey(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readHandoverEvidenceSnapshot(
+  outboxPayload: Prisma.JsonValue
+): {
+  handoverId: string;
+  manifestHash: string;
+  workOrderId: string;
+} {
+  const transition = isRecord(outboxPayload) ? outboxPayload : {};
+  const payload = isRecord(transition.payload) ? transition.payload : {};
+  if (
+    transition.operation !== "COMPLETE_STEP" ||
+    typeof payload.handoverId !== "string" ||
+    typeof payload.manifestHash !== "string" ||
+    typeof payload.workOrderId !== "string"
+  ) {
+    throw journeyError(
+      "JOURNEY_INVALID_TRANSITION",
+      "The delivery-evidence decision is missing its exact evidence snapshot."
+    );
+  }
+  return {
+    handoverId: payload.handoverId,
+    manifestHash: payload.manifestHash,
+    workOrderId: payload.workOrderId
+  };
 }

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import {
   Prisma,
   SubscriptionJourneyJobType,
@@ -7,10 +7,14 @@ import {
 
 import { journeyError } from "./subscription-journey.errors";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
+import { manualTaskTypeFor } from "./subscription-journey-state-machine";
 import {
+  ClaimedJourneyJob,
   ClaimedJourneyOutbox,
   JourneyOperationalMetrics
 } from "./subscription-journey.types";
+import { CustomerService } from "../customer/customer.service";
+import { PrismaService } from "../prisma/prisma.service";
 
 type Tx = Prisma.TransactionClient;
 
@@ -33,7 +37,11 @@ const JOB_TYPE_BY_STEP: Partial<
 
 @Injectable()
 export class SubscriptionJourneyService {
-  constructor(private readonly repository: SubscriptionJourneyRepository) {}
+  constructor(
+    private readonly repository: SubscriptionJourneyRepository,
+    @Optional() private readonly prisma?: PrismaService,
+    @Optional() private readonly customerService?: CustomerService
+  ) {}
 
   async dispatchSignalOutbox(
     tx: Tx,
@@ -47,6 +55,53 @@ export class SubscriptionJourneyService {
     }
     const current = await this.readCurrentJourney(tx, outbox.journeyId);
     await this.repository.enqueueNotificationOutbox(tx, outbox);
+    if (
+      current.currentStepCode ===
+      SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+    ) {
+      const isExactConfirmation =
+        outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
+        isRecord(outbox.payload) &&
+        outbox.payload.signalType === "CUSTOMER_PLAN_CONFIRMED" &&
+        outbox.payload.revision === current.application.finalPlanRevision;
+      if (isExactConfirmation) {
+        await this.repository.completeStep(tx, {
+          eventKey: `journey:${current.id}:step:CUSTOMER_PLAN_CONFIRMATION:revision:${current.application.finalPlanRevision}:completed`,
+          expectedVersion: current.version,
+          journeyId: current.id,
+          payload: {
+            finalPlanRevision: current.application.finalPlanRevision
+          },
+          stepId: current.step.id
+        });
+        return;
+      }
+      if (
+        current.currentStepStatus ===
+        "WAITING_CUSTOMER"
+      ) {
+        return;
+      }
+      await this.repository.waitForCustomer(tx, {
+        eventKey: `journey:${current.id}:step:CUSTOMER_PLAN_CONFIRMATION:revision:${current.application.finalPlanRevision}:waiting`,
+        expectedVersion: current.version,
+        journeyId: current.id,
+        payload: { finalPlanRevision: current.application.finalPlanRevision },
+        stepId: current.step.id
+      });
+      return;
+    }
+    if (manualTaskTypeFor(current.currentStepCode)) {
+      await this.repository.openManualTask(tx, {
+        inputSnapshot: {
+          applicationId: current.applicationId,
+          finalPlanRevision: current.application.finalPlanRevision
+        },
+        journeyId: current.id,
+        stepId: current.step.id
+      });
+      return;
+    }
     const jobType = JOB_TYPE_BY_STEP[current.currentStepCode];
     if (!jobType) return;
     await this.repository.enqueueJob(tx, {
@@ -61,7 +116,13 @@ export class SubscriptionJourneyService {
       sourceKey: stableStepSourceKey(
         current.id,
         current.currentStepCode,
-        current.application.finalPlanRevision
+        current.application.finalPlanRevision,
+        current.currentStepCode ===
+          SubscriptionJourneyStepCode.APPLICATION_VALIDATION &&
+          isRecord(outbox.payload) &&
+          typeof outbox.payload.journeyVersion === "number"
+          ? outbox.payload.journeyVersion
+          : undefined
       ),
       stepId: current.step.id
     });
@@ -106,6 +167,62 @@ export class SubscriptionJourneyService {
     return this.repository.readOperationalMetrics(tx);
   }
 
+  async validateApplicationJob(
+    job: ClaimedJourneyJob
+  ): Promise<Prisma.InputJsonValue> {
+    if (!this.prisma || !this.customerService) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The subscription journey application validator is not configured."
+      );
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const journey = await tx.subscriptionJourney.findUnique({
+        include: { steps: true },
+        where: { id: job.journeyId }
+      });
+      if (!journey) {
+        throw journeyError(
+          "JOURNEY_NOT_FOUND",
+          "The subscription journey was not found."
+        );
+      }
+      if (
+        journey.currentStepCode !==
+        SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+      ) {
+        return {
+          action: "APPLICATION_VALIDATION_ALREADY_COMPLETED",
+          applicationId: journey.applicationId
+        };
+      }
+      const step = journey.steps.find(
+        ({ code }) => code === SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+      );
+      if (!step || step.id !== job.stepId) {
+        throw journeyError(
+          "JOURNEY_INVALID_TRANSITION",
+          "The application validation job does not match the current journey step."
+        );
+      }
+      await this.customerService!.validateJourneyApplication(
+        tx,
+        journey.applicationId
+      );
+      await this.repository.completeStep(tx, {
+        eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:completed`,
+        expectedVersion: journey.version,
+        journeyId: journey.id,
+        payload: { applicationId: journey.applicationId },
+        stepId: step.id
+      });
+      return {
+        action: "APPLICATION_VALIDATED",
+        applicationId: journey.applicationId
+      };
+    });
+  }
+
   private async readCurrentJourney(tx: Tx, journeyId: string) {
     const journey = await tx.subscriptionJourney.findUnique({
       include: {
@@ -142,7 +259,13 @@ export class SubscriptionJourneyService {
 function stableStepSourceKey(
   journeyId: string,
   stepCode: SubscriptionJourneyStepCode,
-  finalPlanRevision: number
+  finalPlanRevision: number,
+  factVersion?: number
 ) {
-  return `journey:${journeyId}:step:${stepCode}:revision:${finalPlanRevision}`;
+  const base = `journey:${journeyId}:step:${stepCode}:revision:${finalPlanRevision}`;
+  return factVersion === undefined ? base : `${base}:facts:${factVersion}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

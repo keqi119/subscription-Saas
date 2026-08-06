@@ -216,8 +216,16 @@ export class SubscriptionJourneyRepository {
         "This journey step does not support a manual task."
       );
     }
+    const existing = await tx.subscriptionJourneyManualTask.findFirst({
+      where: {
+        journeyId: input.journeyId,
+        status: SubscriptionJourneyManualTaskStatus.OPEN,
+        taskType
+      }
+    });
+    if (existing) return existing;
     try {
-      return await tx.subscriptionJourneyManualTask.create({
+      const task = await tx.subscriptionJourneyManualTask.create({
         data: {
           inputSnapshot: input.inputSnapshot,
           journeyId: input.journeyId,
@@ -225,6 +233,38 @@ export class SubscriptionJourneyRepository {
           taskType
         }
       });
+      await this.updateJourneyVersion(
+        tx,
+        input.journeyId,
+        locked.journeyVersion,
+        {
+          currentStepCode: locked.stepCode,
+          currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+          status: SubscriptionJourneyStatus.WAITING_MANUAL,
+          version: { increment: 1 }
+        }
+      );
+      await tx.subscriptionJourneyStep.update({
+        data: {
+          status: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+          waitingAt: new Date()
+        },
+        where: {
+          id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+        }
+      });
+      await this.writeEventAndOutbox(tx, {
+        eventKey: `journey:${input.journeyId}:step:${locked.stepCode}:waiting-manual`,
+        eventType: SubscriptionJourneyEventType.STEP_WAITING_MANUAL,
+        journeyId: input.journeyId,
+        payload: safePayload({
+          operation: "OPEN_MANUAL_TASK",
+          stepId: input.stepId,
+          taskId: task.id
+        }),
+        sequence: locked.journeyVersion + 1
+      });
+      return task;
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw journeyError(
@@ -269,6 +309,113 @@ export class SubscriptionJourneyRepository {
       );
     }
     return task;
+  }
+
+  async returnToCustomerConfirmation(
+    tx: Tx,
+    input: {
+      eventKey: string;
+      expectedVersion: number;
+      journeyId: string;
+      payload: Prisma.InputJsonValue;
+      vehicleStepId: string;
+    }
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    const eventPayload = safePayload({
+      operation: "REQUIRE_PLAN_RECONFIRMATION",
+      payload: input.payload,
+      stepId: input.vehicleStepId
+    });
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (duplicate) {
+      requireExactEvent(duplicate, {
+        eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+        journeyId: input.journeyId,
+        payload: eventPayload
+      });
+      const existing = await tx.subscriptionJourneyStep.findUnique({
+        where: {
+          journeyId_code: {
+            code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+            journeyId: input.journeyId
+          }
+        }
+      });
+      if (!existing) {
+        throw journeyError(
+          "JOURNEY_NOT_FOUND",
+          "The customer-confirmation step was not found."
+        );
+      }
+      return existing;
+    }
+
+    const locked = await lockJourneyStep(
+      tx,
+      input.journeyId,
+      input.vehicleStepId
+    );
+    validateCurrentStep(locked, input.expectedVersion);
+    if (locked.stepCode !== SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "Only vehicle allocation can return to customer confirmation."
+      );
+    }
+    const customerStep = await tx.subscriptionJourneyStep.upsert({
+      create: {
+        code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+        journeyId: input.journeyId,
+        status: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+        waitingAt: new Date()
+      },
+      update: {
+        completedAt: null,
+        status: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+        waitingAt: new Date()
+      },
+      where: {
+        journeyId_code: {
+          code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+          journeyId: input.journeyId
+        }
+      }
+    });
+    await tx.subscriptionJourneyStep.update({
+      data: {
+        completedAt: new Date(),
+        status: SubscriptionJourneyStepStatus.COMPLETED
+      },
+      where: {
+        id_journeyId: {
+          id: input.vehicleStepId,
+          journeyId: input.journeyId
+        }
+      }
+    });
+    await this.updateJourneyVersion(
+      tx,
+      input.journeyId,
+      input.expectedVersion,
+      {
+        currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+        currentStepStatus: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+        status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
+        version: { increment: 1 }
+      }
+    );
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+      journeyId: input.journeyId,
+      payload: eventPayload,
+      sequence: input.expectedVersion + 1
+    });
+    return customerStep;
   }
 
   async enqueueJob(
@@ -337,6 +484,17 @@ export class SubscriptionJourneyRepository {
         "The subscription journey was not found."
       );
     }
+    const existing = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    const persistedPayload = existing?.payload;
+    const journeyVersion =
+      persistedPayload &&
+      typeof persistedPayload === "object" &&
+      !Array.isArray(persistedPayload) &&
+      typeof persistedPayload.journeyVersion === "number"
+        ? persistedPayload.journeyVersion
+        : journey.version + 1;
     const sourcePayload = input.payload;
     const payload = safePayload({
       ...(sourcePayload &&
@@ -344,10 +502,8 @@ export class SubscriptionJourneyRepository {
       !Array.isArray(sourcePayload)
         ? sourcePayload
         : { value: sourcePayload ?? null }),
+      journeyVersion,
       signalType: input.type
-    });
-    const existing = await tx.subscriptionJourneyEvent.findUnique({
-      where: { eventKey: input.eventKey }
     });
     if (existing) {
       requireExactEvent(existing, {
@@ -726,8 +882,25 @@ export class SubscriptionJourneyRepository {
     input: CompleteJourneyStepInput,
     locked: LockedJourneyStep
   ) {
-    const followingStep = nextStep(locked.stepCode, "COMPLETED");
-    if (followingStep) {
+    let followingStep = nextStep(locked.stepCode, "COMPLETED");
+    let skippedCompletedVehicleStep = false;
+    if (
+      followingStep === SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
+    ) {
+      const vehicleStep = await tx.subscriptionJourneyStep.findUnique({
+        where: {
+          journeyId_code: {
+            code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+            journeyId: input.journeyId
+          }
+        }
+      });
+      if (vehicleStep?.status === SubscriptionJourneyStepStatus.COMPLETED) {
+        followingStep = nextStep(vehicleStep.code, "COMPLETED");
+        skippedCompletedVehicleStep = true;
+      }
+    }
+    if (followingStep && !skippedCompletedVehicleStep) {
       assertTransition(locked.stepCode, followingStep);
     }
     await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {

@@ -33,8 +33,10 @@ import {
 } from "../customer/customer.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import { journeyError } from "../subscription-journey/subscription-journey.errors";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
+  ConfirmPortalFinalPlanDto,
   CreatePortalSelfServiceApplicationDto,
   PrecheckPortalSelfServiceApplicationDto,
   RejectPortalFinalPlanDto,
@@ -102,7 +104,8 @@ const portalApplicationInclude = {
       name: true,
       username: true
     }
-  }
+  },
+  subscriptionJourney: { select: { id: true } }
 } satisfies Prisma.ApplicationInclude;
 
 type PortalApplication = Prisma.ApplicationGetPayload<{
@@ -199,7 +202,7 @@ export class PortalApplicationService {
       include: portalApplicationInclude,
       orderBy: { createdAt: "desc" },
       where: {
-        applicationSource: ApplicationSource.SELF_SERVICE,
+        ...portalApplicationSourceScope,
         customerId: currentCustomer.customerId,
         deletedAt: null
       }
@@ -228,11 +231,21 @@ export class PortalApplicationService {
 
   async confirmFinalPlan(
     id: string,
+    dto: ConfirmPortalFinalPlanDto,
     currentCustomer: CurrentCustomer,
     context: PortalRequestContext
   ) {
     const application = await this.findOwnedApplicationOrThrow(id, currentCustomer.customerId);
     assertPortalFinalPlanPending(application);
+    if (
+      application.subscriptionJourney &&
+      dto.revision !== application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The displayed final plan revision is stale."
+      );
+    }
 
     const operator = await this.resolveApplicationSalesUser(application.salesUserId);
     const confirmedAt = new Date();
@@ -259,6 +272,9 @@ export class PortalApplicationService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const updateResult = await tx.application.updateMany({
         data: {
+          customerConfirmedPlanRevision: application.subscriptionJourney
+            ? dto.revision
+            : undefined,
           finalPlanConfirmedAt: confirmedAt,
           finalPlanSnapshot,
           finalQuoteSnapshot,
@@ -267,9 +283,12 @@ export class PortalApplicationService {
           updatedBy: operator.id
         },
         where: {
-          applicationSource: ApplicationSource.SELF_SERVICE,
+          ...portalApplicationSourceScope,
           customerId: currentCustomer.customerId,
           deletedAt: null,
+          finalPlanRevision: application.subscriptionJourney
+            ? dto.revision
+            : undefined,
           id,
           planConfirmStatus: PlanConfirmStatus.PENDING
         }
@@ -292,6 +311,13 @@ export class PortalApplicationService {
           updatedBy: operator.id
         }
       });
+
+      if (application.subscriptionJourney) {
+        await this.customerService.recordJourneyCustomerPlanConfirmation(tx, {
+          applicationId: id,
+          revision: dto.revision
+        });
+      }
 
       return tx.application.findFirstOrThrow({
         include: portalApplicationInclude,
@@ -786,7 +812,7 @@ export class PortalApplicationService {
     const application = await this.prisma.application.findFirst({
       include: portalApplicationInclude,
       where: {
-        applicationSource: ApplicationSource.SELF_SERVICE,
+        ...portalApplicationSourceScope,
         customerId,
         deletedAt: null,
         id
@@ -858,6 +884,13 @@ export class PortalApplicationService {
     });
   }
 }
+
+const portalApplicationSourceScope = {
+  OR: [
+    { applicationSource: ApplicationSource.SELF_SERVICE },
+    { subscriptionJourney: { isNot: null } }
+  ]
+} satisfies Prisma.ApplicationWhereInput;
 
 function toRequestUser(user: { id: string; name: string; username: string }): RequestUser {
   return {
@@ -997,6 +1030,7 @@ function toPortalFinalPlanView(application: PortalApplication) {
   return {
     applicationId: application.id,
     applicationNo: application.applicationNo,
+    finalPlanRevision: application.finalPlanRevision,
     changes: buildFinalPlanChanges(application, {
       finalDepositAmount,
       monthlyFeeAmount,

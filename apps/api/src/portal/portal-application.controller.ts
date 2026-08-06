@@ -20,6 +20,7 @@ import { CurrentCustomer } from "./portal-auth.types";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
 import { PortalApplicationService } from "./portal-application.service";
 import {
+  ConfirmPortalFinalPlanDto,
   CreatePortalSelfServiceApplicationDto,
   PrecheckPortalSelfServiceApplicationDto,
   RejectPortalFinalPlanDto,
@@ -84,11 +85,13 @@ export class PortalApplicationController {
   @Post("applications/:id/final-plan/confirm")
   confirmFinalPlan(
     @Param("id") id: string,
+    @Body() dto: ConfirmPortalFinalPlanDto,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
     @Req() request: Request
   ) {
     return this.portalApplicationService.confirmFinalPlan(
       id,
+      dto,
       currentCustomer,
       requestContext(request)
     );
@@ -173,4 +176,3 @@ function requestContext(request: Request) {
     userAgent: request.headers["user-agent"]
   };
 }
-

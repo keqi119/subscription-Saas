@@ -9,6 +9,7 @@ import type {
 } from "@prisma/client";
 
 export type JourneySignalType =
+  | "APPLICATION_FACTS_CHANGED"
   | "APPLICATION_SUBMITTED"
   | "CUSTOMER_PLAN_CONFIRMED"
   | "FADADA_TASK_COMPLETED"

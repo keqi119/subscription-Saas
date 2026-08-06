@@ -129,7 +129,8 @@ describe("SubscriptionJourneyService dispatch", () => {
           id: "step-1",
           journeyId: "journey-1"
         }
-      ]
+      ],
+      version: 7
     };
     const tx = {
       subscriptionJourney: {
@@ -190,7 +191,8 @@ describe("SubscriptionJourneyService dispatch", () => {
             SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION,
           id: "journey-1",
           orderId: null,
-          steps: []
+          steps: [],
+          version: 8
         }))
       },
       subscriptionJourneyStep: {
@@ -229,6 +231,56 @@ describe("SubscriptionJourneyService dispatch", () => {
         stepId: createdStep.id
       })
     );
+  });
+
+  it("schedules a fresh validation job when approved application facts advance the journey version", async () => {
+    const sourceKeys: string[] = [];
+    let version = 0;
+    const repository = {
+      enqueueJob: vi.fn(async (_tx, input: { sourceKey: string }) => {
+        sourceKeys.push(input.sourceKey);
+        return input;
+      }),
+      enqueueNotificationOutbox: vi.fn(async () => undefined)
+    };
+    const tx = {
+      subscriptionJourney: {
+        findUnique: vi.fn(async () => ({
+          application: { finalPlanRevision: 0 },
+          applicationId: "application-1",
+          currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+          id: "journey-1",
+          orderId: null,
+          steps: [
+            {
+              code: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+              id: "step-validation"
+            }
+          ],
+          version
+        }))
+      }
+    };
+    const service = new SubscriptionJourneyService(repository as never);
+
+    await service.dispatchSignalOutbox(tx as never, {
+      eventKey: "application:application-1:submitted:outbox",
+      id: "outbox-submitted",
+      journeyId: "journey-1",
+      payload: {}
+    } as never);
+    version = 1;
+    await service.dispatchSignalOutbox(tx as never, {
+      eventKey: "application:application-1:facts:credit:outbox",
+      id: "outbox-credit",
+      journeyId: "journey-1",
+      payload: { journeyVersion: 1 }
+    } as never);
+
+    expect(sourceKeys).toEqual([
+      "journey:journey-1:step:APPLICATION_VALIDATION:revision:0",
+      "journey:journey-1:step:APPLICATION_VALIDATION:revision:0:facts:1"
+    ]);
   });
 
   it("attaches an order idempotently after order creation", async () => {

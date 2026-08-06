@@ -97,6 +97,12 @@ describe("self-service application intake API rules", () => {
     });
     expect(harness.tx.subscriptionQuote.create).not.toHaveBeenCalled();
     expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: "application-1",
+      eventKey: "application:application-1:submitted",
+      payload: { source: ApplicationSource.SELF_SERVICE },
+      type: "APPLICATION_SUBMITTED"
+    });
     expect(harness.auditService.write).toHaveBeenCalledTimes(2);
   });
 
@@ -406,14 +412,29 @@ function createSelfServiceApplicationHarness(overrides: {
     vehicle: { findUnique: vi.fn(async () => ({ ...vehicle, status: state.vehicleStatus })) }
   };
   const auditService = { write: vi.fn(async () => undefined) };
+  const journeySignal = { record: vi.fn(async () => undefined) };
   const service = new CustomerService(
     auditService as never,
     prisma as never,
     {} as never,
-    {} as never
+    {} as never,
+    undefined,
+    journeySignal as never
   );
 
-  return { auditService, context, customer, plan, prisma, service, state, tx, user, vehicle };
+  return {
+    auditService,
+    context,
+    customer,
+    journeySignal,
+    plan,
+    prisma,
+    service,
+    state,
+    tx,
+    user,
+    vehicle
+  };
 }
 
 function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}) {

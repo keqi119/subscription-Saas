@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 
+import { CustomerModule } from "../customer/customer.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SubscriptionJourneyRuntimeConfig } from "./subscription-journey.config";
 import { SubscriptionJourneyHandlers } from "./subscription-journey.handlers";
@@ -10,7 +11,7 @@ import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
 
 @Module({
   exports: [SubscriptionJourneyService],
-  imports: [PrismaModule, SubscriptionJourneySignalModule],
+  imports: [CustomerModule, PrismaModule, SubscriptionJourneySignalModule],
   providers: [
     SubscriptionJourneyRuntimeConfig,
     SubscriptionJourneyHandlers,

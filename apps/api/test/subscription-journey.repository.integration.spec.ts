@@ -221,6 +221,64 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
     expect(journey.version).toBe(1);
   });
 
+  it("opens one manual task and persists WAITING_MANUAL atomically", async () => {
+    const step = await prisma.subscriptionJourneyStep.create({
+      data: {
+        code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        id: `${FIXTURE_PREFIX}_final_plan`,
+        journeyId: fixture.journeyId
+      }
+    });
+    await prisma.subscriptionJourney.update({
+      data: {
+        currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        currentStepStatus: SubscriptionJourneyStepStatus.PENDING
+      },
+      where: { id: fixture.journeyId }
+    });
+    const input = {
+      inputSnapshot: { applicationId: fixture.applicationId, finalPlanRevision: 0 },
+      journeyId: fixture.journeyId,
+      stepId: step.id
+    };
+
+    const first = await prisma.$transaction((tx) =>
+      repository.openManualTask(tx, input)
+    );
+    const second = await prisma.$transaction((tx) =>
+      repository.openManualTask(tx, input)
+    );
+    const [journey, taskCount, eventCount, outboxCount] = await Promise.all([
+      prisma.subscriptionJourney.findUniqueOrThrow({
+        where: { id: fixture.journeyId }
+      }),
+      prisma.subscriptionJourneyManualTask.count({
+        where: { journeyId: fixture.journeyId, status: "OPEN" }
+      }),
+      prisma.subscriptionJourneyEvent.count({
+        where: {
+          eventKey: `journey:${fixture.journeyId}:step:FINAL_PLAN_DECISION:waiting-manual`
+        }
+      }),
+      prisma.subscriptionJourneyOutbox.count({
+        where: {
+          eventKey: `journey:${fixture.journeyId}:step:FINAL_PLAN_DECISION:waiting-manual:outbox`
+        }
+      })
+    ]);
+
+    expect(second.id).toBe(first.id);
+    expect(taskCount).toBe(1);
+    expect(eventCount).toBe(1);
+    expect(outboxCount).toBe(1);
+    expect(journey).toMatchObject({
+      currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+      currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+      status: "WAITING_MANUAL",
+      version: 1
+    });
+  });
+
   it("reclaims stale signal outbox separately from notification outbox", async () => {
     const signal = await createOutbox(prisma, "signal-stale", {
       aggregateType: "SUBSCRIPTION_JOURNEY",
@@ -380,19 +438,28 @@ async function resetFixture(prisma: PrismaService) {
   assertFixturePrefix();
   await deleteTestJobs(prisma);
   await prisma.subscriptionJourneyOutbox.deleteMany({
-    where: {
-      eventKey: { startsWith: `${FIXTURE_PREFIX}:` },
-      journeyId: fixture.journeyId
-    }
+    where: { journeyId: fixture.journeyId }
   });
   await prisma.subscriptionJourneyEvent.deleteMany({
-    where: {
-      eventKey: { startsWith: `${FIXTURE_PREFIX}:` },
-      journeyId: fixture.journeyId
-    }
+    where: { journeyId: fixture.journeyId }
+  });
+  await prisma.subscriptionJourneyManualTask.deleteMany({
+    where: { journeyId: fixture.journeyId }
+  });
+  await prisma.subscriptionJourneyStep.deleteMany({
+    where: { journeyId: fixture.journeyId, id: { not: fixture.stepId } }
+  });
+  await prisma.subscriptionJourneyStep.update({
+    data: { status: SubscriptionJourneyStepStatus.RUNNING },
+    where: { id: fixture.stepId }
   });
   await prisma.subscriptionJourney.update({
-    data: { version: 0 },
+    data: {
+      currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+      currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+      status: "RUNNING",
+      version: 0
+    },
     where: { id: fixture.journeyId }
   });
 }

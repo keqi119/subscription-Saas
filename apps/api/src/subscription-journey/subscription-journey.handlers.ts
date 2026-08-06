@@ -2,14 +2,19 @@ import { Injectable } from "@nestjs/common";
 import { Prisma, SubscriptionJourneyJobType } from "@prisma/client";
 
 import { journeyError } from "./subscription-journey.errors";
+import { SubscriptionJourneyService } from "./subscription-journey.service";
 import { ClaimedJourneyJob } from "./subscription-journey.types";
 
 @Injectable()
 export class SubscriptionJourneyHandlers {
   readonly supportedJobTypes = Object.values(SubscriptionJourneyJobType);
 
+  constructor(private readonly service: SubscriptionJourneyService) {}
+
   async handle(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
-    void job;
+    if (job.jobType === SubscriptionJourneyJobType.VALIDATE_APPLICATION) {
+      return this.service.validateApplicationJob(job);
+    }
     throw journeyError(
       "JOURNEY_HANDLER_NOT_READY",
       "The subscription journey handler is not ready."

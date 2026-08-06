@@ -299,6 +299,107 @@ describe("SubscriptionJourneyRepository", () => {
     ).rejects.toMatchObject({ code: "JOURNEY_MANUAL_TASK_ALREADY_OPEN" });
   });
 
+  it("opens a manual task once and moves the journey to WAITING_MANUAL", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    });
+    const tx = completeStepTransaction(step, new Map());
+    const repository = new SubscriptionJourneyRepository();
+    const input = {
+      inputSnapshot: { applicationId: randomUUID(), finalPlanRevision: 0 },
+      journeyId: step.journeyId,
+      stepId: step.id
+    };
+
+    const first = await repository.openManualTask(tx as never, input);
+    const second = await repository.openManualTask(tx as never, input);
+
+    expect(second).toEqual(first);
+    expect(tx.subscriptionJourneyManualTask.create).toHaveBeenCalledOnce();
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledOnce();
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        currentStepStatus: "WAITING_MANUAL",
+        status: "WAITING_MANUAL",
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 0 }
+    });
+    expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledOnce();
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledOnce();
+    expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledOnce();
+  });
+
+  it("completes vehicle allocation and returns to customer confirmation for revised terms", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
+    });
+    const tx = completeStepTransaction(step, new Map(), { version: 3 } as never);
+    const customerStep = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+      id: "step-customer-confirmation"
+    });
+    tx.subscriptionJourneyStep.upsert = vi.fn(async () => customerStep) as never;
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.returnToCustomerConfirmation(tx as never, {
+      eventKey: "journey:journey-1:vehicle:revision:2:reconfirmation",
+      expectedVersion: 3,
+      journeyId: step.journeyId,
+      payload: { finalPlanRevision: 2, vehicleId: randomUUID() },
+      vehicleStepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+        currentStepStatus: "WAITING_CUSTOMER",
+        status: "WAITING_CUSTOMER",
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 3 }
+    });
+    expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "COMPLETED" })
+      })
+    );
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledOnce();
+    expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledOnce();
+  });
+
+  it("skips a completed vehicle step after revised-plan reconfirmation", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+    });
+    const tx = completeStepTransaction(step, new Map(), { version: 4 } as never);
+    tx.subscriptionJourneyStep.findUnique.mockResolvedValueOnce({
+      ...journeyStep({
+        code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+        id: "step-vehicle"
+      }),
+      status: "COMPLETED"
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.completeStep(tx as never, {
+      eventKey: "journey:journey-1:customer:revision:2:completed",
+      expectedVersion: 4,
+      journeyId: step.journeyId,
+      payload: { finalPlanRevision: 2 },
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentStepCode: SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+        })
+      })
+    );
+  });
+
   it("writes the step, event, and outbox through one caller transaction", async () => {
     const step = journeyStep();
     const tx = completeStepTransaction(step, new Map());
@@ -1071,6 +1172,7 @@ function completeStepTransaction(
   eventRows: Map<string, { journeyId: string }>,
   journeyOverrides: Partial<ReturnType<typeof journey>> = {}
 ) {
+  let manualTask: Record<string, unknown> | null = null;
   const currentJourney = journey({
     currentStepCode: step.code,
     currentStepStatus: step.status,
@@ -1092,7 +1194,21 @@ function completeStepTransaction(
     ]),
     $transaction: vi.fn(),
     subscriptionJourney: {
-      updateMany: vi.fn(async () => ({ count: 1 }))
+      updateMany: vi.fn(async (input) => {
+        if (input.data.currentStepCode !== undefined) {
+          currentJourney.currentStepCode = input.data.currentStepCode;
+        }
+        if (input.data.currentStepStatus !== undefined) {
+          currentJourney.currentStepStatus = input.data.currentStepStatus;
+        }
+        if (input.data.status !== undefined) {
+          currentJourney.status = input.data.status;
+        }
+        if (input.data.version?.increment) {
+          currentJourney.version += input.data.version.increment;
+        }
+        return { count: 1 };
+      })
     },
     subscriptionJourneyEvent: {
       create: vi.fn(async (input: { data: { eventKey: string; journeyId: string } }) => {
@@ -1107,10 +1223,15 @@ function completeStepTransaction(
       upsert: vi.fn(async (input) => input.create)
     },
     subscriptionJourneyManualTask: {
-      create: vi.fn(async (input) => ({ id: "manual-task-1", ...input.data }))
+      create: vi.fn(async (input) => {
+        manualTask = { id: "manual-task-1", ...input.data };
+        return manualTask;
+      }),
+      findFirst: vi.fn(async () => manualTask)
     },
     subscriptionJourneyStep: {
       findUnique: vi.fn(async () => step),
+      upsert: vi.fn(),
       update: vi.fn(async (input) => {
         Object.assign(step, input.data);
         return step;

@@ -528,11 +528,11 @@ allocateJourneyVehicle(
 ): Promise<{ application: Application; requiresCustomerReconfirmation: boolean }>;
 ```
 
-- [ ] **Step 1: Write failing A/B parity and validation tests**
+- [x] **Step 1: Write failing A/B parity and validation tests**
 
 Create one admin-assisted application and one Portal self-service application with the same approved inputs. Assert both emit `APPLICATION_SUBMITTED`, enter `APPLICATION_VALIDATION`, reject incomplete materials/credit/product facts with stable codes, and open exactly one `FINAL_PLAN_DECISION` task after validation.
 
-- [ ] **Step 2: Write failing exact-revision and vehicle-allocation tests**
+- [x] **Step 2: Write failing exact-revision and vehicle-allocation tests**
 
 Cover:
 
@@ -547,7 +547,7 @@ expect(await countOpenManualTasks(journey.id)).toBe(1);
 
 Reject vehicle allocation before customer confirmation. On compatible vehicle allocation, reserve once and complete the task. If concrete vehicle facts change price/model/terms, increment `finalPlanRevision`, clear `customerConfirmedPlanRevision`, release the prior reservation safely, return to `CUSTOMER_PLAN_CONFIRMATION`, and do not count an extra internal decision.
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-application.spec.ts test/portal-application.spec.ts
@@ -555,15 +555,15 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-a
 
 Expected: FAIL because signals, revision input and journey decision methods are absent.
 
-- [ ] **Step 4: Publish intake/confirmation signals inside existing transactions**
+- [x] **Step 4: Publish intake/confirmation signals inside existing transactions**
 
 Import only `SubscriptionJourneySignalModule` in `CustomerModule`. Record stable signals in the same transaction as application submission and customer confirmation. Change the Portal confirmation DTO to require integer `revision >= 1`; legacy non-journey applications retain their existing behavior through a separate compatibility branch.
 
-- [ ] **Step 5: Implement validation and the two manual decision handlers**
+- [x] **Step 5: Implement validation and the two manual decision handlers**
 
 Reuse existing product, price, risk and vehicle availability services; do not duplicate rule calculations in the journey handler. Final-plan approval persists a complete snapshot and increments the revision. Allocation happens only after exact revision confirmation and uses row locking/unique reservation rules. Both manual decisions write the domain mutation, manual-task result, journey event and outbox in one transaction.
 
-- [ ] **Step 6: Replace the application handler stubs and make tests GREEN**
+- [x] **Step 6: Replace the application handler stubs and make tests GREEN**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-application.spec.ts test/portal-application.spec.ts
@@ -572,7 +572,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: both intake paths converge and focused tests/typecheck pass.
 
-- [ ] **Step 7: Commit intake and manual-decision behavior**
+- [x] **Step 7: Commit intake and manual-decision behavior**
 
 ```powershell
 git add apps/api/src/customer apps/api/src/portal/portal-application.service.ts apps/api/src/portal/portal-application.controller.ts apps/api/src/portal/portal-application.dto.ts apps/api/src/subscription-journey apps/api/test/subscription-journey-application.spec.ts apps/api/test/portal-application.spec.ts

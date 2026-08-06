@@ -288,9 +288,15 @@ describe("SubscriptionJourneyWorker", () => {
 
 describe("SubscriptionJourneyHandlers", () => {
   it("fails closed for a domain handler that has not been implemented yet", async () => {
-    const handlers = new SubscriptionJourneyHandlers();
+    const handlers = new SubscriptionJourneyHandlers({} as SubscriptionJourneyService);
 
-    await expect(handlers.handle(claimedJob())).rejects.toMatchObject({
+    await expect(
+      handlers.handle(
+        claimedJob({
+          jobType: SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
+        })
+      )
+    ).rejects.toMatchObject({
       code: "JOURNEY_HANDLER_NOT_READY",
       retryable: false
     });

@@ -8,6 +8,7 @@ import {
   EntitlementUsageStatus,
   OrderChangeType,
   OrderReviewStatus,
+  SubscriptionJourneyStatus,
   VehicleDamageLevel,
   VehicleDamageResponsibleParty,
   VehicleDamageType,
@@ -20,6 +21,12 @@ export class CreateOrderFromQuoteDto {
   @IsOptional()
   @IsEnum(BusinessType)
   businessType?: BusinessType;
+}
+
+export class ListOrdersQueryDto {
+  @IsOptional()
+  @IsEnum(SubscriptionJourneyStatus)
+  journeyStatus?: SubscriptionJourneyStatus;
 }
 
 export class CreateCustomerOrderDto {

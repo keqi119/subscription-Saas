@@ -109,6 +109,7 @@ import {
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
   ListContractsQueryDto,
+  ListOrdersQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -388,13 +389,23 @@ export class OrderService {
     @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine
   ) {}
 
-  async listOrders(user: RequestUser) {
+  async listOrders(user: RequestUser, query: ListOrdersQueryDto = {}) {
     const orders = await this.prisma.subscriptionOrder.findMany({
       include: orderInclude,
       orderBy: { createdAt: "desc" },
-      where: canViewAllOrders(user)
-        ? { deletedAt: null }
-        : { application: { salesUserId: user.id }, deletedAt: null }
+      where: {
+        ...(canViewAllOrders(user)
+          ? {}
+          : { application: { salesUserId: user.id } }),
+        deletedAt: null,
+        ...(query.journeyStatus
+          ? {
+              subscriptionJourney: {
+                is: { status: query.journeyStatus }
+              }
+            }
+          : {})
+      }
     });
     return orders.map(toOrderView);
   }

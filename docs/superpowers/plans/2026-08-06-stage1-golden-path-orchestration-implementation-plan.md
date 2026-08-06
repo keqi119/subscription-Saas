@@ -1010,7 +1010,7 @@ git commit -m "feat: activate subscriptions from authoritative facts"
 - Consumes: journey repository, three decision handlers, job/exception records, AuditLog and Orders list filtering.
 - Produces: permission-guarded Admin projections/actions, exception filtering and automation metrics without a new top-level domain page.
 
-- [ ] **Step 1: Write failing controller/RBAC contract tests**
+- [x] **Step 1: Write failing controller/RBAC contract tests**
 
 Add routes:
 
@@ -1030,11 +1030,11 @@ POST /subscription-journeys/:id/cancel
 
 Assert view, task-specific decision, recover and cancel permissions on the exact methods. DTOs reject unknown fields, stale `version`, empty rejection reason and cross-task payloads. Sensitive event payload fields must not appear in responses.
 
-- [ ] **Step 2: Write failing recovery and metrics tests**
+- [x] **Step 2: Write failing recovery and metrics tests**
 
 Recovery rules: retry only DEAD_LETTER/OPEN exception work; pause preserves prior status; resume re-evaluates facts before enqueue; cancel is terminal and releases only journey-owned reservations safely. Every action requires optimistic version and AuditLog. Metrics return counts by journey/step/status, open exception age, retry count and automated progress rate; they must not count customer waiting as failure.
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-controller.spec.ts test/subscription-journey-recovery.spec.ts test/permissions.spec.ts
@@ -1042,11 +1042,11 @@ pnpm --filter @subscription-saas/api exec vitest run test/subscription-journey-c
 
 Expected: FAIL because the controller, DTOs and recovery methods do not exist.
 
-- [ ] **Step 4: Implement safe projections and actions**
+- [x] **Step 4: Implement safe projections and actions**
 
 Return journey header, ordered steps, current/open task, sanitized exceptions, customer next action and available operator actions computed from status plus permission. Never return provider secrets, raw callbacks or complete identity/payment payloads. Use the existing audit context conventions for IP, user agent and request ID.
 
-- [ ] **Step 5: Add Orders exception filtering and make tests GREEN**
+- [x] **Step 5: Add Orders exception filtering and make tests GREEN**
 
 Extend the existing order list DTO/service with optional `journeyStatus`; join/filter only when supplied so normal list performance remains unchanged. Add an index-backed query test for `EXCEPTION`.
 
@@ -1057,7 +1057,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests/typecheck pass and each route has an explicit permission guard.
 
-- [ ] **Step 6: Commit Admin API and recovery controls**
+- [x] **Step 6: Commit Admin API and recovery controls**
 
 ```powershell
 git add apps/api/src/subscription-journey apps/api/src/order/dto/order.dto.ts apps/api/src/order/order.service.ts apps/api/test/subscription-journey-controller.spec.ts apps/api/test/subscription-journey-recovery.spec.ts apps/api/test/permissions.spec.ts

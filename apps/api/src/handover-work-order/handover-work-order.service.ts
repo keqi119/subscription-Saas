@@ -1944,7 +1944,8 @@ export class HandoverWorkOrderService {
     workOrderId: string,
     decision: "APPROVED" | "REJECTED",
     actorId: string,
-    notes?: string
+    notes?: string,
+    decisionManifestHash?: string
   ): Promise<WorkOrderRecord> {
     const workOrder = await this.getWorkOrderOrThrow(workOrderId, tx);
     assertOpsReviewPending(workOrder);
@@ -1953,6 +1954,12 @@ export class HandoverWorkOrderService {
       undefined,
       tx
     );
+    if (
+      decisionManifestHash &&
+      decisionManifestHash !== evidencePackage.manifestHash
+    ) {
+      throw new BadRequestException("JOURNEY_EVIDENCE_MANIFEST_STALE");
+    }
     const expectedManifestHash = readMetadataString(
       workOrder.metadata,
       "journeyEvidenceManifestHash"

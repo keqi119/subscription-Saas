@@ -689,15 +689,17 @@ export class SubscriptionJourneyRepository {
     if (!validClaim(limit, leaseMs)) return [];
     const leaseToken = randomUUID();
     const candidates = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT "id"
-      FROM "subscription_journey_job"
+      SELECT job."id"
+      FROM "subscription_journey_job" job
+      JOIN "subscription_journey" journey ON journey."id" = job."journey_id"
       WHERE (
-        ("status" IN ('PENDING', 'RETRY_SCHEDULED') AND "available_at" <= clock_timestamp())
-        OR ("status" = 'PROCESSING' AND "lease_expires_at" <= clock_timestamp())
+        (job."status" IN ('PENDING', 'RETRY_SCHEDULED') AND job."available_at" <= clock_timestamp())
+        OR (job."status" = 'PROCESSING' AND job."lease_expires_at" <= clock_timestamp())
       )
-      ORDER BY "available_at" ASC, "created_at" ASC
+        AND journey."status" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')
+      ORDER BY job."available_at" ASC, job."created_at" ASC
       LIMIT ${limit}
-      FOR UPDATE SKIP LOCKED
+      FOR UPDATE OF job SKIP LOCKED
     `);
     const ids = candidates.map(({ id }) => id);
     if (ids.length === 0) return [];

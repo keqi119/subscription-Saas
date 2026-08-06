@@ -37,6 +37,7 @@ import {
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
   ListContractsQueryDto,
+  ListOrdersQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -57,8 +58,11 @@ export class OrderController {
 
   @Get("orders")
   @RequirePermissions(PermissionCode.ORDER_VIEW)
-  listOrders(@Req() request: AuthenticatedRequest) {
-    return this.orderService.listOrders(request.user);
+  listOrders(
+    @Query() query: ListOrdersQueryDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.orderService.listOrders(request.user, query);
   }
 
   @Get("orders/review-queue")

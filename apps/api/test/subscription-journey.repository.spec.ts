@@ -574,7 +574,11 @@ describe("SubscriptionJourneyRepository", () => {
     expect(queries).toHaveLength(2);
     for (const [index, query] of queries.entries()) {
       const sql = query.strings.join(" ");
-      expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+      expect(sql).toContain(
+        index === 0
+          ? "FOR UPDATE OF job SKIP LOCKED"
+          : "FOR UPDATE SKIP LOCKED"
+      );
       expect(sql).toContain("clock_timestamp()");
       expect(sql).toContain("ORDER BY");
       expect(query.values).toContain(1);
@@ -587,6 +591,9 @@ describe("SubscriptionJourneyRepository", () => {
       expect(updateWhere).toContain("clock_timestamp()");
       expect(updateWhere).toContain("status");
     }
+    expect(queries[0]?.strings.join(" ")).toContain(
+      "journey.\"status\" NOT IN ('PAUSED', 'CANCELLED', 'COMPLETED')"
+    );
     expect(tx.subscriptionJourneyJob.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ leaseToken: expect.any(String) })

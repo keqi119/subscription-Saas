@@ -1,4 +1,5 @@
 import {
+  SubscriptionJourneyEventType,
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyJobType,
   SubscriptionJourneyManualDecision,
@@ -25,9 +26,7 @@ describe("SubscriptionJourneyRepository", () => {
       eventKey,
       expectedVersion: 0,
       journeyId: step.journeyId,
-      nextStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
       payload: { source: "application" },
-      stepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
       stepId: step.id
     };
 
@@ -45,6 +44,7 @@ describe("SubscriptionJourneyRepository", () => {
     const events = new Map<string, unknown>();
     const outbox = new Map<string, unknown>();
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       subscriptionJourney: {
         upsert: vi.fn(async (input) => {
           const existing = journeys.get(input.where.applicationId);
@@ -55,6 +55,10 @@ describe("SubscriptionJourneyRepository", () => {
         })
       },
       subscriptionJourneyEvent: {
+        findUnique: vi.fn(async (input) => {
+          const event = events.get(input.where.eventKey) as Record<string, unknown> | undefined;
+          return event ? { ...event, journey: journeys.get(applicationId) } : null;
+        }),
         upsert: vi.fn(async (input) => {
           const existing = events.get(input.where.eventKey);
           if (existing) return existing;
@@ -97,8 +101,10 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("moves a step and journey to customer waiting in the caller transaction", async () => {
-    const step = journeyStep();
-    const tx = completeStepTransaction(step, new Map());
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+    });
+    const tx = completeStepTransaction(step, new Map(), { version: 1 } as never);
     const repository = new SubscriptionJourneyRepository() as unknown as {
       waitForCustomer(tx: unknown, input: Record<string, unknown>): Promise<unknown>;
     };
@@ -108,7 +114,6 @@ describe("SubscriptionJourneyRepository", () => {
       expectedVersion: 1,
       journeyId: step.journeyId,
       payload: { planRevision: 3 },
-      stepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
       stepId: step.id
     });
 
@@ -130,10 +135,12 @@ describe("SubscriptionJourneyRepository", () => {
   it("routes application submission through the transaction signal boundary", async () => {
     const startedJourney = journey({ applicationId: "application-1" });
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       subscriptionJourney: {
         upsert: vi.fn(async () => startedJourney)
       },
       subscriptionJourneyEvent: {
+        findUnique: vi.fn(async () => null),
         upsert: vi.fn(async (input) => input.create)
       },
       subscriptionJourneyOutbox: {
@@ -209,7 +216,11 @@ describe("SubscriptionJourneyRepository", () => {
   it("keeps source-key job enqueue idempotent", async () => {
     const rows = new Map<string, ReturnType<typeof journeyJob>>();
     const tx = {
+      $queryRaw: vi.fn(async () => []),
       subscriptionJourneyJob: {
+        async findUnique(input: { where: { sourceKey: string } }) {
+          return rows.get(input.where.sourceKey) ?? null;
+        },
         async upsert(input: {
           create: ReturnType<typeof journeyJob>;
           where: { sourceKey: string };
@@ -240,18 +251,9 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("rejects a stale journey version before changing its step", async () => {
-    const tx = {
-      subscriptionJourney: {
-        updateMany: vi.fn(async () => ({ count: 0 }))
-      },
-      subscriptionJourneyEvent: {
-        findUnique: vi.fn(async () => null)
-      },
-      subscriptionJourneyStep: {
-        update: vi.fn()
-      }
-    };
     const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map(), { version: 7 } as never);
+    tx.subscriptionJourney.updateMany.mockResolvedValue({ count: 0 });
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
@@ -259,8 +261,6 @@ describe("SubscriptionJourneyRepository", () => {
         eventKey: "step:stale",
         expectedVersion: 7,
         journeyId: step.journeyId,
-        nextStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
-        stepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
         stepId: step.id
       })
     ).rejects.toMatchObject({ code: "JOURNEY_OPTIMISTIC_LOCK_CONFLICT" });
@@ -268,19 +268,16 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("maps the one-open-manual-task constraint to a stable conflict", async () => {
-    const tx = {
-      subscriptionJourneyManualTask: {
-        create: vi.fn(async () => {
-          throw Object.assign(new Error("duplicate key value"), {
-            code: "P2002",
-            meta: { target: "subscription_journey_open_manual_task_key" }
-          });
-        })
-      }
-    };
     const step = journeyStep({
       code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
     });
+    const tx = completeStepTransaction(step, new Map());
+    tx.subscriptionJourneyManualTask.create.mockRejectedValue(
+      Object.assign(new Error("duplicate key value"), {
+        code: "P2002",
+        meta: { target: "subscription_journey_open_manual_task_key" }
+      })
+    );
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
@@ -289,7 +286,7 @@ describe("SubscriptionJourneyRepository", () => {
         journeyId: step.journeyId,
         stepCode: step.code,
         stepId: step.id
-      })
+      } as never)
     ).rejects.toMatchObject({ code: "JOURNEY_MANUAL_TASK_ALREADY_OPEN" });
   });
 
@@ -302,12 +299,17 @@ describe("SubscriptionJourneyRepository", () => {
       eventKey: "application:validated:evt-2",
       expectedVersion: 0,
       journeyId: step.journeyId,
-      nextStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
       payload: { applicationId: randomUUID() },
-      stepCode: step.code,
       stepId: step.id
     });
 
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+        })
+      })
+    );
     expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledOnce();
     expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledOnce();
     expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledOnce();
@@ -339,10 +341,21 @@ describe("SubscriptionJourneyRepository", () => {
       status: "PROCESSING",
       updatedAt: new Date("2026-08-06T00:00:00.000Z")
     };
-    const queries: Array<{ strings: readonly string[] }> = [];
+    const queries: Array<{
+      strings: readonly string[];
+      values: readonly unknown[];
+    }> = [];
     const tx = {
-      $executeRaw: vi.fn(async () => 1),
-      $queryRaw: vi.fn(async (query: { strings: readonly string[] }) => {
+      $executeRaw: vi.fn(
+        async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+          void query;
+          return 1;
+        }
+      ),
+      $queryRaw: vi.fn(async (query: {
+        strings: readonly string[];
+        values: readonly unknown[];
+      }) => {
         queries.push(query);
         return queries.length === 1 ? [{ id: job.id }] : [{ id: outbox.id }];
       }),
@@ -363,9 +376,26 @@ describe("SubscriptionJourneyRepository", () => {
     ).resolves.toEqual([outbox]);
 
     expect(queries).toHaveLength(2);
-    for (const query of queries) {
-      expect(query.strings.join(" ")).toContain("FOR UPDATE SKIP LOCKED");
+    for (const [index, query] of queries.entries()) {
+      const sql = query.strings.join(" ");
+      expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+      expect(sql).toContain("clock_timestamp()");
+      expect(sql).toContain("ORDER BY");
+      expect(query.values).toContain(1);
+      const updateSql = (tx.$executeRaw.mock.calls[index]?.[0] as {
+        strings: readonly string[];
+        values: readonly unknown[];
+      }).strings.join(" ");
+      const updateWhere = updateSql.split("WHERE")[1] ?? "";
+      expect(updateWhere).toContain("lease_expires_at");
+      expect(updateWhere).toContain("clock_timestamp()");
+      expect(updateWhere).toContain("status");
     }
+    expect(tx.subscriptionJourneyJob.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ leaseToken: expect.any(String) })
+      })
+    );
   });
 
   it("requires the active lease token to complete a job", async () => {
@@ -382,6 +412,51 @@ describe("SubscriptionJourneyRepository", () => {
       })
     ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
   });
+
+  it.each(["completeJob", "rescheduleJob", "deadLetterJob"] as const)(
+    "requires an unexpired lease for %s",
+    async (operation) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
+      const updateMany = vi.fn(async () => ({ count: 0 }));
+      const tx = {
+        subscriptionJourneyException: { create: vi.fn() },
+        subscriptionJourneyJob: { updateMany }
+      };
+      const repository = new SubscriptionJourneyRepository();
+
+      if (operation === "completeJob") {
+        await expect(
+          repository.completeJob(tx as never, "job-1", "lease-1")
+        ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+      } else if (operation === "rescheduleJob") {
+        await expect(
+          repository.rescheduleJob(tx as never, "job-1", "lease-1", {
+            delayMs: 1_000,
+            error: { code: "TIMEOUT", message: "Timed out.", retryable: true }
+          })
+        ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+      } else {
+        await expect(
+          repository.deadLetterJob(tx as never, {
+            error: { code: "FAILED", message: "Failed.", retryable: false },
+            jobId: "job-1",
+            journeyId: "journey-1",
+            leaseToken: "lease-1",
+            stepId: "step-1"
+          })
+        ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+      }
+
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            leaseExpiresAt: { gt: new Date("2026-08-06T00:00:00.000Z") }
+          })
+        })
+      );
+    }
+  );
 
   it("schedules retry with a safe error and clears the lease", async () => {
     vi.useFakeTimers();
@@ -466,6 +541,253 @@ describe("SubscriptionJourneyRepository", () => {
         }
       )
     ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { rawBody: "callback" },
+    { providerResponse: { status: "ok" } },
+    { headers: { authorization: "Bearer value" } },
+    { customer: { idCard: "310101199001011234" } }
+  ])("rejects raw provider and identity containers: %j", async (payload) => {
+    const upsert = vi.fn();
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.enqueueJob(
+        { subscriptionJourneyJob: { upsert } } as never,
+        {
+          jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+          journeyId: "journey-1",
+          payload,
+          sourceKey: "unsafe-container",
+          stepId: "step-1"
+        }
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "Bearer eyJhbGciOiJIUzI1NiJ9.secret.signature",
+    '{"provider":"fadada","raw":"callback body"}',
+    "customer card 6222021234567890",
+    "customer mobile 13800138000"
+  ])("rejects credential and payment/identity strings: %s", async (value) => {
+    const upsert = vi.fn();
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.enqueueJob(
+        { subscriptionJourneyJob: { upsert } } as never,
+        {
+          jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+          journeyId: "journey-1",
+          payload: { value },
+          sourceKey: "unsafe-string",
+          stepId: "step-1"
+        }
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("stores a bounded generic failure instead of a raw provider response", async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.rescheduleJob(
+      { subscriptionJourneyJob: { updateMany } } as never,
+      "job-1",
+      "lease-1",
+      {
+        delayMs: 1_000,
+        error: {
+          code: "provider-http-500/body",
+          message:
+            'Bearer abc.def.ghi {"customerPhone":"13800138000","rawBody":"provider callback"}',
+          retryable: true
+        }
+      }
+    );
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          lastErrorCode: "PROVIDER_HTTP_500_BODY",
+          lastErrorMessage: "Journey operation failed."
+        })
+      })
+    );
+  });
+
+  it("rejects a persisted journey/step mismatch before completing", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(
+      step,
+      new Map(),
+      {
+        currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+      } as never
+    );
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.completeStep(tx as never, {
+        eventKey: "mismatched-step",
+        expectedVersion: 0,
+        journeyId: step.journeyId,
+        stepId: step.id
+      })
+    ).rejects.toMatchObject({ code: "JOURNEY_INVALID_TRANSITION" });
+    expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("derives manual task type from the locked persisted step", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+    });
+    const tx = completeStepTransaction(step, new Map());
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.openManualTask(tx as never, {
+        inputSnapshot: { planRevision: 2 },
+        journeyId: step.journeyId,
+        stepCode: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+        stepId: step.id
+      } as never)
+    ).rejects.toMatchObject({ code: "JOURNEY_INVALID_TRANSITION" });
+    expect(tx.subscriptionJourneyManualTask.create).not.toHaveBeenCalled();
+  });
+
+  it("returns the committed waiting step for an exact event retry", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+      status: "WAITING_CUSTOMER"
+    } as never);
+    const payload = { planRevision: 3 };
+    const events = new Map<string, never>([
+      [
+        "customer:waiting:retry",
+        {
+          eventKey: "customer:waiting:retry",
+          eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+          journeyId: step.journeyId,
+          payload: {
+            operation: "WAIT_FOR_CUSTOMER",
+            payload,
+            stepId: step.id
+          }
+        } as never
+      ]
+    ]);
+    const tx = completeStepTransaction(step, events);
+    const repository = new SubscriptionJourneyRepository();
+
+    const result = await repository.waitForCustomer(tx as never, {
+      eventKey: "customer:waiting:retry",
+      expectedVersion: 1,
+      journeyId: step.journeyId,
+      payload,
+      stepId: step.id
+    } as never);
+
+    expect(result).toEqual(step);
+    expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects reuse of a waiting event key for another step", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+    });
+    const events = new Map<string, never>([
+      [
+        "customer:waiting:conflict",
+        {
+          eventKey: "customer:waiting:conflict",
+          eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+          journeyId: "another-journey",
+          payload: {
+            operation: "WAIT_FOR_CUSTOMER",
+            payload: { planRevision: 3 },
+            stepId: "another-step"
+          }
+        } as never
+      ]
+    ]);
+    const tx = completeStepTransaction(step, events);
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.waitForCustomer(tx as never, {
+        eventKey: "customer:waiting:conflict",
+        expectedVersion: 1,
+        journeyId: step.journeyId,
+        payload: { planRevision: 3 },
+        stepId: step.id
+      } as never)
+    ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
+    expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a journey start event key owned by another application", async () => {
+    const existing = journey({ applicationId: "application-existing" });
+    const upsert = vi.fn(async () => journey({ applicationId: "application-new" }));
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      subscriptionJourney: { upsert },
+      subscriptionJourneyEvent: {
+        findUnique: vi.fn(async () => ({
+          eventKey: "application:start:shared",
+          eventType: SubscriptionJourneyEventType.JOURNEY_STARTED,
+          journey: existing,
+          journeyId: existing.id,
+          payload: { applicationId: existing.applicationId }
+        })),
+        upsert: vi.fn(async (input) => input.create)
+      },
+      subscriptionJourneyOutbox: {
+        upsert: vi.fn(async (input) => input.create)
+      }
+    };
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.createOrGetForApplication(
+        tx as never,
+        "application-new",
+        "application:start:shared"
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a job source key owned by another journey contract", async () => {
+    const existing = journeyJob({
+      journeyId: "journey-existing",
+      stepId: "step-existing"
+    } as never);
+    const upsert = vi.fn();
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      subscriptionJourneyJob: {
+        findUnique: vi.fn(async () => existing),
+        upsert
+      }
+    };
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.enqueueJob(tx as never, {
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: "journey-new",
+        payload: { applicationId: "application-new" },
+        sourceKey: existing.sourceKey,
+        stepId: "step-new"
+      })
+    ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
     expect(upsert).not.toHaveBeenCalled();
   });
 
@@ -569,9 +891,28 @@ function journeyJob(
 
 function completeStepTransaction(
   step: ReturnType<typeof journeyStep>,
-  eventRows: Map<string, { journeyId: string }>
+  eventRows: Map<string, { journeyId: string }>,
+  journeyOverrides: Partial<ReturnType<typeof journey>> = {}
 ) {
+  const currentJourney = journey({
+    currentStepCode: step.code,
+    currentStepStatus: step.status,
+    id: step.journeyId,
+    ...journeyOverrides
+  } as never);
   return {
+    $queryRaw: vi.fn(async () => [
+      {
+        journeyId: currentJourney.id,
+        journeyStatus: currentJourney.status,
+        journeyVersion: currentJourney.version,
+        currentStepCode: currentJourney.currentStepCode,
+        currentStepStatus: currentJourney.currentStepStatus,
+        stepCode: step.code,
+        stepId: step.id,
+        stepStatus: step.status
+      }
+    ]),
     $transaction: vi.fn(),
     subscriptionJourney: {
       updateMany: vi.fn(async () => ({ count: 1 }))
@@ -587,6 +928,9 @@ function completeStepTransaction(
     },
     subscriptionJourneyOutbox: {
       upsert: vi.fn(async (input) => input.create)
+    },
+    subscriptionJourneyManualTask: {
+      create: vi.fn(async (input) => ({ id: "manual-task-1", ...input.data }))
     },
     subscriptionJourneyStep: {
       findUnique: vi.fn(async () => step),

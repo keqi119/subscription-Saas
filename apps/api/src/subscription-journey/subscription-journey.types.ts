@@ -4,8 +4,7 @@ import type {
   SubscriptionJourneyJobType,
   SubscriptionJourneyManualDecision,
   SubscriptionJourneyManualTask,
-  SubscriptionJourneyStep,
-  SubscriptionJourneyStepCode
+  SubscriptionJourneyStep
 } from "@prisma/client";
 
 export type JourneySignalType =
@@ -29,9 +28,7 @@ export interface CompleteJourneyStepInput {
   eventKey: string;
   expectedVersion: number;
   journeyId: string;
-  nextStepCode: SubscriptionJourneyStepCode | null;
   payload?: Prisma.InputJsonValue;
-  stepCode: SubscriptionJourneyStepCode;
   stepId: string;
 }
 
@@ -40,14 +37,12 @@ export interface WaitForCustomerInput {
   expectedVersion: number;
   journeyId: string;
   payload?: Prisma.InputJsonValue;
-  stepCode: SubscriptionJourneyStepCode;
   stepId: string;
 }
 
 export interface OpenManualTaskInput {
   inputSnapshot: Prisma.InputJsonValue;
   journeyId: string;
-  stepCode: SubscriptionJourneyStepCode;
   stepId: string;
 }
 

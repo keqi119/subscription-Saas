@@ -992,11 +992,11 @@ git commit -m "feat: add vehicle rights documents tab"
 - Consumes: existing vehicle insurance policy/document APIs, existing battery/BaaS fields, current permissions, and `VehicleWorkspaceTabProps`.
 - Produces one primary page without secondary navigation.
 
-- [ ] **Step 1: Write a failing source contract test**
+- [x] **Step 1: Write a failing source contract test**
 
 Create `vehicle-insurance-battery-workspace.spec.ts` to read the new component source and assert that it references the current policy/document, latest valid condition-report, and BaaS endpoints; renders compulsory/commercial policy sections; conditionally renders the BaaS block; and does not contain any of the eight rights-document type values. Insurance policy attachments may retain their existing `客户可见` control because they are outside the rights-document boundary.
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-insurance-battery-workspace.spec.ts
@@ -1004,15 +1004,15 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-insurance-batt
 
 Expected: FAIL because the tab component does not exist.
 
-- [ ] **Step 3: Extract insurance behavior into the new tab**
+- [x] **Step 3: Extract insurance behavior into the new tab**
 
 Move/recompose the current policy summary, policy edit/create forms, policy attachment upload/preview, expiry state, and insurance history into the new component. Retain existing insurance attachment visibility behavior; this task must not convert insurance documents into rights batches.
 
-- [ ] **Step 4: Add the conditional battery/BaaS section**
+- [x] **Step 4: Add the conditional battery/BaaS section**
 
 Render battery capacity/usage mode plus health, inspection date, cycle count, estimated range, and warranty expiry from the latest valid condition report—do not create a second battery-health copy. Show current provider/contract/monthly fee/billing cycle/payment day/next payment/unpaid cost only when usage mode is `BAAS`. For a battery-owned vehicle display “不需要 BaaS 服务”. Do not add a new battery workflow or API; complex insurance and BaaS maintenance continues to link to the existing dedicated pages.
 
-- [ ] **Step 5: Run focused web checks**
+- [x] **Step 5: Run focused web checks**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-insurance-battery-workspace.spec.ts test/vehicle-workspace-shell.spec.tsx
@@ -1022,7 +1022,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the insurance and battery tab**
+- [x] **Step 6: Commit the insurance and battery tab**
 
 ```powershell
 git add apps/web/src/components/vehicle-workspace/vehicle-insurance-battery-tab.tsx apps/web/test/vehicle-insurance-battery-workspace.spec.ts apps/web/src/app/vehicles/page.tsx

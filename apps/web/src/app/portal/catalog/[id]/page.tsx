@@ -23,7 +23,8 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
-import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
+import { PortalSourceDocumentImage } from "../../../../components/portal/portal-source-document-image";
+import { buildPortalAssetUrl, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import {
   PortalCatalogVehicleDetail,
   PortalCatalogVehicleMedia,
@@ -217,7 +218,7 @@ export default function PortalCatalogDetailPage() {
         </div>
 
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <InfoSection title="核心参数">
+          <InfoSection title="车辆配置与核心参数">
             <Descriptions
               bordered
               column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
@@ -235,53 +236,20 @@ export default function PortalCatalogDetailPage() {
               ]}
               size="small"
             />
+            {detail.sourceDocuments.configurationSheet ? (
+              <div style={{ marginTop: 16 }}>
+                <PortalSourceDocumentImage document={detail.sourceDocuments.configurationSheet} />
+              </div>
+            ) : null}
           </InfoSection>
 
           <InfoSection title="一车一况">
-            <Space direction="vertical" size={12} style={{ width: "100%" }}>
-              <Space size={[8, 8]} wrap>
-                {detail.condition.grade ? <Tag color="blue">车况 {detail.condition.grade}</Tag> : <Tag>车况待确认</Tag>}
-                {detail.condition.hasMajorAccident === false ? <Tag color="green">未标记重大事故</Tag> : null}
-                {detail.condition.hasFloodDamage === false ? <Tag color="green">未标记水泡</Tag> : null}
-                {detail.condition.hasFireDamage === false ? <Tag color="green">未标记火烧</Tag> : null}
-                {detail.condition.hasStructuralDamage === false ? <Tag color="green">未标记结构件损伤</Tag> : null}
-              </Space>
-              <Typography.Paragraph style={{ margin: 0 }}>
-                {detail.condition.summary ?? detail.vehicleHistorySummary}
-              </Typography.Paragraph>
-              {detail.condition.knownDefectsSummary ? (
-                <Alert message={detail.condition.knownDefectsSummary} showIcon type="warning" />
-              ) : null}
-              {detail.conditionReportSummary ? (
-                <Alert
-                  action={
-                    <Button onClick={() => router.push(`/portal/catalog/${detail.id}/condition-report`)} size="small" type="link">
-                      查看完整车况报告
-                    </Button>
-                  }
-                  description={[
-                    detail.conditionReportSummary.inspectionDate
-                      ? `检测日期：${formatDate(detail.conditionReportSummary.inspectionDate)}`
-                      : null,
-                    detail.conditionReportSummary.inspectorOrg
-                      ? `检测机构：${detail.conditionReportSummary.inspectorOrg}`
-                      : null,
-                    detail.conditionReportSummary.defectSummary
-                      ? `主要瑕疵：${detail.conditionReportSummary.defectSummary}`
-                      : null
-                  ]
-                    .filter(Boolean)
-                    .join(" / ")}
-                  message={`正式车况报告 ${detail.conditionReportSummary.reportNo}${
-                    detail.conditionReportSummary.overallGrade
-                      ? ` / 综合等级 ${detail.conditionReportSummary.overallGrade}`
-                      : ""
-                  }`}
-                  showIcon
-                  type="success"
-                />
-              ) : null}
-            </Space>
+            <ConditionPresentation
+              detail={detail}
+              onOpenStructuredReport={() =>
+                router.push(`/portal/catalog/${detail.id}/condition-report`)
+              }
+            />
           </InfoSection>
 
           <InfoSection title="电池与续航">
@@ -620,6 +588,71 @@ function PlanOption({ plan }: { plan: PortalSubscriptionPlan }) {
   );
 }
 
+function ConditionPresentation({
+  detail,
+  onOpenStructuredReport
+}: Readonly<{
+  detail: PortalCatalogVehicleDetail;
+  onOpenStructuredReport: () => void;
+}>) {
+  if (
+    detail.conditionDisplayMode === "SOURCE_DOCUMENT" &&
+    detail.sourceDocuments.conditionReport
+  ) {
+    return <PortalSourceDocumentImage document={detail.sourceDocuments.conditionReport} />;
+  }
+
+  if (
+    detail.conditionDisplayMode === "STRUCTURED_REPORT" &&
+    detail.conditionReportSummary
+  ) {
+    return (
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Space size={[8, 8]} wrap>
+          {detail.condition.grade ? (
+            <Tag color="blue">车况 {detail.condition.grade}</Tag>
+          ) : (
+            <Tag>车况待确认</Tag>
+          )}
+          {detail.condition.hasMajorAccident === false ? <Tag color="green">未标记重大事故</Tag> : null}
+          {detail.condition.hasFloodDamage === false ? <Tag color="green">未标记水泡</Tag> : null}
+          {detail.condition.hasFireDamage === false ? <Tag color="green">未标记火烧</Tag> : null}
+          {detail.condition.hasStructuralDamage === false ? <Tag color="green">未标记结构件损伤</Tag> : null}
+        </Space>
+        <Typography.Paragraph style={{ margin: 0 }}>
+          {detail.condition.summary ?? detail.vehicleHistorySummary}
+        </Typography.Paragraph>
+        {detail.condition.knownDefectsSummary ? (
+          <Alert message={detail.condition.knownDefectsSummary} showIcon type="warning" />
+        ) : null}
+        <Alert
+          action={<Button onClick={onOpenStructuredReport} size="small" type="link">查看完整车况报告</Button>}
+          description={[
+            detail.conditionReportSummary.inspectionDate
+              ? `检测日期：${formatDate(detail.conditionReportSummary.inspectionDate)}`
+              : null,
+            detail.conditionReportSummary.inspectorOrg
+              ? `检测机构：${detail.conditionReportSummary.inspectorOrg}`
+              : null,
+            detail.conditionReportSummary.defectSummary
+              ? `主要瑕疵：${detail.conditionReportSummary.defectSummary}`
+              : null
+          ].filter(Boolean).join(" / ")}
+          message={`正式车况报告 ${detail.conditionReportSummary.reportNo}${
+            detail.conditionReportSummary.overallGrade
+              ? ` / 综合等级 ${detail.conditionReportSummary.overallGrade}`
+              : ""
+          }`}
+          showIcon
+          type="success"
+        />
+      </Space>
+    );
+  }
+
+  return <Empty description="暂无可展示的车况报告" />;
+}
+
 function InfoSection({ children, title }: Readonly<{ children: ReactNode; title: string }>) {
   return (
     <section
@@ -636,13 +669,6 @@ function InfoSection({ children, title }: Readonly<{ children: ReactNode; title:
       {children}
     </section>
   );
-}
-
-function buildPortalAssetUrl(url: string) {
-  if (/^https?:\/\//.test(url)) {
-    return url;
-  }
-  return `${PORTAL_API_BASE_URL.replace(/\/api$/, "")}${url}`;
 }
 
 function formatDate(value?: string | null) {

@@ -1430,7 +1430,7 @@ export interface PortalCatalogVehicleDetail {
 }
 ```
 
-- [ ] **Step 1: Write failing rendering and precedence tests**
+- [x] **Step 1: Write failing rendering and precedence tests**
 
 Use `renderToStaticMarkup` for the source-image component and a source contract for the page:
 
@@ -1453,7 +1453,7 @@ it("renders a controlled long image with no storage key", () => {
 
 Assert that the catalog page branches on `conditionDisplayMode`, never renders the source condition image and structured condition-report link in the same branch, and does not render PDFs in an image element.
 
-- [ ] **Step 2: Run the Portal web test and confirm RED**
+- [x] **Step 2: Run the Portal web test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/portal-vehicle-source-documents.spec.tsx
@@ -1461,11 +1461,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/portal-vehicle-source-
 
 Expected: FAIL because the response types and source-image component do not exist.
 
-- [ ] **Step 3: Extend Portal response types and implement the image component**
+- [x] **Step 3: Extend Portal response types and implement the image component**
 
 Add the Task 4 projection to `portal-types.ts`. Implement a responsive, lazy-loaded long-image panel using the existing same-origin API URL helper and current Portal image/preview conventions. The panel must preserve aspect ratio, provide meaningful alt text and loading/error states, and offer image preview without exposing a private storage bucket/key. If the controlled image request fails, hide only that panel, emit a sanitized warning through the existing client logging convention, and keep the rest of the catalog page usable.
 
-- [ ] **Step 4: Render configuration and condition source documents**
+- [x] **Step 4: Render configuration and condition source documents**
 
 In the vehicle catalog detail page:
 
@@ -1475,7 +1475,7 @@ In the vehicle catalog detail page:
 - when `conditionDisplayMode === "NONE"`, render the existing neutral empty state;
 - do not add an Admin-only download link or expose other rights documents.
 
-- [ ] **Step 5: Run Portal API/Web and full web checks**
+- [x] **Step 5: Run Portal API/Web and full web checks**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/portal-catalog.spec.ts
@@ -1487,7 +1487,7 @@ pnpm --filter @subscription-saas/web build
 
 Expected: Portal tests, lint, typecheck, and production web build PASS.
 
-- [ ] **Step 6: Commit the Portal long-image rendering**
+- [x] **Step 6: Commit the Portal long-image rendering**
 
 ```powershell
 git add apps/web/src/lib/portal-types.ts apps/web/src/components/portal/portal-source-document-image.tsx apps/web/src/app/portal/catalog/[id]/page.tsx apps/web/test/portal-vehicle-source-documents.spec.tsx

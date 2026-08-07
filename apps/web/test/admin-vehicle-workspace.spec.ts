@@ -163,6 +163,7 @@ describe("admin vehicle workspace navigation model", () => {
     );
 
     expect(vehiclePageSource).toContain("buildVehicleWorkspaceHref");
+    expect(vehiclePageSource).toContain("<Suspense");
     expect(vehiclePageSource).toContain("vehicles/sale-price-reviews/due");
     expect(vehiclePageSource).not.toContain('key: "sale-price-history"');
     expect(vehiclePageSource).not.toContain("detailOpen");

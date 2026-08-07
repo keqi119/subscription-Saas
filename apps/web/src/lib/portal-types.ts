@@ -53,6 +53,12 @@ export interface PortalCatalogVehicleMedia {
   sortOrder: number;
 }
 
+export interface PortalCatalogSourceDocument {
+  previewUrl: string;
+  section: "CONFIGURATION_SHEET" | "CONDITION_REPORT";
+  title: string;
+}
+
 export interface PortalSubscriptionPlan {
   benefitDescription: string;
   canSubmit: boolean;
@@ -101,6 +107,7 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
     knownDefectsSummary: string | null;
     summary: string | null;
   };
+  conditionDisplayMode: "SOURCE_DOCUMENT" | "STRUCTURED_REPORT" | "NONE";
   conditionReportSummary: {
     defectSummary: string | null;
     id: string;
@@ -120,6 +127,10 @@ export interface PortalCatalogVehicleDetail extends PortalCatalogVehicle {
   }>;
   feeDescription: string;
   serviceHighlights: string[];
+  sourceDocuments: {
+    conditionReport: PortalCatalogSourceDocument | null;
+    configurationSheet: PortalCatalogSourceDocument | null;
+  };
   submitButtonText: string;
   subscriptionPlans: PortalSubscriptionPlan[];
   vehicle: {

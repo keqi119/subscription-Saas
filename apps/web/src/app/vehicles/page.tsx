@@ -21,7 +21,7 @@ import type { ColumnsType } from "antd/es/table";
 import type { Dayjs } from "dayjs";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
@@ -129,6 +129,14 @@ const batteryUsageTypeOptions = [
 ];
 
 export default function VehiclesPage() {
+  return (
+    <Suspense fallback={null}>
+      <VehiclesPageContent />
+    </Suspense>
+  );
+}
+
+function VehiclesPageContent() {
   const { message } = App.useApp();
   const router = useRouter();
   const searchParams = useSearchParams();

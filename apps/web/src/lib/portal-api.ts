@@ -48,6 +48,13 @@ export async function portalApiFetch<T>(path: string, init?: RequestInit): Promi
   return text ? (JSON.parse(text) as T) : (null as T);
 }
 
+export function buildPortalAssetUrl(url: string) {
+  if (/^https?:\/\//.test(url)) {
+    return url;
+  }
+  return `${PORTAL_API_BASE_URL.replace(/\/api$/, "")}${url}`;
+}
+
 export function getPortalJourneyByApplication(applicationId: string) {
   return portalApiFetch<PortalSubscriptionJourney>(
     `/portal/subscription-journeys/by-application/${encodeURIComponent(applicationId)}`

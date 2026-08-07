@@ -8,6 +8,7 @@ import {
   CollectionCaseStatus,
   CollectionLevel,
   ContactMethod,
+  ContractStatus,
   DepositStatus,
   DepositTransactionStatus,
   DepositTransactionType,
@@ -61,6 +62,128 @@ describe("billing finance minimum backend loop", () => {
     expect(second.createdCount).toBe(0);
     expect(second.bills).toHaveLength(2);
     expect(harness.state.bills).toHaveLength(2);
+  });
+
+  it("requires an archived contract before generating initial bills", async () => {
+    const harness = createFinanceHarness({
+      contract: {
+        fileId: null,
+        id: "contract-1",
+        status: ContractStatus.SIGNED
+      }
+    });
+
+    await expect(
+      harness.service.generateInitialBillsInTransaction(
+        harness.transactionClient as never,
+        harness.orderId,
+        harness.user.id,
+        "journey:journey-1:step:INITIAL_BILLING:revision:1"
+      )
+    ).rejects.toThrow("Initial bills require an archived contract.");
+    expect(harness.state.bills).toHaveLength(0);
+  });
+
+  it("creates exact source-keyed initial bills once from the final plan snapshot", async () => {
+    const harness = createFinanceHarness({
+      depositAmount: 1n,
+      finalDepositAmount: 1n,
+      finalPlanSnapshot: {
+        depositAmount: 620000,
+        pricing: { monthlyFeeAmount: 315000 }
+      },
+      monthlyFeeAmount: 1n,
+      quoteSnapshot: {
+        depositAmount: 2,
+        monthlyFeeAmount: 2
+      }
+    });
+    const sourceKey = "journey:journey-1:step:INITIAL_BILLING:revision:1";
+
+    const first = await harness.service.generateInitialBillsInTransaction(
+      harness.transactionClient as never,
+      harness.orderId,
+      harness.user.id,
+      sourceKey
+    );
+    const second = await harness.service.generateInitialBillsInTransaction(
+      harness.transactionClient as never,
+      harness.orderId,
+      harness.user.id,
+      sourceKey
+    );
+
+    expect(first.map((bill) => bill.amount)).toEqual([620000n, 315000n]);
+    expect(first.map((bill) => bill.sourceKey)).toEqual([
+      `${sourceKey}:${BillType.DEPOSIT}`,
+      `${sourceKey}:${BillType.FIRST_MONTHLY_FEE}`
+    ]);
+    expect(second.map((bill) => bill.id)).toEqual(first.map((bill) => bill.id));
+    expect(harness.state.bills).toHaveLength(2);
+  });
+
+  it("rejects an active initial bill that conflicts with the final plan snapshot", async () => {
+    const harness = createFinanceHarness();
+    const sourceKey = "journey:journey-1:step:INITIAL_BILLING:revision:1";
+    await harness.service.generateInitialBillsInTransaction(
+      harness.transactionClient as never,
+      harness.orderId,
+      harness.user.id,
+      sourceKey
+    );
+    harness.state.bills[0]!.amount = 499999n;
+
+    await expect(
+      harness.service.generateInitialBillsInTransaction(
+        harness.transactionClient as never,
+        harness.orderId,
+        harness.user.id,
+        sourceKey
+      )
+    ).rejects.toThrow("does not match the final plan snapshot");
+  });
+
+  it("derives partial, full, and missing initial-bill settlement from bill authority", async () => {
+    const harness = createFinanceHarness();
+
+    await expect(
+      harness.service.evaluateInitialBillSettlement(
+        harness.transactionClient as never,
+        harness.orderId
+      )
+    ).resolves.toEqual({ paid: false, remainingAmount: 800000n });
+
+    await harness.service.generateInitialBillsInTransaction(
+      harness.transactionClient as never,
+      harness.orderId,
+      harness.user.id,
+      "journey:journey-1:step:INITIAL_BILLING:revision:1"
+    );
+    Object.assign(harness.findBill(BillType.DEPOSIT), {
+      billStatus: BillStatus.PARTIALLY_PAID,
+      paidAmount: 200000n,
+      remainingAmount: 300000n
+    });
+    await expect(
+      harness.service.evaluateInitialBillSettlement(
+        harness.transactionClient as never,
+        harness.orderId
+      )
+    ).resolves.toEqual({ paid: false, remainingAmount: 600000n });
+
+    for (const bill of harness.state.bills) {
+      Object.assign(bill, {
+        billStatus: BillStatus.PAID,
+        paidAmount: bill.amount,
+        remainingAmount: 0n
+      });
+    }
+    await expect(
+      harness.service.evaluateInitialBillSettlement(
+        harness.transactionClient as never,
+        harness.orderId
+      )
+    ).resolves.toEqual({ paid: true, remainingAmount: 0n });
   });
 
   it("throws a Chinese error when deposit amount is missing", async () => {
@@ -1517,6 +1640,7 @@ function cloneOrder(harness: ReturnType<typeof createFinanceHarness>, overrides:
   return {
     ...harness.state.order,
     application: { ...(harness.state.order.application as Record<string, unknown>) },
+    contract: { ...(harness.state.order.contract as Record<string, unknown>) },
     customer: { ...(harness.state.order.customer as Record<string, unknown>) },
     quote: { ...(harness.state.order.quote as Record<string, unknown>) },
     vehicle: { ...(harness.state.order.vehicle as Record<string, unknown>) },
@@ -1559,7 +1683,12 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       },
       applicationId: "application-1",
       businessType: BusinessType.SUBSCRIPTION,
-      contractId: null,
+      contract: {
+        fileId: "file-contract-1",
+        id: "contract-1",
+        status: ContractStatus.ARCHIVED
+      },
+      contractId: "contract-1",
       createdAt: now,
       createdBy: user.id,
       customer: { grade: "A", id: customerId, mobile: "13800000000", name: "测试客户" },

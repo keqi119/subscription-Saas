@@ -33,6 +33,56 @@ import { DELIVERY_HANDOVER_ARCHIVE_BLOCKS_DELIVERY_CONFIRMATION } from "../src/d
 import { OrderService } from "../src/order/order.service";
 
 describe("vehicle delivery handover workflow", () => {
+  it("delegates legacy delivery activation to the authority gate and blocks Journey direct progression", async () => {
+    const harness = createDeliveryHarness();
+    harness.state.delivery = buildReadyDelivery(harness);
+    const journeyLookup = vi.fn(async () => null as Record<string, unknown> | null);
+    (harness.prisma as Record<string, unknown>).subscriptionJourney = {
+      findUnique: journeyLookup
+    };
+    const authorityGate = {
+      activateFromAuthoritativeHandover: vi.fn(async () => ({
+        deliveryId: "delivery-1"
+      }))
+    };
+    const service = new OrderService(
+      harness.auditService as never,
+      harness.prisma as never,
+      undefined,
+      undefined,
+      undefined,
+      harness.deliveryEvidenceService as never,
+      harness.handoverWorkOrderService as never,
+      harness.vehicleMileageService as never,
+      harness.mileageReviewService as never,
+      harness.billingAutomationService as never,
+      undefined,
+      authorityGate as never
+    );
+
+    await service.confirmDelivery(
+      harness.orderId,
+      validConfirmDto(),
+      harness.user,
+      harness.context
+    );
+    expect(authorityGate.activateFromAuthoritativeHandover).toHaveBeenCalledWith(
+      harness.tx,
+      { actorId: harness.user.id, orderId: harness.orderId }
+    );
+
+    journeyLookup.mockResolvedValueOnce({ id: "journey-1" });
+    await expect(
+      service.confirmDelivery(
+        harness.orderId,
+        validConfirmDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("JOURNEY_MANAGED_DELIVERY_REQUIRES_AUDITED_RECOVERY");
+    expect(authorityGate.activateFromAuthoritativeHandover).toHaveBeenCalledTimes(1);
+  });
+
   it("returns Stage 2 completion and Field mileage as delivery confirmation defaults", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
@@ -555,6 +605,7 @@ describe("vehicle delivery handover workflow", () => {
       harness.state.delivery = buildReadyDelivery(harness);
       harness.state.afterFirstGateParentLock = async () => {
         expect(harness.state.gateLockOrder).toEqual([
+          "subscription_journey",
           "subscription_order"
         ]);
         insert(harness);
@@ -672,10 +723,17 @@ describe("vehicle delivery handover workflow", () => {
     expect(committedRevocations).toEqual([]);
     expect(blockedRevocations).toEqual(attempts.map((attempt) => attempt.name));
     expect(harness.state.gateLockOrder).toEqual([
+      "subscription_journey",
       "subscription_order",
       "vehicle",
       "vehicle_insurance_policy",
       "vehicle_delivery",
+      "vehicle_inspection",
+      "lease",
+      "receivable_bill",
+      "payment_write_off",
+      "billing_schedule",
+      "order_entitlement_account",
       "order_change",
       "contract",
       "contract_esign_task",
@@ -823,7 +881,7 @@ describe("vehicle delivery handover workflow", () => {
     expect(check.blockingReasons).toContain("商业险未覆盖计划交付日");
   });
 
-  it("treats zero required deposit as automatically satisfied for delivery readiness", async () => {
+  it("keeps legacy money booleans read-only even when zero deposit is authoritative", async () => {
     const harness = createDeliveryHarness();
     harness.state.depositAmount = 0n;
     harness.state.depositStatus = DepositStatus.PENDING_CONFIRM;
@@ -839,12 +897,12 @@ describe("vehicle delivery handover workflow", () => {
 
     const delivery = (await harness.service.prepareDelivery(
       harness.orderId,
-      validPrepareDto({ depositReceivedConfirmed: false }),
+      validPrepareDto(),
       harness.user,
       harness.context
     )) as { depositReceivedConfirmed: boolean };
 
-    expect(delivery.depositReceivedConfirmed).toBe(true);
+    expect(delivery.depositReceivedConfirmed).toBeUndefined();
   });
 
   it("prepare-delivery updates the existing delivery record instead of creating another one", async () => {

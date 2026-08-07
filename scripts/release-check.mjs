@@ -34,6 +34,8 @@ const requiredSteps = [
   ["Fadada test signer real-name prep syntax", "node", ["--check", "scripts/fadada-production-test-signer-realname.mjs"]],
   ["Fadada production upload/signUrl smoke syntax", "node", ["--check", "scripts/fadada-production-upload-signurl-smoke.mjs"]],
   ["Fadada production upload/signUrl smoke tests", "pnpm", ["fadada:upload-signurl:test"]],
+  ["Stage 1 Golden Path preflight tests", "pnpm", ["stage1:golden-path:preflight:test"]],
+  ["Stage 1 Golden Path production image guard", "node", ["scripts/stage1-golden-path-production-preflight.mjs", "--check-examples"]],
   ["Scenario seed syntax", "node", ["--check", "apps/api/prisma/seed-scenario.mjs"]]
 ];
 

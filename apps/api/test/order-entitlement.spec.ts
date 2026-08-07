@@ -18,8 +18,34 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { OrderService } from "../src/order/order.service";
+import { OrderEntitlementService } from "../src/order/order-entitlement.service";
 
 describe("order entitlement grant backend loop", () => {
+  it("prepares idempotent suspended entitlements in the caller transaction", async () => {
+    const harness = createEntitlementHarness({ orderStatus: OrderStatus.PENDING_SIGN });
+    const service = new OrderEntitlementService();
+
+    await service.ensureInitialEntitlements(
+      harness.tx as never,
+      harness.orderId,
+      harness.user.id
+    );
+    await service.ensureInitialEntitlements(
+      harness.tx as never,
+      harness.orderId,
+      harness.user.id
+    );
+
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.state.accounts).toHaveLength(1);
+    expect(harness.state.accounts[0]!.accountStatus).toBe(
+      EntitlementAccountStatus.SUSPENDED
+    );
+    expect(harness.state.grants).toHaveLength(4);
+    expect(harness.tx.orderEntitlementAccount.create).toHaveBeenCalledOnce();
+    expect(harness.tx.orderEntitlementGrant.create).toHaveBeenCalledTimes(4);
+  });
+
   it("generates an ACTIVE entitlement account and mileage, energy, and benefit grants", async () => {
     const harness = createEntitlementHarness();
 
@@ -1195,6 +1221,7 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
   }
 
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: orderId }]),
     orderEntitlementAccount: {
       create: vi.fn(async ({ data }) => {
         const account: AccountRecord = {
@@ -1217,6 +1244,14 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
           throw new Error("Account not found");
         }
         return accountWithGrants(account);
+      }),
+      update: vi.fn(async ({ data, where }) => {
+        const account = state.accounts.find((item) => item.id === where.id);
+        if (!account) {
+          throw new Error("Account not found");
+        }
+        Object.assign(account, data, { updatedAt: now });
+        return account;
       })
     },
     orderEntitlementGrant: {
@@ -1264,6 +1299,9 @@ function createEntitlementHarness(overrides: Record<string, unknown> = {}) {
         return usage;
       }),
       findFirst: vi.fn(async (args) => findUsage(args))
+    },
+    subscriptionOrder: {
+      findUnique: vi.fn(async () => buildOrder())
     }
   };
 

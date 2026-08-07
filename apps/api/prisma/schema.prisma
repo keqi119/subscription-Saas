@@ -471,6 +471,134 @@ enum SubscriptionAutomationJobStatus {
   @@map("subscription_automation_job_status")
 }
 
+enum SubscriptionJourneyStatus {
+  RUNNING
+  WAITING_CUSTOMER
+  WAITING_MANUAL
+  RETRY_SCHEDULED
+  PAUSED
+  EXCEPTION
+  COMPLETED
+  CANCELLED
+
+  @@map("subscription_journey_status")
+}
+
+enum SubscriptionJourneyStepCode {
+  APPLICATION_VALIDATION
+  FINAL_PLAN_DECISION
+  CUSTOMER_PLAN_CONFIRMATION
+  FINAL_VEHICLE_ALLOCATION
+  ORDER_AND_CONTRACT_CREATION
+  FADADA_SIGNING_AND_ARCHIVE
+  INITIAL_BILLING
+  CUSTOMER_JSAPI_PAYMENT
+  HANDOVER_AND_STAGE2_CREATION
+  DELIVERY_EVIDENCE_DECISION
+  AUTHORITATIVE_ACTIVATION
+
+  @@map("subscription_journey_step_code")
+}
+
+enum SubscriptionJourneyStepStatus {
+  PENDING
+  RUNNING
+  WAITING_CUSTOMER
+  WAITING_MANUAL
+  RETRY_SCHEDULED
+  EXCEPTION
+  COMPLETED
+  SKIPPED
+  CANCELLED
+
+  @@map("subscription_journey_step_status")
+}
+
+enum SubscriptionJourneyManualTaskType {
+  FINAL_PLAN_DECISION
+  FINAL_VEHICLE_ALLOCATION
+  DELIVERY_EVIDENCE_DECISION
+
+  @@map("subscription_journey_manual_task_type")
+}
+
+enum SubscriptionJourneyManualTaskStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+
+  @@map("subscription_journey_manual_task_status")
+}
+
+enum SubscriptionJourneyManualDecision {
+  APPROVED
+  REJECTED
+
+  @@map("subscription_journey_manual_decision")
+}
+
+enum SubscriptionJourneyJobType {
+  VALIDATE_APPLICATION
+  CREATE_ORDER_AND_CONTRACT
+  START_FADADA_SIGNING
+  RECONCILE_FADADA_SIGNING
+  GENERATE_INITIAL_BILLS
+  EVALUATE_PAYMENT_SETTLEMENT
+  CREATE_HANDOVER
+  ACTIVATE_SUBSCRIPTION
+  DISPATCH_NOTIFICATION
+
+  @@map("subscription_journey_job_type")
+}
+
+enum SubscriptionJourneyJobStatus {
+  PENDING
+  PROCESSING
+  RETRY_SCHEDULED
+  COMPLETED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("subscription_journey_job_status")
+}
+
+enum SubscriptionJourneyEventType {
+  JOURNEY_STARTED
+  STEP_STARTED
+  STEP_WAITING_CUSTOMER
+  STEP_WAITING_MANUAL
+  STEP_COMPLETED
+  STEP_RETRY_SCHEDULED
+  STEP_EXCEPTION
+  MANUAL_TASK_DECIDED
+  DOMAIN_FACT_OBSERVED
+  JOURNEY_PAUSED
+  JOURNEY_RESUMED
+  JOURNEY_CANCELLED
+  JOURNEY_COMPLETED
+  EXCEPTION_RESOLVED
+
+  @@map("subscription_journey_event_type")
+}
+
+enum SubscriptionJourneyExceptionStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+
+  @@map("subscription_journey_exception_status")
+}
+
+enum SubscriptionJourneyOutboxStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  DEAD_LETTER
+  CANCELLED
+
+  @@map("subscription_journey_outbox_status")
+}
+
 enum SubscriptionChangeType {
   EXTENSION
 
@@ -2583,58 +2711,61 @@ model CustomerFollowup {
 }
 
 model Application {
-  id                         String                     @id @default(uuid()) @db.Uuid
-  applicationNo              String                     @unique @map("application_no") @db.VarChar(64)
-  customerId                 String                     @map("customer_id") @db.Uuid
-  customer                   Customer                   @relation(fields: [customerId], references: [id])
-  salesUserId                String                     @map("sales_user_id") @db.Uuid
-  salesUser                  User                       @relation("ApplicationSales", fields: [salesUserId], references: [id])
-  applicationSource          ApplicationSource          @default(SALES_ASSISTED) @map("application_source")
-  intendedModel              String?                    @map("intended_model") @db.VarChar(64)
-  intendedPeriodMonths       Int?                       @map("intended_period_months")
-  intentVehicleId            String?                    @map("intent_vehicle_id") @db.Uuid
-  intentSubscriptionPlanId   String?                    @map("intent_subscription_plan_id") @db.Uuid
-  intentPeriodMonths         Int?                       @map("intent_period_months")
-  intentVehicleBaseFeeAmount BigInt?                    @map("intent_vehicle_base_fee_amount")
-  intentSnapshot             Json?                      @map("intent_snapshot")
-  customerSelectedSnapshot   Json?                      @map("customer_selected_snapshot")
-  finalVehicleId             String?                    @map("final_vehicle_id") @db.Uuid
-  finalSubscriptionPlanId    String?                    @map("final_subscription_plan_id") @db.Uuid
-  finalPeriodMonths          Int?                       @map("final_period_months")
-  finalVehicleBaseFeeAmount  BigInt?                    @map("final_vehicle_base_fee_amount")
-  finalQuoteSnapshot         Json?                      @map("final_quote_snapshot")
-  finalPlanSnapshot          Json?                      @map("final_plan_snapshot")
-  finalPlanConfirmedAt       DateTime?                  @map("final_plan_confirmed_at") @db.Timestamptz(6)
-  materialReviewStatus       OrderReviewStatus          @default(PENDING) @map("material_review_status")
-  creditReviewStatus         OrderReviewStatus          @default(PENDING) @map("credit_review_status")
-  productReviewStatus        OrderReviewStatus          @default(PENDING) @map("product_review_status")
-  vehicleReviewStatus        OrderReviewStatus          @default(PENDING) @map("vehicle_review_status")
-  depositStatus              DepositStatus              @default(PENDING_CONFIRM) @map("deposit_status")
-  planConfirmStatus          PlanConfirmStatus          @default(PENDING) @map("plan_confirm_status")
-  customerGrade              CustomerGrade?             @map("customer_grade")
-  finalDepositAmount         BigInt?                    @map("final_deposit_amount")
-  depositRuleId              String?                    @map("deposit_rule_id") @db.Uuid
-  depositRuleSnapshot        Json?                      @map("deposit_rule_snapshot")
-  creditReviewComment        String?                    @map("credit_review_comment") @db.Text
-  softReservedVehicleId      String?                    @map("soft_reserved_vehicle_id") @db.Uuid
-  softReservedAt             DateTime?                  @map("soft_reserved_at") @db.Timestamptz(6)
-  softReservationExpiresAt   DateTime?                  @map("soft_reservation_expires_at") @db.Timestamptz(6)
-  status                     ApplicationStatus          @default(DRAFT)
-  submittedAt                DateTime?                  @map("submitted_at") @db.Timestamptz(6)
-  approvedAt                 DateTime?                  @map("approved_at") @db.Timestamptz(6)
-  rejectedReason             String?                    @map("rejected_reason") @db.Text
-  materials                  ApplicationMaterial[]
-  materialGroups             ApplicationMaterialGroup[]
-  materialFiles              ApplicationMaterialFile[]
-  riskResults                RiskResult[]
-  actionLogs                 ApplicationActionLog[]
-  quotes                     SubscriptionQuote[]
-  orders                     SubscriptionOrder[]
-  createdAt                  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                  DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                  String?                    @map("created_by") @db.Uuid
-  updatedBy                  String?                    @map("updated_by") @db.Uuid
-  deletedAt                  DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+  id                            String                     @id @default(uuid()) @db.Uuid
+  applicationNo                 String                     @unique @map("application_no") @db.VarChar(64)
+  customerId                    String                     @map("customer_id") @db.Uuid
+  customer                      Customer                   @relation(fields: [customerId], references: [id])
+  salesUserId                   String                     @map("sales_user_id") @db.Uuid
+  salesUser                     User                       @relation("ApplicationSales", fields: [salesUserId], references: [id])
+  applicationSource             ApplicationSource          @default(SALES_ASSISTED) @map("application_source")
+  intendedModel                 String?                    @map("intended_model") @db.VarChar(64)
+  intendedPeriodMonths          Int?                       @map("intended_period_months")
+  intentVehicleId               String?                    @map("intent_vehicle_id") @db.Uuid
+  intentSubscriptionPlanId      String?                    @map("intent_subscription_plan_id") @db.Uuid
+  intentPeriodMonths            Int?                       @map("intent_period_months")
+  intentVehicleBaseFeeAmount    BigInt?                    @map("intent_vehicle_base_fee_amount")
+  intentSnapshot                Json?                      @map("intent_snapshot")
+  customerSelectedSnapshot      Json?                      @map("customer_selected_snapshot")
+  finalVehicleId                String?                    @map("final_vehicle_id") @db.Uuid
+  finalSubscriptionPlanId       String?                    @map("final_subscription_plan_id") @db.Uuid
+  finalPeriodMonths             Int?                       @map("final_period_months")
+  finalVehicleBaseFeeAmount     BigInt?                    @map("final_vehicle_base_fee_amount")
+  finalQuoteSnapshot            Json?                      @map("final_quote_snapshot")
+  finalPlanSnapshot             Json?                      @map("final_plan_snapshot")
+  finalPlanConfirmedAt          DateTime?                  @map("final_plan_confirmed_at") @db.Timestamptz(6)
+  finalPlanRevision             Int                        @default(0) @map("final_plan_revision")
+  customerConfirmedPlanRevision Int?                       @map("customer_confirmed_plan_revision")
+  materialReviewStatus          OrderReviewStatus          @default(PENDING) @map("material_review_status")
+  creditReviewStatus            OrderReviewStatus          @default(PENDING) @map("credit_review_status")
+  productReviewStatus           OrderReviewStatus          @default(PENDING) @map("product_review_status")
+  vehicleReviewStatus           OrderReviewStatus          @default(PENDING) @map("vehicle_review_status")
+  depositStatus                 DepositStatus              @default(PENDING_CONFIRM) @map("deposit_status")
+  planConfirmStatus             PlanConfirmStatus          @default(PENDING) @map("plan_confirm_status")
+  customerGrade                 CustomerGrade?             @map("customer_grade")
+  finalDepositAmount            BigInt?                    @map("final_deposit_amount")
+  depositRuleId                 String?                    @map("deposit_rule_id") @db.Uuid
+  depositRuleSnapshot           Json?                      @map("deposit_rule_snapshot")
+  creditReviewComment           String?                    @map("credit_review_comment") @db.Text
+  softReservedVehicleId         String?                    @map("soft_reserved_vehicle_id") @db.Uuid
+  softReservedAt                DateTime?                  @map("soft_reserved_at") @db.Timestamptz(6)
+  softReservationExpiresAt      DateTime?                  @map("soft_reservation_expires_at") @db.Timestamptz(6)
+  status                        ApplicationStatus          @default(DRAFT)
+  submittedAt                   DateTime?                  @map("submitted_at") @db.Timestamptz(6)
+  approvedAt                    DateTime?                  @map("approved_at") @db.Timestamptz(6)
+  rejectedReason                String?                    @map("rejected_reason") @db.Text
+  materials                     ApplicationMaterial[]
+  materialGroups                ApplicationMaterialGroup[]
+  materialFiles                 ApplicationMaterialFile[]
+  riskResults                   RiskResult[]
+  actionLogs                    ApplicationActionLog[]
+  quotes                        SubscriptionQuote[]
+  orders                        SubscriptionOrder[]
+  subscriptionJourney           SubscriptionJourney?
+  createdAt                     DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                     String?                    @map("created_by") @db.Uuid
+  updatedBy                     String?                    @map("updated_by") @db.Uuid
+  deletedAt                     DateTime?                  @map("deleted_at") @db.Timestamptz(6)
 
   @@index([customerId])
   @@index([salesUserId])
@@ -4635,6 +4766,7 @@ model SubscriptionOrder {
   automationJobs             SubscriptionAutomationJob[]
   mileageReadings            VehicleMileageReading[]
   mileageReviews             OrderMileageReview[]
+  subscriptionJourney        SubscriptionJourney?
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -4654,6 +4786,181 @@ model SubscriptionOrder {
   @@index([vehicleReviewStatus])
   @@index([depositStatus])
   @@map("subscription_order")
+}
+
+model SubscriptionJourney {
+  id                String                          @id @default(cuid())
+  applicationId     String                          @map("application_id") @db.Uuid
+  application       Application                     @relation(fields: [applicationId], references: [id])
+  orderId           String?                         @unique(map: "subscription_journey_order_id_key") @map("order_id") @db.Uuid
+  order             SubscriptionOrder?              @relation(fields: [orderId], references: [id])
+  status            SubscriptionJourneyStatus       @default(RUNNING)
+  currentStepCode   SubscriptionJourneyStepCode     @map("current_step_code")
+  currentStepStatus SubscriptionJourneyStepStatus   @default(PENDING) @map("current_step_status")
+  pausedFromStatus  SubscriptionJourneyStatus?      @map("paused_from_status")
+  version           Int                             @default(0)
+  startedAt         DateTime                        @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt       DateTime?                       @map("completed_at") @db.Timestamptz(6)
+  cancelledAt       DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
+  createdAt         DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  steps             SubscriptionJourneyStep[]
+  jobs              SubscriptionJourneyJob[]
+  manualTasks       SubscriptionJourneyManualTask[]
+  events            SubscriptionJourneyEvent[]
+  exceptions        SubscriptionJourneyException[]
+  outboxRows        SubscriptionJourneyOutbox[]
+
+  @@unique([applicationId], map: "subscription_journey_application_id_key")
+  @@index([status, currentStepCode, currentStepStatus], map: "subscription_journey_status_step_idx")
+  @@index([orderId], map: "subscription_journey_order_id_idx")
+  @@map("subscription_journey")
+}
+
+model SubscriptionJourneyStep {
+  id            String                          @id @default(cuid())
+  journeyId     String                          @map("journey_id")
+  journey       SubscriptionJourney             @relation(fields: [journeyId], references: [id])
+  code          SubscriptionJourneyStepCode
+  status        SubscriptionJourneyStepStatus   @default(PENDING)
+  attemptCount  Int                             @default(0) @map("attempt_count")
+  startedAt     DateTime?                       @map("started_at") @db.Timestamptz(6)
+  waitingAt     DateTime?                       @map("waiting_at") @db.Timestamptz(6)
+  completedAt   DateTime?                       @map("completed_at") @db.Timestamptz(6)
+  lastErrorCode String?                         @map("last_error_code") @db.VarChar(64)
+  createdAt     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  jobs          SubscriptionJourneyJob[]
+  manualTasks   SubscriptionJourneyManualTask[]
+  exceptions    SubscriptionJourneyException[]
+
+  @@unique([journeyId, code], map: "subscription_journey_step_code_key")
+  @@unique([id, journeyId], map: "subscription_journey_step_id_journey_id_key")
+  @@index([journeyId, status], map: "subscription_journey_step_status_idx")
+  @@map("subscription_journey_step")
+}
+
+model SubscriptionJourneyJob {
+  id               String                         @id @default(cuid())
+  journeyId        String                         @map("journey_id")
+  journey          SubscriptionJourney            @relation(fields: [journeyId], references: [id])
+  stepId           String                         @map("step_id")
+  step             SubscriptionJourneyStep        @relation(fields: [stepId, journeyId], references: [id, journeyId])
+  jobType          SubscriptionJourneyJobType     @map("job_type")
+  status           SubscriptionJourneyJobStatus   @default(PENDING)
+  sourceKey        String                         @unique @map("source_key") @db.VarChar(128)
+  payload          Json?
+  attemptCount     Int                            @default(0) @map("attempt_count")
+  maxAttempts      Int                            @default(5) @map("max_attempts")
+  availableAt      DateTime                       @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseToken       String?                        @map("lease_token") @db.VarChar(128)
+  leaseExpiresAt   DateTime?                      @map("lease_expires_at") @db.Timestamptz(6)
+  lastErrorCode    String?                        @map("last_error_code") @db.VarChar(64)
+  lastErrorMessage String?                        @map("last_error_message") @db.Text
+  completedAt      DateTime?                      @map("completed_at") @db.Timestamptz(6)
+  createdAt        DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  exceptions       SubscriptionJourneyException[]
+
+  @@unique([id, stepId, journeyId], map: "subscription_journey_job_identity_key")
+  @@index([status, availableAt, leaseExpiresAt], map: "subscription_journey_job_claim_idx")
+  @@index([journeyId, status], map: "subscription_journey_job_status_idx")
+  @@index([stepId], map: "subscription_journey_job_step_id_idx")
+  @@map("subscription_journey_job")
+}
+
+model SubscriptionJourneyManualTask {
+  id            String                              @id @default(cuid())
+  journeyId     String                              @map("journey_id")
+  journey       SubscriptionJourney                 @relation(fields: [journeyId], references: [id])
+  stepId        String                              @map("step_id")
+  step          SubscriptionJourneyStep             @relation(fields: [stepId, journeyId], references: [id, journeyId])
+  taskType      SubscriptionJourneyManualTaskType   @map("task_type")
+  status        SubscriptionJourneyManualTaskStatus @default(OPEN)
+  decision      SubscriptionJourneyManualDecision?
+  inputSnapshot Json                                @map("input_snapshot")
+  decidedBy     String?                             @map("decided_by") @db.Uuid
+  decisionNotes String?                             @map("decision_notes") @db.Text
+  decidedAt     DateTime?                           @map("decided_at") @db.Timestamptz(6)
+  version       Int                                 @default(0)
+  createdAt     DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([journeyId, status, taskType], map: "subscription_journey_manual_task_status_idx")
+  @@index([stepId], map: "subscription_journey_manual_task_step_id_idx")
+  @@map("subscription_journey_manual_task")
+}
+
+model SubscriptionJourneyEvent {
+  id        String                       @id @default(cuid())
+  journeyId String                       @map("journey_id")
+  journey   SubscriptionJourney          @relation(fields: [journeyId], references: [id])
+  sequence  Int
+  eventKey  String                       @unique(map: "subscription_journey_event_event_key_key") @map("event_key") @db.VarChar(128)
+  eventType SubscriptionJourneyEventType @map("event_type")
+  actorType String?                      @map("actor_type") @db.VarChar(64)
+  actorId   String?                      @map("actor_id") @db.VarChar(128)
+  payload   Json
+  createdAt DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([journeyId, sequence], map: "subscription_journey_event_sequence_key")
+  @@index([journeyId, createdAt], map: "subscription_journey_event_created_at_idx")
+  @@map("subscription_journey_event")
+}
+
+model SubscriptionJourneyException {
+  id              String                             @id @default(cuid())
+  journeyId       String                             @map("journey_id")
+  journey         SubscriptionJourney                @relation(fields: [journeyId], references: [id])
+  stepId          String                             @map("step_id")
+  step            SubscriptionJourneyStep            @relation(fields: [stepId, journeyId], references: [id, journeyId])
+  jobId           String?                            @map("job_id")
+  job             SubscriptionJourneyJob?            @relation(fields: [jobId, stepId, journeyId], references: [id, stepId, journeyId], onDelete: Restrict)
+  status          SubscriptionJourneyExceptionStatus @default(OPEN)
+  code            String                             @db.VarChar(64)
+  message         String                             @db.Text
+  retryable       Boolean                            @default(false)
+  occurrenceCount Int                                @default(1) @map("occurrence_count")
+  firstOccurredAt DateTime                           @default(now()) @map("first_occurred_at") @db.Timestamptz(6)
+  lastOccurredAt  DateTime                           @default(now()) @map("last_occurred_at") @db.Timestamptz(6)
+  acknowledgedBy  String?                            @map("acknowledged_by") @db.Uuid
+  acknowledgedAt  DateTime?                          @map("acknowledged_at") @db.Timestamptz(6)
+  resolvedBy      String?                            @map("resolved_by") @db.Uuid
+  resolvedAt      DateTime?                          @map("resolved_at") @db.Timestamptz(6)
+  resolutionNotes String?                            @map("resolution_notes") @db.Text
+  createdAt       DateTime                           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([journeyId, status, lastOccurredAt], map: "subscription_journey_exception_status_idx")
+  @@index([stepId], map: "subscription_journey_exception_step_id_idx")
+  @@index([jobId], map: "subscription_journey_exception_job_id_idx")
+  @@map("subscription_journey_exception")
+}
+
+model SubscriptionJourneyOutbox {
+  id               String                          @id @default(cuid())
+  journeyId        String?                         @map("journey_id")
+  journey          SubscriptionJourney?            @relation(fields: [journeyId], references: [id])
+  aggregateType    String                          @map("aggregate_type") @db.VarChar(64)
+  aggregateId      String                          @map("aggregate_id") @db.VarChar(128)
+  eventType        String                          @map("event_type") @db.VarChar(64)
+  eventKey         String                          @unique(map: "subscription_journey_outbox_event_key_key") @map("event_key") @db.VarChar(128)
+  payload          Json
+  status           SubscriptionJourneyOutboxStatus @default(PENDING)
+  attemptCount     Int                             @default(0) @map("attempt_count")
+  availableAt      DateTime                        @default(now()) @map("available_at") @db.Timestamptz(6)
+  leaseToken       String?                         @map("lease_token") @db.VarChar(128)
+  leaseExpiresAt   DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
+  lastErrorCode    String?                         @map("last_error_code") @db.VarChar(64)
+  lastErrorMessage String?                         @map("last_error_message") @db.Text
+  deliveredAt      DateTime?                       @map("delivered_at") @db.Timestamptz(6)
+  createdAt        DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, availableAt, leaseExpiresAt], map: "subscription_journey_outbox_claim_idx")
+  @@index([journeyId, status], map: "subscription_journey_outbox_journey_status_idx")
+  @@index([aggregateType, aggregateId], map: "subscription_journey_outbox_aggregate_idx")
+  @@map("subscription_journey_outbox")
 }
 
 model OrderEntitlementAccount {

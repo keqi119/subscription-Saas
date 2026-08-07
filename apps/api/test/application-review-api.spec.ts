@@ -20,6 +20,7 @@ import {
   RiskResultDecision,
   SalePriceStatus,
   SubscriptionPlanStatus,
+  SubscriptionJourneyStepCode,
   VehicleBatteryUsageType,
   VehicleStatus
 } from "@prisma/client";
@@ -154,6 +155,32 @@ describe("application self-service review APIs", () => {
     expect(harness.tx.application.update).not.toHaveBeenCalled();
   });
 
+  it("publishes the assisted application signal inside its submit transaction", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        materialGroups: approvedRequiredMaterialGroups(
+          new Date("2026-06-05T10:00:00.000Z")
+        ),
+        status: ApplicationStatus.DRAFT
+      }
+    });
+
+    await harness.service.submitApplication(
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: `application:${harness.application.id}:submitted`,
+      payload: { source: ApplicationSource.SALES_ASSISTED },
+      type: "APPLICATION_SUBMITTED"
+    });
+  });
+
   it("approves material review status", async () => {
     const harness = createApplicationReviewHarness();
 
@@ -201,6 +228,13 @@ describe("application self-service review APIs", () => {
         status: DepositStatus.CONFIRMED
       })
     );
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: harness.application.id,
+      eventKey:
+        "application:application-1:facts:credit:application-action-1",
+      payload: { fact: "credit", status: OrderReviewStatus.APPROVED },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
   });
 
   it("saves rating, score, vehicle price, deposit, and comments through the shared approval flow", async () => {
@@ -395,6 +429,230 @@ describe("application self-service review APIs", () => {
     expect(application.vehicleReviewStatus).toBe(OrderReviewStatus.APPROVED);
   });
 
+  it("applies a journey final-plan decision as revision one without allocating the vehicle", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+
+    const application = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {
+        finalPeriodMonths: 12,
+        finalSubscriptionPlanId: harness.plan.id,
+        finalVehicleId: harness.vehicle.id
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(application).toEqual(
+      expect.objectContaining({
+        customerConfirmedPlanRevision: null,
+        finalPlanRevision: 1,
+        planConfirmStatus: PlanConfirmStatus.PENDING,
+        productReviewStatus: OrderReviewStatus.APPROVED,
+        vehicleReviewStatus: OrderReviewStatus.PENDING
+      })
+    );
+    expect(application.finalPlanSnapshot).toEqual(
+      expect.objectContaining({ finalPlanRevision: 1 })
+    );
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledWith(
+      harness.tx,
+      {
+        actorId: harness.user.id,
+        applicationId: harness.application.id,
+        expectedStepCode: "FINAL_PLAN_DECISION",
+        payload: { finalPlanRevision: 1 }
+      }
+    );
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
+  });
+
+  it("keeps the existing finalize endpoint as the journey final-plan decision entry", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication(),
+      journeyStep: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    });
+
+    const application = await harness.service.finalizeApplicationPlan(
+      harness.application.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(application).toEqual(
+      expect.objectContaining({
+        finalPlanRevision: 1,
+        vehicleReviewStatus: OrderReviewStatus.PENDING
+      })
+    );
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledOnce();
+  });
+
+  it("rejects journey vehicle allocation before exact customer confirmation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+
+    await expect(
+      harness.service.allocateJourneyVehicle(
+        harness.tx as never,
+        harness.application.id,
+        harness.vehicle.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      code: "JOURNEY_CUSTOMER_PLAN_CONFIRMATION_REQUIRED"
+    });
+  });
+
+  it("allocates a compatible confirmed vehicle once and completes the manual task", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      }
+    });
+
+    const result = await harness.service.allocateJourneyVehicle(
+      harness.tx as never,
+      harness.application.id,
+      harness.vehicle.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(result.requiresCustomerReconfirmation).toBe(false);
+    expect(result.application).toEqual(
+      expect.objectContaining({
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      })
+    );
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenLastCalledWith(
+      harness.tx,
+      {
+        actorId: harness.user.id,
+        applicationId: harness.application.id,
+        expectedStepCode: "FINAL_VEHICLE_ALLOCATION",
+        payload: {
+          finalPlanRevision: 1,
+          vehicleId: harness.vehicle.id
+        }
+      }
+    );
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
+  });
+
+  it("keeps the existing vehicle-review endpoint as the journey allocation entry", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      }
+    });
+    harness.state.journeyStep =
+      SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION;
+
+    const application = await harness.service.reviewApplication(
+      harness.application.id,
+      "vehicle" as never,
+      {
+        finalVehicleId: harness.vehicle.id,
+        status: OrderReviewStatus.APPROVED
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(application).toEqual(
+      expect.objectContaining({
+        finalPlanRevision: 1,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      })
+    );
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(2);
+  });
+
+  it("revises changed vehicle terms, releases the hold, and requests reconfirmation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      }
+    });
+    harness.vehicle.currentSalePriceAmount += 100000n;
+
+    const result = await harness.service.allocateJourneyVehicle(
+      harness.tx as never,
+      harness.application.id,
+      harness.vehicle.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(result.requiresCustomerReconfirmation).toBe(true);
+    expect(result.application).toEqual(
+      expect.objectContaining({
+        customerConfirmedPlanRevision: null,
+        finalPlanRevision: 2,
+        planConfirmStatus: PlanConfirmStatus.PENDING,
+        vehicleReviewStatus: OrderReviewStatus.PENDING
+      })
+    );
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    expect(
+      harness.journeySignal.requireCustomerReconfirmationAfterManualDecision
+    ).toHaveBeenCalledWith(harness.tx, {
+      actorId: harness.user.id,
+      applicationId: harness.application.id,
+      finalPlanRevision: 2,
+      vehicleId: harness.vehicle.id
+    });
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects finalizing when the selected plan is inactive", async () => {
     const harness = createApplicationReviewHarness({
       application: readyToFinalizeApplication(),
@@ -489,6 +747,107 @@ describe("application self-service review APIs", () => {
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
   });
 
+  it("creates and reuses a journey order in the caller transaction", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1
+      }
+    });
+
+    const first = await harness.service.createOrderFromApplicationInTransaction(
+      harness.tx as never,
+      harness.application.id,
+      harness.user,
+      harness.context
+    );
+    const second = await harness.service.createOrderFromApplicationInTransaction(
+      harness.tx as never,
+      harness.application.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(first.id).toBe("order-1");
+    expect(second.id).toBe(first.id);
+    expect(harness.tx.subscriptionQuote.create).toHaveBeenCalledOnce();
+    expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledOnce();
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+  });
+
+  it("rejects a stale confirmed plan revision before journey order creation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 2
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a journey order without a concrete allocated vehicle", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1,
+        softReservedVehicleId: null
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-subscription product before journey order creation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToCreateOrderApplication(),
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1
+      },
+      plan: {
+        product: {
+          deletedAt: null,
+          id: "product-1",
+          name: "Rent to own",
+          productNo: "RTO001",
+          productType: ProductType.RENT_TO_OWN,
+          status: ProductStatus.ACTIVE
+        }
+      }
+    });
+
+    await expect(
+      harness.service.createOrderFromApplicationInTransaction(
+        harness.tx as never,
+        harness.application.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_APPLICATION_PRODUCT_INVALID" });
+    expect(harness.tx.subscriptionOrder.create).not.toHaveBeenCalled();
+  });
+
   it("disallows duplicate order creation for an application", async () => {
     const harness = createApplicationReviewHarness({
       application: {
@@ -537,6 +896,7 @@ describe("application self-service review APIs", () => {
 function createApplicationReviewHarness(overrides: {
   application?: Record<string, unknown>;
   customer?: Record<string, unknown>;
+  journeyStep?: SubscriptionJourneyStepCode;
   plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
   vehicle?: Record<string, unknown>;
 } = {}) {
@@ -553,17 +913,21 @@ function createApplicationReviewHarness(overrides: {
   const state: {
     application: ReturnType<typeof makeApplication>;
     customer: ReturnType<typeof makeCustomer>;
+    journeyStep?: SubscriptionJourneyStepCode;
     vehicleStatus: VehicleStatus;
   } = {
     application: makeApplication(now, overrides.application),
     customer: makeCustomer(now, overrides.customer),
+    journeyStep: overrides.journeyStep,
     vehicleStatus: VehicleStatus.REVIEW_RESERVED
   };
   const vehicle = makeVehicle(now, { status: state.vehicleStatus, ...overrides.vehicle });
   state.vehicleStatus = vehicle.status;
   const plan = makePlan(now, overrides.plan);
+  let createdOrder: Record<string, unknown> | null = null;
 
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: state.application.id }]),
     application: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.application = makeApplication(now, {
@@ -575,6 +939,7 @@ function createApplicationReviewHarness(overrides: {
         return state.application;
       }),
       findUniqueOrThrow: vi.fn(async () => state.application),
+      findUnique: vi.fn(async () => state.application),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.application = makeApplication(now, { ...state.application, ...data });
         return state.application;
@@ -633,14 +998,36 @@ function createApplicationReviewHarness(overrides: {
     },
     subscriptionOrder: {
       count: vi.fn(async () => 0),
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...data,
-        createdAt: now,
-        deletedAt: null,
-        id: "order-1",
-        orderNo: "ORD202606050001",
-        updatedAt: now
-      }))
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        createdOrder = {
+          ...data,
+          createdAt: now,
+          deletedAt: null,
+          id: "order-1",
+          orderNo: "ORD202606050001",
+          updatedAt: now
+        };
+        state.application = makeApplication(now, {
+          ...state.application,
+          orders: [
+            {
+              deletedAt: null,
+              id: "order-1",
+              orderNo: "ORD202606050001",
+              orderStatus: data.orderStatus
+            }
+          ]
+        });
+        return createdOrder;
+      }),
+      findUnique: vi.fn(async () => createdOrder)
+    },
+    subscriptionJourney: {
+      findUnique: vi.fn(async () =>
+        state.journeyStep
+          ? { currentStepCode: state.journeyStep, id: "journey-1" }
+          : null
+      )
     },
     subscriptionPlan: {
       findUnique: vi.fn(async () => plan)
@@ -686,6 +1073,13 @@ function createApplicationReviewHarness(overrides: {
     }
   };
   const auditService = { write: vi.fn(async () => undefined) };
+  const journeySignal = {
+    completeManualDecision: vi.fn(async () => undefined),
+    record: vi.fn(async () => undefined),
+    requireCustomerReconfirmationAfterManualDecision: vi.fn(
+      async () => undefined
+    )
+  };
   const riskService = {
     createApprovalRiskResult: vi.fn(async (_tx: typeof tx, input: ApprovalRiskInput) => ({
       applicationId: input.applicationId,
@@ -716,13 +1110,16 @@ function createApplicationReviewHarness(overrides: {
     auditService as never,
     prisma as never,
     riskService as never,
-    {} as never
+    {} as never,
+    undefined,
+    journeySignal as never
   );
 
   return {
     application: state.application,
     auditService,
     context,
+    journeySignal,
     plan,
     prisma,
     riskService,
@@ -857,6 +1254,8 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
     finalDepositAmount: null,
     finalPeriodMonths: null,
     finalPlanConfirmedAt: null,
+    finalPlanRevision: 0,
+    customerConfirmedPlanRevision: null,
     finalPlanSnapshot: null,
     finalQuoteSnapshot: null,
     finalSubscriptionPlanId: null,

@@ -669,9 +669,11 @@ export class FadadaESignProvider implements ESignProvider {
           documentType: true,
           id: true,
           providerActionType: true,
+          providerSignerId: true,
           providerTransactionId: true,
           signerType: true,
           slotId: true,
+          snapshot: true,
           taskId: true
         },
         where: {
@@ -680,25 +682,44 @@ export class FadadaESignProvider implements ESignProvider {
         }
       })
     ]);
+    const stage1Task =
+      task?.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
+      task.documentType === "SUBSCRIPTION_CONTRACT";
+    const stage2Task =
+      task?.signingStage === "STAGE2_DELIVERY_HANDOVER" &&
+      task.documentType === "DELIVERY_HANDOVER";
+    const signerTransactionId = signer?.providerTransactionId ?? signer?.providerSignerId;
+    const persistedStage1SlotId = snapshotString(signer?.snapshot, "slotId");
     if (
       !task ||
       !signer ||
       task.id !== input.taskId ||
       task.provider !== ESignProviderType.FADADA ||
-      task.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
-      task.documentType !== "DELIVERY_HANDOVER" ||
+      (!stage1Task && !stage2Task) ||
       task.taskNo !== input.contractId ||
       task.providerEnvelopeId !== input.contractId ||
       task.providerTaskId !== input.providerTaskId ||
       signer.id !== input.signerId ||
       signer.taskId !== input.taskId ||
-      signer.slotId !== input.slotId ||
-      signer.documentType !== "DELIVERY_HANDOVER" ||
-      signer.providerTransactionId !== input.providerTransactionId
+      signerTransactionId !== input.providerTransactionId ||
+      (stage2Task &&
+        (signer.slotId !== input.slotId || signer.documentType !== "DELIVERY_HANDOVER")) ||
+      (stage1Task && persistedStage1SlotId && persistedStage1SlotId !== input.slotId)
     ) {
       return { status: "UNKNOWN" };
     }
+    const stage1CustomerBinding =
+      stage1Task &&
+      signer.customerId !== null &&
+      signer.signerType === "CUSTOMER" &&
+      input.providerTaskId === input.providerTransactionId;
+    const stage1PlatformBinding =
+      stage1Task &&
+      signer.customerId === null &&
+      signer.signerType === "PLATFORM" &&
+      input.providerCustomerId === this.config.platformCustomerId;
     const customerBinding =
+      stage2Task &&
       signer.customerId !== null &&
       signer.signerType === "CUSTOMER" &&
       signer.slotId === STAGE2_CUSTOMER_SLOT_ID &&
@@ -707,6 +728,7 @@ export class FadadaESignProvider implements ESignProvider {
       input.providerTransactionId ===
         buildStage2TransactionId(task.taskNo, "H1");
     const platformBinding =
+      stage2Task &&
       signer.customerId === null &&
       signer.signerType === "PLATFORM" &&
       signer.slotId === STAGE2_PLATFORM_SLOT_ID &&
@@ -716,10 +738,15 @@ export class FadadaESignProvider implements ESignProvider {
       input.providerTransactionId ===
         buildStage2TransactionId(task.taskNo, "H2") &&
       input.providerCustomerId === this.config.platformCustomerId;
-    if (!customerBinding && !platformBinding) {
+    if (
+      !stage1CustomerBinding &&
+      !stage1PlatformBinding &&
+      !customerBinding &&
+      !platformBinding
+    ) {
       return { status: "UNKNOWN" };
     }
-    if (customerBinding) {
+    if (stage1CustomerBinding || customerBinding) {
       const providerCustomerId =
         await this.findVerifiedProviderCustomerId(signer.customerId!);
       if (

@@ -46,3 +46,20 @@ describe("subscription change shared permissions", () => {
     expect(permissions.SUBSCRIPTION_CHANGE_CANCEL).toBe("subscription_change:cancel");
   });
 });
+
+describe("subscription journey shared permissions", () => {
+  it("defines the six approved journey permissions", () => {
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VIEW).toBe("subscription_journey:view");
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE).toBe(
+      "subscription_journey:plan_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE).toBe(
+      "subscription_journey:vehicle_allocate"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE).toBe(
+      "subscription_journey:delivery_evidence_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER).toBe("subscription_journey:recover");
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_CANCEL).toBe("subscription_journey:cancel");
+  });
+});

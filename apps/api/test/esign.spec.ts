@@ -44,6 +44,141 @@ function unknownSignerStatusQuery() {
 }
 
 describe("ESignService", () => {
+  it.each([
+    ["mock provider", { ESIGN_PROVIDER: "mock" }],
+    ["sandbox environment", { FADADA_ENV: "sandbox" }],
+    ["sandbox host", { FADADA_BASE_URL: "https://testapi.fadada.com/api/" }],
+    ["missing callback base URL", { API_BASE_URL: "" }],
+    ["non-HTTPS callback", { API_BASE_URL: "http://api.subauto.example/api" }],
+    ["unverified smoke signer override", { FADADA_FULL_SIGNING_SMOKE: "true" }]
+  ])("fails closed for journey signing with %s", async (_label, overrides) => {
+    const provider = stage1SlotProvider();
+    const { service } = createESignFixture(
+      { ...journeyFadadaProductionEnv(), ...overrides },
+      provider,
+      {
+        contractPdfArtifactService: {
+          preflightContractPdfArtifact: vi.fn(async () => ({
+            slotCoordinates: stage1SlotCoordinates()
+          }))
+        }
+      }
+    );
+
+    await expect(
+      service.startJourneyFadadaSigning("contract-1", "user-sales")
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+  });
+
+  it("requires a verified provider account for journey signing", async () => {
+    const provider = stage1SlotProvider();
+    const { service } = createESignFixture(journeyFadadaProductionEnv(), provider, {
+      contractPdfArtifactService: {
+        preflightContractPdfArtifact: vi.fn(async () => ({
+          slotCoordinates: stage1SlotCoordinates()
+        }))
+      },
+      providerAccounts: []
+    });
+
+    await expect(
+      service.startJourneyFadadaSigning("contract-1", "user-sales")
+    ).rejects.toThrow(/FADADA_ACCOUNT_MISSING/);
+    expect(provider.createSignTask).not.toHaveBeenCalled();
+  });
+
+  it("reuses one production journey task and provider transaction", async () => {
+    const provider = stage1SlotProvider();
+    const { service } = createESignFixture(journeyFadadaProductionEnv(), provider, {
+      contractPdfArtifactService: {
+        preflightContractPdfArtifact: vi.fn(async () => ({
+          slotCoordinates: stage1SlotCoordinates()
+        }))
+      }
+    });
+
+    const first = await service.startJourneyFadadaSigning("contract-1", "user-sales");
+    const repeated = await service.startJourneyFadadaSigning("contract-1", "user-sales");
+
+    expect(repeated).toMatchObject({
+      id: first.id,
+      providerTaskId: first.providerTaskId
+    });
+    expect(provider.createSignTask).toHaveBeenCalledOnce();
+  });
+
+  it("recovers a missed callback by querying customer signing and platform seal", async () => {
+    const provider: ESignProvider = stage1SlotProvider();
+    const { service, state } = createESignFixture(
+      journeyFadadaProductionEnv(),
+      provider,
+      {
+        contractPdfArtifactService: {
+          preflightContractPdfArtifact: vi.fn(async () => ({
+            slotCoordinates: stage1SlotCoordinates()
+          }))
+        }
+      }
+    );
+    await service.startJourneyFadadaSigning("contract-1", "user-sales");
+    vi.mocked(provider.querySignerStatus).mockImplementation(async (input) => ({
+      resultCode: "3000",
+      status: input.providerTransactionId === "CUSTS1" ? "SIGNED" : "SIGNING"
+    }));
+
+    const sealPending = await service.reconcileJourneyFadadaSigning(
+      "contract-1",
+      "user-sales"
+    );
+
+    expect(sealPending.taskStatus).toBe(ESignTaskStatus.SIGNING);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNING);
+
+    vi.mocked(provider.querySignerStatus).mockResolvedValue({
+      resultCode: "3000",
+      status: "SIGNED"
+    });
+    const completed = await service.reconcileJourneyFadadaSigning(
+      "contract-1",
+      "user-sales"
+    );
+
+    expect(completed.taskStatus).toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contracts[0]!.status).toBe(ContractStatus.SIGNED);
+    expect(provider.querySignerStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerCustomerId: "platform-production",
+        providerTransactionId: "PLATS1"
+      })
+    );
+  });
+
+  it("publishes Stage 1 completion in the verified callback transaction once", async () => {
+    const journeySignal = { record: vi.fn(async () => undefined) };
+    const { prisma, service, state } = createFadadaESignFixture({ journeySignal });
+    await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    const payload = fadadaCallbackPayload({
+      contractId: state.tasks[0]!.providerEnvelopeId!,
+      resultCode: "3000",
+      transactionId: state.tasks[0]!.providerTaskId
+    });
+
+    await service.handleCallback("fadada", payload);
+    await service.handleCallback("fadada", payload);
+
+    expect(journeySignal.record).toHaveBeenCalledOnce();
+    expect(journeySignal.record).toHaveBeenCalledWith(prisma, {
+      eventKey: `fadada-task:${state.tasks[0]!.id}:completed`,
+      orderId: "order-1",
+      payload: {
+        contractId: "contract-1",
+        taskId: state.tasks[0]!.id
+      },
+      type: "FADADA_TASK_COMPLETED"
+    });
+  });
+
   it("persists the dedicated Stage 3 identity and forces customer plus platform slots", async () => {
     const provider = stage1SlotProvider();
     const { service, state } = createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
@@ -3193,6 +3328,7 @@ function createESignFixture(
     contractPdfArtifactService?: {
       preflightContractPdfArtifact: ReturnType<typeof vi.fn>;
     };
+    journeySignal?: { record: ReturnType<typeof vi.fn> };
     providerAccounts?: FakeProviderAccount[];
   } = {}
 ) {
@@ -3603,7 +3739,9 @@ function createESignFixture(
     providerOverride ?? new MockESignProvider(configService),
     prisma as never,
     notificationService as never,
-    contractPdfArtifactService as never
+    contractPdfArtifactService as never,
+    undefined,
+    options.journeySignal as never
   );
 
   return {
@@ -3948,7 +4086,9 @@ function stage1CustomerThenPlatformAutoSealProvider() {
   };
 }
 
-function createFadadaESignFixture() {
+function createFadadaESignFixture(options: {
+  journeySignal?: { record: ReturnType<typeof vi.fn> };
+} = {}) {
   const verifier = new FadadaESignProvider(loadFadadaConfig(fadadaConfigService()));
   const provider: ESignProvider = {
     createSignTask: vi.fn(async (input) => {
@@ -3975,7 +4115,24 @@ function createFadadaESignFixture() {
     verifyCallback: vi.fn((payload) => verifier.verifyCallback(payload))
   };
 
-  return createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider);
+  return createESignFixture({ ESIGN_PROVIDER: "fadada" }, provider, options);
+}
+
+function journeyFadadaProductionEnv() {
+  return {
+    API_BASE_URL: "https://api.subauto.example/api",
+    ESIGN_ENTERPRISE_AUTO_SEAL_ENABLED: "true",
+    ESIGN_PROVIDER: "fadada",
+    ESIGN_STAGE1_MULTI_SLOT_ENABLED: "true",
+    FADADA_API_VERSION: "2.0",
+    FADADA_APP_ID: "app-production",
+    FADADA_APP_SECRET: "secret-production",
+    FADADA_BASE_URL: "https://api.fadada.com/api/",
+    FADADA_ENABLED: "true",
+    FADADA_ENV: "production",
+    FADADA_PLATFORM_CUSTOMER_ID: "platform-production",
+    FADADA_PLATFORM_SIGNATURE_ID: "signature-production"
+  };
 }
 
 function enterpriseAutoSealProvider(

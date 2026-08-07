@@ -1,3 +1,5 @@
+import type { AdminSubscriptionJourney } from "./subscription-journey-view-model";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -69,6 +71,78 @@ export async function apiFetch<T>(path: string, init?: ApiFetchInit): Promise<T>
   }
 
   return JSON.parse(text) as T;
+}
+
+export async function loadAdminJourneyByApplication(applicationId: string) {
+  return loadOptionalAdminJourney(
+    `/subscription-journeys/by-application/${encodeURIComponent(applicationId)}`
+  );
+}
+
+export async function loadAdminJourneyByOrder(orderId: string) {
+  return loadOptionalAdminJourney(
+    `/subscription-journeys/by-order/${encodeURIComponent(orderId)}`
+  );
+}
+
+export function decideJourneyFinalPlan(
+  journeyId: string,
+  input: {
+    finalPeriodMonths?: number;
+    finalSubscriptionPlanId?: string;
+    finalVehicleId?: string;
+    version: number;
+  }
+) {
+  return postJourneyAction(journeyId, "final-plan-decision", input);
+}
+
+export function allocateJourneyVehicle(
+  journeyId: string,
+  input: { vehicleId: string; version: number }
+) {
+  return postJourneyAction(journeyId, "vehicle-allocation", input);
+}
+
+export function decideJourneyDeliveryEvidence(
+  journeyId: string,
+  input: {
+    decision: "APPROVED" | "REJECTED";
+    manifestHash: string;
+    notes?: string;
+    version: number;
+    workOrderId: string;
+  }
+) {
+  return postJourneyAction(journeyId, "delivery-evidence-decision", input);
+}
+
+export function recoverSubscriptionJourney(
+  journeyId: string,
+  action: "retry" | "pause" | "resume" | "cancel",
+  input: { reason: string; version: number }
+) {
+  return postJourneyAction(journeyId, action, input);
+}
+
+async function loadOptionalAdminJourney(path: string) {
+  try {
+    return await apiFetch<AdminSubscriptionJourney>(path);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+function postJourneyAction(
+  journeyId: string,
+  action: string,
+  input: Record<string, unknown>
+) {
+  return apiFetch<Record<string, unknown>>(
+    `/subscription-journeys/${encodeURIComponent(journeyId)}/${action}`,
+    { body: JSON.stringify(input), method: "POST" }
+  );
 }
 
 async function readError(response: Response) {

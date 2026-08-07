@@ -101,6 +101,12 @@ const permissionRows = [
   ["subscription_change:execute", "执行合同变更", "subscription_change", "execute"],
   ["subscription_change:manual_takeover", "人工接管合同变更", "subscription_change", "manual_takeover"],
   ["subscription_change:cancel", "取消合同变更", "subscription_change", "cancel"],
+  ["subscription_journey:view", "查看订阅旅程", "subscription_journey", "view"],
+  ["subscription_journey:plan_decide", "决策最终方案", "subscription_journey", "plan_decide"],
+  ["subscription_journey:vehicle_allocate", "分配最终车辆", "subscription_journey", "vehicle_allocate"],
+  ["subscription_journey:delivery_evidence_decide", "决策交付证据", "subscription_journey", "delivery_evidence_decide"],
+  ["subscription_journey:recover", "恢复订阅旅程", "subscription_journey", "recover"],
+  ["subscription_journey:cancel", "取消订阅旅程", "subscription_journey", "cancel"],
   ["mileage_review:view", "查看里程复核", "mileage_review", "view"],
   ["mileage_review:submit", "提交里程复核", "mileage_review", "submit"],
   ["mileage_review:confirm", "确认里程复核", "mileage_review", "confirm"],
@@ -273,6 +279,7 @@ const menuRows = [
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
+  ["orders.journey_exceptions", "订阅旅程异常", "/orders?journeyStatus=EXCEPTION", "audit", 18, "subscription_journey:view", "orders"],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
   ["orders.subscription_changes", "合同变更中心", "/subscription-changes", "contract", 22, "subscription_change:view", "orders"],
   ["orders.mileage_reviews", "里程复核", "/mileage-reviews", "dashboard", 25, "mileage_review:view", "orders"],
@@ -577,6 +584,18 @@ const subscriptionChangeAdminPermissions = [
   "subscription_change:manual_takeover"
 ];
 
+const subscriptionJourneyViewPermissions = ["subscription_journey:view"];
+
+const subscriptionJourneyOperationalPermissions = [
+  ...subscriptionJourneyViewPermissions,
+  "subscription_journey:plan_decide",
+  "subscription_journey:vehicle_allocate",
+  "subscription_journey:delivery_evidence_decide",
+  "subscription_journey:recover"
+];
+
+const subscriptionJourneyExceptionMenuCodes = ["orders.journey_exceptions"];
+
 const financeManagementPermissions = [
   "billing:view",
   "billing:generate",
@@ -877,6 +896,7 @@ async function main() {
       "order_change:view",
       "order_change:create",
       ...subscriptionChangeViewPermissions,
+      ...subscriptionJourneyViewPermissions,
       ...serviceCaseViewPermissions,
       ...notificationViewPermissions,
       ...entitlementViewPermissions,
@@ -899,6 +919,7 @@ async function main() {
       "orders",
       "orders.subscription",
       "orders.subscription_changes",
+      ...subscriptionJourneyExceptionMenuCodes,
       ...mileageReviewMenuCodes,
       "orders.contracts",
       ...serviceCaseMenuCodes,
@@ -928,6 +949,7 @@ async function main() {
       ...quoteManagementPermissions,
       ...orderManagementPermissions,
       ...subscriptionChangeOperationalPermissions,
+      ...subscriptionJourneyOperationalPermissions,
       ...mileageReviewManagementPermissions,
       ...entitlementOperationPermissions,
       ...reportViewPermissions,
@@ -965,6 +987,7 @@ async function main() {
       "orders",
       "orders.subscription",
       "orders.subscription_changes",
+      ...subscriptionJourneyExceptionMenuCodes,
       ...mileageReviewMenuCodes,
       "orders.review",
       "orders.contracts",
@@ -1053,6 +1076,7 @@ async function main() {
         ...(roleCode === "AS" ? ["order:review", "order:reject"] : []),
         "order_change:view",
         ...subscriptionChangeViewPermissions,
+        ...(roleCode === "AS" ? subscriptionJourneyViewPermissions : []),
         "contract:view"
       ],
       [
@@ -1066,6 +1090,7 @@ async function main() {
         "orders",
         "orders.subscription",
         ...(roleCode === "AS" ? ["orders.subscription_changes"] : []),
+        ...(roleCode === "AS" ? subscriptionJourneyExceptionMenuCodes : []),
         ...mileageReviewMenuCodes,
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",

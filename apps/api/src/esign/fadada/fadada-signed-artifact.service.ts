@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AuditAction,
   ContractStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
@@ -23,6 +24,7 @@ import {
 import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 
+import { AuditService } from "../../audit/audit.service";
 import { RequestUser } from "../../auth/auth.types";
 import {
   hasAuthoritativeStage2HandoverRelation,
@@ -31,6 +33,7 @@ import {
 import { PrismaService } from "../../prisma/prisma.service";
 import { CurrentCustomer } from "../../portal/portal-auth.types";
 import { StorageService } from "../../storage/storage.service";
+import { SubscriptionJourneySignalService } from "../../subscription-journey/subscription-journey-signal.service";
 import { Stage3ExtensionArchiveService } from "../stage3-extension-archive.service";
 import { FadadaApiClient } from "./fadada-api.client";
 import { loadFadadaConfig } from "./fadada.config";
@@ -125,10 +128,12 @@ export class FadadaSignedArtifactService {
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService,
     private readonly configService: ConfigService,
-    @Optional() private readonly stage3ArchiveService?: Stage3ExtensionArchiveService
+    @Optional() private readonly stage3ArchiveService?: Stage3ExtensionArchiveService,
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly auditService?: AuditService
   ) {}
 
-  async archiveSignedContract(input: { force?: boolean; taskId: string }): Promise<{
+  async archiveSignedContract(input: { actorId?: string; force?: boolean; taskId: string }): Promise<{
     archived: boolean;
     evidenceObjectKey?: string | null;
     signedPdfObjectKey?: string;
@@ -149,7 +154,15 @@ export class FadadaSignedArtifactService {
     }
     this.assertArchiveableTask(task, Boolean(input.force));
 
-    if (task.signedDocumentObjectKey && !input.force) {
+    const isStage1SubscriptionTask =
+      task.signingStage === ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT &&
+      task.documentType === ESignDocumentType.SUBSCRIPTION_CONTRACT;
+    if (
+      task.signedDocumentObjectKey &&
+      !input.force &&
+      (!isStage1SubscriptionTask ||
+        (task.contract.status === ContractStatus.ARCHIVED && Boolean(task.contract.fileId)))
+    ) {
       await this.finalizeStage3IfApplicable(task);
       return {
         archived: false,
@@ -194,6 +207,10 @@ export class FadadaSignedArtifactService {
       originalName: `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`,
       provider: "fadada"
     });
+    const archivedAt = new Date();
+    const originalName = `${sanitizeFileName(task.contract.contractNo)}-signed.pdf`;
+    const priorContractStatus = task.contract.status;
+    const signedPdfHash = createHash("sha256").update(signedPdf.buffer).digest("hex");
 
     let filing: Awaited<ReturnType<FadadaSignedArtifactApi["createContractFiling"]>>;
     try {
@@ -210,7 +227,7 @@ export class FadadaSignedArtifactService {
 
     const responseSnapshot = mergeResponseSnapshot(task.responseSnapshot, {
       fadadaSignedArtifactArchive: sanitizeProviderPayload({
-        archivedAt: new Date(),
+        archivedAt,
         contractFiling: filing,
         contractStatus,
         querySignResult: signResult.raw,
@@ -222,14 +239,85 @@ export class FadadaSignedArtifactService {
       })
     });
 
-    await this.prisma.contractESignTask.update({
-      data: {
-        evidenceObjectKey: task.evidenceObjectKey,
-        responseSnapshot: toJsonValue(responseSnapshot),
-        signedDocumentObjectKey: stored.objectKey
-      },
-      where: { id: task.id }
-    });
+    if (isStage1SubscriptionTask) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const file = await tx.fileObject.create({
+            data: {
+              bucket: stored.bucket,
+              mimeType: "application/pdf",
+              objectKey: stored.objectKey,
+              originalName,
+              sizeBytes: BigInt(signedPdf.buffer.length),
+              uploadedBy: input.actorId ?? task.contract.order.application.salesUserId
+            }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              evidenceObjectKey: task.evidenceObjectKey,
+              responseSnapshot: toJsonValue(responseSnapshot),
+              signedDocumentObjectKey: stored.objectKey
+            },
+            where: { id: task.id }
+          });
+          await tx.contract.update({
+            data: {
+              archivedAt,
+              fileId: file.id,
+              status: ContractStatus.ARCHIVED,
+              updatedBy: input.actorId ?? task.contract.order.application.salesUserId
+            },
+            where: { id: task.contractId }
+          });
+          await this.auditService?.write(
+            {
+              action: AuditAction.APPROVE,
+              after: {
+                fileId: file.id,
+                signedPdfHash,
+                status: ContractStatus.ARCHIVED,
+                taskId: task.id
+              },
+              before: { status: priorContractStatus },
+              entityId: task.contractId,
+              entityType: "contract",
+              module: "esign",
+              operatorId: input.actorId ?? task.contract.order.application.salesUserId
+            },
+            tx
+          );
+          if (this.journeySignal) {
+            await this.journeySignal.record(tx, {
+              eventKey: `fadada-artifact:${task.id}:archived`,
+              orderId: task.orderId ?? task.contract.order.id,
+              payload: {
+                contractId: task.contractId,
+                fileId: file.id,
+                signedPdfHash,
+                taskId: task.id
+              },
+              type: "FADADA_ARTIFACT_ARCHIVED"
+            });
+          }
+        });
+      } catch (error) {
+        try {
+          await this.storageService.deleteObject(stored.bucket, stored.objectKey);
+        } catch {
+          // The reconciliation job remains retryable even when orphan cleanup fails.
+        }
+        throw error;
+      }
+    } else {
+      await this.prisma.contractESignTask.update({
+        data: {
+          evidenceObjectKey: task.evidenceObjectKey,
+          responseSnapshot: toJsonValue(responseSnapshot),
+          signedDocumentObjectKey: stored.objectKey
+        },
+        where: { id: task.id }
+      });
+    }
     await this.finalizeStage3IfApplicable(task);
 
     return {

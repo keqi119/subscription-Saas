@@ -49,3 +49,9 @@ export class RejectPortalFinalPlanDto {
   reason!: string;
 }
 
+export class ConfirmPortalFinalPlanDto {
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  revision!: number;
+}

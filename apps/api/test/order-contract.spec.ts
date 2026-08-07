@@ -31,6 +31,48 @@ const STAGE1_SLOT_KEYWORDS = [
 ];
 
 describe("subscription order and contract rules", () => {
+  it("creates and reuses a generated journey contract in the caller transaction", async () => {
+    const harness = createOrderServiceHarness();
+    const sourceKey =
+      "journey:journey-1:step:ORDER_AND_CONTRACT_CREATION:revision:1";
+
+    const first = await harness.service.createJourneyContractInTransaction(
+      harness.tx as never,
+      harness.orderId,
+      harness.user.id,
+      sourceKey
+    );
+    const second = await harness.service.createJourneyContractInTransaction(
+      harness.tx as never,
+      harness.orderId,
+      harness.user.id,
+      sourceKey
+    );
+
+    expect(first.id).toBe(second.id);
+    expect(harness.state.contracts).toHaveLength(1);
+    expect(harness.state.contractId).toBe(first.id);
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+    expect(harness.tx.contract.create).toHaveBeenCalledOnce();
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects journey contract generation when no active template exists", async () => {
+    const harness = createOrderServiceHarness({
+      resolveContractVersion: () => null as never
+    });
+
+    await expect(
+      harness.service.createJourneyContractInTransaction(
+        harness.tx as never,
+        harness.orderId,
+        harness.user.id,
+        "journey:journey-1:step:ORDER_AND_CONTRACT_CREATION:revision:1"
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_CONTRACT_TEMPLATE_INACTIVE" });
+    expect(harness.tx.contract.create).not.toHaveBeenCalled();
+  });
+
   it("defaults order business type to subscription", () => {
     expect(ensureSubscriptionBusinessType()).toBe(BusinessType.SUBSCRIPTION);
     expect(ensureSubscriptionBusinessType(BusinessType.SUBSCRIPTION)).toBe(
@@ -1007,8 +1049,15 @@ function createOrderServiceHarness(options: {
   }
 
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: orderId }]),
     contract: {
       count: vi.fn(async () => state.contracts.length),
+      findFirst: vi.fn(async () => {
+        const contract = state.contracts.find(
+          (item) => item.status !== ContractStatus.CANCELLED
+        );
+        return contract ? buildContract(contract) : null;
+      }),
       create: vi.fn(async ({ data }) => {
         const contract = {
           ...data,
@@ -1053,6 +1102,7 @@ function createOrderServiceHarness(options: {
         state.quoteSnapshot = data.quoteSnapshot as Record<string, unknown>;
         return buildOrder();
       }),
+      findUnique: vi.fn(async () => buildOrder()),
       update: vi.fn(async ({ data }) => {
         if ("contractId" in data) {
           state.contractId = data.contractId;
@@ -1062,6 +1112,13 @@ function createOrderServiceHarness(options: {
         }
         return buildOrder();
       })
+    },
+    contractVersion: {
+      findFirst: vi.fn(async (args) =>
+        options.resolveContractVersion
+          ? options.resolveContractVersion(args, template)
+          : template
+      )
     },
     vehicle: {
       update: vi.fn(async ({ data }) => {

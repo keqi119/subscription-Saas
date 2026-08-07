@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { RequestMethod } from "@nestjs/common";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
-import { PermissionCode } from "@subscription-saas/shared";
+import { PermissionCode, SYSTEM_MENUS } from "@subscription-saas/shared";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -26,6 +26,7 @@ import {
 } from "../src/residual-market/residual-market.controller";
 import { RevenueRightController } from "../src/revenue-right/revenue-right.controller";
 import { ServiceCaseController } from "../src/service-case/service-case.controller";
+import { SubscriptionJourneyController } from "../src/subscription-journey/subscription-journey.controller";
 import { VehicleAssetPoolController } from "../src/vehicle-asset-pool/vehicle-asset-pool.controller";
 import { VehicleBaasController } from "../src/vehicle-baas/vehicle-baas.controller";
 import { VehicleDepreciationController } from "../src/vehicle-depreciation/vehicle-depreciation.controller";
@@ -2100,5 +2101,65 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(roleLoopSource(["FI", "AS"]), view)).toBe(true);
     expect(roleHasMenu(roleMenuArray("OP"), "orders.subscription_changes")).toBe(true);
     expect(roleHasMenu(roleMenuArray("SA"), "orders.subscription_changes")).toBe(true);
+  });
+
+  it("assigns the approved subscription journey permissions and exception filter by role", () => {
+    const view = "subscription_journey:view";
+    const operational = [
+      view,
+      "subscription_journey:plan_decide",
+      "subscription_journey:vehicle_allocate",
+      "subscription_journey:delivery_evidence_decide",
+      "subscription_journey:recover"
+    ];
+    const cancel = "subscription_journey:cancel";
+
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VIEW).toBe(view);
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE).toBe(
+      "subscription_journey:plan_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE).toBe(
+      "subscription_journey:vehicle_allocate"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE).toBe(
+      "subscription_journey:delivery_evidence_decide"
+    );
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER).toBe("subscription_journey:recover");
+    expect(PermissionCode.SUBSCRIPTION_JOURNEY_CANCEL).toBe(cancel);
+
+    const orders = SYSTEM_MENUS.find((menu) => menu.code === "orders");
+    const exceptionEntry = orders?.children?.find(
+      (menu) => menu.code === "orders.journey_exceptions"
+    );
+
+    expect(exceptionEntry).toMatchObject({
+      path: "/orders?journeyStatus=EXCEPTION",
+      permissionCode: PermissionCode.SUBSCRIPTION_JOURNEY_VIEW
+    });
+    expect(SYSTEM_MENUS.some((menu) => menu.code === "orders.journey_exceptions")).toBe(false);
+    expect(operational).toHaveLength(5);
+    expect(cancel).toBe("subscription_journey:cancel");
+  });
+
+  it("gates every subscription journey administration route with its exact permission", () => {
+    const routes = [
+      [SubscriptionJourneyController.prototype.getByApplication, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
+      [SubscriptionJourneyController.prototype.getByOrder, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
+      [SubscriptionJourneyController.prototype.list, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
+      [SubscriptionJourneyController.prototype.metrics, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
+      [SubscriptionJourneyController.prototype.decideFinalPlan, PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE],
+      [SubscriptionJourneyController.prototype.allocateVehicle, PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE],
+      [SubscriptionJourneyController.prototype.decideDeliveryEvidence, PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE],
+      [SubscriptionJourneyController.prototype.retry, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
+      [SubscriptionJourneyController.prototype.pause, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
+      [SubscriptionJourneyController.prototype.resume, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
+      [SubscriptionJourneyController.prototype.cancel, PermissionCode.SUBSCRIPTION_JOURNEY_CANCEL]
+    ] as const;
+
+    for (const [handler, permission] of routes) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        permission
+      ]);
+    }
   });
 });

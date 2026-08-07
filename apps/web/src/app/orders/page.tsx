@@ -1,11 +1,12 @@
 "use client";
 
 import { EyeOutlined, FileTextOutlined } from "@ant-design/icons";
-import { App, Button, Space, Table, Tag, Typography } from "antd";
+import { App, Button, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import { ActionButton } from "../../components/action-button";
 import { ProtectedShell } from "../../components/protected-shell";
@@ -46,18 +47,23 @@ function getErrorMessage(error: unknown) {
   return error instanceof ApiError ? error.message : "操作失败，请稍后重试";
 }
 
-export default function OrdersPage() {
+function OrdersPageContent() {
   const { message } = App.useApp();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
+  const journeyStatus = searchParams.get("journeyStatus") === "EXCEPTION" ? "EXCEPTION" : null;
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
       const [nextOrders, nextMe] = await Promise.all([
-        apiFetch<OrderRow[]>("/orders"),
+        apiFetch<OrderRow[]>(
+          journeyStatus ? `/orders?journeyStatus=${encodeURIComponent(journeyStatus)}` : "/orders"
+        ),
         apiFetch<AuthMeResponse>("/auth/me")
       ]);
       setOrders(nextOrders);
@@ -67,7 +73,7 @@ export default function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [message]);
+  }, [journeyStatus, message]);
 
   useEffect(() => {
     void loadOrders();
@@ -141,14 +147,16 @@ export default function OrdersPage() {
               查看详情
             </Button>
           </Link>
-          <ActionButton
-            availability={canGenerateContract(record, permissions)}
-            icon={<FileTextOutlined />}
-            onClick={() => generateContract(record.id)}
-            size="small"
-          >
-            生成合同
-          </ActionButton>
+          {journeyStatus ? null : (
+            <ActionButton
+              availability={canGenerateContract(record, permissions)}
+              icon={<FileTextOutlined />}
+              onClick={() => generateContract(record.id)}
+              size="small"
+            >
+              生成合同
+            </ActionButton>
+          )}
         </Space>
       ),
       title: "操作",
@@ -162,8 +170,34 @@ export default function OrdersPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           订阅订单
         </Typography.Title>
+        {journeyStatus ? (
+          <Tag
+            closable
+            color="red"
+            onClose={(event) => {
+              event.preventDefault();
+              router.replace("/orders");
+            }}
+          >
+            Journey 异常 · 移除异常筛选
+          </Tag>
+        ) : null}
         <Table columns={columns} dataSource={orders} loading={loading} rowKey="id" scroll={{ x: 1600 }} />
       </Space>
     </ProtectedShell>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense
+      fallback={
+        <ProtectedShell>
+          <Spin />
+        </ProtectedShell>
+      }
+    >
+      <OrdersPageContent />
+    </Suspense>
   );
 }

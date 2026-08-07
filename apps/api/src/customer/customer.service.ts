@@ -49,6 +49,8 @@ import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
 import { StorageService } from "../storage/storage.service";
+import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
+import { journeyError } from "../subscription-journey/subscription-journey.errors";
 import {
   assertCustomerIdentityProfileReady,
   assertValidCustomerApplicationIdentityInput
@@ -298,6 +300,12 @@ export interface MaterialPreview {
   stream: Readable;
 }
 
+export interface JourneyFinalPlanDecisionInput {
+  finalPeriodMonths?: number;
+  finalSubscriptionPlanId?: string;
+  finalVehicleId?: string;
+}
+
 @Injectable()
 export class CustomerService {
   constructor(
@@ -305,7 +313,9 @@ export class CustomerService {
     private readonly prisma: PrismaService,
     private readonly riskService: RiskService,
     private readonly storageService: StorageService,
-    @Optional() private readonly notificationService?: NotificationService
+    @Optional() private readonly notificationService?: NotificationService,
+    @Optional()
+    private readonly subscriptionJourneySignal?: SubscriptionJourneySignalService
   ) {}
 
   private async safeNotifyCustomer(input: {
@@ -339,6 +349,23 @@ export class CustomerService {
     } catch {
       // Notification delivery must not block the primary application workflow.
     }
+  }
+
+  private async recordJourneyApplicationFactsChanged(
+    tx: Prisma.TransactionClient,
+    input: {
+      actionId: string;
+      applicationId: string;
+      fact: "credit" | "material" | "product";
+      status: string;
+    }
+  ) {
+    await this.subscriptionJourneySignal?.record(tx, {
+      applicationId: input.applicationId,
+      eventKey: `application:${input.applicationId}:facts:${input.fact}:${input.actionId}`,
+      payload: { fact: input.fact, status: input.status },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
   }
 
   async listCustomers(user: RequestUser) {
@@ -637,13 +664,19 @@ export class CustomerService {
           where: { id }
         });
 
-        await createApplicationActionLog(tx, {
+        const action = await createApplicationActionLog(tx, {
           actionType: ApplicationActionType.REVIEW_MATERIAL,
           applicationId: id,
           comment,
           fromStatus: before.status,
           operator: user,
           toStatus: updated.status
+        });
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: "material",
+          status: OrderReviewStatus.APPROVED
         });
 
         return updated;
@@ -699,13 +732,19 @@ export class CustomerService {
           where: { id }
         });
 
-        await createApplicationActionLog(tx, {
+        const action = await createApplicationActionLog(tx, {
           actionType: ApplicationActionType.APPROVE,
           applicationId: id,
           comment,
           fromStatus: before.status,
           operator: user,
           toStatus: application.status
+        });
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: "credit",
+          status: OrderReviewStatus.APPROVED
         });
 
         return { application, customerAfter, customerBefore };
@@ -746,13 +785,19 @@ export class CustomerService {
           where: { id }
         });
 
-        await createApplicationActionLog(tx, {
+        const action = await createApplicationActionLog(tx, {
           actionType: ApplicationActionType.APPROVE,
           applicationId: id,
           comment,
           fromStatus: before.status,
           operator: user,
           toStatus: updated.status
+        });
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: "product",
+          status: OrderReviewStatus.APPROVED
         });
 
         return updated;
@@ -764,6 +809,26 @@ export class CustomerService {
 
     if (reviewType === "vehicle") {
       const application = await this.prisma.$transaction(async (tx) => {
+        const journey = await tx.subscriptionJourney.findUnique({
+          select: { currentStepCode: true },
+          where: { applicationId: id }
+        });
+        if (journey) {
+          if (journey.currentStepCode !== "FINAL_VEHICLE_ALLOCATION") {
+            throw journeyError(
+              "JOURNEY_INVALID_TRANSITION",
+              "The journey is not waiting for vehicle allocation."
+            );
+          }
+          const result = await this.allocateJourneyVehicle(
+            tx,
+            id,
+            dto.finalVehicleId ?? before.finalVehicleId ?? "",
+            user,
+            context
+          );
+          return result.application;
+        }
         const details = await loadApplicationFinalPlanDetails(tx, before, dto);
         await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
         const updated = await tx.application.update({
@@ -807,6 +872,26 @@ export class CustomerService {
     assertApplicationReadyForFinalPlan(before);
 
     const result = await this.prisma.$transaction(async (tx) => {
+      const journey = await tx.subscriptionJourney.findUnique({
+        select: { currentStepCode: true },
+        where: { applicationId: id }
+      });
+      if (journey) {
+        if (journey.currentStepCode !== "FINAL_PLAN_DECISION") {
+          throw journeyError(
+            "JOURNEY_INVALID_TRANSITION",
+            "The journey is not waiting for a final-plan decision."
+          );
+        }
+        const application = await this.applyJourneyFinalPlanDecision(
+          tx,
+          id,
+          {},
+          user,
+          context
+        );
+        return { application, details: null };
+      }
       const details = await loadApplicationFinalPlanDetails(tx, before);
       await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
       const finalPlanSnapshot = {
@@ -1036,6 +1121,233 @@ export class CustomerService {
     };
   }
 
+  async createOrderFromApplicationInTransaction(
+    tx: Prisma.TransactionClient,
+    applicationId: string,
+    user: RequestUser,
+    context: RequestContext
+  ) {
+    void context;
+    await lockJourneyApplication(tx, applicationId);
+    const application = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!application || application.deletedAt) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The journey application was not found."
+      );
+    }
+    ensureCanAccessApplication(application, user);
+
+    const existingOrder = application.orders.find(
+      (order) => !order.deletedAt
+    );
+    if (existingOrder) {
+      const existing = await tx.subscriptionOrder.findUnique({
+        where: { id: existingOrder.id }
+      });
+      if (!existing) {
+        throw journeyError(
+          "JOURNEY_IDEMPOTENCY_CONFLICT",
+          "The journey application order reference is inconsistent."
+        );
+      }
+      return existing;
+    }
+
+    if (
+      application.finalPlanRevision < 1 ||
+      application.customerConfirmedPlanRevision !== application.finalPlanRevision
+    ) {
+      throw journeyError(
+        "FINAL_PLAN_REVISION_STALE",
+        "The confirmed journey plan revision is stale."
+      );
+    }
+    if (
+      application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
+      !application.finalPlanConfirmedAt
+    ) {
+      throw journeyError(
+        "JOURNEY_CUSTOMER_PLAN_CONFIRMATION_REQUIRED",
+        "The exact journey plan revision must be confirmed before order creation."
+      );
+    }
+    if (!application.finalSubscriptionPlanId) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application has no final subscription plan."
+      );
+    }
+    if (
+      !application.finalVehicleId ||
+      application.softReservedVehicleId !== application.finalVehicleId
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The journey application has no allocated concrete vehicle."
+      );
+    }
+    const allocatedVehicle = await tx.vehicle.findUnique({
+      where: { id: application.finalVehicleId }
+    });
+    if (
+      !allocatedVehicle ||
+      allocatedVehicle.deletedAt ||
+      allocatedVehicle.status !== VehicleStatus.REVIEW_RESERVED
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The allocated journey vehicle is no longer reserved for review."
+      );
+    }
+
+    assertApplicationCanCreateOrder(application);
+    const finalDepositAmount = application.finalDepositAmount;
+    if (finalDepositAmount === null) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application has no confirmed deposit."
+      );
+    }
+    let details: ApplicationFinalPlanDetails;
+    try {
+      details = await loadApplicationFinalPlanDetails(tx, application);
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey subscription plan or its pricing facts are invalid."
+      );
+    }
+    if (
+      details.plan.product.productType !== ProductType.SUBSCRIPTION ||
+      details.vehicle.id !== application.finalVehicleId
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey final plan is not a subscription product."
+      );
+    }
+
+    const vehicleUpdate = await tx.vehicle.updateMany({
+      data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+      where: {
+        deletedAt: null,
+        id: details.vehicle.id,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
+    });
+    if (vehicleUpdate.count !== 1) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The allocated journey vehicle could not enter the order reservation."
+      );
+    }
+
+    const finalPlanSnapshot = (application.finalPlanSnapshot ??
+      details.finalPlanSnapshot) as Prisma.InputJsonValue;
+    const modelSnapshot = buildVehicleModelSnapshot(
+      toCanonicalModelIdentity(details.vehicle)
+    );
+    const quote = await tx.subscriptionQuote.create({
+      data: {
+        applicationId: application.id,
+        benefitPackageId: details.plan.benefitPackage?.id ?? null,
+        benefitPackagePriceAmount: details.benefitPackagePriceAmount,
+        confirmedAt: application.finalPlanConfirmedAt,
+        confirmedBy: user.id,
+        createdBy: user.id,
+        customerId: application.customerId,
+        customerSelectedSnapshot: application.customerSelectedSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        depositAmount: finalDepositAmount,
+        depositRuleSnapshot: application.depositRuleSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+        energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+        energyPackageId: details.plan.energyPackage.id,
+        energyPackagePriceAmount: details.energyPackagePriceAmount,
+        mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+        mileagePackageId: details.plan.mileagePackage.id,
+        mileagePackagePriceAmount: details.mileagePackagePriceAmount,
+        monthlyFeeAmount: details.monthlyFeeAmount,
+        monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
+        monthlyFeeRate: details.plan.monthlyFeeRate,
+        ...modelSnapshot,
+        overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+        packageSnapshot: details.packageSnapshot,
+        periodMonths: details.periodMonths,
+        productId: details.plan.productId,
+        productVersionId: details.plan.productVersionId,
+        quoteNo: createBusinessNo("QUO"),
+        riskResultId: null,
+        status: QuoteStatus.CONFIRMED,
+        subscriptionPlanId: details.plan.id,
+        updatedBy: user.id,
+        vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+        vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
+        vehicleId: details.vehicle.id,
+        vehiclePackageId: details.plan.vehiclePackage.id,
+        vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+        vehicleSalePriceAmount: details.vehicleSalePriceAmount,
+        vehicleSnapshot: details.vehicleSnapshot
+      }
+    });
+    const order = await tx.subscriptionOrder.create({
+      data: {
+        applicationId: application.id,
+        businessType: BusinessType.SUBSCRIPTION,
+        createdBy: user.id,
+        creditReviewStatus: OrderReviewStatus.APPROVED,
+        customerConfirmedAt: application.finalPlanConfirmedAt,
+        customerId: application.customerId,
+        customerSelectedSnapshot: application.customerSelectedSnapshot as
+          | Prisma.InputJsonValue
+          | undefined,
+        depositAmount: finalDepositAmount,
+        depositStatus: DepositStatus.CONFIRMED,
+        energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+        energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+        finalDepositAmount,
+        finalPlanConfirmedAt: application.finalPlanConfirmedAt,
+        finalPlanSnapshot,
+        mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+        monthlyFeeAmount: details.monthlyFeeAmount,
+        ...modelSnapshot,
+        orderNo: createBusinessNo("ORD"),
+        orderSource: mapApplicationSourceToOrderSource(
+          application.applicationSource
+        ),
+        orderStatus: OrderStatus.PENDING_CONTRACT,
+        overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+        periodMonths: details.periodMonths,
+        productId: details.plan.productId,
+        productReviewStatus: OrderReviewStatus.APPROVED,
+        productVersionId: details.plan.productVersionId,
+        quoteId: quote.id,
+        quoteSnapshot: finalPlanSnapshot,
+        riskResultId: null,
+        updatedBy: user.id,
+        vehicleId: details.vehicle.id,
+        vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      }
+    });
+    await createApplicationActionLog(tx, {
+      actionType: ApplicationActionType.APPROVE,
+      applicationId,
+      comment: `Journey order ${order.id} created`,
+      fromStatus: application.status,
+      operator: user,
+      toStatus: application.status
+    });
+    return order;
+  }
+
   async createApplication(dto: CreateApplicationDto, user: RequestUser, context: RequestContext) {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);
@@ -1263,6 +1575,13 @@ export class CustomerService {
         toStatus: ApplicationStatus.SUBMITTED
       });
 
+      await this.subscriptionJourneySignal?.record(tx, {
+        applicationId: application.id,
+        eventKey: `application:${application.id}:submitted`,
+        payload: { source: application.applicationSource },
+        type: "APPLICATION_SUBMITTED"
+      });
+
       if (customer.status === CustomerStatus.LEAD) {
         await tx.customer.update({
           data: {
@@ -1336,6 +1655,320 @@ export class CustomerService {
       status: result.application.status,
       vehicleStatus: result.vehicleAfter.status
     };
+  }
+
+  async recordJourneyCustomerPlanConfirmation(
+    tx: Prisma.TransactionClient,
+    input: { applicationId: string; revision: number }
+  ): Promise<void> {
+    await this.subscriptionJourneySignal?.record(tx, {
+      applicationId: input.applicationId,
+      eventKey: `application:${input.applicationId}:plan-confirmed:${input.revision}`,
+      payload: { revision: input.revision },
+      type: "CUSTOMER_PLAN_CONFIRMED"
+    });
+  }
+
+  async validateJourneyApplication(
+    tx: Prisma.TransactionClient,
+    applicationId: string
+  ): Promise<void> {
+    await lockJourneyApplication(tx, applicationId);
+    const application = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!application || application.deletedAt) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The journey application was not found."
+      );
+    }
+    if (application.materialReviewStatus !== OrderReviewStatus.APPROVED) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE",
+        "The journey application materials have not been approved."
+      );
+    }
+    if (
+      application.creditReviewStatus !== OrderReviewStatus.APPROVED ||
+      application.depositStatus !== DepositStatus.CONFIRMED ||
+      application.finalDepositAmount === null
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_CREDIT_NOT_APPROVED",
+        "The journey application credit and deposit facts have not been approved."
+      );
+    }
+
+    let input: ApplicationFinalPlanInput;
+    try {
+      input = resolveApplicationFinalPlanInput(application);
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application does not contain a valid subscription plan selection."
+      );
+    }
+
+    const plan = await tx.subscriptionPlan.findUnique({
+      include: selfServiceSubscriptionPlanInclude,
+      where: { id: input.subscriptionPlanId }
+    });
+    try {
+      assertSelfServiceSubscriptionPlanAvailable(plan);
+      assertSelfServicePeriodInRange(
+        input.periodMonths,
+        plan.minPeriodMonths,
+        plan.maxPeriodMonths
+      );
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application subscription plan is not available."
+      );
+    }
+
+    const vehicle = await tx.vehicle.findUnique({
+      include: selfServiceVehicleInclude,
+      where: { id: input.vehicleId }
+    });
+    try {
+      assertApplicationVehicleExists(vehicle);
+      if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+        throw new Error("vehicle model mismatch");
+      }
+      await assertApplicationVehicleReviewAllowed(tx, application, vehicle);
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The journey application vehicle is not available for this plan."
+      );
+    }
+
+    try {
+      await loadApplicationFinalPlanDetails(tx, application);
+    } catch {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey application pricing facts are invalid."
+      );
+    }
+  }
+
+  async applyJourneyFinalPlanDecision(
+    tx: Prisma.TransactionClient,
+    applicationId: string,
+    input: JourneyFinalPlanDecisionInput,
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    void context;
+    await lockJourneyApplication(tx, applicationId);
+    const before = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!before || before.deletedAt) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The journey application was not found."
+      );
+    }
+    ensureCanAccessApplication(before, actor);
+    ensureApplicationReviewWorkflowAllowed(before);
+    assertApplicationHasNoOrder(before);
+    assertApplicationReadyForFinalPlan(before);
+
+    const details = await loadApplicationFinalPlanDetails(tx, before, input);
+    await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
+    const finalPlanRevision = before.finalPlanRevision + 1;
+    const finalPlanSnapshot = {
+      ...(details.finalPlanSnapshot as Record<string, unknown>),
+      customerConfirmedPlanRevision: null,
+      finalPlanConfirmedAt: null,
+      finalPlanRevision,
+      planConfirmStatus: PlanConfirmStatus.PENDING
+    } satisfies Prisma.InputJsonValue;
+    const application = await tx.application.update({
+      data: {
+        approvedAt: before.approvedAt ?? new Date(),
+        customerConfirmedPlanRevision: null,
+        finalPeriodMonths: details.periodMonths,
+        finalPlanConfirmedAt: null,
+        finalPlanRevision,
+        finalPlanSnapshot,
+        finalQuoteSnapshot: finalPlanSnapshot,
+        finalSubscriptionPlanId: details.plan.id,
+        finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+        finalVehicleId: details.vehicle.id,
+        planConfirmStatus: PlanConfirmStatus.PENDING,
+        productReviewStatus: OrderReviewStatus.APPROVED,
+        rejectedReason: null,
+        status: ApplicationStatus.APPROVED,
+        updatedBy: actor.id,
+        vehicleReviewStatus: OrderReviewStatus.PENDING
+      },
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    await createApplicationActionLog(tx, {
+      actionType: ApplicationActionType.APPROVE,
+      applicationId,
+      comment: `Journey final plan revision ${finalPlanRevision} approved`,
+      fromStatus: before.status,
+      operator: actor,
+      toStatus: ApplicationStatus.APPROVED
+    });
+    await this.subscriptionJourneySignal?.completeManualDecision(tx, {
+      actorId: actor.id,
+      applicationId,
+      expectedStepCode: "FINAL_PLAN_DECISION",
+      payload: { finalPlanRevision }
+    });
+    return application;
+  }
+
+  async allocateJourneyVehicle(
+    tx: Prisma.TransactionClient,
+    applicationId: string,
+    vehicleId: string,
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    void context;
+    await lockJourneyApplication(tx, applicationId);
+    const before = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!before || before.deletedAt) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The journey application was not found."
+      );
+    }
+    ensureCanAccessApplication(before, actor);
+    assertApplicationHasNoOrder(before);
+    if (
+      before.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
+      before.customerConfirmedPlanRevision !== before.finalPlanRevision ||
+      before.finalPlanRevision < 1
+    ) {
+      throw journeyError(
+        "JOURNEY_CUSTOMER_PLAN_CONFIRMATION_REQUIRED",
+        "The exact journey final-plan revision must be confirmed before vehicle allocation."
+      );
+    }
+
+    const details = await loadApplicationFinalPlanDetails(tx, before, {
+      finalVehicleId: vehicleId
+    });
+    await assertJourneyVehicleAllocationAllowed(tx, before, details.vehicle);
+    const termsChanged = commercialPlanChanged(
+      before.finalPlanSnapshot,
+      details.finalPlanSnapshot
+    );
+    if (termsChanged) {
+      const finalPlanRevision = before.finalPlanRevision + 1;
+      const finalPlanSnapshot = {
+        ...(details.finalPlanSnapshot as Record<string, unknown>),
+        customerConfirmedPlanRevision: null,
+        finalPlanConfirmedAt: null,
+        finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.PENDING
+      } satisfies Prisma.InputJsonValue;
+      await releaseApplicationSoftReservedVehicle(tx, before, actor);
+      const application = await tx.application.update({
+        data: {
+          customerConfirmedPlanRevision: null,
+          finalPeriodMonths: details.periodMonths,
+          finalPlanConfirmedAt: null,
+          finalPlanRevision,
+          finalPlanSnapshot,
+          finalQuoteSnapshot: finalPlanSnapshot,
+          finalSubscriptionPlanId: details.plan.id,
+          finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+          finalVehicleId: details.vehicle.id,
+          planConfirmStatus: PlanConfirmStatus.PENDING,
+          softReservationExpiresAt: null,
+          softReservedAt: null,
+          softReservedVehicleId: null,
+          updatedBy: actor.id,
+          vehicleReviewStatus: OrderReviewStatus.PENDING
+        },
+        include: applicationInclude,
+        where: { id: applicationId }
+      });
+      await createApplicationActionLog(tx, {
+        actionType: ApplicationActionType.APPROVE,
+        applicationId,
+        comment: `Vehicle facts changed; final plan revision ${finalPlanRevision} requires customer confirmation`,
+        fromStatus: before.status,
+        operator: actor,
+        toStatus: application.status
+      });
+      await this.subscriptionJourneySignal?.requireCustomerReconfirmationAfterManualDecision(
+        tx,
+        {
+          actorId: actor.id,
+          applicationId,
+          finalPlanRevision,
+          vehicleId: details.vehicle.id
+        }
+      );
+      return { application, requiresCustomerReconfirmation: true };
+    }
+
+    const alreadyHeld =
+      before.softReservedVehicleId === details.vehicle.id &&
+      details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
+    if (!alreadyHeld) {
+      const reserved = await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: actor.id },
+        where: {
+          deletedAt: null,
+          id: details.vehicle.id,
+          status: VehicleStatus.AVAILABLE
+        }
+      });
+      if (reserved.count !== 1) {
+        throw journeyError(
+          "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+          "The journey vehicle could not be reserved."
+        );
+      }
+    }
+    const application = await tx.application.update({
+      data: {
+        finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+        finalVehicleId: details.vehicle.id,
+        softReservedAt: before.softReservedAt ?? new Date(),
+        softReservedVehicleId: details.vehicle.id,
+        updatedBy: actor.id,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      },
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    await createApplicationActionLog(tx, {
+      actionType: ApplicationActionType.APPROVE,
+      applicationId,
+      comment: `Journey vehicle ${details.vehicle.id} allocated`,
+      fromStatus: before.status,
+      operator: actor,
+      toStatus: application.status
+    });
+    await this.subscriptionJourneySignal?.completeManualDecision(tx, {
+      actorId: actor.id,
+      applicationId,
+      expectedStepCode: "FINAL_VEHICLE_ALLOCATION",
+      payload: {
+        finalPlanRevision: before.finalPlanRevision,
+        vehicleId: details.vehicle.id
+      }
+    });
+    return { application, requiresCustomerReconfirmation: false };
   }
 
   async validateSelfServiceApplicationSelection(
@@ -1447,6 +2080,13 @@ export class CustomerService {
         fromStatus: before.status,
         operator: user,
         toStatus: ApplicationStatus.SUBMITTED
+      });
+
+      await this.subscriptionJourneySignal?.record(tx, {
+        applicationId: id,
+        eventKey: `application:${id}:submitted`,
+        payload: { source: before.applicationSource },
+        type: "APPLICATION_SUBMITTED"
       });
 
       return tx.application.findUniqueOrThrow({
@@ -1739,7 +2379,7 @@ export class CustomerService {
         where: { id }
       });
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.REVIEW_MATERIAL_GROUP,
         applicationId: id,
         comment,
@@ -1747,6 +2387,12 @@ export class CustomerService {
         materialGroupId,
         operator: user,
         toStatus: application.status
+      });
+      await this.recordJourneyApplicationFactsChanged(tx, {
+        actionId: action.id,
+        applicationId: id,
+        fact: "material",
+        status: dto.status
       });
 
       return updated;
@@ -1947,7 +2593,7 @@ export class CustomerService {
         });
       }
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.APPROVE,
         applicationId: id,
         comment,
@@ -1955,6 +2601,14 @@ export class CustomerService {
         operator: user,
         toStatus: ApplicationStatus.APPROVED
       });
+      if (before.applicationSource === ApplicationSource.SELF_SERVICE) {
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: "credit",
+          status: OrderReviewStatus.APPROVED
+        });
+      }
 
       const application = await tx.application.findUniqueOrThrow({
         include: applicationInclude,
@@ -2263,6 +2917,21 @@ async function releaseApplicationSoftReservedVehicle(
   return { after, before };
 }
 
+async function lockJourneyApplication(tx: Tx, applicationId: string) {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT "id"
+    FROM "application"
+    WHERE "id" = ${applicationId}::uuid
+    FOR UPDATE
+  `);
+  if (rows.length !== 1) {
+    throw journeyError(
+      "JOURNEY_APPLICATION_NOT_FOUND",
+      "The journey application was not found."
+    );
+  }
+}
+
 async function loadApplicationFinalPlanDetails(
   tx: Tx,
   application: ApplicationWithDetails,
@@ -2469,6 +3138,50 @@ async function assertApplicationVehicleReviewAllowed(
   });
   if (occupiedByOrderCount > 0) {
     throw new BadRequestException("所选车辆已不可用，请重新选择车辆。");
+  }
+}
+
+async function assertJourneyVehicleAllocationAllowed(
+  tx: Tx,
+  application: ApplicationWithDetails,
+  vehicle: SelfServiceVehicle
+) {
+  const heldByApplication =
+    application.softReservedVehicleId === vehicle.id &&
+    vehicle.status === VehicleStatus.REVIEW_RESERVED;
+  if (!heldByApplication && vehicle.status !== VehicleStatus.AVAILABLE) {
+    throw journeyError(
+      "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+      "The journey vehicle is not available for allocation."
+    );
+  }
+  try {
+    requireSelfServiceCurrentSalePriceAmount(vehicle.currentSalePriceAmount);
+  } catch {
+    throw journeyError(
+      "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+      "The journey vehicle does not have a valid current sale price."
+    );
+  }
+  const occupiedByOrderCount = await tx.subscriptionOrder.count({
+    where: {
+      deletedAt: null,
+      orderStatus: {
+        notIn: [
+          OrderStatus.CANCELLED,
+          OrderStatus.REJECTED,
+          OrderStatus.COMPLETED,
+          OrderStatus.TERMINATED
+        ]
+      },
+      vehicleId: vehicle.id
+    }
+  });
+  if (occupiedByOrderCount > 0) {
+    throw journeyError(
+      "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+      "The journey vehicle is already occupied by another order."
+    );
   }
 }
 
@@ -3064,6 +3777,29 @@ function toJsonSnapshot(value: unknown): Prisma.InputJsonValue {
   return toAuditSnapshot(value) as Prisma.InputJsonValue;
 }
 
+function commercialPlanChanged(
+  previous: Prisma.JsonValue | null,
+  next: Prisma.InputJsonValue
+): boolean {
+  if (!isPlainRecord(previous) || !isPlainRecord(next)) return true;
+  const commercialKeys = [
+    "packageSnapshot",
+    "periodMonths",
+    "pricing",
+    "subscriptionPlan",
+    "subscriptionPlanId",
+    "vehicleId",
+    "vehicleSnapshot"
+  ] as const;
+  const select = (snapshot: Record<string, unknown>) =>
+    Object.fromEntries(commercialKeys.map((key) => [key, snapshot[key] ?? null]));
+  return JSON.stringify(select(previous)) !== JSON.stringify(select(next));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function toAuditSnapshot(value: unknown) {
   return JSON.parse(
     JSON.stringify(value, (_key: string, item: unknown) =>
@@ -3086,7 +3822,7 @@ async function createApplicationActionLog(
     toStatus?: ApplicationStatus | null;
   }
 ) {
-  await tx.applicationActionLog.create({
+  return tx.applicationActionLog.create({
     data: {
       actionType: input.actionType,
       applicationId: input.applicationId,
@@ -3300,6 +4036,8 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
     finalDepositAmount:
       application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
     finalPeriodMonths: application.finalPeriodMonths,
+    finalPlanRevision: application.finalPlanRevision,
+    customerConfirmedPlanRevision: application.customerConfirmedPlanRevision,
     finalPlanConfirmedAt: application.finalPlanConfirmedAt,
     finalPlanSnapshot: application.finalPlanSnapshot,
     finalQuoteSnapshot: application.finalQuoteSnapshot,

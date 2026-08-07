@@ -91,8 +91,11 @@ import {
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { MileageReviewService } from "../mileage-review/mileage-review.service";
 import { activateLeaseRecord } from "../lease/lease-activation.persistence";
+import { LeaseActivationEngine } from "../lease/lease-activation.engine";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
+import { journeyError } from "../subscription-journey/subscription-journey.errors";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
+import { OrderEntitlementService } from "./order-entitlement.service";
 import {
   ArchiveContractDto,
   CancelOrderDto,
@@ -106,6 +109,7 @@ import {
   EntitlementMonthlyRenewalDto,
   ExpireEntitlementsDto,
   ListContractsQueryDto,
+  ListOrdersQueryDto,
   ListEntitlementUsagesQueryDto,
   PrepareDeliveryDto,
   PrepareReturnDto,
@@ -380,18 +384,141 @@ export class OrderService {
     @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
     @Optional() private readonly vehicleMileageService?: VehicleMileageService,
     @Optional() private readonly mileageReviewService?: MileageReviewService,
-    @Optional() private readonly billingAutomationService?: BillingAutomationService
+    @Optional() private readonly billingAutomationService?: BillingAutomationService,
+    @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
+    @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine
   ) {}
 
-  async listOrders(user: RequestUser) {
+  async listOrders(user: RequestUser, query: ListOrdersQueryDto = {}) {
     const orders = await this.prisma.subscriptionOrder.findMany({
       include: orderInclude,
       orderBy: { createdAt: "desc" },
-      where: canViewAllOrders(user)
-        ? { deletedAt: null }
-        : { application: { salesUserId: user.id }, deletedAt: null }
+      where: {
+        ...(canViewAllOrders(user)
+          ? {}
+          : { application: { salesUserId: user.id } }),
+        deletedAt: null,
+        ...(query.journeyStatus
+          ? {
+              subscriptionJourney: {
+                is: { status: query.journeyStatus }
+              }
+            }
+          : {})
+      }
     });
     return orders.map(toOrderView);
+  }
+
+  async createJourneyContractInTransaction(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    actorId: string,
+    sourceKey: string
+  ) {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "subscription_order"
+      WHERE "id" = ${orderId}::uuid
+      FOR UPDATE
+    `);
+    const order = await tx.subscriptionOrder.findUnique({
+      include: orderInclude,
+      where: { id: orderId }
+    });
+    if (!order || order.deletedAt) {
+      throw journeyError("JOURNEY_NOT_FOUND", "The journey order was not found.");
+    }
+    if (
+      order.businessType !== BusinessType.SUBSCRIPTION ||
+      order.productVersion.product.productType !== ProductType.SUBSCRIPTION
+    ) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_PRODUCT_INVALID",
+        "The journey order is not a subscription product."
+      );
+    }
+    if (!order.vehicleId || order.vehicle?.status !== VehicleStatus.RESERVED) {
+      throw journeyError(
+        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+        "The journey order does not have a reserved concrete vehicle."
+      );
+    }
+
+    const existing = await tx.contract.findFirst({
+      orderBy: { createdAt: "desc" },
+      where: {
+        deletedAt: null,
+        orderId,
+        status: { not: ContractStatus.CANCELLED }
+      }
+    });
+    if (existing) {
+      const existingSourceKey = asSnapshotRecord(existing.contractSnapshot)?.journeySourceKey;
+      if (existingSourceKey && existingSourceKey !== sourceKey) {
+        throw journeyError(
+          "JOURNEY_IDEMPOTENCY_CONFLICT",
+          "The journey order is already attached to a contract from another source."
+        );
+      }
+      return existing;
+    }
+    if (order.orderStatus !== OrderStatus.PENDING_CONTRACT) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The journey order is not waiting for contract generation."
+      );
+    }
+
+    const now = new Date();
+    const template = await tx.contractVersion.findFirst({
+      orderBy: { effectiveFrom: "desc" },
+      where: {
+        businessType: BusinessType.SUBSCRIPTION,
+        deletedAt: null,
+        effectiveFrom: { lte: now },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+        status: ContractVersionStatus.ACTIVE,
+        templateType: ContractTemplateType.SUBSCRIPTION_STANDARD
+      }
+    });
+    if (!template) {
+      throw journeyError(
+        "JOURNEY_CONTRACT_TEMPLATE_INACTIVE",
+        "No active subscription contract template is available."
+      );
+    }
+    assertStage1PartyBIdNumberPresent(order);
+    const contractSnapshot = toJsonValue({
+      contentTemplate: template.contentTemplate,
+      customer: buildContractSnapshotCustomer(order.customer),
+      journeySourceKey: sourceKey,
+      order: toOrderView(order),
+      quoteSnapshot: order.quoteSnapshot
+    });
+    const created = await tx.contract.create({
+      data: {
+        businessType: BusinessType.SUBSCRIPTION,
+        contractNo: createBusinessNo("CON"),
+        contractSnapshot,
+        contractTitle: `${template.templateName} ${template.versionNo}`,
+        contractVersionId: template.id,
+        createdBy: actorId,
+        customerId: order.customerId,
+        orderId,
+        status: ContractStatus.GENERATED,
+        updatedBy: actorId
+      }
+    });
+    await tx.subscriptionOrder.update({
+      data: {
+        contractId: created.id,
+        orderStatus: OrderStatus.PENDING_SIGN,
+        updatedBy: actorId
+      },
+      where: { id: orderId }
+    });
+    return tx.contract.findUniqueOrThrow({ where: { id: created.id } });
   }
 
   async getOrder(id: string, user: RequestUser) {
@@ -458,18 +585,35 @@ export class OrderService {
 
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        await (
+          this.orderEntitlementService ?? new OrderEntitlementService()
+        ).ensureInitialEntitlements(tx, id, user.id);
         const accountInTransaction = await tx.orderEntitlementAccount.findFirst({
           include: entitlementAccountInclude,
           orderBy: { createdAt: "desc" },
           where: {
-            accountStatus: EntitlementAccountStatus.ACTIVE,
             deletedAt: null,
             orderId: id
           }
         });
 
         if (accountInTransaction) {
-          return { account: accountInTransaction, created: false };
+          const created =
+            accountInTransaction.accountStatus !== EntitlementAccountStatus.ACTIVE;
+          if (created) {
+            await tx.orderEntitlementAccount.update({
+              data: {
+                accountStatus: EntitlementAccountStatus.ACTIVE,
+                updatedBy: user.id
+              },
+              where: { id: accountInTransaction.id }
+            });
+          }
+          const activeAccount = await tx.orderEntitlementAccount.findUniqueOrThrow({
+            include: entitlementAccountInclude,
+            where: { id: accountInTransaction.id }
+          });
+          return { account: activeAccount, created };
         }
 
         const account = await tx.orderEntitlementAccount.create({
@@ -1946,6 +2090,43 @@ export class OrderService {
   }
 
   async confirmDelivery(
+    id: string,
+    _dto: ConfirmDeliveryDto,
+    user: RequestUser,
+    _context: RequestContext
+  ) {
+    const beforeOrder = await this.findOrderOrThrow(id);
+    ensureCanAccessOrder(beforeOrder, user);
+    assertNoActiveOrderChange(beforeOrder);
+    assertOrderNotDelivered(beforeOrder);
+    const journey = await this.prisma.subscriptionJourney?.findUnique({
+      where: { orderId: id }
+    });
+    if (journey) {
+      throw new BadRequestException(
+        "JOURNEY_MANAGED_DELIVERY_REQUIRES_AUDITED_RECOVERY"
+      );
+    }
+    if (!this.leaseActivationEngine) {
+      return this.confirmDeliveryLegacy(id, _dto, user, _context);
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await this.leaseActivationEngine!.activateFromAuthoritativeHandover(tx, {
+        actorId: user.id,
+        orderId: id
+      });
+      const delivery = await tx.vehicleDelivery.findUnique({
+        include: deliveryInclude,
+        where: { orderId: id }
+      });
+      if (!delivery) {
+        throw new NotFoundException("Delivery not found.");
+      }
+      return toDeliveryView(delivery);
+    });
+  }
+
+  private async confirmDeliveryLegacy(
     id: string,
     dto: ConfirmDeliveryDto,
     user: RequestUser,
@@ -4916,13 +5097,9 @@ function buildPrepareDeliveryData(
 ) {
   const contractSignedConfirmed = isCurrentContractSigned(order);
   const depositReceivedConfirmed =
-    getRequiredDepositAmount(order) === 0n
-      ? true
-      : (dto.depositReceivedConfirmed ?? beforeDelivery?.depositReceivedConfirmed ?? false);
+    beforeDelivery?.depositReceivedConfirmed ?? false;
   const firstMonthlyFeeReceivedConfirmed =
-    dto.firstMonthlyFeeReceivedConfirmed ??
-    beforeDelivery?.firstMonthlyFeeReceivedConfirmed ??
-    false;
+    beforeDelivery?.firstMonthlyFeeReceivedConfirmed ?? false;
   const insuranceValidConfirmed =
     dto.insuranceValidConfirmed ?? beforeDelivery?.insuranceValidConfirmed ?? false;
   const vehiclePreparedConfirmed =
@@ -4952,8 +5129,6 @@ function buildPrepareDeliveryData(
     customerIdentityConfirmed,
     deliveryLocation,
     deliveryStatus: DeliveryStatus.READY,
-    depositReceivedConfirmed,
-    firstMonthlyFeeReceivedConfirmed,
     handoverDocumentsConfirmed,
     insuranceValidConfirmed,
     remark,

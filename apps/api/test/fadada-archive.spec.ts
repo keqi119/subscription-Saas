@@ -128,8 +128,13 @@ describe("FadadaSignedArtifactService", () => {
     });
   });
 
-  it("downloads, validates, stores and records a signed PDF without changing contract or order state", async () => {
-    const { apiClient, service, state, storageService } = createFixture();
+  it("downloads, validates, stores and makes the Stage 1 contract archive authoritative", async () => {
+    const journeySignal = { record: vi.fn(async () => undefined) };
+    const { apiClient, auditService, service, state, storageService } = createFixture(
+      {},
+      undefined,
+      journeySignal
+    );
     const signedAt = state.contract.signedAt;
     const orderStatus = state.contract.order.orderStatus;
     const finance = financeSnapshot(state);
@@ -164,16 +169,112 @@ describe("FadadaSignedArtifactService", () => {
     );
     expect(state.task.evidenceObjectKey).toBeNull();
     expect(state.contract.signedAt).toBe(signedAt);
+    expect(state.contract).toMatchObject({
+      archivedAt: expect.any(Date),
+      fileId: expect.any(String),
+      status: ContractStatus.ARCHIVED
+    });
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
+    expect(state.fileObjects).toHaveLength(1);
+    expect(journeySignal.record).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        eventKey: "fadada-artifact:task-1:archived",
+        orderId: "order-1",
+        payload: {
+          contractId: "contract-1",
+          fileId: state.contract.fileId,
+          signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          taskId: "task-1"
+        },
+        type: "FADADA_ARTIFACT_ARCHIVED"
+      }
+    );
+    expect(auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({
+          signedPdfHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+          status: ContractStatus.ARCHIVED
+        }),
+        before: { status: ContractStatus.SIGNED },
+        entityId: "contract-1",
+        entityType: "contract",
+        module: "esign"
+      }),
+      expect.anything()
+    );
     expect(JSON.stringify(state.task.responseSnapshot)).not.toContain("token=secret");
     expect(JSON.stringify(state.task.responseSnapshot)).toContain("[redacted-url]");
+  });
+
+  it("keeps Stage 1 signed and emits no archive signal when artifact storage fails", async () => {
+    const journeySignal = { record: vi.fn(async () => undefined) };
+    const { service, state, storageService } = createFixture(
+      {},
+      undefined,
+      journeySignal
+    );
+    vi.mocked(storageService.putContractSignedArtifact).mockRejectedValueOnce(
+      new Error("simulated storage failure")
+    );
+
+    await expect(
+      service.archiveSignedContract({ taskId: state.task.id })
+    ).rejects.toThrow(/simulated storage failure/);
+
+    expect(state.contract).toMatchObject({
+      archivedAt: null,
+      fileId: null,
+      status: ContractStatus.SIGNED
+    });
+    expect(state.task.signedDocumentObjectKey).toBeNull();
+    expect(state.fileObjects).toHaveLength(0);
+    expect(journeySignal.record).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid Stage 1 PDF before storage or archive authority changes", async () => {
+    const { apiClient, service, state, storageService } = createFixture();
+    vi.mocked(apiClient.downloadSignedContract).mockResolvedValueOnce({
+      buffer: Buffer.from("not-a-pdf"),
+      contentType: "application/pdf",
+      fileName: "invalid.pdf"
+    });
+
+    await expect(
+      service.archiveSignedContract({ taskId: state.task.id })
+    ).rejects.toThrow(/FADADA_ARCHIVE_SIGNED_PDF_NOT_PDF/);
+
+    expect(storageService.putContractSignedArtifact).not.toHaveBeenCalled();
+    expect(state.contract.status).toBe(ContractStatus.SIGNED);
+    expect(state.contract.fileId).toBeNull();
+  });
+
+  it("removes the retained Stage 1 PDF when archive finalization fails", async () => {
+    const { prisma, service, state, storageService } = createFixture();
+    prisma.$transaction.mockRejectedValueOnce(
+      new Error("simulated Stage 1 finalization failure")
+    );
+
+    await expect(
+      service.archiveSignedContract({ taskId: state.task.id })
+    ).rejects.toThrow(/simulated Stage 1 finalization failure/);
+
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "application-materials",
+      "contracts/contract-1/esign/fadada/signed/2026/signed-1.pdf"
+    );
+    expect(state.contract.status).toBe(ContractStatus.SIGNED);
+    expect(state.task.signedDocumentObjectKey).toBeNull();
   });
 
   it("skips archive idempotently when a signed PDF already exists", async () => {
     const { apiClient, service, state, storageService } = createFixture();
     state.task.signedDocumentObjectKey =
       "contracts/contract-1/esign/fadada/signed/2026/existing.pdf";
+    state.contract.archivedAt = new Date("2026-01-03T04:06:00.000Z");
+    state.contract.fileId = "signed-file-existing";
+    state.contract.status = ContractStatus.ARCHIVED;
 
     const result = await service.archiveSignedContract({ taskId: "task-1" });
 
@@ -264,7 +365,7 @@ describe("FadadaSignedArtifactService", () => {
     });
     expect(state.contract).toMatchObject({
       signedAt: contractSignedAt,
-      status: ContractStatus.SIGNED
+      status: ContractStatus.SIGNED as ContractStatus
     });
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
@@ -1073,9 +1174,18 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
     storageService: never,
     configService: ConfigService,
     private readonly testApiClient: FadadaSignedArtifactApi,
-    stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> }
+    stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> },
+    journeySignal?: { record: ReturnType<typeof vi.fn> },
+    auditService?: { write: ReturnType<typeof vi.fn> }
   ) {
-    super(prisma, storageService, configService, stage3ArchiveService as never);
+    super(
+      prisma,
+      storageService,
+      configService,
+      stage3ArchiveService as never,
+      journeySignal as never,
+      auditService as never
+    );
   }
 
   protected override getApiClient(): FadadaSignedArtifactApi {
@@ -1085,14 +1195,17 @@ class TestFadadaSignedArtifactService extends FadadaSignedArtifactService {
 
 function createFixture(
   env: Record<string, string> = {},
-  stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> }
+  stage3ArchiveService?: { finalizeArchivedContract: ReturnType<typeof vi.fn> },
+  journeySignal?: { record: ReturnType<typeof vi.fn> }
 ) {
   const state = {
     contract: {
+      archivedAt: null as Date | null,
       contractNo: "CON-1",
       customerId: "customer-1",
       deletedAt: null,
       id: "contract-1",
+      fileId: null as string | null,
       order: {
         application: { salesUserId: "user-sales" },
         deletedAt: null,
@@ -1100,7 +1213,7 @@ function createFixture(
         orderStatus: OrderStatus.PENDING_PAYMENT as OrderStatus
       },
       signedAt: new Date("2026-01-03T04:05:06.000Z"),
-      status: ContractStatus.SIGNED
+      status: ContractStatus.SIGNED as ContractStatus
     },
     finance: {
       paymentOrders: [
@@ -1224,6 +1337,15 @@ function createFixture(
         }
       )
     },
+    contract: {
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          if (where.id !== state.contract.id) throw new Error("contract not found");
+          Object.assign(state.contract, data);
+          return state.contract;
+        }
+      )
+    },
     fileObject: {
       create: vi.fn(async ({ data }: { data: Omit<FakeFileObject, "id"> }) => {
         const fileObject: FakeFileObject = {
@@ -1311,6 +1433,7 @@ function createFixture(
       }
     )
   };
+  const auditService = { write: vi.fn(async () => undefined) };
   const service = new TestFadadaSignedArtifactService(
     prisma as never,
     storageService as never,
@@ -1325,10 +1448,12 @@ function createFixture(
       ...env
     }),
     apiClient,
-    stage3ArchiveService
+    stage3ArchiveService,
+    journeySignal as never,
+    auditService
   );
 
-  return { apiClient, prisma, service, state, storageService };
+  return { apiClient, auditService, prisma, service, state, storageService };
 }
 
 function hydrateTask(state: ReturnType<typeof createFixture>["state"]) {

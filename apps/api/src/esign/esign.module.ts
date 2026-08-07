@@ -7,6 +7,7 @@ import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageModule } from "../storage/storage.module";
+import { SubscriptionJourneySignalModule } from "../subscription-journey/subscription-journey-signal.module";
 import { ContractPdfArtifactService } from "./contract-pdf-artifact.service";
 import { CustomerESignProviderAccountController } from "./customer-esign-provider-account.controller";
 import { CustomerESignProviderAccountService } from "./customer-esign-provider-account.service";
@@ -61,7 +62,14 @@ export function createESignProviderClient(
     FadadaSignedArtifactService,
     Stage3ExtensionArchiveService
   ],
-  imports: [AuditModule, AuthModule, NotificationModule, PrismaModule, StorageModule],
+  imports: [
+    AuditModule,
+    AuthModule,
+    NotificationModule,
+    PrismaModule,
+    StorageModule,
+    SubscriptionJourneySignalModule
+  ],
   providers: [
     ContractPdfArtifactService,
     CustomerESignProviderAccountService,

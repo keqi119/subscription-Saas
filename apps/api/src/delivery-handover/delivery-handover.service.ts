@@ -132,7 +132,14 @@ export class DeliveryHandoverService {
     if (!order || order.deletedAt) {
       throw new NotFoundException("订单不存在。");
     }
-    if (!order.contract || order.contract.deletedAt || order.contract.status !== ContractStatus.SIGNED) {
+    if (
+      !order.contract ||
+      order.contract.deletedAt ||
+      (
+        order.contract.status !== ContractStatus.SIGNED &&
+        order.contract.status !== ContractStatus.ARCHIVED
+      )
+    ) {
       throw new BadRequestException("Stage 1 合同尚未签署，不能创建交付交接签署。");
     }
 

@@ -3,6 +3,17 @@ export const LEASE_ACTIVATION_CLOCK = Symbol("LEASE_ACTIVATION_CLOCK");
 export type LeaseActivationClock = () => Date;
 
 export type LeaseActivationCondition =
+  | "CONTRACT_ARCHIVED_ARTIFACT_MISSING"
+  | "DEPOSIT_PAYMENT_MISSING"
+  | "FIRST_RENT_PAYMENT_MISSING"
+  | "DELIVERY_NOT_READY"
+  | "DELIVERY_CHECKLIST_INCOMPLETE"
+  | "HANDOVER_ARCHIVED_ARTIFACT_MISSING"
+  | "HANDOVER_EVIDENCE_NOT_APPROVED"
+  | "DELIVERY_MILEAGE_MISSING"
+  | "VEHICLE_MISMATCH"
+  | "VEHICLE_NOT_RESERVED"
+  | "INSURANCE_NOT_COVERED"
   | "CONTRACT_SIGNED"
   | "DEPOSIT_PAID"
   | "FIRST_RENT_PAID"
@@ -23,6 +34,21 @@ export interface LeaseActivationResult {
   missingConditions: LeaseActivationCondition[];
   reason?: string;
   warningConditions?: LeaseActivationWarningCondition[];
+}
+
+export type LeaseActivationEvaluation = LeaseActivationResult;
+
+export interface SubscriptionActivationResult {
+  activatedAt: string;
+  deliveryId: string;
+  deliveryStatus: "DELIVERED";
+  journeyStatus: "COMPLETED" | null;
+  leaseId: string;
+  leaseStatus: "ACTIVE";
+  orderId: string;
+  orderStatus: "ACTIVE";
+  vehicleId: string;
+  vehicleStatus: "LEASED";
 }
 
 export interface LeaseStatusView {

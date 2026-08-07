@@ -77,6 +77,23 @@ export type SubscriptionChangeGuardAction =
   | "MANUAL"
   | "DONE";
 
+export type SubscriptionJourneyGuardAction =
+  | "FINAL_PLAN_DECISION"
+  | "FINAL_VEHICLE_ALLOCATION"
+  | "DELIVERY_EVIDENCE_DECISION"
+  | "RETRY"
+  | "PAUSE"
+  | "RESUME"
+  | "CANCEL";
+
+export type LegacyJourneyAction =
+  | "CREATE_ORDER"
+  | "GENERATE_INITIAL_BILLS"
+  | "REGISTER_INITIAL_PAYMENT"
+  | "SIGN_OR_ARCHIVE_CONTRACT"
+  | "CONFIRM_DELIVERY"
+  | "GENERATE_MONTHLY_RENT";
+
 const SUBSCRIPTION_CHANGE_ACTION_PERMISSIONS: Partial<
   Record<SubscriptionChangeGuardAction, string>
 > = {
@@ -88,6 +105,27 @@ const SUBSCRIPTION_CHANGE_ACTION_PERMISSIONS: Partial<
   START_ESIGN: "subscription_change:esign_retry",
   WAIT_CUSTOMER: "subscription_change:submit"
 };
+
+const SUBSCRIPTION_JOURNEY_ACTION_PERMISSIONS: Record<
+  SubscriptionJourneyGuardAction,
+  string
+> = {
+  CANCEL: "subscription_journey:cancel",
+  DELIVERY_EVIDENCE_DECISION: "subscription_journey:delivery_evidence_decide",
+  FINAL_PLAN_DECISION: "subscription_journey:plan_decide",
+  FINAL_VEHICLE_ALLOCATION: "subscription_journey:vehicle_allocate",
+  PAUSE: "subscription_journey:recover",
+  RESUME: "subscription_journey:recover",
+  RETRY: "subscription_journey:recover"
+};
+
+const CONFLICTING_LEGACY_JOURNEY_ACTIONS = new Set<LegacyJourneyAction>([
+  "CREATE_ORDER",
+  "GENERATE_INITIAL_BILLS",
+  "REGISTER_INITIAL_PAYMENT",
+  "SIGN_OR_ARCHIVE_CONTRACT",
+  "CONFIRM_DELIVERY"
+]);
 
 export function hasPermission(
   permissions: PermissionCollection,
@@ -147,6 +185,27 @@ export function canRunSubscriptionChangeAction(
     return { allowed: false, reason: "无合同变更操作权限" };
   }
   return { allowed: true };
+}
+
+export function canRunSubscriptionJourneyAction(
+  action: SubscriptionJourneyGuardAction,
+  availableActions: readonly string[],
+  permissions: PermissionCollection
+): ActionAvailability {
+  if (!hasPermission(permissions, SUBSCRIPTION_JOURNEY_ACTION_PERMISSIONS[action])) {
+    return { allowed: false, reason: "无订阅流程操作权限" };
+  }
+  if (!availableActions.includes(action)) {
+    return { allowed: false, reason: "当前流程步骤不允许此操作" };
+  }
+  return { allowed: true };
+}
+
+export function shouldHideLegacyJourneyAction(
+  journeyManaged: boolean,
+  action: LegacyJourneyAction
+) {
+  return journeyManaged && CONFLICTING_LEGACY_JOURNEY_ACTIONS.has(action);
 }
 
 export function canGenerateApplicationQuote(

@@ -23,6 +23,7 @@ import {
   isApplyCertReadiness
 } from "../../../../lib/fadada-onboarding-ui";
 import { getPortalContractDestination } from "../../../../lib/portal-handover-review-view-model";
+import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
 import {
   PortalContractDetail,
   PortalContractListItem,
@@ -305,6 +306,8 @@ export default function PortalContractDetailPage() {
           </Button>
           <Button onClick={() => router.push("/portal")}>返回门户</Button>
         </Flex>
+
+        <PortalJourneyNextActionCard orderId={contract.order.id} />
 
         <section style={sectionStyle}>
           <Flex align="flex-start" justify="space-between" gap={16} wrap="wrap">

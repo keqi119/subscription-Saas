@@ -1,353 +1,578 @@
-import { BillStatus, BillType, ContractStatus, DeliveryStatus } from "@prisma/client";
+import {
+  BillStatus,
+  BillType,
+  ContractStatus,
+  DeliveryStatus,
+  OrderStatus,
+  PaymentStatus,
+  SubscriptionJourneyStatus,
+  VehicleHandoverOpsReviewStatus,
+  VehicleHandoverWorkOrderStatus,
+  VehicleInsurancePolicyStatus,
+  VehicleInsurancePolicyType,
+  VehicleStatus
+} from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { LeaseActivationEngine } from "../src/lease/lease-activation.engine";
 
-describe("LeaseActivationEngine", () => {
-  it("rejects activation when the contract is not signed", async () => {
-    const harness = createLeaseActivationHarness({ contractStatus: ContractStatus.GENERATED });
+describe("LeaseActivationEngine authoritative gate", () => {
+  it("evaluates the complete authoritative fact set inside the caller transaction", async () => {
+    const harness = createHarness();
 
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["CONTRACT_SIGNED"]);
+    await expect(
+      harness.engine.evaluateInTransaction(harness.tx as never, harness.orderId)
+    ).resolves.toEqual({ canActivate: true, missingConditions: [] });
+    expect(harness.tx.$queryRaw).toHaveBeenCalled();
   });
 
-  it("rejects activation when deposit or first rent is not fully paid", async () => {
-    const harness = createLeaseActivationHarness({
-      depositBillStatus: BillStatus.PARTIALLY_PAID,
-      depositRemainingAmount: 100000n,
-      firstRentBillStatus: BillStatus.PENDING,
-      firstRentRemainingAmount: 300000n
+  it("rejects SIGNED Stage 1 contracts without an archived PDF", async () => {
+    const harness = createHarness({
+      contractArchivedAt: null,
+      contractFileId: null,
+      contractStatus: ContractStatus.SIGNED
     });
 
     const result = await harness.engine.evaluate(harness.orderId);
 
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["DEPOSIT_PAID", "FIRST_RENT_PAID"]);
+    expect(result.missingConditions).toContain(
+      "CONTRACT_ARCHIVED_ARTIFACT_MISSING"
+    );
+    expect(harness.state.writeCount).toBe(0);
   });
 
-  it("rejects activation when delivery is not confirmed", async () => {
-    const harness = createLeaseActivationHarness({ deliveryStatus: DeliveryStatus.READY });
-
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["DELIVERY_CONFIRMED"]);
-  });
-
-  it("rejects activation when inspection is not passed", async () => {
-    const harness = createLeaseActivationHarness({ inspectionStatus: "FAILED" });
-
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["INSPECTION_PASSED"]);
-  });
-
-  it("rejects activation when Stage 2 handover is missing", async () => {
-    const harness = createLeaseActivationHarness({ handover: null });
-
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["HANDOVER_SIGNED_MISSING"]);
-  });
-
-  it("keeps signed-but-not-archived handover as a warning instead of a hard blocker", async () => {
-    const harness = createLeaseActivationHarness({
-      handover: {
-        archiveStatus: "NOT_STARTED",
-        deletedAt: null,
-        id: "handover-1",
-        status: "SIGNED"
-      }
+  it("rejects every unpaid or partially paid required bill", async () => {
+    const harness = createHarness({
+      depositRemainingAmount: 1n,
+      depositStatus: BillStatus.PARTIALLY_PAID,
+      firstRentRemainingAmount: 1n,
+      firstRentStatus: BillStatus.PARTIALLY_PAID
     });
 
     const result = await harness.engine.evaluate(harness.orderId);
 
-    expect(result.canActivate).toBe(true);
-    expect(result.missingConditions).toEqual([]);
-    expect(result.warningConditions).toEqual(["HANDOVER_ARCHIVED_MISSING"]);
+    expect(result.missingConditions).toEqual(
+      expect.arrayContaining([
+        "DEPOSIT_PAYMENT_MISSING",
+        "FIRST_RENT_PAYMENT_MISSING"
+      ])
+    );
+    expect(harness.state.writeCount).toBe(0);
   });
 
-  it("reports delivery evidence readiness failures as lease activation blockers", async () => {
-    const harness = createLeaseActivationHarness({
-      evidenceReadiness: buildEvidenceReadiness("order-1", {
-        blockingReasons: ["损伤状态未处理。"],
-        code: "DAMAGE_EVIDENCE_MISSING",
-        ready: false
+  it("does not accept legacy money confirmation booleans without confirmed write-offs", async () => {
+    const harness = createHarness({
+      depositWriteOffConfirmed: false,
+      firstRentWriteOffConfirmed: false,
+      legacyMoneyBooleans: true
+    });
+
+    const result = await harness.engine.evaluate(harness.orderId);
+
+    expect(result.missingConditions).toEqual(
+      expect.arrayContaining([
+        "DEPOSIT_PAYMENT_MISSING",
+        "FIRST_RENT_PAYMENT_MISSING"
+      ])
+    );
+  });
+
+  it.each([
+    ["unapproved evidence", { workOrderApproved: false }, "HANDOVER_EVIDENCE_NOT_APPROVED"],
+    ["missing inspection", { inspectionPassed: false }, "INSPECTION_PASSED"],
+    ["lapsed insurance", { insuranceCovered: false }, "INSURANCE_NOT_COVERED"],
+    ["mismatched vehicle", { deliveryVehicleMatches: false }, "VEHICLE_MISMATCH"],
+    ["missing delivery mileage", { handoverMileageKm: null }, "DELIVERY_MILEAGE_MISSING"],
+    ["unarchived Stage 2 artifact", { handoverArchived: false }, "HANDOVER_ARCHIVED_ARTIFACT_MISSING"]
+  ] as const)("rejects %s with a stable blocker", async (_name, overrides, blocker) => {
+    const harness = createHarness(overrides);
+
+    const result = await harness.engine.evaluate(harness.orderId);
+
+    expect(result.missingConditions).toContain(blocker);
+    expect(harness.state.writeCount).toBe(0);
+  });
+
+  it("atomically activates delivery, order, vehicle, lease, billing, entitlements and journey", async () => {
+    const harness = createHarness({ journey: true });
+
+    const result = await harness.prisma.$transaction((tx) =>
+      harness.engine.activateFromAuthoritativeHandover(tx as never, {
+        actorId: harness.user.id,
+        journeyId: "journey-1",
+        orderId: harness.orderId
       })
-    });
-
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result.canActivate).toBe(false);
-    expect(result.missingConditions).toEqual(["DAMAGE_EVIDENCE_MISSING"]);
-  });
-
-  it("allows activation when all activation conditions are satisfied", async () => {
-    const harness = createLeaseActivationHarness();
-
-    const result = await harness.engine.evaluate(harness.orderId);
-
-    expect(result).toEqual({ canActivate: true, missingConditions: [] });
-    await expect(harness.engine.canActivate(harness.orderId)).resolves.toBe(true);
-  });
-
-  it("activate persists and returns an ACTIVE lease", async () => {
-    const harness = createLeaseActivationHarness();
-
-    const lease = await harness.engine.activate(harness.orderId, harness.user, harness.context);
-
-    expect(lease).toMatchObject({
-      activatedAt: "2026-06-30T06:30:00.000Z",
-      orderId: harness.orderId,
-      status: "ACTIVE"
-    });
-    expect(harness.prisma.lease.create).toHaveBeenCalledTimes(1);
-    expect(harness.auditService.write).toHaveBeenCalledWith(expect.objectContaining({
-      action: "CREATE",
-      entityId: "lease-1",
-      entityType: "lease",
-      module: "lease"
-    }));
-  });
-
-  it("initializes one recurring billing schedule when activation is retried", async () => {
-    const harness = createLeaseActivationHarness();
-
-    await harness.engine.activate(
-      harness.orderId,
-      harness.user,
-      harness.context
-    );
-    await harness.engine.activate(
-      harness.orderId,
-      harness.user,
-      harness.context
     );
 
-    expect(harness.state.billingSchedules).toHaveLength(1);
-    expect(
-      harness.billingAutomationService.ensureActiveSchedule
-    ).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      deliveryStatus: "DELIVERED",
+      journeyStatus: "COMPLETED",
+      leaseStatus: "ACTIVE",
+      orderStatus: "ACTIVE",
+      vehicleStatus: "LEASED"
+    });
+    expect(harness.state.billingScheduleCount).toBe(1);
+    expect(harness.state.entitlementCount).toBe(1);
+    expect(harness.state.journeyCompletedEventCount).toBe(1);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({ entityType: "subscription_activation" }),
+      harness.tx
+    );
   });
 
-  it("uses actualDeliveryAt as leaseStartAt instead of Stage 2 customerSignedAt", async () => {
-    const leaseStartAt = new Date("2026-06-30T08:00:00.000Z");
-    const harness = createLeaseActivationHarness({
-      actualDeliveryAt: leaseStartAt,
-      handover: {
-        archiveStatus: "ARCHIVED",
-        customerSignedAt: new Date("2026-06-29T02:00:00.000Z"),
-        deletedAt: null,
-        id: "handover-1",
-        status: "ARCHIVED"
-      }
-    });
+  it("keeps all authoritative activation records singular on retry", async () => {
+    const harness = createHarness({ journey: true });
 
-    const lease = await harness.engine.activate(harness.orderId, harness.user, harness.context);
+    await harness.engine.activate(harness.orderId, harness.user);
+    await harness.engine.activate(harness.orderId, harness.user);
 
-    expect(lease.activatedAt).toBe("2026-06-30T08:00:00.000Z");
+    expect(harness.state.leaseCount).toBe(1);
+    expect(harness.state.billingScheduleCount).toBe(1);
+    expect(harness.state.entitlementCount).toBe(1);
+    expect(harness.state.journeyCompletedEventCount).toBe(1);
+  });
+
+  it("rolls every aggregate back when a write fails after the vehicle update", async () => {
+    const harness = createHarness({ failAfterVehicleUpdate: true, journey: true });
+
+    await expect(
+      harness.engine.activate(harness.orderId, harness.user)
+    ).rejects.toThrow("injected post-vehicle failure");
+
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.state.deliveryStatus).toBe(DeliveryStatus.READY);
+    expect(harness.state.leaseCount).toBe(0);
+    expect(harness.state.billingScheduleCount).toBe(0);
+    expect(harness.state.entitlementCount).toBe(0);
+    expect(harness.state.journeyStatus).toBe(SubscriptionJourneyStatus.RUNNING);
+  });
+
+  it("derives activation time and mileage only from the approved Stage 2 handover", async () => {
+    const completedAt = new Date("2026-08-06T08:16:00.000Z");
+    const harness = createHarness({ completedAt, handoverMileageKm: 28200 });
+
+    const lease = await harness.engine.activate(harness.orderId, harness.user);
+
+    expect(lease.activatedAt).toBe(completedAt.toISOString());
+    expect(harness.state.deliveryMileageKm).toBe(28200);
   });
 });
 
-function createLeaseActivationHarness(overrides: Partial<LeaseActivationState> = {}) {
-  const now = new Date("2026-06-30T06:30:00.000Z");
+function createHarness(overrides: Partial<State> = {}) {
+  const now = new Date("2026-08-06T08:30:00.000Z");
   const orderId = "order-1";
+  const vehicleId = "vehicle-1";
+  const deliveryId = "delivery-1";
+  const manifestHash = "a".repeat(64);
+  const state: State = {
+    billingScheduleCount: 0,
+    completedAt: new Date("2026-08-06T08:00:00.000Z"),
+    contractArchivedAt: new Date("2026-08-05T09:00:00.000Z"),
+    contractFileId: "stage1-file-1",
+    contractStatus: ContractStatus.ARCHIVED,
+    deliveryMileageKm: null,
+    deliveryStatus: DeliveryStatus.READY,
+    deliveryVehicleMatches: true,
+    depositRemainingAmount: 0n,
+    depositStatus: BillStatus.PAID,
+    depositWriteOffConfirmed: true,
+    entitlementCount: 0,
+    failAfterVehicleUpdate: false,
+    firstRentRemainingAmount: 0n,
+    firstRentStatus: BillStatus.PAID,
+    firstRentWriteOffConfirmed: true,
+    handoverArchived: true,
+    handoverMileageKm: 28100,
+    inspectionPassed: true,
+    insuranceCovered: true,
+    journey: false,
+    journeyCompletedEventCount: 0,
+    journeyStatus: SubscriptionJourneyStatus.RUNNING,
+    leaseCount: 0,
+    legacyMoneyBooleans: false,
+    orderStatus: OrderStatus.PENDING_DELIVERY,
+    vehicleStatus: VehicleStatus.RESERVED,
+    workOrderApproved: true,
+    writeCount: 0,
+    ...overrides
+  };
   const user = {
     id: "user-1",
     menus: [],
-    name: "Admin",
+    name: "Automation",
     permissions: [],
     roles: ["ADMIN"],
-    username: "admin"
+    username: "automation"
   };
-  const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
-  const state: LeaseActivationState = {
-    actualDeliveryAt: now,
-    billingSchedules: [],
-    contractStatus: ContractStatus.SIGNED,
-    depositBillStatus: BillStatus.PAID,
-    depositRemainingAmount: 0n,
-    deliveryStatus: DeliveryStatus.DELIVERED,
-    firstRentBillStatus: BillStatus.PAID,
-    firstRentRemainingAmount: 0n,
-    handover: {
-      archiveStatus: "ARCHIVED",
+
+  const buildJourney = () =>
+    state.journey
+      ? {
+          currentStepCode: "AUTHORITATIVE_ACTIVATION",
+          currentStepStatus: "PENDING",
+          id: "journey-1",
+          status: state.journeyStatus,
+          steps: [
+            {
+              code: "AUTHORITATIVE_ACTIVATION",
+              id: "activation-step-1",
+              status:
+                state.journeyStatus === SubscriptionJourneyStatus.COMPLETED
+                  ? "COMPLETED"
+                  : "PENDING"
+            }
+          ],
+          version: state.journeyStatus === SubscriptionJourneyStatus.COMPLETED ? 2 : 0
+        }
+      : null;
+  const buildOrder = () => ({
+    contract: {
+      archivedAt: state.contractArchivedAt,
       deletedAt: null,
-      id: "handover-1",
-      status: "ARCHIVED"
+      fileId: state.contractFileId,
+      id: "contract-1",
+      status: state.contractStatus
     },
-    evidenceReadiness: buildEvidenceReadiness(orderId),
-    inspectionStatus: "PASSED",
-    lease: null,
-    ...overrides
-  };
-
-  function buildOrder() {
-    return {
-      contract: {
-        deletedAt: null,
-        id: "contract-1",
-        status: state.contractStatus
-      },
-      contractId: "contract-1",
-      customerId: "customer-1",
-      actualDeliveryAt: state.actualDeliveryAt,
+    deletedAt: null,
+    depositAmount: 500000n,
+    finalDepositAmount: 500000n,
+    id: orderId,
+    monthlyFeeAmount: 300000n,
+    orderStatus: state.orderStatus,
+    subscriptionJourney: buildJourney(),
+    vehicle: {
       deletedAt: null,
-      id: orderId,
-      orderNo: "ORD202606300001"
-    };
-  }
+      id: vehicleId,
+      insurancePolicies: buildInsurancePolicies(state, now),
+      status: state.vehicleStatus
+    },
+    vehicleId
+  });
+  const buildDelivery = () => ({
+    contractSignedConfirmed: true,
+    customerId: "customer-1",
+    customerIdentityConfirmed: true,
+    deletedAt: null,
+    deliveryNo: "DLV-1",
+    deliveryStatus: state.deliveryStatus,
+    depositReceivedConfirmed: state.legacyMoneyBooleans,
+    deliveredAt:
+      state.deliveryStatus === DeliveryStatus.DELIVERED
+        ? state.completedAt
+        : null,
+    firstMonthlyFeeReceivedConfirmed: state.legacyMoneyBooleans,
+    handoverDocumentsConfirmed: true,
+    handoverMileageKm: state.deliveryMileageKm,
+    id: deliveryId,
+    insuranceValidConfirmed: true,
+    orderId,
+    vehicleId: state.deliveryVehicleMatches ? vehicleId : "vehicle-other",
+    vehiclePhotosConfirmed: true,
+    vehiclePreparedConfirmed: true
+  });
+  const buildHandover = () => ({
+    archiveStatus: state.handoverArchived ? "ARCHIVED" : "NOT_STARTED",
+    archivedAt: state.handoverArchived ? state.completedAt : null,
+    completedAt: state.completedAt,
+    createdAt: now,
+    customerSignedAt: state.completedAt,
+    deletedAt: null,
+    handoverContract: {
+      deletedAt: null,
+      fileId: "stage2-file-1",
+      id: "stage2-contract-1",
+      status: state.handoverArchived ? "ARCHIVED" : "SIGNED"
+    },
+    handoverESignTask: null,
+    id: "handover-1",
+    manifestHash,
+    orderId,
+    signedDocumentFileId: state.handoverArchived ? "stage2-file-1" : null,
+    sourceDocumentFileId: "stage2-source-file-1",
+    status: state.handoverArchived ? "ARCHIVED" : "SIGNED",
+    vehicleDeliveryId: deliveryId
+  });
+  const buildBills = () => [
+    buildBill(
+      "deposit-bill-1",
+      BillType.DEPOSIT,
+      500000n,
+      state.depositStatus,
+      state.depositRemainingAmount,
+      state.depositWriteOffConfirmed
+    ),
+    buildBill(
+      "rent-bill-1",
+      BillType.FIRST_MONTHLY_FEE,
+      300000n,
+      state.firstRentStatus,
+      state.firstRentRemainingAmount,
+      state.firstRentWriteOffConfirmed
+    )
+  ];
 
-  function buildBills() {
-    return [
-      {
-        billStatus: state.depositBillStatus,
-        billType: BillType.DEPOSIT,
-        deletedAt: null,
-        id: "deposit-bill-1",
-        remainingAmount: state.depositRemainingAmount
-      },
-      {
-        billStatus: state.firstRentBillStatus,
-        billType: BillType.FIRST_MONTHLY_FEE,
-        deletedAt: null,
-        id: "first-rent-bill-1",
-        remainingAmount: state.firstRentRemainingAmount
-      }
-    ];
-  }
-
-  const client = {
+  let lease: Record<string, unknown> | null = null;
+  const tx = {
+    $queryRaw: vi.fn(async () => []),
+    auditLog: { create: vi.fn(async () => (state.writeCount += 1)) },
+    fileObject: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        where.id ? { id: where.id, objectKey: `objects/${where.id}` } : null
+      )
+    },
     lease: {
-      create: vi.fn(async ({ data }) => {
-        state.lease = {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        state.writeCount += 1;
+        state.leaseCount = 1;
+        lease = {
           activatedAt: data.activatedAt,
           createdAt: now,
+          createdBy: data.createdBy ?? null,
+          deletedAt: null,
           id: "lease-1",
-          orderId: data.orderId,
-          status: data.status,
-          updatedAt: now
+          orderId,
+          status: "ACTIVE",
+          updatedAt: now,
+          updatedBy: data.updatedBy ?? null
         };
-        return state.lease;
+        return lease;
       }),
-      findUnique: vi.fn(async () => state.lease),
-      update: vi.fn(async ({ data }) => {
-        Object.assign(state.lease!, data, { updatedAt: now });
-        return state.lease;
+      findUnique: vi.fn(async () => lease),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        state.writeCount += 1;
+        lease = { ...lease, ...data, updatedAt: now };
+        return lease;
       })
     },
-    receivableBill: {
-      findMany: vi.fn(async () => buildBills())
+    orderEntitlementAccount: {
+      updateMany: vi.fn(async () => {
+        state.writeCount += 1;
+        return { count: state.entitlementCount };
+      })
     },
+    receivableBill: { findMany: vi.fn(async () => buildBills()) },
     subscriptionOrder: {
-      findUnique: vi.fn(async () => buildOrder())
+      findUnique: vi.fn(async () => buildOrder()),
+      update: vi.fn(async () => {
+        state.writeCount += 1;
+        state.orderStatus = OrderStatus.ACTIVE;
+        return { id: orderId, orderStatus: state.orderStatus };
+      })
+    },
+    vehicle: {
+      update: vi.fn(async () => {
+        state.writeCount += 1;
+        state.vehicleStatus = VehicleStatus.LEASED;
+        if (state.failAfterVehicleUpdate) {
+          throw new Error("injected post-vehicle failure");
+        }
+        return { id: vehicleId, status: state.vehicleStatus };
+      })
     },
     vehicleDelivery: {
-      findUnique: vi.fn(async () => ({
-        deletedAt: null,
-        deliveredAt: state.deliveryStatus === DeliveryStatus.DELIVERED ? now : null,
-        deliveryStatus: state.deliveryStatus,
-        id: "delivery-1",
-        orderId
-      }))
+      findUnique: vi.fn(async () => buildDelivery()),
+      update: vi.fn(async ({ data }: { data: { handoverMileageKm: number } }) => {
+        state.writeCount += 1;
+        state.deliveryMileageKm = data.handoverMileageKm;
+        state.deliveryStatus = DeliveryStatus.DELIVERED;
+        return buildDelivery();
+      })
     },
     vehicleDeliveryHandover: {
-      findFirst: vi.fn(async () => state.handover)
+      findFirst: vi.fn(async () => buildHandover())
+    },
+    vehicleHandoverWorkOrder: {
+      findFirst: vi.fn(async () => ({
+        createdAt: now,
+        handoverId: "handover-1",
+        handoverMileageKm: state.handoverMileageKm,
+        handoverType: "DELIVERY_OUTBOUND",
+        id: "work-order-1",
+        metadata: {
+          journeyEvidenceManifestHash: state.workOrderApproved
+            ? manifestHash
+            : "b".repeat(64)
+        },
+        opsReviewStatus: state.workOrderApproved
+          ? VehicleHandoverOpsReviewStatus.APPROVED
+          : VehicleHandoverOpsReviewStatus.REJECTED,
+        orderId,
+        status: state.workOrderApproved
+          ? VehicleHandoverWorkOrderStatus.OPS_REVIEWED
+          : VehicleHandoverWorkOrderStatus.FIELD_IN_PROGRESS,
+        vehicleDeliveryId: deliveryId
+      }))
     },
     vehicleInspection: {
       findUnique: vi.fn(async () => ({
         deletedAt: null,
         id: "inspection-1",
-        inspectedAt: state.inspectionStatus === "PASSED" ? now : null,
         orderId,
-        status: state.inspectionStatus
+        status: state.inspectionPassed ? "PASSED" : "FAILED"
       }))
     }
   };
   const prisma = {
-    ...client,
-    $transaction: vi.fn(async (callback) => callback(client))
-  };
-  const auditService = {
-    write: vi.fn(async () => undefined)
-  };
-  const billingAutomationService = {
-    ensureActiveSchedule: vi.fn(async (_tx, targetOrderId) => {
-      const existing = state.billingSchedules.find(
-        (schedule) => schedule.orderId === targetOrderId
-      );
-      if (existing) {
-        return existing;
+    ...tx,
+    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => {
+      const snapshot = snapshotState(state);
+      try {
+        return await callback(tx);
+      } catch (error) {
+        Object.assign(state, snapshot);
+        throw error;
       }
-      const schedule = {
-        id: "billing-schedule-1",
-        orderId: targetOrderId
-      };
-      state.billingSchedules.push(schedule);
-      return schedule;
+    })
+  };
+  const auditService = { write: vi.fn(async () => (state.writeCount += 1)) };
+  const billingAutomationService = {
+    ensureActiveSchedule: vi.fn(async () => {
+      state.writeCount += 1;
+      state.billingScheduleCount = 1;
+      return { id: "schedule-1" };
     })
   };
   const deliveryEvidenceService = {
-    validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => state.evidenceReadiness)
+    validateEvidenceReadyForDeliveryConfirmation: vi.fn(async () => ({
+      blockingDetails: [],
+      blockingReasons: [],
+      handoverId: "handover-1",
+      orderId,
+      ready: true
+    }))
+  };
+  const financeService = {
+    evaluateInitialBillSettlement: vi.fn(async () => ({
+      paid:
+        state.depositRemainingAmount === 0n &&
+        state.firstRentRemainingAmount === 0n,
+      remainingAmount:
+        state.depositRemainingAmount + state.firstRentRemainingAmount
+    }))
+  };
+  const mileageService = {
+    appendConfirmedReading: vi.fn(async () => ({ id: "reading-1" }))
+  };
+  const mileageReviewService = {
+    createFirstReview: vi.fn(async () => ({ id: "review-1" }))
+  };
+  const entitlementService = {
+    ensureInitialEntitlements: vi.fn(async () => {
+      state.writeCount += 1;
+      state.entitlementCount = 1;
+    })
+  };
+  const journeyRepository = {
+    completeActivation: vi.fn(async () => {
+      if (state.journeyStatus !== SubscriptionJourneyStatus.COMPLETED) {
+        state.writeCount += 1;
+        state.journeyStatus = SubscriptionJourneyStatus.COMPLETED;
+        state.journeyCompletedEventCount += 1;
+      }
+    })
   };
   const engine = new LeaseActivationEngine(
     auditService as never,
     prisma as never,
     () => now,
     deliveryEvidenceService as never,
-    billingAutomationService as never
+    billingAutomationService as never,
+    financeService as never,
+    { assertDeliveryCanBeConfirmed: vi.fn(async () => undefined) } as never,
+    mileageService as never,
+    mileageReviewService as never,
+    entitlementService as never,
+    journeyRepository as never
   );
 
   return {
     auditService,
-    billingAutomationService,
-    context,
-    deliveryEvidenceService,
     engine,
     orderId,
     prisma,
     state,
+    tx,
     user
   };
 }
 
-function buildEvidenceReadiness(
-  orderId: string,
-  overrides: Partial<{
-    blockingReasons: string[];
-    code: "DAMAGE_EVIDENCE_MISSING" | "HANDOVER_EVIDENCE_MISSING" | "HANDOVER_EVIDENCE_REJECTED" | "HANDOVER_EVIDENCE_REVIEW_PENDING";
-    ready: boolean;
-  }> = {}
+function buildBill(
+  id: string,
+  billType: BillType,
+  amount: bigint,
+  billStatus: BillStatus,
+  remainingAmount: bigint,
+  confirmed: boolean
 ) {
-  const ready = overrides.ready ?? true;
-  const blockingReasons = overrides.blockingReasons ?? [];
   return {
-    blockingDetails: blockingReasons.map((message) => ({
-      code: overrides.code ?? "HANDOVER_EVIDENCE_MISSING",
-      message
-    })),
-    blockingReasons,
-    handoverId: "handover-1",
-    orderId,
-    ready
+    amount,
+    billStatus,
+    billType,
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    id,
+    remainingAmount,
+    writeOffs: confirmed
+      ? [
+          {
+            payment: { paymentStatus: PaymentStatus.CONFIRMED },
+            writeOffAmount: amount
+          }
+        ]
+      : []
   };
 }
 
-interface LeaseActivationState {
-  actualDeliveryAt: Date | null;
-  billingSchedules: Array<{ id: string; orderId: string }>;
+function buildInsurancePolicies(state: State, now: Date) {
+  const effectiveTo = state.insuranceCovered
+    ? new Date("2027-08-06T00:00:00.000Z")
+    : new Date("2026-08-01T00:00:00.000Z");
+  return [
+    VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
+    VehicleInsurancePolicyType.COMMERCIAL
+  ].map((policyType, index) => ({
+    deletedAt: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo,
+    id: `policy-${index}`,
+    policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+    policyType,
+    updatedAt: now
+  }));
+}
+
+function snapshotState(state: State): State {
+  return structuredClone(state);
+}
+
+interface State {
+  billingScheduleCount: number;
+  completedAt: Date;
+  contractArchivedAt: Date | null;
+  contractFileId: string | null;
   contractStatus: ContractStatus;
-  depositBillStatus: BillStatus;
-  depositRemainingAmount: bigint;
+  deliveryMileageKm: number | null;
   deliveryStatus: DeliveryStatus;
-  firstRentBillStatus: BillStatus;
+  deliveryVehicleMatches: boolean;
+  depositRemainingAmount: bigint;
+  depositStatus: BillStatus;
+  depositWriteOffConfirmed: boolean;
+  entitlementCount: number;
+  failAfterVehicleUpdate: boolean;
   firstRentRemainingAmount: bigint;
-  handover: Record<string, unknown> | null;
-  evidenceReadiness: ReturnType<typeof buildEvidenceReadiness>;
-  inspectionStatus: "PENDING" | "PASSED" | "FAILED";
-  lease: Record<string, unknown> | null;
+  firstRentStatus: BillStatus;
+  firstRentWriteOffConfirmed: boolean;
+  handoverArchived: boolean;
+  handoverMileageKm: number | null;
+  inspectionPassed: boolean;
+  insuranceCovered: boolean;
+  journey: boolean;
+  journeyCompletedEventCount: number;
+  journeyStatus: SubscriptionJourneyStatus;
+  leaseCount: number;
+  legacyMoneyBooleans: boolean;
+  orderStatus: OrderStatus;
+  vehicleStatus: VehicleStatus;
+  workOrderApproved: boolean;
+  writeCount: number;
 }

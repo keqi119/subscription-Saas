@@ -618,7 +618,12 @@ describe("PortalApplicationService", () => {
       application: readyFinalPlanApplication()
     });
 
-    const result = await service.confirmFinalPlan("application-1", currentCustomer("customer-1"), requestContext());
+    const result = await service.confirmFinalPlan(
+      "application-1",
+      { revision: 1 },
+      currentCustomer("customer-1"),
+      requestContext()
+    );
 
     expect(result).toEqual(
       expect.objectContaining({
@@ -655,7 +660,12 @@ describe("PortalApplicationService", () => {
     });
 
     await expect(
-      service.confirmFinalPlan("application-1", currentCustomer("customer-1"), requestContext())
+      service.confirmFinalPlan(
+        "application-1",
+        { revision: 1 },
+        currentCustomer("customer-1"),
+        requestContext()
+      )
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -665,8 +675,61 @@ describe("PortalApplicationService", () => {
     });
 
     await expect(
-      service.confirmFinalPlan("application-1", currentCustomer("customer-other"), requestContext())
+      service.confirmFinalPlan(
+        "application-1",
+        { revision: 1 },
+        currentCustomer("customer-other"),
+        requestContext()
+      )
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("requires and records the exact Journey final-plan revision", async () => {
+    const harness = createPortalApplicationFixture({
+      application: readyFinalPlanApplication({
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        finalPlanRevision: 2,
+        subscriptionJourney: { id: "journey-1" }
+      })
+    });
+
+    await expect(
+      harness.service.confirmFinalPlan(
+        "application-1",
+        { revision: 1 },
+        currentCustomer("customer-1"),
+        requestContext()
+      )
+    ).rejects.toMatchObject({ code: "FINAL_PLAN_REVISION_STALE" });
+
+    const result = await harness.service.confirmFinalPlan(
+      "application-1",
+      { revision: 2 },
+      currentCustomer("customer-1"),
+      requestContext()
+    );
+
+    expect(result).toMatchObject({
+      finalPlanRevision: 2,
+      finalPlanStatus: PlanConfirmStatus.CONFIRMED
+    });
+    expect(harness.application.customerConfirmedPlanRevision).toBe(2);
+    expect(
+      harness.customerService.recordJourneyCustomerPlanConfirmation
+    ).toHaveBeenCalledWith(harness.tx, {
+      applicationId: "application-1",
+      revision: 2
+    });
+    expect(harness.tx.application.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { applicationSource: ApplicationSource.SELF_SERVICE },
+            { subscriptionJourney: { isNot: null } }
+          ]
+        })
+      })
+    );
   });
 
   it("records customer final plan rejection without creating an official order", async () => {
@@ -789,6 +852,7 @@ function createPortalApplicationFixture(
       return application;
     }),
     createOrderFromApplication: vi.fn(),
+    recordJourneyCustomerPlanConfirmation: vi.fn(async () => undefined),
     validateSelfServiceApplicationSelection: vi.fn(async () => ({})),
     createSelfServiceApplication: vi.fn(async () => ({
       applicationId: "application-created",
@@ -903,7 +967,9 @@ function createPortalTransaction(application: ReturnType<typeof createApplicatio
         if (
           where.id !== application.id ||
           where.customerId !== application.customerId ||
-          where.planConfirmStatus !== application.planConfirmStatus
+          where.planConfirmStatus !== application.planConfirmStatus ||
+          (where.finalPlanRevision !== undefined &&
+            where.finalPlanRevision !== application.finalPlanRevision)
         ) {
           return { count: 0 };
         }
@@ -940,16 +1006,19 @@ function readyFinalPlanApplication(overrides: Record<string, unknown> = {}) {
     depositStatus: DepositStatus.CONFIRMED,
     finalDepositAmount: 300000n,
     finalPeriodMonths: 12,
+    finalPlanRevision: 1,
     finalPlanSnapshot: createFinalPlanSnapshot(),
     finalQuoteSnapshot: createFinalPlanSnapshot(),
     finalSubscriptionPlanId: "plan-1",
     finalVehicleBaseFeeAmount: 700000n,
     finalVehicleId: "vehicle-1",
+    customerConfirmedPlanRevision: null,
     materialReviewStatus: OrderReviewStatus.APPROVED,
     planConfirmStatus: PlanConfirmStatus.PENDING,
     productReviewStatus: OrderReviewStatus.APPROVED,
     status: ApplicationStatus.APPROVED,
     vehicleReviewStatus: OrderReviewStatus.APPROVED,
+    subscriptionJourney: null,
     ...overrides
   };
 }
@@ -1020,6 +1089,7 @@ function createApplication(overrides: Record<string, unknown> = {}) {
     createdBy: "user-1",
     creditReviewComment: null,
     creditReviewStatus: OrderReviewStatus.PENDING,
+    customerConfirmedPlanRevision: null,
     customerId: "customer-1",
     customerSelectedSnapshot: null,
     deletedAt: null,
@@ -1028,6 +1098,7 @@ function createApplication(overrides: Record<string, unknown> = {}) {
     depositStatus: DepositStatus.PENDING_CONFIRM,
     finalDepositAmount: null,
     finalPeriodMonths: null,
+    finalPlanRevision: 0,
     finalPlanConfirmedAt: null,
     finalPlanSnapshot: null,
     finalQuoteSnapshot: null,
@@ -1075,6 +1146,7 @@ function createApplication(overrides: Record<string, unknown> = {}) {
     softReservedAt: now,
     softReservedVehicleId: "vehicle-1",
     status: ApplicationStatus.SUBMITTED,
+    subscriptionJourney: null,
     submittedAt: now,
     updatedAt: now,
     updatedBy: "user-1",

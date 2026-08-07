@@ -6,6 +6,7 @@ import type {
   PortalRenewalSegment,
   PortalSubscriptionChange
 } from "./portal-types";
+import type { PortalSubscriptionJourney } from "./portal-journey-view-model";
 
 export const PORTAL_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
@@ -45,6 +46,18 @@ export async function portalApiFetch<T>(path: string, init?: RequestInit): Promi
 
   const text = await response.text();
   return text ? (JSON.parse(text) as T) : (null as T);
+}
+
+export function getPortalJourneyByApplication(applicationId: string) {
+  return portalApiFetch<PortalSubscriptionJourney>(
+    `/portal/subscription-journeys/by-application/${encodeURIComponent(applicationId)}`
+  );
+}
+
+export function getPortalJourneyByOrder(orderId: string) {
+  return portalApiFetch<PortalSubscriptionJourney>(
+    `/portal/subscription-journeys/by-order/${encodeURIComponent(orderId)}`
+  );
 }
 
 export function getPortalAutoDebitAvailability() {

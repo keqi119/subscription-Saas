@@ -5,6 +5,14 @@ export async function lockDeliveryConfirmationGateRows(
   orderId: string
 ) {
   await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:subscription_journey */
+    SELECT "id"
+    FROM "subscription_journey"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
     /* delivery-gate-lock:subscription_order */
     SELECT "id"
     FROM "subscription_order"
@@ -34,6 +42,54 @@ export async function lockDeliveryConfirmationGateRows(
     /* delivery-gate-lock:vehicle_delivery */
     SELECT "id"
     FROM "vehicle_delivery"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:vehicle_inspection */
+    SELECT "id"
+    FROM "vehicle_inspection"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:lease */
+    SELECT "id"
+    FROM "lease"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:receivable_bill */
+    SELECT "id"
+    FROM "receivable_bill"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:payment_write_off */
+    SELECT "id"
+    FROM "payment_write_off"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:billing_schedule */
+    SELECT "id"
+    FROM "billing_schedule"
+    WHERE "order_id" = ${orderId}
+    ORDER BY "id"
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    /* delivery-gate-lock:order_entitlement_account */
+    SELECT "id"
+    FROM "order_entitlement_account"
     WHERE "order_id" = ${orderId}
     ORDER BY "id"
     FOR UPDATE

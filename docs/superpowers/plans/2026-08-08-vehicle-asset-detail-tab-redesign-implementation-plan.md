@@ -716,7 +716,7 @@ export function buildVehicleWorkspaceHref(input: {
 }): string;
 ```
 
-- [ ] **Step 1: Write failing navigation and permission tests**
+- [x] **Step 1: Write failing navigation and permission tests**
 
 Create `admin-vehicle-workspace.spec.ts` with table-driven tests:
 
@@ -747,7 +747,7 @@ it("keeps a valid secondary section only for its owning tab", () => {
 
 Add permission fixtures proving that a user sees only tabs for which the current permission map grants view access; `overview` still requires vehicle read permission and is not a blanket fallback for an unauthorized vehicle.
 
-- [ ] **Step 2: Run the web test and confirm RED**
+- [x] **Step 2: Run the web test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts
@@ -755,11 +755,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspac
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement the pure navigation model**
+- [x] **Step 3: Implement the pure navigation model**
 
 Implement typed tab/section constants, `is*Key` guards, permission-to-visible-tab mapping, parsing, and URL building. Unknown query values must be discarded. When a valid tab has no valid `section`, select that tab's documented default section without emitting redundant query state. Preserve no unrelated query parameters.
 
-- [ ] **Step 4: Run tests and typecheck**
+- [x] **Step 4: Run tests and typecheck**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts
@@ -768,7 +768,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: navigation tests and typecheck PASS.
 
-- [ ] **Step 5: Commit the navigation model**
+- [x] **Step 5: Commit the navigation model**
 
 ```powershell
 git add apps/web/src/lib/admin-vehicle-workspace.ts apps/web/test/admin-vehicle-workspace.spec.ts

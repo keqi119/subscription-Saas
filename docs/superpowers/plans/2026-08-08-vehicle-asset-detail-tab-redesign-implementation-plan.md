@@ -1219,11 +1219,11 @@ export function capitalEventFieldVisibility(
 ): VehicleCapitalEventFieldVisibility;
 ```
 
-- [ ] **Step 1: Write failing capital boundary tests**
+- [x] **Step 1: Write failing capital boundary tests**
 
 Test the exact five secondary sections and the existing event-type field rules. Add a source contract assertion that missing financing allocations are not converted to zero values, and that the revenue preview section contains the explicit boundary copy “仅试算，不生成结算单或付款记录”.
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-capital-workspace.spec.ts
@@ -1231,11 +1231,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-capital-worksp
 
 Expected: FAIL because the capital workspace modules do not exist.
 
-- [ ] **Step 3: Implement the pure capital view model**
+- [x] **Step 3: Implement the pure capital view model**
 
 Extract the current capital-event field visibility, form normalization, labels, totals, and permission-derived action states. Keep financing instruments and allocation identifiers typed exactly as returned by the existing API.
 
-- [ ] **Step 4: Implement the capital and revenue-share tab**
+- [x] **Step 4: Implement the capital and revenue-share tab**
 
 Recompose current behavior into:
 
@@ -1247,7 +1247,7 @@ Recompose current behavior into:
 
 Load the capital/revenue domain once on first primary-tab activation and share it across all five secondary sections. The preview remains read-only. Do not create settlement, payment, approval, financing, or fund-transfer records, and do not silently synthesize capital events from financing allocations. After a successful capital-event mutation, refresh structure and events; after a rule mutation, refresh rules and the currently displayed preview only when its input range is still valid.
 
-- [ ] **Step 5: Run focused web checks**
+- [x] **Step 5: Run focused web checks**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-capital-workspace.spec.ts test/admin-vehicle-workspace.spec.ts
@@ -1257,7 +1257,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the capital workspace**
+- [x] **Step 6: Commit the capital workspace**
 
 ```powershell
 git add apps/web/src/lib/vehicle-capital-workspace.ts apps/web/src/components/vehicle-workspace/vehicle-capital-tab.tsx apps/web/test/vehicle-capital-workspace.spec.ts

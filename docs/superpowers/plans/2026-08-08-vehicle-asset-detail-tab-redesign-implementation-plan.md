@@ -1506,11 +1506,11 @@ git commit -m "feat: reuse vehicle source images in portal catalog"
 - Consumes: all Tasks 1–14, staging Admin/Portal accounts, private object storage, and vehicle `VEH20260731152647G5GV`.
 - Produces: reproducible quality-gate evidence, deployment checklist, and acceptance result. This task does not include the pending WeChat template notification acceptance.
 
-- [ ] **Step 1: Create the acceptance record before running gates**
+- [x] **Step 1: Create the acceptance record before running gates**
 
 Create the acceptance document with sections for commit SHA, migration status, automated commands/results, staging image tags, test vehicle, six-tab checks, rights-document checks, source-binding checks, permission checks, Portal checks, known deferred items, and rollback notes. Mark every check `未执行`; do not pre-fill success.
 
-- [ ] **Step 2: Run database/schema preflight without destructive reset**
+- [x] **Step 2: Run database/schema preflight without destructive reset**
 
 ```powershell
 git status --short --branch
@@ -1528,7 +1528,7 @@ pnpm prisma:migrate:status
 
 Expected: `20260808010000_vehicle_document_workspace` applied once and database schema up to date.
 
-- [ ] **Step 3: Run focused API/Web suites**
+- [x] **Step 3: Run focused API/Web suites**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-document-workspace-schema.spec.ts test/vehicle-insurance.spec.ts test/vehicle-listing.spec.ts test/portal-catalog.spec.ts
@@ -1537,7 +1537,7 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspac
 
 Expected: all focused suites PASS. Record command output summaries in the acceptance document.
 
-- [ ] **Step 4: Run repository quality gates and production builds**
+- [x] **Step 4: Run repository quality gates and production builds**
 
 ```powershell
 pnpm quality:gate
@@ -1548,7 +1548,7 @@ git status --short --branch
 
 Expected: lint, Prisma validation/generation/status, API/Web typecheck, full API/Web tests, all package builds, and whitespace check PASS. Only intentional documentation changes may remain before the evidence commit.
 
-- [ ] **Step 5: Commit verified documentation/evidence**
+- [x] **Step 5: Commit verified documentation/evidence**
 
 ```powershell
 git add docs/superpowers/plans/2026-08-08-vehicle-asset-detail-tab-redesign-acceptance.md

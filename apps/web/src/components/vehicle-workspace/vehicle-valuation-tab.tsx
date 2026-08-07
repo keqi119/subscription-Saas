@@ -271,11 +271,18 @@ interface AssetCostProfileFormValues {
 
 const DEFAULT_HORIZONS = "12, 24, 36, 48, 60";
 
+interface VehicleValuationTabProps extends VehicleWorkspaceTabProps {
+  activeSection?: VehicleValuationSectionKey;
+  onSectionChange?: (section: VehicleValuationSectionKey) => void;
+}
+
 export function VehicleValuationTab({
+  activeSection: controlledSection,
   onVehicleChanged,
+  onSectionChange,
   permissions,
   vehicle
-}: Readonly<VehicleWorkspaceTabProps>) {
+}: Readonly<VehicleValuationTabProps>) {
   const { message } = App.useApp();
   const [generateForm] = Form.useForm<GenerateForecastFormValues>();
   const [adoptForm] = Form.useForm<AdoptPointFormValues>();
@@ -284,7 +291,8 @@ export function VehicleValuationTab({
   const [initializePriceForm] = Form.useForm<InitializePriceFormValues>();
   const [reviewPriceForm] = Form.useForm<ReviewPriceFormValues>();
   const [costProfileForm] = Form.useForm<AssetCostProfileFormValues>();
-  const [activeSection, setActiveSection] = useState<VehicleValuationSectionKey>("overview");
+  const [localSection, setLocalSection] = useState<VehicleValuationSectionKey>("overview");
+  const activeSection = controlledSection ?? localSection;
   const [latestForecast, setLatestForecast] = useState<VehicleResidualForecast | null>(null);
   const [forecasts, setForecasts] = useState<VehicleResidualForecast[]>([]);
   const [reviews, setReviews] = useState<VehicleValuationReview[]>([]);
@@ -616,7 +624,8 @@ export function VehicleValuationTab({
       );
       setCreateReviewTarget(null);
       await refreshReviews();
-      setActiveSection("reviews");
+      setLocalSection("reviews");
+      onSectionChange?.("reviews");
       void message.success("估值复核已发起，销售价保持不变");
     } catch (createError) {
       void message.error(errorText(createError));
@@ -766,7 +775,11 @@ export function VehicleValuationTab({
           key: section.key,
           label: section.label
         }))}
-        onChange={(key) => setActiveSection(key as VehicleValuationSectionKey)}
+        onChange={(key) => {
+          const section = key as VehicleValuationSectionKey;
+          setLocalSection(section);
+          onSectionChange?.(section);
+        }}
       />
 
       <GenerateForecastModal

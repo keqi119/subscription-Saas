@@ -1,4 +1,5 @@
 import { Breadcrumb, Space, Tabs } from "antd";
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 import {
@@ -29,13 +30,15 @@ export function VehicleWorkspace({
     key,
     label: VEHICLE_WORKSPACE_TAB_LABELS[key]
   }));
-  const resolvedActiveTab = visibleTabs.includes(activeTab) ? activeTab : visibleTabs[0];
+  const resolvedActiveTab = visibleTabs.includes(activeTab)
+    ? activeTab
+    : (visibleTabs[0] ?? activeTab);
 
   return (
     <Space data-vehicle-workspace="true" direction="vertical" size={16} style={{ display: "flex" }}>
       <Breadcrumb
         items={[
-          { title: <a href="/vehicles">返回车辆列表</a> },
+          { title: <Link href="/vehicles">返回车辆列表</Link> },
           { title: vehicle.vehicleNo }
         ]}
       />
@@ -43,17 +46,7 @@ export function VehicleWorkspace({
       <Tabs
         activeKey={resolvedActiveTab}
         animated={false}
-        destroyOnHidden
-        items={tabs.map(({ key, label }) => ({
-          children:
-            key === resolvedActiveTab ? (
-              <section aria-label={`${label}内容`} data-vehicle-workspace-active-content={key}>
-                {children}
-              </section>
-            ) : undefined,
-          key,
-          label
-        }))}
+        items={tabs}
         onChange={(key) => onTabChange(key as VehicleWorkspaceTabKey)}
         renderTabBar={(tabBarProps, DefaultTabBar) => (
           <div data-vehicle-workspace-tab-scroll="true" style={{ overflowX: "auto" }}>
@@ -61,6 +54,12 @@ export function VehicleWorkspace({
           </div>
         )}
       />
+      <section
+        aria-label={`${VEHICLE_WORKSPACE_TAB_LABELS[resolvedActiveTab]}内容`}
+        data-vehicle-workspace-active-content={resolvedActiveTab}
+      >
+        {children}
+      </section>
     </Space>
   );
 }

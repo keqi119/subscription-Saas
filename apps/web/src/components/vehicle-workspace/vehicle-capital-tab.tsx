@@ -206,16 +206,24 @@ const financingEventTypes = new Set<VehicleCapitalEventType>([
   "FINANCING_RELEASE"
 ]);
 
+interface VehicleCapitalTabProps extends VehicleWorkspaceTabProps {
+  activeSection?: VehicleCapitalSectionKey;
+  onSectionChange?: (section: VehicleCapitalSectionKey) => void;
+}
+
 export function VehicleCapitalTab({
+  activeSection: controlledSection,
+  onSectionChange,
   permissions,
   vehicle
-}: Readonly<VehicleWorkspaceTabProps>) {
+}: Readonly<VehicleCapitalTabProps>) {
   const { message } = App.useApp();
   const [eventForm] = Form.useForm<CapitalEventFormValues>();
   const [ruleForm] = Form.useForm<RevenueShareRuleFormValues>();
   const [deactivateForm] = Form.useForm<DeactivateRuleFormValues>();
   const [previewForm] = Form.useForm<PreviewFormValues>();
-  const [activeSection, setActiveSection] = useState<VehicleCapitalSectionKey>("overview");
+  const [localSection, setLocalSection] = useState<VehicleCapitalSectionKey>("overview");
+  const activeSection = controlledSection ?? localSection;
   const [capitalStructure, setCapitalStructure] = useState<CapitalStructurePreview | null>(null);
   const [capitalEvents, setCapitalEvents] = useState<CapitalEvent[]>([]);
   const [revenueShareRules, setRevenueShareRules] = useState<RevenueShareRule[]>([]);
@@ -563,7 +571,11 @@ export function VehicleCapitalTab({
       <Tabs
         activeKey={activeSection}
         items={VEHICLE_CAPITAL_SECTIONS.map(({ key, label }) => ({ key, label }))}
-        onChange={(key) => setActiveSection(key as VehicleCapitalSectionKey)}
+        onChange={(key) => {
+          const section = key as VehicleCapitalSectionKey;
+          setLocalSection(section);
+          onSectionChange?.(section);
+        }}
       />
       {activeSection === "overview" ? (
         <CapitalOverview structure={capitalStructure} />

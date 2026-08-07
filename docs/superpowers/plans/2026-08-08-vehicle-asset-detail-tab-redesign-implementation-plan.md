@@ -1278,7 +1278,7 @@ git commit -m "feat: add vehicle capital workspace"
 - Consumes: `GET/PATCH /api/vehicles/:id`, current status/price action endpoints, Tasks 5–11 components, and current Admin auth/permission hooks.
 - Produces stable route `/vehicles/:id?tab=:tab&section=:section` with reload-safe state.
 
-- [ ] **Step 1: Write the failing route composition test**
+- [x] **Step 1: Write the failing route composition test**
 
 Create `admin-vehicle-detail-page.spec.ts` using the repository's source-contract convention. Assert that the route:
 
@@ -1290,7 +1290,7 @@ Create `admin-vehicle-detail-page.spec.ts` using the repository's source-contrac
 - renders an explicit loading state, `403`/permission state, and missing-vehicle state;
 - contains no cross-vehicle table or `vehicles/sale-price-reviews/due` request.
 
-- [ ] **Step 2: Run the route test and confirm RED**
+- [x] **Step 2: Run the route test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-detail-page.spec.ts
@@ -1298,11 +1298,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-detail-p
 
 Expected: FAIL because the route does not exist.
 
-- [ ] **Step 3: Extract single-vehicle header actions**
+- [x] **Step 3: Extract single-vehicle header actions**
 
 Create `VehicleDetailActions` for the existing edit, status change, initialize sales price, and review sales price behavior. Receive the current vehicle and callbacks as props. Do not fetch list data or own page navigation. Preserve current permissions, confirmation prompts, validation, and API payloads.
 
-- [ ] **Step 4: Compose the independent detail page**
+- [x] **Step 4: Compose the independent detail page**
 
 Implement a client route that:
 
@@ -1316,7 +1316,7 @@ Implement a client route that:
 
 Implement the lazy/retained behavior in `vehicle-workspace-content.tsx`: unvisited inactive tabs do not mount or request data; visited tabs remain mounted but hidden, and each primary tab owns one cached domain load shared by its secondary sections. Use `AbortController` or a monotonically increasing request token when vehicle/tab requests can overlap so stale responses cannot overwrite current state. Wrap each retained tab in an independent error/retry boundary so a failed domain request does not blank the header, navigation, or another tab.
 
-- [ ] **Step 5: Run the detail composition suite**
+- [x] **Step 5: Run the detail composition suite**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts test/admin-vehicle-detail-page.spec.ts test/vehicle-workspace-shell.spec.tsx test/vehicle-document-workspace.spec.ts test/vehicle-insurance-battery-workspace.spec.ts test/vehicle-listing-workspace.spec.ts test/vehicle-valuation-workspace.spec.ts test/vehicle-capital-workspace.spec.ts
@@ -1326,7 +1326,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: all workspace tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the detail route**
+- [x] **Step 6: Commit the detail route**
 
 ```powershell
 git add apps/web/src/app/vehicles/[id]/page.tsx apps/web/src/components/vehicle-workspace/vehicle-detail-actions.tsx apps/web/src/components/vehicle-workspace/vehicle-workspace-content.tsx apps/web/test/admin-vehicle-detail-page.spec.ts

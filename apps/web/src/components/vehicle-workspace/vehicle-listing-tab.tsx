@@ -254,16 +254,24 @@ interface VehicleConditionReportItemFormValues {
   title?: string | null;
 }
 
+interface VehicleListingTabProps extends VehicleWorkspaceTabProps {
+  activeSection?: VehicleListingSectionKey;
+  onSectionChange?: (section: VehicleListingSectionKey) => void;
+}
+
 export function VehicleListingTab({
+  activeSection: controlledSection,
+  onSectionChange,
   permissions,
   vehicle
-}: Readonly<VehicleWorkspaceTabProps>) {
+}: Readonly<VehicleListingTabProps>) {
   const { message } = App.useApp();
   const [profileForm] = Form.useForm<VehicleListingProfileFormValues>();
   const [mediaForm] = Form.useForm<VehicleListingMediaFormValues>();
   const [reportForm] = Form.useForm<VehicleConditionReportFormValues>();
   const [itemForm] = Form.useForm<VehicleConditionReportItemFormValues>();
-  const [activeSection, setActiveSection] = useState<VehicleListingSectionKey>("overview");
+  const [localSection, setLocalSection] = useState<VehicleListingSectionKey>("overview");
+  const activeSection = controlledSection ?? localSection;
   const [profile, setProfile] = useState<VehicleListingProfile | null>(null);
   const [mediaRows, setMediaRows] = useState<VehicleListingMedia[]>([]);
   const [planDrafts, setPlanDrafts] = useState<VehicleListingPlanDraft[]>([]);
@@ -748,7 +756,11 @@ export function VehicleListingTab({
           key: section.key,
           label: section.label
         }))}
-        onChange={(key) => setActiveSection(key as VehicleListingSectionKey)}
+        onChange={(key) => {
+          const section = key as VehicleListingSectionKey;
+          setLocalSection(section);
+          onSectionChange?.(section);
+        }}
         tabPosition="top"
       />
 

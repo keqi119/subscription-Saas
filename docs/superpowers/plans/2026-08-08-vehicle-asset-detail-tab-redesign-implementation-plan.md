@@ -913,7 +913,7 @@ export function getRightsDocumentCompleteness(
 ): { completed: number; total: 8; missingTypes: RightsDocumentType[] };
 ```
 
-- [ ] **Step 1: Write failing rights-document model tests**
+- [x] **Step 1: Write failing rights-document model tests**
 
 Test the exact eight-type order, grouping by document type and version, zero visibility switches, and completeness semantics:
 
@@ -938,7 +938,7 @@ it("marks only configuration and inspection images as reusable", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-document-workspace.spec.ts
@@ -946,11 +946,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-document-works
 
 Expected: FAIL because the document workspace model does not exist.
 
-- [ ] **Step 3: Implement the pure document view model**
+- [x] **Step 3: Implement the pure document view model**
 
 Implement rights-type metadata, grouping, file counts, completeness based only on non-deleted `ACTIVE` files, reusable-source badges, multi-file eligibility, and batch/file archive eligibility. Keep all eight types internal; do not expose or accept a `customerVisible` property in the view model. Preserve `INSPECTION_CERTIFICATE`, `VEHICLE_AUTHORIZATION`, and `OTHER` as a separate “其他内部材料” group that is excluded from the 8-category completeness score.
 
-- [ ] **Step 4: Implement the rights documents tab**
+- [x] **Step 4: Implement the rights documents tab**
 
 The tab must:
 
@@ -962,7 +962,7 @@ The tab must:
 - keep referenced archives disabled in the UI and still surface the API's `409` message if state changed concurrently;
 - never render a customer visibility toggle.
 
-- [ ] **Step 5: Run focused tests and quality checks**
+- [x] **Step 5: Run focused tests and quality checks**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-document-workspace.spec.ts test/vehicle-workspace-shell.spec.tsx
@@ -972,7 +972,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the rights documents tab**
+- [x] **Step 6: Commit the rights documents tab**
 
 ```powershell
 git add apps/web/src/lib/vehicle-document-workspace.ts apps/web/src/components/vehicle-workspace/vehicle-documents-tab.tsx apps/web/test/vehicle-document-workspace.spec.ts

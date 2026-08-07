@@ -1,10 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   InsuranceClaimStatus,
   Prisma,
   ServiceCaseType,
   VehicleDocument,
   VehicleDocumentStatus,
+  VehicleDocumentType,
   VehicleInsurancePolicyStatus
 } from "@prisma/client";
 import type { Readable } from "node:stream";
@@ -26,10 +27,17 @@ import {
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsuranceCoverageInputDto,
   VehicleInsurancePoliciesQueryDto
 } from "./dto/vehicle-insurance.dto";
+import {
+  assertVehicleDocumentVisibility,
+  INTERNAL_RIGHTS_DOCUMENT_TYPES,
+  MAX_VEHICLE_DOCUMENT_BATCH_FILES,
+  normalizeVehicleDocumentVisibility
+} from "./vehicle-document-policy";
 
 export interface UploadedVehicleDocumentFile {
   buffer: Buffer;
@@ -43,6 +51,18 @@ export interface VehicleDocumentPreview {
   mimeType?: string | null;
   sizeBytes: number;
   stream: Readable;
+}
+
+export type VehicleDocumentView = ReturnType<typeof toDocumentView>;
+
+export interface VehicleDocumentBatchView {
+  createdAt: Date;
+  documentType: VehicleDocumentType;
+  id: string;
+  items: VehicleDocumentView[];
+  uploadedBy: string | null;
+  vehicleId: string;
+  versionNo: number;
 }
 
 export class VehicleInsuranceCoverageError extends BadRequestException {
@@ -111,6 +131,16 @@ const documentInclude = {
   }
 } satisfies Prisma.VehicleDocumentInclude;
 
+const documentBatchInclude = {
+  documents: {
+    include: documentInclude,
+    orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }],
+    where: { deletedAt: null }
+  }
+} satisfies Prisma.VehicleDocumentBatchInclude;
+
+const VEHICLE_DOCUMENT_BATCH_VERSION_ATTEMPTS = 3;
+
 const claimInclude = {
   customer: {
     select: {
@@ -159,10 +189,13 @@ const claimInclude = {
 
 type PolicyWithRelations = Prisma.VehicleInsurancePolicyGetPayload<{ include: typeof policyInclude }>;
 type DocumentWithRelations = Prisma.VehicleDocumentGetPayload<{ include: typeof documentInclude }>;
+type DocumentBatchWithRelations = Prisma.VehicleDocumentBatchGetPayload<{ include: typeof documentBatchInclude }>;
 type ClaimWithRelations = Prisma.InsuranceClaimGetPayload<{ include: typeof claimInclude }>;
 
 @Injectable()
 export class VehicleInsuranceService {
+  private readonly logger = new Logger(VehicleInsuranceService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService
@@ -323,14 +356,25 @@ export class VehicleInsuranceService {
     return documents.map(toDocumentView);
   }
 
+  async listDocumentBatches(vehicleId: string): Promise<VehicleDocumentBatchView[]> {
+    await this.findVehicleOrThrow(vehicleId);
+    const batches = await this.prisma.vehicleDocumentBatch.findMany({
+      include: documentBatchInclude,
+      orderBy: [{ documentType: "asc" }, { versionNo: "desc" }],
+      where: { vehicleId }
+    });
+    return batches.map(toDocumentBatchView);
+  }
+
   async uploadDocument(
     vehicleId: string,
     dto: UploadVehicleDocumentDto,
     files: UploadedVehicleDocumentFile[] | undefined,
     user: RequestUser
-  ) {
+  ): Promise<VehicleDocumentView> {
     await this.findVehicleOrThrow(vehicleId);
     await this.validatePolicyForVehicle(vehicleId, dto.policyId);
+    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
     const file = (files ?? []).find((item) => item.buffer?.length);
     if (!file) {
       throw new BadRequestException("vehicle document file is required");
@@ -348,7 +392,7 @@ export class VehicleInsuranceService {
     const document = await this.prisma.vehicleDocument.create({
       data: {
         bucket: stored.bucket,
-        customerVisible: dto.customerVisible ?? false,
+        customerVisible,
         description: normalizeOptionalText(dto.description),
         documentType: dto.documentType,
         effectiveFrom: parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom"),
@@ -369,6 +413,135 @@ export class VehicleInsuranceService {
     return toDocumentView(document);
   }
 
+  async uploadDocumentBatch(
+    vehicleId: string,
+    dto: UploadVehicleDocumentBatchDto,
+    files: UploadedVehicleDocumentFile[] | undefined,
+    user: RequestUser
+  ): Promise<VehicleDocumentBatchView> {
+    await this.findVehicleOrThrow(vehicleId);
+    await this.validatePolicyForVehicle(vehicleId, dto.policyId);
+    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
+    const uploadFiles = (files ?? []).filter((file) => file.buffer?.length);
+    if (uploadFiles.length === 0) {
+      throw new BadRequestException("at least one vehicle document file is required");
+    }
+    if (uploadFiles.length > MAX_VEHICLE_DOCUMENT_BATCH_FILES) {
+      throw new BadRequestException(
+        `vehicle document batch cannot exceed ${MAX_VEHICLE_DOCUMENT_BATCH_FILES} files`
+      );
+    }
+    for (const file of uploadFiles) {
+      assertSupportedVehicleDocumentFile(file);
+    }
+
+    const storedFiles: Array<{
+      file: UploadedVehicleDocumentFile;
+      stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>>;
+    }> = [];
+    try {
+      for (const file of uploadFiles) {
+        const stored = await this.storageService.putVehicleDocument({
+          buffer: file.buffer,
+          contentType: file.mimetype,
+          metadata: { originalName: file.originalname },
+          originalName: file.originalname,
+          vehicleId
+        });
+        storedFiles.push({ file, stored });
+      }
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
+
+    try {
+      for (let attempt = 0; attempt < VEHICLE_DOCUMENT_BATCH_VERSION_ATTEMPTS; attempt += 1) {
+        try {
+          const batch = await this.prisma.$transaction(async (transaction) => {
+            const latest = await transaction.vehicleDocumentBatch.aggregate({
+              _max: { versionNo: true },
+              where: { documentType: dto.documentType, vehicleId }
+            });
+            return transaction.vehicleDocumentBatch.create({
+              data: {
+                documentType: dto.documentType,
+                documents: {
+                  create: storedFiles.map(({ file, stored }) => ({
+                    bucket: stored.bucket,
+                    customerVisible,
+                    description: normalizeOptionalText(dto.description),
+                    documentStatus: VehicleDocumentStatus.ACTIVE,
+                    documentType: dto.documentType,
+                    effectiveFrom: parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom"),
+                    effectiveTo: parseOptionalDateOnly(dto.effectiveTo, "effectiveTo"),
+                    fileName: file.originalname,
+                    fileSize: file.size,
+                    mimeType: file.mimetype ?? null,
+                    objectKey: stored.objectKey,
+                    originalName: file.originalname,
+                    policyId: normalizeOptionalText(dto.policyId),
+                    title: normalizeOptionalText(dto.title),
+                    uploadedBy: user.id,
+                    vehicleId
+                  }))
+                },
+                uploadedBy: user.id,
+                vehicleId,
+                versionNo: (latest._max.versionNo ?? 0) + 1
+              },
+              include: documentBatchInclude
+            });
+          });
+
+          return toDocumentBatchView(batch);
+        } catch (error) {
+          if (
+            !isPrismaUniqueConstraintError(error) ||
+            attempt === VEHICLE_DOCUMENT_BATCH_VERSION_ATTEMPTS - 1
+          ) {
+            throw error;
+          }
+        }
+      }
+      throw new Error("unreachable vehicle document batch retry state");
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
+  }
+
+  async archiveDocumentBatch(batchId: string): Promise<VehicleDocumentBatchView> {
+    const existing = await this.prisma.vehicleDocumentBatch.findFirst({
+      select: { id: true },
+      where: { id: batchId }
+    });
+    if (!existing) {
+      throw new NotFoundException("vehicle document batch not found");
+    }
+
+    const batch = await this.prisma.$transaction(async (transaction) => {
+      await transaction.vehicleDocument.updateMany({
+        data: {
+          customerVisible: false,
+          documentStatus: VehicleDocumentStatus.ARCHIVED
+        },
+        where: {
+          batchId,
+          deletedAt: null
+        }
+      });
+      return transaction.vehicleDocumentBatch.findUnique({
+        include: documentBatchInclude,
+        where: { id: batchId }
+      });
+    });
+    if (!batch) {
+      throw new NotFoundException("vehicle document batch not found");
+    }
+    return toDocumentBatchView(batch);
+  }
+
   async updateDocument(id: string, dto: UpdateVehicleDocumentDto) {
     const before = await this.findDocumentOrThrow(id);
     if (dto.policyId !== undefined) {
@@ -376,7 +549,13 @@ export class VehicleInsuranceService {
     }
 
     const data: Prisma.VehicleDocumentUncheckedUpdateInput = {};
-    assignIfDefined(data, "customerVisible", dto.customerVisible);
+    const documentType = dto.documentType ?? before.documentType;
+    assertVehicleDocumentVisibility(documentType, dto.customerVisible);
+    if (INTERNAL_RIGHTS_DOCUMENT_TYPES.has(documentType)) {
+      data.customerVisible = false;
+    } else {
+      assignIfDefined(data, "customerVisible", dto.customerVisible);
+    }
     assignIfDefined(data, "description", normalizeOptionalText(dto.description));
     assignIfDefined(data, "documentStatus", dto.documentStatus);
     assignIfDefined(data, "documentType", dto.documentType);
@@ -694,6 +873,20 @@ export class VehicleInsuranceService {
     };
   }
 
+  private async cleanupStoredVehicleDocuments(
+    storedFiles: Array<{ stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>> }>
+  ) {
+    const results = await Promise.allSettled(
+      storedFiles.map(({ stored }) => this.storageService.deleteObject(stored.bucket, stored.objectKey))
+    );
+    const failureCount = results.filter((result) => result.status === "rejected").length;
+    if (failureCount > 0) {
+      this.logger.warn(
+        `Failed to clean up ${failureCount} vehicle document ${failureCount === 1 ? "object" : "objects"} after batch upload failure`
+      );
+    }
+  }
+
   private async applyClaimStatusTimestamps(
     id: string,
     claimStatus: InsuranceClaimStatus,
@@ -929,6 +1122,18 @@ function toDocumentView(document: DocumentWithRelations) {
   };
 }
 
+function toDocumentBatchView(batch: DocumentBatchWithRelations) {
+  return {
+    createdAt: batch.createdAt,
+    documentType: batch.documentType,
+    id: batch.id,
+    items: batch.documents.map(toDocumentView),
+    uploadedBy: batch.uploadedBy,
+    vehicleId: batch.vehicleId,
+    versionNo: batch.versionNo
+  };
+}
+
 function toPortalDocumentView(document: DocumentWithRelations, orderId: string) {
   return {
     createdAt: document.createdAt,
@@ -1124,4 +1329,13 @@ function addDays(value: Date, days: number) {
 
 function differenceInDays(from: Date, to: Date) {
   return Math.ceil((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  );
 }

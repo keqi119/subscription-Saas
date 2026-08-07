@@ -280,7 +280,7 @@ uploadDocumentBatch(vehicleId: string, dto: UploadVehicleDocumentBatchDto, files
 archiveDocumentBatch(batchId: string): Promise<VehicleDocumentBatchView>;
 ```
 
-- [ ] **Step 1: Write failing policy and batch tests**
+- [x] **Step 1: Write failing policy and batch tests**
 
 Extend `vehicle-insurance.spec.ts` with tests that prove internal visibility, two-file upload, additive payment vouchers, and cleanup:
 
@@ -344,7 +344,7 @@ it("deletes already stored objects when a later file upload fails", async () => 
 
 Change the existing positive `customerVisible=true` test to use `COMMERCIAL_INSURANCE_POLICY`, proving insurance documents keep the old behavior.
 
-- [ ] **Step 2: Run the focused test and confirm RED**
+- [x] **Step 2: Run the focused test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-insurance.spec.ts
@@ -352,7 +352,7 @@ pnpm --filter @subscription-saas/api exec vitest run test/vehicle-insurance.spec
 
 Expected: FAIL because policy helpers and batch methods do not exist.
 
-- [ ] **Step 3: Implement deterministic document policy helpers**
+- [x] **Step 3: Implement deterministic document policy helpers**
 
 Create `vehicle-document-policy.ts`:
 
@@ -379,7 +379,7 @@ export function assertVehicleDocumentVisibility(type: VehicleDocumentType, custo
 }
 ```
 
-- [ ] **Step 4: Add batch DTO and controller routes**
+- [x] **Step 4: Add batch DTO and controller routes**
 
 Add `UploadVehicleDocumentBatchDto` with the same metadata as `UploadVehicleDocumentDto`. Expose:
 
@@ -398,13 +398,13 @@ uploadDocumentBatch(...) { ... }
 archiveDocumentBatch(@Param("batchId") batchId: string) { ... }
 ```
 
-- [ ] **Step 5: Implement atomic multi-file upload and version retry**
+- [x] **Step 5: Implement atomic multi-file upload and version retry**
 
 Validate all files before storage, reject zero or more than 20 files, upload all objects, then create one batch plus N document rows in a transaction. Assign `max(versionNo)+1`; retry a Prisma `P2002` batch-version collision up to three times. On storage or database failure call `deleteObject(bucket, objectKey)` for every newly stored object with `Promise.allSettled`, record cleanup failures through the existing logger without exposing storage identifiers, then rethrow the original error.
 
 For all eight rights types, persist `customerVisible=false` even when the field is omitted or explicitly false; reject true with 400. The returned view must omit bucket/objectKey and include existing Admin preview URLs. `uploadDocument` must call the same visibility assertion and normalization so the legacy endpoint cannot publish internal rights documents. `archiveDocumentBatch` must soft-archive its active item rows in one transaction and must not delete stored objects; existing individual-file update/delete paths remain soft operations.
 
-- [ ] **Step 6: Run focused tests, lint, and typecheck**
+- [x] **Step 6: Run focused tests, lint, and typecheck**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-insurance.spec.ts
@@ -414,7 +414,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 7: Commit the batch API**
+- [x] **Step 7: Commit the batch API**
 
 ```powershell
 git add apps/api/src/vehicle-insurance apps/api/test/vehicle-insurance.spec.ts

@@ -85,7 +85,7 @@
 - Consumes: existing `Vehicle`, `VehicleDocument`, `VehicleDocumentType`, and PostgreSQL enum/migration conventions.
 - Produces: `VehicleDocumentBatch`, `VehicleListingSourceBinding`, `VehicleListingSourceSection`, seven additional `VehicleDocumentType` values, and `VehicleDocument.batchId`.
 
-- [ ] **Step 1: Write the failing schema contract test**
+- [x] **Step 1: Write the failing schema contract test**
 
 Create `apps/api/test/vehicle-document-workspace-schema.spec.ts`:
 
@@ -127,7 +127,7 @@ describe("vehicle document workspace schema", () => {
 });
 ```
 
-- [ ] **Step 2: Run the schema test and confirm RED**
+- [x] **Step 2: Run the schema test and confirm RED**
 
 Run:
 
@@ -137,7 +137,7 @@ pnpm --filter @subscription-saas/api exec vitest run test/vehicle-document-works
 
 Expected: FAIL because the migration, models, enums, and labels do not exist.
 
-- [ ] **Step 3: Add the Prisma models and relations**
+- [x] **Step 3: Add the Prisma models and relations**
 
 Add the seven missing values to `VehicleDocumentType`, add:
 
@@ -184,7 +184,7 @@ model VehicleListingSourceBinding {
 
 Add nullable `batchId` and relations on `VehicleDocument`, and matching collection relations on `Vehicle`.
 
-- [ ] **Step 4: Write the incremental migration and legacy backfill**
+- [x] **Step 4: Write the incremental migration and legacy backfill**
 
 The migration must add enum values with `IF NOT EXISTS`, create the two tables and backfill every legacy file as a one-file batch whose batch UUID equals the legacy document UUID:
 
@@ -214,7 +214,7 @@ WHERE "batch_id" IS NULL AND "deleted_at" IS NULL;
 
 Add guarded foreign keys and indexes after the backfill. Do not alter deleted legacy rows beyond leaving `batch_id` nullable.
 
-- [ ] **Step 5: Add exact Chinese labels**
+- [x] **Step 5: Add exact Chinese labels**
 
 Extend `VEHICLE_DOCUMENT_TYPE_LABELS` with:
 
@@ -228,7 +228,7 @@ VEHICLE_PURCHASE_AGREEMENT: "车辆购买合同及附属协议",
 VEHICLE_REGISTRATION_CERTIFICATE: "机动车登记证"
 ```
 
-- [ ] **Step 6: Validate schema and confirm GREEN**
+- [x] **Step 6: Validate schema and confirm GREEN**
 
 Run:
 
@@ -240,7 +240,7 @@ pnpm --filter @subscription-saas/api exec vitest run test/vehicle-document-works
 
 Expected: Prisma validates/generates and the focused test PASSes.
 
-- [ ] **Step 7: Commit the persistence boundary**
+- [x] **Step 7: Commit the persistence boundary**
 
 ```powershell
 git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260808010000_vehicle_document_workspace/migration.sql apps/web/src/constants/labels.ts apps/api/test/vehicle-document-workspace-schema.spec.ts

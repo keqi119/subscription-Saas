@@ -1039,6 +1039,13 @@ enum VehicleInsuranceCoverageType {
 
 enum VehicleDocumentType {
   VEHICLE_LICENSE
+  VEHICLE_REGISTRATION_CERTIFICATE
+  VEHICLE_INSPECTION_REPORT
+  VEHICLE_PURCHASE_AGREEMENT
+  MOTOR_VEHICLE_INVOICE
+  OWNER_IDENTITY_DOCUMENT
+  VEHICLE_CONFIGURATION_SHEET
+  PURCHASE_PAYMENT_VOUCHER
   COMPULSORY_INSURANCE_POLICY
   COMMERCIAL_INSURANCE_POLICY
   INSPECTION_CERTIFICATE
@@ -1053,6 +1060,13 @@ enum VehicleDocumentStatus {
   ARCHIVED
 
   @@map("vehicle_document_status")
+}
+
+enum VehicleListingSourceSection {
+  CONFIGURATION_SHEET
+  CONDITION_REPORT
+
+  @@map("vehicle_listing_source_section")
 }
 
 enum InsuranceClaimStatus {
@@ -3264,6 +3278,8 @@ model Vehicle {
   conditionReports              VehicleConditionReport[]
   insurancePolicies             VehicleInsurancePolicy[]
   documents                     VehicleDocument[]
+  documentBatches               VehicleDocumentBatch[]
+  listingSourceBindings         VehicleListingSourceBinding[]
   insuranceClaims               InsuranceClaim[]
   baasContracts                 VehicleBaasContract[]
   baasCostRecords               VehicleBaasCostRecord[]
@@ -3697,35 +3713,71 @@ model VehicleInsuranceCoverage {
 }
 
 model VehicleDocument {
-  id              String                  @id @default(uuid()) @db.Uuid
-  vehicleId       String                  @map("vehicle_id") @db.Uuid
-  vehicle         Vehicle                 @relation(fields: [vehicleId], references: [id])
-  policyId        String?                 @map("policy_id") @db.Uuid
-  policy          VehicleInsurancePolicy? @relation(fields: [policyId], references: [id])
-  documentType    VehicleDocumentType     @map("document_type")
-  documentStatus  VehicleDocumentStatus   @default(ACTIVE) @map("document_status")
-  fileName        String                  @map("file_name") @db.VarChar(255)
-  originalName    String?                 @map("original_name") @db.VarChar(255)
-  mimeType        String?                 @map("mime_type") @db.VarChar(128)
-  fileSize        Int?                    @map("file_size")
-  bucket          String?                 @db.VarChar(256)
-  objectKey       String?                 @map("object_key") @db.VarChar(512)
-  title           String?                 @db.VarChar(128)
-  description     String?                 @db.Text
-  effectiveFrom   DateTime?               @map("effective_from") @db.Date
-  effectiveTo     DateTime?               @map("effective_to") @db.Date
-  customerVisible Boolean                 @default(false) @map("customer_visible")
-  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
-  uploadedBy      String?                 @map("uploaded_by") @db.Uuid
-  deletedAt       DateTime?               @map("deleted_at") @db.Timestamptz(6)
+  id                    String                        @id @default(uuid()) @db.Uuid
+  vehicleId             String                        @map("vehicle_id") @db.Uuid
+  vehicle               Vehicle                       @relation(fields: [vehicleId], references: [id])
+  batchId               String?                       @map("batch_id") @db.Uuid
+  batch                 VehicleDocumentBatch?         @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  policyId              String?                       @map("policy_id") @db.Uuid
+  policy                VehicleInsurancePolicy?       @relation(fields: [policyId], references: [id])
+  documentType          VehicleDocumentType           @map("document_type")
+  documentStatus        VehicleDocumentStatus         @default(ACTIVE) @map("document_status")
+  fileName              String                        @map("file_name") @db.VarChar(255)
+  originalName          String?                       @map("original_name") @db.VarChar(255)
+  mimeType              String?                       @map("mime_type") @db.VarChar(128)
+  fileSize              Int?                          @map("file_size")
+  bucket                String?                       @db.VarChar(256)
+  objectKey             String?                       @map("object_key") @db.VarChar(512)
+  title                 String?                       @db.VarChar(128)
+  description           String?                       @db.Text
+  effectiveFrom         DateTime?                     @map("effective_from") @db.Date
+  effectiveTo           DateTime?                     @map("effective_to") @db.Date
+  customerVisible       Boolean                       @default(false) @map("customer_visible")
+  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  uploadedBy            String?                       @map("uploaded_by") @db.Uuid
+  deletedAt             DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+  listingSourceBindings VehicleListingSourceBinding[]
 
   @@index([vehicleId])
+  @@index([batchId])
   @@index([policyId])
   @@index([documentType])
   @@index([documentStatus])
   @@index([customerVisible])
   @@map("vehicle_document")
+}
+
+model VehicleDocumentBatch {
+  id           String              @id @default(uuid()) @db.Uuid
+  vehicleId    String              @map("vehicle_id") @db.Uuid
+  vehicle      Vehicle             @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  documentType VehicleDocumentType @map("document_type")
+  versionNo    Int                 @map("version_no")
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  uploadedBy   String?             @map("uploaded_by") @db.Uuid
+  documents    VehicleDocument[]
+
+  @@unique([vehicleId, documentType, versionNo])
+  @@index([vehicleId, createdAt])
+  @@map("vehicle_document_batch")
+}
+
+model VehicleListingSourceBinding {
+  id         String                      @id @default(uuid()) @db.Uuid
+  vehicleId  String                      @map("vehicle_id") @db.Uuid
+  vehicle    Vehicle                     @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  section    VehicleListingSourceSection
+  documentId String                      @map("document_id") @db.Uuid
+  document   VehicleDocument             @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  createdAt  DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy  String?                     @map("created_by") @db.Uuid
+  updatedAt  DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy  String?                     @map("updated_by") @db.Uuid
+
+  @@unique([vehicleId, section])
+  @@index([documentId])
+  @@map("vehicle_listing_source_binding")
 }
 
 model InsuranceClaim {

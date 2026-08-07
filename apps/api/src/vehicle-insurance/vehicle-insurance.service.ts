@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException
+} from "@nestjs/common";
 import {
   InsuranceClaimStatus,
   Prisma,
@@ -513,12 +519,19 @@ export class VehicleInsuranceService {
 
   async archiveDocumentBatch(batchId: string): Promise<VehicleDocumentBatchView> {
     const existing = await this.prisma.vehicleDocumentBatch.findFirst({
-      select: { id: true },
+      select: {
+        documents: {
+          select: { id: true },
+          where: { deletedAt: null }
+        },
+        id: true
+      },
       where: { id: batchId }
     });
     if (!existing) {
       throw new NotFoundException("vehicle document batch not found");
     }
+    await this.assertDocumentsNotBound(existing.documents.map((document) => document.id));
 
     const batch = await this.prisma.$transaction(async (transaction) => {
       await transaction.vehicleDocument.updateMany({
@@ -544,6 +557,12 @@ export class VehicleInsuranceService {
 
   async updateDocument(id: string, dto: UpdateVehicleDocumentDto) {
     const before = await this.findDocumentOrThrow(id);
+    if (
+      dto.documentStatus === VehicleDocumentStatus.ARCHIVED ||
+      (dto.documentType !== undefined && dto.documentType !== before.documentType)
+    ) {
+      await this.assertDocumentsNotBound([before.id]);
+    }
     if (dto.policyId !== undefined) {
       await this.validatePolicyForVehicle(before.vehicleId, dto.policyId);
     }
@@ -573,7 +592,8 @@ export class VehicleInsuranceService {
   }
 
   async deleteDocument(id: string) {
-    await this.findDocumentOrThrow(id);
+    const before = await this.findDocumentOrThrow(id);
+    await this.assertDocumentsNotBound([before.id]);
     const document = await this.prisma.vehicleDocument.update({
       data: {
         customerVisible: false,
@@ -858,6 +878,24 @@ export class VehicleInsuranceService {
       throw new BadRequestException("policy must belong to the same vehicle");
     }
     return policy;
+  }
+
+  private async assertDocumentsNotBound(documentIds: string[]) {
+    if (documentIds.length === 0) {
+      return;
+    }
+    const binding = await this.prisma.vehicleListingSourceBinding.findFirst({
+      select: { id: true },
+      where: {
+        documentId: { in: documentIds }
+      }
+    });
+    if (binding) {
+      throw new ConflictException({
+        code: "VEHICLE_DOCUMENT_SOURCE_BOUND",
+        message: "该原件正在商品展示中使用，请先解除绑定"
+      });
+    }
   }
 
   private async buildDocumentPreview(document: Pick<VehicleDocument, "bucket" | "fileName" | "fileSize" | "mimeType" | "objectKey" | "originalName">) {

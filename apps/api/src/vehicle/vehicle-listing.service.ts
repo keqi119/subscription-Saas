@@ -7,7 +7,10 @@ import {
   RecordStatus,
   SubscriptionPlanStatus,
   Vehicle,
+  VehicleDocumentStatus,
+  VehicleDocumentType,
   VehicleListingMediaCategory,
+  VehicleListingSourceSection,
   VehicleListingStatus
 } from "@prisma/client";
 import type { Readable } from "node:stream";
@@ -35,6 +38,20 @@ export interface VehicleListingMediaPreview {
   mimeType: string | null;
   sizeBytes: number;
   stream: Readable;
+}
+
+export interface VehicleListingSourceBindingView {
+  document: {
+    documentType: VehicleDocumentType;
+    fileName: string;
+    id: string;
+    mimeType: string | null;
+    previewUrl: string;
+    versionNo: number | null;
+  };
+  id: string;
+  section: VehicleListingSourceSection;
+  vehicleId: string;
 }
 
 const listingProfileInclude = {
@@ -81,6 +98,23 @@ const activePlanInclude = {
   vehiclePackage: true
 } satisfies Prisma.SubscriptionPlanInclude;
 
+const sourceBindingInclude = {
+  document: {
+    include: {
+      batch: {
+        select: { versionNo: true }
+      }
+    }
+  }
+} satisfies Prisma.VehicleListingSourceBindingInclude;
+
+const SOURCE_DOCUMENT_TYPE_BY_SECTION = {
+  [VehicleListingSourceSection.CONFIGURATION_SHEET]: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+  [VehicleListingSourceSection.CONDITION_REPORT]: VehicleDocumentType.VEHICLE_INSPECTION_REPORT
+} satisfies Record<VehicleListingSourceSection, VehicleDocumentType>;
+
+const PRODUCT_SOURCE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
 type ListingProfileWithRelations = Prisma.VehicleListingProfileGetPayload<{
   include: typeof listingProfileInclude;
 }>;
@@ -95,12 +129,83 @@ type ActiveSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
   include: typeof activePlanInclude;
 }>;
 
+type ListingSourceBindingWithDocument = Prisma.VehicleListingSourceBindingGetPayload<{
+  include: typeof sourceBindingInclude;
+}>;
+
 @Injectable()
 export class VehicleListingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storageService: StorageService
   ) {}
+
+  async listSourceBindings(vehicleId: string): Promise<VehicleListingSourceBindingView[]> {
+    await this.findVehicleOrThrow(vehicleId);
+    const bindings = await this.prisma.vehicleListingSourceBinding.findMany({
+      include: sourceBindingInclude,
+      orderBy: { section: "asc" },
+      where: { vehicleId }
+    });
+    return bindings.map(toListingSourceBindingView);
+  }
+
+  async putSourceBinding(
+    vehicleId: string,
+    section: VehicleListingSourceSection,
+    documentId: string,
+    user: RequestUser
+  ): Promise<VehicleListingSourceBindingView> {
+    await this.findVehicleOrThrow(vehicleId);
+    const document = await this.prisma.vehicleDocument.findFirst({
+      include: {
+        batch: {
+          select: { versionNo: true }
+        }
+      },
+      where: {
+        deletedAt: null,
+        documentStatus: VehicleDocumentStatus.ACTIVE,
+        id: documentId,
+        vehicleId
+      }
+    });
+    if (!document) {
+      throw new BadRequestException("listing source document must be active and belong to the vehicle");
+    }
+    if (document.documentType !== SOURCE_DOCUMENT_TYPE_BY_SECTION[section]) {
+      throw new BadRequestException("listing source document type does not match the section");
+    }
+    if (!document.mimeType || !PRODUCT_SOURCE_IMAGE_MIME_TYPES.has(document.mimeType)) {
+      throw new BadRequestException("listing source document must be a supported image");
+    }
+
+    const binding = await this.prisma.vehicleListingSourceBinding.upsert({
+      create: {
+        createdBy: user.id,
+        documentId,
+        section,
+        updatedBy: user.id,
+        vehicleId
+      },
+      include: sourceBindingInclude,
+      update: {
+        documentId,
+        updatedBy: user.id
+      },
+      where: {
+        vehicleId_section: { section, vehicleId }
+      }
+    });
+    return toListingSourceBindingView(binding);
+  }
+
+  async deleteSourceBinding(vehicleId: string, section: VehicleListingSourceSection): Promise<void> {
+    await this.findVehicleOrThrow(vehicleId);
+    await this.prisma.vehicleListingSourceBinding.deleteMany({
+      where: { section, vehicleId }
+    });
+  }
 
   async getListingProfile(vehicleId: string) {
     await this.findVehicleOrThrow(vehicleId);
@@ -618,6 +723,22 @@ function toListingPlanView(plan: ListingPlanRecord) {
     updatedAt: plan.updatedAt,
     vehicleId: plan.vehicleId,
     visible: plan.visible
+  };
+}
+
+function toListingSourceBindingView(binding: ListingSourceBindingWithDocument) {
+  return {
+    document: {
+      documentType: binding.document.documentType,
+      fileName: binding.document.fileName,
+      id: binding.document.id,
+      mimeType: binding.document.mimeType,
+      previewUrl: `/api/vehicle-documents/${binding.document.id}/preview`,
+      versionNo: binding.document.batch?.versionNo ?? null
+    },
+    id: binding.id,
+    section: binding.section,
+    vehicleId: binding.vehicleId
   };
 }
 

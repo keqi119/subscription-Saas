@@ -1,10 +1,11 @@
 import {
   VehicleDocumentType,
+  VehicleDocumentStatus,
   VehicleInsuranceCoverageType,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType
 } from "@prisma/client";
-import { BadRequestException, Logger } from "@nestjs/common";
+import { BadRequestException, ConflictException, Logger } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { VehicleInsuranceService } from "../src/vehicle-insurance/vehicle-insurance.service";
@@ -409,6 +410,39 @@ describe("VehicleInsuranceService policy and document management", () => {
     expect(storageService.deleteObject).not.toHaveBeenCalled();
   });
 
+  it("rejects deleting a document that is bound to a product listing section", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.deleteDocument("document-1")).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { documentStatus: VehicleDocumentStatus.ARCHIVED },
+    { documentType: VehicleDocumentType.MOTOR_VEHICLE_INVOICE }
+  ])("rejects an incompatible update to a bound source document", async (dto) => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects archiving a batch that contains a product listing source document", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleDocumentBatch.findFirst.mockResolvedValueOnce(createDocumentBatch("batch-1", 1));
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.archiveDocumentBatch("batch-1")).rejects.toMatchObject({
+      response: {
+        code: "VEHICLE_DOCUMENT_SOURCE_BOUND"
+      }
+    });
+
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
+  });
+
   it("rejects video vehicle document uploads", async () => {
     const { service, storageService, user } = createHarness();
 
@@ -509,6 +543,9 @@ function createHarness() {
         documents: [],
         vehicle: vehicleBrief()
       }))
+    },
+    vehicleListingSourceBinding: {
+      findFirst: vi.fn(async (): Promise<{ id: string } | null> => null)
     }
   };
   prisma.$transaction.mockImplementation(async (callback: (transaction: typeof prisma) => unknown) =>

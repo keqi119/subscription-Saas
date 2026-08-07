@@ -457,7 +457,7 @@ putSourceBinding(vehicleId: string, section: VehicleListingSourceSection, docume
 deleteSourceBinding(vehicleId: string, section: VehicleListingSourceSection): Promise<void>;
 ```
 
-- [ ] **Step 1: Write failing binding validation tests**
+- [x] **Step 1: Write failing binding validation tests**
 
 Add to `vehicle-listing.spec.ts`:
 
@@ -493,7 +493,7 @@ it.each([
 
 Add to `vehicle-insurance.spec.ts` a test that `deleteDocument` and `archiveDocumentBatch` reject with `ConflictException` when `vehicleListingSourceBinding.findFirst` returns a binding.
 
-- [ ] **Step 2: Run tests and confirm RED**
+- [x] **Step 2: Run tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-listing.spec.ts test/vehicle-insurance.spec.ts
@@ -501,7 +501,7 @@ pnpm --filter @subscription-saas/api exec vitest run test/vehicle-listing.spec.t
 
 Expected: FAIL because binding APIs and archive protection do not exist.
 
-- [ ] **Step 3: Add DTO and exact section-to-type mapping**
+- [x] **Step 3: Add DTO and exact section-to-type mapping**
 
 Add `PutVehicleListingSourceBindingDto` with `@IsUUID()` `documentId`. In the service define:
 
@@ -514,11 +514,11 @@ const SOURCE_DOCUMENT_TYPE_BY_SECTION = {
 const PRODUCT_SOURCE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 ```
 
-- [ ] **Step 4: Implement Admin binding methods and routes**
+- [x] **Step 4: Implement Admin binding methods and routes**
 
 Expose `GET /vehicles/:id/listing-source-bindings` under `PermissionCode.VEHICLE_VIEW` and `PUT/DELETE /vehicles/:id/listing-source-bindings/:section` under `PermissionCode.VEHICLE_MANAGE`, matching the existing listing routes. `putSourceBinding` must query a non-deleted, `ACTIVE` document belonging to the same vehicle; validate exact type and MIME before upserting `(vehicleId, section)` so a rejected request cannot disturb the previous binding. The view must expose only document metadata and `/api/vehicle-documents/:id/preview`.
 
-- [ ] **Step 5: Protect every archive/delete path**
+- [x] **Step 5: Protect every archive/delete path**
 
 Before soft-deleting a document or archiving a batch, query bindings for all affected document IDs. Throw:
 
@@ -531,7 +531,7 @@ throw new ConflictException({
 
 Apply the check to the new batch archive and legacy `PATCH/DELETE /vehicle-documents/:id` paths so callers cannot bypass protection.
 
-- [ ] **Step 6: Run focused tests and typecheck**
+- [x] **Step 6: Run focused tests and typecheck**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/vehicle-listing.spec.ts test/vehicle-insurance.spec.ts
@@ -540,7 +540,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: binding and conflict tests PASS; typecheck PASSes.
 
-- [ ] **Step 7: Commit source binding administration**
+- [x] **Step 7: Commit source binding administration**
 
 ```powershell
 git add apps/api/src/vehicle apps/api/src/vehicle-insurance/vehicle-insurance.service.ts apps/api/test/vehicle-listing.spec.ts apps/api/test/vehicle-insurance.spec.ts

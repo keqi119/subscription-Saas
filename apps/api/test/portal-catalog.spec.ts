@@ -13,8 +13,11 @@ import {
   VehicleConditionItemSeverity,
   VehicleConditionItemType,
   VehicleConditionReportStatus,
+  VehicleDocumentStatus,
+  VehicleDocumentType,
   VehicleListingConditionGrade,
   VehicleListingMediaCategory,
+  VehicleListingSourceSection,
   VehicleListingStatus,
   VehicleStatus
 } from "@prisma/client";
@@ -25,6 +28,105 @@ import { describe, expect, it, vi } from "vitest";
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";
 
 describe("PortalCatalogService enhanced vehicle listing", () => {
+  it("projects bound source images without private storage fields", async () => {
+    const vehicle = createVehicle({
+      listingSourceBindings: [configurationBinding(), conditionBinding()]
+    });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.sourceDocuments.configurationSheet?.previewUrl).toBe(
+      "/api/portal/catalog/vehicles/vehicle-1/source-documents/CONFIGURATION_SHEET/preview"
+    );
+    expect(detail.conditionDisplayMode).toBe("SOURCE_DOCUMENT");
+    expect(JSON.stringify(detail.sourceDocuments)).not.toContain("private-bucket");
+  });
+
+  it.each([
+    { documentStatus: VehicleDocumentStatus.ARCHIVED },
+    { documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET },
+    { mimeType: "application/pdf" },
+    { objectKey: null },
+    { vehicleId: "vehicle-2" }
+  ])("hides an invalid condition source and falls back safely", async (documentOverrides) => {
+    const binding = conditionBinding();
+    const vehicle = createVehicle({
+      conditionReports: [createConditionReport()],
+      listingSourceBindings: [
+        {
+          ...binding,
+          document: {
+            ...binding.document,
+            ...documentOverrides
+          }
+        }
+      ]
+    });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.sourceDocuments.conditionReport).toBeNull();
+    expect(detail.conditionDisplayMode).toBe("STRUCTURED_REPORT");
+  });
+
+  it("falls back to the published structured report without a valid condition binding", async () => {
+    const vehicle = createVehicle({
+      conditionReports: [createConditionReport()],
+      listingSourceBindings: []
+    });
+    const { service } = createHarness({ vehicle });
+
+    const detail = await service.getVehicle("vehicle-1");
+
+    expect(detail.conditionDisplayMode).toBe("STRUCTURED_REPORT");
+  });
+
+  it("fails closed when a source preview is not bound to a published visible listing", async () => {
+    const vehicle = createVehicle({
+      listingProfile: {
+        ...createListingProfile(),
+        portalVisible: false
+      },
+      listingSourceBindings: [conditionBinding()]
+    });
+    const { service } = createHarness({ vehicle });
+
+    await expect(
+      service.previewSourceDocument("vehicle-1", VehicleListingSourceSection.CONDITION_REPORT)
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("streams only the exact valid source document bound to the requested section", async () => {
+    const vehicle = createVehicle({ listingSourceBindings: [conditionBinding()] });
+    const { service, storageService } = createHarness({ vehicle });
+
+    const preview = await service.previewSourceDocument(
+      "vehicle-1",
+      VehicleListingSourceSection.CONDITION_REPORT
+    );
+
+    expect(preview.filename).toBe("condition-report.jpg");
+    expect(storageService.getVehicleDocumentStream).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-documents/vehicle-1/2026/condition-report.jpg"
+    );
+    await expect(
+      service.previewSourceDocument("vehicle-1", VehicleListingSourceSection.CONFIGURATION_SHEET)
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it("maps private source storage failures to not found", async () => {
+    const vehicle = createVehicle({ listingSourceBindings: [conditionBinding()] });
+    const { service, storageService } = createHarness({ vehicle });
+    storageService.getVehicleDocumentStream.mockRejectedValueOnce(new Error("private storage unavailable"));
+
+    await expect(
+      service.previewSourceDocument("vehicle-1", VehicleListingSourceSection.CONDITION_REPORT)
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it("returns enhanced list fields without internal asset fields", async () => {
     const { service } = createHarness();
 
@@ -399,6 +501,11 @@ function createHarness(
     }
   };
   const storageService = {
+    getVehicleDocumentStream: vi.fn(async () => ({
+      contentLength: 5,
+      contentType: "image/jpeg",
+      stream: Readable.from(["hello"])
+    })),
     getVehicleListingMediaStream: vi.fn(async () => ({
       contentLength: 5,
       contentType: "image/jpeg",
@@ -485,12 +592,55 @@ function createVehicle(overrides: Record<string, unknown> = {}) {
     salePriceReinitRequiredAt: null,
     salePriceStatus: SalePriceStatus.EFFECTIVE,
     series: "ES6",
+    listingSourceBindings: [],
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
     updatedBy: "user-1",
     vehicleNo: "VH001",
     vin: "VIN1234567890",
     ...overrides
+  };
+}
+
+function configurationBinding() {
+  return sourceBinding(
+    VehicleListingSourceSection.CONFIGURATION_SHEET,
+    VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+    "configuration.jpg"
+  );
+}
+
+function conditionBinding() {
+  return sourceBinding(
+    VehicleListingSourceSection.CONDITION_REPORT,
+    VehicleDocumentType.VEHICLE_INSPECTION_REPORT,
+    "condition-report.jpg"
+  );
+}
+
+function sourceBinding(
+  section: VehicleListingSourceSection,
+  documentType: VehicleDocumentType,
+  fileName: string
+) {
+  return {
+    document: {
+      bucket: "private-bucket",
+      deletedAt: null,
+      documentStatus: VehicleDocumentStatus.ACTIVE,
+      documentType,
+      fileName,
+      fileSize: 5,
+      id: `document-${section.toLowerCase()}`,
+      mimeType: "image/jpeg",
+      objectKey: `vehicle-documents/vehicle-1/2026/${fileName}`,
+      originalName: fileName,
+      vehicleId: "vehicle-1"
+    },
+    documentId: `document-${section.toLowerCase()}`,
+    id: `binding-${section.toLowerCase()}`,
+    section,
+    vehicleId: "vehicle-1"
   };
 }
 

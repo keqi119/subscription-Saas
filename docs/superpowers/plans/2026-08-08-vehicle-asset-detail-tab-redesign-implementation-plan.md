@@ -583,7 +583,7 @@ export interface PortalSourceDocumentPreview {
 previewSourceDocument(vehicleId: string, section: VehicleListingSourceSection): Promise<PortalSourceDocumentPreview>;
 ```
 
-- [ ] **Step 1: Write failing Portal security and precedence tests**
+- [x] **Step 1: Write failing Portal security and precedence tests**
 
 Extend `portal-catalog.spec.ts`:
 
@@ -613,7 +613,7 @@ it("fails closed when a source preview is not bound to a published visible listi
 });
 ```
 
-- [ ] **Step 2: Run Portal tests and confirm RED**
+- [x] **Step 2: Run Portal tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/portal-catalog.spec.ts
@@ -621,11 +621,11 @@ pnpm --filter @subscription-saas/api exec vitest run test/portal-catalog.spec.ts
 
 Expected: FAIL because source projection, display mode, and preview method do not exist.
 
-- [ ] **Step 3: Extend the Portal vehicle query and projection**
+- [x] **Step 3: Extend the Portal vehicle query and projection**
 
 Include non-deleted binding documents in the existing catalog vehicle query. A source is valid only when the binding section/type match, document status is `ACTIVE`, MIME is an allowed image, and storage fields exist. Return controlled URLs only. Set `conditionDisplayMode` to `SOURCE_DOCUMENT` when a valid condition binding exists; otherwise use `STRUCTURED_REPORT` only when the existing published structured report is available, else `NONE`.
 
-- [ ] **Step 4: Add controlled streaming endpoint**
+- [x] **Step 4: Add controlled streaming endpoint**
 
 Add:
 
@@ -642,7 +642,7 @@ async previewSourceDocument(
 
 The service must repeat publication, Portal visibility, vehicle ownership, type, status, MIME, and binding checks on every request before streaming the private object. Use `NotFoundException` for every unauthorized/missing combination to avoid existence disclosure.
 
-- [ ] **Step 5: Run focused and regression tests**
+- [x] **Step 5: Run focused and regression tests**
 
 ```powershell
 pnpm --filter @subscription-saas/api exec vitest run test/portal-catalog.spec.ts test/vehicle-listing.spec.ts test/vehicle-insurance.spec.ts
@@ -651,7 +651,7 @@ pnpm --filter @subscription-saas/api typecheck
 
 Expected: all focused tests and typecheck PASS.
 
-- [ ] **Step 6: Commit the Portal source boundary**
+- [x] **Step 6: Commit the Portal source boundary**
 
 ```powershell
 git add apps/api/src/portal/portal-catalog.controller.ts apps/api/src/portal/portal-catalog.service.ts apps/api/test/portal-catalog.spec.ts

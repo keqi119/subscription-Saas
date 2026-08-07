@@ -1052,7 +1052,7 @@ export interface VehicleListingReadiness {
 export function getVehicleListingReadiness(input: VehicleListingWorkspaceInput): VehicleListingReadiness;
 ```
 
-- [ ] **Step 1: Write failing section and readiness tests**
+- [x] **Step 1: Write failing section and readiness tests**
 
 Test the five secondary sections, source-binding labels, and non-blocking warnings:
 
@@ -1072,7 +1072,7 @@ it("presents an exact bound document version", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-listing-workspace.spec.ts
@@ -1080,11 +1080,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-listing-worksp
 
 Expected: FAIL because the listing workspace model does not exist.
 
-- [ ] **Step 3: Implement the listing view model**
+- [x] **Step 3: Implement the listing view model**
 
 Implement secondary-section metadata, current listing completeness checks, optional source warnings, exact-version presentation, and eligible document filtering. A source choice is eligible only when section, rights type, active state, and JPEG/PNG/WebP MIME match.
 
-- [ ] **Step 4: Implement the product listing tab**
+- [x] **Step 4: Implement the product listing tab**
 
 Compose the existing listing overview, customer-facing copy, subscription plans, publishing controls, and structured condition report into these secondary sections:
 
@@ -1096,7 +1096,7 @@ Compose the existing listing overview, customer-facing copy, subscription plans,
 
 The source-media section must call `PUT/DELETE /api/vehicles/:vehicleId/listing-source-bindings/:section`, display document version/file name/upload time, and explicitly state “上传新版本不会自动切换当前商品引用”. Before changing an existing binding, open the candidate's controlled Admin preview and require explicit confirmation naming the current and target versions. A failed bind must retain and redisplay the previous binding. The condition section must show which of `SOURCE_DOCUMENT`, `STRUCTURED_REPORT`, or `NONE` the Portal will render, never both source image and structured report. Load the listing domain once on first tab activation, share the cached result across all five secondary sections, and invalidate only affected listing projections after a mutation.
 
-- [ ] **Step 5: Run focused tests and web quality checks**
+- [x] **Step 5: Run focused tests and web quality checks**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-listing-workspace.spec.ts test/vehicle-document-workspace.spec.ts
@@ -1106,7 +1106,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the product listing tab**
+- [x] **Step 6: Commit the product listing tab**
 
 ```powershell
 git add apps/web/src/lib/vehicle-listing-workspace.ts apps/web/src/components/vehicle-workspace/vehicle-listing-tab.tsx apps/web/test/vehicle-listing-workspace.spec.ts

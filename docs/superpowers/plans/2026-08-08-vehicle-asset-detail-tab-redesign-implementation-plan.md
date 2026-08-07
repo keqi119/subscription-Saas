@@ -1139,7 +1139,7 @@ export function getValuationActions(input: {
 }): VehicleValuationActionState;
 ```
 
-- [ ] **Step 1: Write failing valuation navigation and action tests**
+- [x] **Step 1: Write failing valuation navigation and action tests**
 
 Test the exact five secondary sections, permission-based action availability, and the rule that sales-price history belongs only to one vehicle:
 
@@ -1154,7 +1154,7 @@ it("never exposes a cross-vehicle sale-price history section", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and confirm RED**
+- [x] **Step 2: Run the test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-valuation-workspace.spec.ts
@@ -1162,11 +1162,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-valuation-work
 
 Expected: FAIL because the valuation workspace model does not exist.
 
-- [ ] **Step 3: Implement the pure valuation view model**
+- [x] **Step 3: Implement the pure valuation view model**
 
 Move labels, secondary navigation, forecast/review status presentation, amount/date formatting inputs, action permissions, and single-vehicle history link creation out of the legacy page. Keep API response types explicit; do not use `any` to bridge old and new components.
 
-- [ ] **Step 4: Implement the valuation tab**
+- [x] **Step 4: Implement the valuation tab**
 
 Extract/recompose the current capabilities without changing workflow or endpoints:
 
@@ -1178,7 +1178,7 @@ Extract/recompose the current capabilities without changing workflow or endpoint
 
 Load the valuation/depreciation domain once when the primary tab is first activated and share that cached result across its five secondary sections. Refresh only the affected projection after a mutation, plus the shared vehicle header when current price/status changed. Preserve the existing rules: a residual forecast or adopted value does not directly overwrite the current sale price, and only an approved valuation review may write sale-price history.
 
-- [ ] **Step 5: Run valuation and regression checks**
+- [x] **Step 5: Run valuation and regression checks**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-valuation-workspace.spec.ts test/admin-vehicle-workspace.spec.ts
@@ -1188,7 +1188,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the valuation tab**
+- [x] **Step 6: Commit the valuation tab**
 
 ```powershell
 git add apps/web/src/lib/vehicle-valuation-workspace.ts apps/web/src/components/vehicle-workspace/vehicle-valuation-tab.tsx apps/web/test/vehicle-valuation-workspace.spec.ts

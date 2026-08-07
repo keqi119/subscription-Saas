@@ -36,6 +36,15 @@ export type VehicleListingSectionKey = (typeof VEHICLE_LISTING_SECTION_KEYS)[num
 export type VehicleValuationSectionKey = (typeof VEHICLE_VALUATION_SECTION_KEYS)[number];
 export type VehicleCapitalSectionKey = (typeof VEHICLE_CAPITAL_SECTION_KEYS)[number];
 
+export const VEHICLE_WORKSPACE_TAB_LABELS = {
+  capital: "资本与分润",
+  documents: "权证资料",
+  "insurance-battery": "保险与电池",
+  listing: "商品展示",
+  overview: "车辆概览",
+  valuation: "估值与折旧"
+} as const satisfies Record<VehicleWorkspaceTabKey, string>;
+
 export interface VehicleWorkspaceLocation {
   section?: VehicleListingSectionKey | VehicleValuationSectionKey | VehicleCapitalSectionKey;
   tab: VehicleWorkspaceTabKey;

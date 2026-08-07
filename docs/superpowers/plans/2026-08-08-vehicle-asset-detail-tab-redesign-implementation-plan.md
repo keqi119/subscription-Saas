@@ -828,7 +828,7 @@ export interface VehicleWorkspaceTabProps {
 }
 ```
 
-- [ ] **Step 1: Write failing render tests**
+- [x] **Step 1: Write failing render tests**
 
 Use `renderToStaticMarkup` in `vehicle-workspace-shell.spec.tsx` to verify:
 
@@ -853,7 +853,7 @@ it("renders the vehicle identity and only visible primary tabs", () => {
 
 Also assert that the overview contains current status/mileage/insurance coverage/next price review, identity and registration fields, battery basics, current order/lease/listing links, recent status or mileage events, and shortcuts to the other permitted tabs. It must contain no rights-document upload, insurance policy form, listing source binding, valuation action, or revenue-share action.
 
-- [ ] **Step 2: Run the shell test and confirm RED**
+- [x] **Step 2: Run the shell test and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/vehicle-workspace-shell.spec.tsx
@@ -861,15 +861,15 @@ pnpm --filter @subscription-saas/web exec vitest run test/vehicle-workspace-shel
 
 Expected: FAIL because the components do not exist.
 
-- [ ] **Step 3: Implement shared responsive shell and header**
+- [x] **Step 3: Implement shared responsive shell and header**
 
 Build an Ant Design page shell with breadcrumb/back-to-list link, vehicle number/VIN/license/status, brand/series/model, current sale price and price status in a sticky summary header, a right-side action slot, and the six primary tab labels supplied by Task 5. On narrow screens, keep the tab bar horizontally scrollable and render the header fields in a single-column layout. Do not fetch domain data in the shell.
 
-- [ ] **Step 4: Implement the overview tab**
+- [x] **Step 4: Implement the overview tab**
 
 Render read-only `Descriptions`/cards for the base information and lightweight projections already returned by the current vehicle detail API. Include shortcut links built by Task 5. Keep vehicle editing in the header action slot; do not duplicate edit forms in the overview or fetch the heavy insurance/listing/valuation/capital detail endpoints.
 
-- [ ] **Step 5: Run tests, lint, and typecheck**
+- [x] **Step 5: Run tests, lint, and typecheck**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts test/vehicle-workspace-shell.spec.tsx
@@ -879,7 +879,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: focused tests, lint, and typecheck PASS.
 
-- [ ] **Step 6: Commit the shared workspace UI**
+- [x] **Step 6: Commit the shared workspace UI**
 
 ```powershell
 git add apps/web/src/components/vehicle-workspace apps/web/test/vehicle-workspace-shell.spec.tsx

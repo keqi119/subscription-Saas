@@ -1346,7 +1346,7 @@ git commit -m "feat: add independent vehicle detail route"
 - Consumes: Task 5 URL builder and Task 12 detail route.
 - Produces: vehicle ledger with only `车辆列表` and `待销售价格复核`, plus row/detail navigation.
 
-- [ ] **Step 1: Add failing source-boundary tests for the slim list page**
+- [x] **Step 1: Add failing source-boundary tests for the slim list page**
 
 Extend the tests to assert:
 
@@ -1362,7 +1362,7 @@ expect(vehiclePageSource).not.toContain('RevenueShareRule');
 
 Add a pure navigation assertion that a due-review action targets `?tab=valuation&section=sale-price-history` for the selected vehicle. Add a list-state round-trip test proving that filters, page, and page size are serialized to `/vehicles?...` and restored after browser Back.
 
-- [ ] **Step 2: Run the affected tests and confirm RED**
+- [x] **Step 2: Run the affected tests and confirm RED**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts test/admin-vehicle-detail-page.spec.ts
@@ -1370,11 +1370,11 @@ pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspac
 
 Expected: FAIL because the legacy page still owns the modal workspace and global sales-price history.
 
-- [ ] **Step 3: Replace modal opening with route navigation**
+- [x] **Step 3: Replace modal opening with route navigation**
 
 Use `router.push(buildVehicleWorkspaceHref(...))` for the row and “详情” action. Row navigation defaults to `overview`; due-review navigation goes directly to `valuation/sale-price-history`. Stop propagation on the row-local detail link/button so it does not trigger duplicate navigation. Preserve browser modifier behavior where an actual link can be used.
 
-- [ ] **Step 4: Remove the legacy detail/modal ownership**
+- [x] **Step 4: Remove the legacy detail/modal ownership**
 
 Delete from `vehicles/page.tsx`:
 
@@ -1385,7 +1385,7 @@ Delete from `vehicles/page.tsx`:
 
 Retain only fleet list filters/table/pagination, due sales-price review queue, create-vehicle flow, and navigation. The action column must contain only “详情”. Synchronize active list tab, filters, page, and page size to the list URL with `router.replace` so browser Back from a vehicle restores the exact ledger view without an extra API/schema change. Do not change list API/filter payloads or the due-review API.
 
-- [ ] **Step 5: Run the complete workspace test set**
+- [x] **Step 5: Run the complete workspace test set**
 
 ```powershell
 pnpm --filter @subscription-saas/web exec vitest run test/admin-vehicle-workspace.spec.ts test/admin-vehicle-detail-page.spec.ts test/vehicle-workspace-shell.spec.tsx test/vehicle-document-workspace.spec.ts test/vehicle-insurance-battery-workspace.spec.ts test/vehicle-listing-workspace.spec.ts test/vehicle-valuation-workspace.spec.ts test/vehicle-capital-workspace.spec.ts
@@ -1395,7 +1395,7 @@ pnpm --filter @subscription-saas/web typecheck
 
 Expected: all workspace tests, lint, and typecheck PASS; no deleted legacy symbol remains.
 
-- [ ] **Step 6: Commit the ledger cleanup**
+- [x] **Step 6: Commit the ledger cleanup**
 
 ```powershell
 git add apps/web/src/app/vehicles/page.tsx apps/web/test/admin-vehicle-workspace.spec.ts apps/web/test/admin-vehicle-detail-page.spec.ts

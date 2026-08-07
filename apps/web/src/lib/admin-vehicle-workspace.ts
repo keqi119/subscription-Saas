@@ -50,6 +50,14 @@ export interface VehicleWorkspaceLocation {
   tab: VehicleWorkspaceTabKey;
 }
 
+export interface VehicleLedgerState {
+  page: number;
+  pageSize: number;
+  query: string;
+  status: string;
+  tab: "due" | "vehicles";
+}
+
 const VEHICLE_WORKSPACE_TAB_KEY_SET = new Set<string>(VEHICLE_WORKSPACE_TAB_KEYS);
 const VEHICLE_LISTING_SECTION_KEY_SET = new Set<string>(VEHICLE_LISTING_SECTION_KEYS);
 const VEHICLE_VALUATION_SECTION_KEY_SET = new Set<string>(VEHICLE_VALUATION_SECTION_KEYS);
@@ -125,6 +133,34 @@ export function buildVehicleWorkspaceHref(input: {
   return `/vehicles/${encodeURIComponent(input.vehicleId)}?${searchParams.toString()}`;
 }
 
+export function buildVehicleDueReviewHref(vehicleId: string) {
+  return buildVehicleWorkspaceHref({
+    section: "sale-price-history",
+    tab: "valuation",
+    vehicleId
+  });
+}
+
+export function buildVehicleLedgerHref(state: VehicleLedgerState) {
+  const searchParams = new URLSearchParams();
+  if (state.tab === "due") searchParams.set("tab", state.tab);
+  if (state.query) searchParams.set("q", state.query);
+  if (state.status) searchParams.set("status", state.status);
+  searchParams.set("page", String(state.page));
+  searchParams.set("pageSize", String(state.pageSize));
+  return `/vehicles?${searchParams.toString()}`;
+}
+
+export function parseVehicleLedgerState(searchParams: URLSearchParams): VehicleLedgerState {
+  return {
+    page: positiveInteger(searchParams.get("page"), 1),
+    pageSize: positiveInteger(searchParams.get("pageSize"), 10),
+    query: searchParams.get("q")?.trim() ?? "",
+    status: searchParams.get("status")?.trim() ?? "",
+    tab: searchParams.get("tab") === "due" ? "due" : "vehicles"
+  };
+}
+
 export function isVehicleWorkspaceTabKey(value: string | null | undefined): value is VehicleWorkspaceTabKey {
   return Boolean(value && VEHICLE_WORKSPACE_TAB_KEY_SET.has(value));
 }
@@ -164,4 +200,9 @@ function validNonDefaultSection(
     return section;
   }
   return undefined;
+}
+
+function positiveInteger(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

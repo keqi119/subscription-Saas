@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,10 +7,15 @@ import {
   VEHICLE_LISTING_SECTION_KEYS,
   VEHICLE_VALUATION_SECTION_KEYS,
   VEHICLE_WORKSPACE_TAB_KEYS,
+  buildVehicleDueReviewHref,
+  buildVehicleLedgerHref,
   buildVehicleWorkspaceHref,
   getVisibleVehicleWorkspaceTabs,
+  parseVehicleLedgerState,
   parseVehicleWorkspaceLocation
 } from "../src/lib/admin-vehicle-workspace";
+
+const repoRoot = join(__dirname, "..", "..", "..");
 
 describe("admin vehicle workspace navigation model", () => {
   it("builds a stable vehicle workspace URL", () => {
@@ -120,5 +127,47 @@ describe("admin vehicle workspace navigation model", () => {
         "capital_structure:view"
       ])
     ).toEqual(VEHICLE_WORKSPACE_TAB_KEYS);
+  });
+
+  it("routes a due-review vehicle directly to its valuation history", () => {
+    expect(buildVehicleDueReviewHref("vehicle/1")).toBe(
+      "/vehicles/vehicle%2F1?tab=valuation&section=sale-price-history"
+    );
+  });
+
+  it("round-trips ledger filters and pagination through the URL", () => {
+    const href = buildVehicleLedgerHref({
+      page: 3,
+      pageSize: 20,
+      query: "沪A12345",
+      status: "AVAILABLE",
+      tab: "due"
+    });
+
+    expect(href).toBe(
+      "/vehicles?tab=due&q=%E6%B2%AAA12345&status=AVAILABLE&page=3&pageSize=20"
+    );
+    expect(parseVehicleLedgerState(new URL(href, "https://admin.test").searchParams)).toEqual({
+      page: 3,
+      pageSize: 20,
+      query: "沪A12345",
+      status: "AVAILABLE",
+      tab: "due"
+    });
+  });
+
+  it("keeps the vehicle ledger page slim and route-based", () => {
+    const vehiclePageSource = readFileSync(
+      join(repoRoot, "apps/web/src/app/vehicles/page.tsx"),
+      "utf8"
+    );
+
+    expect(vehiclePageSource).toContain("buildVehicleWorkspaceHref");
+    expect(vehiclePageSource).toContain("vehicles/sale-price-reviews/due");
+    expect(vehiclePageSource).not.toContain('key: "sale-price-history"');
+    expect(vehiclePageSource).not.toContain("detailOpen");
+    expect(vehiclePageSource).not.toContain("detailVehicle");
+    expect(vehiclePageSource).not.toContain("VehicleResidualForecast");
+    expect(vehiclePageSource).not.toContain("RevenueShareRule");
   });
 });

@@ -1555,11 +1555,11 @@ git add docs/superpowers/plans/2026-08-08-vehicle-asset-detail-tab-redesign-acce
 git commit -m "docs: record vehicle workspace verification"
 ```
 
-- [ ] **Step 6: Deploy migration and matching API/Web images through the existing staging release process**
+- [x] **Step 6: Deploy migration and matching API/Web images through the existing staging release process**
 
 Before deployment, record the current staging API/Web image tags and database backup/restore reference. Deploy the database migration first, then matching API and Web images built from the same commit. Confirm `/health`, Admin login, and Portal catalog load before functional testing. If migration or health checks fail, stop and roll back application images; use the documented database restore procedure rather than ad-hoc destructive SQL.
 
-- [ ] **Step 7: Execute the Admin staging acceptance matrix**
+- [x] **Step 7: Execute the Admin staging acceptance matrix**
 
 Using vehicle `VEH20260731152647G5GV`, record evidence for:
 
@@ -1573,7 +1573,7 @@ Using vehicle `VEH20260731152647G5GV`, record evidence for:
 8. insurance/BaaS, listing/plans, residual/reviews/depreciation/sale-price history, and capital/events/revenue-share preview retain existing behavior;
 9. revenue-share preview creates no settlement or payment record.
 
-- [ ] **Step 8: Execute the Portal staging acceptance matrix**
+- [x] **Step 8: Execute the Portal staging acceptance matrix**
 
 Publish/preview the vehicle listing and verify:
 
@@ -1583,7 +1583,7 @@ Publish/preview the vehicle listing and verify:
 4. direct preview URL requests for unpublished/hidden vehicles, unbound sections, wrong vehicle IDs, and invalid sections return non-disclosing `404` behavior;
 5. the Portal response/DOM contains no private bucket, object key, or other rights-document metadata.
 
-- [ ] **Step 9: Close or classify acceptance results**
+- [x] **Step 9: Close or classify acceptance results**
 
 Update every acceptance item with `通过`, `失败`, or `暂缓`, include evidence links/timestamps and defect references, then commit the result:
 

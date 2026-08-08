@@ -1,27 +1,20 @@
 "use client";
 
 import { ArrowLeftOutlined, GiftOutlined } from "@ant-design/icons";
-import { App, Button, Empty, Flex, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
+import { App, Button, Flex, Typography } from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
-import {
-  ENTITLEMENT_GRANT_SOURCE_LABELS,
-  ENTITLEMENT_GRANT_STATUS_LABELS,
-  ENTITLEMENT_TYPE_LABELS,
-  ENTITLEMENT_UNIT_LABELS,
-  ENTITLEMENT_USAGE_SOURCE_LABELS,
-  ENTITLEMENT_USAGE_STATUS_LABELS,
-  labelOf
-} from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import {
   PortalEntitlementGrant,
   PortalEntitlementUsage,
   PortalPagedResponse
 } from "../../../lib/portal-types";
+import {
+  PortalEntitlementGrantRecords,
+  PortalEntitlementUsageRecords
+} from "./entitlement-records";
 
 function PortalEntitlementsContent() {
   const router = useRouter();
@@ -81,30 +74,14 @@ function PortalEntitlementsContent() {
               权益余额
             </Typography.Title>
           </Flex>
-          <Table
-            columns={grantColumns}
-            dataSource={grants}
-            loading={loading}
-            locale={{ emptyText: <Empty description="暂无权益" /> }}
-            pagination={false}
-            rowKey="grantId"
-            size="small"
-          />
+          <PortalEntitlementGrantRecords loading={loading} rows={grants} />
         </section>
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             使用记录
           </Typography.Title>
-          <Table
-            columns={usageColumns}
-            dataSource={usages}
-            loading={loading}
-            locale={{ emptyText: <Empty description="暂无使用记录" /> }}
-            pagination={false}
-            rowKey="usageId"
-            size="small"
-          />
+          <PortalEntitlementUsageRecords loading={loading} rows={usages} />
         </section>
       </section>
     </main>
@@ -125,84 +102,6 @@ export default function PortalEntitlementsPage() {
       <PortalEntitlementsContent />
     </Suspense>
   );
-}
-
-const grantColumns: ColumnsType<PortalEntitlementGrant> = [
-  {
-    dataIndex: "name",
-    title: "权益"
-  },
-  {
-    dataIndex: "entitlementType",
-    render: (value: string) => labelOf(ENTITLEMENT_TYPE_LABELS, value),
-    title: "类型"
-  },
-  {
-    dataIndex: "remainingAmount",
-    render: (_value: number | null, row) => formatEntitlementAmount(row.remainingAmount, row.unit),
-    title: "剩余"
-  },
-  {
-    dataIndex: "usedAmount",
-    render: (_value: number | null, row) => formatEntitlementAmount(row.usedAmount, row.unit),
-    title: "已用"
-  },
-  {
-    dataIndex: "status",
-    render: (value: string) => <Tag>{labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}</Tag>,
-    title: "状态"
-  },
-  {
-    dataIndex: "source",
-    render: (value: string) => labelOf(ENTITLEMENT_GRANT_SOURCE_LABELS, value),
-    title: "来源"
-  },
-  {
-    key: "valid",
-    render: (_value, row) => `${row.validFrom ?? "-"} 至 ${row.validTo ?? "-"}`,
-    title: "有效期"
-  }
-];
-
-const usageColumns: ColumnsType<PortalEntitlementUsage> = [
-  {
-    dataIndex: "grantName",
-    title: "权益"
-  },
-  {
-    dataIndex: "amount",
-    render: (_value: number, row) => formatEntitlementAmount(row.amount, row.unit),
-    title: "使用量"
-  },
-  {
-    dataIndex: "status",
-    render: (value: string) => labelOf(ENTITLEMENT_USAGE_STATUS_LABELS, value),
-    title: "状态"
-  },
-  {
-    dataIndex: "source",
-    render: (value: string) => labelOf(ENTITLEMENT_USAGE_SOURCE_LABELS, value),
-    title: "来源"
-  },
-  {
-    dataIndex: "occurredAt",
-    render: (value: string | null) => formatTime(value),
-    title: "发生时间"
-  }
-];
-
-function formatEntitlementAmount(value: number | null, unit: string) {
-  if (unit === "TEXT") {
-    return labelOf(ENTITLEMENT_UNIT_LABELS, unit);
-  }
-  if (value === null) {
-    return "-";
-  }
-  return `${value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} ${labelOf(ENTITLEMENT_UNIT_LABELS, unit)}`;
-}
-
-function formatTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 }
 
 const sectionStyle = {

@@ -1,0 +1,87 @@
+.desktopTable {
+  display: block;
+}
+
+.mobileCards {
+  display: none;
+}
+
+.cardList {
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.cardHeader {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 16px;
+}
+
+.cardHeader strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.primaryValue {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 18px 0;
+  color: #1677ff;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.primaryValue span {
+  color: #7b8495;
+  font-size: 13px;
+  font-weight: 400;
+  word-break: keep-all;
+}
+
+.recordRow {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-top: 1px solid #f0f2f5;
+}
+
+.recordLabel {
+  flex: 0 0 72px;
+  color: #7b8495;
+  word-break: keep-all;
+}
+
+.recordValue,
+.machineValue {
+  min-width: 0;
+  color: #252b36;
+  text-align: right;
+}
+
+.machineValue {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 768px) {
+  .desktopTable {
+    display: none;
+  }
+
+  .mobileCards {
+    display: block;
+  }
+}

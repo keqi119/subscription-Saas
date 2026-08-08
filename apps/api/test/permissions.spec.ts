@@ -1511,7 +1511,7 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const vehicleInsuranceManagementPermissions = ["vehicle_insurance:view", "vehicle_insurance:manage"]'
     );
     expect(seedSource).toContain('["vehicles.insurance_policies"');
@@ -1538,10 +1538,10 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["vehicles.depreciation_policies", "折旧管理", "/vehicle-depreciation-policies", "money", 29, "vehicle_depreciation:view", "vehicles"]'
     );
     expect(seedSource).toContain(
@@ -1570,7 +1570,7 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const vehicleModelManagementPermissions = ["vehicle_model:view", "vehicle_model:manage"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["vehicles.model_definitions", "车型代码", "/vehicle-model-definitions", "car", 15, "vehicle_model:view", "vehicles"]'
     );
     expect(seedSource).toContain('const vehicleModelMenuCodes = ["vehicles.model_definitions"]');
@@ -1601,7 +1601,7 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const vehicleValuationReviewCreatePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewApprovePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewManagementPermissions = [");
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"]'
     );
     expect(seedSource).toContain(
@@ -1728,7 +1728,7 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"]'
     );
     expect(seedSource).toContain('const serviceCaseViewPermissions = ["service_case:view"]');
@@ -1749,7 +1749,7 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"]'
     );
     expect(seedSource).toContain('const notificationViewPermissions = ["notification:view"]');
@@ -1779,7 +1779,7 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const entitlementOperationPermissions = ["entitlement:view", "entitlement:generate", "entitlement:adjust", "entitlement:consume"]'
     );
     expectRolePermissions("OP", [
@@ -1808,7 +1808,7 @@ describe("seed permission calibration", () => {
       'const reportFinancePermissions = ["report:view", "report:finance"]'
     );
     expect(seedSource).toContain('const reportAssetPermissions = ["report:asset"]');
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions)'
     );
     expect(seedSource).toContain('const reportOverviewMenuCodes = ["reports", "reports.overview"]');
@@ -1818,10 +1818,10 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       '["reports", "经营看板", "/reports", "dashboard", 75, null, null]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["reports.overview", "经营总览", "/reports", "dashboard", 10, "report:view", "reports"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"]'
     );
     for (const handler of [
@@ -1840,7 +1840,7 @@ describe("seed permission calibration", () => {
     expect(roleHasMenu(roleMenuArray("GM"), "reports")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "reports.overview")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "reports.asset_profitability")).toBe(true);
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes] : [])'
     );
     expect(seedSource).toContain('...(roleCode === "AS" ? reportAssetMenuCodes : [])');
@@ -1882,7 +1882,7 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"]'
     );
     expect(seedSource).toContain('const revenueRightViewPermissions = ["revenue_right:view"]');
@@ -1894,29 +1894,29 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       '["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]'
     );
     expect(seedSource).toContain('const vehicleMenuCodes = ["vehicles", "vehicles.assets"]');
     expect(seedSource).toContain('const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"]');
     expect(seedSource).toContain('const financingMenuCodes = ["billing.financing_instruments"]');
     expect(seedSource).toContain('const revenueRightMenuCodes = ["billing.revenue_rights"]');
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions)'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions)'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions)'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions)'
     );
     expectRolePermissions("OP", [
@@ -1990,11 +1990,11 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain('const residualMarketViewPermissions = ["residual_market:view"]');
     expect(seedSource).toContain("const residualMarketImportPermissions = [");
     expect(seedSource).toContain("const residualMarketManagementPermissions = [");
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"]'
     );
     expect(seedSource).toContain('const residualMarketMenuCodes = ["vehicles.residual_market"]');
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions)'
     );
     expect(seedSource).toContain("...residualMarketMenuCodes");
@@ -2034,7 +2034,7 @@ describe("seed permission calibration", () => {
     }
 
     expect(seedSource).toContain('const residualCurveViewPermissions = ["residual_curve:view"]');
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const residualCurveGeneratePermissions = ["residual_curve:view", "residual_curve:generate"]'
     );
     expect(seedSource).toContain("const residualCurveManagementPermissions = [");
@@ -2077,11 +2077,11 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       'const residualForecastViewPermissions = ["residual_forecast:view"]'
     );
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       'const residualForecastGeneratePermissions = ["residual_forecast:view", "residual_forecast:generate"]'
     );
     expect(seedSource).toContain("const residualForecastManagementPermissions = [");
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "AS" ? residualForecastManagementPermissions : residualForecastViewPermissions)'
     );
     expectRolePermissions("OP", ["residual_forecast:view", "residual_forecast:generate"]);
@@ -2117,7 +2117,7 @@ describe("seed permission calibration", () => {
       'const residualModelRunViewPermissions = ["residual_model_run:view"]'
     );
     expect(seedSource).toContain("const residualModelRunManagementPermissions = [");
-    expect(seedSource).toContain(
+    expectSeedSourceToContain(
       '...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions)'
     );
     expectRolePermissions("OP", ["residual_model_run:view"]);
@@ -2137,6 +2137,10 @@ describe("seed permission calibration", () => {
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_model_run:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_model_run:manage")).toBe(false);
   });
+
+  function expectSeedSourceToContain(fragment: string) {
+    expect(seedSource.replace(/\s+/g, "")).toContain(fragment.replace(/\s+/g, ""));
+  }
 
   function expectRolePermissions(roleCode: string, permissionCodes: string[]) {
     const permissionsSource = rolePermissionArray(roleCode);

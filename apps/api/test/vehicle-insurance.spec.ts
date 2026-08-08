@@ -111,6 +111,82 @@ describe("VehicleInsuranceService policy and document management", () => {
     });
   });
 
+  it("soft deletes an erroneous policy and active unbound documents with one audit", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [{ id: "document-1" }],
+      vehicle: vehicleBrief()
+    } as never);
+
+    const result = await service.deletePolicy(
+      "policy-1",
+      { reason: "保单号记录录入错误" },
+      user
+    );
+
+    expect(prisma.vehicleInsurancePolicy.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          deletedAt: expect.any(Date),
+          updatedBy: "user-1"
+        }),
+        where: { id: "policy-1" }
+      })
+    );
+    expect(prisma.vehicleDocument.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, policyId: "policy-1" }
+      })
+    );
+    expect(auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "DELETE",
+        after: expect.objectContaining({ reason: "保单号记录录入错误" }),
+        entityId: "policy-1"
+      }),
+      prisma
+    );
+    expect(result.id).toBe("policy-1");
+  });
+
+  it("rejects deleting a policy with any active claim", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.insuranceClaim.count.mockResolvedValueOnce(1);
+
+    await expect(
+      service.deletePolicy("policy-1", { reason: "重复录入" }, user)
+    ).rejects.toMatchObject({ response: { code: "POLICY_HAS_CLAIMS" } });
+
+    expect(prisma.vehicleInsurancePolicy.update).not.toHaveBeenCalled();
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
+    expect(auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting a policy whose document is bound to product display", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [{ id: "document-1" }],
+      vehicle: vehicleBrief()
+    } as never);
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({
+      id: "binding-1"
+    });
+
+    await expect(
+      service.deletePolicy("policy-1", { reason: "重复录入" }, user)
+    ).rejects.toMatchObject({ response: { code: "POLICY_DOCUMENT_BOUND" } });
+
+    expect(prisma.vehicleInsurancePolicy.update).not.toHaveBeenCalled();
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
+    expect(auditService.write).not.toHaveBeenCalled();
+  });
+
   it("uploads vehicle documents through private storage and hides object fields", async () => {
     const { service, storageService, user } = createHarness();
 
@@ -564,7 +640,14 @@ function createHarness() {
       }
     }))
   };
-  const service = new VehicleInsuranceService(prisma as never, storageService as never);
+  const auditService = {
+    write: vi.fn()
+  };
+  const service = new VehicleInsuranceService(
+    prisma as never,
+    storageService as never,
+    auditService as never
+  );
   const user = {
     id: "user-1",
     menus: [],
@@ -574,7 +657,7 @@ function createHarness() {
     username: "admin"
   };
 
-  return { prisma, service, storageService, user };
+  return { auditService, prisma, service, storageService, user };
 }
 
 function coveragePolicy(policyType: VehicleInsurancePolicyType) {

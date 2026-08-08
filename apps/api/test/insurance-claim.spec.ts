@@ -130,7 +130,12 @@ function createHarness() {
     getVehicleDocumentStream: vi.fn(),
     putVehicleDocument: vi.fn()
   };
-  const service = new VehicleInsuranceService(prisma as never, storageService as never);
+  const auditService = { write: vi.fn() };
+  const service = new VehicleInsuranceService(
+    prisma as never,
+    storageService as never,
+    auditService as never
+  );
   const user = {
     id: "user-1",
     menus: [],
@@ -139,7 +144,7 @@ function createHarness() {
     roles: [],
     username: "admin"
   };
-  return { prisma, service, user };
+  return { auditService, prisma, service, user };
 }
 
 function createServiceCase(overrides: Record<string, unknown> = {}) {

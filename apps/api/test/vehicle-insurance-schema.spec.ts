@@ -35,4 +35,23 @@ describe("vehicle insurance policy schema", () => {
     expect(migration).toContain('DROP COLUMN "insurance_end_date"');
     expect(migration).toContain("RAISE EXCEPTION");
   });
+
+  it("uses a migration-owned partial unique index for active policy numbers", () => {
+    const schema = fs.readFileSync(path.resolve(__dirname, "../prisma/schema.prisma"), "utf8");
+    const migrationPath = path.resolve(
+      __dirname,
+      "../prisma/migrations/20260808190000_vehicle_insurance_policy_active_uniqueness/migration.sql"
+    );
+    const migration = fs.existsSync(migrationPath)
+      ? fs.readFileSync(migrationPath, "utf8")
+      : "";
+
+    expect(schema).not.toContain("@@unique([vehicleId, policyNo])");
+    expect(schema).toContain("vehicle_insurance_policy_active_vehicle_policy_no_key");
+    expect(migration).toContain("duplicate active vehicle insurance policy numbers");
+    expect(migration).toContain(
+      'CREATE UNIQUE INDEX "vehicle_insurance_policy_active_vehicle_policy_no_key"'
+    );
+    expect(migration).toContain('WHERE "deleted_at" IS NULL');
+  });
 });

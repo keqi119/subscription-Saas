@@ -26,6 +26,7 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   CreateInsuranceClaimDto,
   CreateVehicleInsurancePolicyDto,
+  DeleteVehicleInsurancePolicyDto,
   InsuranceClaimsQueryDto,
   PutVehicleInsuranceCoveragesDto,
   UpdateInsuranceClaimDto,
@@ -73,6 +74,16 @@ export class VehicleInsuranceController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.vehicleInsuranceService.updatePolicy(id, dto, request.user);
+  }
+
+  @Delete("vehicle-insurance-policies/:id")
+  @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
+  deletePolicy(
+    @Param("id") id: string,
+    @Body() dto: DeleteVehicleInsurancePolicyDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.deletePolicy(id, dto, request.user);
   }
 
   @Post("vehicle-insurance-policies/:id/archive")

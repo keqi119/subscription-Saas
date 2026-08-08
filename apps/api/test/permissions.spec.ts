@@ -782,12 +782,17 @@ describe("vehicle insurance, document, and claim permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       VehicleInsuranceController.prototype.archivePolicy
     );
+    const deletePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.deletePolicy
+    );
 
     expect(listPermissions).toEqual([VEHICLE_INSURANCE_VIEW_PERMISSION]);
     expect(detailPermissions).toEqual([VEHICLE_INSURANCE_VIEW_PERMISSION]);
     expect(createPermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(updatePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(archivePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
+    expect(deletePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(hasRequiredPermissions([VEHICLE_INSURANCE_VIEW_PERMISSION], createPermissions)).toBe(false);
     expect(hasRequiredPermissions([VEHICLE_INSURANCE_MANAGE_PERMISSION], createPermissions)).toBe(true);
   });

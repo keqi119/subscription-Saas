@@ -3,9 +3,11 @@ import {
   ConflictException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  UnprocessableEntityException
 } from "@nestjs/common";
 import {
+  AuditAction,
   InsuranceClaimStatus,
   Prisma,
   ServiceCaseType,
@@ -16,6 +18,7 @@ import {
 } from "@prisma/client";
 import type { Readable } from "node:stream";
 
+import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -27,6 +30,7 @@ import { StorageService } from "../storage/storage.service";
 import {
   CreateInsuranceClaimDto,
   CreateVehicleInsurancePolicyDto,
+  DeleteVehicleInsurancePolicyDto,
   InsuranceClaimsQueryDto,
   PutVehicleInsuranceCoveragesDto,
   UpdateInsuranceClaimDto,
@@ -204,7 +208,8 @@ export class VehicleInsuranceService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storageService: StorageService
+    private readonly storageService: StorageService,
+    private readonly auditService: AuditService
   ) {}
 
   async assertVehicleCoveredThrough(
@@ -340,6 +345,86 @@ export class VehicleInsuranceService {
       include: policyInclude,
       where: { id }
     });
+    return toPolicyView(policy);
+  }
+
+  async deletePolicy(
+    id: string,
+    dto: DeleteVehicleInsurancePolicyDto,
+    user: RequestUser
+  ): Promise<ReturnType<typeof toPolicyView>> {
+    const before = await this.findPolicyOrThrow(id);
+    const reason = normalizePolicyDeleteReason(dto.reason);
+    const claimCount = await this.prisma.insuranceClaim.count({
+      where: {
+        deletedAt: null,
+        policyId: id
+      }
+    });
+    if (claimCount > 0) {
+      throw new ConflictException({
+        code: "POLICY_HAS_CLAIMS",
+        message: "该保单已关联理赔记录，不能作为错误记录删除"
+      });
+    }
+
+    const documentIds = before.documents.map((document) => document.id);
+    try {
+      await this.assertDocumentsNotBound(documentIds);
+    } catch (error) {
+      if (!(error instanceof ConflictException)) throw error;
+      const response = error.getResponse();
+      const message =
+        typeof response === "object" &&
+        response !== null &&
+        "message" in response &&
+        typeof response.message === "string"
+          ? response.message
+          : error.message;
+      throw new ConflictException({
+        code: "POLICY_DOCUMENT_BOUND",
+        message
+      });
+    }
+
+    const deletedAt = new Date();
+    const policy = await this.prisma.$transaction(async (tx) => {
+      await tx.vehicleDocument.updateMany({
+        data: {
+          customerVisible: false,
+          deletedAt,
+          documentStatus: VehicleDocumentStatus.ARCHIVED
+        },
+        where: {
+          deletedAt: null,
+          policyId: id
+        }
+      });
+      const deletedPolicy = await tx.vehicleInsurancePolicy.update({
+        data: {
+          deletedAt,
+          updatedBy: user.id
+        },
+        include: policyInclude,
+        where: { id }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.DELETE,
+          after: {
+            deletedDocumentIds: documentIds,
+            reason
+          },
+          before: toPolicyView(before),
+          entityId: id,
+          entityType: "VehicleInsurancePolicy",
+          module: "VEHICLE_INSURANCE"
+        },
+        tx
+      );
+      return deletedPolicy;
+    });
+
     return toPolicyView(policy);
   }
 
@@ -1318,6 +1403,17 @@ function normalizeRequiredText(value: string | null | undefined, field: string) 
   const normalized = normalizeOptionalText(value);
   if (!normalized) {
     throw new BadRequestException(`${field} is required`);
+  }
+  return normalized;
+}
+
+function normalizePolicyDeleteReason(value: string | null | undefined) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized || normalized.length < 2 || normalized.length > 500) {
+    throw new UnprocessableEntityException({
+      code: "DELETE_REASON_REQUIRED",
+      message: "删除原因长度必须为 2 到 500 个字符"
+    });
   }
   return normalized;
 }

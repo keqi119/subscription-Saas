@@ -16,7 +16,9 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
+  MinLength,
   ValidateNested
 } from "class-validator";
 
@@ -209,6 +211,16 @@ export class UpdateVehicleInsurancePolicyDto {
   @ValidateNested({ each: true })
   @Type(() => VehicleInsuranceCoverageInputDto)
   coverages?: VehicleInsuranceCoverageInputDto[];
+}
+
+export class DeleteVehicleInsurancePolicyDto {
+  @Transform(({ value }) =>
+    typeof value === "string" ? value.trim() : value
+  )
+  @IsString()
+  @MinLength(2)
+  @MaxLength(500)
+  reason!: string;
 }
 
 export class PutVehicleInsuranceCoveragesDto {

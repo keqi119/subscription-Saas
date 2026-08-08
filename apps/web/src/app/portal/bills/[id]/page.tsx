@@ -6,11 +6,7 @@ import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import {
-  BILL_STATUS_LABELS,
-  BILL_TYPE_LABELS,
-  labelOf
-} from "../../../../constants/labels";
+import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../../constants/labels";
 import { buildPortalAutoDebitView } from "../../../../lib/portal-auto-debit-view-model";
 import {
   getPortalAutoDebitAvailability,

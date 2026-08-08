@@ -13,10 +13,7 @@ import {
   ENTITLEMENT_USAGE_STATUS_LABELS,
   labelOf
 } from "../../../constants/labels";
-import type {
-  PortalEntitlementGrant,
-  PortalEntitlementUsage
-} from "../../../lib/portal-types";
+import type { PortalEntitlementGrant, PortalEntitlementUsage } from "../../../lib/portal-types";
 import styles from "./entitlement-records.module.css";
 
 interface PortalEntitlementGrantRecordsProps {
@@ -175,21 +172,17 @@ const grantColumns: ColumnsType<PortalEntitlementGrant> = [
   },
   {
     dataIndex: "remainingAmount",
-    render: (_value: number | null, row) =>
-      formatEntitlementAmount(row.remainingAmount, row.unit),
+    render: (_value: number | null, row) => formatEntitlementAmount(row.remainingAmount, row.unit),
     title: "剩余"
   },
   {
     dataIndex: "usedAmount",
-    render: (_value: number | null, row) =>
-      formatEntitlementAmount(row.usedAmount, row.unit),
+    render: (_value: number | null, row) => formatEntitlementAmount(row.usedAmount, row.unit),
     title: "已用"
   },
   {
     dataIndex: "status",
-    render: (value: string) => (
-      <Tag>{labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}</Tag>
-    ),
+    render: (value: string) => <Tag>{labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}</Tag>,
     title: "状态"
   },
   {

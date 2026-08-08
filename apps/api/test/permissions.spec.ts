@@ -186,13 +186,19 @@ describe("vehicle capital structure permissions", () => {
     ];
     expect(listEventsPermissions).toEqual(expected);
     expect(previewPermissions).toEqual(expected);
-    expect(hasAnyRequiredPermission([CAPITAL_STRUCTURE_VIEW_PERMISSION], listEventsPermissions)).toBe(true);
+    expect(
+      hasAnyRequiredPermission([CAPITAL_STRUCTURE_VIEW_PERMISSION], listEventsPermissions)
+    ).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.VEHICLE_VIEW], previewPermissions)).toBe(true);
     expect(hasAnyRequiredPermission([PermissionCode.REPORT_ASSET], previewPermissions)).toBe(true);
   });
 
   it("requires capital_structure:manage to create, update, and cancel capital events", () => {
-    for (const permissions of [createEventPermissions, updateEventPermissions, cancelEventPermissions]) {
+    for (const permissions of [
+      createEventPermissions,
+      updateEventPermissions,
+      cancelEventPermissions
+    ]) {
       expect(permissions).toEqual([CAPITAL_STRUCTURE_MANAGE_PERMISSION]);
       expect(hasRequiredPermissions([CAPITAL_STRUCTURE_VIEW_PERMISSION], permissions)).toBe(false);
       expect(hasRequiredPermissions([CAPITAL_STRUCTURE_MANAGE_PERMISSION], permissions)).toBe(true);
@@ -353,7 +359,10 @@ describe("residual curve permissions", () => {
 
   it("requires residual_curve:generate for curve generation", () => {
     expect(
-      Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, ResidualMarketController.prototype.generateCurve)
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        ResidualMarketController.prototype.generateCurve
+      )
     ).toEqual([RESIDUAL_CURVE_GENERATE_PERMISSION]);
   });
 
@@ -439,7 +448,9 @@ describe("vehicle valuation review permissions", () => {
       const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
       expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION]);
       expect(hasRequiredPermissions([], requiredPermissions)).toBe(false);
-      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(true);
+      expect(
+        hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)
+      ).toBe(true);
     }
   });
 
@@ -450,8 +461,12 @@ describe("vehicle valuation review permissions", () => {
     ]) {
       const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
       expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION]);
-      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(false);
-      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION], requiredPermissions)).toBe(true);
+      expect(
+        hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)
+      ).toBe(false);
+      expect(
+        hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_CREATE_PERMISSION], requiredPermissions)
+      ).toBe(true);
     }
   });
 
@@ -462,8 +477,12 @@ describe("vehicle valuation review permissions", () => {
     ]) {
       const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
       expect(requiredPermissions).toEqual([VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION]);
-      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)).toBe(false);
-      expect(hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION], requiredPermissions)).toBe(true);
+      expect(
+        hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_VIEW_PERMISSION], requiredPermissions)
+      ).toBe(false);
+      expect(
+        hasRequiredPermissions([VEHICLE_VALUATION_REVIEW_APPROVE_PERMISSION], requiredPermissions)
+      ).toBe(true);
     }
   });
 });
@@ -498,22 +517,15 @@ describe("customer order review permissions", () => {
 describe("order workspace permissions", () => {
   it("exposes workspace detail as an order-view GET endpoint", () => {
     const handler = (
-      OrderController.prototype as unknown as Record<
-        string,
-        (...args: unknown[]) => unknown
-      >
+      OrderController.prototype as unknown as Record<string, (...args: unknown[]) => unknown>
     ).getOrderWorkspaceDetail;
 
     expect(handler).toBeTypeOf("function");
     if (!handler) {
       throw new Error("workspace detail handler is missing");
     }
-    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
-      "orders/:id/workspace/detail"
-    );
-    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
-      RequestMethod.GET
-    );
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe("orders/:id/workspace/detail");
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(RequestMethod.GET);
     expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
       PermissionCode.ORDER_VIEW
     ]);
@@ -521,10 +533,7 @@ describe("order workspace permissions", () => {
 
   it("requires order and service-case view for scoped workspace service details", () => {
     const handler = (
-      OrderController.prototype as unknown as Record<
-        string,
-        (...args: unknown[]) => unknown
-      >
+      OrderController.prototype as unknown as Record<string, (...args: unknown[]) => unknown>
     ).getOrderWorkspaceServiceCase;
 
     expect(handler).toBeTypeOf("function");
@@ -534,9 +543,7 @@ describe("order workspace permissions", () => {
     expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
       "orders/:id/workspace/service-cases/:serviceCaseId"
     );
-    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(
-      RequestMethod.GET
-    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(RequestMethod.GET);
     expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
       PermissionCode.ORDER_VIEW,
       PermissionCode.SERVICE_CASE_VIEW
@@ -755,8 +762,12 @@ describe("service case permissions", () => {
     expect(statusPermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
     expect(actionPermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
     expect(closePermissions).toEqual([PermissionCode.SERVICE_CASE_MANAGE]);
-    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_VIEW], acceptPermissions)).toBe(false);
-    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_MANAGE], acceptPermissions)).toBe(true);
+    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_VIEW], acceptPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([PermissionCode.SERVICE_CASE_MANAGE], acceptPermissions)).toBe(
+      true
+    );
   });
 });
 
@@ -793,8 +804,12 @@ describe("vehicle insurance, document, and claim permissions", () => {
     expect(updatePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(archivePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(deletePermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
-    expect(hasRequiredPermissions([VEHICLE_INSURANCE_VIEW_PERMISSION], createPermissions)).toBe(false);
-    expect(hasRequiredPermissions([VEHICLE_INSURANCE_MANAGE_PERMISSION], createPermissions)).toBe(true);
+    expect(hasRequiredPermissions([VEHICLE_INSURANCE_VIEW_PERMISSION], createPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([VEHICLE_INSURANCE_MANAGE_PERMISSION], createPermissions)).toBe(
+      true
+    );
   });
 
   it("gates vehicle document APIs behind vehicle document permissions", () => {
@@ -822,12 +837,14 @@ describe("vehicle insurance, document, and claim permissions", () => {
     expect(listPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
     expect(previewPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
     expect(uploadPermissions).toEqual([VEHICLE_DOCUMENT_MANAGE_PERMISSION]);
-    expect(policyUploadPermissions).toEqual([
-      VEHICLE_INSURANCE_MANAGE_PERMISSION
-    ]);
+    expect(policyUploadPermissions).toEqual([VEHICLE_INSURANCE_MANAGE_PERMISSION]);
     expect(deletePermissions).toEqual([VEHICLE_DOCUMENT_MANAGE_PERMISSION]);
-    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_VIEW_PERMISSION], uploadPermissions)).toBe(false);
-    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_MANAGE_PERMISSION], uploadPermissions)).toBe(true);
+    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_VIEW_PERMISSION], uploadPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([VEHICLE_DOCUMENT_MANAGE_PERMISSION], uploadPermissions)).toBe(
+      true
+    );
   });
 
   it("gates insurance claim APIs behind claim permissions", () => {
@@ -852,8 +869,12 @@ describe("vehicle insurance, document, and claim permissions", () => {
     expect(detailPermissions).toEqual([INSURANCE_CLAIM_VIEW_PERMISSION]);
     expect(createPermissions).toEqual([INSURANCE_CLAIM_MANAGE_PERMISSION]);
     expect(updatePermissions).toEqual([INSURANCE_CLAIM_MANAGE_PERMISSION]);
-    expect(hasRequiredPermissions([INSURANCE_CLAIM_VIEW_PERMISSION], createPermissions)).toBe(false);
-    expect(hasRequiredPermissions([INSURANCE_CLAIM_MANAGE_PERMISSION], createPermissions)).toBe(true);
+    expect(hasRequiredPermissions([INSURANCE_CLAIM_VIEW_PERMISSION], createPermissions)).toBe(
+      false
+    );
+    expect(hasRequiredPermissions([INSURANCE_CLAIM_MANAGE_PERMISSION], createPermissions)).toBe(
+      true
+    );
   });
 });
 
@@ -886,7 +907,9 @@ describe("vehicle baas permissions", () => {
     ];
 
     for (const handler of viewHandlers) {
-      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([VEHICLE_BAAS_VIEW_PERMISSION]);
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        VEHICLE_BAAS_VIEW_PERMISSION
+      ]);
     }
     for (const handler of manageHandlers) {
       const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
@@ -934,8 +957,12 @@ describe("vehicle depreciation permissions", () => {
     for (const handler of manageHandlers) {
       const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
       expect(permissions).toEqual([VEHICLE_DEPRECIATION_MANAGE_PERMISSION]);
-      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_VIEW_PERMISSION], permissions)).toBe(false);
-      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_MANAGE_PERMISSION], permissions)).toBe(true);
+      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_VIEW_PERMISSION], permissions)).toBe(
+        false
+      );
+      expect(hasRequiredPermissions([VEHICLE_DEPRECIATION_MANAGE_PERMISSION], permissions)).toBe(
+        true
+      );
     }
   });
 });
@@ -1172,13 +1199,13 @@ describe("report permissions", () => {
     expect(assetProfitabilityVehiclesPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetProfitabilityVehiclesExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetProfitabilityVehicleDetailPermissions).toEqual([PermissionCode.REPORT_ASSET]);
-    expect(assetProfitabilityVehicleDetailExportPermissions).toEqual([
-      PermissionCode.REPORT_ASSET
-    ]);
+    expect(assetProfitabilityVehicleDetailExportPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetReturnTrialSummaryPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetReturnTrialVehiclesPermissions).toEqual([PermissionCode.REPORT_ASSET]);
     expect(assetReturnTrialVehicleDetailPermissions).toEqual([PermissionCode.REPORT_ASSET]);
-    expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetReturnTrialSummaryPermissions)).toBe(false);
+    expect(
+      hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetReturnTrialSummaryPermissions)
+    ).toBe(false);
     expect(
       hasRequiredPermissions([PermissionCode.REPORT_VIEW], assetProfitabilitySummaryPermissions)
     ).toBe(false);
@@ -1371,7 +1398,9 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain(
       `["${FLEET_OPS_MENU_CODE}", "车队运营", "/fleet-ops", "dashboard", 45, "${FLEET_OPS_READ_PERMISSION}", "vehicles"]`
     );
-    expect(seedSource).toContain(`const fleetOpsReadPermissions = ["${FLEET_OPS_READ_PERMISSION}"]`);
+    expect(seedSource).toContain(
+      `const fleetOpsReadPermissions = ["${FLEET_OPS_READ_PERMISSION}"]`
+    );
     expect(seedSource).toContain(`const fleetOpsMenuCodes = ["${FLEET_OPS_MENU_CODE}"]`);
     expectRolePermissions("OP", [FLEET_OPS_READ_PERMISSION]);
     expectRolePermissions("GM", [FLEET_OPS_READ_PERMISSION]);
@@ -1379,7 +1408,9 @@ describe("seed permission calibration", () => {
     expect(roleHasMenu(roleMenuArray("GM"), FLEET_OPS_MENU_CODE)).toBe(true);
 
     for (const roleCode of ["SA", "RC"]) {
-      expect(roleHasPermission(rolePermissionArray(roleCode), FLEET_OPS_READ_PERMISSION)).toBe(false);
+      expect(roleHasPermission(rolePermissionArray(roleCode), FLEET_OPS_READ_PERMISSION)).toBe(
+        false
+      );
       expect(roleHasMenu(roleMenuArray(roleCode), FLEET_OPS_MENU_CODE)).toBe(false);
     }
     expect(roleLoopSource(["FI", "AS"])).not.toContain("fleetOpsReadPermissions");
@@ -1477,14 +1508,18 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"]');
+    expect(seedSource).toContain(
+      'const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"]'
+    );
     expect(seedSource).toContain(
       'const vehicleInsuranceManagementPermissions = ["vehicle_insurance:view", "vehicle_insurance:manage"]'
     );
     expect(seedSource).toContain('["vehicles.insurance_policies"');
     expect(seedSource).toContain('"/vehicle-insurance-policies"');
     expect(seedSource).toContain('"vehicle_insurance:view"');
-    expect(seedSource).toContain('const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"]');
+    expect(seedSource).toContain(
+      'const vehicleInsuranceMenuCodes = ["vehicles.insurance_policies"]'
+    );
     expectRolePermissions("OP", ["vehicle_insurance:view", "vehicle_insurance:manage"]);
     expectRolePermissions("SA", ["vehicle_insurance:view"]);
     expectRolePermissions("GM", ["vehicle_insurance:view"]);
@@ -1500,20 +1535,22 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"]');
+    expect(seedSource).toContain(
+      'const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"]'
+    );
     expect(seedSource).toContain(
       'const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"]'
     );
     expect(seedSource).toContain(
       '["vehicles.depreciation_policies", "折旧管理", "/vehicle-depreciation-policies", "money", 29, "vehicle_depreciation:view", "vehicles"]'
     );
-    expect(seedSource).toContain('const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"]');
+    expect(seedSource).toContain(
+      'const vehicleDepreciationMenuCodes = ["vehicles.depreciation_policies"]'
+    );
     expect(seedSource).toContain(
       '...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : [])'
     );
-    expect(seedSource).toContain(
-      '...(roleCode === "FI" ? vehicleDepreciationMenuCodes : [])'
-    );
+    expect(seedSource).toContain('...(roleCode === "FI" ? vehicleDepreciationMenuCodes : [])');
     expectRolePermissions("OP", ["vehicle_depreciation:view", "vehicle_depreciation:manage"]);
     expectRolePermissions("SA", ["vehicle_depreciation:view"]);
     expectRolePermissions("GM", ["vehicle_depreciation:view"]);
@@ -1537,9 +1574,7 @@ describe("seed permission calibration", () => {
       '["vehicles.model_definitions", "车型代码", "/vehicle-model-definitions", "car", 15, "vehicle_model:view", "vehicles"]'
     );
     expect(seedSource).toContain('const vehicleModelMenuCodes = ["vehicles.model_definitions"]');
-    expect(seedSource).toContain(
-      '...(roleCode === "FI" ? vehicleModelManagementPermissions : [])'
-    );
+    expect(seedSource).toContain('...(roleCode === "FI" ? vehicleModelManagementPermissions : [])');
     expect(seedSource).toContain('...(roleCode === "FI" ? vehicleModelMenuCodes : [])');
     expectRolePermissions("OP", ["vehicle_model:view", "vehicle_model:manage"]);
     expectRolePermissions("SA", ["vehicle_model:view"]);
@@ -1560,21 +1595,21 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"]');
+    expect(seedSource).toContain(
+      'const vehicleValuationReviewViewPermissions = ["vehicle_valuation_review:view"]'
+    );
     expect(seedSource).toContain("const vehicleValuationReviewCreatePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewApprovePermissions = [");
     expect(seedSource).toContain("const vehicleValuationReviewManagementPermissions = [");
-    expect(seedSource).toContain('["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"]');
-    expect(seedSource).toContain('const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"]');
     expect(seedSource).toContain(
-      '...(roleCode === "AS"'
+      '["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"]'
     );
     expect(seedSource).toContain(
-      "? vehicleValuationReviewCreatePermissions"
+      'const vehicleValuationReviewMenuCodes = ["vehicles.valuation_reviews"]'
     );
-    expect(seedSource).toContain(
-      ": vehicleValuationReviewViewPermissions)"
-    );
+    expect(seedSource).toContain('...(roleCode === "AS"');
+    expect(seedSource).toContain("? vehicleValuationReviewCreatePermissions");
+    expect(seedSource).toContain(": vehicleValuationReviewViewPermissions)");
     expectRolePermissions("OP", [
       "vehicle_valuation_review:view",
       "vehicle_valuation_review:create",
@@ -1584,14 +1619,31 @@ describe("seed permission calibration", () => {
       "vehicle_valuation_review:view",
       "vehicle_valuation_review:approve"
     ]);
-    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:create")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewCreatePermissions"), "vehicle_valuation_review:approve")).toBe(false);
-    expect(roleHasPermission(permissionConstantSource("vehicleValuationReviewViewPermissions"), "vehicle_valuation_review:view")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("vehicleValuationReviewCreatePermissions"),
+        "vehicle_valuation_review:create"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("vehicleValuationReviewCreatePermissions"),
+        "vehicle_valuation_review:approve"
+      )
+    ).toBe(false);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("vehicleValuationReviewViewPermissions"),
+        "vehicle_valuation_review:view"
+      )
+    ).toBe(true);
     expect(seedSource).toContain("...vehicleValuationReviewMenuCodes");
     for (const roleCode of ["OP", "GM"]) {
       expect(roleHasMenu(roleMenuArray(roleCode), "vehicles.valuation_reviews")).toBe(true);
     }
-    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_valuation_review:view")).toBe(false);
+    expect(roleHasPermission(rolePermissionArray("SA"), "vehicle_valuation_review:view")).toBe(
+      false
+    );
   });
 
   it("calibrates A-line order review permissions by role", () => {
@@ -1676,9 +1728,13 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"]');
+    expect(seedSource).toContain(
+      '["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"]'
+    );
     expect(seedSource).toContain('const serviceCaseViewPermissions = ["service_case:view"]');
-    expect(seedSource).toContain('const serviceCaseManagePermissions = ["service_case:view", "service_case:manage"]');
+    expect(seedSource).toContain(
+      'const serviceCaseManagePermissions = ["service_case:view", "service_case:manage"]'
+    );
     expectRolePermissions("OP", ["service_case:view", "service_case:manage"]);
     expectRolePermissions("SA", ["service_case:view"]);
     expectRolePermissions("GM", ["service_case:view"]);
@@ -1693,9 +1749,13 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"]');
+    expect(seedSource).toContain(
+      '["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"]'
+    );
     expect(seedSource).toContain('const notificationViewPermissions = ["notification:view"]');
-    expect(seedSource).toContain('const notificationManagePermissions = ["notification:view", "notification:manage"]');
+    expect(seedSource).toContain(
+      'const notificationManagePermissions = ["notification:view", "notification:manage"]'
+    );
     expectRolePermissions("OP", ["notification:view", "notification:manage"]);
     expectRolePermissions("SA", ["notification:view"]);
     expectRolePermissions("GM", ["notification:view"]);
@@ -1752,7 +1812,9 @@ describe("seed permission calibration", () => {
       '...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions)'
     );
     expect(seedSource).toContain('const reportOverviewMenuCodes = ["reports", "reports.overview"]');
-    expect(seedSource).toContain('const reportAssetMenuCodes = ["reports", "reports.asset_profitability"]');
+    expect(seedSource).toContain(
+      'const reportAssetMenuCodes = ["reports", "reports.asset_profitability"]'
+    );
     expect(seedSource).toContain(
       '["reports", "经营看板", "/reports", "dashboard", 75, null, null]'
     );
@@ -1769,12 +1831,8 @@ describe("seed permission calibration", () => {
     ]) {
       const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
       expect(requiredPermissions).toEqual([PermissionCode.REPORT_ASSET]);
-      expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], requiredPermissions)).toBe(
-        false
-      );
-      expect(hasRequiredPermissions([PermissionCode.REPORT_ASSET], requiredPermissions)).toBe(
-        true
-      );
+      expect(hasRequiredPermissions([PermissionCode.REPORT_VIEW], requiredPermissions)).toBe(false);
+      expect(hasRequiredPermissions([PermissionCode.REPORT_ASSET], requiredPermissions)).toBe(true);
     }
     expect(roleHasMenu(roleMenuArray("OP"), "reports")).toBe(true);
     expect(roleHasMenu(roleMenuArray("OP"), "reports.overview")).toBe(true);
@@ -1788,7 +1846,9 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain('...(roleCode === "AS" ? reportAssetMenuCodes : [])');
     expect(roleHasPermission(rolePermissionArray("SA"), "report:view")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("SA"), "report:finance")).toBe(false);
-    expect(roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:asset")).toBe(true);
+    expect(
+      roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:asset")
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "report:finance")).toBe(false);
     expect(
       roleHasPermission(permissionConstantSource("reportAssetPermissions"), "report:view")
@@ -1811,20 +1871,38 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const capitalStructureViewPermissions = ["capital_structure:view"]');
+    expect(seedSource).toContain(
+      'const capitalStructureViewPermissions = ["capital_structure:view"]'
+    );
     expect(seedSource).toContain("const capitalStructureManagementPermissions = [");
     expect(seedSource).toContain('const financingViewPermissions = ["financing:view"]');
-    expect(seedSource).toContain('const financingManagementPermissions = ["financing:view", "financing:manage"]');
-    expect(seedSource).toContain('const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"]');
-    expect(seedSource).toContain('const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"]');
+    expect(seedSource).toContain(
+      'const financingManagementPermissions = ["financing:view", "financing:manage"]'
+    );
+    expect(seedSource).toContain(
+      'const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"]'
+    );
+    expect(seedSource).toContain(
+      'const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"]'
+    );
     expect(seedSource).toContain('const revenueRightViewPermissions = ["revenue_right:view"]');
     expect(seedSource).toContain("const revenueRightManagementPermissions = [");
     expect(seedSource).toContain('const revenueShareViewPermissions = ["revenue_share:view"]');
-    expect(seedSource).toContain('const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]');
-    expect(seedSource).toContain('["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"]');
-    expect(seedSource).toContain('["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"]');
-    expect(seedSource).toContain('["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]');
-    expect(seedSource).toContain('["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]');
+    expect(seedSource).toContain(
+      'const revenueShareManagementPermissions = ["revenue_share:view", "revenue_share:manage"]'
+    );
+    expect(seedSource).toContain(
+      '["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"]'
+    );
+    expect(seedSource).toContain(
+      '["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"]'
+    );
+    expect(seedSource).toContain(
+      '["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"]'
+    );
+    expect(seedSource).toContain(
+      '["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"]'
+    );
     expect(seedSource).toContain('const vehicleMenuCodes = ["vehicles", "vehicles.assets"]');
     expect(seedSource).toContain('const vehicleAssetPoolMenuCodes = ["vehicles.asset_pools"]');
     expect(seedSource).toContain('const financingMenuCodes = ["billing.financing_instruments"]');
@@ -1860,11 +1938,36 @@ describe("seed permission calibration", () => {
       expect(roleHasMenu(roleMenuArray(roleCode), "vehicles.asset_pools")).toBe(true);
       expect(roleHasMenu(roleMenuArray(roleCode), "billing.revenue_rights")).toBe(true);
     }
-    expect(roleHasPermission(permissionConstantSource("capitalStructureManagementPermissions"), "capital_structure:manage")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("financingManagementPermissions"), "financing:manage")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("vehicleAssetPoolManagementPermissions"), "vehicle_asset_pool:manage")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("revenueRightManagementPermissions"), "revenue_right:manage")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("revenueShareManagementPermissions"), "revenue_share:manage")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("capitalStructureManagementPermissions"),
+        "capital_structure:manage"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("financingManagementPermissions"),
+        "financing:manage"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("vehicleAssetPoolManagementPermissions"),
+        "vehicle_asset_pool:manage"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("revenueRightManagementPermissions"),
+        "revenue_right:manage"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("revenueShareManagementPermissions"),
+        "revenue_share:manage"
+      )
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "capital_structure:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "financing:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("OP"), "vehicle_asset_pool:manage")).toBe(false);
@@ -1887,7 +1990,9 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain('const residualMarketViewPermissions = ["residual_market:view"]');
     expect(seedSource).toContain("const residualMarketImportPermissions = [");
     expect(seedSource).toContain("const residualMarketManagementPermissions = [");
-    expect(seedSource).toContain('["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"]');
+    expect(seedSource).toContain(
+      '["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"]'
+    );
     expect(seedSource).toContain('const residualMarketMenuCodes = ["vehicles.residual_market"]');
     expect(seedSource).toContain(
       '...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions)'
@@ -1897,9 +2002,24 @@ describe("seed permission calibration", () => {
     expectRolePermissions("GM", ["residual_market:view"]);
     expect(roleHasMenu(roleMenuArray("OP"), "vehicles.residual_market")).toBe(true);
     expect(roleHasMenu(roleMenuArray("GM"), "vehicles.residual_market")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualMarketViewPermissions"), "residual_market:view")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualMarketImportPermissions"), "residual_market:import")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualMarketManagementPermissions"), "residual_market:manage")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualMarketViewPermissions"),
+        "residual_market:view"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualMarketImportPermissions"),
+        "residual_market:import"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualMarketManagementPermissions"),
+        "residual_market:manage"
+      )
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_market:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_market:manage")).toBe(false);
   });
@@ -1923,9 +2043,24 @@ describe("seed permission calibration", () => {
     );
     expectRolePermissions("OP", ["residual_curve:view", "residual_curve:generate"]);
     expectRolePermissions("GM", ["residual_curve:view"]);
-    expect(roleHasPermission(permissionConstantSource("residualCurveViewPermissions"), "residual_curve:view")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualCurveGeneratePermissions"), "residual_curve:generate")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualCurveManagementPermissions"), "residual_curve:manage")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualCurveViewPermissions"),
+        "residual_curve:view"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualCurveGeneratePermissions"),
+        "residual_curve:generate"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualCurveManagementPermissions"),
+        "residual_curve:manage"
+      )
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_curve:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_curve:generate")).toBe(false);
   });
@@ -1939,7 +2074,9 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const residualForecastViewPermissions = ["residual_forecast:view"]');
+    expect(seedSource).toContain(
+      'const residualForecastViewPermissions = ["residual_forecast:view"]'
+    );
     expect(seedSource).toContain(
       'const residualForecastGeneratePermissions = ["residual_forecast:view", "residual_forecast:generate"]'
     );
@@ -1949,9 +2086,24 @@ describe("seed permission calibration", () => {
     );
     expectRolePermissions("OP", ["residual_forecast:view", "residual_forecast:generate"]);
     expectRolePermissions("GM", ["residual_forecast:view"]);
-    expect(roleHasPermission(permissionConstantSource("residualForecastViewPermissions"), "residual_forecast:view")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualForecastGeneratePermissions"), "residual_forecast:generate")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualForecastManagementPermissions"), "residual_forecast:manage")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualForecastViewPermissions"),
+        "residual_forecast:view"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualForecastGeneratePermissions"),
+        "residual_forecast:generate"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualForecastManagementPermissions"),
+        "residual_forecast:manage"
+      )
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_forecast:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_forecast:generate")).toBe(false);
   });
@@ -1961,15 +2113,27 @@ describe("seed permission calibration", () => {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expect(seedSource).toContain('const residualModelRunViewPermissions = ["residual_model_run:view"]');
+    expect(seedSource).toContain(
+      'const residualModelRunViewPermissions = ["residual_model_run:view"]'
+    );
     expect(seedSource).toContain("const residualModelRunManagementPermissions = [");
     expect(seedSource).toContain(
       '...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions)'
     );
     expectRolePermissions("OP", ["residual_model_run:view"]);
     expectRolePermissions("GM", ["residual_model_run:view"]);
-    expect(roleHasPermission(permissionConstantSource("residualModelRunViewPermissions"), "residual_model_run:view")).toBe(true);
-    expect(roleHasPermission(permissionConstantSource("residualModelRunManagementPermissions"), "residual_model_run:manage")).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualModelRunViewPermissions"),
+        "residual_model_run:view"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("residualModelRunManagementPermissions"),
+        "residual_model_run:manage"
+      )
+    ).toBe(true);
     expect(roleHasPermission(rolePermissionArray("OP"), "residual_model_run:manage")).toBe(false);
     expect(roleHasPermission(rolePermissionArray("GM"), "residual_model_run:manage")).toBe(false);
   });
@@ -2014,7 +2178,9 @@ describe("seed permission calibration", () => {
 
   function roleLoopSource(roleCodes: string[]) {
     const roles = roleCodes.map((roleCode) => `"${escapeRegExp(roleCode)}"`).join(", ");
-    const pattern = new RegExp(`for \\(const roleCode of \\[${roles}\\]\\) \\{([\\s\\S]*?)\\n  \\}`);
+    const pattern = new RegExp(
+      `for \\(const roleCode of \\[${roles}\\]\\) \\{([\\s\\S]*?)\\n  \\}`
+    );
     const match = seedSource.match(pattern);
     const source = match?.[1];
 
@@ -2160,13 +2326,28 @@ describe("seed permission calibration", () => {
 
   it("gates every subscription journey administration route with its exact permission", () => {
     const routes = [
-      [SubscriptionJourneyController.prototype.getByApplication, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
-      [SubscriptionJourneyController.prototype.getByOrder, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
+      [
+        SubscriptionJourneyController.prototype.getByApplication,
+        PermissionCode.SUBSCRIPTION_JOURNEY_VIEW
+      ],
+      [
+        SubscriptionJourneyController.prototype.getByOrder,
+        PermissionCode.SUBSCRIPTION_JOURNEY_VIEW
+      ],
       [SubscriptionJourneyController.prototype.list, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
       [SubscriptionJourneyController.prototype.metrics, PermissionCode.SUBSCRIPTION_JOURNEY_VIEW],
-      [SubscriptionJourneyController.prototype.decideFinalPlan, PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE],
-      [SubscriptionJourneyController.prototype.allocateVehicle, PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE],
-      [SubscriptionJourneyController.prototype.decideDeliveryEvidence, PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE],
+      [
+        SubscriptionJourneyController.prototype.decideFinalPlan,
+        PermissionCode.SUBSCRIPTION_JOURNEY_PLAN_DECIDE
+      ],
+      [
+        SubscriptionJourneyController.prototype.allocateVehicle,
+        PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE
+      ],
+      [
+        SubscriptionJourneyController.prototype.decideDeliveryEvidence,
+        PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE
+      ],
       [SubscriptionJourneyController.prototype.retry, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
       [SubscriptionJourneyController.prototype.pause, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
       [SubscriptionJourneyController.prototype.resume, PermissionCode.SUBSCRIPTION_JOURNEY_RECOVER],
@@ -2174,9 +2355,7 @@ describe("seed permission calibration", () => {
     ] as const;
 
     for (const [handler, permission] of routes) {
-      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
-        permission
-      ]);
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([permission]);
     }
   });
 });

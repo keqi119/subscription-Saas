@@ -43,10 +43,7 @@ describe("attachment correction boundaries", () => {
     };
 
     expect(
-      canDeleteMaterialFile(
-        { salesUserId: user.id, status: ApplicationStatus.DRAFT },
-        user
-      )
+      canDeleteMaterialFile({ salesUserId: user.id, status: ApplicationStatus.DRAFT }, user)
     ).toBe(true);
     expect(() => assertDeleteMaterialFileInput(" ")).toThrow();
     expect(assertDeleteMaterialFileInput("重复上传")).toBe("重复上传");

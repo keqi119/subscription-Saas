@@ -21,9 +21,7 @@ describe("vehicle insurance policy correction UI", () => {
     expect(html).toContain("删除原因");
     expect(() => normalizePolicyDeleteReason(" ")).toThrow("2 到 500");
     expect(normalizePolicyDeleteReason("  重复录入  ")).toBe("重复录入");
-    expect(() => normalizePolicyDeleteReason("原".repeat(501))).toThrow(
-      "2 到 500"
-    );
+    expect(() => normalizePolicyDeleteReason("原".repeat(501))).toThrow("2 到 500");
   });
 
   it("keeps erroneous deletion under a low-frequency more menu", () => {
@@ -38,9 +36,7 @@ describe("vehicle insurance policy correction UI", () => {
   it("uses a policy-scoped attachment form with files and an optional remark only", () => {
     const source = readSource("policy-document-panel.tsx");
 
-    expect(source).toContain(
-      "/vehicle-insurance-policies/${policyId}/documents"
-    );
+    expect(source).toContain("/vehicle-insurance-policies/${policyId}/documents");
     expect(source).toContain("multiple");
     expect(source).toContain("maxCount={20}");
     expect(source).toContain("备注");
@@ -63,10 +59,7 @@ describe("vehicle insurance policy correction UI", () => {
 
 function readSource(fileName: string) {
   return fs.readFileSync(
-    path.resolve(
-      __dirname,
-      `../src/app/vehicle-insurance-policies/${fileName}`
-    ),
+    path.resolve(__dirname, `../src/app/vehicle-insurance-policies/${fileName}`),
     "utf8"
   );
 }

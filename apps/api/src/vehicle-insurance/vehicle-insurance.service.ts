@@ -202,9 +202,13 @@ const claimInclude = {
   }
 } satisfies Prisma.InsuranceClaimInclude;
 
-type PolicyWithRelations = Prisma.VehicleInsurancePolicyGetPayload<{ include: typeof policyInclude }>;
+type PolicyWithRelations = Prisma.VehicleInsurancePolicyGetPayload<{
+  include: typeof policyInclude;
+}>;
 type DocumentWithRelations = Prisma.VehicleDocumentGetPayload<{ include: typeof documentInclude }>;
-type DocumentBatchWithRelations = Prisma.VehicleDocumentBatchGetPayload<{ include: typeof documentBatchInclude }>;
+type DocumentBatchWithRelations = Prisma.VehicleDocumentBatchGetPayload<{
+  include: typeof documentBatchInclude;
+}>;
 type ClaimWithRelations = Prisma.InsuranceClaimGetPayload<{ include: typeof claimInclude }>;
 
 @Injectable()
@@ -316,8 +320,14 @@ export class VehicleInsuranceService {
     const data = buildPolicyUpdateData(dto, user.id);
 
     if (dto.effectiveFrom !== undefined || dto.effectiveTo !== undefined) {
-      const effectiveFrom = parseDateOnly(dto.effectiveFrom ?? toIsoDate(before.effectiveFrom)!, "effectiveFrom");
-      const effectiveTo = parseDateOnly(dto.effectiveTo ?? toIsoDate(before.effectiveTo)!, "effectiveTo");
+      const effectiveFrom = parseDateOnly(
+        dto.effectiveFrom ?? toIsoDate(before.effectiveFrom)!,
+        "effectiveFrom"
+      );
+      const effectiveTo = parseDateOnly(
+        dto.effectiveTo ?? toIsoDate(before.effectiveTo)!,
+        "effectiveTo"
+      );
       assertDateOrder(effectiveFrom, effectiveTo);
       data.effectiveFrom = effectiveFrom;
       data.effectiveTo = effectiveTo;
@@ -546,7 +556,10 @@ export class VehicleInsuranceService {
   ): Promise<VehicleDocumentView> {
     await this.findVehicleOrThrow(vehicleId);
     await this.validatePolicyForVehicle(vehicleId, dto.policyId);
-    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
+    const customerVisible = normalizeVehicleDocumentVisibility(
+      dto.documentType,
+      dto.customerVisible
+    );
     const file = (files ?? []).find((item) => item.buffer?.length);
     if (!file) {
       throw new BadRequestException("vehicle document file is required");
@@ -593,7 +606,10 @@ export class VehicleInsuranceService {
   ): Promise<VehicleDocumentBatchView> {
     await this.findVehicleOrThrow(vehicleId);
     await this.validatePolicyForVehicle(vehicleId, dto.policyId);
-    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
+    const customerVisible = normalizeVehicleDocumentVisibility(
+      dto.documentType,
+      dto.customerVisible
+    );
     const uploadFiles = (files ?? []).filter((file) => file.buffer?.length);
     if (uploadFiles.length === 0) {
       throw new BadRequestException("at least one vehicle document file is required");
@@ -744,7 +760,11 @@ export class VehicleInsuranceService {
     assignIfDefined(data, "description", normalizeOptionalText(dto.description));
     assignIfDefined(data, "documentStatus", dto.documentStatus);
     assignIfDefined(data, "documentType", dto.documentType);
-    assignIfDefined(data, "effectiveFrom", parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom"));
+    assignIfDefined(
+      data,
+      "effectiveFrom",
+      parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom")
+    );
     assignIfDefined(data, "effectiveTo", parseOptionalDateOnly(dto.effectiveTo, "effectiveTo"));
     assignIfDefined(data, "policyId", normalizeOptionalText(dto.policyId));
     assignIfDefined(data, "title", normalizeOptionalText(dto.title));
@@ -825,7 +845,11 @@ export class VehicleInsuranceService {
     return toClaimView(await this.findClaimOrThrow(id));
   }
 
-  async createClaimFromServiceCase(serviceCaseId: string, dto: CreateInsuranceClaimDto, user: RequestUser) {
+  async createClaimFromServiceCase(
+    serviceCaseId: string,
+    dto: CreateInsuranceClaimDto,
+    user: RequestUser
+  ) {
     const serviceCase = await this.prisma.serviceCase.findFirst({
       include: {
         customer: { select: { customerNo: true, id: true, mobile: true, name: true } },
@@ -842,7 +866,9 @@ export class VehicleInsuranceService {
       throw new NotFoundException("service case not found");
     }
     if (serviceCase.caseType !== ServiceCaseType.ACCIDENT_REPORT) {
-      throw new BadRequestException("insurance claim can only be created from accident service case");
+      throw new BadRequestException(
+        "insurance claim can only be created from accident service case"
+      );
     }
 
     const vehicleId = serviceCase.vehicleId ?? serviceCase.order?.vehicleId;
@@ -855,8 +881,13 @@ export class VehicleInsuranceService {
     const claim = await withUniqueBusinessNoRetry(() =>
       this.prisma.insuranceClaim.create({
         data: {
-          accidentAt: parseOptionalDateTime(dto.accidentAt ?? serviceCase.occurredAt?.toISOString(), "accidentAt"),
-          claimNo: useAutoNo ? createBusinessNo("IC") : normalizeRequiredText(dto.claimNo, "claimNo"),
+          accidentAt: parseOptionalDateTime(
+            dto.accidentAt ?? serviceCase.occurredAt?.toISOString(),
+            "accidentAt"
+          ),
+          claimNo: useAutoNo
+            ? createBusinessNo("IC")
+            : normalizeRequiredText(dto.claimNo, "claimNo"),
           claimStatus: dto.claimStatus ?? InsuranceClaimStatus.DRAFT,
           createdBy: user.id,
           customerId: serviceCase.customerId,
@@ -1079,11 +1110,19 @@ export class VehicleInsuranceService {
     }
   }
 
-  private async buildDocumentPreview(document: Pick<VehicleDocument, "bucket" | "fileName" | "fileSize" | "mimeType" | "objectKey" | "originalName">) {
+  private async buildDocumentPreview(
+    document: Pick<
+      VehicleDocument,
+      "bucket" | "fileName" | "fileSize" | "mimeType" | "objectKey" | "originalName"
+    >
+  ) {
     if (!document.bucket || !document.objectKey) {
       throw new NotFoundException("vehicle document object is missing");
     }
-    const downloaded = await this.storageService.getVehicleDocumentStream(document.bucket, document.objectKey);
+    const downloaded = await this.storageService.getVehicleDocumentStream(
+      document.bucket,
+      document.objectKey
+    );
     return {
       filename: document.originalName ?? document.fileName,
       mimeType: downloaded.contentType ?? document.mimeType,
@@ -1096,7 +1135,9 @@ export class VehicleInsuranceService {
     storedFiles: Array<{ stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>> }>
   ) {
     const results = await Promise.allSettled(
-      storedFiles.map(({ stored }) => this.storageService.deleteObject(stored.bucket, stored.objectKey))
+      storedFiles.map(({ stored }) =>
+        this.storageService.deleteObject(stored.bucket, stored.objectKey)
+      )
     );
     const failureCount = results.filter((result) => result.status === "rejected").length;
     if (failureCount > 0) {
@@ -1123,7 +1164,10 @@ export class VehicleInsuranceService {
     if (claimStatus === InsuranceClaimStatus.SUBMITTED) {
       data.submittedAt = now;
     }
-    if (claimStatus === InsuranceClaimStatus.ACCEPTED || claimStatus === InsuranceClaimStatus.IN_PROGRESS) {
+    if (
+      claimStatus === InsuranceClaimStatus.ACCEPTED ||
+      claimStatus === InsuranceClaimStatus.IN_PROGRESS
+    ) {
       data.acceptedAt = now;
     }
     if (
@@ -1209,7 +1253,11 @@ function buildPolicyUpdateData(dto: UpdateVehicleInsurancePolicyDto, userId: str
   assignIfDefined(data, "policyType", dto.policyType);
   assignIfDefined(data, "premiumAmount", moneyOrNull(dto.premiumAmount));
   assignIfDefined(data, "remark", normalizeOptionalText(dto.remark));
-  assignIfDefined(data, "renewalReminderAt", parseOptionalDateTime(dto.renewalReminderAt, "renewalReminderAt"));
+  assignIfDefined(
+    data,
+    "renewalReminderAt",
+    parseOptionalDateTime(dto.renewalReminderAt, "renewalReminderAt")
+  );
   return data;
 }
 
@@ -1224,7 +1272,10 @@ function buildCoverageCreateData(coverage: VehicleInsuranceCoverageInputDto) {
 }
 
 function toPolicyView(policy: PolicyWithRelations) {
-  const daysUntilExpiry = differenceInDays(startOfUtcDay(new Date()), startOfUtcDay(policy.effectiveTo));
+  const daysUntilExpiry = differenceInDays(
+    startOfUtcDay(new Date()),
+    startOfUtcDay(policy.effectiveTo)
+  );
   return {
     claimCount: policy.claims.length,
     coverages: policy.coverages.map(toCoverageView),
@@ -1319,9 +1370,7 @@ function toPolicyDocumentView(document: {
 function toDocumentView(document: DocumentWithRelations) {
   return {
     boundListingSections: [
-      ...new Set(
-        (document.listingSourceBindings ?? []).map(({ section }) => section)
-      )
+      ...new Set((document.listingSourceBindings ?? []).map(({ section }) => section))
     ],
     createdAt: document.createdAt,
     customerVisible: document.customerVisible,
@@ -1577,10 +1626,5 @@ function differenceInDays(from: Date, to: Date) {
 }
 
 function isPrismaUniqueConstraintError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }

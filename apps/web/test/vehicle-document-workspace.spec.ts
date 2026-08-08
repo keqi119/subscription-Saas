@@ -88,10 +88,11 @@ describe("vehicle rights document workspace model", () => {
     const groups = getRightsDocumentGroups([versionOne, versionThree]);
 
     expect(groups.map((group) => group.documentType)).toEqual(RIGHTS_DOCUMENT_TYPES);
-    expect(groups.find((group) => group.documentType === "VEHICLE_LICENSE")?.batches.map((batch) => batch.versionNo)).toEqual([
-      3,
-      1
-    ]);
+    expect(
+      groups
+        .find((group) => group.documentType === "VEHICLE_LICENSE")
+        ?.batches.map((batch) => batch.versionNo)
+    ).toEqual([3, 1]);
     expect(getActiveBatchFileCount(versionThree)).toBe(1);
   });
 
@@ -133,13 +134,10 @@ describe("vehicle rights document workspace model", () => {
   });
 
   it("builds one multipart batch with repeated files and no visibility field", () => {
-    const formData = buildVehicleDocumentBatchFormData(
-      "PURCHASE_PAYMENT_VOUCHER",
-      [
-        new File(["receipt-1"], "receipt-1.pdf", { type: "application/pdf" }),
-        new File(["receipt-2"], "receipt-2.jpg", { type: "image/jpeg" })
-      ]
-    );
+    const formData = buildVehicleDocumentBatchFormData("PURCHASE_PAYMENT_VOUCHER", [
+      new File(["receipt-1"], "receipt-1.pdf", { type: "application/pdf" }),
+      new File(["receipt-2"], "receipt-2.jpg", { type: "image/jpeg" })
+    ]);
 
     expect(formData.get("documentType")).toBe("PURCHASE_PAYMENT_VOUCHER");
     expect(formData.getAll("files")).toHaveLength(2);
@@ -164,9 +162,7 @@ describe("vehicle rights document workspace model", () => {
     expect(componentSource).toContain("/vehicle-document-batches/");
     expect(componentSource).toContain("删除错误文件");
     expect(componentSource).toContain("/vehicle-documents/${document.id}");
-    expect(componentSource).toContain(
-      "await Promise.all([loadWorkspace(), onVehicleChanged()])"
-    );
+    expect(componentSource).toContain("await Promise.all([loadWorkspace(), onVehicleChanged()])");
   });
 });
 

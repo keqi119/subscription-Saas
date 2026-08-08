@@ -119,9 +119,7 @@ export function VehicleDocumentsTab({
       new Map(
         bindings.map((binding) => [
           binding.document.id,
-          binding.section === "CONFIGURATION_SHEET"
-            ? "商品配置单已引用"
-            : "商品车况报告已引用"
+          binding.section === "CONFIGURATION_SHEET" ? "商品配置单已引用" : "商品车况报告已引用"
         ])
       ),
     [bindings]
@@ -131,7 +129,7 @@ export function VehicleDocumentsTab({
     [boundDocumentLabels]
   );
   const selectedGroup = selectedType
-    ? groups.find((group) => group.documentType === selectedType) ?? null
+    ? (groups.find((group) => group.documentType === selectedType) ?? null)
     : null;
   const fileLimit = selectedType ? getDocumentBatchFileLimit(selectedType) : 1;
 
@@ -209,8 +207,12 @@ export function VehicleDocumentsTab({
 
   return (
     <Flex data-vehicle-documents-tab="true" gap={16} vertical>
-      {error ? <Alert closable message={error} onClose={() => setError(null)} type="error" /> : null}
-      {notice ? <Alert closable message={notice} onClose={() => setNotice(null)} type="success" /> : null}
+      {error ? (
+        <Alert closable message={error} onClose={() => setError(null)} type="error" />
+      ) : null}
+      {notice ? (
+        <Alert closable message={notice} onClose={() => setNotice(null)} type="success" />
+      ) : null}
       <Card title="权证完整度">
         <Flex align="center" gap={16} wrap>
           <Progress
@@ -232,7 +234,11 @@ export function VehicleDocumentsTab({
               <Col key={group.documentType} lg={6} md={8} sm={12} xs={24}>
                 <Card
                   actions={[
-                    <Button key="detail" onClick={() => setSelectedType(group.documentType)} type="link">
+                    <Button
+                      key="detail"
+                      onClick={() => setSelectedType(group.documentType)}
+                      type="link"
+                    >
                       查看版本与上传
                     </Button>
                   ]}
@@ -244,7 +250,9 @@ export function VehicleDocumentsTab({
                     <Descriptions column={1} size="small">
                       <Descriptions.Item label="最新版本">V{latest.versionNo}</Descriptions.Item>
                       <Descriptions.Item label="有效文件">{activeFileCount} 个</Descriptions.Item>
-                      <Descriptions.Item label="上传时间">{formatDateTime(latest.createdAt)}</Descriptions.Item>
+                      <Descriptions.Item label="上传时间">
+                        {formatDateTime(latest.createdAt)}
+                      </Descriptions.Item>
                     </Descriptions>
                   ) : (
                     <Empty description="尚未上传" image={Empty.PRESENTED_IMAGE_SIMPLE} />

@@ -37,9 +37,7 @@ describe("AdminShellFrame", () => {
 
     expect(css).toMatch(/\.menuViewport\s*\{[\s\S]*?overflow-y:\s*auto/);
     expect(css).toMatch(/\.menuViewport\s*\{[\s\S]*?scrollbar-width:\s*none/);
-    expect(css).toMatch(
-      /\.menuViewport::-webkit-scrollbar\s*\{[\s\S]*?display:\s*none/
-    );
+    expect(css).toMatch(/\.menuViewport::-webkit-scrollbar\s*\{[\s\S]*?display:\s*none/);
     expect(css).not.toMatch(/\.menuViewport\s*\{[\s\S]*?overflow-y:\s*hidden/);
   });
 });

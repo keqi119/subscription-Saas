@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  EyeOutlined,
-  MoreOutlined,
-  PlusOutlined,
-  ReloadOutlined
-} from "@ant-design/icons";
+import { EyeOutlined, MoreOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -45,10 +40,7 @@ import {
   yuanFromCents
 } from "../../lib/capital-format";
 import { PolicyDeleteDialog } from "./policy-delete-dialog";
-import {
-  PolicyDocumentPanel,
-  type PolicyDocumentRow
-} from "./policy-document-panel";
+import { PolicyDocumentPanel, type PolicyDocumentRow } from "./policy-document-panel";
 
 interface VehicleBrief {
   brand: string;
@@ -330,7 +322,9 @@ export default function VehicleInsurancePoliciesPage() {
     {
       dataIndex: "policyStatus",
       render: (value: string) => (
-        <Tag color={statusColors[value] ?? "default"}>{labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, value)}</Tag>
+        <Tag color={statusColors[value] ?? "default"}>
+          {labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, value)}
+        </Tag>
       ),
       title: "状态"
     },
@@ -361,7 +355,8 @@ export default function VehicleInsurancePoliciesPage() {
     },
     {
       dataIndex: "daysUntilExpiry",
-      render: (value: number, row) => row.isExpiringSoon ? <Tag color="orange">{value} 天后到期</Tag> : `${value} 天`,
+      render: (value: number, row) =>
+        row.isExpiringSoon ? <Tag color="orange">{value} 天后到期</Tag> : `${value} 天`,
       title: "到期"
     },
     {
@@ -431,23 +426,45 @@ export default function VehicleInsurancePoliciesPage() {
           </Button>
         </Form>
 
-        <Table columns={columns} dataSource={rows} loading={loading} rowKey="id" scroll={{ x: 1400 }} />
+        <Table
+          columns={columns}
+          dataSource={rows}
+          loading={loading}
+          rowKey="id"
+          scroll={{ x: 1400 }}
+        />
       </Space>
 
-      <Drawer destroyOnClose onClose={() => setDrawerOpen(false)} open={drawerOpen} title={detail?.policyNo ?? "保单详情"} width={760}>
+      <Drawer
+        destroyOnClose
+        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen}
+        title={detail?.policyNo ?? "保单详情"}
+        width={760}
+      >
         {detail ? (
           <Space direction="vertical" size={18} style={{ width: "100%" }}>
             <Descriptions column={1} size="small">
-              <Descriptions.Item label="车辆">{detail.vehicle.displayName || detail.vehicle.vehicleNo}</Descriptions.Item>
-              <Descriptions.Item label="保单类型">{labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, detail.policyType)}</Descriptions.Item>
-              <Descriptions.Item label="状态">{labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, detail.policyStatus)}</Descriptions.Item>
+              <Descriptions.Item label="车辆">
+                {detail.vehicle.displayName || detail.vehicle.vehicleNo}
+              </Descriptions.Item>
+              <Descriptions.Item label="保单类型">
+                {labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, detail.policyType)}
+              </Descriptions.Item>
+              <Descriptions.Item label="状态">
+                {labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, detail.policyStatus)}
+              </Descriptions.Item>
               <Descriptions.Item label="保险公司">{detail.insurerName ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="投保人">{detail.policyHolderName ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="被保险人">{detail.insuredName ?? "-"}</Descriptions.Item>
-              <Descriptions.Item label="保险期间">{formatDate(detail.effectiveFrom)} 至 {formatDate(detail.effectiveTo)}</Descriptions.Item>
+              <Descriptions.Item label="保险期间">
+                {formatDate(detail.effectiveFrom)} 至 {formatDate(detail.effectiveTo)}
+              </Descriptions.Item>
               <Descriptions.Item label="保费">{formatYuan(detail.premiumAmount)}</Descriptions.Item>
               <Descriptions.Item label="保额">{formatYuan(detail.insuredAmount)}</Descriptions.Item>
-              <Descriptions.Item label="续保提醒">{formatDateTime(detail.renewalReminderAt)}</Descriptions.Item>
+              <Descriptions.Item label="续保提醒">
+                {formatDateTime(detail.renewalReminderAt)}
+              </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "-"}</Descriptions.Item>
             </Descriptions>
 
@@ -488,16 +505,35 @@ export default function VehicleInsurancePoliciesPage() {
         submitting={deleting}
       />
 
-      <Drawer destroyOnClose onClose={() => setFormOpen(false)} open={formOpen} title={editing ? "编辑保单" : "新建保单"} width={720}>
+      <Drawer
+        destroyOnClose
+        onClose={() => setFormOpen(false)}
+        open={formOpen}
+        title={editing ? "编辑保单" : "新建保单"}
+        width={720}
+      >
         <Form form={policyForm} layout="vertical" onFinish={(values) => void submitPolicy(values)}>
-          <Form.Item hidden={Boolean(editing)} label="车辆" name="vehicleId" rules={[{ required: !editing, message: "请选择车辆" }]}>
+          <Form.Item
+            hidden={Boolean(editing)}
+            label="车辆"
+            name="vehicleId"
+            rules={[{ required: !editing, message: "请选择车辆" }]}
+          >
             <Select optionFilterProp="label" options={vehicleOptions} showSearch />
           </Form.Item>
-          <Form.Item label="保单号" name="policyNo" rules={[{ required: true, message: "请输入保单号" }]}>
+          <Form.Item
+            label="保单号"
+            name="policyNo"
+            rules={[{ required: true, message: "请输入保单号" }]}
+          >
             <Input maxLength={128} />
           </Form.Item>
           <Space style={{ width: "100%" }} wrap>
-            <Form.Item label="保单类型" name="policyType" rules={[{ required: true, message: "请选择保单类型" }]}>
+            <Form.Item
+              label="保单类型"
+              name="policyType"
+              rules={[{ required: true, message: "请选择保单类型" }]}
+            >
               <Select options={policyTypeOptions} style={{ width: 180 }} />
             </Form.Item>
             <Form.Item label="状态" name="policyStatus">
@@ -508,10 +544,18 @@ export default function VehicleInsurancePoliciesPage() {
             </Form.Item>
           </Space>
           <Space style={{ width: "100%" }} wrap>
-            <Form.Item label="起保日期" name="effectiveFrom" rules={[{ required: true, message: "请选择起保日期" }]}>
+            <Form.Item
+              label="起保日期"
+              name="effectiveFrom"
+              rules={[{ required: true, message: "请选择起保日期" }]}
+            >
               <DatePicker />
             </Form.Item>
-            <Form.Item label="终保日期" name="effectiveTo" rules={[{ required: true, message: "请选择终保日期" }]}>
+            <Form.Item
+              label="终保日期"
+              name="effectiveTo"
+              rules={[{ required: true, message: "请选择终保日期" }]}
+            >
               <DatePicker />
             </Form.Item>
             <Form.Item label="续保提醒" name="renewalReminderAt">
@@ -547,17 +591,34 @@ export default function VehicleInsurancePoliciesPage() {
               <Space direction="vertical" style={{ width: "100%" }}>
                 {fields.map((field) => (
                   <Space align="baseline" key={field.key} wrap>
-                    <Form.Item name={[field.name, "coverageType"]} rules={[{ required: true, message: "请选择险种" }]}>
-                      <Select options={coverageTypeOptions} placeholder="险种" style={{ width: 170 }} />
+                    <Form.Item
+                      name={[field.name, "coverageType"]}
+                      rules={[{ required: true, message: "请选择险种" }]}
+                    >
+                      <Select
+                        options={coverageTypeOptions}
+                        placeholder="险种"
+                        style={{ width: 170 }}
+                      />
                     </Form.Item>
                     <Form.Item name={[field.name, "coverageName"]}>
                       <Input placeholder="险种名称" style={{ width: 150 }} />
                     </Form.Item>
                     <Form.Item name={[field.name, "insuredAmountYuan"]}>
-                      <InputNumber min={0} placeholder="保额(元)" precision={2} style={{ width: 130 }} />
+                      <InputNumber
+                        min={0}
+                        placeholder="保额(元)"
+                        precision={2}
+                        style={{ width: 130 }}
+                      />
                     </Form.Item>
                     <Form.Item name={[field.name, "deductibleAmountYuan"]}>
-                      <InputNumber min={0} placeholder="免赔(元)" precision={2} style={{ width: 130 }} />
+                      <InputNumber
+                        min={0}
+                        placeholder="免赔(元)"
+                        precision={2}
+                        style={{ width: 130 }}
+                      />
                     </Form.Item>
                     <Button danger onClick={() => remove(field.name)} size="small">
                       删除

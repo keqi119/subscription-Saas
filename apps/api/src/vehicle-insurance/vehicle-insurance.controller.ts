@@ -101,23 +101,14 @@ export class VehicleInsuranceController {
 
   @Post("vehicle-insurance-policies/:id/documents")
   @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
-  @UseInterceptors(
-    AnyFilesInterceptor(
-      createUtf8MultipartOptions({ limits: { files: 20 } })
-    )
-  )
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions({ limits: { files: 20 } })))
   uploadPolicyDocuments(
     @Param("id") id: string,
     @Body() dto: UploadPolicyDocumentsDto,
     @UploadedFiles() files: UploadedVehicleDocumentFile[] | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.vehicleInsuranceService.uploadPolicyDocuments(
-      id,
-      dto,
-      files,
-      request.user
-    );
+    return this.vehicleInsuranceService.uploadPolicyDocuments(id, dto, files, request.user);
   }
 
   @Get("vehicles/:id/documents")
@@ -170,10 +161,7 @@ export class VehicleInsuranceController {
 
   @Delete("vehicle-documents/:id")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  deleteDocument(
-    @Param("id") id: string,
-    @Req() request: AuthenticatedRequest
-  ) {
+  deleteDocument(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
     return this.vehicleInsuranceService.deleteDocument(id, request.user);
   }
 

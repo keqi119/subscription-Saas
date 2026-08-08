@@ -28,9 +28,7 @@ describe("portal bill detail records", () => {
   });
 
   it("uses payment status labels rather than payment-order labels for write-offs", () => {
-    const html = renderToStaticMarkup(
-      <PortalWriteOffRecords rows={[writeOffFixture()]} />
-    );
+    const html = renderToStaticMarkup(<PortalWriteOffRecords rows={[writeOffFixture()]} />);
 
     expect(html).toContain("已确认");
     expect(html).not.toContain("CONFIRMED");

@@ -57,7 +57,11 @@ function PortalEntitlementsContent() {
       <section style={{ margin: "0 auto", maxWidth: 960 }}>
         <Flex align="center" justify="space-between" style={{ marginBottom: 18 }}>
           <div>
-            <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal")} style={{ marginBottom: 12 }}>
+            <Button
+              icon={<ArrowLeftOutlined />}
+              onClick={() => router.push("/portal")}
+              style={{ marginBottom: 12 }}
+            >
               返回门户
             </Button>
             <Typography.Title level={2} style={{ margin: 0 }}>

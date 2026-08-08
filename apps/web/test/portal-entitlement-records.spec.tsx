@@ -8,10 +8,7 @@ import {
   PortalEntitlementGrantRecords,
   PortalEntitlementUsageRecords
 } from "../src/app/portal/entitlements/entitlement-records";
-import type {
-  PortalEntitlementGrant,
-  PortalEntitlementUsage
-} from "../src/lib/portal-types";
+import type { PortalEntitlementGrant, PortalEntitlementUsage } from "../src/lib/portal-types";
 
 describe("portal entitlement records", () => {
   it("renders grant and usage records as mobile cards from the same rows", () => {
@@ -44,10 +41,7 @@ describe("portal entitlement records", () => {
 
   it("switches to readable cards at the mobile breakpoint", () => {
     const css = readFileSync(
-      resolve(
-        __dirname,
-        "../src/app/portal/entitlements/entitlement-records.module.css"
-      ),
+      resolve(__dirname, "../src/app/portal/entitlements/entitlement-records.module.css"),
       "utf8"
     );
 

@@ -1,8 +1,4 @@
-import {
-  InsuranceClaimStatus,
-  ServiceCaseType,
-  VehicleInsurancePolicyType
-} from "@prisma/client";
+import { InsuranceClaimStatus, ServiceCaseType, VehicleInsurancePolicyType } from "@prisma/client";
 import { BadRequestException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
@@ -69,11 +65,13 @@ describe("Insurance claim foundation", () => {
 
   it("rejects claims from non-accident service cases", async () => {
     const { prisma, service, user } = createHarness();
-    prisma.serviceCase.findFirst.mockResolvedValueOnce(createServiceCase({ caseType: ServiceCaseType.RESCUE_REQUEST }));
+    prisma.serviceCase.findFirst.mockResolvedValueOnce(
+      createServiceCase({ caseType: ServiceCaseType.RESCUE_REQUEST })
+    );
 
-    await expect(
-      service.createClaimFromServiceCase("case-1", {}, user)
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.createClaimFromServiceCase("case-1", {}, user)).rejects.toBeInstanceOf(
+      BadRequestException
+    );
     expect(prisma.insuranceClaim.create).not.toHaveBeenCalled();
   });
 });

@@ -214,9 +214,7 @@ export class UpdateVehicleInsurancePolicyDto {
 }
 
 export class DeleteVehicleInsurancePolicyDto {
-  @Transform(({ value }) =>
-    typeof value === "string" ? value.trim() : value
-  )
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
   @IsString()
   @MinLength(2)
   @MaxLength(500)

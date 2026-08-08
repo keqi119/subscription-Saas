@@ -122,11 +122,7 @@ describe("VehicleInsuranceService policy and document management", () => {
       vehicle: vehicleBrief()
     } as never);
 
-    const result = await service.deletePolicy(
-      "policy-1",
-      { reason: "保单号记录录入错误" },
-      user
-    );
+    const result = await service.deletePolicy("policy-1", { reason: "保单号记录录入错误" }, user);
 
     expect(prisma.vehicleInsurancePolicy.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -193,10 +189,7 @@ describe("VehicleInsuranceService policy and document management", () => {
       VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
       VehicleDocumentType.COMPULSORY_INSURANCE_POLICY
     ],
-    [
-      VehicleInsurancePolicyType.COMMERCIAL,
-      VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY
-    ],
+    [VehicleInsurancePolicyType.COMMERCIAL, VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY],
     [VehicleInsurancePolicyType.OTHER, VehicleDocumentType.OTHER]
   ])("derives %s policy documents as %s", async (policyType, documentType) => {
     const { prisma, service, user } = createHarness({ policyType });
@@ -229,9 +222,9 @@ describe("VehicleInsuranceService policy and document management", () => {
       uploadFile(`policy-${index + 1}.pdf`, "application/pdf")
     );
 
-    await expect(
-      service.uploadPolicyDocuments("policy-1", {}, files, user)
-    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.uploadPolicyDocuments("policy-1", {}, files, user)).rejects.toBeInstanceOf(
+      BadRequestException
+    );
 
     expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
   });
@@ -299,8 +292,7 @@ describe("VehicleInsuranceService policy and document management", () => {
   });
 
   it("audits a successful document soft delete without deleting storage", async () => {
-    const { auditService, prisma, service, storageService, user } =
-      createHarness();
+    const { auditService, prisma, service, storageService, user } = createHarness();
 
     await service.deleteDocument("document-1", user);
 
@@ -365,9 +357,9 @@ describe("VehicleInsuranceService policy and document management", () => {
   it("rejects making an existing internal rights document customer-visible", async () => {
     const { prisma, service } = createHarness();
 
-    await expect(service.updateDocument("document-1", { customerVisible: true })).rejects.toBeInstanceOf(
-      BadRequestException
-    );
+    await expect(
+      service.updateDocument("document-1", { customerVisible: true })
+    ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
   });
@@ -390,9 +382,11 @@ describe("VehicleInsuranceService policy and document management", () => {
     expect(batch.items).toHaveLength(2);
     expect(batch.items.map((item) => item.fileName)).toEqual(["receipt-1.pdf", "receipt-2.jpg"]);
     expect(batch.items.every((item) => item.customerVisible === false)).toBe(true);
-    expect(batch.items.every((item) => !Object.hasOwn(item, "bucket") && !Object.hasOwn(item, "objectKey"))).toBe(
-      true
-    );
+    expect(
+      batch.items.every(
+        (item) => !Object.hasOwn(item, "bucket") && !Object.hasOwn(item, "objectKey")
+      )
+    ).toBe(true);
   });
 
   it.each([
@@ -470,7 +464,10 @@ describe("VehicleInsuranceService policy and document management", () => {
       service.uploadDocumentBatch(
         "vehicle-1",
         { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
-        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        [
+          uploadFile("receipt-1.pdf", "application/pdf"),
+          uploadFile("receipt-2.pdf", "application/pdf")
+        ],
         user
       )
     ).rejects.toThrow("storage unavailable");
@@ -494,12 +491,17 @@ describe("VehicleInsuranceService policy and document management", () => {
       service.uploadDocumentBatch(
         "vehicle-1",
         { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
-        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        [
+          uploadFile("receipt-1.pdf", "application/pdf"),
+          uploadFile("receipt-2.pdf", "application/pdf")
+        ],
         user
       )
     ).rejects.toThrow("storage unavailable");
 
-    expect(warn).toHaveBeenCalledWith("Failed to clean up 1 vehicle document object after batch upload failure");
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to clean up 1 vehicle document object after batch upload failure"
+    );
     warn.mockRestore();
   });
 
@@ -632,7 +634,9 @@ describe("VehicleInsuranceService policy and document management", () => {
     const { prisma, service } = createHarness();
     prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
 
-    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(
+      ConflictException
+    );
     expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
   });
 
@@ -700,30 +704,36 @@ function createHarness({
       }))
     },
     vehicleDocumentBatch: {
-      aggregate: vi.fn(async (): Promise<{ _max: { versionNo: number | null } }> => ({
-        _max: { versionNo: null }
-      })),
-      create: vi.fn(async ({
-        data
-      }: {
-        data: Record<string, unknown> & {
-          documents?: { create?: Record<string, unknown>[] };
-        };
-      }) => ({
-        createdAt: new Date("2026-06-22T08:00:00.000Z"),
-        documentType: data.documentType,
-        documents: (data.documents?.create ?? []).map((item: Record<string, unknown>, index: number) => ({
-          ...document,
-          ...item,
-          id: `document-${index + 1}`,
-          policy: null,
-          vehicle: vehicleBrief()
-        })),
-        id: "batch-1",
-        uploadedBy: data.uploadedBy,
-        vehicleId: data.vehicleId,
-        versionNo: data.versionNo
-      })),
+      aggregate: vi.fn(
+        async (): Promise<{ _max: { versionNo: number | null } }> => ({
+          _max: { versionNo: null }
+        })
+      ),
+      create: vi.fn(
+        async ({
+          data
+        }: {
+          data: Record<string, unknown> & {
+            documents?: { create?: Record<string, unknown>[] };
+          };
+        }) => ({
+          createdAt: new Date("2026-06-22T08:00:00.000Z"),
+          documentType: data.documentType,
+          documents: (data.documents?.create ?? []).map(
+            (item: Record<string, unknown>, index: number) => ({
+              ...document,
+              ...item,
+              id: `document-${index + 1}`,
+              policy: null,
+              vehicle: vehicleBrief()
+            })
+          ),
+          id: "batch-1",
+          uploadedBy: data.uploadedBy,
+          vehicleId: data.vehicleId,
+          versionNo: data.versionNo
+        })
+      ),
       findFirst: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null),
       findMany: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch>[]> => []),
       findUnique: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null)
@@ -742,8 +752,16 @@ function createHarness({
         documents: [],
         vehicle: vehicleBrief()
       })),
-      findFirst: vi.fn(async () => ({ ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() })),
-      findMany: vi.fn(async () => [{ ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() }]),
+      findFirst: vi.fn(async () => ({
+        ...policy,
+        claims: [],
+        coverages: [],
+        documents: [],
+        vehicle: vehicleBrief()
+      })),
+      findMany: vi.fn(async () => [
+        { ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() }
+      ]),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         ...policy,
         ...data,
@@ -757,8 +775,8 @@ function createHarness({
       findFirst: vi.fn(async (): Promise<{ id: string } | null> => null)
     }
   };
-  prisma.$transaction.mockImplementation(async (callback: (transaction: typeof prisma) => unknown) =>
-    callback(prisma)
+  prisma.$transaction.mockImplementation(
+    async (callback: (transaction: typeof prisma) => unknown) => callback(prisma)
   );
   const storageService = {
     deleteObject: vi.fn(),
@@ -839,8 +857,7 @@ function vehicleBrief() {
 }
 
 function createPolicy(
-  policyType: VehicleInsurancePolicyType =
-    VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+  policyType: VehicleInsurancePolicyType = VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
 ) {
   const now = new Date("2026-06-22T08:00:00.000Z");
   return {

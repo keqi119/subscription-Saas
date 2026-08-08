@@ -1,17 +1,7 @@
 "use client";
 
 import { DeleteOutlined, EyeOutlined, UploadOutlined } from "@ant-design/icons";
-import {
-  App,
-  Button,
-  Form,
-  Input,
-  Space,
-  Table,
-  Tooltip,
-  Typography,
-  Upload
-} from "antd";
+import { App, Button, Form, Input, Space, Table, Tooltip, Typography, Upload } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd/es/upload/interface";
 import { useState } from "react";
@@ -42,11 +32,7 @@ interface UploadFormValues {
   description?: string | null;
 }
 
-export function PolicyDocumentPanel({
-  documents,
-  onChanged,
-  policyId
-}: PolicyDocumentPanelProps) {
+export function PolicyDocumentPanel({ documents, onChanged, policyId }: PolicyDocumentPanelProps) {
   const { message, modal } = App.useApp();
   const [form] = Form.useForm<UploadFormValues>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
@@ -54,9 +40,7 @@ export function PolicyDocumentPanel({
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   async function uploadDocuments(values: UploadFormValues) {
-    const files = fileList.flatMap((file) =>
-      file.originFileObj ? [file.originFileObj] : []
-    );
+    const files = fileList.flatMap((file) => (file.originFileObj ? [file.originFileObj] : []));
     if (files.length === 0) {
       void message.warning("请选择保单附件");
       return;
@@ -171,13 +155,7 @@ export function PolicyDocumentPanel({
       <Typography.Title level={5} style={{ margin: 0 }}>
         保单附件
       </Typography.Title>
-      <Table
-        columns={columns}
-        dataSource={documents}
-        pagination={false}
-        rowKey="id"
-        size="small"
-      />
+      <Table columns={columns} dataSource={documents} pagination={false} rowKey="id" size="small" />
       <Form form={form} layout="vertical" onFinish={uploadDocuments}>
         <Form.Item label="备注" name="description">
           <Input.TextArea maxLength={1000} rows={2} showCount />
@@ -191,12 +169,7 @@ export function PolicyDocumentPanel({
         >
           <Button icon={<UploadOutlined />}>选择文件（最多 20 个）</Button>
         </Upload>
-        <Button
-          htmlType="submit"
-          loading={uploading}
-          style={{ marginTop: 12 }}
-          type="primary"
-        >
+        <Button htmlType="submit" loading={uploading} style={{ marginTop: 12 }} type="primary">
           上传
         </Button>
       </Form>

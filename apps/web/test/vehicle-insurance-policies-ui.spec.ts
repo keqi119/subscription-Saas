@@ -16,5 +16,7 @@ describe("vehicle insurance policy management UI", () => {
     expect(source).toContain('dataIndex: ["vehicle", "vin"]');
     expect(source).toContain('dataIndex: ["vehicle", "plateNo"]');
     expect(source).toContain('NOT_EFFECTIVE: "blue"');
+    expect(source).toContain("PolicyDocumentPanel");
+    expect(source).toContain("PolicyDeleteDialog");
   });
 });

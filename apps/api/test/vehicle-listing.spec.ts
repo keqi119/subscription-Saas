@@ -7,8 +7,10 @@ import {
   RecordStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
+  VehicleDocumentType,
   VehicleListingConditionGrade,
   VehicleListingMediaCategory,
+  VehicleListingSourceSection,
   VehicleListingStatus,
   VehicleStatus
 } from "@prisma/client";
@@ -19,6 +21,94 @@ import { describe, expect, it, vi } from "vitest";
 import { VehicleListingService } from "../src/vehicle/vehicle-listing.service";
 
 describe("VehicleListingService", () => {
+  it("binds an exact configuration sheet image from the same vehicle", async () => {
+    const { prisma, service, user } = createHarness();
+    prisma.vehicleDocument.findFirst.mockResolvedValueOnce(
+      sourceDocument({ documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET })
+    );
+
+    const result = await service.putSourceBinding(
+      "vehicle-1",
+      VehicleListingSourceSection.CONFIGURATION_SHEET,
+      "document-1",
+      user
+    );
+
+    expect(result.document.id).toBe("document-1");
+    expect(prisma.vehicleListingSourceBinding.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          vehicleId_section: {
+            section: VehicleListingSourceSection.CONFIGURATION_SHEET,
+            vehicleId: "vehicle-1"
+          }
+        }
+      })
+    );
+    expect(prisma.vehicleDocument.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          deletedAt: null,
+          documentStatus: "ACTIVE",
+          id: "document-1",
+          vehicleId: "vehicle-1"
+        }
+      })
+    );
+  });
+
+  it.each([
+    ["application/pdf", VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET],
+    ["image/jpeg", VehicleDocumentType.MOTOR_VEHICLE_INVOICE]
+  ])("rejects an incompatible source document", async (mimeType, documentType) => {
+    const { prisma, service, user } = createHarness();
+    prisma.vehicleDocument.findFirst.mockResolvedValueOnce(sourceDocument({ documentType, mimeType }));
+
+    await expect(
+      service.putSourceBinding(
+        "vehicle-1",
+        VehicleListingSourceSection.CONFIGURATION_SHEET,
+        "document-1",
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.vehicleListingSourceBinding.upsert).not.toHaveBeenCalled();
+  });
+
+  it("lists source bindings as sanitized document views", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleListingSourceBinding.findMany.mockResolvedValueOnce([sourceBinding()]);
+
+    const bindings = await service.listSourceBindings("vehicle-1");
+
+    expect(bindings[0]).toMatchObject({
+      document: {
+        id: "document-1",
+        previewUrl: "/api/vehicle-documents/document-1/preview",
+        versionNo: 2
+      },
+      section: VehicleListingSourceSection.CONFIGURATION_SHEET
+    });
+    expect(bindings[0]?.document).not.toHaveProperty("bucket");
+    expect(bindings[0]?.document).not.toHaveProperty("objectKey");
+  });
+
+  it("removes only the selected vehicle listing source binding", async () => {
+    const { prisma, service } = createHarness();
+
+    await expect(
+      service.deleteSourceBinding("vehicle-1", VehicleListingSourceSection.CONDITION_REPORT)
+    ).resolves.toBeUndefined();
+
+    expect(prisma.vehicleListingSourceBinding.deleteMany).toHaveBeenCalledWith({
+      where: {
+        section: VehicleListingSourceSection.CONDITION_REPORT,
+        vehicleId: "vehicle-1"
+      }
+    });
+  });
+
   it("upserts, publishes, and unpublishes a listing profile", async () => {
     const { prisma, service, user } = createHarness();
 
@@ -168,6 +258,9 @@ function createHarness() {
     vehicle: {
       findFirst: vi.fn(async () => vehicle)
     },
+    vehicleDocument: {
+      findFirst: vi.fn(async (): Promise<ReturnType<typeof sourceDocument> | null> => sourceDocument())
+    },
     vehicleListingMedia: {
       create: vi.fn(async () => media),
       findFirst: vi.fn(async () => media),
@@ -187,6 +280,13 @@ function createHarness() {
         ...create,
         ...update
       }))
+    },
+    vehicleListingSourceBinding: {
+      deleteMany: vi.fn(async () => ({ count: 1 })),
+      findMany: vi.fn(async (): Promise<ReturnType<typeof sourceBinding>[]> => []),
+      upsert: vi.fn(async ({ create }: { create: { documentId: string; section: VehicleListingSourceSection } }) =>
+        sourceBinding({ documentId: create.documentId, section: create.section })
+      )
     }
   };
   const storageService = {
@@ -235,6 +335,48 @@ function createVehicle() {
     status: VehicleStatus.AVAILABLE,
     updatedAt: now,
     vehicleNo: "VH001"
+  };
+}
+
+function sourceDocument(
+  overrides: Partial<{
+    documentType: VehicleDocumentType;
+    mimeType: string | null;
+  }> = {}
+) {
+  return {
+    batch: { versionNo: 2 },
+    batchId: "batch-1",
+    deletedAt: null,
+    documentStatus: "ACTIVE",
+    documentType: overrides.documentType ?? VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+    fileName: "configuration.jpg",
+    id: "document-1",
+    mimeType: overrides.mimeType ?? "image/jpeg",
+    vehicleId: "vehicle-1"
+  };
+}
+
+function sourceBinding(
+  overrides: Partial<{
+    documentId: string;
+    section: VehicleListingSourceSection;
+  }> = {}
+) {
+  const document = sourceDocument();
+  return {
+    createdAt: new Date("2026-06-21T10:00:00.000Z"),
+    createdBy: "user-1",
+    document: {
+      ...document,
+      id: overrides.documentId ?? document.id
+    },
+    documentId: overrides.documentId ?? document.id,
+    id: "binding-1",
+    section: overrides.section ?? VehicleListingSourceSection.CONFIGURATION_SHEET,
+    updatedAt: new Date("2026-06-21T10:00:00.000Z"),
+    updatedBy: "user-1",
+    vehicleId: "vehicle-1"
   };
 }
 

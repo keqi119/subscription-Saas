@@ -141,7 +141,7 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
       });
       await prisma.$executeRaw`
         UPDATE "subscription_journey_job"
-        SET "lease_expires_at" = clock_timestamp() - interval '1 second'
+        SET "lease_expires_at" = clock_timestamp() - interval '10 seconds'
         WHERE "id" = ${job.id}
       `;
 

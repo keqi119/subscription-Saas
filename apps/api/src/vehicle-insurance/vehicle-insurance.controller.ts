@@ -31,6 +31,7 @@ import {
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsurancePoliciesQueryDto
 } from "./dto/vehicle-insurance.dto";
@@ -91,6 +92,12 @@ export class VehicleInsuranceController {
     return this.vehicleInsuranceService.listDocuments(id);
   }
 
+  @Get("vehicles/:id/document-batches")
+  @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_VIEW)
+  listDocumentBatches(@Param("id") id: string) {
+    return this.vehicleInsuranceService.listDocumentBatches(id);
+  }
+
   @Post("vehicles/:id/documents")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
   @UseInterceptors(AnyFilesInterceptor())
@@ -101,6 +108,24 @@ export class VehicleInsuranceController {
     @Req() request: AuthenticatedRequest
   ) {
     return this.vehicleInsuranceService.uploadDocument(id, dto, files, request.user);
+  }
+
+  @Post("vehicles/:id/document-batches")
+  @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
+  @UseInterceptors(AnyFilesInterceptor())
+  uploadDocumentBatch(
+    @Param("id") id: string,
+    @Body() dto: UploadVehicleDocumentBatchDto,
+    @UploadedFiles() files: UploadedVehicleDocumentFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.uploadDocumentBatch(id, dto, files, request.user);
+  }
+
+  @Post("vehicle-document-batches/:batchId/archive")
+  @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
+  archiveDocumentBatch(@Param("batchId") batchId: string) {
+    return this.vehicleInsuranceService.archiveDocumentBatch(batchId);
   }
 
   @Patch("vehicle-documents/:id")

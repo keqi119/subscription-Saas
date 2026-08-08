@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseEnumPipe,
   Patch,
   Post,
   Put,
@@ -15,6 +16,7 @@ import {
   UseInterceptors
 } from "@nestjs/common";
 import { AnyFilesInterceptor } from "@nestjs/platform-express";
+import { VehicleListingSourceSection } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
@@ -23,6 +25,7 @@ import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   PutVehicleListingPlansDto,
+  PutVehicleListingSourceBindingDto,
   UpdateVehicleListingMediaDto,
   UploadVehicleListingMediaDto,
   UpsertVehicleListingProfileDto
@@ -33,6 +36,32 @@ import { UploadedVehicleListingFile, VehicleListingService } from "./vehicle-lis
 @UseGuards(AuthGuard, PermissionsGuard)
 export class VehicleListingController {
   constructor(private readonly vehicleListingService: VehicleListingService) {}
+
+  @Get("vehicles/:id/listing-source-bindings")
+  @RequirePermissions(PermissionCode.VEHICLE_VIEW)
+  listSourceBindings(@Param("id") id: string) {
+    return this.vehicleListingService.listSourceBindings(id);
+  }
+
+  @Put("vehicles/:id/listing-source-bindings/:section")
+  @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
+  putSourceBinding(
+    @Param("id") id: string,
+    @Param("section", new ParseEnumPipe(VehicleListingSourceSection)) section: VehicleListingSourceSection,
+    @Body() dto: PutVehicleListingSourceBindingDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleListingService.putSourceBinding(id, section, dto.documentId, request.user);
+  }
+
+  @Delete("vehicles/:id/listing-source-bindings/:section")
+  @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
+  deleteSourceBinding(
+    @Param("id") id: string,
+    @Param("section", new ParseEnumPipe(VehicleListingSourceSection)) section: VehicleListingSourceSection
+  ) {
+    return this.vehicleListingService.deleteSourceBinding(id, section);
+  }
 
   @Get("vehicles/:id/listing-profile")
   @RequirePermissions(PermissionCode.VEHICLE_VIEW)

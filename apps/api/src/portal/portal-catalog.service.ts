@@ -11,6 +11,9 @@ import {
   VehicleBatteryUsageType,
   VehicleConditionItemType,
   VehicleConditionReportStatus,
+  VehicleDocumentStatus,
+  VehicleDocumentType,
+  VehicleListingSourceSection,
   VehicleListingStatus,
   VehicleStatus
 } from "@prisma/client";
@@ -21,6 +24,19 @@ import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
 
 export interface PortalCatalogMediaPreview {
+  filename: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  stream: Readable;
+}
+
+export interface PortalCatalogSourceDocument {
+  previewUrl: string;
+  section: VehicleListingSourceSection;
+  title: string;
+}
+
+export interface PortalSourceDocumentPreview {
   filename: string;
   mimeType: string | null;
   sizeBytes: number;
@@ -111,8 +127,25 @@ const portalVehicleInclude = {
       deletedAt: null,
       reportStatus: VehicleConditionReportStatus.PUBLISHED
     }
+  },
+  listingSourceBindings: {
+    include: {
+      document: true
+    }
   }
 } satisfies Prisma.VehicleInclude;
+
+const SOURCE_DOCUMENT_TYPE_BY_SECTION = {
+  [VehicleListingSourceSection.CONFIGURATION_SHEET]: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+  [VehicleListingSourceSection.CONDITION_REPORT]: VehicleDocumentType.VEHICLE_INSPECTION_REPORT
+} satisfies Record<VehicleListingSourceSection, VehicleDocumentType>;
+
+const SOURCE_DOCUMENT_TITLE_BY_SECTION = {
+  [VehicleListingSourceSection.CONFIGURATION_SHEET]: "车辆配置单",
+  [VehicleListingSourceSection.CONDITION_REPORT]: "车辆检测报告"
+} satisfies Record<VehicleListingSourceSection, string>;
+
+const PORTAL_SOURCE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 type PortalSubscriptionPlan = Prisma.SubscriptionPlanGetPayload<{
   include: typeof portalSubscriptionPlanInclude;
@@ -222,6 +255,38 @@ export class PortalCatalogService {
       filename: media.originalName ?? media.fileName,
       mimeType: downloaded.contentType ?? media.mimeType,
       sizeBytes: downloaded.contentLength ?? media.fileSize ?? 0,
+      stream: downloaded.stream
+    };
+  }
+
+  async previewSourceDocument(
+    vehicleId: string,
+    section: VehicleListingSourceSection
+  ): Promise<PortalSourceDocumentPreview> {
+    if (!this.storageService) {
+      throw new NotFoundException("vehicle source document is not available");
+    }
+
+    const vehicle = await this.findAvailableVehicle(vehicleId);
+    if (!isProfileCustomerVisible(vehicle.listingProfile)) {
+      throw new NotFoundException("vehicle source document is not available");
+    }
+    const binding = validSourceBinding(vehicle, section);
+    if (!binding) {
+      throw new NotFoundException("vehicle source document is not available");
+    }
+
+    const document = binding.document;
+    let downloaded: Awaited<ReturnType<StorageService["getVehicleDocumentStream"]>>;
+    try {
+      downloaded = await this.storageService.getVehicleDocumentStream(document.bucket!, document.objectKey!);
+    } catch {
+      throw new NotFoundException("vehicle source document is not available");
+    }
+    return {
+      filename: document.originalName ?? document.fileName,
+      mimeType: downloaded.contentType ?? document.mimeType,
+      sizeBytes: downloaded.contentLength ?? document.fileSize ?? 0,
       stream: downloaded.stream
     };
   }
@@ -421,6 +486,12 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
   const report = latestConditionReport(vehicle);
   const condition = buildConditionView(profile, report);
   const battery = buildBatteryView(vehicle, profile, report);
+  const configurationSource = profile
+    ? toPortalSourceDocument(vehicle, VehicleListingSourceSection.CONFIGURATION_SHEET)
+    : null;
+  const conditionSource = profile
+    ? toPortalSourceDocument(vehicle, VehicleListingSourceSection.CONDITION_REPORT)
+    : null;
 
   return {
     ...listItem,
@@ -428,12 +499,17 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
     applicationProcess: DEFAULT_APPLICATION_PROCESS,
     battery,
     condition,
+    conditionDisplayMode: conditionSource ? "SOURCE_DOCUMENT" : report ? "STRUCTURED_REPORT" : "NONE",
     conditionReportSummary: report ? toConditionReportSummary(report) : null,
     coreHighlights: buildCoreHighlights(vehicle, profile),
     depositNotice: "押金金额将根据审核结果最终确认。",
     faq: faqArray(profile?.faqSnapshot),
     feeDescription: profile?.feeDescription ?? DEFAULT_FEE_DESCRIPTION,
     serviceHighlights: stringArray(profile?.serviceHighlights, DEFAULT_SERVICE_HIGHLIGHTS),
+    sourceDocuments: {
+      conditionReport: conditionSource,
+      configurationSheet: configurationSource
+    },
     submitButtonText: "提交审核",
     vehicle: {
       batteryCapacityKwh: decimalToNumber(vehicle.batteryCapacityKwh),
@@ -453,6 +529,39 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
     },
     vehicleHistorySummary: buildVehicleHistorySummary(condition)
   };
+}
+
+function toPortalSourceDocument(
+  vehicle: PortalVehicle,
+  section: VehicleListingSourceSection
+): PortalCatalogSourceDocument | null {
+  const binding = validSourceBinding(vehicle, section);
+  if (!binding) {
+    return null;
+  }
+  return {
+    previewUrl: `/api/portal/catalog/vehicles/${vehicle.id}/source-documents/${section}/preview`,
+    section,
+    title: SOURCE_DOCUMENT_TITLE_BY_SECTION[section]
+  };
+}
+
+function validSourceBinding(vehicle: PortalVehicle, section: VehicleListingSourceSection) {
+  return (
+    vehicle.listingSourceBindings.find(
+      (binding) =>
+        binding.section === section &&
+        binding.vehicleId === vehicle.id &&
+        binding.document.vehicleId === vehicle.id &&
+        !binding.document.deletedAt &&
+        binding.document.documentStatus === VehicleDocumentStatus.ACTIVE &&
+        binding.document.documentType === SOURCE_DOCUMENT_TYPE_BY_SECTION[section] &&
+        Boolean(binding.document.mimeType) &&
+        PORTAL_SOURCE_IMAGE_MIME_TYPES.has(binding.document.mimeType!) &&
+        Boolean(binding.document.bucket) &&
+        Boolean(binding.document.objectKey)
+    ) ?? null
+  );
 }
 
 function toPortalSubscriptionPlanView(

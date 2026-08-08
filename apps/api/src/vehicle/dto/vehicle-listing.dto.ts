@@ -12,6 +12,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   Min,
   ValidateNested
@@ -204,6 +205,11 @@ export class PutVehicleListingPlansDto {
   @ValidateNested({ each: true })
   @Type(() => VehicleListingPlanInputDto)
   plans!: VehicleListingPlanInputDto[];
+}
+
+export class PutVehicleListingSourceBindingDto {
+  @IsUUID()
+  documentId!: string;
 }
 
 function booleanField({ value }: { value: unknown }) {

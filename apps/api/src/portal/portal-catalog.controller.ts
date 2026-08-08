@@ -1,4 +1,14 @@
-import { Controller, Get, Param, Query, Res, StreamableFile } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  NotFoundException,
+  Param,
+  ParseEnumPipe,
+  Query,
+  Res,
+  StreamableFile
+} from "@nestjs/common";
+import { VehicleListingSourceSection } from "@prisma/client";
 import type { Response } from "express";
 
 import { PortalCatalogService } from "./portal-catalog.service";
@@ -28,6 +38,25 @@ export class PortalCatalogController {
     return this.portalCatalogService.getVehicleConditionReport(id);
   }
 
+  @Get("vehicles/:id/source-documents/:section/preview")
+  async previewSourceDocument(
+    @Param("id") id: string,
+    @Param(
+      "section",
+      new ParseEnumPipe(VehicleListingSourceSection, {
+        exceptionFactory: () => new NotFoundException()
+      })
+    )
+    section: VehicleListingSourceSection,
+    @Res({ passthrough: true }) response: Response
+  ) {
+    const preview = await this.portalCatalogService.previewSourceDocument(id, section);
+    response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
+    response.setHeader("Content-Length", String(preview.sizeBytes));
+    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    return new StreamableFile(preview.stream);
+  }
+
   @Get("vehicles/:id/media/:mediaId/preview")
   async previewVehicleMedia(
     @Param("id") id: string,
@@ -51,4 +80,3 @@ export class PortalCatalogController {
     return this.portalCatalogService.listVehicleSubscriptionPlans(id);
   }
 }
-

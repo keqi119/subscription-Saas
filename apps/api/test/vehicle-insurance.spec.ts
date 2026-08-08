@@ -1,10 +1,11 @@
 import {
   VehicleDocumentType,
+  VehicleDocumentStatus,
   VehicleInsuranceCoverageType,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType
 } from "@prisma/client";
-import { BadRequestException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Logger } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { VehicleInsuranceService } from "../src/vehicle-insurance/vehicle-insurance.service";
@@ -117,26 +118,329 @@ describe("VehicleInsuranceService policy and document management", () => {
       "vehicle-1",
       {
         customerVisible: true,
-        documentType: VehicleDocumentType.VEHICLE_LICENSE,
-        title: "行驶证"
+        documentType: VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY,
+        title: "商业险保单"
       },
-      [uploadFile("license.pdf", "application/pdf")],
+      [uploadFile("commercial-policy.pdf", "application/pdf")],
       user
     );
 
     expect(storageService.putVehicleDocument).toHaveBeenCalledWith(
       expect.objectContaining({
-        originalName: "license.pdf",
+        originalName: "commercial-policy.pdf",
         vehicleId: "vehicle-1"
       })
     );
     expect(document).toMatchObject({
       customerVisible: true,
-      documentType: VehicleDocumentType.VEHICLE_LICENSE,
+      documentType: VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY,
       previewUrl: "/api/vehicle-documents/document-1/preview"
     });
     expect(document).not.toHaveProperty("bucket");
     expect(document).not.toHaveProperty("objectKey");
+  });
+
+  it("rejects customer-visible internal rights document uploads", async () => {
+    const { service, storageService, user } = createHarness();
+
+    await expect(
+      service.uploadDocument(
+        "vehicle-1",
+        {
+          customerVisible: true,
+          documentType: VehicleDocumentType.VEHICLE_LICENSE
+        },
+        [uploadFile("license.pdf", "application/pdf")],
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects making an existing internal rights document customer-visible", async () => {
+    const { prisma, service } = createHarness();
+
+    await expect(service.updateDocument("document-1", { customerVisible: true })).rejects.toBeInstanceOf(
+      BadRequestException
+    );
+
+    expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+  });
+
+  it("stores multiple purchase payment receipts in one versioned batch", async () => {
+    const { service, user } = createHarness();
+
+    const batch = await service.uploadDocumentBatch(
+      "vehicle-1",
+      { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
+      [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.jpg", "image/jpeg")],
+      user
+    );
+
+    expect(batch).toMatchObject({
+      documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER,
+      id: "batch-1",
+      versionNo: 1
+    });
+    expect(batch.items).toHaveLength(2);
+    expect(batch.items.map((item) => item.fileName)).toEqual(["receipt-1.pdf", "receipt-2.jpg"]);
+    expect(batch.items.every((item) => item.customerVisible === false)).toBe(true);
+    expect(batch.items.every((item) => !Object.hasOwn(item, "bucket") && !Object.hasOwn(item, "objectKey"))).toBe(
+      true
+    );
+  });
+
+  it.each([
+    VehicleDocumentType.VEHICLE_PURCHASE_AGREEMENT,
+    VehicleDocumentType.OWNER_IDENTITY_DOCUMENT,
+    VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER
+  ])("accepts multiple files for %s", async (documentType) => {
+    const { service, user } = createHarness();
+
+    const batch = await service.uploadDocumentBatch(
+      "vehicle-1",
+      { documentType },
+      [uploadFile("part-1.pdf", "application/pdf"), uploadFile("part-2.jpg", "image/jpeg")],
+      user
+    );
+
+    expect(batch.items).toHaveLength(2);
+  });
+
+  it("rejects an empty vehicle document batch before storage", async () => {
+    const { service, storageService, user } = createHarness();
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
+        [],
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects more than twenty files before storage", async () => {
+    const { service, storageService, user } = createHarness();
+    const files = Array.from({ length: 21 }, (_, index) =>
+      uploadFile(`receipt-${index + 1}.pdf`, "application/pdf")
+    );
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
+        files,
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects the whole batch before storage when any file is unsupported", async () => {
+    const { service, storageService, user } = createHarness();
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.VEHICLE_PURCHASE_AGREEMENT },
+        [uploadFile("agreement.pdf", "application/pdf"), uploadFile("recording.mp4", "video/mp4")],
+        user
+      )
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("cleans up already stored objects when a later file upload fails", async () => {
+    const { service, storageService, user } = createHarness();
+    storageService.putVehicleDocument
+      .mockResolvedValueOnce(storedDocument("receipt-1.pdf"))
+      .mockRejectedValueOnce(new Error("storage unavailable"));
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
+        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        user
+      )
+    ).rejects.toThrow("storage unavailable");
+
+    expect(storageService.deleteObject).toHaveBeenCalledTimes(1);
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-documents/vehicle-1/2026/receipt-1.pdf"
+    );
+  });
+
+  it("records cleanup failures without replacing the original upload error", async () => {
+    const { service, storageService, user } = createHarness();
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    storageService.putVehicleDocument
+      .mockResolvedValueOnce(storedDocument("receipt-1.pdf"))
+      .mockRejectedValueOnce(new Error("storage unavailable"));
+    storageService.deleteObject.mockRejectedValueOnce(new Error("cleanup unavailable"));
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
+        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        user
+      )
+    ).rejects.toThrow("storage unavailable");
+
+    expect(warn).toHaveBeenCalledWith("Failed to clean up 1 vehicle document object after batch upload failure");
+    warn.mockRestore();
+  });
+
+  it("cleans up every newly stored object when the batch transaction fails", async () => {
+    const { prisma, service, storageService, user } = createHarness();
+    prisma.$transaction.mockRejectedValueOnce(new Error("database unavailable"));
+
+    await expect(
+      service.uploadDocumentBatch(
+        "vehicle-1",
+        { documentType: VehicleDocumentType.OWNER_IDENTITY_DOCUMENT },
+        [uploadFile("license.pdf", "application/pdf"), uploadFile("id-card.jpg", "image/jpeg")],
+        user
+      )
+    ).rejects.toThrow("database unavailable");
+
+    expect(storageService.deleteObject).toHaveBeenCalledTimes(2);
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-documents/vehicle-1/2026/license.pdf"
+    );
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-documents/vehicle-1/2026/id-card.jpg"
+    );
+  });
+
+  it("retries a concurrent batch version collision without re-uploading the file", async () => {
+    const { prisma, service, storageService, user } = createHarness();
+    prisma.vehicleDocumentBatch.aggregate.mockResolvedValue({ _max: { versionNo: 1 } });
+    prisma.vehicleDocumentBatch.create.mockRejectedValueOnce({ code: "P2002" });
+
+    const batch = await service.uploadDocumentBatch(
+      "vehicle-1",
+      { documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET },
+      [uploadFile("configuration.jpg", "image/jpeg")],
+      user
+    );
+
+    expect(batch.versionNo).toBe(2);
+    expect(storageService.putVehicleDocument).toHaveBeenCalledTimes(1);
+    expect(storageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("allows three transaction attempts for repeated batch version collisions", async () => {
+    const { prisma, service, storageService, user } = createHarness();
+    prisma.vehicleDocumentBatch.aggregate.mockResolvedValue({ _max: { versionNo: 1 } });
+    prisma.vehicleDocumentBatch.create
+      .mockRejectedValueOnce({ code: "P2002" })
+      .mockRejectedValueOnce({ code: "P2002" });
+
+    const batch = await service.uploadDocumentBatch(
+      "vehicle-1",
+      { documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET },
+      [uploadFile("configuration.jpg", "image/jpeg")],
+      user
+    );
+
+    expect(batch.versionNo).toBe(2);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(3);
+    expect(storageService.putVehicleDocument).toHaveBeenCalledTimes(1);
+    expect(storageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("lists document batch versions without exposing storage object fields", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleDocumentBatch.findMany.mockResolvedValue([
+      createDocumentBatch("batch-2", 2),
+      createDocumentBatch("batch-1", 1)
+    ]);
+
+    const batches = await service.listDocumentBatches("vehicle-1");
+
+    expect(batches.map((batch) => batch.versionNo)).toEqual([2, 1]);
+    expect(batches[0]?.items[0]).not.toHaveProperty("bucket");
+    expect(batches[0]?.items[0]).not.toHaveProperty("objectKey");
+    expect(prisma.vehicleDocumentBatch.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ documentType: "asc" }, { versionNo: "desc" }],
+        where: { vehicleId: "vehicle-1" }
+      })
+    );
+  });
+
+  it("archives every active item in a document batch without deleting stored originals", async () => {
+    const { prisma, service, storageService } = createHarness();
+    const batch = createDocumentBatch("batch-1", 1);
+    prisma.vehicleDocumentBatch.findFirst.mockResolvedValue(batch);
+    prisma.vehicleDocumentBatch.findUnique.mockResolvedValue({
+      ...batch,
+      documents: batch.documents.map((document) => ({
+        ...document,
+        customerVisible: false,
+        documentStatus: "ARCHIVED"
+      }))
+    });
+
+    const archived = await service.archiveDocumentBatch("batch-1");
+
+    expect(archived.items.every((item) => item.documentStatus === "ARCHIVED")).toBe(true);
+    expect(archived.items.every((item) => item.customerVisible === false)).toBe(true);
+    expect(prisma.vehicleDocument.updateMany).toHaveBeenCalledWith({
+      data: {
+        customerVisible: false,
+        documentStatus: "ARCHIVED"
+      },
+      where: {
+        batchId: "batch-1",
+        deletedAt: null
+      }
+    });
+    expect(storageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting a document that is bound to a product listing section", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.deleteDocument("document-1")).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { documentStatus: VehicleDocumentStatus.ARCHIVED },
+    { documentType: VehicleDocumentType.MOTOR_VEHICLE_INVOICE }
+  ])("rejects an incompatible update to a bound source document", async (dto) => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects archiving a batch that contains a product listing source document", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleDocumentBatch.findFirst.mockResolvedValueOnce(createDocumentBatch("batch-1", 1));
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
+
+    await expect(service.archiveDocumentBatch("batch-1")).rejects.toMatchObject({
+      response: {
+        code: "VEHICLE_DOCUMENT_SOURCE_BOUND"
+      }
+    });
+
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
   });
 
   it("rejects video vehicle document uploads", async () => {
@@ -158,6 +462,7 @@ function createHarness() {
   const policy = createPolicy();
   const document = createDocument();
   const prisma = {
+    $transaction: vi.fn(),
     insuranceClaim: {
       count: vi.fn(async () => 0),
       findMany: vi.fn(async () => [])
@@ -177,12 +482,42 @@ function createHarness() {
       })),
       findFirst: vi.fn(async () => ({ ...document, policy: null, vehicle: vehicleBrief() })),
       findMany: vi.fn(async () => [{ ...document, policy: null, vehicle: vehicleBrief() }]),
+      updateMany: vi.fn(async () => ({ count: 1 })),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         ...document,
         ...data,
         policy: null,
         vehicle: vehicleBrief()
       }))
+    },
+    vehicleDocumentBatch: {
+      aggregate: vi.fn(async (): Promise<{ _max: { versionNo: number | null } }> => ({
+        _max: { versionNo: null }
+      })),
+      create: vi.fn(async ({
+        data
+      }: {
+        data: Record<string, unknown> & {
+          documents?: { create?: Record<string, unknown>[] };
+        };
+      }) => ({
+        createdAt: new Date("2026-06-22T08:00:00.000Z"),
+        documentType: data.documentType,
+        documents: (data.documents?.create ?? []).map((item: Record<string, unknown>, index: number) => ({
+          ...document,
+          ...item,
+          id: `document-${index + 1}`,
+          policy: null,
+          vehicle: vehicleBrief()
+        })),
+        id: "batch-1",
+        uploadedBy: data.uploadedBy,
+        vehicleId: data.vehicleId,
+        versionNo: data.versionNo
+      })),
+      findFirst: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null),
+      findMany: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch>[]> => []),
+      findUnique: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null)
     },
     vehicleInsuranceCoverage: {
       createMany: vi.fn(async () => ({ count: 1 })),
@@ -208,16 +543,23 @@ function createHarness() {
         documents: [],
         vehicle: vehicleBrief()
       }))
+    },
+    vehicleListingSourceBinding: {
+      findFirst: vi.fn(async (): Promise<{ id: string } | null> => null)
     }
   };
+  prisma.$transaction.mockImplementation(async (callback: (transaction: typeof prisma) => unknown) =>
+    callback(prisma)
+  );
   const storageService = {
+    deleteObject: vi.fn(),
     getVehicleDocumentStream: vi.fn(),
-    putVehicleDocument: vi.fn(async () => ({
+    putVehicleDocument: vi.fn(async (input: { originalName?: string }) => ({
       bucket: "private-bucket",
-      objectKey: "vehicle-documents/vehicle-1/2026/license.pdf",
+      objectKey: `vehicle-documents/vehicle-1/2026/${input.originalName ?? "file"}`,
       stored: {
         driver: "local" as const,
-        key: "vehicle-documents/vehicle-1/2026/license.pdf",
+        key: `vehicle-documents/vehicle-1/2026/${input.originalName ?? "file"}`,
         size: 128
       }
     }))
@@ -252,6 +594,19 @@ function uploadFile(originalname: string, mimetype: string) {
     mimetype,
     originalname,
     size: 128
+  };
+}
+
+function storedDocument(originalName: string) {
+  const objectKey = `vehicle-documents/vehicle-1/2026/${originalName}`;
+  return {
+    bucket: "private-bucket",
+    objectKey,
+    stored: {
+      driver: "local" as const,
+      key: objectKey,
+      size: 128
+    }
   };
 }
 
@@ -339,5 +694,26 @@ function createDocument() {
     uploadedBy: "user-1",
     vehicle: vehicleBrief(),
     vehicleId: "vehicle-1"
+  };
+}
+
+function createDocumentBatch(id: string, versionNo: number) {
+  return {
+    createdAt: new Date("2026-06-22T08:00:00.000Z"),
+    documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+    documents: [
+      {
+        ...createDocument(),
+        batchId: id,
+        customerVisible: false,
+        documentType: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+        policy: null,
+        vehicle: vehicleBrief()
+      }
+    ],
+    id,
+    uploadedBy: "user-1",
+    vehicleId: "vehicle-1",
+    versionNo
   };
 }

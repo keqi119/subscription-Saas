@@ -248,6 +248,8 @@ export class UploadVehicleDocumentDto {
   customerVisible?: boolean;
 }
 
+export class UploadVehicleDocumentBatchDto extends UploadVehicleDocumentDto {}
+
 export class UpdateVehicleDocumentDto {
   @IsOptional()
   @IsEnum(VehicleDocumentType)

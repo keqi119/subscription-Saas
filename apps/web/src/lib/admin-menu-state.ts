@@ -22,7 +22,11 @@ export function getAdminMenuState(
     return cloneState(memoryState);
   }
 
-  memoryState = storage ? readStorageState(storage) : defaultState();
+  if (!storage) {
+    return defaultState();
+  }
+
+  memoryState = readStorageState(storage);
   return cloneState(memoryState);
 }
 

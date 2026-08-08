@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { PortalCatalogCard } from "../src/app/portal/catalog/portal-catalog-card";
+import {
+  isCatalogImageFailed,
+  PortalCatalogCard
+} from "../src/app/portal/catalog/portal-catalog-card";
 import type { PortalCatalogVehicle } from "../src/lib/portal-types";
 
 describe("PortalCatalogCard", () => {
@@ -30,6 +33,7 @@ describe("PortalCatalogCard", () => {
     );
 
     expect(html).toContain('alt="NIO ES6 2024款"');
+    expect(html).toContain('loading="lazy"');
     expect(html).toContain('src="http://localhost:3001/uploads/vehicle-1.jpg"');
   });
 
@@ -55,6 +59,12 @@ describe("PortalCatalogCard", () => {
     );
 
     expect(html).toContain("月租审核后确认");
+  });
+
+  it("detects an image that failed before hydration attached its error listener", () => {
+    expect(isCatalogImageFailed({ complete: true, naturalWidth: 0 })).toBe(true);
+    expect(isCatalogImageFailed({ complete: true, naturalWidth: 128 })).toBe(false);
+    expect(isCatalogImageFailed({ complete: false, naturalWidth: 0 })).toBe(false);
   });
 });
 

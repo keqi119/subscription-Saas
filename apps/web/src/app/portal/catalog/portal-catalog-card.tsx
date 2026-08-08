@@ -4,7 +4,7 @@
 
 import { CarOutlined } from "@ant-design/icons";
 import { Button, Tag } from "antd";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { PORTAL_API_BASE_URL } from "../../../lib/portal-api";
 import type { PortalCatalogVehicle } from "../../../lib/portal-types";
@@ -75,12 +75,22 @@ function VehicleCoverImage({
   vehicle
 }: Readonly<{ title: string; vehicle: PortalCatalogVehicle }>) {
   const [imageFailed, setImageFailed] = useState(false);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    if (imageRef.current && isCatalogImageFailed(imageRef.current)) {
+      setImageFailed(true);
+    }
+  }, [vehicle.coverImageUrl]);
+
   if (vehicle.coverImageUrl && !imageFailed) {
     return (
       <div className={styles.media}>
         <img
           alt={title}
+          loading="lazy"
           onError={() => setImageFailed(true)}
+          ref={imageRef}
           src={buildPortalAssetUrl(vehicle.coverImageUrl)}
         />
       </div>
@@ -96,6 +106,12 @@ function VehicleCoverImage({
       <span>暂无车辆图片</span>
     </div>
   );
+}
+
+export function isCatalogImageFailed(
+  image: Readonly<Pick<HTMLImageElement, "complete" | "naturalWidth">>
+) {
+  return image.complete && image.naturalWidth === 0;
 }
 
 function buildPortalAssetUrl(url: string) {

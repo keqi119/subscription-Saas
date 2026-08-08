@@ -95,16 +95,36 @@ const permissionRows = [
   ["subscription_change:view", "查看合同变更", "subscription_change", "view"],
   ["subscription_change:create", "创建合同变更", "subscription_change", "create"],
   ["subscription_change:quote", "生成合同变更报价", "subscription_change", "quote"],
-  ["subscription_change:price_override_approve", "审批合同变更价格例外", "subscription_change", "price_override_approve"],
+  [
+    "subscription_change:price_override_approve",
+    "审批合同变更价格例外",
+    "subscription_change",
+    "price_override_approve"
+  ],
   ["subscription_change:submit", "提交合同变更", "subscription_change", "submit"],
   ["subscription_change:esign_retry", "重试合同变更电子签", "subscription_change", "esign_retry"],
   ["subscription_change:execute", "执行合同变更", "subscription_change", "execute"],
-  ["subscription_change:manual_takeover", "人工接管合同变更", "subscription_change", "manual_takeover"],
+  [
+    "subscription_change:manual_takeover",
+    "人工接管合同变更",
+    "subscription_change",
+    "manual_takeover"
+  ],
   ["subscription_change:cancel", "取消合同变更", "subscription_change", "cancel"],
   ["subscription_journey:view", "查看订阅旅程", "subscription_journey", "view"],
   ["subscription_journey:plan_decide", "决策最终方案", "subscription_journey", "plan_decide"],
-  ["subscription_journey:vehicle_allocate", "分配最终车辆", "subscription_journey", "vehicle_allocate"],
-  ["subscription_journey:delivery_evidence_decide", "决策交付证据", "subscription_journey", "delivery_evidence_decide"],
+  [
+    "subscription_journey:vehicle_allocate",
+    "分配最终车辆",
+    "subscription_journey",
+    "vehicle_allocate"
+  ],
+  [
+    "subscription_journey:delivery_evidence_decide",
+    "决策交付证据",
+    "subscription_journey",
+    "delivery_evidence_decide"
+  ],
   ["subscription_journey:recover", "恢复订阅旅程", "subscription_journey", "recover"],
   ["subscription_journey:cancel", "取消订阅旅程", "subscription_journey", "cancel"],
   ["mileage_review:view", "查看里程复核", "mileage_review", "view"],
@@ -268,31 +288,159 @@ const menuRows = [
   ["products", "产品中心", "/products", "product", 50, "product:view", null],
   ["vehicles", "车辆资产", "/vehicles", "car", 55, "vehicle:view", null],
   ["vehicles.assets", "车辆资产台账", "/vehicles", "car", 10, "vehicle:view", "vehicles"],
-  ["vehicles.model_definitions", "车型代码", "/vehicle-model-definitions", "car", 15, "vehicle_model:view", "vehicles"],
-  ["vehicles.asset_pools", "车辆资产池", "/vehicle-asset-pools", "car", 20, "vehicle_asset_pool:view", "vehicles"],
-  ["vehicles.insurance_policies", "保单管理", "/vehicle-insurance-policies", "file", 25, "vehicle_insurance:view", "vehicles"],
-  ["vehicles.baas_contracts", "BaaS合同", "/vehicle-baas-contracts", "file", 28, "vehicle_baas:view", "vehicles"],
-  ["vehicles.residual_market", "市场残值样本", "/residual-market", "car", 30, "residual_market:view", "vehicles"],
-  ["vehicles.valuation_reviews", "估值复核", "/vehicle-valuation-reviews", "audit", 40, "vehicle_valuation_review:view", "vehicles"],
+  [
+    "vehicles.model_definitions",
+    "车型代码",
+    "/vehicle-model-definitions",
+    "car",
+    15,
+    "vehicle_model:view",
+    "vehicles"
+  ],
+  [
+    "vehicles.asset_pools",
+    "车辆资产池",
+    "/vehicle-asset-pools",
+    "car",
+    20,
+    "vehicle_asset_pool:view",
+    "vehicles"
+  ],
+  [
+    "vehicles.insurance_policies",
+    "保单管理",
+    "/vehicle-insurance-policies",
+    "file",
+    25,
+    "vehicle_insurance:view",
+    "vehicles"
+  ],
+  [
+    "vehicles.baas_contracts",
+    "BaaS合同",
+    "/vehicle-baas-contracts",
+    "file",
+    28,
+    "vehicle_baas:view",
+    "vehicles"
+  ],
+  [
+    "vehicles.residual_market",
+    "市场残值样本",
+    "/residual-market",
+    "car",
+    30,
+    "residual_market:view",
+    "vehicles"
+  ],
+  [
+    "vehicles.valuation_reviews",
+    "估值复核",
+    "/vehicle-valuation-reviews",
+    "audit",
+    40,
+    "vehicle_valuation_review:view",
+    "vehicles"
+  ],
   ["vehicles.fleet_ops", "车队运营", "/fleet-ops", "dashboard", 45, "fleet_ops:read", "vehicles"],
   ["quotes", "订阅报价", "/quotes", "quote", 60, "quote:view", null],
   ["orders", "订单中心", "/orders", "order", 70, "order:view", null],
   ["orders.subscription", "订阅订单", "/orders", "order", 10, "order:view", "orders"],
   ["orders.review", "旧版订单审核", "/orders/review", "audit", 15, "order:review", "orders"],
-  ["orders.journey_exceptions", "订阅旅程异常", "/orders?journeyStatus=EXCEPTION", "audit", 18, "subscription_journey:view", "orders"],
+  [
+    "orders.journey_exceptions",
+    "订阅旅程异常",
+    "/orders?journeyStatus=EXCEPTION",
+    "audit",
+    18,
+    "subscription_journey:view",
+    "orders"
+  ],
   ["orders.contracts", "合同管理", "/contracts", "contract", 20, "contract:view", "orders"],
-  ["orders.subscription_changes", "合同变更中心", "/subscription-changes", "contract", 22, "subscription_change:view", "orders"],
-  ["orders.mileage_reviews", "里程复核", "/mileage-reviews", "dashboard", 25, "mileage_review:view", "orders"],
-  ["orders.contract_templates", "合同模板", "/contract-versions", "file", 30, "contract_template:view", "orders"],
-  ["orders.service_cases", "服务工单", "/service-cases", "audit", 40, "service_case:view", "orders"],
+  [
+    "orders.subscription_changes",
+    "合同变更中心",
+    "/subscription-changes",
+    "contract",
+    22,
+    "subscription_change:view",
+    "orders"
+  ],
+  [
+    "orders.mileage_reviews",
+    "里程复核",
+    "/mileage-reviews",
+    "dashboard",
+    25,
+    "mileage_review:view",
+    "orders"
+  ],
+  [
+    "orders.contract_templates",
+    "合同模板",
+    "/contract-versions",
+    "file",
+    30,
+    "contract_template:view",
+    "orders"
+  ],
+  [
+    "orders.service_cases",
+    "服务工单",
+    "/service-cases",
+    "audit",
+    40,
+    "service_case:view",
+    "orders"
+  ],
   ["reports", "经营看板", "/reports", "dashboard", 75, null, null],
   ["reports.overview", "经营总览", "/reports", "dashboard", 10, "report:view", "reports"],
-  ["reports.asset_profitability", "资产经营分析", "/reports/asset-profitability", "car", 20, "report:asset", "reports"],
+  [
+    "reports.asset_profitability",
+    "资产经营分析",
+    "/reports/asset-profitability",
+    "car",
+    20,
+    "report:asset",
+    "reports"
+  ],
   ["billing", "财务管理", "/billing", "money", 80, "billing:view", null],
-  ["billing.monthly_rent", "月租账单生成", "/billing/monthly-rent", "money", 10, "billing:generate", "billing"],
-  ["billing.collections", "逾期催收", "/billing/collections", "audit", 20, "collection:view", "billing"],
-  ["billing.financing_instruments", "融资工具", "/financing-instruments", "money", 30, "financing:view", "billing"],
-  ["billing.revenue_rights", "收益权管理", "/revenue-rights", "file", 40, "revenue_right:view", "billing"],
+  [
+    "billing.monthly_rent",
+    "月租账单生成",
+    "/billing/monthly-rent",
+    "money",
+    10,
+    "billing:generate",
+    "billing"
+  ],
+  [
+    "billing.collections",
+    "逾期催收",
+    "/billing/collections",
+    "audit",
+    20,
+    "collection:view",
+    "billing"
+  ],
+  [
+    "billing.financing_instruments",
+    "融资工具",
+    "/financing-instruments",
+    "money",
+    30,
+    "financing:view",
+    "billing"
+  ],
+  [
+    "billing.revenue_rights",
+    "收益权管理",
+    "/revenue-rights",
+    "file",
+    40,
+    "revenue_right:view",
+    "billing"
+  ],
   ["system", "系统管理", "/system", "setting", 90, "user:view", null],
   ["system.users", "用户管理", "/system/users", "team", 10, "user:view", "system"],
   ["system.roles", "角色管理", "/system/roles", "safety", 20, "role:view", "system"],
@@ -301,19 +449,89 @@ const menuRows = [
 ];
 
 menuRows.push(
-  ["orders.notifications", "通知中心", "/notifications", "message", 50, "notification:view", "orders"],
-  ["products.subscription", "订阅产品", "/products?tab=products", "product", 10, "product:view", "products"],
-  ["products.versions", "产品版本", "/products?tab=versions", "file", 20, "product_version:view", "products"],
-  ["products.vehicle_packages", "车型包", "/products?tab=vehicle-packages", "car", 30, "vehicle_package:view", "products"],
-  ["products.mileage_packages", "里程包", "/products?tab=mileage-packages", "dashboard", 40, "mileage_package:view", "products"],
-  ["products.energy_packages", "补能包", "/products?tab=energy-packages", "money", 50, "energy_package:view", "products"],
-  ["products.benefit_packages", "权益包", "/products?tab=benefit-packages", "safety", 60, "benefit_package:view", "products"],
-  ["products.subscription_plans", "订阅套餐", "/products?tab=subscription-plans", "quote", 70, "subscription_plan:view", "products"]
+  [
+    "orders.notifications",
+    "通知中心",
+    "/notifications",
+    "message",
+    50,
+    "notification:view",
+    "orders"
+  ],
+  [
+    "products.subscription",
+    "订阅产品",
+    "/products?tab=products",
+    "product",
+    10,
+    "product:view",
+    "products"
+  ],
+  [
+    "products.versions",
+    "产品版本",
+    "/products?tab=versions",
+    "file",
+    20,
+    "product_version:view",
+    "products"
+  ],
+  [
+    "products.vehicle_packages",
+    "车型包",
+    "/products?tab=vehicle-packages",
+    "car",
+    30,
+    "vehicle_package:view",
+    "products"
+  ],
+  [
+    "products.mileage_packages",
+    "里程包",
+    "/products?tab=mileage-packages",
+    "dashboard",
+    40,
+    "mileage_package:view",
+    "products"
+  ],
+  [
+    "products.energy_packages",
+    "补能包",
+    "/products?tab=energy-packages",
+    "money",
+    50,
+    "energy_package:view",
+    "products"
+  ],
+  [
+    "products.benefit_packages",
+    "权益包",
+    "/products?tab=benefit-packages",
+    "safety",
+    60,
+    "benefit_package:view",
+    "products"
+  ],
+  [
+    "products.subscription_plans",
+    "订阅套餐",
+    "/products?tab=subscription-plans",
+    "quote",
+    70,
+    "subscription_plan:view",
+    "products"
+  ]
 );
 
-menuRows.push(
-  ["vehicles.depreciation_policies", "折旧管理", "/vehicle-depreciation-policies", "money", 29, "vehicle_depreciation:view", "vehicles"]
-);
+menuRows.push([
+  "vehicles.depreciation_policies",
+  "折旧管理",
+  "/vehicle-depreciation-policies",
+  "money",
+  29,
+  "vehicle_depreciation:view",
+  "vehicles"
+]);
 
 const defaultDepositRules = [
   {
@@ -463,16 +681,8 @@ const oldDefaultFlowSeedData = {
     "CUS-DELIVERY-CONFIRM-001"
   ],
   deliveryNos: ["DLV-DELIVERY-CONFIRM-001"],
-  orderNos: [
-    "ORD-AUTO-REVIEW-ET5-001",
-    "ORD-DELIVERY-PREPARE-001",
-    "ORD-DELIVERY-CONFIRM-001"
-  ],
-  quoteNos: [
-    "QUO-AUTO-REVIEW-ET5-001",
-    "QUO-DELIVERY-PREPARE-001",
-    "QUO-DELIVERY-CONFIRM-001"
-  ],
+  orderNos: ["ORD-AUTO-REVIEW-ET5-001", "ORD-DELIVERY-PREPARE-001", "ORD-DELIVERY-CONFIRM-001"],
+  quoteNos: ["QUO-AUTO-REVIEW-ET5-001", "QUO-DELIVERY-PREPARE-001", "QUO-DELIVERY-CONFIRM-001"],
   vehicleVins: [
     "TESTAUTOORDERET5001",
     "TESTSELFAPPET5001",
@@ -638,7 +848,12 @@ const entitlementViewPermissions = ["entitlement:view"];
 
 const entitlementGeneratePermissions = ["entitlement:view", "entitlement:generate"];
 
-const entitlementOperationPermissions = ["entitlement:view", "entitlement:generate", "entitlement:adjust", "entitlement:consume"];
+const entitlementOperationPermissions = [
+  "entitlement:view",
+  "entitlement:generate",
+  "entitlement:adjust",
+  "entitlement:consume"
+];
 
 const reportViewPermissions = ["report:view"];
 
@@ -696,13 +911,19 @@ const vehicleManagementPermissions = [
   "vehicle:manage"
 ];
 const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
-const vehicleInsuranceManagementPermissions = ["vehicle_insurance:view", "vehicle_insurance:manage"];
+const vehicleInsuranceManagementPermissions = [
+  "vehicle_insurance:view",
+  "vehicle_insurance:manage"
+];
 const vehicleDocumentViewPermissions = ["vehicle_document:view"];
 const vehicleDocumentManagementPermissions = ["vehicle_document:view", "vehicle_document:manage"];
 const vehicleBaasViewPermissions = ["vehicle_baas:view"];
 const vehicleBaasManagementPermissions = ["vehicle_baas:view", "vehicle_baas:manage"];
 const vehicleDepreciationViewPermissions = ["vehicle_depreciation:view"];
-const vehicleDepreciationManagementPermissions = ["vehicle_depreciation:view", "vehicle_depreciation:manage"];
+const vehicleDepreciationManagementPermissions = [
+  "vehicle_depreciation:view",
+  "vehicle_depreciation:manage"
+];
 const vehicleModelViewPermissions = ["vehicle_model:view"];
 const vehicleModelManagementPermissions = ["vehicle_model:view", "vehicle_model:manage"];
 const insuranceClaimViewPermissions = ["insurance_claim:view"];
@@ -723,10 +944,7 @@ const vehicleValuationReviewManagementPermissions = [
 ];
 const fleetOpsReadPermissions = ["fleet_ops:read"];
 const mileageReviewViewPermissions = ["mileage_review:view"];
-const mileageReviewSubmitPermissions = [
-  "mileage_review:view",
-  "mileage_review:submit"
-];
+const mileageReviewSubmitPermissions = ["mileage_review:view", "mileage_review:submit"];
 const mileageReviewManagementPermissions = [
   "mileage_review:view",
   "mileage_review:submit",
@@ -758,7 +976,10 @@ const financingManagementPermissions = ["financing:view", "financing:manage"];
 
 const vehicleAssetPoolViewPermissions = ["vehicle_asset_pool:view"];
 
-const vehicleAssetPoolManagementPermissions = ["vehicle_asset_pool:view", "vehicle_asset_pool:manage"];
+const vehicleAssetPoolManagementPermissions = [
+  "vehicle_asset_pool:view",
+  "vehicle_asset_pool:manage"
+];
 
 const revenueRightViewPermissions = ["revenue_right:view"];
 
@@ -790,7 +1011,10 @@ const residualCurveManagementPermissions = [
 
 const residualForecastViewPermissions = ["residual_forecast:view"];
 
-const residualForecastGeneratePermissions = ["residual_forecast:view", "residual_forecast:generate"];
+const residualForecastGeneratePermissions = [
+  "residual_forecast:view",
+  "residual_forecast:generate"
+];
 
 const residualForecastManagementPermissions = [
   "residual_forecast:view",
@@ -1030,7 +1254,20 @@ async function main() {
       "order_change:view",
       "contract:view"
     ],
-    ["dashboard", "customers", "applications", "risk", "risk.deposit_rules", ...productMenuCodes, ...vehicleMenuCodes, "quotes", "orders", "orders.subscription", "orders.review", "orders.contracts"]
+    [
+      "dashboard",
+      "customers",
+      "applications",
+      "risk",
+      "risk.deposit_rules",
+      ...productMenuCodes,
+      ...vehicleMenuCodes,
+      "quotes",
+      "orders",
+      "orders.subscription",
+      "orders.review",
+      "orders.contracts"
+    ]
   );
 
   for (const roleCode of ["FI", "AS"]) {
@@ -1049,25 +1286,33 @@ async function main() {
         ...(roleCode === "AS"
           ? vehicleValuationReviewCreatePermissions
           : vehicleValuationReviewViewPermissions),
-        ...(roleCode === "FI" ? capitalStructureManagementPermissions : capitalStructureViewPermissions),
+        ...(roleCode === "FI"
+          ? capitalStructureManagementPermissions
+          : capitalStructureViewPermissions),
         ...(roleCode === "FI" ? financingManagementPermissions : financingViewPermissions),
         ...(roleCode === "FI" || roleCode === "AS"
           ? vehicleAssetPoolManagementPermissions
           : vehicleAssetPoolViewPermissions),
         ...(roleCode === "FI" ? revenueRightManagementPermissions : revenueRightViewPermissions),
         ...(roleCode === "FI" ? revenueShareManagementPermissions : revenueShareViewPermissions),
-        ...(roleCode === "AS" ? residualMarketManagementPermissions : residualMarketViewPermissions),
+        ...(roleCode === "AS"
+          ? residualMarketManagementPermissions
+          : residualMarketViewPermissions),
         ...(roleCode === "AS" ? residualCurveManagementPermissions : residualCurveViewPermissions),
-        ...(roleCode === "AS" ? residualForecastManagementPermissions : residualForecastViewPermissions),
-        ...(roleCode === "AS" ? residualModelRunManagementPermissions : residualModelRunViewPermissions),
+        ...(roleCode === "AS"
+          ? residualForecastManagementPermissions
+          : residualForecastViewPermissions),
+        ...(roleCode === "AS"
+          ? residualModelRunManagementPermissions
+          : residualModelRunViewPermissions),
         "quote:view",
         "order:view",
-        ...(roleCode === "AS"
-          ? mileageReviewSubmitPermissions
-          : mileageReviewViewPermissions),
+        ...(roleCode === "AS" ? mileageReviewSubmitPermissions : mileageReviewViewPermissions),
         ...(roleCode === "FI" ? financeManagementPermissions : []),
         ...(roleCode === "FI" ? collectionManagementPermissions : []),
-        ...(roleCode === "FI" ? [...reportFinancePermissions, ...reportAssetPermissions] : reportAssetPermissions),
+        ...(roleCode === "FI"
+          ? [...reportFinancePermissions, ...reportAssetPermissions]
+          : reportAssetPermissions),
         ...(roleCode === "AS" ? ["delivery:view", "delivery:prepare", "delivery:confirm"] : []),
         "vehicle_return:view",
         ...(roleCode === "AS"
@@ -1094,7 +1339,9 @@ async function main() {
         ...mileageReviewMenuCodes,
         ...(roleCode === "AS" ? ["orders.review"] : []),
         "orders.contracts",
-        ...(roleCode === "FI" ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes] : []),
+        ...(roleCode === "FI"
+          ? [...reportOverviewMenuCodes, ...reportAssetMenuCodes, ...financeMenuCodes]
+          : []),
         ...financingMenuCodes,
         ...vehicleAssetPoolMenuCodes,
         ...residualMarketMenuCodes,
@@ -1210,24 +1457,114 @@ async function main() {
 
 async function seedNotificationTemplates(adminUserId) {
   const rows = [
-    ["APPLICATION_SUBMITTED_IN_APP", "IN_APP", "APPLICATION_PROGRESS", "申请已提交", "您的订阅申请已提交，平台将尽快审核。"],
-    ["APPLICATION_SUBMITTED_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "APPLICATION_PROGRESS", "申请已提交", "您的订阅申请已提交，点击查看进度。"],
-    ["FINAL_PLAN_READY_IN_APP", "IN_APP", "FINAL_PLAN_PENDING", "最终方案待确认", "平台已生成最终方案，请及时确认。"],
-    ["FINAL_PLAN_READY_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "FINAL_PLAN_PENDING", "最终方案待确认", "平台已生成最终方案，点击确认。"],
-    ["CONTRACT_PENDING_IN_APP", "IN_APP", "CONTRACT_PENDING", "合同待签署", "您的合同已生成，请完成电子签署。"],
-    ["CONTRACT_PENDING_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "CONTRACT_PENDING", "合同待签署", "您的合同已生成，点击签署。"],
-    ["PAYMENT_PENDING_IN_APP", "IN_APP", "PAYMENT_PENDING", "订单待支付", "合同已签署，请完成账单支付。"],
-    ["PAYMENT_PENDING_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "PAYMENT_PENDING", "订单待支付", "合同已签署，点击支付。"],
-    ["SERVICE_CASE_UPDATE_IN_APP", "IN_APP", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度。"],
-    ["SERVICE_CASE_UPDATE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "SERVICE_CASE_UPDATE", "服务工单更新", "您的服务工单有新的处理进度，点击查看。"]
+    [
+      "APPLICATION_SUBMITTED_IN_APP",
+      "IN_APP",
+      "APPLICATION_PROGRESS",
+      "申请已提交",
+      "您的订阅申请已提交，平台将尽快审核。"
+    ],
+    [
+      "APPLICATION_SUBMITTED_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "APPLICATION_PROGRESS",
+      "申请已提交",
+      "您的订阅申请已提交，点击查看进度。"
+    ],
+    [
+      "FINAL_PLAN_READY_IN_APP",
+      "IN_APP",
+      "FINAL_PLAN_PENDING",
+      "最终方案待确认",
+      "平台已生成最终方案，请及时确认。"
+    ],
+    [
+      "FINAL_PLAN_READY_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "FINAL_PLAN_PENDING",
+      "最终方案待确认",
+      "平台已生成最终方案，点击确认。"
+    ],
+    [
+      "CONTRACT_PENDING_IN_APP",
+      "IN_APP",
+      "CONTRACT_PENDING",
+      "合同待签署",
+      "您的合同已生成，请完成电子签署。"
+    ],
+    [
+      "CONTRACT_PENDING_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "CONTRACT_PENDING",
+      "合同待签署",
+      "您的合同已生成，点击签署。"
+    ],
+    [
+      "PAYMENT_PENDING_IN_APP",
+      "IN_APP",
+      "PAYMENT_PENDING",
+      "订单待支付",
+      "合同已签署，请完成账单支付。"
+    ],
+    [
+      "PAYMENT_PENDING_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "PAYMENT_PENDING",
+      "订单待支付",
+      "合同已签署，点击支付。"
+    ],
+    [
+      "SERVICE_CASE_UPDATE_IN_APP",
+      "IN_APP",
+      "SERVICE_CASE_UPDATE",
+      "服务工单更新",
+      "您的服务工单有新的处理进度。"
+    ],
+    [
+      "SERVICE_CASE_UPDATE_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "SERVICE_CASE_UPDATE",
+      "服务工单更新",
+      "您的服务工单有新的处理进度，点击查看。"
+    ]
   ];
 
   rows.push(
-    ["MILEAGE_REVIEW_DUE_IN_APP", "IN_APP", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请提交当前累计里程和仪表盘照片。"],
-    ["MILEAGE_REVIEW_DUE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "MILEAGE_REVIEW_DUE", "月度里程复核待提交", "您的月度里程复核已到期，请点击进入并提交里程资料。"],
-    ["AUTO_DEBIT_FAILURE_IN_APP", "IN_APP", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请及时查看并完成主动支付。"],
-    ["AUTO_DEBIT_FAILURE_WECHAT", "WECHAT_OFFICIAL_ACCOUNT", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请点击查看并完成支付。"],
-    ["AUTO_DEBIT_FAILURE_SMS", "SMS", "AUTO_DEBIT_FAILURE", "自动扣款失败", "您的账单自动扣款失败，请及时登录平台完成支付。"]
+    [
+      "MILEAGE_REVIEW_DUE_IN_APP",
+      "IN_APP",
+      "MILEAGE_REVIEW_DUE",
+      "月度里程复核待提交",
+      "您的月度里程复核已到期，请提交当前累计里程和仪表盘照片。"
+    ],
+    [
+      "MILEAGE_REVIEW_DUE_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "MILEAGE_REVIEW_DUE",
+      "月度里程复核待提交",
+      "您的月度里程复核已到期，请点击进入并提交里程资料。"
+    ],
+    [
+      "AUTO_DEBIT_FAILURE_IN_APP",
+      "IN_APP",
+      "AUTO_DEBIT_FAILURE",
+      "自动扣款失败",
+      "您的账单自动扣款失败，请及时查看并完成主动支付。"
+    ],
+    [
+      "AUTO_DEBIT_FAILURE_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "AUTO_DEBIT_FAILURE",
+      "自动扣款失败",
+      "您的账单自动扣款失败，请点击查看并完成支付。"
+    ],
+    [
+      "AUTO_DEBIT_FAILURE_SMS",
+      "SMS",
+      "AUTO_DEBIT_FAILURE",
+      "自动扣款失败",
+      "您的账单自动扣款失败，请及时登录平台完成支付。"
+    ]
   );
 
   for (const [templateCode, channel, templateType, title, content] of rows) {
@@ -1359,7 +1696,10 @@ async function cleanupDefaultSeedFlowData() {
     select: { id: true },
     where: { vin: { in: demoVehicles.map((vehicle) => vehicle.vin) } }
   });
-  const cleanupVehicleIds = [...oldFlowVehicleIds, ...baselineVehicles.map((vehicle) => vehicle.id)];
+  const cleanupVehicleIds = [
+    ...oldFlowVehicleIds,
+    ...baselineVehicles.map((vehicle) => vehicle.id)
+  ];
 
   const applications = await prisma.application.findMany({
     select: { id: true },
@@ -1453,7 +1793,8 @@ async function cleanupDefaultSeedFlowData() {
     }
   });
   await prisma.vehicleReturnDamage.deleteMany({
-    where: cleanupVehicleIds.length > 0 ? { vehicleId: { in: cleanupVehicleIds } } : { id: { in: [] } }
+    where:
+      cleanupVehicleIds.length > 0 ? { vehicleId: { in: cleanupVehicleIds } } : { id: { in: [] } }
   });
   if (oldFlowCustomerIds.length > 0 || cleanupVehicleIds.length > 0) {
     await prisma.vehicleReturn.deleteMany({
@@ -1496,15 +1837,25 @@ async function cleanupDefaultSeedFlowData() {
 
   if (applicationIds.length > 0) {
     await prisma.riskResult.deleteMany({ where: { applicationId: { in: applicationIds } } });
-    await prisma.applicationActionLog.deleteMany({ where: { applicationId: { in: applicationIds } } });
-    await prisma.applicationMaterialFile.deleteMany({ where: { applicationId: { in: applicationIds } } });
-    await prisma.applicationMaterialGroup.deleteMany({ where: { applicationId: { in: applicationIds } } });
-    await prisma.applicationMaterial.deleteMany({ where: { applicationId: { in: applicationIds } } });
+    await prisma.applicationActionLog.deleteMany({
+      where: { applicationId: { in: applicationIds } }
+    });
+    await prisma.applicationMaterialFile.deleteMany({
+      where: { applicationId: { in: applicationIds } }
+    });
+    await prisma.applicationMaterialGroup.deleteMany({
+      where: { applicationId: { in: applicationIds } }
+    });
+    await prisma.applicationMaterial.deleteMany({
+      where: { applicationId: { in: applicationIds } }
+    });
     await prisma.application.deleteMany({ where: { id: { in: applicationIds } } });
   }
 
   if (oldFlowVehicleIds.length > 0) {
-    await prisma.vehicleSalePriceHistory.deleteMany({ where: { vehicleId: { in: oldFlowVehicleIds } } });
+    await prisma.vehicleSalePriceHistory.deleteMany({
+      where: { vehicleId: { in: oldFlowVehicleIds } }
+    });
     await prisma.vehicle.deleteMany({ where: { id: { in: oldFlowVehicleIds } } });
   }
 
@@ -1626,7 +1977,9 @@ async function seedDemoVehicles(operatorId) {
   for (const vehicleSeed of demoVehicles) {
     const modelDefinition = modelDefinitionByCode.get(vehicleSeed.modelCode);
     if (!modelDefinition) {
-      throw new Error(`Model definition is required for demo vehicle model code ${vehicleSeed.modelCode}.`);
+      throw new Error(
+        `Model definition is required for demo vehicle model code ${vehicleSeed.modelCode}.`
+      );
     }
 
     const vehicle = await prisma.vehicle.upsert({
@@ -1693,34 +2046,37 @@ async function seedDemoVehicles(operatorId) {
         policyType: "COMMERCIAL"
       }
     ]) {
-      await prisma.vehicleInsurancePolicy.upsert({
-        create: {
-          createdBy: operatorId,
-          effectiveFrom: insuranceEffectiveFrom,
-          effectiveTo: insuranceEffectiveTo,
-          insurerName: "Seed Insurance",
-          policyNo: policySeed.policyNo,
-          policyStatus: "ACTIVE",
-          policyType: policySeed.policyType,
-          updatedBy: operatorId,
-          vehicleId: vehicle.id
-        },
-        update: {
-          deletedAt: null,
-          effectiveFrom: insuranceEffectiveFrom,
-          effectiveTo: insuranceEffectiveTo,
-          insurerName: "Seed Insurance",
-          policyStatus: "ACTIVE",
-          policyType: policySeed.policyType,
-          updatedBy: operatorId
-        },
+      const existingPolicy = await prisma.vehicleInsurancePolicy.findFirst({
         where: {
-          vehicleId_policyNo: {
+          deletedAt: null,
+          policyNo: policySeed.policyNo,
+          vehicleId: vehicle.id
+        }
+      });
+      const policyData = {
+        effectiveFrom: insuranceEffectiveFrom,
+        effectiveTo: insuranceEffectiveTo,
+        insurerName: "Seed Insurance",
+        policyStatus: "ACTIVE",
+        policyType: policySeed.policyType,
+        updatedBy: operatorId
+      };
+
+      if (existingPolicy) {
+        await prisma.vehicleInsurancePolicy.update({
+          data: policyData,
+          where: { id: existingPolicy.id }
+        });
+      } else {
+        await prisma.vehicleInsurancePolicy.create({
+          data: {
+            ...policyData,
+            createdBy: operatorId,
             policyNo: policySeed.policyNo,
             vehicleId: vehicle.id
           }
-        }
-      });
+        });
+      }
     }
 
     const existingHistory = await prisma.vehicleSalePriceHistory.findFirst({

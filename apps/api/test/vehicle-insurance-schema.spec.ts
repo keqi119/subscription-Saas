@@ -55,4 +55,12 @@ describe("vehicle insurance policy schema", () => {
     );
     expect(migration).toContain('WHERE "deleted_at" IS NULL');
   });
+
+  it("seeds policies without the removed compound unique selector", () => {
+    const seed = fs.readFileSync(path.resolve(__dirname, "../prisma/seed.mjs"), "utf8");
+
+    expect(seed).not.toContain("vehicleId_policyNo");
+    expect(seed).toContain("prisma.vehicleInsurancePolicy.findFirst");
+    expect(seed).toContain("deletedAt: null");
+  });
 });

@@ -143,6 +143,13 @@ export function canArchiveDocument(document: VehicleDocumentView, boundDocumentI
   return isActiveDocument(document) && !boundDocumentIds.has(document.id);
 }
 
+export function canDeleteVehicleDocument(
+  document: VehicleDocumentView,
+  boundDocumentIds: ReadonlySet<string>
+) {
+  return canArchiveDocument(document, boundDocumentIds);
+}
+
 export function canArchiveDocumentBatch(
   batch: VehicleDocumentBatchView,
   boundDocumentIds: ReadonlySet<string>

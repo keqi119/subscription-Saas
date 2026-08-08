@@ -1,20 +1,12 @@
 "use client";
 
 import { ArrowLeftOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { App, Button, Descriptions, Empty, Flex, Space, Spin, Table, Tag, Typography } from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import {
-  BILL_STATUS_LABELS,
-  BILL_TYPE_LABELS,
-  PAYMENT_CHANNEL_LABELS,
-  PAYMENT_METHOD_LABELS,
-  PAYMENT_ORDER_STATUS_LABELS,
-  labelOf
-} from "../../../../constants/labels";
+import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../../constants/labels";
 import { buildPortalAutoDebitView } from "../../../../lib/portal-auto-debit-view-model";
 import {
   getPortalAutoDebitAvailability,
@@ -31,6 +23,7 @@ import {
   PortalPaymentOrder
 } from "../../../../lib/portal-types";
 import { PortalAutoDebitStatusCard } from "../../auto-debit/auto-debit-status-card";
+import { PortalPaymentOrderRecords, PortalWriteOffRecords } from "./bill-records";
 
 export default function PortalBillDetailPage() {
   const params = useParams<{ id: string }>();
@@ -192,80 +185,19 @@ export default function PortalBillDetailPage() {
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             支付单
           </Typography.Title>
-          <Table
-            columns={paymentOrderColumns}
-            dataSource={bill.paymentOrders}
-            pagination={false}
-            rowKey="paymentOrderId"
-            size="small"
-          />
+          <PortalPaymentOrderRecords rows={bill.paymentOrders} />
         </section>
 
         <section style={sectionStyle}>
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             核销记录
           </Typography.Title>
-          <Table
-            columns={writeOffColumns}
-            dataSource={bill.writeOffs}
-            pagination={false}
-            rowKey="writeOffId"
-            size="small"
-          />
+          <PortalWriteOffRecords rows={bill.writeOffs} />
         </section>
       </section>
     </main>
   );
 }
-
-const paymentOrderColumns: ColumnsType<PortalBillDetail["paymentOrders"][number]> = [
-  {
-    dataIndex: "paymentOrderNo",
-    title: "支付单号"
-  },
-  {
-    dataIndex: "paymentChannel",
-    render: (value: string) => labelOf(PAYMENT_CHANNEL_LABELS, value),
-    title: "渠道"
-  },
-  {
-    dataIndex: "paymentStatus",
-    render: (value: string) => labelOf(PAYMENT_ORDER_STATUS_LABELS, value),
-    title: "状态"
-  },
-  {
-    dataIndex: "paidAmount",
-    render: (value: number) => formatMoney(value),
-    title: "已付"
-  },
-  {
-    dataIndex: "paidAt",
-    render: (value: string | null) => formatTime(value),
-    title: "支付时间"
-  }
-];
-
-const writeOffColumns: ColumnsType<PortalBillDetail["writeOffs"][number]> = [
-  {
-    dataIndex: "paymentNo",
-    title: "收款编号"
-  },
-  {
-    dataIndex: "paymentMethod",
-    render: (value: string) => labelOf(PAYMENT_METHOD_LABELS, value),
-    title: "收款方式"
-  },
-  {
-    dataIndex: "writeOffAmount",
-    render: (value: number) => formatMoney(value),
-    title: "核销金额"
-  },
-  {
-    dataIndex: "writeOffAt",
-    render: (value: string | null) => formatTime(value),
-    title: "核销时间"
-  }
-];
 
 function formatMoney(amount?: number | null) {
   return amount === null || amount === undefined

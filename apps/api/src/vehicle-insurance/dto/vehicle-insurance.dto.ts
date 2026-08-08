@@ -16,7 +16,9 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
+  MinLength,
   ValidateNested
 } from "class-validator";
 
@@ -211,6 +213,14 @@ export class UpdateVehicleInsurancePolicyDto {
   coverages?: VehicleInsuranceCoverageInputDto[];
 }
 
+export class DeleteVehicleInsurancePolicyDto {
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @MinLength(2)
+  @MaxLength(500)
+  reason!: string;
+}
+
 export class PutVehicleInsuranceCoveragesDto {
   @IsArray()
   @ValidateNested({ each: true })
@@ -249,6 +259,13 @@ export class UploadVehicleDocumentDto {
 }
 
 export class UploadVehicleDocumentBatchDto extends UploadVehicleDocumentDto {}
+
+export class UploadPolicyDocumentsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string | null;
+}
 
 export class UpdateVehicleDocumentDto {
   @IsOptional()

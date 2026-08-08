@@ -3,7 +3,8 @@ import {
   VehicleDocumentStatus,
   VehicleInsuranceCoverageType,
   VehicleInsurancePolicyStatus,
-  VehicleInsurancePolicyType
+  VehicleInsurancePolicyType,
+  VehicleListingSourceSection
 } from "@prisma/client";
 import { BadRequestException, ConflictException, Logger } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
@@ -111,6 +112,227 @@ describe("VehicleInsuranceService policy and document management", () => {
     });
   });
 
+  it("projects product listing bindings on policy detail documents", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [
+        {
+          ...createDocument(),
+          listingSourceBindings: [
+            { section: VehicleListingSourceSection.CONFIGURATION_SHEET },
+            { section: VehicleListingSourceSection.CONFIGURATION_SHEET }
+          ],
+          policyId: "policy-1"
+        }
+      ],
+      vehicle: vehicleBrief()
+    } as never);
+
+    const policy = await service.getPolicy("policy-1");
+
+    expect(policy.documents[0]?.boundListingSections).toEqual([
+      VehicleListingSourceSection.CONFIGURATION_SHEET
+    ]);
+  });
+
+  it("soft deletes an erroneous policy and active unbound documents with one audit", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [{ id: "document-1" }],
+      vehicle: vehicleBrief()
+    } as never);
+
+    const result = await service.deletePolicy("policy-1", { reason: "保单号记录录入错误" }, user);
+
+    expect(prisma.vehicleInsurancePolicy.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          deletedAt: expect.any(Date),
+          updatedBy: "user-1"
+        }),
+        where: { id: "policy-1" }
+      })
+    );
+    expect(prisma.vehicleDocument.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, policyId: "policy-1" }
+      })
+    );
+    expect(auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "DELETE",
+        after: expect.objectContaining({ reason: "保单号记录录入错误" }),
+        entityId: "policy-1"
+      }),
+      prisma
+    );
+    expect(result.id).toBe("policy-1");
+  });
+
+  it("rejects deleting a policy with any active claim", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.insuranceClaim.count.mockResolvedValueOnce(1);
+
+    await expect(
+      service.deletePolicy("policy-1", { reason: "重复录入" }, user)
+    ).rejects.toMatchObject({ response: { code: "POLICY_HAS_CLAIMS" } });
+
+    expect(prisma.vehicleInsurancePolicy.update).not.toHaveBeenCalled();
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
+    expect(auditService.write).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting a policy whose document is bound to product display", async () => {
+    const { auditService, prisma, service, user } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [{ id: "document-1" }],
+      vehicle: vehicleBrief()
+    } as never);
+    prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({
+      id: "binding-1"
+    });
+
+    await expect(
+      service.deletePolicy("policy-1", { reason: "重复录入" }, user)
+    ).rejects.toMatchObject({ response: { code: "POLICY_DOCUMENT_BOUND" } });
+
+    expect(prisma.vehicleInsurancePolicy.update).not.toHaveBeenCalled();
+    expect(prisma.vehicleDocument.updateMany).not.toHaveBeenCalled();
+    expect(auditService.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
+      VehicleDocumentType.COMPULSORY_INSURANCE_POLICY
+    ],
+    [VehicleInsurancePolicyType.COMMERCIAL, VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY],
+    [VehicleInsurancePolicyType.OTHER, VehicleDocumentType.OTHER]
+  ])("derives %s policy documents as %s", async (policyType, documentType) => {
+    const { prisma, service, user } = createHarness({ policyType });
+
+    await service.uploadPolicyDocuments(
+      "policy-1",
+      { description: "正式保单" },
+      [uploadFile("保单.pdf", "application/pdf")],
+      user
+    );
+
+    expect(prisma.vehicleDocument.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          customerVisible: true,
+          description: "正式保单",
+          documentType,
+          effectiveFrom: expect.any(Date),
+          effectiveTo: expect.any(Date),
+          policyId: "policy-1",
+          vehicleId: "vehicle-1"
+        })
+      })
+    );
+  });
+
+  it("rejects more than twenty policy files before storage", async () => {
+    const { service, storageService, user } = createHarness();
+    const files = Array.from({ length: 21 }, (_, index) =>
+      uploadFile(`policy-${index + 1}.pdf`, "application/pdf")
+    );
+
+    await expect(service.uploadPolicyDocuments("policy-1", {}, files, user)).rejects.toBeInstanceOf(
+      BadRequestException
+    );
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("cleans up stored policy files when a later upload fails", async () => {
+    const { prisma, service, storageService, user } = createHarness();
+    storageService.putVehicleDocument
+      .mockResolvedValueOnce(storedDocument("policy-1.pdf"))
+      .mockRejectedValueOnce(new Error("storage unavailable"));
+
+    await expect(
+      service.uploadPolicyDocuments(
+        "policy-1",
+        {},
+        [
+          uploadFile("policy-1.pdf", "application/pdf"),
+          uploadFile("policy-2.pdf", "application/pdf")
+        ],
+        user
+      )
+    ).rejects.toThrow("storage unavailable");
+
+    expect(storageService.deleteObject).toHaveBeenCalledWith(
+      "private-bucket",
+      "vehicle-documents/vehicle-1/2026/policy-1.pdf"
+    );
+    expect(prisma.vehicleDocument.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects policy document upload when the policy was deleted", async () => {
+    const { prisma, service, storageService, user } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce(null as never);
+
+    await expect(
+      service.uploadPolicyDocuments(
+        "policy-1",
+        {},
+        [uploadFile("policy.pdf", "application/pdf")],
+        user
+      )
+    ).rejects.toMatchObject({ status: 404 });
+
+    expect(storageService.putVehicleDocument).not.toHaveBeenCalled();
+  });
+
+  it("projects unique product listing bindings on document views", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleDocument.findMany.mockResolvedValueOnce([
+      {
+        ...createDocument(),
+        listingSourceBindings: [
+          { section: VehicleListingSourceSection.CONFIGURATION_SHEET },
+          { section: VehicleListingSourceSection.CONFIGURATION_SHEET }
+        ],
+        policy: null,
+        vehicle: vehicleBrief()
+      }
+    ] as never);
+
+    const documents = await service.listDocuments("vehicle-1");
+
+    expect(documents[0]?.boundListingSections).toEqual([
+      VehicleListingSourceSection.CONFIGURATION_SHEET
+    ]);
+  });
+
+  it("audits a successful document soft delete without deleting storage", async () => {
+    const { auditService, prisma, service, storageService, user } = createHarness();
+
+    await service.deleteDocument("document-1", user);
+
+    expect(auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "DELETE",
+        entityId: "document-1",
+        entityType: "vehicle_document"
+      }),
+      prisma
+    );
+    expect(storageService.deleteObject).not.toHaveBeenCalled();
+  });
+
   it("uploads vehicle documents through private storage and hides object fields", async () => {
     const { service, storageService, user } = createHarness();
 
@@ -161,9 +383,9 @@ describe("VehicleInsuranceService policy and document management", () => {
   it("rejects making an existing internal rights document customer-visible", async () => {
     const { prisma, service } = createHarness();
 
-    await expect(service.updateDocument("document-1", { customerVisible: true })).rejects.toBeInstanceOf(
-      BadRequestException
-    );
+    await expect(
+      service.updateDocument("document-1", { customerVisible: true })
+    ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
   });
@@ -186,9 +408,11 @@ describe("VehicleInsuranceService policy and document management", () => {
     expect(batch.items).toHaveLength(2);
     expect(batch.items.map((item) => item.fileName)).toEqual(["receipt-1.pdf", "receipt-2.jpg"]);
     expect(batch.items.every((item) => item.customerVisible === false)).toBe(true);
-    expect(batch.items.every((item) => !Object.hasOwn(item, "bucket") && !Object.hasOwn(item, "objectKey"))).toBe(
-      true
-    );
+    expect(
+      batch.items.every(
+        (item) => !Object.hasOwn(item, "bucket") && !Object.hasOwn(item, "objectKey")
+      )
+    ).toBe(true);
   });
 
   it.each([
@@ -266,7 +490,10 @@ describe("VehicleInsuranceService policy and document management", () => {
       service.uploadDocumentBatch(
         "vehicle-1",
         { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
-        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        [
+          uploadFile("receipt-1.pdf", "application/pdf"),
+          uploadFile("receipt-2.pdf", "application/pdf")
+        ],
         user
       )
     ).rejects.toThrow("storage unavailable");
@@ -290,12 +517,17 @@ describe("VehicleInsuranceService policy and document management", () => {
       service.uploadDocumentBatch(
         "vehicle-1",
         { documentType: VehicleDocumentType.PURCHASE_PAYMENT_VOUCHER },
-        [uploadFile("receipt-1.pdf", "application/pdf"), uploadFile("receipt-2.pdf", "application/pdf")],
+        [
+          uploadFile("receipt-1.pdf", "application/pdf"),
+          uploadFile("receipt-2.pdf", "application/pdf")
+        ],
         user
       )
     ).rejects.toThrow("storage unavailable");
 
-    expect(warn).toHaveBeenCalledWith("Failed to clean up 1 vehicle document object after batch upload failure");
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to clean up 1 vehicle document object after batch upload failure"
+    );
     warn.mockRestore();
   });
 
@@ -411,11 +643,14 @@ describe("VehicleInsuranceService policy and document management", () => {
   });
 
   it("rejects deleting a document that is bound to a product listing section", async () => {
-    const { prisma, service } = createHarness();
+    const { auditService, prisma, service, user } = createHarness();
     prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
 
-    await expect(service.deleteDocument("document-1")).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.deleteDocument("document-1", user)).rejects.toBeInstanceOf(
+      ConflictException
+    );
     expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
+    expect(auditService.write).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -425,7 +660,9 @@ describe("VehicleInsuranceService policy and document management", () => {
     const { prisma, service } = createHarness();
     prisma.vehicleListingSourceBinding.findFirst.mockResolvedValueOnce({ id: "binding-1" });
 
-    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.updateDocument("document-1", dto)).rejects.toBeInstanceOf(
+      ConflictException
+    );
     expect(prisma.vehicleDocument.update).not.toHaveBeenCalled();
   });
 
@@ -458,8 +695,10 @@ describe("VehicleInsuranceService policy and document management", () => {
   });
 });
 
-function createHarness() {
-  const policy = createPolicy();
+function createHarness({
+  policyType = VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+}: { policyType?: VehicleInsurancePolicyType } = {}) {
+  const policy = createPolicy(policyType);
   const document = createDocument();
   const prisma = {
     $transaction: vi.fn(),
@@ -491,30 +730,36 @@ function createHarness() {
       }))
     },
     vehicleDocumentBatch: {
-      aggregate: vi.fn(async (): Promise<{ _max: { versionNo: number | null } }> => ({
-        _max: { versionNo: null }
-      })),
-      create: vi.fn(async ({
-        data
-      }: {
-        data: Record<string, unknown> & {
-          documents?: { create?: Record<string, unknown>[] };
-        };
-      }) => ({
-        createdAt: new Date("2026-06-22T08:00:00.000Z"),
-        documentType: data.documentType,
-        documents: (data.documents?.create ?? []).map((item: Record<string, unknown>, index: number) => ({
-          ...document,
-          ...item,
-          id: `document-${index + 1}`,
-          policy: null,
-          vehicle: vehicleBrief()
-        })),
-        id: "batch-1",
-        uploadedBy: data.uploadedBy,
-        vehicleId: data.vehicleId,
-        versionNo: data.versionNo
-      })),
+      aggregate: vi.fn(
+        async (): Promise<{ _max: { versionNo: number | null } }> => ({
+          _max: { versionNo: null }
+        })
+      ),
+      create: vi.fn(
+        async ({
+          data
+        }: {
+          data: Record<string, unknown> & {
+            documents?: { create?: Record<string, unknown>[] };
+          };
+        }) => ({
+          createdAt: new Date("2026-06-22T08:00:00.000Z"),
+          documentType: data.documentType,
+          documents: (data.documents?.create ?? []).map(
+            (item: Record<string, unknown>, index: number) => ({
+              ...document,
+              ...item,
+              id: `document-${index + 1}`,
+              policy: null,
+              vehicle: vehicleBrief()
+            })
+          ),
+          id: "batch-1",
+          uploadedBy: data.uploadedBy,
+          vehicleId: data.vehicleId,
+          versionNo: data.versionNo
+        })
+      ),
       findFirst: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null),
       findMany: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch>[]> => []),
       findUnique: vi.fn(async (): Promise<ReturnType<typeof createDocumentBatch> | null> => null)
@@ -533,8 +778,16 @@ function createHarness() {
         documents: [],
         vehicle: vehicleBrief()
       })),
-      findFirst: vi.fn(async () => ({ ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() })),
-      findMany: vi.fn(async () => [{ ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() }]),
+      findFirst: vi.fn(async () => ({
+        ...policy,
+        claims: [],
+        coverages: [],
+        documents: [],
+        vehicle: vehicleBrief()
+      })),
+      findMany: vi.fn(async () => [
+        { ...policy, claims: [], coverages: [], documents: [], vehicle: vehicleBrief() }
+      ]),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         ...policy,
         ...data,
@@ -548,8 +801,8 @@ function createHarness() {
       findFirst: vi.fn(async (): Promise<{ id: string } | null> => null)
     }
   };
-  prisma.$transaction.mockImplementation(async (callback: (transaction: typeof prisma) => unknown) =>
-    callback(prisma)
+  prisma.$transaction.mockImplementation(
+    async (callback: (transaction: typeof prisma) => unknown) => callback(prisma)
   );
   const storageService = {
     deleteObject: vi.fn(),
@@ -564,7 +817,14 @@ function createHarness() {
       }
     }))
   };
-  const service = new VehicleInsuranceService(prisma as never, storageService as never);
+  const auditService = {
+    write: vi.fn()
+  };
+  const service = new VehicleInsuranceService(
+    prisma as never,
+    storageService as never,
+    auditService as never
+  );
   const user = {
     id: "user-1",
     menus: [],
@@ -574,7 +834,7 @@ function createHarness() {
     username: "admin"
   };
 
-  return { prisma, service, storageService, user };
+  return { auditService, prisma, service, storageService, user };
 }
 
 function coveragePolicy(policyType: VehicleInsurancePolicyType) {
@@ -622,7 +882,9 @@ function vehicleBrief() {
   };
 }
 
-function createPolicy() {
+function createPolicy(
+  policyType: VehicleInsurancePolicyType = VehicleInsurancePolicyType.COMPULSORY_TRAFFIC
+) {
   const now = new Date("2026-06-22T08:00:00.000Z");
   return {
     claims: [],
@@ -641,7 +903,7 @@ function createPolicy() {
     policyHolderName: null,
     policyNo: "POLICY-001",
     policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
-    policyType: VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
+    policyType,
     premiumAmount: 300000n,
     remark: null,
     renewalReminderAt: null,
@@ -687,6 +949,7 @@ function createDocument() {
     mimeType: "application/pdf",
     objectKey: "vehicle-documents/vehicle-1/2026/license.pdf",
     originalName: "license.pdf",
+    listingSourceBindings: [],
     policy: null,
     policyId: null,
     title: "行驶证",

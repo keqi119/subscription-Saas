@@ -74,15 +74,14 @@ const PRODUCT_REUSABLE_DOCUMENT_TYPE_SET = new Set<string>([
   "VEHICLE_INSPECTION_REPORT"
 ]);
 
-export function getRightsDocumentCompleteness(
-  batches: readonly VehicleDocumentBatchView[]
-): { completed: number; missingTypes: RightsDocumentType[]; total: 8 } {
+export function getRightsDocumentCompleteness(batches: readonly VehicleDocumentBatchView[]): {
+  completed: number;
+  missingTypes: RightsDocumentType[];
+  total: 8;
+} {
   const completedTypes = new Set<RightsDocumentType>();
   for (const batch of batches) {
-    if (
-      isRightsDocumentType(batch.documentType) &&
-      batch.items.some(isActiveDocument)
-    ) {
+    if (isRightsDocumentType(batch.documentType) && batch.items.some(isActiveDocument)) {
       completedTypes.add(batch.documentType);
     }
   }
@@ -139,8 +138,18 @@ export function isProductReusableDocument(document: VehicleDocumentView) {
   );
 }
 
-export function canArchiveDocument(document: VehicleDocumentView, boundDocumentIds: ReadonlySet<string>) {
+export function canArchiveDocument(
+  document: VehicleDocumentView,
+  boundDocumentIds: ReadonlySet<string>
+) {
   return isActiveDocument(document) && !boundDocumentIds.has(document.id);
+}
+
+export function canDeleteVehicleDocument(
+  document: VehicleDocumentView,
+  boundDocumentIds: ReadonlySet<string>
+) {
+  return canArchiveDocument(document, boundDocumentIds);
 }
 
 export function canArchiveDocumentBatch(

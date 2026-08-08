@@ -101,8 +101,13 @@ function createHarness() {
     })),
     putVehicleDocument: vi.fn()
   };
-  const service = new VehicleInsuranceService(prisma as never, storageService as never);
-  return { prisma, service, storageService };
+  const auditService = { write: vi.fn() };
+  const service = new VehicleInsuranceService(
+    prisma as never,
+    storageService as never,
+    auditService as never
+  );
+  return { auditService, prisma, service, storageService };
 }
 
 function vehicleBrief() {

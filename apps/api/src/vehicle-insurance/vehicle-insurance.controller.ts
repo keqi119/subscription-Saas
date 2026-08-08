@@ -20,17 +20,20 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { RequirePermissions } from "../auth/auth.decorators";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
   CreateInsuranceClaimDto,
   CreateVehicleInsurancePolicyDto,
+  DeleteVehicleInsurancePolicyDto,
   InsuranceClaimsQueryDto,
   PutVehicleInsuranceCoveragesDto,
   UpdateInsuranceClaimDto,
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadPolicyDocumentsDto,
   UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsurancePoliciesQueryDto
@@ -74,6 +77,16 @@ export class VehicleInsuranceController {
     return this.vehicleInsuranceService.updatePolicy(id, dto, request.user);
   }
 
+  @Delete("vehicle-insurance-policies/:id")
+  @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
+  deletePolicy(
+    @Param("id") id: string,
+    @Body() dto: DeleteVehicleInsurancePolicyDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.deletePolicy(id, dto, request.user);
+  }
+
   @Post("vehicle-insurance-policies/:id/archive")
   @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
   archivePolicy(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
@@ -84,6 +97,18 @@ export class VehicleInsuranceController {
   @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
   putCoverages(@Param("id") id: string, @Body() dto: PutVehicleInsuranceCoveragesDto) {
     return this.vehicleInsuranceService.putCoverages(id, dto);
+  }
+
+  @Post("vehicle-insurance-policies/:id/documents")
+  @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions({ limits: { files: 20 } })))
+  uploadPolicyDocuments(
+    @Param("id") id: string,
+    @Body() dto: UploadPolicyDocumentsDto,
+    @UploadedFiles() files: UploadedVehicleDocumentFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.uploadPolicyDocuments(id, dto, files, request.user);
   }
 
   @Get("vehicles/:id/documents")
@@ -100,7 +125,7 @@ export class VehicleInsuranceController {
 
   @Post("vehicles/:id/documents")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadDocument(
     @Param("id") id: string,
     @Body() dto: UploadVehicleDocumentDto,
@@ -112,7 +137,7 @@ export class VehicleInsuranceController {
 
   @Post("vehicles/:id/document-batches")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadDocumentBatch(
     @Param("id") id: string,
     @Body() dto: UploadVehicleDocumentBatchDto,
@@ -136,20 +161,20 @@ export class VehicleInsuranceController {
 
   @Delete("vehicle-documents/:id")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  deleteDocument(@Param("id") id: string) {
-    return this.vehicleInsuranceService.deleteDocument(id);
+  deleteDocument(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
+    return this.vehicleInsuranceService.deleteDocument(id, request.user);
   }
 
   @Get("vehicle-documents/:id/preview")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_VIEW)
-  async previewDocument(
-    @Param("id") id: string,
-    @Res({ passthrough: true }) response: Response
-  ) {
+  async previewDocument(@Param("id") id: string, @Res({ passthrough: true }) response: Response) {
     const preview = await this.vehicleInsuranceService.previewDocument(id);
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
     return new StreamableFile(preview.stream);
   }
 

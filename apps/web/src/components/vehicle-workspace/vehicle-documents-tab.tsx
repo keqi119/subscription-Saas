@@ -1,8 +1,9 @@
 "use client";
 
-import { FileImageOutlined, UploadOutlined } from "@ant-design/icons";
+import { DeleteOutlined, FileImageOutlined, UploadOutlined } from "@ant-design/icons";
 import {
   Alert,
+  App,
   Button,
   Card,
   Col,
@@ -15,6 +16,7 @@ import {
   Row,
   Spin,
   Tag,
+  Tooltip,
   Typography,
   Upload
 } from "antd";
@@ -26,6 +28,7 @@ import {
   RIGHTS_DOCUMENT_LABELS,
   buildVehicleDocumentBatchFormData,
   canArchiveDocumentBatch,
+  canDeleteVehicleDocument,
   getActiveBatchFileCount,
   getDocumentBatchFileLimit,
   getOtherInternalDocumentBatches,
@@ -35,6 +38,7 @@ import {
   type RightsDocumentType,
   type VehicleDocumentBatchView
 } from "../../lib/vehicle-document-workspace";
+import type { VehicleDocumentView } from "../../lib/vehicle-document-workspace";
 import type { VehicleWorkspaceTabProps } from "./vehicle-workspace-types";
 
 interface VehicleListingSourceBindingView {
@@ -57,6 +61,7 @@ export function VehicleDocumentsTab({
   permissions,
   vehicle
 }: Readonly<VehicleWorkspaceTabProps>) {
+  const { modal } = App.useApp();
   const vehicleId = vehicle.id;
   const canManage = permissions.has("vehicle_document:manage");
   const [batches, setBatches] = useState<VehicleDocumentBatchView[]>([]);
@@ -68,6 +73,7 @@ export function VehicleDocumentsTab({
   const [uploadFiles, setUploadFiles] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [archivingBatchId, setArchivingBatchId] = useState<string | null>(null);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
 
   const loadWorkspace = useCallback(
     async (signal?: AbortSignal) => {
@@ -113,9 +119,7 @@ export function VehicleDocumentsTab({
       new Map(
         bindings.map((binding) => [
           binding.document.id,
-          binding.section === "CONFIGURATION_SHEET"
-            ? "商品配置单已引用"
-            : "商品车况报告已引用"
+          binding.section === "CONFIGURATION_SHEET" ? "商品配置单已引用" : "商品车况报告已引用"
         ])
       ),
     [bindings]
@@ -125,7 +129,7 @@ export function VehicleDocumentsTab({
     [boundDocumentLabels]
   );
   const selectedGroup = selectedType
-    ? groups.find((group) => group.documentType === selectedType) ?? null
+    ? (groups.find((group) => group.documentType === selectedType) ?? null)
     : null;
   const fileLimit = selectedType ? getDocumentBatchFileLimit(selectedType) : 1;
 
@@ -175,10 +179,40 @@ export function VehicleDocumentsTab({
     }
   }
 
+  function confirmDeleteDocument(document: VehicleDocumentView) {
+    modal.confirm({
+      content: `删除后该文件不再计入权证完整度，历史批次及版本号仍会保留。文件：${document.originalName ?? document.fileName}`,
+      okButtonProps: { danger: true },
+      okText: "确认删除",
+      onOk: () => deleteDocument(document),
+      title: "删除错误文件？"
+    });
+  }
+
+  async function deleteDocument(document: VehicleDocumentView) {
+    setDeletingDocumentId(document.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/vehicle-documents/${document.id}`, { method: "DELETE" });
+      setNotice("错误文件已删除");
+      await Promise.all([loadWorkspace(), onVehicleChanged()]);
+    } catch (deleteError) {
+      setError(errorMessage(deleteError));
+      throw deleteError;
+    } finally {
+      setDeletingDocumentId(null);
+    }
+  }
+
   return (
     <Flex data-vehicle-documents-tab="true" gap={16} vertical>
-      {error ? <Alert closable message={error} onClose={() => setError(null)} type="error" /> : null}
-      {notice ? <Alert closable message={notice} onClose={() => setNotice(null)} type="success" /> : null}
+      {error ? (
+        <Alert closable message={error} onClose={() => setError(null)} type="error" />
+      ) : null}
+      {notice ? (
+        <Alert closable message={notice} onClose={() => setNotice(null)} type="success" />
+      ) : null}
       <Card title="权证完整度">
         <Flex align="center" gap={16} wrap>
           <Progress
@@ -200,7 +234,11 @@ export function VehicleDocumentsTab({
               <Col key={group.documentType} lg={6} md={8} sm={12} xs={24}>
                 <Card
                   actions={[
-                    <Button key="detail" onClick={() => setSelectedType(group.documentType)} type="link">
+                    <Button
+                      key="detail"
+                      onClick={() => setSelectedType(group.documentType)}
+                      type="link"
+                    >
                       查看版本与上传
                     </Button>
                   ]}
@@ -212,7 +250,9 @@ export function VehicleDocumentsTab({
                     <Descriptions column={1} size="small">
                       <Descriptions.Item label="最新版本">V{latest.versionNo}</Descriptions.Item>
                       <Descriptions.Item label="有效文件">{activeFileCount} 个</Descriptions.Item>
-                      <Descriptions.Item label="上传时间">{formatDateTime(latest.createdAt)}</Descriptions.Item>
+                      <Descriptions.Item label="上传时间">
+                        {formatDateTime(latest.createdAt)}
+                      </Descriptions.Item>
                     </Descriptions>
                   ) : (
                     <Empty description="尚未上传" image={Empty.PRESENTED_IMAGE_SIMPLE} />
@@ -336,6 +376,38 @@ export function VehicleDocumentsTab({
                                   <Tag>{document.documentStatus}</Tag>
                                   {boundDocumentLabels.has(document.id) ? (
                                     <Tag color="blue">{boundDocumentLabels.get(document.id)}</Tag>
+                                  ) : null}
+                                  {canManage &&
+                                  document.documentStatus === "ACTIVE" &&
+                                  !document.deletedAt ? (
+                                    canDeleteVehicleDocument(document, boundDocumentIds) ? (
+                                      <Button
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        loading={deletingDocumentId === document.id}
+                                        onClick={() => confirmDeleteDocument(document)}
+                                        size="small"
+                                        type="link"
+                                      >
+                                        删除错误文件
+                                      </Button>
+                                    ) : (
+                                      <Tooltip
+                                        title={`${boundDocumentLabels.get(document.id) ?? "商品展示已引用"}，请先解除商品引用`}
+                                      >
+                                        <span>
+                                          <Button
+                                            danger
+                                            disabled
+                                            icon={<DeleteOutlined />}
+                                            size="small"
+                                            type="link"
+                                          >
+                                            删除错误文件
+                                          </Button>
+                                        </span>
+                                      </Tooltip>
+                                    )
                                   ) : null}
                                 </Flex>
                               ))}

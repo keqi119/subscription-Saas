@@ -8,6 +8,7 @@ import {
   buildVehicleDocumentBatchFormData,
   canArchiveDocument,
   canArchiveDocumentBatch,
+  canDeleteVehicleDocument,
   getActiveBatchFileCount,
   getDocumentBatchFileLimit,
   getOtherInternalDocumentBatches,
@@ -87,10 +88,11 @@ describe("vehicle rights document workspace model", () => {
     const groups = getRightsDocumentGroups([versionOne, versionThree]);
 
     expect(groups.map((group) => group.documentType)).toEqual(RIGHTS_DOCUMENT_TYPES);
-    expect(groups.find((group) => group.documentType === "VEHICLE_LICENSE")?.batches.map((batch) => batch.versionNo)).toEqual([
-      3,
-      1
-    ]);
+    expect(
+      groups
+        .find((group) => group.documentType === "VEHICLE_LICENSE")
+        ?.batches.map((batch) => batch.versionNo)
+    ).toEqual([3, 1]);
     expect(getActiveBatchFileCount(versionThree)).toBe(1);
   });
 
@@ -120,14 +122,22 @@ describe("vehicle rights document workspace model", () => {
     expect(canArchiveDocumentBatch(batch, new Set())).toBe(true);
   });
 
+  it("allows deleting only active, unbound rights-document files", () => {
+    const batch = batchFixture("VEHICLE_CONFIGURATION_SHEET", ["configuration"]);
+    const activeDocument = batch.items[0]!;
+    const archivedDocument = documentFixture("VEHICLE_LICENSE", "archived");
+    archivedDocument.documentStatus = "ARCHIVED";
+
+    expect(canDeleteVehicleDocument(activeDocument, new Set())).toBe(true);
+    expect(canDeleteVehicleDocument(activeDocument, new Set([activeDocument.id]))).toBe(false);
+    expect(canDeleteVehicleDocument(archivedDocument, new Set())).toBe(false);
+  });
+
   it("builds one multipart batch with repeated files and no visibility field", () => {
-    const formData = buildVehicleDocumentBatchFormData(
-      "PURCHASE_PAYMENT_VOUCHER",
-      [
-        new File(["receipt-1"], "receipt-1.pdf", { type: "application/pdf" }),
-        new File(["receipt-2"], "receipt-2.jpg", { type: "image/jpeg" })
-      ]
-    );
+    const formData = buildVehicleDocumentBatchFormData("PURCHASE_PAYMENT_VOUCHER", [
+      new File(["receipt-1"], "receipt-1.pdf", { type: "application/pdf" }),
+      new File(["receipt-2"], "receipt-2.jpg", { type: "image/jpeg" })
+    ]);
 
     expect(formData.get("documentType")).toBe("PURCHASE_PAYMENT_VOUCHER");
     expect(formData.getAll("files")).toHaveLength(2);
@@ -150,6 +160,9 @@ describe("vehicle rights document workspace model", () => {
     expect(componentSource).toContain("/document-batches");
     expect(componentSource).toContain("/listing-source-bindings");
     expect(componentSource).toContain("/vehicle-document-batches/");
+    expect(componentSource).toContain("删除错误文件");
+    expect(componentSource).toContain("/vehicle-documents/${document.id}");
+    expect(componentSource).toContain("await Promise.all([loadWorkspace(), onVehicleChanged()])");
   });
 });
 

@@ -3,19 +3,23 @@ import {
   ConflictException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  UnprocessableEntityException
 } from "@nestjs/common";
 import {
+  AuditAction,
   InsuranceClaimStatus,
   Prisma,
   ServiceCaseType,
   VehicleDocument,
   VehicleDocumentStatus,
   VehicleDocumentType,
-  VehicleInsurancePolicyStatus
+  VehicleInsurancePolicyStatus,
+  VehicleInsurancePolicyType
 } from "@prisma/client";
 import type { Readable } from "node:stream";
 
+import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -27,12 +31,14 @@ import { StorageService } from "../storage/storage.service";
 import {
   CreateInsuranceClaimDto,
   CreateVehicleInsurancePolicyDto,
+  DeleteVehicleInsurancePolicyDto,
   InsuranceClaimsQueryDto,
   PutVehicleInsuranceCoveragesDto,
   UpdateInsuranceClaimDto,
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadPolicyDocumentsDto,
   UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsuranceCoverageInputDto,
@@ -100,6 +106,11 @@ const policyInclude = {
     where: { deletedAt: null }
   },
   documents: {
+    include: {
+      listingSourceBindings: {
+        select: { section: true }
+      }
+    },
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
   },
@@ -117,6 +128,9 @@ const policyInclude = {
 } satisfies Prisma.VehicleInsurancePolicyInclude;
 
 const documentInclude = {
+  listingSourceBindings: {
+    select: { section: true }
+  },
   policy: {
     select: {
       id: true,
@@ -193,9 +207,13 @@ const claimInclude = {
   }
 } satisfies Prisma.InsuranceClaimInclude;
 
-type PolicyWithRelations = Prisma.VehicleInsurancePolicyGetPayload<{ include: typeof policyInclude }>;
+type PolicyWithRelations = Prisma.VehicleInsurancePolicyGetPayload<{
+  include: typeof policyInclude;
+}>;
 type DocumentWithRelations = Prisma.VehicleDocumentGetPayload<{ include: typeof documentInclude }>;
-type DocumentBatchWithRelations = Prisma.VehicleDocumentBatchGetPayload<{ include: typeof documentBatchInclude }>;
+type DocumentBatchWithRelations = Prisma.VehicleDocumentBatchGetPayload<{
+  include: typeof documentBatchInclude;
+}>;
 type ClaimWithRelations = Prisma.InsuranceClaimGetPayload<{ include: typeof claimInclude }>;
 
 @Injectable()
@@ -204,7 +222,8 @@ export class VehicleInsuranceService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storageService: StorageService
+    private readonly storageService: StorageService,
+    private readonly auditService: AuditService
   ) {}
 
   async assertVehicleCoveredThrough(
@@ -306,8 +325,14 @@ export class VehicleInsuranceService {
     const data = buildPolicyUpdateData(dto, user.id);
 
     if (dto.effectiveFrom !== undefined || dto.effectiveTo !== undefined) {
-      const effectiveFrom = parseDateOnly(dto.effectiveFrom ?? toIsoDate(before.effectiveFrom)!, "effectiveFrom");
-      const effectiveTo = parseDateOnly(dto.effectiveTo ?? toIsoDate(before.effectiveTo)!, "effectiveTo");
+      const effectiveFrom = parseDateOnly(
+        dto.effectiveFrom ?? toIsoDate(before.effectiveFrom)!,
+        "effectiveFrom"
+      );
+      const effectiveTo = parseDateOnly(
+        dto.effectiveTo ?? toIsoDate(before.effectiveTo)!,
+        "effectiveTo"
+      );
       assertDateOrder(effectiveFrom, effectiveTo);
       data.effectiveFrom = effectiveFrom;
       data.effectiveTo = effectiveTo;
@@ -343,6 +368,86 @@ export class VehicleInsuranceService {
     return toPolicyView(policy);
   }
 
+  async deletePolicy(
+    id: string,
+    dto: DeleteVehicleInsurancePolicyDto,
+    user: RequestUser
+  ): Promise<ReturnType<typeof toPolicyView>> {
+    const before = await this.findPolicyOrThrow(id);
+    const reason = normalizePolicyDeleteReason(dto.reason);
+    const claimCount = await this.prisma.insuranceClaim.count({
+      where: {
+        deletedAt: null,
+        policyId: id
+      }
+    });
+    if (claimCount > 0) {
+      throw new ConflictException({
+        code: "POLICY_HAS_CLAIMS",
+        message: "该保单已关联理赔记录，不能作为错误记录删除"
+      });
+    }
+
+    const documentIds = before.documents.map((document) => document.id);
+    try {
+      await this.assertDocumentsNotBound(documentIds);
+    } catch (error) {
+      if (!(error instanceof ConflictException)) throw error;
+      const response = error.getResponse();
+      const message =
+        typeof response === "object" &&
+        response !== null &&
+        "message" in response &&
+        typeof response.message === "string"
+          ? response.message
+          : error.message;
+      throw new ConflictException({
+        code: "POLICY_DOCUMENT_BOUND",
+        message
+      });
+    }
+
+    const deletedAt = new Date();
+    const policy = await this.prisma.$transaction(async (tx) => {
+      await tx.vehicleDocument.updateMany({
+        data: {
+          customerVisible: false,
+          deletedAt,
+          documentStatus: VehicleDocumentStatus.ARCHIVED
+        },
+        where: {
+          deletedAt: null,
+          policyId: id
+        }
+      });
+      const deletedPolicy = await tx.vehicleInsurancePolicy.update({
+        data: {
+          deletedAt,
+          updatedBy: user.id
+        },
+        include: policyInclude,
+        where: { id }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.DELETE,
+          after: {
+            deletedDocumentIds: documentIds,
+            reason
+          },
+          before: toPolicyView(before),
+          entityId: id,
+          entityType: "VehicleInsurancePolicy",
+          module: "VEHICLE_INSURANCE"
+        },
+        tx
+      );
+      return deletedPolicy;
+    });
+
+    return toPolicyView(policy);
+  }
+
   async putCoverages(id: string, dto: PutVehicleInsuranceCoveragesDto) {
     await this.findPolicyOrThrow(id);
     await this.prisma.$transaction((tx) => replaceCoverages(tx, id, dto.coverages));
@@ -360,6 +465,82 @@ export class VehicleInsuranceService {
       }
     });
     return documents.map(toDocumentView);
+  }
+
+  async uploadPolicyDocuments(
+    policyId: string,
+    dto: UploadPolicyDocumentsDto,
+    files: UploadedVehicleDocumentFile[] | undefined,
+    user: RequestUser
+  ): Promise<VehicleDocumentView[]> {
+    const policy = await this.findPolicyOrThrow(policyId);
+    const uploadFiles = (files ?? []).filter((file) => file.buffer?.length);
+    if (uploadFiles.length === 0) {
+      throw new BadRequestException("at least one policy document file is required");
+    }
+    if (uploadFiles.length > MAX_VEHICLE_DOCUMENT_BATCH_FILES) {
+      throw new BadRequestException(
+        `policy document upload cannot exceed ${MAX_VEHICLE_DOCUMENT_BATCH_FILES} files`
+      );
+    }
+    for (const file of uploadFiles) {
+      assertSupportedVehicleDocumentFile(file);
+    }
+
+    const storedFiles: Array<{
+      file: UploadedVehicleDocumentFile;
+      stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>>;
+    }> = [];
+    try {
+      for (const file of uploadFiles) {
+        const stored = await this.storageService.putVehicleDocument({
+          buffer: file.buffer,
+          contentType: file.mimetype,
+          metadata: { originalName: file.originalname },
+          originalName: file.originalname,
+          vehicleId: policy.vehicleId
+        });
+        storedFiles.push({ file, stored });
+      }
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
+
+    try {
+      const documents = await this.prisma.$transaction(async (tx) => {
+        const created: DocumentWithRelations[] = [];
+        for (const { file, stored } of storedFiles) {
+          created.push(
+            await tx.vehicleDocument.create({
+              data: {
+                bucket: stored.bucket,
+                customerVisible: true,
+                description: normalizeOptionalText(dto.description),
+                documentStatus: VehicleDocumentStatus.ACTIVE,
+                documentType: policyDocumentType(policy.policyType),
+                effectiveFrom: policy.effectiveFrom,
+                effectiveTo: policy.effectiveTo,
+                fileName: file.originalname,
+                fileSize: file.size,
+                mimeType: file.mimetype ?? null,
+                objectKey: stored.objectKey,
+                originalName: file.originalname,
+                policyId: policy.id,
+                uploadedBy: user.id,
+                vehicleId: policy.vehicleId
+              },
+              include: documentInclude
+            })
+          );
+        }
+        return created;
+      });
+      return documents.map(toDocumentView);
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
   }
 
   async listDocumentBatches(vehicleId: string): Promise<VehicleDocumentBatchView[]> {
@@ -380,7 +561,10 @@ export class VehicleInsuranceService {
   ): Promise<VehicleDocumentView> {
     await this.findVehicleOrThrow(vehicleId);
     await this.validatePolicyForVehicle(vehicleId, dto.policyId);
-    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
+    const customerVisible = normalizeVehicleDocumentVisibility(
+      dto.documentType,
+      dto.customerVisible
+    );
     const file = (files ?? []).find((item) => item.buffer?.length);
     if (!file) {
       throw new BadRequestException("vehicle document file is required");
@@ -427,7 +611,10 @@ export class VehicleInsuranceService {
   ): Promise<VehicleDocumentBatchView> {
     await this.findVehicleOrThrow(vehicleId);
     await this.validatePolicyForVehicle(vehicleId, dto.policyId);
-    const customerVisible = normalizeVehicleDocumentVisibility(dto.documentType, dto.customerVisible);
+    const customerVisible = normalizeVehicleDocumentVisibility(
+      dto.documentType,
+      dto.customerVisible
+    );
     const uploadFiles = (files ?? []).filter((file) => file.buffer?.length);
     if (uploadFiles.length === 0) {
       throw new BadRequestException("at least one vehicle document file is required");
@@ -578,7 +765,11 @@ export class VehicleInsuranceService {
     assignIfDefined(data, "description", normalizeOptionalText(dto.description));
     assignIfDefined(data, "documentStatus", dto.documentStatus);
     assignIfDefined(data, "documentType", dto.documentType);
-    assignIfDefined(data, "effectiveFrom", parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom"));
+    assignIfDefined(
+      data,
+      "effectiveFrom",
+      parseOptionalDateOnly(dto.effectiveFrom, "effectiveFrom")
+    );
     assignIfDefined(data, "effectiveTo", parseOptionalDateOnly(dto.effectiveTo, "effectiveTo"));
     assignIfDefined(data, "policyId", normalizeOptionalText(dto.policyId));
     assignIfDefined(data, "title", normalizeOptionalText(dto.title));
@@ -591,17 +782,32 @@ export class VehicleInsuranceService {
     return toDocumentView(document);
   }
 
-  async deleteDocument(id: string) {
+  async deleteDocument(id: string, user: RequestUser) {
     const before = await this.findDocumentOrThrow(id);
     await this.assertDocumentsNotBound([before.id]);
-    const document = await this.prisma.vehicleDocument.update({
-      data: {
-        customerVisible: false,
-        deletedAt: new Date(),
-        documentStatus: VehicleDocumentStatus.ARCHIVED
-      },
-      include: documentInclude,
-      where: { id }
+    const deletedAt = new Date();
+    const document = await this.prisma.$transaction(async (tx) => {
+      const deletedDocument = await tx.vehicleDocument.update({
+        data: {
+          customerVisible: false,
+          deletedAt,
+          documentStatus: VehicleDocumentStatus.ARCHIVED
+        },
+        include: documentInclude,
+        where: { id }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.DELETE,
+          after: { deletedAt, deletedBy: user.id },
+          before: toDocumentView(before),
+          entityId: id,
+          entityType: "vehicle_document",
+          module: "VEHICLE_INSURANCE"
+        },
+        tx
+      );
+      return deletedDocument;
     });
     return toDocumentView(document);
   }
@@ -644,7 +850,11 @@ export class VehicleInsuranceService {
     return toClaimView(await this.findClaimOrThrow(id));
   }
 
-  async createClaimFromServiceCase(serviceCaseId: string, dto: CreateInsuranceClaimDto, user: RequestUser) {
+  async createClaimFromServiceCase(
+    serviceCaseId: string,
+    dto: CreateInsuranceClaimDto,
+    user: RequestUser
+  ) {
     const serviceCase = await this.prisma.serviceCase.findFirst({
       include: {
         customer: { select: { customerNo: true, id: true, mobile: true, name: true } },
@@ -661,7 +871,9 @@ export class VehicleInsuranceService {
       throw new NotFoundException("service case not found");
     }
     if (serviceCase.caseType !== ServiceCaseType.ACCIDENT_REPORT) {
-      throw new BadRequestException("insurance claim can only be created from accident service case");
+      throw new BadRequestException(
+        "insurance claim can only be created from accident service case"
+      );
     }
 
     const vehicleId = serviceCase.vehicleId ?? serviceCase.order?.vehicleId;
@@ -674,8 +886,13 @@ export class VehicleInsuranceService {
     const claim = await withUniqueBusinessNoRetry(() =>
       this.prisma.insuranceClaim.create({
         data: {
-          accidentAt: parseOptionalDateTime(dto.accidentAt ?? serviceCase.occurredAt?.toISOString(), "accidentAt"),
-          claimNo: useAutoNo ? createBusinessNo("IC") : normalizeRequiredText(dto.claimNo, "claimNo"),
+          accidentAt: parseOptionalDateTime(
+            dto.accidentAt ?? serviceCase.occurredAt?.toISOString(),
+            "accidentAt"
+          ),
+          claimNo: useAutoNo
+            ? createBusinessNo("IC")
+            : normalizeRequiredText(dto.claimNo, "claimNo"),
           claimStatus: dto.claimStatus ?? InsuranceClaimStatus.DRAFT,
           createdBy: user.id,
           customerId: serviceCase.customerId,
@@ -898,11 +1115,19 @@ export class VehicleInsuranceService {
     }
   }
 
-  private async buildDocumentPreview(document: Pick<VehicleDocument, "bucket" | "fileName" | "fileSize" | "mimeType" | "objectKey" | "originalName">) {
+  private async buildDocumentPreview(
+    document: Pick<
+      VehicleDocument,
+      "bucket" | "fileName" | "fileSize" | "mimeType" | "objectKey" | "originalName"
+    >
+  ) {
     if (!document.bucket || !document.objectKey) {
       throw new NotFoundException("vehicle document object is missing");
     }
-    const downloaded = await this.storageService.getVehicleDocumentStream(document.bucket, document.objectKey);
+    const downloaded = await this.storageService.getVehicleDocumentStream(
+      document.bucket,
+      document.objectKey
+    );
     return {
       filename: document.originalName ?? document.fileName,
       mimeType: downloaded.contentType ?? document.mimeType,
@@ -915,7 +1140,9 @@ export class VehicleInsuranceService {
     storedFiles: Array<{ stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>> }>
   ) {
     const results = await Promise.allSettled(
-      storedFiles.map(({ stored }) => this.storageService.deleteObject(stored.bucket, stored.objectKey))
+      storedFiles.map(({ stored }) =>
+        this.storageService.deleteObject(stored.bucket, stored.objectKey)
+      )
     );
     const failureCount = results.filter((result) => result.status === "rejected").length;
     if (failureCount > 0) {
@@ -942,7 +1169,10 @@ export class VehicleInsuranceService {
     if (claimStatus === InsuranceClaimStatus.SUBMITTED) {
       data.submittedAt = now;
     }
-    if (claimStatus === InsuranceClaimStatus.ACCEPTED || claimStatus === InsuranceClaimStatus.IN_PROGRESS) {
+    if (
+      claimStatus === InsuranceClaimStatus.ACCEPTED ||
+      claimStatus === InsuranceClaimStatus.IN_PROGRESS
+    ) {
       data.acceptedAt = now;
     }
     if (
@@ -1028,7 +1258,11 @@ function buildPolicyUpdateData(dto: UpdateVehicleInsurancePolicyDto, userId: str
   assignIfDefined(data, "policyType", dto.policyType);
   assignIfDefined(data, "premiumAmount", moneyOrNull(dto.premiumAmount));
   assignIfDefined(data, "remark", normalizeOptionalText(dto.remark));
-  assignIfDefined(data, "renewalReminderAt", parseOptionalDateTime(dto.renewalReminderAt, "renewalReminderAt"));
+  assignIfDefined(
+    data,
+    "renewalReminderAt",
+    parseOptionalDateTime(dto.renewalReminderAt, "renewalReminderAt")
+  );
   return data;
 }
 
@@ -1043,7 +1277,10 @@ function buildCoverageCreateData(coverage: VehicleInsuranceCoverageInputDto) {
 }
 
 function toPolicyView(policy: PolicyWithRelations) {
-  const daysUntilExpiry = differenceInDays(startOfUtcDay(new Date()), startOfUtcDay(policy.effectiveTo));
+  const daysUntilExpiry = differenceInDays(
+    startOfUtcDay(new Date()),
+    startOfUtcDay(policy.effectiveTo)
+  );
   return {
     claimCount: policy.claims.length,
     coverages: policy.coverages.map(toCoverageView),
@@ -1105,6 +1342,7 @@ function toPolicyDocumentView(document: {
   fileName: string;
   fileSize: number | null;
   id: string;
+  listingSourceBindings?: Array<{ section: string }>;
   mimeType: string | null;
   originalName: string | null;
   policyId: string | null;
@@ -1114,6 +1352,9 @@ function toPolicyDocumentView(document: {
   vehicleId: string;
 }) {
   return {
+    boundListingSections: [
+      ...new Set((document.listingSourceBindings ?? []).map(({ section }) => section))
+    ],
     createdAt: document.createdAt,
     customerVisible: document.customerVisible,
     description: document.description,
@@ -1137,6 +1378,9 @@ function toPolicyDocumentView(document: {
 
 function toDocumentView(document: DocumentWithRelations) {
   return {
+    boundListingSections: [
+      ...new Set((document.listingSourceBindings ?? []).map(({ section }) => section))
+    ],
     createdAt: document.createdAt,
     customerVisible: document.customerVisible,
     description: document.description,
@@ -1158,6 +1402,16 @@ function toDocumentView(document: DocumentWithRelations) {
     vehicle: toVehicleBrief(document.vehicle),
     vehicleId: document.vehicleId
   };
+}
+
+function policyDocumentType(policyType: VehicleInsurancePolicyType) {
+  if (policyType === VehicleInsurancePolicyType.COMPULSORY_TRAFFIC) {
+    return VehicleDocumentType.COMPULSORY_INSURANCE_POLICY;
+  }
+  if (policyType === VehicleInsurancePolicyType.COMMERCIAL) {
+    return VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY;
+  }
+  return VehicleDocumentType.OTHER;
 }
 
 function toDocumentBatchView(batch: DocumentBatchWithRelations) {
@@ -1322,6 +1576,17 @@ function normalizeRequiredText(value: string | null | undefined, field: string) 
   return normalized;
 }
 
+function normalizePolicyDeleteReason(value: string | null | undefined) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized || normalized.length < 2 || normalized.length > 500) {
+    throw new UnprocessableEntityException({
+      code: "DELETE_REASON_REQUIRED",
+      message: "删除原因长度必须为 2 到 500 个字符"
+    });
+  }
+  return normalized;
+}
+
 function normalizeOptionalText(value: string | null | undefined) {
   if (value === undefined) {
     return undefined;
@@ -1370,10 +1635,5 @@ function differenceInDays(from: Date, to: Date) {
 }
 
 function isPrismaUniqueConstraintError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }

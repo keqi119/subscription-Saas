@@ -1,18 +1,12 @@
 "use client";
 
-import {
-  EyeOutlined,
-  FileTextOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  UploadOutlined
-} from "@ant-design/icons";
+import { EyeOutlined, MoreOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
-  Checkbox,
   DatePicker,
   Descriptions,
+  Dropdown,
   Drawer,
   Form,
   Input,
@@ -21,24 +15,20 @@ import {
   Space,
   Table,
   Tag,
-  Typography,
-  Upload
+  Typography
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import type { UploadFile } from "antd/es/upload/interface";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProtectedShell } from "../../components/protected-shell";
 import {
-  VEHICLE_DOCUMENT_STATUS_LABELS,
-  VEHICLE_DOCUMENT_TYPE_LABELS,
   VEHICLE_INSURANCE_COVERAGE_TYPE_LABELS,
   VEHICLE_INSURANCE_POLICY_STATUS_LABELS,
   VEHICLE_INSURANCE_POLICY_TYPE_LABELS,
   labelOf
 } from "../../constants/labels";
-import { API_BASE_URL, ApiError, apiFetch } from "../../lib/api";
+import { apiFetch } from "../../lib/api";
 import {
   buildQuery,
   formatDate,
@@ -49,6 +39,8 @@ import {
   toCentAmount,
   yuanFromCents
 } from "../../lib/capital-format";
+import { PolicyDeleteDialog } from "./policy-delete-dialog";
+import { PolicyDocumentPanel, type PolicyDocumentRow } from "./policy-document-panel";
 
 interface VehicleBrief {
   brand: string;
@@ -67,7 +59,7 @@ interface VehicleInsurancePolicyRow {
   currency?: string | null;
   daysUntilExpiry: number;
   documentCount: number;
-  documents: VehicleDocument[];
+  documents: PolicyDocumentRow[];
   effectiveFrom: string;
   effectiveTo: string;
   id: string;
@@ -99,25 +91,6 @@ interface VehicleInsuranceCoverage {
   id?: string;
   insuredAmount?: number | null;
   remark?: string | null;
-}
-
-interface VehicleDocument {
-  createdAt: string;
-  customerVisible: boolean;
-  description?: string | null;
-  documentStatus: string;
-  documentType: string;
-  effectiveFrom?: string | null;
-  effectiveTo?: string | null;
-  fileName: string;
-  fileSize?: number | null;
-  id: string;
-  mimeType?: string | null;
-  originalName?: string | null;
-  policyId?: string | null;
-  previewUrl: string;
-  title?: string | null;
-  vehicleId: string;
 }
 
 interface PolicyListResponse {
@@ -158,15 +131,6 @@ interface PolicyFormValues {
   vehicleId?: string;
 }
 
-interface DocumentFormValues {
-  customerVisible?: boolean;
-  description?: string | null;
-  documentType?: string;
-  effectiveFrom?: Dayjs | null;
-  effectiveTo?: Dayjs | null;
-  title?: string | null;
-}
-
 const statusColors: Record<string, string> = {
   ACTIVE: "green",
   ARCHIVED: "default",
@@ -179,13 +143,10 @@ const statusColors: Record<string, string> = {
 const policyTypeOptions = optionsFromLabels(VEHICLE_INSURANCE_POLICY_TYPE_LABELS);
 const policyStatusOptions = optionsFromLabels(VEHICLE_INSURANCE_POLICY_STATUS_LABELS);
 const coverageTypeOptions = optionsFromLabels(VEHICLE_INSURANCE_COVERAGE_TYPE_LABELS);
-const documentTypeOptions = optionsFromLabels(VEHICLE_DOCUMENT_TYPE_LABELS);
-
 export default function VehicleInsurancePoliciesPage() {
   const { message } = App.useApp();
   const [filterForm] = Form.useForm<FilterValues>();
   const [policyForm] = Form.useForm<PolicyFormValues>();
-  const [documentForm] = Form.useForm<DocumentFormValues>();
   const [rows, setRows] = useState<VehicleInsurancePolicyRow[]>([]);
   const [vehicles, setVehicles] = useState<VehicleBrief[]>([]);
   const [loading, setLoading] = useState(false);
@@ -193,9 +154,9 @@ export default function VehicleInsurancePoliciesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [detail, setDetail] = useState<VehicleInsurancePolicyRow | null>(null);
   const [editing, setEditing] = useState<VehicleInsurancePolicyRow | null>(null);
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [deletingPolicy, setDeletingPolicy] = useState<VehicleInsurancePolicyRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const vehicleOptions = useMemo(
     () =>
@@ -322,43 +283,29 @@ export default function VehicleInsurancePoliciesPage() {
     }
   }
 
-  async function uploadDocument(values: DocumentFormValues) {
-    if (!detail) {
+  async function deletePolicy(reason: string) {
+    const policy = deletingPolicy;
+    if (!policy) {
       return;
     }
-    const file = fileList.find((item) => item.originFileObj);
-    if (!file?.originFileObj) {
-      void message.warning("请选择保单附件或车辆材料");
-      return;
-    }
-    if (!values.documentType) {
-      void message.warning("请选择材料类型");
-      return;
-    }
-    setUploading(true);
+    setDeleting(true);
     try {
-      const formData = new FormData();
-      formData.append("files", file.originFileObj, file.name);
-      formData.append("documentType", values.documentType);
-      formData.append("policyId", detail.id);
-      formData.append("customerVisible", values.customerVisible ? "true" : "false");
-      appendIfPresent(formData, "title", values.title);
-      appendIfPresent(formData, "description", values.description);
-      appendIfPresent(formData, "effectiveFrom", values.effectiveFrom?.format("YYYY-MM-DD"));
-      appendIfPresent(formData, "effectiveTo", values.effectiveTo?.format("YYYY-MM-DD"));
-      await apiFetch(`/vehicles/${detail.vehicleId}/documents`, {
-        body: formData,
-        method: "POST"
+      await apiFetch(`/vehicle-insurance-policies/${policy.id}`, {
+        body: JSON.stringify({ reason }),
+        method: "DELETE"
       });
-      setFileList([]);
-      documentForm.resetFields();
-      void message.success("材料已上传");
-      await openDetail(detail.id);
+      void message.success("错误保单记录已删除");
+      setDeletingPolicy(null);
+      if (detail?.id === policy.id) {
+        setDetail(null);
+        setDrawerOpen(false);
+      }
       await loadPolicies();
     } catch (error) {
-      void message.error(error instanceof ApiError ? error.message : getErrorMessage(error));
+      void message.error(getErrorMessage(error));
+      throw error;
     } finally {
-      setUploading(false);
+      setDeleting(false);
     }
   }
 
@@ -375,7 +322,9 @@ export default function VehicleInsurancePoliciesPage() {
     {
       dataIndex: "policyStatus",
       render: (value: string) => (
-        <Tag color={statusColors[value] ?? "default"}>{labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, value)}</Tag>
+        <Tag color={statusColors[value] ?? "default"}>
+          {labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, value)}
+        </Tag>
       ),
       title: "状态"
     },
@@ -406,7 +355,8 @@ export default function VehicleInsurancePoliciesPage() {
     },
     {
       dataIndex: "daysUntilExpiry",
-      render: (value: number, row) => row.isExpiringSoon ? <Tag color="orange">{value} 天后到期</Tag> : `${value} 天`,
+      render: (value: number, row) =>
+        row.isExpiringSoon ? <Tag color="orange">{value} 天后到期</Tag> : `${value} 天`,
       title: "到期"
     },
     {
@@ -418,10 +368,27 @@ export default function VehicleInsurancePoliciesPage() {
           <Button onClick={() => openEdit(row)} size="small">
             编辑
           </Button>
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  danger: true,
+                  key: "delete",
+                  label: "删除错误记录",
+                  onClick: () => setDeletingPolicy(row)
+                }
+              ]
+            }}
+            trigger={["click"]}
+          >
+            <Button icon={<MoreOutlined />} size="small">
+              更多
+            </Button>
+          </Dropdown>
         </Space>
       ),
       title: "操作",
-      width: 150
+      width: 240
     }
   ];
 
@@ -459,23 +426,45 @@ export default function VehicleInsurancePoliciesPage() {
           </Button>
         </Form>
 
-        <Table columns={columns} dataSource={rows} loading={loading} rowKey="id" scroll={{ x: 1400 }} />
+        <Table
+          columns={columns}
+          dataSource={rows}
+          loading={loading}
+          rowKey="id"
+          scroll={{ x: 1400 }}
+        />
       </Space>
 
-      <Drawer destroyOnClose onClose={() => setDrawerOpen(false)} open={drawerOpen} title={detail?.policyNo ?? "保单详情"} width={760}>
+      <Drawer
+        destroyOnClose
+        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen}
+        title={detail?.policyNo ?? "保单详情"}
+        width={760}
+      >
         {detail ? (
           <Space direction="vertical" size={18} style={{ width: "100%" }}>
             <Descriptions column={1} size="small">
-              <Descriptions.Item label="车辆">{detail.vehicle.displayName || detail.vehicle.vehicleNo}</Descriptions.Item>
-              <Descriptions.Item label="保单类型">{labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, detail.policyType)}</Descriptions.Item>
-              <Descriptions.Item label="状态">{labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, detail.policyStatus)}</Descriptions.Item>
+              <Descriptions.Item label="车辆">
+                {detail.vehicle.displayName || detail.vehicle.vehicleNo}
+              </Descriptions.Item>
+              <Descriptions.Item label="保单类型">
+                {labelOf(VEHICLE_INSURANCE_POLICY_TYPE_LABELS, detail.policyType)}
+              </Descriptions.Item>
+              <Descriptions.Item label="状态">
+                {labelOf(VEHICLE_INSURANCE_POLICY_STATUS_LABELS, detail.policyStatus)}
+              </Descriptions.Item>
               <Descriptions.Item label="保险公司">{detail.insurerName ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="投保人">{detail.policyHolderName ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="被保险人">{detail.insuredName ?? "-"}</Descriptions.Item>
-              <Descriptions.Item label="保险期间">{formatDate(detail.effectiveFrom)} 至 {formatDate(detail.effectiveTo)}</Descriptions.Item>
+              <Descriptions.Item label="保险期间">
+                {formatDate(detail.effectiveFrom)} 至 {formatDate(detail.effectiveTo)}
+              </Descriptions.Item>
               <Descriptions.Item label="保费">{formatYuan(detail.premiumAmount)}</Descriptions.Item>
               <Descriptions.Item label="保额">{formatYuan(detail.insuredAmount)}</Descriptions.Item>
-              <Descriptions.Item label="续保提醒">{formatDateTime(detail.renewalReminderAt)}</Descriptions.Item>
+              <Descriptions.Item label="续保提醒">
+                {formatDateTime(detail.renewalReminderAt)}
+              </Descriptions.Item>
               <Descriptions.Item label="备注">{detail.remark ?? "-"}</Descriptions.Item>
             </Descriptions>
 
@@ -490,48 +479,14 @@ export default function VehicleInsurancePoliciesPage() {
               />
             </div>
 
-            <div>
-              <Typography.Title level={5}>保单附件 / 车辆材料</Typography.Title>
-              <Table
-                columns={documentColumns}
-                dataSource={detail.documents}
-                pagination={false}
-                rowKey="id"
-                size="small"
-              />
-            </div>
-
-            <Form form={documentForm} layout="vertical" onFinish={(values) => void uploadDocument(values)}>
-              <Typography.Title level={5}>上传附件</Typography.Title>
-              <Form.Item label="材料类型" name="documentType" rules={[{ required: true, message: "请选择材料类型" }]}>
-                <Select options={documentTypeOptions} />
-              </Form.Item>
-              <Form.Item label="标题" name="title">
-                <Input maxLength={128} />
-              </Form.Item>
-              <Form.Item label="有效期">
-                <Space wrap>
-                  <Form.Item name="effectiveFrom" noStyle>
-                    <DatePicker placeholder="起期" />
-                  </Form.Item>
-                  <Form.Item name="effectiveTo" noStyle>
-                    <DatePicker placeholder="止期" />
-                  </Form.Item>
-                </Space>
-              </Form.Item>
-              <Form.Item name="customerVisible" valuePropName="checked">
-                <Checkbox>客户在租期间可见</Checkbox>
-              </Form.Item>
-              <Form.Item label="说明" name="description">
-                <Input.TextArea rows={2} />
-              </Form.Item>
-              <Upload beforeUpload={() => false} fileList={fileList} maxCount={1} onChange={({ fileList: next }) => setFileList(next)}>
-                <Button icon={<UploadOutlined />}>选择文件</Button>
-              </Upload>
-              <Button htmlType="submit" loading={uploading} style={{ marginTop: 12 }} type="primary">
-                上传
-              </Button>
-            </Form>
+            <PolicyDocumentPanel
+              documents={detail.documents}
+              onChanged={async () => {
+                await openDetail(detail.id);
+                await loadPolicies();
+              }}
+              policyId={detail.id}
+            />
 
             {detail.claimCount ? (
               <Typography.Text type="secondary">
@@ -542,16 +497,43 @@ export default function VehicleInsurancePoliciesPage() {
         ) : null}
       </Drawer>
 
-      <Drawer destroyOnClose onClose={() => setFormOpen(false)} open={formOpen} title={editing ? "编辑保单" : "新建保单"} width={720}>
+      <PolicyDeleteDialog
+        onCancel={() => setDeletingPolicy(null)}
+        onConfirm={deletePolicy}
+        open={Boolean(deletingPolicy)}
+        policyNo={deletingPolicy?.policyNo ?? ""}
+        submitting={deleting}
+      />
+
+      <Drawer
+        destroyOnClose
+        onClose={() => setFormOpen(false)}
+        open={formOpen}
+        title={editing ? "编辑保单" : "新建保单"}
+        width={720}
+      >
         <Form form={policyForm} layout="vertical" onFinish={(values) => void submitPolicy(values)}>
-          <Form.Item hidden={Boolean(editing)} label="车辆" name="vehicleId" rules={[{ required: !editing, message: "请选择车辆" }]}>
+          <Form.Item
+            hidden={Boolean(editing)}
+            label="车辆"
+            name="vehicleId"
+            rules={[{ required: !editing, message: "请选择车辆" }]}
+          >
             <Select optionFilterProp="label" options={vehicleOptions} showSearch />
           </Form.Item>
-          <Form.Item label="保单号" name="policyNo" rules={[{ required: true, message: "请输入保单号" }]}>
+          <Form.Item
+            label="保单号"
+            name="policyNo"
+            rules={[{ required: true, message: "请输入保单号" }]}
+          >
             <Input maxLength={128} />
           </Form.Item>
           <Space style={{ width: "100%" }} wrap>
-            <Form.Item label="保单类型" name="policyType" rules={[{ required: true, message: "请选择保单类型" }]}>
+            <Form.Item
+              label="保单类型"
+              name="policyType"
+              rules={[{ required: true, message: "请选择保单类型" }]}
+            >
               <Select options={policyTypeOptions} style={{ width: 180 }} />
             </Form.Item>
             <Form.Item label="状态" name="policyStatus">
@@ -562,10 +544,18 @@ export default function VehicleInsurancePoliciesPage() {
             </Form.Item>
           </Space>
           <Space style={{ width: "100%" }} wrap>
-            <Form.Item label="起保日期" name="effectiveFrom" rules={[{ required: true, message: "请选择起保日期" }]}>
+            <Form.Item
+              label="起保日期"
+              name="effectiveFrom"
+              rules={[{ required: true, message: "请选择起保日期" }]}
+            >
               <DatePicker />
             </Form.Item>
-            <Form.Item label="终保日期" name="effectiveTo" rules={[{ required: true, message: "请选择终保日期" }]}>
+            <Form.Item
+              label="终保日期"
+              name="effectiveTo"
+              rules={[{ required: true, message: "请选择终保日期" }]}
+            >
               <DatePicker />
             </Form.Item>
             <Form.Item label="续保提醒" name="renewalReminderAt">
@@ -601,17 +591,34 @@ export default function VehicleInsurancePoliciesPage() {
               <Space direction="vertical" style={{ width: "100%" }}>
                 {fields.map((field) => (
                   <Space align="baseline" key={field.key} wrap>
-                    <Form.Item name={[field.name, "coverageType"]} rules={[{ required: true, message: "请选择险种" }]}>
-                      <Select options={coverageTypeOptions} placeholder="险种" style={{ width: 170 }} />
+                    <Form.Item
+                      name={[field.name, "coverageType"]}
+                      rules={[{ required: true, message: "请选择险种" }]}
+                    >
+                      <Select
+                        options={coverageTypeOptions}
+                        placeholder="险种"
+                        style={{ width: 170 }}
+                      />
                     </Form.Item>
                     <Form.Item name={[field.name, "coverageName"]}>
                       <Input placeholder="险种名称" style={{ width: 150 }} />
                     </Form.Item>
                     <Form.Item name={[field.name, "insuredAmountYuan"]}>
-                      <InputNumber min={0} placeholder="保额(元)" precision={2} style={{ width: 130 }} />
+                      <InputNumber
+                        min={0}
+                        placeholder="保额(元)"
+                        precision={2}
+                        style={{ width: 130 }}
+                      />
                     </Form.Item>
                     <Form.Item name={[field.name, "deductibleAmountYuan"]}>
-                      <InputNumber min={0} placeholder="免赔(元)" precision={2} style={{ width: 130 }} />
+                      <InputNumber
+                        min={0}
+                        placeholder="免赔(元)"
+                        precision={2}
+                        style={{ width: 130 }}
+                      />
                     </Form.Item>
                     <Button danger onClick={() => remove(field.name)} size="small">
                       删除
@@ -660,36 +667,6 @@ const coverageColumns: ColumnsType<VehicleInsuranceCoverage> = [
   }
 ];
 
-const documentColumns: ColumnsType<VehicleDocument> = [
-  {
-    dataIndex: "documentType",
-    render: (value: string) => labelOf(VEHICLE_DOCUMENT_TYPE_LABELS, value),
-    title: "类型"
-  },
-  {
-    dataIndex: "documentStatus",
-    render: (value: string) => labelOf(VEHICLE_DOCUMENT_STATUS_LABELS, value),
-    title: "状态"
-  },
-  {
-    dataIndex: "customerVisible",
-    render: (value: boolean) => value ? <Tag color="green">客户可见</Tag> : <Tag>后台可见</Tag>,
-    title: "可见性"
-  },
-  {
-    dataIndex: "fileName",
-    title: "文件"
-  },
-  {
-    render: (_, row) => (
-      <Button icon={<FileTextOutlined />} onClick={() => window.open(buildAdminPreviewUrl(row.previewUrl), "_blank", "noopener,noreferrer")} size="small" type="link">
-        预览
-      </Button>
-    ),
-    title: "操作"
-  }
-];
-
 function toPolicyPayload(values: PolicyFormValues) {
   return {
     coverages: (values.coverages ?? [])
@@ -715,17 +692,6 @@ function toPolicyPayload(values: PolicyFormValues) {
     remark: values.remark,
     renewalReminderAt: values.renewalReminderAt?.toISOString()
   };
-}
-
-function appendIfPresent(formData: FormData, key: string, value?: string | null) {
-  if (value) {
-    formData.append(key, value);
-  }
-}
-
-function buildAdminPreviewUrl(previewUrl: string) {
-  const origin = API_BASE_URL.replace(/\/api$/, "");
-  return `${origin}${previewUrl}`;
 }
 
 function safeValue(value?: string | null) {

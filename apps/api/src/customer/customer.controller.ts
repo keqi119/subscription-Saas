@@ -18,6 +18,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
@@ -113,7 +114,11 @@ export class CustomerController {
     @Body() dto: CreateSelfServiceApplicationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.customerService.createSelfServiceApplication(dto, request.user, requestContext(request));
+    return this.customerService.createSelfServiceApplication(
+      dto,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Get("applications/:id")
@@ -149,7 +154,13 @@ export class CustomerController {
     @Body() dto: ReviewApplicationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.customerService.reviewApplication(id, "material", dto, request.user, requestContext(request));
+    return this.customerService.reviewApplication(
+      id,
+      "material",
+      dto,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/reviews/credit")
@@ -159,7 +170,13 @@ export class CustomerController {
     @Body() dto: ReviewApplicationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.customerService.reviewApplication(id, "credit", dto, request.user, requestContext(request));
+    return this.customerService.reviewApplication(
+      id,
+      "credit",
+      dto,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/reviews/product")
@@ -169,7 +186,13 @@ export class CustomerController {
     @Body() dto: ReviewApplicationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.customerService.reviewApplication(id, "product", dto, request.user, requestContext(request));
+    return this.customerService.reviewApplication(
+      id,
+      "product",
+      dto,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/reviews/vehicle")
@@ -179,7 +202,13 @@ export class CustomerController {
     @Body() dto: ReviewApplicationDto,
     @Req() request: AuthenticatedRequest
   ) {
-    return this.customerService.reviewApplication(id, "vehicle", dto, request.user, requestContext(request));
+    return this.customerService.reviewApplication(
+      id,
+      "vehicle",
+      dto,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/finalize-plan")
@@ -191,7 +220,11 @@ export class CustomerController {
   @Post("applications/:id/create-order")
   @RequirePermissions(PermissionCode.QUOTE_CREATE, PermissionCode.ORDER_CREATE)
   createOrderFromApplication(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return this.customerService.createOrderFromApplication(id, request.user, requestContext(request));
+    return this.customerService.createOrderFromApplication(
+      id,
+      request.user,
+      requestContext(request)
+    );
   }
 
   @Post("applications/:id/cancel")
@@ -206,7 +239,7 @@ export class CustomerController {
 
   @Post("applications/:id/materials")
   @RequirePermissions(PermissionCode.APPLICATION_MATERIAL_UPLOAD)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadMaterial(
     @Param("id") id: string,
     @Body() dto: CreateMaterialDto,

@@ -3685,7 +3685,8 @@ model VehicleInsurancePolicy {
   updatedBy         String?                      @map("updated_by") @db.Uuid
   deletedAt         DateTime?                    @map("deleted_at") @db.Timestamptz(6)
 
-  @@unique([vehicleId, policyNo])
+  // Migration-owned partial unique index: vehicle_insurance_policy_active_vehicle_policy_no_key
+  // enforces (vehicle_id, policy_no) only while deleted_at IS NULL.
   @@index([vehicleId])
   @@index([policyType])
   @@index([policyStatus])

@@ -20,7 +20,10 @@ import {
 } from "../src/field-operator/field-evidence-upload-options";
 
 const TEST_PRODUCT_LIMIT_BYTES = 8;
-const TEST_UPLOAD_DIRECTORY = path.join(tmpdir(), "subscription-saas-field-evidence-multipart-test");
+const TEST_UPLOAD_DIRECTORY = path.join(
+  tmpdir(),
+  "subscription-saas-field-evidence-multipart-test"
+);
 const TEST_UPLOAD_OPTIONS = createFieldEvidenceUploadOptions({
   destination: TEST_UPLOAD_DIRECTORY,
   productMaxSizeBytes: TEST_PRODUCT_LIMIT_BYTES
@@ -37,9 +40,7 @@ const TEST_PARTS_UPLOAD_OPTIONS = {
 @Controller()
 class MultipartBoundaryController {
   @Post("upload")
-  @UseInterceptors(
-    AnyFilesInterceptor(TEST_UPLOAD_OPTIONS)
-  )
+  @UseInterceptors(AnyFilesInterceptor(TEST_UPLOAD_OPTIONS))
   upload(
     @UploadedFiles() files: Array<{ originalname: string; path: string; size: number }> | undefined
   ) {
@@ -87,6 +88,18 @@ describe("field evidence multipart boundary", () => {
     await expect(response.json()).resolves.toMatchObject({
       name: "evidence.bin",
       size: TEST_PRODUCT_LIMIT_BYTES
+    });
+  });
+
+  it("decodes an UTF-8 Chinese upload filename without mojibake", async () => {
+    const form = new FormData();
+    form.append("files", new Blob([Buffer.alloc(1)]), "车辆行驶证.pdf");
+
+    const response = await postMultipart(form);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      name: "车辆行驶证.pdf"
     });
   });
 

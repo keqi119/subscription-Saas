@@ -21,6 +21,7 @@ import {
   PortalServiceCasesQueryDto
 } from "../service-case/dto/service-case.dto";
 import { ServiceCaseService, UploadedServiceCaseFile } from "../service-case/service-case.service";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
@@ -60,7 +61,7 @@ export class PortalServiceCaseController {
   }
 
   @Post(":id/attachments")
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadAttachments(
     @Param("id") id: string,
     @UploadedFiles() files: UploadedServiceCaseFile[],
@@ -89,7 +90,10 @@ export class PortalServiceCaseController {
     );
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(preview.filename)}"`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(preview.filename)}"`
+    );
     return new StreamableFile(preview.stream);
   }
 

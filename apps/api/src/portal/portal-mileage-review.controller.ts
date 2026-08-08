@@ -16,6 +16,7 @@ import {
 import { AnyFilesInterceptor } from "@nestjs/platform-express";
 
 import { UploadedMaterialFile } from "../customer/customer.service";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
@@ -55,7 +56,13 @@ export class PortalMileageReviewController {
   }
 
   @Post(":id/evidence")
-  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 20 * 1024 * 1024 } }))
+  @UseInterceptors(
+    AnyFilesInterceptor(
+      createUtf8MultipartOptions({
+        limits: { fileSize: 20 * 1024 * 1024 }
+      })
+    )
+  )
   uploadEvidence(
     @Param("id") id: string,
     @Body() dto: UploadPortalMileageReviewEvidenceDto,

@@ -19,6 +19,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { RequirePermissions } from "../auth/auth.decorators";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
@@ -109,7 +110,7 @@ export class VehicleBaasController {
 
   @Post("vehicle-baas-contracts/:id/attachments")
   @RequirePermissions(PermissionCode.VEHICLE_BAAS_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadAttachment(
     @Param("id") id: string,
     @Body() dto: UploadVehicleBaasContractAttachmentDto,
@@ -127,14 +128,14 @@ export class VehicleBaasController {
 
   @Get("vehicle-baas-contract-attachments/:id/preview")
   @RequirePermissions(PermissionCode.VEHICLE_BAAS_VIEW)
-  async previewAttachment(
-    @Param("id") id: string,
-    @Res({ passthrough: true }) response: Response
-  ) {
+  async previewAttachment(@Param("id") id: string, @Res({ passthrough: true }) response: Response) {
     const preview = await this.vehicleBaasService.previewAttachment(id);
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
     return new StreamableFile(preview.stream);
   }
 
@@ -146,10 +147,7 @@ export class VehicleBaasController {
 
   @Get("vehicle-baas-contracts/:id/cost-records")
   @RequirePermissions(PermissionCode.VEHICLE_BAAS_VIEW)
-  listContractCostRecords(
-    @Param("id") id: string,
-    @Query() query: VehicleBaasCostRecordsQueryDto
-  ) {
+  listContractCostRecords(@Param("id") id: string, @Query() query: VehicleBaasCostRecordsQueryDto) {
     return this.vehicleBaasService.listContractCostRecords(id, query);
   }
 

@@ -20,6 +20,7 @@ import { VehicleListingSourceSection } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
@@ -47,7 +48,8 @@ export class VehicleListingController {
   @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
   putSourceBinding(
     @Param("id") id: string,
-    @Param("section", new ParseEnumPipe(VehicleListingSourceSection)) section: VehicleListingSourceSection,
+    @Param("section", new ParseEnumPipe(VehicleListingSourceSection))
+    section: VehicleListingSourceSection,
     @Body() dto: PutVehicleListingSourceBindingDto,
     @Req() request: AuthenticatedRequest
   ) {
@@ -58,7 +60,8 @@ export class VehicleListingController {
   @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
   deleteSourceBinding(
     @Param("id") id: string,
-    @Param("section", new ParseEnumPipe(VehicleListingSourceSection)) section: VehicleListingSourceSection
+    @Param("section", new ParseEnumPipe(VehicleListingSourceSection))
+    section: VehicleListingSourceSection
   ) {
     return this.vehicleListingService.deleteSourceBinding(id, section);
   }
@@ -93,7 +96,7 @@ export class VehicleListingController {
 
   @Post("vehicles/:id/listing-media")
   @RequirePermissions(PermissionCode.VEHICLE_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadMedia(
     @Param("id") id: string,
     @Body() dto: UploadVehicleListingMediaDto,
@@ -135,7 +138,10 @@ export class VehicleListingController {
     const preview = await this.vehicleListingService.previewMedia(id, mediaId);
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
     return new StreamableFile(preview.stream);
   }
 

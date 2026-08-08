@@ -19,6 +19,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import type { UploadedMaterialFile } from "../customer/customer.service";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
@@ -101,7 +102,13 @@ export class MileageReviewController {
   }
 
   @Post("mileage-reviews/:id/evidence/upload")
-  @UseInterceptors(AnyFilesInterceptor({ limits: { fileSize: 20 * 1024 * 1024 } }))
+  @UseInterceptors(
+    AnyFilesInterceptor(
+      createUtf8MultipartOptions({
+        limits: { fileSize: 20 * 1024 * 1024 }
+      })
+    )
+  )
   @RequirePermissions(PermissionCode.MILEAGE_REVIEW_SUBMIT)
   uploadEvidence(
     @Param("id") id: string,

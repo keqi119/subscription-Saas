@@ -20,6 +20,7 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
 import { RequirePermissions } from "../auth/auth.decorators";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
 import {
@@ -100,7 +101,7 @@ export class VehicleInsuranceController {
 
   @Post("vehicles/:id/documents")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadDocument(
     @Param("id") id: string,
     @Body() dto: UploadVehicleDocumentDto,
@@ -112,7 +113,7 @@ export class VehicleInsuranceController {
 
   @Post("vehicles/:id/document-batches")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadDocumentBatch(
     @Param("id") id: string,
     @Body() dto: UploadVehicleDocumentBatchDto,
@@ -142,14 +143,14 @@ export class VehicleInsuranceController {
 
   @Get("vehicle-documents/:id/preview")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_VIEW)
-  async previewDocument(
-    @Param("id") id: string,
-    @Res({ passthrough: true }) response: Response
-  ) {
+  async previewDocument(@Param("id") id: string, @Res({ passthrough: true }) response: Response) {
     const preview = await this.vehicleInsuranceService.previewDocument(id);
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
     return new StreamableFile(preview.stream);
   }
 

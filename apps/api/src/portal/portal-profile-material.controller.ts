@@ -16,6 +16,7 @@ import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
 
 import { UploadedMaterialFile } from "../customer/customer.service";
+import { createUtf8MultipartOptions } from "../upload/multipart-upload-options";
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
@@ -41,7 +42,7 @@ export class PortalProfileMaterialController {
   }
 
   @Post("materials")
-  @UseInterceptors(AnyFilesInterceptor())
+  @UseInterceptors(AnyFilesInterceptor(createUtf8MultipartOptions()))
   uploadMaterial(
     @Body() dto: UploadPortalProfileMaterialDto,
     @UploadedFiles() files: UploadedMaterialFile[] | undefined,
@@ -76,7 +77,10 @@ export class PortalProfileMaterialController {
     const preview = await this.profileMaterialService.previewMaterial(id, currentCustomer);
     response.setHeader("Content-Type", preview.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Length", String(preview.sizeBytes));
-    response.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`);
+    response.setHeader(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(preview.filename)}`
+    );
     return new StreamableFile(preview.stream);
   }
 

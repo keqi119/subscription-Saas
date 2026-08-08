@@ -112,6 +112,32 @@ describe("VehicleInsuranceService policy and document management", () => {
     });
   });
 
+  it("projects product listing bindings on policy detail documents", async () => {
+    const { prisma, service } = createHarness();
+    prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({
+      ...createPolicy(),
+      claims: [],
+      coverages: [],
+      documents: [
+        {
+          ...createDocument(),
+          listingSourceBindings: [
+            { section: VehicleListingSourceSection.CONFIGURATION_SHEET },
+            { section: VehicleListingSourceSection.CONFIGURATION_SHEET }
+          ],
+          policyId: "policy-1"
+        }
+      ],
+      vehicle: vehicleBrief()
+    } as never);
+
+    const policy = await service.getPolicy("policy-1");
+
+    expect(policy.documents[0]?.boundListingSections).toEqual([
+      VehicleListingSourceSection.CONFIGURATION_SHEET
+    ]);
+  });
+
   it("soft deletes an erroneous policy and active unbound documents with one audit", async () => {
     const { auditService, prisma, service, user } = createHarness();
     prisma.vehicleInsurancePolicy.findFirst.mockResolvedValueOnce({

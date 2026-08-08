@@ -106,6 +106,11 @@ const policyInclude = {
     where: { deletedAt: null }
   },
   documents: {
+    include: {
+      listingSourceBindings: {
+        select: { section: true }
+      }
+    },
     orderBy: { createdAt: "desc" as const },
     where: { deletedAt: null }
   },
@@ -1337,6 +1342,7 @@ function toPolicyDocumentView(document: {
   fileName: string;
   fileSize: number | null;
   id: string;
+  listingSourceBindings?: Array<{ section: string }>;
   mimeType: string | null;
   originalName: string | null;
   policyId: string | null;
@@ -1346,6 +1352,9 @@ function toPolicyDocumentView(document: {
   vehicleId: string;
 }) {
   return {
+    boundListingSections: [
+      ...new Set((document.listingSourceBindings ?? []).map(({ section }) => section))
+    ],
     createdAt: document.createdAt,
     customerVisible: document.customerVisible,
     description: document.description,

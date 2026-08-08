@@ -40,14 +40,16 @@
 - `apps/web/src/app/portal/catalog/portal-catalog-presentation.ts` — pure title, tag, month, and cents-to-yuan display rules.
 - `apps/web/src/app/portal/catalog/portal-catalog-card.tsx` — one responsive vehicle card and image fallback.
 - `apps/web/src/app/portal/catalog/portal-catalog-card.module.css` — desktop horizontal and mobile scheme-A card layout.
+- `apps/web/src/app/portal/catalog/portal-catalog-filter-panel.tsx` — accessible controlled mobile filter shell that owns no form state.
 - `apps/web/src/app/portal/catalog/catalog-page.module.css` — catalog page header, collapsible mobile filter, and list spacing.
 - `apps/web/src/lib/admin-menu-state.ts` — module-memory/session-storage state boundary with validation and safe persistence.
+- `apps/web/src/components/admin-shell-frame.tsx` — presentation-only Admin viewport frame with menu/header/content slots.
 - `apps/web/src/components/protected-shell.module.css` — fixed viewport shell and independent left/right scroll containers.
 - `apps/web/test/portal-catalog-presentation.spec.ts` — pure Portal display rule tests.
 - `apps/web/test/portal-catalog-card.spec.tsx` — server-rendered catalog card structure and copy tests.
-- `apps/web/test/portal-catalog-layout.spec.ts` — page/CSS integration contract for one filter form and responsive layouts.
+- `apps/web/test/portal-catalog-filter-panel.spec.tsx` — real rendered filter disclosure behavior.
 - `apps/web/test/admin-menu-state.spec.ts` — pure menu cache, validation, merge, and scroll-position tests.
-- `apps/web/test/admin-shell-layout.spec.ts` — ProtectedShell/CSS integration contract.
+- `apps/web/test/admin-shell-layout.spec.tsx` — real rendered Admin viewport-frame structure.
 
 ---
 
@@ -496,42 +498,58 @@ git commit -m "feat: add responsive portal vehicle card"
 **Files:**
 
 - Modify: `apps/web/src/app/portal/catalog/page.tsx:1-238`
+- Create: `apps/web/src/app/portal/catalog/portal-catalog-filter-panel.tsx`
 - Create: `apps/web/src/app/portal/catalog/catalog-page.module.css`
-- Create: `apps/web/test/portal-catalog-layout.spec.ts`
+- Create: `apps/web/test/portal-catalog-filter-panel.spec.tsx`
 - Consume: `apps/web/src/app/portal/catalog/portal-catalog-card.tsx`
 
 **Interfaces:**
 
 - Consumes: existing `loadVehicles(values)`, `Form<CatalogFilterValues>`, model-definition options, and `router.push` behavior.
-- Produces: one responsive filter form, `appliedFilterCount: number`, and a list composed from `PortalCatalogCard`.
+- Produces:
+  - `PortalCatalogFilterPanel({ activeCount, children, onToggle, open })`
+  - one responsive filter form, `appliedFilterCount: number`, and a list composed from `PortalCatalogCard`.
 
-- [ ] **Step 1: Write the failing page/CSS contract test**
+- [ ] **Step 1: Write the failing rendered filter-panel tests**
 
-Read `page.tsx`, `catalog-page.module.css`, and `portal-catalog-card.module.css`, then assert:
+Render the real disclosure component in its closed and open states:
 
-```ts
-expect(pageSource.match(/<Form<CatalogFilterValues>/g)).toHaveLength(1);
-expect(pageSource).toContain("PortalCatalogCard");
-expect(pageSource).toContain("aria-expanded={filtersOpen}");
-expect(pageSource).toContain('data-open={filtersOpen ? "true" : "false"}');
-expect(pageSource).toContain("appliedFilterCount");
-expect(pageCss).toContain("@media (max-width: 768px)");
-expect(pageCss).toMatch(/filterContent\[data-open="false"\][^{]*\{[^}]*display:\s*none/s);
-expect(cardCss).toContain("aspect-ratio: 16 / 9");
-expect(cardCss).toContain("min-width: 0");
+```tsx
+const closed = renderToStaticMarkup(
+  <PortalCatalogFilterPanel activeCount={2} onToggle={() => undefined} open={false}>
+    <form aria-label="车辆筛选">筛选表单</form>
+  </PortalCatalogFilterPanel>
+);
+expect(closed).toContain('aria-expanded="false"');
+expect(closed).toContain("筛选条件（已启用 2 项）");
+expect(closed).toContain('data-open="false"');
+expect(closed).toContain("筛选表单");
+
+const open = renderToStaticMarkup(
+  <PortalCatalogFilterPanel activeCount={0} onToggle={() => undefined} open>
+    <form aria-label="车辆筛选">筛选表单</form>
+  </PortalCatalogFilterPanel>
+);
+expect(open).toContain('aria-expanded="true"');
+expect(open).toContain("筛选条件");
+expect(open).toContain('data-open="true"');
 ```
 
-- [ ] **Step 2: Run the layout test and verify it fails**
+- [ ] **Step 2: Run the filter-panel test and verify it fails**
 
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- portal-catalog-layout.spec.ts
+pnpm --filter @subscription-saas/web test -- portal-catalog-filter-panel.spec.tsx
 ```
 
-Expected: FAIL because the page CSS and integration do not exist.
+Expected: FAIL because `PortalCatalogFilterPanel` does not exist.
 
-- [ ] **Step 3: Add one mobile filter state without duplicating the form**
+- [ ] **Step 3: Implement the controlled filter panel**
+
+`PortalCatalogFilterPanel` owns no form values and renders its children exactly once. Its button uses `aria-controls="portal-catalog-filter-content"`, `aria-expanded={open}`, and the approved active-count copy. The content wrapper uses the matching `id` and `data-open={open ? "true" : "false"}`. Desktop CSS hides the toggle and always displays the content; `@media (max-width: 768px)` hides only `.filterContent[data-open="false"]`.
+
+- [ ] **Step 4: Add one mobile filter state without duplicating the form**
 
 In `PortalCatalogPage`, add:
 
@@ -549,22 +567,21 @@ const applyFilters = async (values: CatalogFilterValues) => {
 
 Use `applyFilters` only for `Form.onFinish`; keep initial loading through `loadVehicles()` so it does not invent active conditions. Do not auto-close the panel after submit.
 
-Add one accessible toggle above the same form content:
+Compose the same form through the controlled panel:
 
 ```tsx
-<Button
-  aria-controls="portal-catalog-filter-content"
-  aria-expanded={filtersOpen}
-  className={styles.filterToggle}
-  onClick={() => setFiltersOpen((current) => !current)}
+<PortalCatalogFilterPanel
+  activeCount={appliedFilterCount}
+  onToggle={() => setFiltersOpen((current) => !current)}
+  open={filtersOpen}
 >
-  {appliedFilterCount ? `筛选条件（已启用 ${appliedFilterCount} 项）` : "筛选条件"}
-</Button>
+  <Form<CatalogFilterValues> form={form} layout="vertical" onFinish={applyFilters}>
+    {/* the existing fields, exactly once */}
+  </Form>
+</PortalCatalogFilterPanel>
 ```
 
-The content wrapper uses `id="portal-catalog-filter-content"` and `data-open={filtersOpen ? "true" : "false"}`. CSS hides the toggle on desktop and always displays the form content there; it hides only the mobile content wrapper when `data-open="false"`.
-
-- [ ] **Step 4: Replace the inline list item with the new card**
+- [ ] **Step 5: Replace the inline list item with the new card**
 
 Keep the existing `List`, loading state, and empty state. Its render function becomes:
 
@@ -579,7 +596,7 @@ renderItem={(vehicle) => (
 
 Remove the old `VehicleCoverImage`, `buildPortalAssetUrl`, `formatMonth`, and `formatYuan` functions from `page.tsx`; their responsibilities now belong to the card/presentation files.
 
-- [ ] **Step 5: Move page-level inline layout into the CSS Module**
+- [ ] **Step 6: Move page-level inline layout into the CSS Module**
 
 Create classes for `main`, `container`, `pageHeader`, `filterPanel`, `filterToggle`, `filterContent`, and `filterForm`. At mobile widths:
 
@@ -589,20 +606,20 @@ Create classes for `main`, `container`, `pageHeader`, `filterPanel`, `filterTogg
 - make the submit button full-width and at least 44px high;
 - ensure `.container`, `.filterPanel`, and the list use `min-width: 0` and `max-width: 100%`.
 
-- [ ] **Step 6: Run all Portal catalog tests**
+- [ ] **Step 7: Run all Portal catalog tests**
 
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- portal-catalog-presentation.spec.ts portal-catalog-card.spec.tsx portal-catalog-layout.spec.ts
+pnpm --filter @subscription-saas/web test -- portal-catalog-presentation.spec.ts portal-catalog-card.spec.tsx portal-catalog-filter-panel.spec.tsx
 ```
 
 Expected: all three test files pass.
 
-- [ ] **Step 7: Commit the page integration**
+- [ ] **Step 8: Commit the page integration**
 
 ```powershell
-git add apps/web/src/app/portal/catalog/page.tsx apps/web/src/app/portal/catalog/catalog-page.module.css apps/web/test/portal-catalog-layout.spec.ts
+git add apps/web/src/app/portal/catalog/page.tsx apps/web/src/app/portal/catalog/portal-catalog-filter-panel.tsx apps/web/src/app/portal/catalog/catalog-page.module.css apps/web/test/portal-catalog-filter-panel.spec.tsx
 git commit -m "feat: optimize portal catalog mobile layout"
 ```
 
@@ -622,7 +639,7 @@ git commit -m "feat: optimize portal catalog mobile layout"
 - [ ] **Step 1: Run the focused Portal and repaired baseline tests**
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- portal-catalog-presentation.spec.ts portal-catalog-card.spec.tsx portal-catalog-layout.spec.ts product-center-access.spec.ts vehicle-insurance-coverage-ui.spec.ts vehicle-mileage-view-model.spec.ts
+pnpm --filter @subscription-saas/web test -- portal-catalog-presentation.spec.ts portal-catalog-card.spec.tsx portal-catalog-filter-panel.spec.tsx product-center-access.spec.ts vehicle-insurance-coverage-ui.spec.ts vehicle-mileage-view-model.spec.ts
 ```
 
 Expected: all selected files pass.
@@ -796,42 +813,55 @@ git commit -m "feat: preserve admin menu ui state"
 **Files:**
 
 - Modify: `apps/web/src/components/protected-shell.tsx:21-354`
+- Create: `apps/web/src/components/admin-shell-frame.tsx`
 - Create: `apps/web/src/components/protected-shell.module.css`
-- Create: `apps/web/test/admin-shell-layout.spec.ts`
+- Create: `apps/web/test/admin-shell-layout.spec.tsx`
 - Consume: `apps/web/src/lib/admin-menu-state.ts`
 - Regression: `apps/web/test/admin-password-change.spec.tsx`
 
 **Interfaces:**
 
 - Consumes: Task 6 state helpers, existing `findRouteOpenKeys`, permission-filtered `me.menus`, and Ant Design `Menu.onOpenChange`.
-- Produces: stable controlled `openKeys`, menu scroll restoration, `data-testid="admin-menu-scroll"`, and `data-testid="admin-content-scroll"`.
+- Produces:
+  - `AdminShellFrame({ children, header, menu, menuScrollRef, onMenuScroll })`
+  - stable controlled `openKeys`, menu scroll restoration, `data-testid="admin-menu-scroll"`, and `data-testid="admin-content-scroll"`.
 
-- [ ] **Step 1: Write the failing shell integration contract**
+- [ ] **Step 1: Write the failing rendered frame test**
 
-Read `protected-shell.tsx` and the new CSS file. Assert:
+Render the real presentation frame with literal slots:
 
-```ts
-expect(source).toContain("getAdminMenuState");
-expect(source).toContain("resolveAdminMenuOpenKeys");
-expect(source).toContain('data-testid="admin-menu-scroll"');
-expect(source).toContain('data-testid="admin-content-scroll"');
-expect(source).not.toContain("openKeysRestored");
-expect(css).toMatch(/\.shell\s*\{[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s);
-expect(css).toMatch(/\.menuViewport\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s);
-expect(css).toMatch(/\.content\s*\{[^}]*min-height:\s*0[^}]*min-width:\s*0[^}]*overflow-y:\s*auto/s);
+```tsx
+const menuScrollRef = createRef<HTMLDivElement>();
+const html = renderToStaticMarkup(
+  <AdminShellFrame
+    header={<span>当前用户</span>}
+    menu={<nav>车辆资产台账</nav>}
+    menuScrollRef={menuScrollRef}
+    onMenuScroll={() => undefined}
+  >
+    <main>详情内容</main>
+  </AdminShellFrame>
+);
+
+expect(html).toContain('data-testid="admin-menu-scroll"');
+expect(html).toContain('data-testid="admin-content-scroll"');
+expect(html).toContain("订阅运营中台");
+expect(html).toContain("车辆资产台账");
+expect(html).toContain("当前用户");
+expect(html).toContain("详情内容");
 ```
 
-Also assert that the CSS contains a `100vh` fallback before `100dvh`.
+The frame is presentation-only: it must not import auth, router, menu state, or API modules.
 
 - [ ] **Step 2: Run the shell integration test and verify it fails**
 
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- admin-shell-layout.spec.ts
+pnpm --filter @subscription-saas/web test -- admin-shell-layout.spec.tsx
 ```
 
-Expected: FAIL because the new helper imports, data hooks, and CSS do not exist.
+Expected: FAIL because `AdminShellFrame` does not exist.
 
 - [ ] **Step 3: Initialize open keys synchronously from the Task 6 state boundary**
 
@@ -891,9 +921,9 @@ menuScrollRef.current.scrollTop =
 
 Do not call smooth scrolling; restoration must not animate.
 
-- [ ] **Step 6: Apply the independent-scroll CSS Module**
+- [ ] **Step 6: Implement the frame and independent-scroll CSS Module**
 
-The JSX structure becomes:
+`AdminShellFrame` owns the JSX structure and imports `protected-shell.module.css`:
 
 ```tsx
 <Layout className={styles.shell}>
@@ -911,6 +941,8 @@ The JSX structure becomes:
   </Layout>
 </Layout>
 ```
+
+It accepts the menu scroll ref/callback from `ProtectedShell`, renders the supplied `menu`, `header`, and `children` slots exactly once, and contains no state.
 
 Implement these essential rules while preserving current colors, 248px Sider width, 64px Header height, and 24px desktop content padding:
 
@@ -932,7 +964,7 @@ At `@media (max-width: 768px)`, set Header horizontal padding to 16px and Conten
 Run:
 
 ```powershell
-pnpm --filter @subscription-saas/web test -- admin-menu-state.spec.ts admin-shell-layout.spec.ts admin-password-change.spec.tsx
+pnpm --filter @subscription-saas/web test -- admin-menu-state.spec.ts admin-shell-layout.spec.tsx admin-password-change.spec.tsx
 ```
 
 Expected: all selected files pass; account actions and password-change completion behavior remain unchanged.
@@ -940,7 +972,7 @@ Expected: all selected files pass; account actions and password-change completio
 - [ ] **Step 8: Commit the Admin shell integration**
 
 ```powershell
-git add apps/web/src/components/protected-shell.tsx apps/web/src/components/protected-shell.module.css apps/web/test/admin-shell-layout.spec.ts
+git add apps/web/src/components/protected-shell.tsx apps/web/src/components/admin-shell-frame.tsx apps/web/src/components/protected-shell.module.css apps/web/test/admin-shell-layout.spec.tsx
 git commit -m "feat: separate admin navigation scrolling"
 ```
 

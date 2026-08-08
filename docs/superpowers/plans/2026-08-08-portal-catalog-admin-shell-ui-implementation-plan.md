@@ -8,6 +8,8 @@
 
 **Tech Stack:** Next.js 16 App Router, React 19, TypeScript 6, Ant Design 6, CSS Modules, Vitest 4, pnpm 11.
 
+**Execution status (2026-08-08):** Tasks 1-8 implemented and locally verified. The feature branch is ready for the integration choice and Staging deployment; no merge has been performed.
+
 ## Global Constraints
 
 - Work only in `D:/Projects/auto-subscription-platform/.worktrees/portal-catalog-admin-shell-ui-20260808` on `feat/portal-catalog-admin-shell-ui-20260808`.
@@ -1065,3 +1067,13 @@ Report:
 - browser widths and scenarios verified;
 - known limitations, especially that the shared Next.js Admin layout migration remains out of scope;
 - recommended next step: open a review PR, build a new Staging Web image, then perform user acceptance before merge.
+
+### Execution evidence (2026-08-08)
+
+- Shared package build: passed.
+- Web full suite: 71 files / 704 tests passed.
+- Web lint, TypeScript (`--noEmit --incremental false`), and production build: passed.
+- Prisma validate: passed; migration status: 87 migrations found, database schema up to date.
+- Portal browser checks: 360px, 390px, and 1280px; no horizontal overflow; responsive media/title/location/tags/price/filter behavior passed.
+- Admin browser checks: independent left/right scrolling, leaf navigation without parent collapse, multiple preserved parents, and refresh restoration passed.
+- Final scope review: Web UI/tests/docs only; no API, database, RBAC, authentication-contract, or business-flow changes.

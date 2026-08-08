@@ -33,6 +33,7 @@ import {
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadPolicyDocumentsDto,
   UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsurancePoliciesQueryDto
@@ -98,6 +99,27 @@ export class VehicleInsuranceController {
     return this.vehicleInsuranceService.putCoverages(id, dto);
   }
 
+  @Post("vehicle-insurance-policies/:id/documents")
+  @RequirePermissions(PermissionCode.VEHICLE_INSURANCE_MANAGE)
+  @UseInterceptors(
+    AnyFilesInterceptor(
+      createUtf8MultipartOptions({ limits: { files: 20 } })
+    )
+  )
+  uploadPolicyDocuments(
+    @Param("id") id: string,
+    @Body() dto: UploadPolicyDocumentsDto,
+    @UploadedFiles() files: UploadedVehicleDocumentFile[] | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.uploadPolicyDocuments(
+      id,
+      dto,
+      files,
+      request.user
+    );
+  }
+
   @Get("vehicles/:id/documents")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_VIEW)
   listDocuments(@Param("id") id: string) {
@@ -148,8 +170,11 @@ export class VehicleInsuranceController {
 
   @Delete("vehicle-documents/:id")
   @RequirePermissions(PermissionCode.VEHICLE_DOCUMENT_MANAGE)
-  deleteDocument(@Param("id") id: string) {
-    return this.vehicleInsuranceService.deleteDocument(id);
+  deleteDocument(
+    @Param("id") id: string,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.vehicleInsuranceService.deleteDocument(id, request.user);
   }
 
   @Get("vehicle-documents/:id/preview")

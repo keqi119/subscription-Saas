@@ -806,6 +806,14 @@ describe("vehicle insurance, document, and claim permissions", () => {
       REQUIRED_PERMISSIONS_KEY,
       VehicleInsuranceController.prototype.uploadDocument
     );
+    const policyUploadPermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.uploadPolicyDocuments
+    );
+    const deletePermissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      VehicleInsuranceController.prototype.deleteDocument
+    );
     const previewPermissions = Reflect.getMetadata(
       REQUIRED_PERMISSIONS_KEY,
       VehicleInsuranceController.prototype.previewDocument
@@ -814,6 +822,10 @@ describe("vehicle insurance, document, and claim permissions", () => {
     expect(listPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
     expect(previewPermissions).toEqual([VEHICLE_DOCUMENT_VIEW_PERMISSION]);
     expect(uploadPermissions).toEqual([VEHICLE_DOCUMENT_MANAGE_PERMISSION]);
+    expect(policyUploadPermissions).toEqual([
+      VEHICLE_INSURANCE_MANAGE_PERMISSION
+    ]);
+    expect(deletePermissions).toEqual([VEHICLE_DOCUMENT_MANAGE_PERMISSION]);
     expect(hasRequiredPermissions([VEHICLE_DOCUMENT_VIEW_PERMISSION], uploadPermissions)).toBe(false);
     expect(hasRequiredPermissions([VEHICLE_DOCUMENT_MANAGE_PERMISSION], uploadPermissions)).toBe(true);
   });

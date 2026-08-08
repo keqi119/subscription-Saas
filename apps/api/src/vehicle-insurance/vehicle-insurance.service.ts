@@ -14,7 +14,8 @@ import {
   VehicleDocument,
   VehicleDocumentStatus,
   VehicleDocumentType,
-  VehicleInsurancePolicyStatus
+  VehicleInsurancePolicyStatus,
+  VehicleInsurancePolicyType
 } from "@prisma/client";
 import type { Readable } from "node:stream";
 
@@ -37,6 +38,7 @@ import {
   UpdateInsuranceClaimStatusDto,
   UpdateVehicleDocumentDto,
   UpdateVehicleInsurancePolicyDto,
+  UploadPolicyDocumentsDto,
   UploadVehicleDocumentBatchDto,
   UploadVehicleDocumentDto,
   VehicleInsuranceCoverageInputDto,
@@ -121,6 +123,9 @@ const policyInclude = {
 } satisfies Prisma.VehicleInsurancePolicyInclude;
 
 const documentInclude = {
+  listingSourceBindings: {
+    select: { section: true }
+  },
   policy: {
     select: {
       id: true,
@@ -447,6 +452,82 @@ export class VehicleInsuranceService {
     return documents.map(toDocumentView);
   }
 
+  async uploadPolicyDocuments(
+    policyId: string,
+    dto: UploadPolicyDocumentsDto,
+    files: UploadedVehicleDocumentFile[] | undefined,
+    user: RequestUser
+  ): Promise<VehicleDocumentView[]> {
+    const policy = await this.findPolicyOrThrow(policyId);
+    const uploadFiles = (files ?? []).filter((file) => file.buffer?.length);
+    if (uploadFiles.length === 0) {
+      throw new BadRequestException("at least one policy document file is required");
+    }
+    if (uploadFiles.length > MAX_VEHICLE_DOCUMENT_BATCH_FILES) {
+      throw new BadRequestException(
+        `policy document upload cannot exceed ${MAX_VEHICLE_DOCUMENT_BATCH_FILES} files`
+      );
+    }
+    for (const file of uploadFiles) {
+      assertSupportedVehicleDocumentFile(file);
+    }
+
+    const storedFiles: Array<{
+      file: UploadedVehicleDocumentFile;
+      stored: Awaited<ReturnType<StorageService["putVehicleDocument"]>>;
+    }> = [];
+    try {
+      for (const file of uploadFiles) {
+        const stored = await this.storageService.putVehicleDocument({
+          buffer: file.buffer,
+          contentType: file.mimetype,
+          metadata: { originalName: file.originalname },
+          originalName: file.originalname,
+          vehicleId: policy.vehicleId
+        });
+        storedFiles.push({ file, stored });
+      }
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
+
+    try {
+      const documents = await this.prisma.$transaction(async (tx) => {
+        const created: DocumentWithRelations[] = [];
+        for (const { file, stored } of storedFiles) {
+          created.push(
+            await tx.vehicleDocument.create({
+              data: {
+                bucket: stored.bucket,
+                customerVisible: true,
+                description: normalizeOptionalText(dto.description),
+                documentStatus: VehicleDocumentStatus.ACTIVE,
+                documentType: policyDocumentType(policy.policyType),
+                effectiveFrom: policy.effectiveFrom,
+                effectiveTo: policy.effectiveTo,
+                fileName: file.originalname,
+                fileSize: file.size,
+                mimeType: file.mimetype ?? null,
+                objectKey: stored.objectKey,
+                originalName: file.originalname,
+                policyId: policy.id,
+                uploadedBy: user.id,
+                vehicleId: policy.vehicleId
+              },
+              include: documentInclude
+            })
+          );
+        }
+        return created;
+      });
+      return documents.map(toDocumentView);
+    } catch (error) {
+      await this.cleanupStoredVehicleDocuments(storedFiles);
+      throw error;
+    }
+  }
+
   async listDocumentBatches(vehicleId: string): Promise<VehicleDocumentBatchView[]> {
     await this.findVehicleOrThrow(vehicleId);
     const batches = await this.prisma.vehicleDocumentBatch.findMany({
@@ -676,17 +757,32 @@ export class VehicleInsuranceService {
     return toDocumentView(document);
   }
 
-  async deleteDocument(id: string) {
+  async deleteDocument(id: string, user: RequestUser) {
     const before = await this.findDocumentOrThrow(id);
     await this.assertDocumentsNotBound([before.id]);
-    const document = await this.prisma.vehicleDocument.update({
-      data: {
-        customerVisible: false,
-        deletedAt: new Date(),
-        documentStatus: VehicleDocumentStatus.ARCHIVED
-      },
-      include: documentInclude,
-      where: { id }
+    const deletedAt = new Date();
+    const document = await this.prisma.$transaction(async (tx) => {
+      const deletedDocument = await tx.vehicleDocument.update({
+        data: {
+          customerVisible: false,
+          deletedAt,
+          documentStatus: VehicleDocumentStatus.ARCHIVED
+        },
+        include: documentInclude,
+        where: { id }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.DELETE,
+          after: { deletedAt, deletedBy: user.id },
+          before: toDocumentView(before),
+          entityId: id,
+          entityType: "vehicle_document",
+          module: "VEHICLE_INSURANCE"
+        },
+        tx
+      );
+      return deletedDocument;
     });
     return toDocumentView(document);
   }
@@ -1222,6 +1318,11 @@ function toPolicyDocumentView(document: {
 
 function toDocumentView(document: DocumentWithRelations) {
   return {
+    boundListingSections: [
+      ...new Set(
+        (document.listingSourceBindings ?? []).map(({ section }) => section)
+      )
+    ],
     createdAt: document.createdAt,
     customerVisible: document.customerVisible,
     description: document.description,
@@ -1243,6 +1344,16 @@ function toDocumentView(document: DocumentWithRelations) {
     vehicle: toVehicleBrief(document.vehicle),
     vehicleId: document.vehicleId
   };
+}
+
+function policyDocumentType(policyType: VehicleInsurancePolicyType) {
+  if (policyType === VehicleInsurancePolicyType.COMPULSORY_TRAFFIC) {
+    return VehicleDocumentType.COMPULSORY_INSURANCE_POLICY;
+  }
+  if (policyType === VehicleInsurancePolicyType.COMMERCIAL) {
+    return VehicleDocumentType.COMMERCIAL_INSURANCE_POLICY;
+  }
+  return VehicleDocumentType.OTHER;
 }
 
 function toDocumentBatchView(batch: DocumentBatchWithRelations) {

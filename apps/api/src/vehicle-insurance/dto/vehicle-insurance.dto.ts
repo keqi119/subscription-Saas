@@ -262,6 +262,13 @@ export class UploadVehicleDocumentDto {
 
 export class UploadVehicleDocumentBatchDto extends UploadVehicleDocumentDto {}
 
+export class UploadPolicyDocumentsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string | null;
+}
+
 export class UpdateVehicleDocumentDto {
   @IsOptional()
   @IsEnum(VehicleDocumentType)

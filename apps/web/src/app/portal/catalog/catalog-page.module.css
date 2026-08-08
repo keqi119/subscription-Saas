@@ -1,0 +1,132 @@
+.main {
+  min-height: 100vh;
+  padding: 24px 16px 40px;
+  overflow-x: hidden;
+  background: #f6f8fb;
+}
+
+.container {
+  width: 100%;
+  max-width: 920px;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  margin-bottom: 18px;
+}
+
+.pageHeading {
+  min-width: 0;
+}
+
+.pageTitle {
+  margin: 0 !important;
+}
+
+.filterPanel {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: 16px;
+  padding: 16px;
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+}
+
+.filterToggle:global(.ant-btn) {
+  display: none;
+}
+
+.filterToggleLabel {
+  flex: 1;
+  text-align: left;
+}
+
+.filterContent,
+.filterForm {
+  min-width: 0;
+}
+
+.filterFields {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.filterItem,
+.filterItemWide,
+.filterAction {
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+
+.filterItemWide {
+  grid-column: span 2;
+}
+
+.filterAction button {
+  width: 100%;
+}
+
+.list {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.list :global(.ant-list-items) {
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .main {
+    padding: 16px 12px 32px;
+  }
+
+  .pageHeader {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .pageTitle {
+    font-size: 32px !important;
+  }
+
+  .filterPanel {
+    padding: 12px;
+  }
+
+  .filterToggle:global(.ant-btn) {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .filterContent {
+    padding-top: 12px;
+  }
+
+  .filterContent[data-open="false"] {
+    display: none;
+  }
+
+  .filterFields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .filterItemWide {
+    grid-column: auto;
+  }
+
+  .filterAction button {
+    min-height: 44px;
+  }
+}

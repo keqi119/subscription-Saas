@@ -12,8 +12,9 @@ describe("vehicle insurance coverage UI", () => {
 
     expect(source).toContain("交强险");
     expect(source).toContain("商业险");
-    expect(source).toContain("insuranceCoverage.compulsoryTraffic");
-    expect(source).toContain("insuranceCoverage.commercial");
+    expect(source).toContain("formatInsuranceCoverage(record.insuranceCoverage)");
+    expect(source).toContain("coverage.compulsoryTraffic");
+    expect(source).toContain("coverage.commercial");
   });
 
   it("separates policy coverage from manual delivery verification", () => {

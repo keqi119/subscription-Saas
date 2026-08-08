@@ -1,0 +1,158 @@
+.card {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 16px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgb(15 23 42 / 4%);
+}
+
+.media {
+  width: 128px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #64748b;
+  background: #eef3f8;
+  font-size: 12px;
+}
+
+.placeholderIcon {
+  color: #246b99;
+  font-size: 28px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.title {
+  min-width: 0;
+  color: #172033;
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.subtitle {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 10px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.location {
+  min-width: 0;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 10px;
+}
+
+.tags :global(.ant-tag) {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.price {
+  min-width: 0;
+  color: #172033;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.detailButton {
+  flex: none;
+  padding-inline: 4px;
+}
+
+@media (max-width: 768px) {
+  .card {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+  }
+
+  .media {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 0;
+  }
+
+  .content {
+    padding: 16px;
+  }
+
+  .title {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .footer {
+    border-top: 1px solid #eef1f6;
+    margin-top: 14px;
+  }
+
+  .detailButton {
+    min-height: 44px;
+  }
+}

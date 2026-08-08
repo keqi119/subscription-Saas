@@ -21,21 +21,26 @@ import {
 import { App, Layout, Menu, Skeleton, Space, Tag, Typography } from "antd";
 import type { ItemType } from "antd/es/menu/interface";
 import { usePathname, useRouter } from "next/navigation";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { ReactNode, UIEventHandler } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { PLATFORM_NAME } from "@subscription-saas/shared";
 import type { MenuItemDefinition } from "@subscription-saas/shared";
 
 import { localizeMenuLabel, ROLE_LABELS } from "../constants/labels";
+import {
+  getAdminMenuState,
+  persistAdminMenuOpenKeys,
+  persistAdminMenuScrollTop,
+  resolveAdminMenuOpenKeys
+} from "../lib/admin-menu-state";
 import { apiFetch, ApiError } from "../lib/api";
 import type { AuthMeResponse } from "../lib/auth";
 import { AccountActions } from "./account-actions";
+import { AdminShellFrame } from "./admin-shell-frame";
 import { ChangePasswordModal } from "./change-password-modal";
 
-const { Content, Header, Sider } = Layout;
-
-const MENU_OPEN_KEYS_STORAGE_KEY = "subscription-saas.admin.menu.openKeys";
+const { Content } = Layout;
 
 let cachedAuthMe: AuthMeResponse | null = null;
 
@@ -66,8 +71,11 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
   const [loading, setLoading] = useState(() => !cachedAuthMe);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [currentMenuKey, setCurrentMenuKey] = useState(pathname);
-  const [openKeys, setOpenKeys] = useState<string[]>([]);
-  const [openKeysRestored, setOpenKeysRestored] = useState(false);
+  const [openKeys, setOpenKeys] = useState<string[]>(
+    () => getAdminMenuState().openKeys
+  );
+  const menuScrollRef = useRef<HTMLDivElement | null>(null);
+  const initialMenuScrollTopRef = useRef(getAdminMenuState().scrollTop);
 
   useEffect(() => {
     let canceled = false;
@@ -109,11 +117,6 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
   const menuItems = useMemo(() => buildMenuItems(me?.menus ?? [], permissions), [me?.menus, permissions]);
 
   useEffect(() => {
-    setOpenKeys(readStoredOpenKeys());
-    setOpenKeysRestored(true);
-  }, []);
-
-  useEffect(() => {
     const syncCurrentMenuKey = () => {
       const queryString = window.location.search.replace(/^\?/, "");
       setCurrentMenuKey(queryString ? `${pathname}?${queryString}` : pathname);
@@ -125,24 +128,36 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
   }, [pathname]);
 
   useEffect(() => {
-    if (!openKeysRestored || !me) {
+    if (!me) {
       return;
     }
 
     const routeOpenKeys = findRouteOpenKeys(me.menus, permissions, currentMenuKey, pathname);
-    if (!routeOpenKeys.length) {
-      return;
-    }
+    const allowedMenuCodes = new Set(
+      me.menus
+        .filter((menu) => !menu.permissionCode || permissions.has(menu.permissionCode))
+        .map((menu) => menu.code)
+    );
 
     setOpenKeys((current) => {
-      const next = mergeKeys(current, routeOpenKeys);
+      const next = resolveAdminMenuOpenKeys(
+        current,
+        routeOpenKeys,
+        allowedMenuCodes
+      );
       if (sameKeys(current, next)) {
         return current;
       }
-      storeOpenKeys(next);
+      persistAdminMenuOpenKeys(next);
       return next;
     });
-  }, [currentMenuKey, me, openKeysRestored, pathname, permissions]);
+  }, [currentMenuKey, me, pathname, permissions]);
+
+  useLayoutEffect(() => {
+    if (!loading && menuScrollRef.current) {
+      menuScrollRef.current.scrollTop = initialMenuScrollTopRef.current;
+    }
+  }, [loading]);
 
   const navigateMenu = (target: string) => {
     if (target === currentMenuKey) {
@@ -154,7 +169,13 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
 
   const updateOpenKeys = (keys: string[]) => {
     setOpenKeys(keys);
-    storeOpenKeys(keys);
+    persistAdminMenuOpenKeys(keys);
+  };
+
+  const handleMenuScroll: UIEventHandler<HTMLDivElement> = (event) => {
+    const scrollTop = event.currentTarget.scrollTop;
+    initialMenuScrollTopRef.current = scrollTop;
+    persistAdminMenuScrollTop(scrollTop);
   };
 
   if (loading) {
@@ -177,30 +198,10 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
 
   return (
     <>
-      <Layout style={{ minHeight: "100vh" }}>
-        <Sider breakpoint="lg" collapsedWidth="0" width={248}>
-          <div style={{ color: "#fff", fontWeight: 700, padding: "20px 18px" }}>订阅运营中台</div>
-          <Menu
-            items={menuItems}
-            mode="inline"
-            onClick={({ key }) => navigateMenu(String(key))}
-            onOpenChange={updateOpenKeys}
-            openKeys={openKeys}
-            selectedKeys={[currentMenuKey, pathname]}
-            theme="dark"
-          />
-        </Sider>
-        <Layout>
-          <Header
-            style={{
-              alignItems: "center",
-              borderBottom: "1px solid #e5e7eb",
-              display: "flex",
-              height: 64,
-              justifyContent: "space-between",
-              padding: "0 24px"
-            }}
-          >
+      <AdminShellFrame
+        brand="订阅运营中台"
+        header={
+          <>
             <Typography.Title level={4} style={{ margin: 0 }}>
               {PLATFORM_NAME}
             </Typography.Title>
@@ -216,10 +217,24 @@ export function ProtectedShell({ children }: Readonly<{ children: ReactNode }>) 
                 userLabel={userLabel}
               />
             </Space>
-          </Header>
-          <Content style={{ padding: 24 }}>{children}</Content>
-        </Layout>
-      </Layout>
+          </>
+        }
+        menu={
+          <Menu
+            items={menuItems}
+            mode="inline"
+            onClick={({ key }) => navigateMenu(String(key))}
+            onOpenChange={updateOpenKeys}
+            openKeys={openKeys}
+            selectedKeys={[currentMenuKey, pathname]}
+            theme="dark"
+          />
+        }
+        menuScrollRef={menuScrollRef}
+        onMenuScroll={handleMenuScroll}
+      >
+        {children}
+      </AdminShellFrame>
       <ChangePasswordModal
         onCancel={() => setChangePasswordOpen(false)}
         onChanged={() =>
@@ -238,33 +253,6 @@ export function finishPasswordChangeSession(
   cachedAuthMe = null;
   closeModal();
   router.replace("/login");
-}
-
-function readStoredOpenKeys() {
-  if (typeof window === "undefined") {
-    return [];
-  }
-  const rawValue = window.sessionStorage.getItem(MENU_OPEN_KEYS_STORAGE_KEY);
-  if (!rawValue) {
-    return [];
-  }
-  try {
-    const value = JSON.parse(rawValue);
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeOpenKeys(keys: string[]) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.sessionStorage.setItem(MENU_OPEN_KEYS_STORAGE_KEY, JSON.stringify(keys));
-}
-
-function mergeKeys(current: string[], keys: string[]) {
-  return Array.from(new Set([...current, ...keys]));
 }
 
 function sameKeys(left: string[], right: string[]) {

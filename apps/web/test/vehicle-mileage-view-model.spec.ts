@@ -12,6 +12,14 @@ import {
 
 const repoRoot = join(__dirname, "..", "..", "..");
 const vehiclesPagePath = join(repoRoot, "apps/web/src/app/vehicles/page.tsx");
+const vehicleDetailActionsPath = join(
+  repoRoot,
+  "apps/web/src/components/vehicle-workspace/vehicle-detail-actions.tsx"
+);
+const vehicleOverviewPath = join(
+  repoRoot,
+  "apps/web/src/components/vehicle-workspace/vehicle-overview-tab.tsx"
+);
 
 const confirmationDefaults = {
   deliveredAt: "2026-08-02T11:03:15.000Z",
@@ -110,25 +118,34 @@ describe("vehicle mileage history view model", () => {
   });
 
   it("keeps creation mileage editable but removes it from existing vehicle edits", () => {
-    const source = readFileSync(vehiclesPagePath, "utf8");
-    const createModal = source.slice(
-      source.indexOf('title="新增车辆"'),
-      source.indexOf('title={editingVehicle ?')
-    );
-    const editFlow = source.slice(
-      source.indexOf("function openEditVehicle"),
-      source.indexOf("function openInitialize")
-    );
-    const editModal = source.slice(
-      source.indexOf('title={editingVehicle ?'),
-      source.indexOf('title={\n          initializingVehicle')
-    );
+    const vehiclesPageSource = readFileSync(vehiclesPagePath, "utf8");
+    const detailActionsSource = readFileSync(vehicleDetailActionsPath, "utf8");
+    const overviewSource = readFileSync(vehicleOverviewPath, "utf8");
+    const createFlow = functionDeclarationSource(vehiclesPageSource, "saveCreateVehicle");
+    const editFlow = functionDeclarationSource(detailActionsSource, "saveEdit");
 
-    expect(createModal).toContain('name="currentMileageKm"');
+    expect(vehiclesPageSource).toContain('name="currentMileageKm"');
+    expect(createFlow).toContain("currentMileageKm:");
     expect(editFlow).not.toContain("currentMileageKm:");
-    expect(editModal).not.toContain('name="currentMileageKm"');
-    expect(editModal).toContain("当前里程只能通过里程流程单据更新");
-    expect(source).toContain("/mileage-readings");
-    expect(source).toContain("里程档案");
+    expect(detailActionsSource).not.toContain('name="currentMileageKm"');
+    expect(detailActionsSource).toContain("当前里程只能通过里程流程单据更新");
+    expect(overviewSource).toContain('label="当前里程"');
+    expect(overviewSource).toContain("最近状态/里程事件");
   });
 });
+
+function functionDeclarationSource(source: string, name: string) {
+  const start = source.indexOf(`function ${name}(`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const openBrace = source.indexOf("{", start);
+  expect(openBrace).toBeGreaterThan(start);
+  let depth = 0;
+  for (let index = openBrace; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  throw new Error(`Unable to find function body: ${name}`);
+}

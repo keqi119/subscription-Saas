@@ -13,7 +13,11 @@ export function VehicleWorkspaceHeader({
   actions,
   vehicle
 }: Readonly<VehicleWorkspaceHeaderProps>) {
-  const vehicleModel = [vehicle.brand, vehicle.series, vehicle.modelDisplayName ?? vehicle.model]
+  const vehicleDisplayName = [
+    vehicle.brand,
+    vehicle.series,
+    vehicle.modelDisplayName ?? vehicle.model
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -46,7 +50,7 @@ export function VehicleWorkspaceHeader({
             label="车牌 / VIN"
             value={vehicle.plateNo || vehicle.vin || "-"}
           />
-          <HeaderFact label="品牌 / 车系 / 车型" value={vehicleModel || "-"} />
+          <HeaderFact label="品牌 / 车系 / 车型" value={vehicleDisplayName || "-"} />
           <HeaderFact
             icon={<DollarOutlined />}
             label="当前销售价"

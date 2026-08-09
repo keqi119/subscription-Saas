@@ -1,0 +1,21 @@
+.statePanel,
+.overviewPanel {
+  padding: 20px;
+  border: 1px solid #e5eaf2;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.stateLabel {
+  display: block;
+  margin-bottom: 16px;
+  color: #657084;
+}
+
+@media (max-width: 768px) {
+  .statePanel,
+  .overviewPanel {
+    padding: 14px;
+    border-radius: 12px;
+  }
+}

@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  BillStatus,
+  BillType,
   NotificationChannel,
   NotificationEventType,
   NotificationStatus,
@@ -46,12 +48,33 @@ export class SubscriptionJourneyNotificationService {
           select: {
             applicationNo: true,
             customerId: true,
+            finalVehicleId: true,
             finalPlanRevision: true,
             id: true
           }
         },
         order: {
-          select: { contractId: true, id: true, orderNo: true }
+          select: {
+            contractId: true,
+            id: true,
+            modelDisplayNameSnapshot: true,
+            orderNo: true,
+            receivableBills: {
+              orderBy: { dueDate: "asc" },
+              select: {
+                amount: true,
+                billType: true,
+                dueDate: true,
+                remainingAmount: true
+              },
+              where: {
+                billStatus: { not: BillStatus.CANCELLED },
+                billType: { in: [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] },
+                deletedAt: null
+              }
+            },
+            vehicle: { select: { plateNo: true } }
+          }
         }
       },
       where: { id: job.journeyId }
@@ -71,7 +94,17 @@ export class SubscriptionJourneyNotificationService {
       );
     }
 
+    const finalVehicle =
+      payload.stepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION &&
+      context.application.finalVehicleId
+        ? await this.prisma.vehicle.findUnique({
+            select: { plateNo: true },
+            where: { id: context.application.finalVehicleId }
+          })
+        : null;
+
     const definition = notificationDefinition(payload.stepCode, context);
+    const semanticData = notificationSemanticData(payload.stepCode, context, finalVehicle);
     const idempotencyKey = `${payload.eventKey}:${context.application.customerId}:${definition.template}`;
     const records = await this.notificationService.notifyCustomer({
       aggregateId: job.journeyId,
@@ -82,7 +115,8 @@ export class SubscriptionJourneyNotificationService {
         applicationNo: context.application.applicationNo,
         finalPlanRevision: context.application.finalPlanRevision,
         orderNo: context.order?.orderNo,
-        status: "待客户处理"
+        status: "待客户处理",
+        ...semanticData
       },
       eventType: definition.eventType,
       idempotencyKey,
@@ -123,6 +157,67 @@ export class SubscriptionJourneyNotificationService {
       );
     }
   }
+}
+
+function notificationSemanticData(
+  stepCode: SubscriptionJourneyStepCode,
+  context: {
+    application: { applicationNo: string };
+    order: {
+      modelDisplayNameSnapshot: string;
+      orderNo: string;
+      receivableBills: Array<{
+        amount: bigint;
+        billType: BillType;
+        dueDate: Date;
+        remainingAmount: bigint;
+      }>;
+      vehicle: { plateNo: string | null } | null;
+    } | null;
+  },
+  finalVehicle: { plateNo: string | null } | null
+) {
+  if (stepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION) {
+    return {
+      applicationNo: context.application.applicationNo,
+      plateNo: finalVehicle?.plateNo ?? undefined
+    };
+  }
+  if (
+    stepCode === SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE ||
+    stepCode === SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION
+  ) {
+    return {
+      modelDisplayName: context.order?.modelDisplayNameSnapshot,
+      orderNo: context.order?.orderNo,
+      plateNo: context.order?.vehicle?.plateNo ?? undefined
+    };
+  }
+  if (stepCode === SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT) {
+    const bills = context.order?.receivableBills ?? [];
+    if (bills.length === 0) {
+      return {
+        initialBillAmountCents: undefined,
+        initialBillDueAt: undefined,
+        initialBillRemainingCents: undefined,
+        plateNo: context.order?.vehicle?.plateNo ?? undefined
+      };
+    }
+    return {
+      hasDepositBill: bills.some(
+        (bill) => bill.billType === BillType.DEPOSIT && bill.amount > 0n
+      ),
+      initialBillAmountCents: bills
+        .reduce((total, bill) => total + bill.amount, 0n)
+        .toString(),
+      initialBillDueAt: bills[0]?.dueDate.toISOString(),
+      initialBillRemainingCents: bills
+        .reduce((total, bill) => total + bill.remainingAmount, 0n)
+        .toString(),
+      plateNo: context.order?.vehicle?.plateNo ?? undefined
+    };
+  }
+  return {};
 }
 
 function readPayload(value: unknown): {

@@ -17,11 +17,37 @@ import type { ClaimedJourneyJob } from "../src/subscription-journey/subscription
 
 describe("SubscriptionJourneyNotificationService", () => {
   it.each([
-    [SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION, NotificationEventType.FINAL_PLAN_READY, "/portal/applications/application-1"],
-    [SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE, NotificationEventType.CONTRACT_PENDING, "/portal/contracts/contract-1/sign"],
-    [SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT, NotificationEventType.PAYMENT_PENDING, "/portal/orders/order-1#bills"],
-    [SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION, NotificationEventType.HANDOVER_ESIGN_PENDING, "/portal/orders/order-1"]
-  ] as const)("sends the sanitized %s customer action once", async (stepCode, eventType, url) => {
+    [
+      SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+      NotificationEventType.FINAL_PLAN_READY,
+      "/portal/applications/application-1",
+      { applicationNo: "APP-1", plateNo: "沪PLAN1" }
+    ],
+    [
+      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+      NotificationEventType.CONTRACT_PENDING,
+      "/portal/contracts/contract-1/sign",
+      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" }
+    ],
+    [
+      SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT,
+      NotificationEventType.PAYMENT_PENDING,
+      "/portal/orders/order-1#bills",
+      {
+        hasDepositBill: true,
+        initialBillAmountCents: "540000",
+        initialBillDueAt: "2026-08-12T10:30:00.000Z",
+        initialBillRemainingCents: "440000",
+        plateNo: "沪ORDER1"
+      }
+    ],
+    [
+      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+      NotificationEventType.HANDOVER_ESIGN_PENDING,
+      "/portal/orders/order-1",
+      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" }
+    ]
+  ] as const)("sends the sanitized %s customer action once", async (stepCode, eventType, url, expectedData) => {
     const harness = notificationHarness();
 
     await expect(harness.service.dispatch(notificationJob(stepCode))).resolves.toMatchObject({
@@ -34,11 +60,54 @@ describe("SubscriptionJourneyNotificationService", () => {
         eventType,
         idempotencyKey: expect.stringContaining("journey:event:customer-1:"),
         requireWechatSuccess: true,
-        url
+        url,
+        data: expect.objectContaining(expectedData)
       })
     );
     const input = harness.notifyCustomer.mock.calls[0]?.[0];
     expect(JSON.stringify(input)).not.toMatch(/signUrl|prepay|openid|providerPayload|secret/i);
+  });
+
+  it("uses a retryable delivery failure when the final vehicle has no usable plate", async () => {
+    const harness = notificationHarness({}, [], { finalVehicle: null });
+
+    await expect(
+      harness.service.dispatch(
+        notificationJob(SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION)
+      )
+    ).rejects.toMatchObject({
+      code: "JOURNEY_NOTIFICATION_DELIVERY_FAILED",
+      retryable: true
+    });
+    expect(harness.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ plateNo: undefined })
+      })
+    );
+  });
+
+  it("passes missing initial bills to the notification fail-closed boundary", async () => {
+    const harness = notificationHarness({}, [], {
+      order: { receivableBills: [] }
+    });
+
+    await expect(
+      harness.service.dispatch(
+        notificationJob(SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT)
+      )
+    ).rejects.toMatchObject({
+      code: "JOURNEY_NOTIFICATION_DELIVERY_FAILED",
+      retryable: true
+    });
+    expect(harness.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          initialBillAmountCents: undefined,
+          initialBillDueAt: undefined,
+          initialBillRemainingCents: undefined
+        })
+      })
+    );
   });
 
   it("fails closed on a non-official-account production provider", async () => {
@@ -84,27 +153,62 @@ function notificationHarness(
       channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
       notificationStatus: NotificationStatus.SENT
     }
-  ]
+  ],
+  options: {
+    finalVehicle?: { plateNo: string | null } | null;
+    order?: { receivableBills?: Array<Record<string, unknown>> } | null;
+  } = {}
 ) {
   const notifyCustomer = vi.fn(async (input: Record<string, unknown>) => {
     void input;
     return records;
   });
+  const defaultOrder = {
+    contractId: "contract-1",
+    id: "order-1",
+    modelDisplayNameSnapshot: "NIO ES6 2024款",
+    orderNo: "ORD-1",
+    receivableBills: [
+      {
+        amount: 300000n,
+        billType: "DEPOSIT",
+        dueDate: new Date("2026-08-12T10:30:00.000Z"),
+        remainingAmount: 200000n
+      },
+      {
+        amount: 240000n,
+        billType: "FIRST_MONTHLY_FEE",
+        dueDate: new Date("2026-08-13T10:30:00.000Z"),
+        remainingAmount: 240000n
+      }
+    ],
+    vehicle: { plateNo: "沪ORDER1" }
+  };
   const prisma = {
     subscriptionJourney: {
       findUnique: vi.fn(async () => ({
         application: {
           applicationNo: "APP-1",
           customerId: "customer-1",
+          finalVehicleId: "vehicle-plan-1",
           finalPlanRevision: 3,
           id: "application-1"
         },
-        order: {
-          contractId: "contract-1",
-          id: "order-1",
-          orderNo: "ORD-1"
-        }
+        order:
+          options.order === null
+            ? null
+            : {
+                ...defaultOrder,
+                ...(options.order ?? {}),
+                receivableBills:
+                  options.order?.receivableBills ?? defaultOrder.receivableBills
+              }
       }))
+    },
+    vehicle: {
+      findUnique: vi.fn(async () =>
+        options.finalVehicle === undefined ? { plateNo: "沪PLAN1" } : options.finalVehicle
+      )
     }
   };
   const service = new SubscriptionJourneyNotificationService(

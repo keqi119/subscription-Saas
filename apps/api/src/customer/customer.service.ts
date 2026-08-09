@@ -324,6 +324,7 @@ export class CustomerService {
     aggregateType: string;
     content: string;
     customerId: string;
+    data?: Record<string, unknown>;
     eventType: NotificationEventType;
     notificationType: NotificationType;
     status: string;
@@ -339,7 +340,8 @@ export class CustomerService {
         customerId: input.customerId,
         data: {
           aggregateNo: input.aggregateNo,
-          status: input.status
+          status: input.status,
+          ...(input.data ?? {})
         },
         eventType: input.eventType,
         notificationType: input.notificationType,
@@ -940,6 +942,10 @@ export class CustomerService {
       aggregateType: "application",
       content: "平台已生成最终方案，请登录客户门户确认。",
       customerId: result.application.customerId,
+      data: {
+        applicationNo: result.application.applicationNo,
+        plateNo: result.details?.vehicle.plateNo
+      },
       eventType: NotificationEventType.FINAL_PLAN_READY,
       notificationType: NotificationType.FINAL_PLAN_PENDING,
       status: result.application.planConfirmStatus,

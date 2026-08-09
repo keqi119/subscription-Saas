@@ -50,6 +50,16 @@
 | `STAGE1_ACCEPTANCE_MAX_PAYMENT_FEN` | 单次付款上限 | 正整数，取批准的最小金额 |
 | `STAGE1_ACCEPTANCE_MAX_REFUND_FEN` | 单次退款上限 | 正整数且不高于付款上限 |
 
+五个微信公众号模板必须分别配置，禁止跨场景复用：
+
+| 变量 | 场景 | 核验字段 |
+|---|---|---|
+| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | 申请已受理 | `character_string3`、`const4`、`const5`、`time6` |
+| `WECHAT_TEMPLATE_FINAL_PLAN_PENDING` | 最终方案待确认 | `character_string2`、`phrase5`、`car_number8`、`thing13`、`time9` |
+| `WECHAT_TEMPLATE_CONTRACT_PENDING` | 合同待签署 | `character_string2`、`thing3`、`thing6`、`thing1` |
+| `WECHAT_TEMPLATE_PAYMENT_PENDING` | 首期账单待支付 | `car_number1`、`thing2`、`amount4`、`amount7`、`time5` |
+| `WECHAT_TEMPLATE_HANDOVER_PENDING` | 车辆待取车 | `character_string1`、`thing9`、`car_number5`、`thing11` |
+
 同时确认：
 
 - `ESIGN_PROVIDER=fadada`、`FADADA_ENV=production`，基础地址为已确认的法大大生产地址；
@@ -57,6 +67,7 @@
 - `PAYMENT_PROVIDER=wechat_pay`、`PAYMENT_DEFAULT_CHANNEL=WECHAT_JSAPI`、`WECHAT_PAY_ENABLED=true`；
 - 微信支付 notify URL 为生产 HTTPS 地址；
 - `NOTIFICATION_PROVIDER=wechat_official_account`，验收窗口内 `NOTIFICATION_WECHAT_ENABLED=true`；
+- 五个模板均通过官方列表接口只读核对，并对单一批准 OpenID 完成精确字段 smoke；
 - A/B 两个新 Application 或对应专用客户被精确加入 allowlist，禁止使用通配或扩大到普通客户群。
 
 ## 4. 只读预检
@@ -71,7 +82,7 @@ pnpm fadada:upload-signurl:preflight
 
 第一条命令只检查 fail-closed 配置并以 GET 请求读取 API health；后两条使用既有法大大生产预检能力。任何 blocker 都必须先修复，禁止通过改脚本、切换 mock/sandbox 或扩大 allowlist 绕过。
 
-完成 migration、部署和配置复核后，按以下顺序进入验收窗口：
+完成 migration、部署、五模板 smoke 和配置复核后，按以下顺序进入验收窗口：
 
 1. 设置精确 allowlist；
 2. 设置 `SUBSCRIPTION_JOURNEY_ENABLED=true`；

@@ -10,6 +10,8 @@ import { ConfigService } from "@nestjs/config";
 import { createHash } from "node:crypto";
 import {
   AuditAction,
+  BillStatus,
+  BillType,
   ContractStatus,
   DeliveryHandoverStatus,
   ESignDocumentType as PrismaESignDocumentType,
@@ -96,6 +98,20 @@ const contractForESignInclude = {
     include: {
       application: { select: { applicationNo: true, id: true, salesUserId: true } },
       quote: { select: { id: true, quoteNo: true } },
+      receivableBills: {
+        orderBy: { dueDate: "asc" as const },
+        select: {
+          amount: true,
+          billType: true,
+          dueDate: true,
+          remainingAmount: true
+        },
+        where: {
+          billStatus: { not: BillStatus.CANCELLED },
+          billType: { in: [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] },
+          deletedAt: null
+        }
+      },
       vehicle: true
     }
   },
@@ -114,6 +130,20 @@ const esignTaskInclude = {
         include: {
           application: { select: { applicationNo: true, id: true, salesUserId: true } },
           quote: { select: { id: true, quoteNo: true } },
+          receivableBills: {
+            orderBy: { dueDate: "asc" as const },
+            select: {
+              amount: true,
+              billType: true,
+              dueDate: true,
+              remainingAmount: true
+            },
+            where: {
+              billStatus: { not: BillStatus.CANCELLED },
+              billType: { in: [BillType.DEPOSIT, BillType.FIRST_MONTHLY_FEE] },
+              deletedAt: null
+            }
+          },
           vehicle: true
         }
       }
@@ -639,6 +669,11 @@ export class ESignService {
         aggregateType: "contract",
         content: "您的合同已生成，请完成电子签署。",
         customerId: updated.customerId ?? contract.customerId,
+        data: {
+          modelDisplayName: updated.contract.order.modelDisplayNameSnapshot,
+          orderNo: updated.contract.order.orderNo,
+          plateNo: updated.contract.order.vehicle?.plateNo
+        },
         eventType: NotificationEventType.CONTRACT_PENDING,
         notificationType: NotificationType.CONTRACT_PENDING,
         status: updated.taskStatus,
@@ -2503,6 +2538,11 @@ export class ESignService {
       aggregateType: "order",
       content: "合同已签署完成，订单进入待支付状态。",
       customerId: finalResult.customerId ?? finalResult.contract.customerId,
+      data: {
+        ...initialBillNotificationData(finalResult.contract.order.receivableBills),
+        orderNo: finalResult.contract.order.orderNo,
+        plateNo: finalResult.contract.order.vehicle?.plateNo
+      },
       eventType: NotificationEventType.PAYMENT_PENDING,
       notificationType: NotificationType.PAYMENT_PENDING,
       status: OrderStatus.PENDING_PAYMENT,
@@ -3272,6 +3312,7 @@ export class ESignService {
     aggregateType: string;
     content: string;
     customerId: string;
+    data?: Record<string, unknown>;
     eventType: NotificationEventType;
     notificationType: NotificationType;
     status: string;
@@ -3287,7 +3328,8 @@ export class ESignService {
         customerId: input.customerId,
         data: {
           aggregateNo: input.aggregateNo,
-          status: input.status
+          status: input.status,
+          ...(input.data ?? {})
         },
         eventType: input.eventType,
         notificationType: input.notificationType,
@@ -3386,6 +3428,35 @@ export class ESignService {
       (this.configService.get<string>("ESIGN_MOCK_ENABLED") ?? "true").toLowerCase() === "true"
     );
   }
+}
+
+function initialBillNotificationData(
+  bills: Array<{
+    amount: bigint;
+    billType: BillType;
+    dueDate: Date;
+    remainingAmount: bigint;
+  }>
+) {
+  if (bills.length === 0) {
+    return {
+      initialBillAmountCents: undefined,
+      initialBillDueAt: undefined,
+      initialBillRemainingCents: undefined
+    };
+  }
+  return {
+    hasDepositBill: bills.some(
+      (bill) => bill.billType === BillType.DEPOSIT && bill.amount > 0n
+    ),
+    initialBillAmountCents: bills
+      .reduce((total, bill) => total + bill.amount, 0n)
+      .toString(),
+    initialBillDueAt: bills[0]?.dueDate.toISOString(),
+    initialBillRemainingCents: bills
+      .reduce((total, bill) => total + bill.remainingAmount, 0n)
+      .toString()
+  };
 }
 
 function findCurrentPortalSigningTask(contract: ContractForESign) {

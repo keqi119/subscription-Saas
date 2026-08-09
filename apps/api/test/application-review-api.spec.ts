@@ -7,6 +7,7 @@ import {
   DepositStatus,
   MaterialStatus,
   MonthlyFeeMode,
+  NotificationType,
   OrderReviewStatus,
   OrderSource,
   OrderStatus,
@@ -427,6 +428,16 @@ describe("application self-service review APIs", () => {
       })
     );
     expect(application.vehicleReviewStatus).toBe(OrderReviewStatus.APPROVED);
+    expect(harness.notificationService.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          aggregateNo: "APP202606050001",
+          applicationNo: "APP202606050001",
+          plateNo: "沪A00001"
+        }),
+        notificationType: NotificationType.FINAL_PLAN_PENDING
+      })
+    );
   });
 
   it("applies a journey final-plan decision as revision one without allocating the vehicle", async () => {
@@ -1106,12 +1117,13 @@ function createApplicationReviewHarness(overrides: {
       updatedAt: now
     }))
   };
+  const notificationService = { notifyCustomer: vi.fn(async () => []) };
   const service = new CustomerService(
     auditService as never,
     prisma as never,
     riskService as never,
     {} as never,
-    undefined,
+    notificationService as never,
     journeySignal as never
   );
 
@@ -1120,6 +1132,7 @@ function createApplicationReviewHarness(overrides: {
     auditService,
     context,
     journeySignal,
+    notificationService,
     plan,
     prisma,
     riskService,

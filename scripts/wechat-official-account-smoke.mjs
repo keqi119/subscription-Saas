@@ -3,6 +3,7 @@ import { randomInt } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const apiRequire = createRequire(new URL("../apps/api/package.json", import.meta.url));
 const { PrismaPg } = apiRequire("@prisma/adapter-pg");
@@ -15,7 +16,7 @@ const DEFAULT_TEST_PHONE = "13900001010";
 const TOKEN_EXPIRED_ERROR_CODES = new Set([40001, 42001]);
 const RANDOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-const SMOKE_TYPES = {
+export const SMOKE_TYPES = {
   APPLICATION_PROGRESS: {
     content: "Application progress updated.",
     envKey: "WECHAT_TEMPLATE_APPLICATION_PROGRESS",
@@ -42,6 +43,15 @@ const SMOKE_TYPES = {
     route: "/portal/applications",
     templateCode: "FINAL_PLAN_READY_WECHAT",
     title: "Final plan pending"
+  },
+  HANDOVER_PENDING: {
+    content: "Vehicle handover is ready for pickup.",
+    envKey: "WECHAT_TEMPLATE_HANDOVER_PENDING",
+    eventType: "HANDOVER_ESIGN_PENDING",
+    notificationType: "HANDOVER_ESIGN_PENDING",
+    route: "/portal/orders",
+    templateCode: "HANDOVER_ESIGN_PENDING_WECHAT",
+    title: "Vehicle pickup pending"
   },
   PAYMENT_PENDING: {
     content: "Payment is pending.",
@@ -499,7 +509,7 @@ function normalizeMode(value) {
   throw new Error("WECHAT_OA_SMOKE_MODE must be token or template.");
 }
 
-function normalizeTemplateType(value) {
+export function normalizeTemplateType(value) {
   const normalized = value.toUpperCase();
   if (!SMOKE_TYPES[normalized]) {
     throw new Error(`Unsupported template type: ${value}. Supported: ${Object.keys(SMOKE_TYPES).join(", ")}`);
@@ -668,7 +678,7 @@ Options:
   --mode <token|template>       Smoke mode. Defaults to WECHAT_OA_SMOKE_MODE or token.
   --env-file <path>             Load env values from a local file. Values are never printed.
   --openid <openid>             Single test openid. Required for template mode.
-  --template-type <type>        APPLICATION_PROGRESS, FINAL_PLAN_PENDING, CONTRACT_PENDING, PAYMENT_PENDING, SERVICE_CASE_UPDATE.
+  --template-type <type>        APPLICATION_PROGRESS, FINAL_PLAN_PENDING, CONTRACT_PENDING, PAYMENT_PENDING, HANDOVER_PENDING, SERVICE_CASE_UPDATE.
   --template-id <id>            Override the WECHAT_TEMPLATE_* env mapping.
   --customer-id <uuid>          Existing smoke customer ID.
   --customer-no <no>            Existing smoke customerNo. Defaults to ${DEFAULT_TEST_CUSTOMER_NO}.
@@ -685,7 +695,10 @@ Safety:
 `);
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+}

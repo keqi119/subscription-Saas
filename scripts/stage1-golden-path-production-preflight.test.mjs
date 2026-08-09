@@ -62,6 +62,25 @@ test("requires official-account notifications and keeps delegated debit disabled
   expectBlocker({ AUTO_DEBIT_ENABLED: "true" }, "AUTO_DEBIT_MUST_BE_DISABLED");
 });
 
+test("requires an independent handover template", () => {
+  for (const value of [undefined, "", "   ", "<CHANGE_ME>"]) {
+    const result = validateStage1GoldenPathPreflight({
+      ...validEnv(),
+      WECHAT_TEMPLATE_HANDOVER_PENDING: value
+    });
+
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.blockers.some(
+        (blocker) =>
+          blocker.code === "PROVIDER_CONFIGURATION_MISSING" &&
+          blocker.key === "WECHAT_TEMPLATE_HANDOVER_PENDING"
+      ),
+      result.blockers
+    );
+  }
+});
+
 test("requires dedicated non-operational acceptance assets and controlled limits", () => {
   expectBlocker({ STAGE1_ACCEPTANCE_TEST_VEHICLE_ID: "" }, "TEST_VEHICLE_ID_MISSING");
   expectBlocker({ STAGE1_ACCEPTANCE_TEST_APPLICATION_ID: "" }, "TEST_APPLICATION_ID_MISSING");
@@ -188,6 +207,7 @@ function validEnv() {
     WECHAT_TEMPLATE_APPLICATION_PROGRESS: "configured-application-template",
     WECHAT_TEMPLATE_CONTRACT_PENDING: "configured-contract-template",
     WECHAT_TEMPLATE_FINAL_PLAN_PENDING: "configured-plan-template",
+    WECHAT_TEMPLATE_HANDOVER_PENDING: "configured-handover-template",
     WECHAT_TEMPLATE_PAYMENT_PENDING: "configured-payment-template"
   };
 }

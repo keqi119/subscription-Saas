@@ -115,7 +115,14 @@ WECHAT_TEMPLATE_APPLICATION_PROGRESS=<real_template_id>
 WECHAT_TEMPLATE_FINAL_PLAN_PENDING=<real_template_id>
 WECHAT_TEMPLATE_CONTRACT_PENDING=<real_template_id>
 WECHAT_TEMPLATE_PAYMENT_PENDING=<real_template_id>
+WECHAT_TEMPLATE_HANDOVER_PENDING=<real_template_id>
 WECHAT_TEMPLATE_SERVICE_CASE_UPDATE=<real_template_id>
 ```
 
 Keep committed examples as `<CHANGE_ME>`.
+
+The Stage 1 handover scene uses its own `订单待取车提醒` template. Its exact fields are
+`character_string1` (订单号), `thing9` (车辆名称), `car_number5` (车牌号), and
+`thing11` (客户名称). Never route `HANDOVER_ESIGN_PENDING` to the application-progress
+template. Before enabling the Journey, run one controlled `HANDOVER_PENDING` smoke with an
+explicit `WECHAT_OA_TEMPLATE_DATA_JSON` object and a single approved OpenID.

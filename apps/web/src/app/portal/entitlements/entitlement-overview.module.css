@@ -1,0 +1,201 @@
+.tabs :global(.ant-tabs-nav) {
+  margin-bottom: 20px;
+}
+
+.tabLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.tabCount {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #657084;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+
+.typePanel {
+  min-width: 0;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.entitlementCard {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #dfe5ee;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 5px 18px rgb(39 55 80 / 6%);
+}
+
+.unavailableCard {
+  border-color: #e5e7eb;
+  background: #f4f5f7;
+  box-shadow: none;
+  color: #8a93a3;
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cardHeader h3 {
+  margin: 10px 0 3px;
+  color: #1f2735;
+  font-size: 18px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.unavailableCard .cardHeader h3 {
+  color: #737b88;
+}
+
+.cardTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.grantNo {
+  color: #8a93a3;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.availableAllowance {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 20px 0 14px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #edf6ff;
+}
+
+.availableAllowance span {
+  color: #526078;
+  font-size: 13px;
+}
+
+.availableAllowance strong {
+  color: #096dd9;
+  font-size: 28px;
+  line-height: 1.1;
+  text-align: right;
+}
+
+.unavailableCard .availableAllowance {
+  background: #e9ebee;
+}
+
+.unavailableCard .availableAllowance strong {
+  color: #777f8c;
+}
+
+.allowanceBreakdown {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.allowanceBreakdown div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #edf0f4;
+  border-radius: 10px;
+}
+
+.allowanceBreakdown dt {
+  margin-bottom: 5px;
+  color: #7b8495;
+  font-size: 12px;
+}
+
+.allowanceBreakdown dd {
+  margin: 0;
+  color: #303847;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.progressBlock {
+  margin-top: 16px;
+}
+
+.progressBlock > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  color: #7b8495;
+  font-size: 12px;
+}
+
+.cardFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #edf0f4;
+  color: #7b8495;
+  font-size: 12px;
+}
+
+.usageSection {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid #e7eaf0;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.sectionHeading h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.sectionHeading span {
+  color: #8a93a3;
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .cardGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .entitlementCard {
+    padding: 16px;
+  }
+
+  .availableAllowance strong {
+    font-size: 24px;
+  }
+
+  .cardFooter,
+  .sectionHeading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

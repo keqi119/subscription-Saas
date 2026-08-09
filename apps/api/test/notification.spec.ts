@@ -342,6 +342,7 @@ describe("NotificationService", () => {
       aggregateType: "Application",
       content: "申请已提交，平台将尽快审核。",
       customerId: "customer-a",
+      data: { aggregateNo: "APP-1" },
       eventType: NotificationEventType.APPLICATION_SUBMITTED,
       notificationType: NotificationType.APPLICATION_PROGRESS,
       title: "申请已提交",
@@ -367,6 +368,75 @@ describe("NotificationService", () => {
       eventStatus: NotificationEventStatus.PROCESSED,
       eventType: NotificationEventType.APPLICATION_SUBMITTED
     });
+  });
+
+  it("sends only exact handover fields to WeChat while retaining the generic audit payload", async () => {
+    const harness = createNotificationHarness();
+
+    await harness.service.notifyCustomer({
+      aggregateId: "order-a",
+      aggregateType: "SubscriptionOrder",
+      content: "车辆交付流程已开始。",
+      customerId: "customer-a",
+      data: {
+        modelDisplayName: "NIO 蔚来 ES6 2024款",
+        orderNo: "ORD-1",
+        plateNo: "沪DGJ578",
+        status: "待取车"
+      },
+      eventType: NotificationEventType.HANDOVER_ESIGN_PENDING,
+      notificationType: NotificationType.HANDOVER_ESIGN_PENDING,
+      title: "车辆待取车",
+      url: "/portal/orders/order-a"
+    });
+
+    expect(harness.provider.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          car_number5: "沪DGJ578",
+          character_string1: "ORD-1",
+          thing11: "测试客户",
+          thing9: "NIO 蔚来 ES6 2024款"
+        }
+      })
+    );
+    const inApp = harness.records.find(
+      (record) => record.channel === NotificationChannel.IN_APP
+    );
+    const wechat = harness.records.find(
+      (record) => record.channel === NotificationChannel.WECHAT_OFFICIAL_ACCOUNT
+    );
+    expect(inApp?.payload).toMatchObject({ orderNo: "ORD-1", status: "待取车" });
+    expect(wechat?.payload).toMatchObject({ orderNo: "ORD-1", status: "待取车" });
+    expect(inApp?.payload).not.toHaveProperty("character_string1");
+    expect(wechat?.payload).not.toHaveProperty("character_string1");
+  });
+
+  it("fails closed before calling WeChat when required template data is missing", async () => {
+    const harness = createNotificationHarness();
+
+    await harness.service.notifyCustomer({
+      aggregateId: "application-a",
+      aggregateType: "Application",
+      content: "最终方案待确认。",
+      customerId: "customer-a",
+      data: { applicationNo: "APP-1" },
+      eventType: NotificationEventType.FINAL_PLAN_READY,
+      notificationType: NotificationType.FINAL_PLAN_PENDING,
+      title: "最终方案待确认",
+      url: "/portal/applications/application-a"
+    });
+
+    expect(harness.provider.send).not.toHaveBeenCalled();
+    expect(harness.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+          errorMessage: "WECHAT_TEMPLATE_DATA_MISSING:plateNo",
+          notificationStatus: NotificationStatus.SKIPPED
+        })
+      ])
+    );
   });
 
   it("skips WeChat notification when the customer has no bound openid", async () => {
@@ -409,6 +479,13 @@ describe("NotificationService", () => {
         aggregateType: "SubscriptionOrder",
         content: "订单待支付。",
         customerId: "customer-a",
+        data: {
+          hasDepositBill: true,
+          initialBillAmountCents: "540000",
+          initialBillDueAt: "2026-08-12T10:30:00.000Z",
+          initialBillRemainingCents: "540000",
+          plateNo: "沪DGJ578"
+        },
         eventType: NotificationEventType.PAYMENT_PENDING,
         notificationType: NotificationType.PAYMENT_PENDING,
         title: "待支付",

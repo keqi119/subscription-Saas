@@ -33,6 +33,7 @@ import {
   NotificationProvider,
   SendNotificationResult
 } from "./notification.provider";
+import { buildGoldenPathWechatTemplateData } from "./wechat-template-data";
 
 export interface NotifyCustomerInput {
   aggregateId?: string;
@@ -1120,7 +1121,10 @@ export class NotificationService {
       title: input.title,
       ...(input.data ?? {})
     };
-    Object.assign(data, this.buildWechatTemplateData(input, data));
+    const wechatTemplateData = this.buildWechatTemplateData(input, data);
+    if (isServiceCaseNotification(input.eventType) && wechatTemplateData.data) {
+      Object.assign(data, wechatTemplateData.data);
+    }
     const inAppNotificationNo = idempotencyKey
       ? billNotificationNo(idempotencyKey, "IN_APP")
       : undefined;
@@ -1176,7 +1180,9 @@ export class NotificationService {
             existingRecordId: existingWechat?.id,
             notificationNo: wechatNotificationNo,
             notificationType: input.notificationType,
+            providerData: wechatTemplateData.data ?? {},
             template: wechatTemplate,
+            templateDataError: wechatTemplateData.error,
             templateCode: templateCodes.wechat,
             title: input.title,
             url: normalizePortalUrl(input.url, this.portalBaseUrl)
@@ -1390,7 +1396,9 @@ export class NotificationService {
     existingRecordId?: string;
     notificationNo?: string;
     notificationType: NotificationType;
+    providerData: Record<string, unknown>;
     template: Prisma.NotificationTemplateGetPayload<Record<string, never>> | null;
+    templateDataError: string | null;
     templateCode: string;
     title: string;
     url: string | null;
@@ -1417,9 +1425,33 @@ export class NotificationService {
       });
     }
 
+    if (input.templateDataError) {
+      return this.createRecord({
+        channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
+        content: input.content,
+        customerAccountId: input.account.id,
+        customerId: input.customerId,
+        errorMessage: input.templateDataError,
+        existingRecordId: input.existingRecordId,
+        notificationNo: input.notificationNo,
+        payload: input.data,
+        recipientOpenId: input.account.wechatOpenId,
+        recipientPhone: input.account.phone,
+        status: NotificationStatus.SKIPPED,
+        template: input.template,
+        templateCode: input.templateCode,
+        title: input.title,
+        type: input.notificationType,
+        url: input.url
+      });
+    }
+
     const providerMode = this.providerMode;
     if (providerMode !== "mock") {
-      const const4Error = this.serviceCaseWechatConst4Error(input);
+      const const4Error = this.serviceCaseWechatConst4Error({
+        data: input.providerData,
+        notificationType: input.notificationType
+      });
       if (const4Error) {
         return this.createRecord({
           channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
@@ -1499,7 +1531,7 @@ export class NotificationService {
       result = await this.provider.send({
         channel: NotificationChannel.WECHAT_OFFICIAL_ACCOUNT,
         content: input.content,
-        data: input.data,
+        data: input.providerData,
         providerTemplateId:
           providerTemplateId ?? input.templateCode,
         recipientOpenId: input.account.wechatOpenId,
@@ -1763,18 +1795,30 @@ export class NotificationService {
   }
 
   private buildWechatTemplateData(input: NotifyCustomerInput, data: Record<string, unknown>) {
+    const goldenPathData = buildGoldenPathWechatTemplateData({
+      data,
+      notificationType: input.notificationType,
+      now: new Date()
+    });
+    if (goldenPathData) {
+      return goldenPathData;
+    }
     if (!isServiceCaseNotification(input.eventType)) {
-      return {};
+      return { data, error: null };
     }
 
     const now = new Date();
     const statusText = serviceCaseStatusText(data.status);
     return {
-      character_string2: stringValue(data.aggregateNo),
-      const3: serviceCaseTypeText(input.notificationType),
-      const4: statusText,
-      thing1: truncateWechatThing(input.title || "服务工单更新"),
-      time6: formatWechatTime(now)
+      data: {
+        ...data,
+        character_string2: stringValue(data.aggregateNo),
+        const3: serviceCaseTypeText(input.notificationType),
+        const4: statusText,
+        thing1: truncateWechatThing(input.title || "服务工单更新"),
+        time6: formatWechatTime(now)
+      },
+      error: null
     };
   }
 

@@ -13,6 +13,7 @@ import {
   ESignSignerStatus,
   ESignSignerType,
   ESignTaskStatus,
+  NotificationType,
   OrderStatus,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
@@ -278,7 +279,7 @@ describe("ESignService", () => {
   });
 
   it("creates a mock e-sign task for a generated contract", async () => {
-    const { service, state } = createESignFixture();
+    const { notificationService, service, state } = createESignFixture();
 
     const result = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
@@ -294,6 +295,16 @@ describe("ESignService", () => {
       signerStatus: ESignSignerStatus.SIGNING,
       signerType: ESignSignerType.CUSTOMER
     });
+    expect(notificationService.notifyCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          modelDisplayName: "NIO ES6 2025款",
+          orderNo: "ORD-1",
+          plateNo: "沪A00001"
+        }),
+        notificationType: NotificationType.CONTRACT_PENDING
+      })
+    );
   });
 
   it("persists provider signer identifiers and sign URLs from a Fadada provider result", async () => {
@@ -2659,7 +2670,7 @@ describe("ESignService", () => {
   });
 
   it("mock-sign completes signer, task, contract, order and callback log", async () => {
-    const { service, state } = createESignFixture();
+    const { notificationService, service, state } = createESignFixture();
     const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
 
     const result = await service.mockSignTask(
@@ -2677,6 +2688,19 @@ describe("ESignService", () => {
       handled: true,
       verified: true
     });
+    expect(notificationService.notifyCustomer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          hasDepositBill: true,
+          initialBillAmountCents: "540000",
+          initialBillDueAt: "2026-08-12T10:30:00.000Z",
+          initialBillRemainingCents: "440000",
+          orderNo: "ORD-1",
+          plateNo: "沪A00001"
+        }),
+        notificationType: NotificationType.PAYMENT_PENDING
+      })
+    );
   });
 
   it("rejects mock-sign when mock provider is not enabled", async () => {
@@ -3832,7 +3856,26 @@ function createContract(
       id: orderId,
       orderNo,
       orderStatus: OrderStatus.PENDING_SIGN,
+      modelDisplayNameSnapshot: "NIO ES6 2025款",
       quote: { id: "quote-1", quoteNo: "QUO-1" },
+      receivableBills: [
+        {
+          amount: 300000n,
+          billStatus: "PENDING",
+          billType: "DEPOSIT",
+          deletedAt: null,
+          dueDate: new Date("2026-08-12T10:30:00.000Z"),
+          remainingAmount: 200000n
+        },
+        {
+          amount: 240000n,
+          billStatus: "PENDING",
+          billType: "FIRST_MONTHLY_FEE",
+          deletedAt: null,
+          dueDate: new Date("2026-08-13T10:30:00.000Z"),
+          remainingAmount: 240000n
+        }
+      ],
       vehicle: {
         assetLocation: "上海",
         batteryCapacityKwh: 75,
@@ -3840,6 +3883,7 @@ function createContract(
         brand: "NIO",
         currentMileageKm: 1200,
         modelYear: 2025,
+        plateNo: "沪A00001",
         series: "ES6",
         vehicleModel: "ES6"
       }

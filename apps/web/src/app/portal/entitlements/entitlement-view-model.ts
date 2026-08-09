@@ -52,7 +52,7 @@ export function sortEntitlementGrants(
       return rankDifference;
     }
 
-    let dateDifference = 0;
+    let dateDifference: number;
     if (leftBucket === "CURRENT") {
       dateDifference = compareDateKeysDescending(left.validFrom, right.validFrom);
     } else if (leftBucket === "FUTURE") {

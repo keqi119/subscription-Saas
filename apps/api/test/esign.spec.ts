@@ -2347,6 +2347,44 @@ describe("ESignService", () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it("puts signable portal contracts before processing and terminal contracts", async () => {
+    const harness = createESignFixture();
+    const processing = createContract(
+      "contract-processing",
+      "customer-1",
+      "order-processing",
+      "ORD-PROCESSING"
+    );
+    processing.createdAt = new Date("2026-08-09T05:00:00Z");
+    processing.updatedAt = new Date("2026-08-10T05:00:00Z");
+    const signed = createContract(
+      "contract-signed",
+      "customer-1",
+      "order-signed",
+      "ORD-SIGNED"
+    );
+    signed.status = ContractStatus.SIGNED;
+    signed.signedAt = new Date("2026-08-10T06:00:00Z");
+    signed.createdAt = new Date("2026-08-11T06:00:00Z");
+    signed.updatedAt = new Date("2026-08-10T06:00:00Z");
+    harness.state.contracts.push(processing, signed);
+    await harness.service.createTaskForContract(
+      "contract-1",
+      adminUser(),
+      requestContext()
+    );
+
+    const contracts = await harness.service.listPortalContracts(
+      currentCustomer("customer-1")
+    );
+
+    expect(contracts.map((contract) => contract.id)).toEqual([
+      "contract-1",
+      "contract-processing",
+      "contract-signed"
+    ]);
+  });
+
   it("projects authoritative Stage 2 routing identity in portal contract list and detail responses", async () => {
     const harness = createTypedStage2CallbackFixture();
 
@@ -3412,14 +3450,20 @@ function createESignFixture(
         );
         return contract ? hydrateContract(state, contract) : null;
       }),
-      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.contracts
+      findMany: vi.fn(async ({ orderBy, where }: {
+        orderBy?: Record<string, "asc" | "desc">;
+        where: Record<string, unknown>;
+      }) =>
+        applySingleOrder(
+          state.contracts
           .filter(
             (contract) =>
               matchesWhere(contract, where) &&
               (where.customerId === undefined || contract.customerId === where.customerId)
           )
-          .map((contract) => hydrateContract(state, contract))
+          .map((contract) => hydrateContract(state, contract)),
+          orderBy
+        )
       ),
       update: vi.fn(
         async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
@@ -3920,6 +3964,25 @@ function createProviderAccount(
     registrationStatus: ESignProviderAccountStatus.REGISTERED,
     ...overrides
   };
+}
+
+function applySingleOrder<T extends Record<string, unknown>>(
+  rows: T[],
+  orderBy: Record<string, "asc" | "desc"> | undefined
+) {
+  const [field, direction] = Object.entries(orderBy ?? {})[0] ?? [];
+  if (!field || !direction) return rows;
+  return [...rows].sort((left, right) => {
+    const leftValue = left[field] instanceof Date
+      ? left[field].getTime()
+      : String(left[field] ?? "");
+    const rightValue = right[field] instanceof Date
+      ? right[field].getTime()
+      : String(right[field] ?? "");
+    if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
+    if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
+    return 0;
+  });
 }
 
 function matchesWhere(row: Record<string, unknown>, where: Record<string, unknown>): boolean {

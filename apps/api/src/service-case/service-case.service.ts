@@ -312,7 +312,7 @@ export class ServiceCaseService {
     }> = query.caseStatus
       ? [{
           bucket: PORTAL_SERVICE_CASE_BUCKETS.find(({ statuses }) =>
-            statuses.includes(query.caseStatus!)
+            (statuses as readonly ServiceCaseStatus[]).includes(query.caseStatus!)
           )?.bucket ?? "HISTORY",
           statuses: [query.caseStatus]
         }]

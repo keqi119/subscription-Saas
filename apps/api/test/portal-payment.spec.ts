@@ -863,8 +863,11 @@ function applyOrderBy(items: AnyRecord[], orderBy: AnyRecord | AnyRecord[] | und
     for (const entry of entries) {
       const [field, rawDirection] = Object.entries(entry)[0] ?? [];
       if (!field) continue;
-      const direction = typeof rawDirection === "string" ? rawDirection : rawDirection?.sort;
-      const nulls = typeof rawDirection === "object" ? rawDirection?.nulls : undefined;
+      const directionConfig = rawDirection && typeof rawDirection === "object"
+        ? rawDirection as { nulls?: string; sort?: string }
+        : null;
+      const direction = typeof rawDirection === "string" ? rawDirection : directionConfig?.sort;
+      const nulls = directionConfig?.nulls;
       const leftValue = left[field];
       const rightValue = right[field];
       if (leftValue == null || rightValue == null) {

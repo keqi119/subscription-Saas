@@ -1279,13 +1279,15 @@ function resolvePortalNextAction(application: PortalApplication) {
 
 function portalApplicationSortKey(application: PortalApplication): PortalListSortKey {
   const latestOrder = findActivePortalOrder(application);
+  const nextAction = resolvePortalNextAction(application);
   const terminal =
     application.status === ApplicationStatus.CANCELLED ||
     application.status === ApplicationStatus.REJECTED ||
+    nextAction === "CANCELLED" ||
+    nextAction === "REJECTED" ||
     (latestOrder
       ? PORTAL_APPLICATION_TERMINAL_ORDER_STATUSES.has(latestOrder.orderStatus)
       : false);
-  const nextAction = resolvePortalNextAction(application);
 
   return {
     createdAt: application.createdAt,

@@ -148,6 +148,30 @@ describe("PortalApplicationService", () => {
     ]);
   });
 
+  it("sinks an application whose final plan was rejected", async () => {
+    const harness = createPortalApplicationFixture();
+    const rejectedPlan = createApplication({
+      ...readyFinalPlanApplication({ planConfirmStatus: PlanConfirmStatus.REJECTED }),
+      id: "application-plan-rejected",
+      updatedAt: new Date("2026-08-11T00:00:00Z")
+    });
+    const processing = createApplication({
+      id: "application-processing",
+      status: ApplicationStatus.SUBMITTED,
+      updatedAt: new Date("2026-08-10T00:00:00Z")
+    });
+    vi.mocked(harness.prisma.application.findMany).mockResolvedValue([
+      rejectedPlan,
+      processing
+    ] as never);
+
+    const result = await harness.service.listApplications(currentCustomer("customer-1"));
+    expect(result.map((item) => item.id)).toEqual([
+      "application-processing",
+      "application-plan-rejected"
+    ]);
+  });
+
   it("creates a self-service application for the current customer without returning order data", async () => {
     const { customerService, prisma, service } = createPortalApplicationFixture();
 

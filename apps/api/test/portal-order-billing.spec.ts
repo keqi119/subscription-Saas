@@ -60,6 +60,60 @@ describe("portal billing and entitlement center", () => {
     expect(result.items.find((item) => item.billNo === "BIL-A2")?.canPay).toBe(false);
   });
 
+  it("sorts bills by business status before due date across pages", async () => {
+    const harness = createPortalBillingHarness();
+    harness.bills.splice(
+      0,
+      harness.bills.length,
+      makeBill({ id: "paid", billNo: "PAID", billStatus: BillStatus.PAID, dueDate: new Date("2026-06-01T00:00:00Z"), remainingAmount: 0n }),
+      makeBill({ id: "pending", billNo: "PENDING", billStatus: BillStatus.PENDING, dueDate: new Date("2026-06-20T00:00:00Z") }),
+      makeBill({ id: "partial", billNo: "PARTIAL", billStatus: BillStatus.PARTIALLY_PAID, dueDate: new Date("2026-06-19T00:00:00Z"), paidAmount: 1n }),
+      makeBill({ id: "overdue-new", billNo: "OVERDUE-NEW", billStatus: BillStatus.OVERDUE, dueDate: new Date("2026-06-10T00:00:00Z") }),
+      makeBill({ id: "overdue-old", billNo: "OVERDUE-OLD", billStatus: BillStatus.OVERDUE, dueDate: new Date("2026-06-05T00:00:00Z") }),
+      makeBill({ id: "cancelled", billNo: "CANCELLED", billStatus: BillStatus.CANCELLED, dueDate: new Date("2026-05-01T00:00:00Z"), remainingAmount: 0n })
+    );
+
+    const first = await harness.service.listBills(
+      harness.currentCustomer("customer_a"),
+      { page: 1, pageSize: 3 }
+    );
+    const second = await harness.service.listBills(
+      harness.currentCustomer("customer_a"),
+      { page: 2, pageSize: 3 }
+    );
+
+    expect(first.items.map((item) => item.billNo)).toEqual([
+      "OVERDUE-OLD",
+      "OVERDUE-NEW",
+      "PARTIAL"
+    ]);
+    expect(second.items.map((item) => item.billNo)).toEqual([
+      "PENDING",
+      "PAID",
+      "CANCELLED"
+    ]);
+    expect(first.total).toBe(6);
+  });
+
+  it("keeps a bill status filter and only sorts inside that status", async () => {
+    const harness = createPortalBillingHarness();
+    harness.bills.splice(
+      0,
+      harness.bills.length,
+      makeBill({ id: "pending-late", billNo: "LATE", dueDate: new Date("2026-06-22T00:00:00Z") }),
+      makeBill({ id: "pending-soon", billNo: "SOON", dueDate: new Date("2026-06-20T00:00:00Z") }),
+      makeBill({ id: "paid", billNo: "PAID", billStatus: BillStatus.PAID, remainingAmount: 0n })
+    );
+
+    const result = await harness.service.listBills(
+      harness.currentCustomer("customer_a"),
+      { billStatus: BillStatus.PENDING }
+    );
+
+    expect(result.items.map((item) => item.billNo)).toEqual(["SOON", "LATE"]);
+    expect(result.total).toBe(2);
+  });
+
   it("rejects bill detail access for another customer's bill", async () => {
     const harness = createPortalBillingHarness();
 
@@ -260,7 +314,8 @@ function createPortalBillingHarness(overrides: { ledgers?: AnyRecord[] } = {}) {
 
   attachRelations(orders, bills, grants);
 
-  const prisma = {
+  const prisma: AnyRecord = {
+    $transaction: vi.fn(async (callback: (tx: AnyRecord) => unknown) => callback(prisma)),
     depositLedger: {
       count: vi.fn(
         async ({ where }: AnyRecord) => ledgers.filter((item) => matches(item, where)).length
@@ -302,9 +357,13 @@ function createPortalBillingHarness(overrides: { ledgers?: AnyRecord[] } = {}) {
         const bill = bills.find((item) => matches(item, where));
         return bill ? includeBillDetail(bill, orders) : null;
       }),
-      findMany: vi.fn(async ({ where }: AnyRecord) =>
-        bills.filter((item) => matches(item, where)).map((item) => includeOrder(item, orders))
-      )
+      findMany: vi.fn(async ({ orderBy, skip = 0, take, where }: AnyRecord) => {
+        const rows = bills
+          .filter((item) => matches(item, where))
+          .map((item) => includeOrder(item, orders));
+        const sorted = applyOrderBy(rows, orderBy);
+        return sorted.slice(skip, take === undefined ? undefined : skip + take);
+      })
     },
     subscriptionOrder: {
       count: vi.fn(
@@ -318,6 +377,7 @@ function createPortalBillingHarness(overrides: { ledgers?: AnyRecord[] } = {}) {
   };
 
   return {
+    bills,
     currentCustomer(customerId: string) {
       return {
         accountStatus: "ACTIVE",
@@ -405,13 +465,15 @@ function makeBill(input: Partial<AnyRecord>) {
     billStatus: input.billStatus ?? BillStatus.PENDING,
     billType: input.billType ?? BillType.MONTHLY_RENT,
     customerId,
+    createdAt: input.createdAt ?? new Date("2026-06-18T00:00:00Z"),
     deletedAt: null,
-    dueDate: new Date("2026-06-20T00:00:00Z"),
+    dueDate: input.dueDate ?? new Date("2026-06-20T00:00:00Z"),
     id: input.id ?? "bill_a1",
     orderId,
     paidAmount,
     paymentOrderItems: [],
     remainingAmount,
+    updatedAt: input.updatedAt ?? new Date("2026-06-18T00:00:00Z"),
     writeOffs: []
   };
 }
@@ -540,6 +602,29 @@ function matches(item: AnyRecord, where: AnyRecord = {}) {
     return false;
   }
   return true;
+}
+
+function applyOrderBy(items: AnyRecord[], orderBy: AnyRecord[] | undefined) {
+  if (!orderBy) {
+    return items;
+  }
+  return [...items].sort((left, right) => {
+    for (const entry of orderBy) {
+      const [field, direction] = Object.entries(entry)[0] ?? [];
+      if (!field || (direction !== "asc" && direction !== "desc")) {
+        continue;
+      }
+      const leftValue = comparable(left[field]);
+      const rightValue = comparable(right[field]);
+      if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
+      if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
+    }
+    return 0;
+  });
+}
+
+function comparable(value: unknown): number | string {
+  return value instanceof Date ? value.getTime() : String(value ?? "");
 }
 
 // The fake Prisma harness deliberately accepts loosely-shaped query/data objects.

@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { planPortalBucketPage } from "../common/portal-list-ordering";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
   PortalBillsQueryDto,
@@ -26,6 +27,13 @@ const PAYABLE_BILL_STATUSES = new Set<BillStatus>([
   BillStatus.PARTIALLY_PAID,
   BillStatus.OVERDUE
 ]);
+const PORTAL_BILL_STATUS_ORDER = [
+  BillStatus.OVERDUE,
+  BillStatus.PARTIALLY_PAID,
+  BillStatus.PENDING,
+  BillStatus.PAID,
+  BillStatus.CANCELLED
+] as const;
 const WAIT_DELIVERY_ORDER_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_VEHICLE,
   OrderStatus.PENDING_DELIVERY
@@ -267,25 +275,47 @@ export class PortalBillingService {
 
   async listBills(currentCustomer: CurrentCustomer, query: PortalBillsQueryDto) {
     const { page, pageSize, skip } = resolvePagination(query);
-    const where: Prisma.ReceivableBillWhereInput = {
-      billStatus: query.billStatus,
+    const baseWhere: Prisma.ReceivableBillWhereInput = {
       billType: query.billType,
       customerId: currentCustomer.customerId,
       deletedAt: null,
       orderId: query.orderId
     };
-    const [items, total] = await Promise.all([
-      this.prisma.receivableBill.findMany({
-        include: { order: { select: { id: true, orderNo: true, orderStatus: true } } },
-        orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
-        skip,
-        take: pageSize,
-        where
-      }),
-      this.prisma.receivableBill.count({ where })
-    ]);
+    const statuses = query.billStatus
+      ? [query.billStatus]
+      : [...PORTAL_BILL_STATUS_ORDER];
 
-    return paged(items.map(toBillListItem), total, page, pageSize);
+    return this.prisma.$transaction(async (tx) => {
+      const counts = await Promise.all(
+        statuses.map((status) =>
+          tx.receivableBill.count({ where: { ...baseWhere, billStatus: status } })
+        )
+      );
+      const slices = planPortalBucketPage(
+        statuses.map((status, index) => ({ bucket: status, count: counts[index] ?? 0 })),
+        skip,
+        pageSize
+      );
+      const pages = await Promise.all(
+        slices.map((slice) =>
+          tx.receivableBill.findMany({
+            include: { order: { select: { id: true, orderNo: true, orderStatus: true } } },
+            orderBy: [
+              { dueDate: "asc" },
+              { updatedAt: "desc" },
+              { createdAt: "desc" },
+              { id: "asc" }
+            ],
+            skip: slice.skip,
+            take: slice.take,
+            where: { ...baseWhere, billStatus: slice.bucket }
+          })
+        )
+      );
+      const total = counts.reduce((sum, count) => sum + count, 0);
+
+      return paged(pages.flat().map(toBillListItem), total, page, pageSize);
+    });
   }
 
   async getBill(id: string, currentCustomer: CurrentCustomer) {

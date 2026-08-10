@@ -21,6 +21,7 @@ import type { Readable } from "node:stream";
 import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { planPortalBucketPage } from "../common/portal-list-ordering";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -49,6 +50,26 @@ export interface ServiceCasePreview {
   sizeBytes: number;
   stream: Readable;
 }
+
+const PORTAL_SERVICE_CASE_BUCKETS = [
+  { bucket: "ACTION" as const, statuses: [ServiceCaseStatus.WAITING_CUSTOMER] },
+  {
+    bucket: "PROCESSING" as const,
+    statuses: [
+      ServiceCaseStatus.SUBMITTED,
+      ServiceCaseStatus.ACCEPTED,
+      ServiceCaseStatus.IN_PROGRESS
+    ]
+  },
+  {
+    bucket: "HISTORY" as const,
+    statuses: [
+      ServiceCaseStatus.RESOLVED,
+      ServiceCaseStatus.CLOSED,
+      ServiceCaseStatus.CANCELLED
+    ]
+  }
+] as const;
 
 const serviceCaseInclude = {
   actions: {
@@ -279,30 +300,65 @@ export class ServiceCaseService {
   async listPortalServiceCases(currentCustomer: CurrentCustomer, query: PortalServiceCasesQueryDto) {
     const page = normalizePage(query.page);
     const pageSize = normalizePageSize(query.pageSize);
-    const where: Prisma.ServiceCaseWhereInput = {
-      caseStatus: query.caseStatus,
+    const skip = (page - 1) * pageSize;
+    const baseWhere: Prisma.ServiceCaseWhereInput = {
       caseType: query.caseType,
       customerId: currentCustomer.customerId,
       deletedAt: null
     };
+    const buckets: Array<{
+      bucket: "ACTION" | "PROCESSING" | "HISTORY";
+      statuses: ServiceCaseStatus[];
+    }> = query.caseStatus
+      ? [{
+          bucket: PORTAL_SERVICE_CASE_BUCKETS.find(({ statuses }) =>
+            (statuses as readonly ServiceCaseStatus[]).includes(query.caseStatus!)
+          )?.bucket ?? "HISTORY",
+          statuses: [query.caseStatus]
+        }]
+      : PORTAL_SERVICE_CASE_BUCKETS.map(({ bucket, statuses }) => ({
+          bucket,
+          statuses: [...statuses]
+        }));
 
-    const [items, total] = await this.prisma.$transaction([
-      this.prisma.serviceCase.findMany({
-        include: serviceCaseInclude,
-        orderBy: { createdAt: "desc" },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        where
-      }),
-      this.prisma.serviceCase.count({ where })
-    ]);
+    return this.prisma.$transaction(async (tx) => {
+      const counts = await Promise.all(
+        buckets.map(({ statuses }) =>
+          tx.serviceCase.count({
+            where: { ...baseWhere, caseStatus: { in: statuses } }
+          })
+        )
+      );
+      const slices = planPortalBucketPage(
+        buckets.map(({ bucket }, index) => ({ bucket, count: counts[index] ?? 0 })),
+        skip,
+        pageSize
+      );
+      const pages = await Promise.all(
+        slices.map((slice) => {
+          const bucket = buckets.find((candidate) => candidate.bucket === slice.bucket)!;
+          return tx.serviceCase.findMany({
+            include: serviceCaseInclude,
+            orderBy: [
+              { updatedAt: "desc" },
+              { createdAt: "desc" },
+              { id: "asc" }
+            ],
+            skip: slice.skip,
+            take: slice.take,
+            where: { ...baseWhere, caseStatus: { in: bucket.statuses } }
+          });
+        })
+      );
+      const total = counts.reduce((sum, count) => sum + count, 0);
 
-    return {
-      items: items.map((item) => toServiceCaseView(item, "portal")),
-      page,
-      pageSize,
-      total
-    };
+      return {
+        items: pages.flat().map((item) => toServiceCaseView(item, "portal")),
+        page,
+        pageSize,
+        total
+      };
+    });
   }
 
   async getPortalServiceCase(id: string, currentCustomer: CurrentCustomer) {

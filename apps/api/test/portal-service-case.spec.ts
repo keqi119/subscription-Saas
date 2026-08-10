@@ -142,6 +142,43 @@ describe("portal service cases", () => {
     );
   });
 
+  it("puts waiting-customer cases before processing and history", async () => {
+    const harness = createServiceCaseHarness();
+    harness.addCase({ id: "closed", caseStatus: ServiceCaseStatus.CLOSED, updatedAt: new Date("2026-08-10T06:00:00Z") });
+    harness.addCase({ id: "submitted", caseStatus: ServiceCaseStatus.SUBMITTED, updatedAt: new Date("2026-08-10T05:00:00Z") });
+    harness.addCase({ id: "waiting-old", caseStatus: ServiceCaseStatus.WAITING_CUSTOMER, updatedAt: new Date("2026-08-10T03:00:00Z") });
+    harness.addCase({ id: "waiting-new", caseStatus: ServiceCaseStatus.WAITING_CUSTOMER, updatedAt: new Date("2026-08-10T04:00:00Z") });
+    harness.addCase({ id: "resolved", caseStatus: ServiceCaseStatus.RESOLVED, updatedAt: new Date("2026-08-10T07:00:00Z") });
+
+    const first = await harness.service.listPortalServiceCases(
+      currentCustomer("customer-a"),
+      { page: 1, pageSize: 3 }
+    );
+    const second = await harness.service.listPortalServiceCases(
+      currentCustomer("customer-a"),
+      { page: 2, pageSize: 3 }
+    );
+
+    expect(first.items.map((item) => item.id)).toEqual([
+      "waiting-new",
+      "waiting-old",
+      "submitted"
+    ]);
+    expect(second.items.map((item) => item.id)).toEqual(["resolved", "closed"]);
+  });
+
+  it("keeps caseStatus filtering exact", async () => {
+    const harness = createServiceCaseHarness();
+    harness.addCase({ id: "waiting", caseStatus: ServiceCaseStatus.WAITING_CUSTOMER });
+    harness.addCase({ id: "closed", caseStatus: ServiceCaseStatus.CLOSED });
+
+    const result = await harness.service.listPortalServiceCases(
+      currentCustomer("customer-a"),
+      { caseStatus: ServiceCaseStatus.CLOSED }
+    );
+    expect(result.items.map((item) => item.id)).toEqual(["closed"]);
+  });
+
   it("uploads attachments through StorageService and hides object storage fields", async () => {
     const harness = createServiceCaseHarness();
     harness.addCase({ customerId: "customer-a", id: "case-a", orderId: "order-a" });
@@ -344,7 +381,11 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
         const row = cases.find((item) => matches(item, where));
         return row ? decorateCase(row) : null;
       }),
-      findMany: vi.fn(async ({ where }: AnyRecord) => cases.filter((item) => matches(item, where)).map(decorateCase)),
+      findMany: vi.fn(async ({ orderBy, skip = 0, take, where }: AnyRecord) => {
+        const rows = cases.filter((item) => matches(item, where)).map(decorateCase);
+        const sorted = applyOrderBy(rows, orderBy);
+        return sorted.slice(skip, take === undefined ? undefined : skip + take);
+      }),
       findUniqueOrThrow: vi.fn(async ({ where }: AnyRecord) => {
         const row = cases.find((item) => item.id === where.id);
         if (!row) {
@@ -457,7 +498,7 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
         closedAt: null,
         contactName: "张三",
         contactPhone: "13800000000",
-        createdAt: now,
+        createdAt: input.createdAt ?? now,
         customerId: input.customerId ?? order?.customerId ?? "customer-a",
         deletedAt: null,
         description: "描述",
@@ -471,7 +512,7 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
         rescueType: null,
         resolvedAt: null,
         title: "事故报案",
-        updatedAt: now,
+        updatedAt: input.updatedAt ?? now,
         vehicleId: order?.vehicleId ?? "vehicle-a"
       });
     },
@@ -487,6 +528,21 @@ export function createServiceCaseHarness(): ServiceCaseHarness {
     ),
     storageService
   };
+}
+
+function applyOrderBy(items: AnyRecord[], orderBy: AnyRecord | AnyRecord[] | undefined) {
+  const entries = orderBy ? (Array.isArray(orderBy) ? orderBy : [orderBy]) : [];
+  return [...items].sort((left, right) => {
+    for (const entry of entries) {
+      const [field, direction] = Object.entries(entry)[0] ?? [];
+      if (!field || (direction !== "asc" && direction !== "desc")) continue;
+      const leftValue = left[field] instanceof Date ? left[field].getTime() : String(left[field] ?? "");
+      const rightValue = right[field] instanceof Date ? right[field].getTime() : String(right[field] ?? "");
+      if (leftValue < rightValue) return direction === "asc" ? -1 : 1;
+      if (leftValue > rightValue) return direction === "asc" ? 1 : -1;
+    }
+    return 0;
+  });
 }
 
 export function currentCustomer(customerId = "customer-a") {

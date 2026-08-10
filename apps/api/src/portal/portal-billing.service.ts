@@ -1,16 +1,22 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   BillStatus,
   ContractStatus,
   DepositTransactionStatus,
   DepositTransactionType,
   EntitlementUnit,
+  ESignTaskStatus,
   OrderMileageReviewStatus,
   OrderStatus,
   Prisma
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  planPortalBucketPage,
+  sortByPortalListOrder
+} from "../common/portal-list-ordering";
+import type { PortalListSortKey } from "../common/portal-list-ordering";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
   PortalBillsQueryDto,
@@ -26,9 +32,32 @@ const PAYABLE_BILL_STATUSES = new Set<BillStatus>([
   BillStatus.PARTIALLY_PAID,
   BillStatus.OVERDUE
 ]);
+const PORTAL_BILL_STATUS_ORDER = [
+  BillStatus.OVERDUE,
+  BillStatus.PARTIALLY_PAID,
+  BillStatus.PENDING,
+  BillStatus.PAID,
+  BillStatus.CANCELLED
+] as const;
 const WAIT_DELIVERY_ORDER_STATUSES = new Set<OrderStatus>([
   OrderStatus.PENDING_VEHICLE,
   OrderStatus.PENDING_DELIVERY
+]);
+const PORTAL_TERMINAL_ORDER_STATUSES = new Set<OrderStatus>([
+  OrderStatus.TERMINATED,
+  OrderStatus.COMPLETED,
+  OrderStatus.CANCELLED,
+  OrderStatus.REJECTED
+]);
+const PORTAL_CUSTOMER_ACTION_ORDER_STATUSES = new Set<OrderStatus>([
+  OrderStatus.PENDING_CUSTOMER_CONFIRMATION,
+  OrderStatus.PENDING_SIGN,
+  OrderStatus.PENDING_PAYMENT
+]);
+const PORTAL_SIGNABLE_TASK_STATUSES = new Set<ESignTaskStatus>([
+  ESignTaskStatus.CREATED,
+  ESignTaskStatus.WAITING_CUSTOMER,
+  ESignTaskStatus.SIGNING
 ]);
 
 const portalOrderInclude = {
@@ -36,6 +65,15 @@ const portalOrderInclude = {
     select: {
       contractNo: true,
       createdAt: true,
+      esignTasks: {
+        orderBy: { createdAt: "desc" as const },
+        select: {
+          signUrlExpiresAt: true,
+          taskStatus: true
+        },
+        take: 1,
+        where: { deletedAt: null }
+      },
       id: true,
       signedAt: true,
       status: true
@@ -46,6 +84,15 @@ const portalOrderInclude = {
     select: {
       contractNo: true,
       createdAt: true,
+      esignTasks: {
+        orderBy: { createdAt: "desc" as const },
+        select: {
+          signUrlExpiresAt: true,
+          taskStatus: true
+        },
+        take: 1,
+        where: { deletedAt: null }
+      },
       id: true,
       signedAt: true,
       status: true
@@ -113,6 +160,7 @@ const portalOrderInclude = {
       amount: true,
       billStatus: true,
       billType: true,
+      dueDate: true,
       id: true,
       paidAmount: true,
       remainingAmount: true
@@ -197,27 +245,70 @@ type EntitlementUsageRow = Prisma.OrderEntitlementUsageGetPayload<{
 
 @Injectable()
 export class PortalBillingService {
+  private readonly logger = new Logger(PortalBillingService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async listOrders(currentCustomer: CurrentCustomer, query: PortalOrdersQueryDto) {
     const { page, pageSize, skip } = resolvePagination(query);
-    const where: Prisma.SubscriptionOrderWhereInput = {
+    const requestedStatus = query.orderStatus as OrderStatus | undefined;
+    const requestsTerminal = requestedStatus
+      ? PORTAL_TERMINAL_ORDER_STATUSES.has(requestedStatus)
+      : null;
+    const nonTerminalWhere: Prisma.SubscriptionOrderWhereInput = {
       customerId: currentCustomer.customerId,
       deletedAt: null,
-      orderStatus: query.orderStatus as OrderStatus | undefined
+      orderStatus: requestedStatus ?? { notIn: [...PORTAL_TERMINAL_ORDER_STATUSES] }
     };
-    const [items, total] = await Promise.all([
-      this.prisma.subscriptionOrder.findMany({
-        include: portalOrderInclude,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: pageSize,
-        where
-      }),
-      this.prisma.subscriptionOrder.count({ where })
-    ]);
+    const terminalWhere: Prisma.SubscriptionOrderWhereInput = {
+      customerId: currentCustomer.customerId,
+      deletedAt: null,
+      orderStatus: requestedStatus ?? { in: [...PORTAL_TERMINAL_ORDER_STATUSES] }
+    };
 
-    return paged(items.map(toPortalOrderListItem), total, page, pageSize);
+    return this.prisma.$transaction(async (tx) => {
+      const nonTerminalOrders = requestsTerminal === true
+        ? []
+        : await tx.subscriptionOrder.findMany({
+            include: portalOrderInclude,
+            where: nonTerminalWhere
+          });
+      const terminalCount = requestsTerminal === false
+        ? 0
+        : await tx.subscriptionOrder.count({ where: terminalWhere });
+      const orderedNonTerminal = sortByPortalListOrder(
+        nonTerminalOrders,
+        portalOrderSortKey
+      );
+      const nonTerminalCount = orderedNonTerminal.length;
+      if (nonTerminalCount > 100) {
+        this.logger.warn({
+          errorCode: "PORTAL_ORDER_ACTIVE_SET_LARGE",
+          nonTerminalCount,
+          page,
+          pageSize
+        });
+      }
+      const nonTerminalPage = orderedNonTerminal.slice(skip, skip + pageSize);
+      const remainingTake = pageSize - nonTerminalPage.length;
+      const terminalOrders = remainingTake > 0 && requestsTerminal !== false
+        ? await tx.subscriptionOrder.findMany({
+            include: portalOrderInclude,
+            orderBy: [
+              { updatedAt: "desc" },
+              { createdAt: "desc" },
+              { id: "asc" }
+            ],
+            skip: Math.max(skip - nonTerminalCount, 0),
+            take: remainingTake,
+            where: terminalWhere
+          })
+        : [];
+      const items = [...nonTerminalPage, ...terminalOrders];
+      const total = nonTerminalCount + terminalCount;
+
+      return paged(items.map(toPortalOrderListItem), total, page, pageSize);
+    });
   }
 
   async getOrder(id: string, currentCustomer: CurrentCustomer) {
@@ -267,25 +358,47 @@ export class PortalBillingService {
 
   async listBills(currentCustomer: CurrentCustomer, query: PortalBillsQueryDto) {
     const { page, pageSize, skip } = resolvePagination(query);
-    const where: Prisma.ReceivableBillWhereInput = {
-      billStatus: query.billStatus,
+    const baseWhere: Prisma.ReceivableBillWhereInput = {
       billType: query.billType,
       customerId: currentCustomer.customerId,
       deletedAt: null,
       orderId: query.orderId
     };
-    const [items, total] = await Promise.all([
-      this.prisma.receivableBill.findMany({
-        include: { order: { select: { id: true, orderNo: true, orderStatus: true } } },
-        orderBy: [{ dueDate: "asc" }, { createdAt: "desc" }],
-        skip,
-        take: pageSize,
-        where
-      }),
-      this.prisma.receivableBill.count({ where })
-    ]);
+    const statuses = query.billStatus
+      ? [query.billStatus]
+      : [...PORTAL_BILL_STATUS_ORDER];
 
-    return paged(items.map(toBillListItem), total, page, pageSize);
+    return this.prisma.$transaction(async (tx) => {
+      const counts = await Promise.all(
+        statuses.map((status) =>
+          tx.receivableBill.count({ where: { ...baseWhere, billStatus: status } })
+        )
+      );
+      const slices = planPortalBucketPage(
+        statuses.map((status, index) => ({ bucket: status, count: counts[index] ?? 0 })),
+        skip,
+        pageSize
+      );
+      const pages = await Promise.all(
+        slices.map((slice) =>
+          tx.receivableBill.findMany({
+            include: { order: { select: { id: true, orderNo: true, orderStatus: true } } },
+            orderBy: [
+              { dueDate: "asc" },
+              { updatedAt: "desc" },
+              { createdAt: "desc" },
+              { id: "asc" }
+            ],
+            skip: slice.skip,
+            take: slice.take,
+            where: { ...baseWhere, billStatus: slice.bucket }
+          })
+        )
+      );
+      const total = counts.reduce((sum, count) => sum + count, 0);
+
+      return paged(pages.flat().map(toBillListItem), total, page, pageSize);
+    });
   }
 
   async getBill(id: string, currentCustomer: CurrentCustomer) {
@@ -483,6 +596,47 @@ function paged<T>(items: T[], total: number, page: number, pageSize: number) {
     page,
     pageSize,
     total
+  };
+}
+
+function portalOrderSortKey(order: PortalOrder): PortalListSortKey {
+  const billSummary = summarizeBills(order.receivableBills);
+  const mileageReviewSummary = toMileageReviewSummary(order);
+  const nextAction = resolveOrderNextAction(
+    order,
+    billSummary.remainingAmount,
+    mileageReviewSummary
+  );
+  const hasCustomerAction =
+    nextAction === "SIGN_CONTRACT" ||
+    nextAction === "PAY_BILL" ||
+    nextAction === "SUBMIT_MILEAGE_REVIEW" ||
+    PORTAL_CUSTOMER_ACTION_ORDER_STATUSES.has(order.orderStatus);
+  const deadlines: Date[] = [];
+
+  if (nextAction === "SIGN_CONTRACT") {
+    const contract = order.contract ?? order.contracts[0];
+    const task = contract?.esignTasks.find((candidate) =>
+      PORTAL_SIGNABLE_TASK_STATUSES.has(candidate.taskStatus)
+    );
+    if (task?.signUrlExpiresAt) deadlines.push(task.signUrlExpiresAt);
+  }
+  if (nextAction === "PAY_BILL") {
+    for (const bill of order.receivableBills) {
+      if (isBillPayable(bill)) deadlines.push(bill.dueDate);
+    }
+  }
+  if (nextAction === "SUBMIT_MILEAGE_REVIEW" && mileageReviewSummary?.hasAction) {
+    const review = order.mileageReviews[0];
+    if (review) deadlines.push(review.dueAt);
+  }
+
+  return {
+    createdAt: order.createdAt,
+    deadlineAt: deadlines.sort((left, right) => left.getTime() - right.getTime())[0] ?? null,
+    id: order.id,
+    priority: hasCustomerAction ? 0 : 1,
+    updatedAt: order.updatedAt
   };
 }
 

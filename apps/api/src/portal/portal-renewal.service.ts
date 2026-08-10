@@ -21,6 +21,8 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
+import { sortByPortalListOrder } from "../common/portal-list-ordering";
+import type { PortalListSortKey } from "../common/portal-list-ordering";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   SUBSCRIPTION_CHANGE_CONFIG,
@@ -32,6 +34,18 @@ import {
   PortalRejectExtensionQuoteDto,
   PortalRenewalDecisionDto
 } from "./portal-renewal.dto";
+
+const PORTAL_RENEWAL_CUSTOMER_ACTIONS = new Set([
+  "DECIDE_RENEW_OR_EXPIRE",
+  "REVIEW_QUOTE",
+  "SIGN_AGREEMENT",
+  "PREPARE_RETURN"
+]);
+const PORTAL_RENEWAL_HISTORY_STATUSES = new Set<RenewalConsiderationStatus>([
+  RenewalConsiderationStatus.EXTENDED,
+  RenewalConsiderationStatus.EXPIRED,
+  RenewalConsiderationStatus.CANCELLED
+]);
 
 const considerationInclude = Prisma.validator<Prisma.RenewalConsiderationInclude>()({
   changeOrder: {
@@ -85,7 +99,9 @@ export class PortalRenewalService {
       orderBy: [{ completionDeadlineAt: "asc" }, { createdAt: "desc" }],
       where: { order: { customerId: currentCustomer.customerId } }
     });
-    return considerations.map(toConsiderationView);
+    return sortByPortalListOrder(considerations, portalRenewalSortKey).map(
+      toConsiderationView
+    );
   }
 
   async get(id: string, currentCustomer: CurrentCustomer) {
@@ -496,6 +512,21 @@ function considerationNextAction(consideration: PortalConsideration) {
   if (change.status === SubscriptionChangeStatus.SCHEDULED) return "WAIT_FOR_EFFECTIVE_DATE";
   if (change.status === SubscriptionChangeStatus.COMPLETED) return "RENEWAL_COMPLETED";
   return "CONTACT_SUPPORT";
+}
+
+function portalRenewalSortKey(consideration: PortalConsideration): PortalListSortKey {
+  const nextAction = considerationNextAction(consideration);
+  const terminal =
+    PORTAL_RENEWAL_HISTORY_STATUSES.has(consideration.status) ||
+    nextAction === "RENEWAL_COMPLETED";
+
+  return {
+    createdAt: consideration.createdAt,
+    deadlineAt: terminal ? null : consideration.completionDeadlineAt,
+    id: consideration.id,
+    priority: terminal ? 2 : PORTAL_RENEWAL_CUSTOMER_ACTIONS.has(nextAction) ? 0 : 1,
+    updatedAt: consideration.updatedAt
+  };
 }
 
 function portalAudit(

@@ -380,6 +380,38 @@ describe("portal payment foundation", () => {
     expect(result.items[0]?.amount).toBe(1000);
   });
 
+  it("puts payable payment orders before historical orders across pages", async () => {
+    const harness = createPaymentHarness();
+    harness.addPaymentOrder({ id: "paid", paymentStatus: PaymentOrderStatus.PAID, updatedAt: new Date("2026-08-10T05:00:00Z") });
+    harness.addPaymentOrder({ id: "pending-late", paymentStatus: PaymentOrderStatus.PENDING, cashierUrlExpiresAt: new Date("2026-08-12T00:00:00Z") });
+    harness.addPaymentOrder({ id: "created-soon", paymentStatus: PaymentOrderStatus.CREATED, cashierUrlExpiresAt: new Date("2026-08-11T00:00:00Z") });
+    harness.addPaymentOrder({ id: "failed", paymentStatus: PaymentOrderStatus.FAILED, updatedAt: new Date("2026-08-10T06:00:00Z") });
+
+    const first = await harness.service.listPortalPaymentOrders(
+      harness.currentCustomer("customer_a"),
+      { page: 1, pageSize: 2 }
+    );
+    const second = await harness.service.listPortalPaymentOrders(
+      harness.currentCustomer("customer_a"),
+      { page: 2, pageSize: 2 }
+    );
+
+    expect(first.items.map((item) => item.id)).toEqual(["created-soon", "pending-late"]);
+    expect(second.items.map((item) => item.id)).toEqual(["failed", "paid"]);
+  });
+
+  it("keeps paymentStatus filtering exact", async () => {
+    const harness = createPaymentHarness();
+    harness.addPaymentOrder({ id: "pending", paymentStatus: PaymentOrderStatus.PENDING });
+    harness.addPaymentOrder({ id: "paid", paymentStatus: PaymentOrderStatus.PAID });
+
+    const result = await harness.service.listPortalPaymentOrders(
+      harness.currentCustomer("customer_a"),
+      { paymentStatus: PaymentOrderStatus.PAID }
+    );
+    expect(result.items.map((item) => item.id)).toEqual(["paid"]);
+  });
+
   it("hides debit-backed payment orders and rejects Portal mock settlement", async () => {
     const harness = createPaymentHarness();
     harness.addBill({ id: "bill_auto_debit", remainingAmount: 1000n });
@@ -452,7 +484,8 @@ function createPaymentHarness(options: {
     }]
   };
 
-  const prisma = {
+  const prisma: AnyRecord = {
+    $transaction: vi.fn(async (callback: (tx: AnyRecord) => unknown) => callback(prisma)),
     autoDebitMandate: {
       findFirst: vi.fn(async () => null)
     },
@@ -528,11 +561,13 @@ function createPaymentHarness(options: {
         const paymentOrder = state.paymentOrders.find((item) => matchesPaymentOrder(item, where));
         return paymentOrder ? includePaymentOrder(state, paymentOrder) : null;
       }),
-      findMany: vi.fn(async ({ where }: AnyRecord) =>
-        state.paymentOrders
+      findMany: vi.fn(async ({ orderBy, skip = 0, take, where }: AnyRecord) => {
+        const rows = state.paymentOrders
           .filter((item) => matchesPaymentOrder(item, where))
-          .map((item) => includePaymentOrder(state, item))
-      ),
+          .map((item) => includePaymentOrder(state, item));
+        const sorted = applyOrderBy(rows, orderBy);
+        return sorted.slice(skip, take === undefined ? undefined : skip + take);
+      }),
       update: vi.fn(async ({ data, where }: AnyRecord) => {
         const paymentOrder = state.paymentOrders.find((item) => item.id === where.id);
         Object.assign(paymentOrder!, data, { updatedAt: new Date() });
@@ -704,6 +739,38 @@ function createPaymentHarness(options: {
         remainingAmount: input.remainingAmount ?? input.amount ?? 1000n
       });
     },
+    addPaymentOrder(input: Partial<AnyRecord>) {
+      const createdAt = input.createdAt ?? new Date(
+        Date.parse("2026-08-01T00:00:00Z") + state.paymentOrders.length * 60_000
+      );
+      state.paymentOrders.push({
+        amount: input.amount ?? 1000n,
+        callbacks: [],
+        cashierUrl: null,
+        cashierUrlExpiresAt: input.cashierUrlExpiresAt ?? null,
+        clientIp: null,
+        createdAt,
+        customerId: input.customerId ?? "customer_a",
+        debitAttempt: null,
+        deletedAt: null,
+        description: null,
+        id: input.id ?? `payment_order_${state.paymentOrders.length + 1}`,
+        items: [],
+        orderId: input.orderId ?? "order_a",
+        paidAmount: input.paymentStatus === PaymentOrderStatus.PAID ? 1000n : 0n,
+        paidAt: null,
+        paymentChannel: input.paymentChannel ?? PaymentChannel.MOCK,
+        paymentOrderNo: input.paymentOrderNo ?? `PAY-${state.paymentOrders.length + 1}`,
+        paymentRecordId: null,
+        paymentStatus: input.paymentStatus ?? PaymentOrderStatus.CREATED,
+        provider: PaymentProviderType.MOCK,
+        providerPrepayId: null,
+        providerTradeNo: null,
+        providerTransactionId: null,
+        subject: null,
+        updatedAt: input.updatedAt ?? createdAt
+      });
+    },
     context: { ipAddress: "127.0.0.1", userAgent: "vitest" },
     currentCustomer(customerId: string) {
       return {
@@ -788,6 +855,33 @@ function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
     return false;
   }
   return true;
+}
+
+function applyOrderBy(items: AnyRecord[], orderBy: AnyRecord | AnyRecord[] | undefined) {
+  const entries = orderBy ? (Array.isArray(orderBy) ? orderBy : [orderBy]) : [];
+  return [...items].sort((left, right) => {
+    for (const entry of entries) {
+      const [field, rawDirection] = Object.entries(entry)[0] ?? [];
+      if (!field) continue;
+      const directionConfig = rawDirection && typeof rawDirection === "object"
+        ? rawDirection as { nulls?: string; sort?: string }
+        : null;
+      const direction = typeof rawDirection === "string" ? rawDirection : directionConfig?.sort;
+      const nulls = directionConfig?.nulls;
+      const leftValue = left[field];
+      const rightValue = right[field];
+      if (leftValue == null || rightValue == null) {
+        if (leftValue == null && rightValue == null) continue;
+        if (nulls === "last") return leftValue == null ? 1 : -1;
+        return leftValue == null ? -1 : 1;
+      }
+      const leftComparable = leftValue instanceof Date ? leftValue.getTime() : String(leftValue);
+      const rightComparable = rightValue instanceof Date ? rightValue.getTime() : String(rightValue);
+      if (leftComparable < rightComparable) return direction === "asc" ? -1 : 1;
+      if (leftComparable > rightComparable) return direction === "asc" ? 1 : -1;
+    }
+    return 0;
+  });
 }
 
 // The fake Prisma harness deliberately accepts loosely-shaped query/data objects.

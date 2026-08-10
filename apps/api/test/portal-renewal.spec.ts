@@ -9,6 +9,73 @@ import { describe, expect, it, vi } from "vitest";
 import { PortalRenewalService } from "../src/portal/portal-renewal.service";
 
 describe("PortalRenewalService", () => {
+  it("sorts renewal customer actions before processing and terminal records", async () => {
+    const harness = portalRenewalHarness();
+    const action = {
+      ...harness.state.consideration,
+      changeOrder: null,
+      completionDeadlineAt: new Date("2026-08-11T00:00:00Z"),
+      id: "renewal-action"
+    };
+    const processing = {
+      ...harness.state.consideration,
+      changeOrder: {
+        ...harness.state.change,
+        status: SubscriptionChangeStatus.DRAFT
+      },
+      completionDeadlineAt: new Date("2026-08-10T00:00:00Z"),
+      decision: RenewalDecision.RENEW,
+      id: "renewal-processing",
+      status: RenewalConsiderationStatus.RENEWAL_REQUESTED
+    };
+    const completed = {
+      ...harness.state.consideration,
+      changeOrder: {
+        ...harness.state.change,
+        status: SubscriptionChangeStatus.COMPLETED
+      },
+      completionDeadlineAt: new Date("2026-08-09T00:00:00Z"),
+      decision: RenewalDecision.RENEW,
+      id: "renewal-completed",
+      status: RenewalConsiderationStatus.EXTENDED
+    };
+    vi.mocked(harness.prisma.renewalConsideration.findMany).mockResolvedValue([
+      completed,
+      processing,
+      action
+    ] as never);
+
+    const result = await harness.service.list(harness.customer);
+    expect(result.map((item) => item.id)).toEqual([
+      "renewal-action",
+      "renewal-processing",
+      "renewal-completed"
+    ]);
+  });
+
+  it("orders renewal actions by completion deadline", async () => {
+    const harness = portalRenewalHarness();
+    const late = {
+      ...harness.state.consideration,
+      changeOrder: null,
+      completionDeadlineAt: new Date("2026-08-12T00:00:00Z"),
+      id: "renewal-late"
+    };
+    const soon = {
+      ...harness.state.consideration,
+      changeOrder: null,
+      completionDeadlineAt: new Date("2026-08-11T00:00:00Z"),
+      id: "renewal-soon"
+    };
+    vi.mocked(harness.prisma.renewalConsideration.findMany).mockResolvedValue([
+      late,
+      soon
+    ] as never);
+
+    const result = await harness.service.list(harness.customer);
+    expect(result.map((item) => item.id)).toEqual(["renewal-soon", "renewal-late"]);
+  });
+
   it("idempotently records RENEW and links exactly one extension change", async () => {
     const harness = portalRenewalHarness();
 
@@ -173,6 +240,7 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
       changeOrderId: null as string | null,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       considerationStartAt: new Date("2026-08-03T01:00:00.000Z"),
+      createdAt: new Date("2026-08-03T01:00:00.000Z"),
       decision: null as RenewalDecision | null,
       decidedAt: null as Date | null,
       id: "consideration-1",
@@ -196,6 +264,7 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
       },
       segmentId: "segment-1",
       status: RenewalConsiderationStatus.PENDING_DECISION,
+      updatedAt: new Date("2026-08-03T01:00:00.000Z"),
       version: 0
     },
     change: {

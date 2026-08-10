@@ -14,6 +14,8 @@ import {
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { Stage2HandoverESignService } from "../handover-work-order/stage2-handover-esign.service";
 import { Stage2HandoverWorkflowService } from "../handover-work-order/stage2-handover-workflow.service";
+import { sortByPortalListOrder } from "../common/portal-list-ordering";
+import type { PortalListSortKey } from "../common/portal-list-ordering";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "./portal-auth.types";
 import {
@@ -35,6 +37,8 @@ const PORTAL_VISIBLE_REVIEW_STATUSES = [
 ] as const;
 const CUSTOMER_REVIEW_ACTIONABLE_STATUSES = new Set(["EVIDENCE_SUBMITTED", "CUSTOMER_REVIEWING"]);
 const TERMINAL_WORK_ORDER_STATUSES = new Set(["VOIDED", "FAILED", "CANCELLED"]);
+const PORTAL_HANDOVER_HISTORY_STATUSES = new Set(["FIELD_COMPLETED", "OPS_REVIEWED"]);
+const PORTAL_HANDOVER_SIGNED_STATUSES = new Set(["SIGNED", "ARCHIVED"]);
 
 const portalHandoverReviewInclude = {
   handover: {
@@ -101,7 +105,8 @@ export class PortalHandoverReviewService {
       }
     });
 
-    return Promise.all(workOrders.map((workOrder) => this.toReviewListItem(workOrder)));
+    const ordered = sortByPortalListOrder(workOrders, portalHandoverReviewSortKey);
+    return Promise.all(ordered.map((workOrder) => this.toReviewListItem(workOrder)));
   }
 
   async getReview(id: string, currentCustomer: CurrentCustomer) {
@@ -312,6 +317,28 @@ export class PortalHandoverReviewService {
       readiness
     };
   }
+}
+
+function portalHandoverReviewSortKey(
+  workOrder: PortalHandoverReviewRecord
+): PortalListSortKey {
+  const status = String(workOrder.status);
+  const handoverStatus = String(workOrder.handover?.status ?? "");
+  const terminal =
+    PORTAL_HANDOVER_HISTORY_STATUSES.has(status) ||
+    PORTAL_HANDOVER_SIGNED_STATUSES.has(handoverStatus);
+  const actionable =
+    !terminal &&
+    (CUSTOMER_REVIEW_ACTIONABLE_STATUSES.has(status) ||
+      handoverStatus === "PENDING_CUSTOMER_SIGNATURE");
+
+  return {
+    createdAt: workOrder.createdAt,
+    deadlineAt: terminal ? null : workOrder.scheduledAt,
+    id: workOrder.id,
+    priority: terminal ? 2 : actionable ? 0 : 1,
+    updatedAt: workOrder.updatedAt
+  };
 }
 
 function assertCanConfirmNoObjection(

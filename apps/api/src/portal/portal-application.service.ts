@@ -21,6 +21,8 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { RequestUser } from "../auth/auth.types";
+import { sortByPortalListOrder } from "../common/portal-list-ordering";
+import type { PortalListSortKey } from "../common/portal-list-ordering";
 import {
   assertCustomerIdentityProfileReady,
   buildCustomerIdentityProfileReadiness,
@@ -49,6 +51,20 @@ import {
   toApplicationMaterialType
 } from "./portal-profile-materials";
 import type { CustomerProfileMaterialCompleteness } from "./portal-profile-materials";
+
+const PORTAL_APPLICATION_ACTIONS = new Set([
+  "UPLOAD_MATERIAL",
+  "CONFIRM_FINAL_PLAN",
+  "GO_CONTRACT",
+  "GO_PAYMENT",
+  "SUBMIT_MILEAGE_REVIEW"
+]);
+const PORTAL_APPLICATION_TERMINAL_ORDER_STATUSES = new Set<OrderStatus>([
+  OrderStatus.TERMINATED,
+  OrderStatus.COMPLETED,
+  OrderStatus.CANCELLED,
+  OrderStatus.REJECTED
+]);
 
 const portalApplicationInclude = {
   materialGroups: {
@@ -208,7 +224,9 @@ export class PortalApplicationService {
       }
     });
 
-    return applications.map(toPortalApplicationListItem);
+    return sortByPortalListOrder(applications, portalApplicationSortKey).map(
+      toPortalApplicationListItem
+    );
   }
 
   async getApplication(id: string, currentCustomer: CurrentCustomer) {
@@ -1257,6 +1275,27 @@ function resolvePortalNextAction(application: PortalApplication) {
     }
   }
   return "WAIT_REVIEW";
+}
+
+function portalApplicationSortKey(application: PortalApplication): PortalListSortKey {
+  const latestOrder = findActivePortalOrder(application);
+  const nextAction = resolvePortalNextAction(application);
+  const terminal =
+    application.status === ApplicationStatus.CANCELLED ||
+    application.status === ApplicationStatus.REJECTED ||
+    nextAction === "CANCELLED" ||
+    nextAction === "REJECTED" ||
+    (latestOrder
+      ? PORTAL_APPLICATION_TERMINAL_ORDER_STATUSES.has(latestOrder.orderStatus)
+      : false);
+
+  return {
+    createdAt: application.createdAt,
+    deadlineAt: null,
+    id: application.id,
+    priority: terminal ? 2 : PORTAL_APPLICATION_ACTIONS.has(nextAction) ? 0 : 1,
+    updatedAt: application.updatedAt
+  };
 }
 
 const PORTAL_VISIBLE_HANDOVER_STATUSES = new Set<VehicleHandoverWorkOrderStatus>([

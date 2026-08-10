@@ -74,6 +74,80 @@ describe("PortalCatalogService", () => {
 });
 
 describe("PortalApplicationService", () => {
+  it("sorts customer application actions before processing and terminal records", async () => {
+    const harness = createPortalApplicationFixture();
+    const upload = createApplication({
+      id: "application-upload",
+      applicationNo: "APP-UPLOAD",
+      status: ApplicationStatus.NEED_MORE_INFO,
+      updatedAt: new Date("2026-08-08T00:00:00Z")
+    });
+    const confirm = createApplication({
+      ...readyFinalPlanApplication(),
+      id: "application-confirm",
+      applicationNo: "APP-CONFIRM",
+      updatedAt: new Date("2026-08-09T00:00:00Z")
+    });
+    const processing = createApplication({
+      id: "application-processing",
+      applicationNo: "APP-PROCESSING",
+      status: ApplicationStatus.SUBMITTED,
+      updatedAt: new Date("2026-08-10T00:00:00Z")
+    });
+    const cancelled = createApplication({
+      id: "application-cancelled",
+      applicationNo: "APP-CANCELLED",
+      status: ApplicationStatus.CANCELLED,
+      updatedAt: new Date("2026-08-11T00:00:00Z")
+    });
+    vi.mocked(harness.prisma.application.findMany).mockResolvedValue([
+      cancelled,
+      processing,
+      upload,
+      confirm
+    ] as never);
+
+    const result = await harness.service.listApplications(currentCustomer("customer-1"));
+
+    expect(result.map((item) => item.applicationNo)).toEqual([
+      "APP-CONFIRM",
+      "APP-UPLOAD",
+      "APP-PROCESSING",
+      "APP-CANCELLED"
+    ]);
+  });
+
+  it("sinks an application whose latest order is terminal", async () => {
+    const harness = createPortalApplicationFixture();
+    const terminalOrderApplication = createApplication({
+      ...readyFinalPlanApplication({ planConfirmStatus: PlanConfirmStatus.CONFIRMED }),
+      id: "application-completed",
+      orders: [{
+        contractId: "contract-1",
+        deletedAt: null,
+        handoverWorkOrders: [],
+        id: "order-completed",
+        mileageReviews: [],
+        orderNo: "ORD-COMPLETED",
+        orderStatus: OrderStatus.COMPLETED
+      }]
+    });
+    const processing = createApplication({
+      id: "application-processing",
+      status: ApplicationStatus.SUBMITTED
+    });
+    vi.mocked(harness.prisma.application.findMany).mockResolvedValue([
+      terminalOrderApplication,
+      processing
+    ] as never);
+
+    const result = await harness.service.listApplications(currentCustomer("customer-1"));
+    expect(result.map((item) => item.id)).toEqual([
+      "application-processing",
+      "application-completed"
+    ]);
+  });
+
   it("creates a self-service application for the current customer without returning order data", async () => {
     const { customerService, prisma, service } = createPortalApplicationFixture();
 

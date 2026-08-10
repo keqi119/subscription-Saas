@@ -66,6 +66,53 @@ describe("Portal handover review API", () => {
     );
   });
 
+  it("puts customer handover actions before processing and completed reviews", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(
+      completeReviewWorkOrder(harness, {
+        id: "review-action-late",
+        scheduledAt: new Date("2026-08-12T00:00:00Z"),
+        status: "CUSTOMER_REVIEWING"
+      }),
+      completeReviewWorkOrder(harness, {
+        id: "review-action-soon",
+        scheduledAt: new Date("2026-08-11T00:00:00Z"),
+        status: "EVIDENCE_SUBMITTED"
+      }),
+      completeReviewWorkOrder(harness, {
+        id: "review-sign",
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          archivedAt: null,
+          completedAt: null,
+          id: "handover-sign",
+          status: "PENDING_CUSTOMER_SIGNATURE"
+        },
+        scheduledAt: new Date("2026-08-13T00:00:00Z"),
+        status: "SIGNING"
+      }),
+      completeReviewWorkOrder(harness, {
+        id: "review-processing",
+        status: "CUSTOMER_OBJECTED",
+        updatedAt: new Date("2026-08-10T06:00:00Z")
+      }),
+      completeReviewWorkOrder(harness, {
+        id: "review-completed",
+        status: "OPS_REVIEWED",
+        updatedAt: new Date("2026-08-10T07:00:00Z")
+      })
+    );
+
+    const reviews = await harness.service.listReviews(currentCustomer("customer-1"));
+    expect(reviews.map((review) => review.id)).toEqual([
+      "review-action-soon",
+      "review-action-late",
+      "review-sign",
+      "review-processing",
+      "review-completed"
+    ]);
+  });
+
   it("returns safe list DTOs without storage, identity, signing, or finance internals", async () => {
     const harness = createPortalReviewHarness();
     harness.state.workOrders.push(completeReviewWorkOrder(harness));

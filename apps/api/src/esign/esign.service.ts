@@ -33,6 +33,8 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { sortByPortalListOrder } from "../common/portal-list-ordering";
+import type { PortalListSortKey } from "../common/portal-list-ordering";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer, PortalRequestContext } from "../portal/portal-auth.types";
@@ -858,7 +860,9 @@ export class ESignService {
       }
     });
 
-    return contracts.map(toPortalContractListItem);
+    return sortByPortalListOrder(contracts, portalContractSortKey).map(
+      toPortalContractListItem
+    );
   }
 
   async getPortalContract(id: string, currentCustomer: CurrentCustomer) {
@@ -3463,6 +3467,36 @@ function findCurrentPortalSigningTask(contract: ContractForESign) {
   return contract.esignTasks.find((task) => ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus));
 }
 
+function isPortalContractSignable(contract: ContractForESign) {
+  const task = findCurrentPortalSigningTask(contract);
+  if (!task) return false;
+  const identity = getPortalContractSigningIdentity(contract);
+  const supportedIdentity =
+    (identity.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
+      identity.documentType === "SUBSCRIPTION_CONTRACT") ||
+    (identity.signingStage === "STAGE3_SUBSCRIPTION_EXTENSION" &&
+      identity.documentType === "SUBSCRIPTION_EXTENSION_AGREEMENT");
+  return supportedIdentity && PORTAL_SIGNABLE_ESIGN_TASK_STATUSES.includes(task.taskStatus);
+}
+
+function portalContractSortKey(contract: ContractForESign): PortalListSortKey {
+  const terminal =
+    contract.status === ContractStatus.SIGNED ||
+    contract.status === ContractStatus.ARCHIVED ||
+    contract.status === ContractStatus.TERMINATED ||
+    contract.status === ContractStatus.CANCELLED;
+  const signable = !terminal && isPortalContractSignable(contract);
+  const task = signable ? findCurrentPortalSigningTask(contract) : null;
+
+  return {
+    createdAt: contract.createdAt,
+    deadlineAt: task?.signUrlExpiresAt ?? null,
+    id: contract.id,
+    priority: terminal ? 2 : signable ? 0 : 1,
+    updatedAt: contract.updatedAt
+  };
+}
+
 function findCurrentPortalCustomerSigningTask(contract: ContractForESign) {
   return contract.esignTasks.find(
     (task) =>
@@ -4052,14 +4086,7 @@ function toPortalContractDetail(contract: ContractForESign) {
 
   return {
     ...toPortalContractListItem(contract),
-    canSign: Boolean(
-      task &&
-      ((identity.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
-        identity.documentType === "SUBSCRIPTION_CONTRACT") ||
-        (identity.signingStage === "STAGE3_SUBSCRIPTION_EXTENSION" &&
-          identity.documentType === "SUBSCRIPTION_EXTENSION_AGREEMENT")) &&
-      PORTAL_SIGNABLE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
-    ),
+    canSign: isPortalContractSignable(contract),
     customer: {
       mobile: maskPhone(contract.customer.mobile),
       name: contract.customer.name

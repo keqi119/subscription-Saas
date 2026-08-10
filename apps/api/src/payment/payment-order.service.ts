@@ -19,6 +19,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { planPortalBucketPage } from "../common/portal-list-ordering";
 import { FinanceService } from "../finance/finance.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { CurrentCustomer } from "../portal/portal-auth.types";
@@ -42,6 +43,23 @@ const PAYABLE_PAYMENT_ORDER_STATUSES = new Set<PaymentOrderStatus>([
   PaymentOrderStatus.CREATED,
   PaymentOrderStatus.PENDING
 ]);
+
+const PORTAL_PAYMENT_ORDER_BUCKETS = [
+  {
+    bucket: "ACTION" as const,
+    statuses: [PaymentOrderStatus.CREATED, PaymentOrderStatus.PENDING]
+  },
+  {
+    bucket: "HISTORY" as const,
+    statuses: [
+      PaymentOrderStatus.PAID,
+      PaymentOrderStatus.FAILED,
+      PaymentOrderStatus.CLOSED,
+      PaymentOrderStatus.CANCELLED,
+      PaymentOrderStatus.EXPIRED
+    ]
+  }
+] as const;
 
 const CALLBACK_PAID_EVENTS = new Set([
   "PAID",
@@ -192,31 +210,73 @@ export class PaymentOrderService {
 
   async listPortalPaymentOrders(currentCustomer: CurrentCustomer, query: PortalPaymentOrdersQueryDto) {
     const { page, pageSize, skip } = resolvePagination(query);
-    const where: Prisma.PaymentOrderWhereInput = {
+    const baseWhere: Prisma.PaymentOrderWhereInput = {
       customerId: currentCustomer.customerId,
       debitAttempt: { is: null },
       deletedAt: null,
       orderId: query.orderId,
-      paymentChannel: { not: PaymentChannel.WECHAT_AUTO_DEBIT },
-      paymentStatus: query.paymentStatus
+      paymentChannel: { not: PaymentChannel.WECHAT_AUTO_DEBIT }
     };
-    const [paymentOrders, total] = await Promise.all([
-      this.prisma.paymentOrder.findMany({
-        include: paymentOrderInclude,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: pageSize,
-        where
-      }),
-      this.prisma.paymentOrder.count({ where })
-    ]);
+    const buckets: Array<{
+      bucket: "ACTION" | "HISTORY";
+      statuses: PaymentOrderStatus[];
+    }> = query.paymentStatus
+      ? [{
+          bucket: PAYABLE_PAYMENT_ORDER_STATUSES.has(query.paymentStatus)
+            ? "ACTION"
+            : "HISTORY",
+          statuses: [query.paymentStatus]
+        }]
+      : PORTAL_PAYMENT_ORDER_BUCKETS.map(({ bucket, statuses }) => ({
+          bucket,
+          statuses: [...statuses]
+        }));
 
-    return {
-      items: paymentOrders.map((paymentOrder) => toPaymentOrderView(paymentOrder)),
-      page,
-      pageSize,
-      total
-    };
+    return this.prisma.$transaction(async (tx) => {
+      const counts = await Promise.all(
+        buckets.map(({ statuses }) =>
+          tx.paymentOrder.count({
+            where: { ...baseWhere, paymentStatus: { in: statuses } }
+          })
+        )
+      );
+      const slices = planPortalBucketPage(
+        buckets.map(({ bucket }, index) => ({ bucket, count: counts[index] ?? 0 })),
+        skip,
+        pageSize
+      );
+      const pages = await Promise.all(
+        slices.map((slice) => {
+          const bucket = buckets.find((candidate) => candidate.bucket === slice.bucket)!;
+          return tx.paymentOrder.findMany({
+            include: paymentOrderInclude,
+            orderBy: slice.bucket === "ACTION"
+              ? [
+                  { cashierUrlExpiresAt: { sort: "asc", nulls: "last" } },
+                  { updatedAt: "desc" },
+                  { createdAt: "desc" },
+                  { id: "asc" }
+                ]
+              : [
+                  { updatedAt: "desc" },
+                  { createdAt: "desc" },
+                  { id: "asc" }
+                ],
+            skip: slice.skip,
+            take: slice.take,
+            where: { ...baseWhere, paymentStatus: { in: bucket.statuses } }
+          });
+        })
+      );
+      const total = counts.reduce((sum, count) => sum + count, 0);
+
+      return {
+        items: pages.flat().map((paymentOrder) => toPaymentOrderView(paymentOrder)),
+        page,
+        pageSize,
+        total
+      };
+    });
   }
 
   async startPortalPayment(id: string, currentCustomer: CurrentCustomer, context: RequestContext) {

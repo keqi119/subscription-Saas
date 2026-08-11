@@ -164,7 +164,7 @@ export function isValidMainlandIdCardNo(value: string) {
   return /^\d{17}[\dX]$/.test(value.toUpperCase());
 }
 
-function normalizeProfileText(value: null | string | undefined) {
+export function normalizeProfileText(value: null | string | undefined) {
   const normalized = value?.trim();
   return normalized || null;
 }

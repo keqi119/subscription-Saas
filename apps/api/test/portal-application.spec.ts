@@ -238,12 +238,10 @@ describe("PortalApplicationService", () => {
     expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
   });
 
-  it("blocks self-service precheck when required profile identity fields are incomplete", async () => {
+  it("blocks self-service precheck when required application profile fields are incomplete", async () => {
     const { customerService, service } = createPortalApplicationFixture({
       customer: {
-        identity: null,
-        mobile: "13800000000",
-        name: "手机用户138****0000"
+        profile: null
       }
     });
 
@@ -260,7 +258,14 @@ describe("PortalApplicationService", () => {
       canSubmit: false,
       profileComplete: false
     });
-    expect(result.missingProfileFields.map((item) => item.key)).toEqual(["name", "idCardNo"]);
+    expect(result.missingProfileFields.map((item) => item.key)).toEqual([
+      "residenceProvince",
+      "residenceCity",
+      "residenceDistrict",
+      "residenceDetail",
+      "emergencyContactName",
+      "emergencyContactMobile"
+    ]);
     expect(result.actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -272,12 +277,10 @@ describe("PortalApplicationService", () => {
     expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
   });
 
-  it("blocks self-service application creation when profile identity is incomplete", async () => {
+  it("blocks self-service application creation when application profile is incomplete", async () => {
     const { customerService, service } = createPortalApplicationFixture({
       customer: {
-        identity: null,
-        mobile: "13800000000",
-        name: "手机用户138****0000"
+        profile: null
       }
     });
 
@@ -291,7 +294,7 @@ describe("PortalApplicationService", () => {
         currentCustomer("customer-1"),
         requestContext()
       )
-    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    ).rejects.toThrow("CUSTOMER_APPLICATION_PROFILE_INCOMPLETE");
     expect(customerService.createSelfServiceApplication).not.toHaveBeenCalled();
   });
 
@@ -992,6 +995,16 @@ interface PortalFixtureCustomer {
   } | null;
   mobile: string;
   name: string;
+  profile: {
+    emergencyContactMobile: string;
+    emergencyContactName: string;
+    residenceAddress: string;
+    residenceCity: string;
+    residenceDetail: string;
+    residenceDistrict: string;
+    residenceProvince: string;
+    updatedAt: Date;
+  } | null;
   sourceChannel: string | null;
 }
 
@@ -1003,6 +1016,16 @@ function createPortalFixtureCustomer(overrides: Partial<PortalFixtureCustomer> =
     },
     mobile: "13800000000",
     name: "测试客户",
+    profile: {
+      emergencyContactMobile: "13900000000",
+      emergencyContactName: "王女士",
+      residenceAddress: "上海市闵行区北翟路1554弄53号",
+      residenceCity: "上海市",
+      residenceDetail: "北翟路1554弄53号",
+      residenceDistrict: "闵行区",
+      residenceProvince: "上海市",
+      updatedAt: new Date("2026-08-12T00:00:00.000Z")
+    },
     sourceChannel: "portal",
     ...overrides
   };

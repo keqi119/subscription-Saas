@@ -1514,6 +1514,20 @@ async function seedNotificationTemplates(adminUserId) {
       "合同已签署，点击支付。"
     ],
     [
+      "HANDOVER_ESIGN_PENDING_IN_APP",
+      "IN_APP",
+      "HANDOVER_ESIGN_PENDING",
+      "车辆待取车",
+      "车辆交付资料已准备完成，请前往订单查看。"
+    ],
+    [
+      "HANDOVER_ESIGN_PENDING_WECHAT",
+      "WECHAT_OFFICIAL_ACCOUNT",
+      "HANDOVER_ESIGN_PENDING",
+      "车辆待取车",
+      "车辆交付资料已准备完成，点击查看取车信息。"
+    ],
+    [
       "SERVICE_CASE_UPDATE_IN_APP",
       "IN_APP",
       "SERVICE_CASE_UPDATE",

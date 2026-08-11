@@ -30,8 +30,8 @@ export function buildGoldenPathWechatTemplateData(
     if (!applicationNo) return missing("applicationNo");
     return success({
       character_string3: truncateCodePoints(applicationNo, 32),
-      const4: "已受理",
-      const5: "车辆订阅",
+      const4: "审核中",
+      const5: "车辆订阅申请",
       time6: formatWechatTime(input.now)
     });
   }

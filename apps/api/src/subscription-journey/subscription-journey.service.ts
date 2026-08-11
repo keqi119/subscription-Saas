@@ -1462,6 +1462,7 @@ export class SubscriptionJourneyService {
       {
         action: AuditAction.UPDATE,
         after: {
+          applicationId: journey.applicationId,
           journeyId: journey.id,
           operation,
           version: journey.version + 1,
@@ -1472,7 +1473,7 @@ export class SubscriptionJourneyService {
           status: journey.status,
           version: journey.version
         },
-        entityId: journey.id,
+        entityId: journey.applicationId,
         entityType: "subscription_journey",
         ipAddress: context.ipAddress,
         module: "subscription_journey",

@@ -109,13 +109,12 @@ describe("Identity profile application gates", () => {
     expect(source).toContain("/portal/me?redirect=");
   });
 
-  it("collects customer identity fields in the assisted application modal", () => {
+  it("keeps assisted application identity data read-only", () => {
     const source = read("apps/web/src/app/applications/page.tsx");
 
-    expect(source).toContain("customerIdentity");
-    expect(source).toContain("idCardNo");
-    expect(source).toContain("身份证号");
-    expect(source).toContain("^\\d{17}[\\dXx]$");
+    expect(source).not.toContain("customerIdentity");
+    expect(source).not.toContain("fillCustomerIdentity");
+    expect(source).toContain('name="customerId"');
   });
 });
 

@@ -633,6 +633,41 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     });
   });
 
+  it("seeds both channels for the handover pending notification", async () => {
+    const result = await client.query<{
+      channel: string;
+      template_code: string;
+      template_status: string;
+      template_type: string;
+    }>(`
+      SELECT channel::text,
+             template_code,
+             template_status::text,
+             template_type::text
+      FROM notification_template
+      WHERE template_code IN (
+        'HANDOVER_ESIGN_PENDING_IN_APP',
+        'HANDOVER_ESIGN_PENDING_WECHAT'
+      )
+      ORDER BY template_code
+    `);
+
+    expect(result.rows).toEqual([
+      {
+        channel: "IN_APP",
+        template_code: "HANDOVER_ESIGN_PENDING_IN_APP",
+        template_status: "ACTIVE",
+        template_type: "HANDOVER_ESIGN_PENDING"
+      },
+      {
+        channel: "WECHAT_OFFICIAL_ACCOUNT",
+        template_code: "HANDOVER_ESIGN_PENDING_WECHAT",
+        template_status: "ACTIVE",
+        template_type: "HANDOVER_ESIGN_PENDING"
+      }
+    ]);
+  });
+
   it("persists one Orders child filter and grants it only to approved roles", async () => {
     const menu = await client.query<{
       code: string;

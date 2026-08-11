@@ -198,7 +198,7 @@ type WechatTemplateDataResult =
   | { data: null; error: `WECHAT_TEMPLATE_DATA_MISSING:${string}` };
 ```
 
-Inputs are stable semantic keys such as `applicationNo`, `orderNo`, `plateNo`, `modelDisplayName`, `initialBillAmountCents`, `initialBillRemainingCents`, `initialBillDueAt`, `hasDepositBill`, and the already resolved `customerName`. Keep application constants fixed to `已受理` and `车辆订阅`.
+Inputs are stable semantic keys such as `applicationNo`, `orderNo`, `plateNo`, `modelDisplayName`, `initialBillAmountCents`, `initialBillRemainingCents`, `initialBillDueAt`, `hasDepositBill`, and the already resolved `customerName`. Keep application constants fixed to the final approved enumerations `审核中` and `车辆订阅申请`.
 
 - [ ] **Step 4: Separate audit payload from provider payload**
 
@@ -440,7 +440,7 @@ PAYMENT_PENDING
 HANDOVER_PENDING
 ```
 
-All must return success and record a provider message ID. Confirm the application constants `已受理` and `车辆订阅` are accepted. Do not expose IDs or message content outside masked evidence.
+All must return success and record a provider message ID. Confirm the application constants `审核中` and `车辆订阅申请` are accepted. Do not expose IDs or message content outside masked evidence.
 
 - [ ] **Step 3: Establish the dedicated Fadada acceptance binding**
 

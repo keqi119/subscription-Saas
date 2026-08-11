@@ -54,7 +54,7 @@
 
 | 变量 | 场景 | 核验字段 |
 |---|---|---|
-| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | 申请已受理 | `character_string3`、`const4`、`const5`、`time6` |
+| `WECHAT_TEMPLATE_APPLICATION_PROGRESS` | 申请已受理 | `character_string3`、`const4`、`const5`、`time6`；枚举固定为 `const4=审核中`、`const5=车辆订阅申请` |
 | `WECHAT_TEMPLATE_FINAL_PLAN_PENDING` | 最终方案待确认 | `character_string2`、`phrase5`、`car_number8`、`thing13`、`time9` |
 | `WECHAT_TEMPLATE_CONTRACT_PENDING` | 合同待签署 | `character_string2`、`thing3`、`thing6`、`thing1` |
 | `WECHAT_TEMPLATE_PAYMENT_PENDING` | 首期账单待支付 | `car_number1`、`thing2`、`amount4`、`amount7`、`time5` |

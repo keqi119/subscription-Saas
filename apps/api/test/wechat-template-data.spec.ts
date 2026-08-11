@@ -19,8 +19,8 @@ describe("Golden Path WeChat template data", () => {
     ).toEqual({
       data: {
         character_string3: "APP-20260810-001",
-        const4: "已受理",
-        const5: "车辆订阅",
+        const4: "审核中",
+        const5: "车辆订阅申请",
         time6: "2026-08-10 09:08"
       },
       error: null

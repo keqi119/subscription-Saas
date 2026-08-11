@@ -21,13 +21,15 @@ describe("SubscriptionJourneyNotificationService", () => {
       SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
       NotificationEventType.FINAL_PLAN_READY,
       "/portal/applications/application-1",
-      { applicationNo: "APP-1", plateNo: "沪PLAN1" }
+      { applicationNo: "APP-1", plateNo: "沪PLAN1" },
+      { aggregateId: "application-1", aggregateType: "Application" }
     ],
     [
       SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
       NotificationEventType.CONTRACT_PENDING,
       "/portal/contracts/contract-1/sign",
-      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" }
+      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" },
+      { aggregateId: "order-1", aggregateType: "SubscriptionOrder" }
     ],
     [
       SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT,
@@ -39,33 +41,53 @@ describe("SubscriptionJourneyNotificationService", () => {
         initialBillDueAt: "2026-08-12T10:30:00.000Z",
         initialBillRemainingCents: "440000",
         plateNo: "沪ORDER1"
-      }
+      },
+      { aggregateId: "order-1", aggregateType: "SubscriptionOrder" }
     ],
     [
       SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
       NotificationEventType.HANDOVER_ESIGN_PENDING,
       "/portal/orders/order-1",
-      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" }
+      { modelDisplayName: "NIO ES6 2024款", orderNo: "ORD-1", plateNo: "沪ORDER1" },
+      { aggregateId: "order-1", aggregateType: "SubscriptionOrder" }
     ]
-  ] as const)("sends the sanitized %s customer action once", async (stepCode, eventType, url, expectedData) => {
-    const harness = notificationHarness();
+  ] as const)(
+    "sends the sanitized %s customer action once",
+    async (stepCode, eventType, url, expectedData, expectedAggregate) => {
+      const harness = notificationHarness();
 
-    await expect(harness.service.dispatch(notificationJob(stepCode))).resolves.toMatchObject({
-      action: "NOTIFIED"
-    });
+      await expect(harness.service.dispatch(notificationJob(stepCode))).resolves.toMatchObject({
+        action: "NOTIFIED"
+      });
 
-    expect(harness.notifyCustomer).toHaveBeenCalledWith(
-      expect.objectContaining({
-        customerId: "customer-1",
-        eventType,
-        idempotencyKey: expect.stringContaining("journey:event:customer-1:"),
-        requireWechatSuccess: true,
-        url,
-        data: expect.objectContaining(expectedData)
-      })
-    );
-    const input = harness.notifyCustomer.mock.calls[0]?.[0];
-    expect(JSON.stringify(input)).not.toMatch(/signUrl|prepay|openid|providerPayload|secret/i);
+      expect(harness.notifyCustomer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...expectedAggregate,
+          customerId: "customer-1",
+          eventType,
+          idempotencyKey: expect.stringContaining("journey:event:customer-1:"),
+          requireWechatSuccess: true,
+          url,
+          data: expect.objectContaining(expectedData)
+        })
+      );
+      expect(harness.notifyCustomer).not.toHaveBeenCalledWith(
+        expect.objectContaining({ aggregateId: "journey-1" })
+      );
+      const input = harness.notifyCustomer.mock.calls[0]?.[0];
+      expect(JSON.stringify(input)).not.toMatch(/signUrl|prepay|openid|providerPayload|secret/i);
+    }
+  );
+
+  it("rejects a post-order notification when the order aggregate is missing", async () => {
+    const harness = notificationHarness({}, [], { order: null });
+
+    await expect(
+      harness.service.dispatch(
+        notificationJob(SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE)
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_INVALID_TRANSITION" });
+    expect(harness.notifyCustomer).not.toHaveBeenCalled();
   });
 
   it("uses a retryable delivery failure when the final vehicle has no usable plate", async () => {

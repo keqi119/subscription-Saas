@@ -114,6 +114,18 @@ describe("SubscriptionJourneyService recovery", () => {
     expect(harness.tx.subscriptionJourneyException.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "RESOLVED" }) })
     );
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({
+          applicationId: "application-1",
+          journeyId: "journey-1",
+          operation: "RETRY"
+        }),
+        entityId: "application-1",
+        entityType: "subscription_journey"
+      }),
+      harness.tx
+    );
   });
 
   it("rejects retry when the exception is not open", async () => {

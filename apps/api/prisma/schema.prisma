@@ -2669,6 +2669,10 @@ model CustomerProfile {
   socialSecurityMonths   Int?      @map("social_security_months")
   housingFundMonths      Int?      @map("housing_fund_months")
   residenceAddress       String?   @map("residence_address") @db.VarChar(255)
+  residenceProvince      String?   @map("residence_province") @db.VarChar(64)
+  residenceCity          String?   @map("residence_city") @db.VarChar(64)
+  residenceDistrict      String?   @map("residence_district") @db.VarChar(64)
+  residenceDetail        String?   @map("residence_detail") @db.VarChar(255)
   emergencyContactName   String?   @map("emergency_contact_name") @db.VarChar(64)
   emergencyContactMobile String?   @map("emergency_contact_mobile") @db.VarChar(32)
   createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -2740,6 +2744,7 @@ model Application {
   intentVehicleBaseFeeAmount    BigInt?                    @map("intent_vehicle_base_fee_amount")
   intentSnapshot                Json?                      @map("intent_snapshot")
   customerSelectedSnapshot      Json?                      @map("customer_selected_snapshot")
+  customerProfileSnapshot       Json?                      @map("customer_profile_snapshot")
   finalVehicleId                String?                    @map("final_vehicle_id") @db.Uuid
   finalSubscriptionPlanId       String?                    @map("final_subscription_plan_id") @db.Uuid
   finalPeriodMonths             Int?                       @map("final_period_months")

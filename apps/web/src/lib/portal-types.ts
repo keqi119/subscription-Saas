@@ -303,18 +303,35 @@ export interface PortalMissingMaterial {
 }
 
 export interface PortalMissingProfileField {
-  key: "idCardNo" | "mobile" | "name";
+  key:
+    | "emergencyContactMobile"
+    | "emergencyContactName"
+    | "idCardNo"
+    | "mobile"
+    | "name"
+    | "residenceCity"
+    | "residenceDetail"
+    | "residenceDistrict"
+    | "residenceProvince";
   label: string;
   reason: "INVALID" | "MISSING" | "PLACEHOLDER";
 }
 
 export interface PortalCustomerProfile {
+  emergencyContactMobile: string | null;
+  emergencyContactName: string | null;
   idCardNoMasked: string | null;
   idCardNoPresent: boolean;
   missingProfileFields: PortalMissingProfileField[];
   mobile: string | null;
   name: string;
   profileComplete: boolean;
+  profileUpdatedAt: string | null;
+  residenceAddress: string | null;
+  residenceCity: string | null;
+  residenceDetail: string | null;
+  residenceDistrict: string | null;
+  residenceProvince: string | null;
 }
 
 export interface PortalMaterialCompleteness {

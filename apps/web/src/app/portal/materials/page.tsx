@@ -23,7 +23,12 @@ import {
 import { useRouter } from "next/navigation";
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 
+import { PortalProfileTabs } from "../../../components/portal/portal-profile-tabs";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../lib/portal-api";
+import {
+  buildPortalProfileHref,
+  normalizePortalRedirect
+} from "../../../lib/portal-profile-navigation";
 import {
   PortalMaterialCompleteness,
   PortalProfileMaterial,
@@ -38,11 +43,11 @@ export default function PortalMaterialsPage() {
   const [completeness, setCompleteness] = useState<PortalMaterialCompleteness>();
   const [loading, setLoading] = useState(true);
   const [uploadingType, setUploadingType] = useState<string>();
-  const [redirect, setRedirect] = useState("/portal");
+  const [redirect, setRedirect] = useState<string | null>(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setRedirect(params.get("redirect") || "/portal");
+    setRedirect(normalizePortalRedirect(params.get("redirect")));
   }, []);
 
   const loadMaterials = useCallback(async () => {
@@ -58,7 +63,12 @@ export default function PortalMaterialsPage() {
       setCompleteness(completenessRow);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
-        router.replace(`/portal/login?redirect=${encodeURIComponent("/portal/materials")}`);
+        const params = new URLSearchParams(window.location.search);
+        const returnTarget = buildPortalProfileHref(
+          "materials",
+          normalizePortalRedirect(params.get("redirect"))
+        );
+        router.replace(`/portal/login?redirect=${encodeURIComponent(returnTarget)}`);
         return;
       }
       void message.error(error instanceof PortalApiError ? error.message : "无法加载客户资料");
@@ -133,15 +143,24 @@ export default function PortalMaterialsPage() {
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
       <section style={{ margin: "0 auto", maxWidth: 860 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push(redirect)} style={{ marginBottom: 16 }}>
+        <Button
+          icon={<ArrowLeftOutlined />}
+          onClick={() => router.push(redirect ?? "/portal")}
+          style={{ marginBottom: 16 }}
+        >
           返回上一页
         </Button>
+
+        <Typography.Title level={3} style={{ margin: 0 }}>
+          我的资料
+        </Typography.Title>
+        <PortalProfileTabs activeTab="materials" redirect={redirect} />
 
         <section style={sectionStyle}>
           <Flex align="center" gap={16} justify="space-between" wrap="wrap">
             <div>
               <Typography.Title level={3} style={{ margin: 0 }}>
-                我的资料
+                证件材料
               </Typography.Title>
               <Typography.Text type="secondary">
                 资料仅用于订阅审核。提交审核后，平台工作人员会根据资料完整性和风控结果确认最终方案。

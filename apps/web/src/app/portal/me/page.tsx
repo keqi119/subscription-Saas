@@ -16,6 +16,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
+import { PortalProfileTabs } from "../../../components/portal/portal-profile-tabs";
 import { CUSTOMER_ACCOUNT_STATUS_LABELS } from "../../../constants/labels";
 import { CHINA_REGION_OPTIONS } from "../../../lib/china-region-options";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
@@ -24,6 +25,10 @@ import {
   toPortalProfileFormValues,
   toPortalProfileUpdatePayload
 } from "../../../lib/portal-profile-form";
+import {
+  buildPortalProfileHref,
+  normalizePortalRedirect
+} from "../../../lib/portal-profile-navigation";
 import type { PortalCustomerProfile, PortalMissingProfileField } from "../../../lib/portal-types";
 
 interface PortalMe {
@@ -62,7 +67,7 @@ function PortalMeContent() {
   const [profile, setProfile] = useState<PortalCustomerProfile>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const redirect = searchParams.get("redirect");
+  const redirect = normalizePortalRedirect(searchParams.get("redirect"));
 
   useEffect(() => {
     Promise.all([
@@ -76,13 +81,14 @@ function PortalMeContent() {
       })
       .catch((error) => {
         if (error instanceof PortalApiError && error.status === 401) {
-          router.replace("/portal/login");
+          const profileHref = buildPortalProfileHref("basic", redirect);
+          router.replace(`/portal/login?redirect=${encodeURIComponent(profileHref)}`);
           return;
         }
         void message.error(error instanceof PortalApiError ? error.message : "无法加载客户信息");
       })
       .finally(() => setLoading(false));
-  }, [form, message, router]);
+  }, [form, message, redirect, router]);
 
   async function saveProfile(values: PortalProfileFormValues) {
     setSaving(true);
@@ -112,6 +118,7 @@ function PortalMeContent() {
           <Typography.Title level={2} style={{ margin: 0 }}>
             我的资料
           </Typography.Title>
+          <PortalProfileTabs activeTab="basic" redirect={redirect} />
           {loading ? (
             <Skeleton active />
           ) : (

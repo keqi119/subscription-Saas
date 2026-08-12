@@ -13,7 +13,10 @@ import {
   runJourneyMutation
 } from "../src/components/order-workspace/subscription-journey-exception-actions";
 import { SubscriptionJourneyCard } from "../src/components/order-workspace/subscription-journey-card";
-import type { AdminSubscriptionJourney } from "../src/lib/subscription-journey-view-model";
+import {
+  getJourneyVehicleConfirmation,
+  type AdminSubscriptionJourney
+} from "../src/lib/subscription-journey-view-model";
 
 describe("subscription journey Admin UI", () => {
   it("renders application decisions only with their task-specific permissions", () => {
@@ -33,7 +36,12 @@ describe("subscription journey Admin UI", () => {
     );
     const vehiclePermission = renderToStaticMarkup(
       <ApplicationJourneyActions
-        journey={journey({ availableActions: ["FINAL_VEHICLE_ALLOCATION"] })}
+        journey={journey({
+          application: finalVehicleApplication(),
+          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          currentStepCode: "FINAL_VEHICLE_ALLOCATION",
+          currentStepStatus: "WAITING_MANUAL"
+        })}
         onChanged={vi.fn()}
         permissions={new Set(["subscription_journey:vehicle_allocate"])}
       />
@@ -41,7 +49,57 @@ describe("subscription journey Admin UI", () => {
 
     expect(noPermission).not.toContain("提交最终方案");
     expect(planPermission).toContain("提交最终方案");
-    expect(vehiclePermission).toContain("确认分配车辆");
+    expect(vehiclePermission).toContain("确认沿用已软锁车辆");
+  });
+
+  it("shows the self-service soft-reserved vehicle without a raw UUID input", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationJourneyActions
+        journey={journey({
+          application: finalVehicleApplication(),
+          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          currentStepCode: "FINAL_VEHICLE_ALLOCATION",
+          currentStepStatus: "WAITING_MANUAL"
+        })}
+        onChanged={vi.fn()}
+        permissions={new Set(["subscription_journey:vehicle_allocate"])}
+      />
+    );
+
+    expect(html).toContain("已软锁车辆");
+    expect(html).toContain("确认沿用已软锁车辆");
+    expect(html).toContain("VEH-1");
+    expect(html).toContain("NIO ES6");
+    expect(html).toContain("沪DGU578");
+    expect(html).toContain("VIN-1");
+    expect(html).not.toContain("分配车辆 ID");
+    expect(
+      getJourneyVehicleConfirmation(
+        journey({
+          application: finalVehicleApplication(),
+          currentStepCode: "FINAL_VEHICLE_ALLOCATION"
+        })
+      ).vehicleId
+    ).toBe("vehicle-1");
+  });
+
+  it("blocks final vehicle allocation when the final plan has no vehicle", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationJourneyActions
+        journey={journey({
+          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          currentStepCode: "FINAL_VEHICLE_ALLOCATION",
+          currentStepStatus: "WAITING_MANUAL"
+        })}
+        onChanged={vi.fn()}
+        permissions={new Set(["subscription_journey:vehicle_allocate"])}
+      />
+    );
+
+    expect(html).toContain("最终方案缺少车辆，请返回最终方案步骤选择车辆");
+    expect(html).not.toContain("确认最终车辆");
+    expect(html).not.toContain("确认沿用已软锁车辆");
+    expect(html).not.toContain("分配车辆 ID");
   });
 
   it("renders evidence review, retry, pause/resume and cancel by exact permission", () => {
@@ -168,5 +226,25 @@ function journey(overrides: Partial<AdminSubscriptionJourney> = {}): AdminSubscr
     ],
     version: 3,
     ...overrides
+  };
+}
+
+function finalVehicleApplication(): AdminSubscriptionJourney["application"] {
+  return {
+    applicationNo: "APP-1",
+    applicationSource: "SELF_SERVICE",
+    finalPlanSnapshot: {
+      vehicleSnapshot: {
+        brand: "NIO",
+        model: "ES6",
+        plateNo: "沪DGU578",
+        vehicleNo: "VEH-1",
+        vin: "VIN-1"
+      }
+    },
+    finalVehicleId: "vehicle-1",
+    id: "application-1",
+    softReservedVehicleId: "vehicle-1",
+    status: "APPROVED"
   };
 }

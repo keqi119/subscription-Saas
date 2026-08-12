@@ -25,8 +25,11 @@ export interface AdminSubscriptionJourneyTask {
 export interface AdminSubscriptionJourney {
   application: {
     applicationNo: string;
+    applicationSource?: string;
     customerId?: string;
+    finalPlanSnapshot?: Record<string, unknown> | null;
     finalPlanRevision?: number;
+    finalVehicleId?: string | null;
     id: string;
     softReservedVehicleId?: string | null;
     status: string;
@@ -80,6 +83,19 @@ export interface AdminSubscriptionJourneyException {
   occurrenceCount: number;
   retryable: boolean;
   status: string;
+}
+
+export interface JourneyVehicleConfirmation {
+  actionLabel: string | null;
+  blockedReason: string | null;
+  title: string | null;
+  vehicle: {
+    brandAndModel: string;
+    plateNo: string;
+    vehicleNo: string;
+    vin: string;
+  };
+  vehicleId: string | null;
 }
 
 const JOURNEY_STATUS_PRESENTATIONS: Record<string, JourneyStatusPresentation> = {
@@ -165,6 +181,50 @@ export function getCurrentJourneyStepSummary(journey: AdminSubscriptionJourney) 
   return `${step.label} · ${status.label}`;
 }
 
+export function getJourneyVehicleConfirmation(
+  journey: Pick<AdminSubscriptionJourney, "application" | "currentStepCode">
+): JourneyVehicleConfirmation {
+  const { application } = journey;
+  const vehicleId = readString(application.finalVehicleId);
+  const finalPlanSnapshot = readRecord(application.finalPlanSnapshot);
+  const vehicleSnapshot = readRecord(finalPlanSnapshot?.vehicleSnapshot);
+  const brand = readString(vehicleSnapshot?.brand);
+  const model =
+    readString(vehicleSnapshot?.modelDisplayNameSnapshot) ??
+    readString(vehicleSnapshot?.model) ??
+    readString(vehicleSnapshot?.series) ??
+    readString(vehicleSnapshot?.vehicleModel);
+  const vehicle = {
+    brandAndModel: [brand, model].filter(Boolean).join(" ") || "-",
+    plateNo: readString(vehicleSnapshot?.plateNo) ?? "-",
+    vehicleNo: readString(vehicleSnapshot?.vehicleNo) ?? "-",
+    vin: readString(vehicleSnapshot?.vin) ?? "-"
+  };
+
+  if (!vehicleId) {
+    return {
+      actionLabel: null,
+      blockedReason: "最终方案缺少车辆，请返回最终方案步骤选择车辆",
+      title: null,
+      vehicle,
+      vehicleId: null
+    };
+  }
+
+  const reusesSoftReservedVehicle =
+    journey.currentStepCode === "FINAL_VEHICLE_ALLOCATION" &&
+    application.applicationSource === "SELF_SERVICE" &&
+    vehicleId === readString(application.softReservedVehicleId);
+
+  return {
+    actionLabel: reusesSoftReservedVehicle ? "确认沿用已软锁车辆" : "确认最终车辆",
+    blockedReason: null,
+    title: reusesSoftReservedVehicle ? "已软锁车辆" : "最终车辆",
+    vehicle,
+    vehicleId
+  };
+}
+
 export function getCustomerWaitLabel(step: string) {
   if (step === "CUSTOMER_PLAN_CONFIRMATION") return "等待客户确认最终方案";
   if (step === "CUSTOMER_JSAPI_PAYMENT") return "等待客户完成首付款";
@@ -241,6 +301,12 @@ function unavailableTask(): ParsedJourneyManualTaskInput {
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function readPositiveInteger(value: unknown) {

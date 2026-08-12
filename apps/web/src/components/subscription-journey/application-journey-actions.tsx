@@ -1,6 +1,17 @@
 "use client";
 
-import { App, Button, Card, Input, InputNumber, Space, Tag, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Descriptions,
+  Input,
+  InputNumber,
+  Space,
+  Tag,
+  Typography
+} from "antd";
 import { useState } from "react";
 
 import {
@@ -13,6 +24,7 @@ import {
 } from "../../lib/api";
 import {
   getCurrentJourneyStepSummary,
+  getJourneyVehicleConfirmation,
   getJourneyStatusPresentation,
   type AdminSubscriptionJourney
 } from "../../lib/subscription-journey-view-model";
@@ -34,9 +46,9 @@ export function ApplicationJourneyActions({
   const [finalPeriodMonths, setFinalPeriodMonths] = useState<number>();
   const [finalSubscriptionPlanId, setFinalSubscriptionPlanId] = useState("");
   const [finalVehicleId, setFinalVehicleId] = useState("");
-  const [vehicleId, setVehicleId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const status = getJourneyStatusPresentation(journey.status);
+  const vehicleConfirmation = getJourneyVehicleConfirmation(journey);
   const planAvailability = canRunSubscriptionJourneyAction(
     "FINAL_PLAN_DECISION",
     journey.availableActions,
@@ -71,8 +83,11 @@ export function ApplicationJourneyActions({
   }
 
   async function submitVehicle() {
-    if (!vehicleId.trim()) {
-      void message.warning("请输入车辆 ID");
+    const vehicleId = vehicleConfirmation.vehicleId;
+    if (!vehicleId) {
+      void message.warning(
+        vehicleConfirmation.blockedReason ?? "最终方案缺少车辆，请返回最终方案步骤选择车辆"
+      );
       return;
     }
     setSubmitting(true);
@@ -80,7 +95,7 @@ export function ApplicationJourneyActions({
       await runJourneyMutation(
         () =>
           allocateJourneyVehicle(journey.id, {
-            vehicleId: vehicleId.trim(),
+            vehicleId,
             version: journey.version
           }),
         onChanged
@@ -130,18 +145,35 @@ export function ApplicationJourneyActions({
           </Space>
         ) : null}
         {vehicleAvailability.allowed ? (
-          <Space wrap>
-            <Input
-              aria-label="分配车辆 ID"
-              onChange={(event) => setVehicleId(event.target.value)}
-              placeholder="车辆 ID"
-              style={{ width: 280 }}
-              value={vehicleId}
+          vehicleConfirmation.vehicleId ? (
+            <Card size="small" title={vehicleConfirmation.title}>
+              <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+                <Descriptions
+                  column={{ lg: 4, md: 2, sm: 2, xs: 1 }}
+                  items={[
+                    { children: vehicleConfirmation.vehicle.vehicleNo, label: "车辆编号" },
+                    { children: vehicleConfirmation.vehicle.brandAndModel, label: "品牌/车型" },
+                    { children: vehicleConfirmation.vehicle.plateNo, label: "车牌号" },
+                    { children: vehicleConfirmation.vehicle.vin, label: "VIN" }
+                  ]}
+                  size="small"
+                />
+                <Button
+                  loading={submitting}
+                  onClick={() => void submitVehicle()}
+                  type="primary"
+                >
+                  {vehicleConfirmation.actionLabel}
+                </Button>
+              </Space>
+            </Card>
+          ) : (
+            <Alert
+              showIcon
+              title={vehicleConfirmation.blockedReason}
+              type="warning"
             />
-            <Button loading={submitting} onClick={() => void submitVehicle()} type="primary">
-              确认分配车辆
-            </Button>
-          </Space>
+          )
         ) : null}
         <SubscriptionJourneyExceptionActions
           journey={journey}

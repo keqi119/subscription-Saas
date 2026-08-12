@@ -23,6 +23,21 @@ describe("Portal profile page contract", () => {
     expect(source).not.toContain('name="mobile"');
     expect(source).not.toContain("values.mobile");
   });
+
+  it("integrates the shared profile tabs and defaults the home entry to basic profile", () => {
+    const meSource = read("apps/web/src/app/portal/me/page.tsx");
+    const materialsSource = read("apps/web/src/app/portal/materials/page.tsx");
+    const homeSource = read("apps/web/src/app/portal/page.tsx");
+
+    expect(meSource).toContain('<PortalProfileTabs activeTab="basic"');
+    expect(materialsSource).toContain('<PortalProfileTabs activeTab="materials"');
+    expect(homeSource).toContain(
+      '{ href: "/portal/me", icon: <IdcardOutlined />, title: "我的资料" }'
+    );
+    expect(homeSource).not.toContain(
+      '{ href: "/portal/materials", icon: <IdcardOutlined />, title: "我的资料" }'
+    );
+  });
 });
 
 function read(file: string) {

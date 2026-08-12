@@ -52,9 +52,10 @@ import { StorageService } from "../storage/storage.service";
 import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
 import {
-  assertCustomerIdentityProfileReady,
-  assertValidCustomerApplicationIdentityInput
-} from "./customer-identity-readiness";
+  buildApplicationCustomerProfileSnapshot,
+  parseApplicationCustomerProfileSnapshot
+} from "./application-customer-profile-snapshot";
+import { buildCustomerApplicationProfileReadiness } from "./customer-application-profile-readiness";
 import {
   ApproveApplicationDto,
   NeedMoreInfoDto,
@@ -1357,38 +1358,8 @@ export class CustomerService {
   async createApplication(dto: CreateApplicationDto, user: RequestUser, context: RequestContext) {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);
-    const identityInput = dto.customerIdentity
-      ? assertValidCustomerApplicationIdentityInput(dto.customerIdentity)
-      : null;
-    if (!identityInput) {
-      assertCustomerIdentityProfileReady(customer);
-    }
 
     const application = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      if (identityInput) {
-        await tx.customer.update({
-          data: {
-            mobile: identityInput.mobile,
-            name: identityInput.name,
-            updatedBy: user.id
-          },
-          where: { id: customer.id }
-        });
-        await tx.customerIdentity.upsert({
-          create: {
-            createdBy: user.id,
-            customerId: customer.id,
-            idCardNo: identityInput.idCardNo,
-            updatedBy: user.id
-          },
-          update: {
-            idCardNo: identityInput.idCardNo,
-            updatedBy: user.id
-          },
-          where: { customerId: customer.id }
-        });
-      }
-
       const created = await tx.application.create({
         data: {
           applicationNo: createBusinessNo("APP"),
@@ -1446,7 +1417,7 @@ export class CustomerService {
   ) {
     const [customer, selection] = await Promise.all([
       this.prisma.customer.findUnique({
-        include: { identity: true },
+        include: { identity: true, profile: true },
         where: { id: dto.customerId }
       }),
       this.validateSelfServiceApplicationSelection(dto)
@@ -1455,7 +1426,6 @@ export class CustomerService {
     if (!customer || customer.deletedAt) {
       throw new NotFoundException("Customer not found.");
     }
-    assertCustomerIdentityProfileReady(customer);
     const { plan, vehicle } = selection;
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
@@ -1538,6 +1508,13 @@ export class CustomerService {
     const customerSelectedSnapshot = intentSnapshot;
 
     const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
+      const currentCustomer = await tx.customer.findUniqueOrThrow({
+        include: { identity: true, profile: true },
+        where: { id: customer.id }
+      });
+      const customerProfileSnapshot = toJsonSnapshot(
+        buildApplicationCustomerProfileSnapshot(currentCustomer, null, now)
+      );
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
       assertSelfServiceVehicleAvailable(vehicleBefore);
 
@@ -1548,6 +1525,7 @@ export class CustomerService {
           createdBy: user.id,
           creditReviewStatus: OrderReviewStatus.PENDING,
           customerId: customer.id,
+          customerProfileSnapshot,
           customerSelectedSnapshot,
           depositStatus: DepositStatus.PENDING_CONFIRM,
           finalDepositAmount: null,
@@ -2061,14 +2039,26 @@ export class CustomerService {
     if (!canEditApplication(before.status)) {
       throw new BadRequestException("Only draft or need-more-info applications can be submitted.");
     }
-    assertCustomerIdentityProfileReady(before.customer);
     assertCanSubmitApplication(before);
+    const submittedAt = new Date();
 
     const application = await this.prisma.$transaction(async (tx) => {
+      const currentCustomer = await tx.customer.findUniqueOrThrow({
+        include: { identity: true, profile: true },
+        where: { id: before.customerId }
+      });
+      const customerProfileSnapshot = toJsonSnapshot(
+        buildApplicationCustomerProfileSnapshot(
+          currentCustomer,
+          before.customerProfileSnapshot,
+          submittedAt
+        )
+      );
       await tx.application.update({
         data: {
+          customerProfileSnapshot,
           status: ApplicationStatus.SUBMITTED,
-          submittedAt: new Date(),
+          submittedAt,
           updatedBy: user.id
         },
         where: { id }
@@ -4012,6 +4002,7 @@ export function toCustomerView(customer: CustomerWithDetails) {
 }
 
 export function toApplicationView(application: ApplicationWithDetails, user?: RequestUser) {
+  const customerProfile = applicationCustomerProfileView(application);
   return {
     actionLogs: application.actionLogs.map(toApplicationActionLogView),
     applicationNo: application.applicationNo,
@@ -4034,6 +4025,7 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
         : null
     },
     customerId: application.customerId,
+    ...customerProfile,
     customerGrade: application.customerGrade,
     customerSelectedSnapshot: application.customerSelectedSnapshot,
     depositRuleId: application.depositRuleId,
@@ -4085,6 +4077,33 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
     status: application.status,
     submittedAt: application.submittedAt,
     vehicleReviewStatus: application.vehicleReviewStatus
+  };
+}
+
+function applicationCustomerProfileView(application: ApplicationWithDetails) {
+  const snapshot = parseApplicationCustomerProfileSnapshot(
+    application.customerProfileSnapshot
+  );
+  const usesCurrent =
+    application.status === ApplicationStatus.DRAFT ||
+    application.status === ApplicationStatus.NEED_MORE_INFO;
+  const customerProfileDisplaySource = usesCurrent
+    ? ("CURRENT" as const)
+    : snapshot
+      ? ("SNAPSHOT" as const)
+      : ("HISTORICAL_CURRENT_FALLBACK" as const);
+
+  return {
+    customerProfileDisplaySource,
+    customerProfileReadiness:
+      customerProfileDisplaySource === "SNAPSHOT"
+        ? { complete: true, missingFields: [] }
+        : buildCustomerApplicationProfileReadiness(application.customer),
+    customerProfileSnapshot: snapshot,
+    customerProfileUpdatedAt:
+      customerProfileDisplaySource === "SNAPSHOT"
+        ? snapshot?.capturedAt ?? null
+        : application.customer.profile?.updatedAt.toISOString() ?? null
   };
 }
 

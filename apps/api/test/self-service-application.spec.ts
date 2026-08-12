@@ -55,6 +55,11 @@ describe("self-service application intake API rules", () => {
           applicationSource: ApplicationSource.SELF_SERVICE,
           creditReviewStatus: OrderReviewStatus.PENDING,
           customerId: harness.customer.id,
+          customerProfileSnapshot: expect.objectContaining({
+            customerId: harness.customer.id,
+            snapshotVersion: 1,
+            source: "CUSTOMER_PORTAL_PROFILE"
+          }),
           depositStatus: DepositStatus.PENDING_CONFIRM,
           finalDepositAmount: null,
           intentPeriodMonths: 12,
@@ -132,7 +137,7 @@ describe("self-service application intake API rules", () => {
     );
   });
 
-  it("rejects self-service intake when required customer identity fields are missing", async () => {
+  it("rejects self-service intake when required customer application profile fields are missing", async () => {
     const harness = createSelfServiceApplicationHarness({
       customer: { identity: null }
     });
@@ -148,7 +153,7 @@ describe("self-service application intake API rules", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    ).rejects.toThrow("CUSTOMER_APPLICATION_PROFILE_INCOMPLETE");
 
     expect(harness.tx.application.create).not.toHaveBeenCalled();
     expect(harness.tx.vehicle.updateMany).not.toHaveBeenCalled();
@@ -322,6 +327,16 @@ function createSelfServiceApplicationHarness(overrides: {
     mobile: "13800000000",
     name: "测试客户",
     ownerUserId: null,
+    profile: {
+      emergencyContactMobile: "13900000000",
+      emergencyContactName: "王女士",
+      residenceAddress: "上海市闵行区北翟路1554弄53号",
+      residenceCity: "上海市",
+      residenceDetail: "北翟路1554弄53号",
+      residenceDistrict: "闵行区",
+      residenceProvince: "上海市",
+      updatedAt: now
+    },
     riskScore: null,
     sourceChannel: null,
     status: CustomerStatus.LEAD,
@@ -385,6 +400,7 @@ function createSelfServiceApplicationHarness(overrides: {
       create: vi.fn(async ({ data }) => ({ ...data, id: "application-action-1" }))
     },
     customer: {
+      findUniqueOrThrow: vi.fn(async () => customer),
       update: vi.fn(async ({ data }) => Object.assign(customer, data))
     },
     subscriptionOrder: {

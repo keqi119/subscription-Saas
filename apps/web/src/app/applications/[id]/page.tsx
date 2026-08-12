@@ -64,6 +64,13 @@ import {
   snapshotValue,
   toNumber
 } from "../../../lib/application-snapshots";
+import {
+  APPLICATION_DRIVING_QUALIFICATION_COPY,
+  buildApplicationCustomerProfileView,
+  type ApplicationCustomerProfileDisplaySource,
+  type ApplicationCustomerProfileReadinessIssue,
+  type ApplicationCustomerProfileSnapshotView
+} from "../../../lib/application-customer-profile-view-model";
 import type { AuthMeResponse } from "../../../lib/auth";
 import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 
@@ -146,24 +153,30 @@ interface ApplicationDetail {
     customerNo: string;
     id: string;
     identity?: {
-      driverLicenseNo?: string | null;
       idCardNo?: string | null;
-      licenseValidUntil?: string | null;
       realnameVerified?: boolean | null;
     } | null;
     mobile: string;
     name: string;
     profile?: {
-      companyName?: string | null;
       emergencyContactMobile?: string | null;
       emergencyContactName?: string | null;
-      monthlyIncomeAmount?: number | null;
-      occupation?: string | null;
       residenceAddress?: string | null;
+      residenceCity?: string | null;
+      residenceDetail?: string | null;
+      residenceDistrict?: string | null;
+      residenceProvince?: string | null;
     } | null;
     sourceChannel?: string | null;
     status: string;
   };
+  customerProfileDisplaySource: ApplicationCustomerProfileDisplaySource;
+  customerProfileReadiness: {
+    complete: boolean;
+    missingFields: ApplicationCustomerProfileReadinessIssue[];
+  };
+  customerProfileSnapshot?: ApplicationCustomerProfileSnapshotView | null;
+  customerProfileUpdatedAt?: string | null;
   customerGrade?: string | null;
   customerSelectedSnapshot?: unknown;
   depositRuleId?: string | null;
@@ -434,6 +447,10 @@ export default function ApplicationDetailPage() {
   }, [loadDetail]);
 
   const availableActions = useMemo(() => new Set(detail?.availableActions ?? []), [detail]);
+  const customerProfileView = useMemo(
+    () => (detail ? buildApplicationCustomerProfileView(detail) : null),
+    [detail]
+  );
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const isSelfServiceApplication = detail?.applicationSource === "SELF_SERVICE";
   const canReviewApplication = permissions.has("application:review");
@@ -450,8 +467,11 @@ export default function ApplicationDetailPage() {
   });
   const createQuoteAvailability = canGenerateApplicationQuote(detail, permissions);
   const submitAvailability = actionAvailability({
-    allowed: availableActions.has("submit"),
-    disabledReason: "当前进件状态不允许提交",
+    allowed: availableActions.has("submit") && Boolean(customerProfileView?.profileComplete),
+    disabledReason:
+      customerProfileView && !customerProfileView.profileComplete
+        ? `客户资料不完整：${customerProfileView.missingFieldLabels.join("、")}`
+        : "当前进件状态不允许提交",
     permissions
   });
   const approveAvailability = actionAvailability({
@@ -1146,21 +1166,44 @@ export default function ApplicationDetailPage() {
             </section>
 
             <section>
-              <Typography.Title level={5}>客户资料</Typography.Title>
+              <Space align="center" wrap style={{ justifyContent: "space-between", width: "100%" }}>
+                <Space align="center" wrap>
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    客户资料
+                  </Typography.Title>
+                  {customerProfileView ? <Tag color="blue">{customerProfileView.sourceLabel}</Tag> : null}
+                  {customerProfileView?.capturedAt ? (
+                    <Typography.Text type="secondary">
+                      资料时间：{formatTime(customerProfileView.capturedAt)}
+                    </Typography.Text>
+                  ) : null}
+                </Space>
+                {["DRAFT", "NEED_MORE_INFO"].includes(detail.status) ? (
+                  <Button loading={loading} onClick={() => void loadDetail()}>
+                    刷新客户资料
+                  </Button>
+                ) : null}
+              </Space>
+              {customerProfileView && !customerProfileView.profileComplete ? (
+                <Alert
+                  description={`缺少或无效：${customerProfileView.missingFieldLabels.join("、")}。请客户登录 Portal“我的资料”完成后点击“刷新客户资料”。`}
+                  message="客户进件资料未完成"
+                  showIcon
+                  style={{ marginBottom: 16, marginTop: 12 }}
+                  type="warning"
+                />
+              ) : null}
               <Descriptions
                 bordered
                 column={2}
                 items={[
-                  { label: "身份证号", children: detail.customer.identity?.idCardNo ?? "-" },
-                  { label: "驾驶证号", children: detail.customer.identity?.driverLicenseNo ?? "-" },
-                  { label: "驾驶证有效期", children: detail.customer.identity?.licenseValidUntil ? dayjs(detail.customer.identity.licenseValidUntil).format("YYYY-MM-DD") : "-" },
+                  { label: "客户姓名", children: customerProfileView?.name ?? "-" },
+                  { label: "登录手机号", children: customerProfileView?.mobile ?? "-" },
+                  { label: "身份证号", children: customerProfileView?.idCardNo ?? "-" },
                   { label: "实名状态", children: detail.customer.identity?.realnameVerified ? "已实名" : "未实名" },
-                  { label: "职业", children: detail.customer.profile?.occupation ?? "-" },
-                  { label: "工作单位", children: detail.customer.profile?.companyName ?? "-" },
-                  { label: "月收入", children: formatYuan(detail.customer.profile?.monthlyIncomeAmount) },
-                  { label: "居住地址", children: detail.customer.profile?.residenceAddress ?? "-" },
-                  { label: "紧急联系人", children: detail.customer.profile?.emergencyContactName ?? "-" },
-                  { label: "紧急联系人电话", children: detail.customer.profile?.emergencyContactMobile ?? "-" }
+                  { label: "居住地址", children: customerProfileView?.address ?? "-" },
+                  { label: "紧急联系人", children: customerProfileView?.emergencyContactName ?? "-" },
+                  { label: "紧急联系人手机号", children: customerProfileView?.emergencyContactMobile ?? "-" }
                 ]}
               />
             </section>
@@ -1448,6 +1491,12 @@ export default function ApplicationDetailPage() {
 
             <section>
               <Typography.Title level={5}>资料清单</Typography.Title>
+              <Alert
+                message={APPLICATION_DRIVING_QUALIFICATION_COPY}
+                showIcon
+                style={{ marginBottom: 12 }}
+                type="info"
+              />
               {detail.materials.length > 0 ? (
                 <Table
                   columns={materialColumns}

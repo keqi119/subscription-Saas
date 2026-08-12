@@ -64,11 +64,59 @@ describe("application self-service review APIs", () => {
     );
   });
 
-  it("blocks assisted application creation when customer identity profile is incomplete", async () => {
+  it.each([
+    [ApplicationStatus.DRAFT, null, "CURRENT"],
+    [
+      ApplicationStatus.SUBMITTED,
+      {
+        capturedAt: "2026-06-05T09:00:00.000Z",
+        customerId: "customer-1",
+        emergencyContactMobile: "13900000000",
+        emergencyContactName: "王女士",
+        idCardNo: "11010519491231002X",
+        mobile: "13800000000",
+        name: "测试客户",
+        residenceAddress: "上海市闵行区北翟路1554弄53号",
+        residenceCity: "上海市",
+        residenceDetail: "北翟路1554弄53号",
+        residenceDistrict: "闵行区",
+        residenceProvince: "上海市",
+        snapshotVersion: 1,
+        source: "CUSTOMER_PORTAL_PROFILE"
+      },
+      "SNAPSHOT"
+    ],
+    [ApplicationStatus.SUBMITTED, null, "HISTORICAL_CURRENT_FALLBACK"]
+  ] as const)(
+    "exposes %s application profile data from %s as %s",
+    async (status, customerProfileSnapshot, expectedSource) => {
+      const harness = createApplicationReviewHarness({
+        application: { customerProfileSnapshot, status }
+      });
+
+      await expect(
+        harness.service.getApplication(harness.application.id, harness.user)
+      ).resolves.toMatchObject({
+        customerProfileDisplaySource: expectedSource,
+        customerProfileReadiness: { complete: true, missingFields: [] },
+        customerProfileSnapshot:
+          expectedSource === "SNAPSHOT"
+            ? expect.objectContaining({ snapshotVersion: 1 })
+            : null,
+        customerProfileUpdatedAt:
+          expectedSource === "SNAPSHOT"
+            ? "2026-06-05T09:00:00.000Z"
+            : "2026-06-05T10:00:00.000Z"
+      });
+    }
+  );
+
+  it("allows an incomplete customer to have a sales-assisted draft", async () => {
     const harness = createApplicationReviewHarness({
       customer: {
         identity: null,
         mobile: "138",
+        profile: null,
         name: ""
       }
     });
@@ -82,65 +130,23 @@ describe("application self-service review APIs", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
-    expect(harness.tx.application.create).not.toHaveBeenCalled();
-  });
-
-  it("fills assisted application identity fields before creating the application", async () => {
-    const harness = createApplicationReviewHarness({
-      customer: {
-        identity: null,
-        mobile: "13800000000",
-        name: "手机用户138****0000"
-      }
-    });
-
-    await harness.service.createApplication(
-      {
-        customerId: "customer-1",
-        customerIdentity: {
-          idCardNo: "11010519491231002X",
-          mobile: "13800000000",
-          name: "测试客户"
-        },
-        intendedModel: "ET5"
-      } as never,
-      harness.user,
-      harness.context
-    );
-
-    expect(harness.tx.customer.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          mobile: "13800000000",
-          name: "测试客户"
-        }),
-        where: { id: "customer-1" }
-      })
-    );
-    expect(harness.tx.customerIdentity.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          customerId: "customer-1",
-          idCardNo: "11010519491231002X"
-        }),
-        update: expect.objectContaining({
-          idCardNo: "11010519491231002X"
-        }),
-        where: { customerId: "customer-1" }
-      })
-    );
+    ).resolves.toMatchObject({ status: ApplicationStatus.DRAFT });
+    expect(harness.tx.customerIdentity.upsert).not.toHaveBeenCalled();
     expect(harness.tx.application.create).toHaveBeenCalled();
   });
 
   it("blocks assisted application submission when customer identity profile is incomplete", async () => {
     const harness = createApplicationReviewHarness({
+      customer: {
+        identity: null,
+        mobile: "138",
+        name: "",
+        profile: null
+      },
       application: {
-        customer: makeCustomerForApplication({
-          identity: null,
-          mobile: "138",
-          name: ""
-        }),
+        materialGroups: approvedRequiredMaterialGroups(
+          new Date("2026-06-05T10:00:00.000Z")
+        ),
         status: ApplicationStatus.DRAFT
       }
     });
@@ -152,7 +158,7 @@ describe("application self-service review APIs", () => {
         harness.user,
         harness.context
       )
-    ).rejects.toThrow("CUSTOMER_IDENTITY_PROFILE_INCOMPLETE");
+    ).rejects.toThrow("CUSTOMER_APPLICATION_PROFILE_INCOMPLETE");
     expect(harness.tx.application.update).not.toHaveBeenCalled();
   });
 
@@ -180,6 +186,43 @@ describe("application self-service review APIs", () => {
       payload: { source: ApplicationSource.SALES_ASSISTED },
       type: "APPLICATION_SUBMITTED"
     });
+    expect(harness.tx.application.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          customerProfileSnapshot: expect.objectContaining({ snapshotVersion: 1 })
+        })
+      })
+    );
+  });
+
+  it("increments the customer profile snapshot after a need-more-info resubmission", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        customerProfileSnapshot: {
+          snapshotVersion: 1,
+          source: "CUSTOMER_PORTAL_PROFILE"
+        },
+        materialGroups: approvedRequiredMaterialGroups(
+          new Date("2026-06-05T10:00:00.000Z")
+        ),
+        status: ApplicationStatus.NEED_MORE_INFO
+      }
+    });
+
+    await harness.service.submitApplication(
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.tx.application.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          customerProfileSnapshot: expect.objectContaining({ snapshotVersion: 2 })
+        })
+      })
+    );
   });
 
   it("approves material review status", async () => {
@@ -945,7 +988,8 @@ function createApplicationReviewHarness(overrides: {
           ...state.application,
           ...data,
           createdAt: now,
-          id: "application-created"
+          id: "application-created",
+          status: data.status ?? ApplicationStatus.DRAFT
         });
         return state.application;
       }),
@@ -964,6 +1008,7 @@ function createApplicationReviewHarness(overrides: {
     },
     customer: {
       findUnique: vi.fn(async () => state.customer),
+      findUniqueOrThrow: vi.fn(async () => state.customer),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.customer = { ...state.customer, ...data };
         return state.customer;
@@ -1260,6 +1305,7 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
       subscriptionPlanId: "plan-1",
       vehicleId: "vehicle-1"
     },
+    customerProfileSnapshot: null,
     deletedAt: null,
     depositRuleId: null,
     depositRuleSnapshot: null,
@@ -1329,7 +1375,7 @@ function makeCustomer(now: Date, overrides: Record<string, unknown> = {}) {
     name: "测试客户",
     ownerUser: null,
     ownerUserId: null,
-    profile: null,
+    profile: completeCustomerProfile(now),
     riskScore: null,
     sourceChannel: null,
     status: CustomerStatus.PENDING_APPLICATION,
@@ -1347,10 +1393,23 @@ function makeCustomerForApplication(overrides: Record<string, unknown> = {}) {
     mobile: "13800000000",
     name: "测试客户",
     ownerUserId: null,
-    profile: null,
+    profile: completeCustomerProfile(new Date("2026-06-05T10:00:00.000Z")),
     sourceChannel: null,
     status: CustomerStatus.PENDING_APPLICATION,
     ...overrides
+  };
+}
+
+function completeCustomerProfile(now: Date) {
+  return {
+    emergencyContactMobile: "13900000000",
+    emergencyContactName: "王女士",
+    residenceAddress: "上海市闵行区北翟路1554弄53号",
+    residenceCity: "上海市",
+    residenceDetail: "北翟路1554弄53号",
+    residenceDistrict: "闵行区",
+    residenceProvince: "上海市",
+    updatedAt: now
   };
 }
 

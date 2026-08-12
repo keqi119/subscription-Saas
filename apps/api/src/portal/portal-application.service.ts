@@ -24,10 +24,10 @@ import { RequestUser } from "../auth/auth.types";
 import { sortByPortalListOrder } from "../common/portal-list-ordering";
 import type { PortalListSortKey } from "../common/portal-list-ordering";
 import {
-  assertCustomerIdentityProfileReady,
-  buildCustomerIdentityProfileReadiness,
-  type CustomerIdentityProfileReadiness
-} from "../customer/customer-identity-readiness";
+  assertCustomerApplicationProfileReady,
+  buildCustomerApplicationProfileReadiness,
+  type CustomerApplicationProfileReadiness
+} from "../customer/customer-application-profile-readiness";
 import {
   CustomerService,
   MaterialPreview,
@@ -152,7 +152,7 @@ export class PortalApplicationService {
 
     const [materialCompleteness, profileReadiness] = await Promise.all([
       this.getProfileMaterialCompleteness(currentCustomer.customerId),
-      this.getProfileIdentityReadiness(currentCustomer.customerId)
+      this.getApplicationProfileReadiness(currentCustomer.customerId)
     ]);
     return toPortalApplicationPrecheck(materialCompleteness, profileReadiness);
   }
@@ -165,11 +165,11 @@ export class PortalApplicationService {
     const operator = await this.resolvePortalApplicationOperator(currentCustomer.customerId);
     const [materialCompleteness, profileReadiness] = await Promise.all([
       this.getProfileMaterialCompleteness(currentCustomer.customerId),
-      this.getProfileIdentityReadiness(currentCustomer.customerId)
+      this.getApplicationProfileReadiness(currentCustomer.customerId)
     ]);
     if (!profileReadiness.complete) {
-      assertCustomerIdentityProfileReady(
-        await this.getProfileIdentitySource(currentCustomer.customerId)
+      assertCustomerApplicationProfileReady(
+        await this.getApplicationProfileSource(currentCustomer.customerId)
       );
     }
     const result = await this.customerService.createSelfServiceApplication(
@@ -710,14 +710,15 @@ export class PortalApplicationService {
     return buildCustomerProfileMaterialCompleteness(materials);
   }
 
-  private async getProfileIdentityReadiness(customerId: string) {
-    const customer = await this.getProfileIdentitySource(customerId);
-    return buildCustomerIdentityProfileReadiness(customer);
+  private async getApplicationProfileReadiness(customerId: string) {
+    const customer = await this.getApplicationProfileSource(customerId);
+    return buildCustomerApplicationProfileReadiness(customer);
   }
 
-  private async getProfileIdentitySource(customerId: string) {
+  private async getApplicationProfileSource(customerId: string) {
     const customer = await this.prisma.customer.findUnique({
       select: {
+        id: true,
         identity: {
           select: {
             idCardNo: true
@@ -725,6 +726,16 @@ export class PortalApplicationService {
         },
         mobile: true,
         name: true,
+        profile: {
+          select: {
+            emergencyContactMobile: true,
+            emergencyContactName: true,
+            residenceCity: true,
+            residenceDetail: true,
+            residenceDistrict: true,
+            residenceProvince: true
+          }
+        },
         sourceChannel: true
       },
       where: { id: customerId }
@@ -971,7 +982,7 @@ function toPortalApplicationDetail(
 
 function toPortalApplicationPrecheck(
   materialCompleteness: CustomerProfileMaterialCompleteness,
-  profileReadiness: CustomerIdentityProfileReadiness
+  profileReadiness: CustomerApplicationProfileReadiness
 ) {
   return {
     actions: [

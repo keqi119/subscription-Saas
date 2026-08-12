@@ -1,11 +1,29 @@
 "use client";
 
-import { Alert, App, Button, Descriptions, Form, Input, Skeleton, Space, Tag, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Cascader,
+  Descriptions,
+  Form,
+  Input,
+  Skeleton,
+  Space,
+  Tag,
+  Typography
+} from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
 import { CUSTOMER_ACCOUNT_STATUS_LABELS } from "../../../constants/labels";
+import { CHINA_REGION_OPTIONS } from "../../../lib/china-region-options";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
+import {
+  type PortalProfileFormValues,
+  toPortalProfileFormValues,
+  toPortalProfileUpdatePayload
+} from "../../../lib/portal-profile-form";
 import type { PortalCustomerProfile, PortalMissingProfileField } from "../../../lib/portal-types";
 
 interface PortalMe {
@@ -15,11 +33,17 @@ interface PortalMe {
   phone: string;
 }
 
-interface PortalProfileFormValues {
-  idCardNo?: string;
-  mobile: string;
-  name: string;
-}
+const PROFILE_FIELD_LABELS: Record<PortalMissingProfileField["key"], string> = {
+  emergencyContactMobile: "紧急联系人手机号",
+  emergencyContactName: "紧急联系人姓名",
+  idCardNo: "身份证号",
+  mobile: "登录手机号",
+  name: "姓名",
+  residenceCity: "居住城市",
+  residenceDetail: "详细地址",
+  residenceDistrict: "居住区县",
+  residenceProvince: "居住省份"
+};
 
 export default function PortalMePage() {
   return (
@@ -48,17 +72,13 @@ function PortalMeContent() {
       .then(([nextMe, nextProfile]) => {
         setMe(nextMe);
         setProfile(nextProfile);
-        form.setFieldsValue({
-          mobile: nextProfile.mobile ?? nextMe.phone,
-          name: nextProfile.name
-        });
+        form.setFieldsValue(toPortalProfileFormValues(nextProfile));
       })
       .catch((error) => {
         if (error instanceof PortalApiError && error.status === 401) {
           router.replace("/portal/login");
           return;
         }
-
         void message.error(error instanceof PortalApiError ? error.message : "无法加载客户信息");
       })
       .finally(() => setLoading(false));
@@ -67,21 +87,14 @@ function PortalMeContent() {
   async function saveProfile(values: PortalProfileFormValues) {
     setSaving(true);
     try {
+      const payload = toPortalProfileUpdatePayload(values, profile?.idCardNoPresent);
       const nextProfile = await portalApiFetch<PortalCustomerProfile>("/portal/profile", {
-        body: JSON.stringify({
-          idCardNo: values.idCardNo?.trim() || undefined,
-          mobile: values.mobile,
-          name: values.name
-        }),
+        body: JSON.stringify(payload),
         method: "PATCH"
       });
       setProfile(nextProfile);
-      form.setFieldsValue({
-        idCardNo: undefined,
-        mobile: nextProfile.mobile ?? values.mobile,
-        name: nextProfile.name
-      });
-      void message.success("资料已保存");
+      form.setFieldsValue(toPortalProfileFormValues(nextProfile));
+      void message.success("申请资料已保存");
       if (redirect && nextProfile.profileComplete) {
         router.push(redirect);
       }
@@ -118,21 +131,17 @@ function PortalMeContent() {
               </Descriptions>
 
               {profile?.profileComplete ? (
-                <Alert message="实名资料已完整，可以继续提交进件。" showIcon type="success" />
+                <Alert message="进件所需资料已完整，可以继续提交申请。" showIcon type="success" />
               ) : (
                 <Alert
                   description={<MissingProfileFields fields={profile?.missingProfileFields ?? []} />}
-                  message="请先完善实名资料，才能提交进件。"
+                  message="请先完善以下资料，才能提交申请。"
                   showIcon
                   type="warning"
                 />
               )}
 
-              <Form<PortalProfileFormValues>
-                form={form}
-                layout="vertical"
-                onFinish={saveProfile}
-              >
+              <Form<PortalProfileFormValues> form={form} layout="vertical" onFinish={saveProfile}>
                 <Form.Item
                   label="姓名"
                   name="name"
@@ -141,28 +150,14 @@ function PortalMeContent() {
                   <Input autoComplete="name" maxLength={64} placeholder="请输入身份证上的姓名" />
                 </Form.Item>
                 <Form.Item
-                  label="实名手机号"
-                  name="mobile"
-                  rules={[
-                    { required: true, message: "请输入实名手机号" },
-                    { pattern: /^1\d{10}$/, message: "手机号需为 11 位大陆手机号" }
-                  ]}
-                >
-                  <Input autoComplete="tel" maxLength={11} placeholder="需与当前登录手机号一致" />
-                </Form.Item>
-                <Form.Item
                   label="身份证号"
                   name="idCardNo"
                   rules={[
                     () => ({
                       validator: async (_, value: string | undefined) => {
                         const normalized = value?.trim();
-                        if (!normalized && profile?.idCardNoPresent) {
-                          return;
-                        }
-                        if (!normalized) {
-                          throw new Error("请输入 18 位身份证号");
-                        }
+                        if (!normalized && profile?.idCardNoPresent) return;
+                        if (!normalized) throw new Error("请输入 18 位身份证号");
                         if (!/^\d{17}[\dXx]$/.test(normalized)) {
                           throw new Error("身份证号需为 18 位，末位可为数字或 X");
                         }
@@ -180,13 +175,59 @@ function PortalMeContent() {
                     }
                   />
                 </Form.Item>
+                <Form.Item
+                  label="省 / 市 / 区县"
+                  name="residenceRegion"
+                  rules={[{ required: true, message: "请选择省、市和区县" }]}
+                >
+                  <Cascader
+                    options={CHINA_REGION_OPTIONS}
+                    placeholder="请选择居住地区"
+                    showSearch
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="详细地址"
+                  name="residenceDetail"
+                  rules={[{ required: true, message: "请输入小区、道路和门牌号" }]}
+                >
+                  <Input.TextArea
+                    autoComplete="street-address"
+                    maxLength={255}
+                    placeholder="例如：北翟路1554弄53号"
+                    rows={3}
+                    showCount
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="紧急联系人姓名"
+                  name="emergencyContactName"
+                  rules={[{ required: true, message: "请输入紧急联系人姓名" }]}
+                >
+                  <Input maxLength={64} placeholder="请输入紧急联系人姓名" />
+                </Form.Item>
+                <Form.Item
+                  label="紧急联系人手机号"
+                  name="emergencyContactMobile"
+                  rules={[
+                    { required: true, message: "请输入紧急联系人手机号" },
+                    { pattern: /^1\d{10}$/, message: "手机号需为 11 位大陆手机号" },
+                    () => ({
+                      validator: async (_, value: string | undefined) => {
+                        if (value && value === me?.phone) {
+                          throw new Error("紧急联系人手机号不能与登录手机号相同");
+                        }
+                      }
+                    })
+                  ]}
+                >
+                  <Input autoComplete="tel" inputMode="tel" maxLength={11} />
+                </Form.Item>
                 <Space wrap>
                   <Button htmlType="submit" loading={saving} type="primary">
                     保存资料
                   </Button>
-                  <Button onClick={() => router.push(redirect ?? "/portal")}>
-                    返回
-                  </Button>
+                  <Button onClick={() => router.push(redirect ?? "/portal")}>返回</Button>
                 </Space>
               </Form>
             </>
@@ -213,14 +254,13 @@ function PortalMeLoadingShell() {
 }
 
 function MissingProfileFields({ fields }: Readonly<{ fields: PortalMissingProfileField[] }>) {
-  if (fields.length === 0) {
-    return null;
-  }
+  if (fields.length === 0) return null;
   return (
     <Space direction="vertical" size={2}>
       {fields.map((field) => (
         <Typography.Text key={field.key}>
-          {field.label}: {field.reason === "PLACEHOLDER" ? "请填写真实信息" : "请补全或修正格式"}
+          {PROFILE_FIELD_LABELS[field.key]}：
+          {field.reason === "PLACEHOLDER" ? "请填写真实信息" : "请补全或修正格式"}
         </Typography.Text>
       ))}
     </Space>

@@ -58,8 +58,11 @@ const adminJourneyInclude = {
   application: {
     select: {
       applicationNo: true,
+      applicationSource: true,
       customerId: true,
+      finalPlanSnapshot: true,
       finalPlanRevision: true,
+      finalVehicleId: true,
       id: true,
       softReservedVehicleId: true,
       status: true

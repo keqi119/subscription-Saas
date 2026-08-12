@@ -229,11 +229,39 @@ describe("SubscriptionJourneyService recovery", () => {
   });
 
   it("returns an allowlisted projection without raw callbacks, secrets, or exception text", async () => {
-    const row = adminJourneyRow();
+    const row = {
+      ...adminJourneyRow(),
+      application: {
+        ...adminJourneyRow().application,
+        applicationSource: "SELF_SERVICE",
+        finalPlanSnapshot: {
+          vehicleSnapshot: {
+            brand: "NIO",
+            model: "ES6",
+            plateNo: "沪DGU578",
+            vehicleNo: "VEH20260807061849KRNM",
+            vin: "VIN-1"
+          }
+        },
+        finalVehicleId: "vehicle-1",
+        softReservedVehicleId: "vehicle-1"
+      }
+    };
+    const findUnique = vi.fn(async (query: unknown) => {
+      const select = (query as {
+        include: { application: { select: Record<string, boolean> } };
+      }).include.application.select;
+      return {
+        ...row,
+        application: Object.fromEntries(
+          Object.keys(select).map((key) => [key, row.application[key as keyof typeof row.application]])
+        )
+      };
+    });
     const service = new SubscriptionJourneyService(
       {} as never,
       {
-        subscriptionJourney: { findUnique: vi.fn(async () => row) }
+        subscriptionJourney: { findUnique }
       } as never
     );
 
@@ -253,6 +281,12 @@ describe("SubscriptionJourneyService recovery", () => {
     expect(serialized).not.toContain("customer-phone");
     expect(serialized).not.toContain("provider stack trace");
     expect(projection.exceptions[0]?.message).toBe("Journey operation failed.");
+    expect(projection.application).toMatchObject({
+      applicationSource: "SELF_SERVICE",
+      finalVehicleId: "vehicle-1",
+      softReservedVehicleId: "vehicle-1"
+    });
+    expect(projection.application.finalPlanSnapshot).toEqual(row.application.finalPlanSnapshot);
   });
 
   it("binds an evidence decision to the exact reviewed manifest", async () => {

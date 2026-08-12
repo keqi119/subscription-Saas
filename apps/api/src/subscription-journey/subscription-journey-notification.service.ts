@@ -104,11 +104,11 @@ export class SubscriptionJourneyNotificationService {
         : null;
 
     const definition = notificationDefinition(payload.stepCode, context);
+    const aggregate = notificationAggregate(payload.stepCode, context);
     const semanticData = notificationSemanticData(payload.stepCode, context, finalVehicle);
     const idempotencyKey = `${payload.eventKey}:${context.application.customerId}:${definition.template}`;
     const records = await this.notificationService.notifyCustomer({
-      aggregateId: job.journeyId,
-      aggregateType: "SubscriptionJourney",
+      ...aggregate,
       content: definition.content,
       customerId: context.application.customerId,
       data: {
@@ -250,6 +250,30 @@ function invalidPayload() {
     "JOURNEY_INVALID_TRANSITION",
     "The journey notification payload is invalid."
   );
+}
+
+function notificationAggregate(
+  stepCode: SubscriptionJourneyStepCode,
+  context: {
+    application: { id: string };
+    order: { id: string } | null;
+  }
+) {
+  if (stepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION) {
+    return {
+      aggregateId: context.application.id,
+      aggregateType: "Application" as const
+    };
+  }
+
+  if (!context.order) {
+    throw invalidPayload();
+  }
+
+  return {
+    aggregateId: context.order.id,
+    aggregateType: "SubscriptionOrder" as const
+  };
 }
 
 function notificationDefinition(

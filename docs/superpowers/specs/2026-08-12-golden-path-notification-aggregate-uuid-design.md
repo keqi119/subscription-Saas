@@ -88,4 +88,3 @@ pnpm prisma:validate
 3. staging 重试后，Journey 从 `CUSTOMER_PLAN_CONFIRMATION / EXCEPTION` 恢复。
 4. 新建 `notification_event.aggregate_id` 为 Application UUID，通知记录使用 `FINAL_PLAN_READY_WECHAT`。
 5. 微信通知状态达到 `SENT` 或 `READ` 后，Journey 保持 `WAITING_CUSTOMER / CUSTOMER_PLAN_CONFIRMATION`，不再进入 UUID 异常。
-

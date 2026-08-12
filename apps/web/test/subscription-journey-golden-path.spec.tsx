@@ -35,6 +35,17 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
   it("shows exactly the current Admin decision and enforces its permission", () => {
     const plan = adminJourney({ availableActions: ["FINAL_PLAN_DECISION"], currentStepCode: "FINAL_PLAN_DECISION" });
     const vehicle = adminJourney({
+      application: {
+        applicationNo: "APP-1",
+        applicationSource: "SELF_SERVICE",
+        finalPlanSnapshot: {
+          vehicleSnapshot: { brand: "NIO", series: "ES6", vehicleNo: "VEH-1" }
+        },
+        finalVehicleId: "vehicle-1",
+        id: "application-1",
+        softReservedVehicleId: "vehicle-1",
+        status: "APPROVED"
+      },
       availableActions: ["FINAL_VEHICLE_ALLOCATION"],
       currentStepCode: "FINAL_VEHICLE_ALLOCATION"
     });
@@ -60,7 +71,8 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
     expect(planHtml).not.toContain(getRecommendedOperatorAction(vehicle).label);
     expect(planHtml.match(/<button/g)).toHaveLength(1);
     expect(deniedHtml).not.toContain("<button");
-    expect(vehicleHtml).toContain(getRecommendedOperatorAction(vehicle).label);
+    expect(vehicleHtml).toContain("确认沿用已软锁车辆");
+    expect(vehicleHtml).not.toContain("分配车辆 ID");
     expect(vehicleHtml).not.toContain(getRecommendedOperatorAction(plan).label);
     expect(vehicleHtml.match(/<button/g)).toHaveLength(1);
   });

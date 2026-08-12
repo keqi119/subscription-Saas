@@ -169,8 +169,8 @@ export function ApplicationJourneyActions({
             </Card>
           ) : (
             <Alert
-              message={vehicleConfirmation.blockedReason}
               showIcon
+              title={vehicleConfirmation.blockedReason}
               type="warning"
             />
           )

@@ -1256,7 +1256,7 @@ export class SubscriptionJourneyService {
   async startFadadaSigningJob(
     job: ClaimedJourneyJob
   ): Promise<Prisma.InputJsonValue> {
-    if (!this.prisma || !this.esignService) {
+    if (!this.prisma || !this.orderService || !this.esignService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
         "The subscription journey Fadada signer is not configured."
@@ -1264,6 +1264,10 @@ export class SubscriptionJourneyService {
     }
     const current = await this.prisma.$transaction((tx) =>
       this.readFadadaJobContext(tx, job)
+    );
+    await this.orderService.ensureJourneyContractPdfArtifact(
+      current.contractId,
+      current.actorId
     );
     const task = await this.esignService.startJourneyFadadaSigning(
       current.contractId,

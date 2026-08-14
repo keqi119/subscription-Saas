@@ -16,6 +16,41 @@ import type {
 } from "../src/subscription-journey/subscription-journey.types";
 
 describe("subscription journey Fadada signing", () => {
+  it("ensures the generated contract PDF before starting Fadada signing", async () => {
+    const callOrder: string[] = [];
+    const tx = signingTransaction();
+    const orderService = {
+      ensureJourneyContractPdfArtifact: vi.fn(async () => {
+        callOrder.push("pdf");
+        return { fileId: "generated-file-1" };
+      })
+    };
+    const esignService = {
+      startJourneyFadadaSigning: vi.fn(async () => {
+        callOrder.push("fadada");
+        return {
+          id: "task-1",
+          providerTaskId: "provider-transaction-1",
+          taskStatus: ESignTaskStatus.WAITING_CUSTOMER
+        };
+      })
+    };
+    const service = journeyService({
+      esignService,
+      orderService,
+      prisma: transactionHost(tx),
+      repository: { enqueueJob: vi.fn(async () => undefined) }
+    });
+
+    await service.startFadadaSigningJob(signingJob());
+
+    expect(callOrder).toEqual(["pdf", "fadada"]);
+    expect(orderService.ensureJourneyContractPdfArtifact).toHaveBeenCalledWith(
+      "contract-1",
+      "00000000-0000-4000-8000-000000000001"
+    );
+  });
+
   it("starts one production task, schedules reconciliation, and never returns the sign URL", async () => {
     const tx = signingTransaction();
     const prisma = transactionHost(tx);
@@ -169,6 +204,7 @@ describe("subscription journey Fadada signing", () => {
 function journeyService(input: {
   archiveService?: unknown;
   esignService?: unknown;
+  orderService?: unknown;
   prisma?: unknown;
   repository: unknown;
 }) {
@@ -176,7 +212,9 @@ function journeyService(input: {
     input.repository as never,
     input.prisma as never,
     {} as never,
-    {} as never,
+    (input.orderService ?? {
+      ensureJourneyContractPdfArtifact: vi.fn(async () => undefined)
+    }) as never,
     {} as never,
     input.esignService as never,
     input.archiveService as never

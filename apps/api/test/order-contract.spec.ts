@@ -31,6 +31,43 @@ const STAGE1_SLOT_KEYWORDS = [
 ];
 
 describe("subscription order and contract rules", () => {
+  it("repairs a journey contract that is missing its generated signing PDF", async () => {
+    const harness = createOrderServiceHarness({
+      artifactWriter: createArtifactWriterMock({ fileId: "generated-file-1" })
+    });
+    const contract = await harness.service.createJourneyContractInTransaction(
+      harness.tx as never,
+      harness.orderId,
+      harness.user.id,
+      "journey:journey-1:step:ORDER_AND_CONTRACT_CREATION:revision:1"
+    );
+
+    await harness.service.ensureJourneyContractPdfArtifact(
+      contract.id,
+      harness.user.id
+    );
+
+    expect(harness.state.contracts[0]).toMatchObject({
+      fileId: "generated-file-1",
+      contractSnapshot: {
+        generatedContractPdfArtifact: {
+          fileId: "generated-file-1",
+          signingStage: "STAGE1_CONTRACT",
+          source: "GENERATED_CONTRACT_PDF"
+        }
+      }
+    });
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contractStatus: ContractStatus.GENERATED,
+        existingContractFileId: null,
+        recoverExistingObject: true,
+        uploadedBy: harness.user.id
+      })
+    );
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_SIGN);
+  });
+
   it("creates and reuses a generated journey contract in the caller transaction", async () => {
     const harness = createOrderServiceHarness();
     const sourceKey =

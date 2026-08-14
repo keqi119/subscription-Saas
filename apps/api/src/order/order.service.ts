@@ -521,6 +521,77 @@ export class OrderService {
     return tx.contract.findUniqueOrThrow({ where: { id: created.id } });
   }
 
+  async ensureJourneyContractPdfArtifact(contractId: string, actorId: string): Promise<void> {
+    if (!this.contractPdfArtifactWriter) {
+      throw journeyError(
+        "JOURNEY_CONFIGURATION_ERROR",
+        "The generated contract PDF writer is not configured."
+      );
+    }
+    const contract = await this.findContractOrThrow(contractId);
+    if (hasGeneratedContractPdfArtifact(contract)) {
+      return;
+    }
+    if (contract.fileId) {
+      throw journeyError(
+        "JOURNEY_IDEMPOTENCY_CONFLICT",
+        "The journey contract has a file that is not a generated signing PDF artifact."
+      );
+    }
+    const order = await this.prisma.subscriptionOrder.findUnique({
+      include: orderInclude,
+      where: { id: contract.orderId }
+    });
+    if (!order || order.deletedAt || order.contractId !== contract.id) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The journey contract is not attached to its active order."
+      );
+    }
+
+    const artifact = await this.contractPdfArtifactWriter.writeGeneratedContractPdfArtifact({
+      cjkFontPath: this.configService?.get<string>(CONTRACT_PDF_CJK_FONT_PATH_ENV),
+      contractStatus: contract.status,
+      existingContractFileId: contract.fileId,
+      recoverExistingObject: true,
+      renderModel: buildContractPdfRenderModel(contract, order, contract.contractVersion),
+      uploadedBy: actorId
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "id"
+        FROM "contract"
+        WHERE "id" = ${contractId}::uuid
+        FOR UPDATE
+      `);
+      const current = await tx.contract.findUniqueOrThrow({ where: { id: contractId } });
+      if (current.deletedAt) {
+        throw journeyError("JOURNEY_NOT_FOUND", "The journey contract was not found.");
+      }
+      if (hasGeneratedContractPdfArtifact(current)) {
+        return;
+      }
+      if (current.fileId && current.fileId !== artifact.fileId) {
+        throw journeyError(
+          "JOURNEY_IDEMPOTENCY_CONFLICT",
+          "The journey contract was attached to another file while its PDF was generated."
+        );
+      }
+      await tx.contract.update({
+        data: {
+          contractSnapshot: buildContractSnapshotWithGeneratedPdfArtifact(
+            current.contractSnapshot,
+            artifact
+          ),
+          fileId: artifact.fileId,
+          updatedBy: actorId
+        },
+        where: { id: contractId }
+      });
+    });
+  }
+
   async getOrder(id: string, user: RequestUser) {
     const order = await this.findOrderOrThrow(id);
     ensureCanAccessOrder(order, user);

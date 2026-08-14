@@ -40,6 +40,8 @@ import {
 } from "react";
 
 import { EvidenceUploadControls } from "../../../../../components/field-handover-evidence-upload-controls";
+import { FieldVideoUploadProgressCard } from "../../../../../components/field-video-upload-progress-card";
+import { FieldVideoUploadRecoveryAlert } from "../../../../../components/field-video-upload-recovery-alert";
 import {
   buildFieldHandoverFileUrl,
   createFieldESignSubmissionController,
@@ -65,6 +67,7 @@ import {
   type FieldEvidenceUploadEnvironment,
   type FieldEvidenceMediaType,
   formatUploadBytes,
+  resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
 } from "../../../../../lib/field-handover-upload";
 import {
@@ -95,6 +98,7 @@ import {
   validateFieldHandoverFactsInput,
   type FieldHandoverFactsDraft
 } from "../../../../../lib/field-handover-view-model";
+import { useFieldVideoUpload } from "../../../../../lib/use-field-video-upload";
 
 const SUBMITTED_TEXT = "现场交接资料已提交，等待客户确认";
 const RESUBMITTED_PENDING_ADMIN_TEXT = "现场交接资料已重新提交，等待后台送回客户复核";
@@ -227,6 +231,16 @@ export default function FieldHandoverTaskDetailPage() {
     [params.id, router]
   );
 
+  const handleFieldVideoCompleted = useCallback(async () => {
+    await loadDetail({ preserveFacts: true, showLoading: false });
+    void message.success("车辆环绕视频已上传并完成校验");
+  }, [loadDetail, message]);
+  const fieldVideoUpload = useFieldVideoUpload({
+    onCompleted: handleFieldVideoCompleted,
+    onSessionExpired: () => router.replace("/field/handover"),
+    workOrderId: params.id
+  });
+
   useEffect(() => {
     void loadDetail();
   }, [loadDetail]);
@@ -260,13 +274,17 @@ export default function FieldHandoverTaskDetailPage() {
     return () => window.clearInterval(timer);
   }, [loadDetail, stage2View?.shouldPollESign]);
 
-  const canSubmitUploadBatch = canSubmitWithFieldEvidenceUploadBatch(uploadBatchState);
+  const canSubmitUploadBatch =
+    canSubmitWithFieldEvidenceUploadBatch(uploadBatchState) &&
+    !fieldVideoUpload.barrierActive;
   const canMutateEvidence = canMutateFieldEvidenceWithUploadBatch(uploadBatchState);
   const hasUploadRecoveries = hasFieldEvidenceUploadRecoveries(uploadBatchState);
   const uploadingItemId =
     uploadBatchState.status === "UPLOADING" ? (uploadBatchState.batch?.itemViewId ?? null) : null;
   const uploadBarrierText =
-    uploadBatchState.status === "REFRESHING"
+    fieldVideoUpload.barrierActive
+      ? "车辆环绕视频正在上传或处理，请完成后再提交"
+      : uploadBatchState.status === "REFRESHING"
       ? "正在同步最新资料"
       : uploadBatchState.status === "REFRESH_FAILED"
         ? "最新资料同步失败，请重新加载状态"
@@ -462,6 +480,25 @@ export default function FieldHandoverTaskDetailPage() {
       }
     }
 
+    const selectedVideo = selectedFiles[0];
+    if (
+      selectedFiles.length === 1 &&
+      selectedVideo &&
+      item.evidenceType === "WALKAROUND_VIDEO" &&
+      resolveFieldEvidenceMediaType(selectedVideo) === "VIDEO"
+    ) {
+      applyUploadBatchState(
+        abandonFieldEvidenceUploadRecovery(uploadBatchStateRef.current, itemViewId)
+      );
+      setBlockers([]);
+      await fieldVideoUpload.selectFile({
+        evidenceItemId: itemId,
+        file: selectedVideo,
+        replaceEvidenceFileId
+      });
+      return;
+    }
+
     applyUploadBatchState(nextBatchState);
     setBlockers([]);
     const finalState = await runFieldEvidenceUploadBatch(nextBatchState, {
@@ -622,6 +659,13 @@ export default function FieldHandoverTaskDetailPage() {
   }
 
   async function removeEvidence(itemId: string, evidenceFileId: string) {
+    if (
+      fieldVideoUpload.barrierActive &&
+      fieldVideoUpload.view?.activeEvidenceItemId === itemId
+    ) {
+      setBlockers(["当前视频正在上传或处理，暂不能修改该资料项"]);
+      return;
+    }
     if (!canMutateFieldEvidenceWithUploadBatch(uploadBatchStateRef.current)) {
       setBlockers([UPLOAD_SUBMIT_BLOCKER_TEXT]);
       void message.warning(UPLOAD_SUBMIT_BLOCKER_TEXT);
@@ -678,7 +722,10 @@ export default function FieldHandoverTaskDetailPage() {
   }
 
   function blockSubmitForUploadBatch() {
-    if (canSubmitWithFieldEvidenceUploadBatch(uploadBatchStateRef.current)) {
+    if (
+      canSubmitWithFieldEvidenceUploadBatch(uploadBatchStateRef.current) &&
+      !fieldVideoUpload.barrierActive
+    ) {
       return false;
     }
     setBlockers([uploadBarrierText]);
@@ -770,6 +817,12 @@ export default function FieldHandoverTaskDetailPage() {
         {!loading && detailView && captureView ? (
           <Flex gap={12} vertical>
             <SummaryCard view={detailView} />
+
+            <FieldVideoUploadRecoveryAlert
+              records={fieldVideoUpload.recoveries.filter(
+                (record) => record.workOrderId === params.id
+              )}
+            />
 
             {reviewContext?.customerObjectionReason ? (
               <Alert
@@ -1068,7 +1121,10 @@ export default function FieldHandoverTaskDetailPage() {
                                     />
                                   </Tooltip>
                                 ) : null}
-                                {captureView.canEdit && canMutateEvidence ? (
+                                {captureView.canEdit &&
+                                canMutateEvidence &&
+                                (!fieldVideoUpload.barrierActive ||
+                                  fieldVideoUpload.view?.activeEvidenceItemId !== item.id) ? (
                                   <Popconfirm
                                     description="删除后需重新上传才能提交。"
                                     okText="删除"
@@ -1148,6 +1204,16 @@ export default function FieldHandoverTaskDetailPage() {
                         </div>
                       ) : null}
 
+                      {fieldVideoUpload.view?.activeEvidenceItemId === item.id ? (
+                        <FieldVideoUploadProgressCard
+                          onCancel={fieldVideoUpload.cancel}
+                          onPause={fieldVideoUpload.pause}
+                          onResume={fieldVideoUpload.resume}
+                          onRetry={fieldVideoUpload.retryFinalization}
+                          view={fieldVideoUpload.view}
+                        />
+                      ) : null}
+
                       {recovery ? (
                         <div aria-live="polite" style={uploadRecoveryStyle}>
                           <Typography.Text strong type="danger">
@@ -1202,7 +1268,11 @@ export default function FieldHandoverTaskDetailPage() {
                         <EvidenceUploadControls
                           allowedMediaTypes={allowedMediaTypes}
                           disabled={
-                            !canStartUpload || !captureView.canEdit || actionLoading === "submit"
+                            !canStartUpload ||
+                            !captureView.canEdit ||
+                            actionLoading === "submit" ||
+                            (fieldVideoUpload.barrierActive &&
+                              fieldVideoUpload.view?.activeEvidenceItemId === item.id)
                           }
                           environment={uploadEnvironment}
                           evidenceType={item.evidenceType}

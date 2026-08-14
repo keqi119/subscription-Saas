@@ -7,6 +7,26 @@ import { DeliveryEvidenceVideoQualityError } from "../src/delivery-handover/deli
 import { FieldVideoUploadFinalizerService } from "../src/field-operator/field-video-upload-finalizer.service";
 
 describe("FieldVideoUploadFinalizerService", () => {
+  it.each([
+    FieldEvidenceVideoUploadStatus.FINALIZE_QUEUED,
+    FieldEvidenceVideoUploadStatus.OSS_COMPLETING,
+    FieldEvidenceVideoUploadStatus.OBJECT_READY,
+    FieldEvidenceVideoUploadStatus.PROCESSING
+  ])("resumes a worker restart from %s and binds evidence exactly once", async (status) => {
+    const harness = finalizerHarness({ status });
+
+    await harness.finalizer.finalize(harness.session);
+
+    expect(harness.handover.attachPreparedFieldVideoFromStoredSource).toHaveBeenCalledOnce();
+    expect(harness.handover.attachPreparedFieldVideoFromStoredSource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        uploadLeaseOwner: harness.session.leaseOwner,
+        uploadSessionId: harness.session.id
+      })
+    );
+    expect(harness.repository.markTerminal).not.toHaveBeenCalled();
+  });
+
   it("resumes from OBJECT_READY without completing OSS twice", async () => {
     const harness = finalizerHarness({ status: FieldEvidenceVideoUploadStatus.OBJECT_READY });
 
@@ -14,12 +34,7 @@ describe("FieldVideoUploadFinalizerService", () => {
 
     expect(harness.storage.completeFieldVideoMultipart).not.toHaveBeenCalled();
     expect(harness.handover.attachPreparedFieldVideoFromStoredSource).toHaveBeenCalledOnce();
-    expect(harness.repository.markTerminal).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: harness.session.id,
-        status: FieldEvidenceVideoUploadStatus.COMPLETED
-      })
-    );
+    expect(harness.repository.markTerminal).not.toHaveBeenCalled();
   });
 
   it("advances every durable stage and completes with ordered OSS parts", async () => {
@@ -42,12 +57,7 @@ describe("FieldVideoUploadFinalizerService", () => {
       FieldEvidenceVideoUploadStatus.PROCESSING
     ]);
     expect(harness.prepared.cleanup).toHaveBeenCalledOnce();
-    expect(harness.handover.recordFieldVideoUploadEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "FIELD_VIDEO_UPLOAD_COMPLETED",
-        sessionId: harness.session.id
-      })
-    );
+    expect(harness.handover.recordFieldVideoUploadEvent).not.toHaveBeenCalled();
   });
 
   it("keeps the old evidence active when 720p validation fails", async () => {

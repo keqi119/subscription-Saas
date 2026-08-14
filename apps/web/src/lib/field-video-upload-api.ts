@@ -141,7 +141,7 @@ export function uploadFieldVideoPart(input: UploadFieldVideoPartInput) {
     );
     xhr.withCredentials = true;
     xhr.timeout = PART_UPLOAD_TIMEOUT_MS;
-    xhr.setRequestHeader("X-Part-SHA256", input.sha256);
+    xhr.setRequestHeader("X-Chunk-SHA256", input.sha256);
     if (input.signal?.aborted) {
       reject(new ApiError("分片上传已暂停。", 0, "VIDEO_UPLOAD_PAUSED"));
       return;

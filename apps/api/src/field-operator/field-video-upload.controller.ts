@@ -68,7 +68,8 @@ export class FieldVideoUploadController {
     @Param("itemId") evidenceItemId: string,
     @Param("sessionId") sessionId: string,
     @Param("partNumber", ParseIntPipe) partNumber: number,
-    @Headers("x-part-sha256") sha256: string,
+    @Headers("x-chunk-sha256") sha256: string | undefined,
+    @Headers("x-part-sha256") legacySha256: string | undefined,
     @UploadedFile() file: DiskUploadedFile | undefined,
     @CurrentFieldOperatorSession() current: CurrentFieldOperator
   ) {
@@ -83,7 +84,7 @@ export class FieldVideoUploadController {
       evidenceItemId,
       sessionId,
       partNumber,
-      sha256,
+      sha256 ?? legacySha256 ?? "",
       file,
       current.phone
     );

@@ -392,6 +392,12 @@ function assertPartMetadata(
   sha256: string,
   sizeBytes: number
 ) {
+  if (session.status !== FieldEvidenceVideoUploadStatus.UPLOADING) {
+    throw new ConflictException({
+      code: "VIDEO_UPLOAD_NOT_ACCEPTING_PARTS",
+      message: "视频已进入处理阶段，不能继续上传分片。"
+    });
+  }
   if (!/^[a-f0-9]{64}$/.test(sha256)) {
     throw new BadRequestException({
       code: "CHUNK_HASH_INVALID",

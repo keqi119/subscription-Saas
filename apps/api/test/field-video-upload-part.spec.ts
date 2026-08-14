@@ -3,6 +3,7 @@ import { mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { FieldEvidenceVideoUploadStatus } from "@prisma/client";
 
 import { FieldVideoUploadService } from "../src/field-operator/field-video-upload.service";
 
@@ -73,9 +74,33 @@ describe("field video upload parts", () => {
     });
     expect(harness.storage.uploadFieldVideoPart).not.toHaveBeenCalled();
   });
+
+  it("rejects late parts after finalization starts before touching OSS", async () => {
+    const file = await tempFile(Buffer.from("verified-part"));
+    const harness = partHarness(file.size, {
+      status: FieldEvidenceVideoUploadStatus.FINALIZE_QUEUED
+    });
+    const sha256 = createHash("sha256").update("verified-part").digest("hex");
+
+    await expect(
+      harness.service.uploadPart(
+        harness.workOrderId,
+        harness.evidenceItemId,
+        harness.session.id,
+        1,
+        sha256,
+        file,
+        "13800138000"
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "VIDEO_UPLOAD_NOT_ACCEPTING_PARTS" })
+    });
+    expect(harness.storage.uploadFieldVideoPart).not.toHaveBeenCalled();
+    await expect(stat(file.path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
-function partHarness(sizeBytes: number) {
+function partHarness(sizeBytes: number, overrides: Record<string, unknown> = {}) {
   const workOrderId = randomUUID();
   const evidenceItemId = randomUUID();
   const session = {
@@ -112,7 +137,8 @@ function partHarness(sizeBytes: number) {
     totalParts: Math.ceil(sizeBytes / (8 * 1024 * 1024)),
     updatedAt: new Date(),
     version: 0,
-    workOrderId
+    workOrderId,
+    ...overrides
   };
   const repository = {
     findById: vi.fn(async () => session),

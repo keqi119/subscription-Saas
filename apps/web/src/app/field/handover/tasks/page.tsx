@@ -15,9 +15,11 @@ import {
   type FieldHandoverWorkOrderListItem
 } from "../../../../lib/field-handover-api";
 import { buildFieldHandoverTaskCard } from "../../../../lib/field-handover-view-model";
+import { listActiveFieldVideoUploadSessions } from "../../../../lib/field-video-upload-api";
 import {
   listFieldVideoRecoveries,
-  type FieldVideoUploadRecoveryRecord
+  synchronizeFieldVideoRecoveryPrompts,
+  type FieldVideoUploadRecoveryPrompt
 } from "../../../../lib/field-video-upload-recovery";
 
 export default function FieldHandoverTasksPage() {
@@ -25,7 +27,7 @@ export default function FieldHandoverTasksPage() {
   const { message } = App.useApp();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryRecord[]>([]);
+  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryPrompt[]>([]);
   const [session, setSession] = useState<FieldHandoverSession | null>(null);
   const [tasks, setTasks] = useState<FieldHandoverWorkOrderListItem[]>([]);
 
@@ -35,9 +37,21 @@ export default function FieldHandoverTasksPage() {
       setErrorMessage(null);
       const currentSession = await getFieldHandoverSession();
       setSession(currentSession);
-      const nextTasks = await listFieldHandoverWorkOrders();
+      const [nextTasks, activeUploads] = await Promise.all([
+        listFieldHandoverWorkOrders(),
+        listActiveFieldVideoUploadSessions().catch((error) => {
+          if (isFieldHandoverUnauthorized(error)) {
+            throw error;
+          }
+          return null;
+        })
+      ]);
       setTasks(nextTasks);
-      setRecoveries(listFieldVideoRecoveries());
+      setRecoveries(
+        activeUploads
+          ? synchronizeFieldVideoRecoveryPrompts(activeUploads)
+          : listFieldVideoRecoveries()
+      );
     } catch (error) {
       if (isFieldHandoverUnauthorized(error)) {
         router.replace("/field/handover");

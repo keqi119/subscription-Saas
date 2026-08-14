@@ -32,6 +32,8 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("请使用被分配交接任务的手机号登录");
     expect(source).toContain("sendFieldHandoverCode");
     expect(source).toContain("loginFieldHandover");
+    expect(source).toContain("FieldVideoUploadRecoveryAlert");
+    expect(source).toContain("listFieldVideoRecoveries");
     expect(source).toContain('router.replace("/field/handover/tasks")');
     expect(source).not.toContain("disabled={checkingSession");
     expect(source).not.toContain("loading={submitting || checkingSession}");
@@ -59,6 +61,8 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("activeTasks");
     expect(source).toContain("endedTasks");
     expect(source).toContain("card.statusColor");
+    expect(source).toContain("listActiveFieldVideoUploadSessions");
+    expect(source).toContain("synchronizeFieldVideoRecoveryPrompts");
     expect(source).not.toContain("/portal/login");
     expect(source).not.toContain("/login");
     expect(source).not.toMatch(
@@ -79,6 +83,7 @@ describe("field handover H5 pages", () => {
     expect(source).toContain("resolveFieldEvidenceMediaType");
     expect(source).toContain("FieldVideoUploadProgressCard");
     expect(source).toContain("fieldVideoUpload.barrierActive");
+    expect(source).toContain("fieldVideoUpload.uploadLocked");
     expect(source).toContain("removeFieldHandoverEvidenceFile");
     expect(source).toContain("validateFieldEvidenceFile");
     expect(source).toContain("import { EvidenceUploadControls }");

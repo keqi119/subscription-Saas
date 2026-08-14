@@ -56,6 +56,7 @@ export class FieldVideoUploadWorker implements OnModuleInit, OnModuleDestroy {
     if (!session.leaseOwner) {
       return;
     }
+    const startedAt = Date.now();
     try {
       if (session.internal.objectKey && session.internal.ossUploadId) {
         await this.storage.abortFieldVideoMultipart({
@@ -87,8 +88,11 @@ export class FieldVideoUploadWorker implements OnModuleInit, OnModuleDestroy {
     } catch {
       await this.repository.releaseLease(session.id, session.leaseOwner).catch(() => false);
       this.logger.warn({
+        elapsedMs: Date.now() - startedAt,
         errorCode: "VIDEO_UPLOAD_EXPIRY_CLEANUP_FAILED",
+        evidenceItemId: session.evidenceItemId,
         sessionId: session.id,
+        stage: FieldEvidenceVideoUploadStatus.UPLOADING,
         workOrderId: session.workOrderId
       });
     }

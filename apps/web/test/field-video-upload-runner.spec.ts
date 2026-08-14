@@ -22,6 +22,33 @@ describe("field video upload runner", () => {
     expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([2, 4]);
   });
 
+  it("reconstructs after reload and resumes only server-missing parts", async () => {
+    const storage = memoryStorage();
+    const api = fakeApi({ completedPartNumbers: [1, 2] });
+    const recovery = {
+      evidenceItemId: "item-1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      fileName: "video.mov",
+      fingerprintSha256: await fingerprintFor(fileOfSize(4 * CHUNK)),
+      lastModifiedMs: 1,
+      sessionId: "session-1",
+      sizeBytes: 4 * CHUNK,
+      workOrderId: "work-order-1"
+    };
+
+    await runFieldVideoUpload({
+      api,
+      evidenceItemId: "item-1",
+      file: fileOfSize(4 * CHUNK),
+      pollIntervalMs: 0,
+      recovery,
+      storage,
+      workOrderId: "work-order-1"
+    });
+
+    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([3, 4]);
+  });
+
   it("retries one part three times without restarting completed parts", async () => {
     const api = fakeApi({ completedPartNumbers: [] });
     let secondPartAttempts = 0;
@@ -212,6 +239,11 @@ function fileOfSize(size: number) {
     slice: (start = 0, end = size) => new Blob([bytes.slice(start, end)]),
     type: "video/quicktime"
   } as File;
+}
+
+async function fingerprintFor(file: File) {
+  const { buildFieldVideoResumeFingerprint } = await import("../src/lib/field-video-upload");
+  return buildFieldVideoResumeFingerprint(file);
 }
 
 function memoryStorage(): Storage {

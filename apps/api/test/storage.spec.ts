@@ -238,6 +238,46 @@ describe("Storage providers", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("recovers when OSS completed the object before the database stage was persisted", async () => {
+    const completeMultipartUpload = vi.fn(async () => {
+      throw Object.assign(new Error("already completed"), { code: "NoSuchUpload", status: 404 });
+    });
+    const source = Readable.from([Buffer.from("completed")]);
+    const getStream = vi.fn(async () => ({
+      res: { headers: { "content-length": "9", etag: "source-etag" } },
+      stream: source
+    }));
+    const factory: OssClientFactory = vi.fn(() => ({
+      completeMultipartUpload,
+      delete: vi.fn(),
+      getStream,
+      put: vi.fn()
+    }));
+    const provider = new OssStorageProvider(
+      config({
+        OSS_ACCESS_KEY_ID: "test-key",
+        OSS_ACCESS_KEY_SECRET: "test-secret",
+        OSS_BUCKET: "private-bucket",
+        OSS_REGION: "oss-cn-shanghai"
+      }) as never,
+      factory
+    );
+
+    await expect(
+      provider.completeMultipartUpload({
+        key: "field-video/upload-sessions/session-1/source",
+        parts: [{ etag: "part-etag", partNumber: 1, sizeBytes: 9 }],
+        sizeBytes: 9,
+        uploadId: "oss-upload-1"
+      })
+    ).resolves.toEqual({
+      etag: "source-etag",
+      key: "field-video/upload-sessions/session-1/source",
+      sizeBytes: 9
+    });
+    expect(getStream).toHaveBeenCalledWith("field-video/upload-sessions/session-1/source");
+  });
+
   it("requires OSS and namespaces resumable field-video objects", async () => {
     const oss = {
       initMultipartUpload: vi.fn(async (input: { key: string }) => ({

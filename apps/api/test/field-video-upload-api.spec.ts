@@ -159,6 +159,37 @@ describe("FieldVideoUploadService", () => {
       expect.objectContaining({ eventType: "FIELD_VIDEO_UPLOAD_CANCELLED" })
     );
   });
+
+  it.each(["ossUploadId", "objectKey", "objectEtag", "bucket", "etag", "leaseOwner"])(
+    "never exposes internal field %s in public service responses",
+    async (forbiddenField) => {
+      const harness = serviceHarness();
+      const publicResponses = [
+        await harness.service.createOrResume(
+          harness.workOrderId,
+          harness.evidenceItemId,
+          "13800138000",
+          randomUUID(),
+          createDto()
+        ),
+        await harness.service.getStatus(
+          harness.workOrderId,
+          harness.evidenceItemId,
+          harness.session.id,
+          "13800138000"
+        ),
+        await harness.service.listActive("13800138000"),
+        await harness.service.complete(
+          harness.workOrderId,
+          harness.evidenceItemId,
+          harness.session.id,
+          "13800138000"
+        )
+      ];
+
+      expect(JSON.stringify(publicResponses)).not.toContain(`"${forbiddenField}"`);
+    }
+  );
 });
 
 function serviceHarness(

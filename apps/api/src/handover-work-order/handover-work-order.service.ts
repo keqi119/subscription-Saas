@@ -26,6 +26,7 @@ import {
   DeliveryEvidenceMediaType,
   DeliveryEvidenceType,
   DeliveryStatus,
+  FieldEvidenceVideoUploadStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   FieldOperatorAuditEventType,
@@ -348,10 +349,13 @@ export interface AttachPreparedFieldVideoFromStoredSourceInput {
   detectedMimeType: string;
   evidenceItemId: string;
   originalName: string;
+  partCount: number;
   prepared: PreparedDeliveryEvidenceArtifacts;
   replaceEvidenceFileId?: string;
   sizeBytes: number;
   storedSource: { bucket: string; objectKey: string };
+  uploadLeaseOwner: string;
+  uploadSessionId: string;
   workOrderId: string;
 }
 
@@ -1058,6 +1062,50 @@ export class HandoverWorkOrderService {
           },
           tx
         );
+        await this.recordEvent(
+          current,
+          VehicleHandoverEventType.FIELD_VIDEO_UPLOAD_COMPLETED,
+          {
+            actorId: input.actorId,
+            actorType: input.actorId
+              ? VehicleHandoverEventActorType.FIELD_OPERATOR
+              : VehicleHandoverEventActorType.SYSTEM,
+            detail: {
+              evidenceItemId: currentItem.id,
+              partCount: input.partCount,
+              sessionId: input.uploadSessionId,
+              status: FieldEvidenceVideoUploadStatus.COMPLETED
+            }
+          },
+          tx
+        );
+        const completedUpload = await tx.fieldEvidenceVideoUploadSession.updateMany({
+          data: {
+            completedAt: new Date(),
+            failureCode: null,
+            failureMessage: null,
+            leaseExpiresAt: null,
+            leaseOwner: null,
+            objectEtag: null,
+            objectKey: null,
+            ossUploadId: null,
+            processingCompletedAt: new Date(),
+            resumeStage: null,
+            status: FieldEvidenceVideoUploadStatus.COMPLETED,
+            version: { increment: 1 }
+          },
+          where: {
+            id: input.uploadSessionId,
+            leaseOwner: input.uploadLeaseOwner,
+            status: FieldEvidenceVideoUploadStatus.PROCESSING
+          }
+        });
+        if (completedUpload.count !== 1) {
+          throw new ConflictException({
+            code: "FIELD_VIDEO_UPLOAD_FINALIZE_CONFLICT",
+            message: "视频上传状态已变化，请稍后重试。"
+          });
+        }
         return result;
       });
     } catch (error) {

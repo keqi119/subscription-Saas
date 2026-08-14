@@ -3,9 +3,16 @@
 import { Modal } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { cancelFieldVideoUploadSession } from "./field-video-upload-api";
-import { clearFieldVideoRecovery, listFieldVideoRecoveries } from "./field-video-upload-recovery";
-import type { FieldVideoUploadRecoveryRecord } from "./field-video-upload-recovery";
+import {
+  cancelFieldVideoUploadSession,
+  listActiveFieldVideoUploadSessions
+} from "./field-video-upload-api";
+import {
+  clearFieldVideoRecovery,
+  listFieldVideoRecoveries,
+  synchronizeFieldVideoRecoveryPrompts
+} from "./field-video-upload-recovery";
+import type { FieldVideoUploadRecoveryPrompt } from "./field-video-upload-recovery";
 import { runFieldVideoUpload } from "./field-video-upload-runner";
 import type { FieldVideoUploadRunnerState } from "./field-video-upload-runner";
 
@@ -25,19 +32,42 @@ export function useFieldVideoUpload({
   workOrderId: string;
 }) {
   const controllerRef = useRef<AbortController | null>(null);
+  const recoveryTargetRef = useRef<FieldVideoUploadRecoveryPrompt | null>(null);
   const selectedRef = useRef<SelectedFieldVideo | null>(null);
   const callbacksRef = useRef({ onCompleted, onSessionExpired });
-  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryRecord[]>([]);
+  const [hasActiveRecoveryTarget, setHasActiveRecoveryTarget] = useState(false);
+  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryPrompt[]>([]);
   const [state, setState] = useState<FieldVideoUploadRunnerState | null>(null);
 
   useEffect(() => {
     callbacksRef.current = { onCompleted, onSessionExpired };
   }, [onCompleted, onSessionExpired]);
 
-  useEffect(() => {
-    setRecoveries(listFieldVideoRecoveries());
-    return () => controllerRef.current?.abort();
+  const updateRecoveryTarget = useCallback((target: FieldVideoUploadRecoveryPrompt | null) => {
+    recoveryTargetRef.current = target;
+    setHasActiveRecoveryTarget(Boolean(target));
   }, []);
+
+  const refreshRecoveries = useCallback(async () => {
+    const local = listFieldVideoRecoveries();
+    try {
+      const active = await listActiveFieldVideoUploadSessions();
+      const prompts = synchronizeFieldVideoRecoveryPrompts(active);
+      setRecoveries(prompts);
+      updateRecoveryTarget(prompts.find((record) => record.workOrderId === workOrderId) ?? null);
+    } catch (error) {
+      setRecoveries(local);
+      updateRecoveryTarget(local.find((record) => record.workOrderId === workOrderId) ?? null);
+      if (isUnauthorized(error)) {
+        callbacksRef.current.onSessionExpired?.();
+      }
+    }
+  }, [updateRecoveryTarget, workOrderId]);
+
+  useEffect(() => {
+    void refreshRecoveries();
+    return () => controllerRef.current?.abort();
+  }, [refreshRecoveries]);
 
   const execute = useCallback(
     async (selected: SelectedFieldVideo, retryFinalization = false) => {
@@ -51,29 +81,46 @@ export function useFieldVideoUpload({
         (record) =>
           record.workOrderId === workOrderId && record.evidenceItemId === selected.evidenceItemId
       );
+      updateRecoveryTarget(
+        recovery ??
+          recoveries.find(
+            (record) =>
+              record.workOrderId === workOrderId &&
+              record.evidenceItemId === selected.evidenceItemId
+          ) ??
+          null
+      );
       try {
         const result = await runFieldVideoUpload({
           evidenceItemId: selected.evidenceItemId,
           file: selected.file,
-          onStateChange: setState,
+          onStateChange: (nextState) => {
+            setState(nextState);
+            if (nextState.session) {
+              updateRecoveryTarget(
+                isTerminalUploadStatus(nextState.session.status)
+                  ? null
+                  : toRecoveryPrompt(nextState.session)
+              );
+            }
+          },
           recovery,
           replaceEvidenceFileId: selected.replaceEvidenceFileId,
           retryFinalization,
           signal: controller.signal,
           workOrderId
         });
-        setRecoveries(listFieldVideoRecoveries());
+        await refreshRecoveries();
         if (result.status === "COMPLETED") {
           await callbacksRef.current.onCompleted?.();
         }
       } catch (error) {
-        setRecoveries(listFieldVideoRecoveries());
+        await refreshRecoveries();
         if (isUnauthorized(error)) {
           callbacksRef.current.onSessionExpired?.();
           return;
         }
-        const isFileMismatch =
-          error instanceof Error && error.message === "VIDEO_UPLOAD_FILE_MISMATCH";
+        const isFileMismatch = isFileSelectionConflict(error);
         setState((current) =>
           current
             ? {
@@ -89,7 +136,7 @@ export function useFieldVideoUpload({
         }
       }
     },
-    [workOrderId]
+    [recoveries, refreshRecoveries, updateRecoveryTarget, workOrderId]
   );
 
   const selectFile = useCallback((selected: SelectedFieldVideo) => execute(selected), [execute]);
@@ -106,7 +153,8 @@ export function useFieldVideoUpload({
   }, [execute]);
   const cancel = useCallback(() => {
     const session = state?.session;
-    if (!session) {
+    const target = session ?? recoveryTargetRef.current;
+    if (!target) {
       setState(null);
       selectedRef.current = null;
       return;
@@ -118,25 +166,27 @@ export function useFieldVideoUpload({
       okText: "确认取消",
       onOk: async () => {
         controllerRef.current?.abort();
-        if (state?.status !== "VALIDATION_FAILED" && state?.status !== "COMPLETED") {
+        if (!session || !isTerminalUploadStatus(session.status)) {
           await cancelFieldVideoUploadSession(
-            session.workOrderId,
-            session.evidenceItemId,
-            session.sessionId
+            target.workOrderId,
+            target.evidenceItemId,
+            target.sessionId
           );
         }
-        clearFieldVideoRecovery(session.sessionId);
-        setRecoveries(listFieldVideoRecoveries());
+        clearFieldVideoRecovery(target.sessionId);
+        updateRecoveryTarget(null);
+        await refreshRecoveries();
         setState(null);
         selectedRef.current = null;
       },
       title: "取消本次视频上传？"
     });
-  }, [state?.session, state?.status]);
+  }, [refreshRecoveries, state?.session, updateRecoveryTarget]);
 
-  const barrierActive = Boolean(
+  const uploadLocked = Boolean(
     state && state.status !== "COMPLETED" && state.status !== "VALIDATION_FAILED"
   );
+  const barrierActive = uploadLocked || hasActiveRecoveryTarget;
   const view = useMemo(() => {
     if (!state) {
       return null;
@@ -162,6 +212,7 @@ export function useFieldVideoUpload({
     resume,
     retryFinalization,
     selectFile,
+    uploadLocked,
     view
   };
 }
@@ -191,4 +242,35 @@ function safeUploadMessage(error: unknown) {
   return error instanceof Error && error.message.trim()
     ? error.message
     : "视频上传暂时失败，请稍后重试。";
+}
+
+function isFileSelectionConflict(error: unknown) {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (("message" in error && error.message === "VIDEO_UPLOAD_FILE_MISMATCH") ||
+      ("code" in error && error.code === "VIDEO_UPLOAD_ACTIVE_FILE_CONFLICT"))
+  );
+}
+
+function isTerminalUploadStatus(status: string) {
+  return ["CANCELLED", "COMPLETED", "EXPIRED", "VALIDATION_FAILED"].includes(status);
+}
+
+function toRecoveryPrompt(session: {
+  evidenceItemId: string;
+  expiresAt: string;
+  fileName: string;
+  sessionId: string;
+  sizeBytes: number;
+  workOrderId: string;
+}): FieldVideoUploadRecoveryPrompt {
+  return {
+    evidenceItemId: session.evidenceItemId,
+    expiresAt: session.expiresAt,
+    fileName: session.fileName,
+    sessionId: session.sessionId,
+    sizeBytes: session.sizeBytes,
+    workOrderId: session.workOrderId
+  };
 }

@@ -100,7 +100,7 @@ describe("field video upload API", () => {
       partNumber: 2,
       sizeBytes: 5
     });
-    expect(request.headers["X-Part-SHA256"]).toBe("a".repeat(64));
+    expect(request.headers["X-Chunk-SHA256"]).toBe("a".repeat(64));
     expect(request.withCredentials).toBe(true);
     expect(onProgress).toHaveBeenCalledWith({ loadedBytes: 3, totalBytes: 5 });
   });

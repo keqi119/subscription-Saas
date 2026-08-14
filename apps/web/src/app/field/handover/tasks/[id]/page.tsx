@@ -1271,7 +1271,7 @@ export default function FieldHandoverTaskDetailPage() {
                             !canStartUpload ||
                             !captureView.canEdit ||
                             actionLoading === "submit" ||
-                            (fieldVideoUpload.barrierActive &&
+                            (fieldVideoUpload.uploadLocked &&
                               fieldVideoUpload.view?.activeEvidenceItemId === item.id)
                           }
                           environment={uploadEnvironment}

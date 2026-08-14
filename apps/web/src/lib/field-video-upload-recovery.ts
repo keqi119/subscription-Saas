@@ -11,6 +11,34 @@ export interface FieldVideoUploadRecoveryRecord {
   workOrderId: string;
 }
 
+export type FieldVideoUploadRecoveryPrompt = Pick<
+  FieldVideoUploadRecoveryRecord,
+  "evidenceItemId" | "expiresAt" | "fileName" | "sessionId" | "sizeBytes" | "workOrderId"
+>;
+
+export function mergeFieldVideoRecoveryPrompts(
+  localRecords: FieldVideoUploadRecoveryRecord[],
+  activeSessions: FieldVideoUploadRecoveryPrompt[]
+): FieldVideoUploadRecoveryPrompt[] {
+  const localBySessionId = new Map(localRecords.map((record) => [record.sessionId, record]));
+  return activeSessions.map((session) => localBySessionId.get(session.sessionId) ?? { ...session });
+}
+
+export function synchronizeFieldVideoRecoveryPrompts(
+  activeSessions: FieldVideoUploadRecoveryPrompt[],
+  storage = browserStorage()
+): FieldVideoUploadRecoveryPrompt[] {
+  const localRecords = listFieldVideoRecoveries(storage);
+  const activeSessionIds = new Set(activeSessions.map((session) => session.sessionId));
+  if (storage) {
+    writeRecords(
+      storage,
+      localRecords.filter((record) => activeSessionIds.has(record.sessionId))
+    );
+  }
+  return mergeFieldVideoRecoveryPrompts(localRecords, activeSessions);
+}
+
 export function saveFieldVideoRecovery(
   record: FieldVideoUploadRecoveryRecord,
   storage = browserStorage()

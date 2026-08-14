@@ -963,12 +963,15 @@ describe("HandoverWorkOrderService", () => {
       detectedMimeType: "video/quicktime",
       evidenceItemId: "walkaround-item",
       originalName: "IMG_0284.MOV",
+      partCount: 28,
       prepared,
       sizeBytes: 1024,
       storedSource: {
         bucket: "oss:video-bucket",
         objectKey: "oss:field-video/upload-sessions/session/source"
       },
+      uploadLeaseOwner: "worker-lease-1",
+      uploadSessionId: "upload-session-1",
       workOrderId: "work-order-visible"
     });
 
@@ -986,6 +989,19 @@ describe("HandoverWorkOrderService", () => {
         processingStatus: "READY",
         videoFrameFileIds: ["file-2"]
       })
+    );
+    expect(harness.prisma.fieldEvidenceVideoUploadSession.updateMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({ status: "COMPLETED" }),
+      where: {
+        id: "upload-session-1",
+        leaseOwner: "worker-lease-1",
+        status: "PROCESSING"
+      }
+    });
+    expect(harness.state.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "FIELD_VIDEO_UPLOAD_COMPLETED" })
+      ])
     );
     expect(attached).toMatchObject({ id: "walkaround-item", status: "UPLOADED" });
   });
@@ -2437,6 +2453,9 @@ function createHandoverWorkOrderHarness() {
         state.fileObjects.push(fileObject);
         return fileObject;
       })
+    },
+    fieldEvidenceVideoUploadSession: {
+      updateMany: vi.fn(async () => ({ count: 1 }))
     },
     vehicleDeliveryEvidenceItem: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>

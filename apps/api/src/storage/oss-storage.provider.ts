@@ -32,9 +32,7 @@ export interface OssClientLike {
     res?: { headers?: Record<string, string | string[] | undefined> };
   }>;
   delete(name: string): Promise<unknown>;
-  getStream(
-    name: string
-  ): Promise<{
+  getStream(name: string): Promise<{
     res?: { headers?: Record<string, string | string[] | undefined> };
     stream: Readable;
   }>;
@@ -126,17 +124,39 @@ export class OssStorageProvider implements StorageProvider {
     if (!method) {
       throw new BadRequestException("OSS 客户端不支持分片上传。");
     }
-    const result = await method.call(
-      this.getClient(),
-      key,
-      input.uploadId,
-      input.parts.map((part) => ({ etag: part.etag, number: part.partNumber }))
-    );
-    return {
-      etag: result.etag ?? getHeader(result.res?.headers, "etag"),
-      key,
-      sizeBytes: input.sizeBytes
-    };
+    try {
+      const result = await method.call(
+        this.getClient(),
+        key,
+        input.uploadId,
+        input.parts.map((part) => ({ etag: part.etag, number: part.partNumber }))
+      );
+      return {
+        etag: result.etag ?? getHeader(result.res?.headers, "etag"),
+        key,
+        sizeBytes: input.sizeBytes
+      };
+    } catch (error) {
+      if (!isNoSuchUploadError(error)) {
+        throw error;
+      }
+      let completed: Awaited<ReturnType<OssClientLike["getStream"]>>;
+      try {
+        completed = await this.getClient().getStream(key);
+      } catch {
+        throw error;
+      }
+      const completedSize = numberHeader(completed.res?.headers, "content-length");
+      completed.stream.destroy();
+      if (completedSize !== input.sizeBytes) {
+        throw error;
+      }
+      return {
+        etag: getHeader(completed.res?.headers, "etag"),
+        key,
+        sizeBytes: input.sizeBytes
+      };
+    }
   }
 
   async abortMultipartUpload(input: AbortMultipartUploadInput): Promise<void> {

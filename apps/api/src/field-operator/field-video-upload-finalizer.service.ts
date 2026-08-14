@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { FieldEvidenceVideoUploadStatus } from "@prisma/client";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -22,6 +22,8 @@ const PROCESSING_ROOT = path.join(tmpdir(), "subscription-saas-field-video-proce
 
 @Injectable()
 export class FieldVideoUploadFinalizerService {
+  private readonly logger = new Logger(FieldVideoUploadFinalizerService.name);
+
   constructor(
     private readonly repository: FieldVideoUploadRepository,
     private readonly storage: StorageService,
@@ -34,6 +36,7 @@ export class FieldVideoUploadFinalizerService {
       return;
     }
 
+    const startedAt = Date.now();
     let stage = claimed.status;
     if (stage === FieldEvidenceVideoUploadStatus.FINALIZE_QUEUED) {
       const advanced = await this.repository.advanceClaimed({
@@ -77,7 +80,8 @@ export class FieldVideoUploadFinalizerService {
           claimed,
           FieldEvidenceVideoUploadStatus.OSS_COMPLETING,
           "VIDEO_UPLOAD_OSS_COMPLETE_FAILED",
-          "视频分片合并暂时失败，请稍后重试。"
+          "视频分片合并暂时失败，请稍后重试。",
+          startedAt
         );
         return;
       }
@@ -100,10 +104,10 @@ export class FieldVideoUploadFinalizerService {
         return;
       }
     }
-    await this.processObject(claimed);
+    await this.processObject(claimed, startedAt);
   }
 
-  private async processObject(claimed: FieldVideoUploadSessionSnapshot) {
+  private async processObject(claimed: FieldVideoUploadSessionSnapshot, startedAt: number) {
     const objectKey = requireInternal(claimed.internal.objectKey);
     await mkdir(PROCESSING_ROOT, { recursive: true });
     const directory = await mkdtemp(path.join(PROCESSING_ROOT, `${claimed.id}-`));
@@ -127,28 +131,15 @@ export class FieldVideoUploadFinalizerService {
         detectedMimeType: prepared.metadata.detectedMimeType,
         evidenceItemId: claimed.evidenceItemId,
         originalName: claimed.originalName,
+        partCount: claimed.parts.length,
         prepared,
         replaceEvidenceFileId: claimed.replaceEvidenceFileId ?? undefined,
         sizeBytes: prepared.metadata.sourceSizeBytes,
         storedSource: this.storage.resolveFieldVideoUploadSourceIdentity({ key: objectKey }),
+        uploadLeaseOwner: requireLease(claimed),
+        uploadSessionId: claimed.id,
         workOrderId: claimed.workOrderId
       });
-      const terminal = await this.repository.markTerminal({
-        leaseOwner: requireLease(claimed),
-        sessionId: claimed.id,
-        status: FieldEvidenceVideoUploadStatus.COMPLETED
-      });
-      if (terminal) {
-        await this.handover.recordFieldVideoUploadEvent({
-          actorId: claimed.createdBySessionId ?? undefined,
-          eventType: "FIELD_VIDEO_UPLOAD_COMPLETED",
-          evidenceItemId: claimed.evidenceItemId,
-          partCount: claimed.parts.length,
-          sessionId: claimed.id,
-          status: FieldEvidenceVideoUploadStatus.COMPLETED,
-          workOrderId: claimed.workOrderId
-        });
-      }
     } catch (error) {
       const validation = validationFailure(error);
       if (validation) {
@@ -171,13 +162,22 @@ export class FieldVideoUploadFinalizerService {
               status: FieldEvidenceVideoUploadStatus.VALIDATION_FAILED,
               workOrderId: claimed.workOrderId
             });
+            this.logger.warn({
+              elapsedMs: Date.now() - startedAt,
+              errorCode: validation.code,
+              evidenceItemId: claimed.evidenceItemId,
+              sessionId: claimed.id,
+              stage: FieldEvidenceVideoUploadStatus.PROCESSING,
+              workOrderId: claimed.workOrderId
+            });
           }
         } catch {
           await this.markRetryable(
             claimed,
             FieldEvidenceVideoUploadStatus.PROCESSING,
             "VIDEO_UPLOAD_VALIDATION_CLEANUP_FAILED",
-            "视频校验失败后的清理暂时未完成，请稍后重试。"
+            "视频校验失败后的清理暂时未完成，请稍后重试。",
+            startedAt
           );
         }
         return;
@@ -186,7 +186,8 @@ export class FieldVideoUploadFinalizerService {
         claimed,
         FieldEvidenceVideoUploadStatus.PROCESSING,
         "VIDEO_UPLOAD_PROCESSING_FAILED",
-        "视频处理暂时失败，请稍后重试。"
+        "视频处理暂时失败，请稍后重试。",
+        startedAt
       );
     } finally {
       await prepared?.cleanup().catch(() => undefined);
@@ -198,9 +199,10 @@ export class FieldVideoUploadFinalizerService {
     claimed: FieldVideoUploadSessionSnapshot,
     resumeStage: FieldEvidenceVideoUploadStatus,
     code: string,
-    message: string
+    message: string,
+    startedAt: number
   ) {
-    await this.repository.markRetryableFailure({
+    const marked = await this.repository.markRetryableFailure({
       code,
       delayMs: retryDelayMs(claimed.retryCount),
       leaseOwner: requireLease(claimed),
@@ -208,6 +210,16 @@ export class FieldVideoUploadFinalizerService {
       resumeStage,
       sessionId: claimed.id
     });
+    if (marked) {
+      this.logger.warn({
+        elapsedMs: Date.now() - startedAt,
+        errorCode: code,
+        evidenceItemId: claimed.evidenceItemId,
+        sessionId: claimed.id,
+        stage: resumeStage,
+        workOrderId: claimed.workOrderId
+      });
+    }
   }
 }
 

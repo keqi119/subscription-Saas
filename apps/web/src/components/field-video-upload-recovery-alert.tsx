@@ -2,12 +2,12 @@
 
 import { Alert, Flex, Typography } from "antd";
 
-import type { FieldVideoUploadRecoveryRecord } from "../lib/field-video-upload-recovery";
+import type { FieldVideoUploadRecoveryPrompt } from "../lib/field-video-upload-recovery";
 
 export function FieldVideoUploadRecoveryAlert({
   records
 }: {
-  records: FieldVideoUploadRecoveryRecord[];
+  records: FieldVideoUploadRecoveryPrompt[];
 }) {
   if (records.length === 0) {
     return null;

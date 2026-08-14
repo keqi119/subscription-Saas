@@ -3,10 +3,11 @@ import {
   Controller,
   INestApplication,
   Post,
+  UploadedFile,
   UploadedFiles,
   UseInterceptors
 } from "@nestjs/common";
-import { AnyFilesInterceptor } from "@nestjs/platform-express";
+import { AnyFilesInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import { Test } from "@nestjs/testing";
 import { mkdir, rm } from "node:fs/promises";
 import { AddressInfo } from "node:net";
@@ -18,6 +19,7 @@ import {
   FIELD_EVIDENCE_REPLACEMENT_FIELD_SIZE_BYTES,
   createFieldEvidenceUploadOptions
 } from "../src/field-operator/field-evidence-upload-options";
+import { createFieldVideoPartUploadOptions } from "../src/field-operator/field-video-upload-options";
 
 const TEST_PRODUCT_LIMIT_BYTES = 8;
 const TEST_UPLOAD_DIRECTORY = path.join(
@@ -36,6 +38,11 @@ const TEST_PARTS_UPLOAD_OPTIONS = {
     files: 10
   }
 };
+const TEST_VIDEO_PART_LIMIT_BYTES = 8;
+const TEST_VIDEO_PART_UPLOAD_OPTIONS = createFieldVideoPartUploadOptions({
+  destination: TEST_UPLOAD_DIRECTORY,
+  partSizeBytes: TEST_VIDEO_PART_LIMIT_BYTES
+});
 
 @Controller()
 class MultipartBoundaryController {
@@ -58,6 +65,15 @@ class MultipartBoundaryController {
   @UseInterceptors(AnyFilesInterceptor(TEST_PARTS_UPLOAD_OPTIONS))
   parts(@UploadedFiles() files: Array<{ size: number }> | undefined) {
     return { fileCount: files?.length ?? 0 };
+  }
+
+  @Post("video-part")
+  @UseInterceptors(FileInterceptor("file", TEST_VIDEO_PART_UPLOAD_OPTIONS))
+  videoPart(@UploadedFile() file: { size: number } | undefined) {
+    if (!file) {
+      throw new BadRequestException("Expected one video part.");
+    }
+    return { size: file.size };
   }
 }
 
@@ -161,6 +177,37 @@ describe("field evidence multipart boundary", () => {
     expect(partFloodResponse.status).toBe(400);
   });
 
+  it("accepts one exact-size video part and rejects parser overflow", async () => {
+    const exactResponse = await postMultipart(
+      videoPartForm(TEST_VIDEO_PART_LIMIT_BYTES),
+      "video-part"
+    );
+    const overflowResponse = await postMultipart(
+      videoPartForm(TEST_VIDEO_PART_LIMIT_BYTES + 1),
+      "video-part"
+    );
+
+    const exactBody = await exactResponse.json();
+    expect({ body: exactBody, status: exactResponse.status }).toEqual({
+      body: { size: TEST_VIDEO_PART_LIMIT_BYTES },
+      status: 201
+    });
+    expect(overflowResponse.status).toBe(413);
+  });
+
+  it("rejects extra video-part fields and file parts", async () => {
+    const fieldFlood = videoPartForm(1);
+    fieldFlood.append("unexpected", "flood");
+    const fieldFloodResponse = await postMultipart(fieldFlood, "video-part");
+
+    const fileFlood = videoPartForm(1);
+    fileFlood.append("file", new Blob(["b"]), "second.part");
+    const fileFloodResponse = await postMultipart(fileFlood, "video-part");
+
+    expect(fieldFloodResponse.status).toBe(400);
+    expect(fileFloodResponse.status).toBe(400);
+  });
+
   function postMultipart(form: FormData, route = "upload") {
     return fetch(`${baseUrl}/${route}`, {
       body: form,
@@ -172,5 +219,11 @@ describe("field evidence multipart boundary", () => {
 function fileForm(size: number) {
   const form = new FormData();
   form.append("files", new Blob(["x".repeat(size)]), "evidence.bin");
+  return form;
+}
+
+function videoPartForm(size: number) {
+  const form = new FormData();
+  form.append("file", new Blob(["x".repeat(size)]), "video.part");
   return form;
 }

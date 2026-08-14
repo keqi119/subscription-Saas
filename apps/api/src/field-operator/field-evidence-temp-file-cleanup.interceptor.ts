@@ -9,10 +9,15 @@ interface DiskBackedUpload {
 
 export class FieldEvidenceTempFileCleanupInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const request = context.switchToHttp().getRequest<{ files?: DiskBackedUpload[] }>();
+    const request = context
+      .switchToHttp()
+      .getRequest<{ file?: DiskBackedUpload; files?: DiskBackedUpload[] }>();
     let cleanupPromise: Promise<void> | null = null;
     const cleanup = () => {
-      cleanupPromise ??= cleanupTempFiles(request.files);
+      cleanupPromise ??= cleanupTempFiles([
+        ...(request.file ? [request.file] : []),
+        ...(request.files ?? [])
+      ]);
       return cleanupPromise;
     };
 
@@ -24,9 +29,9 @@ export class FieldEvidenceTempFileCleanupInterceptor implements NestInterceptor 
   }
 }
 
-async function cleanupTempFiles(files: DiskBackedUpload[] | undefined) {
+async function cleanupTempFiles(files: DiskBackedUpload[]) {
   await Promise.allSettled(
-    (files ?? [])
+    files
       .map((file) => file.path)
       .filter((filePath): filePath is string => Boolean(filePath))
       .map((filePath) => unlink(filePath))

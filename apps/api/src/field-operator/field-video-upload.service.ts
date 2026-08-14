@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   PayloadTooLargeException,
@@ -7,7 +8,9 @@ import {
   UnsupportedMediaTypeException
 } from "@nestjs/common";
 import { FieldEvidenceVideoUploadStatus } from "@prisma/client";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { unlink } from "node:fs/promises";
 
 import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
 import { StorageService } from "../storage/storage.service";
@@ -21,6 +24,7 @@ import { FieldVideoUploadRepository } from "./field-video-upload.repository";
 import {
   FieldVideoUploadSessionPublicSnapshot,
   FieldVideoUploadSessionSnapshot,
+  DiskUploadedFile,
   toPublicFieldVideoUploadSnapshot
 } from "./field-video-upload.types";
 
@@ -136,6 +140,58 @@ export class FieldVideoUploadService {
   async getStatus(workOrderId: string, evidenceItemId: string, sessionId: string, phone: string) {
     const session = await this.getScopedSession(workOrderId, evidenceItemId, sessionId, phone);
     return toPublicFieldVideoUploadSnapshot(session);
+  }
+
+  async uploadPart(
+    workOrderId: string,
+    evidenceItemId: string,
+    sessionId: string,
+    partNumber: number,
+    sha256: string,
+    file: DiskUploadedFile,
+    phone: string
+  ) {
+    try {
+      const session = await this.getScopedSession(workOrderId, evidenceItemId, sessionId, phone);
+      assertPartMetadata(session, partNumber, sha256, file.size);
+
+      const existing = session.parts.find((part) => part.partNumber === partNumber);
+      if (existing) {
+        if (existing.sizeBytes !== file.size || existing.sha256 !== sha256) {
+          throw new ConflictException({
+            code: "CHUNK_CONTENT_CONFLICT",
+            message: "分片内容与已上传记录不一致。"
+          });
+        }
+        return toPublicPart(existing);
+      }
+
+      const actualSha256 = await sha256File(file.path);
+      if (actualSha256 !== sha256) {
+        throw new BadRequestException({
+          code: "CHUNK_HASH_MISMATCH",
+          message: "分片校验失败，请重新上传该分片。"
+        });
+      }
+
+      const stored = await this.storage.uploadFieldVideoPart({
+        filePath: file.path,
+        key: requireInternal(session.internal.objectKey),
+        partNumber,
+        sizeBytes: file.size,
+        uploadId: requireInternal(session.internal.ossUploadId)
+      });
+      const recorded = await this.repository.recordPart({
+        ossEtag: stored.etag,
+        partNumber,
+        sessionId,
+        sha256,
+        sizeBytes: file.size
+      });
+      return toPublicPart(recorded);
+    } finally {
+      await unlink(file.path).catch(() => undefined);
+    }
   }
 
   async listActive(phone: string) {
@@ -328,4 +384,50 @@ function requireInternal(value: string | null) {
     });
   }
   return value;
+}
+
+function assertPartMetadata(
+  session: FieldVideoUploadSessionSnapshot,
+  partNumber: number,
+  sha256: string,
+  sizeBytes: number
+) {
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new BadRequestException({
+      code: "CHUNK_HASH_INVALID",
+      message: "分片 SHA-256 格式不正确。"
+    });
+  }
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > session.totalParts) {
+    throw new BadRequestException({
+      code: "CHUNK_NUMBER_INVALID",
+      message: "分片序号超出有效范围。"
+    });
+  }
+  const expectedSize = Math.min(
+    session.chunkSizeBytes,
+    session.sizeBytes - (partNumber - 1) * session.chunkSizeBytes
+  );
+  if (sizeBytes !== expectedSize) {
+    throw new BadRequestException({
+      code: "CHUNK_SIZE_MISMATCH",
+      message: "分片大小与上传会话不一致。"
+    });
+  }
+}
+
+async function sha256File(filePath: string) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest("hex");
+}
+
+function toPublicPart(part: { completedAt: Date; partNumber: number; sizeBytes: number }) {
+  return {
+    completedAt: part.completedAt.toISOString(),
+    partNumber: part.partNumber,
+    sizeBytes: part.sizeBytes
+  };
 }

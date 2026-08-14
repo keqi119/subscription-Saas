@@ -224,7 +224,20 @@ Staging smoke should run only after a combined API/Web deployment. The deployed 
 
 The staging smoke should cover one controlled field evidence capture path, one Portal customer review path, and one Admin Stage 2 source PDF generation/download path. Fadada Stage 2 signing and archive must remain disabled until the separate controlled sandbox questions above are resolved; real notifications, delivery confirmation, lease, and billing remain outside that smoke.
 
-Field evidence accepts photos up to 10MB and videos up to 300MB. The API Nginx virtual host must set `client_max_body_size 320m` or higher, `proxy_read_timeout`/`proxy_send_timeout` to `1200s`, and `proxy_request_buffering off`. Uploads are spooled to an OS temporary file before local/OSS persistence and the temporary file is cleaned up on success or failure. Validate proxy size, API multipart size, available temporary disk space, and storage connectivity when a large upload fails.
+Field evidence accepts photos up to 10 MiB and videos up to exactly 300 MiB. Photos and the legacy video endpoint keep the existing single-request path. New vehicle walkaround videos use durable 8 MiB OSS Multipart parts sent sequentially through the API. Each part is spooled to an OS temporary file, SHA-256 checked, uploaded without buffering the full video, and removed on both success and failure. The finalizer worker completes OSS Multipart, streams the completed object through the existing FFprobe/720p/derivative pipeline, and only then atomically replaces the active evidence.
+
+Local development keeps `FIELD_VIDEO_UPLOAD_WORKER_ENABLED=false` unless the worker is under test. Staging must use the following controlled settings:
+
+```dotenv
+FIELD_VIDEO_UPLOAD_WORKER_ENABLED=true
+FIELD_VIDEO_UPLOAD_WORKER_POLL_INTERVAL_MS=5000
+FIELD_VIDEO_UPLOAD_WORKER_CONCURRENCY=1
+FIELD_VIDEO_UPLOAD_WORKER_LEASE_MS=300000
+```
+
+Deploy in this order: apply `20260815010000_field_video_resumable_upload`, deploy API, verify OSS Multipart initiation/upload/abort with controlled non-business data, enable and observe the finalizer worker, deploy Web, then run the iPhone WeChat acceptance. Keep the API Nginx virtual host at `client_max_body_size 320m` or higher, `client_body_timeout 1200s`, `proxy_read_timeout`/`proxy_send_timeout 1200s`, and `proxy_request_buffering off`; although new parts are below 9 MiB, these settings preserve the legacy endpoint during API-first/Web-second rollout.
+
+Large-video acceptance must cover `IMG_0284` (about 226.9 MiB), interruption and resume after reselecting the same file, re-login recovery, completed evidence metadata/key frames/audit, a rejected sub-720p replacement that leaves the old evidence active, and cleanup of Multipart uploads plus local processing files. Public upload responses and logs must not expose OSS bucket, object key, upload ID, ETag, credentials, or local paths.
 
 Browser smoke must cover:
 

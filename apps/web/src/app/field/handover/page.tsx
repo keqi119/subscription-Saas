@@ -1,10 +1,16 @@
 "use client";
 
-import { CarOutlined, LoginOutlined, MobileOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
+import {
+  CarOutlined,
+  LoginOutlined,
+  MobileOutlined,
+  SafetyCertificateOutlined
+} from "@ant-design/icons";
 import { Alert, App, Button, Flex, Form, Input, Typography } from "antd";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { FieldVideoUploadRecoveryAlert } from "../../../components/field-video-upload-recovery-alert";
 import {
   getFieldHandoverLoginErrorMessage,
   getFieldHandoverSendCodeErrorMessage,
@@ -14,6 +20,10 @@ import {
   loginFieldHandover,
   sendFieldHandoverCode
 } from "../../../lib/field-handover-api";
+import {
+  listFieldVideoRecoveries,
+  type FieldVideoUploadRecoveryRecord
+} from "../../../lib/field-video-upload-recovery";
 
 interface FieldHandoverLoginValues {
   code: string;
@@ -26,10 +36,12 @@ export default function FieldHandoverLoginPage() {
   const [form] = Form.useForm<FieldHandoverLoginValues>();
   const [countdown, setCountdown] = useState(0);
   const [requestingCode, setRequestingCode] = useState(false);
+  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryRecord[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     let active = true;
+    setRecoveries(listFieldVideoRecoveries());
 
     getFieldHandoverSession()
       .then((session) => {
@@ -41,7 +53,7 @@ export default function FieldHandoverLoginPage() {
         if (!isFieldHandoverUnauthorized(error)) {
           void message.warning("交接登录状态暂不可用，请稍后重试");
         }
-      })
+      });
     return () => {
       active = false;
     };
@@ -129,6 +141,10 @@ export default function FieldHandoverLoginPage() {
           style={{ marginBottom: 18 }}
           type="info"
         />
+
+        <div style={{ marginBottom: recoveries.length > 0 ? 18 : 0 }}>
+          <FieldVideoUploadRecoveryAlert records={recoveries} />
+        </div>
 
         <div
           style={{

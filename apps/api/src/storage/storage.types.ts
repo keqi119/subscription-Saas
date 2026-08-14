@@ -37,9 +37,49 @@ export interface DownloadObjectResult {
   stream: Readable;
 }
 
+export interface BeginMultipartUploadInput {
+  contentType?: string;
+  key: string;
+  metadata?: Record<string, string>;
+}
+
+export interface MultipartUploadHandle {
+  key: string;
+  uploadId: string;
+}
+
+export interface UploadMultipartPartInput extends MultipartUploadHandle {
+  filePath: string;
+  partNumber: number;
+  sizeBytes: number;
+}
+
+export interface MultipartUploadPart {
+  etag: string;
+  partNumber: number;
+  sizeBytes: number;
+}
+
+export interface CompleteMultipartUploadInput extends MultipartUploadHandle {
+  parts: MultipartUploadPart[];
+  sizeBytes: number;
+}
+
+export type AbortMultipartUploadInput = MultipartUploadHandle;
+
+export interface CompletedMultipartObject {
+  etag?: string;
+  key: string;
+  sizeBytes: number;
+}
+
 export interface StorageProvider {
+  abortMultipartUpload?(input: AbortMultipartUploadInput): Promise<void>;
+  completeMultipartUpload?(input: CompleteMultipartUploadInput): Promise<CompletedMultipartObject>;
   deleteObject(key: string): Promise<void>;
   exists?(key: string): Promise<boolean>;
   getObject(key: string): Promise<DownloadObjectResult>;
+  initMultipartUpload?(input: BeginMultipartUploadInput): Promise<MultipartUploadHandle>;
   putObject(input: UploadObjectInput): Promise<StoredObject>;
+  uploadPart?(input: UploadMultipartPartInput): Promise<MultipartUploadPart>;
 }

@@ -24,7 +24,9 @@ import {
   ContractVersionStatus,
   DeliveryEvidenceFileLifecycleStatus,
   DeliveryEvidenceMediaType,
+  DeliveryEvidenceType,
   DeliveryStatus,
+  FieldEvidenceVideoUploadStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
   FieldOperatorAuditEventType,
@@ -340,6 +342,21 @@ export interface UploadedFieldEvidenceFile {
 
 export interface UploadAndAttachFieldEvidenceOptions {
   replaceEvidenceFileId?: string | null;
+}
+
+export interface AttachPreparedFieldVideoFromStoredSourceInput {
+  actorId?: string;
+  detectedMimeType: string;
+  evidenceItemId: string;
+  originalName: string;
+  partCount: number;
+  prepared: PreparedDeliveryEvidenceArtifacts;
+  replaceEvidenceFileId?: string;
+  sizeBytes: number;
+  storedSource: { bucket: string; objectKey: string };
+  uploadLeaseOwner: string;
+  uploadSessionId: string;
+  workOrderId: string;
 }
 
 export interface RequestCustomerObjectionResubmissionInput {
@@ -919,6 +936,255 @@ export class HandoverWorkOrderService {
       await prepared?.cleanup();
       await Promise.all(uploadedFiles.map(cleanupUploadedFieldEvidenceTempFile));
     }
+  }
+
+  async attachPreparedFieldVideoFromStoredSource(
+    input: AttachPreparedFieldVideoFromStoredSourceInput
+  ) {
+    const workOrder = await this.getWorkOrderOrThrow(input.workOrderId);
+    assertFieldSessionEditable(workOrder);
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(
+      workOrder,
+      input.evidenceItemId
+    );
+    const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
+      item.id,
+      DeliveryEvidenceMediaType.VIDEO,
+      input.replaceEvidenceFileId
+    );
+    if (mutation.evidenceType !== DeliveryEvidenceType.WALKAROUND_VIDEO) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_EVIDENCE_TYPE_REQUIRED",
+        message: "仅车辆环绕视频资料支持断点续传。"
+      });
+    }
+
+    const storedDerivatives: Array<
+      PreparedDeliveryEvidenceArtifacts["derivatives"][number] & {
+        stored: Awaited<ReturnType<StorageService["putDeliveryEvidenceDerivativeFromPath"]>>;
+      }
+    > = [];
+    try {
+      for (const derivative of input.prepared.derivatives) {
+        const stored = await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
+          contentType: derivative.contentType,
+          filePath: derivative.filePath,
+          kind: derivative.kind,
+          metadata: {
+            artifactKind: derivative.kind,
+            sourceOriginalName: input.originalName
+          },
+          orderId: workOrder.orderId,
+          originalName: derivative.originalName,
+          sizeBytes: derivative.sizeBytes,
+          workOrderId: workOrder.id
+        });
+        storedDerivatives.push({ ...derivative, stored });
+      }
+
+      return await this.runSerializableTransaction(async (tx) => {
+        const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+        assertFieldSessionEditable(current);
+        const currentItem = await this.assertEvidenceItemBelongsToWorkOrder(
+          current,
+          item.id,
+          tx
+        );
+        const fileObject = await tx.fileObject.create({
+          data: {
+            bucket: input.storedSource.bucket,
+            mimeType: input.detectedMimeType,
+            objectKey: input.storedSource.objectKey,
+            originalName: input.originalName,
+            sizeBytes: BigInt(input.sizeBytes),
+            uploadedBy: null
+          }
+        });
+        const derivativeFileObjects = [];
+        for (const derivative of storedDerivatives) {
+          derivativeFileObjects.push(
+            await tx.fileObject.create({
+              data: {
+                bucket: derivative.stored.bucket,
+                mimeType: derivative.contentType,
+                objectKey: derivative.stored.objectKey,
+                originalName: derivative.originalName,
+                sizeBytes: BigInt(derivative.sizeBytes),
+                uploadedBy: null
+              }
+            })
+          );
+        }
+        const artifactMetadata = {
+          ...input.prepared.metadata,
+          photoPreviewFileId: null,
+          videoFrameFileIds: derivativeFileObjects
+            .map((entry) =>
+              readString(entry as unknown as Record<string, unknown>, "id")
+            )
+            .filter((value): value is string => Boolean(value))
+        } as Prisma.InputJsonValue;
+        const result = input.replaceEvidenceFileId
+          ? await this.deliveryEvidenceService.replaceEvidenceFile(
+              currentItem.id,
+              input.replaceEvidenceFileId,
+              fileObject.id,
+              DeliveryEvidenceMediaType.VIDEO,
+              undefined,
+              tx,
+              input.actorId,
+              artifactMetadata
+            )
+          : await this.deliveryEvidenceService.attachEvidenceFile(
+              currentItem.id,
+              fileObject.id,
+              DeliveryEvidenceMediaType.VIDEO,
+              undefined,
+              tx,
+              input.actorId,
+              artifactMetadata
+            );
+        await this.recordEvent(
+          current,
+          input.replaceEvidenceFileId
+            ? VehicleHandoverEventType.EVIDENCE_FILE_REPLACED
+            : VehicleHandoverEventType.EVIDENCE_FILE_ADDED,
+          {
+            actorId: input.actorId,
+            actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+            detail: {
+              evidenceItemId: currentItem.id,
+              fileName: input.originalName,
+              mediaType: DeliveryEvidenceMediaType.VIDEO,
+              replacedEvidenceFileId: input.replaceEvidenceFileId ?? null,
+              sizeBytes: input.sizeBytes
+            }
+          },
+          tx
+        );
+        await this.recordEvent(
+          current,
+          VehicleHandoverEventType.FIELD_VIDEO_UPLOAD_COMPLETED,
+          {
+            actorId: input.actorId,
+            actorType: input.actorId
+              ? VehicleHandoverEventActorType.FIELD_OPERATOR
+              : VehicleHandoverEventActorType.SYSTEM,
+            detail: {
+              evidenceItemId: currentItem.id,
+              partCount: input.partCount,
+              sessionId: input.uploadSessionId,
+              status: FieldEvidenceVideoUploadStatus.COMPLETED
+            }
+          },
+          tx
+        );
+        const completedUpload = await tx.fieldEvidenceVideoUploadSession.updateMany({
+          data: {
+            completedAt: new Date(),
+            failureCode: null,
+            failureMessage: null,
+            leaseExpiresAt: null,
+            leaseOwner: null,
+            objectEtag: null,
+            objectKey: null,
+            ossUploadId: null,
+            processingCompletedAt: new Date(),
+            resumeStage: null,
+            status: FieldEvidenceVideoUploadStatus.COMPLETED,
+            version: { increment: 1 }
+          },
+          where: {
+            id: input.uploadSessionId,
+            leaseOwner: input.uploadLeaseOwner,
+            status: FieldEvidenceVideoUploadStatus.PROCESSING
+          }
+        });
+        if (completedUpload.count !== 1) {
+          throw new ConflictException({
+            code: "FIELD_VIDEO_UPLOAD_FINALIZE_CONFLICT",
+            message: "视频上传状态已变化，请稍后重试。"
+          });
+        }
+        return result;
+      });
+    } catch (error) {
+      await this.deleteStoredObjectsWithRetry(
+        storedDerivatives.map((derivative) => ({
+          bucket: derivative.stored.bucket,
+          objectKey: derivative.stored.objectKey
+        }))
+      );
+      throw error;
+    }
+  }
+
+  async authorizeFieldVideoUploadMutation(input: {
+    evidenceItemId: string;
+    phone: string;
+    replaceEvidenceFileId?: string;
+    workOrderId: string;
+  }) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(
+      input.workOrderId,
+      input.phone
+    );
+    assertFieldSessionEditable(workOrder);
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(
+      workOrder,
+      input.evidenceItemId
+    );
+    const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
+      item.id,
+      DeliveryEvidenceMediaType.VIDEO,
+      input.replaceEvidenceFileId
+    );
+    if (mutation.evidenceType !== DeliveryEvidenceType.WALKAROUND_VIDEO) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_EVIDENCE_TYPE_REQUIRED",
+        message: "仅车辆环绕视频资料支持断点续传。"
+      });
+    }
+    return {
+      evidenceType: mutation.evidenceType,
+      itemId: mutation.itemId,
+      orderId: workOrder.orderId,
+      replaceEvidenceFileId: input.replaceEvidenceFileId ?? null,
+      workOrderId: workOrder.id
+    };
+  }
+
+  async recordFieldVideoUploadEvent(input: {
+    actorId?: string;
+    elapsedMs?: number;
+    errorCode?: string;
+    eventType:
+      | "FIELD_VIDEO_UPLOAD_CREATED"
+      | "FIELD_VIDEO_UPLOAD_RESUMED"
+      | "FIELD_VIDEO_UPLOAD_CANCELLED"
+      | "FIELD_VIDEO_UPLOAD_COMPLETED"
+      | "FIELD_VIDEO_UPLOAD_FAILED";
+    evidenceItemId: string;
+    partCount?: number;
+    sessionId: string;
+    status: string;
+    workOrderId: string;
+  }) {
+    const workOrder = await this.getWorkOrderOrThrow(input.workOrderId);
+    return this.recordEvent(workOrder, input.eventType, {
+      actorId: input.actorId,
+      actorType: input.actorId
+        ? VehicleHandoverEventActorType.FIELD_OPERATOR
+        : VehicleHandoverEventActorType.SYSTEM,
+      detail: compactUndefined({
+        elapsedMs: input.elapsedMs,
+        errorCode: input.errorCode,
+        evidenceItemId: input.evidenceItemId,
+        partCount: input.partCount,
+        sessionId: input.sessionId,
+        status: input.status
+      })
+    });
   }
 
   async removeFieldAccessibleEvidenceFile(

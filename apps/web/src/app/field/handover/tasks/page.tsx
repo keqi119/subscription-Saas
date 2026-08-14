@@ -5,6 +5,7 @@ import { Alert, App, Button, Empty, Flex, Spin, Tabs, Tag, Typography } from "an
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { FieldVideoUploadRecoveryAlert } from "../../../../components/field-video-upload-recovery-alert";
 import {
   getFieldHandoverSession,
   isFieldHandoverUnauthorized,
@@ -14,12 +15,19 @@ import {
   type FieldHandoverWorkOrderListItem
 } from "../../../../lib/field-handover-api";
 import { buildFieldHandoverTaskCard } from "../../../../lib/field-handover-view-model";
+import { listActiveFieldVideoUploadSessions } from "../../../../lib/field-video-upload-api";
+import {
+  listFieldVideoRecoveries,
+  synchronizeFieldVideoRecoveryPrompts,
+  type FieldVideoUploadRecoveryPrompt
+} from "../../../../lib/field-video-upload-recovery";
 
 export default function FieldHandoverTasksPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [recoveries, setRecoveries] = useState<FieldVideoUploadRecoveryPrompt[]>([]);
   const [session, setSession] = useState<FieldHandoverSession | null>(null);
   const [tasks, setTasks] = useState<FieldHandoverWorkOrderListItem[]>([]);
 
@@ -29,8 +37,21 @@ export default function FieldHandoverTasksPage() {
       setErrorMessage(null);
       const currentSession = await getFieldHandoverSession();
       setSession(currentSession);
-      const nextTasks = await listFieldHandoverWorkOrders();
+      const [nextTasks, activeUploads] = await Promise.all([
+        listFieldHandoverWorkOrders(),
+        listActiveFieldVideoUploadSessions().catch((error) => {
+          if (isFieldHandoverUnauthorized(error)) {
+            throw error;
+          }
+          return null;
+        })
+      ]);
       setTasks(nextTasks);
+      setRecoveries(
+        activeUploads
+          ? synchronizeFieldVideoRecoveryPrompts(activeUploads)
+          : listFieldVideoRecoveries()
+      );
     } catch (error) {
       if (isFieldHandoverUnauthorized(error)) {
         router.replace("/field/handover");
@@ -63,10 +84,7 @@ export default function FieldHandoverTasksPage() {
   const activeTasks = taskViews.filter(({ card }) => card.taskGroup === "ACTIVE");
   const endedTasks = taskViews.filter(({ card }) => card.taskGroup === "ENDED");
 
-  function renderTaskGroup(
-    items: typeof taskViews,
-    emptyDescription: string
-  ) {
+  function renderTaskGroup(items: typeof taskViews, emptyDescription: string) {
     if (items.length === 0) {
       return (
         <Empty
@@ -94,7 +112,9 @@ export default function FieldHandoverTasksPage() {
                 <Typography.Text strong style={{ display: "block", fontSize: 16 }}>
                   {card.title}
                 </Typography.Text>
-                <Typography.Text style={{ color: "#607086" }}>{card.handoverTypeLabel}</Typography.Text>
+                <Typography.Text style={{ color: "#607086" }}>
+                  {card.handoverTypeLabel}
+                </Typography.Text>
               </div>
               <Tag color={card.statusColor} style={{ marginInlineEnd: 0 }}>
                 {card.statusLabel}
@@ -151,6 +171,10 @@ export default function FieldHandoverTasksPage() {
           </Button>
         </Flex>
 
+        <div style={{ marginBottom: recoveries.length > 0 ? 14 : 0 }}>
+          <FieldVideoUploadRecoveryAlert records={recoveries} />
+        </div>
+
         {loading ? (
           <Flex align="center" gap={10} justify="center" style={{ minHeight: 220 }}>
             <Spin />
@@ -160,7 +184,11 @@ export default function FieldHandoverTasksPage() {
 
         {!loading && errorMessage ? (
           <Alert
-            action={<Button onClick={() => void loadTasks()} size="small">重新加载</Button>}
+            action={
+              <Button onClick={() => void loadTasks()} size="small">
+                重新加载
+              </Button>
+            }
             message={errorMessage}
             showIcon
             style={{ marginBottom: 14 }}
@@ -218,7 +246,9 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <Flex justify="space-between" style={{ gap: 12 }}>
       <Typography.Text style={{ color: "#718096", flex: "0 0 76px" }}>{label}</Typography.Text>
-      <Typography.Text style={{ flex: 1, textAlign: "right", wordBreak: "break-word" }}>{value}</Typography.Text>
+      <Typography.Text style={{ flex: 1, textAlign: "right", wordBreak: "break-word" }}>
+        {value}
+      </Typography.Text>
     </Flex>
   );
 }

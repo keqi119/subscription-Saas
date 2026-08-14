@@ -1459,8 +1459,28 @@ enum VehicleHandoverEventType {
   FIELD_COMPLETED
   OPS_REVIEW_UPDATED
   WORK_ORDER_TERMINATED
+  FIELD_VIDEO_UPLOAD_CREATED
+  FIELD_VIDEO_UPLOAD_RESUMED
+  FIELD_VIDEO_UPLOAD_CANCELLED
+  FIELD_VIDEO_UPLOAD_COMPLETED
+  FIELD_VIDEO_UPLOAD_FAILED
 
   @@map("vehicle_handover_event_type")
+}
+
+enum FieldEvidenceVideoUploadStatus {
+  UPLOADING
+  FINALIZE_QUEUED
+  OSS_COMPLETING
+  OBJECT_READY
+  PROCESSING
+  RETRYABLE_FAILED
+  VALIDATION_FAILED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+
+  @@map("field_evidence_video_upload_status")
 }
 
 enum VehicleHandoverEventActorType {
@@ -2595,20 +2615,21 @@ model FieldOperatorOtp {
 }
 
 model FieldOperatorSession {
-  id               String                       @id @default(uuid()) @db.Uuid
-  phone            String                       @db.VarChar(32)
-  operatorType     VehicleHandoverOperatorType? @map("operator_type")
-  sessionTokenHash String                       @unique @map("session_token_hash") @db.VarChar(128)
-  expiresAt        DateTime                     @map("expires_at") @db.Timestamptz(6)
-  revokedAt        DateTime?                    @map("revoked_at") @db.Timestamptz(6)
-  lastSeenAt       DateTime?                    @map("last_seen_at") @db.Timestamptz(6)
-  wechatOpenId     String?                      @map("wechat_open_id") @db.VarChar(128)
-  wechatUnionId    String?                      @map("wechat_union_id") @db.VarChar(128)
-  ipHash           String?                      @map("ip_hash") @db.VarChar(128)
-  userAgentHash    String?                      @map("user_agent_hash") @db.VarChar(128)
-  metadata         Json?
-  createdAt        DateTime                     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime                     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String                            @id @default(uuid()) @db.Uuid
+  phone               String                            @db.VarChar(32)
+  operatorType        VehicleHandoverOperatorType?      @map("operator_type")
+  sessionTokenHash    String                            @unique @map("session_token_hash") @db.VarChar(128)
+  expiresAt           DateTime                          @map("expires_at") @db.Timestamptz(6)
+  revokedAt           DateTime?                         @map("revoked_at") @db.Timestamptz(6)
+  lastSeenAt          DateTime?                         @map("last_seen_at") @db.Timestamptz(6)
+  wechatOpenId        String?                           @map("wechat_open_id") @db.VarChar(128)
+  wechatUnionId       String?                           @map("wechat_union_id") @db.VarChar(128)
+  ipHash              String?                           @map("ip_hash") @db.VarChar(128)
+  userAgentHash       String?                           @map("user_agent_hash") @db.VarChar(128)
+  metadata            Json?
+  videoUploadSessions FieldEvidenceVideoUploadSession[]
+  createdAt           DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([phone])
   @@index([operatorType])
@@ -5888,57 +5909,58 @@ model VehicleDeliveryHandover {
 }
 
 model VehicleHandoverWorkOrder {
-  id                           String                           @id @default(uuid()) @db.Uuid
-  orderId                      String                           @map("order_id") @db.Uuid
-  order                        SubscriptionOrder                @relation(fields: [orderId], references: [id])
-  vehicleDeliveryId            String?                          @map("vehicle_delivery_id") @db.Uuid
-  vehicleDelivery              VehicleDelivery?                 @relation(fields: [vehicleDeliveryId], references: [id])
-  handoverId                   String?                          @map("handover_id") @db.Uuid
-  handover                     VehicleDeliveryHandover?         @relation(fields: [handoverId], references: [id])
-  handoverType                 VehicleHandoverType              @map("handover_type")
-  status                       VehicleHandoverWorkOrderStatus   @default(DRAFT)
-  operatorType                 VehicleHandoverOperatorType      @default(INTERNAL) @map("operator_type")
-  assignedInternalUserId       String?                          @map("assigned_internal_user_id") @db.Uuid
-  assignedInternalUser         User?                            @relation("HandoverWorkOrderInternalOperator", fields: [assignedInternalUserId], references: [id])
-  externalOperatorName         String?                          @map("external_operator_name") @db.VarChar(64)
-  externalOperatorPhone        String?                          @map("external_operator_phone") @db.VarChar(32)
-  externalOperatorOrganization String?                          @map("external_operator_organization") @db.VarChar(128)
-  fieldOperatorName            String?                          @map("field_operator_name") @db.VarChar(64)
-  fieldOperatorPhone           String?                          @map("field_operator_phone") @db.VarChar(32)
-  accessTokenHash              String?                          @unique @map("access_token_hash") @db.VarChar(128)
-  accessTokenExpiresAt         DateTime?                        @map("access_token_expires_at") @db.Timestamptz(6)
-  accessTokenRevokedAt         DateTime?                        @map("access_token_revoked_at") @db.Timestamptz(6)
-  firstAccessedAt              DateTime?                        @map("first_accessed_at") @db.Timestamptz(6)
-  lastAccessedAt               DateTime?                        @map("last_accessed_at") @db.Timestamptz(6)
-  fieldStartedAt               DateTime?                        @map("field_started_at") @db.Timestamptz(6)
-  fieldSubmittedAt             DateTime?                        @map("field_submitted_at") @db.Timestamptz(6)
-  customerReviewStartedAt      DateTime?                        @map("customer_review_started_at") @db.Timestamptz(6)
-  customerConfirmedAt          DateTime?                        @map("customer_confirmed_at") @db.Timestamptz(6)
-  customerObjectedAt           DateTime?                        @map("customer_objected_at") @db.Timestamptz(6)
-  customerObjectionReason      String?                          @map("customer_objection_reason") @db.Text
-  fieldCompletedAt             DateTime?                        @map("field_completed_at") @db.Timestamptz(6)
-  opsReviewStatus              VehicleHandoverOpsReviewStatus   @default(NOT_REQUIRED) @map("ops_review_status")
-  opsReviewedBy                String?                          @map("ops_reviewed_by") @db.Uuid
-  opsReviewer                  User?                            @relation("HandoverWorkOrderOpsReviewer", fields: [opsReviewedBy], references: [id])
-  opsReviewedAt                DateTime?                        @map("ops_reviewed_at") @db.Timestamptz(6)
-  opsReviewNotes               String?                          @map("ops_review_notes") @db.Text
-  deliveryLocation             String?                          @map("delivery_location") @db.VarChar(255)
-  scheduledAt                  DateTime?                        @map("scheduled_at") @db.Timestamptz(6)
-  handoverMileageKm            Int?                             @map("handover_mileage_km")
-  energyLevelText              String?                          @map("energy_level_text") @db.VarChar(64)
-  fuelLevelText                String?                          @map("fuel_level_text") @db.VarChar(64)
-  accessoryChecklist           Json?                            @map("accessory_checklist")
-  damageDeclared               Boolean?                         @map("damage_declared")
-  noVisibleDamageDeclared      Boolean?                         @map("no_visible_damage_declared")
-  fieldNotes                   String?                          @map("field_notes") @db.Text
-  adminReviewStatus            VehicleHandoverAdminReviewStatus @default(NONE) @map("admin_review_status")
-  reviewVersion                Int                              @default(0) @map("review_version")
+  id                           String                            @id @default(uuid()) @db.Uuid
+  orderId                      String                            @map("order_id") @db.Uuid
+  order                        SubscriptionOrder                 @relation(fields: [orderId], references: [id])
+  vehicleDeliveryId            String?                           @map("vehicle_delivery_id") @db.Uuid
+  vehicleDelivery              VehicleDelivery?                  @relation(fields: [vehicleDeliveryId], references: [id])
+  handoverId                   String?                           @map("handover_id") @db.Uuid
+  handover                     VehicleDeliveryHandover?          @relation(fields: [handoverId], references: [id])
+  handoverType                 VehicleHandoverType               @map("handover_type")
+  status                       VehicleHandoverWorkOrderStatus    @default(DRAFT)
+  operatorType                 VehicleHandoverOperatorType       @default(INTERNAL) @map("operator_type")
+  assignedInternalUserId       String?                           @map("assigned_internal_user_id") @db.Uuid
+  assignedInternalUser         User?                             @relation("HandoverWorkOrderInternalOperator", fields: [assignedInternalUserId], references: [id])
+  externalOperatorName         String?                           @map("external_operator_name") @db.VarChar(64)
+  externalOperatorPhone        String?                           @map("external_operator_phone") @db.VarChar(32)
+  externalOperatorOrganization String?                           @map("external_operator_organization") @db.VarChar(128)
+  fieldOperatorName            String?                           @map("field_operator_name") @db.VarChar(64)
+  fieldOperatorPhone           String?                           @map("field_operator_phone") @db.VarChar(32)
+  accessTokenHash              String?                           @unique @map("access_token_hash") @db.VarChar(128)
+  accessTokenExpiresAt         DateTime?                         @map("access_token_expires_at") @db.Timestamptz(6)
+  accessTokenRevokedAt         DateTime?                         @map("access_token_revoked_at") @db.Timestamptz(6)
+  firstAccessedAt              DateTime?                         @map("first_accessed_at") @db.Timestamptz(6)
+  lastAccessedAt               DateTime?                         @map("last_accessed_at") @db.Timestamptz(6)
+  fieldStartedAt               DateTime?                         @map("field_started_at") @db.Timestamptz(6)
+  fieldSubmittedAt             DateTime?                         @map("field_submitted_at") @db.Timestamptz(6)
+  customerReviewStartedAt      DateTime?                         @map("customer_review_started_at") @db.Timestamptz(6)
+  customerConfirmedAt          DateTime?                         @map("customer_confirmed_at") @db.Timestamptz(6)
+  customerObjectedAt           DateTime?                         @map("customer_objected_at") @db.Timestamptz(6)
+  customerObjectionReason      String?                           @map("customer_objection_reason") @db.Text
+  fieldCompletedAt             DateTime?                         @map("field_completed_at") @db.Timestamptz(6)
+  opsReviewStatus              VehicleHandoverOpsReviewStatus    @default(NOT_REQUIRED) @map("ops_review_status")
+  opsReviewedBy                String?                           @map("ops_reviewed_by") @db.Uuid
+  opsReviewer                  User?                             @relation("HandoverWorkOrderOpsReviewer", fields: [opsReviewedBy], references: [id])
+  opsReviewedAt                DateTime?                         @map("ops_reviewed_at") @db.Timestamptz(6)
+  opsReviewNotes               String?                           @map("ops_review_notes") @db.Text
+  deliveryLocation             String?                           @map("delivery_location") @db.VarChar(255)
+  scheduledAt                  DateTime?                         @map("scheduled_at") @db.Timestamptz(6)
+  handoverMileageKm            Int?                              @map("handover_mileage_km")
+  energyLevelText              String?                           @map("energy_level_text") @db.VarChar(64)
+  fuelLevelText                String?                           @map("fuel_level_text") @db.VarChar(64)
+  accessoryChecklist           Json?                             @map("accessory_checklist")
+  damageDeclared               Boolean?                          @map("damage_declared")
+  noVisibleDamageDeclared      Boolean?                          @map("no_visible_damage_declared")
+  fieldNotes                   String?                           @map("field_notes") @db.Text
+  adminReviewStatus            VehicleHandoverAdminReviewStatus  @default(NONE) @map("admin_review_status")
+  reviewVersion                Int                               @default(0) @map("review_version")
   metadata                     Json?
   reviewAttempts               VehicleHandoverReviewAttempt[]
   events                       VehicleHandoverEvent[]
   workflowJobs                 VehicleHandoverWorkflowJob[]
-  createdAt                    DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                    DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  videoUploadSessions          FieldEvidenceVideoUploadSession[]
+  createdAt                    DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                    DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([orderId])
   @@index([vehicleDeliveryId])
@@ -6057,33 +6079,34 @@ model VehicleHandoverEvent {
 }
 
 model VehicleDeliveryEvidenceItem {
-  id                String                           @id @default(uuid()) @db.Uuid
-  orderId           String                           @map("order_id") @db.Uuid
-  order             SubscriptionOrder                @relation(fields: [orderId], references: [id])
-  vehicleDeliveryId String?                          @map("vehicle_delivery_id") @db.Uuid
-  vehicleDelivery   VehicleDelivery?                 @relation(fields: [vehicleDeliveryId], references: [id])
-  handoverId        String?                          @map("handover_id") @db.Uuid
-  handover          VehicleDeliveryHandover?         @relation(fields: [handoverId], references: [id])
-  evidenceType      DeliveryEvidenceType             @map("evidence_type")
-  requirementLevel  DeliveryEvidenceRequirementLevel @map("requirement_level")
-  status            DeliveryEvidenceStatus           @default(NOT_STARTED)
-  reviewStatus      DeliveryEvidenceReviewStatus     @default(NOT_STARTED) @map("review_status")
-  title             String                           @db.VarChar(128)
-  description       String?                          @db.Text
-  isRequired        Boolean                          @default(false) @map("is_required")
-  isConditional     Boolean                          @default(false) @map("is_conditional")
-  allowsMultiple    Boolean                          @default(false) @map("allows_multiple")
-  conditionKey      String?                          @map("condition_key") @db.VarChar(64)
-  conditionValue    String?                          @map("condition_value") @db.VarChar(64)
-  declaredNoDamage  Boolean?                         @map("declared_no_damage")
-  reviewedBy        String?                          @map("reviewed_by") @db.Uuid
-  reviewer          User?                            @relation("DeliveryEvidenceReviewer", fields: [reviewedBy], references: [id])
-  reviewedAt        DateTime?                        @map("reviewed_at") @db.Timestamptz(6)
-  rejectionReason   String?                          @map("rejection_reason") @db.Text
-  metadata          Json?
-  files             VehicleDeliveryEvidenceFile[]
-  createdAt         DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt         DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                  String                            @id @default(uuid()) @db.Uuid
+  orderId             String                            @map("order_id") @db.Uuid
+  order               SubscriptionOrder                 @relation(fields: [orderId], references: [id])
+  vehicleDeliveryId   String?                           @map("vehicle_delivery_id") @db.Uuid
+  vehicleDelivery     VehicleDelivery?                  @relation(fields: [vehicleDeliveryId], references: [id])
+  handoverId          String?                           @map("handover_id") @db.Uuid
+  handover            VehicleDeliveryHandover?          @relation(fields: [handoverId], references: [id])
+  evidenceType        DeliveryEvidenceType              @map("evidence_type")
+  requirementLevel    DeliveryEvidenceRequirementLevel  @map("requirement_level")
+  status              DeliveryEvidenceStatus            @default(NOT_STARTED)
+  reviewStatus        DeliveryEvidenceReviewStatus      @default(NOT_STARTED) @map("review_status")
+  title               String                            @db.VarChar(128)
+  description         String?                           @db.Text
+  isRequired          Boolean                           @default(false) @map("is_required")
+  isConditional       Boolean                           @default(false) @map("is_conditional")
+  allowsMultiple      Boolean                           @default(false) @map("allows_multiple")
+  conditionKey        String?                           @map("condition_key") @db.VarChar(64)
+  conditionValue      String?                           @map("condition_value") @db.VarChar(64)
+  declaredNoDamage    Boolean?                          @map("declared_no_damage")
+  reviewedBy          String?                           @map("reviewed_by") @db.Uuid
+  reviewer            User?                             @relation("DeliveryEvidenceReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt          DateTime?                         @map("reviewed_at") @db.Timestamptz(6)
+  rejectionReason     String?                           @map("rejection_reason") @db.Text
+  metadata            Json?
+  files               VehicleDeliveryEvidenceFile[]
+  videoUploadSessions FieldEvidenceVideoUploadSession[]
+  createdAt           DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([orderId])
   @@index([vehicleDeliveryId])
@@ -6097,25 +6120,26 @@ model VehicleDeliveryEvidenceItem {
 }
 
 model VehicleDeliveryEvidenceFile {
-  id               String                              @id @default(uuid()) @db.Uuid
-  evidenceItemId   String                              @map("evidence_item_id") @db.Uuid
-  evidenceItem     VehicleDeliveryEvidenceItem         @relation(fields: [evidenceItemId], references: [id])
-  fileId           String                              @map("file_id") @db.Uuid
-  file             FileObject                          @relation(fields: [fileId], references: [id])
-  objectKey        String?                             @map("object_key") @db.VarChar(512)
-  mediaType        DeliveryEvidenceMediaType           @map("media_type")
-  lifecycleStatus  DeliveryEvidenceFileLifecycleStatus @default(ACTIVE) @map("lifecycle_status")
-  lifecycleAt      DateTime?                           @map("lifecycle_at") @db.Timestamptz(6)
-  lifecycleActorId String?                             @map("lifecycle_actor_id") @db.Uuid
-  replacedById     String?                             @unique @map("replaced_by_id") @db.Uuid
-  replacedBy       VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement", fields: [replacedById], references: [id])
-  replaces         VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement")
-  uploadedBy       String?                             @map("uploaded_by") @db.Uuid
-  uploader         User?                               @relation("DeliveryEvidenceFileUploader", fields: [uploadedBy], references: [id])
-  uploadedAt       DateTime                            @default(now()) @map("uploaded_at") @db.Timestamptz(6)
-  metadata         Json?
-  createdAt        DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt        DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                             String                              @id @default(uuid()) @db.Uuid
+  evidenceItemId                 String                              @map("evidence_item_id") @db.Uuid
+  evidenceItem                   VehicleDeliveryEvidenceItem         @relation(fields: [evidenceItemId], references: [id])
+  fileId                         String                              @map("file_id") @db.Uuid
+  file                           FileObject                          @relation(fields: [fileId], references: [id])
+  objectKey                      String?                             @map("object_key") @db.VarChar(512)
+  mediaType                      DeliveryEvidenceMediaType           @map("media_type")
+  lifecycleStatus                DeliveryEvidenceFileLifecycleStatus @default(ACTIVE) @map("lifecycle_status")
+  lifecycleAt                    DateTime?                           @map("lifecycle_at") @db.Timestamptz(6)
+  lifecycleActorId               String?                             @map("lifecycle_actor_id") @db.Uuid
+  replacedById                   String?                             @unique @map("replaced_by_id") @db.Uuid
+  replacedBy                     VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement", fields: [replacedById], references: [id])
+  replaces                       VehicleDeliveryEvidenceFile?        @relation("DeliveryEvidenceFileReplacement")
+  uploadedBy                     String?                             @map("uploaded_by") @db.Uuid
+  uploader                       User?                               @relation("DeliveryEvidenceFileUploader", fields: [uploadedBy], references: [id])
+  replacementVideoUploadSessions FieldEvidenceVideoUploadSession[]
+  uploadedAt                     DateTime                            @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  metadata                       Json?
+  createdAt                      DateTime                            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                      DateTime                            @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([evidenceItemId, fileId])
   @@index([evidenceItemId])
@@ -6125,6 +6149,67 @@ model VehicleDeliveryEvidenceFile {
   @@index([lifecycleActorId])
   @@index([uploadedBy])
   @@map("vehicle_delivery_evidence_file")
+}
+
+model FieldEvidenceVideoUploadSession {
+  id                    String                          @id @default(uuid()) @db.Uuid
+  workOrderId           String                          @map("work_order_id") @db.Uuid
+  evidenceItemId        String                          @map("evidence_item_id") @db.Uuid
+  createdBySessionId    String?                         @map("created_by_session_id") @db.Uuid
+  originalName          String                          @map("original_name") @db.VarChar(255)
+  mimeType              String                          @map("mime_type") @db.VarChar(128)
+  sizeBytes             BigInt                          @map("size_bytes")
+  lastModifiedMs        BigInt                          @map("last_modified_ms")
+  fingerprintHash       String                          @map("fingerprint_hash") @db.Char(64)
+  replaceEvidenceFileId String?                         @map("replace_evidence_file_id") @db.Uuid
+  chunkSizeBytes        Int                             @map("chunk_size_bytes")
+  totalParts            Int                             @map("total_parts")
+  status                FieldEvidenceVideoUploadStatus  @default(UPLOADING)
+  ossUploadId           String?                         @map("oss_upload_id") @db.VarChar(255)
+  objectKey             String?                         @map("object_key") @db.VarChar(512)
+  objectEtag            String?                         @map("object_etag") @db.VarChar(255)
+  failureCode           String?                         @map("failure_code") @db.VarChar(64)
+  failureMessage        String?                         @map("failure_message") @db.VarChar(255)
+  resumeStage           FieldEvidenceVideoUploadStatus? @map("resume_stage")
+  retryCount            Int                             @default(0) @map("retry_count")
+  leaseOwner            String?                         @map("lease_owner") @db.VarChar(128)
+  leaseExpiresAt        DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
+  expiresAt             DateTime                        @map("expires_at") @db.Timestamptz(6)
+  objectCompletedAt     DateTime?                       @map("object_completed_at") @db.Timestamptz(6)
+  processingCompletedAt DateTime?                       @map("processing_completed_at") @db.Timestamptz(6)
+  completedAt           DateTime?                       @map("completed_at") @db.Timestamptz(6)
+  cancelledAt           DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
+  version               Int                             @default(0)
+  createdAt             DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  workOrder             VehicleHandoverWorkOrder        @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  evidenceItem          VehicleDeliveryEvidenceItem     @relation(fields: [evidenceItemId], references: [id], onDelete: Cascade)
+  createdBySession      FieldOperatorSession?           @relation(fields: [createdBySessionId], references: [id], onDelete: SetNull)
+  replaceEvidenceFile   VehicleDeliveryEvidenceFile?    @relation(fields: [replaceEvidenceFileId], references: [id], onDelete: SetNull)
+  parts                 FieldEvidenceVideoUploadPart[]
+
+  @@index([workOrderId, status])
+  @@index([evidenceItemId, status])
+  @@index([status, leaseExpiresAt])
+  @@index([expiresAt])
+  @@map("field_evidence_video_upload_session")
+}
+
+model FieldEvidenceVideoUploadPart {
+  id          String                          @id @default(uuid()) @db.Uuid
+  sessionId   String                          @map("session_id") @db.Uuid
+  partNumber  Int                             @map("part_number")
+  sizeBytes   Int                             @map("size_bytes")
+  sha256      String                          @db.Char(64)
+  ossEtag     String                          @map("oss_etag") @db.VarChar(255)
+  completedAt DateTime                        @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  session     FieldEvidenceVideoUploadSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, partNumber])
+  @@index([sessionId, completedAt])
+  @@map("field_evidence_video_upload_part")
 }
 
 model VehicleInspection {

@@ -10,7 +10,10 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
-import { DeliveryEvidenceVideoQualityError } from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
+import {
+  DeliveryEvidenceVideoQualityError,
+  type PreparedDeliveryEvidenceArtifacts
+} from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
 
 describe("HandoverWorkOrderService", () => {
@@ -929,6 +932,78 @@ describe("HandoverWorkOrderService", () => {
         "other-field-session"
       )
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("attaches a prepared multipart source without uploading the full video again", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      id: "work-order-visible",
+      status: "FIELD_IN_PROGRESS"
+    });
+    harness.state.evidenceItems.push({
+      handoverId: "handover-1",
+      id: "walkaround-item",
+      orderId: harness.orderId
+    });
+    harness.evidenceService.validateEvidenceFileMutation.mockResolvedValueOnce({
+      allowsMultiple: false,
+      currentFileCount: 0,
+      evidenceType: "WALKAROUND_VIDEO",
+      itemId: "walkaround-item"
+    });
+    const prepared = (await harness.artifactService.prepareUpload({
+      evidenceType: "WALKAROUND_VIDEO",
+      file: { mimetype: "video/quicktime", originalname: "IMG_0284.MOV", size: 1024 },
+      mediaType: "VIDEO"
+    })) as PreparedDeliveryEvidenceArtifacts;
+
+    const attached = await harness.service.attachPreparedFieldVideoFromStoredSource({
+      actorId: "field-session-1",
+      detectedMimeType: "video/quicktime",
+      evidenceItemId: "walkaround-item",
+      originalName: "IMG_0284.MOV",
+      partCount: 28,
+      prepared,
+      sizeBytes: 1024,
+      storedSource: {
+        bucket: "oss:video-bucket",
+        objectKey: "oss:field-video/upload-sessions/session/source"
+      },
+      uploadLeaseOwner: "worker-lease-1",
+      uploadSessionId: "upload-session-1",
+      workOrderId: "work-order-visible"
+    });
+
+    expect(harness.storageService.putDeliveryEvidenceFile).not.toHaveBeenCalled();
+    expect(harness.storageService.putDeliveryEvidenceFileFromPath).not.toHaveBeenCalled();
+    expect(harness.storageService.putDeliveryEvidenceDerivativeFromPath).toHaveBeenCalledOnce();
+    expect(harness.evidenceService.attachEvidenceFile).toHaveBeenCalledWith(
+      "walkaround-item",
+      "file-1",
+      "VIDEO",
+      undefined,
+      expect.any(Object),
+      "field-session-1",
+      expect.objectContaining({
+        processingStatus: "READY",
+        videoFrameFileIds: ["file-2"]
+      })
+    );
+    expect(harness.prisma.fieldEvidenceVideoUploadSession.updateMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({ status: "COMPLETED" }),
+      where: {
+        id: "upload-session-1",
+        leaseOwner: "worker-lease-1",
+        status: "PROCESSING"
+      }
+    });
+    expect(harness.state.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "FIELD_VIDEO_UPLOAD_COMPLETED" })
+      ])
+    );
+    expect(attached).toMatchObject({ id: "walkaround-item", status: "UPLOADED" });
   });
 
   it("returns an actionable 422 before storing a low-resolution walkaround", async () => {
@@ -2378,6 +2453,9 @@ function createHandoverWorkOrderHarness() {
         state.fileObjects.push(fileObject);
         return fileObject;
       })
+    },
+    fieldEvidenceVideoUploadSession: {
+      updateMany: vi.fn(async () => ({ count: 1 }))
     },
     vehicleDeliveryEvidenceItem: {
       findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>

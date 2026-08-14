@@ -13,7 +13,9 @@ describe("FieldEvidenceTempFileCleanupInterceptor", () => {
     const interceptor = new FieldEvidenceTempFileCleanupInterceptor();
 
     await expect(
-      lastValueFrom(interceptor.intercept(contextWithFile(filePath), { handle: () => of({ ok: true }) }))
+      lastValueFrom(
+        interceptor.intercept(contextWithFile(filePath), { handle: () => of({ ok: true }) })
+      )
     ).resolves.toEqual({ ok: true });
     await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -31,6 +33,20 @@ describe("FieldEvidenceTempFileCleanupInterceptor", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("removes a disk-backed single-file upload", async () => {
+    const filePath = await createTempUpload();
+    const interceptor = new FieldEvidenceTempFileCleanupInterceptor();
+
+    await expect(
+      lastValueFrom(
+        interceptor.intercept(contextWithSingleFile(filePath), {
+          handle: () => of({ ok: true })
+        })
+      )
+    ).resolves.toEqual({ ok: true });
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
 
 async function createTempUpload() {
@@ -46,6 +62,14 @@ function contextWithFile(filePath: string) {
       getRequest: () => ({
         files: [{ path: filePath }]
       })
+    })
+  } as never;
+}
+
+function contextWithSingleFile(filePath: string) {
+  return {
+    switchToHttp: () => ({
+      getRequest: () => ({ file: { path: filePath } })
     })
   } as never;
 }

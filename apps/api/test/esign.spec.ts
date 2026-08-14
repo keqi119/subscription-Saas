@@ -72,6 +72,28 @@ describe("ESignService", () => {
     expect(provider.createSignTask).not.toHaveBeenCalled();
   });
 
+  it("allows a public staging HTTPS callback for production journey signing", async () => {
+    const provider = stage1SlotProvider();
+    const { service } = createESignFixture(
+      {
+        ...journeyFadadaProductionEnv(),
+        API_BASE_URL: "https://staging-api.subauto.keybox.cloud/api"
+      },
+      provider,
+      {
+        contractPdfArtifactService: {
+          preflightContractPdfArtifact: vi.fn(async () => ({
+            slotCoordinates: stage1SlotCoordinates()
+          }))
+        }
+      }
+    );
+
+    await service.startJourneyFadadaSigning("contract-1", "user-sales");
+
+    expect(provider.createSignTask).toHaveBeenCalledOnce();
+  });
+
   it("requires a verified provider account for journey signing", async () => {
     const provider = stage1SlotProvider();
     const { service } = createESignFixture(journeyFadadaProductionEnv(), provider, {

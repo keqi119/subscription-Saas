@@ -127,6 +127,159 @@ describe("Storage providers", () => {
     await expect(readStream(downloaded.stream)).resolves.toBe("hello");
   });
 
+  it("owns the OSS multipart lifecycle without buffering a disk part", async () => {
+    const initMultipartUpload = vi.fn(async () => ({
+      name: "field-video/upload-sessions/session-1/source",
+      uploadId: "oss-upload-1"
+    }));
+    const uploadPart = vi.fn(async () => ({ etag: "etag-1" }));
+    const completeMultipartUpload = vi.fn(async () => ({
+      etag: "source-etag",
+      name: "field-video/upload-sessions/session-1/source",
+      res: { headers: { etag: "source-etag" } }
+    }));
+    const abortMultipartUpload = vi.fn(async () => ({}));
+    const factory: OssClientFactory = vi.fn(() => ({
+      abortMultipartUpload,
+      completeMultipartUpload,
+      delete: vi.fn(),
+      getStream: vi.fn(),
+      initMultipartUpload,
+      put: vi.fn(),
+      uploadPart
+    }));
+    const provider = new OssStorageProvider(
+      config({
+        OSS_ACCESS_KEY_ID: "test-key",
+        OSS_ACCESS_KEY_SECRET: "test-secret",
+        OSS_BUCKET: "private-bucket",
+        OSS_REGION: "oss-cn-shanghai"
+      }) as never,
+      factory
+    );
+
+    const started = await provider.initMultipartUpload({
+      contentType: "video/quicktime",
+      key: "field-video/upload-sessions/session-1/source"
+    });
+    const part = await provider.uploadPart({
+      filePath: "C:/tmp/part-1",
+      key: started.key,
+      partNumber: 1,
+      sizeBytes: 8 * 1024 * 1024,
+      uploadId: started.uploadId
+    });
+    const completed = await provider.completeMultipartUpload({
+      key: started.key,
+      parts: [part],
+      sizeBytes: 8 * 1024 * 1024,
+      uploadId: started.uploadId
+    });
+    await provider.abortMultipartUpload(started);
+
+    expect(started).toEqual({
+      key: "field-video/upload-sessions/session-1/source",
+      uploadId: "oss-upload-1"
+    });
+    expect(part).toEqual({
+      etag: "etag-1",
+      partNumber: 1,
+      sizeBytes: 8 * 1024 * 1024
+    });
+    expect(completed).toEqual({
+      etag: "source-etag",
+      key: "field-video/upload-sessions/session-1/source",
+      sizeBytes: 8 * 1024 * 1024
+    });
+    expect(uploadPart).toHaveBeenCalledWith(
+      "field-video/upload-sessions/session-1/source",
+      "oss-upload-1",
+      1,
+      "C:/tmp/part-1",
+      0,
+      8 * 1024 * 1024
+    );
+    expect(completeMultipartUpload).toHaveBeenCalledWith(
+      "field-video/upload-sessions/session-1/source",
+      "oss-upload-1",
+      [{ etag: "etag-1", number: 1 }]
+    );
+    expect(abortMultipartUpload).toHaveBeenCalledWith(
+      "field-video/upload-sessions/session-1/source",
+      "oss-upload-1"
+    );
+  });
+
+  it("treats an already-absent OSS multipart upload as aborted", async () => {
+    const abortMultipartUpload = vi.fn(async () => {
+      throw Object.assign(new Error("gone"), { code: "NoSuchUpload", status: 404 });
+    });
+    const factory: OssClientFactory = vi.fn(() => ({
+      abortMultipartUpload,
+      delete: vi.fn(),
+      getStream: vi.fn(),
+      put: vi.fn()
+    }));
+    const provider = new OssStorageProvider(
+      config({
+        OSS_ACCESS_KEY_ID: "test-key",
+        OSS_ACCESS_KEY_SECRET: "test-secret",
+        OSS_BUCKET: "private-bucket",
+        OSS_REGION: "oss-cn-shanghai"
+      }) as never,
+      factory
+    );
+
+    await expect(
+      provider.abortMultipartUpload({
+        key: "field-video/upload-sessions/session-1/source",
+        uploadId: "oss-upload-1"
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("requires OSS and namespaces resumable field-video objects", async () => {
+    const oss = {
+      initMultipartUpload: vi.fn(async (input: { key: string }) => ({
+        key: input.key,
+        uploadId: "oss-upload-1"
+      }))
+    };
+    const localService = new StorageService(
+      config({ UPLOAD_STORAGE_DRIVER: "local" }) as never,
+      {} as never,
+      oss as never
+    );
+    const ossService = new StorageService(
+      config({
+        OSS_PREFIX: "subscription-saas/staging",
+        UPLOAD_STORAGE_DRIVER: "oss"
+      }) as never,
+      {} as never,
+      oss as never
+    );
+
+    await expect(
+      localService.beginFieldVideoMultipart({
+        contentType: "video/quicktime",
+        originalName: "IMG_0284.MOV",
+        sessionId: "session-1"
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "FIELD_VIDEO_MULTIPART_REQUIRES_OSS" })
+    });
+    await expect(
+      ossService.beginFieldVideoMultipart({
+        contentType: "video/quicktime",
+        originalName: "IMG_0284.MOV",
+        sessionId: "session-1"
+      })
+    ).resolves.toEqual({
+      key: "subscription-saas/staging/field-video/upload-sessions/session-1/source",
+      uploadId: "oss-upload-1"
+    });
+  });
+
   it("encodes Unicode OSS metadata values for object and file uploads while preserving ASCII and undefined metadata", async () => {
     const put = vi.fn(async () => ({ res: { headers: { etag: "etag-1" } }, url: "private-url" }));
     const factory: OssClientFactory = vi.fn(() => ({

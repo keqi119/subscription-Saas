@@ -6,10 +6,15 @@ import { randomUUID } from "node:crypto";
 import { LocalStorageProvider } from "./local-storage.provider";
 import { OssStorageProvider } from "./oss-storage.provider";
 import {
+  AbortMultipartUploadInput,
+  CompleteMultipartUploadInput,
   DownloadObjectResult,
+  MultipartUploadHandle,
+  MultipartUploadPart,
   StorageDriver,
   StoredObject,
   UploadFileObjectInput,
+  UploadMultipartPartInput,
   UploadObjectInput,
   StorageProvider
 } from "./storage.types";
@@ -58,6 +63,52 @@ export class StorageService {
       return driver;
     }
     throw new BadRequestException("UPLOAD_STORAGE_DRIVER 必须为 local 或 oss。");
+  }
+
+  async beginFieldVideoMultipart(input: {
+    contentType: string;
+    originalName: string;
+    sessionId: string;
+  }): Promise<MultipartUploadHandle> {
+    this.assertFieldVideoMultipartDriver();
+    const key = this.withOssPrefix(
+      `field-video/upload-sessions/${sanitizeKeyPart(input.sessionId)}/source`
+    );
+    return this.ossStorage.initMultipartUpload({
+      contentType: input.contentType,
+      key,
+      metadata: { originalName: input.originalName }
+    });
+  }
+
+  uploadFieldVideoPart(input: UploadMultipartPartInput): Promise<MultipartUploadPart> {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    return this.ossStorage.uploadPart(input);
+  }
+
+  completeFieldVideoMultipart(input: CompleteMultipartUploadInput) {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    return this.ossStorage.completeMultipartUpload(input);
+  }
+
+  abortFieldVideoMultipart(input: AbortMultipartUploadInput): Promise<void> {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    return this.ossStorage.abortMultipartUpload(input);
+  }
+
+  downloadFieldVideoUploadSource(input: { key: string }): Promise<DownloadObjectResult> {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    return this.ossStorage.getObject(input.key);
+  }
+
+  async deleteFieldVideoUploadSource(input: { key: string }): Promise<void> {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    await this.ossStorage.deleteObject(input.key);
   }
 
   async putApplicationMaterial(
@@ -548,6 +599,25 @@ export class StorageService {
   private withOssPrefix(key: string) {
     const prefix = this.configService.get<string>("OSS_PREFIX")?.replace(/^\/+|\/+$/g, "");
     return prefix ? `${prefix}/${key}` : key;
+  }
+
+  private assertFieldVideoMultipartDriver() {
+    if (this.getDriver() !== "oss") {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_MULTIPART_REQUIRES_OSS",
+        message: "视频断点续传仅支持受控 OSS 存储。"
+      });
+    }
+  }
+
+  private assertFieldVideoObjectKey(key: string) {
+    const prefix = this.withOssPrefix("field-video/upload-sessions/");
+    if (!key.startsWith(prefix) || key.includes("..") || key.includes("\0")) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_OBJECT_KEY_INVALID",
+        message: "视频上传存储路径无效。"
+      });
+    }
   }
 }
 

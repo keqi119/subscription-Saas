@@ -3225,7 +3225,7 @@ export class ESignService {
         "JOURNEY_FADADA_CALLBACK_REQUIRED: API_BASE_URL is required"
       );
     }
-    assertProductionHttpsUrl(callbackBaseUrl, "API_BASE_URL");
+    assertPublicHttpsUrl(callbackBaseUrl, "API_BASE_URL");
     if (!config.platformCustomerId || !config.platformSignatureId) {
       throw new BadRequestException(
         "JOURNEY_FADADA_PLATFORM_SEAL_REQUIRED: platform customer and signature ids are required"
@@ -4222,6 +4222,27 @@ function trimTrailingSlash(value: string) {
 }
 
 function assertProductionHttpsUrl(value: string, key: string) {
+  const url = parseHttpsUrl(value, key);
+  const hostname = url.hostname.toLowerCase();
+  const forbiddenHostname =
+    isLocalHostname(hostname) || /(^|[.-])(sandbox|staging|test|dev)/.test(hostname);
+  if (forbiddenHostname) {
+    throw new BadRequestException(
+      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use a public production HTTPS host`
+    );
+  }
+}
+
+function assertPublicHttpsUrl(value: string, key: string) {
+  const url = parseHttpsUrl(value, key);
+  if (isLocalHostname(url.hostname.toLowerCase())) {
+    throw new BadRequestException(
+      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use a public HTTPS host`
+    );
+  }
+}
+
+function parseHttpsUrl(value: string, key: string) {
   let url: URL;
   try {
     url = new URL(value);
@@ -4230,18 +4251,21 @@ function assertProductionHttpsUrl(value: string, key: string) {
       `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must be a valid URL`
     );
   }
-  const hostname = url.hostname.toLowerCase();
-  const forbiddenHostname =
+  if (url.protocol !== "https:") {
+    throw new BadRequestException(
+      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use HTTPS`
+    );
+  }
+  return url;
+}
+
+function isLocalHostname(hostname: string) {
+  return (
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
     hostname === "::1" ||
-    hostname.endsWith(".local") ||
-    /(^|[.-])(sandbox|staging|test|dev)/.test(hostname);
-  if (url.protocol !== "https:" || forbiddenHostname) {
-    throw new BadRequestException(
-      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use a public production HTTPS host`
-    );
-  }
+    hostname.endsWith(".local")
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -659,7 +659,7 @@ describe("application self-service review APIs", () => {
     expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(2);
   });
 
-  it("revises changed vehicle terms, releases the hold, and requests reconfirmation", async () => {
+  it("keeps the allocated vehicle held while changed terms wait for reconfirmation", async () => {
     const harness = createApplicationReviewHarness({
       application: readyToFinalizeApplication()
     });
@@ -692,10 +692,11 @@ describe("application self-service review APIs", () => {
         customerConfirmedPlanRevision: null,
         finalPlanRevision: 2,
         planConfirmStatus: PlanConfirmStatus.PENDING,
-        vehicleReviewStatus: OrderReviewStatus.PENDING
+        softReservedVehicleId: harness.vehicle.id,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
       })
     );
-    expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
     expect(
       harness.journeySignal.requireCustomerReconfirmationAfterManualDecision
     ).toHaveBeenCalledWith(harness.tx, {
@@ -705,6 +706,115 @@ describe("application self-service review APIs", () => {
       vehicleId: harness.vehicle.id
     });
     expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it("transfers the review hold to a different available final vehicle before reconfirmation", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        softReservedVehicleId: "vehicle-old"
+      }
+    });
+    harness.state.vehicleStatus = VehicleStatus.AVAILABLE;
+    harness.vehicle.currentSalePriceAmount += 100000n;
+    harness.tx.vehicle.findUnique.mockImplementation(
+      async (...args: unknown[]) =>
+        (args[0] as { where: { id: string } }).where.id === "vehicle-old"
+          ? {
+              ...harness.vehicle,
+              id: "vehicle-old",
+              status: VehicleStatus.REVIEW_RESERVED
+            }
+          : { ...harness.vehicle, status: harness.state.vehicleStatus }
+    );
+
+    const result = await harness.service.allocateJourneyVehicle(
+      harness.tx as never,
+      harness.application.id,
+      harness.vehicle.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(result.requiresCustomerReconfirmation).toBe(true);
+    expect(result.application).toEqual(
+      expect.objectContaining({
+        softReservedVehicleId: harness.vehicle.id,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      })
+    );
+    expect(harness.tx.vehicle.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: VehicleStatus.REVIEW_RESERVED }),
+        where: expect.objectContaining({
+          id: harness.vehicle.id,
+          status: VehicleStatus.AVAILABLE
+        })
+      })
+    );
+    expect(harness.tx.vehicle.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: VehicleStatus.AVAILABLE }),
+        where: { id: "vehicle-old" }
+      })
+    );
+  });
+
+  it("does not release the previous hold when the new final vehicle is unavailable", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED,
+        softReservedVehicleId: "vehicle-old"
+      }
+    });
+    harness.state.vehicleStatus = VehicleStatus.RESERVED;
+    harness.tx.vehicle.findUnique.mockImplementation(
+      async (...args: unknown[]) =>
+        (args[0] as { where: { id: string } }).where.id === "vehicle-old"
+          ? {
+              ...harness.vehicle,
+              id: "vehicle-old",
+              status: VehicleStatus.REVIEW_RESERVED
+            }
+          : { ...harness.vehicle, status: harness.state.vehicleStatus }
+    );
+
+    await expect(
+      harness.service.allocateJourneyVehicle(
+        harness.tx as never,
+        harness.application.id,
+        harness.vehicle.id,
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      code: "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE"
+    });
+
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
+    expect(harness.state.application.softReservedVehicleId).toBe("vehicle-old");
   });
 
   it("rejects finalizing when the selected plan is inactive", async () => {

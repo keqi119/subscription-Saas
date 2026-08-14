@@ -37,6 +37,7 @@ CREATE TABLE "field_evidence_video_upload_session" (
   "failure_code" VARCHAR(64),
   "failure_message" VARCHAR(255),
   "resume_stage" "field_evidence_video_upload_status",
+  "retry_count" INTEGER NOT NULL DEFAULT 0,
   "lease_owner" VARCHAR(128),
   "lease_expires_at" TIMESTAMPTZ(6),
   "expires_at" TIMESTAMPTZ(6) NOT NULL,

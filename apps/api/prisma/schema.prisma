@@ -6171,6 +6171,7 @@ model FieldEvidenceVideoUploadSession {
   failureCode           String?                         @map("failure_code") @db.VarChar(64)
   failureMessage        String?                         @map("failure_message") @db.VarChar(255)
   resumeStage           FieldEvidenceVideoUploadStatus? @map("resume_stage")
+  retryCount            Int                             @default(0) @map("retry_count")
   leaseOwner            String?                         @map("lease_owner") @db.VarChar(128)
   leaseExpiresAt        DateTime?                       @map("lease_expires_at") @db.Timestamptz(6)
   expiresAt             DateTime                        @map("expires_at") @db.Timestamptz(6)

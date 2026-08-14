@@ -103,9 +103,6 @@ describe("HandoverWorkOrderService", () => {
       },
       (harness: ReturnType<typeof createHandoverWorkOrderHarness>) => {
         harness.state.order.vehicle.insurancePolicies = [];
-      },
-      (harness: ReturnType<typeof createHandoverWorkOrderHarness>) => {
-        harness.state.vehicleInspection.status = "PENDING";
       }
     ]) {
       const harness = createHandoverWorkOrderHarness();
@@ -120,6 +117,26 @@ describe("HandoverWorkOrderService", () => {
       ).rejects.toThrow();
       expect(harness.state.workOrders).toHaveLength(0);
     }
+  });
+
+  it("creates the Journey handover before an order-level vehicle inspection exists", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.vehicleInspection = null;
+
+    const workOrder = await harness.service.createJourneyHandoverInTransaction(
+      harness.prisma as never,
+      harness.orderId,
+      harness.admin.id,
+      "journey:journey-1:handover"
+    );
+
+    expect(workOrder).toMatchObject({
+      handoverId: "handover-1",
+      orderId: harness.orderId,
+      status: "DRAFT",
+      vehicleDeliveryId: "delivery-1"
+    });
+    expect(harness.state.workOrders).toHaveLength(1);
   });
 
   it("creates the Stage 2 delivery record in the same Journey transaction when absent", async () => {
@@ -1555,6 +1572,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("allows approval review without blocking Stage 2 but returns a rejection to evidence preparation", async () => {
     const harness = createReadyForCustomerReviewHarness();
+    harness.state.vehicleInspection = null;
 
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("客户尚未确认");
 
@@ -1585,6 +1603,7 @@ describe("HandoverWorkOrderService", () => {
       opsReviewStatus: "REJECTED",
       status: "FIELD_IN_PROGRESS"
     });
+    expect(harness.state.vehicleInspection).toBeNull();
   });
 
   it("blocks ops review pending before post-signing work-order states", async () => {
@@ -1645,6 +1664,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("publishes readiness and decides the exact aggregate review in the same transaction", async () => {
     const harness = createReadyForCustomerReviewHarness();
+    harness.state.vehicleInspection = null;
     const manifestHash = (
       await harness.service.getCurrentEvidencePackage("work-order-1")
     ).manifestHash;
@@ -1686,6 +1706,11 @@ describe("HandoverWorkOrderService", () => {
       notes: "approved",
       orderId: harness.orderId,
       workOrderId: "work-order-1"
+    });
+    expect(harness.state.vehicleInspection).toMatchObject({
+      inspectedAt: harness.now,
+      orderId: harness.orderId,
+      status: "PASSED"
     });
   });
 
@@ -2230,9 +2255,18 @@ function createHandoverWorkOrderHarness() {
     vehicleInspection: {
       deletedAt: null,
       id: "inspection-1",
+      inspectedAt: now,
       orderId,
       status: "PASSED"
-    },
+    } as {
+      createdBy?: string | null;
+      deletedAt: Date | null;
+      id: string;
+      inspectedAt: Date | null;
+      orderId: string;
+      status: "PENDING" | "PASSED" | "FAILED";
+      updatedBy?: string | null;
+    } | null,
     evidenceItems: [] as Array<Record<string, unknown>>,
     evidenceFiles: [] as Array<Record<string, unknown>>,
     events: [] as Array<Record<string, unknown>>,
@@ -2287,7 +2321,29 @@ function createHandoverWorkOrderHarness() {
       })
     },
     vehicleInspection: {
-      findUnique: vi.fn(async () => state.vehicleInspection)
+      findUnique: vi.fn(async () => state.vehicleInspection),
+      upsert: vi.fn(async ({
+        create,
+        update
+      }: {
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => {
+        if (state.vehicleInspection) {
+          Object.assign(state.vehicleInspection, update);
+        } else {
+          state.vehicleInspection = {
+            createdBy: String(create.createdBy),
+            deletedAt: null,
+            id: "inspection-1",
+            inspectedAt: create.inspectedAt as Date,
+            orderId: String(create.orderId),
+            status: create.status as "PASSED",
+            updatedBy: String(create.updatedBy)
+          };
+        }
+        return state.vehicleInspection;
+      })
     },
     user: {
       findFirst: vi.fn(async ({

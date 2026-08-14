@@ -445,16 +445,6 @@ export class HandoverWorkOrderService {
     ) {
       throw new BadRequestException("A reserved vehicle is required before handover creation.");
     }
-    const inspection = await tx.vehicleInspection.findUnique({
-      where: { orderId }
-    });
-    if (
-      !inspection ||
-      inspection.deletedAt ||
-      inspection.status !== VehicleInspectionStatus.PASSED
-    ) {
-      throw new BadRequestException("A passed vehicle inspection is required before handover creation.");
-    }
     let delivery = await tx.vehicleDelivery.findUnique({ where: { orderId } });
     const evaluationDate =
       (delivery && !delivery.deletedAt ? delivery.scheduledAt : null) ??
@@ -1974,6 +1964,7 @@ export class HandoverWorkOrderService {
     }
     const normalizedNotes = normalizeOptionalText(notes);
     const manifestHash = expectedManifestHash ?? evidencePackage.manifestHash;
+    const reviewedAt = new Date();
     const updated = await this.updateWorkOrderVersioned(workOrder, {
       customerConfirmedAt:
         decision === "REJECTED" ? null : workOrder.customerConfirmedAt,
@@ -1985,10 +1976,28 @@ export class HandoverWorkOrderService {
       }),
       opsReviewNotes: normalizedNotes,
       opsReviewStatus: decision,
-      opsReviewedAt: new Date(),
+      opsReviewedAt: reviewedAt,
       opsReviewedBy: actorId,
       status: decision === "REJECTED" ? "FIELD_IN_PROGRESS" : "OPS_REVIEWED"
     }, tx);
+    if (decision === "APPROVED") {
+      await tx.vehicleInspection.upsert({
+        create: {
+          createdBy: actorId,
+          inspectedAt: reviewedAt,
+          orderId: updated.orderId,
+          status: VehicleInspectionStatus.PASSED,
+          updatedBy: actorId
+        },
+        update: {
+          deletedAt: null,
+          inspectedAt: reviewedAt,
+          status: VehicleInspectionStatus.PASSED,
+          updatedBy: actorId
+        },
+        where: { orderId: updated.orderId }
+      });
+    }
     await this.recordEvent(
       updated,
       VehicleHandoverEventType.OPS_REVIEW_UPDATED,

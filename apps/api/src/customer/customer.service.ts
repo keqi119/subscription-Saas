@@ -1853,7 +1853,32 @@ export class CustomerService {
       before.finalPlanSnapshot,
       details.finalPlanSnapshot
     );
+    const alreadyHeld =
+      before.softReservedVehicleId === details.vehicle.id &&
+      details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
     if (termsChanged) {
+      if (!alreadyHeld) {
+        const reserved = await tx.vehicle.updateMany({
+          data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: actor.id },
+          where: {
+            deletedAt: null,
+            id: details.vehicle.id,
+            status: VehicleStatus.AVAILABLE
+          }
+        });
+        if (reserved.count !== 1) {
+          throw journeyError(
+            "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+            "The journey vehicle could not be reserved."
+          );
+        }
+        if (
+          before.softReservedVehicleId &&
+          before.softReservedVehicleId !== details.vehicle.id
+        ) {
+          await releaseApplicationSoftReservedVehicle(tx, before, actor);
+        }
+      }
       const finalPlanRevision = before.finalPlanRevision + 1;
       const finalPlanSnapshot = {
         ...(details.finalPlanSnapshot as Record<string, unknown>),
@@ -1862,7 +1887,6 @@ export class CustomerService {
         finalPlanRevision,
         planConfirmStatus: PlanConfirmStatus.PENDING
       } satisfies Prisma.InputJsonValue;
-      await releaseApplicationSoftReservedVehicle(tx, before, actor);
       const application = await tx.application.update({
         data: {
           customerConfirmedPlanRevision: null,
@@ -1875,11 +1899,12 @@ export class CustomerService {
           finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
           finalVehicleId: details.vehicle.id,
           planConfirmStatus: PlanConfirmStatus.PENDING,
-          softReservationExpiresAt: null,
-          softReservedAt: null,
-          softReservedVehicleId: null,
+          softReservedAt: alreadyHeld
+            ? (before.softReservedAt ?? new Date())
+            : new Date(),
+          softReservedVehicleId: details.vehicle.id,
           updatedBy: actor.id,
-          vehicleReviewStatus: OrderReviewStatus.PENDING
+          vehicleReviewStatus: OrderReviewStatus.APPROVED
         },
         include: applicationInclude,
         where: { id: applicationId }
@@ -1904,9 +1929,6 @@ export class CustomerService {
       return { application, requiresCustomerReconfirmation: true };
     }
 
-    const alreadyHeld =
-      before.softReservedVehicleId === details.vehicle.id &&
-      details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
     if (!alreadyHeld) {
       const reserved = await tx.vehicle.updateMany({
         data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: actor.id },

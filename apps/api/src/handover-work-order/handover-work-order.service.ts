@@ -343,6 +343,18 @@ export interface UploadAndAttachFieldEvidenceOptions {
   replaceEvidenceFileId?: string | null;
 }
 
+export interface AttachPreparedFieldVideoFromStoredSourceInput {
+  actorId?: string;
+  detectedMimeType: string;
+  evidenceItemId: string;
+  originalName: string;
+  prepared: PreparedDeliveryEvidenceArtifacts;
+  replaceEvidenceFileId?: string;
+  sizeBytes: number;
+  storedSource: { bucket: string; objectKey: string };
+  workOrderId: string;
+}
+
 export interface RequestCustomerObjectionResubmissionInput {
   note: string;
   targetEvidenceItemIds?: string[];
@@ -919,6 +931,143 @@ export class HandoverWorkOrderService {
     } finally {
       await prepared?.cleanup();
       await Promise.all(uploadedFiles.map(cleanupUploadedFieldEvidenceTempFile));
+    }
+  }
+
+  async attachPreparedFieldVideoFromStoredSource(
+    input: AttachPreparedFieldVideoFromStoredSourceInput
+  ) {
+    const workOrder = await this.getWorkOrderOrThrow(input.workOrderId);
+    assertFieldSessionEditable(workOrder);
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(
+      workOrder,
+      input.evidenceItemId
+    );
+    const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
+      item.id,
+      DeliveryEvidenceMediaType.VIDEO,
+      input.replaceEvidenceFileId
+    );
+    if (mutation.evidenceType !== DeliveryEvidenceType.WALKAROUND_VIDEO) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_EVIDENCE_TYPE_REQUIRED",
+        message: "仅车辆环绕视频资料支持断点续传。"
+      });
+    }
+
+    const storedDerivatives: Array<
+      PreparedDeliveryEvidenceArtifacts["derivatives"][number] & {
+        stored: Awaited<ReturnType<StorageService["putDeliveryEvidenceDerivativeFromPath"]>>;
+      }
+    > = [];
+    try {
+      for (const derivative of input.prepared.derivatives) {
+        const stored = await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
+          contentType: derivative.contentType,
+          filePath: derivative.filePath,
+          kind: derivative.kind,
+          metadata: {
+            artifactKind: derivative.kind,
+            sourceOriginalName: input.originalName
+          },
+          orderId: workOrder.orderId,
+          originalName: derivative.originalName,
+          sizeBytes: derivative.sizeBytes,
+          workOrderId: workOrder.id
+        });
+        storedDerivatives.push({ ...derivative, stored });
+      }
+
+      return await this.runSerializableTransaction(async (tx) => {
+        const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
+        assertFieldSessionEditable(current);
+        const currentItem = await this.assertEvidenceItemBelongsToWorkOrder(
+          current,
+          item.id,
+          tx
+        );
+        const fileObject = await tx.fileObject.create({
+          data: {
+            bucket: input.storedSource.bucket,
+            mimeType: input.detectedMimeType,
+            objectKey: input.storedSource.objectKey,
+            originalName: input.originalName,
+            sizeBytes: BigInt(input.sizeBytes),
+            uploadedBy: null
+          }
+        });
+        const derivativeFileObjects = [];
+        for (const derivative of storedDerivatives) {
+          derivativeFileObjects.push(
+            await tx.fileObject.create({
+              data: {
+                bucket: derivative.stored.bucket,
+                mimeType: derivative.contentType,
+                objectKey: derivative.stored.objectKey,
+                originalName: derivative.originalName,
+                sizeBytes: BigInt(derivative.sizeBytes),
+                uploadedBy: null
+              }
+            })
+          );
+        }
+        const artifactMetadata = {
+          ...input.prepared.metadata,
+          photoPreviewFileId: null,
+          videoFrameFileIds: derivativeFileObjects
+            .map((entry) =>
+              readString(entry as unknown as Record<string, unknown>, "id")
+            )
+            .filter((value): value is string => Boolean(value))
+        } as Prisma.InputJsonValue;
+        const result = input.replaceEvidenceFileId
+          ? await this.deliveryEvidenceService.replaceEvidenceFile(
+              currentItem.id,
+              input.replaceEvidenceFileId,
+              fileObject.id,
+              DeliveryEvidenceMediaType.VIDEO,
+              undefined,
+              tx,
+              input.actorId,
+              artifactMetadata
+            )
+          : await this.deliveryEvidenceService.attachEvidenceFile(
+              currentItem.id,
+              fileObject.id,
+              DeliveryEvidenceMediaType.VIDEO,
+              undefined,
+              tx,
+              input.actorId,
+              artifactMetadata
+            );
+        await this.recordEvent(
+          current,
+          input.replaceEvidenceFileId
+            ? VehicleHandoverEventType.EVIDENCE_FILE_REPLACED
+            : VehicleHandoverEventType.EVIDENCE_FILE_ADDED,
+          {
+            actorId: input.actorId,
+            actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+            detail: {
+              evidenceItemId: currentItem.id,
+              fileName: input.originalName,
+              mediaType: DeliveryEvidenceMediaType.VIDEO,
+              replacedEvidenceFileId: input.replaceEvidenceFileId ?? null,
+              sizeBytes: input.sizeBytes
+            }
+          },
+          tx
+        );
+        return result;
+      });
+    } catch (error) {
+      await this.deleteStoredObjectsWithRetry(
+        storedDerivatives.map((derivative) => ({
+          bucket: derivative.stored.bucket,
+          objectKey: derivative.stored.objectKey
+        }))
+      );
+      throw error;
     }
   }
 

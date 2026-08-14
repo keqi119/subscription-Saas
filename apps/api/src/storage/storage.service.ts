@@ -111,6 +111,22 @@ export class StorageService {
     await this.ossStorage.deleteObject(input.key);
   }
 
+  resolveFieldVideoUploadSourceIdentity(input: { key: string }) {
+    this.assertFieldVideoMultipartDriver();
+    this.assertFieldVideoObjectKey(input.key);
+    const bucket = this.configService.get<string>("OSS_BUCKET")?.trim();
+    if (!bucket) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_OSS_BUCKET_MISSING",
+        message: "视频存储配置不完整。"
+      });
+    }
+    return {
+      bucket: `${OSS_BUCKET_PREFIX}${bucket}`,
+      objectKey: `${OSS_KEY_PREFIX}${input.key}`
+    };
+  }
+
   async putApplicationMaterial(
     input: Omit<UploadObjectInput, "key"> & { applicationId: string }
   ): Promise<{

@@ -221,6 +221,7 @@ function createInput(existing: ReturnType<typeof uploadSession>) {
     originalName: "IMG_0284.MOV",
     ossUploadId: "oss-upload-1",
     replaceEvidenceFileId: null,
+    sessionId: existing.id,
     sizeBytes: 8 * 1024 * 1024,
     totalParts: 1,
     workOrderId: existing.workOrderId

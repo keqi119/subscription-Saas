@@ -9,6 +9,9 @@ import { ESignModule } from "../esign/esign.module";
 import { FieldOperatorAuthController } from "../field-operator/field-operator-auth.controller";
 import { FieldOperatorAuthGuard } from "../field-operator/field-operator-auth.guard";
 import { FieldOperatorAuthService } from "../field-operator/field-operator-auth.service";
+import { FieldVideoUploadController } from "../field-operator/field-video-upload.controller";
+import { FieldVideoUploadRepository } from "../field-operator/field-video-upload.repository";
+import { FieldVideoUploadService } from "../field-operator/field-video-upload.service";
 import { FinanceModule } from "../finance/finance.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
@@ -31,6 +34,7 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
   controllers: [
     HandoverWorkOrderAdminController,
     FieldOperatorAuthController,
+    FieldVideoUploadController,
     HandoverWorkOrderFieldController
   ],
   exports: [
@@ -57,6 +61,8 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
     DeliveryHandoverService,
     FieldOperatorAuthGuard,
     FieldOperatorAuthService,
+    FieldVideoUploadRepository,
+    FieldVideoUploadService,
     HandoverWorkOrderService,
     Stage2HandoverESignReadinessService,
     Stage2HandoverESignService,

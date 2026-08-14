@@ -39,6 +39,7 @@ export interface CreateFieldVideoUploadSessionInput {
   originalName: string;
   ossUploadId: string;
   replaceEvidenceFileId: string | null;
+  sessionId: string;
   sizeBytes: number;
   totalParts: number;
   workOrderId: string;
@@ -121,6 +122,7 @@ export class FieldVideoUploadRepository {
             originalName: input.originalName,
             ossUploadId: input.ossUploadId,
             replaceEvidenceFileId: input.replaceEvidenceFileId,
+            id: input.sessionId,
             sizeBytes: BigInt(input.sizeBytes),
             totalParts: input.totalParts,
             workOrderId: input.workOrderId
@@ -376,6 +378,68 @@ export class FieldVideoUploadRepository {
         version: { increment: 1 }
       },
       where: { id: input.sessionId, leaseOwner: input.leaseOwner }
+    });
+    return updated.count === 1;
+  }
+
+  async retryFailed(sessionId: string): Promise<boolean> {
+    const updated = await this.prisma.fieldEvidenceVideoUploadSession.updateMany({
+      data: {
+        failureCode: null,
+        failureMessage: null,
+        leaseExpiresAt: new Date(),
+        version: { increment: 1 }
+      },
+      where: {
+        id: sessionId,
+        leaseOwner: null,
+        status: FieldEvidenceVideoUploadStatus.RETRYABLE_FAILED
+      }
+    });
+    return updated.count === 1;
+  }
+
+  async claimCancellation(
+    sessionId: string,
+    leaseMs: number
+  ): Promise<FieldVideoUploadSessionSnapshot | null> {
+    if (leaseMs <= 0) {
+      return null;
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const leaseOwner = `cancel:${randomUUID()}`;
+      const updated = await tx.fieldEvidenceVideoUploadSession.updateMany({
+        data: {
+          leaseExpiresAt: new Date(now.getTime() + leaseMs),
+          leaseOwner,
+          version: { increment: 1 }
+        },
+        where: {
+          id: sessionId,
+          status: { in: [...FIELD_VIDEO_LIVE_STATUSES] },
+          OR: [{ leaseOwner: null }, { leaseExpiresAt: { lte: now } }]
+        }
+      });
+      if (updated.count !== 1) {
+        return null;
+      }
+      const row = await tx.fieldEvidenceVideoUploadSession.findUnique({
+        include: sessionInclude,
+        where: { id: sessionId }
+      });
+      return row?.leaseOwner === leaseOwner ? toSessionSnapshot(row) : null;
+    });
+  }
+
+  async releaseLease(sessionId: string, leaseOwner: string): Promise<boolean> {
+    const updated = await this.prisma.fieldEvidenceVideoUploadSession.updateMany({
+      data: {
+        leaseExpiresAt: null,
+        leaseOwner: null,
+        version: { increment: 1 }
+      },
+      where: { id: sessionId, leaseOwner }
     });
     return updated.count === 1;
   }

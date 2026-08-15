@@ -1,6 +1,5 @@
 export const FIELD_VIDEO_CHUNK_SIZE_BYTES = 8 * 1024 * 1024;
 export const MAX_FIELD_VIDEO_SIZE_BYTES = 300 * 1024 * 1024;
-const FINGERPRINT_SAMPLE_SIZE_BYTES = 1024 * 1024;
 
 export interface FieldVideoChunk {
   endByte: number;
@@ -52,14 +51,10 @@ export function selectMissingFieldVideoParts(
 }
 
 export async function buildFieldVideoResumeFingerprint(file: File) {
-  const sampleSize = Math.min(FINGERPRINT_SAMPLE_SIZE_BYTES, file.size);
-  const first = new Uint8Array(await file.slice(0, sampleSize).arrayBuffer());
-  const lastStart = Math.max(sampleSize, file.size - sampleSize);
-  const last = new Uint8Array(await file.slice(lastStart, file.size).arrayBuffer());
   const metadata = new TextEncoder().encode(
     `${file.name}\n${file.type}\n${file.size}\n${file.lastModified}\n`
   );
-  return sha256Bytes(concatBytes(metadata, first, last));
+  return sha256Bytes(metadata);
 }
 
 export async function sha256Blob(blob: Blob) {
@@ -84,14 +79,4 @@ async function sha256Bytes(bytes: Uint8Array) {
   copied.set(bytes);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", copied.buffer);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-function concatBytes(...parts: Uint8Array[]) {
-  const result = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.length;
-  }
-  return result;
 }

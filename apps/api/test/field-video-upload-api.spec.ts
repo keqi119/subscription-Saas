@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FieldVideoUploadService } from "../src/field-operator/field-video-upload.service";
 import { MAX_FIELD_VIDEO_SIZE_BYTES } from "../src/field-operator/field-video-upload.constants";
+import type { FieldVideoUploadSessionSnapshot } from "../src/field-operator/field-video-upload.types";
 
 describe("FieldVideoUploadService", () => {
   it("creates a safe resumable session without exposing OSS fields", async () => {
@@ -77,6 +78,36 @@ describe("FieldVideoUploadService", () => {
     ).rejects.toMatchObject({
       response: expect.objectContaining({ code: "VIDEO_UPLOAD_SESSION_SCOPE_MISMATCH" })
     });
+  });
+
+  it("reads a completed replacement session without revalidating the archived target file", async () => {
+    const completed = sessionSnapshot({
+      completedAt: new Date("2026-08-15T00:10:00.000Z"),
+      replaceEvidenceFileId: randomUUID(),
+      status: FieldEvidenceVideoUploadStatus.COMPLETED
+    });
+    const harness = serviceHarness({ session: completed });
+    harness.handover.authorizeFieldVideoUploadMutation.mockRejectedValue(
+      new Error("replacement target is already archived")
+    );
+
+    await expect(
+      harness.service.getStatus(
+        harness.workOrderId,
+        harness.evidenceItemId,
+        completed.id,
+        "13800138000"
+      )
+    ).resolves.toMatchObject({
+      sessionId: completed.id,
+      status: FieldEvidenceVideoUploadStatus.COMPLETED
+    });
+    expect(harness.handover.authorizeFieldVideoUploadAccess).toHaveBeenCalledWith({
+      evidenceItemId: harness.evidenceItemId,
+      phone: "13800138000",
+      workOrderId: harness.workOrderId
+    });
+    expect(harness.handover.authorizeFieldVideoUploadMutation).not.toHaveBeenCalled();
   });
 
   it("returns only active sessions still authorized for the current operator", async () => {
@@ -193,7 +224,7 @@ describe("FieldVideoUploadService", () => {
 });
 
 function serviceHarness(
-  options: { live?: boolean; session?: ReturnType<typeof sessionSnapshot> } = {}
+  options: { live?: boolean; session?: FieldVideoUploadSessionSnapshot } = {}
 ) {
   const workOrderId = options.session?.workOrderId ?? randomUUID();
   const evidenceItemId = options.session?.evidenceItemId ?? randomUUID();
@@ -227,6 +258,10 @@ function serviceHarness(
     deleteFieldVideoUploadSource: vi.fn(async () => undefined)
   };
   const handover = {
+    authorizeFieldVideoUploadAccess: vi.fn(async (input: { workOrderId: string }) => {
+      void input;
+      return authorization({ evidenceItemId, workOrderId });
+    }),
     authorizeFieldVideoUploadMutation: vi.fn(async (input: { workOrderId: string }) => {
       void input;
       return authorization({ evidenceItemId, workOrderId });
@@ -268,11 +303,13 @@ function baseCreateDto() {
   };
 }
 
-function sessionSnapshot(override: Partial<ReturnType<typeof baseSessionSnapshot>> = {}) {
+function sessionSnapshot(
+  override: Partial<FieldVideoUploadSessionSnapshot> = {}
+): FieldVideoUploadSessionSnapshot {
   return { ...baseSessionSnapshot(), ...override };
 }
 
-function baseSessionSnapshot() {
+function baseSessionSnapshot(): FieldVideoUploadSessionSnapshot {
   return {
     cancelledAt: null,
     chunkSizeBytes: 8 * 1024 * 1024,

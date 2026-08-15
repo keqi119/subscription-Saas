@@ -138,7 +138,13 @@ export class FieldVideoUploadService {
   }
 
   async getStatus(workOrderId: string, evidenceItemId: string, sessionId: string, phone: string) {
-    const session = await this.getScopedSession(workOrderId, evidenceItemId, sessionId, phone);
+    const session = await this.getScopedSession(
+      workOrderId,
+      evidenceItemId,
+      sessionId,
+      phone,
+      "READ"
+    );
     return toPublicFieldVideoUploadSnapshot(session);
   }
 
@@ -315,7 +321,8 @@ export class FieldVideoUploadService {
     workOrderId: string,
     evidenceItemId: string,
     sessionId: string,
-    phone: string
+    phone: string,
+    access: "MUTATE" | "READ" = "MUTATE"
   ) {
     const session = await this.repository.findById(sessionId);
     if (
@@ -328,12 +335,20 @@ export class FieldVideoUploadService {
         message: "无权访问该视频上传记录。"
       });
     }
-    await this.handover.authorizeFieldVideoUploadMutation({
-      evidenceItemId,
-      phone,
-      replaceEvidenceFileId: session.replaceEvidenceFileId ?? undefined,
-      workOrderId
-    });
+    if (access === "READ") {
+      await this.handover.authorizeFieldVideoUploadAccess({
+        evidenceItemId,
+        phone,
+        workOrderId
+      });
+    } else {
+      await this.handover.authorizeFieldVideoUploadMutation({
+        evidenceItemId,
+        phone,
+        replaceEvidenceFileId: session.replaceEvidenceFileId ?? undefined,
+        workOrderId
+      });
+    }
     return session;
   }
 }

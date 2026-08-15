@@ -9,10 +9,13 @@ import {
   MAX_FIELD_VIDEO_SIZE_BYTES,
   buildFieldEvidenceUploadInputContracts,
   buildFieldEvidenceUploadRetryDisplay,
+  clearFieldVideoSelectionPending,
   completeFieldEvidenceUploadSelection,
+  consumeInterruptedFieldVideoSelection,
   detectFieldEvidenceUploadEnvironment,
   formatUploadBytes,
   getFieldEvidenceUploadGuidance,
+  markFieldVideoSelectionPending,
   routeFieldEvidenceUploadPrimaryAction,
   resolveFieldEvidenceMediaType,
   validateFieldEvidenceFile
@@ -145,10 +148,75 @@ describe("field handover evidence upload validation", () => {
     ]);
   });
 
+  it("offers separate album and Files routes for the mobile walkaround video", () => {
+    expect(
+      buildFieldEvidenceUploadInputContracts(
+        ["VIDEO"],
+        false,
+        "MOBILE",
+        "WALKAROUND_VIDEO"
+      )
+    ).toEqual([
+      {
+        accept: "video/*",
+        key: "library",
+        label: "从相册选择（不超过 200 MB）",
+        multiple: false
+      },
+      {
+        accept: ".m4v,.mov,.mp4,.webm",
+        key: "video-file",
+        label: "从文件选择（200–300 MB）",
+        multiple: false
+      }
+    ]);
+    expect(
+      buildFieldEvidenceUploadInputContracts(
+        ["VIDEO"],
+        false,
+        "DESKTOP",
+        "WALKAROUND_VIDEO"
+      )
+    ).toEqual([
+      {
+        accept: "video/*",
+        key: "library",
+        label: "资料上传",
+        multiple: false
+      }
+    ]);
+  });
+
+  it("consumes an interrupted mobile video selection marker exactly once", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      }
+    };
+
+    markFieldVideoSelectionPending(storage, "walkaround-item");
+    expect(values).toEqual(
+      new Map([["subscription-saas:field-video-selection:walkaround-item", "1"]])
+    );
+    expect(consumeInterruptedFieldVideoSelection(storage, "walkaround-item")).toBe(true);
+    expect(consumeInterruptedFieldVideoSelection(storage, "walkaround-item")).toBe(false);
+
+    markFieldVideoSelectionPending(storage, "walkaround-item");
+    clearFieldVideoSelectionPending(storage, "walkaround-item");
+    expect(values.size).toBe(0);
+  });
+
   it("shows video-quality guidance only for the walkaround item", () => {
     const guidance = getFieldEvidenceUploadGuidance(["VIDEO"], "WALKAROUND_VIDEO");
     expect(guidance).toContain("系统相机");
     expect(guidance).toContain("720p");
+    expect(guidance).toContain("200 MB");
+    expect(guidance).toContain("手机“文件”");
     expect(guidance).toContain("300MB");
     expect(
       getFieldEvidenceUploadGuidance(["PHOTO", "VIDEO"], "WHEEL_CLOSEUP_FRONT_LEFT")

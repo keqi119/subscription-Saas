@@ -14,9 +14,15 @@ export interface FieldEvidenceUploadEnvironmentSignals {
 export interface FieldEvidenceUploadInputContract {
   accept: string;
   capture?: "environment";
-  key: "library" | "photo-capture" | "video-capture";
+  key: "library" | "photo-capture" | "video-capture" | "video-file";
   label: string;
   multiple: boolean;
+}
+
+interface FieldVideoSelectionStorage {
+  getItem: (key: string) => string | null;
+  removeItem: (key: string) => void;
+  setItem: (key: string, value: string) => void;
 }
 
 export interface FieldEvidenceUploadPrimaryActionHandlers {
@@ -59,8 +65,9 @@ const SAFE_VIDEO_MIME_TYPES = new Set([
 const MOBILE_USER_AGENT_PATTERN =
   /android|avantgo|blackberry|iemobile|ip(?:ad|hone|od)|mobile|opera mini|windows phone/i;
 const MOBILE_UPLOAD_MAX_VIEWPORT_WIDTH = 768;
+const FIELD_VIDEO_SELECTION_STORAGE_PREFIX = "subscription-saas:field-video-selection:";
 const FIELD_VIDEO_LIBRARY_GUIDANCE =
-  "请先使用手机系统相机以 720p 或更高画质录制完整车辆环绕视频，再从相册选择上传。单个视频不超过 300MB。";
+  "请使用手机系统相机以 720p 或更高画质录制完整车辆环绕视频。200 MB 以内可从相册选择；超过 200 MB 请先保存到手机“文件”后上传。单个视频不超过 300MB。";
 
 export function detectFieldEvidenceUploadEnvironment(
   signals: FieldEvidenceUploadEnvironmentSignals = {}
@@ -142,7 +149,8 @@ export function validateFieldEvidenceFile(
 export function buildFieldEvidenceUploadInputContracts(
   allowedMediaTypes: FieldEvidenceMediaType[],
   allowsMultiple: boolean,
-  environment: FieldEvidenceUploadEnvironment = "DESKTOP"
+  environment: FieldEvidenceUploadEnvironment = "DESKTOP",
+  evidenceType?: string | null
 ): FieldEvidenceUploadInputContract[] {
   const contracts: FieldEvidenceUploadInputContract[] = [];
   if (environment === "MOBILE" && allowedMediaTypes.includes("PHOTO")) {
@@ -163,11 +171,58 @@ export function buildFieldEvidenceUploadInputContracts(
         .filter(Boolean)
         .join(","),
       key: "library",
-      label: environment === "DESKTOP" ? "资料上传" : "从相册选择",
+      label:
+        environment === "DESKTOP"
+          ? "资料上传"
+          : evidenceType === "WALKAROUND_VIDEO" && allowedMediaTypes.includes("VIDEO")
+            ? "从相册选择（不超过 200 MB）"
+            : "从相册选择",
       multiple: allowsMultiple
     });
   }
+  if (
+    environment === "MOBILE" &&
+    evidenceType === "WALKAROUND_VIDEO" &&
+    allowedMediaTypes.includes("VIDEO")
+  ) {
+    contracts.push({
+      accept: ".m4v,.mov,.mp4,.webm",
+      key: "video-file",
+      label: "从文件选择（200–300 MB）",
+      multiple: false
+    });
+  }
   return contracts;
+}
+
+export function markFieldVideoSelectionPending(
+  storage: FieldVideoSelectionStorage,
+  controlId: string
+) {
+  storage.setItem(fieldVideoSelectionStorageKey(controlId), "1");
+}
+
+export function clearFieldVideoSelectionPending(
+  storage: FieldVideoSelectionStorage,
+  controlId: string
+) {
+  storage.removeItem(fieldVideoSelectionStorageKey(controlId));
+}
+
+export function consumeInterruptedFieldVideoSelection(
+  storage: FieldVideoSelectionStorage,
+  controlId: string
+) {
+  const key = fieldVideoSelectionStorageKey(controlId);
+  const interrupted = storage.getItem(key) === "1";
+  if (interrupted) {
+    storage.removeItem(key);
+  }
+  return interrupted;
+}
+
+function fieldVideoSelectionStorageKey(controlId: string) {
+  return `${FIELD_VIDEO_SELECTION_STORAGE_PREFIX}${controlId}`;
 }
 
 export function getFieldEvidenceUploadGuidance(

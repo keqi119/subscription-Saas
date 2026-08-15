@@ -191,6 +191,216 @@ describe("SubscriptionJourneyRepository PostgreSQL leases", () => {
     }
   );
 
+  it.each(["complete", "reschedule", "dead-letter"] as const)(
+    "rejects an expired outbox lease token when attempting to %s",
+    async (operation) => {
+      const leaseToken = `${FIXTURE_PREFIX}_outbox_${operation}`;
+      const outbox = await createOutbox(prisma, `expired-outbox-${operation}`, {
+        leaseExpiresAt: new Date(),
+        leaseToken,
+        status: SubscriptionJourneyOutboxStatus.PROCESSING
+      });
+      await prisma.$executeRaw`
+        UPDATE "subscription_journey_outbox"
+        SET "lease_expires_at" = clock_timestamp() - interval '10 seconds'
+        WHERE "id" = ${outbox.id}
+      `;
+      const before = await prisma.subscriptionJourneyOutbox.findUniqueOrThrow({
+        where: { id: outbox.id }
+      });
+
+      const attempted = prisma.$transaction(async (tx) => {
+        if (operation === "complete") {
+          return repository.completeOutbox(tx, outbox.id, leaseToken);
+        }
+        if (operation === "reschedule") {
+          return repository.rescheduleOutbox(tx, outbox.id, leaseToken, {
+            delayMs: 1_000,
+            error: {
+              code: "PROVIDER_TIMEOUT",
+              message: "Provider timed out.",
+              retryable: true
+            }
+          });
+        }
+        return repository.deadLetterOutbox(tx, outbox.id, leaseToken, {
+          code: "PROVIDER_REJECTED",
+          message: "Provider rejected the request.",
+          retryable: false
+        });
+      });
+
+      await expect(attempted).rejects.toMatchObject({
+        code: "JOURNEY_LEASE_LOST"
+      });
+      await expect(
+        prisma.subscriptionJourneyOutbox.findUniqueOrThrow({
+          where: { id: outbox.id }
+        })
+      ).resolves.toMatchObject({
+        attemptCount: before.attemptCount,
+        availableAt: before.availableAt,
+        deliveredAt: before.deliveredAt,
+        lastErrorCode: before.lastErrorCode,
+        lastErrorMessage: before.lastErrorMessage,
+        leaseExpiresAt: before.leaseExpiresAt,
+        leaseToken,
+        status: SubscriptionJourneyOutboxStatus.PROCESSING
+      });
+    }
+  );
+
+  it.each(["complete", "reschedule", "dead-letter"] as const)(
+    "applies %s for an active job lease",
+    async (operation) => {
+      const leaseToken = `${FIXTURE_PREFIX}_active_job_${operation}`;
+      const job = await createJob(prisma, `active-job-${operation}`, {
+        leaseExpiresAt: new Date(),
+        leaseToken,
+        status: SubscriptionJourneyJobStatus.PROCESSING
+      });
+      await prisma.$executeRaw`
+        UPDATE "subscription_journey_job"
+        SET "lease_expires_at" = clock_timestamp() + interval '1 minute'
+        WHERE "id" = ${job.id}
+      `;
+
+      await prisma.$transaction(async (tx) => {
+        if (operation === "complete") {
+          await repository.completeJob(tx, job.id, leaseToken, { ok: true });
+          return;
+        }
+        if (operation === "reschedule") {
+          await repository.rescheduleJob(tx, job.id, leaseToken, {
+            delayMs: 1_000,
+            error: {
+              code: "PROVIDER_TIMEOUT",
+              message: "Provider timed out.",
+              retryable: true
+            }
+          });
+          return;
+        }
+        await repository.deadLetterJob(tx, {
+          error: {
+            code: "PROVIDER_REJECTED",
+            message: "Provider rejected the request.",
+            retryable: false
+          },
+          jobId: job.id,
+          journeyId: fixture.journeyId,
+          leaseToken,
+          stepId: fixture.stepId
+        });
+      });
+
+      const persisted = await prisma.subscriptionJourneyJob.findUniqueOrThrow({
+        where: { id: job.id }
+      });
+      expect(persisted.leaseExpiresAt).toBeNull();
+      expect(persisted.leaseToken).toBeNull();
+      if (operation === "complete") {
+        expect(persisted).toMatchObject({
+          attemptCount: 0,
+          lastErrorCode: null,
+          status: SubscriptionJourneyJobStatus.COMPLETED
+        });
+        expect(persisted.completedAt).toBeInstanceOf(Date);
+      } else if (operation === "reschedule") {
+        expect(persisted).toMatchObject({
+          attemptCount: 1,
+          lastErrorCode: "PROVIDER_TIMEOUT",
+          lastErrorMessage: "Provider timed out.",
+          status: SubscriptionJourneyJobStatus.RETRY_SCHEDULED
+        });
+        expect(persisted.completedAt).toBeNull();
+      } else {
+        expect(persisted).toMatchObject({
+          attemptCount: 1,
+          lastErrorCode: "PROVIDER_REJECTED",
+          lastErrorMessage: "Provider rejected the request.",
+          status: SubscriptionJourneyJobStatus.DEAD_LETTER
+        });
+        expect(persisted.completedAt).toBeInstanceOf(Date);
+        await expect(
+          prisma.subscriptionJourneyException.count({
+            where: { jobId: job.id }
+          })
+        ).resolves.toBe(1);
+      }
+    }
+  );
+
+  it.each(["complete", "reschedule", "dead-letter"] as const)(
+    "applies %s for an active outbox lease",
+    async (operation) => {
+      const leaseToken = `${FIXTURE_PREFIX}_active_outbox_${operation}`;
+      const outbox = await createOutbox(prisma, `active-outbox-${operation}`, {
+        leaseExpiresAt: new Date(),
+        leaseToken,
+        status: SubscriptionJourneyOutboxStatus.PROCESSING
+      });
+      await prisma.$executeRaw`
+        UPDATE "subscription_journey_outbox"
+        SET "lease_expires_at" = clock_timestamp() + interval '1 minute'
+        WHERE "id" = ${outbox.id}
+      `;
+
+      await prisma.$transaction(async (tx) => {
+        if (operation === "complete") {
+          await repository.completeOutbox(tx, outbox.id, leaseToken);
+          return;
+        }
+        if (operation === "reschedule") {
+          await repository.rescheduleOutbox(tx, outbox.id, leaseToken, {
+            delayMs: 1_000,
+            error: {
+              code: "PROVIDER_TIMEOUT",
+              message: "Provider timed out.",
+              retryable: true
+            }
+          });
+          return;
+        }
+        await repository.deadLetterOutbox(tx, outbox.id, leaseToken, {
+          code: "PROVIDER_REJECTED",
+          message: "Provider rejected the request.",
+          retryable: false
+        });
+      });
+
+      const persisted = await prisma.subscriptionJourneyOutbox.findUniqueOrThrow({
+        where: { id: outbox.id }
+      });
+      expect(persisted.leaseExpiresAt).toBeNull();
+      expect(persisted.leaseToken).toBeNull();
+      if (operation === "complete") {
+        expect(persisted).toMatchObject({
+          attemptCount: 0,
+          lastErrorCode: null,
+          status: SubscriptionJourneyOutboxStatus.DELIVERED
+        });
+        expect(persisted.deliveredAt).toBeInstanceOf(Date);
+      } else if (operation === "reschedule") {
+        expect(persisted).toMatchObject({
+          attemptCount: 1,
+          lastErrorCode: "PROVIDER_TIMEOUT",
+          lastErrorMessage: "Provider timed out.",
+          status: SubscriptionJourneyOutboxStatus.PENDING
+        });
+        expect(persisted.deliveredAt).toBeNull();
+      } else {
+        expect(persisted).toMatchObject({
+          attemptCount: 1,
+          lastErrorCode: "PROVIDER_REJECTED",
+          lastErrorMessage: "Provider rejected the request.",
+          status: SubscriptionJourneyOutboxStatus.DEAD_LETTER
+        });
+        expect(persisted.deliveredAt).toBeNull();
+      }
+    }
+  );
+
   it("commits concurrent retries of the same domain signal exactly once", async () => {
     const eventKey = `${FIXTURE_PREFIX}:signal:application-submitted`;
     const signal = {

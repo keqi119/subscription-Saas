@@ -878,18 +878,22 @@ export class SubscriptionJourneyRepository {
     result?: Prisma.InputJsonValue
   ): Promise<void> {
     assertSafePayload(result);
-    const updated = await tx.subscriptionJourneyJob.updateMany({
-      data: {
-        completedAt: new Date(),
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyJobStatus.COMPLETED
-      },
-      where: processingLease(jobId, leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_job"
+      SET
+        "status" = 'COMPLETED',
+        "completed_at" = clock_timestamp(),
+        "last_error_code" = NULL,
+        "last_error_message" = NULL,
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${jobId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
   }
 
   async completeOutbox(
@@ -897,18 +901,22 @@ export class SubscriptionJourneyRepository {
     outboxId: string,
     leaseToken: string
   ): Promise<void> {
-    const updated = await tx.subscriptionJourneyOutbox.updateMany({
-      data: {
-        deliveredAt: new Date(),
-        lastErrorCode: null,
-        lastErrorMessage: null,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyOutboxStatus.DELIVERED
-      },
-      where: processingOutboxLease(outboxId, leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_outbox"
+      SET
+        "status" = 'DELIVERED',
+        "delivered_at" = clock_timestamp(),
+        "last_error_code" = NULL,
+        "last_error_message" = NULL,
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${outboxId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
   }
 
   async rescheduleOutbox(
@@ -921,19 +929,23 @@ export class SubscriptionJourneyRepository {
       throw new RangeError("Journey retry delay must be a non-negative integer.");
     }
     const failure = safeFailure(input.error);
-    const updated = await tx.subscriptionJourneyOutbox.updateMany({
-      data: {
-        attemptCount: { increment: 1 },
-        availableAt: new Date(Date.now() + input.delayMs),
-        lastErrorCode: failure.code,
-        lastErrorMessage: failure.message,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyOutboxStatus.PENDING
-      },
-      where: processingOutboxLease(outboxId, leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_outbox"
+      SET
+        "status" = 'PENDING',
+        "attempt_count" = "attempt_count" + 1,
+        "available_at" = clock_timestamp() + (${input.delayMs} * interval '1 millisecond'),
+        "last_error_code" = ${failure.code},
+        "last_error_message" = ${failure.message},
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${outboxId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
   }
 
   async deadLetterOutbox(
@@ -943,18 +955,22 @@ export class SubscriptionJourneyRepository {
     error: JourneyFailure
   ): Promise<void> {
     const failure = safeFailure(error);
-    const updated = await tx.subscriptionJourneyOutbox.updateMany({
-      data: {
-        attemptCount: { increment: 1 },
-        lastErrorCode: failure.code,
-        lastErrorMessage: failure.message,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyOutboxStatus.DEAD_LETTER
-      },
-      where: processingOutboxLease(outboxId, leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_outbox"
+      SET
+        "status" = 'DEAD_LETTER',
+        "attempt_count" = "attempt_count" + 1,
+        "last_error_code" = ${failure.code},
+        "last_error_message" = ${failure.message},
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${outboxId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
   }
 
   async readOperationalMetrics(tx: Tx): Promise<JourneyOperationalMetrics> {
@@ -1051,19 +1067,23 @@ export class SubscriptionJourneyRepository {
       throw new RangeError("Journey retry delay must be a non-negative integer.");
     }
     const failure = safeFailure(input.error);
-    const updated = await tx.subscriptionJourneyJob.updateMany({
-      data: {
-        attemptCount: { increment: 1 },
-        availableAt: new Date(Date.now() + input.delayMs),
-        lastErrorCode: failure.code,
-        lastErrorMessage: failure.message,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyJobStatus.RETRY_SCHEDULED
-      },
-      where: processingLease(jobId, leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_job"
+      SET
+        "status" = 'RETRY_SCHEDULED',
+        "attempt_count" = "attempt_count" + 1,
+        "available_at" = clock_timestamp() + (${input.delayMs} * interval '1 millisecond'),
+        "last_error_code" = ${failure.code},
+        "last_error_message" = ${failure.message},
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${jobId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
   }
 
   async deadLetterJob(
@@ -1071,19 +1091,23 @@ export class SubscriptionJourneyRepository {
     input: DeadLetterJourneyJobInput
   ): Promise<SubscriptionJourneyException> {
     const failure = safeFailure(input.error);
-    const updated = await tx.subscriptionJourneyJob.updateMany({
-      data: {
-        attemptCount: { increment: 1 },
-        completedAt: new Date(),
-        lastErrorCode: failure.code,
-        lastErrorMessage: failure.message,
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: SubscriptionJourneyJobStatus.DEAD_LETTER
-      },
-      where: processingLease(input.jobId, input.leaseToken, new Date())
-    });
-    requireLease(updated.count);
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_journey_job"
+      SET
+        "status" = 'DEAD_LETTER',
+        "attempt_count" = "attempt_count" + 1,
+        "completed_at" = clock_timestamp(),
+        "last_error_code" = ${failure.code},
+        "last_error_message" = ${failure.message},
+        "lease_expires_at" = NULL,
+        "lease_token" = NULL,
+        "updated_at" = clock_timestamp()
+      WHERE "id" = ${input.jobId}
+        AND "status" = 'PROCESSING'
+        AND "lease_token" = ${input.leaseToken}
+        AND "lease_expires_at" > clock_timestamp()
+    `);
+    requireLease(updated);
     return this.recordException(tx, { ...input, error: failure });
   }
 
@@ -1191,28 +1215,6 @@ export class SubscriptionJourneyRepository {
       where: { eventKey: input.eventKey }
     });
   }
-}
-
-function processingLease(jobId: string, leaseToken: string, now: Date) {
-  return {
-    id: jobId,
-    leaseExpiresAt: { gt: now },
-    leaseToken,
-    status: SubscriptionJourneyJobStatus.PROCESSING
-  };
-}
-
-function processingOutboxLease(
-  outboxId: string,
-  leaseToken: string,
-  now: Date
-) {
-  return {
-    id: outboxId,
-    leaseExpiresAt: { gt: now },
-    leaseToken,
-    status: SubscriptionJourneyOutboxStatus.PROCESSING
-  };
 }
 
 function latestDate(...values: Array<Date | null>): Date | null {

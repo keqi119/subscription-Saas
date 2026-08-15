@@ -623,11 +623,9 @@ describe("SubscriptionJourneyRepository", () => {
   it.each(["completeOutbox", "rescheduleOutbox", "deadLetterOutbox"] as const)(
     "requires an unexpired outbox lease for %s",
     async (operation) => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
-      const updateMany = vi.fn(async () => ({ count: 0 }));
+      const executeRaw = vi.fn(async (_query: unknown) => 0);
       const repository = new SubscriptionJourneyRepository();
-      const tx = { subscriptionJourneyOutbox: { updateMany } };
+      const tx = { $executeRaw: executeRaw };
 
       const result =
         operation === "completeOutbox"
@@ -658,13 +656,16 @@ describe("SubscriptionJourneyRepository", () => {
               );
 
       await expect(result).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
-      expect(updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            leaseExpiresAt: { gt: new Date("2026-08-06T00:00:00.000Z") }
-          })
-        })
-      );
+      const query = executeRaw.mock.calls[0]![0] as {
+        strings: readonly string[];
+        values: readonly unknown[];
+      };
+      const sql = query.strings.join(" ");
+      expect(sql).toContain('UPDATE "subscription_journey_outbox"');
+      expect(sql).toContain(`"status" = 'PROCESSING'`);
+      expect(sql).toContain(`"lease_expires_at" > clock_timestamp()`);
+      expect(query.values).toContain("outbox-1");
+      expect(query.values).toContain("lease-1");
     }
   );
 
@@ -724,9 +725,7 @@ describe("SubscriptionJourneyRepository", () => {
 
   it("requires the active lease token to complete a job", async () => {
     const tx = {
-      subscriptionJourneyJob: {
-        updateMany: vi.fn(async () => ({ count: 0 }))
-      }
+      $executeRaw: vi.fn(async () => 0)
     };
     const repository = new SubscriptionJourneyRepository();
 
@@ -738,34 +737,31 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("preserves the idempotency input payload when completing a job", async () => {
-    const updateMany = vi.fn(
-      async (input: { data: Record<string, unknown> }) => {
-        void input;
-        return { count: 1 };
-      }
-    );
+    const executeRaw = vi.fn(async (_query: unknown) => 1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.completeJob(
-      { subscriptionJourneyJob: { updateMany } } as never,
+      { $executeRaw: executeRaw } as never,
       "job-1",
       "lease-1",
       { resultId: "domain-result-1" }
     );
 
-    const data = updateMany.mock.calls[0]![0].data;
-    expect(data).not.toHaveProperty("payload");
+    const query = executeRaw.mock.calls[0]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    expect(query.strings.join(" ")).not.toContain('"payload"');
+    expect(query.values).not.toContain("domain-result-1");
   });
 
   it.each(["completeJob", "rescheduleJob", "deadLetterJob"] as const)(
     "requires an unexpired lease for %s",
     async (operation) => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
-      const updateMany = vi.fn(async () => ({ count: 0 }));
+      const executeRaw = vi.fn(async (_query: unknown) => 0);
       const tx = {
+        $executeRaw: executeRaw,
         subscriptionJourneyException: { create: vi.fn() },
-        subscriptionJourneyJob: { updateMany }
       };
       const repository = new SubscriptionJourneyRepository();
 
@@ -792,24 +788,25 @@ describe("SubscriptionJourneyRepository", () => {
         ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
       }
 
-      expect(updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            leaseExpiresAt: { gt: new Date("2026-08-06T00:00:00.000Z") }
-          })
-        })
-      );
+      const query = executeRaw.mock.calls[0]![0] as {
+        strings: readonly string[];
+        values: readonly unknown[];
+      };
+      const sql = query.strings.join(" ");
+      expect(sql).toContain('UPDATE "subscription_journey_job"');
+      expect(sql).toContain(`"status" = 'PROCESSING'`);
+      expect(sql).toContain(`"lease_expires_at" > clock_timestamp()`);
+      expect(query.values).toContain("job-1");
+      expect(query.values).toContain("lease-1");
     }
   );
 
   it("schedules retry with a safe error and clears the lease", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-08-06T00:00:00.000Z"));
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const executeRaw = vi.fn(async (_query: unknown) => 1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(
-      { subscriptionJourneyJob: { updateMany } } as never,
+      { $executeRaw: executeRaw } as never,
       "job-1",
       "lease-1",
       {
@@ -822,29 +819,37 @@ describe("SubscriptionJourneyRepository", () => {
       }
     );
 
-    expect(updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          availableAt: new Date("2026-08-06T00:00:30.000Z"),
-          lastErrorCode: "PROVIDER_TIMEOUT",
-          lastErrorMessage: "Provider request failed.",
-          leaseExpiresAt: null,
-          leaseToken: null,
-          status: SubscriptionJourneyJobStatus.RETRY_SCHEDULED
-        })
-      })
+    const query = executeRaw.mock.calls[0]![0] as {
+      strings: readonly string[];
+      values: readonly unknown[];
+    };
+    const sql = query.strings.join(" ");
+    expect(sql).toContain(`"status" = 'RETRY_SCHEDULED'`);
+    expect(sql).toContain(`"attempt_count" = "attempt_count" + 1`);
+    expect(sql).toContain(`clock_timestamp()`);
+    expect(sql).toContain(`"lease_expires_at" = NULL`);
+    expect(sql).toContain(`"lease_token" = NULL`);
+    expect(query.values).toEqual(
+      expect.arrayContaining([
+        30_000,
+        "PROVIDER_TIMEOUT",
+        "Provider request failed.",
+        "job-1",
+        "lease-1"
+      ])
     );
   });
 
   it("dead-letters under the lease and creates a composite-linked exception", async () => {
     const create = vi.fn(async (input) => ({ id: "exception-1", ...input.data }));
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const executeRaw = vi.fn(async (_query: unknown) => 1);
     const updateStep = vi.fn(async (input) => input.data);
     const updateJourney = vi.fn(async () => ({ count: 1 }));
     const repository = new SubscriptionJourneyRepository();
 
     await repository.deadLetterJob(
       {
+        $executeRaw: executeRaw,
         subscriptionJourney: {
           findUnique: vi.fn(async () => ({
             currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
@@ -856,7 +861,6 @@ describe("SubscriptionJourneyRepository", () => {
         },
         subscriptionJourneyException: { create },
         subscriptionJourneyEvent: { create: vi.fn(async (input) => input.data) },
-        subscriptionJourneyJob: { updateMany },
         subscriptionJourneyOutbox: {
           upsert: vi.fn(async (input) => input.create)
         },
@@ -977,11 +981,11 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("stores a bounded generic failure instead of a raw provider response", async () => {
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const executeRaw = vi.fn(async (_query: unknown) => 1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(
-      { subscriptionJourneyJob: { updateMany } } as never,
+      { $executeRaw: executeRaw } as never,
       "job-1",
       "lease-1",
       {
@@ -995,22 +999,23 @@ describe("SubscriptionJourneyRepository", () => {
       }
     );
 
-    expect(updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          lastErrorCode: "PROVIDER_HTTP_500_BODY",
-          lastErrorMessage: "Journey operation failed."
-        })
-      })
+    const query = executeRaw.mock.calls[0]![0] as {
+      values: readonly unknown[];
+    };
+    expect(query.values).toEqual(
+      expect.arrayContaining([
+        "PROVIDER_HTTP_500_BODY",
+        "Journey operation failed."
+      ])
     );
   });
 
   it("does not persist a truncated raw JSON provider error", async () => {
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const executeRaw = vi.fn(async (_query: unknown) => 1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(
-      { subscriptionJourneyJob: { updateMany } } as never,
+      { $executeRaw: executeRaw } as never,
       "job-1",
       "lease-1",
       {
@@ -1025,13 +1030,10 @@ describe("SubscriptionJourneyRepository", () => {
       }
     );
 
-    expect(updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          lastErrorMessage: "Journey operation failed."
-        })
-      })
-    );
+    const query = executeRaw.mock.calls[0]![0] as {
+      values: readonly unknown[];
+    };
+    expect(query.values).toContain("Journey operation failed.");
   });
 
   it("rejects a persisted journey/step mismatch before completing", async () => {

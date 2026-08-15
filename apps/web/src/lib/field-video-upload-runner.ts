@@ -147,12 +147,37 @@ export async function runFieldVideoUpload(
     }
 
     const parts = buildFieldVideoChunkPlan(input.file.size, session.chunkSizeBytes);
-    const missing = selectMissingFieldVideoParts(parts, session.completedPartNumbers);
     let uploadedBytes = parts
       .filter((part) => session!.completedPartNumbers.includes(part.partNumber))
       .reduce((total, part) => total + part.sizeBytes, 0);
     emit(input, "UPLOADING", session, uploadedBytes, parts.length);
 
+    const firstCompletedPart = parts.find(
+      (part) =>
+        part.partNumber === 1 && session!.completedPartNumbers.includes(part.partNumber)
+    );
+    if (firstCompletedPart) {
+      assertNotPaused(input.signal);
+      const blob = input.file.slice(firstCompletedPart.startByte, firstCompletedPart.endByte);
+      const sha256 = await sha256Blob(blob);
+      await retryPart(
+        () =>
+          api.uploadPart({
+            blob,
+            evidenceItemId: input.evidenceItemId,
+            onProgress: () => emit(input, "UPLOADING", session, uploadedBytes, parts.length),
+            partNumber: firstCompletedPart.partNumber,
+            sessionId: session!.sessionId,
+            sha256,
+            signal: input.signal,
+            workOrderId: input.workOrderId
+          }),
+        input.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS,
+        input.signal
+      );
+    }
+
+    const missing = selectMissingFieldVideoParts(parts, session.completedPartNumbers);
     for (const part of missing) {
       assertNotPaused(input.signal);
       const blob = input.file.slice(part.startByte, part.endByte);

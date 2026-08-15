@@ -5,16 +5,19 @@ import {
   FolderOpenOutlined,
   UploadOutlined
 } from "@ant-design/icons";
-import { Button, Drawer, Flex, Typography } from "antd";
-import { useRef, useState } from "react";
+import { Alert, Button, Drawer, Flex, Typography } from "antd";
+import { useEffect, useRef, useState } from "react";
 
 import {
   buildFieldEvidenceUploadInputContracts,
+  clearFieldVideoSelectionPending,
   completeFieldEvidenceUploadSelection,
+  consumeInterruptedFieldVideoSelection,
   type FieldEvidenceMediaType,
   type FieldEvidenceUploadEnvironment,
   type FieldEvidenceUploadInputContract,
   getFieldEvidenceUploadGuidance,
+  markFieldVideoSelectionPending,
   routeFieldEvidenceUploadPrimaryAction
 } from "../lib/field-handover-upload";
 
@@ -44,15 +47,40 @@ export function EvidenceUploadControls({
   const contracts = buildFieldEvidenceUploadInputContracts(
     allowedMediaTypes,
     multiple,
-    environment
+    environment,
+    evidenceType
   );
   const inputRefs = useRef<
     Partial<Record<FieldEvidenceUploadInputContract["key"], HTMLInputElement>>
   >({});
   const [chooserOpen, setChooserOpen] = useState(false);
+  const [selectionWarning, setSelectionWarning] = useState<string | null>(null);
   const guidance = getFieldEvidenceUploadGuidance(allowedMediaTypes, evidenceType);
+  const tracksMobileVideoSelection =
+    environment === "MOBILE" && evidenceType === "WALKAROUND_VIDEO";
+
+  useEffect(() => {
+    if (!tracksMobileVideoSelection || typeof window === "undefined") {
+      return;
+    }
+    try {
+      if (consumeInterruptedFieldVideoSelection(window.sessionStorage, id)) {
+        setSelectionWarning(interruptedVideoSelectionMessage());
+      }
+    } catch {
+      // The picker remains usable when sessionStorage is unavailable.
+    }
+  }, [id, tracksMobileVideoSelection]);
 
   function selectContract(contract: FieldEvidenceUploadInputContract) {
+    setSelectionWarning(null);
+    if (tracksMobileVideoSelection && typeof window !== "undefined") {
+      try {
+        markFieldVideoSelectionPending(window.sessionStorage, id);
+      } catch {
+        // The picker remains usable when sessionStorage is unavailable.
+      }
+    }
     inputRefs.current[contract.key]?.click();
   }
 
@@ -69,6 +97,21 @@ export function EvidenceUploadControls({
           onChange={(event) => {
             const files = Array.from(event.currentTarget.files ?? []);
             event.currentTarget.value = "";
+            if (tracksMobileVideoSelection && typeof window !== "undefined") {
+              try {
+                clearFieldVideoSelectionPending(window.sessionStorage, id);
+              } catch {
+                // The selected file can still upload when sessionStorage is unavailable.
+              }
+            }
+            if (files.length === 0) {
+              setChooserOpen(false);
+              if (tracksMobileVideoSelection) {
+                setSelectionWarning(interruptedVideoSelectionMessage());
+              }
+              return;
+            }
+            setSelectionWarning(null);
             completeFieldEvidenceUploadSelection(files, {
               closeMobileChooser: () => setChooserOpen(false),
               onFiles
@@ -87,6 +130,14 @@ export function EvidenceUploadControls({
         >
           {guidance}
         </Typography.Paragraph>
+      ) : null}
+      {selectionWarning ? (
+        <Alert
+          message={selectionWarning}
+          showIcon
+          style={{ marginBottom: 8 }}
+          type="warning"
+        />
       ) : null}
       <Button
         block
@@ -137,4 +188,8 @@ export function EvidenceUploadControls({
       ) : null}
     </div>
   );
+}
+
+function interruptedVideoSelectionMessage() {
+  return "系统未能读取所选视频。超过 200 MB 请先保存到手机“文件”，再使用“从文件选择”上传。";
 }

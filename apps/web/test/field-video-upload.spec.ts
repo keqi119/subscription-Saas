@@ -31,16 +31,13 @@ describe("field video upload primitives", () => {
     );
   });
 
-  it("fingerprints metadata plus at most the first and last MiB", async () => {
+  it("creates a resume fingerprint before any random-access read of a large mobile video", async () => {
     const file = trackedFile(226_900_000);
 
     const fingerprint = await buildFieldVideoResumeFingerprint(file);
 
     expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
-    expect(file.slices).toEqual([
-      [0, 1_048_576],
-      [225_851_424, 226_900_000]
-    ]);
+    expect(file.slices).toEqual([]);
   });
 
   it("selects only missing parts and formats aggregate progress", () => {

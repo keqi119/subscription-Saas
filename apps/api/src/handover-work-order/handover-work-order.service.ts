@@ -1154,6 +1154,33 @@ export class HandoverWorkOrderService {
     };
   }
 
+  async authorizeFieldVideoUploadAccess(input: {
+    evidenceItemId: string;
+    phone: string;
+    workOrderId: string;
+  }) {
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(
+      input.workOrderId,
+      input.phone
+    );
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(
+      workOrder,
+      input.evidenceItemId
+    );
+    if (item.evidenceType !== DeliveryEvidenceType.WALKAROUND_VIDEO) {
+      throw new BadRequestException({
+        code: "FIELD_VIDEO_EVIDENCE_TYPE_REQUIRED",
+        message: "仅车辆环绕视频资料支持断点续传。"
+      });
+    }
+    return {
+      evidenceType: item.evidenceType,
+      itemId: item.id,
+      orderId: workOrder.orderId,
+      workOrderId: workOrder.id
+    };
+  }
+
   async recordFieldVideoUploadEvent(input: {
     actorId?: string;
     elapsedMs?: number;

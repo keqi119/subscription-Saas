@@ -275,4 +275,3 @@ Ask the user to verify:
 3. Mobile Files route uploads a 200–300 MB video.
 4. First upload and replacement no longer show false capacity or stale-target errors.
 5. No return-to-list/re-enter step is required.
-

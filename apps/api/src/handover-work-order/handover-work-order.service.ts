@@ -3239,7 +3239,14 @@ export class HandoverWorkOrderService {
       throw new BadRequestException("车辆交接记录尚未创建。");
     }
     const stage1Contract = asRecord(record.stage1Contract);
-    if (!stage1Contract || readString(stage1Contract, "status") !== ContractStatus.SIGNED) {
+    const stage1ContractStatus = stage1Contract
+      ? readString(stage1Contract, "status")
+      : null;
+    if (
+      !stage1Contract ||
+      (stage1ContractStatus !== ContractStatus.SIGNED &&
+        stage1ContractStatus !== ContractStatus.ARCHIVED)
+    ) {
       throw new BadRequestException("Stage 1 合同尚未完成签署，不能生成车辆交接确认单 PDF。");
     }
   }

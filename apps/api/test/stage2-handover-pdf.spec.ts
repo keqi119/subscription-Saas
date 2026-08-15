@@ -633,6 +633,43 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
   });
 
+  it(
+    "generates the Stage 2 source PDF when the Stage 1 contract is archived",
+    async () => {
+      const harness = createServiceHarness();
+      Object.assign(harness.records.handover.stage1Contract, {
+        status: ContractStatus.ARCHIVED
+      });
+
+      await expect(
+        ensureStage2HandoverPdf(
+          harness.service,
+          "work-order-1",
+          harness.currentManifestHash
+        )
+      ).resolves.toMatchObject({ status: "GENERATED" });
+    }
+  );
+
+  it(
+    "rejects Stage 2 source PDF generation before the Stage 1 contract is signed",
+    async () => {
+      const harness = createServiceHarness();
+      Object.assign(harness.records.handover.stage1Contract, {
+        status: ContractStatus.GENERATED
+      });
+
+      await expect(
+        ensureStage2HandoverPdf(
+          harness.service,
+          "work-order-1",
+          harness.currentManifestHash
+        )
+      ).rejects.toThrow("Stage 1 合同尚未完成签署");
+      expect(harness.renderer.renderToFile).not.toHaveBeenCalled();
+    }
+  );
+
   it("reuses a source artifact with the same manifest hash and source PDF hash", async () => {
     const harness = createServiceHarness();
     linkCompleteSourceArtifact(harness);

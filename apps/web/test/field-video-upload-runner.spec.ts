@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 const CHUNK = 8;
 
 describe("field video upload runner", () => {
-  it("uploads only missing parts in ascending order", async () => {
+  it("verifies the first completed part before uploading missing parts in ascending order", async () => {
     const api = fakeApi({ completedPartNumbers: [1, 3] });
 
     await runFieldVideoUpload({
@@ -19,7 +19,7 @@ describe("field video upload runner", () => {
       workOrderId: "work-order-1"
     });
 
-    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([2, 4]);
+    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([1, 2, 4]);
   });
 
   it("reconstructs after reload and resumes only server-missing parts", async () => {
@@ -46,7 +46,32 @@ describe("field video upload runner", () => {
       workOrderId: "work-order-1"
     });
 
-    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([3, 4]);
+    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([1, 3, 4]);
+  });
+
+  it("rejects a reselected file when its first completed part has different content", async () => {
+    const api = fakeApi({ completedPartNumbers: [1] });
+    api.uploadPart.mockImplementation(async (input) => {
+      if (input.partNumber === 1) {
+        throw new ApiError("分片内容冲突", 409, "CHUNK_CONTENT_CONFLICT");
+      }
+      return {
+        completedAt: new Date().toISOString(),
+        partNumber: input.partNumber,
+        sizeBytes: input.blob.size
+      };
+    });
+
+    await expect(
+      runFieldVideoUpload({
+        api,
+        evidenceItemId: "item-1",
+        file: fileOfSize(3 * CHUNK),
+        storage: memoryStorage(),
+        workOrderId: "work-order-1"
+      })
+    ).rejects.toMatchObject({ code: "CHUNK_CONTENT_CONFLICT" });
+    expect(api.uploadPart.mock.calls.map(([input]) => input.partNumber)).toEqual([1]);
   });
 
   it("retries one part three times without restarting completed parts", async () => {

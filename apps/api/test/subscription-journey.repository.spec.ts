@@ -623,7 +623,9 @@ describe("SubscriptionJourneyRepository", () => {
   it.each(["completeOutbox", "rescheduleOutbox", "deadLetterOutbox"] as const)(
     "requires an unexpired outbox lease for %s",
     async (operation) => {
-      const executeRaw = vi.fn(async (_query: unknown) => 0);
+      const executeRaw = vi
+        .fn<(query: unknown) => Promise<number>>()
+        .mockResolvedValue(0);
       const repository = new SubscriptionJourneyRepository();
       const tx = { $executeRaw: executeRaw };
 
@@ -737,7 +739,9 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("preserves the idempotency input payload when completing a job", async () => {
-    const executeRaw = vi.fn(async (_query: unknown) => 1);
+    const executeRaw = vi
+      .fn<(query: unknown) => Promise<number>>()
+      .mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.completeJob(
@@ -758,7 +762,9 @@ describe("SubscriptionJourneyRepository", () => {
   it.each(["completeJob", "rescheduleJob", "deadLetterJob"] as const)(
     "requires an unexpired lease for %s",
     async (operation) => {
-      const executeRaw = vi.fn(async (_query: unknown) => 0);
+      const executeRaw = vi
+        .fn<(query: unknown) => Promise<number>>()
+        .mockResolvedValue(0);
       const tx = {
         $executeRaw: executeRaw,
         subscriptionJourneyException: { create: vi.fn() },
@@ -802,7 +808,9 @@ describe("SubscriptionJourneyRepository", () => {
   );
 
   it("schedules retry with a safe error and clears the lease", async () => {
-    const executeRaw = vi.fn(async (_query: unknown) => 1);
+    const executeRaw = vi
+      .fn<(query: unknown) => Promise<number>>()
+      .mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(
@@ -842,7 +850,9 @@ describe("SubscriptionJourneyRepository", () => {
 
   it("dead-letters under the lease and creates a composite-linked exception", async () => {
     const create = vi.fn(async (input) => ({ id: "exception-1", ...input.data }));
-    const executeRaw = vi.fn(async (_query: unknown) => 1);
+    const executeRaw = vi
+      .fn<(query: unknown) => Promise<number>>()
+      .mockResolvedValue(1);
     const updateStep = vi.fn(async (input) => input.data);
     const updateJourney = vi.fn(async () => ({ count: 1 }));
     const repository = new SubscriptionJourneyRepository();
@@ -981,7 +991,9 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("stores a bounded generic failure instead of a raw provider response", async () => {
-    const executeRaw = vi.fn(async (_query: unknown) => 1);
+    const executeRaw = vi
+      .fn<(query: unknown) => Promise<number>>()
+      .mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(
@@ -1011,7 +1023,9 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("does not persist a truncated raw JSON provider error", async () => {
-    const executeRaw = vi.fn(async (_query: unknown) => 1);
+    const executeRaw = vi
+      .fn<(query: unknown) => Promise<number>>()
+      .mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rescheduleJob(

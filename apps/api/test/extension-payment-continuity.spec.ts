@@ -149,7 +149,7 @@ function createDebitContinuityHarness() {
       findUnique: vi.fn(async () => bill)
     },
     subscriptionAutomationJob: {
-      upsert: vi.fn(async ({ create }) => ({ ...create, id: "job-query" }))
+      createMany: vi.fn(async () => ({ count: 1 }))
     }
   };
   const provider = {

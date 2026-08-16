@@ -61,6 +61,13 @@ describe("contract detail e-sign display", () => {
     expect(eSignTaskSection).toContain("openSignedContract(task.id)");
     expect(eSignTaskSection).toContain("archiveStatus.errorSummary");
   });
+
+  it("does not disguise e-sign request failures as an empty task list", () => {
+    expect(source).not.toContain(".catch(() => [])");
+    expect(source).toContain("eSignTasksError");
+    expect(source).toContain("电子签任务加载失败");
+    expect(source).toContain("重新加载");
+  });
 });
 
 describe("portal extension contract display", () => {

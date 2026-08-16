@@ -45,6 +45,44 @@ function unknownSignerStatusQuery() {
 }
 
 describe("ESignService", () => {
+  it("lets uppercase ADMIN read contract e-sign tasks", async () => {
+    const { service } = createESignFixture();
+
+    await expect(
+      service.listTasksForContract("contract-1", {
+        ...adminUser(),
+        permissions: ["contract:view"],
+        roles: ["ADMIN"]
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it("lets the owning sales user read contract e-sign tasks", async () => {
+    const { service } = createESignFixture();
+
+    await expect(
+      service.listTasksForContract("contract-1", {
+        ...adminUser(),
+        id: "user-sales",
+        permissions: ["contract:view"],
+        roles: ["SALES"]
+      })
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps restricted contract e-sign access scoped to the owning sales user", async () => {
+    const { service } = createESignFixture();
+
+    await expect(
+      service.listTasksForContract("contract-1", {
+        ...adminUser(),
+        id: "user-other",
+        permissions: ["contract:view"],
+        roles: ["SALES"]
+      })
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it.each([
     ["mock provider", { ESIGN_PROVIDER: "mock" }],
     ["sandbox environment", { FADADA_ENV: "sandbox" }],
@@ -4353,7 +4391,7 @@ function adminUser(): RequestUser {
     menus: [],
     name: "Admin",
     permissions: ["contract:view", "contract:sign"],
-    roles: ["admin"],
+    roles: ["ADMIN"],
     username: "admin"
   };
 }

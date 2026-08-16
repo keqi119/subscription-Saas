@@ -996,7 +996,10 @@ export class FadadaSignedArtifactService {
 }
 
 function ensureCanAccessTask(task: SignedArtifactTask, user: RequestUser) {
-  if (user.roles.includes("admin") || user.permissions.includes("order:view:all")) {
+  if (
+    user.roles.some((role) => ["ADMIN", "GM", "OP", "RC", "FI", "AS"].includes(role)) ||
+    user.permissions.includes("order:view:all")
+  ) {
     return;
   }
   if (task.contract.order.application.salesUserId !== user.id) {

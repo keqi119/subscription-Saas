@@ -3539,7 +3539,10 @@ function ensureCanAccessContractByOwner(
 }
 
 function canViewAllOrders(user: RequestUser) {
-  return user.roles.includes("admin") || user.permissions.includes("order:view:all");
+  return (
+    user.roles.some((role) => ["ADMIN", "GM", "OP", "RC", "FI", "AS"].includes(role)) ||
+    user.permissions.includes("order:view:all")
+  );
 }
 
 function findPlatformSigningStep(plan?: ApprovedSigningPlanRef) {

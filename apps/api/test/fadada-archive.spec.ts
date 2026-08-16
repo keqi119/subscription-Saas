@@ -1565,7 +1565,7 @@ function adminUser(): RequestUser {
     menus: [],
     name: "Admin",
     permissions: ["contract:view", "contract:archive"],
-    roles: ["admin"],
+    roles: ["ADMIN"],
     username: "admin"
   };
 }

@@ -322,6 +322,11 @@ export class Stage2HandoverWorkflowService
       .toLowerCase() === "true";
   }
 
+  reconcileArchivedStage2Evidence(limit: number) {
+    return this.handoverWorkOrderService
+      .reconcileArchivedStage2JourneyEvidenceBatch(limit);
+  }
+
   async retryDeadLetterJob(
     workOrderId: string,
     sourceJobId: string,

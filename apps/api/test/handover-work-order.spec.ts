@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  UnauthorizedException
+} from "@nestjs/common";
 import {
   ContractStatus,
   FieldOperatorAuditEventType,
@@ -2145,6 +2150,85 @@ describe("HandoverWorkOrderService", () => {
       orderId: harness.orderId,
       workOrderId: "work-order-1"
     });
+  });
+
+  it("scans only complete archives stranded at the Stage 2 Journey step", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    harness.prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValueOnce([
+      { id: "work-order-1" }
+    ]);
+
+    const result = await harness.service
+      .reconcileArchivedStage2JourneyEvidenceBatch(10);
+
+    expect(
+      harness.prisma.vehicleHandoverWorkOrder.findMany
+    ).toHaveBeenCalledWith({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: 10,
+      where: {
+        handover: {
+          is: {
+            archiveStatus: "ARCHIVED",
+            archivedAt: { not: null },
+            deletedAt: null,
+            signedDocumentFileId: { not: null },
+            signedObjectKey: { not: null },
+            signedPdfHash: { not: null },
+            status: "ARCHIVED"
+          }
+        },
+        handoverType: "DELIVERY_OUTBOUND",
+        order: {
+          is: {
+            subscriptionJourney: {
+              is: {
+                currentStepCode: "HANDOVER_AND_STAGE2_CREATION",
+                status: { notIn: ["COMPLETED", "CANCELLED"] }
+              }
+            }
+          }
+        },
+        status: {
+          in: [
+            "CUSTOMER_CONFIRMED",
+            "SIGNING",
+            "CUSTOMER_SIGNED",
+            "PLATFORM_SEALED",
+            "FIELD_COMPLETED",
+            "OPS_REVIEW_PENDING"
+          ]
+        }
+      }
+    });
+    expect(result).toEqual({ failed: 0, processed: 1, scanned: 1 });
+  });
+
+  it("continues bounded archive convergence after one candidate fails", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(
+      () => undefined
+    );
+    harness.prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValueOnce([
+      { id: "missing-work-order" },
+      { id: "work-order-1" }
+    ]);
+
+    await expect(
+      harness.service.reconcileArchivedStage2JourneyEvidenceBatch(2)
+    ).resolves.toEqual({ failed: 1, processed: 1, scanned: 2 });
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({
+      errorCode: "STAGE2_ARCHIVE_CONVERGENCE_FAILED",
+      operation: "RECONCILE_ARCHIVED_STAGE2_EVIDENCE",
+      workOrderId: "missing-work-order"
+    });
+    warn.mockRestore();
   });
 
   it("blocks Stage 2 signing when the customer objects or the work order is cancelled", async () => {

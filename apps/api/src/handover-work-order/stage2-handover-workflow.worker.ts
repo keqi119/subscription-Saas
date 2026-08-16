@@ -20,6 +20,7 @@ import {
 const DEFAULT_CONCURRENCY = 1;
 const DEFAULT_LEASE_MS = 120_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
+const ARCHIVED_STAGE2_RECONCILIATION_BATCH_SIZE = 10;
 const RETRY_DELAYS_MS = [60_000, 300_000, 900_000, 3_600_000, 21_600_000] as const;
 
 @Injectable()
@@ -63,6 +64,9 @@ export class Stage2HandoverWorkflowWorker implements OnModuleInit, OnModuleDestr
       return;
     }
 
+    await this.handler.reconcileArchivedStage2Evidence?.(
+      ARCHIVED_STAGE2_RECONCILIATION_BATCH_SIZE
+    );
     const concurrency = this.concurrency();
     const jobs = await this.repository.claimDue(
       concurrency,

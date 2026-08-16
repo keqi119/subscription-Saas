@@ -65,6 +65,55 @@ describe("Stage2HandoverWorkflowWorker", () => {
     );
   });
 
+  it("runs a ten-record archive convergence batch before claiming due jobs", async () => {
+    const order: string[] = [];
+    const handler = {
+      handle: vi.fn(async () => ({ kind: "COMPLETED" as const })),
+      reconcileArchivedStage2Evidence: vi.fn(async (limit: number) => {
+        order.push(`reconcile:${limit}`);
+        return { failed: 0, processed: 0, scanned: 0 };
+      }),
+      supportedJobTypes: [
+        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+      ]
+    } satisfies Stage2HandoverWorkflowHandler & {
+      reconcileArchivedStage2Evidence(
+        limit: number
+      ): Promise<{ failed: number; processed: number; scanned: number }>;
+    };
+    const harness = createWorkerHarness({ handler });
+    harness.repository.claimDue.mockImplementationOnce(async () => {
+      order.push("claim");
+      return [];
+    });
+
+    await harness.worker.runOnce();
+
+    expect(order).toEqual(["reconcile:10", "claim"]);
+  });
+
+  it("does not claim jobs when the archive convergence query fails", async () => {
+    const failure = new Error("archive convergence query failed");
+    const handler = {
+      handle: vi.fn(async () => ({ kind: "COMPLETED" as const })),
+      reconcileArchivedStage2Evidence: vi.fn(async () => {
+        throw failure;
+      }),
+      supportedJobTypes: [
+        VehicleHandoverWorkflowJobType.ARCHIVE_SIGNED_PDF
+      ]
+    } satisfies Stage2HandoverWorkflowHandler & {
+      reconcileArchivedStage2Evidence(
+        limit: number
+      ): Promise<{ failed: number; processed: number; scanned: number }>;
+    };
+    const harness = createWorkerHarness({ handler });
+
+    await expect(harness.worker.runOnce()).rejects.toBe(failure);
+
+    expect(harness.repository.claimDue).not.toHaveBeenCalled();
+  });
+
   it("uses 1m, 5m, 15m, 1h, and 6h retry delays", async () => {
     const expectedDelays = [60_000, 300_000, 900_000, 3_600_000, 21_600_000];
 

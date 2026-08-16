@@ -33,12 +33,16 @@ import {
   FieldOperatorAuditEventType,
   Prisma,
   OrderStatus,
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
   UserStatus,
   VehicleInspectionStatus,
   VehicleStatus,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
   VehicleHandoverEventType,
+  VehicleHandoverType,
+  VehicleHandoverWorkOrderStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
@@ -161,6 +165,7 @@ const STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS = 3;
 const STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV = "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL";
 const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV = "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES = 1024 * 1024;
+const MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE = 10;
 const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -2266,6 +2271,82 @@ export class HandoverWorkOrderService {
         workOrderId: workOrder.id
       };
     });
+  }
+
+  async reconcileArchivedStage2JourneyEvidenceBatch(
+    limit = MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
+  ): Promise<{ failed: number; processed: number; scanned: number }> {
+    const safeLimit = Number.isSafeInteger(limit)
+      ? Math.min(
+          Math.max(limit, 1),
+          MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
+        )
+      : MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE;
+    const candidates = await this.prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: safeLimit,
+      where: {
+        handover: {
+          is: {
+            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+            archivedAt: { not: null },
+            deletedAt: null,
+            signedDocumentFileId: { not: null },
+            signedObjectKey: { not: null },
+            signedPdfHash: { not: null },
+            status: DeliveryHandoverStatus.ARCHIVED
+          }
+        },
+        handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+        order: {
+          is: {
+            subscriptionJourney: {
+              is: {
+                currentStepCode:
+                  SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+                status: {
+                  notIn: [
+                    SubscriptionJourneyStatus.COMPLETED,
+                    SubscriptionJourneyStatus.CANCELLED
+                  ]
+                }
+              }
+            }
+          }
+        },
+        status: {
+          in: [
+            VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+            VehicleHandoverWorkOrderStatus.SIGNING,
+            VehicleHandoverWorkOrderStatus.CUSTOMER_SIGNED,
+            VehicleHandoverWorkOrderStatus.PLATFORM_SEALED,
+            VehicleHandoverWorkOrderStatus.FIELD_COMPLETED,
+            VehicleHandoverWorkOrderStatus.OPS_REVIEW_PENDING
+          ]
+        }
+      }
+    });
+    let failed = 0;
+    let processed = 0;
+    for (const candidate of candidates) {
+      try {
+        await this.reconcileArchivedStage2JourneyEvidence(candidate.id);
+        processed += 1;
+      } catch {
+        failed += 1;
+        this.logger.warn({
+          errorCode: "STAGE2_ARCHIVE_CONVERGENCE_FAILED",
+          operation: "RECONCILE_ARCHIVED_STAGE2_EVIDENCE",
+          workOrderId: candidate.id
+        });
+      }
+    }
+    return {
+      failed,
+      processed,
+      scanned: candidates.length
+    };
   }
 
   async markOpsReviewPending(id: string, actorId?: string) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearFieldVideoRecovery,
@@ -10,6 +10,15 @@ import {
 } from "../src/lib/field-video-upload-recovery";
 
 describe("field video upload recovery storage", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("saves records, removes terminal records, and filters expired records", () => {
     const storage = memoryStorage();
     saveFieldVideoRecovery(recovery("live", "2026-08-16T00:00:00.000Z"), storage);

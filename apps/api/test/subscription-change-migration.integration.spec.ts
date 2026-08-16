@@ -39,7 +39,7 @@ describe("Stage 1B migration deployment", () => {
     if (baselineFixtureRoot) {
       rmSync(baselineFixtureRoot, { force: true, recursive: true });
     }
-  });
+  }, 30_000);
 
   it("deploys every migration into a fresh PostgreSQL schema", async () => {
     const deploy = runPrismaMigration("deploy", freshDatabaseUrl);

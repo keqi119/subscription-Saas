@@ -444,14 +444,20 @@ function hasCompleteStage2SigningState(
     | "manifestHash"
     | "orderId"
     | "platformSignedAt"
+    | "signedDocumentFileId"
     | "sourceDocumentFileId"
     | "sourceDocumentFile"
     | "sourceObjectKey"
     | "sourcePdfHash"
+    | "status"
   >
 ) {
   const contract = handover.handoverContract;
   const task = handover.handoverESignTask;
+  const authoritativeContractFileId =
+    handover.status === DeliveryHandoverStatus.ARCHIVED
+      ? handover.signedDocumentFileId
+      : handover.sourceDocumentFileId;
   if (
     !handover.completedAt ||
     !handover.customerSignedAt ||
@@ -459,7 +465,8 @@ function hasCompleteStage2SigningState(
     !contract ||
     contract.deletedAt ||
     contract.id !== handover.handoverContractId ||
-    contract.fileId !== handover.sourceDocumentFileId ||
+    !authoritativeContractFileId ||
+    contract.fileId !== authoritativeContractFileId ||
     (
       contract.status !== ContractStatus.SIGNED &&
       contract.status !== ContractStatus.ARCHIVED

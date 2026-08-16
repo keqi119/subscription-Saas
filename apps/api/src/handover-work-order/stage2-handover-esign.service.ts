@@ -49,6 +49,7 @@ import { FadadaSignedArtifactService } from "../esign/fadada/fadada-signed-artif
 import { normalizeFieldOperatorPhone } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import { hasCompleteStage2HandoverArchive } from "../delivery-handover/stage2-handover-archive-state";
+import { HandoverWorkOrderService } from "./handover-work-order.service";
 import {
   Stage2HandoverESignBlocker,
   Stage2HandoverESignReadiness,
@@ -410,7 +411,9 @@ export class Stage2HandoverESignService {
     @Inject(forwardRef(() => Stage2HandoverWorkflowService))
     private readonly workflowService?: Stage2HandoverWorkflowService,
     @Optional()
-    private readonly eSignService?: ESignService
+    private readonly eSignService?: ESignService,
+    @Optional()
+    private readonly handoverWorkOrderService?: HandoverWorkOrderService
   ) {}
 
   async getStatus(workOrderId: string): Promise<Stage2HandoverESignView> {
@@ -1932,10 +1935,22 @@ export class Stage2HandoverESignService {
       });
     }
 
-    await this.signedArtifactService.archiveSignedStage2Handover({
+    const result = await this.signedArtifactService.archiveSignedStage2Handover({
       actorId,
       taskId: task.id
     });
+    if (
+      result.archiveStatus === DeliveryHandoverArchiveStatus.ARCHIVED
+    ) {
+      if (!this.handoverWorkOrderService) {
+        throw new BadGatewayException({
+          code: "STAGE2_HANDOVER_ARCHIVE_CONVERGENCE_UNAVAILABLE",
+          message: "The Stage 2 archive convergence service is unavailable."
+        });
+      }
+      await this.handoverWorkOrderService
+        .reconcileArchivedStage2JourneyEvidence(workOrderId);
+    }
     return this.getSignedDocumentState(workOrderId);
   }
 

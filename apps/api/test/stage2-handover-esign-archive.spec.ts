@@ -42,6 +42,9 @@ describe("Stage 2 handover archive retry wiring", () => {
       actorId: "admin-1",
       taskId: "stage2-task-1"
     });
+    expect(
+      harness.workOrder.reconcileArchivedStage2JourneyEvidence
+    ).toHaveBeenCalledWith("work-order-1");
     expect(result).toEqual({
       archiveLastAttemptAt: NOW,
       archiveLastError: null,
@@ -150,6 +153,12 @@ describe("Stage 2 signed-PDF archive workflow", () => {
     ).toHaveBeenNthCalledWith(2, {
       taskId: "stage2-task-1"
     });
+    expect(
+      harness.workOrder.reconcileArchivedStage2JourneyEvidence
+    ).toHaveBeenNthCalledWith(1, "work-order-1");
+    expect(
+      harness.workOrder.reconcileArchivedStage2JourneyEvidence
+    ).toHaveBeenNthCalledWith(2, "work-order-1");
     expect(harness.downstream.vehicleDeliveryUpdate).not.toHaveBeenCalled();
     expect(harness.downstream.leaseCreate).not.toHaveBeenCalled();
     expect(harness.downstream.billingWrite).not.toHaveBeenCalled();
@@ -301,6 +310,13 @@ function createHarness() {
     assertReady: vi.fn(),
     getReadiness: vi.fn()
   };
+  const workOrderService = {
+    reconcileArchivedStage2JourneyEvidence: vi.fn(async () => ({
+      manifestHash: "d".repeat(64),
+      outcome: "SIGNALLED",
+      workOrderId: "work-order-1"
+    }))
+  };
   const service = new Stage2HandoverESignService(
     prisma as never,
     readiness as never,
@@ -308,6 +324,9 @@ function createHarness() {
     new ConfigService(),
     archive as never
   );
+  Object.assign(service as object, {
+    handoverWorkOrderService: workOrderService
+  });
 
   return {
     archive,
@@ -315,7 +334,8 @@ function createHarness() {
     prisma,
     provider,
     service,
-    task
+    task,
+    workOrder: workOrderService
   };
 }
 
@@ -368,6 +388,13 @@ function createArchiveWorkflowHarness() {
   const repository = {
     renewLease: vi.fn(async () => true)
   };
+  const workOrderService = {
+    reconcileArchivedStage2JourneyEvidence: vi.fn(async () => ({
+      manifestHash: "d".repeat(64),
+      outcome: "SIGNALLED",
+      workOrderId: "work-order-1"
+    }))
+  };
   const service = new Stage2HandoverWorkflowService(
     prisma as never,
     new ConfigService({
@@ -375,7 +402,7 @@ function createArchiveWorkflowHarness() {
       STAGE2_HANDOVER_WORKFLOW_ENABLED: "true"
     }),
     repository as never,
-    {} as never
+    workOrderService as never
   );
   Object.assign(service as object, {
     signedArtifactService: archive
@@ -383,7 +410,8 @@ function createArchiveWorkflowHarness() {
   return {
     archive,
     downstream,
-    service
+    service,
+    workOrder: workOrderService
   };
 }
 

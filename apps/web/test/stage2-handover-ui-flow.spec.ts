@@ -185,7 +185,11 @@ async function runMockedStage2HandoverConfirmFlow() {
       taskId: "stage2-task-ui-flow"
     },
     stage2PortalESignStatus({
-      capability: { canStartSigning: true },
+      capability: {
+        canStartSigning: true,
+        reentryAvailableAt: null,
+        reentryRemainingSeconds: 0
+      },
       ready: true,
       status: "WAITING_CUSTOMER",
       taskId: "stage2-task-ui-flow"
@@ -296,7 +300,11 @@ function stage2PortalESignStatus(
   return {
     archiveStatus: "NOT_STARTED",
     blockers: [],
-    capability: { canStartSigning: false },
+    capability: {
+      canStartSigning: false,
+      reentryAvailableAt: null,
+      reentryRemainingSeconds: 0
+    },
     createdAt: null,
     customerSigner: {
       signedAt: null,

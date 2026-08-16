@@ -39,10 +39,28 @@ export interface FieldHandoverVehicleSummary {
   vinSuffix?: string | null;
 }
 
+export type FieldHandoverDisplayStatus =
+  | "HANDOVER_PDF_GENERATING"
+  | "ESIGN_INITIATION_PENDING"
+  | "CUSTOMER_SIGNATURE_PENDING"
+  | "PLATFORM_SEAL_PENDING"
+  | "ARCHIVE_PENDING"
+  | "ARCHIVE_FAILED"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "VOIDED"
+  | "FAILED"
+  | "INCONSISTENT"
+  | "FIELD_WORK_PENDING"
+  | "CUSTOMER_REVIEW_PENDING";
+
 export interface FieldHandoverWorkOrderListItem {
   adminReviewStatus?: string | null;
+  completedAt?: string | null;
   customer?: FieldHandoverCustomerSummary | null;
   deliveryLocation?: string | null;
+  displayStatus?: FieldHandoverDisplayStatus;
+  displayStatusLabel?: string;
   evidenceProgress?: FieldHandoverEvidenceProgress | null;
   fieldResubmissionRequested?: boolean | null;
   handoverId?: string | null;

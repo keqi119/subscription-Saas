@@ -14,7 +14,182 @@ import {
   DeliveryEvidenceVideoQualityError,
   type PreparedDeliveryEvidenceArtifacts
 } from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
+import { projectFieldHandoverWorkflow } from "../src/handover-work-order/field-handover-workflow-projection";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+
+describe("Field handover workflow projection", () => {
+  const base = {
+    handover: null,
+    task: null,
+    workOrderStatus: "CUSTOMER_CONFIRMED"
+  } as const;
+
+  it.each([
+    {
+      expected: ["HANDOVER_PDF_GENERATING", "交接单生成中", "ACTIVE"],
+      facts: base,
+      name: "customer-confirmed without a Stage 2 source"
+    },
+    {
+      expected: ["ESIGN_INITIATION_PENDING", "待发起签署", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "SOURCE_GENERATED",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        }
+      },
+      name: "generated PDF without an eSign task"
+    },
+    {
+      expected: ["CUSTOMER_SIGNATURE_PENDING", "待客户签署", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "PENDING_CUSTOMER_SIGNATURE",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        },
+        task: {
+          signers: [
+            { signedAt: null, signerStatus: "SIGNING", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: null, signerStatus: "PENDING", slotId: "STAGE2_HANDOVER_PLATFORM" }
+          ],
+          taskStatus: "WAITING_CUSTOMER"
+        }
+      },
+      name: "customer signature pending"
+    },
+    {
+      expected: ["PLATFORM_SEAL_PENDING", "平台盖章中", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "NOT_STARTED",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "PENDING_PLATFORM_SEAL",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        },
+        task: {
+          signers: [
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: null, signerStatus: "PENDING", slotId: "STAGE2_HANDOVER_PLATFORM" }
+          ],
+          taskStatus: "SIGNING"
+        }
+      },
+      name: "platform seal pending"
+    },
+    {
+      expected: ["ARCHIVE_PENDING", "签署完成，归档中", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "PENDING",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "SIGNED",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        },
+        task: {
+          signers: [
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
+          ],
+          taskStatus: "COMPLETED"
+        }
+      },
+      name: "signed document awaiting archive"
+    },
+    {
+      expected: ["ARCHIVE_FAILED", "归档异常", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "FAILED",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "SIGNED",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        },
+        task: {
+          signers: [
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
+          ],
+          taskStatus: "COMPLETED"
+        }
+      },
+      name: "archive failure"
+    },
+    {
+      expected: ["COMPLETED", "已完成", "ENDED"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "ARCHIVED",
+          archivedAt: new Date("2026-08-16T08:10:00.000Z"),
+          signedDocumentFileId: "signed-file-1",
+          signedPdfHash: "a".repeat(64),
+          sourceDocumentFileId: "source-file-1",
+          status: "ARCHIVED",
+          updatedAt: new Date("2026-08-16T08:10:00.000Z")
+        },
+        task: {
+          signers: [
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
+          ],
+          taskStatus: "COMPLETED"
+        }
+      },
+      name: "fully archived handover"
+    },
+    ...(["CANCELLED", "VOIDED", "FAILED"] as const).map((status) => ({
+      expected: [status, status === "CANCELLED" ? "已取消" : status === "VOIDED" ? "已作废" : "处理失败", "ENDED"],
+      facts: { ...base, workOrderStatus: status },
+      name: `terminal ${status.toLowerCase()} work order`
+    })),
+    {
+      expected: ["INCONSISTENT", "状态异常，请联系运营", "ACTIVE"],
+      facts: {
+        ...base,
+        handover: {
+          archiveStatus: "ARCHIVED",
+          archivedAt: null,
+          signedDocumentFileId: null,
+          signedPdfHash: null,
+          sourceDocumentFileId: "source-file-1",
+          status: "ARCHIVED",
+          updatedAt: new Date("2026-08-16T08:00:00.000Z")
+        }
+      },
+      name: "contradictory archived handover"
+    }
+  ])("projects $name", ({ expected, facts }) => {
+    expect(projectFieldHandoverWorkflow(facts)).toMatchObject({
+      displayStatus: expected[0],
+      displayStatusLabel: expected[1],
+      taskGroup: expected[2]
+    });
+  });
+});
 
 describe("HandoverWorkOrderService", () => {
   beforeEach(() => {
@@ -505,7 +680,7 @@ describe("HandoverWorkOrderService", () => {
     expect(serialized).not.toContain("oss/internal/evidence.jpg");
   });
 
-  it("keeps completed, reviewed, cancelled, voided, and failed tasks available as read-only history", async () => {
+  it("keeps terminal tasks as history but does not end Stage 2 before authoritative archive", async () => {
     const harness = createHandoverWorkOrderHarness();
     harness.state.workOrders.push(
       {
@@ -567,15 +742,86 @@ describe("HandoverWorkOrderService", () => {
     );
 
     await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([
-      expect.objectContaining({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED", taskGroup: "ENDED" }),
+      expect.objectContaining({ id: "work-order-field-completed", status: "FIELD_COMPLETED", taskGroup: "ACTIVE" }),
+      expect.objectContaining({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED", taskGroup: "ACTIVE" }),
       expect.objectContaining({ id: "work-order-cancelled", status: "CANCELLED", taskGroup: "ENDED" }),
       expect.objectContaining({ id: "work-order-failed", status: "FAILED", taskGroup: "ENDED" }),
-      expect.objectContaining({ id: "work-order-voided", status: "VOIDED", taskGroup: "ENDED" }),
-      expect.objectContaining({ id: "work-order-field-completed", status: "FIELD_COMPLETED", taskGroup: "ENDED" })
+      expect.objectContaining({ id: "work-order-voided", status: "VOIDED", taskGroup: "ENDED" })
     ]);
     await expect(
       harness.service.getFieldAccessibleWorkOrder("work-order-ops-reviewed", "13800000000")
-    ).resolves.toMatchObject({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED" });
+    ).resolves.toMatchObject({
+      displayStatus: "HANDOVER_PDF_GENERATING",
+      id: "work-order-ops-reviewed",
+      status: "OPS_REVIEWED",
+      taskGroup: "ACTIVE"
+    });
+  });
+
+  it("projects a historically customer-confirmed but fully archived Stage 2 task as completed", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      assignedInternalUserId: harness.internalUser.id,
+      fieldOperatorName: "内部交付员",
+      fieldOperatorPhone: harness.internalUser.mobile,
+      id: "work-order-archived-stage2",
+      operatorType: "INTERNAL",
+      status: "CUSTOMER_CONFIRMED"
+    });
+    Object.assign(harness.prisma, {
+      contractESignTask: {
+        findFirst: vi.fn(async ({ where }: { where: { taskStatus?: { in?: string[] } } }) =>
+          where.taskStatus?.in?.includes("COMPLETED")
+            ? {
+                id: "stage2-task-archived",
+                signers: [
+                  {
+                    signedAt: new Date("2026-08-16T08:05:00.000Z"),
+                    signerStatus: "SIGNED",
+                    slotId: "STAGE2_HANDOVER_CUSTOMER"
+                  },
+                  {
+                    signedAt: new Date("2026-08-16T08:06:00.000Z"),
+                    signerStatus: "SIGNED",
+                    slotId: "STAGE2_HANDOVER_PLATFORM"
+                  }
+                ],
+                taskStatus: "COMPLETED"
+              }
+            : null
+        )
+      },
+      vehicleDeliveryHandover: {
+        findFirst: vi.fn(async () => ({
+          archiveStatus: "ARCHIVED",
+          archivedAt: new Date("2026-08-16T08:10:00.000Z"),
+          handoverContractId: "handover-contract-archived",
+          handoverESignTaskId: "stage2-task-archived",
+          id: "handover-1",
+          signedDocumentFileId: "signed-file-archived",
+          signedPdfHash: "a".repeat(64),
+          sourceDocumentFileId: "source-file-archived",
+          status: "ARCHIVED",
+          updatedAt: new Date("2026-08-16T08:10:00.000Z")
+        }))
+      }
+    });
+
+    const [item] = await harness.service.listFieldAccessibleWorkOrders(
+      harness.internalUser.mobile
+    );
+
+    expect(item).toMatchObject({
+      completedAt: "2026-08-16T08:10:00.000Z",
+      displayStatus: "COMPLETED",
+      displayStatusLabel: "已完成",
+      status: "CUSTOMER_CONFIRMED",
+      taskGroup: "ENDED"
+    });
+    expect(JSON.stringify(item)).not.toMatch(
+      /provider|signUrl|transactionId|signedPdfHash|signedDocumentFileId/i
+    );
   });
 
   it("denies stale internal snapshots after the assigned user is disabled or deleted", async () => {

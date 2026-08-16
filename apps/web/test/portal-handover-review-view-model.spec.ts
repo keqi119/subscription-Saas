@@ -171,7 +171,11 @@ describe("portal handover review view model", () => {
         status: "CUSTOMER_CONFIRMED"
       },
       esign: createESignStatus({
-        capability: { canStartSigning: true },
+        capability: {
+          canStartSigning: true,
+          reentryAvailableAt: null,
+          reentryRemainingSeconds: 0
+        },
         status: "WAITING_CUSTOMER",
         taskId: "task-1"
       }),
@@ -243,6 +247,83 @@ describe("portal handover review view model", () => {
       detail as PortalHandoverReviewDetail,
       esign
     )).toMatchObject(expected);
+  });
+
+  it("projects first-entry, reentry, and cooldown button states from the safe server projection", () => {
+    const detail = {
+      ...sampleDetail(),
+      handover: {
+        archiveStatus: "NOT_STARTED",
+        id: "handover-1",
+        status: "PENDING_CUSTOMER_SIGNATURE"
+      },
+      status: "CUSTOMER_CONFIRMED"
+    } as PortalHandoverReviewDetail;
+
+    expect(buildPortalHandoverWorkflowView(
+      detail,
+      createESignStatus({
+        capability: {
+          canStartSigning: true,
+          reentryAvailableAt: null,
+          reentryRemainingSeconds: 0
+        },
+        customerSigner: {
+          signedAt: null,
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "PENDING"
+        }
+      }),
+      new Date("2026-07-27T08:00:00.000Z")
+    )).toMatchObject({
+      canStartSigning: true,
+      signingButtonDisabled: false,
+      signingButtonText: "去签署",
+      signingReentryAvailableAt: null
+    });
+
+    expect(buildPortalHandoverWorkflowView(
+      detail,
+      createESignStatus({
+        capability: {
+          canStartSigning: true,
+          reentryAvailableAt: "2026-07-27T08:00:42.000Z",
+          reentryRemainingSeconds: 42
+        },
+        customerSigner: {
+          signedAt: null,
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNING"
+        }
+      }),
+      new Date("2026-07-27T08:00:00.250Z")
+    )).toMatchObject({
+      canStartSigning: true,
+      signingButtonDisabled: true,
+      signingButtonText: "请等待 42 秒后重新进入",
+      signingReentryAvailableAt: "2026-07-27T08:00:42.000Z"
+    });
+
+    expect(buildPortalHandoverWorkflowView(
+      detail,
+      createESignStatus({
+        capability: {
+          canStartSigning: true,
+          reentryAvailableAt: "2026-07-27T08:00:42.000Z",
+          reentryRemainingSeconds: 42
+        },
+        customerSigner: {
+          signedAt: null,
+          slotId: "STAGE2_HANDOVER_CUSTOMER",
+          status: "SIGNING"
+        }
+      }),
+      new Date("2026-07-27T08:00:42.000Z")
+    )).toMatchObject({
+      canStartSigning: true,
+      signingButtonDisabled: false,
+      signingButtonText: "继续签署"
+    });
   });
 
   it("routes Stage 2 generic contract entries to the handover review and keeps Stage 1 details unchanged", () => {
@@ -372,7 +453,11 @@ function createESignStatus(
   return {
     archiveStatus: null,
     blockers: [],
-    capability: { canStartSigning: false },
+    capability: {
+      canStartSigning: false,
+      reentryAvailableAt: null,
+      reentryRemainingSeconds: 0
+    },
     createdAt: null,
     customerSigner: {
       signedAt: null,

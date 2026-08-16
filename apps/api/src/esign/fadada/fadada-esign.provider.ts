@@ -770,6 +770,31 @@ export class FadadaESignProvider implements ESignProvider {
       resultDescription: result.resultDesc
     };
     if (
+      hasConflictingProviderIdentity(
+        result.providerContractId,
+        input.contractId
+      ) ||
+      hasConflictingProviderIdentity(
+        result.providerCustomerId,
+        input.providerCustomerId
+      ) ||
+      hasConflictingProviderIdentity(
+        result.providerTransactionId,
+        input.providerTransactionId
+      )
+    ) {
+      return {
+        ...response,
+        status: "UNKNOWN"
+      };
+    }
+    if (isExplicitFadadaPendingSignature(result)) {
+      return {
+        ...response,
+        status: "SIGNING"
+      };
+    }
+    if (
       result.providerContractId !== input.contractId ||
       result.providerCustomerId !== input.providerCustomerId ||
       result.providerTransactionId !== input.providerTransactionId
@@ -1132,6 +1157,23 @@ function buildTransactionId(taskNo: string, index: number) {
 
 function buildStage2TransactionId(taskNo: string, suffix: "H1" | "H2") {
   return buildTransactionIdWithSuffix(taskNo, suffix);
+}
+
+function hasConflictingProviderIdentity(
+  observed: string | undefined,
+  expected: string
+) {
+  return observed !== undefined && observed !== expected;
+}
+
+function isExplicitFadadaPendingSignature(result: {
+  resultCode?: string;
+  resultDesc?: string;
+}) {
+  return (
+    result.resultCode === "9999" &&
+    result.resultDesc?.trim() === "待签署"
+  );
 }
 
 function buildTransactionIdWithSuffix(taskNo: string, suffix: string) {

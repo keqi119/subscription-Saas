@@ -76,7 +76,11 @@ describe("portal handover review API client", () => {
     const status = {
       archiveStatus: "NOT_STARTED",
       blockers: [],
-      capability: { canStartSigning: true },
+      capability: {
+        canStartSigning: true,
+        reentryAvailableAt: null,
+        reentryRemainingSeconds: 0
+      },
       createdAt: "2026-07-27T08:00:00.000Z",
       customerSigner: {
         signedAt: null,

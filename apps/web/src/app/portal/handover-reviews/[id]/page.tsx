@@ -52,6 +52,7 @@ export default function PortalHandoverReviewDetailPage() {
   const [esignLoading, setESignLoading] = useState(true);
   const [esignErrorMessage, setESignErrorMessage] = useState<string | null>(null);
   const [startingSigning, setStartingSigning] = useState(false);
+  const [signingClockMs, setSigningClockMs] = useState(() => Date.now());
   const signingStartInFlight = useRef(false);
   const workflowControllerRef = useRef<ReturnType<
     typeof createPortalWorkflowRequestController<
@@ -85,6 +86,7 @@ export default function PortalHandoverReviewDetailPage() {
         setESignErrorMessage(null);
         setLoading(false);
         setESignLoading(false);
+        setSigningClockMs(Date.now());
       },
       onError: (error) => {
         if (error instanceof PortalApiError && error.status === 401) {
@@ -118,8 +120,25 @@ export default function PortalHandoverReviewDetailPage() {
   }, []);
 
   const workflowDisplay = review
-    ? buildPortalHandoverWorkflowView(review, esignView)
+    ? buildPortalHandoverWorkflowView(review, esignView, new Date(signingClockMs))
     : null;
+
+  useEffect(() => {
+    const availableAt = workflowDisplay?.signingReentryAvailableAt;
+    if (!availableAt) {
+      return;
+    }
+    const availableAtMs = Date.parse(availableAt);
+    const remainingMs = availableAtMs - signingClockMs;
+    if (!Number.isFinite(availableAtMs) || remainingMs <= 0) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setSigningClockMs(Date.now()),
+      Math.min(1_000, remainingMs)
+    );
+    return () => window.clearTimeout(timer);
+  }, [signingClockMs, workflowDisplay?.signingReentryAvailableAt]);
 
   useEffect(() => {
     if (!workflowDisplay?.shouldPoll) {
@@ -186,6 +205,7 @@ export default function PortalHandoverReviewDetailPage() {
     if (
       !esignView ||
       !workflowDisplay?.canStartSigning ||
+      workflowDisplay.signingButtonDisabled ||
       review?.handover?.status !== "PENDING_CUSTOMER_SIGNATURE" ||
       signingStartInFlight.current ||
       startingSigning
@@ -507,14 +527,14 @@ export default function PortalHandoverReviewDetailPage() {
               {workflowDisplay?.canStartSigning ? (
                 <Button
                   block
-                  disabled={!workflowDisplay.canStartSigning || startingSigning}
+                  disabled={workflowDisplay.signingButtonDisabled || startingSigning}
                   icon={<EditOutlined />}
                   loading={startingSigning}
                   onClick={startSigning}
                   size="large"
                   type="primary"
                 >
-                  去签署
+                  {workflowDisplay.signingButtonText}
                 </Button>
               ) : null}
             </Space>

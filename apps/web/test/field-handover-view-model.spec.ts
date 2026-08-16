@@ -71,6 +71,35 @@ describe("field handover view model", () => {
     expect(JSON.stringify(card)).not.toMatch(/provider|deposit|payment/i);
   });
 
+  it("uses the authoritative Stage 2 projection for card labels and tabs", () => {
+    const completed = buildFieldHandoverTaskCard({
+      ...sampleTask(),
+      completedAt: "2026-08-16T08:10:00.000Z",
+      displayStatus: "COMPLETED",
+      displayStatusLabel: "已完成",
+      status: "CUSTOMER_CONFIRMED",
+      taskGroup: "ENDED"
+    });
+    const inconsistent = buildFieldHandoverTaskCard({
+      ...sampleTask(),
+      displayStatus: "INCONSISTENT",
+      displayStatusLabel: "状态异常，请联系运营",
+      status: "CUSTOMER_CONFIRMED",
+      taskGroup: "ACTIVE"
+    });
+
+    expect(completed).toMatchObject({
+      statusColor: "green",
+      statusLabel: "已完成",
+      taskGroup: "ENDED"
+    });
+    expect(inconsistent).toMatchObject({
+      statusColor: "red",
+      statusLabel: "状态异常，请联系运营",
+      taskGroup: "ACTIVE"
+    });
+  });
+
   it("builds an evidence capture view with 14 safe checklist items and progress copy", () => {
     const detail = buildFieldHandoverDetailView({
       ...sampleTask(),

@@ -1,13 +1,22 @@
 import { UnauthorizedException } from "@nestjs/common";
 import { DeliveryEvidenceType, FieldEvidenceVideoUploadStatus } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FieldVideoUploadService } from "../src/field-operator/field-video-upload.service";
 import { MAX_FIELD_VIDEO_SIZE_BYTES } from "../src/field-operator/field-video-upload.constants";
 import type { FieldVideoUploadSessionSnapshot } from "../src/field-operator/field-video-upload.types";
 
 describe("FieldVideoUploadService", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("creates a safe resumable session without exposing OSS fields", async () => {
     const harness = serviceHarness();
 

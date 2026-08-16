@@ -29,6 +29,7 @@ import {
   FieldEvidenceVideoUploadStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
+  ESignTaskStatus,
   FieldOperatorAuditEventType,
   Prisma,
   OrderStatus,
@@ -93,6 +94,11 @@ import {
 import {
   buildAuthoritativeStage2TaskWhere
 } from "./stage2-handover-task-binding";
+import {
+  getFieldHandoverDisplayPriority,
+  projectFieldHandoverWorkflow,
+  type FieldHandoverWorkflowProjection
+} from "./field-handover-workflow-projection";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
@@ -104,19 +110,6 @@ const FIELD_ENDED_WORK_ORDER_STATUSES = [
   "OPS_REVIEWED"
 ] as const;
 const FIELD_ENDED_WORK_ORDER_STATUS_SET = new Set<string>(FIELD_ENDED_WORK_ORDER_STATUSES);
-const FIELD_ACTIVE_STATUS_PRIORITY = new Map<string, number>([
-  ["ASSIGNED", 0],
-  ["FIELD_IN_PROGRESS", 0],
-  ["CUSTOMER_OBJECTED", 1],
-  ["DRAFT", 1],
-  ["EVIDENCE_SUBMITTED", 2],
-  ["CUSTOMER_REVIEWING", 2],
-  ["CUSTOMER_CONFIRMED", 2],
-  ["SIGNING", 2],
-  ["CUSTOMER_SIGNED", 2],
-  ["PLATFORM_SEALED", 2],
-  ["OPS_REVIEW_PENDING", 3]
-]);
 const READY_FOR_STAGE2_STATUSES = [
   "CUSTOMER_CONFIRMED",
   "SIGNING",
@@ -709,8 +702,14 @@ export class HandoverWorkOrderService {
         authorizedWorkOrders.push(workOrder);
       }
     }
-    const sorted = authorizedWorkOrders.sort(compareFieldWorkOrders);
-    return Promise.all(sorted.map((workOrder) => this.toFieldTaskListItem(workOrder)));
+    const projected = await Promise.all(
+      authorizedWorkOrders.map(async (workOrder) => ({
+        item: await this.toFieldTaskListItem(workOrder),
+        workOrder
+      }))
+    );
+    projected.sort(compareProjectedFieldWorkOrders);
+    return projected.map(({ item }) => item);
   }
 
   async getFieldAccessibleWorkOrder(id: string, phone: string) {
@@ -4456,11 +4455,14 @@ export class HandoverWorkOrderService {
   }
 
   private async toFieldTaskListItem(workOrder: WorkOrderRecord) {
-    const order = await this.getOrderOrThrow(workOrder.orderId);
-    const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
-      handoverId: workOrder.handoverId ?? null,
-      orderId: workOrder.orderId
-    });
+    const [order, evidenceChecklist, workflowProjection] = await Promise.all([
+      this.getOrderOrThrow(workOrder.orderId),
+      this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }),
+      this.getFieldHandoverWorkflowProjection(workOrder)
+    ]);
 
     return {
       customer: {
@@ -4477,7 +4479,7 @@ export class HandoverWorkOrderService {
       orderNo: order.orderNo,
       scheduledAt: workOrder.scheduledAt,
       status: workOrder.status,
-      taskGroup: isFieldEndedWorkOrder(workOrder) ? "ENDED" : "ACTIVE",
+      ...workflowProjection,
       vehicle: {
         brand: order.vehicle?.brand ?? null,
         model: order.vehicle?.model ?? null,
@@ -4485,6 +4487,139 @@ export class HandoverWorkOrderService {
         vinSuffix: suffix(order.vehicle?.vin, 6)
       }
     };
+  }
+
+  private async getFieldHandoverWorkflowProjection(
+    workOrder: WorkOrderRecord
+  ): Promise<FieldHandoverWorkflowProjection> {
+    const handoverModel = (this.prisma as unknown as {
+      vehicleDeliveryHandover?: {
+        findFirst: (
+          args: Prisma.VehicleDeliveryHandoverFindFirstArgs
+        ) => Promise<null | Record<string, unknown>>;
+      };
+    }).vehicleDeliveryHandover;
+    const handover = handoverModel
+      ? await handoverModel.findFirst({
+          select: {
+            archiveStatus: true,
+            archivedAt: true,
+            handoverContractId: true,
+            handoverESignTaskId: true,
+            id: true,
+            signedDocumentFileId: true,
+            signedPdfHash: true,
+            sourceDocumentFileId: true,
+            status: true,
+            updatedAt: true
+          },
+          where: {
+            deletedAt: null,
+            ...(workOrder.handoverId ? { id: workOrder.handoverId } : {}),
+            orderId: workOrder.orderId
+          }
+        })
+      : null;
+    const handoverRecord = asRecord(handover);
+    const activeTaskWhere = handoverRecord
+      ? buildAuthoritativeStage2TaskWhere({
+          contractId: readString(handoverRecord, "handoverContractId"),
+          orderId: workOrder.orderId,
+          taskId: readString(handoverRecord, "handoverESignTaskId")
+        })
+      : null;
+    const taskWhere = activeTaskWhere
+      ? {
+          ...activeTaskWhere,
+          taskStatus: {
+            in: [
+              ESignTaskStatus.CREATED,
+              ESignTaskStatus.WAITING_CUSTOMER,
+              ESignTaskStatus.SIGNING,
+              ESignTaskStatus.COMPLETED,
+              ESignTaskStatus.FAILED,
+              ESignTaskStatus.CANCELLED,
+              ESignTaskStatus.EXPIRED
+            ]
+          }
+        }
+      : null;
+    const taskModel = (this.prisma as unknown as {
+      contractESignTask?: {
+        findFirst: (
+          args: Prisma.ContractESignTaskFindFirstArgs
+        ) => Promise<null | {
+          signers: Array<{
+            signedAt: Date | null;
+            signerStatus: string;
+            slotId: string;
+          }>;
+          taskStatus: string;
+        }>;
+      };
+    }).contractESignTask;
+    const task = taskWhere && taskModel
+      ? await taskModel.findFirst({
+          orderBy: { createdAt: "desc" },
+          select: {
+            signers: {
+              select: {
+                signedAt: true,
+                signerStatus: true,
+                slotId: true
+              },
+              where: {
+                slotId: {
+                  in: [
+                    "STAGE2_HANDOVER_CUSTOMER",
+                    "STAGE2_HANDOVER_PLATFORM"
+                  ]
+                }
+              }
+            },
+            taskStatus: true
+          },
+          where: taskWhere
+        })
+      : null;
+    const projection = projectFieldHandoverWorkflow({
+      handover: handoverRecord
+        ? {
+            archiveStatus: readString(handoverRecord, "archiveStatus") ?? "",
+            archivedAt: readDateValue(handoverRecord, "archivedAt"),
+            signedDocumentFileId: readString(
+              handoverRecord,
+              "signedDocumentFileId"
+            ),
+            signedPdfHash: readString(handoverRecord, "signedPdfHash"),
+            sourceDocumentFileId: readString(
+              handoverRecord,
+              "sourceDocumentFileId"
+            ),
+            status: readString(handoverRecord, "status") ?? "",
+            updatedAt: readDateValue(handoverRecord, "updatedAt")
+          }
+        : null,
+      task,
+      workOrderStatus: workOrder.status
+    });
+
+    if (projection.displayStatus === "INCONSISTENT") {
+      this.logger.warn(JSON.stringify({
+        archiveStatus: handoverRecord
+          ? readString(handoverRecord, "archiveStatus")
+          : null,
+        displayStatus: projection.displayStatus,
+        handoverId: handoverRecord ? readString(handoverRecord, "id") : null,
+        handoverStatus: handoverRecord
+          ? readString(handoverRecord, "status")
+          : null,
+        taskStatus: task?.taskStatus ?? null,
+        workOrderId: workOrder.id,
+        workOrderStatus: workOrder.status
+      }));
+    }
+    return projection;
   }
 
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
@@ -4884,40 +5019,55 @@ function isFieldAccessibleWorkOrder(workOrder: null | WorkOrderRecord, phone: st
   return true;
 }
 
-function compareFieldWorkOrders(left: WorkOrderRecord, right: WorkOrderRecord) {
-  const leftEnded = isFieldEndedWorkOrder(left);
-  const rightEnded = isFieldEndedWorkOrder(right);
+function compareProjectedFieldWorkOrders(
+  left: {
+    item: FieldHandoverWorkflowProjection;
+    workOrder: WorkOrderRecord;
+  },
+  right: {
+    item: FieldHandoverWorkflowProjection;
+    workOrder: WorkOrderRecord;
+  }
+) {
+  const leftEnded = left.item.taskGroup === "ENDED";
+  const rightEnded = right.item.taskGroup === "ENDED";
   if (leftEnded !== rightEnded) {
     return leftEnded ? 1 : -1;
   }
 
   if (leftEnded && rightEnded) {
-    const updatedDifference =
-      (right.updatedAt?.getTime() ?? 0) - (left.updatedAt?.getTime() ?? 0);
-    if (updatedDifference !== 0) {
-      return updatedDifference;
+    const leftCompletedAt = left.item.completedAt
+      ? Date.parse(left.item.completedAt)
+      : left.workOrder.updatedAt?.getTime() ?? 0;
+    const rightCompletedAt = right.item.completedAt
+      ? Date.parse(right.item.completedAt)
+      : right.workOrder.updatedAt?.getTime() ?? 0;
+    if (leftCompletedAt !== rightCompletedAt) {
+      return rightCompletedAt - leftCompletedAt;
     }
   } else {
     const priorityDifference =
-      (FIELD_ACTIVE_STATUS_PRIORITY.get(left.status) ?? 4) -
-      (FIELD_ACTIVE_STATUS_PRIORITY.get(right.status) ?? 4);
+      getFieldHandoverDisplayPriority(left.item.displayStatus) -
+      getFieldHandoverDisplayPriority(right.item.displayStatus);
     if (priorityDifference !== 0) {
       return priorityDifference;
     }
   }
 
-  const leftCreated = left.createdAt?.getTime() ?? 0;
-  const rightCreated = right.createdAt?.getTime() ?? 0;
+  const leftCreated = left.workOrder.createdAt?.getTime() ?? 0;
+  const rightCreated = right.workOrder.createdAt?.getTime() ?? 0;
   if (leftCreated !== rightCreated) {
     return rightCreated - leftCreated;
   }
 
-  const leftScheduled = left.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
-  const rightScheduled = right.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const leftScheduled =
+    left.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const rightScheduled =
+    right.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
   if (leftScheduled !== rightScheduled) {
     return leftScheduled - rightScheduled;
   }
-  return left.id.localeCompare(right.id);
+  return left.workOrder.id.localeCompare(right.workOrder.id);
 }
 
 function isFieldEndedWorkOrder(workOrder: WorkOrderRecord) {
@@ -5052,6 +5202,11 @@ function readRecord(record: Record<string, unknown>, key: string) {
 function readString(record: Record<string, unknown>, key: string) {
   const value = record[key];
   return typeof value === "string" ? value : null;
+}
+
+function readDateValue(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return value instanceof Date ? value : null;
 }
 
 function readNullableString(record: Record<string, unknown>, key: string) {

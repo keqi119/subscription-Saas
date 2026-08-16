@@ -330,6 +330,80 @@ describe("Stage 2 Fadada provider mapping", () => {
 
     expect(harness.apiClient.autoSealContract).not.toHaveBeenCalled();
   });
+
+  it("maps the exact production 9999 pending response without echoed identities to signing", async () => {
+    const harness = createProviderHarness();
+    harness.apiClient.querySignResult.mockResolvedValueOnce({
+      contractId: "HDVQUERY1",
+      raw: {
+        msg: "success",
+        result: "9999",
+        result_desc: "待签署"
+      },
+      resultCode: "9999",
+      resultDesc: "待签署",
+      status: "UNKNOWN",
+      transactionId: "HDVQUERY1H1"
+    });
+
+    await expect(harness.provider.querySignerStatus({
+      contractId: "HDVQUERY1",
+      providerCustomerId: "provider-customer-1",
+      providerTaskId: "HDVQUERY1H1",
+      providerTransactionId: "HDVQUERY1H1",
+      signerId: "signer-stage2-query-1",
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      taskId: "task-stage2-query-1"
+    })).resolves.toMatchObject({
+      resultCode: "9999",
+      resultDescription: "待签署",
+      status: "SIGNING"
+    });
+  });
+
+  it.each([
+    {
+      name: "different description",
+      result: {
+        resultCode: "9999",
+        resultDesc: "处理中"
+      }
+    },
+    {
+      name: "different result code",
+      result: {
+        resultCode: "1000",
+        resultDesc: "待签署"
+      }
+    },
+    {
+      name: "conflicting echoed transaction",
+      result: {
+        providerTransactionId: "OTHERH1",
+        resultCode: "9999",
+        resultDesc: "待签署"
+      }
+    }
+  ])("keeps $name closed instead of treating it as a pending signature", async ({ result }) => {
+    const harness = createProviderHarness();
+    harness.apiClient.querySignResult.mockResolvedValueOnce({
+      contractId: "HDVQUERY1",
+      raw: result,
+      status: "UNKNOWN",
+      transactionId: "HDVQUERY1H1",
+      ...result
+    });
+
+    await expect(harness.provider.querySignerStatus({
+      contractId: "HDVQUERY1",
+      providerCustomerId: "provider-customer-1",
+      providerTaskId: "HDVQUERY1H1",
+      providerTransactionId: "HDVQUERY1H1",
+      signerId: "signer-stage2-query-1",
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      taskId: "task-stage2-query-1"
+    })).resolves.toMatchObject({ status: "UNKNOWN" });
+  });
 });
 
 describe("Stage 2 Contract PDF artifact preflight", () => {
@@ -464,6 +538,17 @@ function createProviderHarness(options: {
       signUrlExpiresAt: new Date("2026-07-26T12:00:00.000Z"),
       transactionId: input.transactionId
     })),
+    querySignResult: vi.fn(async () => ({
+      contractId: "HDVQUERY1",
+      providerContractId: "HDVQUERY1",
+      providerCustomerId: "provider-customer-1",
+      providerTransactionId: "HDVQUERY1H1",
+      raw: { result: "0", result_desc: "签署中" },
+      resultCode: "0",
+      resultDesc: "签署中",
+      status: "SIGNING" as const,
+      transactionId: "HDVQUERY1H1"
+    })),
     uploadDocs: vi.fn(async (input) => ({
       contractId: input.contractId,
       raw: {
@@ -498,6 +583,38 @@ function createProviderHarness(options: {
     FADADA_TEST_LOCAL_CUSTOMER_ID: "customer-1",
     ...options.config
   }));
+  const prisma = {
+    contractESignSigner: {
+      findFirst: vi.fn(async () => ({
+        customerId: "customer-1",
+        documentType: "DELIVERY_HANDOVER",
+        id: "signer-stage2-query-1",
+        providerActionType: "CUSTOMER_MANUAL_SIGN",
+        providerSignerId: "HDVQUERY1H1",
+        providerTransactionId: "HDVQUERY1H1",
+        signerType: "CUSTOMER",
+        slotId: "STAGE2_HANDOVER_CUSTOMER",
+        snapshot: null,
+        taskId: "task-stage2-query-1"
+      }))
+    },
+    contractESignTask: {
+      findFirst: vi.fn(async () => ({
+        documentType: "DELIVERY_HANDOVER",
+        id: "task-stage2-query-1",
+        provider: "FADADA",
+        providerEnvelopeId: "HDVQUERY1",
+        providerTaskId: "HDVQUERY1H1",
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        taskNo: "HDVQUERY1"
+      }))
+    },
+    customerESignProviderAccount: {
+      findFirst: vi.fn(async () => ({
+        providerCustomerId: "provider-customer-1"
+      }))
+    }
+  };
 
   return {
     apiClient,
@@ -506,7 +623,8 @@ function createProviderHarness(options: {
     provider: new FadadaESignProvider(
       config,
       apiClient as never,
-      pdfArtifactService as never
+      pdfArtifactService as never,
+      prisma as never
     )
   };
 }

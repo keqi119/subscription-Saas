@@ -211,6 +211,8 @@ export interface Stage2PortalESignView {
   blockers: Stage2PortalESignBlocker[];
   capability: {
     canStartSigning: boolean;
+    reentryAvailableAt: string | null;
+    reentryRemainingSeconds: number;
   };
   createdAt: string | null;
   customerSigner: Stage2PortalESignSignerView;

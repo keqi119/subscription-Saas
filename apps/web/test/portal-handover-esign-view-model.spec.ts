@@ -19,7 +19,11 @@ describe("Portal Stage 2 handover eSign view model", () => {
     {
       expected: "待客户签署",
       input: createStatus({
-        capability: { canStartSigning: true },
+        capability: {
+          canStartSigning: true,
+          reentryAvailableAt: null,
+          reentryRemainingSeconds: 0
+        },
         status: "WAITING_CUSTOMER",
         taskId: "task-1"
       })
@@ -206,7 +210,11 @@ function createStatus(
   return {
     archiveStatus: null,
     blockers: [],
-    capability: { canStartSigning: false },
+    capability: {
+      canStartSigning: false,
+      reentryAvailableAt: null,
+      reentryRemainingSeconds: 0
+    },
     createdAt: null,
     customerSigner: {
       signedAt: null,

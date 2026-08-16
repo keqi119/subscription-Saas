@@ -57,6 +57,9 @@ export interface PortalHandoverReviewEvidenceFileView {
 export interface PortalHandoverWorkflowView {
   canStartSigning: boolean;
   shouldPoll: boolean;
+  signingButtonDisabled: boolean;
+  signingButtonText: "去签署" | "继续签署" | `请等待 ${number} 秒后重新进入`;
+  signingReentryAvailableAt: string | null;
   statusLabel:
     | "交接确认单生成中"
     | "平台盖章处理中"
@@ -188,7 +191,8 @@ export function validatePortalHandoverObjectionReason(value: string) {
 
 export function buildPortalHandoverWorkflowView(
   detail: PortalHandoverReviewDetail,
-  esign?: Stage2PortalESignView
+  esign?: Stage2PortalESignView,
+  now = new Date()
 ): PortalHandoverWorkflowView {
   const handoverStatus = detail.handover?.status;
   const signingCompleted =
@@ -201,6 +205,9 @@ export function buildPortalHandoverWorkflowView(
     return {
       canStartSigning: false,
       shouldPoll: false,
+      signingButtonDisabled: true,
+      signingButtonText: "去签署",
+      signingReentryAvailableAt: null,
       statusLabel: "签署已完成",
       statusTone: "success"
     };
@@ -215,15 +222,39 @@ export function buildPortalHandoverWorkflowView(
     return {
       canStartSigning: false,
       shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+      signingButtonDisabled: true,
+      signingButtonText: "去签署",
+      signingReentryAvailableAt: null,
       statusLabel: "平台盖章处理中",
       statusTone: "processing"
     };
   }
 
   if (handoverStatus === "PENDING_CUSTOMER_SIGNATURE") {
+    const canStartSigning = esign?.capability.canStartSigning === true;
+    const signingReentryAvailableAt = esign?.capability.reentryAvailableAt ?? null;
+    const reentryAvailableAtMs = signingReentryAvailableAt
+      ? Date.parse(signingReentryAvailableAt)
+      : Number.NaN;
+    const timestampRemainingSeconds = Number.isFinite(reentryAvailableAtMs)
+      ? Math.max(0, Math.ceil((reentryAvailableAtMs - now.getTime()) / 1_000))
+      : 0;
+    const reentryRemainingSeconds = timestampRemainingSeconds > 0
+      ? timestampRemainingSeconds
+      : (
+          signingReentryAvailableAt && !Number.isFinite(reentryAvailableAtMs)
+            ? Math.max(0, Math.ceil(esign?.capability.reentryRemainingSeconds ?? 0))
+            : 0
+        );
+    const signingInProgress = esign?.customerSigner.status === "SIGNING";
     return {
-      canStartSigning: esign?.capability.canStartSigning === true,
+      canStartSigning,
       shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+      signingButtonDisabled: !canStartSigning || reentryRemainingSeconds > 0,
+      signingButtonText: reentryRemainingSeconds > 0
+        ? `请等待 ${reentryRemainingSeconds} 秒后重新进入`
+        : (signingInProgress ? "继续签署" : "去签署"),
+      signingReentryAvailableAt,
       statusLabel: "待客户签署",
       statusTone: "warning"
     };
@@ -240,6 +271,9 @@ export function buildPortalHandoverWorkflowView(
     return {
       canStartSigning: false,
       shouldPoll: true,
+      signingButtonDisabled: true,
+      signingButtonText: "去签署",
+      signingReentryAvailableAt: null,
       statusLabel: "交接确认单生成中",
       statusTone: "processing"
     };
@@ -248,6 +282,9 @@ export function buildPortalHandoverWorkflowView(
   return {
     canStartSigning: false,
     shouldPoll: detail.status === "CUSTOMER_CONFIRMED",
+    signingButtonDisabled: true,
+    signingButtonText: "去签署",
+    signingReentryAvailableAt: null,
     statusLabel: "等待经办人发起签署",
     statusTone: "default"
   };

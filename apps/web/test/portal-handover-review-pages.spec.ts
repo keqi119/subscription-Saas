@@ -60,14 +60,17 @@ describe("portal handover review pages", () => {
     expect(source).toContain("buildPortalHandoverWorkflowView");
     expect(source).toContain("正在加载签署状态...");
     expect(source).toContain("签署状态加载失败");
-    expect(source).toContain("去签署");
+    expect(source).toContain("workflowDisplay.signingButtonText");
+    expect(source).toContain("workflowDisplay.signingButtonDisabled");
+    expect(source).toContain("window.setTimeout");
+    expect(source).toContain("window.clearTimeout");
     expect(source).toContain("查看已签署交接确认单");
     expect(source).toContain("esignDisplay.signedDocumentPreviewUrl");
     expect(source).toMatch(
       /buildPortalHandoverReviewFileUrl\(\s*esignDisplay\.signedDocumentPreviewUrl\s*\)/
     );
     expect(source).toContain("loading={startingSigning}");
-    expect(source).toContain("!workflowDisplay.canStartSigning || startingSigning");
+    expect(source).toContain("workflowDisplay.signingButtonDisabled || startingSigning");
     expect(source).toContain(
       "window.location.assign(validatePortalHandoverSigningRedirect(result.signUrl))"
     );

@@ -29,6 +29,7 @@ import {
   FieldEvidenceVideoUploadStatus,
   DeliveryHandoverArchiveStatus,
   DeliveryHandoverStatus,
+  ESignTaskStatus,
   FieldOperatorAuditEventType,
   Prisma,
   OrderStatus,
@@ -4520,12 +4521,28 @@ export class HandoverWorkOrderService {
         })
       : null;
     const handoverRecord = asRecord(handover);
-    const taskWhere = handoverRecord
+    const activeTaskWhere = handoverRecord
       ? buildAuthoritativeStage2TaskWhere({
           contractId: readString(handoverRecord, "handoverContractId"),
           orderId: workOrder.orderId,
           taskId: readString(handoverRecord, "handoverESignTaskId")
         })
+      : null;
+    const taskWhere = activeTaskWhere
+      ? {
+          ...activeTaskWhere,
+          taskStatus: {
+            in: [
+              ESignTaskStatus.CREATED,
+              ESignTaskStatus.WAITING_CUSTOMER,
+              ESignTaskStatus.SIGNING,
+              ESignTaskStatus.COMPLETED,
+              ESignTaskStatus.FAILED,
+              ESignTaskStatus.CANCELLED,
+              ESignTaskStatus.EXPIRED
+            ]
+          }
+        }
       : null;
     const taskModel = (this.prisma as unknown as {
       contractESignTask?: {

@@ -771,22 +771,26 @@ describe("HandoverWorkOrderService", () => {
     });
     Object.assign(harness.prisma, {
       contractESignTask: {
-        findFirst: vi.fn(async () => ({
-          id: "stage2-task-archived",
-          signers: [
-            {
-              signedAt: new Date("2026-08-16T08:05:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_CUSTOMER"
-            },
-            {
-              signedAt: new Date("2026-08-16T08:06:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_PLATFORM"
-            }
-          ],
-          taskStatus: "COMPLETED"
-        }))
+        findFirst: vi.fn(async ({ where }: { where: { taskStatus?: { in?: string[] } } }) =>
+          where.taskStatus?.in?.includes("COMPLETED")
+            ? {
+                id: "stage2-task-archived",
+                signers: [
+                  {
+                    signedAt: new Date("2026-08-16T08:05:00.000Z"),
+                    signerStatus: "SIGNED",
+                    slotId: "STAGE2_HANDOVER_CUSTOMER"
+                  },
+                  {
+                    signedAt: new Date("2026-08-16T08:06:00.000Z"),
+                    signerStatus: "SIGNED",
+                    slotId: "STAGE2_HANDOVER_PLATFORM"
+                  }
+                ],
+                taskStatus: "COMPLETED"
+              }
+            : null
+        )
       },
       vehicleDeliveryHandover: {
         findFirst: vi.fn(async () => ({

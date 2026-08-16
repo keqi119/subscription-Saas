@@ -57,9 +57,42 @@ describe("SubscriptionJourneyController contract", () => {
       pipe.transform(
         {
           decision: "REJECTED",
-          manifestHash: "a".repeat(64),
+          manifestHash: `sha256:${"a".repeat(64)}`,
           notes: "",
           version: 1,
+          workOrderId: "0798f776-261b-4a73-818b-d822f2315c89"
+        },
+        { metatype: DeliveryEvidenceDecisionDto, type: "body" }
+      )
+    ).rejects.toThrow();
+  });
+
+  it("accepts the canonical sha256 delivery-evidence manifest hash", async () => {
+    const pipe = new ValidationPipe({ transform: true, whitelist: true });
+    const manifestHash = `sha256:${"a".repeat(64)}`;
+
+    await expect(
+      pipe.transform(
+        {
+          decision: "APPROVED",
+          manifestHash,
+          version: 41,
+          workOrderId: "0798f776-261b-4a73-818b-d822f2315c89"
+        },
+        { metatype: DeliveryEvidenceDecisionDto, type: "body" }
+      )
+    ).resolves.toMatchObject({ manifestHash });
+  });
+
+  it("rejects a bare delivery-evidence manifest digest", async () => {
+    const pipe = new ValidationPipe({ transform: true, whitelist: true });
+
+    await expect(
+      pipe.transform(
+        {
+          decision: "APPROVED",
+          manifestHash: "a".repeat(64),
+          version: 41,
           workOrderId: "0798f776-261b-4a73-818b-d822f2315c89"
         },
         { metatype: DeliveryEvidenceDecisionDto, type: "body" }

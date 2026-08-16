@@ -5,12 +5,12 @@ import {
 import { Type } from "class-transformer";
 import {
   IsEnum,
-  IsHash,
   IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   Min,
   ValidateIf
@@ -55,7 +55,7 @@ export class DeliveryEvidenceDecisionDto extends JourneyVersionDto {
   @IsEnum(SubscriptionJourneyManualDecision)
   decision!: SubscriptionJourneyManualDecision;
 
-  @IsHash("sha256")
+  @Matches(/^sha256:[0-9a-f]{64}$/i)
   manifestHash!: string;
 
   @ValidateIf(

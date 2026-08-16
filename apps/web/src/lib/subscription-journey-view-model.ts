@@ -268,7 +268,12 @@ export function parseJourneyManualTaskInput(
     const handoverId = readString(task.inputSnapshot.handoverId);
     const manifestHash = readString(task.inputSnapshot.manifestHash);
     const workOrderId = readString(task.inputSnapshot.workOrderId);
-    if (!handoverId || !manifestHash || !/^[a-f\d]{64}$/i.test(manifestHash) || !workOrderId) {
+    if (
+      !handoverId ||
+      !manifestHash ||
+      !/^sha256:[a-f\d]{64}$/i.test(manifestHash) ||
+      !workOrderId
+    ) {
       return unavailableTask();
     }
     return {

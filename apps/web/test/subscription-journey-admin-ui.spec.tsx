@@ -111,7 +111,7 @@ describe("subscription journey Admin UI", () => {
           applicationId: "application-1",
           finalPlanRevision: 2,
           handoverId: "handover-1",
-          manifestHash: "a".repeat(64),
+          manifestHash: `sha256:${"a".repeat(64)}`,
           workOrderId: "work-order-1"
         },
         status: "OPEN",

@@ -88,7 +88,7 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
           applicationId: "application-1",
           finalPlanRevision: 3,
           handoverId: "handover-1",
-          manifestHash: "a".repeat(64),
+          manifestHash: `sha256:${"a".repeat(64)}`,
           workOrderId: "work-order-1"
         },
         status: "OPEN",

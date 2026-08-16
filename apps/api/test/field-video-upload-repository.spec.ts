@@ -1,11 +1,20 @@
 import { ConflictException } from "@nestjs/common";
 import { FieldEvidenceVideoUploadStatus } from "@prisma/client";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FieldVideoUploadRepository } from "../src/field-operator/field-video-upload.repository";
 
 describe("FieldVideoUploadRepository", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("resumes the same live fingerprint instead of creating another session", async () => {
     const existing = uploadSession();
     const tx = {

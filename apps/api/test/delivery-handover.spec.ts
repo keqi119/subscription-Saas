@@ -136,6 +136,44 @@ describe("DeliveryHandoverService", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("accepts an archived Stage 2 handover whose contract points to the signed PDF", async () => {
+    const harness = createDeliveryHandoverHarness();
+    const draft = await harness.service.createHandoverRecord(
+      harness.orderId,
+      harness.user.id
+    );
+    const completedAt = new Date("2026-07-21T04:12:00.000Z");
+    await harness.service.markCompleted(
+      draft.id,
+      completedAt,
+      harness.user.id
+    );
+    completeStage2SignedState(harness, draft.id);
+    const handover = harness.state.handovers.find(
+      (item) => item.id === draft.id
+    );
+    if (!handover) {
+      throw new Error("handover not found");
+    }
+    Object.assign(handover, {
+      archiveStatus: "ARCHIVED",
+      archivedAt: completedAt,
+      status: "ARCHIVED"
+    });
+    Object.assign(handover.handoverContract as Record<string, unknown>, {
+      fileId: "stage2-signed-file",
+      status: "ARCHIVED"
+    });
+
+    await expect(
+      harness.service.assertDeliveryCanBeConfirmed(
+        harness.orderId,
+        harness.prisma as never,
+        "a".repeat(64)
+      )
+    ).resolves.toBeUndefined();
+  });
+
   it("delegates Stage 2 PDF, eSign, and delivery confirmation evidence gates", async () => {
     const evidenceService = {
       assertEvidenceReadyForDeliveryConfirmation: vi.fn(async () => undefined),

@@ -392,6 +392,10 @@ describe("vehicle delivery handover workflow", () => {
       signedPdfHash: null,
       status: DeliveryHandoverStatus.SIGNED
     });
+    Object.assign(handover.handoverContract, {
+      fileId: "source-file-1",
+      status: ContractStatus.SIGNED
+    });
     handover.handoverESignTask.signedDocumentObjectKey = null;
     harness.state.handover = handover;
 
@@ -446,12 +450,17 @@ describe("vehicle delivery handover workflow", () => {
   it("keeps a complete signed artifact available while archive failure remains a warning", async () => {
     const harness = createDeliveryHarness();
     harness.state.delivery = buildReadyDelivery(harness);
-    harness.state.handover = buildHandoverRecord(harness, {
+    const handover = buildHandoverRecord(harness, {
       archiveStatus: DeliveryHandoverArchiveStatus.FAILED,
       archivedAt: null,
       failureReason: "temporary provider filing timeout",
       status: DeliveryHandoverStatus.SIGNED
     });
+    Object.assign(handover.handoverContract, {
+      fileId: "source-file-1",
+      status: ContractStatus.SIGNED
+    });
+    harness.state.handover = handover;
 
     const check = (await harness.service.getDeliveryCheck(harness.orderId, harness.user)) as {
       canConfirmDelivery: boolean;
@@ -1802,9 +1811,9 @@ function buildHandoverRecord(
     failureReason: null,
     handoverContract: {
       deletedAt: null,
-      fileId: "source-file-1",
+      fileId: "signed-file-1",
       id: "handover-contract-1",
-      status: ContractStatus.SIGNED
+      status: ContractStatus.ARCHIVED
     },
     handoverContractId: "handover-contract-1",
     handoverESignTask: stage2Task,

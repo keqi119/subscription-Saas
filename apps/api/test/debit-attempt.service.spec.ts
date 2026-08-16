@@ -49,12 +49,13 @@ describe("DebitAttemptService", () => {
 
     expect(harness.prisma.debitAttempt.create).not.toHaveBeenCalled();
     expect(harness.provider.submitDebit).not.toHaveBeenCalled();
-    expect(harness.prisma.subscriptionAutomationJob.upsert).toHaveBeenCalledWith(
+    expect(harness.prisma.subscriptionAutomationJob.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
           payload: { debitAttemptId: "attempt-1" }
-        })
+        }),
+        skipDuplicates: true
       })
     );
   });
@@ -115,7 +116,7 @@ describe("DebitAttemptService", () => {
         data: expect.objectContaining({ status: DebitAttemptStatus.PROCESSING })
       })
     );
-    expect(harness.prisma.subscriptionAutomationJob.upsert).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.subscriptionAutomationJob.createMany).toHaveBeenCalledTimes(1);
   });
 
   it("does not create a second attempt when the same leased job is recovered", async () => {
@@ -143,7 +144,7 @@ describe("DebitAttemptService", () => {
         data: expect.objectContaining({ status: DebitAttemptStatus.UNKNOWN })
       })
     );
-    expect(harness.prisma.subscriptionAutomationJob.upsert).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.subscriptionAutomationJob.createMany).toHaveBeenCalledTimes(1);
   });
 
   it("maps a provider retryable failure to final failure on D+3", async () => {
@@ -161,15 +162,16 @@ describe("DebitAttemptService", () => {
         data: expect.objectContaining({ paymentStatus: PaymentOrderStatus.FAILED })
       })
     );
-    expect(harness.prisma.subscriptionAutomationJob.upsert).toHaveBeenCalledWith(
+    expect(harness.prisma.subscriptionAutomationJob.createMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           billId: "bill-1",
           idempotencyKey: "debit-failure:attempt-1",
           jobType: SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE,
           orderId: "order-1",
           payload: { debitAttemptId: "attempt-1" }
-        })
+        }),
+        skipDuplicates: true
       })
     );
   });
@@ -436,7 +438,7 @@ function createHarness(
       findUnique: vi.fn().mockResolvedValue(bill)
     },
     subscriptionAutomationJob: {
-      upsert: vi.fn(async ({ create }) => ({ id: "query-job-1", ...create }))
+      createMany: vi.fn(async () => ({ count: 1 }))
     }
   };
   const provider: MandateDebitProvider = {

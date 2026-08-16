@@ -239,6 +239,15 @@ describe("auto debit atomic settlement PostgreSQL integration", () => {
           where: { debitAttempt: { isNot: null }, orderId: ids.order }
         })
       ).resolves.toBe(1);
+      const attempt = await prisma.debitAttempt.findFirstOrThrow({
+        select: { id: true },
+        where: { billId: ids.bill }
+      });
+      await expect(
+        prisma.subscriptionAutomationJob.count({
+          where: { idempotencyKey: `debit-query:${attempt.id}` }
+        })
+      ).resolves.toBe(1);
     } finally {
       await cleanupSettlementFixture(prisma, ids);
     }

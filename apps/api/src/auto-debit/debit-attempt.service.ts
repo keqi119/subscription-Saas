@@ -684,16 +684,15 @@ async function enqueueQueryJob(
   tx: Pick<Prisma.TransactionClient, "subscriptionAutomationJob">,
   attempt: Prisma.DebitAttemptGetPayload<Record<string, never>>
 ) {
-  return tx.subscriptionAutomationJob.upsert({
-    create: {
+  return tx.subscriptionAutomationJob.createMany({
+    data: {
       billId: attempt.billId,
       idempotencyKey: `debit-query:${attempt.id}`,
       jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT,
       orderId: attempt.orderId,
       payload: { debitAttemptId: attempt.id }
     },
-    update: {},
-    where: { idempotencyKey: `debit-query:${attempt.id}` }
+    skipDuplicates: true
   });
 }
 
@@ -701,16 +700,15 @@ async function enqueueFailureNoticeJob(
   tx: Pick<Prisma.TransactionClient, "subscriptionAutomationJob">,
   attempt: Prisma.DebitAttemptGetPayload<Record<string, never>>
 ) {
-  return tx.subscriptionAutomationJob.upsert({
-    create: {
+  return tx.subscriptionAutomationJob.createMany({
+    data: {
       billId: attempt.billId,
       idempotencyKey: `debit-failure:${attempt.id}`,
       jobType: SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE,
       orderId: attempt.orderId,
       payload: { debitAttemptId: attempt.id }
     },
-    update: {},
-    where: { idempotencyKey: `debit-failure:${attempt.id}` }
+    skipDuplicates: true
   });
 }
 

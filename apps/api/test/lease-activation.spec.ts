@@ -26,6 +26,30 @@ describe("LeaseActivationEngine authoritative gate", () => {
     expect(harness.tx.$queryRaw).toHaveBeenCalled();
   });
 
+  it("accepts equivalent prefixed and case-variant approved evidence hashes", async () => {
+    const digest = "a".repeat(64);
+    const harness = createHarness({
+      approvedManifestHash: `sha256:${digest.toUpperCase()}`,
+      handoverManifestHash: digest
+    });
+
+    await expect(harness.engine.evaluate(harness.orderId)).resolves.toEqual({
+      canActivate: true,
+      missingConditions: []
+    });
+  });
+
+  it.each([null, "", "sha256:not-a-digest", "b".repeat(64)])(
+    "rejects non-matching approved evidence hash %s",
+    async (approvedManifestHash) => {
+      const harness = createHarness({ approvedManifestHash });
+
+      const result = await harness.engine.evaluate(harness.orderId);
+
+      expect(result.missingConditions).toContain("HANDOVER_EVIDENCE_NOT_APPROVED");
+    }
+  );
+
   it("rejects SIGNED Stage 1 contracts without an archived PDF", async () => {
     const harness = createHarness({
       contractArchivedAt: null,
@@ -166,6 +190,7 @@ function createHarness(overrides: Partial<State> = {}) {
   const deliveryId = "delivery-1";
   const manifestHash = "a".repeat(64);
   const state: State = {
+    approvedManifestHash: manifestHash,
     billingScheduleCount: 0,
     completedAt: new Date("2026-08-06T08:00:00.000Z"),
     contractArchivedAt: new Date("2026-08-05T09:00:00.000Z"),
@@ -183,6 +208,7 @@ function createHarness(overrides: Partial<State> = {}) {
     firstRentStatus: BillStatus.PAID,
     firstRentWriteOffConfirmed: true,
     handoverArchived: true,
+    handoverManifestHash: manifestHash,
     handoverMileageKm: 28100,
     inspectionPassed: true,
     insuranceCovered: true,
@@ -286,7 +312,7 @@ function createHarness(overrides: Partial<State> = {}) {
     },
     handoverESignTask: null,
     id: "handover-1",
-    manifestHash,
+    manifestHash: state.handoverManifestHash,
     orderId,
     signedDocumentFileId: state.handoverArchived ? "stage2-file-1" : null,
     sourceDocumentFileId: "stage2-source-file-1",
@@ -391,7 +417,7 @@ function createHarness(overrides: Partial<State> = {}) {
         id: "work-order-1",
         metadata: {
           journeyEvidenceManifestHash: state.workOrderApproved
-            ? manifestHash
+            ? state.approvedManifestHash
             : "b".repeat(64)
         },
         opsReviewStatus: state.workOrderApproved
@@ -546,6 +572,7 @@ function snapshotState(state: State): State {
 }
 
 interface State {
+  approvedManifestHash: string | null;
   billingScheduleCount: number;
   completedAt: Date;
   contractArchivedAt: Date | null;
@@ -563,6 +590,7 @@ interface State {
   firstRentStatus: BillStatus;
   firstRentWriteOffConfirmed: boolean;
   handoverArchived: boolean;
+  handoverManifestHash: string | null;
   handoverMileageKm: number | null;
   inspectionPassed: boolean;
   insuranceCovered: boolean;

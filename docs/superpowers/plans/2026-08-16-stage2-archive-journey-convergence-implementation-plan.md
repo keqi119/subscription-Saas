@@ -24,11 +24,13 @@
 ## File Structure
 
 - `apps/api/src/handover-work-order/handover-work-order.service.ts`：归档事实校验、单条幂等收敛、严格候选扫描与小批量补偿的唯一领域入口。
+- `apps/api/src/delivery-evidence/delivery-evidence.service.ts`：保留默认运营审核门禁，并为权威归档收敛提供显式的现场完整性门禁。
 - `apps/api/src/handover-work-order/stage2-handover-workflow.service.ts`：archive worker 成功后的即时收敛，并向 worker 暴露补偿委托。
 - `apps/api/src/handover-work-order/stage2-handover-esign.service.ts`：后台 archive retry 成功后的即时收敛。
 - `apps/api/src/handover-work-order/stage2-handover-workflow.types.ts`：Stage 2 handler 的可选补偿接口。
 - `apps/api/src/handover-work-order/stage2-handover-workflow.worker.ts`：每轮领取任务前调用固定上限补偿，不复制领域逻辑。
 - `apps/api/test/handover-work-order.spec.ts`：单条收敛、归档门禁、幂等和候选过滤回归测试。
+- `apps/api/test/delivery-evidence.spec.ts`：验证权威归档可以从现场完整性打开最终人工任务，同时默认入口仍阻止未审核证据。
 - `apps/api/test/stage2-handover-esign-archive.spec.ts`：两个归档成功入口都即时收敛的回归测试。
 - `apps/api/test/stage2-handover-workflow.worker.spec.ts`：worker 每轮有界补偿且补偿失败隔离的回归测试。
 - `apps/api/test/subscription-journey-handover.spec.ts`：复跑既有精确信号、第三个人工任务绑定和人工决定测试，不新增第二套 Journey 逻辑。
@@ -176,7 +178,7 @@ const updated = await this.updateWorkOrderVersioned(workOrder, {
 ```
 
 6. 状态发生变化时只记录一次 `OPS_REVIEW_UPDATED`，actor 为 `SYSTEM`，detail 至少包含 `manifestHash`、`status: "PENDING"`、`source: "STAGE2_AUTHORITATIVE_ARCHIVE"`。
-7. 无论首次或重放，都调用 `recordJourneyEvidenceReady`；既有稳定事件键负责 outbox 幂等。
+7. 无论首次或重放，都调用 `recordJourneyEvidenceReady(..., { readinessMode: "FIELD_COMPLETENESS" })`；既有稳定事件键负责 outbox 幂等。该模式只打开最终人工证据复核，不自动批准任何证据项。未传该选项的 Admin 手工入口继续使用默认 `OPS_REVIEW` 门禁。
 8. 若工单已为 `OPS_REVIEWED`，不得改回 `OPS_REVIEW_PENDING`，只用 metadata 中相同 manifest 做安全重放；manifest 不一致时抛出 `ConflictException("JOURNEY_EVIDENCE_MANIFEST_STALE")`。
 
 - [ ] **Step 4: Run the focused test and verify GREEN**

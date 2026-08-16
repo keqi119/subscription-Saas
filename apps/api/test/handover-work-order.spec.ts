@@ -2066,12 +2066,16 @@ describe("HandoverWorkOrderService", () => {
     });
     expect(
       harness.evidenceService.recordJourneyEvidenceReady
-    ).toHaveBeenCalledWith(harness.prisma, {
-      handoverId: "handover-1",
-      manifestHash,
-      orderId: harness.orderId,
-      workOrderId: "work-order-1"
-    });
+    ).toHaveBeenCalledWith(
+      harness.prisma,
+      {
+        handoverId: "handover-1",
+        manifestHash,
+        orderId: harness.orderId,
+        workOrderId: "work-order-1"
+      },
+      { readinessMode: "FIELD_COMPLETENESS" }
+    );
     expect(
       harness.state.events.filter(
         (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
@@ -2144,12 +2148,17 @@ describe("HandoverWorkOrderService", () => {
     ).toHaveBeenCalledTimes(2);
     expect(
       harness.evidenceService.recordJourneyEvidenceReady
-    ).toHaveBeenNthCalledWith(2, harness.prisma, {
-      handoverId: "handover-1",
-      manifestHash: first.manifestHash,
-      orderId: harness.orderId,
-      workOrderId: "work-order-1"
-    });
+    ).toHaveBeenNthCalledWith(
+      2,
+      harness.prisma,
+      {
+        handoverId: "handover-1",
+        manifestHash: first.manifestHash,
+        orderId: harness.orderId,
+        workOrderId: "work-order-1"
+      },
+      { readinessMode: "FIELD_COMPLETENESS" }
+    );
   });
 
   it("scans only complete archives stranded at the Stage 2 Journey step", async () => {

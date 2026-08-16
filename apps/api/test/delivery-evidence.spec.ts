@@ -170,6 +170,39 @@ describe("DeliveryEvidenceService", () => {
     });
   });
 
+  it("publishes the Journey evidence-ready signal from field completeness for an authoritative archive", async () => {
+    const harness = createDeliveryEvidenceHarness();
+    await uploadRequiredFileEvidence(harness);
+    await harness.service.declareNoVisibleDamage(
+      harness.orderId,
+      harness.userId,
+      harness.handoverId,
+      "field confirmed"
+    );
+
+    await harness.service.recordJourneyEvidenceReady(
+      harness.prisma as never,
+      {
+        handoverId: harness.handoverId,
+        manifestHash: "b".repeat(64),
+        orderId: harness.orderId,
+        workOrderId: "work-order-2"
+      },
+      { readinessMode: "FIELD_COMPLETENESS" }
+    );
+
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.prisma, {
+      eventKey: "handover:work-order-2:ready:bbbbbbbbbbbbbbbb",
+      orderId: harness.orderId,
+      payload: {
+        handoverId: harness.handoverId,
+        manifestHash: "b".repeat(64),
+        workOrderId: "work-order-2"
+      },
+      type: "HANDOVER_EVIDENCE_READY"
+    });
+  });
+
   it("blocks readiness when evidence is rejected and requires re-upload or re-review", async () => {
     const harness = createDeliveryEvidenceHarness();
     await harness.service.initializeChecklist(harness.orderId, harness.handoverId);

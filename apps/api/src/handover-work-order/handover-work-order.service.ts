@@ -2259,12 +2259,16 @@ export class HandoverWorkOrderService {
         );
       }
 
-      await this.deliveryEvidenceService.recordJourneyEvidenceReady(tx, {
-        handoverId: workOrder.handoverId,
-        manifestHash: evidencePackage.manifestHash,
-        orderId: workOrder.orderId,
-        workOrderId: workOrder.id
-      });
+      await this.deliveryEvidenceService.recordJourneyEvidenceReady(
+        tx,
+        {
+          handoverId: workOrder.handoverId,
+          manifestHash: evidencePackage.manifestHash,
+          orderId: workOrder.orderId,
+          workOrderId: workOrder.id
+        },
+        { readinessMode: "FIELD_COMPLETENESS" }
+      );
       return {
         manifestHash: evidencePackage.manifestHash,
         outcome: alreadyReady ? "ALREADY_READY" : "SIGNALLED",

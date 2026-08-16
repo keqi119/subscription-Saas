@@ -82,7 +82,9 @@ reconcileArchivedStage2JourneyEvidence(
 4. 基于当前证据重新计算精确 manifest，不复用客户端或旧 metadata 中的 hash；
 5. 将工单收敛为 `OPS_REVIEW_PENDING`、`opsReviewStatus=PENDING`，补齐可由权威签署事实推导的时间字段；
 6. 记录 `OPS_REVIEW_UPDATED` 领域事件，注明来源为 Stage 2 权威归档收敛；
-7. 调用现有 `recordJourneyEvidenceReady`，使用稳定事件键写入 Journey outbox。
+7. 调用现有 `recordJourneyEvidenceReady`，使用稳定事件键写入 Journey outbox。权威归档收敛使用 `FIELD_COMPLETENESS` 门禁：现场必填资料齐全且 Stage 2 已权威归档即可打开 `DELIVERY_EVIDENCE_DECISION`；原 Admin 手工入口继续使用默认 `OPS_REVIEW` 门禁，要求逐项审核通过。
+
+`FIELD_COMPLETENESS` 只允许系统打开最终人工证据复核任务，不会把任何证据项自动标记为审核通过，也不会跳过 `DELIVERY_EVIDENCE_DECISION`。因此，当前验收订单中“已上传、待审核”的证据可进入第三个人工任务，而最终批准权仍保留给 Admin。
 
 若工单已经处于 `OPS_REVIEW_PENDING` 或更后状态，方法不得回退状态；它只验证 manifest 并幂等补发相同信号。重复调用不得重复创建 ManualTask、JourneyEvent 或激活记录。
 
@@ -147,13 +149,14 @@ Stage 2 签署文件权威归档
 ### 7.1 自动化测试
 
 1. 归档成功后会把 `CUSTOMER_CONFIRMED` 工单收敛为 `OPS_REVIEW_PENDING` 并记录一次证据就绪信号。
-2. 已归档结果再次重试时仍会执行收敛，但不重复创建事件或任务。
-3. handover 缺文件、对象键或 SHA-256 时拒绝推进。
-4. 取消、作废、失败、客户异议工单拒绝推进。
-5. 正常 archive worker 与后台 archive retry 都调用同一收敛入口。
-6. 有界补偿只选择满足严格条件的记录，并能恢复已归档存量订单。
-7. Journey 收到信号后生成且仅生成一个 `DELIVERY_EVIDENCE_DECISION` ManualTask。
-8. 人工批准后，现有激活测试继续证明 Order、Delivery、Vehicle、Lease、BillingSchedule 与 Journey 一致完成。
+2. 权威归档收敛允许“现场资料完整、逐项待审核”的证据打开最终人工复核；默认 Admin 手工入口仍会阻止未逐项审核通过的证据。
+3. 已归档结果再次重试时仍会执行收敛，但不重复创建事件或任务。
+4. handover 缺文件、对象键或 SHA-256 时拒绝推进。
+5. 取消、作废、失败、客户异议工单拒绝推进。
+6. 正常 archive worker 与后台 archive retry 都调用同一收敛入口。
+7. 有界补偿只选择满足严格条件的记录，并能恢复已归档存量订单。
+8. Journey 收到信号后生成且仅生成一个 `DELIVERY_EVIDENCE_DECISION` ManualTask。
+9. 人工批准后，现有激活测试继续证明 Order、Delivery、Vehicle、Lease、BillingSchedule 与 Journey 一致完成。
 
 ### 7.2 Staging 人工验收
 

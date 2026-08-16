@@ -797,6 +797,24 @@ export class FadadaSignedArtifactService {
       if (finalized.count !== 1) {
         throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
       }
+      const convergedContract = await tx.contract.updateMany({
+        data: {
+          archivedAt,
+          fileId: fileObject.id,
+          signedAt: input.task.contract.signedAt ?? input.task.completedAt ?? archivedAt,
+          status: ContractStatus.ARCHIVED,
+          updatedBy: input.actorId ?? null
+        },
+        where: {
+          deletedAt: null,
+          id: input.task.contractId,
+          orderId: input.handover.orderId,
+          status: { in: [ContractStatus.SIGNED, ContractStatus.ARCHIVED] }
+        }
+      });
+      if (convergedContract.count !== 1) {
+        throw new Error(STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH);
+      }
     });
   }
 

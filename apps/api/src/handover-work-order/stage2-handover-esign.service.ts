@@ -10,6 +10,7 @@ import {
   UnauthorizedException
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
 import {
   AuditAction,
   ContractStatus,
@@ -55,6 +56,13 @@ import {
   STAGE2_HANDOVER_ESIGN_NOT_READY
 } from "./stage2-handover-esign-readiness.service";
 import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
+import {
+  getPortalSigningReentryAvailability,
+  STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN_MS,
+  withPortalSigningEntryClaim,
+  withPortalSigningEntryIssued,
+  withoutPortalSigningEntryClaim
+} from "./stage2-portal-signing-entry";
 import { matchesStage2HandoverTaskSourceBinding } from "./stage2-handover-task-binding";
 
 export const STAGE2_HANDOVER_ESIGN_REBUILD_REQUIRED =
@@ -284,6 +292,8 @@ export interface Stage2PortalESignView {
   blockers: Stage2PortalESignBlocker[];
   capability: {
     canStartSigning: boolean;
+    reentryAvailableAt: Date | null;
+    reentryRemainingSeconds: number;
   };
   createdAt: Date | null;
   customerSigner: Stage2PortalESignSignerView;
@@ -323,6 +333,12 @@ export interface Stage2ESignReviewAcknowledgement {
   reason?: string;
   reviewedAt?: Date;
   sourcePdfHash: string;
+}
+
+interface PortalSigningEntryClaim {
+  claimSnapshot: Prisma.InputJsonValue;
+  signerId: string;
+  taskId: string;
 }
 
 type Stage2PrismaClient = Pick<
@@ -438,9 +454,10 @@ export class Stage2HandoverESignService {
     workOrderId: string,
     customerId: string
   ): Promise<Stage2PortalESignView> {
-    const [workOrder, readiness] = await Promise.all([
+    const [workOrder, readiness, databaseNow] = await Promise.all([
       this.loadOwnedWorkOrder(workOrderId, customerId),
-      this.readinessService.getReadiness(workOrderId)
+      this.readinessService.getReadiness(workOrderId),
+      this.loadDatabaseNow(this.prisma)
     ]);
     const task = await this.resolveCurrentTask(workOrder);
     const signers = task ? requireTypedSigners(task) : null;
@@ -453,6 +470,13 @@ export class Stage2HandoverESignService {
     const signedArtifactAvailable = hasCompleteStage2HandoverArchive(
       workOrder.handover
     );
+    const reentryAvailability =
+      canStartSigning && signers?.customerSigner
+        ? getPortalSigningReentryAvailability(
+            signers.customerSigner.snapshot,
+            databaseNow
+          )
+        : { availableAt: null, remainingSeconds: 0 };
     return {
       archiveStatus: workOrder.handover?.archiveStatus ?? null,
       blockers:
@@ -460,7 +484,10 @@ export class Stage2HandoverESignService {
           ? []
           : toPortalBlockers(readiness.blockers),
       capability: {
-        canStartSigning
+        canStartSigning,
+        reentryAvailableAt: reentryAvailability.availableAt,
+        reentryRemainingSeconds:
+          reentryAvailability.remainingSeconds
       },
       createdAt:
         task?.createdAt ??
@@ -512,6 +539,8 @@ export class Stage2HandoverESignService {
 
     const readiness = await this.readinessService.getReadiness(workOrderId);
     assertPortalStartReadiness(workOrder, task, readiness);
+    let entryClaim: PortalSigningEntryClaim | null = null;
+    let providerUrlAccepted = false;
     try {
       const providerStatus = await this.queryCustomerProviderStatus(
         task,
@@ -551,6 +580,11 @@ export class Stage2HandoverESignService {
         );
       }
 
+      entryClaim = await this.claimPortalSigningEntry(
+        customerSigner,
+        task.id
+      );
+
       const refreshed = await this.provider.getSignerUrl({
         contractId: task.providerEnvelopeId ?? task.taskNo,
         providerTaskId: task.providerTaskId ?? task.taskNo,
@@ -564,12 +598,18 @@ export class Stage2HandoverESignService {
         task.provider,
         this.configService
       );
+      providerUrlAccepted = true;
+      const issuedAt = await this.loadDatabaseNow(this.prisma);
       const persisted =
         await this.prisma.contractESignSigner.updateMany({
           data: {
             signUrl: null,
             signUrlExpiresAt: refreshed.expiresAt ?? null,
-            signerStatus: ESignSignerStatus.SIGNING
+            signerStatus: ESignSignerStatus.SIGNING,
+            snapshot: withPortalSigningEntryIssued(
+              entryClaim.claimSnapshot,
+              { lastIssuedAt: issuedAt }
+            )
           },
           where: {
             id: customerSigner.id,
@@ -581,6 +621,7 @@ export class Stage2HandoverESignService {
                 ESignSignerStatus.SIGNING
               ]
             },
+            snapshot: jsonSnapshotEquals(entryClaim.claimSnapshot),
             slotId: CUSTOMER_SLOT_ID,
             taskId: task.id
           }
@@ -594,9 +635,112 @@ export class Stage2HandoverESignService {
         expiresAt: refreshed.expiresAt ?? null,
         signUrl
       };
-    } catch {
+    } catch (error) {
+      if (entryClaim && !providerUrlAccepted) {
+        await Promise.allSettled([
+          this.releasePortalSigningEntryClaim(entryClaim)
+        ]);
+      }
+      if (
+        error instanceof ConflictException &&
+        exceptionCode(error) ===
+          "STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN"
+      ) {
+        throw error;
+      }
       throw portalSigningUrlUnavailable();
     }
+  }
+
+  private async claimPortalSigningEntry(
+    signer: Stage2Signer,
+    taskId: string
+  ): Promise<PortalSigningEntryClaim> {
+    let snapshot = signer.snapshot;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const databaseNow = await this.loadDatabaseNow(this.prisma);
+      const availability = getPortalSigningReentryAvailability(
+        snapshot,
+        databaseNow
+      );
+      if (availability.availableAt) {
+        throw portalSigningReentryCooldown(
+          availability.availableAt,
+          availability.remainingSeconds
+        );
+      }
+
+      const claimToken = randomUUID();
+      const claimUntil = new Date(
+        databaseNow.getTime() +
+          STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN_MS
+      );
+      const claimSnapshot = withPortalSigningEntryClaim(snapshot, {
+        claimToken,
+        claimUntil
+      });
+      const claimed = await this.prisma.contractESignSigner.updateMany({
+        data: { snapshot: claimSnapshot },
+        where: {
+          id: signer.id,
+          providerTransactionId: signer.providerTransactionId,
+          signerStatus: {
+            in: [
+              ESignSignerStatus.PENDING,
+              ESignSignerStatus.SIGNING
+            ]
+          },
+          slotId: CUSTOMER_SLOT_ID,
+          snapshot: jsonSnapshotEquals(snapshot),
+          taskId
+        }
+      });
+      if (claimed.count === 1) {
+        return {
+          claimSnapshot,
+          signerId: signer.id,
+          taskId
+        };
+      }
+
+      const refreshed = await this.prisma.contractESignSigner.findFirst({
+        select: { snapshot: true },
+        where: {
+          id: signer.id,
+          providerTransactionId: signer.providerTransactionId,
+          signerStatus: {
+            in: [
+              ESignSignerStatus.PENDING,
+              ESignSignerStatus.SIGNING
+            ]
+          },
+          slotId: CUSTOMER_SLOT_ID,
+          taskId
+        }
+      });
+      if (!refreshed) {
+        throw portalSigningUrlUnavailable();
+      }
+      snapshot = refreshed.snapshot;
+    }
+    throw portalSigningUrlUnavailable();
+  }
+
+  private async releasePortalSigningEntryClaim(
+    claim: PortalSigningEntryClaim
+  ) {
+    await this.prisma.contractESignSigner.updateMany({
+      data: {
+        snapshot: withoutPortalSigningEntryClaim(
+          claim.claimSnapshot
+        )
+      },
+      where: {
+        id: claim.signerId,
+        snapshot: jsonSnapshotEquals(claim.claimSnapshot),
+        taskId: claim.taskId
+      }
+    });
   }
 
   private async queryCustomerProviderStatus(
@@ -3431,6 +3575,32 @@ function portalSigningUrlUnavailable() {
     code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE",
     message: "The customer signing link is temporarily unavailable."
   });
+}
+
+function portalSigningReentryCooldown(
+  reentryAvailableAt: Date,
+  reentryRemainingSeconds: number
+) {
+  return new ConflictException({
+    code: "STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN",
+    message: "The customer signing entry is temporarily rate limited.",
+    reentryAvailableAt: reentryAvailableAt.toISOString(),
+    reentryRemainingSeconds
+  });
+}
+
+function jsonSnapshotEquals(
+  snapshot:
+    | Prisma.InputJsonValue
+    | Prisma.JsonValue
+    | null
+) {
+  return {
+    equals:
+      snapshot === null
+        ? Prisma.DbNull
+        : snapshot as Prisma.InputJsonValue
+  };
 }
 
 function platformStatusUnavailable() {

@@ -538,7 +538,17 @@ function createProviderHarness(options: {
       signUrlExpiresAt: new Date("2026-07-26T12:00:00.000Z"),
       transactionId: input.transactionId
     })),
-    querySignResult: vi.fn(async () => ({
+    querySignResult: vi.fn(async (): Promise<{
+      contractId: string;
+      providerContractId?: string;
+      providerCustomerId?: string;
+      providerTransactionId?: string;
+      raw: unknown;
+      resultCode?: string;
+      resultDesc?: string;
+      status: "FAILED" | "SIGNED" | "SIGNING" | "UNKNOWN";
+      transactionId?: string;
+    }> => ({
       contractId: "HDVQUERY1",
       providerContractId: "HDVQUERY1",
       providerCustomerId: "provider-customer-1",

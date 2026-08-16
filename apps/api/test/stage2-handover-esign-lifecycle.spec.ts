@@ -16,6 +16,7 @@ import {
   ESignSlotId,
   ESignTaskStatus,
   OrderStatus,
+  Prisma,
   UserStatus,
   VehicleHandoverOperatorType,
   VehicleHandoverWorkOrderStatus
@@ -3105,7 +3106,9 @@ describe("Stage2HandoverESignService", () => {
         }
       ],
       capability: {
-        canStartSigning: false
+        canStartSigning: false,
+        reentryAvailableAt: null,
+        reentryRemainingSeconds: 0
       },
       createdAt: NOW,
       customerSigner: {
@@ -3325,6 +3328,148 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
     expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
     expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
+  });
+
+  it("allows the first Portal entry but enforces the database-clock 60 second reentry boundary", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    task.signers[0]!.lastAttemptAt = NOW;
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl.mockResolvedValue({
+      expiresAt: new Date(NOW.getTime() + 30 * 60_000),
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).resolves.toMatchObject({
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+
+    harness.setDatabaseTime(new Date(NOW.getTime() + 59_000));
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toMatchObject({
+      response: {
+        code: "STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN",
+        reentryAvailableAt: "2026-07-26T08:01:00.000Z",
+        reentryRemainingSeconds: 1
+      },
+      status: 409
+    });
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+
+    harness.setDatabaseTime(new Date(NOW.getTime() + 60_000));
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).resolves.toMatchObject({
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(2);
+    expect(task.signers[0]!.lastAttemptAt).toEqual(NOW);
+  });
+
+  it("exposes the persisted reentry window without removing the signing capability", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl.mockResolvedValueOnce({
+      expiresAt: new Date(NOW.getTime() + 30 * 60_000),
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+
+    await harness.service.startPortalSigning("work-order-1", "customer-1");
+    harness.setDatabaseTime(new Date(NOW.getTime() + 18_250));
+
+    await expect(
+      harness.service.getPortalStatus("work-order-1", "customer-1")
+    ).resolves.toMatchObject({
+      capability: {
+        canStartSigning: true,
+        reentryAvailableAt: new Date("2026-07-26T08:01:00.000Z"),
+        reentryRemainingSeconds: 42
+      }
+    });
+  });
+
+  it("admits only one provider URL generation when Portal entry requests overlap", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted!: () => void;
+    const firstDidStart = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let calls = 0;
+    harness.provider.getSignerUrl.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        firstStarted();
+        await firstMayFinish;
+      }
+      return {
+        expiresAt: new Date(NOW.getTime() + 30 * 60_000),
+        signUrl: "https://sentinel.example/stage2-sign"
+      };
+    });
+
+    const winner = harness.service.startPortalSigning(
+      "work-order-1",
+      "customer-1"
+    );
+    await firstDidStart;
+    const overlapping = harness.service.startPortalSigning(
+      "work-order-1",
+      "customer-1"
+    );
+    releaseFirst();
+
+    await expect(winner).resolves.toMatchObject({
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+    await expect(overlapping).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_PORTAL_SIGNING_REENTRY_COOLDOWN"
+      }),
+      status: 409
+    });
+    expect(harness.provider.getSignerUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the entry claim when provider URL generation fails before acceptance", async () => {
+    const harness = createHarness();
+    const task = makeTask();
+    attachPortalTask(harness, task);
+    harness.provider.getSignerUrl
+      .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+      .mockResolvedValueOnce({
+        expiresAt: new Date(NOW.getTime() + 30 * 60_000),
+        signUrl: "https://sentinel.example/stage2-sign"
+      });
+
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_PORTAL_SIGNING_URL_UNAVAILABLE"
+      })
+    });
+    await expect(
+      harness.service.startPortalSigning("work-order-1", "customer-1")
+    ).resolves.toMatchObject({
+      signUrl: "https://sentinel.example/stage2-sign"
+    });
+    expect(task.signers[0]!.snapshot).toMatchObject({
+      portalSigningEntry: {
+        claimToken: null,
+        claimUntil: null,
+        lastIssuedAt: "2026-07-26T08:00:00.000Z"
+      }
+    });
   });
 
   it("refreshes an expired URL without re-uploading or creating a new transaction", async () => {
@@ -3575,7 +3720,18 @@ describe("Stage2HandoverESignService", () => {
     expect(harness.prisma.contractESignTask.update).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
     expect(harness.prisma.contractESignSigner.update).not.toHaveBeenCalled();
-    expect(harness.prisma.contractESignSigner.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contractESignSigner.updateMany).toHaveBeenCalledTimes(2);
+    expect(task.signers[0]).toMatchObject({
+      signUrl: null,
+      signUrlExpiresAt: null,
+      snapshot: {
+        portalSigningEntry: {
+          claimToken: null,
+          claimUntil: null,
+          lastIssuedAt: null
+        }
+      }
+    });
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
     expect(harness.prisma.vehicleDelivery.update).not.toHaveBeenCalled();
     expect(harness.prisma.leaseContract.create).not.toHaveBeenCalled();
@@ -4497,6 +4653,7 @@ function makeSigner(type: "CUSTOMER" | "PLATFORM"): any {
       : ESignSignerStatus.PENDING,
     signerType: customer ? ESignSignerType.CUSTOMER : ESignSignerType.PLATFORM,
     slotId: customer ? CUSTOMER_SLOT : PLATFORM_SLOT,
+    snapshot: null,
     taskId: "stage2-task-1",
     updatedAt: NOW
   };
@@ -4554,6 +4711,13 @@ function matchesSignerWhere(
       }
       if ("in" in expected) {
         return expected.in.includes(actual);
+      }
+      if ("equals" in expected) {
+        const expectedValue = expected.equals;
+        if (expectedValue === Prisma.DbNull) {
+          return actual === null;
+        }
+        return JSON.stringify(actual) === JSON.stringify(expectedValue);
       }
       if ("not" in expected) {
         return actual !== expected.not;

@@ -1,4 +1,5 @@
 import type {
+  FieldHandoverDisplayStatus,
   FieldHandoverEvidenceItem,
   FieldHandoverEvidenceProgress,
   FieldHandoverFieldFacts,
@@ -167,6 +168,22 @@ const WORK_ORDER_STATUS_COLORS: Record<string, string> = {
   VOIDED: "default"
 };
 
+const HANDOVER_DISPLAY_STATUS_COLORS: Record<FieldHandoverDisplayStatus, string> = {
+  ARCHIVE_FAILED: "red",
+  ARCHIVE_PENDING: "processing",
+  CANCELLED: "default",
+  COMPLETED: "green",
+  CUSTOMER_REVIEW_PENDING: "purple",
+  CUSTOMER_SIGNATURE_PENDING: "gold",
+  ESIGN_INITIATION_PENDING: "blue",
+  FAILED: "red",
+  FIELD_WORK_PENDING: "cyan",
+  HANDOVER_PDF_GENERATING: "processing",
+  INCONSISTENT: "red",
+  PLATFORM_SEAL_PENDING: "geekblue",
+  VOIDED: "default"
+};
+
 export function formatFieldHandoverType(value: null | string | undefined) {
   if (!value) {
     return "-";
@@ -198,8 +215,10 @@ export function buildFieldHandoverTaskCard(task: FieldHandoverWorkOrderListItem)
     id: task.id,
     plateText: task.vehicle?.plateMasked || "-",
     scheduledAtText: formatDateTime(task.scheduledAt),
-    statusColor: getFieldWorkOrderStatusColor(task.status),
-    statusLabel: formatFieldWorkOrderStatus(task.status),
+    statusColor: task.displayStatus
+      ? HANDOVER_DISPLAY_STATUS_COLORS[task.displayStatus]
+      : getFieldWorkOrderStatusColor(task.status),
+    statusLabel: task.displayStatusLabel ?? formatFieldWorkOrderStatus(task.status),
     taskGroup: task.taskGroup ?? getFieldHandoverTaskGroup(task.status),
     title: task.orderNo || "交接任务",
     vehicleText: joinVehicleText(task.vehicle?.brand, task.vehicle?.model),

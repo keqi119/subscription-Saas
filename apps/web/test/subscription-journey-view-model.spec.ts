@@ -92,7 +92,7 @@ describe("subscription journey view model", () => {
           applicationId: "application-1",
           finalPlanRevision: 2,
           handoverId: "handover-1",
-          manifestHash: "a".repeat(64),
+          manifestHash: `sha256:${"a".repeat(64)}`,
           workOrderId: "work-order-1"
         },
         taskType: "DELIVERY_EVIDENCE_DECISION"
@@ -102,9 +102,24 @@ describe("subscription journey view model", () => {
       finalPlanRevision: 2,
       handoverId: "handover-1",
       kind: "DELIVERY_EVIDENCE_DECISION",
-      manifestHash: "a".repeat(64),
+      manifestHash: `sha256:${"a".repeat(64)}`,
       workOrderId: "work-order-1"
     });
+  });
+
+  it("rejects a bare delivery-evidence manifest digest", () => {
+    expect(
+      parseJourneyManualTaskInput({
+        inputSnapshot: {
+          applicationId: "application-1",
+          finalPlanRevision: 2,
+          handoverId: "handover-1",
+          manifestHash: "a".repeat(64),
+          workOrderId: "work-order-1"
+        },
+        taskType: "DELIVERY_EVIDENCE_DECISION"
+      })
+    ).toMatchObject({ kind: "UNAVAILABLE" });
   });
 
   it("returns a recommended action and a reason when no action is available", () => {

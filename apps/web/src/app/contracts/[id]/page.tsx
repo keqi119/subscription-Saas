@@ -380,6 +380,8 @@ export default function ContractDetailPage() {
   const { message } = App.useApp();
   const [contract, setContract] = useState<ContractDetail | null>(null);
   const [esignTasks, setESignTasks] = useState<ContractESignTask[]>([]);
+  const [eSignTasksError, setESignTasksError] = useState<string | null>(null);
+  const [eSignTasksLoading, setESignTasksLoading] = useState(false);
   const [archiveErrorsByTaskId, setArchiveErrorsByTaskId] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
@@ -400,19 +402,31 @@ export default function ContractDetailPage() {
     () => esignTasks.find((task) => task.hasSignedDocument) ?? null,
     [esignTasks]
   );
+  const loadESignTasks = useCallback(async () => {
+    setESignTasksLoading(true);
+    try {
+      const tasks = await apiFetch<ContractESignTask[]>(`/contracts/${params.id}/esign-tasks`);
+      setESignTasks(tasks);
+      setESignTasksError(null);
+    } catch (error) {
+      setESignTasks([]);
+      setESignTasksError(getErrorMessage(error));
+    } finally {
+      setESignTasksLoading(false);
+    }
+  }, [params.id]);
   const loadContract = useCallback(async () => {
     setLoading(true);
     try {
-      const [nextContract, nextESignTasks, nextMe] = await Promise.all([
+      const [nextContract, nextMe] = await Promise.all([
         apiFetch<ContractDetail>(`/contracts/${params.id}`),
-        apiFetch<ContractESignTask[]>(`/contracts/${params.id}/esign-tasks`).catch(() => []),
-        apiFetch<AuthMeResponse>("/auth/me")
+        apiFetch<AuthMeResponse>("/auth/me"),
+        loadESignTasks()
       ]);
       const nextOnboardingStatus = await apiFetch<FadadaOnboardingReadiness>(
         `/customers/${nextContract.customer.id}/esign-onboarding/status`
       ).catch(() => null);
       setContract(nextContract);
-      setESignTasks(nextESignTasks);
       setMe(nextMe);
       setOnboardingStatus(nextOnboardingStatus);
       setLoading(false);
@@ -431,7 +445,7 @@ export default function ContractDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [message, params.id]);
+  }, [loadESignTasks, message, params.id]);
 
   useEffect(() => {
     void loadContract();
@@ -643,10 +657,29 @@ export default function ContractDetailPage() {
               style={{ marginBottom: 16 }}
               type={getFadadaReadinessTone(onboardingStatus)}
             />
-            <List
-              dataSource={esignTasks}
-              locale={{ emptyText: <Empty description="暂无电子签任务" /> }}
-              renderItem={(task) => {
+            {eSignTasksError ? (
+              <Alert
+                action={
+                  <Button
+                    icon={<ReloadOutlined />}
+                    loading={eSignTasksLoading}
+                    onClick={() => void loadESignTasks()}
+                    size="small"
+                  >
+                    重新加载
+                  </Button>
+                }
+                description={eSignTasksError}
+                message="电子签任务加载失败"
+                showIcon
+                type="error"
+              />
+            ) : (
+              <List
+                dataSource={esignTasks}
+                locale={{ emptyText: <Empty description="暂无电子签任务" /> }}
+                loading={eSignTasksLoading}
+                renderItem={(task) => {
                 const archiveStatus = getAdminESignArchiveStatus({
                   archiveError:
                     task.archiveError ?? archiveErrorsByTaskId[task.id],
@@ -711,8 +744,9 @@ export default function ContractDetailPage() {
                     ) : null}
                   </List.Item>
                 );
-              }}
-            />
+                }}
+              />
+            )}
           </Card>
         ) : null}
 

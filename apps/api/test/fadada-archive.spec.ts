@@ -20,7 +20,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   FadadaSignedArtifactApi,
-  FadadaSignedArtifactService
+  FadadaSignedArtifactService,
+  STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH
 } from "../src/esign/fadada/fadada-signed-artifact.service";
 import { RequestUser } from "../src/auth/auth.types";
 import { CurrentCustomer } from "../src/portal/portal-auth.types";
@@ -364,8 +365,11 @@ describe("FadadaSignedArtifactService", () => {
       taskStatus: ESignTaskStatus.COMPLETED
     });
     expect(state.contract).toMatchObject({
+      archivedAt: state.handover?.archivedAt,
+      fileId: state.handover?.signedDocumentFileId,
       signedAt: contractSignedAt,
-      status: ContractStatus.SIGNED as ContractStatus
+      status: ContractStatus.ARCHIVED as ContractStatus,
+      updatedBy: "user-admin"
     });
     expect(state.contract.order.orderStatus).toBe(orderStatus);
     expect(financeSnapshot(state)).toEqual(finance);
@@ -386,6 +390,28 @@ describe("FadadaSignedArtifactService", () => {
     expect(storageService.getContractSignedArtifactStream).toHaveBeenCalledWith(
       state.handover!.signedObjectKey
     );
+  });
+
+  it("fails Stage 2 finalization when the linked handover contract cannot be converged", async () => {
+    const { prisma, service, state } = createStage2Fixture();
+    vi.mocked(prisma.contract.updateMany).mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      service.archiveSignedStage2Handover({
+        actorId: "user-admin",
+        taskId: state.task.id
+      })
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: STAGE2_HANDOVER_ARCHIVE_SOURCE_MISMATCH
+      })
+    });
+
+    expect(state.contract).toMatchObject({
+      archivedAt: null,
+      fileId: null,
+      status: ContractStatus.SIGNED
+    });
   });
 
   it("adopts a validated task-bound Stage 2 signed PDF without downloading it again", async () => {
@@ -1206,6 +1232,7 @@ function createFixture(
       deletedAt: null,
       id: "contract-1",
       fileId: null as string | null,
+      orderId: "order-1",
       order: {
         application: { salesUserId: "user-sales" },
         deletedAt: null,
@@ -1213,7 +1240,8 @@ function createFixture(
         orderStatus: OrderStatus.PENDING_PAYMENT as OrderStatus
       },
       signedAt: new Date("2026-01-03T04:05:06.000Z"),
-      status: ContractStatus.SIGNED as ContractStatus
+      status: ContractStatus.SIGNED as ContractStatus,
+      updatedBy: null as string | null
     },
     finance: {
       paymentOrders: [
@@ -1311,7 +1339,13 @@ function createFixture(
   const prisma = {
     $transaction: vi.fn(async (input: unknown) => {
       if (typeof input === "function") {
-        return (input as (tx: typeof prisma) => unknown)(prisma);
+        const snapshot = structuredClone(state);
+        try {
+          return await (input as (tx: typeof prisma) => unknown)(prisma);
+        } catch (error) {
+          Object.assign(state, snapshot);
+          throw error;
+        }
       }
       return Promise.all(input as Array<Promise<unknown>>);
     }),
@@ -1338,6 +1372,19 @@ function createFixture(
       )
     },
     contract: {
+      updateMany: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+          if (
+            where.id !== state.contract.id ||
+            (where.orderId && where.orderId !== state.contract.orderId) ||
+            (where.deletedAt === null && state.contract.deletedAt !== null)
+          ) {
+            return { count: 0 };
+          }
+          Object.assign(state.contract, data);
+          return { count: 1 };
+        }
+      ),
       update: vi.fn(
         async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
           if (where.id !== state.contract.id) throw new Error("contract not found");
@@ -1529,6 +1576,7 @@ function createStage2Fixture(env: Record<string, string> = {}) {
     handoverESignTaskId: harness.state.task.id,
     id: "handover-1",
     manifestHash: "b".repeat(64),
+    orderId: harness.state.contract.orderId,
     signedDocumentFileId: null,
     signedObjectKey: null,
     signedPdfHash: null,
@@ -1565,7 +1613,7 @@ function adminUser(): RequestUser {
     menus: [],
     name: "Admin",
     permissions: ["contract:view", "contract:archive"],
-    roles: ["admin"],
+    roles: ["ADMIN"],
     username: "admin"
   };
 }
@@ -1602,6 +1650,7 @@ interface FakeStage2Handover extends Record<string, unknown> {
   handoverESignTaskId: string;
   id: string;
   manifestHash: string;
+  orderId: string;
   signedDocumentFileId: string | null;
   signedObjectKey: string | null;
   signedPdfHash: string | null;

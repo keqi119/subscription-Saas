@@ -72,16 +72,16 @@ describe("Fleet Ops PR-5 audit sink boundary", () => {
 
   it("does not call auditSink.write outside execution-log.service.ts", async () => {
     const files = await listFleetOpsSourceFiles();
-    const matches: string[] = [];
-
-    for (const file of files) {
+    const matches = await Promise.all(files.map(async (file) => {
       const content = await readFile(file, "utf8");
-      if (/auditSink(?:\?\.|\.)\s*write\s*\(/.test(content)) {
-        matches.push(relative(process.cwd(), file).replaceAll("\\", "/"));
-      }
-    }
+      return /auditSink(?:\?\.|\.)\s*write\s*\(/.test(content)
+        ? relative(process.cwd(), file).replaceAll("\\", "/")
+        : null;
+    }));
 
-    expect(matches).toEqual(["src/fleet-ops/execution/execution-log.service.ts"]);
+    expect(matches.filter((file): file is string => file !== null)).toEqual([
+      "src/fleet-ops/execution/execution-log.service.ts"
+    ]);
   });
 });
 

@@ -612,13 +612,24 @@ function isAuthoritativelySettled(
 }
 
 function sameManifest(metadata: Prisma.JsonValue, manifestHash?: string | null) {
-  return Boolean(
-    manifestHash &&
-      metadata &&
-      typeof metadata === "object" &&
-      !Array.isArray(metadata) &&
-      metadata.journeyEvidenceManifestHash === manifestHash
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return false;
+  }
+  const approvedManifestHash = normalizeSha256(metadata.journeyEvidenceManifestHash);
+  const archivedManifestHash = normalizeSha256(manifestHash);
+  return (
+    approvedManifestHash !== null &&
+    archivedManifestHash !== null &&
+    approvedManifestHash === archivedManifestHash
   );
+}
+
+function normalizeSha256(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/^sha256:/i, "").toLowerCase();
+  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 
 function toLeaseView(lease: Lease) {

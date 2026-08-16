@@ -327,6 +327,7 @@ it("converges only complete archived handover contracts onto the signed file", (
   expect(sql).toContain('"status" = \'ARCHIVED\'');
   expect(sql).toContain('"deleted_at" IS NULL');
   expect(sql).toContain('EXISTS');
+  expect(sql).toContain('c."status" IN (\'SIGNED\', \'ARCHIVED\')');
 });
 ```
 
@@ -362,8 +363,9 @@ WHERE c."id" = h."handover_contract_id"
   AND h."signed_pdf_hash" IS NOT NULL
   AND EXISTS (
     SELECT 1 FROM "file_object" AS f
-    WHERE f."id" = h."signed_document_file_id" AND f."deleted_at" IS NULL
+    WHERE f."id" = h."signed_document_file_id"
   )
+  AND c."status" IN ('SIGNED', 'ARCHIVED')
   AND (
     c."status" <> 'ARCHIVED'
     OR c."archived_at" IS DISTINCT FROM h."archived_at"

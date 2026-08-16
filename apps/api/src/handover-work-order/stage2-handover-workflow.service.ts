@@ -322,6 +322,11 @@ export class Stage2HandoverWorkflowService
       .toLowerCase() === "true";
   }
 
+  reconcileArchivedStage2Evidence(limit: number) {
+    return this.handoverWorkOrderService
+      .reconcileArchivedStage2JourneyEvidenceBatch(limit);
+  }
+
   async retryDeadLetterJob(
     workOrderId: string,
     sourceJobId: string,
@@ -1083,6 +1088,9 @@ export class Stage2HandoverWorkflowService
         result.archiveStatus ===
         DeliveryHandoverArchiveStatus.ARCHIVED
       ) {
+        await this.handoverWorkOrderService
+          .reconcileArchivedStage2JourneyEvidence(job.workOrderId);
+        await lease.assertLease();
         return {
           kind: "COMPLETED",
           result: {

@@ -33,12 +33,16 @@ import {
   FieldOperatorAuditEventType,
   Prisma,
   OrderStatus,
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
   UserStatus,
   VehicleInspectionStatus,
   VehicleStatus,
   VehicleHandoverAdminReviewStatus,
   VehicleHandoverEventActorType,
   VehicleHandoverEventType,
+  VehicleHandoverType,
+  VehicleHandoverWorkOrderStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
@@ -127,6 +131,15 @@ const OPS_REVIEW_PENDING_ALLOWED_STATUSES = new Set([
   "OPS_REVIEW_PENDING",
   "OPS_REVIEWED"
 ]);
+const ARCHIVED_STAGE2_RECONCILABLE_STATUSES = new Set([
+  "CUSTOMER_CONFIRMED",
+  "SIGNING",
+  "CUSTOMER_SIGNED",
+  "PLATFORM_SEALED",
+  "FIELD_COMPLETED",
+  "OPS_REVIEW_PENDING",
+  "OPS_REVIEWED"
+]);
 const FIELD_SESSION_LOCKED_STATUSES = new Set([
   "CUSTOMER_OBJECTED",
   "CUSTOMER_REVIEWING",
@@ -152,6 +165,7 @@ const STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS = 3;
 const STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV = "STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL";
 const STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV = "STAGE2_HANDOVER_WORKFLOW_ENABLED";
 const MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES = 1024 * 1024;
+const MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE = 10;
 const SAFE_FIELD_PHOTO_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -236,6 +250,12 @@ export interface WorkOrderRecord {
   status: string;
   updatedAt?: Date | null;
   vehicleDeliveryId?: string | null;
+}
+
+export interface ArchivedStage2EvidenceReconciliationResult {
+  manifestHash: string;
+  outcome: "ALREADY_READY" | "SIGNALLED";
+  workOrderId: string;
 }
 
 export interface EvidenceFileStreamResult {
@@ -2152,6 +2172,185 @@ export class HandoverWorkOrderService {
       actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
       detail: { completedAt: completedAt.toISOString() }
     });
+  }
+
+  async reconcileArchivedStage2JourneyEvidence(
+    workOrderId: string
+  ): Promise<ArchivedStage2EvidenceReconciliationResult> {
+    return this.runSerializableTransaction(async (tx) => {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT work_order."id"
+        FROM "vehicle_handover_work_order" AS work_order
+        INNER JOIN "vehicle_delivery_handover" AS handover
+          ON handover."id" = work_order."handover_id"
+        WHERE work_order."id" = CAST(${workOrderId} AS uuid)
+        FOR UPDATE OF work_order, handover
+      `);
+
+      const workOrder = await this.getWorkOrderOrThrow(workOrderId, tx);
+      assertCanReconcileArchivedStage2Evidence(workOrder);
+      if (!workOrder.handoverId) {
+        throw new ConflictException("STAGE2_HANDOVER_ARCHIVE_BINDING_INVALID");
+      }
+      const handover = await tx.vehicleDeliveryHandover.findFirst({
+        where: {
+          deletedAt: null,
+          id: workOrder.handoverId,
+          orderId: workOrder.orderId
+        }
+      });
+      if (
+        !handover ||
+        !handover.archivedAt ||
+        !hasCompleteStage2HandoverArchive(handover)
+      ) {
+        throw new ConflictException("STAGE2_HANDOVER_ARCHIVE_INCOMPLETE");
+      }
+
+      const evidencePackage = await this.buildCurrentEvidencePackage(
+        workOrder,
+        undefined,
+        tx
+      );
+      const persistedManifestHash = readMetadataString(
+        workOrder.metadata,
+        "journeyEvidenceManifestHash"
+      );
+      if (
+        (workOrder.status === "OPS_REVIEW_PENDING" ||
+          workOrder.status === "OPS_REVIEWED") &&
+        persistedManifestHash &&
+        persistedManifestHash !== evidencePackage.manifestHash
+      ) {
+        throw new ConflictException("JOURNEY_EVIDENCE_MANIFEST_STALE");
+      }
+
+      const alreadyReady =
+        (workOrder.status === "OPS_REVIEW_PENDING" &&
+          workOrder.opsReviewStatus === "PENDING" &&
+          persistedManifestHash === evidencePackage.manifestHash) ||
+        workOrder.status === "OPS_REVIEWED";
+      if (!alreadyReady) {
+        const updated = await this.updateWorkOrderVersioned(workOrder, {
+          fieldCompletedAt:
+            workOrder.fieldCompletedAt ??
+            handover.completedAt ??
+            handover.archivedAt,
+          metadata: mergeMetadata(workOrder.metadata, {
+            journeyEvidenceManifestHash: evidencePackage.manifestHash,
+            opsReviewRequestedBy: null,
+            opsReviewSource: "STAGE2_AUTHORITATIVE_ARCHIVE"
+          }),
+          opsReviewStatus: "PENDING",
+          status: "OPS_REVIEW_PENDING"
+        }, tx);
+        await this.recordEvent(
+          updated,
+          VehicleHandoverEventType.OPS_REVIEW_UPDATED,
+          {
+            actorType: VehicleHandoverEventActorType.SYSTEM,
+            detail: {
+              manifestHash: evidencePackage.manifestHash,
+              source: "STAGE2_AUTHORITATIVE_ARCHIVE",
+              status: "PENDING"
+            }
+          },
+          tx
+        );
+      }
+
+      await this.deliveryEvidenceService.recordJourneyEvidenceReady(
+        tx,
+        {
+          handoverId: workOrder.handoverId,
+          manifestHash: evidencePackage.manifestHash,
+          orderId: workOrder.orderId,
+          workOrderId: workOrder.id
+        },
+        { readinessMode: "FIELD_COMPLETENESS" }
+      );
+      return {
+        manifestHash: evidencePackage.manifestHash,
+        outcome: alreadyReady ? "ALREADY_READY" : "SIGNALLED",
+        workOrderId: workOrder.id
+      };
+    });
+  }
+
+  async reconcileArchivedStage2JourneyEvidenceBatch(
+    limit = MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
+  ): Promise<{ failed: number; processed: number; scanned: number }> {
+    const safeLimit = Number.isSafeInteger(limit)
+      ? Math.min(
+          Math.max(limit, 1),
+          MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
+        )
+      : MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE;
+    const candidates = await this.prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: safeLimit,
+      where: {
+        handover: {
+          is: {
+            archiveStatus: DeliveryHandoverArchiveStatus.ARCHIVED,
+            archivedAt: { not: null },
+            deletedAt: null,
+            signedDocumentFileId: { not: null },
+            signedObjectKey: { not: null },
+            signedPdfHash: { not: null },
+            status: DeliveryHandoverStatus.ARCHIVED
+          }
+        },
+        handoverType: VehicleHandoverType.DELIVERY_OUTBOUND,
+        order: {
+          is: {
+            subscriptionJourney: {
+              is: {
+                currentStepCode:
+                  SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+                status: {
+                  notIn: [
+                    SubscriptionJourneyStatus.COMPLETED,
+                    SubscriptionJourneyStatus.CANCELLED
+                  ]
+                }
+              }
+            }
+          }
+        },
+        status: {
+          in: [
+            VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+            VehicleHandoverWorkOrderStatus.SIGNING,
+            VehicleHandoverWorkOrderStatus.CUSTOMER_SIGNED,
+            VehicleHandoverWorkOrderStatus.PLATFORM_SEALED,
+            VehicleHandoverWorkOrderStatus.FIELD_COMPLETED,
+            VehicleHandoverWorkOrderStatus.OPS_REVIEW_PENDING
+          ]
+        }
+      }
+    });
+    let failed = 0;
+    let processed = 0;
+    for (const candidate of candidates) {
+      try {
+        await this.reconcileArchivedStage2JourneyEvidence(candidate.id);
+        processed += 1;
+      } catch {
+        failed += 1;
+        this.logger.warn({
+          errorCode: "STAGE2_ARCHIVE_CONVERGENCE_FAILED",
+          operation: "RECONCILE_ARCHIVED_STAGE2_EVIDENCE",
+          workOrderId: candidate.id
+        });
+      }
+    }
+    return {
+      failed,
+      processed,
+      scanned: candidates.length
+    };
   }
 
   async markOpsReviewPending(id: string, actorId?: string) {
@@ -5476,6 +5675,23 @@ function assertCanMarkOpsReviewPending(workOrder: WorkOrderRecord) {
   }
   if (!OPS_REVIEW_PENDING_ALLOWED_STATUSES.has(String(workOrder.status))) {
     throw new BadRequestException("运营复核只能在客户签署、平台盖章或现场完成后发起。");
+  }
+}
+
+function assertCanReconcileArchivedStage2Evidence(
+  workOrder: WorkOrderRecord
+) {
+  if (isTerminalWorkOrderStatus(workOrder.status)) {
+    throw new BadRequestException("交付工单已终止，不能收敛归档证据。");
+  }
+  if (workOrder.status === "CUSTOMER_OBJECTED" || workOrder.customerObjectedAt) {
+    throw new BadRequestException("客户存在异议，不能收敛归档证据。");
+  }
+  if (
+    workOrder.handoverType !== "DELIVERY_OUTBOUND" ||
+    !ARCHIVED_STAGE2_RECONCILABLE_STATUSES.has(String(workOrder.status))
+  ) {
+    throw new BadRequestException("交付工单状态不允许收敛 Stage 2 归档证据。");
   }
 }
 

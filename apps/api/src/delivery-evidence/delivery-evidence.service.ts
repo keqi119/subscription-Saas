@@ -801,13 +801,25 @@ export class DeliveryEvidenceService {
       manifestHash: string;
       orderId: string;
       workOrderId: string;
-    }
+    },
+    options: {
+      readinessMode?: "FIELD_COMPLETENESS" | "OPS_REVIEW";
+    } = {}
   ): Promise<void> {
-    await this.assertEvidenceReadyForOpsReview(
-      input.orderId,
-      input.handoverId,
-      tx
-    );
+    if (options.readinessMode === "FIELD_COMPLETENESS") {
+      await this.assertFieldEvidenceComplete(
+        input.orderId,
+        input.handoverId,
+        undefined,
+        tx
+      );
+    } else {
+      await this.assertEvidenceReadyForOpsReview(
+        input.orderId,
+        input.handoverId,
+        tx
+      );
+    }
     if (!this.journeySignal) {
       throw new Error("Subscription journey evidence signaling is unavailable.");
     }

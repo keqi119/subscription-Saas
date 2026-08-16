@@ -53,5 +53,8 @@ export type WorkflowHandlerResult =
 
 export interface Stage2HandoverWorkflowHandler {
   handle(job: ClaimedStage2WorkflowJob): Promise<WorkflowHandlerResult>;
+  reconcileArchivedStage2Evidence?(
+    limit: number
+  ): Promise<{ failed: number; processed: number; scanned: number }>;
   readonly supportedJobTypes: readonly VehicleHandoverWorkflowJobType[];
 }

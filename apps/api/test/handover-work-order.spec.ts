@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  UnauthorizedException
+} from "@nestjs/common";
 import {
   ContractStatus,
   FieldOperatorAuditEventType,
@@ -2035,6 +2040,206 @@ describe("HandoverWorkOrderService", () => {
     });
   });
 
+  it("converges a customer-confirmed work order only after a complete authoritative Stage 2 archive", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+
+    const result = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
+
+    const manifestHash = buildDeliveryHandoverEvidencePackage({
+      evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
+      handoverId: "handover-1",
+      orderId: harness.orderId,
+      workOrderId: "work-order-1"
+    }).manifestHash;
+    expect(result).toEqual({
+      manifestHash,
+      outcome: "SIGNALLED",
+      workOrderId: "work-order-1"
+    });
+    expect(harness.state.workOrders[0]).toMatchObject({
+      fieldCompletedAt: harness.now,
+      opsReviewStatus: "PENDING",
+      status: "OPS_REVIEW_PENDING"
+    });
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledWith(
+      harness.prisma,
+      {
+        handoverId: "handover-1",
+        manifestHash,
+        orderId: harness.orderId,
+        workOrderId: "work-order-1"
+      },
+      { readinessMode: "FIELD_COMPLETENESS" }
+    );
+    expect(
+      harness.state.events.filter(
+        (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
+      )
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ["archivedAt", null],
+    ["signedDocumentFileId", null],
+    ["signedObjectKey", null],
+    ["signedPdfHash", null]
+  ])("rejects archive convergence when %s is missing", async (field, value) => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    Object.assign(harness.state.handover, { [field]: value });
+
+    await expect(
+      harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1")
+    ).rejects.toThrow("STAGE2_HANDOVER_ARCHIVE_INCOMPLETE");
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).not.toHaveBeenCalled();
+    expect(harness.state.workOrders[0]).toMatchObject({
+      opsReviewStatus: "NOT_REQUIRED",
+      status: "CUSTOMER_CONFIRMED"
+    });
+  });
+
+  it.each(["CUSTOMER_OBJECTED", "VOIDED", "FAILED", "CANCELLED"])(
+    "rejects archived convergence from %s",
+    async (status) => {
+      const harness = createConfirmedWorkOrderHarness();
+      setCompleteArchivedHandover(harness);
+      Object.assign(harness.state.workOrders[0]!, {
+        customerObjectedAt:
+          status === "CUSTOMER_OBJECTED" ? harness.now : null,
+        status
+      });
+
+      await expect(
+        harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1")
+      ).rejects.toThrow(BadRequestException);
+      expect(
+        harness.evidenceService.recordJourneyEvidenceReady
+      ).not.toHaveBeenCalled();
+    }
+  );
+
+  it("replays the stable readiness signal without duplicating the ops-review event", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+
+    const first = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
+    const second = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
+
+    expect(first.outcome).toBe("SIGNALLED");
+    expect(second).toEqual({ ...first, outcome: "ALREADY_READY" });
+    expect(
+      harness.state.events.filter(
+        (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
+      )
+    ).toHaveLength(1);
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenNthCalledWith(
+      2,
+      harness.prisma,
+      {
+        handoverId: "handover-1",
+        manifestHash: first.manifestHash,
+        orderId: harness.orderId,
+        workOrderId: "work-order-1"
+      },
+      { readinessMode: "FIELD_COMPLETENESS" }
+    );
+  });
+
+  it("scans only complete archives stranded at the Stage 2 Journey step", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    harness.prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValueOnce([
+      { id: "work-order-1" }
+    ]);
+
+    const result = await harness.service
+      .reconcileArchivedStage2JourneyEvidenceBatch(10);
+
+    expect(
+      harness.prisma.vehicleHandoverWorkOrder.findMany
+    ).toHaveBeenCalledWith({
+      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+      select: { id: true },
+      take: 10,
+      where: {
+        handover: {
+          is: {
+            archiveStatus: "ARCHIVED",
+            archivedAt: { not: null },
+            deletedAt: null,
+            signedDocumentFileId: { not: null },
+            signedObjectKey: { not: null },
+            signedPdfHash: { not: null },
+            status: "ARCHIVED"
+          }
+        },
+        handoverType: "DELIVERY_OUTBOUND",
+        order: {
+          is: {
+            subscriptionJourney: {
+              is: {
+                currentStepCode: "HANDOVER_AND_STAGE2_CREATION",
+                status: { notIn: ["COMPLETED", "CANCELLED"] }
+              }
+            }
+          }
+        },
+        status: {
+          in: [
+            "CUSTOMER_CONFIRMED",
+            "SIGNING",
+            "CUSTOMER_SIGNED",
+            "PLATFORM_SEALED",
+            "FIELD_COMPLETED",
+            "OPS_REVIEW_PENDING"
+          ]
+        }
+      }
+    });
+    expect(result).toEqual({ failed: 0, processed: 1, scanned: 1 });
+  });
+
+  it("continues bounded archive convergence after one candidate fails", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(
+      () => undefined
+    );
+    harness.prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValueOnce([
+      { id: "missing-work-order" },
+      { id: "work-order-1" }
+    ]);
+
+    await expect(
+      harness.service.reconcileArchivedStage2JourneyEvidenceBatch(2)
+    ).resolves.toEqual({ failed: 1, processed: 1, scanned: 2 });
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({
+      errorCode: "STAGE2_ARCHIVE_CONVERGENCE_FAILED",
+      operation: "RECONCILE_ARCHIVED_STAGE2_EVIDENCE",
+      workOrderId: "missing-work-order"
+    });
+    warn.mockRestore();
+  });
+
   it("blocks Stage 2 signing when the customer objects or the work order is cancelled", async () => {
     const harness = createReadyForCustomerReviewHarness();
 
@@ -2430,6 +2635,20 @@ function createConfirmedWorkOrderHarness() {
   return harness;
 }
 
+function setCompleteArchivedHandover(
+  harness: ReturnType<typeof createHandoverWorkOrderHarness>
+) {
+  Object.assign(harness.state.handover, {
+    archiveStatus: "ARCHIVED",
+    archivedAt: harness.now,
+    completedAt: harness.now,
+    signedDocumentFileId: "signed-file-1",
+    signedObjectKey: "handover/signed/stage2.pdf",
+    signedPdfHash: "a".repeat(64),
+    status: "ARCHIVED"
+  });
+}
+
 function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness>) {
   return {
     accessTokenExpiresAt: null,
@@ -2486,11 +2705,15 @@ function createHandoverWorkOrderHarness() {
   const state = {
     handover: {
       archiveStatus: "NOT_STARTED",
+      archivedAt: null as Date | null,
+      completedAt: null as Date | null,
       deletedAt: null,
       id: "handover-1",
       manifestHash: null as string | null,
       orderId,
-      signedObjectKey: null,
+      signedDocumentFileId: null as string | null,
+      signedObjectKey: null as string | null,
+      signedPdfHash: null as string | null,
       status: "DRAFT",
       vehicleDeliveryId: "delivery-1"
     },
@@ -2685,6 +2908,18 @@ function createHandoverWorkOrderHarness() {
         return state.vehicleDelivery;
       }),
       findUnique: vi.fn(async () => state.vehicleDelivery)
+    },
+    vehicleDeliveryHandover: {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        (!where.id || where.id === state.handover.id)
+          ? state.handover
+          : null
+      ),
+      findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        (!where.id || where.id === state.handover.id)
+          ? state.handover
+          : null
+      )
     },
     fileObject: {
       count: vi.fn(async ({ where }: { where: { id?: { in?: string[] } } }) => {

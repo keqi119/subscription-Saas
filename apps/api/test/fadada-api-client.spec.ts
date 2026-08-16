@@ -772,6 +772,38 @@ describe("Fadada API client", () => {
     expect(String(vi.mocked(transport).mock.calls[0]?.[0].body)).toContain("transaction_id=TX1");
   });
 
+  it("prefers the nested sign result description over the top-level request message", async () => {
+    const transport: FadadaTransport = vi.fn(async () => ({
+      bodyText: JSON.stringify({
+        code: 1,
+        data: {
+          download_url: "https://download.example.test/file.pdf?token=secret",
+          endTime: "2026-08-16 18:31:01",
+          result: "9999",
+          result_desc: "待签署",
+          view_url: "https://view.example.test/file.pdf?token=secret"
+        },
+        msg: "success"
+      }),
+      headers: { "content-type": "application/json" },
+      status: 200
+    }));
+    const apiClient = new FadadaApiClient(
+      fadadaConfig(),
+      new FadadaHttpClient(fadadaConfig(), transport)
+    );
+
+    await expect(apiClient.querySignResult({
+      contractId: "CON-1",
+      customerId: "fadada-customer-1",
+      transactionId: "TX1"
+    })).resolves.toMatchObject({
+      resultCode: "9999",
+      resultDesc: "待签署",
+      status: "UNKNOWN"
+    });
+  });
+
   it("preserves Stage 1 sign_status=1 as signed while keeping active state as signing", async () => {
     const responses = [
       {

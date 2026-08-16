@@ -488,6 +488,9 @@ export class FadadaApiClient {
     assertHttpOk(response.status);
     const raw = response.parsedBody ?? response.bodyText;
     const resultCode = stringField(raw, ["result_code", "resultCode", "result"]);
+    const resultDesc =
+      nestedDataStringField(raw, ["result_desc", "resultDesc"]) ??
+      stringField(raw, ["result_desc", "resultDesc", "message", "msg"]);
 
     return {
       contractId: input.contractId,
@@ -506,7 +509,7 @@ export class FadadaApiClient {
       ]),
       raw,
       resultCode,
-      resultDesc: stringField(raw, ["result_desc", "resultDesc", "message", "msg"]),
+      resultDesc,
       status: mapQuerySignResultStatus(raw, resultCode),
       transactionId: input.transactionId,
       viewPdfUrl: stringField(raw, ["view_url", "viewUrl", "viewpdf_url", "viewPdfUrl", "view_pdf_url"])
@@ -701,6 +704,20 @@ function assertDownloadedPdf(buffer: Buffer, contentType?: string) {
 
 function stringField(raw: unknown, keys: string[]): string | undefined {
   return scalarField(raw, keys);
+}
+
+function nestedDataStringField(raw: unknown, keys: string[]): string | undefined {
+  const record = recordField(raw);
+  if (!record) {
+    return undefined;
+  }
+  for (const data of nestedProviderRecords(record.data, 0)) {
+    const nested = scalarField(data, keys);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
 }
 
 function scalarField(

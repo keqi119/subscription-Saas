@@ -92,18 +92,16 @@ describe("Fleet Ops dependency boundaries", () => {
 
 async function findImports(pattern: RegExp) {
   const files = await listFiles(join(process.cwd(), "src", "fleet-ops"));
-  const matches: Array<{ file: string; line: number; text: string }> = [];
-
-  for (const file of files) {
+  const matches = await Promise.all(files.map(async (file) => {
     const lines = (await readFile(file, "utf8")).split(/\r?\n/);
-    lines.forEach((lineText, index) => {
-      if (/^\s*import\b/.test(lineText) && pattern.test(lineText)) {
-        matches.push({ file: relative(process.cwd(), file).replaceAll("\\", "/"), line: index + 1, text: lineText.trim() });
-      }
-    });
-  }
+    return lines.flatMap((lineText, index) =>
+      /^\s*import\b/.test(lineText) && pattern.test(lineText)
+        ? [{ file: relative(process.cwd(), file).replaceAll("\\", "/"), line: index + 1, text: lineText.trim() }]
+        : []
+    );
+  }));
 
-  return matches;
+  return matches.flat();
 }
 
 function isLowerLayerFile(file: string) {
@@ -114,18 +112,16 @@ function isLowerLayerFile(file: string) {
 }
 
 async function grepFiles(files: string[], pattern: RegExp) {
-  const matches: Array<{ file: string; line: number; text: string }> = [];
-
-  for (const file of files) {
+  const matches = await Promise.all(files.map(async (file) => {
     const lines = (await readFile(file, "utf8")).split(/\r?\n/);
-    lines.forEach((lineText, index) => {
-      if (pattern.test(lineText)) {
-        matches.push({ file: relative(process.cwd(), file).replaceAll("\\", "/"), line: index + 1, text: lineText.trim() });
-      }
-    });
-  }
+    return lines.flatMap((lineText, index) =>
+      pattern.test(lineText)
+        ? [{ file: relative(process.cwd(), file).replaceAll("\\", "/"), line: index + 1, text: lineText.trim() }]
+        : []
+    );
+  }));
 
-  return matches;
+  return matches.flat();
 }
 
 async function listFiles(root: string): Promise<string[]> {

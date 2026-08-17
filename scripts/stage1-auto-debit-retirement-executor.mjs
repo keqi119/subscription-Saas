@@ -6,26 +6,43 @@ import {
 const COLLECTION_MODE = "ACTIVE_PAYMENT_ONLY";
 const RETIREMENT_CODE = "STAGE1_ACTIVE_PAYMENT_BASELINE_RETIRED";
 const RETIREMENT_MESSAGE = "Cancelled by Stage 1 active-payment-only baseline rollout.";
+const LOCK_EXECUTABLE_RETIRED_JOBS_SQL = `
+  SELECT "id"
+  FROM "subscription_automation_job"
+  WHERE "job_type" IN (
+    'SUBMIT_BILL_DEBIT',
+    'QUERY_DEBIT_ATTEMPT',
+    'SEND_DEBIT_FAILURE_NOTICE',
+    'SYNC_PAYMENT_MANDATE'
+  )
+    AND "job_status" IN ('PENDING', 'PROCESSING')
+  ORDER BY "available_at" ASC, "created_at" ASC, "id" ASC
+  FOR UPDATE
+`;
 
-export async function executeStage1AutoDebitRetirement({ mode, now, prisma }) {
-  const effectiveNow = now ?? new Date();
+export async function executeStage1AutoDebitRetirement({ mode, prisma }) {
   if (mode === "dry-run") {
-    const rows = await findRetiredJobs(prisma);
-    const plan = buildRetirementPlan(rows, effectiveNow);
-    const executableJobCount = await countExecutableJobs(prisma);
-    return {
-      exitCode: 0,
-      report: report({
-        cancelledCount: 0,
-        executableJobCount,
-        mode,
-        ok: plan.blockedProcessingIds.length === 0,
-        plan
-      })
-    };
+    return prisma.$transaction(async (tx) => {
+      const effectiveNow = await readDatabaseNow(tx);
+      const rows = await findRetiredJobs(tx);
+      const plan = buildRetirementPlan(rows, effectiveNow);
+      const executableJobCount = await countExecutableJobs(tx);
+      return {
+        exitCode: 0,
+        report: report({
+          cancelledCount: 0,
+          executableJobCount,
+          mode,
+          ok: plan.blockedProcessingIds.length === 0,
+          plan
+        })
+      };
+    });
   }
 
   return prisma.$transaction(async (tx) => {
+    await lockExecutableRetiredJobs(tx);
+    const effectiveNow = await readDatabaseNow(tx);
     const rows = await findRetiredJobs(tx);
     const plan = buildRetirementPlan(rows, effectiveNow);
     if (plan.blockedProcessingIds.length > 0) {
@@ -108,6 +125,19 @@ export async function executeStage1AutoDebitRetirement({ mode, now, prisma }) {
       })
     };
   });
+}
+
+async function lockExecutableRetiredJobs(db) {
+  await db.$queryRawUnsafe(LOCK_EXECUTABLE_RETIRED_JOBS_SQL);
+}
+
+async function readDatabaseNow(db) {
+  const rows = await db.$queryRawUnsafe('SELECT clock_timestamp() AS "now"');
+  const value = rows[0]?.now;
+  if (!value || typeof value.getTime !== "function" || Number.isNaN(value.getTime())) {
+    throw new Error("STAGE1_AUTO_DEBIT_RETIREMENT_DATABASE_CLOCK_INVALID");
+  }
+  return value;
 }
 
 function findRetiredJobs(db) {

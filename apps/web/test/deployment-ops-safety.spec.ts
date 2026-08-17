@@ -89,6 +89,18 @@ describe("Deployment operations safety", () => {
     });
   });
 
+  it("pins the complete auto-debit retirement policy in source-build env examples", () => {
+    for (const file of [".env.production.example", ".env.staging.example"]) {
+      const environment = parseEnvironment(read(file));
+
+      expect(environment).toMatchObject({
+        AUTO_DEBIT_ENABLED: "false",
+        PAYMENT_MANDATE_MOCK_ENABLED: "false",
+        PAYMENT_MANDATE_PROVIDER: "disabled"
+      });
+    }
+  });
+
   it("passes explicit auto debit defaults from both image Compose files", () => {
     const staging = parseComposeEnvironment(
       read("docker-compose.staging.images.example.yml")

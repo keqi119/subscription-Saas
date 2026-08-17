@@ -16,7 +16,6 @@ test("dry-run reports executable jobs without writes", async () => {
 
   const result = await executeStage1AutoDebitRetirement({
     mode: "dry-run",
-    now: NOW,
     prisma: harness.prisma
   });
 
@@ -50,7 +49,6 @@ test("apply refuses while an auto-debit job holds a live lease", async () => {
 
   const result = await executeStage1AutoDebitRetirement({
     mode: "apply",
-    now: NOW,
     prisma: harness.prisma
   });
 
@@ -60,6 +58,39 @@ test("apply refuses while an auto-debit job holds a live lease", async () => {
   assert.equal(result.report.postcondition.executableJobCount, 1);
   assert.equal(harness.updateCalls.length, 0);
   assert.equal(harness.audits.length, 0);
+});
+
+test("apply uses the database clock and locks jobs before lease classification", async () => {
+  const harness = createHarness(
+    [
+      job({
+        id: "00000000-0000-4000-8000-000000000008",
+        jobStatus: "PROCESSING",
+        leaseExpiresAt: new Date("2026-08-18T08:00:01.000Z")
+      })
+    ],
+    { databaseNow: NOW }
+  );
+  const RealDate = Date;
+  globalThis.Date = class extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : ["2026-08-18T09:00:00.000Z"]));
+    }
+  };
+
+  try {
+    const result = await executeStage1AutoDebitRetirement({
+      mode: "apply",
+      prisma: harness.prisma
+    });
+
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.report.blockedProcessingCount, 1);
+    assert.deepEqual(harness.operations.slice(0, 3), ["lock", "database-now", "find"]);
+    assert.equal(harness.updateCalls.length, 0);
+  } finally {
+    globalThis.Date = RealDate;
+  }
 });
 
 test("apply cancels only eligible jobs and writes one audit per cancellation", async () => {
@@ -84,7 +115,6 @@ test("apply cancels only eligible jobs and writes one audit per cancellation", a
 
   const first = await executeStage1AutoDebitRetirement({
     mode: "apply",
-    now: NOW,
     prisma: harness.prisma
   });
 
@@ -122,7 +152,6 @@ test("apply cancels only eligible jobs and writes one audit per cancellation", a
 
   const second = await executeStage1AutoDebitRetirement({
     mode: "apply",
-    now: new Date("2026-08-18T08:05:00.000Z"),
     prisma: harness.prisma
   });
 
@@ -132,11 +161,23 @@ test("apply cancels only eligible jobs and writes one audit per cancellation", a
   assert.equal(harness.audits.length, 2);
 });
 
-function createHarness(initialRows) {
+function createHarness(initialRows, { databaseNow = NOW } = {}) {
   const rows = initialRows.map((row) => ({ ...row }));
   const audits = [];
+  const operations = [];
   const updateCalls = [];
   const db = {
+    $queryRawUnsafe: async (query) => {
+      if (/FOR UPDATE/.test(query)) {
+        operations.push("lock");
+        return rows.map(({ id }) => ({ id }));
+      }
+      if (/clock_timestamp/.test(query)) {
+        operations.push("database-now");
+        return [{ now: databaseNow }];
+      }
+      throw new Error(`Unexpected query: ${query}`);
+    },
     auditLog: {
       create: async ({ data }) => {
         audits.push(data);
@@ -149,8 +190,12 @@ function createHarness(initialRows) {
           (row) =>
             where.jobType.in.includes(row.jobType) && where.jobStatus.in.includes(row.jobStatus)
         ).length,
-      findMany: async ({ where }) =>
-        rows.filter((row) => where.jobType.in.includes(row.jobType)).map((row) => ({ ...row })),
+      findMany: async ({ where }) => {
+        operations.push("find");
+        return rows
+          .filter((row) => where.jobType.in.includes(row.jobType))
+          .map((row) => ({ ...row }));
+      },
       updateMany: async ({ data, where }) => {
         updateCalls.push({ data, where });
         const row = rows.find((candidate) => candidate.id === where.id);
@@ -172,7 +217,7 @@ function createHarness(initialRows) {
     ...db,
     $transaction: async (operation) => operation(db)
   };
-  return { audits, prisma, rows, updateCalls };
+  return { audits, operations, prisma, rows, updateCalls };
 }
 
 function job(overrides = {}) {

@@ -90,7 +90,7 @@ export class BillingAutomationHandlers {
       idempotencyKey: job.idempotencyKey,
       notificationType: overdue ? NotificationType.BILL_OVERDUE : NotificationType.BILL_DUE,
       title: overdue ? "账单逾期提醒" : "账单到期提醒",
-      url: "/portal/billing"
+      url: `/portal/bills/${bill.id}`
     });
 
     return {

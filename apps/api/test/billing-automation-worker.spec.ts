@@ -262,7 +262,8 @@ describe("BillingAutomationHandlers", () => {
         customerId: bill.customerId,
         eventType: NotificationEventType.BILL_DUE,
         idempotencyKey: job.idempotencyKey,
-        notificationType: NotificationType.BILL_DUE
+        notificationType: NotificationType.BILL_DUE,
+        url: `/portal/bills/${bill.id}`
       })
     );
   });

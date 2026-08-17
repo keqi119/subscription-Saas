@@ -16,6 +16,9 @@ export class AutoDebitScheduler {
     _bill: SchedulableBill,
     _billingScheduleId?: string
   ) {
+    void _tx;
+    void _bill;
+    void _billingScheduleId;
     return [];
   }
 
@@ -25,6 +28,10 @@ export class AutoDebitScheduler {
     _now: Date,
     _billingScheduleId?: string
   ) {
+    void _tx;
+    void _bill;
+    void _now;
+    void _billingScheduleId;
     return [];
   }
 }

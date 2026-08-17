@@ -20,10 +20,16 @@ describe("auto debit deployment safety", () => {
     });
   });
 
-  it("rejects the legacy Staging mock example until deployment examples are retired", () => {
+  it("keeps the retired Staging example on the active-payment-only policy", () => {
     const staging = readEnvironment(".env.staging.images.example");
 
-    expect(() => readAutoDebitConfig(staging)).toThrow("AUTO_DEBIT_STAGE1_BASELINE_DISABLED");
+    expect(readAutoDebitConfig(staging)).toMatchObject({
+      collectionMode: "ACTIVE_PAYMENT_ONLY",
+      enabled: false,
+      environment: "staging",
+      mockEnabled: false,
+      provider: "disabled"
+    });
   });
 
   it("rejects a dormant WeChat mandate provider even with an approved template", () => {

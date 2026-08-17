@@ -4,7 +4,7 @@
 
 适用范围：第 1 阶段新订阅 A/B Golden Path。A 线为客户 Portal 自助进件，B 线为 Admin 代客进件。两条线必须使用不同的 Application，但执行完全相同的下游步骤。
 
-本手册不授权接入或开启微信委托代扣。整个验收期间必须保持 `AUTO_DEBIT_ENABLED=false`，支付仅使用客户 Portal 的微信 JSAPI 主动支付。
+本手册不授权接入或开启微信委托代扣。整个验收期间必须保持 `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，支付仅使用客户 Portal 的微信 JSAPI 主动支付。
 
 ## 1. 安全边界与通过条件
 
@@ -18,7 +18,8 @@
 - 法大大完成客户签署、平台盖章和归档，最终 PDF 的服务端校验和可复核；
 - 最小金额真实 JSAPI 支付已登记、分摊并核销，随后按批准流程完成退款和对账；
 - Stage 2 的精确 evidence manifest 已通过审核，订单、车辆、Lease 与 BillingSchedule 由权威事实激活；
-- 未创建 PaymentMandate 或 DebitAttempt，也未依赖人工“已收款”布尔字段；
+- 当前收款模式为 `ACTIVE_PAYMENT_ONLY`，不存在 `PENDING` 或 `PROCESSING` 的退役自动扣款任务；
+- 客户和 Admin 均无代扣 mutation 路由或 UI 动作控件；历史 Mandate/Attempt 数量只记录、不影响验收；
 - 导出的证据已脱敏，PII 与供应商原始 payload 只保留在受控服务端审计系统中。
 
 ## 2. 变更窗口前检查
@@ -31,7 +32,7 @@
 - [ ] `/api/health` 正常；worker heartbeat、待处理 job/outbox 和最老异常时间已建立基线。
 - [ ] 回滚负责人、应用回滚步骤和数据库处置边界已确认。
 - [ ] 初始配置为 `SUBSCRIPTION_JOURNEY_ENABLED=false`、`SUBSCRIPTION_JOURNEY_WORKER_ENABLED=false`、两类 allowlist 为空。
-- [ ] `AUTO_DEBIT_ENABLED=false`，且变更窗口内禁止修改。
+- [ ] `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false`，且变更窗口内禁止修改。
 
 先完成 migration 和应用部署，再确认健康状态；不得在 migration 或部署未确认时开启 Journey 或 worker。
 
@@ -151,7 +152,7 @@ DELIVERY_EVIDENCE_DECISION   = 1
 - 所有必需证据完成后记录 evidence manifest hash；审批时绑定该精确版本。
 - 如证据新增或替换，旧决定不得继续生效，必须生成并审批新 manifest。
 - 审批通过后确认 Order、Vehicle、Lease、BillingSchedule、初始权益和 Journey 在权威激活事务中一致完成。
-- 核对没有 PaymentMandate、DebitAttempt，也没有通过旧交付布尔值激活。
+- 核对本次 Journey 没有新建 PaymentMandate、DebitAttempt，也没有通过旧交付布尔值激活；系统级历史记录允许存在但必须只读。
 
 ## 10. 脱敏证据包
 
@@ -164,7 +165,8 @@ DELIVERY_EVIDENCE_DECISION   = 1
 - 掩码后的微信支付/退款交易引用、Bill/Payment/write-off 引用；
 - evidence manifest hash、Stage 2 审批和权威激活审计引用；
 - 执行前后 Journey 指标快照：pending job/outbox、open exception、最老异常、worker heartbeat；
-- `AUTO_DEBIT_ENABLED=false` 以及 mandate/attempt 数量为零的核验结果。
+- `ACTIVE_PAYMENT_ONLY` 收款模式、退役任务 `PENDING/PROCESSING=0`、客户/Admin 无 mutation 入口的核验结果；
+- 历史 mandate/attempt 数量快照（允许非零，不作为失败条件），以及至少一笔客户发起的 JSAPI 支付达到 PaymentRecord `CONFIRMED` 并生成 WriteOff 的证据。
 
 姓名、手机号、证件号、OpenID、密钥、证书、签署 URL、支付凭据和 provider raw payload 不得进入证据包。完整审计留在服务端受控系统，并按现有保留策略管理。
 
@@ -182,7 +184,7 @@ pnpm release:check
 
 - Portal `SELF_SERVICE` A 线与 Admin `SALES_ASSISTED` B 线执行相同的 11 个有序步骤，且各自只有三个内部人工决定；
 - 每条线只有一个 Order、Contract、Lease 和 BillingSchedule，合同含法大大签署/盖章/归档元数据，初始账单由 PaymentRecord 与 write-off 权威结清；
-- `PaymentMandate=0`、`DebitAttempt=0`，未使用委托代扣或人工“已收款”捷径；
+- 本次 A/B Journey 未新建 PaymentMandate、DebitAttempt，系统无可执行退役代扣任务，且未使用委托代扣或人工“已收款”捷径；已有历史 Mandate/Attempt 可非零但必须只读；
 - 法大大启动/归档存储、账单、交接、激活前置条件的重试可恢复，重复支付回调不重复生成业务事实，过期 worker lease 可回收；
 - 死信原子投影为 Journey/Step `EXCEPTION`，后台 retry/pause/resume/cancel 受版本和权限约束，Portal/Admin 均不显示 provider/payment 原始错误；
 - Journey 订单不显示旧手工收款、直接合同归档或直接交付激活入口。
@@ -209,5 +211,5 @@ pnpm release:check
 - [ ] `SUBSCRIPTION_JOURNEY_ENABLED` 恢复为发布决策指定状态；未批准正式放量时设回 `false`。
 - [ ] allowlist 清空；注意只有同时关闭 `SUBSCRIPTION_JOURNEY_ENABLED` 才能阻止新 enrollment。
 - [ ] worker 对已入组 Journey 的处置策略已记录；无遗留时可按发布决策关闭。
-- [ ] `AUTO_DEBIT_ENABLED=false` 保持不变。
+- [ ] `AUTO_DEBIT_ENABLED=false`、`PAYMENT_MANDATE_PROVIDER=disabled`、`PAYMENT_MANDATE_MOCK_ENABLED=false` 保持不变。
 - [ ] 变更单已附脱敏证据引用、异常说明和最终签字。

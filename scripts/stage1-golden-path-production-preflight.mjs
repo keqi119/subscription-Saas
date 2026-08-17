@@ -71,6 +71,20 @@ export function validateStage1GoldenPathPreflight(env) {
   if (truthy(env.AUTO_DEBIT_ENABLED)) {
     add("AUTO_DEBIT_MUST_BE_DISABLED", "AUTO_DEBIT_ENABLED", "Delegated debit must stay disabled for this acceptance.");
   }
+  if (normalized(env.PAYMENT_MANDATE_PROVIDER) !== "disabled") {
+    add(
+      "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+      "PAYMENT_MANDATE_PROVIDER",
+      "Stage 1 requires the delegated debit provider to stay disabled."
+    );
+  }
+  if (truthy(env.PAYMENT_MANDATE_MOCK_ENABLED)) {
+    add(
+      "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+      "PAYMENT_MANDATE_MOCK_ENABLED",
+      "Stage 1 forbids delegated debit mock execution."
+    );
+  }
 
   requireConfigured(env, "STAGE1_ACCEPTANCE_TEST_VEHICLE_ID", "TEST_VEHICLE_ID_MISSING", add);
   requireConfigured(env, "STAGE1_ACCEPTANCE_TEST_APPLICATION_ID", "TEST_APPLICATION_ID_MISSING", add);
@@ -114,6 +128,24 @@ export function validateProductionImageGoldenPathConfig(env) {
   const blockers = [];
   if (truthy(env.AUTO_DEBIT_ENABLED)) {
     blockers.push(blocker("AUTO_DEBIT_MUST_BE_DISABLED", "AUTO_DEBIT_ENABLED", "Production acceptance examples must keep auto debit disabled."));
+  }
+  if (normalized(env.PAYMENT_MANDATE_PROVIDER) !== "disabled") {
+    blockers.push(
+      blocker(
+        "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+        "PAYMENT_MANDATE_PROVIDER",
+        "Stage 1 requires the delegated debit provider to stay disabled."
+      )
+    );
+  }
+  if (truthy(env.PAYMENT_MANDATE_MOCK_ENABLED)) {
+    blockers.push(
+      blocker(
+        "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+        "PAYMENT_MANDATE_MOCK_ENABLED",
+        "Stage 1 forbids delegated debit mock execution."
+      )
+    );
   }
   if (!truthy(env.SUBSCRIPTION_JOURNEY_ENABLED)) return blockers;
   if (normalized(env.ESIGN_PROVIDER) !== "fadada") {
@@ -186,6 +218,8 @@ async function checkProductionExamples() {
   const blockers = validateProductionImageGoldenPathConfig(parseEnvExample(envText));
   const requiredComposeKeys = [
     "AUTO_DEBIT_ENABLED",
+    "PAYMENT_MANDATE_MOCK_ENABLED",
+    "PAYMENT_MANDATE_PROVIDER",
     "ESIGN_PROVIDER",
     "FADADA_ENV",
     "NOTIFICATION_PROVIDER",
@@ -218,6 +252,7 @@ function buildSafeSummary(env) {
     identifiers,
     runtime: {
       autoDebit: truthy(env.AUTO_DEBIT_ENABLED) ? "enabled" : "disabled",
+      collectionMode: "active-payment-only",
       journey: truthy(env.SUBSCRIPTION_JOURNEY_ENABLED) ? "enabled" : "disabled",
       notificationProvider: normalized(env.NOTIFICATION_PROVIDER) === "wechat_official_account" ? "official-account" : "invalid",
       worker: truthy(env.SUBSCRIPTION_JOURNEY_WORKER_ENABLED) ? "enabled" : "disabled"

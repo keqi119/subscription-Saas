@@ -5,18 +5,15 @@ import { Button, Tag } from "antd";
 import dayjs from "dayjs";
 
 import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../constants/labels";
-import type { PortalAutoDebitView } from "../../../lib/portal-auto-debit-view-model";
 import type { PortalBillListItem } from "../../../lib/portal-types";
 import styles from "./portal-bill-card.module.css";
 
 export function PortalBillCard({
-  autoDebit,
   bill,
   onDetails,
   onPay,
   paying
 }: {
-  autoDebit?: PortalAutoDebitView;
   bill: PortalBillListItem;
   onDetails: (bill: PortalBillListItem) => void;
   onPay: (bill: PortalBillListItem) => void;
@@ -46,12 +43,6 @@ export function PortalBillCard({
             </Tag>
             <Tag>{labelOf(BILL_TYPE_LABELS, bill.billType)}</Tag>
           </div>
-          {autoDebit ? (
-            <div className={styles.autoDebit} data-testid="portal-bill-auto-debit">
-              <div className={styles.autoDebitTitle}>{autoDebit.title}</div>
-              <div className={styles.autoDebitHelper}>{autoDebit.helper}</div>
-            </div>
-          ) : null}
         </div>
       </div>
       <div className={styles.actions} data-testid="portal-bill-actions">

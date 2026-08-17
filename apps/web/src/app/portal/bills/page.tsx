@@ -1,24 +1,14 @@
 "use client";
 
 import { ArrowLeftOutlined } from "@ant-design/icons";
-import { App, Button, Empty, Flex, List, Typography } from "antd";
+import { Alert, App, Button, Empty, Flex, List, Typography } from "antd";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
-import { buildPortalAutoDebitView } from "../../../lib/portal-auto-debit-view-model";
+import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import {
-  getPortalAutoDebitAvailability,
-  getPortalDebitAttempts,
-  getPortalPaymentMandates,
-  PortalApiError,
-  portalApiFetch
-} from "../../../lib/portal-api";
-import {
-  PortalAutoDebitAvailability,
   PortalBillListItem,
-  PortalDebitAttempt,
   PortalPagedResponse,
-  PortalPaymentMandate,
   PortalPaymentOrder
 } from "../../../lib/portal-types";
 import { PortalBillCard } from "./portal-bill-card";
@@ -28,9 +18,6 @@ function PortalBillsContent() {
   const searchParams = useSearchParams();
   const { message } = App.useApp();
   const [bills, setBills] = useState<PortalBillListItem[]>([]);
-  const [availability, setAvailability] = useState<PortalAutoDebitAvailability>();
-  const [mandates, setMandates] = useState<PortalPaymentMandate[]>([]);
-  const [attempts, setAttempts] = useState<PortalDebitAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [payingBillId, setPayingBillId] = useState<string>();
   const orderId = searchParams.get("orderId");
@@ -40,17 +27,9 @@ function PortalBillsContent() {
   );
 
   useEffect(() => {
-    Promise.all([
-      portalApiFetch<PortalPagedResponse<PortalBillListItem>>(path),
-      getPortalAutoDebitAvailability(),
-      getPortalPaymentMandates(orderId ?? undefined),
-      getPortalDebitAttempts(orderId ? { orderId } : undefined)
-    ])
-      .then(([result, nextAvailability, nextMandates, nextAttempts]) => {
+    portalApiFetch<PortalPagedResponse<PortalBillListItem>>(path)
+      .then((result) => {
         setBills(result.items);
-        setAvailability(nextAvailability);
-        setMandates(nextMandates);
-        setAttempts(nextAttempts);
       })
       .catch((error) => {
         if (error instanceof PortalApiError && error.status === 401) {
@@ -96,24 +75,20 @@ function PortalBillsContent() {
           </div>
         </Flex>
 
+        <Alert
+          description="系统会按账期生成账单并发送到期、逾期提醒；请在账单页面主动完成微信支付。"
+          message="账单提醒 + 主动支付"
+          showIcon
+          style={{ marginBottom: 16 }}
+          type="info"
+        />
+
         <List
           dataSource={bills}
           loading={loading}
           locale={{ emptyText: <Empty description="暂无账单" /> }}
           renderItem={(bill) => (
             <PortalBillCard
-              autoDebit={
-                availability
-                  ? buildPortalAutoDebitView({
-                      attempt:
-                        attempts.find((item) => item.billId === bill.billId) ??
-                        attempts.find((item) => item.orderId === bill.orderId),
-                      availability,
-                      bill,
-                      mandate: mandates.find((item) => item.orderId === bill.orderId)
-                    })
-                  : undefined
-              }
               bill={bill}
               onDetails={(item) => router.push(`/portal/bills/${item.billId}`)}
               onPay={(item) => void payBill(item)}

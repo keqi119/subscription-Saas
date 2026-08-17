@@ -1,7 +1,4 @@
 import type {
-  PortalAutoDebitAvailability,
-  PortalDebitAttempt,
-  PortalPaymentMandate,
   PortalRenewalConsideration,
   PortalRenewalSegment,
   PortalSubscriptionChange
@@ -64,41 +61,6 @@ export function getPortalJourneyByApplication(applicationId: string) {
 export function getPortalJourneyByOrder(orderId: string) {
   return portalApiFetch<PortalSubscriptionJourney>(
     `/portal/subscription-journeys/by-order/${encodeURIComponent(orderId)}`
-  );
-}
-
-export function getPortalAutoDebitAvailability() {
-  return portalApiFetch<PortalAutoDebitAvailability>("/portal/auto-debit/availability");
-}
-
-export function getPortalPaymentMandates(orderId?: string) {
-  const query = orderId ? `?orderId=${encodeURIComponent(orderId)}` : "";
-  return portalApiFetch<PortalPaymentMandate[]>(`/portal/auto-debit/mandates${query}`);
-}
-
-export function getPortalDebitAttempts(filters?: { billId?: string; orderId?: string }) {
-  const params = new URLSearchParams();
-  if (filters?.billId) {
-    params.set("billId", filters.billId);
-  }
-  if (filters?.orderId) {
-    params.set("orderId", filters.orderId);
-  }
-  const query = params.size ? `?${params.toString()}` : "";
-  return portalApiFetch<PortalDebitAttempt[]>(`/portal/auto-debit/attempts${query}`);
-}
-
-export function createPortalPaymentMandate(orderId: string) {
-  return portalApiFetch<PortalPaymentMandate>("/portal/auto-debit/mandates", {
-    body: JSON.stringify({ orderId }),
-    method: "POST"
-  });
-}
-
-export function revokePortalPaymentMandate(mandateId: string) {
-  return portalApiFetch<PortalPaymentMandate>(
-    `/portal/auto-debit/mandates/${encodeURIComponent(mandateId)}/revoke`,
-    { method: "POST" }
   );
 }
 

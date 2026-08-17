@@ -80,27 +80,6 @@
   margin-inline-end: 0;
 }
 
-.autoDebit {
-  background: #f6f9ff;
-  border: 1px solid #dbe8ff;
-  border-radius: 8px;
-  margin-top: 12px;
-  min-width: 0;
-  padding: 10px 12px;
-}
-
-.autoDebitTitle {
-  color: #183b72;
-  font-weight: 600;
-}
-
-.autoDebitHelper {
-  color: #64748b;
-  font-size: 13px;
-  margin-top: 3px;
-  overflow-wrap: anywhere;
-}
-
 .actions {
   display: flex;
   align-items: center;

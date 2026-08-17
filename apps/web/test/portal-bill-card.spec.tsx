@@ -56,29 +56,12 @@ describe("PortalBillCard", () => {
     expect(html).toContain("已收款");
   });
 
-  it("shows auto debit progress without removing active payment", () => {
+  it("keeps active payment without any auto-debit copy", () => {
     const html = renderToStaticMarkup(
-      <PortalBillCard
-        autoDebit={{
-          canEnroll: false,
-          canPay: true,
-          canRevoke: true,
-          description: "系统正在确认本次扣款结果。",
-          helper: "主动支付始终可用。",
-          nextActionAt: null,
-          state: "PROCESSING",
-          title: "扣款结果确认中",
-          tone: "info"
-        }}
-        bill={payableBill}
-        onDetails={vi.fn()}
-        onPay={vi.fn()}
-        paying={false}
-      />
+      <PortalBillCard bill={payableBill} onDetails={vi.fn()} onPay={vi.fn()} paying={false} />
     );
 
-    expect(html).toContain("扣款结果确认中");
-    expect(html).toContain("主动支付始终可用");
     expect(html).toContain("去支付");
+    expect(html).not.toMatch(/自动扣款|授权|扣款结果/);
   });
 });

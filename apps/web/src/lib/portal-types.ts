@@ -986,60 +986,6 @@ export interface PortalBillDetail extends PortalBillListItem {
   }>;
 }
 
-export interface PortalAutoDebitAvailability {
-  enabled: boolean;
-  mode: "DISABLED" | "LIVE" | "SIMULATION";
-  provider: "WECHAT_AUTO_DEBIT" | null;
-}
-
-export type PortalPaymentMandateStatus =
-  | "PENDING"
-  | "ACTIVE"
-  | "SUSPENDED"
-  | "REVOKED"
-  | "EXPIRED"
-  | "FAILED";
-
-export interface PortalPaymentMandate {
-  effectiveAt: string | null;
-  expiresAt: string | null;
-  id: string;
-  mandateNo: string;
-  orderId: string;
-  provider: string;
-  providerMode: string;
-  providerReference: string | null;
-  revokedAt: string | null;
-  signedAt: string | null;
-  status: PortalPaymentMandateStatus;
-}
-
-export type PortalDebitAttemptStatus =
-  | "CREATED"
-  | "SUBMITTING"
-  | "PROCESSING"
-  | "UNKNOWN"
-  | "SUCCEEDED"
-  | "FAILED_RETRYABLE"
-  | "FAILED_FINAL"
-  | "CANCELLED";
-
-export type PortalDebitRetrySlot = "DUE" | "D1" | "D3" | "MANUAL";
-
-export interface PortalDebitAttempt {
-  acceptedAt: string | null;
-  billId: string;
-  confirmedAmount: string;
-  createdAt: string;
-  debitAttemptNo: string;
-  id: string;
-  orderId: string;
-  requestedAmount: string;
-  resolvedAt: string | null;
-  retrySlot: PortalDebitRetrySlot;
-  status: PortalDebitAttemptStatus;
-}
-
 export interface PortalDepositOverview {
   accounts: PortalDepositAccount[];
   availableAmount: number;

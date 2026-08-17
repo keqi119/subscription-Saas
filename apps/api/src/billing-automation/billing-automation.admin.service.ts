@@ -11,7 +11,11 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
-import { isStage1AutoDebitJobType } from "../auto-debit/auto-debit.policy";
+import {
+  isStage1AutoDebitJobType,
+  STAGE1_AUTO_DEBIT_JOB_TYPES,
+  STAGE1_COLLECTION_MODE
+} from "../auto-debit/auto-debit.policy";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
 import { BillingAutomationJobQueryDto, BillingScheduleQueryDto } from "./billing-automation.dto";
@@ -31,6 +35,7 @@ export class BillingAutomationAdminService {
     const [
       scheduleGroups,
       jobGroups,
+      historicalAutoDebitJobGroups,
       nextSchedule,
       oldestPendingJob,
       mandateGroups,
@@ -43,7 +48,17 @@ export class BillingAutomationAdminService {
       }),
       this.prisma.subscriptionAutomationJob.groupBy({
         _count: { _all: true },
-        by: ["jobStatus"]
+        by: ["jobStatus"],
+        where: {
+          jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+        }
+      }),
+      this.prisma.subscriptionAutomationJob.groupBy({
+        _count: { _all: true },
+        by: ["jobStatus"],
+        where: {
+          jobType: { in: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+        }
       }),
       this.prisma.billingSchedule.findFirst({
         orderBy: { nextGenerateAt: "asc" },
@@ -59,7 +74,8 @@ export class BillingAutomationAdminService {
         orderBy: { availableAt: "asc" },
         select: { availableAt: true, id: true },
         where: {
-          jobStatus: SubscriptionAutomationJobStatus.PENDING
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
         }
       }),
       this.prisma.paymentMandate.groupBy({
@@ -103,20 +119,22 @@ export class BillingAutomationAdminService {
       jobGroups,
       "jobStatus"
     );
+    const historicalAutoDebitJobs = countByEnum(
+      Object.values(SubscriptionAutomationJobStatus),
+      historicalAutoDebitJobGroups,
+      "jobStatus"
+    );
     const unallocated = unallocatedRows[0] ?? {
       paymentCount: 0n,
       unallocatedAmount: 0n
     };
 
     return {
-      autoDebit: {
+      collectionMode: STAGE1_COLLECTION_MODE,
+      historicalAutoDebit: {
         attempts,
-        deadLetterCount: jobs.DEAD_LETTER,
+        jobs: historicalAutoDebitJobs,
         mandates,
-        unallocatedPayments: {
-          amount: unallocated.unallocatedAmount.toString(),
-          count: Number(unallocated.paymentCount)
-        },
         unknownCount: attempts.UNKNOWN
       },
       jobs,
@@ -134,6 +152,12 @@ export class BillingAutomationAdminService {
             availableAt: toIso(oldestPendingJob.availableAt)
           }
         : null,
+      payments: {
+        unallocated: {
+          amount: unallocated.unallocatedAmount.toString(),
+          count: Number(unallocated.paymentCount)
+        }
+      },
       schedules: countByEnum(Object.values(BillingScheduleStatus), scheduleGroups, "status")
     };
   }
@@ -175,6 +199,9 @@ export class BillingAutomationAdminService {
 
   async listJobs(query: BillingAutomationJobQueryDto) {
     const { page, pageSize, skip } = pagination(query);
+    const jobTypeWhere = query.jobType
+      ? { jobType: query.jobType }
+      : { jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] } };
     const where = {
       ...(query.billId ? { billId: query.billId } : {}),
       ...(query.jobStatus
@@ -190,7 +217,7 @@ export class BillingAutomationAdminService {
               }
             }
           : {}),
-      ...(query.jobType ? { jobType: query.jobType } : {}),
+      ...jobTypeWhere,
       ...(query.orderId ? { orderId: query.orderId } : {})
     };
     const [items, total] = await Promise.all([

@@ -13,6 +13,7 @@ import {
   REQUIRED_ANY_PERMISSIONS_KEY,
   REQUIRED_PERMISSIONS_KEY
 } from "../src/auth/auth.decorators";
+import { STAGE1_AUTO_DEBIT_JOB_TYPES } from "../src/auto-debit/auto-debit.policy";
 import { BillingAutomationAdminService } from "../src/billing-automation/billing-automation.admin.service";
 import { BillingAutomationController } from "../src/billing-automation/billing-automation.controller";
 import { PauseBillingScheduleDto } from "../src/billing-automation/billing-automation.dto";
@@ -109,7 +110,23 @@ describe("BillingAutomationController", () => {
     expect(repository.retryDeadLetter).not.toHaveBeenCalled();
   });
 
-  it("includes mandate, attempt, dead-letter, and unallocated-payment metrics", async () => {
+  it("separates live billing metrics from historical auto-debit facts", async () => {
+    const groupByJobs = vi.fn(async ({ where }) =>
+      where?.jobType?.in
+        ? [
+            {
+              _count: { _all: 1 },
+              jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER
+            }
+          ]
+        : [
+            {
+              _count: { _all: 2 },
+              jobStatus: SubscriptionAutomationJobStatus.PENDING
+            }
+          ]
+    );
+    const findOldestJob = vi.fn().mockResolvedValue(null);
     const prisma = {
       $queryRaw: vi.fn().mockResolvedValue([{ paymentCount: 2n, unallocatedAmount: 150n }]),
       billingSchedule: {
@@ -133,13 +150,8 @@ describe("BillingAutomationController", () => {
         ])
       },
       subscriptionAutomationJob: {
-        findFirst: vi.fn().mockResolvedValue(null),
-        groupBy: vi.fn().mockResolvedValue([
-          {
-            _count: { _all: 1 },
-            jobStatus: SubscriptionAutomationJobStatus.DEAD_LETTER
-          }
-        ])
+        findFirst: findOldestJob,
+        groupBy: groupByJobs
       }
     };
     const service = new BillingAutomationAdminService(
@@ -149,14 +161,74 @@ describe("BillingAutomationController", () => {
       {} as never
     );
 
-    await expect(service.summary()).resolves.toMatchObject({
-      autoDebit: {
+    const result = await service.summary();
+
+    expect(result).toMatchObject({
+      collectionMode: "ACTIVE_PAYMENT_ONLY",
+      historicalAutoDebit: {
         attempts: { UNKNOWN: 3 },
-        deadLetterCount: 1,
+        jobs: { DEAD_LETTER: 1 },
         mandates: { ACTIVE: 4 },
-        unallocatedPayments: { amount: "150", count: 2 },
         unknownCount: 3
+      },
+      jobs: { DEAD_LETTER: 0, PENDING: 2 },
+      payments: {
+        unallocated: { amount: "150", count: 2 }
       }
+    });
+    expect(result).not.toHaveProperty("autoDebit");
+    expect(groupByJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+        }
+      })
+    );
+    expect(groupByJobs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          jobType: { in: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+        }
+      })
+    );
+    expect(findOldestJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+        }
+      })
+    );
+  });
+
+  it("excludes retired jobs by default but permits an explicit historical query", async () => {
+    const findMany = vi.fn().mockResolvedValue([]);
+    const count = vi.fn().mockResolvedValue(0);
+    const prisma = {
+      subscriptionAutomationJob: { count, findMany }
+    };
+    const service = new BillingAutomationAdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never
+    );
+
+    await service.listJobs({ page: 1, pageSize: 20 });
+    await service.listJobs({
+      jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
+      page: 1,
+      pageSize: 20
+    });
+
+    expect(findMany.mock.calls[0]?.[0].where).toMatchObject({
+      jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+    });
+    expect(count.mock.calls[0]?.[0].where).toMatchObject({
+      jobType: { notIn: [...STAGE1_AUTO_DEBIT_JOB_TYPES] }
+    });
+    expect(findMany.mock.calls[1]?.[0].where).toMatchObject({
+      jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
     });
   });
 });

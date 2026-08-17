@@ -208,7 +208,7 @@ it("rejects the legacy mock safety switch even while disabled", () => {
 });
 ```
 
-Change `auto-debit-production-safety.spec.ts` so both Production and Staging examples must parse to the same disabled policy. Remove the tests that approve Staging mock or a WeChat template.
+Change `auto-debit-production-safety.spec.ts` so Production parses to the disabled policy, the legacy Staging mock example is rejected by the runtime parser, and a dormant WeChat provider is rejected even with a template. Task 7 will then change the Staging example itself to the disabled policy. Remove the tests that approve Staging mock or a WeChat template.
 
 - [ ] **Step 2: Run the focused config tests and verify RED**
 

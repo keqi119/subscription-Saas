@@ -151,7 +151,7 @@ import {
   OrderAutoDebitTracePanel,
   type AdminAutoDebitAttempt,
   type AdminPaymentMandate
-} from "../../billing/monthly-rent/auto-debit-operations-panel";
+} from "../../billing/monthly-rent/historical-auto-debit-panel";
 
 interface OrderWorkspaceSummary {
   asOf: string;

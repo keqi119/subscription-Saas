@@ -91,12 +91,11 @@ export function isAutoDebitJobType(jobType?: string | null) {
   );
 }
 
-export function buildAutoDebitSummaryView(
+export function buildHistoricalAutoDebitSummaryView(
   input?: {
     attempts: Record<string, number>;
-    deadLetterCount: number;
+    jobs: Record<string, number>;
     mandates: Record<string, number>;
-    unallocatedPayments: { amount: string; count: number };
     unknownCount: number;
   } | null
 ) {
@@ -108,9 +107,7 @@ export function buildAutoDebitSummaryView(
     pendingMandates: mandates.PENDING ?? 0,
     processingAttempts:
       (attempts.CREATED ?? 0) + (attempts.SUBMITTING ?? 0) + (attempts.PROCESSING ?? 0),
-    unknownAttempts: input?.unknownCount ?? attempts.UNKNOWN ?? 0,
-    unallocatedAmount: safeInteger(input?.unallocatedPayments.amount),
-    unallocatedCount: input?.unallocatedPayments.count ?? 0
+    unknownAttempts: input?.unknownCount ?? attempts.UNKNOWN ?? 0
   };
 }
 
@@ -158,12 +155,4 @@ function statusView(statuses: Record<string, StatusView>, status?: string | null
       label: "未知状态"
     }
   );
-}
-
-function safeInteger(value?: string) {
-  if (!value || !/^-?\d+$/.test(value)) {
-    return 0;
-  }
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : 0;
 }

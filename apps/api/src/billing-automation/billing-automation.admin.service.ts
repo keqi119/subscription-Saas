@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { isStage1AutoDebitJobType } from "../auto-debit/auto-debit.policy";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
 import { BillingAutomationJobQueryDto, BillingScheduleQueryDto } from "./billing-automation.dto";
@@ -69,9 +70,7 @@ export class BillingAutomationAdminService {
         _count: { _all: true },
         by: ["status"]
       }),
-      this.prisma.$queryRaw<
-        Array<{ paymentCount: bigint; unallocatedAmount: bigint }>
-      >(Prisma.sql`
+      this.prisma.$queryRaw<Array<{ paymentCount: bigint; unallocatedAmount: bigint }>>(Prisma.sql`
         WITH "allocated" AS (
           SELECT
             "payment_id",
@@ -97,16 +96,8 @@ export class BillingAutomationAdminService {
       `)
     ]);
 
-    const mandates = countByEnum(
-      Object.values(PaymentMandateStatus),
-      mandateGroups,
-      "status"
-    );
-    const attempts = countByEnum(
-      Object.values(DebitAttemptStatus),
-      attemptGroups,
-      "status"
-    );
+    const mandates = countByEnum(Object.values(PaymentMandateStatus), mandateGroups, "status");
+    const attempts = countByEnum(Object.values(DebitAttemptStatus), attemptGroups, "status");
     const jobs = countByEnum(
       Object.values(SubscriptionAutomationJobStatus),
       jobGroups,
@@ -286,6 +277,19 @@ export class BillingAutomationAdminService {
   }
 
   async retryJob(id: string, user: RequestUser, context: RequestContext) {
+    const current = await this.prisma.subscriptionAutomationJob.findUnique({
+      select: { jobType: true },
+      where: { id }
+    });
+    if (!current) {
+      throw new NotFoundException("自动化任务不存在。");
+    }
+    if (isStage1AutoDebitJobType(current.jobType)) {
+      throw new BadRequestException({
+        code: "AUTO_DEBIT_STAGE1_BASELINE_DISABLED",
+        message: "阶段 1 已停用委托代扣任务，历史任务不可重试。"
+      });
+    }
     const retried = await this.repository.retryDeadLetter(id);
     if (!retried) {
       throw new BadRequestException("只有死信任务可以人工重试。");

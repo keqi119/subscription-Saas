@@ -2,7 +2,8 @@ import { BadRequestException } from "@nestjs/common";
 import {
   DebitAttemptStatus,
   PaymentMandateStatus,
-  SubscriptionAutomationJobStatus
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import { validate } from "class-validator";
@@ -58,11 +59,18 @@ describe("BillingAutomationController", () => {
   });
 
   it("rejects retry when the job is not in dead letter", async () => {
+    const prisma = {
+      subscriptionAutomationJob: {
+        findUnique: vi.fn().mockResolvedValue({
+          jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+        })
+      }
+    };
     const repository = {
       retryDeadLetter: vi.fn().mockResolvedValue(false)
     };
     const service = new BillingAutomationAdminService(
-      {} as never,
+      prisma as never,
       repository as never,
       {} as never,
       {} as never
@@ -73,11 +81,37 @@ describe("BillingAutomationController", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it("rejects retrying a retired auto-debit dead letter", async () => {
+    const prisma = {
+      subscriptionAutomationJob: {
+        findUnique: vi.fn().mockResolvedValue({
+          jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
+        })
+      }
+    };
+    const repository = {
+      retryDeadLetter: vi.fn().mockResolvedValue(false)
+    };
+    const service = new BillingAutomationAdminService(
+      prisma as never,
+      repository as never,
+      {} as never,
+      {} as never
+    );
+
+    await expect(
+      service.retryJob("00000000-0000-4000-8000-000000000001", testUser(), {})
+    ).rejects.toMatchObject({
+      response: {
+        code: "AUTO_DEBIT_STAGE1_BASELINE_DISABLED"
+      }
+    });
+    expect(repository.retryDeadLetter).not.toHaveBeenCalled();
+  });
+
   it("includes mandate, attempt, dead-letter, and unallocated-payment metrics", async () => {
     const prisma = {
-      $queryRaw: vi.fn().mockResolvedValue([
-        { paymentCount: 2n, unallocatedAmount: 150n }
-      ]),
+      $queryRaw: vi.fn().mockResolvedValue([{ paymentCount: 2n, unallocatedAmount: 150n }]),
       billingSchedule: {
         findFirst: vi.fn().mockResolvedValue(null),
         groupBy: vi.fn().mockResolvedValue([])

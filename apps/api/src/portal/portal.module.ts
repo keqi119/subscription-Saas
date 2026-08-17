@@ -1,8 +1,6 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
-import { AutoDebitModule } from "../auto-debit/auto-debit.module";
-import { PortalAutoDebitController } from "../auto-debit/portal-auto-debit.controller";
 import { CustomerModule } from "../customer/customer.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { ESignModule } from "../esign/esign.module";
@@ -52,7 +50,6 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
   controllers: [
     PortalApplicationController,
     PortalAuthController,
-    PortalAutoDebitController,
     PortalBillingController,
     PortalCatalogController,
     PortalContractController,
@@ -74,7 +71,6 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
   exports: [CustomerAuthGuard, PortalAuthService],
   imports: [
     AuditModule,
-    AutoDebitModule,
     CustomerModule,
     DeliveryEvidenceModule,
     ESignModule,

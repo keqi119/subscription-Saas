@@ -78,9 +78,7 @@ describe("BillingAutomationService", () => {
     await harness.service.reconcileSchedules({ dryRun: false });
 
     expect(harness.schedules).toHaveLength(1);
-    expect(harness.schedules[0]?.status).toBe(
-      BillingScheduleStatus.PAUSED
-    );
+    expect(harness.schedules[0]?.status).toBe(BillingScheduleStatus.PAUSED);
   });
 
   it("previews and repairs a delivered active order that is missing its lease and schedule", async () => {
@@ -213,9 +211,7 @@ describe("BillingAutomationService", () => {
 
   it("baselines an old lease at the current period instead of replaying history", async () => {
     const harness = createHarness();
-    harness.order.actualDeliveryAt = new Date(
-      "2026-01-10T02:00:00.000Z"
-    );
+    harness.order.actualDeliveryAt = new Date("2026-01-10T02:00:00.000Z");
 
     const result = await harness.service.reconcileSchedules({
       dryRun: false
@@ -245,20 +241,15 @@ describe("BillingAutomationService", () => {
       harness.order.actualDeliveryAt
     );
 
-    const first = await harness.service.enqueueDueSchedules(
-      new Date("2026-07-07T00:00:00.000Z")
-    );
-    const second = await harness.service.enqueueDueSchedules(
-      new Date("2026-07-07T00:00:00.000Z")
-    );
+    const first = await harness.service.enqueueDueSchedules(new Date("2026-07-07T00:00:00.000Z"));
+    const second = await harness.service.enqueueDueSchedules(new Date("2026-07-07T00:00:00.000Z"));
 
     expect(first).toMatchObject({ dueCount: 1, enqueuedCount: 1 });
     expect(second).toMatchObject({ dueCount: 1, enqueuedCount: 1 });
     expect([...harness.jobs.values()]).toEqual([
       expect.objectContaining({
         idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
-        jobType:
-          SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+        jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
       })
     ]);
   });
@@ -293,10 +284,7 @@ describe("BillingAutomationService", () => {
     });
     expect([...harness.jobs.values()].map((item) => item.jobType)).toEqual([
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
-      SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT
+      SubscriptionAutomationJobType.MARK_BILL_OVERDUE
     ]);
     expect(harness.audits).toEqual([
       expect.objectContaining({
@@ -419,15 +407,13 @@ describe("BillingAutomationService", () => {
       harness.order.id,
       harness.order.actualDeliveryAt
     );
-    harness.finance.generateMonthlyRentBillForCycle.mockImplementationOnce(
-      async () => {
-        harness.schedules[0]!.status = BillingScheduleStatus.PAUSED;
-        return {
-          bill: { id: randomUUID() },
-          created: true
-        };
-      }
-    );
+    harness.finance.generateMonthlyRentBillForCycle.mockImplementationOnce(async () => {
+      harness.schedules[0]!.status = BillingScheduleStatus.PAUSED;
+      return {
+        bill: { id: randomUUID() },
+        created: true
+      };
+    });
 
     await expect(
       harness.service.generateScheduledMonthlyRent(
@@ -500,8 +486,7 @@ describe("BillingAutomationService", () => {
       expect.objectContaining({
         billId,
         idempotencyKey: `bill-overdue-notice:${billId}`,
-        jobType:
-          SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
+        jobType: SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
       })
     ]);
     expect(harness.audits).toEqual([
@@ -586,8 +571,7 @@ function createHarness() {
       async findUnique({ where }: { where: { id?: string; orderId?: string } }) {
         const schedule = schedules.find(
           (item) =>
-            (where.id && item.id === where.id) ||
-            (where.orderId && item.orderId === where.orderId)
+            (where.id && item.id === where.id) || (where.orderId && item.orderId === where.orderId)
         );
         return schedule ? { ...schedule, order } : null;
       },
@@ -600,9 +584,7 @@ function createHarness() {
       }) {
         const schedule = schedules.find(
           (item) =>
-            item.id === where.id &&
-            item.status === where.status &&
-            item.version === where.version
+            item.id === where.id && item.status === where.status && item.version === where.version
         );
         if (!schedule) {
           return { count: 0 };
@@ -610,8 +592,7 @@ function createHarness() {
         const version = data.version as { increment?: number } | undefined;
         Object.assign(schedule, data, {
           updatedAt: now,
-          version:
-            Number(schedule.version) + Number(version?.increment ?? 0)
+          version: Number(schedule.version) + Number(version?.increment ?? 0)
         });
         return { count: 1 };
       },
@@ -622,9 +603,7 @@ function createHarness() {
         create: Record<string, unknown>;
         where: { orderId: string };
       }) {
-        const existing = schedules.find(
-          (item) => item.orderId === where.orderId
-        );
+        const existing = schedules.find((item) => item.orderId === where.orderId);
         if (existing) {
           return existing;
         }
@@ -695,8 +674,7 @@ function createHarness() {
     }
   };
   const prisma = {
-    $transaction: (operation: (client: typeof tx) => unknown) =>
-      operation(tx),
+    $transaction: (operation: (client: typeof tx) => unknown) => operation(tx),
     billingSchedule: {
       async findUnique({ where }: { where: { id: string } }) {
         return schedules.find((item) => item.id === where.id) ?? null;
@@ -712,8 +690,7 @@ function createHarness() {
         return schedules.filter(
           (schedule) =>
             schedule.status === where.status &&
-            (schedule.nextGenerateAt as Date).getTime() <=
-              where.nextGenerateAt.lte.getTime()
+            (schedule.nextGenerateAt as Date).getTime() <= where.nextGenerateAt.lte.getTime()
         );
       }
     },
@@ -721,19 +698,14 @@ function createHarness() {
       async findMany({ where }: { where?: Record<string, unknown> } = {}) {
         if (
           where?.lease &&
-          (!order.lease ||
-            order.lease.deletedAt ||
-            order.lease.status !== LeaseStatus.ACTIVE)
+          (!order.lease || order.lease.deletedAt || order.lease.status !== LeaseStatus.ACTIVE)
         ) {
           return [];
         }
         return [
           {
             ...order,
-            billingSchedule:
-              schedules.find(
-                (schedule) => schedule.orderId === order.id
-              ) ?? null,
+            billingSchedule: schedules.find((schedule) => schedule.orderId === order.id) ?? null,
             receivableBills: bills
           }
         ];
@@ -781,9 +753,7 @@ function createHarness() {
           sourceKey: string;
         }
       ) => {
-        const existing = bills.find(
-          (bill) => bill.sourceKey === input.sourceKey
-        );
+        const existing = bills.find((bill) => bill.sourceKey === input.sourceKey);
         if (existing) {
           return { bill: existing, created: false };
         }
@@ -804,14 +774,7 @@ function createHarness() {
     ),
     markBillOverdueForAutomation: vi.fn()
   };
-  const autoDebitScheduler = new AutoDebitScheduler({
-    enabled: true,
-    environment: "staging",
-    mockEnabled: true,
-    provider: "mock",
-    runTime: "09:00",
-    wechatTemplateId: null
-  });
+  const autoDebitScheduler = new AutoDebitScheduler();
   const segmentMonthlyFeeAmount = order.monthlyFeeAmount;
   const service = new BillingAutomationService(
     prisma as never,
@@ -868,8 +831,7 @@ function claimedJob(
     id: randomUUID(),
     idempotencyKey: "job-key",
     jobStatus: SubscriptionAutomationJobStatus.PROCESSING,
-    jobType:
-      SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
+    jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
     lastErrorCode: null,
     lastErrorMessage: null,
     leaseExpiresAt: new Date("2026-07-07T00:02:00.000Z"),

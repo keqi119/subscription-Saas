@@ -234,14 +234,7 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
         prisma,
         { enqueue } as never,
         finance as never,
-        new AutoDebitScheduler({
-          enabled: true,
-          environment: "staging",
-          mockEnabled: true,
-          provider: "mock",
-          runTime: "09:00",
-          wechatTemplateId: null
-        }),
+        new AutoDebitScheduler(),
         {
           resolveEffectiveServiceEndDate: vi.fn(async () => new Date("2027-07-09T00:00:00.000Z")),
           resolveSegmentForPeriod: vi.fn(async () => ({
@@ -415,7 +408,7 @@ describe("BillingAutomationRepository PostgreSQL integration", () => {
               orderId: ids.order
             }
           })
-        ).resolves.toBe(3);
+        ).resolves.toBe(0);
         expect(finance.generateMonthlyRentBillForCycle).toHaveBeenCalledTimes(1);
       } finally {
         const bills = await prisma.receivableBill

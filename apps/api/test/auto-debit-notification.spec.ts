@@ -68,14 +68,9 @@ describe("auto debit final failure notification", () => {
       submitBillDebit: vi.fn()
     };
     const notifications = {
-      notifyAutoDebitFailure: vi.fn().mockResolvedValue([
-        { channel: NotificationChannel.IN_APP }
-      ])
+      notifyAutoDebitFailure: vi.fn().mockResolvedValue([{ channel: NotificationChannel.IN_APP }])
     };
-    const handlers = new AutoDebitHandlers(
-      debitAttempts as never,
-      notifications as never
-    );
+    const handlers = new AutoDebitHandlers(debitAttempts as never, notifications as never);
 
     await expect(handlers.handle(failureNoticeJob())).resolves.toMatchObject({
       action: "NOTIFIED",
@@ -89,21 +84,13 @@ describe("auto debit final failure notification", () => {
     expect(debitAttempts.queryDebitAttempt).not.toHaveBeenCalled();
   });
 
-  it("exposes failure notification jobs through the shared billing worker", async () => {
-    const autoDebitHandlers = {
-      handle: vi.fn().mockResolvedValue({ action: "NOTIFIED" })
-    };
-    const handlers = new BillingAutomationHandlers(
-      {} as never,
-      {} as never,
-      {} as never,
-      autoDebitHandlers as never
-    );
-    const job = failureNoticeJob();
+  it("keeps historical failure notification handlers outside the shared billing worker", async () => {
+    const handlers = new BillingAutomationHandlers({} as never, {} as never, {} as never);
 
-    await expect(handlers.handle(job)).resolves.toEqual({ action: "NOTIFIED" });
-    expect(autoDebitHandlers.handle).toHaveBeenCalledWith(job);
-    expect(handlers.supportedJobTypes).toContain(
+    await expect(handlers.handle(failureNoticeJob())).rejects.toThrow(
+      "Unsupported billing automation job type."
+    );
+    expect(handlers.supportedJobTypes).not.toContain(
       SubscriptionAutomationJobType.SEND_DEBIT_FAILURE_NOTICE
     );
   });
@@ -128,10 +115,7 @@ function createNotificationHarness() {
   }> = [];
   const templates = [
     template("AUTO_DEBIT_FAILURE_IN_APP", NotificationChannel.IN_APP),
-    template(
-      "AUTO_DEBIT_FAILURE_WECHAT",
-      NotificationChannel.WECHAT_OFFICIAL_ACCOUNT
-    ),
+    template("AUTO_DEBIT_FAILURE_WECHAT", NotificationChannel.WECHAT_OFFICIAL_ACCOUNT),
     template("AUTO_DEBIT_FAILURE_SMS", NotificationChannel.SMS)
   ];
   const prisma = {
@@ -200,8 +184,7 @@ function createNotificationHarness() {
       findUnique: vi.fn(({ where }) =>
         Promise.resolve(
           records.find(
-            (item) =>
-              item.id === where.id || item.notificationNo === where.notificationNo
+            (item) => item.id === where.id || item.notificationNo === where.notificationNo
           ) ?? null
         )
       ),
@@ -224,9 +207,7 @@ function createNotificationHarness() {
     },
     notificationTemplate: {
       findFirst: vi.fn(({ where }) =>
-        Promise.resolve(
-          templates.find((item) => item.templateCode === where.templateCode) ?? null
-        )
+        Promise.resolve(templates.find((item) => item.templateCode === where.templateCode) ?? null)
       )
     }
   };

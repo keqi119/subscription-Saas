@@ -51,6 +51,32 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
     expect(databaseErrorCode(rejectedReason(attempts))).toBe("23P01");
   });
 
+  it("rejects concurrent open subscription periods for one vehicle", async () => {
+    const vehicleId = randomUUID();
+
+    const attempts = await Promise.allSettled([
+      insertSubscriptionPeriod(prisma, {
+        endedAt: null,
+        orderId: randomUUID(),
+        sourceKey: `${FIXTURE_PREFIX}:subscription:concurrent-open:first`,
+        vehicleId
+      }),
+      insertSubscriptionPeriod(prisma, {
+        endedAt: null,
+        orderId: randomUUID(),
+        sourceKey: `${FIXTURE_PREFIX}:subscription:concurrent-open:second`,
+        vehicleId
+      })
+    ]);
+
+    const successfulAttempts = attempts.filter((attempt) => attempt.status === "fulfilled");
+    if (successfulAttempts.length === 0) {
+      throw rejectedReason(attempts);
+    }
+    expect(successfulAttempts).toHaveLength(1);
+    expect(databaseErrorCode(rejectedReason(attempts))).toBe("23505");
+  });
+
   it("rejects a second open subscription period for one order on another vehicle", async () => {
     const orderId = randomUUID();
 
@@ -91,6 +117,29 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("rejects equal and reversed subscription period boundaries", async () => {
+    const startedAt = new Date("2026-08-01T00:00:00.000Z");
+
+    await expect(
+      insertSubscriptionPeriod(prisma, {
+        endedAt: startedAt,
+        orderId: randomUUID(),
+        sourceKey: `${FIXTURE_PREFIX}:subscription:invalid:equal`,
+        startedAt,
+        vehicleId: randomUUID()
+      })
+    ).rejects.toSatisfy((error) => databaseErrorCode(error) === "23514");
+    await expect(
+      insertSubscriptionPeriod(prisma, {
+        endedAt: new Date("2026-07-31T23:59:59.999Z"),
+        orderId: randomUUID(),
+        sourceKey: `${FIXTURE_PREFIX}:subscription:invalid:reversed`,
+        startedAt,
+        vehicleId: randomUUID()
+      })
+    ).rejects.toSatisfy((error) => databaseErrorCode(error) === "23514");
+  });
+
   it("rejects overlapping ownership periods for one vehicle", async () => {
     const vehicleId = randomUUID();
 
@@ -111,6 +160,29 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
         vehicleId
       })
     ).rejects.toSatisfy((error) => databaseErrorCode(error) === "23P01");
+  });
+
+  it("rejects equal and reversed ownership period boundaries", async () => {
+    const startedAt = new Date("2026-08-01T00:00:00.000Z");
+
+    await expect(
+      insertOwnershipPeriod(prisma, {
+        assetOwnerId: randomUUID(),
+        endedAt: startedAt,
+        sourceKey: `${FIXTURE_PREFIX}:ownership:invalid:equal`,
+        startedAt,
+        vehicleId: randomUUID()
+      })
+    ).rejects.toSatisfy((error) => databaseErrorCode(error) === "23514");
+    await expect(
+      insertOwnershipPeriod(prisma, {
+        assetOwnerId: randomUUID(),
+        endedAt: new Date("2026-07-31T23:59:59.999Z"),
+        sourceKey: `${FIXTURE_PREFIX}:ownership:invalid:reversed`,
+        startedAt,
+        vehicleId: randomUUID()
+      })
+    ).rejects.toSatisfy((error) => databaseErrorCode(error) === "23514");
   });
 
   it("keeps exact source replay distinguishable from conflicting source reuse", async () => {
@@ -277,9 +349,17 @@ function databaseErrorCode(error: unknown) {
   const candidate = error as {
     cause?: { code?: string };
     code?: string;
-    meta?: { code?: string };
+    meta?: {
+      code?: string;
+      driverAdapterError?: { cause?: { originalCode?: string } };
+    };
   };
-  return candidate.meta?.code ?? candidate.code ?? candidate.cause?.code;
+  return (
+    candidate.meta?.driverAdapterError?.cause?.originalCode ??
+    candidate.meta?.code ??
+    candidate.code ??
+    candidate.cause?.code
+  );
 }
 
 function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {

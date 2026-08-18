@@ -23,6 +23,59 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
     }
   });
 
+  it("keeps the named exclusion constraints and partial unique open-period indexes", async () => {
+    const constraints = await prisma.$queryRaw<Array<{ definition: string; name: string }>>`
+      SELECT conname AS "name", pg_get_constraintdef(oid) AS "definition"
+      FROM pg_constraint
+      WHERE conname IN (
+        'vehicle_subscription_period_no_overlap_excl',
+        'vehicle_ownership_period_no_overlap_excl'
+      )
+      ORDER BY conname
+    `;
+    expect(constraints).toEqual([
+      {
+        definition:
+          'EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, \'infinity\'::timestamp with time zone), \'[)\'::text) WITH &&)',
+        name: "vehicle_ownership_period_no_overlap_excl"
+      },
+      {
+        definition:
+          'EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, \'infinity\'::timestamp with time zone), \'[)\'::text) WITH &&)',
+        name: "vehicle_subscription_period_no_overlap_excl"
+      }
+    ]);
+
+    const indexes = await prisma.$queryRaw<Array<{ definition: string; name: string }>>`
+      SELECT indexname AS "name", indexdef AS "definition"
+      FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND indexname IN (
+          'vehicle_ownership_period_one_open_per_vehicle_uidx',
+          'vehicle_subscription_period_one_open_per_order_uidx',
+          'vehicle_subscription_period_one_open_per_vehicle_uidx'
+        )
+      ORDER BY indexname
+    `;
+    expect(indexes).toEqual([
+      {
+        definition:
+          'CREATE UNIQUE INDEX vehicle_ownership_period_one_open_per_vehicle_uidx ON public.vehicle_ownership_period USING btree (vehicle_id) WHERE (ended_at IS NULL)',
+        name: "vehicle_ownership_period_one_open_per_vehicle_uidx"
+      },
+      {
+        definition:
+          'CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_order_uidx ON public.vehicle_subscription_period USING btree (order_id) WHERE (ended_at IS NULL)',
+        name: "vehicle_subscription_period_one_open_per_order_uidx"
+      },
+      {
+        definition:
+          'CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_vehicle_uidx ON public.vehicle_subscription_period USING btree (vehicle_id) WHERE (ended_at IS NULL)',
+        name: "vehicle_subscription_period_one_open_per_vehicle_uidx"
+      }
+    ]);
+  });
+
   it("rejects concurrent overlapping subscription periods for one vehicle", async () => {
     const vehicleId = randomUUID();
 

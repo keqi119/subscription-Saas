@@ -1,11 +1,30 @@
+import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import {
+  Prisma,
+  VehicleOwnershipPeriodEndReason,
+  VehicleOwnershipPeriodStartReason,
+  VehicleSubscriptionPeriodEndReason,
+  VehicleSubscriptionPeriodStartReason
+} from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import {
+  ASSET_FACT_CONFLICT_CODE,
+  AssetFactsRepository
+} from "../src/asset-facts/asset-facts.repository";
+import type {
+  CloseOwnershipPeriodInput,
+  CloseSubscriptionPeriodInput,
+  OpenOwnershipPeriodInput,
+  OpenSubscriptionPeriodInput
+} from "../src/asset-facts/asset-facts.types";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
 const FIXTURE_PREFIX = `stage1c_asset_facts_${randomUUID().replaceAll("-", "")}`;
+const REPOSITORY_FIXTURE_PREFIX = `S1C${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 
 describe("Stage 1C asset fact PostgreSQL invariants", () => {
   let prisma: PrismaService;
@@ -36,12 +55,12 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
     expect(constraints).toEqual([
       {
         definition:
-          'EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, \'infinity\'::timestamp with time zone), \'[)\'::text) WITH &&)',
+          "EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, 'infinity'::timestamp with time zone), '[)'::text) WITH &&)",
         name: "vehicle_ownership_period_no_overlap_excl"
       },
       {
         definition:
-          'EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, \'infinity\'::timestamp with time zone), \'[)\'::text) WITH &&)',
+          "EXCLUDE USING gist (vehicle_id WITH =, tstzrange(started_at, COALESCE(ended_at, 'infinity'::timestamp with time zone), '[)'::text) WITH &&)",
         name: "vehicle_subscription_period_no_overlap_excl"
       }
     ]);
@@ -60,17 +79,17 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
     expect(indexes).toEqual([
       {
         definition:
-          'CREATE UNIQUE INDEX vehicle_ownership_period_one_open_per_vehicle_uidx ON public.vehicle_ownership_period USING btree (vehicle_id) WHERE (ended_at IS NULL)',
+          "CREATE UNIQUE INDEX vehicle_ownership_period_one_open_per_vehicle_uidx ON public.vehicle_ownership_period USING btree (vehicle_id) WHERE (ended_at IS NULL)",
         name: "vehicle_ownership_period_one_open_per_vehicle_uidx"
       },
       {
         definition:
-          'CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_order_uidx ON public.vehicle_subscription_period USING btree (order_id) WHERE (ended_at IS NULL)',
+          "CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_order_uidx ON public.vehicle_subscription_period USING btree (order_id) WHERE (ended_at IS NULL)",
         name: "vehicle_subscription_period_one_open_per_order_uidx"
       },
       {
         definition:
-          'CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_vehicle_uidx ON public.vehicle_subscription_period USING btree (vehicle_id) WHERE (ended_at IS NULL)',
+          "CREATE UNIQUE INDEX vehicle_subscription_period_one_open_per_vehicle_uidx ON public.vehicle_subscription_period USING btree (vehicle_id) WHERE (ended_at IS NULL)",
         name: "vehicle_subscription_period_one_open_per_vehicle_uidx"
       }
     ]);
@@ -279,6 +298,218 @@ describe("Stage 1C asset fact PostgreSQL invariants", () => {
   });
 });
 
+describe("AssetFactsRepository PostgreSQL command behavior", () => {
+  let prisma: PrismaService;
+
+  beforeAll(async () => {
+    prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
+    await prisma.onModuleInit();
+  });
+
+  afterAll(async () => {
+    try {
+      await deleteRepositoryFixtures(prisma);
+    } finally {
+      await prisma.onModuleDestroy();
+    }
+  });
+
+  it("rejects the root Prisma client because consecutive probes use distinct autocommit transactions", async () => {
+    const fixture = await createRepositoryFixture(prisma);
+    await expectConflictCode(
+      new AssetFactsRepository().openSubscriptionPeriod(
+        prisma as unknown as Prisma.TransactionClient,
+        openRepositoryInput(
+          "subscription",
+          fixture,
+          "root-transaction-contract"
+        ) as OpenSubscriptionPeriodInput
+      ),
+      ASSET_FACT_CONFLICT_CODE.TRANSACTION_CONTRACT
+    );
+  });
+
+  it("rejects an actual PostgreSQL SERIALIZABLE interactive transaction", async () => {
+    const fixture = await createRepositoryFixture(prisma);
+    await expectConflictCode(
+      prisma.$transaction(
+        (tx) =>
+          new AssetFactsRepository().openOwnershipPeriod(
+            tx,
+            openRepositoryInput(
+              "ownership",
+              fixture,
+              "serializable-transaction-contract"
+            ) as OpenOwnershipPeriodInput
+          ),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      ),
+      ASSET_FACT_CONFLICT_CODE.TRANSACTION_CONTRACT
+    );
+  });
+
+  it.each(["subscription", "ownership"] as const)(
+    "serializes concurrent exact %s start replay on the source lock and returns one fact",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const input = openRepositoryInput(periodKind, fixture, "exact-start");
+
+      const result = await runStartRace(prisma, periodKind, input, input);
+
+      expect(result.waitedOnSourceLock).toBe(true);
+      expect(fulfilledValue(result.second).id).toBe(result.first.id);
+      await expect(countPeriodsByStartSource(prisma, periodKind, input.source)).resolves.toBe(1);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "serializes concurrent conflicting %s start replay and rejects payload drift",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const firstInput = openRepositoryInput(periodKind, fixture, "conflicting-start");
+      const secondInput = {
+        ...firstInput,
+        snapshot: { ...firstInput.snapshot, drift: true }
+      };
+
+      const result = await runStartRace(prisma, periodKind, firstInput, secondInput);
+
+      expect(result.waitedOnSourceLock).toBe(true);
+      expect(result.first.id).toBeTruthy();
+      expectConflictError(
+        rejectedValue(result.second),
+        periodKind === "subscription"
+          ? ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE
+          : ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE
+      );
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "does not serialize an unrelated %s start source behind another source lock",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+
+      const result = await runDistinctStartSources(prisma, periodKind, fixture);
+
+      expect(result.secondFinishedBeforeFirstCommitted).toBe(true);
+      expect(result.second.id).not.toBe(result.first.id);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "resolves the losing %s close compare-and-set as an exact replay",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const opened = await readCommitted(prisma, (tx) =>
+        repositoryOpen(
+          new AssetFactsRepository(),
+          tx,
+          periodKind,
+          openRepositoryInput(periodKind, fixture, "exact-close-open")
+        )
+      );
+      const closeInput = closeRepositoryInput(periodKind, opened.id, "exact-close");
+
+      const result = await runCloseRace(prisma, periodKind, closeInput, closeInput);
+
+      expect(result.waitedOnRowLock).toBe(true);
+      expect(fulfilledValue(result.second).id).toBe(result.first.id);
+      expect(fulfilledValue(result.second).endedAt).toEqual(closeInput.endedAt);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "rejects payload drift for the losing %s close compare-and-set",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const opened = await readCommitted(prisma, (tx) =>
+        repositoryOpen(
+          new AssetFactsRepository(),
+          tx,
+          periodKind,
+          openRepositoryInput(periodKind, fixture, "conflicting-close-open")
+        )
+      );
+      const firstInput = closeRepositoryInput(periodKind, opened.id, "conflicting-close");
+      const secondInput = {
+        ...firstInput,
+        snapshot: { ...firstInput.snapshot, drift: true }
+      };
+
+      const result = await runCloseRace(prisma, periodKind, firstInput, secondInput);
+
+      expect(result.waitedOnRowLock).toBe(true);
+      expect(result.first.id).toBe(opened.id);
+      expectConflictError(
+        rejectedValue(result.second),
+        periodKind === "subscription"
+          ? ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE
+          : ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE
+      );
+    }
+  );
+
+  it.each([
+    [
+      "start-source unique",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE,
+      subscriptionStartSourceConflict
+    ],
+    [
+      "end-source unique",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE,
+      subscriptionEndSourceConflict
+    ],
+    [
+      "open-vehicle unique",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_VEHICLE,
+      subscriptionOpenVehicleConflict
+    ],
+    [
+      "open-order unique",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_ORDER,
+      subscriptionOpenOrderConflict
+    ],
+    [
+      "period exclusion",
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP,
+      subscriptionOverlapConflict
+    ],
+    ["period check", ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_RANGE, subscriptionRangeConflict]
+  ] as const)(
+    "normalizes the real subscription %s failure after PostgreSQL aborts the transaction",
+    async (_constraint, code, exercise) => {
+      await expectConflictCode(exercise(prisma), code);
+    }
+  );
+
+  it.each([
+    [
+      "start-source unique",
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE,
+      ownershipStartSourceConflict
+    ],
+    [
+      "end-source unique",
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE,
+      ownershipEndSourceConflict
+    ],
+    [
+      "open-vehicle unique",
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OPEN_VEHICLE,
+      ownershipOpenVehicleConflict
+    ],
+    ["period exclusion", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP, ownershipOverlapConflict],
+    ["period check", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_RANGE, ownershipRangeConflict]
+  ] as const)(
+    "normalizes the real ownership %s failure after PostgreSQL aborts the transaction",
+    async (_constraint, code, exercise) => {
+      await expectConflictCode(exercise(prisma), code);
+    }
+  );
+});
+
 type SubscriptionPeriodInput = {
   customerId?: string;
   endedAt?: Date | null;
@@ -299,6 +530,646 @@ type OwnershipPeriodInput = {
   startedAt?: Date;
   vehicleId: string;
 };
+
+type RepositoryPeriodKind = "ownership" | "subscription";
+type RepositoryFact = { endedAt: Date | null; id: string };
+type RepositoryOpenInput = OpenOwnershipPeriodInput | OpenSubscriptionPeriodInput;
+type RepositoryCloseInput = CloseOwnershipPeriodInput | CloseSubscriptionPeriodInput;
+type RepositoryFixture = {
+  customerId: string;
+  orderId: string;
+  otherOrderId: string;
+  otherOwnerId: string;
+  otherVehicleId: string;
+  ownerId: string;
+  vehicleId: string;
+};
+
+async function createRepositoryFixture(prisma: PrismaService): Promise<RepositoryFixture> {
+  const customerId = randomUUID();
+  const orderId = randomUUID();
+  const otherOrderId = randomUUID();
+  const otherOwnerId = randomUUID();
+  const otherVehicleId = randomUUID();
+  const ownerId = randomUUID();
+  const vehicleId = randomUUID();
+  const token = randomUUID().replaceAll("-", "").slice(0, 12);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "customer" (
+        "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
+      ) VALUES (
+        ${customerId}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}C${token}`},
+        'Stage 1C Repository', '13800000000', 'ACTIVE', clock_timestamp(), clock_timestamp()
+      )
+    `);
+    for (const [index, id] of [vehicleId, otherVehicleId].entries()) {
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "vehicle" (
+          "id", "vehicle_no", "plate_no", "brand", "model_definition_id",
+          "purchase_price_amount", "status", "created_at", "updated_at"
+        ) VALUES (
+          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}V${token}${index}`},
+          ${`沪T${token.slice(0, 6)}${index}`}, 'NIO', ${randomUUID()}::uuid,
+          20000000, 'LEASED', clock_timestamp(), clock_timestamp()
+        )
+      `);
+    }
+    for (const [index, id] of [ownerId, otherOwnerId].entries()) {
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "asset_owner" (
+          "id", "owner_no", "name", "owner_type", "status", "created_at", "updated_at"
+        ) VALUES (
+          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}A${token}${index}`},
+          ${`Stage 1C Owner ${index}`}, 'PLATFORM', 'ACTIVE', clock_timestamp(), clock_timestamp()
+        )
+      `);
+    }
+    for (const [index, id] of [orderId, otherOrderId].entries()) {
+      const assignedVehicleId = index === 0 ? vehicleId : otherVehicleId;
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "subscription_order" (
+          "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
+          "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
+          "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
+          "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
+          "quote_snapshot", "order_status", "created_at", "updated_at"
+        ) VALUES (
+          ${id}::uuid, ${`${REPOSITORY_FIXTURE_PREFIX}O${token}${index}`}, ${customerId}::uuid,
+          ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${assignedVehicleId}::uuid,
+          ${randomUUID()}::uuid, ${randomUUID()}::uuid, 20000000, 100, 0, 6, 1500, 100,
+          ${randomUUID()}::uuid, 'NIO_ET5_2024', 'NIO ET5', '{}'::jsonb,
+          'ACTIVE', clock_timestamp(), clock_timestamp()
+        )
+      `);
+    }
+  });
+
+  return {
+    customerId,
+    orderId,
+    otherOrderId,
+    otherOwnerId,
+    otherVehicleId,
+    ownerId,
+    vehicleId
+  };
+}
+
+function openRepositoryInput(
+  periodKind: RepositoryPeriodKind,
+  fixture: RepositoryFixture,
+  label: string,
+  useOtherAggregate = false
+): RepositoryOpenInput {
+  const sourceId = randomUUID();
+  const common = {
+    actorId: null,
+    confirmedAt: new Date("2026-08-01T00:05:00.000Z"),
+    snapshot: { label },
+    source: {
+      id: sourceId,
+      key: `${REPOSITORY_FIXTURE_PREFIX}:${label}:${sourceId}`,
+      type: "STAGE1C_TEST"
+    },
+    startedAt: new Date("2026-08-01T00:00:00.000Z"),
+    vehicleId: useOtherAggregate ? fixture.otherVehicleId : fixture.vehicleId
+  };
+  if (periodKind === "subscription") {
+    return {
+      ...common,
+      contractId: null,
+      contractSegmentId: null,
+      customerId: fixture.customerId,
+      orderId: useOtherAggregate ? fixture.otherOrderId : fixture.orderId,
+      reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED
+    };
+  }
+  return {
+    ...common,
+    assetOwnerId: useOtherAggregate ? fixture.otherOwnerId : fixture.ownerId,
+    reason: VehicleOwnershipPeriodStartReason.INITIAL_ACQUISITION
+  };
+}
+
+function closeRepositoryInput(
+  periodKind: RepositoryPeriodKind,
+  periodId: string,
+  label: string
+): RepositoryCloseInput {
+  const sourceId = randomUUID();
+  const common = {
+    actorId: null,
+    confirmedAt: new Date("2026-10-01T00:05:00.000Z"),
+    endedAt: new Date("2026-10-01T00:00:00.000Z"),
+    periodId,
+    snapshot: { label },
+    source: {
+      id: sourceId,
+      key: `${REPOSITORY_FIXTURE_PREFIX}:${label}:${sourceId}`,
+      type: "STAGE1C_TEST"
+    }
+  };
+  return periodKind === "subscription"
+    ? { ...common, reason: VehicleSubscriptionPeriodEndReason.RETURN_CONFIRMED }
+    : { ...common, reason: VehicleOwnershipPeriodEndReason.OWNERSHIP_TRANSFER };
+}
+
+function repositoryOpen(
+  repository: AssetFactsRepository,
+  tx: Prisma.TransactionClient,
+  periodKind: RepositoryPeriodKind,
+  input: RepositoryOpenInput
+): Promise<RepositoryFact> {
+  return periodKind === "subscription"
+    ? repository.openSubscriptionPeriod(tx, input as OpenSubscriptionPeriodInput)
+    : repository.openOwnershipPeriod(tx, input as OpenOwnershipPeriodInput);
+}
+
+function repositoryClose(
+  repository: AssetFactsRepository,
+  tx: Prisma.TransactionClient,
+  periodKind: RepositoryPeriodKind,
+  input: RepositoryCloseInput
+): Promise<RepositoryFact> {
+  return periodKind === "subscription"
+    ? repository.closeSubscriptionPeriod(tx, input as CloseSubscriptionPeriodInput)
+    : repository.closeOwnershipPeriod(tx, input as CloseOwnershipPeriodInput);
+}
+
+function readCommitted<T>(
+  prisma: PrismaService,
+  work: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+  return prisma.$transaction(work, {
+    isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    maxWait: 5_000,
+    timeout: 10_000
+  });
+}
+
+async function runStartRace(
+  prisma: PrismaService,
+  periodKind: RepositoryPeriodKind,
+  firstInput: RepositoryOpenInput,
+  secondInput: RepositoryOpenInput
+) {
+  const firstOpened = deferred<RepositoryFact>();
+  const releaseFirst = deferred<void>();
+  const repository = new AssetFactsRepository();
+  const firstPromise = readCommitted(prisma, async (tx) => {
+    const opened = await repositoryOpen(repository, tx, periodKind, firstInput);
+    firstOpened.resolve(opened);
+    await releaseFirst.promise;
+    return opened;
+  });
+  void firstPromise.catch(firstOpened.reject);
+  const first = await firstOpened.promise;
+  const secondPromise = readCommitted(prisma, (tx) =>
+    repositoryOpen(repository, tx, periodKind, secondInput)
+  );
+  let waitedOnSourceLock: boolean;
+  try {
+    waitedOnSourceLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
+  } finally {
+    releaseFirst.resolve();
+  }
+  const [, second] = await Promise.all([firstPromise, settled(secondPromise)]);
+  return { first, second, waitedOnSourceLock };
+}
+
+async function runDistinctStartSources(
+  prisma: PrismaService,
+  periodKind: RepositoryPeriodKind,
+  fixture: RepositoryFixture
+) {
+  const repository = new AssetFactsRepository();
+  const firstOpened = deferred<RepositoryFact>();
+  const releaseFirst = deferred<void>();
+  const firstInput = openRepositoryInput(periodKind, fixture, "distinct-first");
+  const secondInput = openRepositoryInput(periodKind, fixture, "distinct-second", true);
+  const firstPromise = readCommitted(prisma, async (tx) => {
+    const opened = await repositoryOpen(repository, tx, periodKind, firstInput);
+    firstOpened.resolve(opened);
+    await releaseFirst.promise;
+    return opened;
+  });
+  void firstPromise.catch(firstOpened.reject);
+  const first = await firstOpened.promise;
+  const secondPromise = readCommitted(prisma, (tx) =>
+    repositoryOpen(repository, tx, periodKind, secondInput)
+  );
+  const earlySecond = await settlesWithin(secondPromise, 3_000);
+  releaseFirst.resolve();
+  await firstPromise;
+  const second = earlySecond.finished ? earlySecond.value : await secondPromise;
+  return { first, second, secondFinishedBeforeFirstCommitted: earlySecond.finished };
+}
+
+async function runCloseRace(
+  prisma: PrismaService,
+  periodKind: RepositoryPeriodKind,
+  firstInput: RepositoryCloseInput,
+  secondInput: RepositoryCloseInput
+) {
+  const repository = new AssetFactsRepository();
+  const firstLocked = deferred<void>();
+  const releaseFirst = deferred<void>();
+  const table =
+    periodKind === "subscription" ? "vehicle_subscription_period" : "vehicle_ownership_period";
+  const firstPromise = readCommitted(prisma, async (tx) => {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${firstInput.periodId}::uuid FOR UPDATE`
+    );
+    firstLocked.resolve();
+    await releaseFirst.promise;
+    return repositoryClose(repository, tx, periodKind, firstInput);
+  });
+  void firstPromise.catch(firstLocked.reject);
+  await firstLocked.promise;
+  const secondPromise = readCommitted(prisma, (tx) =>
+    repositoryClose(repository, tx, periodKind, secondInput)
+  );
+  let waitedOnRowLock: boolean;
+  try {
+    waitedOnRowLock = await waitForDatabaseLock(prisma, table);
+  } finally {
+    releaseFirst.resolve();
+  }
+  const [first, second] = await Promise.all([firstPromise, settled(secondPromise)]);
+  return { first, second, waitedOnRowLock };
+}
+
+async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [status] = await prisma.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE "pid" <> pg_backend_pid()
+          AND "datname" = current_database()
+          AND "state" = 'active'
+          AND "wait_event_type" = 'Lock'
+          AND "query" ILIKE ${`%${queryFragment}%`}
+      ) AS "waiting"
+    `);
+    if (status?.waiting) return true;
+    await delay(20);
+  }
+  return false;
+}
+
+async function countPeriodsByStartSource(
+  prisma: PrismaService,
+  periodKind: RepositoryPeriodKind,
+  source: { id: string; key: string; type: string }
+) {
+  const table =
+    periodKind === "subscription" ? "vehicle_subscription_period" : "vehicle_ownership_period";
+  const [result] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS "count"
+    FROM ${Prisma.raw(`"${table}"`)}
+    WHERE "start_source_type" = ${source.type}
+      AND "start_source_id" = ${source.id}::uuid
+      AND "start_source_key" = ${source.key}
+  `);
+  return Number(result?.count ?? 0n);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+async function settled<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { reason, status: "rejected" };
+  }
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs: number) {
+  const marker = Symbol("timeout");
+  const result = await Promise.race([promise, delay(timeoutMs).then(() => marker)]);
+  return result === marker
+    ? ({ finished: false } as const)
+    : ({ finished: true, value: result as T } as const);
+}
+
+function fulfilledValue<T>(result: PromiseSettledResult<T>) {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
+}
+
+function rejectedValue(result: PromiseSettledResult<unknown>) {
+  if (result.status === "fulfilled") {
+    throw new Error("Expected repository command to be rejected.");
+  }
+  return result.reason;
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function subscriptionStartSourceConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const input = openRepositoryInput("subscription", fixture, "subscription-start-source");
+  const original = await readCommitted(prisma, (tx) =>
+    repositoryOpen(new AssetFactsRepository(), tx, "subscription", input)
+  );
+  await relocatePeriodAggregate(prisma, "subscription", original.id);
+  return readCommitted(prisma, (tx) =>
+    repositoryOpen(new AssetFactsRepository(), tx, "subscription", input)
+  );
+}
+
+async function subscriptionEndSourceConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const first = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "subscription",
+      openRepositoryInput("subscription", fixture, "subscription-end-source-first")
+    )
+  );
+  const second = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "subscription",
+      openRepositoryInput("subscription", fixture, "subscription-end-source-second", true)
+    )
+  );
+  const closeInput = closeRepositoryInput("subscription", first.id, "subscription-end-source");
+  await readCommitted(prisma, (tx) => repositoryClose(repository, tx, "subscription", closeInput));
+  await relocatePeriodAggregate(prisma, "subscription", first.id);
+  return readCommitted(prisma, (tx) =>
+    repositoryClose(repository, tx, "subscription", { ...closeInput, periodId: second.id })
+  );
+}
+
+async function subscriptionOpenVehicleConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "subscription",
+      openRepositoryInput("subscription", fixture, "subscription-open-vehicle-first")
+    )
+  );
+  const input = openRepositoryInput(
+    "subscription",
+    fixture,
+    "subscription-open-vehicle-second",
+    true
+  ) as OpenSubscriptionPeriodInput;
+  return readCommitted(prisma, (tx) =>
+    repository.openSubscriptionPeriod(tx, { ...input, vehicleId: fixture.vehicleId })
+  );
+}
+
+async function subscriptionOpenOrderConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "subscription",
+      openRepositoryInput("subscription", fixture, "subscription-open-order-first")
+    )
+  );
+  const input = openRepositoryInput(
+    "subscription",
+    fixture,
+    "subscription-open-order-second",
+    true
+  ) as OpenSubscriptionPeriodInput;
+  return readCommitted(prisma, (tx) =>
+    repository.openSubscriptionPeriod(tx, { ...input, orderId: fixture.orderId })
+  );
+}
+
+async function subscriptionOverlapConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const first = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "subscription",
+      openRepositoryInput("subscription", fixture, "subscription-overlap-first")
+    )
+  );
+  await readCommitted(prisma, (tx) =>
+    repositoryClose(
+      repository,
+      tx,
+      "subscription",
+      closeRepositoryInput("subscription", first.id, "subscription-overlap-close")
+    )
+  );
+  const input = openRepositoryInput(
+    "subscription",
+    fixture,
+    "subscription-overlap-second",
+    true
+  ) as OpenSubscriptionPeriodInput;
+  return readCommitted(prisma, (tx) =>
+    repository.openSubscriptionPeriod(tx, {
+      ...input,
+      startedAt: new Date("2026-09-01T00:00:00.000Z"),
+      vehicleId: fixture.vehicleId
+    })
+  );
+}
+
+async function subscriptionRangeConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const input = openRepositoryInput(
+    "subscription",
+    fixture,
+    "subscription-range-open"
+  ) as OpenSubscriptionPeriodInput;
+  const opened = await readCommitted(prisma, (tx) => repository.openSubscriptionPeriod(tx, input));
+  return readCommitted(prisma, (tx) =>
+    repository.closeSubscriptionPeriod(tx, {
+      ...(closeRepositoryInput(
+        "subscription",
+        opened.id,
+        "subscription-range-close"
+      ) as CloseSubscriptionPeriodInput),
+      endedAt: input.startedAt
+    })
+  );
+}
+
+async function ownershipStartSourceConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const input = openRepositoryInput("ownership", fixture, "ownership-start-source");
+  const original = await readCommitted(prisma, (tx) =>
+    repositoryOpen(new AssetFactsRepository(), tx, "ownership", input)
+  );
+  await relocatePeriodAggregate(prisma, "ownership", original.id);
+  return readCommitted(prisma, (tx) =>
+    repositoryOpen(new AssetFactsRepository(), tx, "ownership", input)
+  );
+}
+
+async function ownershipEndSourceConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const first = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "ownership",
+      openRepositoryInput("ownership", fixture, "ownership-end-source-first")
+    )
+  );
+  const second = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "ownership",
+      openRepositoryInput("ownership", fixture, "ownership-end-source-second", true)
+    )
+  );
+  const closeInput = closeRepositoryInput("ownership", first.id, "ownership-end-source");
+  await readCommitted(prisma, (tx) => repositoryClose(repository, tx, "ownership", closeInput));
+  await relocatePeriodAggregate(prisma, "ownership", first.id);
+  return readCommitted(prisma, (tx) =>
+    repositoryClose(repository, tx, "ownership", { ...closeInput, periodId: second.id })
+  );
+}
+
+async function ownershipOpenVehicleConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "ownership",
+      openRepositoryInput("ownership", fixture, "ownership-open-vehicle-first")
+    )
+  );
+  const input = openRepositoryInput(
+    "ownership",
+    fixture,
+    "ownership-open-vehicle-second",
+    true
+  ) as OpenOwnershipPeriodInput;
+  return readCommitted(prisma, (tx) =>
+    repository.openOwnershipPeriod(tx, { ...input, vehicleId: fixture.vehicleId })
+  );
+}
+
+async function ownershipOverlapConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const first = await readCommitted(prisma, (tx) =>
+    repositoryOpen(
+      repository,
+      tx,
+      "ownership",
+      openRepositoryInput("ownership", fixture, "ownership-overlap-first")
+    )
+  );
+  await readCommitted(prisma, (tx) =>
+    repositoryClose(
+      repository,
+      tx,
+      "ownership",
+      closeRepositoryInput("ownership", first.id, "ownership-overlap-close")
+    )
+  );
+  const input = openRepositoryInput(
+    "ownership",
+    fixture,
+    "ownership-overlap-second",
+    true
+  ) as OpenOwnershipPeriodInput;
+  return readCommitted(prisma, (tx) =>
+    repository.openOwnershipPeriod(tx, {
+      ...input,
+      startedAt: new Date("2026-09-01T00:00:00.000Z"),
+      vehicleId: fixture.vehicleId
+    })
+  );
+}
+
+async function ownershipRangeConflict(prisma: PrismaService) {
+  const fixture = await createRepositoryFixture(prisma);
+  const repository = new AssetFactsRepository();
+  const input = openRepositoryInput(
+    "ownership",
+    fixture,
+    "ownership-range-open"
+  ) as OpenOwnershipPeriodInput;
+  const opened = await readCommitted(prisma, (tx) => repository.openOwnershipPeriod(tx, input));
+  return readCommitted(prisma, (tx) =>
+    repository.closeOwnershipPeriod(tx, {
+      ...(closeRepositoryInput(
+        "ownership",
+        opened.id,
+        "ownership-range-close"
+      ) as CloseOwnershipPeriodInput),
+      endedAt: input.startedAt
+    })
+  );
+}
+
+async function relocatePeriodAggregate(
+  prisma: PrismaService,
+  periodKind: RepositoryPeriodKind,
+  periodId: string
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    if (periodKind === "subscription") {
+      await tx.$executeRaw(Prisma.sql`
+        UPDATE "vehicle_subscription_period"
+        SET "vehicle_id" = ${randomUUID()}::uuid, "order_id" = ${randomUUID()}::uuid
+        WHERE "id" = ${periodId}::uuid
+      `);
+      return;
+    }
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "vehicle_ownership_period"
+      SET "vehicle_id" = ${randomUUID()}::uuid
+      WHERE "id" = ${periodId}::uuid
+    `);
+  });
+}
+
+async function expectConflictCode(promise: Promise<unknown>, code: string) {
+  try {
+    await promise;
+    throw new Error(`Expected conflict ${code}.`);
+  } catch (error) {
+    expectConflictError(error, code);
+  }
+}
+
+function expectConflictError(error: unknown, code: string) {
+  expect(error).toBeInstanceOf(ConflictException);
+  expect((error as ConflictException).getResponse()).toMatchObject({ code });
+}
 
 async function insertSubscriptionPeriod(prisma: PrismaService, input: SubscriptionPeriodInput) {
   const startedAt = input.startedAt ?? new Date("2026-08-01T00:00:00.000Z");
@@ -387,6 +1258,36 @@ async function deleteFixturesIfTablesExist(prisma: PrismaService) {
   }
 }
 
+async function deleteRepositoryFixtures(prisma: PrismaService) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle_subscription_period"
+      WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle_ownership_period"
+      WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "subscription_order"
+      WHERE "order_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "asset_owner"
+      WHERE "owner_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle"
+      WHERE "vehicle_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "customer"
+      WHERE "customer_no" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+    `;
+  });
+}
+
 function rejectedReason(results: PromiseSettledResult<unknown>[]) {
   const rejected = results.find(
     (result): result is PromiseRejectedResult => result.status === "rejected"
@@ -420,7 +1321,7 @@ function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL is required for asset fact integration tests");
   }
   const url = new URL(value);
-  if (!['postgres:', 'postgresql:'].includes(url.protocol)) {
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
     throw new Error("Asset fact integration tests require PostgreSQL");
   }
   if (!isLoopbackHostname(url.hostname)) {

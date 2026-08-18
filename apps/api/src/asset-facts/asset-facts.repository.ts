@@ -22,6 +22,7 @@ export const ASSET_FACT_CONFLICT_CODE = {
   OWNERSHIP_RANGE: "OWNERSHIP_PERIOD_RANGE_CONFLICT",
   OWNERSHIP_START_SOURCE: "OWNERSHIP_PERIOD_START_SOURCE_CONFLICT",
   OWNERSHIP_WRITE: "OWNERSHIP_PERIOD_WRITE_CONFLICT",
+  TRANSACTION_CONTRACT: "ASSET_FACT_TRANSACTION_CONTRACT_VIOLATION",
   SUBSCRIPTION_CLOSE_REPLAY: "SUBSCRIPTION_PERIOD_CLOSE_REPLAY_CONFLICT",
   SUBSCRIPTION_END_SOURCE: "SUBSCRIPTION_PERIOD_END_SOURCE_CONFLICT",
   SUBSCRIPTION_OPEN_ORDER: "SUBSCRIPTION_PERIOD_OPEN_ORDER_CONFLICT",
@@ -42,20 +43,15 @@ const CONSTRAINT_CONFLICT_CODES: Readonly<Record<string, AssetFactConflictCode>>
   vehicle_ownership_period_no_overlap_excl: ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP,
   vehicle_ownership_period_one_open_per_vehicle_uidx:
     ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OPEN_VEHICLE,
-  vehicle_ownership_period_start_source_key:
-    ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE,
-  vehicle_subscription_period_end_after_start_chk:
-    ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_RANGE,
-  vehicle_subscription_period_end_source_key:
-    ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE,
-  vehicle_subscription_period_no_overlap_excl:
-    ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP,
+  vehicle_ownership_period_start_source_key: ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE,
+  vehicle_subscription_period_end_after_start_chk: ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_RANGE,
+  vehicle_subscription_period_end_source_key: ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE,
+  vehicle_subscription_period_no_overlap_excl: ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP,
   vehicle_subscription_period_one_open_per_order_uidx:
     ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_ORDER,
   vehicle_subscription_period_one_open_per_vehicle_uidx:
     ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_VEHICLE,
-  vehicle_subscription_period_start_source_key:
-    ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE
+  vehicle_subscription_period_start_source_key: ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE
 };
 
 const CONFLICT_MESSAGES: Readonly<Record<AssetFactConflictCode, string>> = {
@@ -73,6 +69,8 @@ const CONFLICT_MESSAGES: Readonly<Record<AssetFactConflictCode, string>> = {
     "The ownership start source identity is already bound to different facts.",
   [ASSET_FACT_CONFLICT_CODE.OWNERSHIP_WRITE]:
     "The ownership period conflicts with the current database state.",
+  [ASSET_FACT_CONFLICT_CODE.TRANSACTION_CONTRACT]:
+    "Asset fact commands require a caller-provided PostgreSQL READ COMMITTED interactive transaction.",
   [ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY]:
     "The subscription period was already closed by a different command.",
   [ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE]:
@@ -91,33 +89,40 @@ const CONFLICT_MESSAGES: Readonly<Record<AssetFactConflictCode, string>> = {
     "The subscription period conflicts with the current database state."
 };
 
+/**
+ * Every command requires a caller-provided Prisma interactive transaction running at PostgreSQL
+ * READ COMMITTED. The repository never starts or owns a transaction. Start-source advisory locks
+ * and close compare-and-set semantics are valid only inside that caller-owned transaction.
+ */
 @Injectable()
 export class AssetFactsRepository {
   async openSubscriptionPeriod(
     tx: Prisma.TransactionClient,
     input: OpenSubscriptionPeriodInput
   ): Promise<VehicleSubscriptionPeriod> {
-    await lockStartSource(tx, "subscription", input.source);
-    const existing = await findSubscriptionByStartSource(tx, input);
-    if (existing) return replaySubscriptionStart(existing, input);
+    await assertTransactionContract(tx);
+    const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    await lockStartSource(tx, "subscription", normalizedInput.source);
+    const existing = await findSubscriptionByStartSource(tx, normalizedInput);
+    if (existing) return replaySubscriptionStart(existing, normalizedInput);
 
     try {
       return await tx.vehicleSubscriptionPeriod.create({
         data: {
-          contractId: input.contractId,
-          contractSegmentId: input.contractSegmentId,
-          createdBy: input.actorId,
-          customerId: input.customerId,
-          orderId: input.orderId,
-          startConfirmedAt: input.confirmedAt,
-          startConfirmedBy: input.actorId,
-          startReason: input.reason,
-          startSnapshot: input.snapshot,
-          startSourceId: input.source.id,
-          startSourceKey: input.source.key,
-          startSourceType: input.source.type,
-          startedAt: input.startedAt,
-          vehicleId: input.vehicleId
+          contractId: normalizedInput.contractId,
+          contractSegmentId: normalizedInput.contractSegmentId,
+          createdBy: normalizedInput.actorId,
+          customerId: normalizedInput.customerId,
+          orderId: normalizedInput.orderId,
+          startConfirmedAt: normalizedInput.confirmedAt,
+          startConfirmedBy: normalizedInput.actorId,
+          startReason: normalizedInput.reason,
+          startSnapshot: normalizedInput.snapshot,
+          startSourceId: normalizedInput.source.id,
+          startSourceKey: normalizedInput.source.key,
+          startSourceType: normalizedInput.source.type,
+          startedAt: normalizedInput.startedAt,
+          vehicleId: normalizedInput.vehicleId
         }
       });
     } catch (error) {
@@ -129,10 +134,12 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseSubscriptionPeriodInput
   ): Promise<VehicleSubscriptionPeriod> {
-    const replay = await findSubscriptionByEndSource(tx, input);
-    if (replay) return replaySubscriptionClose(replay, input);
+    await assertTransactionContract(tx);
+    const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    const replay = await findSubscriptionByEndSource(tx, normalizedInput);
+    if (replay) return replaySubscriptionClose(replay, normalizedInput);
 
-    const period = await findSubscriptionById(tx, input.periodId);
+    const period = await findSubscriptionById(tx, normalizedInput.periodId);
     if (!period || period.endedAt) {
       throw conflict(ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY);
     }
@@ -140,25 +147,25 @@ export class AssetFactsRepository {
     try {
       const updated = await tx.vehicleSubscriptionPeriod.updateMany({
         data: {
-          endConfirmedAt: input.confirmedAt,
-          endConfirmedBy: input.actorId,
-          endReason: input.reason,
-          endSnapshot: input.snapshot,
-          endSourceId: input.source.id,
-          endSourceKey: input.source.key,
-          endSourceType: input.source.type,
-          endedAt: input.endedAt
+          endConfirmedAt: normalizedInput.confirmedAt,
+          endConfirmedBy: normalizedInput.actorId,
+          endReason: normalizedInput.reason,
+          endSnapshot: normalizedInput.snapshot,
+          endSourceId: normalizedInput.source.id,
+          endSourceKey: normalizedInput.source.key,
+          endSourceType: normalizedInput.source.type,
+          endedAt: normalizedInput.endedAt
         },
-        where: { endedAt: null, id: input.periodId }
+        where: { endedAt: null, id: normalizedInput.periodId }
       });
       if (updated.count !== 1) {
-        return await resolveSubscriptionCloseRace(tx, input);
+        return await resolveSubscriptionCloseRace(tx, normalizedInput);
       }
     } catch (error) {
       throw normalizeDatabaseConflict(error, "subscription");
     }
 
-    const closed = await findSubscriptionById(tx, input.periodId);
+    const closed = await findSubscriptionById(tx, normalizedInput.periodId);
     if (!closed) throw conflict(ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY);
     return closed;
   }
@@ -167,24 +174,26 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: OpenOwnershipPeriodInput
   ): Promise<VehicleOwnershipPeriod> {
-    await lockStartSource(tx, "ownership", input.source);
-    const existing = await findOwnershipByStartSource(tx, input);
-    if (existing) return replayOwnershipStart(existing, input);
+    await assertTransactionContract(tx);
+    const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    await lockStartSource(tx, "ownership", normalizedInput.source);
+    const existing = await findOwnershipByStartSource(tx, normalizedInput);
+    if (existing) return replayOwnershipStart(existing, normalizedInput);
 
     try {
       return await tx.vehicleOwnershipPeriod.create({
         data: {
-          assetOwnerId: input.assetOwnerId,
-          createdBy: input.actorId,
-          startConfirmedAt: input.confirmedAt,
-          startConfirmedBy: input.actorId,
-          startReason: input.reason,
-          startSnapshot: input.snapshot,
-          startSourceId: input.source.id,
-          startSourceKey: input.source.key,
-          startSourceType: input.source.type,
-          startedAt: input.startedAt,
-          vehicleId: input.vehicleId
+          assetOwnerId: normalizedInput.assetOwnerId,
+          createdBy: normalizedInput.actorId,
+          startConfirmedAt: normalizedInput.confirmedAt,
+          startConfirmedBy: normalizedInput.actorId,
+          startReason: normalizedInput.reason,
+          startSnapshot: normalizedInput.snapshot,
+          startSourceId: normalizedInput.source.id,
+          startSourceKey: normalizedInput.source.key,
+          startSourceType: normalizedInput.source.type,
+          startedAt: normalizedInput.startedAt,
+          vehicleId: normalizedInput.vehicleId
         }
       });
     } catch (error) {
@@ -196,10 +205,12 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseOwnershipPeriodInput
   ): Promise<VehicleOwnershipPeriod> {
-    const replay = await findOwnershipByEndSource(tx, input);
-    if (replay) return replayOwnershipClose(replay, input);
+    await assertTransactionContract(tx);
+    const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    const replay = await findOwnershipByEndSource(tx, normalizedInput);
+    if (replay) return replayOwnershipClose(replay, normalizedInput);
 
-    const period = await findOwnershipById(tx, input.periodId);
+    const period = await findOwnershipById(tx, normalizedInput.periodId);
     if (!period || period.endedAt) {
       throw conflict(ASSET_FACT_CONFLICT_CODE.OWNERSHIP_CLOSE_REPLAY);
     }
@@ -207,25 +218,25 @@ export class AssetFactsRepository {
     try {
       const updated = await tx.vehicleOwnershipPeriod.updateMany({
         data: {
-          endConfirmedAt: input.confirmedAt,
-          endConfirmedBy: input.actorId,
-          endReason: input.reason,
-          endSnapshot: input.snapshot,
-          endSourceId: input.source.id,
-          endSourceKey: input.source.key,
-          endSourceType: input.source.type,
-          endedAt: input.endedAt
+          endConfirmedAt: normalizedInput.confirmedAt,
+          endConfirmedBy: normalizedInput.actorId,
+          endReason: normalizedInput.reason,
+          endSnapshot: normalizedInput.snapshot,
+          endSourceId: normalizedInput.source.id,
+          endSourceKey: normalizedInput.source.key,
+          endSourceType: normalizedInput.source.type,
+          endedAt: normalizedInput.endedAt
         },
-        where: { endedAt: null, id: input.periodId }
+        where: { endedAt: null, id: normalizedInput.periodId }
       });
       if (updated.count !== 1) {
-        return await resolveOwnershipCloseRace(tx, input);
+        return await resolveOwnershipCloseRace(tx, normalizedInput);
       }
     } catch (error) {
       throw normalizeDatabaseConflict(error, "ownership");
     }
 
-    const closed = await findOwnershipById(tx, input.periodId);
+    const closed = await findOwnershipById(tx, normalizedInput.periodId);
     if (!closed) throw conflict(ASSET_FACT_CONFLICT_CODE.OWNERSHIP_CLOSE_REPLAY);
     return closed;
   }
@@ -240,6 +251,34 @@ const SUBSCRIPTION_LIVE_AGGREGATE_FILTER = {
 const OWNERSHIP_LIVE_AGGREGATE_FILTER = {
   vehicle: { deletedAt: null }
 } satisfies Prisma.VehicleOwnershipPeriodWhereInput;
+
+async function assertTransactionContract(tx: Prisma.TransactionClient) {
+  const [firstProbe] = await tx.$queryRaw<Array<{ isolationLevel: string; transactionId: string }>>(
+    Prisma.sql`
+      SELECT
+        current_setting('transaction_isolation') AS "isolationLevel",
+        txid_current()::text AS "transactionId"
+    `
+  );
+  const [secondProbe] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+    Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+  );
+  if (
+    firstProbe?.isolationLevel !== "read committed" ||
+    !firstProbe.transactionId ||
+    firstProbe.transactionId !== secondProbe?.transactionId
+  ) {
+    throw conflict(ASSET_FACT_CONFLICT_CODE.TRANSACTION_CONTRACT);
+  }
+}
+
+function normalizeSnapshot(snapshot: Prisma.InputJsonObject): Prisma.JsonObject {
+  const normalized: unknown = JSON.parse(JSON.stringify(snapshot));
+  if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+    throw new TypeError("Asset fact snapshots must serialize to a JSON object.");
+  }
+  return normalized as Prisma.JsonObject;
+}
 
 async function lockStartSource(
   tx: Prisma.TransactionClient,
@@ -301,10 +340,7 @@ function findSubscriptionById(tx: Prisma.TransactionClient, periodId: string) {
   });
 }
 
-function findOwnershipByStartSource(
-  tx: Prisma.TransactionClient,
-  input: OpenOwnershipPeriodInput
-) {
+function findOwnershipByStartSource(tx: Prisma.TransactionClient, input: OpenOwnershipPeriodInput) {
   return tx.vehicleOwnershipPeriod.findFirst({
     where: {
       ...OWNERSHIP_LIVE_AGGREGATE_FILTER,
@@ -315,10 +351,7 @@ function findOwnershipByStartSource(
   });
 }
 
-function findOwnershipByEndSource(
-  tx: Prisma.TransactionClient,
-  input: CloseOwnershipPeriodInput
-) {
+function findOwnershipByEndSource(tx: Prisma.TransactionClient, input: CloseOwnershipPeriodInput) {
   return tx.vehicleOwnershipPeriod.findFirst({
     where: {
       ...OWNERSHIP_LIVE_AGGREGATE_FILTER,
@@ -351,18 +384,12 @@ function replaySubscriptionClose(
   throw conflict(ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE);
 }
 
-function replayOwnershipStart(
-  existing: VehicleOwnershipPeriod,
-  input: OpenOwnershipPeriodInput
-) {
+function replayOwnershipStart(existing: VehicleOwnershipPeriod, input: OpenOwnershipPeriodInput) {
   if (sameOwnershipStart(existing, input)) return existing;
   throw conflict(ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE);
 }
 
-function replayOwnershipClose(
-  existing: VehicleOwnershipPeriod,
-  input: CloseOwnershipPeriodInput
-) {
+function replayOwnershipClose(existing: VehicleOwnershipPeriod, input: CloseOwnershipPeriodInput) {
   if (sameOwnershipClose(existing, input)) return existing;
   throw conflict(ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE);
 }
@@ -423,10 +450,7 @@ function sameSubscriptionClose(
   );
 }
 
-function sameOwnershipStart(
-  existing: VehicleOwnershipPeriod,
-  input: OpenOwnershipPeriodInput
-) {
+function sameOwnershipStart(existing: VehicleOwnershipPeriod, input: OpenOwnershipPeriodInput) {
   return (
     existing.vehicleId === input.vehicleId &&
     existing.assetOwnerId === input.assetOwnerId &&
@@ -441,10 +465,7 @@ function sameOwnershipStart(
   );
 }
 
-function sameOwnershipClose(
-  existing: VehicleOwnershipPeriod,
-  input: CloseOwnershipPeriodInput
-) {
+function sameOwnershipClose(existing: VehicleOwnershipPeriod, input: CloseOwnershipPeriodInput) {
   return (
     existing.id === input.periodId &&
     sameNullableDate(existing.endedAt, input.endedAt) &&
@@ -495,7 +516,9 @@ function normalizeDatabaseConflict(error: unknown, periodKind: PeriodKind): Erro
         : ASSET_FACT_CONFLICT_CODE.OWNERSHIP_WRITE
     );
   }
-  return error instanceof Error ? error : new Error("Asset fact database write failed", { cause: error });
+  return error instanceof Error
+    ? error
+    : new Error("Asset fact database write failed", { cause: error });
 }
 
 function conflictFromPrismaTarget(error: unknown, periodKind: PeriodKind) {
@@ -514,7 +537,10 @@ function conflictFromPrismaTarget(error: unknown, periodKind: PeriodKind) {
       ? ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE
       : ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE;
   }
-  if (periodKind === "subscription" && (target.includes("orderid") || target.includes("order_id"))) {
+  if (
+    periodKind === "subscription" &&
+    (target.includes("orderid") || target.includes("order_id"))
+  ) {
     return ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_ORDER;
   }
   if (target.includes("vehicleid") || target.includes("vehicle_id")) {

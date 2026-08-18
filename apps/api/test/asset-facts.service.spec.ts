@@ -26,6 +26,116 @@ const ENDED_AT = new Date("2026-10-01T00:00:00.000Z");
 const START_CONFIRMED_AT = new Date("2026-08-01T00:05:00.000Z");
 const END_CONFIRMED_AT = new Date("2026-10-01T00:05:00.000Z");
 
+const SUBSCRIPTION_START_DRIFTS = [
+  ["vehicleId", { vehicleId: "different-vehicle" }],
+  ["orderId", { orderId: "different-order" }],
+  ["contractId", { contractId: null }],
+  ["contractSegmentId", { contractSegmentId: null }],
+  ["customerId", { customerId: "different-customer" }],
+  ["startedAt", { startedAt: new Date("2026-08-02T00:00:00.000Z") }],
+  ["reason", { reason: VehicleSubscriptionPeriodStartReason.LEASE_ACTIVATED }],
+  ["actorId", { actorId: "different-actor" }],
+  ["confirmedAt", { confirmedAt: new Date("2026-08-01T00:06:00.000Z") }],
+  ["snapshot", { snapshot: { deliveryId: "different-delivery", vehicleVin: "VIN-1" } }]
+] satisfies ReadonlyArray<readonly [string, Partial<OpenSubscriptionPeriodInput>]>;
+
+const SUBSCRIPTION_CLOSE_DRIFTS = [
+  ["periodId", { periodId: "different-period" }],
+  ["endedAt", { endedAt: new Date("2026-10-02T00:00:00.000Z") }],
+  ["reason", { reason: VehicleSubscriptionPeriodEndReason.EARLY_TERMINATION }],
+  ["actorId", { actorId: "different-actor" }],
+  ["confirmedAt", { confirmedAt: new Date("2026-10-01T00:06:00.000Z") }],
+  ["snapshot", { snapshot: { returnId: "different-return", vehicleVin: "VIN-1" } }]
+] satisfies ReadonlyArray<readonly [string, Partial<CloseSubscriptionPeriodInput>]>;
+
+const OWNERSHIP_START_DRIFTS = [
+  ["vehicleId", { vehicleId: "different-vehicle" }],
+  ["assetOwnerId", { assetOwnerId: "different-owner" }],
+  ["startedAt", { startedAt: new Date("2026-08-02T00:00:00.000Z") }],
+  ["reason", { reason: VehicleOwnershipPeriodStartReason.OWNERSHIP_TRANSFER }],
+  ["actorId", { actorId: "different-actor" }],
+  ["confirmedAt", { confirmedAt: new Date("2026-08-01T00:06:00.000Z") }],
+  ["snapshot", { snapshot: { acquisitionId: "different-acquisition", ownerNo: "PLATFORM" } }]
+] satisfies ReadonlyArray<readonly [string, Partial<OpenOwnershipPeriodInput>]>;
+
+const OWNERSHIP_CLOSE_DRIFTS = [
+  ["periodId", { periodId: "different-period" }],
+  ["endedAt", { endedAt: new Date("2026-10-02T00:00:00.000Z") }],
+  ["reason", { reason: VehicleOwnershipPeriodEndReason.DISPOSAL }],
+  ["actorId", { actorId: "different-actor" }],
+  ["confirmedAt", { confirmedAt: new Date("2026-10-01T00:06:00.000Z") }],
+  ["snapshot", { snapshot: { transferId: "different-transfer" } }]
+] satisfies ReadonlyArray<readonly [string, Partial<CloseOwnershipPeriodInput>]>;
+
+const SUBSCRIPTION_START_SOURCE_VARIANTS = [
+  [
+    "type",
+    { id: "source-1", key: "delivery:source-1:occupancy:v1", type: "DIFFERENT_SOURCE_TYPE" }
+  ],
+  ["id", { id: "different-source-id", key: "delivery:source-1:occupancy:v1", type: "DELIVERY" }],
+  ["key", { id: "source-1", key: "different-source-key", type: "DELIVERY" }]
+] as const;
+
+const SUBSCRIPTION_CLOSE_SOURCE_VARIANTS = [
+  [
+    "type",
+    {
+      id: "source-2",
+      key: "return:source-2:occupancy:v1",
+      type: "DIFFERENT_SOURCE_TYPE"
+    }
+  ],
+  [
+    "id",
+    {
+      id: "different-source-id",
+      key: "return:source-2:occupancy:v1",
+      type: "VEHICLE_RETURN"
+    }
+  ],
+  ["key", { id: "source-2", key: "different-source-key", type: "VEHICLE_RETURN" }]
+] as const;
+
+const OWNERSHIP_START_SOURCE_VARIANTS = [
+  [
+    "type",
+    {
+      id: "source-1",
+      key: "acquisition:source-1:ownership:v1",
+      type: "DIFFERENT_SOURCE_TYPE"
+    }
+  ],
+  [
+    "id",
+    {
+      id: "different-source-id",
+      key: "acquisition:source-1:ownership:v1",
+      type: "ACQUISITION"
+    }
+  ],
+  ["key", { id: "source-1", key: "different-source-key", type: "ACQUISITION" }]
+] as const;
+
+const OWNERSHIP_CLOSE_SOURCE_VARIANTS = [
+  [
+    "type",
+    {
+      id: "source-2",
+      key: "transfer:source-2:ownership:v1",
+      type: "DIFFERENT_SOURCE_TYPE"
+    }
+  ],
+  [
+    "id",
+    {
+      id: "different-source-id",
+      key: "transfer:source-2:ownership:v1",
+      type: "OWNERSHIP_TRANSFER"
+    }
+  ],
+  ["key", { id: "source-2", key: "different-source-key", type: "OWNERSHIP_TRANSFER" }]
+] as const;
+
 describe("AssetFactsRepository subscription period commands", () => {
   it("opens a subscription period from the caller's transaction", async () => {
     const harness = createHarness();
@@ -67,6 +177,64 @@ describe("AssetFactsRepository subscription period commands", () => {
     expect(result).toBe(original);
     expect(harness.subscriptionPeriods).toEqual([original]);
   });
+
+  it("normalizes subscription start snapshots to their JSONB storage form", async () => {
+    const original = subscriptionRow({
+      startSnapshot: {
+        capturedAt: "2026-08-01T00:00:00.000Z",
+        nested: { kept: true }
+      }
+    });
+    const harness = createHarness({ subscriptionPeriods: [original] });
+
+    const result = await new AssetFactsRepository().openSubscriptionPeriod(
+      harness.tx,
+      subscriptionOpenInput({ snapshot: storageEquivalentInputSnapshot() })
+    );
+
+    expect(result).toBe(original);
+  });
+
+  it.each(SUBSCRIPTION_START_DRIFTS)(
+    "rejects subscription start source replay when %s drifts",
+    async (_field, overrides) => {
+      const harness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().openSubscriptionPeriod(
+          harness.tx,
+          subscriptionOpenInput(overrides)
+        ),
+        ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE
+      );
+    }
+  );
+
+  it.each(SUBSCRIPTION_START_SOURCE_VARIANTS)(
+    "treats a changed subscription start source %s as a distinct command identity",
+    async (_field, source) => {
+      const harness = createHarness({
+        subscriptionPeriods: [
+          subscriptionRow({
+            endedAt: new Date("2026-07-31T00:00:00.000Z"),
+            startedAt: new Date("2026-07-01T00:00:00.000Z")
+          })
+        ]
+      });
+
+      const result = await new AssetFactsRepository().openSubscriptionPeriod(
+        harness.tx,
+        subscriptionOpenInput({ source })
+      );
+
+      expect(result).toMatchObject({
+        startSourceId: source.id,
+        startSourceKey: source.key,
+        startSourceType: source.type
+      });
+      expect(harness.subscriptionPeriods).toHaveLength(2);
+    }
+  );
 
   it("takes a transaction-scoped source lock before checking a subscription start replay", async () => {
     const original = subscriptionRow();
@@ -149,6 +317,68 @@ describe("AssetFactsRepository subscription period commands", () => {
     expect(result).toBe(original);
   });
 
+  it("normalizes subscription close snapshots to their JSONB storage form", async () => {
+    const original = closedSubscriptionRow({
+      endSnapshot: {
+        capturedAt: "2026-10-01T00:00:00.000Z",
+        nested: { kept: true }
+      }
+    });
+    const harness = createHarness({ subscriptionPeriods: [original] });
+
+    const result = await new AssetFactsRepository().closeSubscriptionPeriod(
+      harness.tx,
+      subscriptionCloseInput({ snapshot: storageEquivalentCloseInputSnapshot() })
+    );
+
+    expect(result).toBe(original);
+  });
+
+  it.each(SUBSCRIPTION_CLOSE_DRIFTS)(
+    "rejects subscription close replay when %s drifts",
+    async (_field, overrides) => {
+      const harness = createHarness({ subscriptionPeriods: [closedSubscriptionRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().closeSubscriptionPeriod(
+          harness.tx,
+          subscriptionCloseInput(overrides)
+        ),
+        ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE
+      );
+    }
+  );
+
+  it.each(SUBSCRIPTION_CLOSE_SOURCE_VARIANTS)(
+    "treats a changed subscription close source %s as a non-replay close",
+    async (_field, source) => {
+      const harness = createHarness({ subscriptionPeriods: [closedSubscriptionRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().closeSubscriptionPeriod(
+          harness.tx,
+          subscriptionCloseInput({ source })
+        ),
+        ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY
+      );
+    }
+  );
+
+  it.each(["vehicle", "order", "customer", "contract"] as const)(
+    "does not replay a subscription close whose %s aggregate is soft-deleted",
+    async (aggregate) => {
+      const harness = createHarness({
+        deletedSubscriptionAggregate: aggregate,
+        subscriptionPeriods: [closedSubscriptionRow()]
+      });
+
+      await expectConflictCode(
+        new AssetFactsRepository().closeSubscriptionPeriod(harness.tx, subscriptionCloseInput()),
+        ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY
+      );
+    }
+  );
+
   it("rejects subscription end source reuse with a different close payload", async () => {
     const harness = createHarness({
       subscriptionPeriods: [
@@ -217,6 +447,61 @@ describe("AssetFactsRepository ownership period commands", () => {
     expect(result).toBe(original);
     expect(harness.ownershipPeriods).toEqual([original]);
   });
+
+  it("normalizes ownership start snapshots to their JSONB storage form", async () => {
+    const original = ownershipRow({
+      startSnapshot: {
+        capturedAt: "2026-08-01T00:00:00.000Z",
+        nested: { kept: true }
+      }
+    });
+    const harness = createHarness({ ownershipPeriods: [original] });
+
+    const result = await new AssetFactsRepository().openOwnershipPeriod(
+      harness.tx,
+      ownershipOpenInput({ snapshot: storageEquivalentInputSnapshot() })
+    );
+
+    expect(result).toBe(original);
+  });
+
+  it.each(OWNERSHIP_START_DRIFTS)(
+    "rejects ownership start source replay when %s drifts",
+    async (_field, overrides) => {
+      const harness = createHarness({ ownershipPeriods: [ownershipRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().openOwnershipPeriod(harness.tx, ownershipOpenInput(overrides)),
+        ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE
+      );
+    }
+  );
+
+  it.each(OWNERSHIP_START_SOURCE_VARIANTS)(
+    "treats a changed ownership start source %s as a distinct command identity",
+    async (_field, source) => {
+      const harness = createHarness({
+        ownershipPeriods: [
+          ownershipRow({
+            endedAt: new Date("2026-07-31T00:00:00.000Z"),
+            startedAt: new Date("2026-07-01T00:00:00.000Z")
+          })
+        ]
+      });
+
+      const result = await new AssetFactsRepository().openOwnershipPeriod(
+        harness.tx,
+        ownershipOpenInput({ source })
+      );
+
+      expect(result).toMatchObject({
+        startSourceId: source.id,
+        startSourceKey: source.key,
+        startSourceType: source.type
+      });
+      expect(harness.ownershipPeriods).toHaveLength(2);
+    }
+  );
 
   it("takes a transaction-scoped source lock before checking an ownership start replay", async () => {
     const original = ownershipRow();
@@ -296,6 +581,62 @@ describe("AssetFactsRepository ownership period commands", () => {
     expect(result).toBe(original);
   });
 
+  it("normalizes ownership close snapshots to their JSONB storage form", async () => {
+    const original = closedOwnershipRow({
+      endSnapshot: {
+        capturedAt: "2026-10-01T00:00:00.000Z",
+        nested: { kept: true }
+      }
+    });
+    const harness = createHarness({ ownershipPeriods: [original] });
+
+    const result = await new AssetFactsRepository().closeOwnershipPeriod(
+      harness.tx,
+      ownershipCloseInput({ snapshot: storageEquivalentCloseInputSnapshot() })
+    );
+
+    expect(result).toBe(original);
+  });
+
+  it.each(OWNERSHIP_CLOSE_DRIFTS)(
+    "rejects ownership close replay when %s drifts",
+    async (_field, overrides) => {
+      const harness = createHarness({ ownershipPeriods: [closedOwnershipRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().closeOwnershipPeriod(harness.tx, ownershipCloseInput(overrides)),
+        ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE
+      );
+    }
+  );
+
+  it.each(OWNERSHIP_CLOSE_SOURCE_VARIANTS)(
+    "treats a changed ownership close source %s as a non-replay close",
+    async (_field, source) => {
+      const harness = createHarness({ ownershipPeriods: [closedOwnershipRow()] });
+
+      await expectConflictCode(
+        new AssetFactsRepository().closeOwnershipPeriod(
+          harness.tx,
+          ownershipCloseInput({ source })
+        ),
+        ASSET_FACT_CONFLICT_CODE.OWNERSHIP_CLOSE_REPLAY
+      );
+    }
+  );
+
+  it("does not replay an ownership close whose vehicle aggregate is soft-deleted", async () => {
+    const harness = createHarness({
+      deletedOwnershipVehicle: true,
+      ownershipPeriods: [closedOwnershipRow()]
+    });
+
+    await expectConflictCode(
+      new AssetFactsRepository().closeOwnershipPeriod(harness.tx, ownershipCloseInput()),
+      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_CLOSE_REPLAY
+    );
+  });
+
   it("rejects ownership end source reuse with a different close payload", async () => {
     const harness = createHarness({
       ownershipPeriods: [closedOwnershipRow({ endedAt: new Date("2026-10-02T00:00:00.000Z") })]
@@ -338,22 +679,12 @@ describe("AssetFactsRepository database conflict normalization", () => {
       "vehicle_subscription_period_one_open_per_order_uidx",
       ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OPEN_ORDER
     ],
-    [
-      "vehicle_subscription_period_no_overlap_excl",
-      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP
-    ],
-    [
-      "vehicle_subscription_period_end_after_start_chk",
-      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_RANGE
-    ]
+    ["vehicle_subscription_period_no_overlap_excl", ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_OVERLAP],
+    ["vehicle_subscription_period_end_after_start_chk", ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_RANGE]
   ])("maps subscription constraint %s", async (constraint, expectedCode) => {
     const harness = createHarness({
       createSubscriptionError: databaseConstraintError(
-        constraint.endsWith("_excl")
-          ? "23P01"
-          : constraint.endsWith("_chk")
-            ? "23514"
-            : "23505",
+        constraint.endsWith("_excl") ? "23P01" : constraint.endsWith("_chk") ? "23514" : "23505",
         constraint
       )
     });
@@ -365,30 +696,17 @@ describe("AssetFactsRepository database conflict normalization", () => {
   });
 
   it.each([
-    [
-      "vehicle_ownership_period_start_source_key",
-      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE
-    ],
+    ["vehicle_ownership_period_start_source_key", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_START_SOURCE],
     [
       "vehicle_ownership_period_one_open_per_vehicle_uidx",
       ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OPEN_VEHICLE
     ],
-    [
-      "vehicle_ownership_period_no_overlap_excl",
-      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP
-    ],
-    [
-      "vehicle_ownership_period_end_after_start_chk",
-      ASSET_FACT_CONFLICT_CODE.OWNERSHIP_RANGE
-    ]
+    ["vehicle_ownership_period_no_overlap_excl", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP],
+    ["vehicle_ownership_period_end_after_start_chk", ASSET_FACT_CONFLICT_CODE.OWNERSHIP_RANGE]
   ])("maps ownership constraint %s", async (constraint, expectedCode) => {
     const harness = createHarness({
       createOwnershipError: databaseConstraintError(
-        constraint.endsWith("_excl")
-          ? "23P01"
-          : constraint.endsWith("_chk")
-            ? "23514"
-            : "23505",
+        constraint.endsWith("_excl") ? "23P01" : constraint.endsWith("_chk") ? "23514" : "23505",
         constraint
       )
     });
@@ -456,6 +774,32 @@ describe("AssetFactsRepository database conflict normalization", () => {
     await expectConflictCode(
       new AssetFactsRepository().openOwnershipPeriod(harness.tx, ownershipOpenInput()),
       ASSET_FACT_CONFLICT_CODE.OWNERSHIP_OVERLAP
+    );
+  });
+});
+
+describe("AssetFactsRepository transaction contract", () => {
+  it("rejects a root Prisma client passed in place of an interactive transaction", async () => {
+    const harness = createHarness({
+      subscriptionPeriods: [subscriptionRow()],
+      transactionIds: ["root-autocommit-1", "root-autocommit-2"]
+    });
+
+    await expectConflictCode(
+      new AssetFactsRepository().openSubscriptionPeriod(harness.tx, subscriptionOpenInput()),
+      "ASSET_FACT_TRANSACTION_CONTRACT_VIOLATION"
+    );
+  });
+
+  it("rejects a transaction whose PostgreSQL isolation is not READ COMMITTED", async () => {
+    const harness = createHarness({
+      isolationLevel: "serializable",
+      subscriptionPeriods: [subscriptionRow()]
+    });
+
+    await expectConflictCode(
+      new AssetFactsRepository().openSubscriptionPeriod(harness.tx, subscriptionOpenInput()),
+      "ASSET_FACT_TRANSACTION_CONTRACT_VIOLATION"
     );
   });
 });
@@ -590,9 +934,7 @@ function closedSubscriptionRow(
   });
 }
 
-function ownershipRow(
-  overrides: Partial<VehicleOwnershipPeriod> = {}
-): VehicleOwnershipPeriod {
+function ownershipRow(overrides: Partial<VehicleOwnershipPeriod> = {}): VehicleOwnershipPeriod {
   return {
     assetOwnerId: "owner-1",
     createdAt: new Date("2026-08-01T00:05:01.000Z"),
@@ -643,10 +985,12 @@ type HarnessOptions = {
   createSubscriptionError?: unknown;
   deletedOwnershipVehicle?: boolean;
   deletedSubscriptionAggregate?: "contract" | "customer" | "order" | "vehicle";
+  isolationLevel?: string;
   ownershipPeriods?: VehicleOwnershipPeriod[];
   requireOwnershipStartSourceLock?: boolean;
   requireSubscriptionStartSourceLock?: boolean;
   subscriptionPeriods?: VehicleSubscriptionPeriod[];
+  transactionIds?: readonly [string, string];
   updateOwnershipError?: unknown;
   updateSubscriptionError?: unknown;
 };
@@ -658,9 +1002,21 @@ function createHarness(options: HarnessOptions = {}) {
   let subscriptionTransactionAborted = false;
   let ownershipStartSourceLocked = false;
   let subscriptionStartSourceLocked = false;
+  let transactionProbeCount = 0;
 
   const tx = {
     $queryRaw: async (query: Prisma.Sql) => {
+      if (query.sql.includes("txid_current()")) {
+        const transactionIds = options.transactionIds ?? [
+          "interactive-transaction",
+          "interactive-transaction"
+        ];
+        const transactionId = transactionIds[Math.min(transactionProbeCount, 1)];
+        transactionProbeCount += 1;
+        return query.sql.includes("current_setting('transaction_isolation')")
+          ? [{ isolationLevel: options.isolationLevel ?? "read committed", transactionId }]
+          : [{ transactionId }];
+      }
       if (
         (options.requireOwnershipStartSourceLock || options.requireSubscriptionStartSourceLock) &&
         !query.sql.includes('SELECT TRUE AS "locked" FROM pg_advisory_xact_lock')
@@ -907,10 +1263,21 @@ function abortedTransactionError() {
   };
 }
 
-async function expectConflictCode(
-  promise: Promise<unknown>,
-  expectedCode: (typeof ASSET_FACT_CONFLICT_CODE)[keyof typeof ASSET_FACT_CONFLICT_CODE]
-) {
+function storageEquivalentInputSnapshot(): Prisma.InputJsonObject {
+  return {
+    capturedAt: new Date("2026-08-01T00:00:00.000Z"),
+    nested: { kept: true, omitted: undefined }
+  };
+}
+
+function storageEquivalentCloseInputSnapshot(): Prisma.InputJsonObject {
+  return {
+    capturedAt: new Date("2026-10-01T00:00:00.000Z"),
+    nested: { kept: true, omitted: undefined }
+  };
+}
+
+async function expectConflictCode(promise: Promise<unknown>, expectedCode: string) {
   try {
     await promise;
   } catch (error) {

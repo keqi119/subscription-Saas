@@ -52,9 +52,7 @@ describe("BillingAutomationWorker", () => {
       SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
       SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
-      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-      SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
     ]);
   });
 
@@ -129,18 +127,14 @@ describe("BillingAutomationWorker", () => {
 
     await harness.worker.runOnce();
 
-    expect(harness.repository.reschedule).toHaveBeenCalledWith(
-      job.id,
-      job.leaseToken,
-      {
-        delayMs: 60_000,
-        error: {
-          code: "AUTO_DEBIT_QUERY_PENDING",
-          message: "Debit result is still pending provider confirmation.",
-          retryable: true
-        }
+    expect(harness.repository.reschedule).toHaveBeenCalledWith(job.id, job.leaseToken, {
+      delayMs: 60_000,
+      error: {
+        code: "AUTO_DEBIT_QUERY_PENDING",
+        message: "Debit result is still pending provider confirmation.",
+        retryable: true
       }
-    );
+    });
   });
 
   it("returns a claimed generation job to pending without consuming an attempt when paused", async () => {
@@ -154,15 +148,11 @@ describe("BillingAutomationWorker", () => {
 
     await harness.worker.runOnce();
 
-    expect(harness.repository.defer).toHaveBeenCalledWith(
-      job.id,
-      job.leaseToken,
-      {
-        code: "BILLING_SCHEDULE_PAUSED",
-        message: "Billing schedule is paused.",
-        retryable: true
-      }
-    );
+    expect(harness.repository.defer).toHaveBeenCalledWith(job.id, job.leaseToken, {
+      code: "BILLING_SCHEDULE_PAUSED",
+      message: "Billing schedule is paused.",
+      retryable: true
+    });
     expect(harness.repository.deadLetter).not.toHaveBeenCalled();
     expect(harness.repository.reschedule).not.toHaveBeenCalled();
   });
@@ -257,8 +247,7 @@ describe("BillingAutomationHandlers", () => {
     const handlers = new BillingAutomationHandlers(
       service as unknown as BillingAutomationService,
       prisma as unknown as PrismaService,
-      notification as unknown as NotificationService,
-      { handle: vi.fn() } as never
+      notification as unknown as NotificationService
     );
     const job = claimedJob({
       idempotencyKey: `bill-due-notice:${bill.id}`,
@@ -273,7 +262,8 @@ describe("BillingAutomationHandlers", () => {
         customerId: bill.customerId,
         eventType: NotificationEventType.BILL_DUE,
         idempotencyKey: job.idempotencyKey,
-        notificationType: NotificationType.BILL_DUE
+        notificationType: NotificationType.BILL_DUE,
+        url: `/portal/bills/${bill.id}`
       })
     );
   });
@@ -317,9 +307,7 @@ function createWorkerHarness(
       SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
       SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE,
       SubscriptionAutomationJobType.MARK_BILL_OVERDUE,
-      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE,
-      SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-      SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
+      SubscriptionAutomationJobType.SEND_BILL_OVERDUE_NOTICE
     ]
   };
   const config = new ConfigService({

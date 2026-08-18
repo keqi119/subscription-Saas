@@ -53,6 +53,20 @@ export function validateStage1GoldenPathPreflight(env) {
   requireConfigured(env, "STAGE1_ACCEPTANCE_CONTRACT_TEMPLATE_ID", "CONTRACT_TEMPLATE_ID_MISSING", add);
 
   requireTrue(env, "WECHAT_PAY_ENABLED", "WECHAT_PAY_DISABLED", add);
+  if (normalized(env.PAYMENT_PROVIDER) !== "wechat_pay") {
+    add(
+      "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY",
+      "PAYMENT_PROVIDER",
+      "Stage 1 production acceptance requires the WeChat payment provider."
+    );
+  }
+  if (truthy(env.PAYMENT_MOCK_ENABLED)) {
+    add(
+      "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED",
+      "PAYMENT_MOCK_ENABLED",
+      "Stage 1 production acceptance forbids mock payment execution."
+    );
+  }
   if (
     normalized(env.PAYMENT_DEFAULT_CHANNEL) !== "wechat_jsapi" ||
     normalized(env.WECHAT_PAY_DEFAULT_CHANNEL) !== "wechat_jsapi"
@@ -70,6 +84,20 @@ export function validateStage1GoldenPathPreflight(env) {
   requireTrue(env, "NOTIFICATION_WECHAT_ENABLED", "WECHAT_NOTIFICATION_DISABLED", add);
   if (truthy(env.AUTO_DEBIT_ENABLED)) {
     add("AUTO_DEBIT_MUST_BE_DISABLED", "AUTO_DEBIT_ENABLED", "Delegated debit must stay disabled for this acceptance.");
+  }
+  if (normalized(env.PAYMENT_MANDATE_PROVIDER) !== "disabled") {
+    add(
+      "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+      "PAYMENT_MANDATE_PROVIDER",
+      "Stage 1 requires the delegated debit provider to stay disabled."
+    );
+  }
+  if (truthy(env.PAYMENT_MANDATE_MOCK_ENABLED)) {
+    add(
+      "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+      "PAYMENT_MANDATE_MOCK_ENABLED",
+      "Stage 1 forbids delegated debit mock execution."
+    );
   }
 
   requireConfigured(env, "STAGE1_ACCEPTANCE_TEST_VEHICLE_ID", "TEST_VEHICLE_ID_MISSING", add);
@@ -112,8 +140,44 @@ export function validateStage1GoldenPathPreflight(env) {
 
 export function validateProductionImageGoldenPathConfig(env) {
   const blockers = [];
+  if (normalized(env.PAYMENT_PROVIDER) !== "wechat_pay") {
+    blockers.push(
+      blocker(
+        "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY",
+        "PAYMENT_PROVIDER",
+        "Stage 1 production acceptance requires the WeChat payment provider."
+      )
+    );
+  }
+  if (truthy(env.PAYMENT_MOCK_ENABLED)) {
+    blockers.push(
+      blocker(
+        "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED",
+        "PAYMENT_MOCK_ENABLED",
+        "Stage 1 production acceptance forbids mock payment execution."
+      )
+    );
+  }
   if (truthy(env.AUTO_DEBIT_ENABLED)) {
     blockers.push(blocker("AUTO_DEBIT_MUST_BE_DISABLED", "AUTO_DEBIT_ENABLED", "Production acceptance examples must keep auto debit disabled."));
+  }
+  if (normalized(env.PAYMENT_MANDATE_PROVIDER) !== "disabled") {
+    blockers.push(
+      blocker(
+        "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+        "PAYMENT_MANDATE_PROVIDER",
+        "Stage 1 requires the delegated debit provider to stay disabled."
+      )
+    );
+  }
+  if (truthy(env.PAYMENT_MANDATE_MOCK_ENABLED)) {
+    blockers.push(
+      blocker(
+        "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+        "PAYMENT_MANDATE_MOCK_ENABLED",
+        "Stage 1 forbids delegated debit mock execution."
+      )
+    );
   }
   if (!truthy(env.SUBSCRIPTION_JOURNEY_ENABLED)) return blockers;
   if (normalized(env.ESIGN_PROVIDER) !== "fadada") {
@@ -186,6 +250,10 @@ async function checkProductionExamples() {
   const blockers = validateProductionImageGoldenPathConfig(parseEnvExample(envText));
   const requiredComposeKeys = [
     "AUTO_DEBIT_ENABLED",
+    "PAYMENT_MOCK_ENABLED",
+    "PAYMENT_PROVIDER",
+    "PAYMENT_MANDATE_MOCK_ENABLED",
+    "PAYMENT_MANDATE_PROVIDER",
     "ESIGN_PROVIDER",
     "FADADA_ENV",
     "NOTIFICATION_PROVIDER",
@@ -218,6 +286,9 @@ function buildSafeSummary(env) {
     identifiers,
     runtime: {
       autoDebit: truthy(env.AUTO_DEBIT_ENABLED) ? "enabled" : "disabled",
+      activePaymentProvider:
+        normalized(env.PAYMENT_PROVIDER) === "wechat_pay" ? "wechat-pay" : "invalid",
+      collectionMode: "active-payment-only",
       journey: truthy(env.SUBSCRIPTION_JOURNEY_ENABLED) ? "enabled" : "disabled",
       notificationProvider: normalized(env.NOTIFICATION_PROVIDER) === "wechat_official_account" ? "official-account" : "invalid",
       worker: truthy(env.SUBSCRIPTION_JOURNEY_WORKER_ENABLED) ? "enabled" : "disabled"

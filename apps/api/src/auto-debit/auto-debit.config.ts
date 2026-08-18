@@ -1,4 +1,5 @@
 import { PaymentMandateProviderName } from "./auto-debit-provider";
+import { STAGE1_COLLECTION_MODE } from "./auto-debit.policy";
 
 export interface AutoDebitConfig {
   enabled: boolean;
@@ -9,54 +10,50 @@ export interface AutoDebitConfig {
   wechatTemplateId: string | null;
 }
 
+export interface Stage1AutoDebitRuntimeConfig extends AutoDebitConfig {
+  collectionMode: typeof STAGE1_COLLECTION_MODE;
+  enabled: false;
+  mockEnabled: false;
+  provider: "disabled";
+}
+
 export function readAutoDebitConfig(
   environment: Record<string, string | undefined>
-): AutoDebitConfig {
+): Stage1AutoDebitRuntimeConfig {
   const nodeEnvironment =
-    normalize(environment.APP_ENV) ||
-    normalize(environment.NODE_ENV) ||
-    "development";
+    normalize(environment.APP_ENV) || normalize(environment.NODE_ENV) || "development";
   const provider = providerName(environment.PAYMENT_MANDATE_PROVIDER);
   const enabled = booleanValue(environment.AUTO_DEBIT_ENABLED);
   const mockEnabled = booleanValue(environment.PAYMENT_MANDATE_MOCK_ENABLED);
   const runTime = normalize(environment.AUTO_DEBIT_RUN_TIME) || "09:00";
-  const wechatTemplateId = configuredValue(
-    environment.WECHAT_AUTO_RENEW_TEMPLATE_ID
-  );
 
   if (!isValidLocalTime(runTime)) {
     throw new Error("AUTO_DEBIT_RUN_TIME_INVALID");
   }
-  if (nodeEnvironment === "production" && provider === "mock") {
-    throw new Error("AUTO_DEBIT_MOCK_FORBIDDEN_IN_PRODUCTION");
+  if (enabled) {
+    throw new Error("AUTO_DEBIT_STAGE1_BASELINE_DISABLED");
   }
-  if (provider === "mock" && !mockEnabled) {
-    throw new Error("AUTO_DEBIT_MOCK_NOT_ENABLED");
+  if (provider !== "disabled") {
+    throw new Error("AUTO_DEBIT_STAGE1_PROVIDER_MUST_BE_DISABLED");
   }
-  if (enabled && provider === "disabled") {
-    throw new Error("AUTO_DEBIT_PROVIDER_REQUIRED");
-  }
-  if (enabled && provider === "wechat_auto_renew" && !wechatTemplateId) {
-    throw new Error("AUTO_DEBIT_WECHAT_TEMPLATE_REQUIRED");
+  if (mockEnabled) {
+    throw new Error("AUTO_DEBIT_STAGE1_MOCK_MUST_BE_DISABLED");
   }
 
   return {
-    enabled,
+    collectionMode: STAGE1_COLLECTION_MODE,
+    enabled: false,
     environment: nodeEnvironment,
-    mockEnabled,
-    provider,
+    mockEnabled: false,
+    provider: "disabled",
     runTime,
-    wechatTemplateId
+    wechatTemplateId: null
   };
 }
 
 function providerName(value?: string): PaymentMandateProviderName {
   const normalized = normalize(value) || "disabled";
-  if (
-    normalized !== "disabled" &&
-    normalized !== "mock" &&
-    normalized !== "wechat_auto_renew"
-  ) {
+  if (normalized !== "disabled" && normalized !== "mock" && normalized !== "wechat_auto_renew") {
     throw new Error("AUTO_DEBIT_PROVIDER_INVALID");
   }
   return normalized;
@@ -64,14 +61,6 @@ function providerName(value?: string): PaymentMandateProviderName {
 
 function booleanValue(value?: string) {
   return normalize(value) === "true";
-}
-
-function configuredValue(value?: string) {
-  const normalized = value?.trim();
-  if (!normalized || normalized === "<CHANGE_ME>") {
-    return null;
-  }
-  return normalized;
 }
 
 function normalize(value?: string) {

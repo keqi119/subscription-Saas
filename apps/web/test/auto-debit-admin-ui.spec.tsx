@@ -1,102 +1,47 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
-  AutoDebitOperationsPanel,
+  HistoricalAutoDebitPanel,
   OrderAutoDebitTracePanel,
   type AdminAutoDebitAttempt,
   type AdminPaymentMandate
-} from "../src/app/billing/monthly-rent/auto-debit-operations-panel";
+} from "../src/app/billing/monthly-rent/historical-auto-debit-panel";
 
-describe("AutoDebitOperationsPanel", () => {
-  it("wires filters, summary metrics and audited operator endpoints into monthly rent automation", () => {
-    const source = readFileSync(
+describe("historical auto-debit Admin views", () => {
+  it("renders historical mandate and attempt facts without mutation controls", () => {
+    const html = renderToStaticMarkup(
+      <HistoricalAutoDebitPanel
+        attempts={[attempt({ status: "UNKNOWN" })]}
+        loading={false}
+        mandates={[mandate({ status: "ACTIVE" })]}
+      />
+    );
+
+    expect(html).toContain("历史自动扣款（已停用）");
+    expect(html).toContain("MDT20260804000001");
+    expect(html).toContain("DBT20260902000001");
+    expect(html).not.toMatch(/人工扣款|查询结果|同步授权|关闭授权|设置模拟结果/);
+  });
+
+  it("does not call retired mutation endpoints", () => {
+    const monthlyRentSource = readFileSync(
       fileURLToPath(new URL("../src/app/billing/monthly-rent/page.tsx", import.meta.url)),
       "utf8"
     );
 
-    expect(source).toContain("筛选授权状态");
-    expect(source).toContain("筛选扣款状态");
-    expect(source).toContain("未分配收款");
-    expect(source).toContain("/billing/automation/attempts/${attempt.id}/query");
-    expect(source).toContain("/billing/automation/bills/${attempt.billId}/debit");
-    expect(source).toContain("/billing/automation/jobs/${job.id}/cancel");
-    expect(source).toContain("reason: reason.trim()");
-  });
-
-  it("offers UNKNOWN query only and gates resolved manual debit by permission", () => {
-    const html = renderToStaticMarkup(
-      <AutoDebitOperationsPanel
-        attempts={[
-          attempt({ id: "unknown", status: "UNKNOWN" }),
-          attempt({ id: "failed", status: "FAILED_FINAL" })
-        ]}
-        canExecute
-        canManage
-        loading={false}
-        mandates={[mandate()]}
-        onManualDebit={vi.fn()}
-        onMockResult={vi.fn()}
-        onQueryAttempt={vi.fn()}
-        onRevokeMandate={vi.fn()}
-        onSyncMandate={vi.fn()}
-      />
+    expect(monthlyRentSource).toContain("筛选授权状态");
+    expect(monthlyRentSource).toContain("筛选扣款状态");
+    expect(monthlyRentSource).toContain("未分配收款");
+    expect(monthlyRentSource).not.toMatch(
+      /attempts\/\$\{attempt\.id\}\/query|bills\/\$\{attempt\.billId\}\/debit|mandates\/\$\{mandate\.id\}\/(sync|revoke)|mock\/attempts/
     );
-
-    expect(html.match(/查询结果/g)).toHaveLength(1);
-    expect(html.match(/人工扣款/g)).toHaveLength(1);
-    expect(html).toContain("同步授权");
-    expect(html).toContain("关闭授权");
-    expect(html).not.toContain("设置模拟结果");
   });
 
-  it("shows explicit Staging mock controls only for mock unresolved records", () => {
-    const html = renderToStaticMarkup(
-      <AutoDebitOperationsPanel
-        attempts={[
-          attempt({
-            mandate: { mandateNo: "MDT20260804000001", providerMode: "mock" },
-            status: "PROCESSING"
-          })
-        ]}
-        canExecute
-        canManage={false}
-        loading={false}
-        mandates={[mandate({ providerMode: "mock" })]}
-        onManualDebit={vi.fn()}
-        onMockResult={vi.fn()}
-        onQueryAttempt={vi.fn()}
-        onRevokeMandate={vi.fn()}
-        onSyncMandate={vi.fn()}
-      />
-    );
-
-    expect(html).toContain("STAGING MOCK，不会发生真实扣款");
-    expect(html).toContain("设置模拟结果");
-  });
-
-  it("renders records read-only without operation permissions", () => {
-    const html = renderToStaticMarkup(
-      <AutoDebitOperationsPanel
-        attempts={[attempt({ status: "FAILED_FINAL" })]}
-        canExecute={false}
-        canManage={false}
-        loading={false}
-        mandates={[mandate()]}
-        onManualDebit={vi.fn()}
-        onMockResult={vi.fn()}
-        onQueryAttempt={vi.fn()}
-        onRevokeMandate={vi.fn()}
-        onSyncMandate={vi.fn()}
-      />
-    );
-
-    expect(html).toContain("最终失败");
-    expect(html).not.toContain("人工扣款");
-    expect(html).not.toContain("同步授权");
-  });
-
-  it("traces mandate through attempt, payment order, payment record and write-off", () => {
+  it("traces historical facts through payment and write-off evidence", () => {
     const html = renderToStaticMarkup(
       <OrderAutoDebitTracePanel
         attempts={[
@@ -125,13 +70,13 @@ describe("AutoDebitOperationsPanel", () => {
       />
     );
 
-    expect(html).toContain("自动扣款结算追踪");
+    expect(html).toContain("历史自动扣款结算追踪（已停用）");
     expect(html).toContain("Mandate");
     expect(html).toContain("Attempt");
     expect(html).toContain("PaymentOrder");
     expect(html).toContain("PaymentRecord");
     expect(html).toContain("WriteOff 1 笔");
-    expect(html).toContain("进入自动扣款操作台");
+    expect(html).toContain("查看历史自动扣款记录");
   });
 });
 
@@ -175,5 +120,3 @@ function attempt(overrides: Partial<AdminAutoDebitAttempt> = {}): AdminAutoDebit
     ...overrides
   };
 }
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";

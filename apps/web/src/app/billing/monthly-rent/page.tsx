@@ -41,26 +41,25 @@ import type { AuthMeResponse } from "../../../lib/auth";
 import {
   autoDebitAttemptStatusView,
   autoDebitMandateStatusView,
-  buildAutoDebitSummaryView,
+  buildHistoricalAutoDebitSummaryView,
   automationErrorText,
   formatAutomationDate,
   jobStatusView,
-  isAutoDebitJobType,
   jobTypeLabel,
   scheduleStatusView
 } from "../../../lib/billing-automation-view-model";
 import {
-  AutoDebitOperationsPanel,
+  HistoricalAutoDebitPanel,
   type AdminAutoDebitAttempt,
   type AdminPaymentMandate
-} from "./auto-debit-operations-panel";
+} from "./historical-auto-debit-panel";
 
 interface AutomationSummary {
-  autoDebit: {
+  collectionMode: "ACTIVE_PAYMENT_ONLY";
+  historicalAutoDebit: {
     attempts: Record<string, number>;
-    deadLetterCount: number;
+    jobs: Record<string, number>;
     mandates: Record<string, number>;
-    unallocatedPayments: { amount: string; count: number };
     unknownCount: number;
   };
   jobs: Record<string, number>;
@@ -74,6 +73,9 @@ interface AutomationSummary {
     availableAt: string;
     id: string;
   } | null;
+  payments: {
+    unallocated: { amount: string; count: number };
+  };
   schedules: Record<string, number>;
 }
 
@@ -221,8 +223,6 @@ export default function MonthlyRentAutomationPage() {
   const permissions = useMemo(() => new Set(me?.user.permissions ?? []), [me]);
   const canViewBilling = permissions.has("billing:view") || permissions.has("billing:generate");
   const canViewAutoDebit = permissions.has("auto_debit:view");
-  const canExecuteAutoDebit = permissions.has("auto_debit:execute");
-  const canManageAutoDebit = permissions.has("auto_debit:manage");
   const canView = canViewBilling || canViewAutoDebit;
   const generateAvailability = actionAvailability({
     allowed: canView,
@@ -408,142 +408,6 @@ export default function MonthlyRentAutomationPage() {
         }
       },
       title: "重试死信任务"
-    });
-  }
-
-  function confirmCancelJob(job: BillingJobItem) {
-    confirmReason("取消自动扣款任务", "请填写取消原因", async (reason) => {
-      setActionLoading(`cancel:${job.id}`);
-      try {
-        await apiFetch(`/billing/automation/jobs/${job.id}/cancel`, {
-          body: JSON.stringify({ reason }),
-          method: "POST"
-        });
-        void message.success("自动扣款任务已取消");
-        await loadAutomation();
-      } finally {
-        setActionLoading(null);
-      }
-    });
-  }
-
-  function confirmAttemptAction(
-    title: string,
-    attempt: AdminAutoDebitAttempt,
-    action: "query" | "debit"
-  ) {
-    confirmReason(title, "请填写操作原因", async (reason) => {
-      const key = `${action}:${attempt.id}`;
-      setActionLoading(key);
-      try {
-        await apiFetch(
-          action === "query"
-            ? `/billing/automation/attempts/${attempt.id}/query`
-            : `/billing/automation/bills/${attempt.billId}/debit`,
-          { body: JSON.stringify({ reason }), method: "POST" }
-        );
-        void message.success(action === "query" ? "扣款查询任务已提交" : "人工扣款任务已提交");
-        await loadAutomation();
-      } finally {
-        setActionLoading(null);
-      }
-    });
-  }
-
-  function confirmMandateAction(
-    title: string,
-    mandate: AdminPaymentMandate,
-    action: "sync" | "revoke"
-  ) {
-    confirmReason(title, "请填写操作原因", async (reason) => {
-      const key = `${action}:${mandate.id}`;
-      setActionLoading(key);
-      try {
-        await apiFetch(`/billing/automation/mandates/${mandate.id}/${action}`, {
-          body: JSON.stringify({ reason }),
-          method: "POST"
-        });
-        void message.success(action === "sync" ? "授权同步已完成" : "授权已关闭");
-        await loadAutomation();
-      } finally {
-        setActionLoading(null);
-      }
-    });
-  }
-
-  function confirmMockResult(attempt: AdminAutoDebitAttempt) {
-    let nextResult = "SUCCEEDED";
-    let reason = "";
-    modal.confirm({
-      cancelText: "取消",
-      content: (
-        <Space orientation="vertical" size={12} style={{ width: "100%" }}>
-          <Alert message="仅用于 Staging Mock 验收，不会发生真实扣款。" showIcon type="warning" />
-          <Select
-            defaultValue={nextResult}
-            onChange={(value) => {
-              nextResult = value;
-            }}
-            options={[
-              { label: "模拟成功", value: "SUCCEEDED" },
-              { label: "模拟可重试失败", value: "FAILED_RETRYABLE" },
-              { label: "模拟最终失败", value: "FAILED_FINAL" },
-              { label: "模拟结果不明", value: "UNKNOWN" }
-            ]}
-            style={{ width: "100%" }}
-          />
-          <Input.TextArea
-            onChange={(event) => {
-              reason = event.target.value;
-            }}
-            placeholder="请输入验收操作原因"
-            rows={3}
-          />
-        </Space>
-      ),
-      okText: "保存模拟结果",
-      onOk: async () => {
-        if (!reason.trim()) {
-          void message.error("请输入操作原因");
-          throw new Error("reason required");
-        }
-        await apiFetch(`/billing/automation/mock/attempts/${attempt.id}/next-result`, {
-          body: JSON.stringify({ nextResult, reason: reason.trim() }),
-          method: "POST"
-        });
-        void message.success("模拟结果已保存");
-        await loadAutomation();
-      },
-      title: "设置下一次 Mock 查询结果"
-    });
-  }
-
-  function confirmReason(
-    title: string,
-    placeholder: string,
-    onSubmit: (reason: string) => Promise<void>
-  ) {
-    let reason = "";
-    modal.confirm({
-      cancelText: "取消",
-      content: (
-        <Input.TextArea
-          onChange={(event) => {
-            reason = event.target.value;
-          }}
-          placeholder={placeholder}
-          rows={3}
-        />
-      ),
-      okText: "确认执行",
-      onOk: async () => {
-        if (!reason.trim()) {
-          void message.error("请输入操作原因");
-          throw new Error("reason required");
-        }
-        await onSubmit(reason.trim());
-      },
-      title
     });
   }
 
@@ -784,17 +648,6 @@ export default function MonthlyRentAutomationPage() {
           >
             重试
           </ActionButton>
-        ) : record.jobStatus === "PENDING" &&
-          isAutoDebitJobType(record.jobType) &&
-          canExecuteAutoDebit ? (
-          <Button
-            danger
-            loading={actionLoading === `cancel:${record.id}`}
-            onClick={() => confirmCancelJob(record)}
-            size="small"
-          >
-            取消
-          </Button>
         ) : (
           "-"
         ),
@@ -835,7 +688,9 @@ export default function MonthlyRentAutomationPage() {
       width: 260
     }
   ];
-  const autoDebitSummary = buildAutoDebitSummaryView(summary?.autoDebit);
+  const historicalAutoDebitSummary = buildHistoricalAutoDebitSummaryView(
+    summary?.historicalAutoDebit
+  );
 
   return (
     <ProtectedShell>
@@ -851,6 +706,15 @@ export default function MonthlyRentAutomationPage() {
         </Space>
 
         {!loadingMe && !canView ? <Alert message="无账单查看权限" showIcon type="warning" /> : null}
+
+        {canView ? (
+          <Alert
+            description="系统继续生成账单、发送到期与逾期提醒；客户通过账单页面主动完成微信支付。"
+            message="当前收款基线：账单提醒 + 主动支付"
+            showIcon
+            type="success"
+          />
+        ) : null}
 
         {canViewBilling ? <Row gutter={[12, 12]}>
           <SummaryCard
@@ -874,56 +738,61 @@ export default function MonthlyRentAutomationPage() {
             value={summary?.jobs.DEAD_LETTER ?? 0}
             valueStyle={(summary?.jobs.DEAD_LETTER ?? 0) > 0 ? { color: "#cf1322" } : undefined}
           />
+          <SummaryCard
+            loading={automationLoading}
+            title={`未分配收款（${formatYuan(summary?.payments.unallocated.amount)}）`}
+            value={summary?.payments.unallocated.count ?? 0}
+            valueStyle={
+              (summary?.payments.unallocated.count ?? 0) > 0 ? { color: "#cf1322" } : undefined
+            }
+          />
         </Row> : null}
 
         {canViewAutoDebit ? (
-          <Row gutter={[12, 12]}>
-            <SummaryCard
-              loading={automationLoading}
-              title="有效授权"
-              value={autoDebitSummary.activeMandates}
-            />
-            <SummaryCard
-              loading={automationLoading}
-              title="待确认授权"
-              value={autoDebitSummary.pendingMandates}
-            />
-            <SummaryCard
-              loading={automationLoading}
-              title="扣款处理中"
-              value={autoDebitSummary.processingAttempts}
-            />
-            <SummaryCard
-              loading={automationLoading}
-              title="结果不明"
-              value={autoDebitSummary.unknownAttempts}
-              valueStyle={
-                autoDebitSummary.unknownAttempts > 0
-                  ? { color: "#d48806" }
-                  : undefined
-              }
-            />
-            <SummaryCard
-              loading={automationLoading}
-              title="扣款失败"
-              value={autoDebitSummary.failedAttempts}
-              valueStyle={
-                autoDebitSummary.failedAttempts > 0
-                  ? { color: "#cf1322" }
-                  : undefined
-              }
-            />
-            <SummaryCard
-              loading={automationLoading}
-              title={`未分配收款（${formatYuan(autoDebitSummary.unallocatedAmount)}）`}
-              value={autoDebitSummary.unallocatedCount}
-              valueStyle={
-                autoDebitSummary.unallocatedCount > 0
-                  ? { color: "#cf1322" }
-                  : undefined
-              }
-            />
-          </Row>
+          <Card title="历史自动扣款（已停用）">
+            <Row gutter={[12, 12]}>
+              <SummaryCard
+                loading={automationLoading}
+                title="历史有效授权"
+                value={historicalAutoDebitSummary.activeMandates}
+              />
+              <SummaryCard
+                loading={automationLoading}
+                title="历史待确认授权"
+                value={historicalAutoDebitSummary.pendingMandates}
+              />
+              <SummaryCard
+                loading={automationLoading}
+                title="历史处理中尝试"
+                value={historicalAutoDebitSummary.processingAttempts}
+              />
+              <SummaryCard
+                loading={automationLoading}
+                title="历史结果不明"
+                value={historicalAutoDebitSummary.unknownAttempts}
+                valueStyle={
+                  historicalAutoDebitSummary.unknownAttempts > 0
+                    ? { color: "#d48806" }
+                    : undefined
+                }
+              />
+              <SummaryCard
+                loading={automationLoading}
+                title="历史扣款失败"
+                value={historicalAutoDebitSummary.failedAttempts}
+                valueStyle={
+                  historicalAutoDebitSummary.failedAttempts > 0
+                    ? { color: "#cf1322" }
+                    : undefined
+                }
+              />
+              <SummaryCard
+                loading={automationLoading}
+                title="已退役代扣任务"
+                value={sumCounts(summary?.historicalAutoDebit.jobs)}
+              />
+            </Row>
+          </Card>
         ) : null}
 
         {canViewBilling ? <Card
@@ -1118,19 +987,10 @@ export default function MonthlyRentAutomationPage() {
                 </Button>
               </Space>
             </Card>
-            <AutoDebitOperationsPanel
+            <HistoricalAutoDebitPanel
               attempts={debitAttempts}
-              canExecute={canExecuteAutoDebit}
-              canManage={canManageAutoDebit}
               loading={automationLoading}
               mandates={mandates}
-              onManualDebit={(attempt) => confirmAttemptAction("发起人工扣款", attempt, "debit")}
-              onMockResult={confirmMockResult}
-              onQueryAttempt={(attempt) => confirmAttemptAction("查询扣款结果", attempt, "query")}
-              onRevokeMandate={(mandate) =>
-                confirmMandateAction("关闭自动扣款授权", mandate, "revoke")
-              }
-              onSyncMandate={(mandate) => confirmMandateAction("同步自动扣款授权", mandate, "sync")}
             />
           </>
         ) : null}

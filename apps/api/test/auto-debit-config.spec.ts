@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { readAutoDebitConfig } from "../src/auto-debit/auto-debit.config";
 
 describe("readAutoDebitConfig", () => {
-  it("is disabled and provider-neutral by default", () => {
+  it("uses the active-payment-only Stage 1 baseline by default", () => {
     expect(readAutoDebitConfig({ NODE_ENV: "development" })).toEqual({
+      collectionMode: "ACTIVE_PAYMENT_ONLY",
       enabled: false,
       environment: "development",
       mockEnabled: false,
@@ -14,53 +15,40 @@ describe("readAutoDebitConfig", () => {
     });
   });
 
-  it("allows an explicitly enabled mock only outside production", () => {
-    expect(
+  it.each([
+    { AUTO_DEBIT_ENABLED: "true", PAYMENT_MANDATE_PROVIDER: "disabled" },
+    {
+      AUTO_DEBIT_ENABLED: "true",
+      PAYMENT_MANDATE_MOCK_ENABLED: "true",
+      PAYMENT_MANDATE_PROVIDER: "mock"
+    },
+    {
+      AUTO_DEBIT_ENABLED: "true",
+      PAYMENT_MANDATE_PROVIDER: "wechat_auto_renew",
+      WECHAT_AUTO_RENEW_TEMPLATE_ID: "approved-template-id"
+    }
+  ])("rejects delegated debit enablement: %o", (environment) => {
+    expect(() => readAutoDebitConfig(environment)).toThrow("AUTO_DEBIT_STAGE1_BASELINE_DISABLED");
+  });
+
+  it("rejects a dormant non-disabled provider", () => {
+    expect(() =>
       readAutoDebitConfig({
-        APP_ENV: "staging",
-        AUTO_DEBIT_ENABLED: "true",
-        NODE_ENV: "production",
+        AUTO_DEBIT_ENABLED: "false",
         PAYMENT_MANDATE_MOCK_ENABLED: "true",
         PAYMENT_MANDATE_PROVIDER: "mock"
       })
-    ).toMatchObject({
-      enabled: true,
-      mockEnabled: true,
-      provider: "mock"
-    });
+    ).toThrow("AUTO_DEBIT_STAGE1_PROVIDER_MUST_BE_DISABLED");
   });
 
-  it("fails closed when production selects the mock provider", () => {
+  it("rejects the legacy mock safety switch even while disabled", () => {
     expect(() =>
       readAutoDebitConfig({
-        APP_ENV: "production",
-        AUTO_DEBIT_ENABLED: "true",
-        NODE_ENV: "production",
+        AUTO_DEBIT_ENABLED: "false",
         PAYMENT_MANDATE_MOCK_ENABLED: "true",
-        PAYMENT_MANDATE_PROVIDER: "mock"
-      })
-    ).toThrow("AUTO_DEBIT_MOCK_FORBIDDEN_IN_PRODUCTION");
-  });
-
-  it("rejects enabled configurations without a usable provider", () => {
-    expect(() =>
-      readAutoDebitConfig({
-        AUTO_DEBIT_ENABLED: "true",
-        NODE_ENV: "staging",
         PAYMENT_MANDATE_PROVIDER: "disabled"
       })
-    ).toThrow("AUTO_DEBIT_PROVIDER_REQUIRED");
-  });
-
-  it("rejects mock selection without its explicit safety switch", () => {
-    expect(() =>
-      readAutoDebitConfig({
-        AUTO_DEBIT_ENABLED: "true",
-        NODE_ENV: "staging",
-        PAYMENT_MANDATE_MOCK_ENABLED: "false",
-        PAYMENT_MANDATE_PROVIDER: "mock"
-      })
-    ).toThrow("AUTO_DEBIT_MOCK_NOT_ENABLED");
+    ).toThrow("AUTO_DEBIT_STAGE1_MOCK_MUST_BE_DISABLED");
   });
 
   it("validates the local run time", () => {

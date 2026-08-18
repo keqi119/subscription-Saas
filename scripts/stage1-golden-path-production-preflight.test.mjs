@@ -14,6 +14,7 @@ test("accepts a complete controlled production acceptance configuration", () => 
   assert.match(result.summary.identifiers.application, /^appl.*5678$/);
   assert.equal(result.summary.sensitive.FADADA_APP_SECRET, "configured");
   assert.equal(result.summary.sensitive.STAGE1_ACCEPTANCE_PAYER_OPENID, "configured");
+  assert.equal(result.summary.runtime.collectionMode, "active-payment-only");
 });
 
 test("blocks disabled Journey runtime, worker, and empty allowlists independently", () => {
@@ -47,6 +48,14 @@ test("blocks non-production or incomplete Fadada configuration independently", (
 
 test("blocks incomplete production JSAPI payment and payer authorization", () => {
   expectBlocker({ WECHAT_PAY_ENABLED: "false" }, "WECHAT_PAY_DISABLED");
+  expectBlocker(
+    { PAYMENT_PROVIDER: "mock" },
+    "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY"
+  );
+  expectBlocker(
+    { PAYMENT_MOCK_ENABLED: "true" },
+    "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED"
+  );
   expectBlocker({ PAYMENT_DEFAULT_CHANNEL: "MOCK" }, "WECHAT_TRADE_TYPE_INVALID");
   expectBlocker({ WECHAT_PAY_DEFAULT_CHANNEL: "NATIVE" }, "WECHAT_TRADE_TYPE_INVALID");
   expectBlocker(
@@ -60,6 +69,17 @@ test("requires official-account notifications and keeps delegated debit disabled
   expectBlocker({ NOTIFICATION_PROVIDER: "mock" }, "NOTIFICATION_PROVIDER_INVALID");
   expectBlocker({ NOTIFICATION_WECHAT_ENABLED: "false" }, "WECHAT_NOTIFICATION_DISABLED");
   expectBlocker({ AUTO_DEBIT_ENABLED: "true" }, "AUTO_DEBIT_MUST_BE_DISABLED");
+});
+
+test("requires the complete active-payment-only policy", () => {
+  expectBlocker(
+    { PAYMENT_MANDATE_PROVIDER: "mock" },
+    "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED"
+  );
+  expectBlocker(
+    { PAYMENT_MANDATE_MOCK_ENABLED: "true" },
+    "AUTO_DEBIT_MOCK_MUST_BE_DISABLED"
+  );
 });
 
 test("requires an independent handover template", () => {
@@ -124,6 +144,10 @@ test("production-image guard allows disabled rollout defaults", () => {
   assert.deepEqual(
     validateProductionImageGoldenPathConfig({
       AUTO_DEBIT_ENABLED: "false",
+      PAYMENT_MOCK_ENABLED: "false",
+      PAYMENT_PROVIDER: "wechat_pay",
+      PAYMENT_MANDATE_MOCK_ENABLED: "false",
+      PAYMENT_MANDATE_PROVIDER: "disabled",
       ESIGN_PROVIDER: "fadada",
       FADADA_ENV: "production",
       NOTIFICATION_PROVIDER: "wechat_official_account",
@@ -139,6 +163,10 @@ test("production-image guard allows disabled rollout defaults", () => {
 test("production-image guard rejects unsafe enabled rollout defaults", () => {
   const blockers = validateProductionImageGoldenPathConfig({
     AUTO_DEBIT_ENABLED: "true",
+    PAYMENT_MOCK_ENABLED: "true",
+    PAYMENT_PROVIDER: "mock",
+    PAYMENT_MANDATE_MOCK_ENABLED: "true",
+    PAYMENT_MANDATE_PROVIDER: "mock",
     ESIGN_PROVIDER: "mock",
     FADADA_ENV: "sandbox",
     NOTIFICATION_PROVIDER: "mock",
@@ -152,6 +180,10 @@ test("production-image guard rejects unsafe enabled rollout defaults", () => {
     blockers.map(({ code }) => code).sort(),
     [
       "AUTO_DEBIT_MUST_BE_DISABLED",
+      "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+      "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+      "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED",
+      "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY",
       "ENABLED_ALLOWLIST_EMPTY",
       "ENABLED_ESIGN_PROVIDER_UNSAFE",
       "ENABLED_FADADA_ENV_UNSAFE",
@@ -170,6 +202,10 @@ function validEnv() {
   return {
     API_BASE_URL: "https://api.subauto.keybox.cloud/api",
     AUTO_DEBIT_ENABLED: "false",
+    PAYMENT_MOCK_ENABLED: "false",
+    PAYMENT_PROVIDER: "wechat_pay",
+    PAYMENT_MANDATE_MOCK_ENABLED: "false",
+    PAYMENT_MANDATE_PROVIDER: "disabled",
     ESIGN_PROVIDER: "fadada",
     FADADA_APP_ID: "configured-app-id",
     FADADA_APP_SECRET: "configured-app-secret",

@@ -12,48 +12,36 @@ describe("auto debit deployment safety", () => {
     const production = readEnvironment(".env.production.images.example");
 
     expect(readAutoDebitConfig(production)).toMatchObject({
+      collectionMode: "ACTIVE_PAYMENT_ONLY",
       enabled: false,
       environment: "production",
       mockEnabled: false,
       provider: "disabled"
     });
-    expect(() =>
-      readAutoDebitConfig({
-        ...production,
-        PAYMENT_MANDATE_MOCK_ENABLED: "true",
-        PAYMENT_MANDATE_PROVIDER: "mock"
-      })
-    ).toThrow("AUTO_DEBIT_MOCK_FORBIDDEN_IN_PRODUCTION");
   });
 
-  it("enables the explicit persistent mock only in staging", () => {
+  it("keeps the retired Staging example on the active-payment-only policy", () => {
     const staging = readEnvironment(".env.staging.images.example");
 
     expect(readAutoDebitConfig(staging)).toMatchObject({
-      enabled: true,
+      collectionMode: "ACTIVE_PAYMENT_ONLY",
+      enabled: false,
       environment: "staging",
-      mockEnabled: true,
-      provider: "mock"
+      mockEnabled: false,
+      provider: "disabled"
     });
   });
 
-  it("requires an approved template before a real WeChat mandate provider can start", () => {
-    const base = {
-      APP_ENV: "staging",
-      AUTO_DEBIT_ENABLED: "true",
-      PAYMENT_MANDATE_MOCK_ENABLED: "false",
-      PAYMENT_MANDATE_PROVIDER: "wechat_auto_renew"
-    };
-
-    expect(() => readAutoDebitConfig(base)).toThrow(
-      "AUTO_DEBIT_WECHAT_TEMPLATE_REQUIRED"
-    );
-    expect(
+  it("rejects a dormant WeChat mandate provider even with an approved template", () => {
+    expect(() =>
       readAutoDebitConfig({
-        ...base,
+        APP_ENV: "staging",
+        AUTO_DEBIT_ENABLED: "false",
+        PAYMENT_MANDATE_MOCK_ENABLED: "false",
+        PAYMENT_MANDATE_PROVIDER: "wechat_auto_renew",
         WECHAT_AUTO_RENEW_TEMPLATE_ID: "approved-template-id"
       })
-    ).toMatchObject({ provider: "wechat_auto_renew" });
+    ).toThrow("AUTO_DEBIT_STAGE1_PROVIDER_MUST_BE_DISABLED");
   });
 
   it("keeps recurring billing and active payment independent from the auto debit switch", () => {
@@ -65,14 +53,9 @@ describe("auto debit deployment safety", () => {
   });
 
   it("serializes the PostgreSQL settlement integration with other database suites", () => {
-    const vitestConfig = readFileSync(
-      join(repoRoot, "apps/api/vitest.config.ts"),
-      "utf8"
-    );
+    const vitestConfig = readFileSync(join(repoRoot, "apps/api/vitest.config.ts"), "utf8");
 
-    expect(vitestConfig).toContain(
-      '"test/auto-debit-settlement.integration.spec.ts"'
-    );
+    expect(vitestConfig).toContain('"test/auto-debit-settlement.integration.spec.ts"');
   });
 });
 

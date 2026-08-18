@@ -4,7 +4,7 @@ import {
   autoDebitAttemptStatusView,
   autoDebitMandateStatusView,
   automationErrorText,
-  buildAutoDebitSummaryView,
+  buildHistoricalAutoDebitSummaryView,
   formatAutomationDate,
   isAutoDebitJobType,
   jobStatusView,
@@ -49,9 +49,9 @@ describe("billing automation view model", () => {
     );
   });
 
-  it("summarizes mandate, processing, unknown, failure and unallocated states", () => {
+  it("summarizes historical mandate and attempt states without payment allocation", () => {
     expect(
-      buildAutoDebitSummaryView({
+      buildHistoricalAutoDebitSummaryView({
         attempts: {
           CREATED: 1,
           FAILED_FINAL: 2,
@@ -60,9 +60,8 @@ describe("billing automation view model", () => {
           SUBMITTING: 5,
           UNKNOWN: 6
         },
-        deadLetterCount: 7,
+        jobs: { CANCELLED: 7 },
         mandates: { ACTIVE: 8, PENDING: 9 },
-        unallocatedPayments: { amount: "12345", count: 10 },
         unknownCount: 6
       })
     ).toEqual({
@@ -70,9 +69,7 @@ describe("billing automation view model", () => {
       failedAttempts: 5,
       pendingMandates: 9,
       processingAttempts: 10,
-      unknownAttempts: 6,
-      unallocatedAmount: 12345,
-      unallocatedCount: 10
+      unknownAttempts: 6
     });
   });
 

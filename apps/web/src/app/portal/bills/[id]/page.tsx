@@ -1,28 +1,14 @@
 "use client";
 
 import { ArrowLeftOutlined, PayCircleOutlined } from "@ant-design/icons";
-import { App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
+import { Alert, App, Button, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { BILL_STATUS_LABELS, BILL_TYPE_LABELS, labelOf } from "../../../../constants/labels";
-import { buildPortalAutoDebitView } from "../../../../lib/portal-auto-debit-view-model";
-import {
-  getPortalAutoDebitAvailability,
-  getPortalDebitAttempts,
-  getPortalPaymentMandates,
-  PortalApiError,
-  portalApiFetch
-} from "../../../../lib/portal-api";
-import {
-  PortalAutoDebitAvailability,
-  PortalBillDetail,
-  PortalDebitAttempt,
-  PortalPaymentMandate,
-  PortalPaymentOrder
-} from "../../../../lib/portal-types";
-import { PortalAutoDebitStatusCard } from "../../auto-debit/auto-debit-status-card";
+import { PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
+import { PortalBillDetail, PortalPaymentOrder } from "../../../../lib/portal-types";
 import { PortalPaymentOrderRecords, PortalWriteOffRecords } from "./bill-records";
 
 export default function PortalBillDetailPage() {
@@ -30,9 +16,6 @@ export default function PortalBillDetailPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const [bill, setBill] = useState<PortalBillDetail>();
-  const [availability, setAvailability] = useState<PortalAutoDebitAvailability>();
-  const [mandates, setMandates] = useState<PortalPaymentMandate[]>([]);
-  const [attempts, setAttempts] = useState<PortalDebitAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
 
@@ -42,16 +25,7 @@ export default function PortalBillDetailPage() {
     }
     setLoading(true);
     try {
-      const nextBill = await portalApiFetch<PortalBillDetail>(`/portal/bills/${params.id}`);
-      const [nextAvailability, nextMandates, nextAttempts] = await Promise.all([
-        getPortalAutoDebitAvailability(),
-        getPortalPaymentMandates(nextBill.orderId),
-        getPortalDebitAttempts({ billId: nextBill.billId })
-      ]);
-      setBill(nextBill);
-      setAvailability(nextAvailability);
-      setMandates(nextMandates);
-      setAttempts(nextAttempts);
+      setBill(await portalApiFetch<PortalBillDetail>(`/portal/bills/${params.id}`));
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(
@@ -105,15 +79,6 @@ export default function PortalBillDetailPage() {
     );
   }
 
-  const autoDebit = availability
-    ? buildPortalAutoDebitView({
-        attempt: attempts[0],
-        availability,
-        bill,
-        mandate: mandates[0]
-      })
-    : null;
-
   return (
     <main style={{ background: "#f6f8fb", minHeight: "100vh", padding: "24px 16px 44px" }}>
       <section style={{ margin: "0 auto", maxWidth: 900 }}>
@@ -141,9 +106,13 @@ export default function PortalBillDetailPage() {
           </Flex>
         </section>
 
-        {autoDebit ? (
-          <PortalAutoDebitStatusCard model={autoDebit} onPay={() => void payBill()} />
-        ) : null}
+        <Alert
+          description="系统会按账期生成账单并发送到期、逾期提醒；请在账单页面主动完成微信支付。"
+          message="账单提醒 + 主动支付"
+          showIcon
+          style={{ marginBottom: 14 }}
+          type="info"
+        />
 
         <section style={sectionStyle}>
           <Flex

@@ -73,10 +73,10 @@ describe("Deployment operations safety", () => {
 
     expect(staging).toMatchObject({
       APP_ENV: "staging",
-      AUTO_DEBIT_ENABLED: "true",
+      AUTO_DEBIT_ENABLED: "false",
       BILLING_AUTOMATION_WORKER_ENABLED: "true",
-      PAYMENT_MANDATE_MOCK_ENABLED: "true",
-      PAYMENT_MANDATE_PROVIDER: "mock",
+      PAYMENT_MANDATE_MOCK_ENABLED: "false",
+      PAYMENT_MANDATE_PROVIDER: "disabled",
       PAYMENT_PROVIDER: "mock"
     });
     expect(production).toMatchObject({
@@ -89,6 +89,18 @@ describe("Deployment operations safety", () => {
     });
   });
 
+  it("pins the complete auto-debit retirement policy in source-build env examples", () => {
+    for (const file of [".env.production.example", ".env.staging.example"]) {
+      const environment = parseEnvironment(read(file));
+
+      expect(environment).toMatchObject({
+        AUTO_DEBIT_ENABLED: "false",
+        PAYMENT_MANDATE_MOCK_ENABLED: "false",
+        PAYMENT_MANDATE_PROVIDER: "disabled"
+      });
+    }
+  });
+
   it("passes explicit auto debit defaults from both image Compose files", () => {
     const staging = parseComposeEnvironment(
       read("docker-compose.staging.images.example.yml")
@@ -98,40 +110,42 @@ describe("Deployment operations safety", () => {
     );
 
     expect(staging).toMatchObject({
-      AUTO_DEBIT_ENABLED: "true",
-      PAYMENT_MANDATE_MOCK_ENABLED: "true",
-      PAYMENT_MANDATE_PROVIDER: "mock"
+      AUTO_DEBIT_ENABLED: "false",
+      PAYMENT_MANDATE_MOCK_ENABLED: "false",
+      PAYMENT_MANDATE_PROVIDER: "disabled"
     });
     expect(production).toMatchObject({
       AUTO_DEBIT_ENABLED: "false",
       PAYMENT_MANDATE_MOCK_ENABLED: "false",
       PAYMENT_MANDATE_PROVIDER: "disabled"
     });
+
+    for (const compose of [
+      read("docker-compose.staging.images.example.yml"),
+      read("docker-compose.production.images.example.yml")
+    ]) {
+      expect(compose).not.toMatch(/AUTO_DEBIT_ENABLED:\s*\$\{[^}]*:-true/);
+      expect(compose).not.toMatch(/PAYMENT_MANDATE_PROVIDER:\s*\$\{[^}]*:-mock/);
+      expect(compose).not.toMatch(/PAYMENT_MANDATE_MOCK_ENABLED:\s*\$\{[^}]*:-true/);
+    }
   });
 
-  it("documents the fixed release order and complete Stage 1B acceptance operations", () => {
+  it("documents the fixed release order and auto-debit retirement operations", () => {
     const deployment = read("docs/deployment.md");
     const runbook = read("docs/operations/stage1b-auto-debit-runbook.zh-CN.md");
     const migration = deployment.indexOf("prisma:migrate:deploy", deployment.indexOf("镜像发布固定顺序"));
     const healthy = deployment.indexOf("healthy", migration);
     const publicHealth = deployment.indexOf("staging-api.subauto.keybox.cloud/api/health", healthy);
-    const acceptance = runbook.match(
-      /## 4\. Staging 十项人工验收\n\n([\s\S]*?)\n\n## 5\./
-    )?.[1] ?? "";
 
     expect(migration).toBeGreaterThanOrEqual(0);
     expect(healthy).toBeGreaterThan(migration);
     expect(publicHealth).toBeGreaterThan(healthy);
-    expect(acceptance.match(/^\d+\./gm)).toHaveLength(10);
-    expect(runbook).toContain("STAGING MOCK，不会发生真实扣款");
-    expect(runbook).toContain("UNKNOWN");
-    expect(runbook).toContain("死信");
-    expect(runbook).toContain("人工扣款");
-    expect(runbook).toContain("未分配收款");
-    expect(runbook).toContain("WECHAT_AUTO_RENEW_TEMPLATE_ID");
-    expect(runbook).toContain(
-      "../superpowers/specs/assets/2026-08-04-stage1b-wechat-auto-debit-portal-flow-long.png"
-    );
+    expect(runbook).toContain("stage1:auto-debit-retirement:dry-run");
+    expect(runbook).toContain("stage1:auto-debit-retirement:apply");
+    expect(runbook).toContain("postcondition.executableJobCount");
+    expect(runbook).toContain("账单提醒 + 主动支付");
+    expect(runbook).toContain("历史自动扣款");
+    expect(runbook).toContain("不得重新启用自动扣款");
   });
 
   it("routes staging WeChat OAuth through the authorized Portal domain", () => {
@@ -264,7 +278,9 @@ function parseComposeEnvironment(source: string) {
   const result: Record<string, string> = {};
   const apiEnvironment = source.match(/\n  api:\n[\s\S]*?\n    environment:\n([\s\S]*?)\n    ports:/)?.[1] ?? "";
   for (const line of apiEnvironment.split(/\r?\n/)) {
-    const match = /^      ([A-Z0-9_]+): \$\{\1:-([^}]*)\}$/.exec(line);
+    const variable = /^      ([A-Z0-9_]+): \$\{\1:-([^}]*)\}$/.exec(line);
+    const literal = /^      ([A-Z0-9_]+): "([^"]*)"$/.exec(line);
+    const match = variable ?? literal;
     if (match) {
       result[match[1]] = match[2];
     }

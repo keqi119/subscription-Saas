@@ -1,6 +1,6 @@
 "use client";
 
-import { Alert, Button, Card, Descriptions, Empty, Space, Table, Tag, Typography } from "antd";
+import { Alert, Card, Descriptions, Empty, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
@@ -54,33 +54,15 @@ export interface AdminAutoDebitAttempt {
   status: string;
 }
 
-export function AutoDebitOperationsPanel({
+export function HistoricalAutoDebitPanel({
   attempts,
-  canExecute,
-  canManage,
   loading,
-  mandates,
-  onManualDebit,
-  onMockResult,
-  onQueryAttempt,
-  onRevokeMandate,
-  onSyncMandate
+  mandates
 }: {
   attempts: AdminAutoDebitAttempt[];
-  canExecute: boolean;
-  canManage: boolean;
   loading: boolean;
   mandates: AdminPaymentMandate[];
-  onManualDebit: (attempt: AdminAutoDebitAttempt) => void;
-  onMockResult: (attempt: AdminAutoDebitAttempt) => void;
-  onQueryAttempt: (attempt: AdminAutoDebitAttempt) => void;
-  onRevokeMandate: (mandate: AdminPaymentMandate) => void;
-  onSyncMandate: (mandate: AdminPaymentMandate) => void;
 }) {
-  const mockMode =
-    mandates.some((item) => item.providerMode === "mock") ||
-    attempts.some((item) => item.mandate.providerMode === "mock");
-
   const mandateColumns: ColumnsType<AdminPaymentMandate> = [
     {
       dataIndex: "mandateNo",
@@ -124,22 +106,9 @@ export function AutoDebitOperationsPanel({
       width: 160
     },
     {
-      fixed: "right",
-      render: (_, record) =>
-        canManage && ["PENDING", "ACTIVE", "SUSPENDED"].includes(record.status) ? (
-          <Space size={4}>
-            <Button onClick={() => onSyncMandate(record)} size="small">
-              同步授权
-            </Button>
-            <Button danger onClick={() => onRevokeMandate(record)} size="small">
-              关闭授权
-            </Button>
-          </Space>
-        ) : (
-          "-"
-        ),
-      title: "操作",
-      width: 190
+      dataIndex: "providerMode",
+      title: "历史供应商模式",
+      width: 150
     }
   ];
 
@@ -153,6 +122,12 @@ export function AutoDebitOperationsPanel({
       ),
       title: "订单",
       width: 190
+    },
+    {
+      render: (_, record) =>
+        record.customer ? `${record.customer.name} / ${record.customer.customerNo}` : "-",
+      title: "客户",
+      width: 170
     },
     {
       render: (_, record) => `${record.bill.billNo} / ${formatFen(record.requestedAmount)}`,
@@ -196,59 +171,28 @@ export function AutoDebitOperationsPanel({
     },
     { dataIndex: "createdAt", render: formatTime, title: "创建时间", width: 160 },
     {
-      fixed: "right",
-      render: (_, record) => {
-        if (!canExecute) {
-          return "-";
-        }
-        if (record.status === "UNKNOWN") {
-          return (
-            <Space size={4}>
-              <Button onClick={() => onQueryAttempt(record)} size="small" type="primary">
-                查询结果
-              </Button>
-              {record.mandate.providerMode === "mock" ? (
-                <Button onClick={() => onMockResult(record)} size="small">
-                  设置模拟结果
-                </Button>
-              ) : null}
-            </Space>
-          );
-        }
-        if (record.mandate.providerMode === "mock" && record.status === "PROCESSING") {
-          return (
-            <Button onClick={() => onMockResult(record)} size="small">
-              设置模拟结果
-            </Button>
-          );
-        }
-        if (["FAILED_RETRYABLE", "FAILED_FINAL", "CANCELLED"].includes(record.status)) {
-          return (
-            <Button onClick={() => onManualDebit(record)} size="small" type="primary">
-              人工扣款
-            </Button>
-          );
-        }
-        return "-";
-      },
-      title: "操作",
-      width: 210
+      render: (_, record) => record.mandate.providerMode,
+      title: "历史供应商模式",
+      width: 150
     }
   ];
 
   return (
-    <Card title="自动扣款授权与尝试">
+    <Card title="历史自动扣款（已停用）">
       <Space orientation="vertical" size={16} style={{ width: "100%" }}>
-        {mockMode ? (
-          <Alert message="STAGING MOCK，不会发生真实扣款" showIcon type="warning" />
-        ) : null}
+        <Alert
+          description="以下授权、扣款尝试及结算链路仅作为历史审计证据保留；系统不会发起新的扣款、授权同步或供应商查询。"
+          message="阶段 1 已切换为账单提醒 + 主动支付"
+          showIcon
+          type="info"
+        />
         <Table
           columns={mandateColumns}
           dataSource={mandates}
           loading={loading}
           pagination={false}
           rowKey="id"
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1160 }}
           size="small"
           title={() => "支付授权"}
         />
@@ -258,7 +202,7 @@ export function AutoDebitOperationsPanel({
           loading={loading}
           pagination={false}
           rowKey="id"
-          scroll={{ x: 1550 }}
+          scroll={{ x: 1650 }}
           size="small"
           title={() => "扣款尝试与结算链路"}
         />
@@ -279,9 +223,9 @@ export function OrderAutoDebitTracePanel({
   const mandate = mandates[0];
   return (
     <Card
-      extra={<Link href="/billing/monthly-rent">进入自动扣款操作台</Link>}
+      extra={<Link href="/billing/monthly-rent">查看历史自动扣款记录</Link>}
       loading={loading}
-      title="自动扣款结算追踪"
+      title="历史自动扣款结算追踪（已停用）"
     >
       <Space orientation="vertical" size={16} style={{ width: "100%" }}>
         <Descriptions

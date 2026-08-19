@@ -1229,6 +1229,53 @@ describe("AssetFactsService audited commands", () => {
 });
 
 describe("AssetFactsService read projections", () => {
+  it("discovers occupancy-compatible order and lease facts for a vehicle without a current subscription", async () => {
+    const harness = createServiceHarness();
+    harness.records.orders.get("order-1")!.orderStatus = OrderStatus.ACTIVE;
+    harness.records.vehicles.get("vehicle-1")!.status = VehicleStatus.LEASED;
+    harness.records.leases.get("order-1")!.status = LeaseStatus.ACTIVE;
+
+    const projection = await harness.service.getByVehicle("vehicle-1");
+
+    expect(projection.runtime).toEqual({
+      leaseStatus: LeaseStatus.ACTIVE,
+      orderStatus: OrderStatus.ACTIVE,
+      vehicleStatus: VehicleStatus.LEASED
+    });
+    expect(projection.discrepancyFlags).toEqual([
+      "ORDER_WITHOUT_CURRENT_SUBSCRIPTION",
+      "LEASE_WITHOUT_CURRENT_SUBSCRIPTION",
+      "VEHICLE_WITHOUT_CURRENT_SUBSCRIPTION"
+    ]);
+  });
+
+  it("flags an occupancy-compatible lease even when its vehicle order status is not compatible", async () => {
+    const harness = createServiceHarness();
+    harness.records.orders.get("order-1")!.orderStatus = OrderStatus.CANCELLED;
+    harness.records.vehicles.get("vehicle-1")!.status = VehicleStatus.AVAILABLE;
+    harness.records.leases.get("order-1")!.status = LeaseStatus.ACTIVE;
+
+    const projection = await harness.service.getByVehicle("vehicle-1");
+
+    expect(projection.runtime).toEqual({
+      leaseStatus: LeaseStatus.ACTIVE,
+      orderStatus: OrderStatus.CANCELLED,
+      vehicleStatus: VehicleStatus.AVAILABLE
+    });
+    expect(projection.discrepancyFlags).toEqual(["LEASE_WITHOUT_CURRENT_SUBSCRIPTION"]);
+  });
+
+  it("flags a current vehicle subscription whose order belongs to another customer", async () => {
+    const current = subscriptionRow({ customerId: "customer-2" });
+    const harness = createServiceHarness({ subscriptionPeriods: [current] });
+
+    const projection = await harness.service.getByVehicle("vehicle-1");
+
+    expect(projection.discrepancyFlags).toContain(
+      "OPEN_SUBSCRIPTION_ORDER_CUSTOMER_MISMATCH"
+    );
+  });
+
   it("returns vehicle current/history source identity and deterministic runtime discrepancy flags", async () => {
     const current = subscriptionRow({
       customerId: "customer-2",
@@ -1926,7 +1973,23 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
       findFirst: async ({ where }: { where: { deletedAt?: null; orderId?: string } }) => {
         const lease = where.orderId ? records.leases.get(where.orderId) ?? null : null;
         return where.deletedAt === null && lease?.deletedAt ? null : lease;
-      }
+      },
+      findMany: async ({
+        where
+      }: {
+        where: { deletedAt?: null; orderId?: { in?: string[] } };
+      }) =>
+        [...records.leases.values()]
+          .filter(
+            (lease) =>
+              (where.deletedAt !== null || lease.deletedAt === null) &&
+              (where.orderId?.in === undefined || where.orderId.in.includes(lease.orderId))
+          )
+          .sort((left, right) => {
+            const activated = (right.activatedAt?.getTime() ?? 0) -
+              (left.activatedAt?.getTime() ?? 0);
+            return activated === 0 ? left.id.localeCompare(right.id) : activated;
+          })
     },
     subscriptionContractSegment: {
       findFirst: async ({ where }: { where: { id?: string } }) =>
@@ -1934,7 +1997,28 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
     },
     subscriptionOrder: {
       findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
-        findServiceRecord(records.orders, where.id, where.deletedAt === null)
+        findServiceRecord(records.orders, where.id, where.deletedAt === null),
+      findMany: async ({
+        where
+      }: {
+        where: {
+          deletedAt?: null;
+          orderStatus?: { in?: OrderStatus[] };
+          vehicleId?: string;
+        };
+      }) =>
+        [...records.orders.values()]
+          .filter(
+            (order) =>
+              (where.deletedAt !== null || order.deletedAt === null) &&
+              (where.vehicleId === undefined || order.vehicleId === where.vehicleId) &&
+              (where.orderStatus?.in === undefined ||
+                where.orderStatus.in.includes(order.orderStatus))
+          )
+          .sort(
+            (left, right) =>
+              left.orderNo.localeCompare(right.orderNo) || left.id.localeCompare(right.id)
+          )
     },
     vehicle: {
       findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
@@ -1944,15 +2028,19 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
   Object.assign(sharedTx, aggregateDelegates);
 
   let transactionSequence = 0;
-  let lockTail = Promise.resolve();
-  const acquireSourceLock = async () => {
-    const previous = lockTail;
+  const lockTails = new Map<string, Promise<void>>();
+  const acquireSourceLock = async (lockKey: string) => {
+    const previous = lockTails.get(lockKey) ?? Promise.resolve();
     let release!: () => void;
-    lockTail = new Promise<void>((resolve) => {
+    const next = new Promise<void>((resolve) => {
       release = resolve;
     });
+    lockTails.set(lockKey, next);
     await previous;
-    return release;
+    return () => {
+      release();
+      if (lockTails.get(lockKey) === next) lockTails.delete(lockKey);
+    };
   };
 
   const prisma = {
@@ -1971,7 +2059,7 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
       transactionOptions.push(transactionOption ?? {});
       transactionSequence += 1;
       const transactionId = `service-transaction-${transactionSequence}`;
-      let releaseSourceLock: (() => void) | undefined;
+      const heldSourceLocks = new Map<string, () => void>();
       const tx = {
         ...sharedTx,
         $queryRaw: async (query: Prisma.Sql) => {
@@ -1981,7 +2069,10 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
               : [{ transactionId }];
           }
           if (query.sql.includes("pg_advisory_xact_lock")) {
-            releaseSourceLock = await acquireSourceLock();
+            const lockKey = String(query.values[0]);
+            if (!heldSourceLocks.has(lockKey)) {
+              heldSourceLocks.set(lockKey, await acquireSourceLock(lockKey));
+            }
             return [{ locked: true }];
           }
           return [];
@@ -1990,7 +2081,9 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
       try {
         return await work(tx);
       } finally {
-        releaseSourceLock?.();
+        for (const releaseSourceLock of [...heldSourceLocks.values()].reverse()) {
+          releaseSourceLock();
+        }
       }
     }
   } as unknown as PrismaService;

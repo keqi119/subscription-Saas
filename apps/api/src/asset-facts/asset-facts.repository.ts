@@ -36,6 +36,7 @@ export const ASSET_FACT_CONFLICT_CODE = {
 type AssetFactConflictCode =
   (typeof ASSET_FACT_CONFLICT_CODE)[keyof typeof ASSET_FACT_CONFLICT_CODE];
 type PeriodKind = "ownership" | "subscription";
+export type AssetFactCommandPhase = "end" | "start";
 
 export interface AssetFactWriteOutcome<T> {
   readonly fact: T;
@@ -96,11 +97,21 @@ const CONFLICT_MESSAGES: Readonly<Record<AssetFactConflictCode, string>> = {
 
 /**
  * Every command requires a caller-provided Prisma interactive transaction running at PostgreSQL
- * READ COMMITTED. The repository never starts or owns a transaction. Start-source advisory locks
- * and close compare-and-set semantics are valid only inside that caller-owned transaction.
+ * READ COMMITTED. The repository never starts or owns a transaction. Command-source advisory
+ * locks and close compare-and-set semantics are valid only inside that caller-owned transaction.
  */
 @Injectable()
 export class AssetFactsRepository {
+  async lockCommandSource(
+    tx: Prisma.TransactionClient,
+    periodKind: PeriodKind,
+    phase: AssetFactCommandPhase,
+    source: StableFactSource
+  ) {
+    await assertTransactionContract(tx);
+    await acquireCommandSourceLock(tx, periodKind, phase, source);
+  }
+
   async openSubscriptionPeriod(
     tx: Prisma.TransactionClient,
     input: OpenSubscriptionPeriodInput
@@ -112,9 +123,8 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: OpenSubscriptionPeriodInput
   ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
-    await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    await lockStartSource(tx, "subscription", normalizedInput.source);
+    await this.lockCommandSource(tx, "subscription", "start", normalizedInput.source);
     const existing = await findSubscriptionByStartSource(tx, normalizedInput);
     if (existing) {
       return { fact: replaySubscriptionStart(existing, normalizedInput), wrote: false };
@@ -156,8 +166,8 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseSubscriptionPeriodInput
   ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
-    await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    await this.lockCommandSource(tx, "subscription", "end", normalizedInput.source);
     const replay = await findSubscriptionByEndSource(tx, normalizedInput);
     if (replay) {
       return { fact: replaySubscriptionClose(replay, normalizedInput), wrote: false };
@@ -208,9 +218,8 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: OpenOwnershipPeriodInput
   ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
-    await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    await lockStartSource(tx, "ownership", normalizedInput.source);
+    await this.lockCommandSource(tx, "ownership", "start", normalizedInput.source);
     const existing = await findOwnershipByStartSource(tx, normalizedInput);
     if (existing) {
       return { fact: replayOwnershipStart(existing, normalizedInput), wrote: false };
@@ -249,8 +258,8 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseOwnershipPeriodInput
   ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
-    await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
+    await this.lockCommandSource(tx, "ownership", "end", normalizedInput.source);
     const replay = await findOwnershipByEndSource(tx, normalizedInput);
     if (replay) {
       return { fact: replayOwnershipClose(replay, normalizedInput), wrote: false };
@@ -329,15 +338,16 @@ function normalizeSnapshot(snapshot: Prisma.InputJsonObject): Prisma.JsonObject 
   return normalized as Prisma.JsonObject;
 }
 
-async function lockStartSource(
+async function acquireCommandSourceLock(
   tx: Prisma.TransactionClient,
   periodKind: PeriodKind,
+  phase: AssetFactCommandPhase,
   source: StableFactSource
 ) {
   const lockKey = JSON.stringify([
     "asset-facts",
     periodKind,
-    "start",
+    phase,
     source.type,
     source.id,
     source.key

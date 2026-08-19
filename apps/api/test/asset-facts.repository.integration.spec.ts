@@ -1,7 +1,9 @@
 import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
+  AuditAction,
   Prisma,
+  VehicleStatus,
   VehicleOwnershipPeriodEndReason,
   VehicleOwnershipPeriodStartReason,
   VehicleSubscriptionPeriodEndReason,
@@ -14,6 +16,14 @@ import {
   ASSET_FACT_CONFLICT_CODE,
   AssetFactsRepository
 } from "../src/asset-facts/asset-facts.repository";
+import { AuditService } from "../src/audit/audit.service";
+import type {
+  CloseOwnershipPeriodDto,
+  CloseSubscriptionPeriodDto,
+  OpenOwnershipPeriodDto,
+  OpenSubscriptionPeriodDto
+} from "../src/asset-facts/dto/asset-facts.dto";
+import { AssetFactsService } from "../src/asset-facts/asset-facts.service";
 import type {
   CloseOwnershipPeriodInput,
   CloseSubscriptionPeriodInput,
@@ -413,7 +423,7 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
 
       const result = await runCloseRace(prisma, periodKind, closeInput, closeInput);
 
-      expect(result.waitedOnRowLock).toBe(true);
+      expect(result.waitedOnSourceLock).toBe(true);
       expect(fulfilledValue(result.second).id).toBe(result.first.id);
       expect(fulfilledValue(result.second).endedAt).toEqual(closeInput.endedAt);
     }
@@ -439,7 +449,7 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
 
       const result = await runCloseRace(prisma, periodKind, firstInput, secondInput);
 
-      expect(result.waitedOnRowLock).toBe(true);
+      expect(result.waitedOnSourceLock).toBe(true);
       expect(result.first.id).toBe(opened.id);
       expectConflictError(
         rejectedValue(result.second),
@@ -447,6 +457,130 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
           ? ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_END_SOURCE
           : ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE
       );
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "keeps an exact %s start replay on the original snapshot when authority changes behind its source lock",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const input = serviceOpenDto(periodKind, fixture, `service-${periodKind}-start-replay`);
+      const service = createAssetFactsService(prisma);
+      const auditReached = deferred<void>();
+      const releaseAudit = deferred<void>();
+      const firstService = createAssetFactsService(
+        prisma,
+        blockingAuditService(prisma, auditReached, releaseAudit)
+      );
+      const firstPromise = serviceOpen(firstService, periodKind, input);
+      void firstPromise.catch(auditReached.reject);
+      await auditReached.promise;
+      const mutationPromise = prisma.vehicle.update({
+        data: { status: VehicleStatus.AVAILABLE },
+        where: { id: fixture.vehicleId }
+      });
+      const earlyMutation = await settlesWithin(mutationPromise, 300);
+
+      const replayPromise = settled(serviceOpen(service, periodKind, input));
+      let waitedOnSourceLock: boolean;
+      try {
+        waitedOnSourceLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
+      } finally {
+        releaseAudit.resolve();
+      }
+      const original = await firstPromise;
+      await mutationPromise;
+      const replay = fulfilledValue(await replayPromise);
+
+      expect(earlyMutation.finished).toBe(false);
+      expect(waitedOnSourceLock).toBe(true);
+      expect(replay.id).toBe(original.id);
+      await expect(countAssetFactAudits(prisma, original.id, AuditAction.CREATE)).resolves.toBe(1);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "serializes an exact concurrent %s close before authority snapshot selection and audits once",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const service = createAssetFactsService(prisma);
+      const opened = await serviceOpen(
+        service,
+        periodKind,
+        serviceOpenDto(periodKind, fixture, `service-${periodKind}-close-open`)
+      );
+      const closeInput = serviceCloseDto(
+        periodKind,
+        opened.id,
+        `service-${periodKind}-close-replay`
+      );
+      const auditReached = deferred<void>();
+      const releaseAudit = deferred<void>();
+      const firstService = createAssetFactsService(
+        prisma,
+        blockingAuditService(prisma, auditReached, releaseAudit)
+      );
+      const firstPromise = serviceClose(firstService, periodKind, closeInput);
+      void firstPromise.catch(auditReached.reject);
+      await auditReached.promise;
+
+      const mutationPromise = prisma.vehicle.update({
+        data: { status: VehicleStatus.AVAILABLE },
+        where: { id: fixture.vehicleId }
+      });
+      const earlyMutation = await settlesWithin(mutationPromise, 300);
+      const secondPromise = settled(serviceClose(service, periodKind, closeInput));
+      let waitedOnSourceLock: boolean;
+      try {
+        waitedOnSourceLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
+      } finally {
+        releaseAudit.resolve();
+      }
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+      await mutationPromise;
+
+      expect(earlyMutation.finished).toBe(false);
+      expect(waitedOnSourceLock).toBe(true);
+      expect(fulfilledValue(second).id).toBe(first.id);
+      await expect(countAssetFactAudits(prisma, first.id, AuditAction.UPDATE)).resolves.toBe(1);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "holds authoritative %s rows through the fact and audit write boundary",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const auditReached = deferred<void>();
+      const releaseAudit = deferred<void>();
+      const service = createAssetFactsService(
+        prisma,
+        blockingAuditService(prisma, auditReached, releaseAudit)
+      );
+      const commandPromise = serviceOpen(
+        service,
+        periodKind,
+        serviceOpenDto(periodKind, fixture, `service-${periodKind}-authority-lock`)
+      );
+      void commandPromise.catch(auditReached.reject);
+      await auditReached.promise;
+
+      const mutationPromise: Promise<unknown> =
+        periodKind === "subscription"
+          ? prisma.subscriptionOrder.update({
+              data: { vehicleId: fixture.otherVehicleId },
+              where: { id: fixture.orderId }
+            })
+          : prisma.vehicle.update({
+              data: { deletedAt: new Date() },
+              where: { id: fixture.vehicleId }
+            });
+      const earlyMutation = await settlesWithin(mutationPromise, 300);
+      releaseAudit.resolve();
+      const fact = await commandPromise;
+      await mutationPromise;
+
+      expect(earlyMutation.finished).toBe(false);
+      await expect(countAssetFactAudits(prisma, fact.id, AuditAction.CREATE)).resolves.toBe(1);
     }
   );
 
@@ -535,6 +669,8 @@ type RepositoryPeriodKind = "ownership" | "subscription";
 type RepositoryFact = { endedAt: Date | null; id: string };
 type RepositoryOpenInput = OpenOwnershipPeriodInput | OpenSubscriptionPeriodInput;
 type RepositoryCloseInput = CloseOwnershipPeriodInput | CloseSubscriptionPeriodInput;
+type ServiceOpenDto = OpenOwnershipPeriodDto | OpenSubscriptionPeriodDto;
+type ServiceCloseDto = CloseOwnershipPeriodDto | CloseSubscriptionPeriodDto;
 type RepositoryFixture = {
   customerId: string;
   orderId: string;
@@ -710,6 +846,110 @@ function readCommitted<T>(
   });
 }
 
+function createAssetFactsService(prisma: PrismaService, auditService = new AuditService(prisma)) {
+  return new AssetFactsService(prisma, new AssetFactsRepository(), auditService);
+}
+
+function blockingAuditService(
+  prisma: PrismaService,
+  reached: ReturnType<typeof deferred<void>>,
+  release: ReturnType<typeof deferred<void>>
+) {
+  const realAuditService = new AuditService(prisma);
+  return {
+    async write(...args: Parameters<AuditService["write"]>) {
+      await realAuditService.write(...args);
+      reached.resolve();
+      await release.promise;
+    }
+  } as unknown as AuditService;
+}
+
+function serviceOpenDto(
+  periodKind: RepositoryPeriodKind,
+  fixture: RepositoryFixture,
+  label: string
+): ServiceOpenDto {
+  const sourceId = randomUUID();
+  const common = {
+    confirmedAt: "2026-08-01T00:05:00.000Z",
+    snapshot: { label },
+    source: {
+      id: sourceId,
+      key: `${REPOSITORY_FIXTURE_PREFIX}:${label}:${sourceId}`,
+      type: "STAGE1C_TEST"
+    },
+    startedAt: "2026-08-01T00:00:00.000Z",
+    vehicleId: fixture.vehicleId
+  };
+  return periodKind === "subscription"
+    ? {
+        ...common,
+        contractId: null,
+        contractSegmentId: null,
+        customerId: fixture.customerId,
+        orderId: fixture.orderId,
+        reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED
+      }
+    : {
+        ...common,
+        assetOwnerId: fixture.ownerId,
+        reason: VehicleOwnershipPeriodStartReason.INITIAL_ACQUISITION
+      };
+}
+
+function serviceCloseDto(
+  periodKind: RepositoryPeriodKind,
+  periodId: string,
+  label: string
+): ServiceCloseDto {
+  const sourceId = randomUUID();
+  const common = {
+    confirmedAt: "2026-10-01T00:05:00.000Z",
+    endedAt: "2026-10-01T00:00:00.000Z",
+    periodId,
+    snapshot: { label },
+    source: {
+      id: sourceId,
+      key: `${REPOSITORY_FIXTURE_PREFIX}:${label}:${sourceId}`,
+      type: "STAGE1C_TEST"
+    }
+  };
+  return periodKind === "subscription"
+    ? { ...common, reason: VehicleSubscriptionPeriodEndReason.RETURN_CONFIRMED }
+    : { ...common, reason: VehicleOwnershipPeriodEndReason.OWNERSHIP_TRANSFER };
+}
+
+function serviceOpen(
+  service: AssetFactsService,
+  periodKind: RepositoryPeriodKind,
+  input: ServiceOpenDto
+): Promise<RepositoryFact> {
+  return periodKind === "subscription"
+    ? service.openSubscriptionPeriod(input as OpenSubscriptionPeriodDto, { actorId: null })
+    : service.openOwnershipPeriod(input as OpenOwnershipPeriodDto, { actorId: null });
+}
+
+function serviceClose(
+  service: AssetFactsService,
+  periodKind: RepositoryPeriodKind,
+  input: ServiceCloseDto
+): Promise<RepositoryFact> {
+  return periodKind === "subscription"
+    ? service.closeSubscriptionPeriod(input as CloseSubscriptionPeriodDto, { actorId: null })
+    : service.closeOwnershipPeriod(input as CloseOwnershipPeriodDto, { actorId: null });
+}
+
+function countAssetFactAudits(
+  prisma: PrismaService,
+  entityId: string,
+  action: AuditAction
+) {
+  return prisma.auditLog.count({
+    where: { action, entityId, module: "asset_facts" }
+  });
+}
+
 async function runStartRace(
   prisma: PrismaService,
   periodKind: RepositoryPeriodKind,
@@ -780,6 +1020,7 @@ async function runCloseRace(
   const table =
     periodKind === "subscription" ? "vehicle_subscription_period" : "vehicle_ownership_period";
   const firstPromise = readCommitted(prisma, async (tx) => {
+    await repository.lockCommandSource(tx, periodKind, "end", firstInput.source);
     await tx.$queryRaw(
       Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${firstInput.periodId}::uuid FOR UPDATE`
     );
@@ -792,14 +1033,14 @@ async function runCloseRace(
   const secondPromise = readCommitted(prisma, (tx) =>
     repositoryClose(repository, tx, periodKind, secondInput)
   );
-  let waitedOnRowLock: boolean;
+  let waitedOnSourceLock: boolean;
   try {
-    waitedOnRowLock = await waitForDatabaseLock(prisma, table);
+    waitedOnSourceLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
   } finally {
     releaseFirst.resolve();
   }
   const [first, second] = await Promise.all([firstPromise, settled(secondPromise)]);
-  return { first, second, waitedOnRowLock };
+  return { first, second, waitedOnSourceLock };
 }
 
 async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string) {
@@ -1261,6 +1502,17 @@ async function deleteFixturesIfTablesExist(prisma: PrismaService) {
 async function deleteRepositoryFixtures(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw`
+      DELETE FROM "audit_log"
+      WHERE "module" = 'asset_facts'
+        AND "entity_id" IN (
+          SELECT "id" FROM "vehicle_subscription_period"
+          WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+          UNION ALL
+          SELECT "id" FROM "vehicle_ownership_period"
+          WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}
+        )
+    `;
     await tx.$executeRaw`
       DELETE FROM "vehicle_subscription_period"
       WHERE "start_source_key" LIKE ${`${REPOSITORY_FIXTURE_PREFIX}%`}

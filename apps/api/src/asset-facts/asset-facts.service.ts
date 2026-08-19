@@ -170,6 +170,8 @@ export class AssetFactsService {
     assertSource(dto.source);
 
     return this.runCommand(async (tx) => {
+      await this.repository.lockCommandSource(tx, "subscription", "start", dto.source);
+      await lockSubscriptionAuthorityRows(tx, dto);
       const authority = await loadSubscriptionAuthority(tx, dto);
       const replay = await findSubscriptionStartReplay(tx, dto);
       const snapshot = replaySnapshot(replay?.startSnapshot, metadata) ??
@@ -206,6 +208,8 @@ export class AssetFactsService {
     assertSource(dto.source);
 
     return this.runCommand(async (tx) => {
+      await this.repository.lockCommandSource(tx, "subscription", "end", dto.source);
+      await lockPeriodRow(tx, "vehicle_subscription_period", dto.periodId);
       const period = await tx.vehicleSubscriptionPeriod.findFirst({
         where: { id: dto.periodId }
       });
@@ -216,6 +220,7 @@ export class AssetFactsService {
         );
       }
       assertEndAfterStart(period.startedAt, endedAt);
+      await lockSubscriptionAuthorityRows(tx, period);
       const authority = await loadSubscriptionAuthority(tx, {
         contractId: period.contractId,
         contractSegmentId: period.contractSegmentId,
@@ -261,6 +266,8 @@ export class AssetFactsService {
     assertSource(dto.source);
 
     return this.runCommand(async (tx) => {
+      await this.repository.lockCommandSource(tx, "ownership", "start", dto.source);
+      await lockOwnershipAuthorityRows(tx, dto);
       const authority = await loadOwnershipAuthority(tx, dto);
       const replay = await findOwnershipStartReplay(tx, dto);
       const snapshot = replaySnapshot(replay?.startSnapshot, metadata) ??
@@ -294,6 +301,8 @@ export class AssetFactsService {
     assertSource(dto.source);
 
     return this.runCommand(async (tx) => {
+      await this.repository.lockCommandSource(tx, "ownership", "end", dto.source);
+      await lockPeriodRow(tx, "vehicle_ownership_period", dto.periodId);
       const period = await tx.vehicleOwnershipPeriod.findFirst({ where: { id: dto.periodId } });
       if (!period) {
         throw notFound(
@@ -302,6 +311,7 @@ export class AssetFactsService {
         );
       }
       assertEndAfterStart(period.startedAt, endedAt);
+      await lockOwnershipAuthorityRows(tx, period);
       const authority = await loadOwnershipAuthority(tx, {
         assetOwnerId: period.assetOwnerId,
         vehicleId: period.vehicleId
@@ -346,25 +356,64 @@ export class AssetFactsService {
     }
     const subscription = projectSubscriptionRows(subscriptionRows);
     const ownership = projectOwnershipRows(ownershipRows);
-    const order = subscription.current
-      ? await this.prisma.subscriptionOrder.findFirst({
-          select: ORDER_SELECT,
-          where: { deletedAt: null, id: subscription.current.orderId }
-        })
-      : null;
-    const lease = order
-      ? await this.prisma.lease.findFirst({
+    const [currentOrder, vehicleOrders] = await Promise.all([
+      subscription.current
+        ? this.prisma.subscriptionOrder.findFirst({
+            select: ORDER_SELECT,
+            where: { deletedAt: null, id: subscription.current.orderId }
+          })
+        : null,
+      this.prisma.subscriptionOrder.findMany({
+        orderBy: [{ orderNo: "asc" }, { id: "asc" }],
+        select: ORDER_SELECT,
+        where: {
+          deletedAt: null,
+          vehicleId
+        }
+      })
+    ]);
+    const orderIds = [
+      ...new Set([
+        ...vehicleOrders.map(({ id }) => id),
+        ...(currentOrder ? [currentOrder.id] : [])
+      ])
+    ];
+    const leases = orderIds.length
+      ? await this.prisma.lease.findMany({
+          orderBy: [{ activatedAt: "desc" }, { id: "asc" }],
           select: LEASE_SELECT,
-          where: { deletedAt: null, orderId: order.id }
+          where: { deletedAt: null, orderId: { in: orderIds } }
         })
+      : [];
+    const runtimeOrder = currentOrder ??
+      vehicleOrders.find(({ orderStatus }) => orderExpectsSubscription(orderStatus)) ??
+      vehicleOrders.find(({ id }) =>
+        leases.some(
+          ({ orderId, status }) => orderId === id && leaseExpectsSubscription(status)
+        )
+      ) ??
+      vehicleOrders[0] ??
+      null;
+    const currentLease = currentOrder
+      ? leases.find(({ orderId }) => orderId === currentOrder.id) ?? null
+      : null;
+    const runtimeLease = runtimeOrder
+      ? leases.find(({ orderId }) => orderId === runtimeOrder.id) ?? null
       : null;
 
     return {
-      discrepancyFlags: vehicleDiscrepancies(vehicle, subscription.current, order, lease),
+      discrepancyFlags: vehicleDiscrepancies(
+        vehicle,
+        subscription.current,
+        currentOrder,
+        currentLease,
+        vehicleOrders,
+        leases
+      ),
       ownership,
       runtime: {
-        leaseStatus: lease?.status ?? null,
-        orderStatus: order?.orderStatus ?? null,
+        leaseStatus: runtimeLease?.status ?? null,
+        orderStatus: runtimeOrder?.orderStatus ?? null,
         vehicleStatus: vehicle.status
       },
       subscription,
@@ -436,6 +485,77 @@ export class AssetFactsService {
       tx
     );
   }
+}
+
+type AuthorityTable =
+  | "asset_owner"
+  | "contract"
+  | "customer"
+  | "subscription_contract_segment"
+  | "subscription_order"
+  | "vehicle";
+
+async function lockSubscriptionAuthorityRows(
+  tx: Prisma.TransactionClient,
+  input: {
+    contractId?: string | null;
+    contractSegmentId?: string | null;
+    customerId: string;
+    orderId: string;
+    vehicleId: string;
+  }
+) {
+  await lockAuthorityRows(tx, [
+    input.contractId ? { id: input.contractId, table: "contract" } : null,
+    input.contractSegmentId
+      ? { id: input.contractSegmentId, table: "subscription_contract_segment" }
+      : null,
+    { id: input.customerId, table: "customer" },
+    { id: input.orderId, table: "subscription_order" },
+    { id: input.vehicleId, table: "vehicle" }
+  ]);
+}
+
+async function lockOwnershipAuthorityRows(
+  tx: Prisma.TransactionClient,
+  input: { assetOwnerId: string; vehicleId: string }
+) {
+  await lockAuthorityRows(tx, [
+    { id: input.assetOwnerId, table: "asset_owner" },
+    { id: input.vehicleId, table: "vehicle" }
+  ]);
+}
+
+async function lockAuthorityRows(
+  tx: Prisma.TransactionClient,
+  rows: ReadonlyArray<{ id: string; table: AuthorityTable } | null>
+) {
+  const orderedRows = rows
+    .filter((row): row is { id: string; table: AuthorityTable } => row !== null)
+    .sort((left, right) =>
+      left.table === right.table
+        ? compareLockKey(left.id, right.id)
+        : compareLockKey(left.table, right.table)
+    );
+  for (const row of orderedRows) {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE`
+    );
+  }
+}
+
+function compareLockKey(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function lockPeriodRow(
+  tx: Prisma.TransactionClient,
+  table: "vehicle_ownership_period" | "vehicle_subscription_period",
+  periodId: string
+) {
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${periodId}::uuid FOR UPDATE`
+  );
 }
 
 async function loadSubscriptionAuthority(
@@ -702,10 +822,18 @@ function vehicleDiscrepancies(
   vehicle: VehicleAuthority,
   current: ReturnType<typeof projectSubscriptionPeriod> | null,
   order: OrderAuthority | null,
-  lease: LeaseAuthority | null
+  lease: LeaseAuthority | null,
+  vehicleOrders: OrderAuthority[],
+  vehicleLeases: LeaseAuthority[]
 ): AssetFactDiscrepancyFlag[] {
   const flags: AssetFactDiscrepancyFlag[] = [];
   if (!current) {
+    if (vehicleOrders.some(({ orderStatus }) => orderExpectsSubscription(orderStatus))) {
+      flags.push("ORDER_WITHOUT_CURRENT_SUBSCRIPTION");
+    }
+    if (vehicleLeases.some(({ status }) => leaseExpectsSubscription(status))) {
+      flags.push("LEASE_WITHOUT_CURRENT_SUBSCRIPTION");
+    }
     if (vehicleExpectsSubscription(vehicle.status)) {
       flags.push("VEHICLE_WITHOUT_CURRENT_SUBSCRIPTION");
     }
@@ -716,6 +844,9 @@ function vehicleDiscrepancies(
   } else {
     if (order.vehicleId !== vehicle.id) {
       flags.push("OPEN_SUBSCRIPTION_ORDER_VEHICLE_MISMATCH");
+    }
+    if (order.customerId !== current.customerId) {
+      flags.push("OPEN_SUBSCRIPTION_ORDER_CUSTOMER_MISMATCH");
     }
     if (!orderExpectsSubscription(order.orderStatus)) {
       flags.push("OPEN_SUBSCRIPTION_ORDER_STATUS_MISMATCH");

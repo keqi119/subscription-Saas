@@ -919,10 +919,12 @@ describe("AssetFactsService audited commands", () => {
           status: ContractStatus.ARCHIVED
         },
         contractSegment: {
+          endDate: "2026-10-31",
           id: "segment-1",
           orderId: "order-1",
           segmentNo: "SEGMENT-1",
           sourceContractId: "contract-1",
+          startDate: "2026-08-01",
           status: "ACTIVE"
         },
         customer: {
@@ -959,6 +961,124 @@ describe("AssetFactsService audited commands", () => {
     expect(opened.orderId).toBe("order-1");
     expect(opened.customerId).toBe("customer-1");
     expect(opened.contractId).toBe("contract-1");
+    expect(harness.auditLogs).toMatchObject([
+      {
+        afterSnapshot: {
+          startSnapshot: {
+            authority: {
+              contractSegment: {
+                endDate: "2026-10-31",
+                startDate: "2026-08-01",
+                status: "ACTIVE"
+              }
+            }
+          }
+        }
+      }
+    ]);
+  });
+
+  it.each([
+    [
+      "cancelled",
+      (segment: ServiceContractSegmentRecord) => {
+        segment.status = "CANCELLED";
+      }
+    ],
+    [
+      "before its inclusive UTC start day",
+      (segment: ServiceContractSegmentRecord) => {
+        segment.startDate = new Date("2026-08-02T00:00:00.000Z");
+      }
+    ],
+    [
+      "after its inclusive UTC end day",
+      (segment: ServiceContractSegmentRecord) => {
+        segment.endDate = new Date("2026-07-31T00:00:00.000Z");
+      }
+    ]
+  ] as const)("rejects a selected contract segment that is %s", async (_case, mutate) => {
+    const harness = createServiceHarness();
+    mutate(harness.records.contractSegments.get("segment-1")!);
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext()),
+      ConflictException,
+      "ASSET_FACT_CONTRACT_SEGMENT_INVALID"
+    );
+    expect(harness.subscriptionPeriods).toEqual([]);
+    expect(harness.auditLogs).toEqual([]);
+  });
+
+  it.each([
+    ["start", "2026-08-01T23:59:59.999Z", "2026-08-02T00:00:00.000Z"],
+    ["end", "2026-10-31T23:59:59.999Z", "2026-11-01T00:00:00.000Z"]
+  ] as const)(
+    "accepts the exact inclusive UTC %s boundary day for a selected contract segment",
+    async (_boundary, startedAt, confirmedAt) => {
+      const harness = createServiceHarness();
+
+      const fact = await harness.service.openSubscriptionPeriod(
+        serviceSubscriptionOpenDto({ confirmedAt, startedAt }),
+        serviceContext()
+      );
+
+      expect(fact.startSnapshot).toMatchObject({
+        authority: {
+          contractSegment: {
+            endDate: "2026-10-31",
+            startDate: "2026-08-01",
+            status: "ACTIVE"
+          }
+        }
+      });
+      expect(harness.subscriptionPeriods).toHaveLength(1);
+      expect(harness.auditLogs).toHaveLength(1);
+    }
+  );
+
+  it("returns the original fact without a second audit for unchanged valid segment authority replay", async () => {
+    const harness = createServiceHarness();
+    const dto = serviceSubscriptionOpenDto();
+
+    const original = await harness.service.openSubscriptionPeriod(dto, serviceContext());
+    const replay = await harness.service.openSubscriptionPeriod(dto, serviceContext());
+
+    expect(replay.id).toBe(original.id);
+    expect(harness.subscriptionPeriods).toHaveLength(1);
+    expect(harness.auditLogs).toHaveLength(1);
+  });
+
+  it("fails a replay closed when selected segment authority changed but remains valid", async () => {
+    const harness = createServiceHarness();
+    const dto = serviceSubscriptionOpenDto();
+    const original = await harness.service.openSubscriptionPeriod(dto, serviceContext());
+    harness.records.contractSegments.get("segment-1")!.endDate = new Date(
+      "2026-11-30T00:00:00.000Z"
+    );
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(dto, serviceContext()),
+      ConflictException,
+      ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE
+    );
+    expect(harness.subscriptionPeriods).toEqual([original]);
+    expect(harness.auditLogs).toHaveLength(1);
+  });
+
+  it("fails a replay closed when selected segment authority becomes invalid", async () => {
+    const harness = createServiceHarness();
+    const dto = serviceSubscriptionOpenDto();
+    const original = await harness.service.openSubscriptionPeriod(dto, serviceContext());
+    harness.records.contractSegments.get("segment-1")!.status = "CANCELLED";
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(dto, serviceContext()),
+      ConflictException,
+      "ASSET_FACT_CONTRACT_SEGMENT_INVALID"
+    );
+    expect(harness.subscriptionPeriods).toEqual([original]);
+    expect(harness.auditLogs).toHaveLength(1);
   });
 
   it.each([
@@ -1234,6 +1354,47 @@ describe("AssetFactsService audited commands", () => {
     expect(second.id).toBe(first.id);
     expect(harness.subscriptionPeriods).toHaveLength(1);
     expect(harness.auditLogs).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      "direct PostgreSQL adapter error",
+      {
+        code: "55P03",
+        message: "could not obtain lock with secret connection details"
+      }
+    ],
+    [
+      "Prisma raw-query wrapper",
+      {
+        code: "P2010",
+        meta: {
+          driverAdapterError: {
+            cause: {
+              originalCode: "55P03",
+              originalMessage: "could not obtain lock with secret connection details"
+            }
+          }
+        }
+      }
+    ]
+  ] as const)("maps a %s to the stable authority-busy conflict", async (_case, lockError) => {
+    const harness = createServiceHarness({ authorityLockError: lockError });
+
+    try {
+      await harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext());
+      throw new Error("Expected the authority lock to fail fast.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toEqual({
+        code: "ASSET_FACT_AUTHORITY_BUSY",
+        message: "Asset fact authority is being updated. Review the current state and retry."
+      });
+      expect(JSON.stringify((error as ConflictException).getResponse())).not.toContain("secret");
+      expect(JSON.stringify((error as ConflictException).getResponse())).not.toContain("55P03");
+    }
+    expect(harness.subscriptionPeriods).toEqual([]);
+    expect(harness.auditLogs).toEqual([]);
   });
 });
 
@@ -1893,10 +2054,12 @@ type ServiceContractRecord = {
 };
 
 type ServiceContractSegmentRecord = {
+  endDate: Date;
   id: string;
   orderId: string;
   segmentNo: string;
   sourceContractId: string | null;
+  startDate: Date;
   status: string;
 };
 
@@ -1927,6 +2090,7 @@ type ServiceRecords = {
 };
 
 type ServiceHarnessOptions = {
+  authorityLockError?: unknown;
   ownershipPeriods?: VehicleOwnershipPeriod[];
   subscriptionPeriods?: VehicleSubscriptionPeriod[];
 };
@@ -2080,6 +2244,9 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
             }
             return [{ locked: true }];
           }
+          if (query.sql.includes("FOR SHARE") && options.authorityLockError) {
+            throw options.authorityLockError;
+          }
           return [];
         }
       } as unknown as Prisma.TransactionClient;
@@ -2126,10 +2293,12 @@ function createServiceRecords(): ServiceRecords {
       [
         "segment-1",
         {
+          endDate: new Date("2026-10-31T00:00:00.000Z"),
           id: "segment-1",
           orderId: "order-1",
           segmentNo: "SEGMENT-1",
           sourceContractId: "contract-1",
+          startDate: new Date("2026-08-01T00:00:00.000Z"),
           status: "ACTIVE"
         }
       ]

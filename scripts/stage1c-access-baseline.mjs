@@ -26,17 +26,30 @@ export function parseStage1cAccessBaselineArgs(args) {
       continue;
     }
     if (argument === "--output") {
-      if (output !== null || args[index + 1] === undefined) {
-        throw new Error("STAGE1C_ACCESS_BASELINE_OUTPUT_INVALID");
+      const value = args[index + 1];
+      if (output !== null || !value || value.trim().length === 0 || value.startsWith("--")) {
+        invalidOutput();
       }
-      output = args[index + 1];
+      output = value;
       index += 1;
+      continue;
+    }
+    if (argument.startsWith("--output=")) {
+      const value = argument.slice("--output=".length);
+      if (output !== null || value.trim().length === 0 || value.startsWith("--")) {
+        invalidOutput();
+      }
+      output = value;
       continue;
     }
     throw new Error("STAGE1C_ACCESS_BASELINE_ARGUMENT_INVALID");
   }
   if (mode === null) throw new Error("STAGE1C_ACCESS_BASELINE_MODE_REQUIRED");
   return { mode, output };
+}
+
+function invalidOutput() {
+  throw new Error("STAGE1C_ACCESS_BASELINE_OUTPUT_INVALID");
 }
 
 export async function runStage1cAccessBaselineCli({

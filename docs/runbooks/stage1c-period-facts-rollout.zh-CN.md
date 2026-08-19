@@ -162,7 +162,7 @@ ORDER BY owner_no;
 ```
 
 最后一个查询必须恰好只有 `PLATFORM | 平台资产主体 | PLATFORM | ACTIVE`；多一行、少一行或字段
-不同都停止。apply 前后还必须比较第 9.1 节的权属期间计数，证明零增长。
+不同都停止。apply 前后还必须比较第 9.0 节的权属期间计数，证明零增长。
 
 `pnpm prisma:seed` 会创建/恢复默认用户（存在默认密码回退）、清理并写入演示流程数据，还会写产品、
 客户、车辆和模板；`pnpm prisma:seed:verify` 验证的是演示基线。两者**禁止在 Staging 或 Production
@@ -318,6 +318,26 @@ apply 的 `safeToApply` 仅在以下条件全部满足时为 `true`：每个订�
 
 必须从仓库根目录使用现有 root scripts：
 
+在本节任何期间命令之前，先为**当前环境**定义三个仓库外报告路径。以下是可直接执行的 Local
+示例；Staging/Production 必须把 `$stage1cEnvironment` 和变更单目录改成该环境获批的独立值，且
+证据根目录必须是仓库外的受控存储。路径检查失败时停止，不得退回仓库内保存：
+
+```powershell
+$stage1cEnvironment = 'Local'
+$stage1cReportDirectory = "D:\Stage1C-Controlled-Evidence\$stage1cEnvironment\CHG-20260820-001"
+$repositoryRoot = [System.IO.Path]::GetFullPath((Get-Location).Path).TrimEnd('\') + '\'
+$resolvedReportDirectory = [System.IO.Path]::GetFullPath($stage1cReportDirectory).TrimEnd('\') + '\'
+if ($resolvedReportDirectory.StartsWith($repositoryRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw 'Stage 1C reports must be stored outside the repository.'
+}
+New-Item -ItemType Directory -Force -Path $stage1cReportDirectory | Out-Null
+$dryRunReport = Join-Path $stage1cReportDirectory 'stage1c-period-dry-run.json'
+$applyReport = Join-Path $stage1cReportDirectory 'stage1c-period-apply.json'
+$replayReport = Join-Path $stage1cReportDirectory 'stage1c-period-replay.json'
+```
+
+三个变量在本环境整次执行中保持不变；不得让不同环境共用目录或覆盖彼此报告。
+
 ```powershell
 pnpm stage1c:periods:dry-run -- --output <report-path>
 pnpm stage1c:periods:apply -- --output <report-path>
@@ -364,6 +384,17 @@ if ($periodApplyExit -ne 0) {
   `Write-Output $env:DATABASE_URL` 或进程参数记录连接串。
 
 ## 7. 锁竞争、维护窗口与重试
+
+Stage 1C 管理型事实命令对每个车辆、订单、客户、合同、合同分段或 owner 权威行使用
+`FOR SHARE NOWAIT`。权威行正被交付、还车、里程或其他正常业务事务更新时，命令立即返回 HTTP
+`409`，稳定代码为 `ASSET_FACT_AUTHORITY_BUSY`；响应只包含稳定代码和脱敏消息，不返回 SQLSTATE、
+连接串或原始数据库异常。该冲突不代表正常业务事务失败，也不得终止或绕过正常写入者。
+
+收到该冲突后不要紧密自动重试：等待当前业务事务结束，重新读取车辆/订单事实投影和所选权威聚合，
+核对是否已有事实或权威字段变化。若没有事实且原 authority/source/payload 全部不变，可使用同一个
+`Idempotency-Key` 重试原命令；authority 已变化、所选合同分段已取消或不再覆盖开始时间时必须停止并
+重新复核，不得为了让重放通过而沿用旧快照、改旧事实或绕过权威检查。业务意图经独立复核后确实变化
+时，才使用新的稳定来源身份提交新的命令。
 
 apply 在单个 `REPEATABLE READ` 事务内先取得
 `vehicle_subscription_period` 的 `SHARE ROW EXCLUSIVE` 锁，再用一个 `SHARE MODE NOWAIT` 语句锁定

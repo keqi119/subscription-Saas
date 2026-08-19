@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import { INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
+import { ConflictException, INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
 import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { Reflector } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
@@ -184,6 +184,31 @@ describe("AssetFactsController administrative boundary", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ code: "IDEMPOTENCY_KEY_MISMATCH" });
     expect(service.openSubscriptionPeriod).not.toHaveBeenCalled();
+  });
+
+  it("exposes the stable authority-busy conflict as HTTP 409 without raw database details", async () => {
+    service.openSubscriptionPeriod.mockRejectedValueOnce(
+      new ConflictException({
+        code: "ASSET_FACT_AUTHORITY_BUSY",
+        message: "Asset fact authority is being updated. Review the current state and retry."
+      })
+    );
+
+    const response = await post(
+      "/api/asset-facts/admin/subscription-periods/open",
+      subscriptionOpenBody(),
+      "period",
+      SOURCE_KEY
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      code: "ASSET_FACT_AUTHORITY_BUSY",
+      message: "Asset fact authority is being updated. Review the current state and retry."
+    });
+    expect(JSON.stringify(body)).not.toContain("55P03");
+    expect(JSON.stringify(body)).not.toContain("postgresql://");
   });
 
   it("rejects duplicate Idempotency-Key fields before normalized values can delegate", async () => {

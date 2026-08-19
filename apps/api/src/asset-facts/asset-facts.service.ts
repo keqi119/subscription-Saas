@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import {
   AuditAction,
+  ContractSegmentStatus,
   LeaseStatus,
   OrderStatus,
   Prisma,
@@ -31,8 +32,10 @@ import type {
 } from "./dto/asset-facts.dto";
 
 export const ASSET_FACT_SERVICE_CODE = {
+  AUTHORITY_BUSY: "ASSET_FACT_AUTHORITY_BUSY",
   ASSET_OWNER_NOT_FOUND: "ASSET_OWNER_NOT_FOUND",
   CONTRACT_NOT_FOUND: "ASSET_FACT_CONTRACT_NOT_FOUND",
+  CONTRACT_SEGMENT_INVALID: "ASSET_FACT_CONTRACT_SEGMENT_INVALID",
   CONTRACT_SEGMENT_NOT_FOUND: "ASSET_FACT_CONTRACT_SEGMENT_NOT_FOUND",
   CUSTOMER_NOT_FOUND: "ASSET_FACT_CUSTOMER_NOT_FOUND",
   INVALID_CONFIRMATION_TIME: "ASSET_FACT_INVALID_CONFIRMATION_TIME",
@@ -104,10 +107,12 @@ const CONTRACT_SELECT = {
 } satisfies Prisma.ContractSelect;
 
 const CONTRACT_SEGMENT_SELECT = {
+  endDate: true,
   id: true,
   segmentNo: true,
   orderId: true,
   sourceContractId: true,
+  startDate: true,
   status: true
 } satisfies Prisma.SubscriptionContractSegmentSelect;
 
@@ -170,10 +175,8 @@ export class AssetFactsService {
       await this.repository.lockCommandSource(tx, "subscription", "start", dto.source);
       await lockSubscriptionAuthorityRows(tx, dto);
       const authority = await loadSubscriptionAuthority(tx, dto);
-      const replay = await findSubscriptionStartReplay(tx, dto);
-      const snapshot =
-        replaySnapshot(replay?.startSnapshot, metadata) ??
-        buildSubscriptionSnapshot(authority, metadata);
+      assertContractSegmentCoversStart(authority.contractSegment, startedAt);
+      const snapshot = buildSubscriptionSnapshot(authority, metadata);
       const outcome = await this.repository.openSubscriptionPeriodWithOutcome(tx, {
         actorId: context.actorId,
         confirmedAt,
@@ -456,10 +459,20 @@ export class AssetFactsService {
     };
   }
 
-  private runCommand<T>(work: (tx: Prisma.TransactionClient) => Promise<T>) {
-    return this.prisma.$transaction(work, {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
-    });
+  private async runCommand<T>(work: (tx: Prisma.TransactionClient) => Promise<T>) {
+    try {
+      return await this.prisma.$transaction(work, {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+      });
+    } catch (error) {
+      if (containsDatabaseCode(error, "55P03")) {
+        throw new ConflictException({
+          code: ASSET_FACT_SERVICE_CODE.AUTHORITY_BUSY,
+          message: "Asset fact authority is being updated. Review the current state and retry."
+        });
+      }
+      throw error;
+    }
   }
 
   private writeAudit(
@@ -539,7 +552,7 @@ async function lockAuthorityRows(
     );
   for (const row of orderedRows) {
     await tx.$queryRaw(
-      Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE`
+      Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`
     );
   }
 }
@@ -720,10 +733,12 @@ function projectContract(contract: ContractAuthority) {
 
 function projectContractSegment(segment: ContractSegmentAuthority) {
   return {
+    endDate: utcCalendarDate(segment.endDate),
     id: segment.id,
     orderId: segment.orderId,
     segmentNo: segment.segmentNo,
     sourceContractId: segment.sourceContractId,
+    startDate: utcCalendarDate(segment.startDate),
     status: segment.status
   };
 }
@@ -926,16 +941,6 @@ function vehicleExpectsSubscription(status: VehicleStatus) {
   return status === VehicleStatus.LEASED || status === VehicleStatus.RENTED;
 }
 
-function findSubscriptionStartReplay(tx: Prisma.TransactionClient, dto: OpenSubscriptionPeriodDto) {
-  return tx.vehicleSubscriptionPeriod.findFirst({
-    where: subscriptionLiveWhere({
-      startSourceId: dto.source.id,
-      startSourceKey: dto.source.key,
-      startSourceType: dto.source.type
-    })
-  });
-}
-
 function findSubscriptionEndReplay(tx: Prisma.TransactionClient, dto: CloseSubscriptionPeriodDto) {
   return tx.vehicleSubscriptionPeriod.findFirst({
     where: subscriptionLiveWhere({
@@ -1031,6 +1036,26 @@ function assertEndAfterStart(startedAt: Date, endedAt: Date) {
   }
 }
 
+function assertContractSegmentCoversStart(
+  segment: ContractSegmentAuthority | null,
+  startedAt: Date
+) {
+  if (!segment) return;
+  const startedDate = utcCalendarDate(startedAt);
+  const segmentStartDate = utcCalendarDate(segment.startDate);
+  const segmentEndDate = utcCalendarDate(segment.endDate);
+  if (
+    segment.status === ContractSegmentStatus.CANCELLED ||
+    startedDate < segmentStartDate ||
+    startedDate > segmentEndDate
+  ) {
+    throw new ConflictException({
+      code: ASSET_FACT_SERVICE_CODE.CONTRACT_SEGMENT_INVALID,
+      message: "The selected contract segment is cancelled or does not cover the start date."
+    });
+  }
+}
+
 function assertStartReason(
   reason: VehicleOwnershipPeriodStartReason | VehicleSubscriptionPeriodStartReason,
   kind: "ownership" | "subscription"
@@ -1065,6 +1090,22 @@ function assertSource(source: { id: string; key: string; type: string }) {
 
 function toIso(value: Date | null) {
   return value?.toISOString() ?? null;
+}
+
+function utcCalendarDate(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function containsDatabaseCode(
+  value: unknown,
+  expectedCode: string,
+  seen = new WeakSet<object>()
+): boolean {
+  if (typeof value === "string") return value === expectedCode;
+  if (!value || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  const record = value as Record<string, unknown>;
+  return Object.values(record).some((child) => containsDatabaseCode(child, expectedCode, seen));
 }
 
 function badRequest(code: string, message: string) {

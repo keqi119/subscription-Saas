@@ -460,9 +460,16 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
     }
   );
 
-  it.each(["subscription", "ownership"] as const)(
-    "keeps an exact %s start replay on the original snapshot when authority changes behind its source lock",
-    async (periodKind) => {
+  it.each([
+    {
+      conflictCode: ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_START_SOURCE,
+      expectation: "rejects",
+      periodKind: "subscription"
+    },
+    { conflictCode: null, expectation: "keeps", periodKind: "ownership" }
+  ] as const)(
+    "$expectation an exact $periodKind start replay when authority changes behind its source lock",
+    async ({ conflictCode, periodKind }) => {
       const fixture = await createRepositoryFixture(prisma);
       const input = serviceOpenDto(periodKind, fixture, `service-${periodKind}-start-replay`);
       const service = createAssetFactsService(prisma);
@@ -490,11 +497,15 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
       }
       const original = await firstPromise;
       await mutationPromise;
-      const replay = fulfilledValue(await replayPromise);
+      const replay = await replayPromise;
 
       expect(earlyMutation.finished).toBe(false);
       expect(waitedOnSourceLock).toBe(true);
-      expect(replay.id).toBe(original.id);
+      if (conflictCode) {
+        expectConflictError(rejectedValue(replay), conflictCode);
+      } else {
+        expect(fulfilledValue(replay).id).toBe(original.id);
+      }
       await expect(countAssetFactAudits(prisma, original.id, AuditAction.CREATE)).resolves.toBe(1);
     }
   );
@@ -583,6 +594,30 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
       await expect(countAssetFactAudits(prisma, fact.id, AuditAction.CREATE)).resolves.toBe(1);
     }
   );
+
+  it("fails repair fast while an order-first delivery-like writer remains usable", async () => {
+    const result = await runAuthorityContention(prisma, "order-first");
+
+    expect(result.repairFinishedFast).toBe(true);
+    expectConflictError(rejectedValue(result.repair), "ASSET_FACT_AUTHORITY_BUSY");
+    expect(fulfilledValue(result.liveWriter)).toMatchObject({
+      followUpAuthorityUpdates: 1,
+      transactionUsable: true
+    });
+    await expect(countPeriodsByStartSource(prisma, "subscription", result.source)).resolves.toBe(0);
+  });
+
+  it("fails repair fast while a vehicle-first return-like writer remains usable", async () => {
+    const result = await runAuthorityContention(prisma, "vehicle-first");
+
+    expect(result.repairFinishedFast).toBe(true);
+    expectConflictError(rejectedValue(result.repair), "ASSET_FACT_AUTHORITY_BUSY");
+    expect(fulfilledValue(result.liveWriter)).toMatchObject({
+      followUpAuthorityUpdates: 1,
+      transactionUsable: true
+    });
+    await expect(countPeriodsByStartSource(prisma, "subscription", result.source)).resolves.toBe(0);
+  });
 
   it.each([
     [
@@ -944,6 +979,67 @@ function countAssetFactAudits(prisma: PrismaService, entityId: string, action: A
   return prisma.auditLog.count({
     where: { action, entityId, module: "asset_facts" }
   });
+}
+
+async function runAuthorityContention(
+  prisma: PrismaService,
+  lockOrder: "order-first" | "vehicle-first"
+) {
+  const fixture = await createRepositoryFixture(prisma);
+  const input = serviceOpenDto(
+    "subscription",
+    fixture,
+    `service-subscription-authority-${lockOrder}`
+  ) as OpenSubscriptionPeriodDto;
+  const lockReached = deferred<void>();
+  const allowFollowUp = deferred<void>();
+  const liveWriterPromise = readCommitted(prisma, async (tx) => {
+    if (lockOrder === "order-first") {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "subscription_order" WHERE "id" = ${fixture.orderId}::uuid FOR UPDATE`
+      );
+    } else {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${fixture.vehicleId}::uuid FOR UPDATE`
+      );
+    }
+    lockReached.resolve();
+    await allowFollowUp.promise;
+    const [transactionProbe] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+      Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+    );
+    const followUpAuthorityUpdates =
+      lockOrder === "order-first"
+        ? await tx.$executeRaw(
+            Prisma.sql`UPDATE "vehicle" SET "updated_at" = clock_timestamp() WHERE "id" = ${fixture.vehicleId}::uuid`
+          )
+        : await tx.$executeRaw(
+            Prisma.sql`UPDATE "subscription_order" SET "updated_at" = clock_timestamp() WHERE "id" = ${fixture.orderId}::uuid`
+          );
+    return {
+      followUpAuthorityUpdates,
+      transactionUsable: Boolean(transactionProbe?.transactionId)
+    };
+  });
+  void liveWriterPromise.catch(lockReached.reject);
+  await lockReached.promise;
+
+  const repairPromise = settled(
+    createAssetFactsService(prisma).openSubscriptionPeriod(input, { actorId: null })
+  );
+  const earlyRepair = await settlesWithin(repairPromise, 750);
+  allowFollowUp.resolve();
+  const [liveWriter, repair] = await Promise.all([
+    settled(liveWriterPromise),
+    earlyRepair.finished ? Promise.resolve(earlyRepair.value) : repairPromise
+  ]);
+
+  return {
+    liveWriter,
+    repair,
+    repairFinishedFast: earlyRepair.finished,
+    source: input.source
+  };
 }
 
 async function runStartRace(

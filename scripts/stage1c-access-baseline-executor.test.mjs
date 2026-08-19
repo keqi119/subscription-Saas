@@ -137,6 +137,82 @@ test("apply confirmation accepts only the exact dedicated value", () => {
   }
 });
 
+test("access CLI parsing keeps one optional output and rejects unusable path values", () => {
+  const parse = requiredExport(cli, "parseStage1cAccessBaselineArgs");
+
+  assert.deepEqual(parse(["--dry-run"]), { mode: "dry-run", output: null });
+  assert.deepEqual(parse(["--apply", "--output", "reports/access.json"]), {
+    mode: "apply",
+    output: "reports/access.json"
+  });
+  assert.deepEqual(parse(["--dry-run", "--output=reports/access.json"]), {
+    mode: "dry-run",
+    output: "reports/access.json"
+  });
+
+  for (const args of [
+    ["--dry-run", "--output"],
+    ["--dry-run", "--output", ""],
+    ["--dry-run", "--output", "   "],
+    ["--dry-run", "--output", "--apply"],
+    ["--dry-run", "--output="],
+    ["--dry-run", "--output=\t"],
+    ["--dry-run", "--output=--apply"],
+    ["--dry-run", "--output", "a.json", "--output=b.json"]
+  ]) {
+    assert.throws(
+      () => parse(args),
+      /STAGE1C_ACCESS_BASELINE_OUTPUT_INVALID/,
+      `expected ${JSON.stringify(args)} to reject an invalid output path`
+    );
+  }
+});
+
+test("process rejects a flag-shaped access output before database or report side effects", async () => {
+  const stderr = [];
+  let createPrismaCalls = 0;
+  let executeCalls = 0;
+  let stdoutWrites = 0;
+  let outputWrites = 0;
+
+  const exitCode = await requiredExport(
+    cli,
+    "runStage1cAccessBaselineProcess"
+  )({
+    disconnect: async () => {},
+    run: () =>
+      requiredExport(
+        cli,
+        "runStage1cAccessBaselineCli"
+      )({
+        args: ["--dry-run", "--output", "--apply"],
+        createPrisma: async () => {
+          createPrismaCalls += 1;
+          return { marker: "must-not-connect" };
+        },
+        env: {},
+        execute: async () => {
+          executeCalls += 1;
+          return { exitCode: 0, report: { safeToApply: true } };
+        },
+        writeOutput: async () => {
+          outputWrites += 1;
+        },
+        writeStdout: async () => {
+          stdoutWrites += 1;
+        }
+      }),
+    writeStderr: (contents) => stderr.push(contents)
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(createPrismaCalls, 0);
+  assert.equal(executeCalls, 0);
+  assert.equal(stdoutWrites, 0);
+  assert.equal(outputWrites, 0);
+  assert.deepEqual(stderr, ['{"error":"STAGE1C_ACCESS_BASELINE_FAILED"}\n']);
+});
+
 test("process errors and disconnect errors are redacted and nonzero", async () => {
   const errors = [];
   const runProcess = requiredExport(cli, "runStage1cAccessBaselineProcess");

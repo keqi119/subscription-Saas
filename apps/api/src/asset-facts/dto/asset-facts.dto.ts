@@ -6,6 +6,7 @@ import {
   VehicleSubscriptionPeriodStartReason
 } from "@prisma/client";
 import {
+  IsDefined,
   IsEnum,
   IsISO8601,
   IsNotEmpty,
@@ -36,6 +37,7 @@ abstract class AssetFactCommandDto {
   @IsISO8601({ strict: true, strictSeparator: true })
   confirmedAt!: string;
 
+  @IsDefined()
   @ValidateNested()
   @Type(() => AssetFactSourceDto)
   source!: AssetFactSourceDto;

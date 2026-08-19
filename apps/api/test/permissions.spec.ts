@@ -13,6 +13,7 @@ import {
   REQUIRED_PERMISSIONS_KEY
 } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
+import { AssetFactsController } from "../src/asset-facts/asset-facts.controller";
 import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
 import { FinancingController } from "../src/financing/financing.controller";
@@ -91,6 +92,41 @@ describe("hasAnyRequiredPermission", () => {
 
   it("denies requests without any matching permission", () => {
     expect(hasAnyRequiredPermission(["quote:view"], ["vehicle:view", "quote:create"])).toBe(false);
+  });
+});
+
+describe("asset facts permissions", () => {
+  it("requires asset_facts:view for vehicle and order fact projections", () => {
+    for (const handler of [
+      AssetFactsController.prototype.getByVehicle,
+      AssetFactsController.prototype.getByOrder
+    ]) {
+      const requiredPermissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler);
+      expect(requiredPermissions).toEqual([PermissionCode.ASSET_FACTS_VIEW]);
+      expect(hasRequiredPermissions([], requiredPermissions)).toBe(false);
+      expect(hasRequiredPermissions([PermissionCode.ASSET_FACTS_VIEW], requiredPermissions)).toBe(
+        true
+      );
+    }
+  });
+
+  it("separates ownership administration from subscription-period repair", () => {
+    for (const handler of [
+      AssetFactsController.prototype.openOwnershipPeriod,
+      AssetFactsController.prototype.closeOwnershipPeriod
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.ASSET_OWNER_MANAGE
+      ]);
+    }
+    for (const handler of [
+      AssetFactsController.prototype.openSubscriptionPeriod,
+      AssetFactsController.prototype.closeSubscriptionPeriod
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.VEHICLE_PERIOD_MANAGE
+      ]);
+    }
   });
 });
 
@@ -1312,6 +1348,62 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("await seedDefaultUsers()");
     expect(seedSource).toContain("prisma.user.upsert");
     expect(seedSource).toContain("prisma.userRole.upsert");
+  });
+
+  it("assigns the governed asset fact permissions to the approved role matrix", () => {
+    expect(PermissionCode.ASSET_FACTS_VIEW).toBe("asset_facts:view");
+    expect(PermissionCode.ASSET_OWNER_MANAGE).toBe("asset_owner:manage");
+    expect(PermissionCode.VEHICLE_PERIOD_MANAGE).toBe("vehicle_period:manage");
+
+    for (const permission of [
+      "asset_facts:view",
+      "asset_owner:manage",
+      "vehicle_period:manage"
+    ]) {
+      expect(seedSource).toContain(`"${permission}"`);
+    }
+
+    expectRolePermissions("OP", ["asset_facts:view", "vehicle_period:manage"]);
+    expectRolePermissions("GM", ["asset_facts:view"]);
+    expectSeedSourceToContain(
+      '...(roleCode === "AS" ? assetFactManagementPermissions : assetFactViewPermissions)'
+    );
+    expect(
+      roleHasPermission(permissionConstantSource("assetFactViewPermissions"), "asset_facts:view")
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("assetFactManagementPermissions"),
+        "asset_facts:view"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("assetFactManagementPermissions"),
+        "asset_owner:manage"
+      )
+    ).toBe(true);
+    expect(
+      roleHasPermission(
+        permissionConstantSource("assetFactManagementPermissions"),
+        "vehicle_period:manage"
+      )
+    ).toBe(true);
+
+    for (const roleCode of ["SA", "RC"]) {
+      const permissions = rolePermissionArray(roleCode);
+      expect(roleHasPermission(permissions, "asset_facts:view")).toBe(false);
+      expect(roleHasPermission(permissions, "asset_owner:manage")).toBe(false);
+      expect(roleHasPermission(permissions, "vehicle_period:manage")).toBe(false);
+    }
+    for (const roleCode of ["OP", "GM"]) {
+      const permissions = rolePermissionArray(roleCode);
+      expect(roleHasPermission(permissions, "asset_owner:manage")).toBe(false);
+    }
+    expect(seedSource).not.toMatch(
+      /assignRoleAccess\(\s*["']CS["'][\s\S]*?(?:asset_(?:facts|owner)|vehicle_period):/
+    );
+    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_period:manage")).toBe(false);
   });
 
   it("defines vehicle and subscription plan permissions for ADMIN all-permission seeding", () => {

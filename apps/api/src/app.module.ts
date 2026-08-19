@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
+import { AssetFactsModule } from "./asset-facts/asset-facts.module";
 import { AuditModule } from "./audit/audit.module";
 import { AutoDebitModule } from "./auto-debit/auto-debit.module";
 import { AuthModule } from "./auth/auth.module";
@@ -44,6 +45,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
       isGlobal: true
     }),
     PrismaModule,
+    AssetFactsModule,
     AuditModule,
     AutoDebitModule,
     AuthModule,

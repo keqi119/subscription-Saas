@@ -45,6 +45,8 @@
     "stage1:auto-debit-retirement:dry-run": "node scripts/stage1-auto-debit-retirement.mjs --dry-run",
     "stage1:auto-debit-retirement:apply": "node scripts/stage1-auto-debit-retirement.mjs --apply",
     "stage1:auto-debit-retirement:test": "node --test scripts/stage1-auto-debit-retirement-core.test.mjs scripts/stage1-auto-debit-retirement-executor.test.mjs",
+    "stage1c:periods:dry-run": "node scripts/stage1c-period-backfill.mjs --dry-run",
+    "stage1c:periods:apply": "node scripts/stage1c-period-backfill.mjs --apply",
     "stage2-handover-workflow:backfill:dry-run": "node scripts/stage2-handover-workflow-backfill.mjs --dry-run",
     "stage2-handover-workflow:backfill:apply": "node scripts/stage2-handover-workflow-backfill.mjs --apply",
     "stage2-handover-workflow:backfill:test": "node --test scripts/stage2-handover-workflow-backfill-core.test.mjs scripts/stage2-handover-workflow-backfill-apply.test.mjs scripts/stage2-handover-workflow-backfill-executor.test.mjs",

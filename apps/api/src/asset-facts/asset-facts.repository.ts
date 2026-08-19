@@ -37,6 +37,11 @@ type AssetFactConflictCode =
   (typeof ASSET_FACT_CONFLICT_CODE)[keyof typeof ASSET_FACT_CONFLICT_CODE];
 type PeriodKind = "ownership" | "subscription";
 
+export interface AssetFactWriteOutcome<T> {
+  readonly fact: T;
+  readonly wrote: boolean;
+}
+
 const CONSTRAINT_CONFLICT_CODES: Readonly<Record<string, AssetFactConflictCode>> = {
   vehicle_ownership_period_end_after_start_chk: ASSET_FACT_CONFLICT_CODE.OWNERSHIP_RANGE,
   vehicle_ownership_period_end_source_key: ASSET_FACT_CONFLICT_CODE.OWNERSHIP_END_SOURCE,
@@ -100,14 +105,23 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: OpenSubscriptionPeriodInput
   ): Promise<VehicleSubscriptionPeriod> {
+    return (await this.openSubscriptionPeriodWithOutcome(tx, input)).fact;
+  }
+
+  async openSubscriptionPeriodWithOutcome(
+    tx: Prisma.TransactionClient,
+    input: OpenSubscriptionPeriodInput
+  ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
     await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
     await lockStartSource(tx, "subscription", normalizedInput.source);
     const existing = await findSubscriptionByStartSource(tx, normalizedInput);
-    if (existing) return replaySubscriptionStart(existing, normalizedInput);
+    if (existing) {
+      return { fact: replaySubscriptionStart(existing, normalizedInput), wrote: false };
+    }
 
     try {
-      return await tx.vehicleSubscriptionPeriod.create({
+      const fact = await tx.vehicleSubscriptionPeriod.create({
         data: {
           contractId: normalizedInput.contractId,
           contractSegmentId: normalizedInput.contractSegmentId,
@@ -125,6 +139,7 @@ export class AssetFactsRepository {
           vehicleId: normalizedInput.vehicleId
         }
       });
+      return { fact, wrote: true };
     } catch (error) {
       throw normalizeDatabaseConflict(error, "subscription");
     }
@@ -134,10 +149,19 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseSubscriptionPeriodInput
   ): Promise<VehicleSubscriptionPeriod> {
+    return (await this.closeSubscriptionPeriodWithOutcome(tx, input)).fact;
+  }
+
+  async closeSubscriptionPeriodWithOutcome(
+    tx: Prisma.TransactionClient,
+    input: CloseSubscriptionPeriodInput
+  ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
     await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
     const replay = await findSubscriptionByEndSource(tx, normalizedInput);
-    if (replay) return replaySubscriptionClose(replay, normalizedInput);
+    if (replay) {
+      return { fact: replaySubscriptionClose(replay, normalizedInput), wrote: false };
+    }
 
     const period = await findSubscriptionById(tx, normalizedInput.periodId);
     if (!period || period.endedAt) {
@@ -159,7 +183,10 @@ export class AssetFactsRepository {
         where: { endedAt: null, id: normalizedInput.periodId }
       });
       if (updated.count !== 1) {
-        return await resolveSubscriptionCloseRace(tx, normalizedInput);
+        return {
+          fact: await resolveSubscriptionCloseRace(tx, normalizedInput),
+          wrote: false
+        };
       }
     } catch (error) {
       throw normalizeDatabaseConflict(error, "subscription");
@@ -167,21 +194,30 @@ export class AssetFactsRepository {
 
     const closed = await findSubscriptionById(tx, normalizedInput.periodId);
     if (!closed) throw conflict(ASSET_FACT_CONFLICT_CODE.SUBSCRIPTION_CLOSE_REPLAY);
-    return closed;
+    return { fact: closed, wrote: true };
   }
 
   async openOwnershipPeriod(
     tx: Prisma.TransactionClient,
     input: OpenOwnershipPeriodInput
   ): Promise<VehicleOwnershipPeriod> {
+    return (await this.openOwnershipPeriodWithOutcome(tx, input)).fact;
+  }
+
+  async openOwnershipPeriodWithOutcome(
+    tx: Prisma.TransactionClient,
+    input: OpenOwnershipPeriodInput
+  ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
     await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
     await lockStartSource(tx, "ownership", normalizedInput.source);
     const existing = await findOwnershipByStartSource(tx, normalizedInput);
-    if (existing) return replayOwnershipStart(existing, normalizedInput);
+    if (existing) {
+      return { fact: replayOwnershipStart(existing, normalizedInput), wrote: false };
+    }
 
     try {
-      return await tx.vehicleOwnershipPeriod.create({
+      const fact = await tx.vehicleOwnershipPeriod.create({
         data: {
           assetOwnerId: normalizedInput.assetOwnerId,
           createdBy: normalizedInput.actorId,
@@ -196,6 +232,7 @@ export class AssetFactsRepository {
           vehicleId: normalizedInput.vehicleId
         }
       });
+      return { fact, wrote: true };
     } catch (error) {
       throw normalizeDatabaseConflict(error, "ownership");
     }
@@ -205,10 +242,19 @@ export class AssetFactsRepository {
     tx: Prisma.TransactionClient,
     input: CloseOwnershipPeriodInput
   ): Promise<VehicleOwnershipPeriod> {
+    return (await this.closeOwnershipPeriodWithOutcome(tx, input)).fact;
+  }
+
+  async closeOwnershipPeriodWithOutcome(
+    tx: Prisma.TransactionClient,
+    input: CloseOwnershipPeriodInput
+  ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
     await assertTransactionContract(tx);
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
     const replay = await findOwnershipByEndSource(tx, normalizedInput);
-    if (replay) return replayOwnershipClose(replay, normalizedInput);
+    if (replay) {
+      return { fact: replayOwnershipClose(replay, normalizedInput), wrote: false };
+    }
 
     const period = await findOwnershipById(tx, normalizedInput.periodId);
     if (!period || period.endedAt) {
@@ -230,7 +276,10 @@ export class AssetFactsRepository {
         where: { endedAt: null, id: normalizedInput.periodId }
       });
       if (updated.count !== 1) {
-        return await resolveOwnershipCloseRace(tx, normalizedInput);
+        return {
+          fact: await resolveOwnershipCloseRace(tx, normalizedInput),
+          wrote: false
+        };
       }
     } catch (error) {
       throw normalizeDatabaseConflict(error, "ownership");
@@ -238,7 +287,7 @@ export class AssetFactsRepository {
 
     const closed = await findOwnershipById(tx, normalizedInput.periodId);
     if (!closed) throw conflict(ASSET_FACT_CONFLICT_CODE.OWNERSHIP_CLOSE_REPLAY);
-    return closed;
+    return { fact: closed, wrote: true };
   }
 }
 

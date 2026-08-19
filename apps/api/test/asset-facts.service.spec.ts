@@ -1,6 +1,12 @@
-import { ConflictException } from "@nestjs/common";
+import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
+import { plainToInstance } from "class-transformer";
 import {
+  AuditAction,
+  ContractStatus,
+  LeaseStatus,
+  OrderStatus,
   Prisma,
+  VehicleStatus,
   VehicleOwnershipPeriodEndReason,
   VehicleOwnershipPeriodStartReason,
   VehicleSubscriptionPeriodEndReason,
@@ -8,23 +14,41 @@ import {
   type VehicleOwnershipPeriod,
   type VehicleSubscriptionPeriod
 } from "@prisma/client";
+import { validateSync } from "class-validator";
 import { describe, expect, it } from "vitest";
 
+import { AuditService } from "../src/audit/audit.service";
 import {
   ASSET_FACT_CONFLICT_CODE,
   AssetFactsRepository
 } from "../src/asset-facts/asset-facts.repository";
+import {
+  CloseOwnershipPeriodDto,
+  CloseSubscriptionPeriodDto,
+  OpenOwnershipPeriodDto,
+  OpenSubscriptionPeriodDto
+} from "../src/asset-facts/dto/asset-facts.dto";
+import {
+  ASSET_FACT_SERVICE_CODE,
+  AssetFactsService
+} from "../src/asset-facts/asset-facts.service";
 import type {
   CloseOwnershipPeriodInput,
   CloseSubscriptionPeriodInput,
   OpenOwnershipPeriodInput,
   OpenSubscriptionPeriodInput
 } from "../src/asset-facts/asset-facts.types";
+import type { PrismaService } from "../src/prisma/prisma.service";
 
 const STARTED_AT = new Date("2026-08-01T00:00:00.000Z");
 const ENDED_AT = new Date("2026-10-01T00:00:00.000Z");
 const START_CONFIRMED_AT = new Date("2026-08-01T00:05:00.000Z");
 const END_CONFIRMED_AT = new Date("2026-10-01T00:05:00.000Z");
+const SERVICE_ACTOR_ID = "00000000-0000-4000-8000-000000000001";
+const SUBSCRIPTION_START_SOURCE_ID = "00000000-0000-4000-8000-000000000011";
+const SUBSCRIPTION_END_SOURCE_ID = "00000000-0000-4000-8000-000000000012";
+const OWNERSHIP_START_SOURCE_ID = "00000000-0000-4000-8000-000000000021";
+const OWNERSHIP_END_SOURCE_ID = "00000000-0000-4000-8000-000000000022";
 
 const SUBSCRIPTION_START_DRIFTS = [
   ["vehicleId", { vehicleId: "different-vehicle" }],
@@ -804,6 +828,498 @@ describe("AssetFactsRepository transaction contract", () => {
   });
 });
 
+describe("Asset fact command DTO validation", () => {
+  it("rejects malformed dates and reasons before a command reaches the service", () => {
+    const dto = plainToInstance(CloseSubscriptionPeriodDto, {
+      confirmedAt: "not-a-date",
+      endedAt: "also-not-a-date",
+      periodId: "not-a-uuid",
+      reason: "NOT_A_SUBSCRIPTION_END_REASON",
+      snapshot: [],
+      source: {
+        id: "not-a-uuid",
+        key: "",
+        type: ""
+      }
+    });
+
+    const invalidProperties = validateSync(dto)
+      .map(({ property }) => property)
+      .sort();
+
+    expect(invalidProperties).toEqual([
+      "confirmedAt",
+      "endedAt",
+      "periodId",
+      "reason",
+      "snapshot",
+      "source"
+    ]);
+  });
+
+  it.each([
+    [
+      OpenSubscriptionPeriodDto,
+      serviceSubscriptionOpenDto({
+        contractId: "00000000-0000-4000-8000-000000000103",
+        contractSegmentId: "00000000-0000-4000-8000-000000000104",
+        customerId: "00000000-0000-4000-8000-000000000102",
+        orderId: "00000000-0000-4000-8000-000000000101",
+        vehicleId: "00000000-0000-4000-8000-000000000100"
+      })
+    ],
+    [
+      CloseSubscriptionPeriodDto,
+      serviceSubscriptionCloseDto("00000000-0000-4000-8000-000000000105")
+    ],
+    [
+      OpenOwnershipPeriodDto,
+      serviceOwnershipOpenDto({
+        assetOwnerId: "00000000-0000-4000-8000-000000000107",
+        vehicleId: "00000000-0000-4000-8000-000000000106"
+      })
+    ],
+    [
+      CloseOwnershipPeriodDto,
+      serviceOwnershipCloseDto("00000000-0000-4000-8000-000000000108")
+    ]
+  ])("accepts a valid %s command payload", (Dto, payload) => {
+    expect(
+      validateSync(plainToInstance(Dto as new () => object, payload) as object)
+    ).toEqual([]);
+  });
+});
+
+describe("AssetFactsService audited commands", () => {
+  it("opens every command in an explicit Prisma READ COMMITTED transaction", async () => {
+    const harness = createServiceHarness();
+
+    await harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext());
+
+    expect(harness.transactionOptions).toEqual([
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    ]);
+  });
+
+  it("captures authoritative live aggregate identities without trusting caller snapshot fields", async () => {
+    const harness = createServiceHarness();
+
+    const opened = await harness.service.openSubscriptionPeriod(
+      serviceSubscriptionOpenDto({
+        snapshot: {
+          contractId: "spoofed-contract",
+          customerId: "spoofed-customer",
+          note: "operator supplied description",
+          orderId: "spoofed-order",
+          vehicleId: "spoofed-vehicle"
+        }
+      }),
+      serviceContext()
+    );
+
+    expect(opened.startSnapshot).toEqual({
+      authority: {
+        contract: {
+          contractNo: "CONTRACT-1",
+          customerId: "customer-1",
+          id: "contract-1",
+          orderId: "order-1",
+          status: ContractStatus.ARCHIVED
+        },
+        contractSegment: {
+          id: "segment-1",
+          orderId: "order-1",
+          segmentNo: "SEGMENT-1",
+          sourceContractId: "contract-1",
+          status: "ACTIVE"
+        },
+        customer: {
+          customerNo: "CUSTOMER-1",
+          id: "customer-1",
+          name: "Stage 1C Customer",
+          status: "ACTIVE"
+        },
+        order: {
+          contractId: "contract-1",
+          customerId: "customer-1",
+          id: "order-1",
+          orderNo: "ORDER-1",
+          orderStatus: OrderStatus.ACTIVE,
+          vehicleId: "vehicle-1"
+        },
+        vehicle: {
+          id: "vehicle-1",
+          plateNo: "沪A00001",
+          status: VehicleStatus.LEASED,
+          vehicleNo: "VEHICLE-1",
+          vin: "VIN-1"
+        }
+      },
+      metadata: {
+        contractId: "spoofed-contract",
+        customerId: "spoofed-customer",
+        note: "operator supplied description",
+        orderId: "spoofed-order",
+        vehicleId: "spoofed-vehicle"
+      }
+    });
+    expect(opened.vehicleId).toBe("vehicle-1");
+    expect(opened.orderId).toBe("order-1");
+    expect(opened.customerId).toBe("customer-1");
+    expect(opened.contractId).toBe("contract-1");
+  });
+
+  it.each([
+    ["vehicle", ASSET_FACT_SERVICE_CODE.VEHICLE_NOT_FOUND],
+    ["order", ASSET_FACT_SERVICE_CODE.ORDER_NOT_FOUND],
+    ["customer", ASSET_FACT_SERVICE_CODE.CUSTOMER_NOT_FOUND],
+    ["contract", ASSET_FACT_SERVICE_CODE.CONTRACT_NOT_FOUND],
+    ["contractSegment", ASSET_FACT_SERVICE_CODE.CONTRACT_SEGMENT_NOT_FOUND]
+  ] as const)("rejects a missing or soft-deleted %s reference", async (reference, code) => {
+    const harness = createServiceHarness();
+    softDeleteServiceReference(harness.records, reference);
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext()),
+      NotFoundException,
+      code
+    );
+    expect(harness.auditLogs).toEqual([]);
+  });
+
+  it("rejects a missing asset owner reference", async () => {
+    const harness = createServiceHarness();
+    harness.records.assetOwners.clear();
+
+    await expectServiceError(
+      harness.service.openOwnershipPeriod(serviceOwnershipOpenDto(), serviceContext()),
+      NotFoundException,
+      ASSET_FACT_SERVICE_CODE.ASSET_OWNER_NOT_FOUND
+    );
+  });
+
+  it.each([
+    ["order vehicle", (records: ServiceRecords) => {
+      records.orders.get("order-1")!.vehicleId = "vehicle-2";
+    }],
+    ["order customer", (records: ServiceRecords) => {
+      records.orders.get("order-1")!.customerId = "customer-2";
+    }],
+    ["contract order", (records: ServiceRecords) => {
+      records.contracts.get("contract-1")!.orderId = "order-2";
+    }],
+    ["contract customer", (records: ServiceRecords) => {
+      records.contracts.get("contract-1")!.customerId = "customer-2";
+    }],
+    ["segment order", (records: ServiceRecords) => {
+      records.contractSegments.get("segment-1")!.orderId = "order-2";
+    }],
+    [
+      "segment contract",
+      (records: ServiceRecords) => {
+        records.contractSegments.get("segment-1")!.sourceContractId = "contract-2";
+      }
+    ]
+  ] as const)("rejects inconsistent %s aggregate identity", async (_case, corrupt) => {
+    const harness = createServiceHarness();
+    corrupt(harness.records);
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext()),
+      ConflictException,
+      ASSET_FACT_SERVICE_CODE.SUBSCRIPTION_AGGREGATE_MISMATCH
+    );
+    expect(harness.auditLogs).toEqual([]);
+  });
+
+  it("rejects an invalid close range and a confirmation before the end instant", async () => {
+    const harness = createServiceHarness({ subscriptionPeriods: [subscriptionRow()] });
+
+    await expectServiceError(
+      harness.service.closeSubscriptionPeriod(
+        serviceSubscriptionCloseDto("subscription-period-1", {
+          endedAt: STARTED_AT.toISOString()
+        }),
+        serviceContext()
+      ),
+      BadRequestException,
+      ASSET_FACT_SERVICE_CODE.INVALID_TIME_RANGE
+    );
+    await expectServiceError(
+      harness.service.closeSubscriptionPeriod(
+        serviceSubscriptionCloseDto("subscription-period-1", {
+          confirmedAt: "2026-09-30T23:59:59.999Z"
+        }),
+        serviceContext()
+      ),
+      BadRequestException,
+      ASSET_FACT_SERVICE_CODE.INVALID_CONFIRMATION_TIME
+    );
+    expect(harness.auditLogs).toEqual([]);
+  });
+
+  it("rejects a confirmation before an opened period starts", async () => {
+    const harness = createServiceHarness();
+
+    await expectServiceError(
+      harness.service.openSubscriptionPeriod(
+        serviceSubscriptionOpenDto({ confirmedAt: "2026-07-31T23:59:59.999Z" }),
+        serviceContext()
+      ),
+      BadRequestException,
+      ASSET_FACT_SERVICE_CODE.INVALID_CONFIRMATION_TIME
+    );
+    expect(harness.transactionOptions).toEqual([]);
+  });
+
+  it.each([
+    ["subscription", "NOT_A_SUBSCRIPTION_REASON"],
+    ["ownership", "NOT_AN_OWNERSHIP_REASON"]
+  ] as const)("rejects an illegal %s start reason at the domain boundary", async (kind, reason) => {
+    const harness = createServiceHarness();
+    const command =
+      kind === "subscription"
+        ? harness.service.openSubscriptionPeriod(
+            serviceSubscriptionOpenDto({
+              reason: reason as VehicleSubscriptionPeriodStartReason
+            }),
+            serviceContext()
+          )
+        : harness.service.openOwnershipPeriod(
+            serviceOwnershipOpenDto({ reason: reason as VehicleOwnershipPeriodStartReason }),
+            serviceContext()
+          );
+
+    await expectServiceError(
+      command,
+      BadRequestException,
+      ASSET_FACT_SERVICE_CODE.INVALID_START_REASON
+    );
+    expect(harness.transactionOptions).toEqual([]);
+  });
+
+  it.each([
+    ["subscription", "NOT_A_SUBSCRIPTION_REASON"],
+    ["ownership", "NOT_AN_OWNERSHIP_REASON"]
+  ] as const)("rejects an illegal %s close reason at the domain boundary", async (kind, reason) => {
+    const harness = createServiceHarness({
+      ownershipPeriods: [ownershipRow()],
+      subscriptionPeriods: [subscriptionRow()]
+    });
+    const command =
+      kind === "subscription"
+        ? harness.service.closeSubscriptionPeriod(
+            serviceSubscriptionCloseDto("subscription-period-1", {
+              reason: reason as VehicleSubscriptionPeriodEndReason
+            }),
+            serviceContext()
+          )
+        : harness.service.closeOwnershipPeriod(
+            serviceOwnershipCloseDto("ownership-period-1", {
+              reason: reason as VehicleOwnershipPeriodEndReason
+            }),
+            serviceContext()
+          );
+
+    await expectServiceError(
+      command,
+      BadRequestException,
+      ASSET_FACT_SERVICE_CODE.INVALID_END_REASON
+    );
+  });
+
+  it("audits each new fact and first successful close once, then skips exact replays", async () => {
+    const harness = createServiceHarness();
+    const subscriptionOpen = serviceSubscriptionOpenDto();
+    const ownershipOpen = serviceOwnershipOpenDto({
+      snapshot: { assetOwnerId: "spoofed-owner", vehicleId: "spoofed-vehicle" }
+    });
+
+    const subscription = await harness.service.openSubscriptionPeriod(
+      subscriptionOpen,
+      serviceContext()
+    );
+    const ownership = await harness.service.openOwnershipPeriod(ownershipOpen, serviceContext());
+    const subscriptionClose = serviceSubscriptionCloseDto(subscription.id, {
+      snapshot: { orderId: "spoofed-order", vehicleId: "spoofed-vehicle" }
+    });
+    const ownershipClose = serviceOwnershipCloseDto(ownership.id, {
+      snapshot: { assetOwnerId: "spoofed-owner", vehicleId: "spoofed-vehicle" }
+    });
+    const closedSubscription = await harness.service.closeSubscriptionPeriod(
+      subscriptionClose,
+      serviceContext()
+    );
+    const closedOwnership = await harness.service.closeOwnershipPeriod(
+      ownershipClose,
+      serviceContext()
+    );
+
+    expect(ownership.startSnapshot).toMatchObject({
+      authority: {
+        assetOwner: { id: "owner-1", ownerNo: "OWNER-1" },
+        vehicle: { id: "vehicle-1", vehicleNo: "VEHICLE-1" }
+      },
+      metadata: { assetOwnerId: "spoofed-owner", vehicleId: "spoofed-vehicle" }
+    });
+    expect(closedSubscription.endSnapshot).toMatchObject({
+      authority: {
+        customer: { id: "customer-1" },
+        order: { id: "order-1" },
+        vehicle: { id: "vehicle-1" }
+      },
+      metadata: { orderId: "spoofed-order", vehicleId: "spoofed-vehicle" }
+    });
+    expect(closedOwnership.endSnapshot).toMatchObject({
+      authority: {
+        assetOwner: { id: "owner-1" },
+        vehicle: { id: "vehicle-1" }
+      },
+      metadata: { assetOwnerId: "spoofed-owner", vehicleId: "spoofed-vehicle" }
+    });
+
+    expect(harness.auditLogs.map(({ action, entityId, entityType }) => ({
+      action,
+      entityId,
+      entityType
+    }))).toEqual([
+      {
+        action: AuditAction.CREATE,
+        entityId: subscription.id,
+        entityType: "vehicle_subscription_period"
+      },
+      {
+        action: AuditAction.CREATE,
+        entityId: ownership.id,
+        entityType: "vehicle_ownership_period"
+      },
+      {
+        action: AuditAction.UPDATE,
+        entityId: subscription.id,
+        entityType: "vehicle_subscription_period"
+      },
+      {
+        action: AuditAction.UPDATE,
+        entityId: ownership.id,
+        entityType: "vehicle_ownership_period"
+      }
+    ]);
+
+    await harness.service.openSubscriptionPeriod(subscriptionOpen, serviceContext());
+    await harness.service.openOwnershipPeriod(ownershipOpen, serviceContext());
+    await harness.service.closeSubscriptionPeriod(subscriptionClose, serviceContext());
+    await harness.service.closeOwnershipPeriod(ownershipClose, serviceContext());
+
+    expect(harness.auditLogs).toHaveLength(4);
+  });
+
+  it("serializes concurrent exact start replay and commits only one audit row", async () => {
+    const harness = createServiceHarness();
+    const dto = serviceSubscriptionOpenDto();
+
+    const [first, second] = await Promise.all([
+      harness.service.openSubscriptionPeriod(dto, serviceContext()),
+      harness.service.openSubscriptionPeriod(dto, serviceContext())
+    ]);
+
+    expect(second.id).toBe(first.id);
+    expect(harness.subscriptionPeriods).toHaveLength(1);
+    expect(harness.auditLogs).toHaveLength(1);
+  });
+});
+
+describe("AssetFactsService read projections", () => {
+  it("returns vehicle current/history source identity and deterministic runtime discrepancy flags", async () => {
+    const current = subscriptionRow({
+      customerId: "customer-2",
+      id: "subscription-current",
+      orderId: "order-2",
+      vehicleId: "vehicle-1"
+    });
+    const historical = closedSubscriptionRow({
+      endedAt: new Date("2026-07-01T00:00:00.000Z"),
+      id: "subscription-history",
+      startedAt: new Date("2026-06-01T00:00:00.000Z")
+    });
+    const currentOwnership = ownershipRow({ id: "ownership-current" });
+    const historicalOwnership = closedOwnershipRow({
+      endedAt: new Date("2026-05-01T00:00:00.000Z"),
+      id: "ownership-history",
+      startedAt: new Date("2026-04-01T00:00:00.000Z")
+    });
+    const harness = createServiceHarness({
+      ownershipPeriods: [historicalOwnership, currentOwnership],
+      subscriptionPeriods: [historical, current]
+    });
+    harness.records.vehicles.get("vehicle-1")!.status = VehicleStatus.AVAILABLE;
+    harness.records.orders.set("order-2", {
+      contractId: null,
+      customerId: "customer-2",
+      deletedAt: null,
+      id: "order-2",
+      orderNo: "ORDER-2",
+      orderStatus: OrderStatus.CANCELLED,
+      vehicleId: "vehicle-2"
+    });
+
+    const projection = await harness.service.getByVehicle("vehicle-1");
+
+    expect(projection.subscription.current).toMatchObject({
+      id: "subscription-current",
+      start: {
+        reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED,
+        source: {
+          id: "source-1",
+          key: "delivery:source-1:occupancy:v1",
+          type: "DELIVERY"
+        }
+      }
+    });
+    expect(projection.subscription.history.map(({ id }) => id)).toEqual([
+      "subscription-history"
+    ]);
+    expect(projection.ownership.current).toMatchObject({
+      assetOwnerId: "owner-1",
+      id: "ownership-current",
+      start: {
+        source: {
+          id: "source-1",
+          key: "acquisition:source-1:ownership:v1",
+          type: "ACQUISITION"
+        }
+      }
+    });
+    expect(projection.ownership.history.map(({ id }) => id)).toEqual(["ownership-history"]);
+    expect(projection.discrepancyFlags).toEqual([
+      "OPEN_SUBSCRIPTION_ORDER_VEHICLE_MISMATCH",
+      "OPEN_SUBSCRIPTION_ORDER_STATUS_MISMATCH",
+      "OPEN_SUBSCRIPTION_LEASE_MISSING",
+      "OPEN_SUBSCRIPTION_VEHICLE_STATUS_MISMATCH"
+    ]);
+  });
+
+  it("returns order current/history source identity and missing-period flags in stable order", async () => {
+    const harness = createServiceHarness();
+    harness.records.orders.get("order-1")!.orderStatus = OrderStatus.ACTIVE;
+    harness.records.vehicles.get("vehicle-1")!.status = VehicleStatus.LEASED;
+    harness.records.leases.get("order-1")!.status = LeaseStatus.ACTIVE;
+
+    const projection = await harness.service.getByOrder("order-1");
+
+    expect(projection.subscription).toEqual({ current: null, history: [] });
+    expect(projection.runtime).toEqual({
+      leaseStatus: LeaseStatus.ACTIVE,
+      orderStatus: OrderStatus.ACTIVE,
+      vehicleStatus: VehicleStatus.LEASED
+    });
+    expect(projection.discrepancyFlags).toEqual([
+      "ORDER_WITHOUT_CURRENT_SUBSCRIPTION",
+      "LEASE_WITHOUT_CURRENT_SUBSCRIPTION",
+      "VEHICLE_WITHOUT_CURRENT_SUBSCRIPTION"
+    ]);
+  });
+});
+
 function subscriptionOpenInput(
   overrides: Partial<OpenSubscriptionPeriodInput> = {}
 ): OpenSubscriptionPeriodInput {
@@ -1286,4 +1802,443 @@ async function expectConflictCode(promise: Promise<unknown>, expectedCode: strin
     return;
   }
   throw new Error(`Expected conflict code ${expectedCode}`);
+}
+
+type ServiceVehicleRecord = {
+  deletedAt: Date | null;
+  id: string;
+  plateNo: string | null;
+  status: VehicleStatus;
+  vehicleNo: string;
+  vin: string | null;
+};
+
+type ServiceOrderRecord = {
+  contractId: string | null;
+  customerId: string;
+  deletedAt: Date | null;
+  id: string;
+  orderNo: string;
+  orderStatus: OrderStatus;
+  vehicleId: string | null;
+};
+
+type ServiceCustomerRecord = {
+  customerNo: string;
+  deletedAt: Date | null;
+  id: string;
+  name: string;
+  status: string;
+};
+
+type ServiceContractRecord = {
+  contractNo: string;
+  customerId: string;
+  deletedAt: Date | null;
+  id: string;
+  orderId: string;
+  status: ContractStatus;
+};
+
+type ServiceContractSegmentRecord = {
+  id: string;
+  orderId: string;
+  segmentNo: string;
+  sourceContractId: string | null;
+  status: string;
+};
+
+type ServiceAssetOwnerRecord = {
+  id: string;
+  name: string;
+  ownerNo: string;
+  ownerType: string;
+  status: string;
+};
+
+type ServiceLeaseRecord = {
+  activatedAt: Date | null;
+  deletedAt: Date | null;
+  id: string;
+  orderId: string;
+  status: LeaseStatus;
+};
+
+type ServiceRecords = {
+  assetOwners: Map<string, ServiceAssetOwnerRecord>;
+  contractSegments: Map<string, ServiceContractSegmentRecord>;
+  contracts: Map<string, ServiceContractRecord>;
+  customers: Map<string, ServiceCustomerRecord>;
+  leases: Map<string, ServiceLeaseRecord>;
+  orders: Map<string, ServiceOrderRecord>;
+  vehicles: Map<string, ServiceVehicleRecord>;
+};
+
+type ServiceHarnessOptions = {
+  ownershipPeriods?: VehicleOwnershipPeriod[];
+  subscriptionPeriods?: VehicleSubscriptionPeriod[];
+};
+
+function createServiceHarness(options: ServiceHarnessOptions = {}) {
+  const repositoryHarness = createHarness(options);
+  const records = createServiceRecords();
+  const auditLogs: Array<{
+    action: AuditAction;
+    entityId?: string | null;
+    entityType: string;
+    [key: string]: unknown;
+  }> = [];
+  const transactionOptions: Array<{ isolationLevel?: Prisma.TransactionIsolationLevel }> = [];
+  const sharedTx = repositoryHarness.tx as unknown as Record<string, unknown>;
+  const subscriptionDelegate = sharedTx.vehicleSubscriptionPeriod as Record<string, unknown>;
+  const ownershipDelegate = sharedTx.vehicleOwnershipPeriod as Record<string, unknown>;
+  subscriptionDelegate.findMany = async ({ where }: { where: { orderId?: string; vehicleId?: string } }) =>
+    repositoryHarness.subscriptionPeriods.filter(
+      (row) =>
+        (where.orderId === undefined || row.orderId === where.orderId) &&
+        (where.vehicleId === undefined || row.vehicleId === where.vehicleId)
+    );
+  ownershipDelegate.findMany = async ({ where }: { where: { vehicleId?: string } }) =>
+    repositoryHarness.ownershipPeriods.filter(
+      (row) => where.vehicleId === undefined || row.vehicleId === where.vehicleId
+    );
+
+  const aggregateDelegates = {
+    assetOwner: {
+      findFirst: async ({ where }: { where: { id?: string } }) =>
+        findServiceRecord(records.assetOwners, where.id)
+    },
+    auditLog: {
+      create: async ({ data }: { data: (typeof auditLogs)[number] }) => {
+        auditLogs.push(data);
+        return { ...data, id: `audit-${auditLogs.length}` };
+      }
+    },
+    contract: {
+      findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        findServiceRecord(records.contracts, where.id, where.deletedAt === null)
+    },
+    customer: {
+      findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        findServiceRecord(records.customers, where.id, where.deletedAt === null)
+    },
+    lease: {
+      findFirst: async ({ where }: { where: { deletedAt?: null; orderId?: string } }) => {
+        const lease = where.orderId ? records.leases.get(where.orderId) ?? null : null;
+        return where.deletedAt === null && lease?.deletedAt ? null : lease;
+      }
+    },
+    subscriptionContractSegment: {
+      findFirst: async ({ where }: { where: { id?: string } }) =>
+        findServiceRecord(records.contractSegments, where.id)
+    },
+    subscriptionOrder: {
+      findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        findServiceRecord(records.orders, where.id, where.deletedAt === null)
+    },
+    vehicle: {
+      findFirst: async ({ where }: { where: { deletedAt?: null; id?: string } }) =>
+        findServiceRecord(records.vehicles, where.id, where.deletedAt === null)
+    }
+  };
+  Object.assign(sharedTx, aggregateDelegates);
+
+  let transactionSequence = 0;
+  let lockTail = Promise.resolve();
+  const acquireSourceLock = async () => {
+    const previous = lockTail;
+    let release!: () => void;
+    lockTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    return release;
+  };
+
+  const prisma = {
+    ...aggregateDelegates,
+    auditLog: {
+      create: async () => {
+        throw new Error("Asset fact audits must use the command transaction client.");
+      }
+    },
+    vehicleOwnershipPeriod: ownershipDelegate,
+    vehicleSubscriptionPeriod: subscriptionDelegate,
+    $transaction: async <T>(
+      work: (tx: Prisma.TransactionClient) => Promise<T>,
+      transactionOption?: { isolationLevel?: Prisma.TransactionIsolationLevel }
+    ) => {
+      transactionOptions.push(transactionOption ?? {});
+      transactionSequence += 1;
+      const transactionId = `service-transaction-${transactionSequence}`;
+      let releaseSourceLock: (() => void) | undefined;
+      const tx = {
+        ...sharedTx,
+        $queryRaw: async (query: Prisma.Sql) => {
+          if (query.sql.includes("txid_current()")) {
+            return query.sql.includes("current_setting('transaction_isolation')")
+              ? [{ isolationLevel: "read committed", transactionId }]
+              : [{ transactionId }];
+          }
+          if (query.sql.includes("pg_advisory_xact_lock")) {
+            releaseSourceLock = await acquireSourceLock();
+            return [{ locked: true }];
+          }
+          return [];
+        }
+      } as unknown as Prisma.TransactionClient;
+      try {
+        return await work(tx);
+      } finally {
+        releaseSourceLock?.();
+      }
+    }
+  } as unknown as PrismaService;
+  const service = new AssetFactsService(
+    prisma,
+    new AssetFactsRepository(),
+    new AuditService(prisma)
+  );
+
+  return {
+    auditLogs,
+    ownershipPeriods: repositoryHarness.ownershipPeriods,
+    records,
+    service,
+    subscriptionPeriods: repositoryHarness.subscriptionPeriods,
+    transactionOptions
+  };
+}
+
+function createServiceRecords(): ServiceRecords {
+  return {
+    assetOwners: new Map([
+      [
+        "owner-1",
+        {
+          id: "owner-1",
+          name: "Platform Asset Owner",
+          ownerNo: "OWNER-1",
+          ownerType: "PLATFORM",
+          status: "ACTIVE"
+        }
+      ]
+    ]),
+    contractSegments: new Map([
+      [
+        "segment-1",
+        {
+          id: "segment-1",
+          orderId: "order-1",
+          segmentNo: "SEGMENT-1",
+          sourceContractId: "contract-1",
+          status: "ACTIVE"
+        }
+      ]
+    ]),
+    contracts: new Map([
+      [
+        "contract-1",
+        {
+          contractNo: "CONTRACT-1",
+          customerId: "customer-1",
+          deletedAt: null,
+          id: "contract-1",
+          orderId: "order-1",
+          status: ContractStatus.ARCHIVED
+        }
+      ]
+    ]),
+    customers: new Map([
+      [
+        "customer-1",
+        {
+          customerNo: "CUSTOMER-1",
+          deletedAt: null,
+          id: "customer-1",
+          name: "Stage 1C Customer",
+          status: "ACTIVE"
+        }
+      ]
+    ]),
+    leases: new Map([
+      [
+        "order-1",
+        {
+          activatedAt: STARTED_AT,
+          deletedAt: null,
+          id: "lease-1",
+          orderId: "order-1",
+          status: LeaseStatus.ACTIVE
+        }
+      ]
+    ]),
+    orders: new Map([
+      [
+        "order-1",
+        {
+          contractId: "contract-1",
+          customerId: "customer-1",
+          deletedAt: null,
+          id: "order-1",
+          orderNo: "ORDER-1",
+          orderStatus: OrderStatus.ACTIVE,
+          vehicleId: "vehicle-1"
+        }
+      ]
+    ]),
+    vehicles: new Map([
+      [
+        "vehicle-1",
+        {
+          deletedAt: null,
+          id: "vehicle-1",
+          plateNo: "沪A00001",
+          status: VehicleStatus.LEASED,
+          vehicleNo: "VEHICLE-1",
+          vin: "VIN-1"
+        }
+      ],
+      [
+        "vehicle-2",
+        {
+          deletedAt: null,
+          id: "vehicle-2",
+          plateNo: "沪A00002",
+          status: VehicleStatus.AVAILABLE,
+          vehicleNo: "VEHICLE-2",
+          vin: "VIN-2"
+        }
+      ]
+    ])
+  };
+}
+
+function findServiceRecord<T>(
+  records: Map<string, T>,
+  id: string | undefined,
+  requireLive = false
+) {
+  const record = id ? records.get(id) ?? null : null;
+  const deletedAt = (record as { deletedAt?: Date | null } | null)?.deletedAt;
+  return requireLive && deletedAt ? null : record;
+}
+
+function softDeleteServiceReference(
+  records: ServiceRecords,
+  reference: "contract" | "contractSegment" | "customer" | "order" | "vehicle"
+) {
+  if (reference === "contractSegment") {
+    records.contractSegments.clear();
+  } else if (reference === "contract") {
+    records.contracts.get("contract-1")!.deletedAt = new Date();
+  } else if (reference === "customer") {
+    records.customers.get("customer-1")!.deletedAt = new Date();
+  } else if (reference === "order") {
+    records.orders.get("order-1")!.deletedAt = new Date();
+  } else {
+    records.vehicles.get("vehicle-1")!.deletedAt = new Date();
+  }
+}
+
+function serviceSubscriptionOpenDto(
+  overrides: Partial<OpenSubscriptionPeriodDto> = {}
+): OpenSubscriptionPeriodDto {
+  return {
+    confirmedAt: START_CONFIRMED_AT.toISOString(),
+    contractId: "contract-1",
+    contractSegmentId: "segment-1",
+    customerId: "customer-1",
+    orderId: "order-1",
+    reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED,
+    snapshot: { note: "Stage 1C subscription start" },
+    source: {
+      id: SUBSCRIPTION_START_SOURCE_ID,
+      key: "delivery:source-1:occupancy:v1",
+      type: "DELIVERY"
+    },
+    startedAt: STARTED_AT.toISOString(),
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function serviceSubscriptionCloseDto(
+  periodId: string,
+  overrides: Partial<CloseSubscriptionPeriodDto> = {}
+): CloseSubscriptionPeriodDto {
+  return {
+    confirmedAt: END_CONFIRMED_AT.toISOString(),
+    endedAt: ENDED_AT.toISOString(),
+    periodId,
+    reason: VehicleSubscriptionPeriodEndReason.RETURN_CONFIRMED,
+    snapshot: { note: "Stage 1C subscription close" },
+    source: {
+      id: SUBSCRIPTION_END_SOURCE_ID,
+      key: "return:source-2:occupancy:v1",
+      type: "VEHICLE_RETURN"
+    },
+    ...overrides
+  };
+}
+
+function serviceOwnershipOpenDto(
+  overrides: Partial<OpenOwnershipPeriodDto> = {}
+): OpenOwnershipPeriodDto {
+  return {
+    assetOwnerId: "owner-1",
+    confirmedAt: START_CONFIRMED_AT.toISOString(),
+    reason: VehicleOwnershipPeriodStartReason.INITIAL_ACQUISITION,
+    snapshot: { note: "Stage 1C ownership start" },
+    source: {
+      id: OWNERSHIP_START_SOURCE_ID,
+      key: "acquisition:source-1:ownership:v1",
+      type: "ACQUISITION"
+    },
+    startedAt: STARTED_AT.toISOString(),
+    vehicleId: "vehicle-1",
+    ...overrides
+  };
+}
+
+function serviceOwnershipCloseDto(
+  periodId: string,
+  overrides: Partial<CloseOwnershipPeriodDto> = {}
+): CloseOwnershipPeriodDto {
+  return {
+    confirmedAt: END_CONFIRMED_AT.toISOString(),
+    endedAt: ENDED_AT.toISOString(),
+    periodId,
+    reason: VehicleOwnershipPeriodEndReason.OWNERSHIP_TRANSFER,
+    snapshot: { note: "Stage 1C ownership close" },
+    source: {
+      id: OWNERSHIP_END_SOURCE_ID,
+      key: "transfer:source-2:ownership:v1",
+      type: "OWNERSHIP_TRANSFER"
+    },
+    ...overrides
+  };
+}
+
+function serviceContext() {
+  return {
+    actorId: SERVICE_ACTOR_ID,
+    ipAddress: "127.0.0.1",
+    userAgent: "asset-facts-service-test"
+  };
+}
+
+async function expectServiceError(
+  promise: Promise<unknown>,
+  ErrorType: typeof BadRequestException | typeof ConflictException | typeof NotFoundException,
+  code: string
+) {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).toBeInstanceOf(ErrorType);
+    expect((error as BadRequestException).getResponse()).toMatchObject({ code });
+    return;
+  }
+  throw new Error(`Expected service error ${code}`);
 }

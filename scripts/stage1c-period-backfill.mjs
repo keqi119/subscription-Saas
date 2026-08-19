@@ -22,16 +22,50 @@ export async function runStage1cPeriodBackfillCli({
   env = process.env,
   execute = executeStage1cPeriodBackfill,
   writeOutput = writeStage1cPeriodBackfillOutput,
-  writeStdout = (contents) => process.stdout.write(contents)
+  writeStdout = writeStage1cPeriodBackfillStdout
 }) {
   const { mode, output } = parseStage1cPeriodBackfillArgs(args);
   assertStage1cPeriodBackfillApplyConfirmation(mode, env);
   const prisma = await createPrisma();
   const result = await execute({ mode, prisma });
   const json = `${JSON.stringify(result.report, null, 2)}\n`;
-  writeStdout(json);
+  await writeStdout(json);
   if (output !== null) await writeOutput(output, json);
   return result.exitCode;
+}
+
+export function writeStage1cPeriodBackfillStdout(contents, stdout = process.stdout) {
+  return new Promise((resolveWrite, rejectWrite) => {
+    let settled = false;
+    const cleanup = () => stdout.removeListener("error", onError);
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      rejectWrite(error);
+    };
+    const onError = (error) => {
+      cleanup();
+      rejectOnce(error);
+    };
+
+    stdout.once("error", onError);
+    try {
+      stdout.write(contents, (error) => {
+        if (error) {
+          rejectOnce(error);
+          setImmediate(cleanup);
+          return;
+        }
+        cleanup();
+        if (settled) return;
+        settled = true;
+        resolveWrite();
+      });
+    } catch (error) {
+      cleanup();
+      rejectOnce(error);
+    }
+  });
 }
 
 export function stage1cPeriodBackfillPublicError() {

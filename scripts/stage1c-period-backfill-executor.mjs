@@ -279,7 +279,7 @@ async function lockStage1cPeriodBackfillApply(tx) {
 
 async function lockStage1cPeriodBackfillTables(tx) {
   await tx.$executeRaw`LOCK TABLE "vehicle_subscription_period" IN SHARE ROW EXCLUSIVE MODE`;
-  await tx.$executeRaw`LOCK TABLE "asset_owner", "contract", "customer", "lease", "subscription_contract_segment", "subscription_order", "vehicle", "vehicle_delivery", "vehicle_ownership_period", "vehicle_return" IN SHARE MODE`;
+  await tx.$executeRaw`LOCK TABLE "asset_owner", "contract", "customer", "lease", "subscription_contract_segment", "subscription_order", "vehicle", "vehicle_delivery", "vehicle_ownership_period", "vehicle_return" IN SHARE MODE NOWAIT`;
 }
 
 function buildReport({ applied, classification, generatedAt, mode, safeToApply }) {

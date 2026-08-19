@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Writable } from "node:stream";
 import test from "node:test";
 
 const executor = await import("./stage1c-period-backfill-executor.mjs").catch(() => ({}));
@@ -121,6 +122,50 @@ test("unsafe apply is read-only, returns nonzero, and reports every blocker", as
   ]);
 });
 
+test("apply locks every source table in one fail-fast NOWAIT statement before snapshot loading", async () => {
+  const lockQueries = [];
+  let snapshotLoaded = false;
+  const transactionClient = {
+    $executeRaw(strings) {
+      lockQueries.push(strings.join("?").replace(/\s+/g, " ").trim());
+      return Promise.resolve(0);
+    },
+    $queryRaw() {
+      return Promise.resolve([{ locked: true }]);
+    }
+  };
+  const prisma = {
+    $transaction(work, options) {
+      assert.deepEqual(options, {
+        isolationLevel: "RepeatableRead",
+        maxWait: 10_000,
+        timeout: 120_000
+      });
+      return work(transactionClient);
+    }
+  };
+
+  await requiredExport(
+    executor,
+    "executeStage1cPeriodBackfill"
+  )({
+    classify: () => cleanReport(),
+    loadSnapshot: async (db) => {
+      assert.equal(db, transactionClient);
+      snapshotLoaded = true;
+      return emptySnapshot();
+    },
+    mode: "apply",
+    prisma
+  });
+
+  assert.deepEqual(lockQueries, [
+    'LOCK TABLE "vehicle_subscription_period" IN SHARE ROW EXCLUSIVE MODE',
+    'LOCK TABLE "asset_owner", "contract", "customer", "lease", "subscription_contract_segment", "subscription_order", "vehicle", "vehicle_delivery", "vehicle_ownership_period", "vehicle_return" IN SHARE MODE NOWAIT'
+  ]);
+  assert.equal(snapshotLoaded, true);
+});
+
 test("clean apply inserts only CREATE rows, skips UNCHANGED, and audits each insert once", async () => {
   const calls = [];
   const createdRows = [];
@@ -179,6 +224,41 @@ test("clean apply inserts only CREATE rows, skips UNCHANGED, and audits each ins
     "audit.create",
     "transaction.commit"
   ]);
+});
+
+test("a later candidate audit failure rolls back every fact and audit in the apply transaction", async () => {
+  const calls = [];
+  const createdRows = [];
+  const auditRows = [];
+  const prisma = transactionalDatabase({
+    auditRows,
+    calls,
+    createdRows,
+    failAuditAt: 2
+  });
+  const report = cleanReport({
+    subscriptionPeriods: [
+      candidate("CREATE", { orderId: "00000000-0000-4000-8000-000000000002" }),
+      candidate("CREATE", { orderId: "00000000-0000-4000-8000-000000000003" })
+    ]
+  });
+
+  await assert.rejects(
+    requiredExport(
+      executor,
+      "executeStage1cPeriodBackfill"
+    )({
+      classify: () => report,
+      generatedAt: "2026-08-19T00:00:00.000Z",
+      loadSnapshot: async () => emptySnapshot(),
+      mode: "apply",
+      prisma
+    }),
+    /INJECTED_AUDIT_FAILURE/
+  );
+
+  assert.equal(createdRows.length, 0);
+  assert.equal(auditRows.length, 0);
 });
 
 test("transaction-scoped locking makes concurrent apply and replay insert one fact and one audit", async () => {
@@ -504,6 +584,84 @@ test("CLI uses Task 6 parsing, emits JSON, writes optional output, and returns u
   assert.deepEqual(writes, [["output/report.json", expectedJson]]);
 });
 
+test("an asynchronous stdout rejection becomes one generic process failure before file output", async () => {
+  const stderr = [];
+  let disconnects = 0;
+  let outputWrites = 0;
+  const secretUrl = "postgresql://secret-user:secret-password@prod.example.invalid/prod";
+  const stdoutFailure = Promise.reject(new Error(`stdout failed: ${secretUrl}`));
+  void stdoutFailure.catch(() => {});
+
+  const exitCode = await requiredExport(
+    cli,
+    "runStage1cPeriodBackfillProcess"
+  )({
+    disconnect: async () => {
+      disconnects += 1;
+    },
+    run: () =>
+      requiredExport(
+        cli,
+        "runStage1cPeriodBackfillCli"
+      )({
+        args: ["--dry-run", "--output", "output/report.json"],
+        createPrisma: async () => ({ marker: "fake-prisma" }),
+        execute: async () => ({
+          exitCode: 0,
+          report: {
+            applied: null,
+            classification: cleanReport(),
+            generatedAt: "2026-08-19T00:00:00.000Z",
+            mode: "dry-run",
+            safeToApply: true
+          }
+        }),
+        writeOutput: async () => {
+          outputWrites += 1;
+        },
+        writeStdout: () => stdoutFailure
+      }),
+    writeStderr: (contents) => stderr.push(contents)
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(disconnects, 1);
+  assert.equal(outputWrites, 0);
+  assert.deepEqual(stderr, [`${JSON.stringify({ error: "STAGE1C_PERIOD_BACKFILL_FAILED" })}\n`]);
+  assert.doesNotMatch(stderr.join(""), /secret|postgresql|prod/);
+});
+
+test("the default stdout writer awaits completion and safely consumes stream errors", async () => {
+  const writeStdout = requiredExport(cli, "writeStage1cPeriodBackfillStdout");
+  let releaseWrite;
+  const delayedStream = new Writable({
+    write(_chunk, _encoding, callback) {
+      releaseWrite = callback;
+    }
+  });
+  let completed = false;
+  const pendingWrite = writeStdout("report\n", delayedStream).then(() => {
+    completed = true;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+  releaseWrite();
+  await pendingWrite;
+  assert.equal(completed, true);
+  assert.equal(delayedStream.listenerCount("error"), 0);
+
+  const secretUrl = "postgresql://secret-user:secret-password@prod.example.invalid/prod";
+  const failingStream = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback(new Error(`stdout failed: ${secretUrl}`));
+    }
+  });
+  await assert.rejects(writeStdout("report\n", failingStream), /stdout failed/);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failingStream.listenerCount("error"), 0);
+});
+
 test("public CLI failures never include the database URL or credentials", () => {
   const publicError = requiredExport(cli, "stage1cPeriodBackfillPublicError");
   const secretUrl = "postgresql://secret-user:secret-password@prod.example.invalid/prod";
@@ -610,13 +768,17 @@ function transactionalDatabase({
   auditRows = [],
   calls,
   createdRows = [],
+  failAuditAt = null,
   serializeTransactions = false
 }) {
+  let auditCreateAttempts = 0;
   let factLockTail = Promise.resolve();
 
   async function runTransaction(work) {
     calls.push("transaction.begin");
     let releaseFactLock;
+    const pendingAuditRows = [];
+    const pendingCreatedRows = [];
     const tx = {
       $executeRaw(strings) {
         const query = strings.join("?").replace(/\s+/g, " ").trim();
@@ -643,8 +805,12 @@ function transactionalDatabase({
       auditLog: {
         async create({ data }) {
           calls.push("audit.create");
-          auditRows.push(data);
-          return { id: `audit-${auditRows.length}`, ...data };
+          auditCreateAttempts += 1;
+          if (auditCreateAttempts === failAuditAt) {
+            throw new Error("INJECTED_AUDIT_FAILURE");
+          }
+          pendingAuditRows.push(data);
+          return { id: `audit-${auditRows.length + pendingAuditRows.length}`, ...data };
         },
         update() {
           throw new Error("audit update is forbidden");
@@ -656,10 +822,12 @@ function transactionalDatabase({
           const row = {
             ...data,
             createdAt: new Date("2026-08-19T00:00:00.000Z"),
-            id: `00000000-0000-4000-8000-10000000000${createdRows.length + 1}`,
+            id: `00000000-0000-4000-8000-10000000000${
+              createdRows.length + pendingCreatedRows.length + 1
+            }`,
             updatedAt: new Date("2026-08-19T00:00:00.000Z")
           };
-          createdRows.push(row);
+          pendingCreatedRows.push(row);
           return row;
         },
         update() {
@@ -675,8 +843,13 @@ function transactionalDatabase({
     };
     try {
       const result = await work(tx);
+      createdRows.push(...pendingCreatedRows);
+      auditRows.push(...pendingAuditRows);
       calls.push("transaction.commit");
       return result;
+    } catch (error) {
+      calls.push("transaction.rollback");
+      throw error;
     } finally {
       releaseFactLock?.();
     }

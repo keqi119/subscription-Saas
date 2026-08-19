@@ -1,4 +1,5 @@
 const CURRENT_ORDER_STATUSES = new Set(["ACTIVE", "PENDING_RETURN"]);
+const CLOSED_ORDER_STATUSES = new Set(["COMPLETED", "TERMINATED"]);
 const CREDIBLE_LEASE_STATUSES = new Set(["ACTIVE", "RETURN_DUE", "COMPLETED"]);
 const START_SOURCE_TYPE = "SUBSCRIPTION_ORDER";
 
@@ -15,14 +16,16 @@ export function parseStage1cPeriodBackfillArgs(args) {
     }
     if (argument === "--output") {
       const value = args[index + 1];
-      if (output !== null || !value || value.startsWith("--")) invalidArguments();
+      if (output !== null || !value || value.trim().length === 0 || value.startsWith("--")) {
+        invalidArguments();
+      }
       output = value;
       index += 1;
       continue;
     }
     if (argument.startsWith("--output=")) {
       const value = argument.slice("--output=".length);
-      if (output !== null || value.length === 0) invalidArguments();
+      if (output !== null || value.trim().length === 0) invalidArguments();
       output = value;
       continue;
     }
@@ -36,6 +39,7 @@ export function parseStage1cPeriodBackfillArgs(args) {
 export function classifyStage1cPeriodBackfill(snapshot = {}) {
   const orders = array(snapshot.orders);
   const vehicles = array(snapshot.vehicles);
+  const contracts = array(snapshot.contracts);
   const existingSubscriptionPeriods = array(snapshot.existingSubscriptionPeriods);
   const existingOwnershipPeriods = array(snapshot.existingOwnershipPeriods);
   const vehicleById = new Map(
@@ -63,6 +67,15 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
       ambiguities.push(ambiguity(context, "MISSING_CUSTOMER"));
       continue;
     }
+    const contractAuthority = resolveContractAuthority(contracts, order);
+    if (contractAuthority.code) {
+      ambiguities.push(ambiguity(context, contractAuthority.code));
+      continue;
+    }
+    if (!hasCompleteBaseAuthority({ contract: contractAuthority.contract, order, vehicle })) {
+      ambiguities.push(ambiguity(context, "INCOMPLETE_AUTHORITY_SNAPSHOT"));
+      continue;
+    }
 
     const activation = readActivation(order);
     if (activation.code) {
@@ -79,7 +92,16 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
       continue;
     }
 
-    const segment = resolveContractSegment(order.contractSegments, activation.startedAt);
+    const segment = resolveContractSegment(
+      order.contractSegments,
+      activation.startedAt,
+      order,
+      contractAuthority.contract
+    );
+    if (segment.code) {
+      ambiguities.push(ambiguity(context, segment.code));
+      continue;
+    }
     if (segment.coveringSegmentIds.length !== 1) {
       segmentOmissions.push({
         code: "CONTRACT_SEGMENT_UNRESOLVED",
@@ -91,9 +113,12 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
     const payload = buildPayload({
       activation,
       completion,
+      contract: contractAuthority.contract,
       contractSegmentId: segment.contractSegmentId,
+      contractSegment: segment.contractSegment,
       order,
-      sourceKey
+      sourceKey,
+      vehicle
     });
     provisional.push({
       disposition: "CREATE",
@@ -105,20 +130,56 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
   }
 
   const existingBySourceKey = new Map();
-  for (const period of [...existingSubscriptionPeriods].sort(compareSourceKey)) {
-    if (!existingBySourceKey.has(period?.startSourceKey)) {
-      existingBySourceKey.set(period?.startSourceKey, period);
-    }
+  for (const period of existingSubscriptionPeriods) {
+    const persisted = existingBySourceKey.get(period?.startSourceKey) ?? [];
+    persisted.push(period);
+    existingBySourceKey.set(period?.startSourceKey, persisted);
   }
 
   const resolved = [];
   const pendingCreates = [];
+  const persistedSourceViolations = [];
   for (const result of provisional) {
-    const existing = existingBySourceKey.get(result.sourceKey);
-    if (!existing) {
+    const persisted = [...(existingBySourceKey.get(result.sourceKey) ?? [])].sort(
+      comparePersistedPeriod
+    );
+    if (persisted.length === 0) {
       pendingCreates.push(result);
       continue;
     }
+    const matchingIdentity = persisted.filter(
+      (period) =>
+        period.startSourceType === result.payload.startSourceType &&
+        period.startSourceId === result.payload.startSourceId &&
+        period.startSourceKey === result.payload.startSourceKey
+    );
+    if (persisted.length !== 1 || matchingIdentity.length !== 1) {
+      const existingPeriodIds = persisted.map((period) => period.id ?? null).sort();
+      const differingFields = [
+        ...new Set(persisted.flatMap((period) => payloadDifferences(result.payload, period)))
+      ].sort();
+      resolved.push({
+        conflictCode:
+          persisted.length > 1
+            ? "MULTIPLE_PERSISTED_SOURCE_ROWS"
+            : "PERSISTED_SOURCE_IDENTITY_CONFLICT",
+        ...(differingFields.length > 0 ? { differingFields } : {}),
+        disposition: "CONFLICT",
+        ...(persisted.length === 1 ? { existingPeriodId: existingPeriodIds[0] } : {}),
+        existingPeriodIds,
+        orderId: result.orderId,
+        orderNo: result.orderNo,
+        payload: result.payload,
+        sourceKey: result.sourceKey
+      });
+      persistedSourceViolations.push({
+        code: "PERSISTED_SOURCE_IDENTITY_CONFLICT",
+        existingPeriodIds,
+        sourceKey: result.sourceKey
+      });
+      continue;
+    }
+    const existing = matchingIdentity[0];
     const differingFields = payloadDifferences(result.payload, existing);
     resolved.push({
       ...(differingFields.length > 0 ? { differingFields } : {}),
@@ -154,7 +215,9 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
   }
   const multipleCurrent = multipleCurrentOrderViolations(openPeriods);
   const createResults = resolved.filter((result) => result.disposition === "CREATE");
-  const invariantViolations = [...overlaps, ...multipleCurrent].sort(compareViolation);
+  const invariantViolations = [...overlaps, ...multipleCurrent, ...persistedSourceViolations].sort(
+    compareViolation
+  );
 
   return {
     ambiguities,
@@ -183,6 +246,7 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
     segmentOmissions,
     sourceCounts: {
       assetOwners: array(snapshot.assetOwners).length,
+      contracts: contracts.length,
       existingOwnershipPeriods: existingOwnershipPeriods.length,
       existingSubscriptionPeriods: existingSubscriptionPeriods.length,
       orders: orders.length,
@@ -193,19 +257,17 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
 }
 
 function readActivation(order) {
+  const presentLease = order.lease && !order.lease.deletedAt ? order.lease : null;
+  if (presentLease && presentLease.orderId !== order.id) {
+    return { code: "ACTIVATION_EVIDENCE_IDENTITY_MISMATCH" };
+  }
   const lease =
-    order.lease &&
-    !order.lease.deletedAt &&
-    CREDIBLE_LEASE_STATUSES.has(order.lease.status) &&
-    timestamp(order.lease.activatedAt)
-      ? order.lease
-      : null;
+    presentLease && CREDIBLE_LEASE_STATUSES.has(presentLease.status) ? presentLease : null;
+  if (lease && !timestamp(lease.activatedAt)) {
+    return { code: "INVALID_LEASE_ACTIVATION_TIMESTAMP" };
+  }
   const deliveries = array(order.deliveries).filter(
-    (delivery) =>
-      delivery &&
-      !delivery.deletedAt &&
-      delivery.deliveryStatus === "DELIVERED" &&
-      timestamp(delivery.deliveredAt)
+    (delivery) => delivery && !delivery.deletedAt && delivery.deliveryStatus === "DELIVERED"
   );
   const inconsistentDelivery = deliveries.find(
     (delivery) =>
@@ -215,6 +277,9 @@ function readActivation(order) {
   );
   if (inconsistentDelivery) {
     return { code: "ACTIVATION_EVIDENCE_IDENTITY_MISMATCH" };
+  }
+  if (deliveries.some((delivery) => !timestamp(delivery.deliveredAt))) {
+    return { code: "INVALID_DELIVERY_TIMESTAMP" };
   }
   const deliveryTimes = uniqueTimestamps(deliveries.map((delivery) => delivery.deliveredAt));
   if (deliveryTimes.length > 1) {
@@ -240,10 +305,7 @@ function readCompletion(order) {
   }
   const returns = array(order.returns).filter(
     (vehicleReturn) =>
-      vehicleReturn &&
-      !vehicleReturn.deletedAt &&
-      vehicleReturn.returnStatus === "CONFIRMED" &&
-      timestamp(vehicleReturn.returnedAt)
+      vehicleReturn && !vehicleReturn.deletedAt && vehicleReturn.returnStatus === "CONFIRMED"
   );
   const inconsistentReturn = returns.find(
     (vehicleReturn) =>
@@ -252,6 +314,9 @@ function readCompletion(order) {
       vehicleReturn.customerId !== order.customerId
   );
   if (inconsistentReturn) return { code: "RETURN_EVIDENCE_IDENTITY_MISMATCH" };
+  if (returns.some((vehicleReturn) => !timestamp(vehicleReturn.returnedAt))) {
+    return { code: "INVALID_RETURN_TIMESTAMP" };
+  }
   const returnTimes = uniqueTimestamps(returns.map((vehicleReturn) => vehicleReturn.returnedAt));
   if (returnTimes.length > 1) {
     return { code: "CONFLICTING_RETURN_TIMESTAMPS", details: returnTimes };
@@ -264,14 +329,33 @@ function readCompletion(order) {
       details: [orderReturnTime, evidenceReturnTime].sort()
     };
   }
+  if (!orderReturnTime && !evidenceReturnTime && CLOSED_ORDER_STATUSES.has(order.orderStatus)) {
+    return { code: "MISSING_RETURN_EVIDENCE" };
+  }
   return {
     endedAt: orderReturnTime ?? evidenceReturnTime,
     returnEvidence: returns.sort(compareId)[0] ?? null
   };
 }
 
-function buildPayload({ activation, completion, contractSegmentId, order, sourceKey }) {
+function buildPayload({
+  activation,
+  completion,
+  contract,
+  contractSegment,
+  contractSegmentId,
+  order,
+  sourceKey,
+  vehicle
+}) {
   const endedAt = completion.endedAt ?? null;
+  const authority = projectSubscriptionAuthority({
+    contract,
+    contractSegment,
+    customer: order.customer,
+    order,
+    vehicle
+  });
   return {
     contractId: order.contractId ?? null,
     contractSegmentId,
@@ -280,14 +364,17 @@ function buildPayload({ activation, completion, contractSegmentId, order, source
     endReason: endedAt ? "BACKFILL" : null,
     endSnapshot: endedAt
       ? {
-          orderActualReturnAt: timestamp(order.actualReturnAt),
-          returnEvidence: completion.returnEvidence
-            ? {
-                id: completion.returnEvidence.id,
-                returnedAt: timestamp(completion.returnEvidence.returnedAt),
-                status: completion.returnEvidence.returnStatus
-              }
-            : null
+          authority,
+          metadata: {
+            orderActualReturnAt: timestamp(order.actualReturnAt),
+            returnEvidence: completion.returnEvidence
+              ? {
+                  id: completion.returnEvidence.id,
+                  returnedAt: timestamp(completion.returnEvidence.returnedAt),
+                  status: completion.returnEvidence.returnStatus
+                }
+              : null
+          }
         }
       : null,
     endSourceId: endedAt ? order.id : null,
@@ -297,29 +384,24 @@ function buildPayload({ activation, completion, contractSegmentId, order, source
     startedAt: activation.startedAt,
     startReason: "BACKFILL",
     startSnapshot: {
-      activationEvidence: {
-        delivery: activation.delivery
-          ? {
-              deliveredAt: timestamp(activation.delivery.deliveredAt),
-              id: activation.delivery.id,
-              status: activation.delivery.deliveryStatus
-            }
-          : null,
-        lease: activation.lease
-          ? {
-              activatedAt: timestamp(activation.lease.activatedAt),
-              id: activation.lease.id,
-              status: activation.lease.status
-            }
-          : null
-      },
-      order: {
-        contractId: order.contractId ?? null,
-        customerId: order.customerId,
-        id: order.id,
-        orderNo: order.orderNo ?? null,
-        orderStatus: order.orderStatus,
-        vehicleId: order.vehicleId
+      authority,
+      metadata: {
+        activationEvidence: {
+          delivery: activation.delivery
+            ? {
+                deliveredAt: timestamp(activation.delivery.deliveredAt),
+                id: activation.delivery.id,
+                status: activation.delivery.deliveryStatus
+              }
+            : null,
+          lease: activation.lease
+            ? {
+                activatedAt: timestamp(activation.lease.activatedAt),
+                id: activation.lease.id,
+                status: activation.lease.status
+              }
+            : null
+        }
       }
     },
     startSourceId: order.id,
@@ -329,23 +411,127 @@ function buildPayload({ activation, completion, contractSegmentId, order, source
   };
 }
 
-function resolveContractSegment(segments, startedAt) {
-  const instant = Date.parse(startedAt);
+function projectSubscriptionAuthority({ contract, contractSegment, customer, order, vehicle }) {
+  return {
+    contract: contract
+      ? {
+          contractNo: contract.contractNo,
+          customerId: contract.customerId,
+          id: contract.id,
+          orderId: contract.orderId,
+          status: contract.status
+        }
+      : null,
+    contractSegment: contractSegment
+      ? {
+          id: contractSegment.id,
+          orderId: contractSegment.orderId,
+          segmentNo: contractSegment.segmentNo,
+          sourceContractId: contractSegment.sourceContractId ?? null,
+          status: contractSegment.status
+        }
+      : null,
+    customer: {
+      customerNo: customer.customerNo,
+      id: customer.id,
+      name: customer.name,
+      status: customer.status
+    },
+    order: {
+      contractId: order.contractId ?? null,
+      customerId: order.customerId,
+      id: order.id,
+      orderNo: order.orderNo,
+      orderStatus: order.orderStatus,
+      vehicleId: order.vehicleId
+    },
+    vehicle: {
+      id: vehicle.id,
+      plateNo: vehicle.plateNo ?? null,
+      status: vehicle.status,
+      vehicleNo: vehicle.vehicleNo,
+      vin: vehicle.vin ?? null
+    }
+  };
+}
+
+function resolveContractAuthority(contracts, order) {
+  if (!order.contractId) return { contract: null };
+  const referenced = contracts.filter((contract) => contract?.id === order.contractId);
+  if (referenced.length === 0 || (referenced.length === 1 && referenced[0].deletedAt)) {
+    return { code: "MISSING_CONTRACT" };
+  }
+  if (referenced.length !== 1) return { code: "SUBSCRIPTION_AGGREGATE_MISMATCH" };
+  const contract = referenced[0];
+  if (
+    contract.deletedAt ||
+    contract.orderId !== order.id ||
+    contract.customerId !== order.customerId
+  ) {
+    return { code: "SUBSCRIPTION_AGGREGATE_MISMATCH" };
+  }
+  return { contract };
+}
+
+function resolveContractSegment(segments, startedAt, order, contract) {
+  const startedDate = utcCalendarDate(startedAt);
   const covering = array(segments)
     .filter(
       (segment) =>
         segment &&
         segment.status !== "CANCELLED" &&
-        timestamp(segment.startDate) &&
-        timestamp(segment.endDate) &&
-        Date.parse(timestamp(segment.startDate)) <= instant &&
-        instant <= Date.parse(timestamp(segment.endDate))
+        utcCalendarDate(segment.startDate) &&
+        utcCalendarDate(segment.endDate) &&
+        utcCalendarDate(segment.startDate) <= startedDate &&
+        startedDate <= utcCalendarDate(segment.endDate)
     )
     .sort(compareId);
+  if (
+    covering.some(
+      (segment) =>
+        segment.orderId !== order.id ||
+        (segment.sourceContractId != null && segment.sourceContractId !== contract?.id)
+    )
+  ) {
+    return { code: "SUBSCRIPTION_AGGREGATE_MISMATCH" };
+  }
+  if (covering.length === 1 && !hasCompleteContractSegmentAuthority(covering[0])) {
+    return { code: "INCOMPLETE_AUTHORITY_SNAPSHOT" };
+  }
   return {
     contractSegmentId: covering.length === 1 ? covering[0].id : null,
+    contractSegment: covering.length === 1 ? covering[0] : null,
     coveringSegmentIds: covering.map((segment) => segment.id)
   };
+}
+
+function hasCompleteBaseAuthority({ contract, order, vehicle }) {
+  return (
+    hasDefined(vehicle, ["id", "vehicleNo", "status", "plateNo", "vin", "deletedAt"]) &&
+    hasDefined(order, [
+      "id",
+      "orderNo",
+      "customerId",
+      "vehicleId",
+      "contractId",
+      "orderStatus",
+      "deletedAt"
+    ]) &&
+    hasDefined(order.customer, ["id", "customerNo", "name", "status", "deletedAt"]) &&
+    (!contract ||
+      hasDefined(contract, ["id", "contractNo", "orderId", "customerId", "status", "deletedAt"]))
+  );
+}
+
+function hasCompleteContractSegmentAuthority(segment) {
+  return hasDefined(segment, ["id", "segmentNo", "orderId", "sourceContractId", "status"]);
+}
+
+function hasDefined(value, fields) {
+  return (
+    Boolean(value) &&
+    fields.every((field) => Object.hasOwn(value, field) && value[field] !== undefined)
+  );
 }
 
 function findOverlaps(candidates, existingPeriods) {
@@ -433,6 +619,7 @@ function payloadDifferences(payload, existing) {
 function shouldClassify(order) {
   return (
     CURRENT_ORDER_STATUSES.has(order.orderStatus) ||
+    CLOSED_ORDER_STATUSES.has(order.orderStatus) ||
     order.actualReturnAt != null ||
     array(order.returns).some(
       (vehicleReturn) =>
@@ -487,6 +674,10 @@ function timestamp(value) {
   return Number.isFinite(instant.getTime()) ? instant.toISOString() : null;
 }
 
+function utcCalendarDate(value) {
+  return timestamp(value)?.slice(0, 10) ?? null;
+}
+
 function uniqueTimestamps(values) {
   return [...new Set(values.map(timestamp).filter(Boolean))].sort();
 }
@@ -523,6 +714,16 @@ function compareSourceKey(left, right) {
   );
 }
 
+function comparePersistedPeriod(left, right) {
+  return `${left?.startSourceType ?? ""}|${left?.startSourceId ?? ""}|${
+    left?.startSourceKey ?? ""
+  }|${left?.id ?? ""}`.localeCompare(
+    `${right?.startSourceType ?? ""}|${right?.startSourceId ?? ""}|${
+      right?.startSourceKey ?? ""
+    }|${right?.id ?? ""}`
+  );
+}
+
 function compareReportRow(left, right) {
   return `${left.code}|${left.orderId ?? ""}|${left.sourceKey ?? ""}`.localeCompare(
     `${right.code}|${right.orderId ?? ""}|${right.sourceKey ?? ""}`
@@ -536,7 +737,7 @@ function compareOverlap(left, right) {
 }
 
 function compareViolation(left, right) {
-  return `${left.code}|${left.orderId ?? left.leftSourceKey ?? ""}`.localeCompare(
-    `${right.code}|${right.orderId ?? right.leftSourceKey ?? ""}`
+  return `${left.code}|${left.orderId ?? left.leftSourceKey ?? left.sourceKey ?? ""}`.localeCompare(
+    `${right.code}|${right.orderId ?? right.leftSourceKey ?? right.sourceKey ?? ""}`
   );
 }

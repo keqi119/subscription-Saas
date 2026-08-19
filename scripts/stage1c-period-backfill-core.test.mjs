@@ -28,6 +28,8 @@ test("argument parsing requires exactly one mode and accepts one optional output
     [],
     ["--dry-run", "--apply"],
     ["--dry-run", "--output"],
+    ["--dry-run", "--output", "   "],
+    ["--dry-run", "--output=\t"],
     ["--dry-run", "--output", "a.json", "--output", "b.json"],
     ["--dry-run", "--unknown"]
   ]) {
@@ -84,6 +86,19 @@ test("trusted active, pending-return, and returned orders produce materialized p
 
   const report = classify(
     snapshot({
+      contracts: [
+        contractRecord(),
+        contractRecord({
+          customerId: "customer-pending-return",
+          id: "contract-pending-return",
+          orderId: "order-pending-return"
+        }),
+        contractRecord({
+          customerId: "customer-closed",
+          id: "contract-closed",
+          orderId: "order-closed"
+        })
+      ],
       orders: [pendingReturn, closed, active],
       vehicles: [
         vehicleRecord(),
@@ -126,23 +141,20 @@ test("trusted active, pending-return, and returned orders produce materialized p
 
 test("untrusted and internally inconsistent source records are ambiguous", () => {
   const orders = [
-    orderRecord({ id: "order-missing-vehicle", orderNo: "ORD-1", vehicleId: "absent" }),
-    orderRecord({
-      id: "order-missing-customer",
+    isolatedOrder("missing-vehicle", { orderNo: "ORD-1", vehicleId: "absent" }),
+    isolatedOrder("missing-customer", {
       orderNo: "ORD-2",
       customer: null,
       vehicleId: "vehicle-2",
       lease: leaseRecord({ id: "lease-2", orderId: "order-missing-customer" })
     }),
-    orderRecord({
-      id: "order-missing-activation",
+    isolatedOrder("missing-activation", {
       orderNo: "ORD-3",
       vehicleId: "vehicle-3",
       lease: null,
       deliveries: []
     }),
-    orderRecord({
-      id: "order-conflicting-starts",
+    isolatedOrder("conflicting-starts", {
       orderNo: "ORD-4",
       vehicleId: "vehicle-4",
       lease: leaseRecord({
@@ -159,8 +171,7 @@ test("untrusted and internally inconsistent source records are ambiguous", () =>
         })
       ]
     }),
-    orderRecord({
-      id: "order-conflicting-returns",
+    isolatedOrder("conflicting-returns", {
       orderNo: "ORD-5",
       vehicleId: "vehicle-5",
       actualReturnAt: date("2026-04-01T00:00:00.000Z"),
@@ -174,8 +185,7 @@ test("untrusted and internally inconsistent source records are ambiguous", () =>
         })
       ]
     }),
-    orderRecord({
-      id: "order-invalid-range",
+    isolatedOrder("invalid-range", {
       orderNo: "ORD-6",
       vehicleId: "vehicle-6",
       actualReturnAt: date("2026-03-03T00:00:00.000Z"),
@@ -210,11 +220,11 @@ test("overlapping proposed and persisted periods are reported and skipped", () =
   const proposedOverlap = classify(
     snapshot({
       orders: [
-        orderRecord({ id: "order-a", orderNo: "ORD-A" }),
-        orderRecord({
-          id: "order-b",
+        isolatedOrder("a", { orderNo: "ORD-A", vehicleId: "vehicle-1" }),
+        isolatedOrder("b", {
           orderNo: "ORD-B",
           customerId: "customer-b",
+          vehicleId: "vehicle-1",
           lease: leaseRecord({
             id: "lease-b",
             orderId: "order-b",
@@ -266,9 +276,8 @@ test("overlapping proposed and persisted periods are reported and skipped", () =
 test("classification is deterministic across source ordering", () => {
   const source = snapshot({
     orders: [
-      orderRecord({ id: "order-z", orderNo: "ORD-Z" }),
-      orderRecord({
-        id: "order-a",
+      isolatedOrder("z", { orderNo: "ORD-Z", vehicleId: "vehicle-1" }),
+      isolatedOrder("a", {
         orderNo: "ORD-A",
         vehicleId: "vehicle-a",
         customerId: "customer-a",
@@ -279,6 +288,7 @@ test("classification is deterministic across source ordering", () => {
   });
   const reversed = {
     ...source,
+    contracts: [...source.contracts].reverse(),
     orders: [...source.orders].reverse(),
     vehicles: [...source.vehicles].reverse()
   };
@@ -398,12 +408,362 @@ test("reconciliation counts existing periods and one-order-multiple-current anom
   assert.equal(report.counters.oneOrderMultipleCurrentAnomalies, 1);
 });
 
+test("referenced contract authority must exist, be live, and match the order aggregate", () => {
+  const missing = classify(snapshot({ contracts: [] }));
+  const deleted = classify(
+    snapshot({ contracts: [contractRecord({ deletedAt: date("2026-08-01T00:00:00.000Z") })] })
+  );
+  const wrongOrder = classify(
+    snapshot({ contracts: [contractRecord({ orderId: "order-foreign" })] })
+  );
+  const wrongCustomer = classify(
+    snapshot({ contracts: [contractRecord({ customerId: "customer-foreign" })] })
+  );
+
+  assert.deepEqual(
+    [missing, deleted, wrongOrder, wrongCustomer].map((report) =>
+      report.ambiguities.map(({ code }) => code)
+    ),
+    [
+      ["MISSING_CONTRACT"],
+      ["MISSING_CONTRACT"],
+      ["SUBSCRIPTION_AGGREGATE_MISMATCH"],
+      ["SUBSCRIPTION_AGGREGATE_MISMATCH"]
+    ]
+  );
+  assert.deepEqual(
+    [missing, deleted, wrongOrder, wrongCustomer].map(
+      (report) => report.subscriptionPeriods.length
+    ),
+    [0, 0, 0, 0]
+  );
+});
+
+test("authority liveness markers must be present in the classifier input", () => {
+  const orderWithoutMarker = orderRecord();
+  delete orderWithoutMarker.deletedAt;
+  const customerWithoutMarker = orderRecord();
+  delete customerWithoutMarker.customer.deletedAt;
+  const vehicleWithoutMarker = vehicleRecord();
+  delete vehicleWithoutMarker.deletedAt;
+  const contractWithoutMarker = contractRecord({ deletedAt: undefined });
+
+  const reports = [
+    classify(snapshot({ orders: [orderWithoutMarker] })),
+    classify(snapshot({ orders: [customerWithoutMarker] })),
+    classify(snapshot({ vehicles: [vehicleWithoutMarker] })),
+    classify(snapshot({ contracts: [contractWithoutMarker] }))
+  ];
+
+  assert.deepEqual(
+    reports.map((report) => report.ambiguities.map(({ code }) => code)),
+    [
+      ["INCOMPLETE_AUTHORITY_SNAPSHOT"],
+      ["INCOMPLETE_AUTHORITY_SNAPSHOT"],
+      ["INCOMPLETE_AUTHORITY_SNAPSHOT"],
+      ["INCOMPLETE_AUTHORITY_SNAPSHOT"]
+    ]
+  );
+  assert.deepEqual(
+    reports.map((report) => report.subscriptionPeriods.length),
+    [0, 0, 0, 0]
+  );
+});
+
+test("invalid confirmed evidence and closed projections without returns fail closed", () => {
+  const invalidDelivery = isolatedOrder("invalid-delivery", {
+    deliveries: [
+      deliveryRecord({
+        deliveredAt: null,
+        id: "delivery-invalid",
+        orderId: "order-invalid-delivery",
+        vehicleId: "vehicle-invalid-delivery"
+      })
+    ]
+  });
+  const invalidReturn = isolatedOrder("invalid-return", {
+    actualReturnAt: date("2026-04-03T00:00:00.000Z"),
+    returns: [
+      returnRecord({
+        id: "return-invalid",
+        orderId: "order-invalid-return",
+        returnedAt: "not-a-timestamp",
+        vehicleId: "vehicle-invalid-return"
+      })
+    ]
+  });
+  const completedWithoutReturn = isolatedOrder("completed-without-return", {
+    orderStatus: "COMPLETED"
+  });
+  const terminatedWithoutReturn = isolatedOrder("terminated-without-return", {
+    orderStatus: "TERMINATED"
+  });
+
+  const report = classify(
+    snapshot({
+      orders: [invalidDelivery, invalidReturn, completedWithoutReturn, terminatedWithoutReturn],
+      vehicles: [
+        vehicleRecord({ id: "vehicle-invalid-delivery" }),
+        vehicleRecord({ id: "vehicle-invalid-return" }),
+        vehicleRecord({ id: "vehicle-completed-without-return" }),
+        vehicleRecord({ id: "vehicle-terminated-without-return" })
+      ]
+    })
+  );
+
+  assert.deepEqual(
+    report.ambiguities.map(({ code, orderId }) => ({ code, orderId })),
+    [
+      { code: "INVALID_DELIVERY_TIMESTAMP", orderId: "order-invalid-delivery" },
+      { code: "INVALID_RETURN_TIMESTAMP", orderId: "order-invalid-return" },
+      { code: "MISSING_RETURN_EVIDENCE", orderId: "order-completed-without-return" },
+      { code: "MISSING_RETURN_EVIDENCE", orderId: "order-terminated-without-return" }
+    ]
+  );
+  assert.deepEqual(report.subscriptionPeriods, []);
+});
+
+test("lease and covering contract-segment identities must match the order aggregate", () => {
+  const leaseMismatch = isolatedOrder("lease-mismatch", {
+    lease: leaseRecord({ id: "lease-mismatch", orderId: "order-foreign" })
+  });
+  const segmentOrderMismatch = isolatedOrder("segment-order-mismatch", {
+    contractSegments: [
+      segmentRecord({
+        id: "segment-order-mismatch",
+        orderId: "order-foreign",
+        sourceContractId: "contract-segment-order-mismatch"
+      })
+    ]
+  });
+  const segmentContractMismatch = isolatedOrder("segment-contract-mismatch", {
+    contractSegments: [
+      segmentRecord({
+        id: "segment-contract-mismatch",
+        orderId: "order-segment-contract-mismatch",
+        sourceContractId: "contract-foreign"
+      })
+    ]
+  });
+
+  const report = classify(
+    snapshot({
+      orders: [leaseMismatch, segmentOrderMismatch, segmentContractMismatch],
+      vehicles: [
+        vehicleRecord({ id: "vehicle-lease-mismatch" }),
+        vehicleRecord({ id: "vehicle-segment-order-mismatch" }),
+        vehicleRecord({ id: "vehicle-segment-contract-mismatch" })
+      ]
+    })
+  );
+
+  assert.deepEqual(
+    report.ambiguities.map(({ code, orderId }) => ({ code, orderId })),
+    [
+      {
+        code: "ACTIVATION_EVIDENCE_IDENTITY_MISMATCH",
+        orderId: "order-lease-mismatch"
+      },
+      {
+        code: "SUBSCRIPTION_AGGREGATE_MISMATCH",
+        orderId: "order-segment-contract-mismatch"
+      },
+      {
+        code: "SUBSCRIPTION_AGGREGATE_MISMATCH",
+        orderId: "order-segment-order-mismatch"
+      }
+    ]
+  );
+  assert.deepEqual(report.subscriptionPeriods, []);
+});
+
+test("persisted reconciliation requires one exact full source identity", () => {
+  const expected = expectedActivePayload();
+  const exact = existingPeriod({ id: "period-exact", ...expected });
+  const drift = existingPeriod({
+    id: "period-drift",
+    ...expected,
+    customerId: "customer-drift"
+  });
+  const forward = classify(snapshot({ existingSubscriptionPeriods: [exact, drift] }));
+  const reversed = classify(snapshot({ existingSubscriptionPeriods: [drift, exact] }));
+
+  assert.equal(JSON.stringify(forward), JSON.stringify(reversed));
+  assert.equal(forward.subscriptionPeriods[0].disposition, "CONFLICT");
+  assert.equal(forward.subscriptionPeriods[0].conflictCode, "MULTIPLE_PERSISTED_SOURCE_ROWS");
+  assert.deepEqual(forward.subscriptionPeriods[0].existingPeriodIds, [
+    "period-drift",
+    "period-exact"
+  ]);
+  assert.deepEqual(
+    forward.invariantViolations.filter(({ code }) => code === "PERSISTED_SOURCE_IDENTITY_CONFLICT"),
+    [
+      {
+        code: "PERSISTED_SOURCE_IDENTITY_CONFLICT",
+        existingPeriodIds: ["period-drift", "period-exact"],
+        sourceKey: "stage1c-period-backfill:subscription-order:order-active"
+      }
+    ]
+  );
+
+  const foreignTuple = classify(
+    snapshot({
+      existingSubscriptionPeriods: [
+        existingPeriod({
+          id: "period-foreign",
+          ...expected,
+          startSourceId: "order-foreign",
+          startSourceType: "FOREIGN_SOURCE"
+        })
+      ]
+    })
+  );
+
+  assert.equal(foreignTuple.subscriptionPeriods[0].disposition, "CONFLICT");
+  assert.equal(
+    foreignTuple.subscriptionPeriods[0].conflictCode,
+    "PERSISTED_SOURCE_IDENTITY_CONFLICT"
+  );
+  assert.deepEqual(foreignTuple.subscriptionPeriods[0].differingFields, [
+    "startSourceId",
+    "startSourceType"
+  ]);
+});
+
+test("contract segment dates include the entire UTC calendar end day", () => {
+  const endDay = classify(
+    snapshot({
+      orders: [
+        orderRecord({
+          lease: leaseRecord({ activatedAt: date("2026-03-31T23:59:59.999Z") }),
+          contractSegments: [
+            segmentRecord({
+              endDate: date("2026-03-31T00:00:00.000Z"),
+              id: "segment-end-day",
+              startDate: date("2026-03-01T00:00:00.000Z")
+            })
+          ]
+        })
+      ]
+    })
+  );
+  const afterEndDay = classify(
+    snapshot({
+      orders: [
+        orderRecord({
+          lease: leaseRecord({ activatedAt: date("2026-04-01T00:00:00.000Z") }),
+          contractSegments: [
+            segmentRecord({
+              endDate: date("2026-03-31T00:00:00.000Z"),
+              id: "segment-ended",
+              startDate: date("2026-03-01T00:00:00.000Z")
+            })
+          ]
+        })
+      ]
+    })
+  );
+  const beforeStartDay = classify(
+    snapshot({
+      orders: [
+        orderRecord({
+          lease: leaseRecord({ activatedAt: date("2026-02-28T23:59:59.999Z") }),
+          contractSegments: [
+            segmentRecord({
+              endDate: date("2026-03-31T00:00:00.000Z"),
+              id: "segment-not-started",
+              startDate: date("2026-03-01T00:00:00.000Z")
+            })
+          ]
+        })
+      ]
+    })
+  );
+
+  assert.equal(endDay.subscriptionPeriods[0].payload.contractSegmentId, "segment-end-day");
+  assert.equal(afterEndDay.subscriptionPeriods[0].payload.contractSegmentId, null);
+  assert.equal(beforeStartDay.subscriptionPeriods[0].payload.contractSegmentId, null);
+});
+
+test("report remains deterministic when authorities, evidence, and segments are reversed", () => {
+  const order = isolatedOrder("deterministic", {
+    actualReturnAt: date("2026-04-03T00:00:00.000Z"),
+    contractSegments: [
+      segmentRecord({
+        endDate: date("2026-02-01T00:00:00.000Z"),
+        id: "segment-old",
+        orderId: "order-deterministic",
+        sourceContractId: "contract-deterministic"
+      }),
+      segmentRecord({
+        id: "segment-current",
+        orderId: "order-deterministic",
+        sourceContractId: "contract-deterministic"
+      })
+    ],
+    deliveries: [
+      deliveryRecord({
+        id: "delivery-z",
+        orderId: "order-deterministic",
+        vehicleId: "vehicle-deterministic"
+      }),
+      deliveryRecord({
+        id: "delivery-a",
+        orderId: "order-deterministic",
+        vehicleId: "vehicle-deterministic"
+      })
+    ],
+    returns: [
+      returnRecord({
+        id: "return-z",
+        orderId: "order-deterministic",
+        vehicleId: "vehicle-deterministic"
+      }),
+      returnRecord({
+        id: "return-a",
+        orderId: "order-deterministic",
+        vehicleId: "vehicle-deterministic"
+      })
+    ]
+  });
+  const source = snapshot({
+    orders: [order],
+    vehicles: [vehicleRecord({ id: "vehicle-deterministic" })]
+  });
+  const reversed = {
+    ...source,
+    contracts: [...source.contracts].reverse(),
+    orders: source.orders.map((record) => ({
+      ...record,
+      contractSegments: [...record.contractSegments].reverse(),
+      deliveries: [...record.deliveries].reverse(),
+      returns: [...record.returns].reverse()
+    })),
+    vehicles: [...source.vehicles].reverse()
+  };
+
+  assert.equal(JSON.stringify(classify(source)), JSON.stringify(classify(reversed)));
+});
+
 function snapshot(overrides = {}) {
+  const orders = overrides.orders ?? [orderRecord()];
+  const contracts =
+    overrides.contracts ??
+    orders
+      .filter((order) => order.contractId)
+      .map((order) =>
+        contractRecord({
+          customerId: order.customerId,
+          id: order.contractId,
+          orderId: order.id
+        })
+      );
   return {
     assetOwners: [],
+    contracts,
     existingOwnershipPeriods: [],
     existingSubscriptionPeriods: [],
-    orders: [orderRecord()],
+    orders,
     vehicles: [vehicleRecord()],
     ...overrides
   };
@@ -413,18 +773,23 @@ function orderRecord(overrides = {}) {
   const id = overrides.id ?? "order-active";
   const customerId = overrides.customerId ?? "customer-1";
   const vehicleId = overrides.vehicleId ?? "vehicle-1";
+  const contractId = overrides.contractId ?? "contract-1";
   return {
     actualReturnAt: null,
-    contractId: "contract-1",
+    contractId,
     contractSegments: [
-      {
-        endDate: date("2026-12-31T00:00:00.000Z"),
-        id: "segment-1",
-        startDate: date("2026-01-01T00:00:00.000Z"),
-        status: "ACTIVE"
-      }
+      segmentRecord({
+        orderId: id,
+        sourceContractId: contractId
+      })
     ],
-    customer: { deletedAt: null, id: customerId },
+    customer: {
+      customerNo: "CUS-1",
+      deletedAt: null,
+      id: customerId,
+      name: "Customer One",
+      status: "ACTIVE"
+    },
     customerId,
     deletedAt: null,
     deliveries: [],
@@ -438,12 +803,60 @@ function orderRecord(overrides = {}) {
   };
 }
 
+function isolatedOrder(suffix, overrides = {}) {
+  const id = `order-${suffix}`;
+  const contractId = `contract-${suffix}`;
+  return orderRecord({
+    contractId,
+    contractSegments: [
+      segmentRecord({
+        id: `segment-${suffix}`,
+        orderId: id,
+        segmentNo: `SEG-${suffix}`,
+        sourceContractId: contractId
+      })
+    ],
+    id,
+    lease: leaseRecord({ id: `lease-${suffix}`, orderId: id }),
+    orderNo: `ORD-${suffix}`,
+    vehicleId: `vehicle-${suffix}`,
+    ...overrides
+  });
+}
+
 function vehicleRecord(overrides = {}) {
   return {
     deletedAt: null,
     id: "vehicle-1",
+    plateNo: "沪A00001",
     status: "LEASED",
     vehicleNo: "VEH-1",
+    vin: "VIN00000000000001",
+    ...overrides
+  };
+}
+
+function contractRecord(overrides = {}) {
+  return {
+    contractNo: "CTR-1",
+    customerId: "customer-1",
+    deletedAt: null,
+    id: "contract-1",
+    orderId: "order-active",
+    status: "ARCHIVED",
+    ...overrides
+  };
+}
+
+function segmentRecord(overrides = {}) {
+  return {
+    endDate: date("2026-12-31T00:00:00.000Z"),
+    id: "segment-1",
+    orderId: "order-active",
+    segmentNo: "SEG-1",
+    sourceContractId: "contract-1",
+    startDate: date("2026-01-01T00:00:00.000Z"),
+    status: "ACTIVE",
     ...overrides
   };
 }
@@ -524,21 +937,52 @@ function expectedActivePayload() {
     startedAt: "2026-03-03T00:00:00.000Z",
     startReason: "BACKFILL",
     startSnapshot: {
-      activationEvidence: {
-        delivery: null,
-        lease: {
-          activatedAt: "2026-03-03T00:00:00.000Z",
-          id: "lease-1",
+      authority: {
+        contract: {
+          contractNo: "CTR-1",
+          customerId: "customer-1",
+          id: "contract-1",
+          orderId: "order-active",
+          status: "ARCHIVED"
+        },
+        contractSegment: {
+          id: "segment-1",
+          orderId: "order-active",
+          segmentNo: "SEG-1",
+          sourceContractId: "contract-1",
           status: "ACTIVE"
+        },
+        customer: {
+          customerNo: "CUS-1",
+          id: "customer-1",
+          name: "Customer One",
+          status: "ACTIVE"
+        },
+        order: {
+          contractId: "contract-1",
+          customerId: "customer-1",
+          id: "order-active",
+          orderNo: "ORD-ACTIVE",
+          orderStatus: "ACTIVE",
+          vehicleId: "vehicle-1"
+        },
+        vehicle: {
+          id: "vehicle-1",
+          plateNo: "沪A00001",
+          status: "LEASED",
+          vehicleNo: "VEH-1",
+          vin: "VIN00000000000001"
         }
       },
-      order: {
-        contractId: "contract-1",
-        customerId: "customer-1",
-        id: "order-active",
-        orderNo: "ORD-ACTIVE",
-        orderStatus: "ACTIVE",
-        vehicleId: "vehicle-1"
+      metadata: {
+        activationEvidence: {
+          delivery: null,
+          lease: {
+            activatedAt: "2026-03-03T00:00:00.000Z",
+            id: "lease-1",
+            status: "ACTIVE"
+          }
+        }
       }
     },
     startSourceId: "order-active",
@@ -557,21 +1001,46 @@ function expectedPendingReturnPayload() {
     orderId: "order-pending-return",
     startedAt: "2026-04-02T03:04:05.000Z",
     startSnapshot: {
-      activationEvidence: {
-        delivery: {
-          deliveredAt: "2026-04-02T03:04:05.000Z",
-          id: "delivery-pending-return",
-          status: "DELIVERED"
+      authority: {
+        contract: {
+          contractNo: "CTR-1",
+          customerId: "customer-pending-return",
+          id: "contract-pending-return",
+          orderId: "order-pending-return",
+          status: "ARCHIVED"
         },
-        lease: null
+        contractSegment: null,
+        customer: {
+          customerNo: "CUS-1",
+          id: "customer-pending-return",
+          name: "Customer One",
+          status: "ACTIVE"
+        },
+        order: {
+          contractId: "contract-pending-return",
+          customerId: "customer-pending-return",
+          id: "order-pending-return",
+          orderNo: "ORD-PENDING-RETURN",
+          orderStatus: "PENDING_RETURN",
+          vehicleId: "vehicle-pending-return"
+        },
+        vehicle: {
+          id: "vehicle-pending-return",
+          plateNo: "沪A00001",
+          status: "LEASED",
+          vehicleNo: "VEH-PENDING",
+          vin: "VIN00000000000001"
+        }
       },
-      order: {
-        contractId: "contract-pending-return",
-        customerId: "customer-pending-return",
-        id: "order-pending-return",
-        orderNo: "ORD-PENDING-RETURN",
-        orderStatus: "PENDING_RETURN",
-        vehicleId: "vehicle-pending-return"
+      metadata: {
+        activationEvidence: {
+          delivery: {
+            deliveredAt: "2026-04-02T03:04:05.000Z",
+            id: "delivery-pending-return",
+            status: "DELIVERED"
+          },
+          lease: null
+        }
       }
     },
     startSourceId: "order-pending-return",
@@ -589,11 +1058,44 @@ function expectedClosedPayload() {
     endedAt: "2026-06-01T08:00:00.000Z",
     endReason: "BACKFILL",
     endSnapshot: {
-      orderActualReturnAt: "2026-06-01T08:00:00.000Z",
-      returnEvidence: {
-        id: "return-closed",
-        returnedAt: "2026-06-01T08:00:00.000Z",
-        status: "CONFIRMED"
+      authority: {
+        contract: {
+          contractNo: "CTR-1",
+          customerId: "customer-closed",
+          id: "contract-closed",
+          orderId: "order-closed",
+          status: "ARCHIVED"
+        },
+        contractSegment: null,
+        customer: {
+          customerNo: "CUS-1",
+          id: "customer-closed",
+          name: "Customer One",
+          status: "ACTIVE"
+        },
+        order: {
+          contractId: "contract-closed",
+          customerId: "customer-closed",
+          id: "order-closed",
+          orderNo: "ORD-CLOSED",
+          orderStatus: "COMPLETED",
+          vehicleId: "vehicle-closed"
+        },
+        vehicle: {
+          id: "vehicle-closed",
+          plateNo: "沪A00001",
+          status: "RETURNED",
+          vehicleNo: "VEH-CLOSED",
+          vin: "VIN00000000000001"
+        }
+      },
+      metadata: {
+        orderActualReturnAt: "2026-06-01T08:00:00.000Z",
+        returnEvidence: {
+          id: "return-closed",
+          returnedAt: "2026-06-01T08:00:00.000Z",
+          status: "CONFIRMED"
+        }
       }
     },
     endSourceId: "order-closed",
@@ -602,21 +1104,46 @@ function expectedClosedPayload() {
     orderId: "order-closed",
     startedAt: "2026-05-01T08:00:00.000Z",
     startSnapshot: {
-      activationEvidence: {
-        delivery: null,
-        lease: {
-          activatedAt: "2026-05-01T08:00:00.000Z",
-          id: "lease-closed",
-          status: "COMPLETED"
+      authority: {
+        contract: {
+          contractNo: "CTR-1",
+          customerId: "customer-closed",
+          id: "contract-closed",
+          orderId: "order-closed",
+          status: "ARCHIVED"
+        },
+        contractSegment: null,
+        customer: {
+          customerNo: "CUS-1",
+          id: "customer-closed",
+          name: "Customer One",
+          status: "ACTIVE"
+        },
+        order: {
+          contractId: "contract-closed",
+          customerId: "customer-closed",
+          id: "order-closed",
+          orderNo: "ORD-CLOSED",
+          orderStatus: "COMPLETED",
+          vehicleId: "vehicle-closed"
+        },
+        vehicle: {
+          id: "vehicle-closed",
+          plateNo: "沪A00001",
+          status: "RETURNED",
+          vehicleNo: "VEH-CLOSED",
+          vin: "VIN00000000000001"
         }
       },
-      order: {
-        contractId: "contract-closed",
-        customerId: "customer-closed",
-        id: "order-closed",
-        orderNo: "ORD-CLOSED",
-        orderStatus: "COMPLETED",
-        vehicleId: "vehicle-closed"
+      metadata: {
+        activationEvidence: {
+          delivery: null,
+          lease: {
+            activatedAt: "2026-05-01T08:00:00.000Z",
+            id: "lease-closed",
+            status: "COMPLETED"
+          }
+        }
       }
     },
     startSourceId: "order-closed",

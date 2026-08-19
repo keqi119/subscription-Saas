@@ -257,7 +257,10 @@ export function classifyStage1cPeriodBackfill(snapshot = {}) {
 }
 
 function readActivation(order) {
-  const presentLease = order.lease && !order.lease.deletedAt ? order.lease : null;
+  if (order.lease && !hasExplicitLivenessMarker(order.lease)) {
+    return { code: "LEASE_LIVENESS_UNKNOWN" };
+  }
+  const presentLease = order.lease?.deletedAt === null ? order.lease : null;
   if (presentLease && presentLease.orderId !== order.id) {
     return { code: "ACTIVATION_EVIDENCE_IDENTITY_MISMATCH" };
   }
@@ -266,8 +269,12 @@ function readActivation(order) {
   if (lease && !timestamp(lease.activatedAt)) {
     return { code: "INVALID_LEASE_ACTIVATION_TIMESTAMP" };
   }
-  const deliveries = array(order.deliveries).filter(
-    (delivery) => delivery && !delivery.deletedAt && delivery.deliveryStatus === "DELIVERED"
+  const deliveryRecords = array(order.deliveries).filter(Boolean);
+  if (deliveryRecords.some((delivery) => !hasExplicitLivenessMarker(delivery))) {
+    return { code: "DELIVERY_EVIDENCE_LIVENESS_UNKNOWN" };
+  }
+  const deliveries = deliveryRecords.filter(
+    (delivery) => delivery.deletedAt === null && delivery.deliveryStatus === "DELIVERED"
   );
   const inconsistentDelivery = deliveries.find(
     (delivery) =>
@@ -303,9 +310,13 @@ function readCompletion(order) {
   if (order.actualReturnAt != null && !timestamp(order.actualReturnAt)) {
     return { code: "INVALID_RETURN_TIMESTAMP" };
   }
-  const returns = array(order.returns).filter(
+  const returnRecords = array(order.returns).filter(Boolean);
+  if (returnRecords.some((vehicleReturn) => !hasExplicitLivenessMarker(vehicleReturn))) {
+    return { code: "RETURN_EVIDENCE_LIVENESS_UNKNOWN" };
+  }
+  const returns = returnRecords.filter(
     (vehicleReturn) =>
-      vehicleReturn && !vehicleReturn.deletedAt && vehicleReturn.returnStatus === "CONFIRMED"
+      vehicleReturn.deletedAt === null && vehicleReturn.returnStatus === "CONFIRMED"
   );
   const inconsistentReturn = returns.find(
     (vehicleReturn) =>
@@ -532,6 +543,10 @@ function hasDefined(value, fields) {
     Boolean(value) &&
     fields.every((field) => Object.hasOwn(value, field) && value[field] !== undefined)
   );
+}
+
+function hasExplicitLivenessMarker(record) {
+  return Object.hasOwn(record, "deletedAt") && record.deletedAt !== undefined;
 }
 
 function findOverlaps(candidates, existingPeriods) {

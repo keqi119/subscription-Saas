@@ -523,6 +523,225 @@ test("invalid confirmed evidence and closed projections without returns fail clo
   assert.deepEqual(report.subscriptionPeriods, []);
 });
 
+test("absent or undefined evidence liveness markers fail closed deterministically", () => {
+  const leaseAbsent = leaseRecord({
+    id: "lease-liveness-absent",
+    orderId: "order-lease-liveness-absent"
+  });
+  delete leaseAbsent.deletedAt;
+  const leaseUndefined = leaseRecord({
+    deletedAt: undefined,
+    id: "lease-liveness-undefined",
+    orderId: "order-lease-liveness-undefined"
+  });
+  const deliveryAbsent = deliveryRecord({
+    id: "delivery-liveness-absent",
+    orderId: "order-delivery-liveness-absent",
+    vehicleId: "vehicle-delivery-liveness-absent"
+  });
+  delete deliveryAbsent.deletedAt;
+  const deliveryUndefined = deliveryRecord({
+    deletedAt: undefined,
+    id: "delivery-liveness-undefined",
+    orderId: "order-delivery-liveness-undefined",
+    vehicleId: "vehicle-delivery-liveness-undefined"
+  });
+  const returnAbsent = returnRecord({
+    id: "return-liveness-absent",
+    orderId: "order-return-liveness-absent",
+    vehicleId: "vehicle-return-liveness-absent"
+  });
+  delete returnAbsent.deletedAt;
+  const returnUndefined = returnRecord({
+    deletedAt: undefined,
+    id: "return-liveness-undefined",
+    orderId: "order-return-liveness-undefined",
+    vehicleId: "vehicle-return-liveness-undefined"
+  });
+  const orders = [
+    isolatedOrder("lease-liveness-absent", {
+      deliveries: [
+        deliveryRecord({
+          id: "delivery-for-lease-absent",
+          orderId: "order-lease-liveness-absent",
+          vehicleId: "vehicle-lease-liveness-absent"
+        })
+      ],
+      lease: leaseAbsent
+    }),
+    isolatedOrder("lease-liveness-undefined", {
+      deliveries: [
+        deliveryRecord({
+          id: "delivery-for-lease-undefined",
+          orderId: "order-lease-liveness-undefined",
+          vehicleId: "vehicle-lease-liveness-undefined"
+        })
+      ],
+      lease: leaseUndefined
+    }),
+    isolatedOrder("delivery-liveness-absent", { deliveries: [deliveryAbsent] }),
+    isolatedOrder("delivery-liveness-undefined", { deliveries: [deliveryUndefined] }),
+    isolatedOrder("return-liveness-absent", {
+      actualReturnAt: date("2026-04-03T00:00:00.000Z"),
+      returns: [returnAbsent]
+    }),
+    isolatedOrder("return-liveness-undefined", {
+      actualReturnAt: date("2026-04-03T00:00:00.000Z"),
+      returns: [returnUndefined]
+    })
+  ];
+  const source = snapshot({
+    orders,
+    vehicles: orders.map((order) => vehicleRecord({ id: order.vehicleId }))
+  });
+  const reversed = {
+    ...source,
+    contracts: [...source.contracts].reverse(),
+    orders: [...source.orders].reverse(),
+    vehicles: [...source.vehicles].reverse()
+  };
+
+  const report = classify(source);
+
+  assert.equal(JSON.stringify(report), JSON.stringify(classify(reversed)));
+  assert.deepEqual(
+    report.ambiguities.map(({ code, orderId }) => ({ code, orderId })),
+    [
+      {
+        code: "DELIVERY_EVIDENCE_LIVENESS_UNKNOWN",
+        orderId: "order-delivery-liveness-absent"
+      },
+      {
+        code: "DELIVERY_EVIDENCE_LIVENESS_UNKNOWN",
+        orderId: "order-delivery-liveness-undefined"
+      },
+      { code: "LEASE_LIVENESS_UNKNOWN", orderId: "order-lease-liveness-absent" },
+      { code: "LEASE_LIVENESS_UNKNOWN", orderId: "order-lease-liveness-undefined" },
+      {
+        code: "RETURN_EVIDENCE_LIVENESS_UNKNOWN",
+        orderId: "order-return-liveness-absent"
+      },
+      {
+        code: "RETURN_EVIDENCE_LIVENESS_UNKNOWN",
+        orderId: "order-return-liveness-undefined"
+      }
+    ]
+  );
+  assert.deepEqual(report.subscriptionPeriods, []);
+});
+
+test("explicitly deleted evidence is ignored", () => {
+  const deletedAt = date("2026-08-01T00:00:00.000Z");
+  const orders = [
+    isolatedOrder("deleted-lease", {
+      deliveries: [
+        deliveryRecord({
+          id: "delivery-live",
+          orderId: "order-deleted-lease",
+          vehicleId: "vehicle-deleted-lease"
+        })
+      ],
+      lease: leaseRecord({
+        activatedAt: "invalid-but-deleted",
+        deletedAt,
+        id: "lease-deleted",
+        orderId: "order-foreign"
+      })
+    }),
+    isolatedOrder("deleted-delivery", {
+      deliveries: [
+        deliveryRecord({
+          deletedAt,
+          deliveredAt: "invalid-but-deleted",
+          id: "delivery-deleted",
+          orderId: "order-foreign",
+          vehicleId: "vehicle-foreign"
+        })
+      ]
+    }),
+    isolatedOrder("deleted-return", {
+      returns: [
+        returnRecord({
+          deletedAt,
+          id: "return-deleted",
+          orderId: "order-foreign",
+          returnedAt: "invalid-but-deleted",
+          vehicleId: "vehicle-foreign"
+        })
+      ]
+    })
+  ];
+  const report = classify(
+    snapshot({
+      orders,
+      vehicles: orders.map((order) => vehicleRecord({ id: order.vehicleId }))
+    })
+  );
+
+  assert.deepEqual(report.ambiguities, []);
+  assert.deepEqual(
+    report.subscriptionPeriods.map(({ disposition, payload, sourceKey }) => ({
+      disposition,
+      endedAt: payload.endedAt,
+      selectedDeliveryId: payload.startSnapshot.metadata.activationEvidence.delivery?.id ?? null,
+      selectedLeaseId: payload.startSnapshot.metadata.activationEvidence.lease?.id ?? null,
+      sourceKey
+    })),
+    [
+      {
+        disposition: "CREATE",
+        endedAt: null,
+        selectedDeliveryId: null,
+        selectedLeaseId: "lease-deleted-delivery",
+        sourceKey: "stage1c-period-backfill:subscription-order:order-deleted-delivery"
+      },
+      {
+        disposition: "CREATE",
+        endedAt: null,
+        selectedDeliveryId: "delivery-live",
+        selectedLeaseId: null,
+        sourceKey: "stage1c-period-backfill:subscription-order:order-deleted-lease"
+      },
+      {
+        disposition: "CREATE",
+        endedAt: null,
+        selectedDeliveryId: null,
+        selectedLeaseId: "lease-deleted-return",
+        sourceKey: "stage1c-period-backfill:subscription-order:order-deleted-return"
+      }
+    ]
+  );
+});
+
+test("an explicitly live lease requires a valid activation timestamp", () => {
+  const report = classify(
+    snapshot({
+      orders: [
+        isolatedOrder("invalid-live-lease", {
+          lease: leaseRecord({
+            activatedAt: "not-a-timestamp",
+            deletedAt: null,
+            id: "lease-invalid-live",
+            orderId: "order-invalid-live-lease"
+          })
+        })
+      ],
+      vehicles: [vehicleRecord({ id: "vehicle-invalid-live-lease" })]
+    })
+  );
+
+  assert.deepEqual(
+    report.ambiguities.map(({ code, orderId }) => ({ code, orderId })),
+    [
+      {
+        code: "INVALID_LEASE_ACTIVATION_TIMESTAMP",
+        orderId: "order-invalid-live-lease"
+      }
+    ]
+  );
+  assert.deepEqual(report.subscriptionPeriods, []);
+});
+
 test("lease and covering contract-segment identities must match the order aggregate", () => {
   const leaseMismatch = isolatedOrder("lease-mismatch", {
     lease: leaseRecord({ id: "lease-mismatch", orderId: "order-foreign" })

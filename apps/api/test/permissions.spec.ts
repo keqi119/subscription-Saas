@@ -1351,59 +1351,35 @@ describe("seed permission calibration", () => {
   });
 
   it("assigns the governed asset fact permissions to the approved role matrix", () => {
+    const assetFactPermissions = [
+      "asset_facts:view",
+      "asset_owner:manage",
+      "vehicle_period:manage"
+    ];
     expect(PermissionCode.ASSET_FACTS_VIEW).toBe("asset_facts:view");
     expect(PermissionCode.ASSET_OWNER_MANAGE).toBe("asset_owner:manage");
     expect(PermissionCode.VEHICLE_PERIOD_MANAGE).toBe("vehicle_period:manage");
 
-    for (const permission of [
-      "asset_facts:view",
-      "asset_owner:manage",
-      "vehicle_period:manage"
-    ]) {
+    for (const permission of assetFactPermissions) {
       expect(seedSource).toContain(`"${permission}"`);
     }
 
-    expectRolePermissions("OP", ["asset_facts:view", "vehicle_period:manage"]);
-    expectRolePermissions("GM", ["asset_facts:view"]);
     expectSeedSourceToContain(
       '...(roleCode === "AS" ? assetFactManagementPermissions : assetFactViewPermissions)'
     );
+    const sharedLoopRoles = assetFactSharedLoopRoles();
+    expect(sharedLoopRoles).toEqual(["FI", "AS"]);
     expect(
-      roleHasPermission(permissionConstantSource("assetFactViewPermissions"), "asset_facts:view")
-    ).toBe(true);
-    expect(
-      roleHasPermission(
-        permissionConstantSource("assetFactManagementPermissions"),
-        "asset_facts:view"
-      )
-    ).toBe(true);
-    expect(
-      roleHasPermission(
-        permissionConstantSource("assetFactManagementPermissions"),
-        "asset_owner:manage"
-      )
-    ).toBe(true);
-    expect(
-      roleHasPermission(
-        permissionConstantSource("assetFactManagementPermissions"),
-        "vehicle_period:manage"
-      )
-    ).toBe(true);
-
-    for (const roleCode of ["SA", "RC"]) {
-      const permissions = rolePermissionArray(roleCode);
-      expect(roleHasPermission(permissions, "asset_facts:view")).toBe(false);
-      expect(roleHasPermission(permissions, "asset_owner:manage")).toBe(false);
-      expect(roleHasPermission(permissions, "vehicle_period:manage")).toBe(false);
-    }
-    for (const roleCode of ["OP", "GM"]) {
-      const permissions = rolePermissionArray(roleCode);
-      expect(roleHasPermission(permissions, "asset_owner:manage")).toBe(false);
-    }
-    expect(seedSource).not.toMatch(
-      /assignRoleAccess\(\s*["']CS["'][\s\S]*?(?:asset_(?:facts|owner)|vehicle_period):/
-    );
-    expect(roleHasPermission(rolePermissionArray("GM"), "vehicle_period:manage")).toBe(false);
+      effectiveAssetFactPermissions(assetFactPermissions, sharedLoopRoles)
+    ).toEqual({
+      AS: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
+      CS: [],
+      FI: ["asset_facts:view"],
+      GM: ["asset_facts:view"],
+      OP: ["asset_facts:view", "vehicle_period:manage"],
+      RC: [],
+      SA: []
+    });
   });
 
   it("defines vehicle and subscription plan permissions for ADMIN all-permission seeding", () => {
@@ -2251,6 +2227,53 @@ describe("seed permission calibration", () => {
 
     expect(source).toBeDefined();
     return source ?? "";
+  }
+
+  function optionalRolePermissionArray(roleCode: string) {
+    const pattern = new RegExp(
+      `await\\s+assignRoleAccess\\(\\s*["']${escapeRegExp(roleCode)}["']\\s*,\\s*\\[([\\s\\S]*?)\\]\\s*,`
+    );
+    return seedSource.match(pattern)?.[1] ?? "";
+  }
+
+  function assetFactSharedLoopRoles() {
+    for (const match of seedSource.matchAll(
+      /for \(const roleCode of \[([^\]]+)\]\) \{([\s\S]*?)\n {2}\}/g
+    )) {
+      const body = match[2] ?? "";
+      if (!body.includes("assetFactManagementPermissions")) continue;
+      return [...(match[1] ?? "").matchAll(/["']([^"']+)["']/g)].map(
+        (roleMatch) => roleMatch[1]!
+      );
+    }
+    return [];
+  }
+
+  function effectiveAssetFactPermissions(
+    permissionCodes: string[],
+    sharedLoopRoles: string[]
+  ) {
+    const roleCodes = ["SA", "OP", "RC", "FI", "AS", "CS", "GM"];
+    const viewSource = permissionConstantSource("assetFactViewPermissions");
+    const managementSource = permissionConstantSource("assetFactManagementPermissions");
+
+    return Object.fromEntries(
+      roleCodes.map((roleCode) => {
+        const directSource = optionalRolePermissionArray(roleCode);
+        const loopSource = sharedLoopRoles.includes(roleCode)
+          ? roleCode === "AS"
+            ? managementSource
+            : viewSource
+          : "";
+        const effectiveSource = `${directSource}\n${loopSource}`;
+        return [
+          roleCode,
+          permissionCodes.filter((permission) =>
+            roleHasPermission(effectiveSource, permission)
+          )
+        ];
+      })
+    );
   }
 
   function roleMenuArray(roleCode: string) {

@@ -3,7 +3,6 @@ import {
   Body,
   Controller,
   Get,
-  Headers,
   Param,
   Post,
   Req,
@@ -23,6 +22,7 @@ import {
 } from "./dto/asset-facts.dto";
 
 export const ASSET_FACT_API_CODE = {
+  IDEMPOTENCY_KEY_MULTIPLE: "IDEMPOTENCY_KEY_MULTIPLE",
   IDEMPOTENCY_KEY_MISMATCH: "IDEMPOTENCY_KEY_MISMATCH",
   IDEMPOTENCY_KEY_REQUIRED: "IDEMPOTENCY_KEY_REQUIRED"
 } as const;
@@ -48,11 +48,10 @@ export class AssetFactsController {
   @RequirePermissions(PermissionCode.ASSET_OWNER_MANAGE)
   openOwnershipPeriod(
     @Body() dto: OpenOwnershipPeriodDto,
-    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
     return this.service.openOwnershipPeriod(
-      authoritativeSource(dto, idempotencyKey),
+      authoritativeSource(dto, request),
       commandContext(request)
     );
   }
@@ -61,11 +60,10 @@ export class AssetFactsController {
   @RequirePermissions(PermissionCode.ASSET_OWNER_MANAGE)
   closeOwnershipPeriod(
     @Body() dto: CloseOwnershipPeriodDto,
-    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
     return this.service.closeOwnershipPeriod(
-      authoritativeSource(dto, idempotencyKey),
+      authoritativeSource(dto, request),
       commandContext(request)
     );
   }
@@ -74,11 +72,10 @@ export class AssetFactsController {
   @RequirePermissions(PermissionCode.VEHICLE_PERIOD_MANAGE)
   openSubscriptionPeriod(
     @Body() dto: OpenSubscriptionPeriodDto,
-    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
     return this.service.openSubscriptionPeriod(
-      authoritativeSource(dto, idempotencyKey),
+      authoritativeSource(dto, request),
       commandContext(request)
     );
   }
@@ -87,11 +84,10 @@ export class AssetFactsController {
   @RequirePermissions(PermissionCode.VEHICLE_PERIOD_MANAGE)
   closeSubscriptionPeriod(
     @Body() dto: CloseSubscriptionPeriodDto,
-    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
     return this.service.closeSubscriptionPeriod(
-      authoritativeSource(dto, idempotencyKey),
+      authoritativeSource(dto, request),
       commandContext(request)
     );
   }
@@ -99,9 +95,16 @@ export class AssetFactsController {
 
 function authoritativeSource<T extends { source: { key: string } }>(
   dto: T,
-  idempotencyKey: string | undefined
+  request: AuthenticatedRequest
 ): T {
-  const sourceKey = idempotencyKey?.trim();
+  const idempotencyKeys = rawHeaderValues(request.rawHeaders, "idempotency-key");
+  if (idempotencyKeys.length > 1) {
+    throw apiBadRequest(
+      ASSET_FACT_API_CODE.IDEMPOTENCY_KEY_MULTIPLE,
+      "Exactly one Idempotency-Key header is required."
+    );
+  }
+  const sourceKey = idempotencyKeys[0]?.trim();
   if (!sourceKey) {
     throw apiBadRequest(
       ASSET_FACT_API_CODE.IDEMPOTENCY_KEY_REQUIRED,
@@ -121,6 +124,16 @@ function authoritativeSource<T extends { source: { key: string } }>(
       key: sourceKey
     }
   };
+}
+
+function rawHeaderValues(rawHeaders: string[], headerName: string) {
+  const values: string[] = [];
+  for (let index = 0; index + 1 < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]?.toLowerCase() === headerName) {
+      values.push(rawHeaders[index + 1]!);
+    }
+  }
+  return values;
 }
 
 function commandContext(request: AuthenticatedRequest) {

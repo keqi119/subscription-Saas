@@ -15,7 +15,7 @@ import {
   VehicleSubscriptionPeriodStartReason
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
-import { AddressInfo } from "node:net";
+import { AddressInfo, createConnection } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
@@ -180,6 +180,50 @@ describe("AssetFactsController administrative boundary", () => {
     expect(service.openSubscriptionPeriod).not.toHaveBeenCalled();
   });
 
+  it("rejects duplicate Idempotency-Key fields before normalized values can delegate", async () => {
+    const firstKey = `${SOURCE_KEY}:first`;
+    const secondKey = `${SOURCE_KEY}:second`;
+    const body = subscriptionOpenBody();
+    body.source.key = `${firstKey}, ${secondKey}`;
+
+    const response = await postWithRawHeaders(
+      "/api/asset-facts/admin/subscription-periods/open",
+      body,
+      [
+        "Idempotency-Key",
+        firstKey,
+        "Idempotency-Key",
+        secondKey
+      ]
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ code: "IDEMPOTENCY_KEY_MULTIPLE" });
+    expect(service.openSubscriptionPeriod).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate Idempotency-Key fields whose names use different casing", async () => {
+    const firstKey = `${SOURCE_KEY}:mixed-first`;
+    const secondKey = `${SOURCE_KEY}:mixed-second`;
+    const body = subscriptionOpenBody();
+    body.source.key = `${firstKey}, ${secondKey}`;
+
+    const response = await postWithRawHeaders(
+      "/api/asset-facts/admin/subscription-periods/open",
+      body,
+      [
+        "IDEMPOTENCY-KEY",
+        firstKey,
+        "iDeMpOtEnCy-KeY",
+        secondKey
+      ]
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ code: "IDEMPOTENCY_KEY_MULTIPLE" });
+    expect(service.openSubscriptionPeriod).not.toHaveBeenCalled();
+  });
+
   it("rejects a missing nested source at the controller DTO boundary", async () => {
     const body: Partial<ReturnType<typeof ownershipOpenBody>> = ownershipOpenBody();
     delete body.source;
@@ -321,6 +365,44 @@ describe("AssetFactsController administrative boundary", () => {
         "user-agent": "asset-facts-controller-test"
       },
       method: "POST"
+    });
+  }
+
+  function postWithRawHeaders(path: string, body: object, idempotencyHeaders: string[]) {
+    return new Promise<{ body: unknown; status: number }>((resolve, reject) => {
+      const payload = JSON.stringify(body);
+      const endpoint = new URL(baseUrl);
+      const headerLines: string[] = [];
+      for (let index = 0; index + 1 < idempotencyHeaders.length; index += 2) {
+        headerLines.push(`${idempotencyHeaders[index]}: ${idempotencyHeaders[index + 1]}`);
+      }
+      const rawRequest = [
+        `POST ${path} HTTP/1.1`,
+        `Host: ${endpoint.host}`,
+        "Authorization: Bearer period",
+        "Content-Type: application/json",
+        `Content-Length: ${Buffer.byteLength(payload)}`,
+        "User-Agent: asset-facts-controller-test",
+        "Connection: close",
+        ...headerLines,
+        "",
+        payload
+      ].join("\r\n");
+      const chunks: Buffer[] = [];
+      const socket = createConnection(Number(endpoint.port), endpoint.hostname, () => {
+        socket.write(rawRequest);
+      });
+      socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+      socket.on("error", reject);
+      socket.on("end", () => {
+        const rawResponse = Buffer.concat(chunks).toString("utf8");
+        const [head = "", responseBody = ""] = rawResponse.split("\r\n\r\n", 2);
+        const status = Number(head.match(/^HTTP\/1\.1 (\d{3})/)?.[1] ?? 0);
+        resolve({
+          body: responseBody ? (JSON.parse(responseBody) as unknown) : null,
+          status
+        });
+      });
     });
   }
 });

@@ -7,6 +7,7 @@ import {
   convergeVehicleModelDefinition,
   upsertCanonicalProductPriceRule
 } from "./seed-vehicle-model.mjs";
+import { synchronizeStage1cBaselineForDemoSeed } from "./seed-stage1c-baseline.mjs";
 
 config({ path: "../../.env" });
 config({ path: ".env" });
@@ -1435,6 +1436,8 @@ async function main() {
       ...collectionMenuCodes
     ]
   );
+
+  await synchronizeStage1cBaselineForDemoSeed({ prisma });
 
   const adminUser = await seedDefaultUsers();
 

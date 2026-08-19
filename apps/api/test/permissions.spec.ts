@@ -1369,9 +1369,7 @@ describe("seed permission calibration", () => {
     );
     const sharedLoopRoles = assetFactSharedLoopRoles();
     expect(sharedLoopRoles).toEqual(["FI", "AS"]);
-    expect(
-      effectiveAssetFactPermissions(assetFactPermissions, sharedLoopRoles)
-    ).toEqual({
+    expect(effectiveAssetFactPermissions(assetFactPermissions, sharedLoopRoles)).toEqual({
       AS: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
       CS: [],
       FI: ["asset_facts:view"],
@@ -2242,17 +2240,12 @@ describe("seed permission calibration", () => {
     )) {
       const body = match[2] ?? "";
       if (!body.includes("assetFactManagementPermissions")) continue;
-      return [...(match[1] ?? "").matchAll(/["']([^"']+)["']/g)].map(
-        (roleMatch) => roleMatch[1]!
-      );
+      return [...(match[1] ?? "").matchAll(/["']([^"']+)["']/g)].map((roleMatch) => roleMatch[1]!);
     }
     return [];
   }
 
-  function effectiveAssetFactPermissions(
-    permissionCodes: string[],
-    sharedLoopRoles: string[]
-  ) {
+  function effectiveAssetFactPermissions(permissionCodes: string[], sharedLoopRoles: string[]) {
     const roleCodes = ["SA", "OP", "RC", "FI", "AS", "CS", "GM"];
     const viewSource = permissionConstantSource("assetFactViewPermissions");
     const managementSource = permissionConstantSource("assetFactManagementPermissions");
@@ -2268,9 +2261,7 @@ describe("seed permission calibration", () => {
         const effectiveSource = `${directSource}\n${loopSource}`;
         return [
           roleCode,
-          permissionCodes.filter((permission) =>
-            roleHasPermission(effectiveSource, permission)
-          )
+          permissionCodes.filter((permission) => roleHasPermission(effectiveSource, permission))
         ];
       })
     );

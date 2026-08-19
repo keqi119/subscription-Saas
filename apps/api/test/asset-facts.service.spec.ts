@@ -28,10 +28,7 @@ import {
   OpenOwnershipPeriodDto,
   OpenSubscriptionPeriodDto
 } from "../src/asset-facts/dto/asset-facts.dto";
-import {
-  ASSET_FACT_SERVICE_CODE,
-  AssetFactsService
-} from "../src/asset-facts/asset-facts.service";
+import { ASSET_FACT_SERVICE_CODE, AssetFactsService } from "../src/asset-facts/asset-facts.service";
 import type {
   CloseOwnershipPeriodInput,
   CloseSubscriptionPeriodInput,
@@ -879,14 +876,9 @@ describe("Asset fact command DTO validation", () => {
         vehicleId: "00000000-0000-4000-8000-000000000106"
       })
     ],
-    [
-      CloseOwnershipPeriodDto,
-      serviceOwnershipCloseDto("00000000-0000-4000-8000-000000000108")
-    ]
+    [CloseOwnershipPeriodDto, serviceOwnershipCloseDto("00000000-0000-4000-8000-000000000108")]
   ])("accepts a valid %s command payload", (Dto, payload) => {
-    expect(
-      validateSync(plainToInstance(Dto as new () => object, payload) as object)
-    ).toEqual([]);
+    expect(validateSync(plainToInstance(Dto as new () => object, payload) as object)).toEqual([]);
   });
 });
 
@@ -999,21 +991,36 @@ describe("AssetFactsService audited commands", () => {
   });
 
   it.each([
-    ["order vehicle", (records: ServiceRecords) => {
-      records.orders.get("order-1")!.vehicleId = "vehicle-2";
-    }],
-    ["order customer", (records: ServiceRecords) => {
-      records.orders.get("order-1")!.customerId = "customer-2";
-    }],
-    ["contract order", (records: ServiceRecords) => {
-      records.contracts.get("contract-1")!.orderId = "order-2";
-    }],
-    ["contract customer", (records: ServiceRecords) => {
-      records.contracts.get("contract-1")!.customerId = "customer-2";
-    }],
-    ["segment order", (records: ServiceRecords) => {
-      records.contractSegments.get("segment-1")!.orderId = "order-2";
-    }],
+    [
+      "order vehicle",
+      (records: ServiceRecords) => {
+        records.orders.get("order-1")!.vehicleId = "vehicle-2";
+      }
+    ],
+    [
+      "order customer",
+      (records: ServiceRecords) => {
+        records.orders.get("order-1")!.customerId = "customer-2";
+      }
+    ],
+    [
+      "contract order",
+      (records: ServiceRecords) => {
+        records.contracts.get("contract-1")!.orderId = "order-2";
+      }
+    ],
+    [
+      "contract customer",
+      (records: ServiceRecords) => {
+        records.contracts.get("contract-1")!.customerId = "customer-2";
+      }
+    ],
+    [
+      "segment order",
+      (records: ServiceRecords) => {
+        records.contractSegments.get("segment-1")!.orderId = "order-2";
+      }
+    ],
     [
       "segment contract",
       (records: ServiceRecords) => {
@@ -1178,11 +1185,13 @@ describe("AssetFactsService audited commands", () => {
       metadata: { assetOwnerId: "spoofed-owner", vehicleId: "spoofed-vehicle" }
     });
 
-    expect(harness.auditLogs.map(({ action, entityId, entityType }) => ({
-      action,
-      entityId,
-      entityType
-    }))).toEqual([
+    expect(
+      harness.auditLogs.map(({ action, entityId, entityType }) => ({
+        action,
+        entityId,
+        entityType
+      }))
+    ).toEqual([
       {
         action: AuditAction.CREATE,
         entityId: subscription.id,
@@ -1271,9 +1280,7 @@ describe("AssetFactsService read projections", () => {
 
     const projection = await harness.service.getByVehicle("vehicle-1");
 
-    expect(projection.discrepancyFlags).toContain(
-      "OPEN_SUBSCRIPTION_ORDER_CUSTOMER_MISMATCH"
-    );
+    expect(projection.discrepancyFlags).toContain("OPEN_SUBSCRIPTION_ORDER_CUSTOMER_MISMATCH");
   });
 
   it("returns vehicle current/history source identity and deterministic runtime discrepancy flags", async () => {
@@ -1322,9 +1329,7 @@ describe("AssetFactsService read projections", () => {
         }
       }
     });
-    expect(projection.subscription.history.map(({ id }) => id)).toEqual([
-      "subscription-history"
-    ]);
+    expect(projection.subscription.history.map(({ id }) => id)).toEqual(["subscription-history"]);
     expect(projection.ownership.current).toMatchObject({
       assetOwnerId: "owner-1",
       id: "ownership-current",
@@ -1939,7 +1944,11 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
   const sharedTx = repositoryHarness.tx as unknown as Record<string, unknown>;
   const subscriptionDelegate = sharedTx.vehicleSubscriptionPeriod as Record<string, unknown>;
   const ownershipDelegate = sharedTx.vehicleOwnershipPeriod as Record<string, unknown>;
-  subscriptionDelegate.findMany = async ({ where }: { where: { orderId?: string; vehicleId?: string } }) =>
+  subscriptionDelegate.findMany = async ({
+    where
+  }: {
+    where: { orderId?: string; vehicleId?: string };
+  }) =>
     repositoryHarness.subscriptionPeriods.filter(
       (row) =>
         (where.orderId === undefined || row.orderId === where.orderId) &&
@@ -1971,14 +1980,10 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
     },
     lease: {
       findFirst: async ({ where }: { where: { deletedAt?: null; orderId?: string } }) => {
-        const lease = where.orderId ? records.leases.get(where.orderId) ?? null : null;
+        const lease = where.orderId ? (records.leases.get(where.orderId) ?? null) : null;
         return where.deletedAt === null && lease?.deletedAt ? null : lease;
       },
-      findMany: async ({
-        where
-      }: {
-        where: { deletedAt?: null; orderId?: { in?: string[] } };
-      }) =>
+      findMany: async ({ where }: { where: { deletedAt?: null; orderId?: { in?: string[] } } }) =>
         [...records.leases.values()]
           .filter(
             (lease) =>
@@ -1986,8 +1991,8 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
               (where.orderId?.in === undefined || where.orderId.in.includes(lease.orderId))
           )
           .sort((left, right) => {
-            const activated = (right.activatedAt?.getTime() ?? 0) -
-              (left.activatedAt?.getTime() ?? 0);
+            const activated =
+              (right.activatedAt?.getTime() ?? 0) - (left.activatedAt?.getTime() ?? 0);
             return activated === 0 ? left.id.localeCompare(right.id) : activated;
           })
     },
@@ -2212,7 +2217,7 @@ function findServiceRecord<T>(
   id: string | undefined,
   requireLive = false
 ) {
-  const record = id ? records.get(id) ?? null : null;
+  const record = id ? (records.get(id) ?? null) : null;
   const deletedAt = (record as { deletedAt?: Date | null } | null)?.deletedAt;
   return requireLive && deletedAt ? null : record;
 }

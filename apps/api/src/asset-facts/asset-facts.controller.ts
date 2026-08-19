@@ -46,10 +46,7 @@ export class AssetFactsController {
 
   @Post("admin/ownership-periods/open")
   @RequirePermissions(PermissionCode.ASSET_OWNER_MANAGE)
-  openOwnershipPeriod(
-    @Body() dto: OpenOwnershipPeriodDto,
-    @Req() request: AuthenticatedRequest
-  ) {
+  openOwnershipPeriod(@Body() dto: OpenOwnershipPeriodDto, @Req() request: AuthenticatedRequest) {
     return this.service.openOwnershipPeriod(
       authoritativeSource(dto, request),
       commandContext(request)
@@ -58,10 +55,7 @@ export class AssetFactsController {
 
   @Post("admin/ownership-periods/close")
   @RequirePermissions(PermissionCode.ASSET_OWNER_MANAGE)
-  closeOwnershipPeriod(
-    @Body() dto: CloseOwnershipPeriodDto,
-    @Req() request: AuthenticatedRequest
-  ) {
+  closeOwnershipPeriod(@Body() dto: CloseOwnershipPeriodDto, @Req() request: AuthenticatedRequest) {
     return this.service.closeOwnershipPeriod(
       authoritativeSource(dto, request),
       commandContext(request)

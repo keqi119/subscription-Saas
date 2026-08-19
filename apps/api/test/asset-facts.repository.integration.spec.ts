@@ -940,11 +940,7 @@ function serviceClose(
     : service.closeOwnershipPeriod(input as CloseOwnershipPeriodDto, { actorId: null });
 }
 
-function countAssetFactAudits(
-  prisma: PrismaService,
-  entityId: string,
-  action: AuditAction
-) {
+function countAssetFactAudits(prisma: PrismaService, entityId: string, action: AuditAction) {
   return prisma.auditLog.count({
     where: { action, entityId, module: "asset_facts" }
   });

@@ -1,10 +1,6 @@
 import "reflect-metadata";
 
-import {
-  INestApplication,
-  RequestMethod,
-  ValidationPipe
-} from "@nestjs/common";
+import { INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
 import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { Reflector } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
@@ -103,7 +99,12 @@ describe("AssetFactsController administrative boundary", () => {
   });
 
   it.each([
-    ["ownership open", "/api/asset-facts/admin/ownership-periods/open", ownershipOpenBody(), "view"],
+    [
+      "ownership open",
+      "/api/asset-facts/admin/ownership-periods/open",
+      ownershipOpenBody(),
+      "view"
+    ],
     [
       "ownership close",
       "/api/asset-facts/admin/ownership-periods/close",
@@ -139,7 +140,12 @@ describe("AssetFactsController administrative boundary", () => {
   });
 
   it.each([
-    ["ownership open", "/api/asset-facts/admin/ownership-periods/open", ownershipOpenBody(), "owner"],
+    [
+      "ownership open",
+      "/api/asset-facts/admin/ownership-periods/open",
+      ownershipOpenBody(),
+      "owner"
+    ],
     [
       "ownership close",
       "/api/asset-facts/admin/ownership-periods/close",
@@ -189,12 +195,7 @@ describe("AssetFactsController administrative boundary", () => {
     const response = await postWithRawHeaders(
       "/api/asset-facts/admin/subscription-periods/open",
       body,
-      [
-        "Idempotency-Key",
-        firstKey,
-        "Idempotency-Key",
-        secondKey
-      ]
+      ["Idempotency-Key", firstKey, "Idempotency-Key", secondKey]
     );
 
     expect(response.status).toBe(400);
@@ -211,12 +212,7 @@ describe("AssetFactsController administrative boundary", () => {
     const response = await postWithRawHeaders(
       "/api/asset-facts/admin/subscription-periods/open",
       body,
-      [
-        "IDEMPOTENCY-KEY",
-        firstKey,
-        "iDeMpOtEnCy-KeY",
-        secondKey
-      ]
+      ["IDEMPOTENCY-KEY", firstKey, "iDeMpOtEnCy-KeY", secondKey]
     );
 
     expect(response.status).toBe(400);
@@ -257,7 +253,12 @@ describe("AssetFactsController administrative boundary", () => {
   });
 
   it.each([
-    ["openOwnershipPeriod", "/api/asset-facts/admin/ownership-periods/open", ownershipOpenBody(), "owner"],
+    [
+      "openOwnershipPeriod",
+      "/api/asset-facts/admin/ownership-periods/open",
+      ownershipOpenBody(),
+      "owner"
+    ],
     [
       "closeOwnershipPeriod",
       "/api/asset-facts/admin/ownership-periods/close",
@@ -341,13 +342,16 @@ describe("AssetFactsController administrative boundary", () => {
       RequestMethod.POST,
       PermissionCode.VEHICLE_PERIOD_MANAGE
     ]
-  ] as const)("registers %s as an explicitly permissioned route", (method, path, verb, permission) => {
-    const handler = AssetFactsController.prototype[method];
+  ] as const)(
+    "registers %s as an explicitly permissioned route",
+    (method, path, verb, permission) => {
+      const handler = AssetFactsController.prototype[method];
 
-    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(path);
-    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(verb);
-    expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([permission]);
-  });
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(path);
+      expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(verb);
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([permission]);
+    }
+  );
 
   function get(path: string, token?: string) {
     return fetch(`${baseUrl}${path}`, {

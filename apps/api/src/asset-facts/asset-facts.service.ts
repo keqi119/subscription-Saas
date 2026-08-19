@@ -158,10 +158,7 @@ export class AssetFactsService {
     private readonly auditService: AuditService
   ) {}
 
-  async openSubscriptionPeriod(
-    dto: OpenSubscriptionPeriodDto,
-    context: AssetFactCommandContext
-  ) {
+  async openSubscriptionPeriod(dto: OpenSubscriptionPeriodDto, context: AssetFactCommandContext) {
     const startedAt = parseDate(dto.startedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
     assertStartReason(dto.reason, "subscription");
@@ -174,7 +171,8 @@ export class AssetFactsService {
       await lockSubscriptionAuthorityRows(tx, dto);
       const authority = await loadSubscriptionAuthority(tx, dto);
       const replay = await findSubscriptionStartReplay(tx, dto);
-      const snapshot = replaySnapshot(replay?.startSnapshot, metadata) ??
+      const snapshot =
+        replaySnapshot(replay?.startSnapshot, metadata) ??
         buildSubscriptionSnapshot(authority, metadata);
       const outcome = await this.repository.openSubscriptionPeriodWithOutcome(tx, {
         actorId: context.actorId,
@@ -190,16 +188,19 @@ export class AssetFactsService {
         vehicleId: authority.vehicle.id
       });
       if (outcome.wrote) {
-        await this.writeAudit(tx, AuditAction.CREATE, "vehicle_subscription_period", outcome.fact, context);
+        await this.writeAudit(
+          tx,
+          AuditAction.CREATE,
+          "vehicle_subscription_period",
+          outcome.fact,
+          context
+        );
       }
       return outcome.fact;
     });
   }
 
-  async closeSubscriptionPeriod(
-    dto: CloseSubscriptionPeriodDto,
-    context: AssetFactCommandContext
-  ) {
+  async closeSubscriptionPeriod(dto: CloseSubscriptionPeriodDto, context: AssetFactCommandContext) {
     const endedAt = parseDate(dto.endedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
     assertEndReason(dto.reason, "subscription");
@@ -229,7 +230,8 @@ export class AssetFactsService {
         vehicleId: period.vehicleId
       });
       const replay = await findSubscriptionEndReplay(tx, dto);
-      const snapshot = replaySnapshot(replay?.endSnapshot, metadata) ??
+      const snapshot =
+        replaySnapshot(replay?.endSnapshot, metadata) ??
         buildSubscriptionSnapshot(authority, metadata);
       const outcome = await this.repository.closeSubscriptionPeriodWithOutcome(tx, {
         actorId: context.actorId,
@@ -254,10 +256,7 @@ export class AssetFactsService {
     });
   }
 
-  async openOwnershipPeriod(
-    dto: OpenOwnershipPeriodDto,
-    context: AssetFactCommandContext
-  ) {
+  async openOwnershipPeriod(dto: OpenOwnershipPeriodDto, context: AssetFactCommandContext) {
     const startedAt = parseDate(dto.startedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
     assertStartReason(dto.reason, "ownership");
@@ -270,7 +269,8 @@ export class AssetFactsService {
       await lockOwnershipAuthorityRows(tx, dto);
       const authority = await loadOwnershipAuthority(tx, dto);
       const replay = await findOwnershipStartReplay(tx, dto);
-      const snapshot = replaySnapshot(replay?.startSnapshot, metadata) ??
+      const snapshot =
+        replaySnapshot(replay?.startSnapshot, metadata) ??
         buildOwnershipSnapshot(authority, metadata);
       const outcome = await this.repository.openOwnershipPeriodWithOutcome(tx, {
         actorId: context.actorId,
@@ -283,16 +283,19 @@ export class AssetFactsService {
         vehicleId: authority.vehicle.id
       });
       if (outcome.wrote) {
-        await this.writeAudit(tx, AuditAction.CREATE, "vehicle_ownership_period", outcome.fact, context);
+        await this.writeAudit(
+          tx,
+          AuditAction.CREATE,
+          "vehicle_ownership_period",
+          outcome.fact,
+          context
+        );
       }
       return outcome.fact;
     });
   }
 
-  async closeOwnershipPeriod(
-    dto: CloseOwnershipPeriodDto,
-    context: AssetFactCommandContext
-  ) {
+  async closeOwnershipPeriod(dto: CloseOwnershipPeriodDto, context: AssetFactCommandContext) {
     const endedAt = parseDate(dto.endedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
     assertEndReason(dto.reason, "ownership");
@@ -317,7 +320,8 @@ export class AssetFactsService {
         vehicleId: period.vehicleId
       });
       const replay = await findOwnershipEndReplay(tx, dto);
-      const snapshot = replaySnapshot(replay?.endSnapshot, metadata) ??
+      const snapshot =
+        replaySnapshot(replay?.endSnapshot, metadata) ??
         buildOwnershipSnapshot(authority, metadata);
       const outcome = await this.repository.closeOwnershipPeriodWithOutcome(tx, {
         actorId: context.actorId,
@@ -373,10 +377,7 @@ export class AssetFactsService {
       })
     ]);
     const orderIds = [
-      ...new Set([
-        ...vehicleOrders.map(({ id }) => id),
-        ...(currentOrder ? [currentOrder.id] : [])
-      ])
+      ...new Set([...vehicleOrders.map(({ id }) => id), ...(currentOrder ? [currentOrder.id] : [])])
     ];
     const leases = orderIds.length
       ? await this.prisma.lease.findMany({
@@ -385,20 +386,19 @@ export class AssetFactsService {
           where: { deletedAt: null, orderId: { in: orderIds } }
         })
       : [];
-    const runtimeOrder = currentOrder ??
+    const runtimeOrder =
+      currentOrder ??
       vehicleOrders.find(({ orderStatus }) => orderExpectsSubscription(orderStatus)) ??
       vehicleOrders.find(({ id }) =>
-        leases.some(
-          ({ orderId, status }) => orderId === id && leaseExpectsSubscription(status)
-        )
+        leases.some(({ orderId, status }) => orderId === id && leaseExpectsSubscription(status))
       ) ??
       vehicleOrders[0] ??
       null;
     const currentLease = currentOrder
-      ? leases.find(({ orderId }) => orderId === currentOrder.id) ?? null
+      ? (leases.find(({ orderId }) => orderId === currentOrder.id) ?? null)
       : null;
     const runtimeLease = runtimeOrder
-      ? leases.find(({ orderId }) => orderId === runtimeOrder.id) ?? null
+      ? (leases.find(({ orderId }) => orderId === runtimeOrder.id) ?? null)
       : null;
 
     return {
@@ -569,7 +569,10 @@ async function loadSubscriptionAuthority(
   }
 ): Promise<SubscriptionAuthority> {
   const [vehicle, order, customer, contract, contractSegment] = await Promise.all([
-    tx.vehicle.findFirst({ select: VEHICLE_SELECT, where: { deletedAt: null, id: input.vehicleId } }),
+    tx.vehicle.findFirst({
+      select: VEHICLE_SELECT,
+      where: { deletedAt: null, id: input.vehicleId }
+    }),
     tx.subscriptionOrder.findFirst({
       select: ORDER_SELECT,
       where: { deletedAt: null, id: input.orderId }
@@ -625,7 +628,10 @@ async function loadOwnershipAuthority(
   input: { assetOwnerId: string; vehicleId: string }
 ): Promise<OwnershipAuthority> {
   const [vehicle, assetOwner] = await Promise.all([
-    tx.vehicle.findFirst({ select: VEHICLE_SELECT, where: { deletedAt: null, id: input.vehicleId } }),
+    tx.vehicle.findFirst({
+      select: VEHICLE_SELECT,
+      where: { deletedAt: null, id: input.vehicleId }
+    }),
     tx.assetOwner.findFirst({ select: ASSET_OWNER_SELECT, where: { id: input.assetOwnerId } })
   ]);
   if (!vehicle) throw notFound(ASSET_FACT_SERVICE_CODE.VEHICLE_NOT_FOUND, "Vehicle not found.");
@@ -896,10 +902,7 @@ function orderDiscrepancies(
   return flags;
 }
 
-function appendLeaseDiscrepancies(
-  flags: AssetFactDiscrepancyFlag[],
-  lease: LeaseAuthority | null
-) {
+function appendLeaseDiscrepancies(flags: AssetFactDiscrepancyFlag[], lease: LeaseAuthority | null) {
   if (!lease) {
     flags.push("OPEN_SUBSCRIPTION_LEASE_MISSING");
   } else if (!leaseExpectsSubscription(lease.status)) {

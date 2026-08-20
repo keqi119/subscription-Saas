@@ -6,6 +6,96 @@ import test from "node:test";
 const repoRoot = resolve(import.meta.dirname, "..");
 const rolloutPath = resolve(repoRoot, "docs/runbooks/stage1c-asset-operations-rollout.zh-CN.md");
 const periodRunbookPath = resolve(repoRoot, "docs/runbooks/stage1c-period-facts-rollout.zh-CN.md");
+const schemaPath = resolve(repoRoot, "apps/api/prisma/schema.prisma");
+
+const sqlBlockOrder = [
+  "01-migration-catalog",
+  "02-permission-matrix",
+  "03-handover-source",
+  "04-return-source",
+  "05-service-case-source",
+  "06-condition-report-source",
+  "07-active-blocker-scopes",
+  "08-available-blocked-occupied",
+  "09-availability-parity",
+  "10-release-tuple",
+  "11-terminal-timestamp",
+  "12-source-integrity",
+  "13-event-sequence",
+  "14-evidence-successor",
+  "15-database-catalog",
+  "16-audit-integrity"
+];
+
+const stage1cBEnums = {
+  AssetWorkOrderType: [
+    "DELIVERY_OUTBOUND",
+    "RETURN_INBOUND",
+    "SWAP_OUTBOUND",
+    "SWAP_INBOUND",
+    "RECOVERY",
+    "RECONDITIONING",
+    "MAINTENANCE"
+  ],
+  AssetWorkOrderStatus: [
+    "PENDING",
+    "IN_PROGRESS",
+    "WAITING_EXTERNAL",
+    "PENDING_ACCEPTANCE",
+    "PENDING_COST_CONFIRMATION",
+    "CLOSED",
+    "CANCELLED"
+  ],
+  AssetWorkOrderPriority: ["LOW", "NORMAL", "HIGH", "URGENT"],
+  AssetWorkOrderEventType: [
+    "CREATED",
+    "ASSIGNED",
+    "STARTED",
+    "WAITING_EXTERNAL",
+    "RESUMED",
+    "EVIDENCE_ATTACHED",
+    "SUBMITTED_FOR_ACCEPTANCE",
+    "ACCEPTED",
+    "COST_CONFIRMED",
+    "PHYSICAL_CONTROL_CONFIRMED",
+    "INSPECTION_RECORDED",
+    "RESTRICTION_CREATED",
+    "RESTRICTION_RELEASED",
+    "CLOSED",
+    "CANCELLED",
+    "NOTE_ADDED"
+  ],
+  AssetWorkOrderEvidenceAction: ["ATTACH", "SUPERSEDE", "REMOVE"],
+  AssetWorkOrderEvidenceType: [
+    "PHOTO",
+    "VIDEO",
+    "DOCUMENT",
+    "SIGNATURE",
+    "LOCATION_PROOF",
+    "THIRD_PARTY_RECEIPT",
+    "INSPECTION_REPORT",
+    "OTHER"
+  ],
+  VehicleOperationalRestrictionType: [
+    "RETURN_INSPECTION_PENDING",
+    "REINSPECTION_PENDING",
+    "RECONDITIONING_PENDING",
+    "MAINTENANCE_OR_ACCIDENT",
+    "RECOVERY_IN_PROGRESS",
+    "LEGAL_HOLD",
+    "EVIDENCE_EXCEPTION",
+    "OWNERSHIP_EXCEPTION",
+    "OTHER"
+  ],
+  VehicleOperationalRestrictionSeverity: ["ADVISORY", "BLOCKING"],
+  VehicleOperationalRestrictionScope: [
+    "ALLOCATION",
+    "DELIVERY",
+    "CUSTOMER_USE",
+    "INVENTORY_RELEASE"
+  ],
+  VehicleOperationalRestrictionStatus: ["ACTIVE", "RELEASED", "VOIDED"]
+};
 
 async function readOrEmpty(path) {
   try {
@@ -33,6 +123,235 @@ function markdownRows(contents) {
           .join("|")
       )
   );
+}
+
+function normalizeSql(sql) {
+  return sql.replace(/\s+/g, " ").trim();
+}
+
+function extractMarkedSqlBlocks(contents) {
+  const blocks = [
+    ...contents.matchAll(
+      /<!-- stage1c-sql:([a-z0-9-]+) -->\r?\n(?:\r?\n)?```sql\r?\n([\s\S]*?)```/g
+    )
+  ].map((match) => ({ name: match[1], sql: match[2].trim() }));
+  const allSqlFences = [...contents.matchAll(/```sql\r?\n([\s\S]*?)```/g)];
+
+  assert.equal(allSqlFences.length, 16, "the runbook must contain exactly 16 SQL fences");
+  assert.deepEqual(
+    blocks.map((block) => block.name),
+    sqlBlockOrder,
+    "SQL markers must be unique, complete, and in approved order"
+  );
+  return new Map(blocks.map((block) => [block.name, block.sql]));
+}
+
+function requireSqlFragments(blocks, name, fragments) {
+  const sql = blocks.get(name);
+  assert.ok(sql, `missing SQL block ${name}`);
+  const normalized = normalizeSql(sql);
+  for (const fragment of fragments) {
+    assert.ok(
+      normalized.includes(normalizeSql(fragment)),
+      `${name} missing SQL contract: ${fragment}`
+    );
+  }
+}
+
+function validateEnumContracts(runbook, schema) {
+  for (const [enumName, expectedValues] of Object.entries(stage1cBEnums)) {
+    const schemaMatch = schema.match(new RegExp(`enum\\s+${enumName}\\s*\\{([\\s\\S]*?)\\n\\}`));
+    assert.ok(schemaMatch, `schema enum missing: ${enumName}`);
+    const schemaValues = schemaMatch[1]
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("@@"));
+    assert.deepEqual(schemaValues, expectedValues, `schema enum drift: ${enumName}`);
+
+    const runbookMatch = runbook.match(new RegExp(`^${enumName}\\s*=\\s*(.+)$`, "m"));
+    assert.ok(runbookMatch, `runbook enum missing: ${enumName}`);
+    assert.deepEqual(
+      runbookMatch[1].split("|").map((value) => value.trim()),
+      expectedValues,
+      `runbook enum drift: ${enumName}`
+    );
+  }
+}
+
+function validateRunbookSql(runbook) {
+  const blocks = extractMarkedSqlBlocks(runbook);
+  for (const [name, sql] of blocks) {
+    assert.match(sql, /^BEGIN TRANSACTION READ ONLY;/, `${name} is not independently read-only`);
+    assert.match(sql, /COMMIT;$/, `${name} has no independent COMMIT`);
+    assert.doesNotMatch(
+      sql,
+      /^\s*(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|CALL|DO|COPY)\b/im,
+      `${name} contains a write-capable statement`
+    );
+  }
+
+  requireSqlFragments(blocks, "01-migration-catalog", [
+    "FROM _prisma_migrations",
+    "rolled_back_at",
+    "failed_or_incomplete_migration_count",
+    "migration_catalog_fingerprint"
+  ]);
+  requireSqlFragments(blocks, "02-permission-matrix", [
+    "expected_role(role_code)",
+    "permission_definition(code, name, module, action)",
+    "expected_grant(role_code, permission_code)",
+    "IS DISTINCT FROM"
+  ]);
+
+  const classificationContracts = {
+    "03-handover-source": [
+      "FROM vehicle_handover_work_order AS handover",
+      "JOIN subscription_order AS source_order"
+    ],
+    "04-return-source": [
+      "FROM vehicle_return AS source_return",
+      "source_return.deleted_at IS NULL"
+    ],
+    "05-service-case-source": [
+      "FROM service_case AS service",
+      "service.case_status IN ('SUBMITTED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_CUSTOMER')"
+    ],
+    "06-condition-report-source": [
+      "FROM vehicle_condition_report AS report",
+      "report.report_status = 'PUBLISHED'",
+      "item.deleted_at IS NULL"
+    ]
+  };
+  for (const [name, candidateFragments] of Object.entries(classificationContracts)) {
+    requireSqlFragments(blocks, name, [
+      ...candidateFragments,
+      "FROM asset_work_order_event AS event",
+      "COUNT(link.claim_id) = 0",
+      "COUNT(link.claim_id) = 1",
+      "BOOL_AND(link.source_key = expected.source_key)",
+      "BOOL_AND(link.vehicle_id = expected.vehicle_id)",
+      "BOOL_AND(NOT link.source_conflict)",
+      "WHEN event.id IS NULL THEN material.event_required",
+      "'CREATED'",
+      "'EVIDENCE_ATTACHED'",
+      "'RESTRICTION_CREATED'",
+      "'RESTRICTION_RELEASED'"
+    ]);
+  }
+
+  requireSqlFragments(blocks, "07-active-blocker-scopes", [
+    "VALUES ('ALLOCATION'), ('DELIVERY'), ('CUSTOMER_USE'), ('INVENTORY_RELEASE')",
+    "restriction.started_at <= params.as_of",
+    "restriction.status = 'ACTIVE'",
+    "restriction.severity = 'BLOCKING'"
+  ]);
+  requireSqlFragments(blocks, "08-available-blocked-occupied", [
+    "period.started_at <= params.as_of",
+    "period.ended_at IS NULL OR period.ended_at > params.as_of",
+    "restriction.started_at <= params.as_of",
+    "restriction.scopes && ARRAY['ALLOCATION', 'DELIVERY', 'INVENTORY_RELEASE']::vehicle_operational_restriction_scope[]"
+  ]);
+  requireSqlFragments(blocks, "09-availability-parity", [
+    "VALUES ('ALLOCATION'), ('DELIVERY'), ('MARK_AVAILABLE')",
+    "period.started_at <= params.as_of",
+    "restriction.started_at <= params.as_of"
+  ]);
+  requireSqlFragments(blocks, "10-release-tuple", [
+    "num_nonnulls(",
+    "<> 7",
+    "released_at < started_at"
+  ]);
+  requireSqlFragments(blocks, "11-terminal-timestamp", [
+    "status = 'CLOSED'",
+    "status = 'CANCELLED'",
+    "closed_at < created_at",
+    "cancelled_at < created_at"
+  ]);
+  requireSqlFragments(blocks, "12-source-integrity", [
+    "FROM asset_work_order_event AS event",
+    "'CREATED'",
+    "'EVIDENCE_ATTACHED'",
+    "'RESTRICTION_CREATED'",
+    "'RESTRICTION_RELEASED'",
+    "event.work_order_id = material.work_order_id",
+    "source_conflict",
+    "material_owner_count",
+    "event_owner_count"
+  ]);
+  assert.doesNotMatch(blocks.get("12-source-integrity"), /'NOTE_ADDED'/);
+  requireSqlFragments(blocks, "13-event-sequence", [
+    "row_number() OVER",
+    "PARTITION BY event.work_order_id",
+    "sequence IS DISTINCT FROM expected_sequence"
+  ]);
+  requireSqlFragments(blocks, "14-evidence-successor", [
+    "GROUP BY supersedes_evidence_id",
+    "HAVING COUNT(*) > 1"
+  ]);
+
+  const catalogNames = [
+    "asset_work_order_event_append_only",
+    "asset_work_order_evidence_append_only",
+    "vehicle_operational_restriction_release_only",
+    "reject_asset_operation_append_only_mutation",
+    "enforce_vehicle_operational_restriction_release",
+    "asset_work_order_version_nonnegative_chk",
+    "asset_work_order_event_sequence_positive_chk",
+    "asset_work_order_event_occurred_not_future_chk",
+    "asset_work_order_evidence_sha256_chk",
+    "asset_work_order_evidence_action_shape_chk",
+    "asset_work_order_evidence_file_snapshot_shape_chk",
+    "asset_work_order_evidence_file_size_nonnegative_chk",
+    "vehicle_operational_restriction_scopes_not_empty_chk",
+    "vehicle_operational_restriction_release_after_start_chk",
+    "vehicle_operational_restriction_release_tuple_chk",
+    "asset_work_order_create_source_key",
+    "asset_work_order_event_work_order_sequence_key",
+    "asset_work_order_event_source_key",
+    "asset_work_order_evidence_source_key",
+    "asset_work_order_evidence_supersedes_evidence_id_key",
+    "vehicle_operational_restriction_start_source_key",
+    "vehicle_operational_restriction_release_source_key",
+    "vehicle_operational_restriction_active_vehicle_idx"
+  ];
+  requireSqlFragments(blocks, "15-database-catalog", [
+    "JOIN pg_namespace",
+    "current_schema()",
+    "trigger.tgfoid",
+    "trigger.tgtype = 27",
+    "pg_get_functiondef",
+    "pg_get_constraintdef",
+    "pg_indexes",
+    "actual.enabled IS DISTINCT FROM 'O'",
+    "actual.function_definition !~ 'ERRCODE = ''55000'''",
+    "actual.function_definition !~ 'TG_TABLE_NAME'",
+    "actual.function_definition !~ 'TG_OP = ''DELETE'''",
+    "actual.function_definition !~ 'OLD\\.\"status\" <> ''ACTIVE'''",
+    "actual.function_definition !~ 'NEW\\.\"status\" = ''ACTIVE'''",
+    "actual.function_definition !~ 'NEW\\.\"scopes\"'",
+    "actual.function_definition !~ 'OLD\\.\"scopes\"'",
+    "actual.function_definition !~ 'RETURN NEW'",
+    ...catalogNames
+  ]);
+  requireSqlFragments(blocks, "16-audit-integrity", [
+    "GROUP BY fact.entity_type, fact.id",
+    "create_audit_count <> 1",
+    "facts_with_invalid_create_audit_count",
+    "facts_with_duplicate_create_audit",
+    "extra_create_audits",
+    "audits_without_fact",
+    "audit_fingerprint"
+  ]);
+  return blocks;
+}
+
+function mutateSqlBlock(runbook, blockName, mutation) {
+  const pattern = new RegExp(
+    "(<!-- stage1c-sql:" + blockName + " -->\\r?\\n(?:\\r?\\n)?```sql\\r?\\n)([\\s\\S]*?)(```)"
+  );
+  const match = runbook.match(pattern);
+  assert.ok(match, `cannot mutate missing SQL block ${blockName}`);
+  return runbook.replace(pattern, () => `${match[1]}${mutation(match[2])}${match[3]}`);
 }
 
 test("pins non-goals, rollout stop gates, and forward-only recovery", async () => {
@@ -92,16 +411,10 @@ test("pins the five permissions and the exact eight-role matrix layered with Sta
 });
 
 test("pins every work-order and restriction enum", async () => {
-  const runbook = await readOrEmpty(rolloutPath);
+  const [runbook, schema] = await Promise.all([readOrEmpty(rolloutPath), readOrEmpty(schemaPath)]);
 
+  validateEnumContracts(runbook, schema);
   assertIncludesEvery(runbook, [
-    "DELIVERY_OUTBOUND | RETURN_INBOUND | SWAP_OUTBOUND | SWAP_INBOUND | RECOVERY | RECONDITIONING | MAINTENANCE",
-    "PENDING | IN_PROGRESS | WAITING_EXTERNAL | PENDING_ACCEPTANCE | PENDING_COST_CONFIRMATION | CLOSED | CANCELLED",
-    "RETURN_INSPECTION_PENDING | REINSPECTION_PENDING | RECONDITIONING_PENDING | MAINTENANCE_OR_ACCIDENT | RECOVERY_IN_PROGRESS | LEGAL_HOLD | EVIDENCE_EXCEPTION | OWNERSHIP_EXCEPTION | OTHER",
-    "ADVISORY | BLOCKING",
-    "ALLOCATION | DELIVERY | CUSTOMER_USE | INVENTORY_RELEASE",
-    "ACTIVE | RELEASED | VOIDED",
-    "ATTACH | SUPERSEDE | REMOVE",
     "事件和证据均为只追加、不可更新、不可删除",
     "解除元组必须全空或全非空"
   ]);
@@ -176,22 +489,152 @@ test("pins fail-closed contention, stable errors, and PAUSED journey recovery", 
   ]);
 });
 
-test("makes every reconciliation SQL block independently copy/paste-safe and read-only", async () => {
+test("validates exactly 16 marked SQL blocks and each structural contract", async () => {
   const runbook = await readOrEmpty(rolloutPath);
-  const sqlBlocks = [...runbook.matchAll(/```sql\r?\n([\s\S]*?)```/g)].map((match) =>
-    match[1].trim()
+
+  validateRunbookSql(runbook);
+});
+
+test("rejects dangerous reconciliation SQL mutations", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  validateRunbookSql(runbook);
+
+  const mutations = [
+    [
+      "accepts multiple material claims",
+      mutateSqlBlock(runbook, "03-handover-source", (sql) =>
+        sql.replace("COUNT(link.claim_id) = 1", "COUNT(link.claim_id) >= 1")
+      )
+    ],
+    [
+      "drops vehicle identity equality",
+      mutateSqlBlock(runbook, "04-return-source", (sql) =>
+        sql.replace("AND BOOL_AND(link.vehicle_id = expected.vehicle_id)", "")
+      )
+    ],
+    [
+      "drops period as-of predicate",
+      mutateSqlBlock(runbook, "08-available-blocked-occupied", (sql) =>
+        sql.replace("AND period.started_at <= params.as_of", "")
+      )
+    ],
+    [
+      "drops restriction as-of predicate",
+      mutateSqlBlock(runbook, "08-available-blocked-occupied", (sql) =>
+        sql.replace("AND restriction.started_at <= params.as_of", "")
+      )
+    ],
+    [
+      "removes a required block",
+      runbook.replace(
+        /<!-- stage1c-sql:14-evidence-successor -->\r?\n(?:\r?\n)?```sql\r?\n[\s\S]*?```/,
+        ""
+      )
+    ],
+    [
+      "replaces a gate with SELECT 1",
+      mutateSqlBlock(
+        runbook,
+        "13-event-sequence",
+        () => "BEGIN TRANSACTION READ ONLY;\nSELECT 1;\nCOMMIT;\n"
+      )
+    ],
+    [
+      "drops restriction trigger",
+      mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
+        sql.replace("vehicle_operational_restriction_release_only", "restriction_trigger_removed")
+      )
+    ],
+    [
+      "accepts a no-op trigger function identity",
+      mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
+        sql.replaceAll(
+          "enforce_vehicle_operational_restriction_release",
+          "noop_vehicle_operational_restriction_release"
+        )
+      )
+    ],
+    [
+      "drops an immutable restriction field from function-body validation",
+      mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
+        sql.replace('NEW\\."scopes"', "restriction_scope_body_check_removed")
+      )
+    ],
+    [
+      "drops a database-only constraint expectation",
+      mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
+        sql.replace("asset_work_order_evidence_action_shape_chk", "constraint_removed")
+      )
+    ],
+    [
+      "drops event ownership from source integrity",
+      mutateSqlBlock(runbook, "12-source-integrity", (sql) =>
+        sql.replace("FROM asset_work_order_event AS event", "FROM asset_work_order AS event")
+      )
+    ],
+    [
+      "accepts NOTE_ADDED as a material pair",
+      mutateSqlBlock(runbook, "12-source-integrity", (sql) =>
+        sql.replace("'RESTRICTION_RELEASED'", "'NOTE_ADDED'")
+      )
+    ],
+    [
+      "drops duplicate CREATE-audit cardinality",
+      mutateSqlBlock(runbook, "16-audit-integrity", (sql) =>
+        sql.replace("facts_with_duplicate_create_audit", "duplicate_create_check_removed")
+      )
+    ]
+  ];
+
+  for (const [name, mutated] of mutations) {
+    assert.notEqual(mutated, runbook, `mutation did not alter the runbook: ${name}`);
+    assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
+});
+
+test("rejects AVAILABLE-scope and ordered-enum mutations", async () => {
+  const [runbook, schema] = await Promise.all([readOrEmpty(rolloutPath), readOrEmpty(schemaPath)]);
+  validateEnumContracts(runbook, schema);
+  validateRunbookSql(runbook);
+
+  const scopeMutations = [
+    ["ALLOCATION", "'ALLOCATION', "],
+    ["DELIVERY", "'DELIVERY', "],
+    ["INVENTORY_RELEASE", ", 'INVENTORY_RELEASE'"],
+    ["CUSTOMER_USE addition", "'DELIVERY'", "'DELIVERY', 'CUSTOMER_USE'"]
+  ];
+  for (const mutation of scopeMutations) {
+    const [name, from, to = ""] = mutation;
+    const mutated = mutateSqlBlock(runbook, "08-available-blocked-occupied", (sql) =>
+      sql.replace(from, to)
+    );
+    assert.notEqual(mutated, runbook, `scope mutation did not alter SQL: ${name}`);
+    assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
+
+  const missingPriority = runbook.replace(
+    "AssetWorkOrderPriority = LOW | NORMAL | HIGH | URGENT",
+    "AssetWorkOrderPriority = LOW | NORMAL | HIGH"
+  );
+  const reorderedEvents = runbook.replace(
+    "AssetWorkOrderEventType = CREATED | ASSIGNED",
+    "AssetWorkOrderEventType = ASSIGNED | CREATED"
+  );
+  assert.throws(() => validateEnumContracts(missingPriority, schema));
+  assert.throws(() => validateEnumContracts(reorderedEvents, schema));
+});
+
+test("pins semantic restriction-function body validation", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  const mutated = mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
+    sql.replace('NEW\\."scopes"', "restriction_scope_body_check_removed")
   );
 
-  assert.ok(sqlBlocks.length >= 12, `expected at least 12 SQL blocks, found ${sqlBlocks.length}`);
-  for (const [index, sql] of sqlBlocks.entries()) {
-    assert.match(sql, /^BEGIN TRANSACTION READ ONLY;/);
-    assert.match(sql, /COMMIT;$/);
-    assert.doesNotMatch(
-      sql,
-      /^\s*(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|CALL|DO|COPY)\b/im,
-      `SQL block ${index + 1} contains a write-capable statement`
-    );
-  }
+  assert.notEqual(mutated, runbook);
+  assert.throws(
+    () => validateRunbookSql(mutated),
+    /15-database-catalog missing SQL contract: actual\.function_definition !~ 'NEW/
+  );
 });
 
 test("cross-links the Stage 1C-A period rollout and pins evidence redaction", async () => {

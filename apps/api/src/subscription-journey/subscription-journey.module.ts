@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { CustomerModule } from "../customer/customer.module";
 import { ESignModule } from "../esign/esign.module";
@@ -29,6 +30,7 @@ import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
   exports: [SubscriptionJourneyService],
   imports: [
     AuditModule,
+    AssetOperationsModule,
     AuthModule,
     CustomerModule,
     ESignModule,

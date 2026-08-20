@@ -38,6 +38,8 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Readable } from "node:stream";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -316,7 +318,8 @@ export class CustomerService {
     private readonly storageService: StorageService,
     @Optional() private readonly notificationService?: NotificationService,
     @Optional()
-    private readonly subscriptionJourneySignal?: SubscriptionJourneySignalService
+    private readonly subscriptionJourneySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   private async safeNotifyCustomer(input: {
@@ -967,8 +970,18 @@ export class CustomerService {
 
     const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
       const details = await loadApplicationFinalPlanDetails(tx, before);
+      await lockVehicleAvailabilityAuthorities(tx, [details.vehicle.id]);
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
       assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        details.vehicle.id,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        new Date(),
+        before.applicationSource === ApplicationSource.SELF_SERVICE
+          ? VehicleStatus.AVAILABLE
+          : undefined
+      );
 
       const vehicleUpdate = await tx.vehicle.updateMany({
         data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
@@ -1197,6 +1210,7 @@ export class CustomerService {
         "The journey application has no allocated concrete vehicle."
       );
     }
+    await lockVehicleAvailabilityAuthorities(tx, [application.finalVehicleId]);
     const allocatedVehicle = await tx.vehicle.findUnique({
       where: { id: application.finalVehicleId }
     });
@@ -1210,6 +1224,13 @@ export class CustomerService {
         "The allocated journey vehicle is no longer reserved for review."
       );
     }
+    await this.assetOperationsService?.assertVehicleAvailable(
+      tx,
+      application.finalVehicleId,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      new Date(),
+      VehicleStatus.AVAILABLE
+    );
 
     assertApplicationCanCreateOrder(application);
     const finalDepositAmount = application.finalDepositAmount;
@@ -1515,8 +1536,15 @@ export class CustomerService {
       const customerProfileSnapshot = toJsonSnapshot(
         buildApplicationCustomerProfileSnapshot(currentCustomer, null, now)
       );
+      await lockVehicleAvailabilityAuthorities(tx, [dto.vehicleId]);
       const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
       assertSelfServiceVehicleAvailable(vehicleBefore);
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        dto.vehicleId,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        new Date()
+      );
 
       const application = await tx.application.create({
         data: {
@@ -1834,6 +1862,7 @@ export class CustomerService {
     }
     ensureCanAccessApplication(before, actor);
     assertApplicationHasNoOrder(before);
+    await lockVehicleAvailabilityAuthorities(tx, [vehicleId, before.softReservedVehicleId]);
     if (
       before.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
       before.customerConfirmedPlanRevision !== before.finalPlanRevision ||
@@ -1856,6 +1885,14 @@ export class CustomerService {
     const alreadyHeld =
       before.softReservedVehicleId === details.vehicle.id &&
       details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
+    if (!alreadyHeld) {
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        details.vehicle.id,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        new Date()
+      );
+    }
     if (termsChanged) {
       if (!alreadyHeld) {
         const reserved = await tx.vehicle.updateMany({
@@ -1876,7 +1913,12 @@ export class CustomerService {
           before.softReservedVehicleId &&
           before.softReservedVehicleId !== details.vehicle.id
         ) {
-          await releaseApplicationSoftReservedVehicle(tx, before, actor);
+          await releaseApplicationSoftReservedVehicle(
+            tx,
+            before,
+            actor,
+            this.assetOperationsService
+          );
         }
       }
       const finalPlanRevision = before.finalPlanRevision + 1;
@@ -2677,7 +2719,12 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(
+        tx,
+        before,
+        user,
+        this.assetOperationsService
+      );
       const application = await tx.application.update({
         data: {
           rejectedReason: comment,
@@ -2732,7 +2779,12 @@ export class CustomerService {
     const comment = normalizeRequiredText(dto.comment ?? dto.reason ?? dto.remark, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(
+        tx,
+        before,
+        user,
+        this.assetOperationsService
+      );
       const data: Prisma.ApplicationUpdateInput = {
         rejectedReason: comment,
         status: ApplicationStatus.REJECTED,
@@ -2916,16 +2968,26 @@ async function findActiveApplicationDepositRule(tx: Tx, grade: CustomerGrade) {
 async function releaseApplicationSoftReservedVehicle(
   tx: Tx,
   application: ApplicationWithDetails,
-  user: RequestUser
+  user: RequestUser,
+  assetOperationsService?: AssetOperationsService
 ) {
   if (!application.softReservedVehicleId) {
     return null;
   }
 
+  await lockVehicleAvailabilityAuthorities(tx, [application.softReservedVehicleId]);
   const before = await tx.vehicle.findUnique({ where: { id: application.softReservedVehicleId } });
   if (!before || before.deletedAt || before.status !== VehicleStatus.REVIEW_RESERVED) {
     return null;
   }
+
+  await assetOperationsService?.assertVehicleAvailable(
+    tx,
+    before.id,
+    VehicleAvailabilityPurpose.MARK_AVAILABLE,
+    new Date(),
+    VehicleStatus.AVAILABLE
+  );
 
   const after = await tx.vehicle.update({
     data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
@@ -2933,6 +2995,18 @@ async function releaseApplicationSoftReservedVehicle(
   });
 
   return { after, before };
+}
+
+async function lockVehicleAvailabilityAuthorities(
+  tx: Tx,
+  vehicleIds: ReadonlyArray<string | null | undefined>
+) {
+  const ids = [...new Set(vehicleIds.filter((id): id is string => Boolean(id)))].sort();
+  for (const vehicleId of ids) {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+    );
+  }
 }
 
 async function lockJourneyApplication(tx: Tx, applicationId: string) {

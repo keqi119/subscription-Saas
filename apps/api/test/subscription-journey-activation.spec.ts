@@ -1,4 +1,5 @@
 import { SubscriptionJourneyJobType } from "@prisma/client";
+import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { SubscriptionJourneyHandlers } from "../src/subscription-journey/subscription-journey.handlers";
@@ -95,5 +96,70 @@ describe("subscription journey authoritative activation", () => {
       }
     );
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("converges an operational restriction to a durable PAUSED business wait", async () => {
+    const journey = {
+      application: { finalPlanRevision: 4, salesUserId: "user-1" },
+      currentStepCode: "AUTHORITATIVE_ACTIVATION",
+      id: "journey-1",
+      orderId: "order-1",
+      status: "RUNNING",
+      steps: [{ code: "AUTHORITATIVE_ACTIVATION", id: "step-1", status: "PENDING" }],
+      version: 7
+    };
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      subscriptionJourney: { findUnique: vi.fn(async () => journey) }
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx))
+    };
+    const repository = {
+      pauseForOperationalRestriction: vi.fn(async () => undefined)
+    };
+    const activation = {
+      activateFromAuthoritativeHandover: vi.fn(async () => {
+        throw new ConflictException({
+          code: "VEHICLE_OPERATIONALLY_RESTRICTED",
+          reasons: [{ code: "ACTIVE_OPERATIONAL_RESTRICTION", restrictionId: "restriction-1" }]
+        });
+      })
+    };
+    const service = new SubscriptionJourneyService(
+      repository as never,
+      prisma as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      activation as never
+    );
+    const job = {
+      jobType: SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION,
+      journeyId: "journey-1",
+      payload: { finalPlanRevision: 4, orderId: "order-1" },
+      stepId: "step-1"
+    };
+
+    await expect(service.activateSubscriptionJob(job as never)).resolves.toEqual({
+      action: "SUBSCRIPTION_ACTIVATION_WAITING_OPERATIONAL_CLEARANCE",
+      journeyId: "journey-1",
+      orderId: "order-1"
+    });
+    expect(repository.pauseForOperationalRestriction).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        expectedVersion: 7,
+        journeyId: "journey-1",
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ restrictionId: "restriction-1" })
+        ]),
+        stepId: "step-1"
+      })
+    );
   });
 });

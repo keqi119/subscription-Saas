@@ -3,7 +3,8 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
-  NotFoundException
+  NotFoundException,
+  Optional
 } from "@nestjs/common";
 import {
   ApplicationSource,
@@ -24,6 +25,8 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { requireActiveVehicleModelDefinition } from "../common/vehicle-model-resolver";
@@ -183,7 +186,8 @@ const productMapperLogger = new Logger("ProductService");
 export class ProductService {
   constructor(
     private readonly auditService: AuditService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async listProducts() {
@@ -1449,10 +1453,19 @@ export class ProductService {
       let vehicleAfter = null;
 
       if (before.vehicleId) {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${before.vehicleId}::uuid FOR UPDATE`
+        );
         vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
         if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.AVAILABLE) {
           throw new BadRequestException("所选车辆已不可租用，请重新选择车辆");
         }
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          before.vehicleId,
+          VehicleAvailabilityPurpose.ALLOCATION,
+          new Date()
+        );
         vehicleAfter = await tx.vehicle.update({
           data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
           where: { id: before.vehicleId }

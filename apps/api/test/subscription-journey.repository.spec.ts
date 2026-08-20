@@ -71,6 +71,44 @@ describe("SubscriptionJourneyRepository", () => {
     expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledTimes(2);
   });
 
+  it("persists an activation operational-clearance wait without completing the step", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+    });
+    const tx = completeStepTransaction(step, new Map(), {
+      currentStepCode: SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION,
+      currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+      status: SubscriptionJourneyStatus.RUNNING,
+      version: 5
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.pauseForOperationalRestriction(tx as never, {
+      expectedVersion: 5,
+      journeyId: step.journeyId,
+      reasons: [{ code: "ACTIVE_OPERATIONAL_RESTRICTION", restrictionId: "restriction-1" }],
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+        status: SubscriptionJourneyStatus.PAUSED,
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 5 }
+    });
+    expect(tx.subscriptionJourneyStep.update).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: SubscriptionJourneyEventType.JOURNEY_PAUSED,
+          sequence: 6
+        })
+      })
+    );
+  });
+
   it("creates one application journey and one durable start event for producer retries", async () => {
     const applicationId = randomUUID();
     const journeys = new Map<string, ReturnType<typeof journey>>();

@@ -19,6 +19,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerService } from "../src/customer/customer.service";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 describe("self-service application intake API rules", () => {
   it("creates a self-service application without quote or order and review-reserves the vehicle", async () => {
@@ -49,6 +50,13 @@ describe("self-service application intake API rules", () => {
     );
     expect(response.applicationNo).toMatch(/^APP/);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      harness.vehicle.id,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date)
+    );
+    expect(harness.tx.$queryRaw).toHaveBeenCalled();
     expect(harness.tx.application.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -385,6 +393,7 @@ function createSelfServiceApplicationHarness(overrides: {
   const plan = makePlan(now, overrides.plan);
 
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: vehicle.id }]),
     application: {
       create: vi.fn(async ({ data }) => ({
         ...data,
@@ -429,16 +438,21 @@ function createSelfServiceApplicationHarness(overrides: {
   };
   const auditService = { write: vi.fn(async () => undefined) };
   const journeySignal = { record: vi.fn(async () => undefined) };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
   const service = new CustomerService(
     auditService as never,
     prisma as never,
     {} as never,
     {} as never,
     undefined,
-    journeySignal as never
+    journeySignal as never,
+    assetOperationsService as never
   );
 
   return {
+    assetOperationsService,
     auditService,
     context,
     customer,

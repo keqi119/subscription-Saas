@@ -5,6 +5,9 @@
 本手册用于发布 Stage 1C-A 的 `AssetOwner`、`VehicleOwnershipPeriod` 和
 `VehicleSubscriptionPeriod` 事实模型，并安全执行车辆订阅期间的只读核对、受控补录和重放验收。
 执行依据是 [Stage 1C 实施计划](../superpowers/plans/2026-08-18-stage1c-occupancy-ownership-facts-implementation-plan.md)。
+后续资产工单、运营限制与统一可用性守卫见
+[Stage 1C-B 资产工单与运营限制发布运行手册](./stage1c-asset-operations-rollout.zh-CN.md)；1C-B 只读取本手册
+期间事实，不授权重跑本手册的 apply 或推断历史工单/限制。
 
 本次增量只增加事实表、审计命令、只读投影、专用访问/平台 owner 基线同步器和订阅期间补录工具。
 下列行为不在范围内：

@@ -15,6 +15,7 @@ import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 import {
   DeliveryEvidenceVideoQualityError,
   type PreparedDeliveryEvidenceArtifacts
@@ -1093,6 +1094,12 @@ describe("HandoverWorkOrderService", () => {
     );
 
     expect(started).toMatchObject({ status: "FIELD_IN_PROGRESS" });
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.prisma,
+      "vehicle-1",
+      VehicleAvailabilityPurpose.DELIVERY,
+      expect.any(Date)
+    );
     expect(updated).toMatchObject({
       accessoryChecklist: { chargingCable: true, keys: 2 },
       energyLevelText: "80%",
@@ -1112,6 +1119,123 @@ describe("HandoverWorkOrderService", () => {
     await expect(
       harness.service.updateFieldAccessibleFacts("work-order-visible", "13900000000", { handoverMileageKm: 1 })
     ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it.each([
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.startFieldAccessibleWorkOrder(
+          "work-order-visible",
+          "13800000000",
+          "field-session-1"
+        ),
+      label: "field-session start",
+      status: "ASSIGNED"
+    },
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.startFieldWork("work-order-visible", harness.admin.id),
+      label: "direct field-work start",
+      status: "ASSIGNED"
+    },
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.updateFieldFacts(
+          "work-order-visible",
+          { handoverMileageKm: 100 },
+          harness.admin.id
+        ),
+      label: "draft field-facts start",
+      status: "DRAFT"
+    }
+  ])("blocks $label before handover state writes", async ({ invoke, status }) => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status
+    });
+    harness.assetOperationsService.assertVehicleAvailable.mockRejectedValueOnce(
+      new Error("VEHICLE_OPERATIONALLY_RESTRICTED")
+    );
+    harness.prisma.vehicleHandoverWorkOrder.updateMany.mockClear();
+
+    await expect(invoke(harness)).rejects.toThrow("VEHICLE_OPERATIONALLY_RESTRICTED");
+
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.prisma,
+      "vehicle-1",
+      VehicleAvailabilityPurpose.DELIVERY,
+      expect.any(Date)
+    );
+    expect(harness.prisma.$queryRaw).toHaveBeenCalled();
+    expect(harness.prisma.vehicleHandoverWorkOrder.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.startFieldAccessibleWorkOrder(
+          "work-order-visible",
+          "13800000000",
+          "field-session-1"
+        ),
+      status: "ASSIGNED"
+    },
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.startFieldWork("work-order-visible", harness.admin.id),
+      status: "ASSIGNED"
+    },
+    {
+      invoke: (harness: ReturnType<typeof createHandoverWorkOrderHarness>) =>
+        harness.service.updateFieldFacts(
+          "work-order-visible",
+          { handoverMileageKm: 100 },
+          harness.admin.id
+        ),
+      status: "DRAFT"
+    }
+  ])("uses READ COMMITTED only for guarded field-work transitions", async ({ invoke, status }) => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
+      externalOperatorPhone: "13800000000",
+      fieldOperatorPhone: "13800000000",
+      id: "work-order-visible",
+      operatorType: "EXTERNAL",
+      status
+    });
+
+    await invoke(harness);
+
+    expect(harness.prisma.$transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: "ReadCommitted"
+    });
+  });
+
+  it("keeps non-start field-fact updates SERIALIZABLE", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    harness.state.workOrders.push({
+      ...baseWorkOrder(harness),
+      id: "work-order-visible",
+      status: "FIELD_IN_PROGRESS"
+    });
+
+    await harness.service.updateFieldFacts(
+      "work-order-visible",
+      { handoverMileageKm: 100 },
+      harness.admin.id
+    );
+
+    expect(harness.prisma.$transaction).toHaveBeenLastCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable"
+    });
   });
 
   it("atomically uploads and attaches evidence through field-session ownership without exposing storage fields", async () => {
@@ -3047,7 +3171,7 @@ function createHandoverWorkOrderHarness() {
           )
       )
     },
-    $queryRaw: vi.fn(async () => [{ id: orderId }]),
+    $queryRaw: vi.fn(async () => [{ id: "vehicle-1" }]),
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {
         events: structuredClone(state.events),
@@ -3177,6 +3301,9 @@ function createHandoverWorkOrderHarness() {
   const journeySignal = {
     completeHandoverEvidenceDecision: vi.fn(async () => undefined)
   };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
   const service = new HandoverWorkOrderService(
     prisma as never,
     evidenceService as never,
@@ -3187,11 +3314,13 @@ function createHandoverWorkOrderHarness() {
     artifactService as never,
     workflowRepository as never,
     financeService as never,
-    journeySignal as never
+    journeySignal as never,
+    assetOperationsService as never
   );
 
   return {
     admin,
+    assetOperationsService,
     artifactService,
     evidenceService,
     financeService,

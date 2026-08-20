@@ -25,6 +25,8 @@ import {
 } from "@prisma/client";
 
 import { journeyError } from "./subscription-journey.errors";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
 import { manualTaskTypeFor } from "./subscription-journey-state-machine";
 import {
@@ -156,7 +158,8 @@ export class SubscriptionJourneyService {
     @Optional() private readonly financeService?: FinanceService,
     @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
     @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine,
-    @Optional() private readonly auditService?: AuditService
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async dispatchSignalOutbox(
@@ -659,6 +662,7 @@ export class SubscriptionJourneyService {
             journeyId: journey.id,
             payload: {
               applicationId: journey.applicationId,
+              finalPlanRevision: journey.application.finalPlanRevision,
               orderId: journey.orderId,
               recoveryVersion: journey.version + 1
             },
@@ -1234,8 +1238,9 @@ export class SubscriptionJourneyService {
           "The activation job targets a stale order or final-plan revision."
         );
       }
-      const result =
-        await this.leaseActivationEngine!.activateFromAuthoritativeHandover(
+      let result;
+      try {
+        result = await this.leaseActivationEngine!.activateFromAuthoritativeHandover(
           tx,
           {
             actorId: journey.application.salesUserId,
@@ -1243,6 +1248,21 @@ export class SubscriptionJourneyService {
             orderId: journey.orderId
           }
         );
+      } catch (error) {
+        const reasons = operationalRestrictionReasons(error);
+        if (!reasons) throw error;
+        await this.repository.pauseForOperationalRestriction(tx, {
+          expectedVersion: journey.version,
+          journeyId: journey.id,
+          reasons: reasons as Prisma.InputJsonValue,
+          stepId: step.id
+        });
+        return {
+          action: "SUBSCRIPTION_ACTIVATION_WAITING_OPERATIONAL_CLEARANCE",
+          journeyId: journey.id,
+          orderId: journey.orderId
+        };
+      }
       return {
         action: "SUBSCRIPTION_ACTIVATED",
         deliveryId: result.deliveryId,
@@ -1519,13 +1539,24 @@ export class SubscriptionJourneyService {
     if (!journey.orderId) {
       const vehicleId = journey.application.softReservedVehicleId;
       if (vehicleId) {
-        await tx.vehicle.updateMany({
-          data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
-          where: {
-            id: vehicleId,
-            status: VehicleStatus.REVIEW_RESERVED
-          }
-        });
+        await lockJourneyVehicle(tx, vehicleId);
+        const vehicle = await tx.vehicle.findUnique({ where: { id: vehicleId } });
+        if (vehicle && !vehicle.deletedAt && vehicle.status === VehicleStatus.REVIEW_RESERVED) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            vehicleId,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date(),
+            VehicleStatus.AVAILABLE
+          );
+          await tx.vehicle.updateMany({
+            data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
+            where: {
+              id: vehicleId,
+              status: VehicleStatus.REVIEW_RESERVED
+            }
+          });
+        }
       }
       await tx.application.update({
         data: {
@@ -1541,6 +1572,40 @@ export class SubscriptionJourneyService {
       return;
     }
 
+    let releasableVehicleId: string | null = null;
+    if (journey.order?.vehicleId) {
+      await lockJourneyVehicle(tx, journey.order.vehicleId);
+      const otherOccupants = await tx.subscriptionOrder.count({
+        where: {
+          deletedAt: null,
+          id: { not: journey.orderId },
+          orderStatus: {
+            notIn: [
+              OrderStatus.CANCELLED,
+              OrderStatus.REJECTED,
+              OrderStatus.TERMINATED,
+              OrderStatus.COMPLETED
+            ]
+          },
+          vehicleId: journey.order.vehicleId
+        }
+      });
+      if (otherOccupants === 0) {
+        const vehicle = await tx.vehicle.findUnique({
+          where: { id: journey.order.vehicleId }
+        });
+        if (vehicle && !vehicle.deletedAt && vehicle.status === VehicleStatus.RESERVED) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            vehicle.id,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date(),
+            VehicleStatus.AVAILABLE
+          );
+          releasableVehicleId = vehicle.id;
+        }
+      }
+    }
     await tx.subscriptionOrder.update({
       data: {
         orderStatus: OrderStatus.CANCELLED,
@@ -1562,31 +1627,14 @@ export class SubscriptionJourneyService {
         }
       }
     });
-    if (journey.order?.vehicleId) {
-      const otherOccupants = await tx.subscriptionOrder.count({
+    if (releasableVehicleId) {
+      await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
         where: {
-          deletedAt: null,
-          id: { not: journey.orderId },
-          orderStatus: {
-            notIn: [
-              OrderStatus.CANCELLED,
-              OrderStatus.REJECTED,
-              OrderStatus.TERMINATED,
-              OrderStatus.COMPLETED
-            ]
-          },
-          vehicleId: journey.order.vehicleId
+          id: releasableVehicleId,
+          status: VehicleStatus.RESERVED
         }
       });
-      if (otherOccupants === 0) {
-        await tx.vehicle.updateMany({
-          data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
-          where: {
-            id: journey.order.vehicleId,
-            status: VehicleStatus.RESERVED
-          }
-        });
-      }
     }
     await tx.application.update({
       data: {
@@ -1842,6 +1890,12 @@ export class SubscriptionJourneyService {
       }));
     return { ...journey, step };
   }
+}
+
+async function lockJourneyVehicle(tx: Tx, vehicleId: string) {
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+  );
 }
 
 const SAFE_JOURNEY_PAYLOAD_KEYS = new Set([
@@ -2167,6 +2221,15 @@ function stableStepSourceKey(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function operationalRestrictionReasons(error: unknown) {
+  if (!(error instanceof ConflictException)) return null;
+  const response = error.getResponse();
+  if (!isRecord(response) || response.code !== "VEHICLE_OPERATIONALLY_RESTRICTED") {
+    return null;
+  }
+  return Array.isArray(response.reasons) ? response.reasons : [];
 }
 
 function readHandoverEvidenceSnapshot(

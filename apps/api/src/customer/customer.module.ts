@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
@@ -15,6 +16,7 @@ import { CustomerService } from "./customer.service";
   exports: [CustomerService],
   imports: [
     PrismaModule,
+    AssetOperationsModule,
     AuditModule,
     AuthModule,
     NotificationModule,

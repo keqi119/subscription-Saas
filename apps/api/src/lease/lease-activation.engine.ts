@@ -29,6 +29,8 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { BillingAutomationService } from "../billing-automation/billing-automation.service";
 import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
@@ -91,7 +93,8 @@ export class LeaseActivationEngine {
     @Optional()
     private readonly orderEntitlementService?: OrderEntitlementService,
     @Optional()
-    private readonly journeyRepository?: SubscriptionJourneyRepository
+    private readonly journeyRepository?: SubscriptionJourneyRepository,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async evaluate(orderId: string): Promise<LeaseActivationEvaluation> {
@@ -119,6 +122,17 @@ export class LeaseActivationEngine {
   ): Promise<SubscriptionActivationResult> {
     await lockDeliveryConfirmationGateRows(tx, input.orderId);
     const facts = await this.readAuthorityFacts(tx, input.orderId);
+    if (!isCompletedActivationReplay(facts)) {
+      const vehicleId = facts.order.vehicleId;
+      if (vehicleId) {
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          vehicleId,
+          VehicleAvailabilityPurpose.DELIVERY,
+          new Date()
+        );
+      }
+    }
     const evaluation = this.evaluateFacts(facts);
     if (!evaluation.canActivate) {
       throw new BadRequestException(evaluation);
@@ -609,6 +623,14 @@ function isAuthoritativelySettled(
     0n
   );
   return confirmedWriteOffAmount >= requiredAmount;
+}
+
+function isCompletedActivationReplay(facts: AuthorityFacts) {
+  return (
+    facts.order.orderStatus === OrderStatus.ACTIVE &&
+    facts.delivery?.deliveryStatus === DeliveryStatus.DELIVERED &&
+    facts.order.vehicle?.status === VehicleStatus.LEASED
+  );
 }
 
 function sameManifest(metadata: Prisma.JsonValue, manifestHash?: string | null) {

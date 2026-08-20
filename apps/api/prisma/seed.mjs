@@ -212,6 +212,16 @@ permissionRows.push(
   ["asset_facts:view", "查看车辆事实台账", "asset_facts", "view"],
   ["asset_owner:manage", "管理车辆权属期间", "asset_facts", "owner_manage"],
   ["vehicle_period:manage", "修复车辆订阅期间", "asset_facts", "period_manage"],
+  ["asset_operations:view", "查看资产运营工单与限制", "asset_operations", "view"],
+  ["asset_work_order:manage", "管理资产运营工单", "asset_operations", "work_order_manage"],
+  ["vehicle_restriction:manage", "管理车辆运营限制", "asset_operations", "restriction_manage"],
+  ["vehicle_restriction:release", "解除车辆运营限制", "asset_operations", "restriction_release"],
+  [
+    "vehicle_restriction:approve_release",
+    "审批高风险车辆运营限制解除",
+    "asset_operations",
+    "restriction_approve_release"
+  ],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
   ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
@@ -921,6 +931,21 @@ const assetFactManagementPermissions = [
   "asset_owner:manage",
   "vehicle_period:manage"
 ];
+const assetOperationsViewPermissions = ["asset_operations:view"];
+const assetOperationsOperationsPermissions = [
+  "asset_operations:view",
+  "asset_work_order:manage",
+  "vehicle_restriction:manage",
+  "vehicle_restriction:release"
+];
+const assetOperationsManagementPermissions = [
+  ...assetOperationsOperationsPermissions,
+  "vehicle_restriction:approve_release"
+];
+const assetOperationsApprovalPermissions = [
+  "asset_operations:view",
+  "vehicle_restriction:approve_release"
+];
 const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
 const vehicleInsuranceManagementPermissions = [
   "vehicle_insurance:view",
@@ -1174,6 +1199,7 @@ async function main() {
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
       ...assetFactOperationsPermissions,
+      ...assetOperationsOperationsPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
       ...vehicleModelManagementPermissions,
@@ -1259,6 +1285,7 @@ async function main() {
       "product_price_rule:view",
       ...productPackageViewPermissions,
       ...vehicleViewPermissions,
+      ...assetOperationsViewPermissions,
       "quote:view",
       "order:view",
       "order:review",
@@ -1293,6 +1320,9 @@ async function main() {
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
         ...(roleCode === "AS" ? assetFactManagementPermissions : assetFactViewPermissions),
+        ...(roleCode === "AS"
+          ? assetOperationsManagementPermissions
+          : assetOperationsViewPermissions),
         ...(roleCode === "FI" ? vehicleModelManagementPermissions : []),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
@@ -1377,6 +1407,7 @@ async function main() {
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
       ...assetFactViewPermissions,
+      ...assetOperationsApprovalPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleModelViewPermissions,

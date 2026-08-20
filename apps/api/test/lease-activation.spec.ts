@@ -12,9 +12,11 @@ import {
   VehicleInsurancePolicyType,
   VehicleStatus
 } from "@prisma/client";
+import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { LeaseActivationEngine } from "../src/lease/lease-activation.engine";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 describe("LeaseActivationEngine authoritative gate", () => {
   it("evaluates the complete authoritative fact set inside the caller transaction", async () => {
@@ -144,6 +146,22 @@ describe("LeaseActivationEngine authoritative gate", () => {
     );
   });
 
+  it("blocks central activation before every write when DELIVERY is operationally restricted", async () => {
+    const harness = createHarness({ operationallyRestricted: true });
+
+    await expect(harness.engine.activate(harness.orderId, harness.user)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "VEHICLE_OPERATIONALLY_RESTRICTED" })
+    });
+
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      "vehicle-1",
+      VehicleAvailabilityPurpose.DELIVERY,
+      expect.any(Date)
+    );
+    expect(harness.state.writeCount).toBe(0);
+  });
+
   it("keeps all authoritative activation records singular on retry", async () => {
     const harness = createHarness({ journey: true });
 
@@ -215,6 +233,7 @@ function createHarness(overrides: Partial<State> = {}) {
     journey: false,
     journeyCompletedEventCount: 0,
     journeyStatus: SubscriptionJourneyStatus.RUNNING,
+    operationallyRestricted: false,
     leaseCount: 0,
     legacyMoneyBooleans: false,
     orderStatus: OrderStatus.PENDING_DELIVERY,
@@ -498,6 +517,16 @@ function createHarness(overrides: Partial<State> = {}) {
       }
     })
   };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => {
+      if (state.operationallyRestricted) {
+        throw new ConflictException({
+          code: "VEHICLE_OPERATIONALLY_RESTRICTED",
+          message: "Vehicle is operationally restricted."
+        });
+      }
+    })
+  };
   const engine = new LeaseActivationEngine(
     auditService as never,
     prisma as never,
@@ -509,10 +538,12 @@ function createHarness(overrides: Partial<State> = {}) {
     mileageService as never,
     mileageReviewService as never,
     entitlementService as never,
-    journeyRepository as never
+    journeyRepository as never,
+    assetOperationsService as never
   );
 
   return {
+    assetOperationsService,
     auditService,
     engine,
     orderId,
@@ -600,6 +631,7 @@ interface State {
   leaseCount: number;
   legacyMoneyBooleans: boolean;
   orderStatus: OrderStatus;
+  operationallyRestricted: boolean;
   vehicleStatus: VehicleStatus;
   workOrderApproved: boolean;
   writeCount: number;

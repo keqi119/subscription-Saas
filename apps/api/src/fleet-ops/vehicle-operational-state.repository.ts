@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { VehicleOperationalRestrictionStatus } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import type { VehicleOperationalStateInput } from "./vehicle-operational-state.types";
@@ -7,8 +8,12 @@ import type { VehicleOperationalStateInput } from "./vehicle-operational-state.t
 export class VehicleOperationalStateRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async loadVehicleOperationalStateSnapshot(vehicleId: string, asOf: Date = new Date()): Promise<VehicleOperationalStateInput> {
-    const [vehicle, leases, orders, serviceCases, conditionReports] = await Promise.all([
+  async loadVehicleOperationalStateSnapshot(
+    vehicleId: string,
+    asOf: Date = new Date()
+  ): Promise<VehicleOperationalStateInput> {
+    const [vehicle, leases, orders, serviceCases, conditionReports, operationalRestrictions] =
+      await Promise.all([
       this.prisma.vehicle.findUnique({
         select: {
           createdAt: true,
@@ -101,6 +106,27 @@ export class VehicleOperationalStateRepository {
           createdAt: { lte: asOf },
           vehicleId
         }
+      }),
+      this.prisma.vehicleOperationalRestriction.findMany({
+        orderBy: [{ startedAt: "desc" }, { id: "asc" }],
+        select: {
+          id: true,
+          restrictionType: true,
+          scopes: true,
+          severity: true,
+          startSourceId: true,
+          startSourceKey: true,
+          startSourceType: true,
+          startedAt: true,
+          status: true,
+          vehicleId: true,
+          workOrderId: true
+        },
+        where: {
+          startedAt: { lte: asOf },
+          status: VehicleOperationalRestrictionStatus.ACTIVE,
+          vehicleId
+        }
       })
     ]);
 
@@ -108,6 +134,7 @@ export class VehicleOperationalStateRepository {
       asOf,
       conditionReports,
       leases,
+      operationalRestrictions,
       orders,
       serviceCases,
       vehicle

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
@@ -18,6 +19,7 @@ import { LeaseController } from "./lease.controller";
   exports: [LeaseActivationEngine],
   imports: [
     AuditModule,
+    AssetOperationsModule,
     AuthModule,
     BillingAutomationModule,
     DeliveryEvidenceModule,

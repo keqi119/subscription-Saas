@@ -53,6 +53,45 @@ type LockedJourneyStep = {
 
 @Injectable()
 export class SubscriptionJourneyRepository {
+  async pauseForOperationalRestriction(
+    tx: Tx,
+    input: {
+      expectedVersion: number;
+      journeyId: string;
+      reasons: Prisma.InputJsonValue;
+      stepId: string;
+    }
+  ): Promise<void> {
+    assertSafePayload(input.reasons);
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    validateCurrentStep(locked, input.expectedVersion);
+    if (
+      locked.stepCode !== SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
+      locked.journeyStatus !== SubscriptionJourneyStatus.RUNNING
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "Only a running authoritative activation can wait for operational clearance."
+      );
+    }
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+      status: SubscriptionJourneyStatus.PAUSED,
+      version: { increment: 1 }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: `journey:${input.journeyId}:activation:operational-clearance:version:${input.expectedVersion}`,
+      eventType: SubscriptionJourneyEventType.JOURNEY_PAUSED,
+      journeyId: input.journeyId,
+      payload: safePayload({
+        operation: "WAIT_FOR_OPERATIONAL_CLEARANCE",
+        reasons: input.reasons,
+        stepId: input.stepId
+      }),
+      sequence: input.expectedVersion + 1
+    });
+  }
+
   async createOrGetForApplication(
     tx: Tx,
     applicationId: string,

@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
@@ -22,6 +23,7 @@ import { OrderEntitlementService } from "./order-entitlement.service";
   exports: [OrderEntitlementService, OrderService],
   imports: [
     AuditModule,
+    AssetOperationsModule,
     AuthModule,
     BillingAutomationModule,
     ContractModule,

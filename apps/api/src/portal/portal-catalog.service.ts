@@ -20,6 +20,7 @@ import {
 import type { Readable } from "node:stream";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { buildAllocationAvailabilityWhere } from "../asset-operations/vehicle-availability-query";
 import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
 
@@ -405,11 +406,13 @@ function catalogVehicleWhere(
   id?: string,
   modelFilter: Prisma.VehicleWhereInput = {}
 ): Prisma.VehicleWhereInput {
+  const asOf = new Date();
   return {
     currentSalePriceAmount: { gt: 0 },
     deletedAt: null,
     id,
     ...modelFilter,
+    ...buildAllocationAvailabilityWhere(asOf),
     salePriceStatus: SalePriceStatus.EFFECTIVE,
     status: VehicleStatus.AVAILABLE,
     ...(query.brand ? { brand: { contains: query.brand, mode: "insensitive" } } : {}),

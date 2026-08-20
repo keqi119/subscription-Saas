@@ -22,6 +22,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { ProductService } from "../src/product/product.service";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 const now = new Date("2026-06-02T00:00:00.000Z");
 const user = {
@@ -648,7 +649,7 @@ describe("subscription plan backend flow", () => {
       vehicleId: "vehicle-asset-1",
       vehicleSnapshot: { vehicleNo: "VEH2026060200001" }
     });
-    const { prisma, service } = makeService({ quote });
+    const { assetOperationsService, prisma, service } = makeService({ quote });
 
     await service.confirmQuote("quote-1", user, context);
 
@@ -656,6 +657,13 @@ describe("subscription plan backend flow", () => {
       data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
       where: { id: "vehicle-asset-1" }
     });
+    expect(prisma.$queryRaw).toHaveBeenCalled();
+    expect(assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      prisma,
+      "vehicle-asset-1",
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date)
+    );
     expect(prisma.subscriptionQuote.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.not.objectContaining({
@@ -715,6 +723,7 @@ function makeService(seed: Partial<MockSeed> = {}) {
   const plan = seed.plan ?? makeSubscriptionPlan();
   const quote = seed.quote ?? makeQuote({ subscriptionPlan: plan, subscriptionPlanId: plan.id });
   const prisma = {
+    $queryRaw: vi.fn(async () => [{ id: "vehicle-asset-1" }]),
     $transaction: vi.fn(),
     application: {
       findUnique: vi.fn().mockResolvedValue(seed.application ?? makeApplication())
@@ -777,8 +786,16 @@ function makeService(seed: Partial<MockSeed> = {}) {
     }
   };
   prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) => callback(prisma));
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
 
-  return { audit, prisma, service: new ProductService(audit as never, prisma as never) };
+  return {
+    assetOperationsService,
+    audit,
+    prisma,
+    service: new ProductService(audit as never, prisma as never, assetOperationsService as never)
+  };
 }
 
 function createPlanDto() {

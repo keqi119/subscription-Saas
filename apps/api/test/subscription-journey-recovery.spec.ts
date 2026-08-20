@@ -2,6 +2,7 @@ import { SubscriptionJourneyStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 import { OrderService } from "../src/order/order.service";
 
 describe("SubscriptionJourneyService recovery", () => {
@@ -72,6 +73,7 @@ describe("SubscriptionJourneyService recovery", () => {
 
   it("rechecks authoritative facts and re-enqueues the current step when resuming", async () => {
     const harness = createRecoveryHarness({
+      activation: true,
       pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
       status: SubscriptionJourneyStatus.PAUSED
     });
@@ -91,6 +93,10 @@ describe("SubscriptionJourneyService recovery", () => {
       harness.tx,
       expect.objectContaining({
         journeyId: "journey-1",
+        payload: expect.objectContaining({
+          finalPlanRevision: 4,
+          orderId: "order-1"
+        }),
         sourceKey: "journey:journey-1:resume:4",
         stepId: "step-1"
       })
@@ -170,6 +176,13 @@ describe("SubscriptionJourneyService recovery", () => {
       data: { status: "AVAILABLE", updatedBy: "user-1" },
       where: { id: "vehicle-1", status: "REVIEW_RESERVED" }
     });
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      "vehicle-1",
+      VehicleAvailabilityPurpose.MARK_AVAILABLE,
+      expect.any(Date),
+      "AVAILABLE"
+    );
     expect(harness.tx.application.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -181,6 +194,26 @@ describe("SubscriptionJourneyService recovery", () => {
     );
     expect(harness.state.status).toBe(SubscriptionJourneyStatus.CANCELLED);
     expect(harness.auditService.write).toHaveBeenCalled();
+  });
+
+  it("guards a post-order vehicle release before writing order cancellation facts", async () => {
+    const harness = createRecoveryHarness({ postOrder: true });
+    harness.assetOperationsService.assertVehicleAvailable.mockRejectedValueOnce(
+      new Error("VEHICLE_OPERATIONALLY_RESTRICTED")
+    );
+
+    await expect(
+      harness.service.cancelJourney(
+        "journey-1",
+        { reason: "customer withdrew", version: 3 },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("VEHICLE_OPERATIONALLY_RESTRICTED");
+
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.tx.contract.updateMany).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.updateMany).not.toHaveBeenCalled();
   });
 
   it("excludes customer-waiting work from the automated failure denominator", async () => {
@@ -364,9 +397,11 @@ describe("SubscriptionJourneyService recovery", () => {
 
 function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
   const state: RecoveryState = {
+    activation: false,
     archivedContract: false,
     exceptionOpen: true,
     pausedFromStatus: null,
+    postOrder: false,
     softReservedVehicleId: null,
     status: SubscriptionJourneyStatus.RUNNING,
     version: 3,
@@ -375,18 +410,19 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
   const journey = () => ({
     applicationId: "application-1",
     application: {
+      finalPlanRevision: 4,
       softReservedVehicleId: state.softReservedVehicleId
     },
-    currentStepCode: "APPLICATION_VALIDATION",
+    currentStepCode: state.activation ? "AUTHORITATIVE_ACTIVATION" : "APPLICATION_VALIDATION",
     currentStepStatus: state.status === "EXCEPTION" ? "EXCEPTION" : "RUNNING",
     id: "journey-1",
-    order: state.archivedContract
-      ? { contract: { status: "ARCHIVED" }, id: "order-1", vehicleId: "vehicle-1" }
+    order: state.archivedContract || state.postOrder
+      ? { contract: state.archivedContract ? { status: "ARCHIVED" } : null, id: "order-1", vehicleId: "vehicle-1" }
       : null,
-    orderId: state.archivedContract ? "order-1" : null,
+    orderId: state.archivedContract || state.activation || state.postOrder ? "order-1" : null,
     pausedFromStatus: state.pausedFromStatus,
     status: state.status,
-    steps: [{ code: "APPLICATION_VALIDATION", id: "step-1", status: "RUNNING" }],
+    steps: [{ code: state.activation ? "AUTHORITATIVE_ACTIVATION" : "APPLICATION_VALIDATION", id: "step-1", status: "RUNNING" }],
     version: state.version
   });
   const tx = {
@@ -428,11 +464,21 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
       upsert: vi.fn(async ({ create }) => create)
     },
     subscriptionJourneyStep: { updateMany: vi.fn(async () => ({ count: 1 })) },
-    vehicle: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    vehicle: {
+      findUnique: vi.fn(async () => ({
+        deletedAt: null,
+        id: "vehicle-1",
+        status: state.postOrder ? "RESERVED" : "REVIEW_RESERVED"
+      })),
+      updateMany: vi.fn(async () => ({ count: 1 }))
+    }
   };
   const prisma = { $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)) };
   const auditService = { write: vi.fn(async () => undefined) };
   const repository = { enqueueJob: vi.fn(async () => ({})) };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
   const service = new SubscriptionJourneyService(
     repository as never,
     prisma as never,
@@ -444,9 +490,11 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
     undefined,
     undefined,
     undefined,
-    auditService as never
+    auditService as never,
+    assetOperationsService as never
   );
   return {
+    assetOperationsService,
     auditService,
     context: { ipAddress: "127.0.0.1", userAgent: "vitest" },
     repository,
@@ -465,9 +513,11 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
 }
 
 interface RecoveryState {
+  activation: boolean;
   archivedContract: boolean;
   exceptionOpen: boolean;
   pausedFromStatus: SubscriptionJourneyStatus | null;
+  postOrder: boolean;
   softReservedVehicleId: string | null;
   status: SubscriptionJourneyStatus;
   version: number;

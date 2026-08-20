@@ -14,6 +14,7 @@ import {
 } from "../src/auth/auth.decorators";
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
 import { AssetFactsController } from "../src/asset-facts/asset-facts.controller";
+import { AssetOperationsController } from "../src/asset-operations/asset-operations.controller";
 import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
 import { FinancingController } from "../src/financing/financing.controller";
@@ -127,6 +128,63 @@ describe("asset facts permissions", () => {
         PermissionCode.VEHICLE_PERIOD_MANAGE
       ]);
     }
+  });
+});
+
+describe("asset operations permissions", () => {
+  it("publishes the exact five permission codes", () => {
+    expect([
+      PermissionCode.ASSET_OPERATIONS_VIEW,
+      PermissionCode.ASSET_WORK_ORDER_MANAGE,
+      PermissionCode.VEHICLE_RESTRICTION_MANAGE,
+      PermissionCode.VEHICLE_RESTRICTION_RELEASE,
+      PermissionCode.VEHICLE_RESTRICTION_APPROVE_RELEASE
+    ]).toEqual([
+      "asset_operations:view",
+      "asset_work_order:manage",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release",
+      "vehicle_restriction:approve_release"
+    ]);
+  });
+
+  it("gates reads, work-order commands, restriction creation, and release exactly", () => {
+    for (const handler of [
+      AssetOperationsController.prototype.getWorkOrderDetail,
+      AssetOperationsController.prototype.listVehicleWorkOrders,
+      AssetOperationsController.prototype.listVehicleRestrictions,
+      AssetOperationsController.prototype.getVehicleAvailability
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.ASSET_OPERATIONS_VIEW
+      ]);
+    }
+    for (const handler of [
+      AssetOperationsController.prototype.createWorkOrder,
+      AssetOperationsController.prototype.assignWorkOrder,
+      AssetOperationsController.prototype.transitionWorkOrder,
+      AssetOperationsController.prototype.appendNote,
+      AssetOperationsController.prototype.appendEvidence
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.ASSET_WORK_ORDER_MANAGE
+      ]);
+    }
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        AssetOperationsController.prototype.createRestriction
+      )
+    ).toEqual([PermissionCode.VEHICLE_RESTRICTION_MANAGE]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_ANY_PERMISSIONS_KEY,
+        AssetOperationsController.prototype.releaseRestriction
+      )
+    ).toEqual([
+      PermissionCode.VEHICLE_RESTRICTION_RELEASE,
+      PermissionCode.VEHICLE_RESTRICTION_APPROVE_RELEASE
+    ]);
   });
 });
 
@@ -1380,6 +1438,43 @@ describe("seed permission calibration", () => {
     });
   });
 
+  it("assigns the exact asset-operations matrix without widening SA or CS", () => {
+    const permissionCodes = [
+      "asset_operations:view",
+      "asset_work_order:manage",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release",
+      "vehicle_restriction:approve_release"
+    ];
+
+    for (const permissionCode of permissionCodes) {
+      expect(seedSource).toContain(`"${permissionCode}"`);
+    }
+    expectSeedSourceToContain("...assetOperationsOperationsPermissions");
+    expectSeedSourceToContain("...assetOperationsViewPermissions");
+    expectSeedSourceToContain("...assetOperationsApprovalPermissions");
+    expectSeedSourceToContain(
+      '...(roleCode === "AS" ? assetOperationsManagementPermissions : assetOperationsViewPermissions)'
+    );
+    expect(seedSource).toContain("allPermissions.map((permission)");
+
+    expect(effectiveAssetOperationsPermissions(permissionCodes)).toEqual({
+      ADMIN: permissionCodes,
+      AS: permissionCodes,
+      CS: [],
+      FI: ["asset_operations:view"],
+      GM: ["asset_operations:view", "vehicle_restriction:approve_release"],
+      OP: [
+        "asset_operations:view",
+        "asset_work_order:manage",
+        "vehicle_restriction:manage",
+        "vehicle_restriction:release"
+      ],
+      RC: ["asset_operations:view"],
+      SA: []
+    });
+  });
+
   it("defines vehicle and subscription plan permissions for ADMIN all-permission seeding", () => {
     for (const permission of [
       "vehicle:view",
@@ -2264,6 +2359,26 @@ describe("seed permission calibration", () => {
           permissionCodes.filter((permission) => roleHasPermission(effectiveSource, permission))
         ];
       })
+    );
+  }
+
+  function effectiveAssetOperationsPermissions(permissionCodes: string[]) {
+    const sourceByRole: Record<string, string> = {
+      ADMIN: permissionCodes.map((code) => `"${code}"`).join(","),
+      AS: permissionConstantSource("assetOperationsManagementPermissions"),
+      CS: optionalRolePermissionArray("CS"),
+      FI: permissionConstantSource("assetOperationsViewPermissions"),
+      GM: optionalRolePermissionArray("GM"),
+      OP: optionalRolePermissionArray("OP"),
+      RC: optionalRolePermissionArray("RC"),
+      SA: optionalRolePermissionArray("SA")
+    };
+
+    return Object.fromEntries(
+      Object.entries(sourceByRole).map(([roleCode, source]) => [
+        roleCode,
+        permissionCodes.filter((permissionCode) => roleHasPermission(source, permissionCode))
+      ])
     );
   }
 

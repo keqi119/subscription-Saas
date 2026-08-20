@@ -54,6 +54,8 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { BillingAutomationService } from "../billing-automation/billing-automation.service";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
@@ -386,7 +388,8 @@ export class OrderService {
     @Optional() private readonly mileageReviewService?: MileageReviewService,
     @Optional() private readonly billingAutomationService?: BillingAutomationService,
     @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
-    @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine
+    @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async listOrders(user: RequestUser, query: ListOrdersQueryDto = {}) {
@@ -1402,7 +1405,24 @@ export class OrderService {
       let vehicleBefore = null;
       let vehicleAfter = null;
       if (before.vehicleId && before.vehicle?.status === VehicleStatus.REVIEW_RESERVED) {
-        vehicleBefore = before.vehicle;
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, before.vehicleId);
+        }
+        vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
+        if (
+          !vehicleBefore ||
+          vehicleBefore.deletedAt ||
+          vehicleBefore.status !== VehicleStatus.REVIEW_RESERVED
+        ) {
+          throw new BadRequestException("订单车辆未处于审核占用状态，无法释放库存。");
+        }
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          before.vehicleId,
+          VehicleAvailabilityPurpose.MARK_AVAILABLE,
+          new Date(),
+          VehicleStatus.AVAILABLE
+        );
         vehicleAfter = await tx.vehicle.update({
           data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
           where: { id: before.vehicleId }
@@ -1466,6 +1486,9 @@ export class OrderService {
       let vehicleBefore = null;
       let vehicleAfter = null;
       if (before.vehicleId) {
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, before.vehicleId);
+        }
         vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
         if (
           !vehicleBefore ||
@@ -1474,6 +1497,13 @@ export class OrderService {
         ) {
           throw new BadRequestException("订单车辆未处于审核占用状态，无法进入签约。");
         }
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          before.vehicleId,
+          VehicleAvailabilityPurpose.ALLOCATION,
+          new Date(),
+          VehicleStatus.AVAILABLE
+        );
         vehicleAfter = await tx.vehicle.update({
           data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
           where: { id: before.vehicleId }
@@ -1641,8 +1671,17 @@ export class OrderService {
 
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, dto.vehicleId);
+        }
         const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
         assertVehicleAvailableForCustomerOrder(vehicleBefore);
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          dto.vehicleId,
+          VehicleAvailabilityPurpose.ALLOCATION,
+          new Date()
+        );
 
         const application = await tx.application.create({
           data: {
@@ -1923,7 +1962,24 @@ export class OrderService {
       let vehicleAfter = null;
 
       if (before.vehicleId && before.vehicle?.status === VehicleStatus.RESERVED) {
-        vehicleBefore = before.vehicle;
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, before.vehicleId);
+        }
+        vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
+        if (
+          !vehicleBefore ||
+          vehicleBefore.deletedAt ||
+          vehicleBefore.status !== VehicleStatus.RESERVED
+        ) {
+          throw new BadRequestException("订单车辆未处于签约锁定状态，无法释放库存。");
+        }
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          before.vehicleId,
+          VehicleAvailabilityPurpose.MARK_AVAILABLE,
+          new Date(),
+          VehicleStatus.AVAILABLE
+        );
         vehicleAfter = await tx.vehicle.update({
           data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
           where: { id: before.vehicleId }
@@ -2182,6 +2238,13 @@ export class OrderService {
       return this.confirmDeliveryLegacy(id, _dto, user, _context);
     }
     return this.prisma.$transaction(async (tx) => {
+      await lockDeliveryConfirmationGateRows(tx, id);
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        beforeOrder.vehicleId!,
+        VehicleAvailabilityPurpose.DELIVERY,
+        new Date()
+      );
       await this.leaseActivationEngine!.activateFromAuthoritativeHandover(tx, {
         actorId: user.id,
         orderId: id
@@ -2285,6 +2348,12 @@ export class OrderService {
         ) {
           throw new BadRequestException("交付前车辆必须处于“签约锁定（RESERVED）”状态。");
         }
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          orderBefore.vehicleId!,
+          VehicleAvailabilityPurpose.DELIVERY,
+          new Date()
+        );
 
         const occupiedByOtherOrderCount = await tx.subscriptionOrder.count({
           where: {
@@ -3392,18 +3461,14 @@ export class OrderService {
       }
       ensureReturnToPlanOrderChange({ ...currentChange, order: orderBefore });
       const unsignedContract = findUnsignedCurrentContract(orderBefore);
+      if (orderBefore.vehicleId && this.assetOperationsService) {
+        await lockVehicleAvailabilityAuthority(tx, orderBefore.vehicleId);
+      }
       const vehicleBefore = orderBefore.vehicleId
         ? await tx.vehicle.findUnique({ where: { id: orderBefore.vehicleId } })
         : null;
 
       let contractAfter = null;
-      if (unsignedContract) {
-        contractAfter = await tx.contract.update({
-          data: { status: ContractStatus.CANCELLED, updatedBy: user.id },
-          where: { id: unsignedContract.id }
-        });
-      }
-
       let vehicleAfter = null;
       if (
         vehicleBefore &&
@@ -3420,11 +3485,25 @@ export class OrderService {
           }
         });
         if (occupyingOrders === 0) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            vehicleBefore.id,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date(),
+            VehicleStatus.AVAILABLE
+          );
           vehicleAfter = await tx.vehicle.update({
             data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
             where: { id: vehicleBefore.id }
           });
         }
+      }
+
+      if (unsignedContract) {
+        contractAfter = await tx.contract.update({
+          data: { status: ContractStatus.CANCELLED, updatedBy: user.id },
+          where: { id: unsignedContract.id }
+        });
       }
 
       const orderAfter = await tx.subscriptionOrder.update({
@@ -5412,6 +5491,12 @@ function reviewDecision(dto: Partial<ReviewOrderDto>) {
 
 function reviewComment(dto: Partial<ReviewOrderDto>) {
   return dto.comment ?? dto.remark ?? null;
+}
+
+async function lockVehicleAvailabilityAuthority(tx: Prisma.TransactionClient, vehicleId: string) {
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+  );
 }
 
 function buildFinalPlanSnapshot(order: OrderWithDetails) {

@@ -7,6 +7,10 @@ import {
   VehicleConditionItemResult,
   VehicleConditionItemSeverity,
   VehicleConditionReportStatus,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType,
   VehicleStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
@@ -19,6 +23,7 @@ import {
   type VehicleOperationalStateConditionReportSnapshot,
   type VehicleOperationalStateLeaseSnapshot,
   type VehicleOperationalStateOrderSnapshot,
+  type VehicleOperationalStateRestrictionSnapshot,
   type VehicleOperationalStateServiceCaseSnapshot,
   type VehicleOperationalStateVehicleSnapshot
 } from "../src/fleet-ops/vehicle-operational-state.types";
@@ -32,6 +37,7 @@ describe("VehicleOperationalStateResolver", () => {
       conditionReports: [],
       leases: [lease({ status: LeaseStatus.ACTIVE })],
       orders: [order({ orderStatus: OrderStatus.ACTIVE })],
+      operationalRestrictions: [],
       serviceCases: [],
       vehicle: vehicle({ status: VehicleStatus.RETIRED })
     });
@@ -41,7 +47,9 @@ describe("VehicleOperationalStateResolver", () => {
     expect(result.conflicts.map((conflict) => conflict.state)).toContain(
       VehicleComputedOperationalState.LEASED_ACTIVE
     );
-    expect(result.warnings).toContain("Vehicle inactive signal conflicts with active lease or order evidence.");
+    expect(result.warnings).toContain(
+      "Vehicle inactive signal conflicts with active lease or order evidence."
+    );
   });
 
   it("uses active lease evidence before available vehicle and open service signals", () => {
@@ -50,6 +58,7 @@ describe("VehicleOperationalStateResolver", () => {
       conditionReports: [],
       leases: [lease({ status: LeaseStatus.ACTIVE })],
       orders: [],
+      operationalRestrictions: [],
       serviceCases: [serviceCase({ priority: ServiceCasePriority.URGENT })],
       vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
     });
@@ -68,6 +77,7 @@ describe("VehicleOperationalStateResolver", () => {
       conditionReports: [],
       leases: [],
       orders: [],
+      operationalRestrictions: [],
       serviceCases: [serviceCase({ priority: ServiceCasePriority.HIGH })],
       vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
     });
@@ -101,6 +111,7 @@ describe("VehicleOperationalStateResolver", () => {
       ],
       leases: [],
       orders: [],
+      operationalRestrictions: [],
       serviceCases: [],
       vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
     });
@@ -116,12 +127,104 @@ describe("VehicleOperationalStateResolver", () => {
       conditionReports: [],
       leases: [],
       orders: [order({ orderStatus: OrderStatus.PENDING_SIGN })],
+      operationalRestrictions: [],
       serviceCases: [],
       vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
     });
 
     expect(result.computedState).toBe(VehicleComputedOperationalState.RESERVED_OR_ORDER_LOCKED);
     expect(result.primaryEvidence.source).toBe("ORDER");
+  });
+
+  it("uses every active blocking operational restriction ahead of heuristic service and condition signals", () => {
+    const restrictions = [
+      restriction({
+        id: "restriction-b",
+        restrictionType: VehicleOperationalRestrictionType.LEGAL_HOLD
+      }),
+      restriction({
+        id: "restriction-a",
+        restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT
+      })
+    ];
+    const result = new VehicleOperationalStateResolver().resolve({
+      asOf,
+      conditionReports: [conditionReport({ hasMajorAccident: true })],
+      leases: [],
+      operationalRestrictions: restrictions,
+      orders: [],
+      serviceCases: [serviceCase()],
+      vehicle: vehicle()
+    });
+
+    expect(result.computedState).toBe(VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED);
+    expect(result.primaryEvidence).toMatchObject({
+      fields: {
+        restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+        scopes: [VehicleOperationalRestrictionScope.ALLOCATION]
+      },
+      source: "OPERATIONAL_RESTRICTION",
+      sourceId: "restriction-a"
+    });
+    expect(result.supportingEvidence).toEqual([
+      expect.objectContaining({ source: "OPERATIONAL_RESTRICTION", sourceId: "restriction-b" })
+    ]);
+  });
+
+  it("orders retired 100 above operational restriction 95 above active lease 90", () => {
+    const resolver = new VehicleOperationalStateResolver();
+    const restrictedLease = resolver.resolve({
+      asOf,
+      conditionReports: [],
+      leases: [lease({ status: LeaseStatus.ACTIVE })],
+      operationalRestrictions: [restriction()],
+      orders: [order({ orderStatus: OrderStatus.ACTIVE })],
+      serviceCases: [],
+      vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
+    });
+    const retired = resolver.resolve({
+      asOf,
+      conditionReports: [],
+      leases: [lease({ status: LeaseStatus.ACTIVE })],
+      operationalRestrictions: [restriction()],
+      orders: [order({ orderStatus: OrderStatus.ACTIVE })],
+      serviceCases: [],
+      vehicle: vehicle({ status: VehicleStatus.RETIRED })
+    });
+
+    expect(restrictedLease.computedState).toBe(
+      VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED
+    );
+    expect(restrictedLease.conflicts.map(({ state }) => state)).toContain(
+      VehicleComputedOperationalState.LEASED_ACTIVE
+    );
+    expect(retired.computedState).toBe(VehicleComputedOperationalState.RETIRED_OR_INACTIVE);
+    expect(retired.conflicts.map(({ state }) => state)).toEqual(
+      expect.arrayContaining([
+        VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED,
+        VehicleComputedOperationalState.LEASED_ACTIVE
+      ])
+    );
+    expect(
+      retired.conflicts.find(({ source }) => source === "OPERATIONAL_RESTRICTION")?.priority
+    ).toBe(95);
+  });
+
+  it("does not turn an advisory restriction into an operational block", () => {
+    const result = new VehicleOperationalStateResolver().resolve({
+      asOf,
+      conditionReports: [],
+      leases: [],
+      operationalRestrictions: [
+        restriction({ severity: VehicleOperationalRestrictionSeverity.ADVISORY })
+      ],
+      orders: [],
+      serviceCases: [],
+      vehicle: vehicle()
+    });
+
+    expect(result.computedState).toBe(VehicleComputedOperationalState.AVAILABLE);
+    expect(result.primaryEvidence.source).toBe("VEHICLE");
   });
 });
 
@@ -137,6 +240,17 @@ describe("VehicleOperationalStateRepository", () => {
     expect(prisma.lease.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.subscriptionOrder.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.serviceCase.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.vehicleOperationalRestriction.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.vehicleOperationalRestriction.findMany).toHaveBeenCalledWith({
+      orderBy: [{ startedAt: "desc" }, { id: "asc" }],
+      select: expect.any(Object),
+      where: {
+        startedAt: { lte: asOf },
+        status: "ACTIVE",
+        vehicleId: "vehicle-1"
+      }
+    });
+    expect(snapshot.operationalRestrictions).toEqual([restriction()]);
     expect(prisma.vehicleConditionReport.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.vehicle.create).not.toHaveBeenCalled();
     expect(prisma.vehicle.update).not.toHaveBeenCalled();
@@ -144,7 +258,9 @@ describe("VehicleOperationalStateRepository", () => {
   });
 });
 
-function vehicle(overrides: Partial<VehicleOperationalStateVehicleSnapshot> = {}): VehicleOperationalStateVehicleSnapshot {
+function vehicle(
+  overrides: Partial<VehicleOperationalStateVehicleSnapshot> = {}
+): VehicleOperationalStateVehicleSnapshot {
   return { ...baseVehicle(), ...overrides };
 }
 
@@ -159,7 +275,9 @@ function baseVehicle(): VehicleOperationalStateVehicleSnapshot {
   };
 }
 
-function lease(overrides: Partial<VehicleOperationalStateLeaseSnapshot> = {}): VehicleOperationalStateLeaseSnapshot {
+function lease(
+  overrides: Partial<VehicleOperationalStateLeaseSnapshot> = {}
+): VehicleOperationalStateLeaseSnapshot {
   return { ...baseLease(), ...overrides };
 }
 
@@ -175,7 +293,9 @@ function baseLease(): VehicleOperationalStateLeaseSnapshot {
   };
 }
 
-function order(overrides: Partial<VehicleOperationalStateOrderSnapshot> = {}): VehicleOperationalStateOrderSnapshot {
+function order(
+  overrides: Partial<VehicleOperationalStateOrderSnapshot> = {}
+): VehicleOperationalStateOrderSnapshot {
   return { ...baseOrder(), ...overrides };
 }
 
@@ -223,6 +343,25 @@ function conditionReport(
   overrides: Partial<VehicleOperationalStateConditionReportSnapshot> = {}
 ): VehicleOperationalStateConditionReportSnapshot {
   return { ...baseConditionReport(), ...overrides };
+}
+
+function restriction(
+  overrides: Partial<VehicleOperationalStateRestrictionSnapshot> = {}
+): VehicleOperationalStateRestrictionSnapshot {
+  return {
+    id: "restriction-1",
+    restrictionType: VehicleOperationalRestrictionType.LEGAL_HOLD,
+    scopes: [VehicleOperationalRestrictionScope.ALLOCATION],
+    severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+    startSourceId: "00000000-0000-4000-8000-000000000091",
+    startSourceKey: "manual-review",
+    startSourceType: "asset-operations",
+    startedAt: new Date("2026-06-30T08:00:00.000Z"),
+    status: VehicleOperationalRestrictionStatus.ACTIVE,
+    vehicleId: "vehicle-1",
+    workOrderId: null,
+    ...overrides
+  };
 }
 
 function baseConditionReport(): VehicleOperationalStateConditionReportSnapshot {
@@ -283,6 +422,9 @@ function createPrismaReadHarness() {
     },
     vehicleConditionReport: {
       findMany: vi.fn(async () => [conditionReport()])
+    },
+    vehicleOperationalRestriction: {
+      findMany: vi.fn(async () => [restriction()])
     }
   };
 }

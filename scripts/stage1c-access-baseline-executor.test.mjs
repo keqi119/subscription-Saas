@@ -421,6 +421,31 @@ function databaseState() {
       permissionRow("asset_facts:view", "查看车辆事实台账", "view"),
       permissionRow("asset_owner:manage", "管理车辆权属期间", "owner_manage"),
       permissionRow("vehicle_period:manage", "修复车辆订阅期间", "period_manage"),
+      permissionRow("asset_operations:view", "查看资产运营工单与限制", "view", "asset_operations"),
+      permissionRow(
+        "asset_work_order:manage",
+        "管理资产运营工单",
+        "work_order_manage",
+        "asset_operations"
+      ),
+      permissionRow(
+        "vehicle_restriction:manage",
+        "管理车辆运营限制",
+        "restriction_manage",
+        "asset_operations"
+      ),
+      permissionRow(
+        "vehicle_restriction:release",
+        "解除车辆运营限制",
+        "restriction_release",
+        "asset_operations"
+      ),
+      permissionRow(
+        "vehicle_restriction:approve_release",
+        "审批高风险车辆运营限制解除",
+        "restriction_approve_release",
+        "asset_operations"
+      ),
       permissionRow("unrelated:keep", "不相关权限", "keep", "other")
     ],
     rolePermissions: [],
@@ -580,7 +605,11 @@ function inMemoryTransaction(state, { failAudit }) {
 }
 
 function activeStage1cMatrix(state) {
-  const codes = new Set(["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"]);
+  const codes = new Set(
+    state.permissions
+      .filter(({ module }) => ["asset_facts", "asset_operations"].includes(module))
+      .map(({ code }) => code)
+  );
   return Object.fromEntries(
     ["ADMIN", "AS", "CS", "FI", "GM", "OP", "RC", "SA"].map((roleCode) => [
       roleCode,
@@ -597,13 +626,38 @@ function activeStage1cMatrix(state) {
 
 function expectedMatrix() {
   return {
-    ADMIN: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
-    AS: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
+    ADMIN: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_owner:manage",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:approve_release",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
+    AS: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_owner:manage",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:approve_release",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
     CS: [],
-    FI: ["asset_facts:view"],
-    GM: ["asset_facts:view"],
-    OP: ["asset_facts:view", "vehicle_period:manage"],
-    RC: [],
+    FI: ["asset_facts:view", "asset_operations:view"],
+    GM: ["asset_facts:view", "asset_operations:view", "vehicle_restriction:approve_release"],
+    OP: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
+    RC: ["asset_operations:view"],
     SA: []
   };
 }

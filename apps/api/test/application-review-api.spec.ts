@@ -28,6 +28,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerService } from "../src/customer/customer.service";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 interface ApprovalRiskInput {
   applicationId: string;
@@ -909,6 +910,13 @@ describe("application self-service review APIs", () => {
       })
     );
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      harness.vehicle.id,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date),
+      VehicleStatus.AVAILABLE
+    );
   });
 
   it("creates and reuses a journey order in the caller transaction", async () => {
@@ -939,6 +947,13 @@ describe("application self-service review APIs", () => {
     expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledOnce();
     expect(harness.prisma.$transaction).not.toHaveBeenCalled();
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      harness.vehicle.id,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date),
+      VehicleStatus.AVAILABLE
+    );
   });
 
   it("rejects a stale confirmed plan revision before journey order creation", async () => {
@@ -1273,17 +1288,22 @@ function createApplicationReviewHarness(overrides: {
     }))
   };
   const notificationService = { notifyCustomer: vi.fn(async () => []) };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
   const service = new CustomerService(
     auditService as never,
     prisma as never,
     riskService as never,
     {} as never,
     notificationService as never,
-    journeySignal as never
+    journeySignal as never,
+    assetOperationsService as never
   );
 
   return {
     application: state.application,
+    assetOperationsService,
     auditService,
     context,
     journeySignal,

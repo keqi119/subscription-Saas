@@ -128,7 +128,7 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   });
 
   it("returns enhanced list fields without internal asset fields", async () => {
-    const { service } = createHarness();
+    const { prisma, service } = createHarness();
 
     const rows = await service.listVehicles();
 
@@ -146,6 +146,26 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     expect(rows[0]).not.toHaveProperty("plateNo");
     expect(JSON.stringify(rows[0])).not.toContain("private-bucket");
     expect(JSON.stringify(rows[0])).not.toContain("vehicle-listings/");
+    expect(prisma.vehicle.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          operationalRestrictions: {
+            none: {
+              scopes: { has: "ALLOCATION" },
+              severity: "BLOCKING",
+              startedAt: { lte: expect.any(Date) },
+              status: "ACTIVE"
+            }
+          },
+          subscriptionPeriods: {
+            none: {
+              OR: [{ endedAt: null }, { endedAt: { gt: expect.any(Date) } }],
+              startedAt: { lte: expect.any(Date) }
+            }
+          }
+        })
+      })
+    );
   });
 
   it("returns detail gallery, condition, battery, FAQ, and configured visible plans", async () => {

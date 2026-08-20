@@ -88,6 +88,8 @@ import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { FinanceService } from "../finance/finance.service";
 import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import {
   hasStage2SourceArtifactState,
   normalizeStage2Sha256,
@@ -392,7 +394,8 @@ export class HandoverWorkOrderService {
     @Optional() private readonly evidenceArtifactService?: DeliveryHandoverEvidenceArtifactService,
     @Optional() private readonly workflowRepository?: Stage2HandoverWorkflowRepository,
     @Optional() private readonly financeService?: FinanceService,
-    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
@@ -765,7 +768,9 @@ export class HandoverWorkOrderService {
     }, VehicleHandoverEventType.FIELD_STARTED, {
       actorId,
       actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
-    });
+    }, (tx) => this.assertDeliveryStartAvailable(tx, workOrder),
+      Prisma.TransactionIsolationLevel.ReadCommitted
+    );
   }
 
   async updateFieldAccessibleFacts(
@@ -1557,7 +1562,9 @@ export class HandoverWorkOrderService {
       actorDisplay,
       actorId,
       actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
-    });
+    }, (tx) => this.assertDeliveryStartAvailable(tx, workOrder),
+      Prisma.TransactionIsolationLevel.ReadCommitted
+    );
   }
 
   async startFieldWorkByToken(token: string) {
@@ -1589,7 +1596,10 @@ export class HandoverWorkOrderService {
     }
     assertDamageState(input.damageDeclared, input.noVisibleDamageDeclared);
     const switchesToDamage = input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
-    return this.runSerializableTransaction(async (tx) => {
+    return this.runTransaction(async (tx) => {
+      if (workOrder.status === "DRAFT") {
+        await this.assertDeliveryStartAvailable(tx, workOrder);
+      }
       const updated = await this.updateWorkOrderVersioned(workOrder, compactUndefined({
         accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
         damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
@@ -1628,7 +1638,11 @@ export class HandoverWorkOrderService {
         }
       }, tx);
       return updated;
-    });
+    },
+      workOrder.status === "DRAFT"
+        ? Prisma.TransactionIsolationLevel.ReadCommitted
+        : Prisma.TransactionIsolationLevel.Serializable
+    );
   }
 
   async updateFieldFactsByToken(token: string, input: UpdateFieldFactsInput) {
@@ -5070,21 +5084,57 @@ export class HandoverWorkOrderService {
       actorType: VehicleHandoverEventActorType;
       detail?: Record<string, unknown>;
       reviewAttemptId?: string | null;
-    }
+    },
+    beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>,
+    isolationLevel: Prisma.TransactionIsolationLevel = Prisma.TransactionIsolationLevel.Serializable
   ) {
-    return this.runSerializableTransaction(async (tx) => {
+    return this.runTransaction(async (tx) => {
+      await beforeWrite?.(tx);
       const updated = await this.updateWorkOrderVersioned(workOrder, data, tx);
       await this.recordEvent(updated, eventType, event, tx);
       return updated;
-    });
+    }, isolationLevel);
+  }
+
+  private async assertDeliveryStartAvailable(
+    tx: Prisma.TransactionClient,
+    workOrder: WorkOrderRecord
+  ) {
+    if (!this.assetOperationsService) {
+      return;
+    }
+    const vehicles = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT v."id"
+      FROM "vehicle" v
+      INNER JOIN "subscription_order" o ON o."vehicle_id" = v."id"
+      WHERE o."id" = ${workOrder.orderId}::uuid
+      FOR UPDATE OF v
+    `);
+    const vehicle = vehicles[0];
+    if (!vehicle) {
+      throw new NotFoundException("交付车辆不存在。");
+    }
+    await this.assetOperationsService.assertVehicleAvailable(
+      tx,
+      vehicle.id,
+      VehicleAvailabilityPurpose.DELIVERY,
+      new Date()
+    );
   }
 
   private async runSerializableTransaction<T>(
     callback: (transaction: Prisma.TransactionClient) => Promise<T>
   ): Promise<T> {
+    return this.runTransaction(callback, Prisma.TransactionIsolationLevel.Serializable);
+  }
+
+  private async runTransaction<T>(
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>,
+    isolationLevel: Prisma.TransactionIsolationLevel
+  ): Promise<T> {
     try {
       return await this.prisma.$transaction(callback, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        isolationLevel
       });
     } catch (error) {
       if (isPrismaSerializationConflict(error)) {

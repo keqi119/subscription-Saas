@@ -7,12 +7,17 @@ import {
   VehicleConditionItemResult,
   VehicleConditionItemSeverity,
   VehicleConditionReportStatus,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType,
   VehicleStatus
 } from "@prisma/client";
 
 export enum VehicleComputedOperationalState {
   RETIRED_OR_INACTIVE = "RETIRED_OR_INACTIVE",
   LEASED_ACTIVE = "LEASED_ACTIVE",
+  OPERATIONALLY_RESTRICTED = "OPERATIONALLY_RESTRICTED",
   SERVICE_BLOCKED = "SERVICE_BLOCKED",
   CONDITION_BLOCKED = "CONDITION_BLOCKED",
   RESERVED_OR_ORDER_LOCKED = "RESERVED_OR_ORDER_LOCKED",
@@ -31,6 +36,7 @@ export enum VehicleOperationalConfidenceBand {
 export type VehicleOperationalStateSource =
   | "VEHICLE"
   | "LEASE"
+  | "OPERATIONAL_RESTRICTION"
   | "ORDER"
   | "SERVICE_CASE"
   | "CONDITION_REPORT"
@@ -114,10 +120,25 @@ export interface VehicleOperationalStateConditionReportSnapshot {
   vehicleId?: string | null;
 }
 
+export interface VehicleOperationalStateRestrictionSnapshot {
+  id: string;
+  restrictionType: VehicleOperationalRestrictionType;
+  scopes: VehicleOperationalRestrictionScope[];
+  severity: VehicleOperationalRestrictionSeverity;
+  startSourceId: string;
+  startSourceKey: string;
+  startSourceType: string;
+  startedAt: Date;
+  status: VehicleOperationalRestrictionStatus;
+  vehicleId: string;
+  workOrderId?: string | null;
+}
+
 export interface VehicleOperationalStateInput {
   asOf?: Date;
   conditionReports: VehicleOperationalStateConditionReportSnapshot[];
   leases: VehicleOperationalStateLeaseSnapshot[];
+  operationalRestrictions: VehicleOperationalStateRestrictionSnapshot[];
   orders: VehicleOperationalStateOrderSnapshot[];
   serviceCases: VehicleOperationalStateServiceCaseSnapshot[];
   vehicle: VehicleOperationalStateVehicleSnapshot | null;

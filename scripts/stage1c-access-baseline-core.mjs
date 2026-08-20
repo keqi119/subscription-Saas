@@ -27,17 +27,76 @@ export const STAGE1C_PERMISSION_DEFINITIONS = Object.freeze([
     code: "vehicle_period:manage",
     module: "asset_facts",
     name: "修复车辆订阅期间"
+  }),
+  Object.freeze({
+    action: "view",
+    code: "asset_operations:view",
+    module: "asset_operations",
+    name: "查看资产运营工单与限制"
+  }),
+  Object.freeze({
+    action: "work_order_manage",
+    code: "asset_work_order:manage",
+    module: "asset_operations",
+    name: "管理资产运营工单"
+  }),
+  Object.freeze({
+    action: "restriction_manage",
+    code: "vehicle_restriction:manage",
+    module: "asset_operations",
+    name: "管理车辆运营限制"
+  }),
+  Object.freeze({
+    action: "restriction_release",
+    code: "vehicle_restriction:release",
+    module: "asset_operations",
+    name: "解除车辆运营限制"
+  }),
+  Object.freeze({
+    action: "restriction_approve_release",
+    code: "vehicle_restriction:approve_release",
+    module: "asset_operations",
+    name: "审批高风险车辆运营限制解除"
   })
 ]);
 
 export const STAGE1C_ROLE_PERMISSION_MATRIX = Object.freeze({
-  ADMIN: Object.freeze(["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"]),
-  AS: Object.freeze(["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"]),
+  ADMIN: Object.freeze([
+    "asset_facts:view",
+    "asset_owner:manage",
+    "vehicle_period:manage",
+    "asset_operations:view",
+    "asset_work_order:manage",
+    "vehicle_restriction:manage",
+    "vehicle_restriction:release",
+    "vehicle_restriction:approve_release"
+  ]),
+  AS: Object.freeze([
+    "asset_facts:view",
+    "asset_owner:manage",
+    "vehicle_period:manage",
+    "asset_operations:view",
+    "asset_work_order:manage",
+    "vehicle_restriction:manage",
+    "vehicle_restriction:release",
+    "vehicle_restriction:approve_release"
+  ]),
   CS: Object.freeze([]),
-  FI: Object.freeze(["asset_facts:view"]),
-  GM: Object.freeze(["asset_facts:view"]),
-  OP: Object.freeze(["asset_facts:view", "vehicle_period:manage"]),
-  RC: Object.freeze([]),
+  FI: Object.freeze(["asset_facts:view", "asset_operations:view"]),
+  GM: Object.freeze([
+    "asset_facts:view",
+    "asset_operations:view",
+    "vehicle_restriction:approve_release"
+  ]),
+  OP: Object.freeze([
+    "asset_facts:view",
+    "vehicle_period:manage",
+    "asset_operations:view",
+    "asset_work_order:manage",
+    "vehicle_restriction:manage",
+    "vehicle_restriction:release"
+  ]),
+  RC: Object.freeze(["asset_operations:view"]),
   SA: Object.freeze([])
 });
 
@@ -56,14 +115,19 @@ export function classifyStage1cAccessBaseline(snapshot) {
   );
   const permissions = STAGE1C_PERMISSION_DEFINITIONS.map((definition) => {
     const current = permissionsByCode.get(definition.code);
+    if (current !== undefined && !permissionIdentityMatches(current, definition)) {
+      blockers.push({ code: "PERMISSION_IDENTITY_DRIFT", permissionCode: definition.code });
+    }
     return {
       ...definition,
       disposition:
         current === undefined
           ? "CREATE"
-          : permissionMatches(current, definition)
-            ? "UNCHANGED"
-            : "CONVERGE"
+          : !permissionIdentityMatches(current, definition)
+            ? "BLOCKED"
+            : permissionMatches(current, definition)
+              ? "UNCHANGED"
+              : "CONVERGE"
     };
   });
   const rolePermissions = STAGE1C_REQUIRED_ROLE_CODES.flatMap((roleCode) =>
@@ -144,11 +208,17 @@ function classifyPlatformOwner(assetOwners, blockers) {
 
 function permissionMatches(current, definition) {
   return (
-    current.action === definition.action &&
+    permissionIdentityMatches(current, definition) &&
     current.deletedAt === null &&
-    current.module === definition.module &&
-    current.name === definition.name &&
     current.status === "ACTIVE"
+  );
+}
+
+function permissionIdentityMatches(current, definition) {
+  return (
+    current.action === definition.action &&
+    current.module === definition.module &&
+    current.name === definition.name
   );
 }
 

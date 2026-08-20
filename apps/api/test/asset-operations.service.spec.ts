@@ -129,6 +129,47 @@ describe("AssetOperationsService", () => {
     expect(harness.auditInputs).toHaveLength(0);
   });
 
+  it("rejects an order whose reciprocal contract pointer identifies another contract", async () => {
+    const harness = createHarness();
+    harness.tx.subscriptionOrder.findUnique.mockResolvedValue({
+      contractId: randomUUID(),
+      customerId: harness.ids.customerId,
+      deletedAt: null,
+      id: harness.ids.orderId,
+      orderNo: "SO-1",
+      orderStatus: "ACTIVE",
+      vehicleId: harness.ids.vehicleId
+    });
+
+    await expect(
+      harness.service.createWorkOrder(fullCreateCommand(harness), harness.context)
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_AUTHORITY_MISMATCH" } });
+    expect(harness.repository.createWorkOrder).not.toHaveBeenCalled();
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("rejects order and contract customer drift when the command omits customer", async () => {
+    const harness = createHarness();
+    harness.tx.subscriptionOrder.findUnique.mockResolvedValue({
+      contractId: harness.ids.contractId,
+      customerId: randomUUID(),
+      deletedAt: null,
+      id: harness.ids.orderId,
+      orderNo: "SO-1",
+      orderStatus: "ACTIVE",
+      vehicleId: harness.ids.vehicleId
+    });
+
+    await expect(
+      harness.service.createWorkOrder(
+        { ...fullCreateCommand(harness), customerId: null },
+        harness.context
+      )
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_AUTHORITY_MISMATCH" } });
+    expect(harness.repository.createWorkOrder).not.toHaveBeenCalled();
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
   it("keeps an omitted asset owner null instead of inferring the current owner", async () => {
     const harness = createHarness();
     const command = { ...fullCreateCommand(harness), assetOwnerId: null };
@@ -418,6 +459,27 @@ describe("AssetOperationsService", () => {
     expect(harness.repository.createRestriction).not.toHaveBeenCalled();
   });
 
+  it("rejects release when the linked work order belongs to another live vehicle", async () => {
+    const harness = createHarness();
+    harness.restriction.vehicleId = randomUUID();
+
+    await expect(
+      harness.service.releaseRestriction(
+        {
+          occurredAt: NOW,
+          releaseReason: "must not release",
+          releaseSnapshot: { evidenceIds: [harness.ids.fileId] },
+          restrictionId: harness.ids.restrictionId,
+          source: nextSource(harness, "release-wrong-work-order-vehicle"),
+          targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+        },
+        { ...harness.context, permissions: ["vehicle_restriction:release"] }
+      )
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_AUTHORITY_MISMATCH" } });
+    expect(harness.repository.releaseRestriction).not.toHaveBeenCalled();
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
   it("allows high-risk release only with approve_release and audits it once", async () => {
     const harness = createHarness({
       restrictionType: VehicleOperationalRestrictionType.LEGAL_HOLD
@@ -464,6 +526,16 @@ describe("AssetOperationsService", () => {
       specialistDeepLink: `/handover-work-orders/${harness.source.id}`
     });
     expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("returns JSON-safe decimal file sizes in all and effective evidence", async () => {
+    const harness = createHarness();
+
+    const projection = await harness.service.getWorkOrderDetail(harness.ids.workOrderId);
+
+    expect(() => JSON.stringify(projection)).not.toThrow();
+    expect(projection.evidence.all.map(({ fileSizeBytes }) => fileSizeBytes)).toEqual(["12", "13"]);
+    expect(projection.evidence.effective.map(({ fileSizeBytes }) => fileSizeBytes)).toEqual(["13"]);
   });
 
   it("projects vehicle work orders, restrictions, and deterministic availability without writes", async () => {
@@ -874,6 +946,7 @@ function createHarness(
     context,
     ids,
     repository,
+    restriction: activeRestriction,
     sequence,
     service: new AssetOperationsService(prisma, repository, auditService),
     source,

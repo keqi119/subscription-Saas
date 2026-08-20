@@ -330,9 +330,12 @@ export class AssetOperationsService {
         );
       }
       if (candidate.workOrderId) {
-        await this.validateWorkOrderAuthority(tx, candidate.workOrderId, [
+        const linked = await this.validateWorkOrderAuthority(tx, candidate.workOrderId, [
           { id: candidate.vehicleId, table: "vehicle" }
         ]);
+        if (candidate.vehicleId !== linked.workOrder.vehicleId) {
+          throw authorityMismatch();
+        }
       } else {
         await lockAuthorityRows(tx, [{ id: candidate.vehicleId, table: "vehicle" }]);
         await loadLiveVehicle(tx, candidate.vehicleId);
@@ -649,6 +652,8 @@ function assertAuthorityConsistency(authority: CreateAuthority) {
     (order && order.vehicleId !== vehicle.id) ||
     (order && customer && order.customerId !== customer.id) ||
     (contract && order && contract.orderId !== order.id) ||
+    (contract && order && order.contractId !== contract.id) ||
+    (contract && order && order.customerId !== contract.customerId) ||
     (contract && customer && contract.customerId !== customer.id) ||
     (relatedWorkOrder && relatedWorkOrder.vehicleId !== vehicle.id)
   ) {
@@ -879,14 +884,27 @@ function specialistDeepLink(source: StableAssetOperationSource) {
   }
 }
 
-function sanitizeFact<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(sanitizeFact) as T;
-  if (value instanceof Date || value === null || typeof value !== "object") return value;
+type JsonSafe<T> = T extends bigint
+  ? string
+  : T extends Date
+    ? T
+    : T extends readonly (infer Item)[]
+      ? JsonSafe<Item>[]
+      : T extends object
+        ? { [Key in keyof T]: JsonSafe<T[Key]> }
+        : T;
+
+function sanitizeFact<T>(value: T): JsonSafe<T> {
+  if (typeof value === "bigint") return value.toString() as JsonSafe<T>;
+  if (Array.isArray(value)) return value.map(sanitizeFact) as JsonSafe<T>;
+  if (value instanceof Date || value === null || typeof value !== "object") {
+    return value as JsonSafe<T>;
+  }
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([key]) => key !== "__assetOperationCommandV1")
       .map(([key, item]) => [key, sanitizeFact(item)])
-  ) as T;
+  ) as JsonSafe<T>;
 }
 
 function toAuditSnapshot(value: unknown): unknown {

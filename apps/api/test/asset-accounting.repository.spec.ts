@@ -1,0 +1,634 @@
+import { ConflictException } from "@nestjs/common";
+import { Prisma, type VehicleCostLedgerEntry } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { describe, expect, it } from "vitest";
+
+import {
+  ASSET_ACCOUNTING_ERROR_CODE,
+  AssetAccountingRepository,
+  type AppendCostEntryCommand,
+  type ReverseCostEntryCommand
+} from "../src/asset-accounting/asset-accounting.repository";
+
+const NOW = new Date("2026-08-20T10:00:00.000Z");
+const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
+
+describe("AssetAccountingRepository", () => {
+  it("rejects root-like and non-READ-COMMITTED clients", async () => {
+    const repository = new AssetAccountingRepository();
+    const rootLike = fakeTransaction({ secondTransactionId: "tx-2" });
+    const serializable = fakeTransaction({ isolationLevel: "serializable" });
+
+    await expectCode(
+      repository.appendCostEntry(rootLike.tx, appendCommand(rootLike.ids, "root")),
+      ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+    await expectCode(
+      repository.appendCostEntry(serializable.tx, appendCommand(serializable.ids, "serializable")),
+      ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+  });
+
+  it("locks the exact source tuple, replays the stored outcome, and rejects payload or command drift", async () => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    const command = appendCommand(database.ids, "exact-replay");
+
+    const first = await repository.appendCostEntry(database.tx, command);
+    const persisted = database.entries.get(first.outcome.id);
+    if (!persisted) throw new Error("missing persisted entry fixture");
+    database.entries.set(first.outcome.id, { ...persisted, accountingPeriod: "2099-12" });
+    database.authorities.vehicle.delete(database.ids.vehicleId);
+    const replay = await repository.appendCostEntry(database.tx, command);
+
+    expect(first.wrote).toBe(true);
+    expect(replay).toEqual({ outcome: first.outcome, wrote: false });
+    expect(replay.outcome.accountingPeriod).toBe("2026-08");
+    expect(database.sourceLockKeys).toEqual([
+      JSON.stringify([command.source.type, command.source.id, command.source.key]),
+      JSON.stringify([command.source.type, command.source.id, command.source.key])
+    ]);
+    expect(database.lockedAuthorities).toEqual(
+      [...database.lockedAuthorities].sort((left, right) => {
+        const leftKey = `${left.table}:${left.id}`;
+        const rightKey = `${right.table}:${right.id}`;
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      })
+    );
+    await expectCode(
+      repository.appendCostEntry(database.tx, { ...command, amountCents: 200n }),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
+    await expectCode(
+      repository.reverseCostEntry(database.tx, {
+        actorId: command.actorId,
+        confirmedAt: command.confirmedAt,
+        originalEntryId: first.outcome.id,
+        source: command.source
+      }),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it("rejects missing, non-live, and cross-ID-drifted authorities", async () => {
+    const cases: Array<{
+      arrange: (database: FakeDatabase) => void;
+      code: string;
+      name: string;
+    }> = [
+      {
+        arrange: (database) => database.authorities.vehicle.delete(database.ids.vehicleId),
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        name: "missing vehicle"
+      },
+      {
+        arrange: (database) => {
+          const vehicle = database.authorities.vehicle.get(database.ids.vehicleId)!;
+          database.authorities.vehicle.set(database.ids.vehicleId, {
+            ...vehicle,
+            deletedAt: NOW
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE,
+        name: "deleted vehicle"
+      },
+      {
+        arrange: (database) => {
+          const order = database.authorities.subscriptionOrder.get(database.ids.orderId)!;
+          database.authorities.subscriptionOrder.set(database.ids.orderId, {
+            ...order,
+            vehicleId: randomUUID()
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH,
+        name: "order vehicle mismatch"
+      },
+      {
+        arrange: (database) => {
+          const contract = database.authorities.contract.get(database.ids.contractId)!;
+          database.authorities.contract.set(database.ids.contractId, {
+            ...contract,
+            orderId: randomUUID()
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH,
+        name: "contract order mismatch"
+      },
+      {
+        arrange: (database) => {
+          const workOrder = database.authorities.assetWorkOrder.get(database.ids.workOrderId)!;
+          database.authorities.assetWorkOrder.set(database.ids.workOrderId, {
+            ...workOrder,
+            customerId: randomUUID()
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH,
+        name: "work-order customer mismatch"
+      },
+      {
+        arrange: (database) => {
+          const evidence = database.authorities.assetWorkOrderEvidence.get(
+            database.ids.evidenceId
+          )!;
+          database.authorities.assetWorkOrderEvidence.set(database.ids.evidenceId, {
+            ...evidence,
+            supersededById: randomUUID()
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE,
+        name: "superseded evidence"
+      },
+      {
+        arrange: (database) => {
+          const owner = database.authorities.assetOwner.get(database.ids.assetOwnerId)!;
+          database.authorities.assetOwner.set(database.ids.assetOwnerId, {
+            ...owner,
+            status: "INACTIVE"
+          });
+        },
+        code: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE,
+        name: "inactive owner"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const database = fakeTransaction();
+      testCase.arrange(database);
+      await expectCode(
+        new AssetAccountingRepository().appendCostEntry(
+          database.tx,
+          appendCommand(database.ids, testCase.name)
+        ),
+        testCase.code
+      );
+    }
+  });
+
+  it("does not infer omitted owner, order, contract, customer, work-order, or evidence identities", async () => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    const command: AppendCostEntryCommand = {
+      ...appendCommand(database.ids, "no-inference"),
+      assetOwnerId: null,
+      assetOwnerSnapshot: null,
+      contractId: null,
+      customerId: null,
+      evidenceId: null,
+      evidenceSnapshot: null,
+      orderId: null,
+      responsiblePartyId: null,
+      workOrderId: null
+    };
+
+    const result = await repository.appendCostEntry(database.tx, command);
+
+    expect(result.outcome).toMatchObject({
+      assetOwnerId: null,
+      contractId: null,
+      customerId: null,
+      evidenceId: null,
+      orderId: null,
+      workOrderId: null
+    });
+    expect(database.lockedAuthorities.map(({ table }) => table)).toEqual(["user", "vehicle"]);
+  });
+
+  it("creates one equal-and-opposite immutable reversal and exactly replays it", async () => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    const original = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "original")
+    );
+    const command = reverseCommand(database.ids, original.outcome.id, "reverse");
+
+    const reversed = await repository.reverseCostEntry(database.tx, command);
+    const replay = await repository.reverseCostEntry(database.tx, command);
+
+    expect(reversed.wrote).toBe(true);
+    expect(replay).toEqual({ outcome: reversed.outcome, wrote: false });
+    expect(reversed.outcome).toMatchObject({
+      actionType: original.outcome.actionType,
+      amountCents: -original.outcome.amountCents,
+      assetOwnerId: original.outcome.assetOwnerId,
+      assetOwnerSnapshot: original.outcome.assetOwnerSnapshot,
+      contractId: original.outcome.contractId,
+      costCategory: original.outcome.costCategory,
+      customerId: original.outcome.customerId,
+      entryKind: "REVERSAL",
+      evidenceId: original.outcome.evidenceId,
+      evidenceSnapshot: original.outcome.evidenceSnapshot,
+      occurredOn: original.outcome.occurredOn,
+      orderId: original.outcome.orderId,
+      responsiblePartyId: original.outcome.responsiblePartyId,
+      responsiblePartyType: original.outcome.responsiblePartyType,
+      responsibilitySnapshot: original.outcome.responsibilitySnapshot,
+      reversalOfEntryId: original.outcome.id,
+      vehicleId: original.outcome.vehicleId,
+      workOrderId: original.outcome.workOrderId
+    });
+    expect(database.lockedOriginalIds).toContain(original.outcome.id);
+  });
+
+  it("returns source-free read projections for entry, vehicle, order, and work-order lookups", async () => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    const created = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "read-projections")
+    );
+
+    await expect(repository.getCostEntry(database.tx, created.outcome.id)).resolves.toEqual(
+      created.outcome
+    );
+    await expect(
+      repository.listVehicleEntries(database.tx, database.ids.vehicleId)
+    ).resolves.toEqual([created.outcome]);
+    await expect(repository.listOrderEntries(database.tx, database.ids.orderId)).resolves.toEqual([
+      created.outcome
+    ]);
+    await expect(
+      repository.listWorkOrderEntries(database.tx, database.ids.workOrderId)
+    ).resolves.toEqual([created.outcome]);
+    expect(created.outcome).not.toHaveProperty("sourceKey");
+  });
+
+  it("rejects a second reversal, reverse-of-reversal, and missing original", async () => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    const original = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "reverse-guards-original")
+    );
+    const reversal = await repository.reverseCostEntry(
+      database.tx,
+      reverseCommand(database.ids, original.outcome.id, "reverse-guards-first")
+    );
+
+    await expectCode(
+      repository.reverseCostEntry(
+        database.tx,
+        reverseCommand(database.ids, original.outcome.id, "reverse-guards-second")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS
+    );
+    await expectCode(
+      repository.reverseCostEntry(
+        database.tx,
+        reverseCommand(database.ids, reversal.outcome.id, "reverse-a-reversal")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID
+    );
+    await expectCode(
+      repository.reverseCostEntry(
+        database.tx,
+        reverseCommand(database.ids, randomUUID(), "missing")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.COST_ENTRY_NOT_FOUND
+    );
+  });
+
+  it.each([
+    ["vehicle_cost_ledger_entry_reversal_of_entry_id_key", "23505", "REVERSAL_ALREADY_EXISTS"],
+    ["vehicle_cost_ledger_entry_reverse_of_reversal_chk", "23514", "REVERSAL_INVALID"],
+    ["vehicle_cost_ledger_entry_reversal_amount_chk", "23514", "REVERSAL_INVALID"],
+    ["vehicle_cost_ledger_entry_reversal_reference_chk", "23514", "REVERSAL_INVALID"],
+    ["vehicle_cost_ledger_entry_kind_amount_shape_chk", "23514", "INVALID_COST_COMMAND"],
+    ["vehicle_cost_ledger_entry_accounting_period_chk", "23514", "INVALID_COST_COMMAND"],
+    ["vehicle_cost_ledger_entry_source_key_not_blank_chk", "23514", "INVALID_COST_COMMAND"],
+    ["vehicle_cost_ledger_entry_vehicle_id_fkey", "23503", "AUTHORITY_NOT_FOUND"],
+    ["vehicle_cost_ledger_entry_confirmed_by_fkey", "23503", "AUTHORITY_NOT_FOUND"],
+    ["asset_accounting_command_receipt_source_key", "23505", "SOURCE_CONFLICT"],
+    ["asset_accounting_command_receipt_payload_hash_chk", "23514", "WRITE_CONFLICT"],
+    ["asset_accounting_command_receipt_source_key_not_blank_chk", "23514", "INVALID_COST_COMMAND"],
+    ["asset_accounting_command_receipt_target_shape_chk", "23514", "WRITE_CONFLICT"]
+  ] as const)("normalizes named database constraint %s", async (constraint, code, expected) => {
+    const repository = new AssetAccountingRepository();
+    const database = fakeTransaction();
+    if (constraint.startsWith("asset_accounting_command_receipt_")) {
+      database.nextReceiptCreateError = databaseError(code, constraint);
+    } else {
+      database.nextEntryCreateError = databaseError(code, constraint);
+    }
+
+    await expectCode(
+      repository.appendCostEntry(database.tx, appendCommand(database.ids, constraint)),
+      ASSET_ACCOUNTING_ERROR_CODE[expected]
+    );
+  });
+
+  it.each([
+    ["23514", "reversal amount must be the exact opposite of the original", "REVERSAL_INVALID"],
+    [
+      "23514",
+      "reversal must preserve the original accounting and authority references",
+      "REVERSAL_INVALID"
+    ],
+    ["23514", "a reversal cannot target another reversal", "REVERSAL_INVALID"],
+    [
+      "23514",
+      'new row violates check constraint "vehicle_cost_ledger_entry_kind_amount_shape_chk"',
+      "INVALID_COST_COMMAND"
+    ]
+  ] as const)(
+    "normalizes Prisma adapter SQLSTATE %s with stable message %s",
+    async (code, message, expected) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = databaseMessageError(code, message);
+
+      await expectCode(
+        repository.appendCostEntry(database.tx, appendCommand(database.ids, message)),
+        ASSET_ACCOUNTING_ERROR_CODE[expected]
+      );
+    }
+  );
+});
+
+type AuthorityRecord = Record<string, unknown> & { id: string };
+type AuthorityStore = {
+  assetOwner: Map<string, AuthorityRecord>;
+  assetWorkOrder: Map<string, AuthorityRecord>;
+  assetWorkOrderEvidence: Map<string, AuthorityRecord>;
+  contract: Map<string, AuthorityRecord>;
+  customer: Map<string, AuthorityRecord>;
+  subscriptionOrder: Map<string, AuthorityRecord>;
+  user: Map<string, AuthorityRecord>;
+  vehicle: Map<string, AuthorityRecord>;
+};
+type FixtureIds = ReturnType<typeof fixtureIds>;
+type FakeDatabase = ReturnType<typeof fakeTransaction>;
+
+function fakeTransaction(options: { isolationLevel?: string; secondTransactionId?: string } = {}) {
+  const ids = fixtureIds();
+  const authorities: AuthorityStore = {
+    assetOwner: new Map([[ids.assetOwnerId, { id: ids.assetOwnerId, status: "ACTIVE" }]]),
+    assetWorkOrder: new Map([
+      [
+        ids.workOrderId,
+        {
+          assetOwnerId: ids.assetOwnerId,
+          contractId: ids.contractId,
+          customerId: ids.customerId,
+          id: ids.workOrderId,
+          orderId: ids.orderId,
+          status: "PENDING_COST_CONFIRMATION",
+          vehicleId: ids.vehicleId
+        }
+      ]
+    ]),
+    assetWorkOrderEvidence: new Map([
+      [
+        ids.evidenceId,
+        {
+          id: ids.evidenceId,
+          supersededById: null,
+          workOrderId: ids.workOrderId
+        }
+      ]
+    ]),
+    contract: new Map([
+      [
+        ids.contractId,
+        {
+          customerId: ids.customerId,
+          deletedAt: null,
+          id: ids.contractId,
+          orderId: ids.orderId
+        }
+      ]
+    ]),
+    customer: new Map([[ids.customerId, { deletedAt: null, id: ids.customerId }]]),
+    subscriptionOrder: new Map([
+      [
+        ids.orderId,
+        {
+          contractId: ids.contractId,
+          customerId: ids.customerId,
+          deletedAt: null,
+          id: ids.orderId,
+          vehicleId: ids.vehicleId
+        }
+      ]
+    ]),
+    user: new Map([[ids.actorId, { deletedAt: null, id: ids.actorId, status: "ACTIVE" }]]),
+    vehicle: new Map([[ids.vehicleId, { deletedAt: null, id: ids.vehicleId }]])
+  };
+  const entries = new Map<string, VehicleCostLedgerEntry>();
+  const receipts = new Map<string, Record<string, unknown>>();
+  const sourceLockKeys: string[] = [];
+  const lockedAuthorities: Array<{ id: string; table: string }> = [];
+  const lockedOriginalIds: string[] = [];
+  const database = {
+    authorities,
+    entries,
+    ids,
+    lockedAuthorities,
+    lockedOriginalIds,
+    nextEntryCreateError: undefined as unknown,
+    nextReceiptCreateError: undefined as unknown,
+    receipts,
+    sourceLockKeys,
+    tx: undefined as unknown as Prisma.TransactionClient
+  };
+  let probeCount = 0;
+
+  const tx = {
+    $queryRaw: async (query: unknown) => {
+      const text = sqlText(query);
+      if (text.includes("current_setting('transaction_isolation')")) {
+        probeCount += 1;
+        return [
+          {
+            isolationLevel: options.isolationLevel ?? "read committed",
+            transactionId: "tx-1"
+          }
+        ];
+      }
+      if (text.includes("txid_current()")) {
+        probeCount += 1;
+        return [{ transactionId: options.secondTransactionId ?? "tx-1" }];
+      }
+      const values = sqlValues(query);
+      if (text.includes("pg_advisory_xact_lock")) {
+        sourceLockKeys.push(String(values[0]));
+        return [{ locked: true }];
+      }
+      const table = /FROM "([a-z_]+)"/.exec(text)?.[1];
+      if (table) {
+        const id = String(values[0]);
+        if (table === "vehicle_cost_ledger_entry") lockedOriginalIds.push(id);
+        else lockedAuthorities.push({ id, table });
+      }
+      return [{ id: values[0] }];
+    },
+    assetAccountingCommandReceipt: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        if (database.nextReceiptCreateError) {
+          const error = database.nextReceiptCreateError;
+          database.nextReceiptCreateError = undefined;
+          throw error;
+        }
+        const key = receiptKey(data.sourceType, data.sourceId, data.sourceKey);
+        if (receipts.has(key)) {
+          throw databaseError("23505", "asset_accounting_command_receipt_source_key");
+        }
+        const row = { ...data, createdAt: NOW, id: String(data.id ?? randomUUID()) };
+        receipts.set(key, row);
+        return row;
+      },
+      findUnique: async ({ where }: { where: Record<string, Record<string, unknown>> }) => {
+        const source = where.sourceType_sourceId_sourceKey;
+        if (!source) throw new Error("missing source receipt identity");
+        return (
+          receipts.get(receiptKey(source.sourceType, source.sourceId, source.sourceKey)) ?? null
+        );
+      }
+    },
+    assetOwner: delegate(authorities.assetOwner),
+    assetWorkOrder: delegate(authorities.assetWorkOrder),
+    assetWorkOrderEvidence: delegate(authorities.assetWorkOrderEvidence),
+    contract: delegate(authorities.contract),
+    customer: delegate(authorities.customer),
+    subscriptionOrder: delegate(authorities.subscriptionOrder),
+    user: delegate(authorities.user),
+    vehicle: delegate(authorities.vehicle),
+    vehicleCostLedgerEntry: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        if (database.nextEntryCreateError) {
+          const error = database.nextEntryCreateError;
+          database.nextEntryCreateError = undefined;
+          throw error;
+        }
+        if (
+          data.reversalOfEntryId &&
+          [...entries.values()].some((entry) => entry.reversalOfEntryId === data.reversalOfEntryId)
+        ) {
+          throw databaseError("23505", "vehicle_cost_ledger_entry_reversal_of_entry_id_key");
+        }
+        const row = {
+          ...data,
+          assetOwnerSnapshot:
+            data.assetOwnerSnapshot === Prisma.JsonNull ? null : data.assetOwnerSnapshot,
+          createdAt: NOW,
+          evidenceSnapshot:
+            data.evidenceSnapshot === Prisma.JsonNull ? null : data.evidenceSnapshot,
+          id: String(data.id ?? randomUUID())
+        } as VehicleCostLedgerEntry;
+        entries.set(row.id, row);
+        return row;
+      },
+      findMany: async () => [...entries.values()],
+      findUnique: async ({ where }: { where: { id: string } }) => entries.get(where.id) ?? null
+    }
+  };
+  database.tx = tx as unknown as Prisma.TransactionClient;
+  void probeCount;
+  return database;
+}
+
+function delegate(store: Map<string, AuthorityRecord>) {
+  return {
+    findUnique: async ({ where }: { where: { id: string } }) => store.get(where.id) ?? null
+  };
+}
+
+function appendCommand(ids: FixtureIds, key: string): AppendCostEntryCommand {
+  return {
+    actionType: "ACTUAL_COST",
+    accountingPeriod: "2026-08",
+    actorId: ids.actorId,
+    amountCents: 100n,
+    assetOwnerId: ids.assetOwnerId,
+    assetOwnerSnapshot: { ownerNo: "AO-001" },
+    confirmedAt: NOW,
+    contractId: ids.contractId,
+    costCategory: "REPAIR",
+    customerId: ids.customerId,
+    evidenceId: ids.evidenceId,
+    evidenceSnapshot: { sha256: "a".repeat(64) },
+    occurredOn: OCCURRED_ON,
+    orderId: ids.orderId,
+    responsiblePartyId: ids.customerId,
+    responsiblePartyType: "CUSTOMER",
+    responsibilitySnapshot: { basis: "inspection" },
+    source: { id: ids.sourceId, key, type: "ASSET_WORK_ORDER" },
+    vehicleId: ids.vehicleId,
+    workOrderId: ids.workOrderId
+  };
+}
+
+function reverseCommand(
+  ids: FixtureIds,
+  originalEntryId: string,
+  key: string
+): ReverseCostEntryCommand {
+  return {
+    actorId: ids.actorId,
+    confirmedAt: new Date("2026-08-20T11:00:00.000Z"),
+    originalEntryId,
+    source: { id: ids.sourceId, key, type: "ASSET_WORK_ORDER" }
+  };
+}
+
+function fixtureIds() {
+  return {
+    actorId: randomUUID(),
+    assetOwnerId: randomUUID(),
+    contractId: randomUUID(),
+    customerId: randomUUID(),
+    evidenceId: randomUUID(),
+    orderId: randomUUID(),
+    sourceId: randomUUID(),
+    vehicleId: randomUUID(),
+    workOrderId: randomUUID()
+  };
+}
+
+function receiptKey(type: unknown, id: unknown, key: unknown) {
+  return `${String(type)}:${String(id)}:${String(key)}`;
+}
+
+function sqlText(query: unknown) {
+  if (!query || typeof query !== "object" || !("strings" in query)) return "";
+  return (query.strings as readonly string[]).join("?");
+}
+
+function sqlValues(query: unknown): readonly unknown[] {
+  if (!query || typeof query !== "object" || !("values" in query)) return [];
+  return query.values as readonly unknown[];
+}
+
+function databaseError(code: string, constraint: string) {
+  return {
+    code: "P2010",
+    meta: {
+      driverAdapterError: {
+        cause: { constraint, originalCode: code }
+      }
+    }
+  };
+}
+
+function databaseMessageError(code: string, message: string) {
+  return {
+    code: "P2010",
+    message,
+    meta: {
+      driverAdapterError: {
+        cause: { message, originalCode: code }
+      }
+    }
+  };
+}
+
+async function expectCode(promise: Promise<unknown>, code: string) {
+  try {
+    await promise;
+    throw new Error(`Expected conflict ${code}`);
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConflictException);
+    const response = (error as ConflictException).getResponse();
+    expect(response).toMatchObject({ code });
+  }
+}

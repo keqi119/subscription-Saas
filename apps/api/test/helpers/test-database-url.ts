@@ -17,6 +17,11 @@ export function requiredVehicleAvailabilityTestDatabaseUrl(value: string | undef
   if (!["postgres:", "postgresql:"].includes(url.protocol)) {
     throw new Error("Vehicle availability integration tests require a PostgreSQL URL");
   }
+  if (url.search !== "" && url.search !== "?schema=public") {
+    throw new Error(
+      "Vehicle availability integration tests require no query parameters except schema=public"
+    );
+  }
   if (!url.username) {
     throw new Error("Vehicle availability integration tests require a database user");
   }

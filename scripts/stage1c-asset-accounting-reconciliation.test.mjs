@@ -37,6 +37,27 @@ const catalogDefinitionDigests = {
   expected_trigger_raw: "4e7c1e0270d318a67d339e8af5ae3b2ffc8b645912138d7985ceaaa9df968482"
 };
 
+const authorityEvaluationContract = `
+SELECT
+  candidate.*,
+  (
+    candidate.missing_vehicle
+    OR candidate.missing_order
+    OR candidate.missing_contract
+    OR candidate.missing_customer
+    OR candidate.missing_owner
+    OR candidate.missing_work_order
+    OR candidate.missing_evidence
+    OR candidate.missing_confirmer
+    OR candidate.missing_responsible_customer
+    OR candidate.missing_responsible_owner
+    OR candidate.evidence_work_order_mismatch
+    OR candidate.responsible_customer_mismatch
+    OR candidate.responsible_owner_mismatch
+  ) AS is_anomaly
+FROM authority_candidate AS candidate
+`;
+
 const stage1cCEnums = {
   VehicleCostEntryKind: ["ORIGINAL", "REVERSAL"],
   VehicleCostActionType: [
@@ -382,6 +403,16 @@ function extractCatalogCteBody(sql, cteName, nextCteName) {
   return normalizeSql(match[1]);
 }
 
+function extractBoundedCteBody(sql, cteName, nextCteName) {
+  const match = sql.match(
+    new RegExp(
+      `${cteName}(?:\\([^)]*\\))?\\s+AS\\s*\\(\\n([\\s\\S]*?)\\n\\),\\s+${nextCteName}(?:\\([^)]*\\))?\\s+AS\\s*\\(`
+    )
+  );
+  assert.ok(match, `missing or unbounded SQL CTE: ${cteName}`);
+  return normalizeSql(match[1]);
+}
+
 function validateCatalogDefinitionDigests(blocks) {
   const sql = blocks.get("03-database-catalog");
   assert.ok(sql);
@@ -432,21 +463,22 @@ function extractControllerApiTuples(controller, sharedAuth) {
   );
   const tuples = [
     ...controller.matchAll(
-      /@(Get|Post)\("([^"]+)"\)\s*@RequirePermissions\(PermissionCode\.([A-Z0-9_]+)\)/g
+      /@(Get|Post|Put|Patch|Delete|Options|Head|All)\("([^"]+)"\)\s*@RequirePermissions\(PermissionCode\.([A-Z0-9_]+)\)/g
     )
   ].map((match) => {
     const permission = permissionMap.get(match[3]);
     assert.ok(permission, `API_INVENTORY: unmapped PermissionCode.${match[3]}`);
     return [match[1].toUpperCase(), `/${controllerMatch[1]}/${match[2]}`, permission];
   });
-  assert.equal(tuples.length, 8, "API_INVENTORY: expected eight controller decorator blocks");
   return tuples;
 }
 
 function extractDocumentedApiTuples(runbook) {
-  return [...runbook.matchAll(/^\|\s*(GET|POST)\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gm)].map(
-    (match) => [match[1], match[2], match[3]]
-  );
+  return [
+    ...runbook.matchAll(
+      /^\|\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|ALL)\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gm
+    )
+  ].map((match) => [match[1], match[2], match[3]]);
 }
 
 function validateEnums(runbook, schema) {
@@ -494,6 +526,21 @@ function validatePermissionSql(blocks) {
     "permission.code LIKE 'vehicle_cost_ledger:%'",
     "permission.code LIKE 'business_exception:%'"
   ]);
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_UNEXPECTED_DEFINITION", [
+    "WHERE expected.code IS NULL"
+  ]);
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_RELEVANT_GRANT_SCOPE", [
+    "OR permission.code IN (SELECT code FROM actual_stage1c_c_permission)"
+  ]);
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_EXACT_DEFINITION_COUNT", [
+    "HAVING COUNT(*) <> 6"
+  ]);
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_EXACT_GRANT_COUNT", [
+    "OR (SELECT COUNT(*) FROM actual_relevant_grant) <> 54"
+  ]);
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_UNEXPECTED_GRANT", [
+    "WHERE expected.role_code IS NULL"
+  ]);
 }
 
 function validateForeignKeySql(blocks) {
@@ -511,6 +558,42 @@ function validateForeignKeySql(blocks) {
     "foreign_key.convalidated IS NOT TRUE",
     "UNEXPECTED_FOREIGN_KEY"
   ]);
+  requireSqlInvariant(blocks, "03-database-catalog", "FK_CATALOG_DELETE_ACTION", [
+    'foreign_key.confdeltype IS DISTINCT FROM expected.confdeltype::"char"'
+  ]);
+  requireSqlInvariant(blocks, "03-database-catalog", "FK_CATALOG_REFERENCED_SCHEMA", [
+    "JOIN pg_namespace AS referenced_namespace",
+    "referenced_namespace.nspname AS referenced_schema",
+    "foreign_key.referenced_schema IS DISTINCT FROM current_schema()"
+  ]);
+}
+
+function validateAuthoritySql(blocks) {
+  const sql = blocks.get("05-ledger-integrity");
+  assert.ok(sql);
+  requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_HISTORY_FIXTURES", [
+    "NORMAL_POST_APPEND_ORDER_DRIFT",
+    "MISSING_VEHICLE",
+    "EVIDENCE_WORK_ORDER_MISMATCH",
+    "authority_fixture_contract",
+    "is_anomaly IS DISTINCT FROM expected_anomaly"
+  ]);
+  requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_ORPHAN", [
+    "candidate.missing_vehicle"
+  ]);
+  requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_EVIDENCE_WORK_ORDER", [
+    "candidate.evidence_work_order_mismatch"
+  ]);
+  assert.equal(
+    extractBoundedCteBody(sql, "authority_evaluation", "authority_anomaly"),
+    normalizeSql(authorityEvaluationContract),
+    "AUTHORITY_HISTORICAL_PROJECTION: only existence and immutable ledger/evidence relationships may block"
+  );
+  assert.doesNotMatch(
+    sql,
+    /order_row\.(?:vehicle_id|customer_id)|contract_row\.(?:order_id|customer_id)|work_order\.(?:vehicle_id|order_id|contract_id|customer_id|asset_owner_id)\s+IS\s+DISTINCT\s+FROM\s+entry\./,
+    "AUTHORITY_HISTORICAL_PROJECTION: mutable current projections must not block frozen history"
+  );
 }
 
 function validateRunbookSql(runbook) {
@@ -654,10 +737,9 @@ function validateRunbookSql(runbook) {
     "LEFT JOIN asset_work_order_evidence AS evidence ON evidence.id = entry.evidence_id",
     'LEFT JOIN "user" AS confirmer ON confirmer.id = entry.confirmed_by',
     "vehicle.id IS NULL",
-    "evidence.work_order_id IS DISTINCT FROM entry.work_order_id",
-    "order_row.vehicle_id IS DISTINCT FROM entry.vehicle_id",
-    "work_order.vehicle_id IS DISTINCT FROM entry.vehicle_id"
+    "evidence.work_order_id IS DISTINCT FROM entry.work_order_id"
   ]);
+  validateAuthoritySql(blocks);
 
   requireSqlFragments(blocks, "06-approval-integrity", [
     "approval.requested_by = approval.decided_by",
@@ -695,6 +777,9 @@ function validateRunbookSql(runbook) {
     "cost.expected_public_fact",
     "approval.expected_public_fact",
     "approval.expected_version"
+  ]);
+  requireSqlInvariant(blocks, "07-audit-integrity", "AUDIT_EXTRA", [
+    "WHERE expected.receipt_id IS NULL"
   ]);
   requireSqlFragments(blocks, "07-audit-integrity", [
     "MISSING_AUDIT",
@@ -802,6 +887,28 @@ test("pins API, source, replay, approval, redaction, and contention contracts", 
     "同一个 `Idempotency-Key`",
     "不要紧密自动重试"
   ]);
+});
+
+test("detects a synthetic route for every Nest HTTP method decorator", async () => {
+  const [runbook, controller, sharedAuth] = await Promise.all([
+    readOrEmpty(rolloutPath),
+    readOrEmpty(controllerPath),
+    readOrEmpty(sharedAuthPath)
+  ]);
+  const documented = extractDocumentedApiTuples(runbook);
+  for (const decorator of ["Get", "Post", "Put", "Patch", "Delete", "Options", "Head", "All"]) {
+    const syntheticController = `${controller}\n@${decorator}("synthetic-${decorator.toLowerCase()}")\n@RequirePermissions(PermissionCode.VEHICLE_COST_LEDGER_VIEW)\n`;
+    assert.throws(
+      () =>
+        assert.deepEqual(
+          documented,
+          extractControllerApiTuples(syntheticController, sharedAuth),
+          "API_INVENTORY: synthetic route escaped the exact inventory"
+        ),
+      (error) => error instanceof Error && error.message.includes("API_INVENTORY"),
+      `API_INVENTORY: @${decorator} synthetic route must fail exact inventory`
+    );
+  }
 });
 
 test("pins permissions-only zero ownership coupling and legacy default distinction", async () => {
@@ -977,18 +1084,38 @@ test("kills finding-specific mutations with the intended invariant labels", asyn
       (sql) => sql.replace("foreign_key.convalidated IS NOT TRUE", "false")
     ],
     [
-      "FK_CATALOG_IDENTITY",
+      "FK_CATALOG_DELETE_ACTION",
       "03-database-catalog",
       (sql) =>
         sql.replace(
-          "'vehicle_cost_ledger_entry_vehicle_id_fkey', 'vehicle_cost_ledger_entry', 'vehicle_id', 'vehicle', 'id', 'r'",
-          "'vehicle_cost_ledger_entry_vehicle_id_fkey', 'vehicle_cost_ledger_entry', 'vehicle_id', 'vehicle', 'id', 'c'"
+          'foreign_key.confdeltype IS DISTINCT FROM expected.confdeltype::"char"',
+          "false"
         )
+    ],
+    [
+      "FK_CATALOG_REFERENCED_SCHEMA",
+      "03-database-catalog",
+      (sql) =>
+        sql.replace("foreign_key.referenced_schema IS DISTINCT FROM current_schema()", "false")
     ],
     [
       "AUTHORITY_ORPHAN",
       "05-ledger-integrity",
-      (sql) => sql.replace("vehicle.id IS NULL", "false")
+      (sql) => sql.replace("candidate.missing_vehicle", "false")
+    ],
+    [
+      "AUTHORITY_HISTORICAL_PROJECTION",
+      "05-ledger-integrity",
+      (sql) =>
+        sql.replace(
+          "OR candidate.responsible_owner_mismatch",
+          "OR candidate.responsible_owner_mismatch OR candidate.order_vehicle_drift"
+        )
+    ],
+    [
+      "AUTHORITY_EVIDENCE_WORK_ORDER",
+      "05-ledger-integrity",
+      (sql) => sql.replace("candidate.evidence_work_order_mismatch", "false")
     ],
     [
       "AUDIT_SOURCE_VALIDITY",
@@ -996,14 +1123,38 @@ test("kills finding-specific mutations with the intended invariant labels", asyn
       (sql) => sql.replace("WHERE NOT source_is_valid", "WHERE false")
     ],
     [
-      "PERMISSION_EXACTNESS",
+      "PERMISSION_UNEXPECTED_DEFINITION",
       "02-permission-matrix",
-      (sql) => sql.replace("UNEXPECTED_PERMISSION_DEFINITION", "IGNORED_PERMISSION_DEFINITION")
+      (sql) => sql.replace("WHERE expected.code IS NULL", "WHERE false")
     ],
     [
-      "PERMISSION_EXACTNESS",
+      "PERMISSION_RELEVANT_GRANT_SCOPE",
       "02-permission-matrix",
-      (sql) => sql.replace("UNEXPECTED_ROLE_PERMISSION", "IGNORED_ROLE_PERMISSION")
+      (sql) =>
+        sql.replace(
+          "OR permission.code IN (SELECT code FROM actual_stage1c_c_permission)",
+          "OR false"
+        )
+    ],
+    [
+      "PERMISSION_EXACT_DEFINITION_COUNT",
+      "02-permission-matrix",
+      (sql) => sql.replace("HAVING COUNT(*) <> 6", "HAVING false")
+    ],
+    [
+      "PERMISSION_EXACT_GRANT_COUNT",
+      "02-permission-matrix",
+      (sql) => sql.replace("OR (SELECT COUNT(*) FROM actual_relevant_grant) <> 54", "OR false")
+    ],
+    [
+      "PERMISSION_UNEXPECTED_GRANT",
+      "02-permission-matrix",
+      (sql) => sql.replace("WHERE expected.role_code IS NULL", "WHERE false")
+    ],
+    [
+      "AUDIT_EXTRA",
+      "07-audit-integrity",
+      (sql) => sql.replace("WHERE expected.receipt_id IS NULL", "WHERE false")
     ],
     [
       "APPROVAL_DECISION_COMMENT",

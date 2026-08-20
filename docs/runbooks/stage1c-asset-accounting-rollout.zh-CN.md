@@ -420,9 +420,10 @@ ADMIN 也不能绕过。决定使用 `expectedVersion` CAS；合法状态仅为
 
 以下查询预期零行。它绑定 `current_schema()`，要求四个 trigger 的 table/function/schema、完整规范化定义、
 `tgtype`、普通启用状态、空 `tgattr` 和空 `tgqual` 精确一致；要求三个函数完整正文（包括固定
-`search_path`）、11 个 validated CHECK、Task 1 全部 15 个 validated FK（名称、本地列、引用表/列、
-`ON DELETE RESTRICT`）和 15 个 valid/ready index 精确一致。仅同名、错误 schema、disabled trigger、
-`UPDATE OF` 缩窄、额外 `WHEN`、无效 FK/index 或部分函数正文都阻断。
+`search_path`）、11 个 validated CHECK、Task 1 全部 15 个 validated FK（名称、本地列、owning/referenced
+schema 都是 `current_schema()`、引用表/列、`ON DELETE RESTRICT`）和 15 个 valid/ready index 精确一致。
+仅同名、错误 owning/referenced schema、disabled trigger、`UPDATE OF` 缩窄、额外 `WHEN`、无效 FK/index
+或部分函数正文都阻断。
 
 <!-- stage1c-accounting-sql:03-database-catalog -->
 
@@ -721,6 +722,7 @@ $definition$)
        AND attribute.attnum = key.attnum
       ORDER BY key.position
     ), ',') AS local_columns,
+    referenced_namespace.nspname AS referenced_schema,
     referenced_table.relname AS referenced_table,
     array_to_string(ARRAY(
       SELECT attribute.attname
@@ -736,6 +738,8 @@ $definition$)
   JOIN pg_class AS table_name ON table_name.oid = foreign_constraint.conrelid
   JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_name.relnamespace
   JOIN pg_class AS referenced_table ON referenced_table.oid = foreign_constraint.confrelid
+  JOIN pg_namespace AS referenced_namespace
+    ON referenced_namespace.oid = referenced_table.relnamespace
   WHERE foreign_constraint.contype = 'f'
 ), actual_index AS (
   SELECT
@@ -828,6 +832,7 @@ $definition$)
        foreign_key.table_schema = current_schema()
        AND (
          foreign_key.local_columns IS DISTINCT FROM expected.local_columns
+         OR foreign_key.referenced_schema IS DISTINCT FROM current_schema()
          OR foreign_key.referenced_table IS DISTINCT FROM expected.referenced_table
          OR foreign_key.referenced_columns IS DISTINCT FROM expected.referenced_columns
          OR foreign_key.confdeltype IS DISTINCT FROM expected.confdeltype::"char"
@@ -1161,12 +1166,14 @@ ORDER BY anomaly_kind, target_id;
 COMMIT;
 ```
 
-## 9. ledger 只追加、authority existence/cross-ID、单次冲正与 16 维相等
+## 9. ledger 只追加、authority existence/immutable identity、单次冲正与 16 维相等
 
-以下查询检查 base shape、authority existence、创建时已冻结的 cross-ID、单次冲正、金额符号，以及
-reversal 对 original 的全部 16 维相等；预期零行。这里只核对引用存在和不可变 identity，不把 authority
-后来 soft-delete、状态变化或历史 ownership projection 漂移误报为 orphan。append-only trigger 的完整
-catalog 身份由第 7 节单独核对。
+以下查询检查 base shape、ledger FK/command authority existence、immutable evidence→work-order identity、
+ledger 内部 responsible-party identity、单次冲正、金额符号，以及 reversal 对 original 的全部 16 维相等；
+预期零行。这里只核对引用存在和能证明不可变的 identity；不得把 authority 后来 soft-delete、状态变化、
+order vehicle/customer、contract/work-order 当前 projection 或历史 ownership projection 漂移误报为 orphan。
+内嵌 fixture 明确要求正常的 post-append order vehicle/customer drift 为零 anomaly，同时 missing vehicle 与
+evidence/work-order mismatch 必须命中。append-only trigger 的完整 catalog 身份由第 7 节单独核对。
 
 <!-- stage1c-accounting-sql:05-ledger-integrity -->
 
@@ -1216,8 +1223,41 @@ WITH reversal_row AS (
      OR (entry.entry_kind = 'REVERSAL' AND (
        entry.amount_cents >= 0 OR entry.reversal_of_entry_id IS NULL
      ))
-), authority_anomaly AS (
-  SELECT entry.id AS entry_id
+), authority_candidate(
+  entry_id, fixture_name, expected_anomaly,
+  missing_vehicle, missing_order, missing_contract, missing_customer, missing_owner,
+  missing_work_order, missing_evidence, missing_confirmer,
+  missing_responsible_customer, missing_responsible_owner,
+  evidence_work_order_mismatch, responsible_customer_mismatch,
+  responsible_owner_mismatch, order_vehicle_drift, order_customer_drift
+) AS (
+  SELECT
+    entry.id,
+    NULL::text,
+    NULL::boolean,
+    vehicle.id IS NULL,
+    entry.order_id IS NOT NULL AND order_row.id IS NULL,
+    entry.contract_id IS NOT NULL AND contract_row.id IS NULL,
+    entry.customer_id IS NOT NULL AND customer.id IS NULL,
+    entry.asset_owner_id IS NOT NULL AND owner_row.id IS NULL,
+    entry.work_order_id IS NOT NULL AND work_order.id IS NULL,
+    entry.evidence_id IS NOT NULL AND evidence.id IS NULL,
+    confirmer.id IS NULL,
+    entry.responsible_party_type = 'CUSTOMER'
+      AND entry.responsible_party_id IS NOT NULL AND responsible_customer.id IS NULL,
+    entry.responsible_party_type = 'ASSET_OWNER'
+      AND entry.responsible_party_id IS NOT NULL AND responsible_owner.id IS NULL,
+    entry.evidence_id IS NOT NULL AND entry.work_order_id IS NOT NULL
+      AND evidence.id IS NOT NULL
+      AND evidence.work_order_id IS DISTINCT FROM entry.work_order_id,
+    entry.responsible_party_type = 'CUSTOMER'
+      AND entry.responsible_party_id IS NOT NULL AND entry.customer_id IS NOT NULL
+      AND entry.responsible_party_id IS DISTINCT FROM entry.customer_id,
+    entry.responsible_party_type = 'ASSET_OWNER'
+      AND entry.responsible_party_id IS NOT NULL AND entry.asset_owner_id IS NOT NULL
+      AND entry.responsible_party_id IS DISTINCT FROM entry.asset_owner_id,
+    false,
+    false
   FROM vehicle_cost_ledger_entry AS entry
   LEFT JOIN vehicle AS vehicle ON vehicle.id = entry.vehicle_id
   LEFT JOIN subscription_order AS order_row ON order_row.id = entry.order_id
@@ -1233,44 +1273,48 @@ WITH reversal_row AS (
   LEFT JOIN asset_owner AS responsible_owner
     ON entry.responsible_party_type = 'ASSET_OWNER'
    AND responsible_owner.id = entry.responsible_party_id
-  WHERE vehicle.id IS NULL
-     OR (entry.order_id IS NOT NULL AND order_row.id IS NULL)
-     OR (entry.contract_id IS NOT NULL AND contract_row.id IS NULL)
-     OR (entry.customer_id IS NOT NULL AND customer.id IS NULL)
-     OR (entry.asset_owner_id IS NOT NULL AND owner_row.id IS NULL)
-     OR (entry.work_order_id IS NOT NULL AND work_order.id IS NULL)
-     OR (entry.evidence_id IS NOT NULL AND evidence.id IS NULL)
-     OR confirmer.id IS NULL
-     OR (entry.responsible_party_type = 'CUSTOMER'
-       AND entry.responsible_party_id IS NOT NULL AND responsible_customer.id IS NULL)
-     OR (entry.responsible_party_type = 'ASSET_OWNER'
-       AND entry.responsible_party_id IS NOT NULL AND responsible_owner.id IS NULL)
-     OR (order_row.id IS NOT NULL
-       AND order_row.vehicle_id IS DISTINCT FROM entry.vehicle_id)
-     OR (order_row.id IS NOT NULL AND entry.customer_id IS NOT NULL
-       AND order_row.customer_id IS DISTINCT FROM entry.customer_id)
-     OR (contract_row.id IS NOT NULL AND entry.order_id IS NOT NULL
-       AND contract_row.order_id IS DISTINCT FROM entry.order_id)
-     OR (contract_row.id IS NOT NULL AND entry.customer_id IS NOT NULL
-       AND contract_row.customer_id IS DISTINCT FROM entry.customer_id)
-     OR (work_order.id IS NOT NULL
-       AND work_order.vehicle_id IS DISTINCT FROM entry.vehicle_id)
-     OR (work_order.id IS NOT NULL AND entry.order_id IS NOT NULL
-       AND work_order.order_id IS DISTINCT FROM entry.order_id)
-     OR (work_order.id IS NOT NULL AND entry.contract_id IS NOT NULL
-       AND work_order.contract_id IS DISTINCT FROM entry.contract_id)
-     OR (work_order.id IS NOT NULL AND entry.customer_id IS NOT NULL
-       AND work_order.customer_id IS DISTINCT FROM entry.customer_id)
-     OR (work_order.id IS NOT NULL AND entry.asset_owner_id IS NOT NULL
-       AND work_order.asset_owner_id IS DISTINCT FROM entry.asset_owner_id)
-     OR (evidence.id IS NOT NULL
-       AND evidence.work_order_id IS DISTINCT FROM entry.work_order_id)
-     OR (entry.responsible_party_type = 'CUSTOMER'
-       AND entry.responsible_party_id IS NOT NULL AND entry.customer_id IS NOT NULL
-       AND entry.responsible_party_id IS DISTINCT FROM entry.customer_id)
-     OR (entry.responsible_party_type = 'ASSET_OWNER'
-       AND entry.responsible_party_id IS NOT NULL AND entry.asset_owner_id IS NOT NULL
-       AND entry.responsible_party_id IS DISTINCT FROM entry.asset_owner_id)
+
+  UNION ALL
+
+  VALUES
+    (NULL::uuid, 'NORMAL_POST_APPEND_ORDER_DRIFT', false,
+      false, false, false, false, false, false, false, false, false, false,
+      false, false, false, true, true),
+    (NULL::uuid, 'MISSING_VEHICLE', true,
+      true, false, false, false, false, false, false, false, false, false,
+      false, false, false, false, false),
+    (NULL::uuid, 'EVIDENCE_WORK_ORDER_MISMATCH', true,
+      false, false, false, false, false, false, false, false, false, false,
+      true, false, false, false, false)
+), authority_evaluation AS (
+  SELECT
+    candidate.*,
+    (
+      candidate.missing_vehicle
+      OR candidate.missing_order
+      OR candidate.missing_contract
+      OR candidate.missing_customer
+      OR candidate.missing_owner
+      OR candidate.missing_work_order
+      OR candidate.missing_evidence
+      OR candidate.missing_confirmer
+      OR candidate.missing_responsible_customer
+      OR candidate.missing_responsible_owner
+      OR candidate.evidence_work_order_mismatch
+      OR candidate.responsible_customer_mismatch
+      OR candidate.responsible_owner_mismatch
+    ) AS is_anomaly
+  FROM authority_candidate AS candidate
+), authority_anomaly AS (
+  SELECT entry_id
+  FROM authority_evaluation
+  WHERE fixture_name IS NULL
+    AND is_anomaly
+), authority_fixture_contract AS (
+  SELECT fixture_name
+  FROM authority_evaluation
+  WHERE fixture_name IS NOT NULL
+    AND is_anomaly IS DISTINCT FROM expected_anomaly
 )
 SELECT 'BASE_SHAPE'::text AS anomaly_kind, entry_id
 FROM base_shape_anomaly
@@ -1280,6 +1324,9 @@ FROM reversal_anomaly
 UNION ALL
 SELECT 'AUTHORITY_ORPHAN_OR_MISMATCH', entry_id
 FROM authority_anomaly
+UNION ALL
+SELECT 'AUTHORITY_FIXTURE_CONTRACT:' || fixture_name, NULL::uuid
+FROM authority_fixture_contract
 ORDER BY anomaly_kind, entry_id;
 COMMIT;
 ```
@@ -1785,9 +1832,9 @@ secret。未运行 seed、apply、deploy、修复 SQL、网络或 Production 操
 | -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `01-migration-catalog`     | 1 行     | applied `96`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `3`、fingerprint `5f71cc9e30cc4671361349250e3fc73e`；rolled-back 阻断。 |
 | `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。             |
-| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK、15 个 index 的 schema/定义/状态均匹配。                                           |
+| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK（含 owning/referenced schema）、15 个 index 均匹配。                               |
 | `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                       |
-| `05-ledger-integrity`      | 0 行     | 无 base shape、authority orphan/cross-ID、重复冲正、金额/日期/期间/16 维相等异常。                                                               |
+| `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity、fixture contract、重复冲正或 16 维相等异常。                                     |
 | `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                               |
 | `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                               |
 | `08-closed-cost-integrity` | 2 行     | 两个 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`；阻断且未修复。                                                    |

@@ -35,8 +35,9 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { ProductService } from "../src/product/product.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { requiredVehicleAvailabilityTestDatabaseUrl } from "./helpers/test-database-url";
 
-const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const TEST_DATABASE_URL = requiredVehicleAvailabilityTestDatabaseUrl(process.env.DATABASE_URL);
 const FIXTURE_PREFIX = `S1CBA${randomUUID().replaceAll("-", "").slice(0, 10)}`;
 const AS_OF = new Date("2026-08-20T06:00:00.000Z");
 
@@ -1662,28 +1663,4 @@ function describeSettlement(result: PromiseSettledResult<unknown> | null) {
 function expectConflict(error: unknown, code: string) {
   expect(error).toBeInstanceOf(ConflictException);
   expect((error as ConflictException).getResponse()).toMatchObject({ code });
-}
-
-function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
-  if (!value)
-    throw new Error("DATABASE_URL is required for vehicle availability integration tests");
-  const url = new URL(value);
-  if (!isLoopbackHostname(url.hostname)) {
-    throw new Error("Vehicle availability integration tests require a loopback PostgreSQL host");
-  }
-  if (decodeURIComponent(url.pathname.slice(1)) !== "subscription_saas_codex") {
-    throw new Error("Vehicle availability integration tests require the dedicated codex database");
-  }
-  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
-  return url.toString();
-}
-
-function isLoopbackHostname(hostname: string) {
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const octets = hostname.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-  );
 }

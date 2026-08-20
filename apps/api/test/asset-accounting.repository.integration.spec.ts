@@ -126,7 +126,7 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     await expect(countReceipts(prisma, append.source)).resolves.toBe(1);
   });
 
-  it("lets the partial unique index arbitrate different-source double reversal", async () => {
+  it("fast-fails a different-source same-work-order double reversal at the authority lock", async () => {
     const repository = new AssetAccountingRepository();
     const original = await readCommitted(prisma, (tx) =>
       repository.appendCostEntry(tx, appendCommand(fixture, "double-reversal-original"))
@@ -140,13 +140,16 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       readCommitted(prisma, (tx) => repository.reverseCostEntry(tx, secondCommand))
     );
 
-    expect(await waitForDatabaseLock(prisma, "vehicle_cost_ledger_entry")).toBe(true);
-    holder.release.resolve();
-    await holder.result;
-    expectConflict(
-      rejectedValue(await secondPromise),
-      ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS
-    );
+    try {
+      const secondEarly = await settlesWithin(secondPromise, 750);
+      expect(secondEarly.finished).toBe(true);
+      if (!secondEarly.finished) throw new Error("Expected NOWAIT authority conflict");
+      expectConflict(rejectedValue(secondEarly.value), ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
+      await expect(countReceipts(prisma, secondCommand.source)).resolves.toBe(0);
+    } finally {
+      holder.release.resolve();
+      await holder.result;
+    }
     await expect(
       prisma.vehicleCostLedgerEntry.count({
         where: { reversalOfEntryId: original.outcome.id }
@@ -2613,6 +2616,17 @@ async function settled<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>>
   } catch (reason) {
     return { reason, status: "rejected" };
   }
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs: number) {
+  const marker = Symbol("timeout");
+  const value = await Promise.race([
+    promise,
+    new Promise<typeof marker>((resolve) => setTimeout(() => resolve(marker), timeoutMs))
+  ]);
+  return value === marker
+    ? { finished: false as const, value: undefined }
+    : { finished: true as const, value };
 }
 
 function rejectedValue(result: PromiseSettledResult<unknown>) {

@@ -61,6 +61,7 @@ describe("AssetAccountingRepository", () => {
       appendCommand(database.ids, "reverse-operation-timeline-original")
     );
     database.operationTimeline.length = 0;
+    database.authorityLockModes.length = 0;
 
     await repository.reverseCostEntry(
       database.tx,
@@ -76,7 +77,89 @@ describe("AssetAccountingRepository", () => {
       `authority-lock:asset_work_order:${database.ids.workOrderId}`,
       `authority-lock:user:${database.ids.actorId}`
     ]);
+    expect(database.authorityLockModes).toEqual([
+      { id: database.ids.workOrderId, mode: "UPDATE", table: "asset_work_order" },
+      { id: database.ids.actorId, mode: "SHARE", table: "user" }
+    ]);
   });
+
+  it("rejects reversal of the last active actual cost on a closed cost-required work order", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const original = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "closed-last-active-original")
+    );
+    updateAuthority(database.authorities.assetWorkOrder, database.ids.workOrderId, {
+      costConfirmationRequired: true,
+      status: "CLOSED"
+    });
+    database.operationTimeline.length = 0;
+    database.authorityLockModes.length = 0;
+
+    await expectCode(
+      repository.reverseCostEntry(
+        database.tx,
+        reverseCommand(database.ids, original.outcome.id, "closed-last-active-reversal")
+      ),
+      "ASSET_ACCOUNTING_WORK_ORDER_COST_NOT_CONFIRMED"
+    );
+
+    expect(database.operationTimeline).toEqual([
+      "transaction-probe",
+      "transaction-probe",
+      "source-lock",
+      "receipt-lookup",
+      `original-lock:${original.outcome.id}`,
+      `authority-lock:asset_work_order:${database.ids.workOrderId}`,
+      `authority-lock:user:${database.ids.actorId}`
+    ]);
+    expect(database.authorityLockModes).toEqual([
+      { id: database.ids.workOrderId, mode: "UPDATE", table: "asset_work_order" },
+      { id: database.ids.actorId, mode: "SHARE", table: "user" }
+    ]);
+    expect(database.lastActiveCostQueryArgs).toEqual({
+      select: { id: true },
+      where: {
+        actionType: "ACTUAL_COST",
+        entryKind: "ORIGINAL",
+        id: { not: original.outcome.id },
+        reversals: { none: {} },
+        workOrderId: database.ids.workOrderId
+      }
+    });
+    expect(database.entries.size).toBe(1);
+    expect(database.receipts.size).toBe(1);
+  });
+
+  it.each([
+    ["non-closed work order", "PENDING_COST_CONFIRMATION", true, "ACTUAL_COST"],
+    ["closed no-cost work order", "CLOSED", false, "ACTUAL_COST"],
+    ["closed non-actual entry", "CLOSED", true, "RESPONSIBILITY_CONFIRMED"]
+  ] as const)(
+    "preserves reversal behavior for a %s",
+    async (_label, status, costConfirmationRequired, actionType) => {
+      const database = fakeTransaction();
+      const repository = new AssetAccountingRepository();
+      const original = await repository.appendCostEntry(database.tx, {
+        ...appendCommand(database.ids, `unguarded-${actionType}`),
+        actionType
+      });
+      updateAuthority(database.authorities.assetWorkOrder, database.ids.workOrderId, {
+        costConfirmationRequired,
+        status
+      });
+      database.lastActiveCostQueryArgs = undefined;
+
+      await expect(
+        repository.reverseCostEntry(
+          database.tx,
+          reverseCommand(database.ids, original.outcome.id, `unguarded-reverse-${actionType}`)
+        )
+      ).resolves.toMatchObject({ wrote: true });
+      expect(database.lastActiveCostQueryArgs).toBeUndefined();
+    }
+  );
 
   it("locks the exact source tuple, replays the stored outcome, and rejects payload or command drift", async () => {
     const repository = new AssetAccountingRepository();
@@ -1674,6 +1757,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
           assetOwnerId: ids.assetOwnerId,
           contractId: ids.contractId,
           customerId: ids.customerId,
+          costConfirmationRequired: true,
           id: ids.workOrderId,
           orderId: ids.orderId,
           status: "PENDING_COST_CONFIRMATION",
@@ -1729,9 +1813,15 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
   const subjectLockKeys: string[] = [];
   const operationTimeline: string[] = [];
   const lockedAuthorities: Array<{ id: string; table: string }> = [];
+  const authorityLockModes: Array<{
+    id: string;
+    mode: "SHARE" | "UPDATE";
+    table: string;
+  }> = [];
   const lockedOriginalIds: string[] = [];
   const database = {
     authorities,
+    authorityLockModes,
     approvals,
     entries,
     ids,
@@ -1740,6 +1830,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     nextEntryCreateError: undefined as unknown,
     nextApprovalCreateError: undefined as unknown,
     lastApprovalFindManyArgs: undefined as unknown,
+    lastActiveCostQueryArgs: undefined as unknown,
     nextReceiptCreateError: undefined as unknown,
     operationTimeline,
     receipts,
@@ -1801,6 +1892,11 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
           operationTimeline.push(`original-lock:${id}`);
         } else {
           lockedAuthorities.push({ id, table });
+          authorityLockModes.push({
+            id,
+            mode: text.includes("FOR UPDATE NOWAIT") ? "UPDATE" : "SHARE",
+            table
+          });
           operationTimeline.push(`authority-lock:${table}:${id}`);
         }
       }
@@ -1911,6 +2007,28 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
         } as VehicleCostLedgerEntry;
         entries.set(row.id, row);
         return row;
+      },
+      findFirst: async (args: {
+        select: { id: true };
+        where: {
+          actionType: string;
+          entryKind: string;
+          id: { not: string };
+          reversals: { none: Record<string, never> };
+          workOrderId: string;
+        };
+      }) => {
+        database.lastActiveCostQueryArgs = structuredClone(args);
+        return (
+          [...entries.values()].find(
+            (entry) =>
+              entry.actionType === args.where.actionType &&
+              entry.entryKind === args.where.entryKind &&
+              entry.id !== args.where.id.not &&
+              entry.workOrderId === args.where.workOrderId &&
+              ![...entries.values()].some((candidate) => candidate.reversalOfEntryId === entry.id)
+          ) ?? null
+        );
       },
       findMany: async () => [...entries.values()],
       findUnique: async ({ where }: { where: { id: string } }) => entries.get(where.id) ?? null

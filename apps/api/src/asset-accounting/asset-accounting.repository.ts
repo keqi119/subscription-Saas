@@ -48,6 +48,7 @@ export const ASSET_ACCOUNTING_ERROR_CODE = {
   SOURCE_CONFLICT: "ASSET_ACCOUNTING_SOURCE_CONFLICT",
   SELF_APPROVAL_FORBIDDEN: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN",
   TRANSACTION_REQUIRED: "ASSET_ACCOUNTING_TRANSACTION_REQUIRED",
+  WORK_ORDER_COST_NOT_CONFIRMED: "ASSET_ACCOUNTING_WORK_ORDER_COST_NOT_CONFIRMED",
   WRITE_CONFLICT: "ASSET_ACCOUNTING_WRITE_CONFLICT"
 } as const;
 
@@ -88,6 +89,8 @@ const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
     "The requester cannot decide the same exception approval.",
   [ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED]:
     "Asset-accounting commands require a caller-provided PostgreSQL READ COMMITTED interactive transaction.",
+  [ASSET_ACCOUNTING_ERROR_CODE.WORK_ORDER_COST_NOT_CONFIRMED]:
+    "The cost-required work order has no other active confirmed actual-cost fact.",
   [ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT]:
     "The asset-accounting command conflicts with the current database state."
 };
@@ -228,7 +231,11 @@ type AuthorityTable =
   | "user"
   | "vehicle";
 
-type AuthorityLock = Readonly<{ id: string; table: AuthorityTable }>;
+type AuthorityLock = Readonly<{
+  id: string;
+  mode: "SHARE" | "UPDATE";
+  table: AuthorityTable;
+}>;
 
 const CONSTRAINT_CODES: Readonly<Record<string, AssetAccountingErrorCode>> = {
   business_exception_approval_approval_no_key: ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT,
@@ -571,6 +578,7 @@ export class AssetAccountingRepository {
 
     await lockAuthorityRows(tx, reverseAuthorityLocks(original, normalized.actorId));
     await validateReverseActor(tx, normalized.actorId);
+    await assertClosedWorkOrderRetainsActualCost(tx, original);
 
     try {
       const reversal = await tx.vehicleCostLedgerEntry.create({
@@ -977,7 +985,7 @@ async function lockAndLoadApproval(tx: Prisma.TransactionClient, approvalId: str
 }
 
 async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
-  await lockAuthorityRows(tx, [{ id: actorId, table: "user" }]);
+  await lockAuthorityRows(tx, [{ id: actorId, mode: "SHARE", table: "user" }]);
   const actor = await tx.user.findUnique({ where: { id: actorId } });
   requireAuthority(actor, isLiveUser(actor));
 }
@@ -1234,7 +1242,10 @@ function appendAuthorityLocks(
 }
 
 function reverseAuthorityLocks(original: VehicleCostLedgerEntry, actorId: string): AuthorityLock[] {
-  return compactLocks([lock(original.workOrderId, "asset_work_order"), lock(actorId, "user")]);
+  return compactLocks([
+    lock(original.workOrderId, "asset_work_order", "UPDATE"),
+    lock(actorId, "user")
+  ]);
 }
 
 function responsibleAuthorityId(
@@ -1244,13 +1255,22 @@ function responsibleAuthorityId(
   return command.responsiblePartyType === type ? command.responsiblePartyId : null;
 }
 
-function lock(id: string | null | undefined, table: AuthorityTable): AuthorityLock | null {
-  return id ? { id, table } : null;
+function lock(
+  id: string | null | undefined,
+  table: AuthorityTable,
+  mode: AuthorityLock["mode"] = "SHARE"
+): AuthorityLock | null {
+  return id ? { id, mode, table } : null;
 }
 
 function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock[] {
   const unique = new Map<string, AuthorityLock>();
-  for (const item of locks) if (item) unique.set(`${item.table}:${item.id}`, item);
+  for (const item of locks) {
+    if (!item) continue;
+    const key = `${item.table}:${item.id}`;
+    const existing = unique.get(key);
+    if (!existing || item.mode === "UPDATE") unique.set(key, item);
+  }
   return [...unique.values()].sort((left, right) =>
     left.table === right.table ? compare(left.id, right.id) : compare(left.table, right.table)
   );
@@ -1259,9 +1279,11 @@ function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock
 async function lockAuthorityRows(tx: Prisma.TransactionClient, locks: readonly AuthorityLock[]) {
   try {
     for (const item of locks) {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR SHARE NOWAIT`
-      );
+      const query =
+        item.mode === "UPDATE"
+          ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR UPDATE NOWAIT`
+          : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR SHARE NOWAIT`;
+      await tx.$queryRaw(query);
     }
   } catch (error) {
     if (databaseCode(error) === "55P03") {
@@ -1396,6 +1418,33 @@ async function contractAuthoritativeOrderId(
 async function validateReverseActor(tx: Prisma.TransactionClient, actorId: string) {
   const actor = await tx.user.findUnique({ where: { id: actorId } });
   requireAuthority(actor, isLiveUser(actor));
+}
+
+async function assertClosedWorkOrderRetainsActualCost(
+  tx: Prisma.TransactionClient,
+  original: VehicleCostLedgerEntry
+) {
+  if (!original.workOrderId || original.actionType !== "ACTUAL_COST") return;
+  const workOrder = await tx.assetWorkOrder.findUnique({
+    select: { costConfirmationRequired: true, status: true },
+    where: { id: original.workOrderId }
+  });
+  if (workOrder?.status !== "CLOSED" || !workOrder.costConfirmationRequired) {
+    return;
+  }
+  const replacement = await tx.vehicleCostLedgerEntry.findFirst({
+    select: { id: true },
+    where: {
+      actionType: "ACTUAL_COST",
+      entryKind: "ORIGINAL",
+      id: { not: original.id },
+      reversals: { none: {} },
+      workOrderId: original.workOrderId
+    }
+  });
+  if (!replacement) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WORK_ORDER_COST_NOT_CONFIRMED);
+  }
 }
 
 function requireAuthority(value: unknown, live: boolean) {

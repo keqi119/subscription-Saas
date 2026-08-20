@@ -1146,6 +1146,192 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     if (closeResult.status === "rejected") throw closeResult.reason;
     expect(closeResult.value.workOrder.status).toBe(AssetWorkOrderStatus.CLOSED);
     await expect(countReversals(prisma, original.id)).resolves.toBe(0);
+
+    await expectCode(
+      accounting.reverseCost(
+        reversal,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reversal.source.key)
+      ),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+    await expect(countReversals(prisma, original.id)).resolves.toBe(0);
+    await expect(countAccountingReceiptsBySource(prisma, reversal.source)).resolves.toBe(0);
+    await expect(countAccountingAuditsBySourceKey(prisma, reversal.source.key)).resolves.toBe(0);
+    await expect(currentWorkOrderStatus(prisma, fixture.workOrder.id)).resolves.toBe(
+      AssetWorkOrderStatus.CLOSED
+    );
+    await expect(countActiveActualCosts(prisma, fixture.workOrder.id)).resolves.toBe(1);
+
+    const replacement = await appendActualCost(
+      accounting,
+      fixture.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-close-first-replacement"
+    );
+    const reversed = await accounting.reverseCost(
+      reversal,
+      accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reversal.source.key)
+    );
+    expect(reversed).toMatchObject({ reversalOfEntryId: original.id });
+    await expect(currentWorkOrderStatus(prisma, fixture.workOrder.id)).resolves.toBe(
+      AssetWorkOrderStatus.CLOSED
+    );
+    await expect(countActiveActualCosts(prisma, fixture.workOrder.id)).resolves.toBe(1);
+    await expect(countReversals(prisma, original.id)).resolves.toBe(1);
+    await expect(countReversals(prisma, replacement.id)).resolves.toBe(0);
+    await expect(countAccountingReceiptsBySource(prisma, reversal.source)).resolves.toBe(1);
+    const auditCount = await countAccountingAuditsBySourceKey(prisma, reversal.source.key);
+
+    const replay = await readCommitted(prisma, (tx) =>
+      new AssetAccountingRepository().reverseCostEntry(tx, {
+        ...reversal,
+        actorId: userId
+      })
+    );
+    expect(replay).toMatchObject({
+      outcome: {
+        id: reversed.id,
+        reversalOfEntryId: original.id,
+        sourceId: reversal.source.id,
+        sourceKey: reversal.source.key,
+        sourceType: reversal.source.type
+      },
+      wrote: false
+    });
+    await expect(countAccountingReceiptsBySource(prisma, reversal.source)).resolves.toBe(1);
+    await expect(countAccountingAuditsBySourceKey(prisma, reversal.source.key)).resolves.toBe(
+      auditCount
+    );
+    await expect(countActiveActualCosts(prisma, fixture.workOrder.id)).resolves.toBe(1);
+  });
+
+  it("serializes reversals on one closed work order while another work order remains independent", async () => {
+    const setupOperations = createAssetOperationsService(prisma);
+    const accounting = createAssetAccountingService(prisma);
+    const contested = await createClosureFixture(
+      setupOperations,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-contested",
+      true
+    );
+    const contestedFirst = await appendActualCost(
+      accounting,
+      contested.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-contested-first"
+    );
+    const contestedLast = await appendActualCost(
+      accounting,
+      contested.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-contested-last"
+    );
+    await setupOperations.transitionWorkOrder(
+      closeCommand(contested.workOrder.id, "cost-gate-reversal-serialization-close", 3),
+      serviceContext(userId)
+    );
+
+    const independent = await createClosureFixture(
+      setupOperations,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-independent",
+      true
+    );
+    const independentFirst = await appendActualCost(
+      accounting,
+      independent.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-independent-first"
+    );
+    await appendActualCost(
+      accounting,
+      independent.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-serialization-independent-last"
+    );
+    await setupOperations.transitionWorkOrder(
+      closeCommand(independent.workOrder.id, "cost-gate-reversal-independent-close", 3),
+      serviceContext(userId)
+    );
+
+    const pausingRepository = new PausingReverseRepository();
+    const winnerAccounting = createAssetAccountingService(
+      prisma,
+      new AuditService(prisma),
+      pausingRepository
+    );
+    const winner = reverseCostCommand(contestedFirst.id, "cost-gate-reversal-serialization-winner");
+    const loser = reverseCostCommand(contestedLast.id, "cost-gate-reversal-serialization-loser");
+    const independentReversal = reverseCostCommand(
+      independentFirst.id,
+      "cost-gate-reversal-serialization-independent"
+    );
+    const winnerPromise = settled(
+      winnerAccounting.reverseCost(
+        winner,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, winner.source.key)
+      )
+    );
+    await pausingRepository.reversalReached.promise;
+
+    const loserPromise = settled(
+      accounting.reverseCost(
+        loser,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, loser.source.key)
+      )
+    );
+    const independentPromise = settled(
+      accounting.reverseCost(
+        independentReversal,
+        accountingContext(
+          userId,
+          ASSET_ACCOUNTING_PERMISSION.COST_REVERSE,
+          independentReversal.source.key
+        )
+      )
+    );
+    const [loserEarly, independentEarly] = await Promise.all([
+      settlesWithin(loserPromise, 750),
+      settlesWithin(independentPromise, 750)
+    ]);
+    pausingRepository.releaseReversal.resolve();
+    const [winnerResult, loserResult, independentResult, holderUsable] = await Promise.all([
+      winnerPromise,
+      loserEarly.finished ? Promise.resolve(loserEarly.value) : loserPromise,
+      independentEarly.finished ? Promise.resolve(independentEarly.value) : independentPromise,
+      pausingRepository.holderUsable.promise
+    ]);
+
+    expect(loserEarly.finished).toBe(true);
+    expect(independentEarly.finished).toBe(true);
+    expectConflict(rejectedValue(loserResult), ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
+    expect(winnerResult.status).toBe("fulfilled");
+    if (winnerResult.status === "rejected") throw winnerResult.reason;
+    expect(independentResult.status).toBe("fulfilled");
+    if (independentResult.status === "rejected") throw independentResult.reason;
+    expect(holderUsable).toBe(true);
+
+    await expectCode(
+      accounting.reverseCost(
+        loser,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, loser.source.key)
+      ),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+    await expect(countAccountingReceiptsBySource(prisma, loser.source)).resolves.toBe(0);
+    await expect(countAccountingAuditsBySourceKey(prisma, loser.source.key)).resolves.toBe(0);
+    await expect(countReversals(prisma, contestedFirst.id)).resolves.toBe(1);
+    await expect(countReversals(prisma, contestedLast.id)).resolves.toBe(0);
+    await expect(countActiveActualCosts(prisma, contested.workOrder.id)).resolves.toBe(1);
+    await expect(countReversals(prisma, independentFirst.id)).resolves.toBe(1);
+    await expect(countActiveActualCosts(prisma, independent.workOrder.id)).resolves.toBe(1);
   });
 
   it("never closes over a reversal that won the work-order lock", async () => {
@@ -2078,6 +2264,40 @@ async function countAccountingFacts(prisma: PrismaService, workOrderId: string) 
     prisma.assetAccountingCommandReceipt.count({ where: { costEntry: { workOrderId } } })
   ]);
   return { entries, receipts };
+}
+
+function countActiveActualCosts(prisma: PrismaService, workOrderId: string) {
+  return prisma.vehicleCostLedgerEntry.count({
+    where: {
+      actionType: "ACTUAL_COST",
+      entryKind: "ORIGINAL",
+      reversals: { none: {} },
+      workOrderId
+    }
+  });
+}
+
+function countAccountingReceiptsBySource(
+  prisma: PrismaService,
+  sourceValue: StableAssetOperationSource
+) {
+  return prisma.assetAccountingCommandReceipt.count({
+    where: {
+      sourceId: sourceValue.id,
+      sourceKey: sourceValue.key,
+      sourceType: sourceValue.type
+    }
+  });
+}
+
+async function countAccountingAuditsBySourceKey(prisma: PrismaService, sourceKey: string) {
+  const [row] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS "count"
+    FROM "audit_log"
+    WHERE "module" = 'asset_accounting'
+      AND "after_snapshot"::text LIKE ${`%${sourceKey}%`}
+  `);
+  return Number(row?.count ?? 0n);
 }
 
 function countReversals(prisma: PrismaService, originalEntryId: string) {

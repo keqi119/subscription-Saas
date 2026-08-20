@@ -20,6 +20,7 @@ import {
 } from "../src/asset-accounting/asset-accounting.domain";
 import {
   ASSET_ACCOUNTING_PERMISSION,
+  ASSET_ACCOUNTING_SERVICE_CODE,
   AssetAccountingService,
   type AssetAccountingCommandContext
 } from "../src/asset-accounting/asset-accounting.service";
@@ -109,6 +110,7 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
           actorId: fixture.userId,
           confirmedAt: CONFIRMED_AT,
           originalEntryId: original.outcome.id,
+          reason: "cross-command ownership must be rejected",
           source: append.source
         })
       )
@@ -1298,8 +1300,19 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
 
   it("audits service append, replay, reverse, reads, and summaries with exact request context", async () => {
     const service = realService(prisma);
-    const appendRepositoryCommand = appendCommand(fixture, "service-cost-append");
+    const appendRepositoryCommand = {
+      ...appendCommand(fixture, "service-cost-append"),
+      source: {
+        ...appendCommand(fixture, "unused-canonical-source").source,
+        id: randomUUID().toUpperCase(),
+        key: `${FIXTURE_PREFIX}:service-cost-append`
+      }
+    };
     const append = omitFields(appendRepositoryCommand, "actorId");
+    const canonicalAppendSource = {
+      ...append.source,
+      id: append.source.id.toLowerCase()
+    };
     const appendContext = serviceContext(
       fixture.userId,
       ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
@@ -1312,7 +1325,8 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     expect(created).toMatchObject({
       amountCents: "100",
       confirmedAt: CONFIRMED_AT.toISOString(),
-      occurredOn: "2026-08-19T00:00:00.000Z"
+      occurredOn: "2026-08-19T00:00:00.000Z",
+      sourceId: canonicalAppendSource.id
     });
     expect(created).not.toHaveProperty("wrote");
     expect(created).not.toHaveProperty("receipt");
@@ -1334,7 +1348,7 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     expect(appendAudits[0]?.afterSnapshot).toEqual({
       fact: created,
       permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
-      reason: "Confirmed ACTUAL_COST vehicle cost fact.",
+      reason: append.reason,
       requestContext: {
         idempotencyKey: append.source.key,
         ipAddress: "203.0.113.18",
@@ -1342,8 +1356,31 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
         userAgent: "asset-accounting-integration"
       },
       snapshotHash: hashBusinessExceptionSnapshot(created),
-      source: append.source
+      source: canonicalAppendSource
     });
+    await expect(
+      prisma.assetAccountingCommandReceipt.findUniqueOrThrow({
+        select: { sourceId: true, sourceKey: true, sourceType: true },
+        where: {
+          sourceType_sourceId_sourceKey: {
+            sourceId: canonicalAppendSource.id,
+            sourceKey: canonicalAppendSource.key,
+            sourceType: canonicalAppendSource.type
+          }
+        }
+      })
+    ).resolves.toEqual({
+      sourceId: canonicalAppendSource.id,
+      sourceKey: canonicalAppendSource.key,
+      sourceType: canonicalAppendSource.type
+    });
+    await expectCode(
+      service.appendCost(
+        { ...append, reason: "drifted service confirmation reason" },
+        appendContext
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
 
     const readContext = serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_VIEW);
     await expect(service.getEntry(created.id, readContext)).resolves.toEqual(created);
@@ -1391,7 +1428,7 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     expect(reverseAudits[0]?.afterSnapshot).toEqual({
       fact: reversed,
       permission: ASSET_ACCOUNTING_PERMISSION.COST_REVERSE,
-      reason: `Reversed vehicle cost fact ${created.id}.`,
+      reason: reverse.reason,
       requestContext: {
         idempotencyKey: reverse.source.key,
         ipAddress: "203.0.113.18",
@@ -1401,6 +1438,13 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       snapshotHash: hashBusinessExceptionSnapshot(reversed),
       source: reverse.source
     });
+    await expectCode(
+      service.reverseCost(
+        { ...reverse, reason: "drifted service reversal reason" },
+        serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reverse.source.key)
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
   });
 
   it("audits internal request, decide, automatic expiry, and exact replay without public comments", async () => {
@@ -1425,6 +1469,31 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     );
     expect(requestReplay).toEqual(requested);
     expect(requested).not.toHaveProperty("decisionComment");
+
+    const notStaleRepositoryCommand = expireApprovalCommand(
+      fixture,
+      requested.id,
+      requested.version,
+      "service-approval-not-stale"
+    );
+    const notStaleCommand = omitFields(notStaleRepositoryCommand, "authoritySnapshot", "expiredBy");
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        service.expireStaleApprovalsInTransaction(
+          tx,
+          notStaleCommand,
+          serviceContext(
+            fixture.deciderId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+            notStaleCommand.source.key
+          ),
+          (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+        )
+      ),
+      "ASSET_ACCOUNTING_APPROVAL_NOT_STALE"
+    );
+    await expect(countReceipts(prisma, notStaleCommand.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, notStaleCommand.source)).resolves.toBe(0);
 
     const decisionRepositoryCommand = decideApprovalCommand(
       fixture,
@@ -1589,9 +1658,72 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     ).not.toContain("fixture approval reviewed");
   });
 
+  it("requires a real active ACTUAL_COST for a transaction-bound cost-required work order", async () => {
+    const service = realService(prisma);
+    const workOrderId = await createCostGateWorkOrder(prisma, fixture, "service-cost-gate");
+    const assertConfirmed = () =>
+      readCommitted(prisma, (tx) => service.assertWorkOrderCostConfirmed(tx, workOrderId));
+
+    await expectCode(
+      assertConfirmed(),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+
+    const nonActualRepositoryCommand = {
+      ...appendCommand(fixture, "service-cost-gate-non-actual"),
+      actionType: "RECOVERY_EXPOSURE" as const,
+      evidenceId: null,
+      evidenceSnapshot: null,
+      workOrderId
+    };
+    const nonActual = omitFields(nonActualRepositoryCommand, "actorId");
+    await service.appendCost(
+      nonActual,
+      serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM, nonActual.source.key)
+    );
+    await expectCode(
+      assertConfirmed(),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+
+    const actualRepositoryCommand = {
+      ...appendCommand(fixture, "service-cost-gate-actual"),
+      evidenceId: null,
+      evidenceSnapshot: null,
+      workOrderId
+    };
+    const actualCommand = omitFields(actualRepositoryCommand, "actorId");
+    const actual = await service.appendCost(
+      actualCommand,
+      serviceContext(
+        fixture.userId,
+        ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+        actualCommand.source.key
+      )
+    );
+    await expect(assertConfirmed()).resolves.toBe(true);
+
+    const reversalRepositoryCommand = reverseCommand(
+      fixture,
+      actual.id,
+      "service-cost-gate-reverse"
+    );
+    const reversal = omitFields(reversalRepositoryCommand, "actorId");
+    await service.reverseCost(
+      reversal,
+      serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reversal.source.key)
+    );
+    await expectCode(
+      assertConfirmed(),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+  });
+
   it("rolls back service cost and approval writes completely when audit fails", async () => {
     const auditFailure = new Error("SERVICE_AUDIT_FAILURE");
-    const failingAudit = { write: async () => Promise.reject(auditFailure) } as AuditService;
+    const failingAudit = {
+      write: async () => Promise.reject(auditFailure)
+    } as unknown as AuditService;
     const service = realService(prisma, failingAudit);
     const appendRepositoryCommand = appendCommand(fixture, "service-audit-failure-cost");
     const append = omitFields(appendRepositoryCommand, "actorId");
@@ -1630,6 +1762,236 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       })
     ).resolves.toBe(0);
     await expect(countReceipts(prisma, request.source)).resolves.toBe(0);
+  });
+
+  it("rolls back every distinct service transition shape when its audit fails", async () => {
+    const auditFailure = new Error("SERVICE_TRANSITION_AUDIT_FAILURE");
+    const failingService = realService(prisma, {
+      write: async () => Promise.reject(auditFailure)
+    } as unknown as AuditService);
+    const healthyService = realService(prisma);
+    const repository = new AssetAccountingRepository();
+
+    const original = await readCommitted(prisma, (tx) =>
+      repository.appendCostEntry(
+        tx,
+        appendCommand(fixture, "service-audit-failure-reverse-original")
+      )
+    );
+    const reverseRepositoryCommand = reverseCommand(
+      fixture,
+      original.outcome.id,
+      "service-audit-failure-reverse"
+    );
+    const reverse = omitFields(reverseRepositoryCommand, "actorId");
+    await expect(
+      failingService.reverseCost(
+        reverse,
+        serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reverse.source.key)
+      )
+    ).rejects.toBe(auditFailure);
+    await expect(
+      prisma.vehicleCostLedgerEntry.count({
+        where: { reversalOfEntryId: original.outcome.id }
+      })
+    ).resolves.toBe(0);
+    await expect(countReceipts(prisma, reverse.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, reverse.source)).resolves.toBe(0);
+
+    const requestApproval = async (subjectField: string, suffix: string) => {
+      const repositoryCommand = {
+        ...requestApprovalCommand(fixture, suffix),
+        subject: { ...approvalSubject(fixture), subjectField }
+      };
+      const command = omitFields(repositoryCommand, "authoritySnapshot", "requestedBy");
+      const outcome = await readCommitted(prisma, (tx) =>
+        healthyService.requestApprovalInTransaction(
+          tx,
+          command,
+          serviceContext(
+            fixture.userId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+            command.source.key
+          ),
+          (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+        )
+      );
+      return { command, outcome };
+    };
+    const decideApproval = async (approvalId: string, subjectField: string, suffix: string) => {
+      const repositoryCommand = {
+        ...decideApprovalCommand(fixture, approvalId, suffix),
+        subject: { ...approvalSubject(fixture), subjectField }
+      };
+      const command = omitFields(repositoryCommand, "authoritySnapshot", "decidedBy");
+      const outcome = await readCommitted(prisma, (tx) =>
+        healthyService.decideApprovalInTransaction(
+          tx,
+          command,
+          serviceContext(
+            fixture.deciderId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+            command.source.key
+          ),
+          (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+        )
+      );
+      return { command, outcome };
+    };
+
+    const decisionField = "auditFailureDecision";
+    const decisionRequest = await requestApproval(
+      decisionField,
+      "service-audit-failure-decision-request"
+    );
+    const decisionRepositoryCommand = {
+      ...decideApprovalCommand(
+        fixture,
+        decisionRequest.outcome.id,
+        "service-audit-failure-decision"
+      ),
+      subject: { ...approvalSubject(fixture), subjectField: decisionField }
+    };
+    const decision = omitFields(decisionRepositoryCommand, "authoritySnapshot", "decidedBy");
+    const decisionPredecessor = await prisma.businessExceptionApproval.findUniqueOrThrow({
+      where: { id: decisionRequest.outcome.id }
+    });
+    await expect(
+      readCommitted(prisma, (tx) =>
+        failingService.decideApprovalInTransaction(
+          tx,
+          decision,
+          serviceContext(
+            fixture.deciderId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+            decision.source.key
+          ),
+          (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+        )
+      )
+    ).rejects.toBe(auditFailure);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({
+        where: { id: decisionRequest.outcome.id }
+      })
+    ).resolves.toEqual(decisionPredecessor);
+    await expect(countReceipts(prisma, decision.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, decision.source)).resolves.toBe(0);
+
+    for (const predecessorStatus of ["PENDING", "APPROVED"] as const) {
+      const subjectField = `auditFailureExplicit${predecessorStatus}`;
+      const requested = await requestApproval(
+        subjectField,
+        `service-audit-failure-explicit-${predecessorStatus}-request`
+      );
+      const predecessor =
+        predecessorStatus === "APPROVED"
+          ? (
+              await decideApproval(
+                requested.outcome.id,
+                subjectField,
+                `service-audit-failure-explicit-${predecessorStatus}-decision`
+              )
+            ).outcome
+          : requested.outcome;
+      await prisma.vehicle.update({
+        data: {
+          remark: `${FIXTURE_PREFIX}:explicit-${predecessorStatus}-${randomUUID()}`
+        },
+        where: { id: fixture.vehicleId }
+      });
+      const expireRepositoryCommand = {
+        ...expireApprovalCommand(
+          fixture,
+          predecessor.id,
+          predecessor.version,
+          `service-audit-failure-explicit-${predecessorStatus}`
+        ),
+        subject: { ...approvalSubject(fixture), subjectField }
+      };
+      const expire = omitFields(expireRepositoryCommand, "authoritySnapshot", "expiredBy");
+      const exactPredecessor = await prisma.businessExceptionApproval.findUniqueOrThrow({
+        where: { id: predecessor.id }
+      });
+      await expect(
+        readCommitted(prisma, (tx) =>
+          failingService.expireStaleApprovalsInTransaction(
+            tx,
+            expire,
+            serviceContext(
+              fixture.deciderId,
+              ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+              expire.source.key
+            ),
+            (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+          )
+        )
+      ).rejects.toBe(auditFailure);
+      await expect(
+        prisma.businessExceptionApproval.findUniqueOrThrow({
+          where: { id: predecessor.id }
+        })
+      ).resolves.toEqual(exactPredecessor);
+      await expect(countReceipts(prisma, expire.source)).resolves.toBe(0);
+      await expect(countAuditsForSource(prisma, expire.source)).resolves.toBe(0);
+    }
+
+    const automaticField = "auditFailureAutomaticExpiry";
+    const automaticRequest = await requestApproval(
+      automaticField,
+      "service-audit-failure-automatic-request"
+    );
+    const automaticApproval = await decideApproval(
+      automaticRequest.outcome.id,
+      automaticField,
+      "service-audit-failure-automatic-decision"
+    );
+    const automaticRepositoryCommand = {
+      ...requireCurrentCommand(
+        fixture,
+        automaticApproval.outcome.id,
+        automaticApproval.outcome.version,
+        "service-audit-failure-automatic",
+        { ignoredClientSnapshot: true }
+      ),
+      subject: { ...approvalSubject(fixture), subjectField: automaticField }
+    };
+    const automatic = omitFields(automaticRepositoryCommand, "authoritySnapshot", "expiredBy");
+    const automaticPredecessor = await prisma.businessExceptionApproval.findUniqueOrThrow({
+      where: { id: automaticApproval.outcome.id }
+    });
+    const factPredecessor = await currentVehicleRemarkSnapshot(prisma, fixture.vehicleId);
+    await expect(
+      readCommitted(prisma, (tx) =>
+        failingService.requireApprovedExceptionInTransaction(
+          tx,
+          automatic,
+          serviceContext(
+            fixture.deciderId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+            automatic.source.key
+          ),
+          async (resolverTx) => {
+            await lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId);
+            await resolverTx.vehicle.update({
+              data: { remark: `${FIXTURE_PREFIX}:automatic-rollback` },
+              where: { id: fixture.vehicleId }
+            });
+            return currentVehicleRemarkSnapshot(resolverTx, fixture.vehicleId);
+          }
+        )
+      )
+    ).rejects.toBe(auditFailure);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({
+        where: { id: automaticApproval.outcome.id }
+      })
+    ).resolves.toEqual(automaticPredecessor);
+    await expect(currentVehicleRemarkSnapshot(prisma, fixture.vehicleId)).resolves.toEqual(
+      factPredecessor
+    );
+    await expect(countReceipts(prisma, automatic.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, automatic.source)).resolves.toBe(0);
   });
 
   it("returns a stable NOWAIT loser while the holder transaction remains usable", async () => {
@@ -1692,6 +2054,7 @@ function appendCommand(fixtureValue: Fixture, suffix: string): AppendCostEntryCo
     evidenceSnapshot: { evidenceKey: fixtureValue.evidenceKey },
     occurredOn: new Date("2026-08-19T00:00:00.000Z"),
     orderId: fixtureValue.orderId,
+    reason: "confirmed against the inspected fixture invoice",
     responsiblePartyId: fixtureValue.customerId,
     responsiblePartyType: "CUSTOMER",
     responsibilitySnapshot: { basis: "inspection", fixture: FIXTURE_PREFIX },
@@ -1710,6 +2073,7 @@ function reverseCommand(
     actorId: fixtureValue.userId,
     confirmedAt: new Date("2026-08-20T11:00:00.000Z"),
     originalEntryId,
+    reason: "correcting the fixture cost with a full reversal",
     source: { id: randomUUID(), key: `${FIXTURE_PREFIX}:${suffix}`, type: "ASSET_WORK_ORDER" }
   };
 }
@@ -1765,6 +2129,7 @@ function expireApprovalCommand(
 ): ExpireExceptionApprovalCommand {
   return {
     approvalId,
+    authoritySnapshot: { factRevision: 2, state: "CHANGED" },
     exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
     expectedVersion,
     expiredAt: new Date("2026-08-20T10:20:00.000Z"),
@@ -1931,6 +2296,27 @@ async function deleteFixtures(prisma: PrismaService, fixtureValue: Fixture) {
       WHERE "username" LIKE ${`${FIXTURE_PREFIX.toLowerCase()}%`}
     `;
   });
+}
+
+async function createCostGateWorkOrder(
+  prisma: PrismaService,
+  fixtureValue: Fixture,
+  suffix: string
+) {
+  const workOrderId = randomUUID();
+  await prisma.$executeRaw(Prisma.sql`
+    INSERT INTO "asset_work_order" (
+      "id", "work_order_no", "vehicle_id", "order_id", "contract_id", "customer_id",
+      "asset_owner_id", "work_order_type", "status", "cost_confirmation_required",
+      "create_source_type", "create_source_id", "create_source_key", "authority_snapshot", "updated_at"
+    ) VALUES (
+      ${workOrderId}::uuid, ${`${FIXTURE_PREFIX}-${suffix}`}, ${fixtureValue.vehicleId}::uuid,
+      ${fixtureValue.orderId}::uuid, ${fixtureValue.contractId}::uuid, ${fixtureValue.customerId}::uuid,
+      ${fixtureValue.assetOwnerId}::uuid, 'MAINTENANCE', 'PENDING_COST_CONFIRMATION', TRUE,
+      'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:${suffix}`}, '{}'::jsonb, CURRENT_TIMESTAMP
+    )
+  `);
+  return workOrderId;
 }
 
 function realService(prisma: PrismaService, audit = new AuditService(prisma)) {
@@ -2194,6 +2580,21 @@ function countReceipts(prisma: PrismaService, source: AppendCostEntryCommand["so
   return prisma.assetAccountingCommandReceipt.count({
     where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
   });
+}
+
+async function countAuditsForSource(
+  prisma: PrismaService,
+  source: AppendCostEntryCommand["source"]
+) {
+  const [result] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT count(*)::bigint AS "count"
+    FROM "audit_log"
+    WHERE "module" = 'asset_accounting'
+      AND "after_snapshot" #>> '{source,type}' = ${source.type}
+      AND "after_snapshot" #>> '{source,id}' = ${source.id.toLowerCase()}
+      AND "after_snapshot" #>> '{source,key}' = ${source.key}
+  `);
+  return Number(result?.count ?? 0n);
 }
 
 function deferred<T>() {

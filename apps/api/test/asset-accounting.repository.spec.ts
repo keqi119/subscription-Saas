@@ -109,10 +109,18 @@ describe("AssetAccountingRepository", () => {
       ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
     );
     await expectCode(
+      repository.appendCostEntry(database.tx, {
+        ...command,
+        reason: "a different confirmation reason"
+      }),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
+    await expectCode(
       repository.reverseCostEntry(database.tx, {
         actorId: command.actorId,
         confirmedAt: command.confirmedAt,
         originalEntryId: first.outcome.id,
+        reason: "cross-command ownership must be rejected",
         source: command.source
       }),
       ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
@@ -538,6 +546,42 @@ describe("AssetAccountingRepository", () => {
       workOrderId: original.outcome.workOrderId
     });
     expect(database.lockedOriginalIds).toContain(original.outcome.id);
+    await expectCode(
+      repository.reverseCostEntry(database.tx, {
+        ...command,
+        reason: "a different reversal reason"
+      }),
+      ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it("rejects blank cost business reasons before writing a fact or receipt", async () => {
+    const repository = new AssetAccountingRepository();
+    const appendDatabase = fakeTransaction();
+    await expectCode(
+      repository.appendCostEntry(appendDatabase.tx, {
+        ...appendCommand(appendDatabase.ids, "blank-append-reason"),
+        reason: " "
+      }),
+      ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND
+    );
+    expect(appendDatabase.entries.size).toBe(0);
+    expect(appendDatabase.receipts.size).toBe(0);
+
+    const reverseDatabase = fakeTransaction();
+    const original = await repository.appendCostEntry(
+      reverseDatabase.tx,
+      appendCommand(reverseDatabase.ids, "blank-reverse-original")
+    );
+    await expectCode(
+      repository.reverseCostEntry(reverseDatabase.tx, {
+        ...reverseCommand(reverseDatabase.ids, original.outcome.id, "blank-reverse-reason"),
+        reason: ""
+      }),
+      ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND
+    );
+    expect(reverseDatabase.entries.size).toBe(1);
+    expect(reverseDatabase.receipts.size).toBe(1);
   });
 
   it("reverses frozen historical dimensions while validating only the live actor", async () => {
@@ -1398,6 +1442,13 @@ describe("AssetAccountingRepository", () => {
           }),
           ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
         );
+        await expectCode(
+          repository.expireExceptionApproval(database.tx, {
+            ...command,
+            authoritySnapshot: { factRevision: 3, state: "CHANGED_AGAIN" }
+          }),
+          ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+        );
       }
     });
 
@@ -1820,7 +1871,10 @@ function updateAuthority(
   store.set(id, { ...current, ...patch });
 }
 
-function appendCommand(ids: FixtureIds, key: string): AppendCostEntryCommand {
+function appendCommand(
+  ids: FixtureIds,
+  key: string
+): AppendCostEntryCommand & { readonly reason: string } {
   return {
     actionType: "ACTUAL_COST",
     accountingPeriod: "2026-08",
@@ -1838,6 +1892,7 @@ function appendCommand(ids: FixtureIds, key: string): AppendCostEntryCommand {
     orderId: ids.orderId,
     responsiblePartyId: ids.customerId,
     responsiblePartyType: "CUSTOMER",
+    reason: "confirmed against the inspected supplier invoice",
     responsibilitySnapshot: { basis: "inspection" },
     source: { id: ids.sourceId, key, type: "ASSET_WORK_ORDER" },
     vehicleId: ids.vehicleId,
@@ -1849,11 +1904,12 @@ function reverseCommand(
   ids: FixtureIds,
   originalEntryId: string,
   key: string
-): ReverseCostEntryCommand {
+): ReverseCostEntryCommand & { readonly reason: string } {
   return {
     actorId: ids.actorId,
     confirmedAt: new Date("2026-08-20T11:00:00.000Z"),
     originalEntryId,
+    reason: "correcting the confirmed cost with a full reversal",
     source: { id: ids.sourceId, key, type: "ASSET_WORK_ORDER" }
   };
 }
@@ -1918,9 +1974,12 @@ function expireApprovalCommand(
   approvalId: string,
   expectedVersion: number,
   key: string
-): ExpireExceptionApprovalCommand {
+): ExpireExceptionApprovalCommand & {
+  readonly authoritySnapshot: { readonly factRevision: number; readonly state: string };
+} {
   return {
     approvalId,
+    authoritySnapshot: { factRevision: 2, state: "CHANGED" },
     exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
     expectedVersion,
     expiredAt: new Date("2026-08-20T10:20:00.000Z"),

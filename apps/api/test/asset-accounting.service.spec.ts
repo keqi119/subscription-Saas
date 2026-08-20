@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import type { AuditService } from "../src/audit/audit.service";
+import { hashBusinessExceptionSnapshot } from "../src/asset-accounting/asset-accounting.domain";
 import {
   type AssetAccountingApprovalCommandOutcome,
   type AssetAccountingCostCommandOutcome,
@@ -83,9 +84,53 @@ describe("AssetAccountingService", () => {
       BadRequestException,
       ASSET_ACCOUNTING_SERVICE_CODE.INVALID_SOURCE
     );
+    for (const invalidSource of [
+      { ...command.source, id: "not-a-uuid" },
+      { ...command.source, type: "T".repeat(65) },
+      { ...command.source, key: "K".repeat(256) }
+    ]) {
+      await expectServiceCode(
+        harness.service.appendCost(
+          { ...command, source: invalidSource },
+          context(IDS.actor, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM, invalidSource.key)
+        ),
+        BadRequestException,
+        ASSET_ACCOUNTING_SERVICE_CODE.INVALID_SOURCE
+      );
+    }
 
     expect(harness.transactions).toHaveLength(0);
     expect(harness.repository.operations).toHaveLength(0);
+  });
+
+  it("canonicalizes one valid source before repository persistence and audit", async () => {
+    const harness = serviceHarness();
+    const uppercaseSource = {
+      id: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+      key: "canonical-source",
+      type: "ASSET_WORK_ORDER"
+    };
+    const canonicalSource = { ...uppercaseSource, id: uppercaseSource.id.toLowerCase() };
+    harness.repository.appendOutcome = {
+      outcome: {
+        ...costEntry(),
+        sourceId: canonicalSource.id,
+        sourceKey: canonicalSource.key,
+        sourceType: canonicalSource.type
+      },
+      wrote: true
+    };
+
+    const created = await harness.service.appendCost(
+      { ...appendServiceCommand(uppercaseSource.key), source: uppercaseSource },
+      context(IDS.actor, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM, uppercaseSource.key)
+    );
+
+    expect(created.sourceId).toBe(canonicalSource.id);
+    expect(harness.repository.lastAppendSource).toEqual(canonicalSource);
+    expect(harness.audits[0]?.input).toMatchObject({
+      after: { source: canonicalSource }
+    });
   });
 
   it("runs cost commands at READ COMMITTED, emits one exact transaction-local audit, and audits replay zero", async () => {
@@ -118,7 +163,7 @@ describe("AssetAccountingService", () => {
         after: {
           fact: publicCostEntry(),
           permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
-          reason: "Confirmed ACTUAL_COST vehicle cost fact.",
+          reason: append.reason,
           requestContext: {
             idempotencyKey: append.source.key,
             ipAddress: "203.0.113.8",
@@ -154,6 +199,7 @@ describe("AssetAccountingService", () => {
     const command = {
       confirmedAt: new Date("2026-08-20T11:00:00.000Z"),
       originalEntryId: IDS.entry,
+      reason: "duplicate repair invoice must be reversed",
       source: source("audited-reverse")
     };
 
@@ -168,7 +214,7 @@ describe("AssetAccountingService", () => {
       action: AuditAction.CREATE,
       after: {
         permission: ASSET_ACCOUNTING_PERMISSION.COST_REVERSE,
-        reason: `Reversed vehicle cost fact ${IDS.entry}.`,
+        reason: command.reason,
         source: command.source
       },
       entityType: "vehicle_cost_ledger_entry"
@@ -209,6 +255,22 @@ describe("AssetAccountingService", () => {
   it("requires an unreversed ACTUAL_COST only when the work order requires cost confirmation", async () => {
     const harness = serviceHarness();
     harness.workOrder.costConfirmationRequired = true;
+
+    for (const actionType of [
+      "RESPONSIBILITY_CONFIRMED",
+      "RECOVERY_EXPOSURE",
+      "RECOVERY_RECEIVED",
+      "WAIVER",
+      "WRITE_OFF"
+    ] as const) {
+      harness.repository.entries = [{ ...costEntry(), actionType }];
+      await expectServiceCode(
+        harness.service.assertWorkOrderCostConfirmed(harness.tx, IDS.workOrder),
+        ConflictException,
+        ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+      );
+    }
+
     harness.repository.entries = [
       costEntry(),
       {
@@ -217,7 +279,8 @@ describe("AssetAccountingService", () => {
         entryKind: "REVERSAL",
         id: randomUUID(),
         reversalOfEntryId: IDS.entry
-      }
+      },
+      { ...costEntry(), actionType: "RECOVERY_EXPOSURE", id: randomUUID() }
     ];
 
     await expectServiceCode(
@@ -237,6 +300,13 @@ describe("AssetAccountingService", () => {
       harness.service.assertWorkOrderCostConfirmed(harness.tx, IDS.workOrder)
     ).resolves.toBe(true);
     expect(harness.repository.workOrderListCalls).toBe(listCalls);
+
+    harness.workOrderExists = false;
+    await expectServiceCode(
+      harness.service.assertWorkOrderCostConfirmed(harness.tx, IDS.workOrder),
+      NotFoundException,
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_NOT_FOUND
+    );
   });
 
   it("takes source then subject ownership before every owning resolver and never accepts a client hash", async () => {
@@ -314,6 +384,33 @@ describe("AssetAccountingService", () => {
   });
 
   it("audits explicit expiry once and stale require commits expiry, returns false, and audits replay zero", async () => {
+    const currentHarness = serviceHarness();
+    const currentSnapshot = { revision: 1, state: "PENDING" };
+    currentHarness.currentApproval.subjectSnapshot = currentSnapshot;
+    currentHarness.currentApproval.subjectSnapshotHash =
+      hashBusinessExceptionSnapshot(currentSnapshot);
+    const currentCommand = expireServiceCommand("approval-not-stale");
+    await expectServiceCode(
+      currentHarness.service.expireStaleApprovalsInTransaction(
+        currentHarness.tx,
+        currentCommand,
+        context(
+          IDS.decider,
+          ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+          currentCommand.source.key
+        ),
+        resolverWithTimeline(currentHarness, currentSnapshot)
+      ),
+      ConflictException,
+      "ASSET_ACCOUNTING_APPROVAL_NOT_STALE"
+    );
+    expect(currentHarness.repository.operations).toEqual([
+      "source-subject-lock",
+      "owning-resolver",
+      "approval-lock"
+    ]);
+    expect(currentHarness.audits).toHaveLength(0);
+
     const harness = serviceHarness();
     const expire = expireServiceCommand("approval-expire");
     const expireContext = context(
@@ -329,6 +426,9 @@ describe("AssetAccountingService", () => {
     );
     expect(expired).not.toHaveProperty("decisionComment");
     expect(harness.audits).toHaveLength(1);
+    expect(harness.repository.lastExpire).toMatchObject({
+      authoritySnapshot: { revision: 2, state: "CHANGED" }
+    });
 
     harness.audits.length = 0;
     harness.repository.requireOutcome = {
@@ -388,7 +488,7 @@ function serviceHarness() {
   const audits: Array<{ client: unknown; input: Record<string, unknown> }> = [];
   const transactions: unknown[] = [];
   const workOrder = { costConfirmationRequired: true, id: IDS.workOrder };
-  const currentApproval: Record<string, unknown> = {
+  const currentApproval = {
     ...approvalSnapshot(),
     decisionComment: null,
     requestedBy: IDS.actor
@@ -402,20 +502,22 @@ function serviceHarness() {
     service: undefined as unknown as AssetAccountingService,
     transactions,
     tx: undefined as unknown as Prisma.TransactionClient,
-    workOrder
+    workOrder,
+    workOrderExists: true
   };
   const tx = {
     assetAccountingCommandReceipt: {
       findUnique: async () => (harness.receiptExists ? { id: randomUUID() } : null)
     },
     assetWorkOrder: {
-      findUnique: async () => workOrder
+      findUnique: async () => (harness.workOrderExists ? workOrder : null)
     },
     businessExceptionApproval: {
       findUnique: async () => currentApproval
     }
   } as unknown as Prisma.TransactionClient;
   const repository = new FakeRepository();
+  repository.currentApproval = currentApproval;
   const prisma = {
     $transaction: async <T>(
       callback: (transaction: Prisma.TransactionClient) => Promise<T>,
@@ -443,6 +545,7 @@ function serviceHarness() {
 
 class FakeRepository {
   readonly operations: string[] = [];
+  currentApproval: BusinessExceptionApprovalSnapshot = approvalSnapshot();
   appendOutcome: AssetAccountingCostCommandOutcome = { outcome: costEntry(), wrote: true };
   reverseOutcome: AssetAccountingCostCommandOutcome = { outcome: costEntry(), wrote: true };
   requestOutcome: AssetAccountingApprovalCommandOutcome = {
@@ -472,6 +575,8 @@ class FakeRepository {
   entry: VehicleCostLedgerEntrySnapshot | null = costEntry();
   entries: VehicleCostLedgerEntrySnapshot[] = [costEntry()];
   lastAppendActor?: string;
+  lastAppendSource?: unknown;
+  lastExpire?: ExpireExceptionApprovalCommand;
   lastRequest?: RequestExceptionApprovalCommand;
   workOrderListCalls = 0;
 
@@ -486,10 +591,21 @@ class FakeRepository {
     this.operations.push("source-subject-lock");
   }
 
-  async appendCostEntry(_tx: Prisma.TransactionClient, command: { actorId: string }) {
+  async appendCostEntry(
+    _tx: Prisma.TransactionClient,
+    command: { actorId: string; source: unknown }
+  ) {
     this.operations.push("repository-append");
     this.lastAppendActor = command.actorId;
+    this.lastAppendSource = command.source;
     return this.appendOutcome;
+  }
+
+  async lockExceptionApproval(_tx: Prisma.TransactionClient, _approvalId: string) {
+    void _tx;
+    void _approvalId;
+    this.operations.push("approval-lock");
+    return this.currentApproval;
   }
 
   async reverseCostEntry() {
@@ -538,7 +654,7 @@ class FakeRepository {
     command: ExpireExceptionApprovalCommand
   ) {
     void tx;
-    void command;
+    this.lastExpire = command;
     this.operations.push("repository-expire");
     return this.expireOutcome;
   }
@@ -582,6 +698,7 @@ function appendServiceCommand(key: string) {
     orderId: IDS.order,
     responsiblePartyId: null,
     responsiblePartyType: "PLATFORM" as const,
+    reason: "confirmed after inspection and invoice review",
     responsibilitySnapshot: { basis: "inspection" },
     source: source(key),
     vehicleId: IDS.vehicle,

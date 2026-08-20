@@ -106,6 +106,7 @@ export interface AppendCostEntryCommand {
   readonly evidenceSnapshot?: AssetAccountingSnapshotObject | null;
   readonly occurredOn: Date;
   readonly orderId?: string | null;
+  readonly reason: string;
   readonly responsiblePartyId?: string | null;
   readonly responsiblePartyType: VehicleCostResponsiblePartyType;
   readonly responsibilitySnapshot: AssetAccountingSnapshotObject;
@@ -118,6 +119,7 @@ export interface ReverseCostEntryCommand {
   readonly actorId: string;
   readonly confirmedAt: Date;
   readonly originalEntryId: string;
+  readonly reason: string;
   readonly source: AssetAccountingSource;
 }
 
@@ -158,6 +160,7 @@ export interface DecideExceptionApprovalCommand {
 
 export interface ExpireExceptionApprovalCommand {
   readonly approvalId: string;
+  readonly authoritySnapshot: BusinessExceptionSnapshot;
   readonly exceptionType: BusinessExceptionType;
   readonly expectedVersion: number;
   readonly expiredAt: Date;
@@ -167,9 +170,7 @@ export interface ExpireExceptionApprovalCommand {
   readonly subject: BusinessExceptionSubjectIdentity;
 }
 
-export interface RequireCurrentApprovedExceptionCommand extends ExpireExceptionApprovalCommand {
-  readonly authoritySnapshot: BusinessExceptionSnapshot;
-}
+export type RequireCurrentApprovedExceptionCommand = ExpireExceptionApprovalCommand;
 
 export interface AssetAccountingApprovalCommandOutcome {
   readonly outcome: BusinessExceptionApprovalSnapshot;
@@ -285,11 +286,19 @@ export function businessExceptionSubjectLockIdentity(
  */
 @Injectable()
 export class AssetAccountingRepository {
+  async lockExceptionApproval(
+    tx: Prisma.TransactionClient,
+    approvalId: string
+  ): Promise<BusinessExceptionApprovalSnapshot> {
+    await assertTransactionContract(tx);
+    return projectApproval(await lockAndLoadApproval(tx, canonicalApprovalUuid(approvalId)));
+  }
+
   async lockSourceOwnership(
     tx: Prisma.TransactionClient,
     source: AssetAccountingSource
   ): Promise<void> {
-    const normalized = normalizeAssetAccountingSource(source);
+    const normalized = canonicalAssetAccountingSource(source);
     await assertTransactionContract(tx);
     const exactTuple = JSON.stringify([normalized.type, normalized.id, normalized.key]);
     await tx.$queryRaw(
@@ -656,7 +665,7 @@ async function assertTransactionContract(tx: Prisma.TransactionClient) {
 }
 
 function normalizeAppendCommand(command: AppendCostEntryCommand): NormalizedAppendCommand {
-  const source = normalizeAssetAccountingSource(command.source);
+  const source = canonicalAssetAccountingSource(command.source);
   const actorId = canonicalUuid(command.actorId, "actorId");
   const vehicleId = canonicalUuid(command.vehicleId, "vehicleId");
   assertVehicleCostAmountCents(command.amountCents);
@@ -664,6 +673,7 @@ function normalizeAppendCommand(command: AppendCostEntryCommand): NormalizedAppe
   assertAccountingPeriod(command.accountingPeriod);
   assertValidDate(command.occurredOn);
   assertValidDate(command.confirmedAt);
+  requireCostReason(command.reason);
   const assetOwnerId = canonicalOptionalUuid(command.assetOwnerId, "assetOwnerId");
   const evidenceId = canonicalOptionalUuid(command.evidenceId, "evidenceId");
   const assetOwnerSnapshot = normalizeNullableSnapshot(command.assetOwnerSnapshot);
@@ -693,10 +703,11 @@ function normalizeAppendCommand(command: AppendCostEntryCommand): NormalizedAppe
 }
 
 function normalizeReverseCommand(command: ReverseCostEntryCommand): ReverseCostEntryCommand {
-  const source = normalizeAssetAccountingSource(command.source);
+  const source = canonicalAssetAccountingSource(command.source);
   const actorId = canonicalUuid(command.actorId, "actorId");
   const originalEntryId = canonicalUuid(command.originalEntryId, "originalEntryId");
   assertValidDate(command.confirmedAt);
+  requireCostReason(command.reason);
   return { ...command, actorId, originalEntryId, source };
 }
 
@@ -734,7 +745,7 @@ function normalizeApprovalSubject(
 
 function normalizeApprovalSource(source: AssetAccountingSource) {
   try {
-    return normalizeAssetAccountingSource(source);
+    return canonicalAssetAccountingSource(source);
   } catch {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
@@ -798,7 +809,7 @@ function normalizeDecisionCommand(
 
 function normalizeExpireCommand(
   command: ExpireExceptionApprovalCommand
-): ExpireExceptionApprovalCommand {
+): ExpireExceptionApprovalCommand & { readonly authoritySnapshot: Prisma.JsonObject } {
   const source = normalizeApprovalSource(command.source);
   const approvalId = canonicalApprovalUuid(command.approvalId);
   const expiredBy = canonicalApprovalUuid(command.expiredBy);
@@ -811,6 +822,7 @@ function normalizeExpireCommand(
   return {
     ...command,
     approvalId,
+    authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot),
     expiredBy,
     source,
     subject: normalizeApprovalSubject(command.subject)
@@ -820,11 +832,7 @@ function normalizeExpireCommand(
 function normalizeRequireCurrentCommand(
   command: RequireCurrentApprovedExceptionCommand
 ): RequireCurrentApprovedExceptionCommand & { readonly authoritySnapshot: Prisma.JsonObject } {
-  const normalized = normalizeExpireCommand(command);
-  return {
-    ...normalized,
-    authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot)
-  };
+  return normalizeExpireCommand(command);
 }
 
 function requestApprovalPayload(command: NormalizedRequestApprovalCommand) {
@@ -856,6 +864,8 @@ function decisionPayload(command: NormalizedDecisionCommand) {
 function expiryPayload(command: ExpireExceptionApprovalCommand) {
   return {
     approvalId: command.approvalId,
+    authoritySnapshot: command.authoritySnapshot,
+    authoritySnapshotHash: hashBusinessExceptionSnapshot(command.authoritySnapshot),
     exceptionType: command.exceptionType,
     expectedVersion: command.expectedVersion,
     expiredAt: command.expiredAt,
@@ -870,7 +880,7 @@ function requireCurrentPayload(
     readonly authoritySnapshot: Prisma.JsonObject;
   }
 ) {
-  return { ...expiryPayload(command), authoritySnapshot: command.authoritySnapshot };
+  return expiryPayload(command);
 }
 
 async function takeBusinessExceptionSubjectLock(
@@ -1038,6 +1048,7 @@ function appendPayload(command: NormalizedAppendCommand) {
     evidenceSnapshot: command.evidenceSnapshot,
     occurredOn: command.occurredOn,
     orderId: command.orderId,
+    reason: command.reason,
     responsiblePartyId: command.responsiblePartyId,
     responsiblePartyType: command.responsiblePartyType,
     responsibilitySnapshot: command.responsibilitySnapshot,
@@ -1050,7 +1061,8 @@ function reversePayload(command: ReverseCostEntryCommand) {
   return {
     actorId: command.actorId,
     confirmedAt: command.confirmedAt,
-    originalEntryId: command.originalEntryId
+    originalEntryId: command.originalEntryId,
+    reason: command.reason
   };
 }
 
@@ -1814,8 +1826,13 @@ function canonicalOptionalUuid(value: unknown, field: string) {
   return value === null || value === undefined ? null : canonicalUuid(value, field);
 }
 
-function normalizeAssetAccountingSource(source: AssetAccountingSource): AssetAccountingSource {
+export function canonicalAssetAccountingSource(
+  source: AssetAccountingSource
+): AssetAccountingSource {
   assertAssetAccountingSource(source);
+  if (source.type.length > 64 || source.key.length > 255) {
+    throw new TypeError("asset accounting source exceeds its persistence limit");
+  }
   return { ...source, id: canonicalUuid(source.id, "source.id") };
 }
 
@@ -1847,6 +1864,12 @@ function assertExpectedApprovalVersion(value: unknown): asserts value is number 
 
 function assertValidDate(value: unknown): asserts value is Date {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND);
+  }
+}
+
+function requireCostReason(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND);
   }
 }

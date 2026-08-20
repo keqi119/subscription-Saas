@@ -12,11 +12,11 @@ import { PrismaService } from "../prisma/prisma.service";
 import {
   canonicalAssetAccountingJson,
   hashBusinessExceptionSnapshot,
-  isValidAssetAccountingSource,
   summarizeVehicleCostEntries
 } from "./asset-accounting.domain";
 import {
   AssetAccountingRepository,
+  canonicalAssetAccountingSource,
   type AppendCostEntryCommand,
   type BusinessExceptionSubjectIdentity,
   type DecideExceptionApprovalCommand,
@@ -44,6 +44,7 @@ export const ASSET_ACCOUNTING_PERMISSION = {
 
 export const ASSET_ACCOUNTING_SERVICE_CODE = {
   AUTHENTICATION_REQUIRED: "ASSET_ACCOUNTING_AUTHENTICATION_REQUIRED",
+  APPROVAL_NOT_STALE: "ASSET_ACCOUNTING_APPROVAL_NOT_STALE",
   COST_ENTRY_NOT_FOUND: "ASSET_ACCOUNTING_COST_ENTRY_NOT_FOUND",
   IDEMPOTENCY_KEY_INVALID: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_INVALID",
   IDEMPOTENCY_KEY_MISMATCH: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_MISMATCH",
@@ -73,7 +74,10 @@ export type DecideApprovalServiceCommand = Omit<
   DecideExceptionApprovalCommand,
   "authoritySnapshot" | "decidedBy"
 >;
-export type ExpireApprovalServiceCommand = Omit<ExpireExceptionApprovalCommand, "expiredBy">;
+export type ExpireApprovalServiceCommand = Omit<
+  ExpireExceptionApprovalCommand,
+  "authoritySnapshot" | "expiredBy"
+>;
 export type RequireApprovedExceptionServiceCommand = Omit<
   RequireCurrentApprovedExceptionCommand,
   "authoritySnapshot" | "expiredBy"
@@ -190,13 +194,13 @@ export class AssetAccountingService {
     command: AppendCostServiceCommand,
     context: AssetAccountingCommandContext
   ): Promise<PublicVehicleCostLedgerEntry> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM
     );
     return this.runReadCommitted(async (tx) => {
-      const result = await this.repository.appendCostEntry(tx, { ...command, actorId });
+      const result = await this.repository.appendCostEntry(tx, { ...command, actorId, source });
       const fact = projectCostEntry(result.outcome);
       if (result.wrote) {
         await this.writeAudit(tx, {
@@ -206,9 +210,9 @@ export class AssetAccountingService {
           entityType: "vehicle_cost_ledger_entry",
           fact,
           permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
-          reason: `Confirmed ${fact.actionType} vehicle cost fact.`,
+          reason: command.reason,
           snapshotHash: hashBusinessExceptionSnapshot(fact),
-          source: command.source
+          source
         });
       }
       return fact;
@@ -219,13 +223,13 @@ export class AssetAccountingService {
     command: ReverseCostServiceCommand,
     context: AssetAccountingCommandContext
   ): Promise<PublicVehicleCostLedgerEntry> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.COST_REVERSE
     );
     return this.runReadCommitted(async (tx) => {
-      const result = await this.repository.reverseCostEntry(tx, { ...command, actorId });
+      const result = await this.repository.reverseCostEntry(tx, { ...command, actorId, source });
       const fact = projectCostEntry(result.outcome);
       if (result.wrote) {
         await this.writeAudit(tx, {
@@ -235,9 +239,9 @@ export class AssetAccountingService {
           entityType: "vehicle_cost_ledger_entry",
           fact,
           permission: ASSET_ACCOUNTING_PERMISSION.COST_REVERSE,
-          reason: `Reversed vehicle cost fact ${command.originalEntryId}.`,
+          reason: command.reason,
           snapshotHash: hashBusinessExceptionSnapshot(fact),
-          source: command.source
+          source
         });
       }
       return fact;
@@ -344,14 +348,19 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<PublicBusinessExceptionApproval> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST
     );
-    const authoritySnapshot = await this.resolveApprovalAuthority(tx, command, resolveAuthority);
+    const normalizedCommand = { ...command, source };
+    const authoritySnapshot = await this.resolveApprovalAuthority(
+      tx,
+      normalizedCommand,
+      resolveAuthority
+    );
     const result = await this.repository.requestExceptionApproval(tx, {
-      ...command,
+      ...normalizedCommand,
       authoritySnapshot,
       requestedBy: actorId
     });
@@ -366,7 +375,7 @@ export class AssetAccountingService {
         permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
         reason: command.requestReason,
         snapshotHash: hashBusinessExceptionSnapshot(authoritySnapshot),
-        source: command.source
+        source
       });
     }
     return fact;
@@ -378,12 +387,17 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<PublicBusinessExceptionApproval> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE
     );
-    const authoritySnapshot = await this.resolveApprovalAuthority(tx, command, resolveAuthority);
+    const normalizedCommand = { ...command, source };
+    const authoritySnapshot = await this.resolveApprovalAuthority(
+      tx,
+      normalizedCommand,
+      resolveAuthority
+    );
     const before = await loadApprovalAuditRow(tx, command.approvalId);
     if (before && sameIdentity(before.requestedBy, actorId)) {
       throw conflict(
@@ -392,7 +406,7 @@ export class AssetAccountingService {
       );
     }
     const result = await this.repository.decideExceptionApproval(tx, {
-      ...command,
+      ...normalizedCommand,
       authoritySnapshot,
       decidedBy: actorId
     });
@@ -408,7 +422,7 @@ export class AssetAccountingService {
         permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
         reason: command.decisionComment,
         snapshotHash: hashBusinessExceptionSnapshot(authoritySnapshot),
-        source: command.source
+        source
       });
     }
     return fact;
@@ -420,15 +434,27 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<PublicBusinessExceptionApproval> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST
     );
-    const authoritySnapshot = await this.resolveApprovalAuthority(tx, command, resolveAuthority);
-    const before = await loadApprovalAuditRow(tx, command.approvalId);
+    const normalizedCommand = { ...command, source };
+    const authoritySnapshot = await this.resolveApprovalAuthority(
+      tx,
+      normalizedCommand,
+      resolveAuthority
+    );
+    const before = await this.repository.lockExceptionApproval(tx, command.approvalId);
+    if (before && approvalHasAuthoritySnapshot(before, authoritySnapshot)) {
+      throw conflict(
+        ASSET_ACCOUNTING_SERVICE_CODE.APPROVAL_NOT_STALE,
+        "The exception approval is still bound to the current authoritative snapshot."
+      );
+    }
     const result = await this.repository.expireExceptionApproval(tx, {
-      ...command,
+      ...normalizedCommand,
+      authoritySnapshot,
       expiredBy: actorId
     });
     const fact = projectApproval(result.outcome);
@@ -443,7 +469,7 @@ export class AssetAccountingService {
         permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
         reason: command.expiryReason,
         snapshotHash: hashBusinessExceptionSnapshot(authoritySnapshot),
-        source: command.source
+        source
       });
     }
     return fact;
@@ -455,27 +481,32 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     resolveAuthority: BusinessExceptionAuthorityResolver
   ): Promise<boolean> {
-    const actorId = assertWriteContext(
+    const { actorId, source } = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST
     );
-    const authoritySnapshot = await this.resolveApprovalAuthority(tx, command, resolveAuthority);
+    const normalizedCommand = { ...command, source };
+    const authoritySnapshot = await this.resolveApprovalAuthority(
+      tx,
+      normalizedCommand,
+      resolveAuthority
+    );
     const [before, receipt] = await Promise.all([
       loadApprovalAuditRow(tx, command.approvalId),
       tx.assetAccountingCommandReceipt.findUnique({
         select: { id: true },
         where: {
           sourceType_sourceId_sourceKey: {
-            sourceId: command.source.id,
-            sourceKey: command.source.key,
-            sourceType: command.source.type
+            sourceId: source.id,
+            sourceKey: source.key,
+            sourceType: source.type
           }
         }
       })
     ]);
     const result = await this.repository.requireCurrentApprovedException(tx, {
-      ...command,
+      ...normalizedCommand,
       authoritySnapshot,
       expiredBy: actorId
     });
@@ -493,7 +524,7 @@ export class AssetAccountingService {
         permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
         reason: command.expiryReason,
         snapshotHash: hashBusinessExceptionSnapshot(authoritySnapshot),
-        source: command.source
+        source
       });
     }
     return false;
@@ -579,10 +610,13 @@ function assertWriteContext(
   source: AssetAccountingSource,
   context: AssetAccountingCommandContext,
   permission: string
-): string {
+): Readonly<{ actorId: string; source: AssetAccountingSource }> {
   const actorId = requireActor(context);
   requirePermission(context, permission);
-  if (!isValidAssetAccountingSource(source)) {
+  let normalizedSource: AssetAccountingSource;
+  try {
+    normalizedSource = canonicalAssetAccountingSource(source);
+  } catch {
     throw badRequest(
       ASSET_ACCOUNTING_SERVICE_CODE.INVALID_SOURCE,
       "The asset-accounting source must contain nonblank type, UUID id, and key values."
@@ -600,7 +634,7 @@ function assertWriteContext(
       "Idempotency-Key must exactly match source.key."
     );
   }
-  return actorId;
+  return { actorId, source: normalizedSource };
 }
 
 function requireActor(context: AssetAccountingCommandContext): string {
@@ -658,6 +692,17 @@ function loadApprovalAuditRow(tx: Prisma.TransactionClient, approvalId: string) 
 
 function sameIdentity(left: string, right: string) {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function approvalHasAuthoritySnapshot(
+  approval: Readonly<{ subjectSnapshot: unknown; subjectSnapshotHash: string }>,
+  authoritySnapshot: BusinessExceptionSnapshot
+) {
+  return (
+    approval.subjectSnapshotHash === hashBusinessExceptionSnapshot(authoritySnapshot) &&
+    canonicalAssetAccountingJson(approval.subjectSnapshot) ===
+      canonicalAssetAccountingJson(authoritySnapshot)
+  );
 }
 
 function badRequest(code: string, message: string) {

@@ -339,8 +339,8 @@ $replayReport = Join-Path $stage1cReportDirectory 'stage1c-period-replay.json'
 三个变量在本环境整次执行中保持不变；不得让不同环境共用目录或覆盖彼此报告。
 
 ```powershell
-pnpm stage1c:periods:dry-run -- --output <report-path>
-pnpm stage1c:periods:apply -- --output <report-path>
+pnpm stage1c:periods:dry-run -- --output $dryRunReport
+pnpm stage1c:periods:apply -- --output $applyReport
 ```
 
 参数规则：必须且只能选择 `--dry-run` 或 `--apply`；`--output <path>` 或

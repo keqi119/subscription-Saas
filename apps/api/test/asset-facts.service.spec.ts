@@ -1396,6 +1396,26 @@ describe("AssetFactsService audited commands", () => {
     expect(harness.subscriptionPeriods).toEqual([]);
     expect(harness.auditLogs).toEqual([]);
   });
+
+  it.each([
+    ["message", { code: "UNRELATED_DATABASE_ERROR", message: "55P03" }],
+    ["payload", { code: "UNRELATED_DATABASE_ERROR", payload: "55P03" }],
+    [
+      "nested payload",
+      {
+        code: "UNRELATED_DATABASE_ERROR",
+        payload: { code: "55P03" }
+      }
+    ]
+  ] as const)("rethrows an unrelated error with 55P03 in its %s", async (_case, lockError) => {
+    const harness = createServiceHarness({ authorityLockError: lockError });
+
+    await expect(
+      harness.service.openSubscriptionPeriod(serviceSubscriptionOpenDto(), serviceContext())
+    ).rejects.toBe(lockError);
+    expect(harness.subscriptionPeriods).toEqual([]);
+    expect(harness.auditLogs).toEqual([]);
+  });
 });
 
 describe("AssetFactsService read projections", () => {

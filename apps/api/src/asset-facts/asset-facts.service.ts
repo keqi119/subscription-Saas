@@ -465,7 +465,7 @@ export class AssetFactsService {
         isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
       });
     } catch (error) {
-      if (containsDatabaseCode(error, "55P03")) {
+      if (isAuthorityLockUnavailableError(error)) {
         throw new ConflictException({
           code: ASSET_FACT_SERVICE_CODE.AUTHORITY_BUSY,
           message: "Asset fact authority is being updated. Review the current state and retry."
@@ -1096,16 +1096,17 @@ function utcCalendarDate(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
-function containsDatabaseCode(
-  value: unknown,
-  expectedCode: string,
-  seen = new WeakSet<object>()
-): boolean {
-  if (typeof value === "string") return value === expectedCode;
-  if (!value || typeof value !== "object" || seen.has(value)) return false;
-  seen.add(value);
-  const record = value as Record<string, unknown>;
-  return Object.values(record).some((child) => containsDatabaseCode(child, expectedCode, seen));
+function isAuthorityLockUnavailableError(value: unknown) {
+  if (!isRecord(value)) return false;
+  if (value.code === "55P03") return true;
+  if (!isRecord(value.meta)) return false;
+  if (!isRecord(value.meta.driverAdapterError)) return false;
+  const cause = value.meta.driverAdapterError.cause;
+  return isRecord(cause) && cause.originalCode === "55P03";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }
 
 function badRequest(code: string, message: string) {

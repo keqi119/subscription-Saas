@@ -22,13 +22,38 @@ test("plans the exact positive and negative Stage 1C role matrix without touchin
 
   assert.deepEqual(report.blockers, []);
   assert.deepEqual(activeMatrixAfterPlan(snapshot, report), {
-    ADMIN: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
-    AS: ["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"],
+    ADMIN: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_owner:manage",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:approve_release",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
+    AS: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_owner:manage",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:approve_release",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
     CS: [],
-    FI: ["asset_facts:view"],
-    GM: ["asset_facts:view"],
-    OP: ["asset_facts:view", "vehicle_period:manage"],
-    RC: [],
+    FI: ["asset_facts:view", "asset_operations:view"],
+    GM: ["asset_facts:view", "asset_operations:view", "vehicle_restriction:approve_release"],
+    OP: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "asset_work_order:manage",
+      "vehicle_period:manage",
+      "vehicle_restriction:manage",
+      "vehicle_restriction:release"
+    ],
+    RC: ["asset_operations:view"],
     SA: []
   });
   assert.equal(
@@ -99,6 +124,28 @@ test("missing, inactive, and soft-deleted required roles are blockers before wri
   }
 });
 
+test("permission identity drift is a blocker while lifecycle drift remains convergent", () => {
+  const classify = requiredExport("classifyStage1cAccessBaseline");
+  const identityDrift = baselineSnapshot();
+  identityDrift.permissions.find(({ code }) => code === "asset_operations:view").module = "other";
+  const blocked = classify(identityDrift);
+  assert.deepEqual(blocked.blockers, [
+    { code: "PERMISSION_IDENTITY_DRIFT", permissionCode: "asset_operations:view" }
+  ]);
+
+  const lifecycleDrift = baselineSnapshot();
+  lifecycleDrift.permissions.find(({ code }) => code === "asset_operations:view").status =
+    "INACTIVE";
+  lifecycleDrift.permissions.find(({ code }) => code === "asset_operations:view").deletedAt =
+    "2026-08-01";
+  const convergent = classify(lifecycleDrift);
+  assert.deepEqual(convergent.blockers, []);
+  assert.equal(
+    convergent.permissions.find(({ code }) => code === "asset_operations:view").disposition,
+    "CONVERGE"
+  );
+});
+
 test("creates one stable platform owner and exact replay is unchanged without ownership-period planning", () => {
   const classify = requiredExport("classifyStage1cAccessBaseline");
   const first = classify(baselineSnapshot());
@@ -142,6 +189,31 @@ function baselineSnapshot() {
     permission("asset_facts:view", "查看车辆事实台账", "view"),
     permission("asset_owner:manage", "管理车辆权属期间", "owner_manage"),
     permission("vehicle_period:manage", "修复车辆订阅期间", "period_manage"),
+    permission("asset_operations:view", "查看资产运营工单与限制", "view", "asset_operations"),
+    permission(
+      "asset_work_order:manage",
+      "管理资产运营工单",
+      "work_order_manage",
+      "asset_operations"
+    ),
+    permission(
+      "vehicle_restriction:manage",
+      "管理车辆运营限制",
+      "restriction_manage",
+      "asset_operations"
+    ),
+    permission(
+      "vehicle_restriction:release",
+      "解除车辆运营限制",
+      "restriction_release",
+      "asset_operations"
+    ),
+    permission(
+      "vehicle_restriction:approve_release",
+      "审批高风险车辆运营限制解除",
+      "restriction_approve_release",
+      "asset_operations"
+    ),
     permission("unrelated:keep", "不相关权限", "keep", "other")
   ];
   return {
@@ -194,7 +266,7 @@ function platformOwner() {
 }
 
 function activeMatrixAfterPlan(snapshot, report) {
-  const stageCodes = new Set(["asset_facts:view", "asset_owner:manage", "vehicle_period:manage"]);
+  const stageCodes = new Set(report.permissions.map(({ code }) => code));
   const active = new Set(
     snapshot.rolePermissions
       .filter(

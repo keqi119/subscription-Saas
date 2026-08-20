@@ -72,6 +72,96 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("replays the immutable post-command outcome after the live header changes", async () => {
+    const createDatabase = new FakeDatabase();
+    const createRepository = new AssetOperationsRepository();
+    const create = createCommand();
+    const created = await createRepository.createWorkOrder(createDatabase.tx, create);
+    const createdSnapshot = structuredClone(created);
+    mutateLiveHeader(createDatabase);
+    expect(await createRepository.createWorkOrder(createDatabase.tx, create)).toEqual({
+      ...createdSnapshot,
+      wrote: false
+    });
+
+    const assignDatabase = new FakeDatabase();
+    const assignRepository = new AssetOperationsRepository();
+    const assignCreated = await assignRepository.createWorkOrder(
+      assignDatabase.tx,
+      createCommand()
+    );
+    const assign = {
+      actorId: null,
+      assignedUserId: randomUUID(),
+      detailSnapshot: { reason: "snapshot-assignment" },
+      expectedVersion: 0,
+      occurredAt: new Date("2026-08-20T01:15:00.000Z"),
+      scheduledAt: new Date("2026-08-21T01:00:00.000Z"),
+      slaDueAt: new Date("2026-08-22T01:00:00.000Z"),
+      source: source("snapshot-assignment"),
+      workOrderId: assignCreated.workOrder.id
+    };
+    const assigned = await assignRepository.assignWorkOrder(assignDatabase.tx, assign);
+    const assignedSnapshot = structuredClone(assigned);
+    mutateLiveHeader(assignDatabase);
+    expect(await assignRepository.assignWorkOrder(assignDatabase.tx, assign)).toEqual({
+      ...assignedSnapshot,
+      wrote: false
+    });
+
+    const transitionDatabase = new FakeDatabase();
+    const transitionRepository = new AssetOperationsRepository();
+    const transitionCreated = await transitionRepository.createWorkOrder(
+      transitionDatabase.tx,
+      createCommand()
+    );
+    const transition = transitionCommand(
+      transitionCreated.workOrder.id,
+      AssetWorkOrderStatus.IN_PROGRESS,
+      0
+    );
+    const transitioned = await transitionRepository.transitionWorkOrder(
+      transitionDatabase.tx,
+      transition
+    );
+    const transitionedSnapshot = structuredClone(transitioned);
+    mutateLiveHeader(transitionDatabase);
+    expect(
+      await transitionRepository.transitionWorkOrder(transitionDatabase.tx, transition)
+    ).toEqual({ ...transitionedSnapshot, wrote: false });
+
+    const noteDatabase = new FakeDatabase();
+    const noteRepository = new AssetOperationsRepository();
+    const noteCreated = await noteRepository.createWorkOrder(noteDatabase.tx, createCommand());
+    const note = noteCommand(noteCreated.workOrder.id, "snapshot note", "snapshot-note");
+    const noted = await noteRepository.appendNote(noteDatabase.tx, note);
+    const notedSnapshot = structuredClone(noted);
+    mutateLiveHeader(noteDatabase);
+    expect(await noteRepository.appendNote(noteDatabase.tx, note)).toEqual({
+      ...notedSnapshot,
+      wrote: false
+    });
+
+    const evidenceDatabase = new FakeDatabase();
+    const evidenceRepository = new AssetOperationsRepository();
+    const evidenceCreated = await evidenceRepository.createWorkOrder(
+      evidenceDatabase.tx,
+      createCommand()
+    );
+    const evidence = evidenceCommand(
+      evidenceCreated.workOrder.id,
+      evidenceDatabase.addFile(),
+      "snapshot"
+    );
+    const attached = await evidenceRepository.appendEvidence(evidenceDatabase.tx, evidence);
+    const attachedSnapshot = structuredClone(attached);
+    mutateLiveHeader(evidenceDatabase);
+    expect(await evidenceRepository.appendEvidence(evidenceDatabase.tx, evidence)).toEqual({
+      ...attachedSnapshot,
+      wrote: false
+    });
+  });
+
   it("retries a colliding generated work-order number within the bounded generator path", async () => {
     const database = new FakeDatabase();
     database.workOrders.push({ id: randomUUID(), workOrderNo: "AWOCOLLISION" });
@@ -125,6 +215,34 @@ describe("AssetOperationsRepository", () => {
       ASSET_OPERATION_ERROR_CODE.WORK_ORDER_VERSION_CONFLICT
     );
     expect(database.events).toHaveLength(1);
+  });
+
+  it("rejects a transition replay when another command already owns the source", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const created = await repository.createWorkOrder(database.tx, createCommand());
+    const transition = transitionCommand(created.workOrder.id, AssetWorkOrderStatus.IN_PROGRESS, 0);
+    await appendInternalEvent(repository, database.tx, {
+      actorId: transition.actorId,
+      afterStatus: transition.targetStatus,
+      beforeStatus: AssetWorkOrderStatus.PENDING,
+      detailSnapshot: {
+        closeReason: transition.closeReason,
+        detailSnapshot: transition.detailSnapshot,
+        expectedVersion: transition.expectedVersion,
+        solution: transition.solution,
+        targetStatus: transition.targetStatus
+      },
+      eventType: AssetWorkOrderEventType.NOTE_ADDED,
+      occurredAt: transition.occurredAt,
+      source: transition.source,
+      workOrderId: transition.workOrderId
+    });
+
+    await expectCode(
+      repository.transitionWorkOrder(database.tx, transition),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
   });
 
   it("enforces the cost-confirmation branch before allowing a terminal close", async () => {
@@ -481,6 +599,17 @@ function evidenceCommand(
 function source(label: string) {
   const id = randomUUID();
   return { id, key: `stage1c-task2:${label}:${id}`, type: "STAGE1C_TASK2_TEST" };
+}
+
+function mutateLiveHeader(database: FakeDatabase) {
+  const workOrder = database.workOrders.at(-1);
+  if (!workOrder) throw new Error("Expected a work-order fixture.");
+  Object.assign(workOrder, {
+    assignedUserId: randomUUID(),
+    status: AssetWorkOrderStatus.CANCELLED,
+    updatedAt: new Date("2026-08-20T01:59:00.000Z"),
+    version: 99
+  });
 }
 
 async function expectCode(promise: Promise<unknown>, code: string) {

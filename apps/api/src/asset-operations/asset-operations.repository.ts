@@ -111,6 +111,22 @@ const DIRECT_EVENT_TYPES = new Set<AssetWorkOrderEventType>([
   AssetWorkOrderEventType.RESTRICTION_RELEASED
 ]);
 
+const COMMAND_ENVELOPE_KEY = "__assetOperationCommandV1";
+const WORK_ORDER_DATE_FIELDS = [
+  "acceptedAt",
+  "cancelledAt",
+  "closedAt",
+  "costConfirmedAt",
+  "createdAt",
+  "scheduledAt",
+  "slaDueAt",
+  "startedAt",
+  "updatedAt"
+] as const;
+
+type CommandEnvelopeKind = "assign" | "create" | "event" | "evidence" | "note" | "transition";
+type CommandEnvelopeInput = Readonly<{ command: unknown; kind: CommandEnvelopeKind }>;
+
 /** Caller-owned READ COMMITTED transaction only; this repository never opens a transaction. */
 @Injectable()
 export class AssetOperationsRepository {
@@ -131,10 +147,14 @@ export class AssetOperationsRepository {
       actorId: normalized.actorId,
       afterStatus: AssetWorkOrderStatus.PENDING,
       beforeStatus: null,
-      detailSnapshot: normalizeSnapshot({
-        authoritySnapshot: normalized.authoritySnapshot,
-        metadata: normalized.metadata
-      }),
+      detailSnapshot: commandEventDetail(
+        { command: normalized, kind: "create" },
+        {
+          authoritySnapshot: normalized.authoritySnapshot,
+          metadata: normalized.metadata
+        },
+        workOrder
+      ),
       eventType: AssetWorkOrderEventType.CREATED,
       occurredAt: normalized.occurredAt,
       sequence: 1,
@@ -152,7 +172,7 @@ export class AssetOperationsRepository {
     await prepareCommand(tx, "work-order:assign", normalized.source);
     await lockAuthorityRows(tx, [{ id: normalized.assignedUserId, table: "user" }]);
     const replay = await findEventBySource(tx, normalized.source);
-    if (replay) return replayAssignment(tx, replay, normalized);
+    if (replay) return replayAssignment(replay, normalized);
     const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
     assertVersion(current, normalized.expectedVersion);
     if (TERMINAL_STATUSES.has(current.status)) {
@@ -170,7 +190,11 @@ export class AssetOperationsRepository {
       actorId: normalized.actorId,
       afterStatus: current.status,
       beforeStatus: current.status,
-      detailSnapshot: assignmentPayload(normalized),
+      detailSnapshot: commandEventDetail(
+        { command: normalized, kind: "assign" },
+        assignmentPayload(normalized),
+        updated
+      ),
       eventType: AssetWorkOrderEventType.ASSIGNED,
       occurredAt: normalized.occurredAt,
       source: normalized.source,
@@ -186,7 +210,7 @@ export class AssetOperationsRepository {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, "work-order:transition", normalized.source);
     const replay = await findEventBySource(tx, normalized.source);
-    if (replay) return replayTransition(tx, replay, normalized);
+    if (replay) return replayTransition(replay, normalized);
     const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
     assertVersion(current, normalized.expectedVersion);
     assertTransition(current, normalized.targetStatus);
@@ -201,7 +225,11 @@ export class AssetOperationsRepository {
       actorId: normalized.actorId,
       afterStatus: normalized.targetStatus,
       beforeStatus: current.status,
-      detailSnapshot: transitionPayload(normalized),
+      detailSnapshot: commandEventDetail(
+        { command: normalized, kind: "transition" },
+        transitionPayload(normalized, current.status),
+        updated
+      ),
       eventType: transitionEventType(current.status, normalized.targetStatus),
       occurredAt: normalized.occurredAt,
       source: normalized.source,
@@ -211,28 +239,33 @@ export class AssetOperationsRepository {
   }
 
   appendNote(tx: Prisma.TransactionClient, command: AppendNoteCommand) {
-    return this.appendEvent(tx, {
-      actorId: command.actorId,
-      afterStatus: null,
-      beforeStatus: null,
-      detailSnapshot: { note: command.note },
-      eventType: AssetWorkOrderEventType.NOTE_ADDED,
-      occurredAt: command.occurredAt,
-      source: command.source,
-      workOrderId: command.workOrderId
-    });
+    return this.appendEvent(
+      tx,
+      {
+        actorId: command.actorId,
+        afterStatus: null,
+        beforeStatus: null,
+        detailSnapshot: { note: command.note },
+        eventType: AssetWorkOrderEventType.NOTE_ADDED,
+        occurredAt: command.occurredAt,
+        source: command.source,
+        workOrderId: command.workOrderId
+      },
+      { command, kind: "note" }
+    );
   }
 
   private async appendEvent(
     tx: Prisma.TransactionClient,
-    command: AppendWorkOrderEventCommand
+    command: AppendWorkOrderEventCommand,
+    envelope: CommandEnvelopeInput = { command, kind: "event" }
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, "work-order:event", normalized.source);
     if (!DIRECT_EVENT_TYPES.has(command.eventType)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_INVALID);
     }
-    return appendEventCommand(tx, normalized);
+    return appendEventCommand(tx, normalized, { envelope });
   }
 
   async appendEvidence(
@@ -312,7 +345,11 @@ export class AssetOperationsRepository {
         source: normalized.source,
         workOrderId: normalized.workOrderId
       },
-      { allowGovernedEvent: true, headerAlreadyLocked: workOrder }
+      {
+        allowGovernedEvent: true,
+        envelope: { command: normalized, kind: "evidence" },
+        headerAlreadyLocked: workOrder
+      }
     );
     return {
       evidence,
@@ -516,17 +553,25 @@ async function lockAndLoadEvidence(tx: Prisma.TransactionClient, evidenceId: str
 async function appendEventCommand(
   tx: Prisma.TransactionClient,
   command: AppendWorkOrderEventCommand,
-  options: { allowGovernedEvent?: boolean; headerAlreadyLocked?: AssetWorkOrder } = {}
+  options: {
+    allowGovernedEvent?: boolean;
+    envelope?: CommandEnvelopeInput;
+    headerAlreadyLocked?: AssetWorkOrder;
+  } = {}
 ): Promise<WorkOrderCommandOutcome> {
   if (!options.allowGovernedEvent && !DIRECT_EVENT_TYPES.has(command.eventType)) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_INVALID);
   }
   const replay = await findEventBySource(tx, command.source);
-  if (replay) return replayEvent(tx, replay, command);
+  const envelope = options.envelope ?? { command, kind: "event" };
+  if (replay) return replayEvent(replay, command, envelope);
   const workOrder =
     options.headerAlreadyLocked ?? (await lockAndLoadWorkOrder(tx, command.workOrderId));
   await assertEventTime(tx, command.occurredAt);
-  const event = await appendEventRow(tx, command);
+  const event = await appendEventRow(tx, {
+    ...command,
+    detailSnapshot: commandEventDetail(envelope, command.detailSnapshot, workOrder)
+  });
   return { event, workOrder, wrote: true };
 }
 
@@ -676,7 +721,73 @@ function normalizeEvidenceCommand(command: AppendEvidenceCommand): NormalizedEvi
   };
 }
 
-function normalizeSnapshot(snapshot: AssetOperationSnapshot): Prisma.JsonObject {
+function commandEventDetail(
+  envelope: CommandEnvelopeInput,
+  detailSnapshot: AssetOperationSnapshot,
+  workOrder: AssetWorkOrder
+) {
+  const publicDetail = normalizeSnapshot(detailSnapshot);
+  return normalizeSnapshot({
+    ...publicDetail,
+    [COMMAND_ENVELOPE_KEY]: {
+      command: normalizeSnapshot(envelope.command),
+      kind: envelope.kind,
+      result: { workOrder: normalizeSnapshot(workOrder) },
+      version: 1
+    }
+  });
+}
+
+function sameCommandEnvelope(event: AssetWorkOrderEvent, expected: CommandEnvelopeInput) {
+  const envelope = commandEnvelope(event);
+  return (
+    envelope?.version === 1 &&
+    envelope.kind === expected.kind &&
+    isDeepStrictEqual(envelope.command, normalizeSnapshot(expected.command))
+  );
+}
+
+function commandPayload(event: AssetWorkOrderEvent) {
+  if (!isRecord(event.detailSnapshot)) return null;
+  const payload = { ...event.detailSnapshot };
+  delete payload[COMMAND_ENVELOPE_KEY];
+  return payload;
+}
+
+function envelopeWorkOrder(event: AssetWorkOrderEvent, expected: CommandEnvelopeInput) {
+  const envelope = commandEnvelope(event);
+  if (
+    !envelope ||
+    envelope.version !== 1 ||
+    envelope.kind !== expected.kind ||
+    !isDeepStrictEqual(envelope.command, normalizeSnapshot(expected.command)) ||
+    !isRecord(envelope.result) ||
+    !isRecord(envelope.result.workOrder)
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  const workOrder = normalizeSnapshot(envelope.result.workOrder) as Record<string, unknown>;
+  if (workOrder.id !== event.workOrderId) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  for (const field of WORK_ORDER_DATE_FIELDS) {
+    const value = workOrder[field];
+    if (value === null || value === undefined) continue;
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    workOrder[field] = new Date(value);
+  }
+  return workOrder as AssetWorkOrder;
+}
+
+function commandEnvelope(event: AssetWorkOrderEvent) {
+  if (!isRecord(event.detailSnapshot)) return null;
+  const envelope = event.detailSnapshot[COMMAND_ENVELOPE_KEY];
+  return isRecord(envelope) ? envelope : null;
+}
+
+function normalizeSnapshot(snapshot: unknown): Prisma.JsonObject {
   const normalized: unknown = JSON.parse(JSON.stringify(snapshot));
   if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.WRITE_CONFLICT);
@@ -732,55 +843,56 @@ async function replayCreate(
 ): Promise<WorkOrderCommandOutcome> {
   const event = await findEventBySource(tx, command.source);
   if (event && sameCreate(existing, event, command)) {
-    return { event, workOrder: existing, wrote: false };
+    return replayEventWorkOrder(event, { command, kind: "create" });
   }
   throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
 }
 
-async function replayAssignment(
-  tx: Prisma.TransactionClient,
-  event: AssetWorkOrderEvent,
-  command: AssignWorkOrderCommand
-) {
-  if (!sameEvent(event, command, AssetWorkOrderEventType.ASSIGNED, assignmentPayload(command))) {
-    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
-  }
-  return replayEventWorkOrder(tx, event);
-}
-
-async function replayTransition(
-  tx: Prisma.TransactionClient,
-  event: AssetWorkOrderEvent,
-  command: TransitionWorkOrderCommand
-) {
+function replayAssignment(event: AssetWorkOrderEvent, command: AssignWorkOrderCommand) {
   if (
-    event.workOrderId !== command.workOrderId ||
-    event.afterStatus !== command.targetStatus ||
-    event.actorId !== command.actorId ||
-    !sameDate(event.occurredAt, command.occurredAt) ||
-    !sameSource(event, command.source) ||
-    !isDeepStrictEqual(event.detailSnapshot, transitionPayload(command))
+    event.beforeStatus === null ||
+    event.beforeStatus !== event.afterStatus ||
+    !sameCommandEvent(event, command, AssetWorkOrderEventType.ASSIGNED, {
+      command,
+      kind: "assign"
+    })
   ) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
   }
-  return replayEventWorkOrder(tx, event);
+  return replayEventWorkOrder(event, { command, kind: "assign" });
 }
 
-async function replayEvent(
-  tx: Prisma.TransactionClient,
-  event: AssetWorkOrderEvent,
-  command: AppendWorkOrderEventCommand
-) {
-  if (!sameEvent(event, command, command.eventType, command.detailSnapshot as Prisma.JsonObject)) {
+function replayTransition(event: AssetWorkOrderEvent, command: TransitionWorkOrderCommand) {
+  const beforeStatus = event.beforeStatus;
+  if (
+    beforeStatus === null ||
+    event.eventType !== transitionEventType(beforeStatus, command.targetStatus) ||
+    event.afterStatus !== command.targetStatus ||
+    !sameCommandEvent(event, command, event.eventType, { command, kind: "transition" }) ||
+    !isDeepStrictEqual(commandPayload(event), transitionPayload(command, beforeStatus))
+  ) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
   }
-  return replayEventWorkOrder(tx, event);
+  return replayEventWorkOrder(event, { command, kind: "transition" });
 }
 
-async function replayEventWorkOrder(tx: Prisma.TransactionClient, event: AssetWorkOrderEvent) {
-  const workOrder = await tx.assetWorkOrder.findUnique({ where: { id: event.workOrderId } });
-  if (!workOrder) throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND);
-  return { event, workOrder, wrote: false } as WorkOrderCommandOutcome;
+function replayEvent(
+  event: AssetWorkOrderEvent,
+  command: AppendWorkOrderEventCommand,
+  envelope: CommandEnvelopeInput
+) {
+  if (!sameCommandEvent(event, command, command.eventType, envelope)) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  return replayEventWorkOrder(event, envelope);
+}
+
+function replayEventWorkOrder(event: AssetWorkOrderEvent, envelope: CommandEnvelopeInput) {
+  return {
+    event,
+    workOrder: envelopeWorkOrder(event, envelope),
+    wrote: false
+  } as WorkOrderCommandOutcome;
 }
 
 async function replayEvidence(
@@ -792,12 +904,16 @@ async function replayEvidence(
     throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
   }
   const event = await findEventBySource(tx, command.source);
-  if (!event || event.workOrderId !== command.workOrderId) {
+  const envelope = { command, kind: "evidence" } as const;
+  if (
+    !event ||
+    event.beforeStatus !== null ||
+    event.afterStatus !== null ||
+    !sameCommandEvent(event, command, AssetWorkOrderEventType.EVIDENCE_ATTACHED, envelope)
+  ) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
   }
-  const workOrder = await tx.assetWorkOrder.findUnique({ where: { id: command.workOrderId } });
-  if (!workOrder) throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND);
-  return { evidence, event, workOrder, wrote: false };
+  return { evidence, ...replayEventWorkOrder(event, envelope) };
 }
 
 function sameCreate(
@@ -806,45 +922,37 @@ function sameCreate(
   command: CreateWorkOrderCommand
 ) {
   return (
-    existing.vehicleId === command.vehicleId &&
-    existing.orderId === command.orderId &&
-    existing.contractId === command.contractId &&
-    existing.customerId === command.customerId &&
-    existing.assetOwnerId === command.assetOwnerId &&
-    existing.relatedWorkOrderId === command.relatedWorkOrderId &&
-    existing.workOrderType === command.workOrderType &&
-    existing.priority === command.priority &&
-    existing.costConfirmationRequired === command.costConfirmationRequired &&
-    existing.description === command.description &&
-    isDeepStrictEqual(existing.authoritySnapshot, command.authoritySnapshot) &&
-    isDeepStrictEqual(existing.metadata, command.metadata) &&
-    existing.createdBy === command.actorId &&
     event.workOrderId === existing.id &&
     event.eventType === AssetWorkOrderEventType.CREATED &&
     event.sequence === 1 &&
-    event.actorId === command.actorId &&
-    sameDate(event.occurredAt, command.occurredAt) &&
-    sameSource(event, command.source)
-  );
-}
-
-function sameEvent(
-  event: AssetWorkOrderEvent,
-  command: AppendWorkOrderEventCommand | AssignWorkOrderCommand,
-  eventType: AssetWorkOrderEventType,
-  detailSnapshot: Prisma.JsonObject
-) {
-  const beforeStatus = "beforeStatus" in command ? command.beforeStatus : event.beforeStatus;
-  const afterStatus = "afterStatus" in command ? command.afterStatus : event.afterStatus;
-  return (
-    event.workOrderId === command.workOrderId &&
-    event.eventType === eventType &&
-    event.beforeStatus === beforeStatus &&
-    event.afterStatus === afterStatus &&
+    event.beforeStatus === null &&
+    event.afterStatus === AssetWorkOrderStatus.PENDING &&
     event.actorId === command.actorId &&
     sameDate(event.occurredAt, command.occurredAt) &&
     sameSource(event, command.source) &&
-    isDeepStrictEqual(event.detailSnapshot, detailSnapshot)
+    sameCommandEnvelope(event, { command, kind: "create" })
+  );
+}
+
+function sameCommandEvent(
+  event: AssetWorkOrderEvent,
+  command:
+    | AppendWorkOrderEventCommand
+    | AppendEvidenceCommand
+    | AssignWorkOrderCommand
+    | TransitionWorkOrderCommand,
+  eventType: AssetWorkOrderEventType,
+  envelope: CommandEnvelopeInput
+) {
+  return (
+    event.workOrderId === command.workOrderId &&
+    event.eventType === eventType &&
+    (!("beforeStatus" in command) || event.beforeStatus === command.beforeStatus) &&
+    (!("afterStatus" in command) || event.afterStatus === command.afterStatus) &&
+    event.actorId === command.actorId &&
+    sameDate(event.occurredAt, command.occurredAt) &&
+    sameSource(event, command.source) &&
+    sameCommandEnvelope(event, envelope)
   );
 }
 
@@ -874,8 +982,12 @@ function assignmentPayload(command: AssignWorkOrderCommand) {
   });
 }
 
-function transitionPayload(command: TransitionWorkOrderCommand) {
+function transitionPayload(
+  command: TransitionWorkOrderCommand,
+  beforeStatus: AssetWorkOrderStatus
+) {
   return normalizeSnapshot({
+    beforeStatus,
     closeReason: command.closeReason,
     detailSnapshot: command.detailSnapshot,
     expectedVersion: command.expectedVersion,

@@ -18,6 +18,7 @@ import {
 } from "../src/asset-operations/asset-operations.repository";
 import type {
   AppendEvidenceCommand,
+  AppendNoteCommand,
   AppendWorkOrderEventCommand,
   CreateWorkOrderCommand,
   StableAssetOperationSource,
@@ -136,46 +137,132 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     expect(replayed.wrote).toBe(false);
   });
 
-  it("serializes a concurrent same-version transition into one exact event", async () => {
+  it("replays immutable post-command outcomes after later governed header changes", async () => {
+    const repository = new AssetOperationsRepository();
+    const create = createCommand(vehicleId, "snapshot-create");
+    const created = await readCommitted(prisma, (tx) => repository.createWorkOrder(tx, create));
+
+    const assign = assignmentCommand(created.workOrder.id, userId, "snapshot-assign-1", 0, 5);
+    const assigned = await readCommitted(prisma, (tx) => repository.assignWorkOrder(tx, assign));
+    await expect(
+      readCommitted(prisma, (tx) => repository.createWorkOrder(tx, create))
+    ).resolves.toEqual({ ...created, wrote: false });
+
+    const transition = {
+      ...transitionCommand(created.workOrder.id, "snapshot-transition"),
+      expectedVersion: 1
+    };
+    const transitioned = await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(tx, transition)
+    );
+    await expect(
+      readCommitted(prisma, (tx) => repository.assignWorkOrder(tx, assign))
+    ).resolves.toEqual({ ...assigned, wrote: false });
+
+    await readCommitted(prisma, (tx) =>
+      repository.assignWorkOrder(
+        tx,
+        assignmentCommand(created.workOrder.id, userId, "snapshot-assign-2", 2, 12)
+      )
+    );
+    await expect(
+      readCommitted(prisma, (tx) => repository.transitionWorkOrder(tx, transition))
+    ).resolves.toEqual({ ...transitioned, wrote: false });
+
+    const note = noteCommand(created.workOrder.id, "snapshot-note");
+    const noted = await readCommitted(prisma, (tx) => repository.appendNote(tx, note));
+    await readCommitted(prisma, (tx) =>
+      repository.assignWorkOrder(
+        tx,
+        assignmentCommand(created.workOrder.id, userId, "snapshot-assign-3", 3, 21)
+      )
+    );
+    await expect(readCommitted(prisma, (tx) => repository.appendNote(tx, note))).resolves.toEqual({
+      ...noted,
+      wrote: false
+    });
+
+    const evidence = evidenceCommand(
+      created.workOrder.id,
+      await createFileFixture(prisma, "snapshot"),
+      "snapshot-evidence"
+    );
+    const attached = await readCommitted(prisma, (tx) => repository.appendEvidence(tx, evidence));
+    await readCommitted(prisma, (tx) =>
+      repository.assignWorkOrder(
+        tx,
+        assignmentCommand(created.workOrder.id, userId, "snapshot-assign-4", 4, 32)
+      )
+    );
+    await expect(
+      readCommitted(prisma, (tx) => repository.appendEvidence(tx, evidence))
+    ).resolves.toEqual({ ...attached, wrote: false });
+  });
+
+  it("serializes distinct-source same-version transitions on the work-order header", async () => {
     const repository = new AssetOperationsRepository();
     const created = await readCommitted(prisma, (tx) =>
       repository.createWorkOrder(tx, createCommand(vehicleId, "transition-create"))
     );
-    const transition = transitionCommand(created.workOrder.id, "transition-exact");
+    const firstTransition = transitionCommand(created.workOrder.id, "transition-header-first");
+    const secondTransition = transitionCommand(created.workOrder.id, "transition-header-second");
     const first = await holdFirstTransaction(prisma, (tx) =>
-      repository.transitionWorkOrder(tx, transition)
+      repository.transitionWorkOrder(tx, firstTransition)
     );
-    const secondPromise = readCommitted(prisma, (tx) =>
-      repository.transitionWorkOrder(tx, transition)
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) => repository.transitionWorkOrder(tx, secondTransition))
     );
-    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
-    first.release.resolve();
-    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+    try {
+      expect(await waitForDatabaseLock(prisma, 'FROM "asset_work_order"')).toBe(true);
+    } finally {
+      first.release.resolve();
+    }
+    const firstResult = await first.result;
+    const secondResult = await secondPromise;
 
-    expect(secondResult.event.id).toBe(firstResult.event.id);
-    expect(secondResult.workOrder.version).toBe(1);
-    await expect(countEventsBySource(prisma, transition.source)).resolves.toBe(1);
+    expect(firstResult.workOrder.version).toBe(1);
+    expectConflict(
+      rejectedValue(secondResult),
+      ASSET_OPERATION_ERROR_CODE.WORK_ORDER_VERSION_CONFLICT
+    );
+    await expect(
+      prisma.assetWorkOrder.findUnique({ where: { id: created.workOrder.id } })
+    ).resolves.toMatchObject({ status: AssetWorkOrderStatus.IN_PROGRESS, version: 1 });
+    await expect(
+      prisma.assetWorkOrderEvent.count({
+        where: {
+          eventType: AssetWorkOrderEventType.STARTED,
+          workOrderId: created.workOrder.id
+        }
+      })
+    ).resolves.toBe(1);
   });
 
-  it("serializes concurrent appendEvent replay and keeps sequence monotonic", async () => {
+  it("serializes distinct-source notes on the header into adjacent unique sequences", async () => {
     const repository = new AssetOperationsRepository();
     const created = await readCommitted(prisma, (tx) =>
       repository.createWorkOrder(tx, createCommand(vehicleId, "event-create"))
     );
-    const command = eventCommand(created.workOrder.id, "event-exact");
+    const firstCommand = eventCommand(created.workOrder.id, "event-header-first");
+    const secondCommand = eventCommand(created.workOrder.id, "event-header-second");
     const first = await holdFirstTransaction(prisma, (tx) =>
-      appendInternalEvent(repository, tx, command)
+      appendInternalEvent(repository, tx, firstCommand)
     );
-    const secondPromise = readCommitted(prisma, (tx) =>
-      appendInternalEvent(repository, tx, command)
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) => appendInternalEvent(repository, tx, secondCommand))
     );
-    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
-    first.release.resolve();
+    try {
+      expect(await waitForDatabaseLock(prisma, 'FROM "asset_work_order"')).toBe(true);
+    } finally {
+      first.release.resolve();
+    }
     const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
 
-    expect(secondResult.event.id).toBe(firstResult.event.id);
     expect(firstResult.event.sequence).toBe(2);
-    await expect(workOrderSequences(prisma, created.workOrder.id)).resolves.toEqual([1, 2]);
+    expect(secondResult.status).toBe("fulfilled");
+    if (secondResult.status === "rejected") throw secondResult.reason;
+    expect(secondResult.value.event.sequence).toBe(3);
+    await expect(workOrderSequences(prisma, created.workOrder.id)).resolves.toEqual([1, 2, 3]);
   });
 
   it("allows one concurrent successor for an immutable evidence row", async () => {
@@ -289,6 +376,36 @@ function transitionCommand(workOrderId: string, label: string): TransitionWorkOr
     solution: null,
     source: source(label),
     targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+    workOrderId
+  };
+}
+
+function assignmentCommand(
+  workOrderId: string,
+  assignedUserId: string,
+  label: string,
+  expectedVersion: number,
+  minute: number
+) {
+  return {
+    actorId: assignedUserId,
+    assignedUserId,
+    detailSnapshot: { fixture: FIXTURE_PREFIX, label },
+    expectedVersion,
+    occurredAt: new Date(`2026-08-20T01:${String(minute).padStart(2, "0")}:00.000Z`),
+    scheduledAt: new Date("2026-08-21T01:00:00.000Z"),
+    slaDueAt: new Date("2026-08-22T01:00:00.000Z"),
+    source: source(label),
+    workOrderId
+  };
+}
+
+function noteCommand(workOrderId: string, label: string): AppendNoteCommand {
+  return {
+    actorId: null,
+    note: label,
+    occurredAt: new Date("2026-08-20T01:20:00.000Z"),
+    source: source(label),
     workOrderId
   };
 }

@@ -607,13 +607,21 @@ function inMemoryPrisma(persisted, { failAudit = false, forbidOwnershipAccess = 
 function inMemoryTransaction(state, { failAudit, forbidOwnershipAccess }) {
   const tx = {
     $executeRaw: async (query) => {
-      const sql = String(query?.strings?.join(" ") ?? query ?? "");
-      if (forbidOwnershipAccess && /asset_owner|vehicle_ownership_period/.test(sql)) {
-        throw new Error(`permission-only SQL touched ownership state: ${sql}`);
-      }
+      assertPermissionOnlySql(query, forbidOwnershipAccess);
       return 0;
     },
-    $queryRaw: async () => [{ locked: true }],
+    $executeRawUnsafe: async (query) => {
+      assertPermissionOnlySql(query, forbidOwnershipAccess);
+      return 0;
+    },
+    $queryRaw: async (query) => {
+      assertPermissionOnlySql(query, forbidOwnershipAccess);
+      return [{ locked: true }];
+    },
+    $queryRawUnsafe: async (query) => {
+      assertPermissionOnlySql(query, forbidOwnershipAccess);
+      return [{ locked: true }];
+    },
     assetOwner: {
       async create({ data }) {
         const row = {
@@ -728,6 +736,13 @@ function inMemoryTransaction(state, { failAudit, forbidOwnershipAccess }) {
       return Reflect.get(target, property, receiver);
     }
   });
+}
+
+function assertPermissionOnlySql(query, forbidOwnershipAccess) {
+  const sql = String(query?.strings?.join(" ") ?? query ?? "");
+  if (forbidOwnershipAccess && /asset_owner|vehicle_ownership_period/i.test(sql)) {
+    throw new Error(`permission-only SQL touched ownership state: ${sql}`);
+  }
 }
 
 function platformOwner() {

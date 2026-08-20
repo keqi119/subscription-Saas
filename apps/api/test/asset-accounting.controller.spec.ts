@@ -1,8 +1,16 @@
 import "reflect-metadata";
 
-import { INestApplication, Patch, Post, RequestMethod, ValidationPipe } from "@nestjs/common";
+import {
+  Controller,
+  Get,
+  INestApplication,
+  Patch,
+  Post,
+  RequestMethod,
+  ValidationPipe
+} from "@nestjs/common";
 import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from "@nestjs/common/constants";
-import { Reflector } from "@nestjs/core";
+import { MetadataScanner, Reflector } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
 import {
   BusinessExceptionApprovalStatus,
@@ -138,6 +146,41 @@ describe("AssetAccountingController governed boundary", () => {
       expect(response.status, JSON.stringify(body)).toBe(400);
     }
     expect(service.appendCost).not.toHaveBeenCalled();
+  });
+
+  it("accepts every exact public write maximum with exact converted delegation", async () => {
+    const maximumReason = "r".repeat(2000);
+    const maximumSource = {
+      ...source(),
+      key: "k".repeat(255),
+      type: "t".repeat(64)
+    };
+    const maximumSnapshot = nestedSnapshot(32);
+    const body = {
+      ...appendBody(),
+      amountCents: "9223372036854775807",
+      reason: maximumReason,
+      responsibilitySnapshot: maximumSnapshot,
+      source: maximumSource
+    };
+
+    const response = await post(
+      "/api/asset-accounting/cost-entries",
+      body,
+      "confirm",
+      maximumSource.key
+    );
+
+    expect(response.status).toBe(201);
+    expect(service.appendCost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 9_223_372_036_854_775_807n,
+        reason: maximumReason,
+        responsibilitySnapshot: maximumSnapshot,
+        source: maximumSource
+      }),
+      expect.objectContaining({ idempotencyKey: maximumSource.key })
+    );
   });
 
   it("rejects every financial write boundary before append or reverse service delegation", async () => {
@@ -452,6 +495,66 @@ describe("AssetAccountingController governed boundary", () => {
     }
   );
 
+  it("matches Nest prototype traversal and de-duplicates overridden route methods", () => {
+    class BaseController {
+      inheritedPostMutation() {}
+      inheritedPatchMutation() {}
+      overriddenMutation() {}
+    }
+    decorateRoute(
+      BaseController.prototype,
+      "inheritedPostMutation",
+      Post("exception-approvals/:id/inherited-post"),
+      PermissionCode.BUSINESS_EXCEPTION_APPROVE
+    );
+    decorateRoute(
+      BaseController.prototype,
+      "inheritedPatchMutation",
+      Patch("exception-approvals/:id/inherited-patch"),
+      PermissionCode.BUSINESS_EXCEPTION_APPROVE
+    );
+    decorateRoute(
+      BaseController.prototype,
+      "overriddenMutation",
+      Post("exception-approvals/:id/overridden-base"),
+      PermissionCode.BUSINESS_EXCEPTION_APPROVE
+    );
+
+    class DerivedController extends BaseController {
+      override overriddenMutation() {}
+    }
+    Controller("asset-accounting")(DerivedController);
+    decorateRoute(
+      DerivedController.prototype,
+      "overriddenMutation",
+      Get("cost-entries/override"),
+      PermissionCode.VEHICLE_COST_LEDGER_VIEW
+    );
+
+    expect(controllerRouteInventory(DerivedController)).toEqual(
+      [
+        [
+          "inheritedPatchMutation",
+          "asset-accounting/exception-approvals/:id/inherited-patch",
+          RequestMethod.PATCH,
+          [PermissionCode.BUSINESS_EXCEPTION_APPROVE]
+        ],
+        [
+          "inheritedPostMutation",
+          "asset-accounting/exception-approvals/:id/inherited-post",
+          RequestMethod.POST,
+          [PermissionCode.BUSINESS_EXCEPTION_APPROVE]
+        ],
+        [
+          "overriddenMutation",
+          "asset-accounting/cost-entries/override",
+          RequestMethod.GET,
+          [PermissionCode.VEHICLE_COST_LEDGER_VIEW]
+        ]
+      ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    );
+  });
+
   function get(path: string, token?: string) {
     return fetch(`${baseUrl}${path}`, {
       headers: token ? { authorization: `Bearer ${token}` } : undefined
@@ -674,10 +777,11 @@ function routeMetadata() {
   ] as const;
 }
 
-function controllerRouteInventory() {
-  const rootPath = Reflect.getMetadata(PATH_METADATA, AssetAccountingController) as string;
-  const prototype = AssetAccountingController.prototype as unknown as Record<string, unknown>;
-  return Object.getOwnPropertyNames(prototype)
+function controllerRouteInventory(controller: { prototype: object } = AssetAccountingController) {
+  const rootPath = Reflect.getMetadata(PATH_METADATA, controller) as string;
+  const prototype = controller.prototype as Record<string, unknown>;
+  return new MetadataScanner()
+    .getAllMethodNames(prototype)
     .flatMap((methodName) => {
       const handler = prototype[methodName];
       if (typeof handler !== "function") return [];
@@ -690,6 +794,17 @@ function controllerRouteInventory() {
       return [[methodName, `${rootPath}/${methodPath}`, verb, permissions] as const];
     })
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function decorateRoute(
+  prototype: object,
+  name: string,
+  route: MethodDecorator,
+  permission: PermissionCode
+) {
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, name)!;
+  route(prototype, name, descriptor);
+  RequirePermissions(permission)(prototype, name, descriptor);
 }
 
 function expectedRouteInventory() {

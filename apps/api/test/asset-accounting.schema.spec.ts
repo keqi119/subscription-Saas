@@ -17,7 +17,15 @@ const hardeningMigrationPath = resolve(
 const hardeningMigration = existsSync(hardeningMigrationPath)
   ? readFileSync(hardeningMigrationPath, "utf8")
   : "";
-const finalMigration = `${migration}\n${hardeningMigration}`;
+const reversalPeriodMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260821000200_stage1c_reversal_period_integrity/migration.sql"
+);
+const reversalPeriodMigration = existsSync(reversalPeriodMigrationPath)
+  ? readFileSync(reversalPeriodMigrationPath, "utf8")
+  : "";
+const migrationPrefix = `${migration}\n${hardeningMigration}`;
+const finalMigration = `${migrationPrefix}\n${reversalPeriodMigration}`;
 
 function prismaBlockFrom(source: string, kind: "enum" | "model", name: string) {
   return source.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -273,6 +281,8 @@ const reversalDimensionFields = [
   "customer_id",
   "asset_owner_id",
   "work_order_id",
+  "occurred_on",
+  "accounting_period",
   "action_type",
   "cost_category",
   "responsible_party_type",
@@ -321,7 +331,7 @@ function mutateReversalOriginalDimensionFields(
     comparison[0],
     `${comparison[1]}${replacement}${comparison[3]}`
   );
-  return source.replace(functionSql, mutatedFunction);
+  return source.replace(functionSql, () => mutatedFunction);
 }
 
 const finalTriggerContracts = [
@@ -535,6 +545,17 @@ const enumContracts = [
 ] as const;
 
 describe("Stage 1C-C asset accounting persistence contract", () => {
+  it("adds reversal date and period equality through one forward correction", () => {
+    expect(reversalPeriodMigration).not.toBe("");
+    expect(
+      reversalPeriodMigration.match(
+        /CREATE OR REPLACE FUNCTION "public"\."enforce_vehicle_cost_ledger_reversal"\(\)/g
+      )
+    ).toHaveLength(1);
+    expect(reversalPeriodMigration).not.toMatch(/ALTER TABLE|DROP (?:FUNCTION|TRIGGER|TABLE)/);
+    expectFinalPersistenceContract(finalMigration, schema);
+  });
+
   it("defines the exact approved Prisma and PostgreSQL enums", () => {
     for (const contract of enumContracts) {
       expect(enumValues(contract.prismaName), contract.prismaName).toEqual(contract.values);
@@ -770,6 +791,8 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       expect(mutatedSchema, `${label} mutation applied`).not.toBe(schema);
       expect(() => expectFinalPersistenceContract(finalMigration, mutatedSchema)).toThrow(label);
     };
+    const replaceHardening = (before: string, after: string) =>
+      `${migration}\n${hardeningMigration.replace(before, after)}\n${reversalPeriodMigration}`;
 
     for (const relation of restrictivePrismaRelations) {
       const field = prismaFieldLine(schema, relation.model, relation.field);
@@ -797,56 +820,54 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       expectMigrationMutationToFail(foreignKey[1], finalMigration.replace(statement, ""));
     }
 
-    const reversalComparatorMutation = hardeningMigration.replace(
+    const reversalComparatorMutation = reversalPeriodMigration.replace(
       'NEW."amount_cents" <> -original."amount_cents"',
       'NEW."amount_cents" = -original."amount_cents"'
     );
     expectMigrationMutationToFail(
       "reversal amount comparator",
-      `${migration}\n${reversalComparatorMutation}`
+      `${migrationPrefix}\n${reversalComparatorMutation}`
     );
 
     for (const [index, field] of reversalDimensionFields.entries()) {
       expectMigrationMutationToFail(
         "reversal original dimension pairing",
-        `${migration}\n${mutateReversalOriginalDimensionFields(hardeningMigration, (fields) =>
-          fields.filter((_, fieldIndex) => fieldIndex !== index)
+        `${migrationPrefix}\n${mutateReversalOriginalDimensionFields(
+          reversalPeriodMigration,
+          (fields) => fields.filter((_, fieldIndex) => fieldIndex !== index)
         )}`
       );
 
       const nextIndex = (index + 1) % reversalDimensionFields.length;
       expectMigrationMutationToFail(
         "reversal original dimension pairing",
-        `${migration}\n${mutateReversalOriginalDimensionFields(hardeningMigration, (fields) => {
-          const swapped = [...fields];
-          const currentField = swapped[index];
-          const nextField = swapped[nextIndex];
-          if (currentField === undefined || nextField === undefined) {
-            throw new Error("reversal dimension swap index is out of bounds");
+        `${migrationPrefix}\n${mutateReversalOriginalDimensionFields(
+          reversalPeriodMigration,
+          (fields) => {
+            const swapped = [...fields];
+            const currentField = swapped[index];
+            const nextField = swapped[nextIndex];
+            if (currentField === undefined || nextField === undefined) {
+              throw new Error("reversal dimension swap index is out of bounds");
+            }
+            [swapped[index], swapped[nextIndex]] = [nextField, currentField];
+            return swapped;
           }
-          [swapped[index], swapped[nextIndex]] = [nextField, currentField];
-          return swapped;
-        })}`
+        )}`
       );
       expect(field).toBe(reversalDimensionFields[index]);
     }
 
-    const versionMutation = hardeningMigration.replace(
+    const versionMutation = replaceHardening(
       'NEW."version" <> OLD."version" + 1',
       'NEW."version" <> OLD."version" + 2'
     );
-    expectMigrationMutationToFail("approval version increment", `${migration}\n${versionMutation}`);
+    expectMigrationMutationToFail("approval version increment", versionMutation);
 
-    const pendingCommentMutation = hardeningMigration.replace(
-      ' AND "decision_comment" IS NULL',
-      ""
-    );
-    expectMigrationMutationToFail(
-      "pending decision comment",
-      `${migration}\n${pendingCommentMutation}`
-    );
+    const pendingCommentMutation = replaceHardening(' AND "decision_comment" IS NULL', "");
+    expectMigrationMutationToFail("pending decision comment", pendingCommentMutation);
 
-    const insertGuardMutation = finalMigration.replace(
+    const insertGuardMutation = replaceHardening(
       "IF TG_OP = 'INSERT' THEN",
       "IF TG_OP = 'CREATE' THEN"
     );
@@ -866,38 +887,35 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       ["approval update transition predicate", ")\n        OR (OLD.", ")\n        AND (OLD."],
       ["approval update transition predicate", "IF NOT (\n        (OLD.", "IF (\n        (OLD."]
     ] as const) {
-      expectMigrationMutationToFail(
-        label,
-        `${migration}\n${hardeningMigration.replace(before, after)}`
-      );
+      expectMigrationMutationToFail(label, replaceHardening(before, after));
     }
 
-    const appendOnlyWiringMutation = hardeningMigration.replace(
+    const appendOnlyWiringMutation = replaceHardening(
       'EXECUTE FUNCTION "public"."reject_asset_accounting_append_only_mutation"()',
       'EXECUTE FUNCTION "public"."enforce_vehicle_cost_ledger_reversal"()'
     );
     expectMigrationMutationToFail(
       "vehicle_cost_ledger_entry_append_only",
-      `${migration}\n${appendOnlyWiringMutation}`
+      appendOnlyWiringMutation
     );
 
     const finalReversalTrigger = latestMigrationTrigger(
-      hardeningMigration,
+      finalMigration,
       "vehicle_cost_ledger_entry_reversal_integrity"
     );
     expectMigrationMutationToFail(
       "vehicle_cost_ledger_entry_reversal_integrity",
-      `${migration}\n${hardeningMigration.replace(
+      finalMigration.replace(
         finalReversalTrigger,
         finalReversalTrigger.replace(
           'EXECUTE FUNCTION "public"."enforce_vehicle_cost_ledger_reversal"()',
           'EXECUTE FUNCTION "public"."reject_asset_accounting_append_only_mutation"()'
         )
-      )}`
+      )
     );
     expectMigrationMutationToFail(
       "vehicle_cost_ledger_entry_reversal_integrity",
-      `${migration}\n${hardeningMigration.replace(finalReversalTrigger, "")}`
+      finalMigration.replace(finalReversalTrigger, "")
     );
   });
 });

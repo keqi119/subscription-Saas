@@ -1328,7 +1328,8 @@ COMMIT;
 ### 7.6 数据库专属约束、索引与不可变 trigger catalog
 
 以下 catalog 查询预期零行。它绑定 `current_schema()`，检查三个 row-level `BEFORE UPDATE OR DELETE`
-trigger 的精确 trigger→function 身份、启用状态和函数语义，并检查 migration 中 Prisma drift 无法完整表达的
+trigger 的完整规范化定义、精确 trigger→function 身份、启用状态和函数语义；`tgattr` 必须为空，不能
+缩窄为 `UPDATE OF` 部分列，`tgqual` 必须为空，不能增加 `WHEN` 条件。它还检查 migration 中 Prisma drift 无法完整表达的
 十个 CHECK、七个 source/sequence/successor UNIQUE guard 以及 active restriction partial index。缺失、重复、
 禁用、仅存在于错误 schema、名称/列序/谓词/函数体定义漂移都会返回 stop row：
 
@@ -1336,14 +1337,25 @@ trigger 的精确 trigger→function 身份、启用状态和函数语义，并�
 
 ```sql
 BEGIN TRANSACTION READ ONLY;
-WITH expected_trigger(table_name, trigger_name, function_name) AS (
+WITH expected_trigger_raw(table_name, trigger_name, function_name, trigger_definition) AS (
   VALUES
     ('asset_work_order_event', 'asset_work_order_event_append_only',
-      'reject_asset_operation_append_only_mutation'),
+      'reject_asset_operation_append_only_mutation',
+      $definition$CREATE TRIGGER asset_work_order_event_append_only BEFORE DELETE OR UPDATE ON asset_work_order_event FOR EACH ROW EXECUTE FUNCTION reject_asset_operation_append_only_mutation()$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_append_only',
-      'reject_asset_operation_append_only_mutation'),
+      'reject_asset_operation_append_only_mutation',
+      $definition$CREATE TRIGGER asset_work_order_evidence_append_only BEFORE DELETE OR UPDATE ON asset_work_order_evidence FOR EACH ROW EXECUTE FUNCTION reject_asset_operation_append_only_mutation()$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_release_only',
-      'enforce_vehicle_operational_restriction_release')
+      'enforce_vehicle_operational_restriction_release',
+      $definition$CREATE TRIGGER vehicle_operational_restriction_release_only BEFORE DELETE OR UPDATE ON vehicle_operational_restriction FOR EACH ROW EXECUTE FUNCTION enforce_vehicle_operational_restriction_release()$definition$)
+), expected_trigger AS (
+  SELECT
+    table_name,
+    trigger_name,
+    function_name,
+    btrim(regexp_replace(trigger_definition, '\s+', ' ', 'g'))
+      AS normalized_trigger_definition
+  FROM expected_trigger_raw
 ), expected_function_raw(function_name, function_definition) AS (
   VALUES
     ('reject_asset_operation_append_only_mutation', $definition$CREATE OR REPLACE FUNCTION reject_asset_operation_append_only_mutation() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = format('%I is append-only', TG_TABLE_NAME); END; $function$$definition$),
@@ -1361,9 +1373,14 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     trigger.tgname AS trigger_name,
     trigger.tgenabled AS enabled,
     trigger.tgtype = 27 AS exact_row_before_update_delete,
+    trigger.tgattr = ''::int2vector AS no_update_column_restriction,
+    trigger.tgqual IS NULL AS no_when_condition,
     function_schema.nspname AS function_schema,
     function_name.proname AS function_name,
-    pg_get_triggerdef(trigger.oid) AS trigger_definition,
+    btrim(regexp_replace(
+      replace(pg_get_triggerdef(trigger.oid), table_schema.nspname || '.', ''),
+      '\s+', ' ', 'g'
+    )) AS normalized_trigger_definition,
     btrim(regexp_replace(
       replace(pg_get_functiondef(trigger.tgfoid), function_schema.nspname || '.', ''),
       '\s+', ' ', 'g'
@@ -1477,7 +1494,7 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     expected.trigger_name AS object_name,
     string_agg(DISTINCT actual.table_schema, ',' ORDER BY actual.table_schema) AS actual_schemas,
     md5(COALESCE(string_agg(
-      actual.trigger_definition || ':' || actual.normalized_function_definition,
+      actual.normalized_trigger_definition || ':' || actual.normalized_function_definition,
       ',' ORDER BY actual.table_schema, actual.trigger_name
     ), '')) AS definition_fingerprint
   FROM expected_trigger AS expected
@@ -1487,7 +1504,7 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     ON actual.table_name = expected.table_name
    AND actual.trigger_name = expected.trigger_name
   GROUP BY expected.table_name, expected.trigger_name, expected.function_name,
-    expected_body.normalized_function_definition
+    expected.normalized_trigger_definition, expected_body.normalized_function_definition
   HAVING COUNT(*) FILTER (WHERE actual.table_schema = current_schema()) <> 1
      OR COUNT(*) FILTER (WHERE actual.table_schema <> current_schema()) > 0
      OR BOOL_OR(
@@ -1496,7 +1513,10 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
          OR actual.function_name IS DISTINCT FROM expected.function_name
          OR actual.enabled IS DISTINCT FROM 'O'
          OR actual.exact_row_before_update_delete IS NOT TRUE
-         OR actual.trigger_definition !~ 'FOR EACH ROW EXECUTE FUNCTION'
+         OR actual.no_update_column_restriction IS NOT TRUE
+         OR actual.no_when_condition IS NOT TRUE
+         OR actual.normalized_trigger_definition IS DISTINCT FROM
+           expected.normalized_trigger_definition
          OR actual.normalized_function_definition IS DISTINCT FROM
            expected_body.normalized_function_definition
        )

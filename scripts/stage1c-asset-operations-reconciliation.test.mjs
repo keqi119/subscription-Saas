@@ -180,6 +180,55 @@ function extractValuesCte(sql, cteName) {
   return [...match[1].matchAll(/\('([A-Z_]+)'\)/g)].map((value) => value[1]);
 }
 
+function extractBoundedCteBody(sql, cteName, nextCteName) {
+  const match = sql.match(
+    new RegExp(
+      `\\),\\s*${cteName}\\s+AS\\s*\\(([\\s\\S]*?)\\n\\),\\s*${nextCteName}\\s+AS\\s*\\(`,
+      "i"
+    )
+  );
+  assert.ok(match, `missing or unbounded CTE: ${cteName}`);
+  return normalizeSql(match[1]);
+}
+
+function validateSourceSqlContract(blocks, name) {
+  const sql = blocks.get(name);
+  assert.ok(sql, `missing SQL block ${name}`);
+  assert.deepEqual(
+    extractValuesCte(sql, "material_pair_type"),
+    materialPairEventTypes,
+    `${name} material-pair event types must remain exact and ordered`
+  );
+  assert.deepEqual(
+    extractValuesCte(sql, "event_only_type"),
+    eventOnlyEventTypes,
+    `${name} event-only event types must remain exact and ordered`
+  );
+  assert.equal(
+    extractBoundedCteBody(sql, "authoritative_link_owner", "source_event"),
+    normalizeSql(`
+      SELECT *
+      FROM collision_material_owner
+      WHERE owner_kind = 'ASSET_WORK_ORDER'
+         OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
+    `),
+    `${name} authoritative owner set must remain exact`
+  );
+  requireSqlFragments(blocks, name, [
+    `WHEN material.claim_id IS NULL THEN NOT EXISTS (
+      SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+    )`,
+    `WHEN NOT EXISTS (
+      SELECT 1 FROM material_pair_type
+      WHERE event_type = material.expected_event_type
+    ) THEN true`,
+    "COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1",
+    "WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1",
+    "WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1",
+    "ELSE COUNT(DISTINCT event_id) <> 0"
+  ]);
+}
+
 function validateEnumContracts(runbook, schema) {
   for (const [enumName, expectedValues] of Object.entries(stage1cBEnums)) {
     const schemaMatch = schema.match(new RegExp(`enum\\s+${enumName}\\s*\\{([\\s\\S]*?)\\n\\}`));
@@ -265,6 +314,7 @@ function validateRunbookSql(runbook) {
       "'RESTRICTION_CREATED'",
       "'RESTRICTION_RELEASED'"
     ]);
+    validateSourceSqlContract(blocks, name);
   }
 
   requireSqlFragments(blocks, "07-active-blocker-scopes", [
@@ -310,16 +360,7 @@ function validateRunbookSql(runbook) {
     "WHERE owner_kind = 'ASSET_WORK_ORDER'",
     "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'"
   ]);
-  assert.deepEqual(
-    extractValuesCte(blocks.get("12-source-integrity"), "material_pair_type"),
-    materialPairEventTypes,
-    "material-pair event types must remain exact and ordered"
-  );
-  assert.deepEqual(
-    extractValuesCte(blocks.get("12-source-integrity"), "event_only_type"),
-    eventOnlyEventTypes,
-    "event-only event types must remain exact and ordered"
-  );
+  validateSourceSqlContract(blocks, "12-source-integrity");
   requireSqlFragments(blocks, "13-event-sequence", [
     "row_number() OVER",
     "PARTITION BY event.work_order_id",
@@ -360,6 +401,8 @@ function validateRunbookSql(runbook) {
     "current_schema()",
     "trigger.tgfoid",
     "trigger.tgtype = 27",
+    "trigger.tgattr = ''::int2vector AS no_update_column_restriction",
+    "trigger.tgqual IS NULL AS no_when_condition",
     "btrim(regexp_replace(",
     "pg_get_functiondef",
     "pg_get_constraintdef",
@@ -367,6 +410,12 @@ function validateRunbookSql(runbook) {
     "FROM pg_constraint",
     "FROM pg_index",
     "actual.enabled IS DISTINCT FROM 'O'",
+    "actual.no_update_column_restriction IS NOT TRUE",
+    "actual.no_when_condition IS NOT TRUE",
+    "actual.normalized_trigger_definition IS DISTINCT FROM expected.normalized_trigger_definition",
+    "CREATE TRIGGER asset_work_order_event_append_only BEFORE DELETE OR UPDATE ON asset_work_order_event FOR EACH ROW EXECUTE FUNCTION reject_asset_operation_append_only_mutation()",
+    "CREATE TRIGGER asset_work_order_evidence_append_only BEFORE DELETE OR UPDATE ON asset_work_order_evidence FOR EACH ROW EXECUTE FUNCTION reject_asset_operation_append_only_mutation()",
+    "CREATE TRIGGER vehicle_operational_restriction_release_only BEFORE DELETE OR UPDATE ON vehicle_operational_restriction FOR EACH ROW EXECUTE FUNCTION enforce_vehicle_operational_restriction_release()",
     "actual.normalized_function_definition IS DISTINCT FROM expected.normalized_function_definition",
     "actual.normalized_constraint_definition IS DISTINCT FROM expected.normalized_constraint_definition",
     "actual.normalized_index_definition IS DISTINCT FROM expected.normalized_index_definition",
@@ -634,7 +683,10 @@ test("rejects dangerous reconciliation SQL mutations", async () => {
     [
       "drops restriction trigger",
       mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
-        sql.replace("vehicle_operational_restriction_release_only", "restriction_trigger_removed")
+        sql.replaceAll(
+          "vehicle_operational_restriction_release_only",
+          "restriction_trigger_removed"
+        )
       )
     ],
     [
@@ -730,6 +782,37 @@ test("rejects catalog definition and validity-state mutations", async () => {
   const runbook = await readOrEmpty(rolloutPath);
   const mutations = [
     [
+      "narrows event trigger to UPDATE OF one column",
+      "BEFORE DELETE OR UPDATE ON asset_work_order_event",
+      "BEFORE DELETE OR UPDATE OF detail_snapshot ON asset_work_order_event"
+    ],
+    [
+      "adds a false WHEN clause to evidence trigger",
+      "ON asset_work_order_evidence FOR EACH ROW EXECUTE FUNCTION",
+      "ON asset_work_order_evidence FOR EACH ROW WHEN (false) EXECUTE FUNCTION"
+    ],
+    [
+      "removes the trigger-definition comparator",
+      "actual.normalized_trigger_definition IS DISTINCT FROM\n           expected.normalized_trigger_definition",
+      "false"
+    ],
+    [
+      "drops the empty tgattr hard state",
+      "actual.no_update_column_restriction IS NOT TRUE",
+      "false"
+    ],
+    ["drops the null tgqual hard state", "actual.no_when_condition IS NOT TRUE", "false"],
+    [
+      "stops reading tgattr",
+      "trigger.tgattr = ''::int2vector AS no_update_column_restriction",
+      "true AS no_update_column_restriction"
+    ],
+    [
+      "stops reading tgqual",
+      "trigger.tgqual IS NULL AS no_when_condition",
+      "true AS no_when_condition"
+    ],
+    [
       "removes the normalized function comparator",
       "actual.normalized_function_definition IS DISTINCT FROM\n         expected.normalized_function_definition",
       "false"
@@ -800,12 +883,32 @@ test("pins event-only and material-pair source-integrity shapes", async () => {
     eventRequired: true
   };
 
-  assert.equal(
-    classifySyntheticSourceShape([], [{ eventType: "NOTE_ADDED" }]),
-    "UNLINKED_REVIEW_REQUIRED"
-  );
+  for (const eventType of eventOnlyEventTypes) {
+    assert.equal(
+      classifySyntheticSourceShape([], [{ eventType }]),
+      "UNLINKED_REVIEW_REQUIRED",
+      `${eventType} must remain a valid zero-material event-only source`
+    );
+  }
   assert.equal(
     classifySyntheticSourceShape([createOwner], [{ eventType: "NOTE_ADDED" }]),
+    "SOURCE_CONFLICT"
+  );
+  assert.equal(
+    classifySyntheticSourceShape([], [{ eventType: "NOTE_ADDED" }, { eventType: "ASSIGNED" }]),
+    "SOURCE_CONFLICT"
+  );
+  assert.equal(
+    classifySyntheticSourceShape(
+      [createOwner, startOwner],
+      [
+        {
+          eventType: createOwner.expectedEventType,
+          workOrderId: createOwner.workOrderId,
+          reference: createOwner.ownerId
+        }
+      ]
+    ),
     "SOURCE_CONFLICT"
   );
   for (const owner of [evidenceOwner, releaseOwner]) {
@@ -843,6 +946,32 @@ test("pins event-only and material-pair source-integrity shapes", async () => {
         [owner],
         [
           {
+            eventType: owner.expectedEventType,
+            workOrderId: "wrong-work-order",
+            reference: owner.ownerId
+          }
+        ]
+      ),
+      "SOURCE_CONFLICT"
+    );
+    assert.equal(
+      classifySyntheticSourceShape(
+        [owner],
+        [
+          {
+            eventType: owner.expectedEventType,
+            workOrderId: owner.workOrderId,
+            reference: "wrong-reference"
+          }
+        ]
+      ),
+      "SOURCE_CONFLICT"
+    );
+    assert.equal(
+      classifySyntheticSourceShape(
+        [owner],
+        [
+          {
             eventType: "NOTE_ADDED",
             workOrderId: owner.workOrderId,
             reference: owner.ownerId
@@ -869,6 +998,64 @@ test("pins event-only and material-pair source-integrity shapes", async () => {
   for (const [name, from, to] of sourceMutations) {
     const mutated = mutateSqlBlock(runbook, "12-source-integrity", (sql) => sql.replace(from, to));
     assert.notEqual(mutated, runbook, `source mutation did not alter SQL: ${name}`);
+    assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
+
+  const actualSqlMutations = [
+    [
+      "reverses block 12 zero-material event-only semantics",
+      "12-source-integrity",
+      (sql) =>
+        sql.replace(
+          "WHEN material.claim_id IS NULL THEN NOT EXISTS (",
+          "WHEN material.claim_id IS NULL THEN EXISTS ("
+        )
+    ],
+    [
+      "makes block 12 zero-material rows unconditional conflicts",
+      "12-source-integrity",
+      (sql) =>
+        sql.replace(
+          "WHEN material.claim_id IS NULL THEN NOT EXISTS (",
+          "WHEN material.claim_id IS NULL THEN true OR NOT EXISTS ("
+        )
+    ],
+    [
+      "reverses classifier zero-material event-only semantics",
+      "03-handover-source",
+      (sql) =>
+        sql.replace(
+          "WHEN material.claim_id IS NULL THEN NOT EXISTS (",
+          "WHEN material.claim_id IS NULL THEN EXISTS ("
+        )
+    ],
+    [
+      "appends evidence to classifier authority",
+      "03-handover-source",
+      (sql) =>
+        sql.replace(
+          "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'",
+          "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'\n     OR owner_kind = 'ASSET_WORK_ORDER_EVIDENCE'"
+        )
+    ],
+    [
+      "appends release to another classifier authority",
+      "04-return-source",
+      (sql) =>
+        sql.replace(
+          "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'",
+          "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'\n     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_RELEASE'"
+        )
+    ],
+    [
+      "removes classifier event-only type without changing block 12",
+      "03-handover-source",
+      (sql) => sql.replace("('ASSIGNED'), ", "")
+    ]
+  ];
+  for (const [name, blockName, mutate] of actualSqlMutations) {
+    const mutated = mutateSqlBlock(runbook, blockName, mutate);
+    assert.notEqual(mutated, runbook, `actual SQL mutation did not alter SQL: ${name}`);
     assert.throws(() => validateRunbookSql(mutated), undefined, name);
   }
 });

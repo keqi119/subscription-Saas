@@ -7,6 +7,7 @@ import {
   convergeVehicleModelDefinition,
   upsertCanonicalProductPriceRule
 } from "./seed-vehicle-model.mjs";
+import { synchronizeStage1cBaselineForDemoSeed } from "./seed-stage1c-baseline.mjs";
 
 config({ path: "../../.env" });
 config({ path: ".env" });
@@ -208,6 +209,9 @@ permissionRows.push(
   ["vehicle:history_view", "查看车辆销售价历史", "vehicle", "history_view"],
   ["vehicle_mileage:view", "查看车辆里程档案", "vehicle_mileage", "view"],
   ["vehicle:manage", "管理车辆资产", "vehicle", "manage"],
+  ["asset_facts:view", "查看车辆事实台账", "asset_facts", "view"],
+  ["asset_owner:manage", "管理车辆权属期间", "asset_facts", "owner_manage"],
+  ["vehicle_period:manage", "修复车辆订阅期间", "asset_facts", "period_manage"],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
   ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
@@ -910,6 +914,13 @@ const vehicleManagementPermissions = [
   "vehicle:review_sale_price",
   "vehicle:manage"
 ];
+const assetFactViewPermissions = ["asset_facts:view"];
+const assetFactOperationsPermissions = ["asset_facts:view", "vehicle_period:manage"];
+const assetFactManagementPermissions = [
+  "asset_facts:view",
+  "asset_owner:manage",
+  "vehicle_period:manage"
+];
 const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
 const vehicleInsuranceManagementPermissions = [
   "vehicle_insurance:view",
@@ -1162,6 +1173,7 @@ async function main() {
       "application:material_delete",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...assetFactOperationsPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
       ...vehicleModelManagementPermissions,
@@ -1280,6 +1292,7 @@ async function main() {
         "product_price_rule:view",
         ...productPackageViewPermissions,
         ...(roleCode === "AS" ? vehicleManagementPermissions : vehicleViewPermissions),
+        ...(roleCode === "AS" ? assetFactManagementPermissions : assetFactViewPermissions),
         ...(roleCode === "FI" ? vehicleModelManagementPermissions : []),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
@@ -1363,6 +1376,7 @@ async function main() {
       "risk:manage",
       ...productManagementPermissions,
       ...vehicleManagementPermissions,
+      ...assetFactViewPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleModelViewPermissions,
@@ -1422,6 +1436,8 @@ async function main() {
       ...collectionMenuCodes
     ]
   );
+
+  await synchronizeStage1cBaselineForDemoSeed({ prisma });
 
   const adminUser = await seedDefaultUsers();
 

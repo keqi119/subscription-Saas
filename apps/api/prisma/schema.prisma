@@ -1652,6 +1652,60 @@ enum OrderChangeStatus {
   @@map("order_change_status")
 }
 
+enum AssetOwnerType {
+  PLATFORM
+  EXTERNAL_COMPANY
+
+  @@map("asset_owner_type")
+}
+
+enum AssetOwnerStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("asset_owner_status")
+}
+
+enum VehicleOwnershipPeriodStartReason {
+  INITIAL_ACQUISITION
+  OWNERSHIP_TRANSFER
+  BACKFILL
+  MANUAL_REPAIR
+
+  @@map("vehicle_ownership_period_start_reason")
+}
+
+enum VehicleOwnershipPeriodEndReason {
+  OWNERSHIP_TRANSFER
+  DISPOSAL
+  BACKFILL
+  MANUAL_REPAIR
+
+  @@map("vehicle_ownership_period_end_reason")
+}
+
+enum VehicleSubscriptionPeriodStartReason {
+  LEASE_ACTIVATED
+  DELIVERY_CONFIRMED
+  VEHICLE_SWAP
+  BACKFILL
+  MANUAL_REPAIR
+
+  @@map("vehicle_subscription_period_start_reason")
+}
+
+enum VehicleSubscriptionPeriodEndReason {
+  RETURN_CONFIRMED
+  RECOVERY_CONFIRMED
+  VEHICLE_SWAP
+  NORMAL_COMPLETION
+  EARLY_TERMINATION
+  BACKFILL
+  MANUAL_REPAIR
+
+  @@map("vehicle_subscription_period_end_reason")
+}
+
 enum VehicleStatus {
   DRAFT
   IN_PREPARATION
@@ -2284,6 +2338,14 @@ model User {
   reviewedMileageReviews                      OrderMileageReview[]           @relation("MileageReviewReviewedBy")
   voidedMileageReviews                        OrderMileageReview[]           @relation("MileageReviewVoidedBy")
   mileageReviewEvidence                       OrderMileageReviewEvidence[]   @relation("MileageReviewEvidenceUploadedByUser")
+  createdAssetOwners                          AssetOwner[]                   @relation("AssetOwnerCreatedBy")
+  updatedAssetOwners                          AssetOwner[]                   @relation("AssetOwnerUpdatedBy")
+  createdVehicleOwnershipPeriods              VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodCreatedBy")
+  startConfirmedVehicleOwnershipPeriods       VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodStartConfirmedBy")
+  endConfirmedVehicleOwnershipPeriods         VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodEndConfirmedBy")
+  createdVehicleSubscriptionPeriods           VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodCreatedBy")
+  startConfirmedVehicleSubscriptionPeriods    VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodStartConfirmedBy")
+  endConfirmedVehicleSubscriptionPeriods      VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodEndConfirmedBy")
 
   @@index([status])
   @@map("user")
@@ -2462,6 +2524,7 @@ model Customer {
   mileageReviewEvidence   OrderMileageReviewEvidence[]   @relation("MileageReviewEvidenceUploadedByCustomer")
   esignProviderAccounts   CustomerESignProviderAccount[]
   insuranceClaims         InsuranceClaim[]
+  subscriptionPeriods     VehicleSubscriptionPeriod[]
   createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy               String?                        @map("created_by") @db.Uuid
@@ -3317,6 +3380,8 @@ model Vehicle {
   valuationReviews              VehicleValuationReview[]
   mileageReadings               VehicleMileageReading[]
   mileageReviews                OrderMileageReview[]
+  ownershipPeriods              VehicleOwnershipPeriod[]
+  subscriptionPeriods           VehicleSubscriptionPeriod[]
   createdAt                     DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                       @map("created_by") @db.Uuid
@@ -3329,6 +3394,117 @@ model Vehicle {
   @@index([nextSalePriceReviewAt])
   @@index([salePriceReinitRequiredAt])
   @@map("vehicle")
+}
+
+model AssetOwner {
+  id                     String                   @id @default(uuid()) @db.Uuid
+  ownerNo                String                   @unique(map: "asset_owner_owner_no_key") @map("owner_no") @db.VarChar(64)
+  name                   String                   @db.VarChar(128)
+  legalName              String?                  @map("legal_name") @db.VarChar(128)
+  registrationIdentifier String?                  @map("registration_identifier") @db.VarChar(128)
+  ownerType              AssetOwnerType           @map("owner_type")
+  status                 AssetOwnerStatus         @default(ACTIVE)
+  onboardingSnapshot     Json?                    @map("onboarding_snapshot")
+  ownershipPeriods       VehicleOwnershipPeriod[]
+  createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy              String?                  @map("created_by") @db.Uuid
+  creator                User?                    @relation("AssetOwnerCreatedBy", fields: [createdBy], references: [id])
+  updatedBy              String?                  @map("updated_by") @db.Uuid
+  updater                User?                    @relation("AssetOwnerUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@index([ownerType], map: "asset_owner_owner_type_idx")
+  @@index([status], map: "asset_owner_status_idx")
+  @@index([createdBy], map: "asset_owner_created_by_idx")
+  @@index([updatedBy], map: "asset_owner_updated_by_idx")
+  @@map("asset_owner")
+}
+
+model VehicleOwnershipPeriod {
+  id               String                            @id @default(uuid()) @db.Uuid
+  vehicleId        String                            @map("vehicle_id") @db.Uuid
+  vehicle          Vehicle                           @relation(fields: [vehicleId], references: [id])
+  assetOwnerId     String                            @map("asset_owner_id") @db.Uuid
+  assetOwner       AssetOwner                        @relation(fields: [assetOwnerId], references: [id])
+  startedAt        DateTime                          @map("started_at") @db.Timestamptz(6)
+  endedAt          DateTime?                         @map("ended_at") @db.Timestamptz(6)
+  startReason      VehicleOwnershipPeriodStartReason @map("start_reason")
+  endReason        VehicleOwnershipPeriodEndReason?  @map("end_reason")
+  startSourceType  String                            @map("start_source_type") @db.VarChar(64)
+  startSourceId    String                            @map("start_source_id") @db.Uuid
+  startSourceKey   String                            @map("start_source_key") @db.VarChar(255)
+  endSourceType    String?                           @map("end_source_type") @db.VarChar(64)
+  endSourceId      String?                           @map("end_source_id") @db.Uuid
+  endSourceKey     String?                           @map("end_source_key") @db.VarChar(255)
+  startSnapshot    Json                              @map("start_snapshot")
+  endSnapshot      Json?                             @map("end_snapshot")
+  startConfirmedBy String?                           @map("start_confirmed_by") @db.Uuid
+  startConfirmer   User?                             @relation("VehicleOwnershipPeriodStartConfirmedBy", fields: [startConfirmedBy], references: [id])
+  startConfirmedAt DateTime?                         @map("start_confirmed_at") @db.Timestamptz(6)
+  endConfirmedBy   String?                           @map("end_confirmed_by") @db.Uuid
+  endConfirmer     User?                             @relation("VehicleOwnershipPeriodEndConfirmedBy", fields: [endConfirmedBy], references: [id])
+  endConfirmedAt   DateTime?                         @map("end_confirmed_at") @db.Timestamptz(6)
+  createdAt        DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy        String?                           @map("created_by") @db.Uuid
+  creator          User?                             @relation("VehicleOwnershipPeriodCreatedBy", fields: [createdBy], references: [id])
+
+  @@unique([startSourceType, startSourceId, startSourceKey], map: "vehicle_ownership_period_start_source_key")
+  @@unique([endSourceType, endSourceId, endSourceKey], map: "vehicle_ownership_period_end_source_key")
+  @@index([vehicleId, startedAt], map: "vehicle_ownership_period_vehicle_started_at_idx")
+  @@index([assetOwnerId, startedAt], map: "vehicle_ownership_period_owner_started_at_idx")
+  @@index([startConfirmedBy], map: "vehicle_ownership_period_start_confirmed_by_idx")
+  @@index([endConfirmedBy], map: "vehicle_ownership_period_end_confirmed_by_idx")
+  @@index([createdBy], map: "vehicle_ownership_period_created_by_idx")
+  @@map("vehicle_ownership_period")
+}
+
+model VehicleSubscriptionPeriod {
+  id                String                               @id @default(uuid()) @db.Uuid
+  vehicleId         String                               @map("vehicle_id") @db.Uuid
+  vehicle           Vehicle                              @relation(fields: [vehicleId], references: [id])
+  orderId           String                               @map("order_id") @db.Uuid
+  order             SubscriptionOrder                    @relation(fields: [orderId], references: [id])
+  contractId        String?                              @map("contract_id") @db.Uuid
+  contract          Contract?                            @relation(fields: [contractId], references: [id])
+  contractSegmentId String?                              @map("contract_segment_id") @db.Uuid
+  contractSegment   SubscriptionContractSegment?         @relation(fields: [contractSegmentId], references: [id])
+  customerId        String                               @map("customer_id") @db.Uuid
+  customer          Customer                             @relation(fields: [customerId], references: [id])
+  startedAt         DateTime                             @map("started_at") @db.Timestamptz(6)
+  endedAt           DateTime?                            @map("ended_at") @db.Timestamptz(6)
+  startReason       VehicleSubscriptionPeriodStartReason @map("start_reason")
+  endReason         VehicleSubscriptionPeriodEndReason?  @map("end_reason")
+  startSourceType   String                               @map("start_source_type") @db.VarChar(64)
+  startSourceId     String                               @map("start_source_id") @db.Uuid
+  startSourceKey    String                               @map("start_source_key") @db.VarChar(255)
+  endSourceType     String?                              @map("end_source_type") @db.VarChar(64)
+  endSourceId       String?                              @map("end_source_id") @db.Uuid
+  endSourceKey      String?                              @map("end_source_key") @db.VarChar(255)
+  startSnapshot     Json                                 @map("start_snapshot")
+  endSnapshot       Json?                                @map("end_snapshot")
+  startConfirmedBy  String?                              @map("start_confirmed_by") @db.Uuid
+  startConfirmer    User?                                @relation("VehicleSubscriptionPeriodStartConfirmedBy", fields: [startConfirmedBy], references: [id])
+  startConfirmedAt  DateTime?                            @map("start_confirmed_at") @db.Timestamptz(6)
+  endConfirmedBy    String?                              @map("end_confirmed_by") @db.Uuid
+  endConfirmer      User?                                @relation("VehicleSubscriptionPeriodEndConfirmedBy", fields: [endConfirmedBy], references: [id])
+  endConfirmedAt    DateTime?                            @map("end_confirmed_at") @db.Timestamptz(6)
+  createdAt         DateTime                             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime                             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy         String?                              @map("created_by") @db.Uuid
+  creator           User?                                @relation("VehicleSubscriptionPeriodCreatedBy", fields: [createdBy], references: [id])
+
+  @@unique([startSourceType, startSourceId, startSourceKey], map: "vehicle_subscription_period_start_source_key")
+  @@unique([endSourceType, endSourceId, endSourceKey], map: "vehicle_subscription_period_end_source_key")
+  @@index([vehicleId, startedAt], map: "vehicle_subscription_period_vehicle_started_at_idx")
+  @@index([orderId, startedAt], map: "vehicle_subscription_period_order_started_at_idx")
+  @@index([contractId], map: "vehicle_subscription_period_contract_id_idx")
+  @@index([contractSegmentId], map: "vehicle_subscription_period_contract_segment_id_idx")
+  @@index([customerId, startedAt], map: "vehicle_subscription_period_customer_started_at_idx")
+  @@index([startConfirmedBy], map: "vehicle_subscription_period_start_confirmed_by_idx")
+  @@index([endConfirmedBy], map: "vehicle_subscription_period_end_confirmed_by_idx")
+  @@index([createdBy], map: "vehicle_subscription_period_created_by_idx")
+  @@map("vehicle_subscription_period")
 }
 
 model VehicleMileageReading {
@@ -4846,6 +5022,7 @@ model SubscriptionOrder {
   mileageReadings            VehicleMileageReading[]
   mileageReviews             OrderMileageReview[]
   subscriptionJourney        SubscriptionJourney?
+  subscriptionPeriods        VehicleSubscriptionPeriod[]
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -6355,6 +6532,7 @@ model Contract {
   handoverDeliveryHandover VehicleDeliveryHandover?      @relation("DeliveryHandoverContract")
   subscriptionChange       SubscriptionChangeOrder?
   contractSegments         SubscriptionContractSegment[]
+  subscriptionPeriods      VehicleSubscriptionPeriod[]
   createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                       @map("created_by") @db.Uuid
@@ -6627,6 +6805,7 @@ model SubscriptionContractSegment {
   cancelledAt          DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
   renewalConsideration RenewalConsideration?
   automationJobs       SubscriptionAutomationJob[]
+  subscriptionPeriods  VehicleSubscriptionPeriod[]
   createdAt            DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
   createdBy            String?                     @map("created_by") @db.Uuid
 

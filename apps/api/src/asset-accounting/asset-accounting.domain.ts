@@ -28,6 +28,15 @@ function isPlainObject(value: object): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function assertNoAccessorProperties(value: object, path: string): void {
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && (descriptor.get !== undefined || descriptor.set !== undefined)) {
+      throw new TypeError(`canonical asset-accounting value at ${path} contains an accessor`);
+    }
+  }
+}
+
 function canonicalizeValue(
   value: unknown,
   path: string,
@@ -49,10 +58,11 @@ function canonicalizeValue(
     return value;
   }
   if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
+    assertNoAccessorProperties(value, path);
+    if (Number.isNaN(Date.prototype.getTime.call(value))) {
       throw new TypeError(`canonical asset-accounting date at ${path} is invalid`);
     }
-    return value.toISOString();
+    return Date.prototype.toISOString.call(value);
   }
   if (typeof value !== "object") {
     throw new TypeError(`canonical asset-accounting value at ${path} has an unsupported type`);
@@ -64,8 +74,10 @@ function canonicalizeValue(
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(value);
   if (Array.isArray(value)) {
-    return value.map((item, index) => {
-      const canonical = canonicalizeValue(item, `${path}[${index}]`, nextAncestors);
+    assertNoAccessorProperties(value, path);
+    return Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      const canonical = canonicalizeValue(descriptor?.value, `${path}[${index}]`, nextAncestors);
       // JSON arrays cannot omit a position.  Undefined therefore follows the
       // JSON-compatible null representation while object properties are omitted.
       return canonical === OMITTED ? null : canonical;
@@ -75,9 +87,11 @@ function canonicalizeValue(
     throw new TypeError(`canonical asset-accounting value at ${path} must be a plain object`);
   }
 
-  const result: { [key: string]: CanonicalValue } = {};
+  assertNoAccessorProperties(value, path);
+  const result = Object.create(null) as { [key: string]: CanonicalValue };
   for (const key of Object.keys(value).sort()) {
-    const canonical = canonicalizeValue(value[key], `${path}.${key}`, nextAncestors);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    const canonical = canonicalizeValue(descriptor?.value, `${path}.${key}`, nextAncestors);
     if (canonical !== OMITTED) {
       result[key] = canonical;
     }
@@ -248,11 +262,91 @@ function emptyBuckets(keys: readonly string[]): Record<string, VehicleCostSummar
   >;
 }
 
+function assertNonBlankField(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new TypeError(`vehicle cost ${field} must be a nonblank string`);
+  }
+}
+
+function assertEnumValue(
+  value: unknown,
+  values: readonly string[],
+  field: string
+): asserts value is string {
+  if (typeof value !== "string" || !values.includes(value)) {
+    throw new TypeError(`vehicle cost ${field} is invalid`);
+  }
+}
+
+function assertVehicleCostLedgerEntry(
+  entry: unknown,
+  entriesById: ReadonlyMap<string, VehicleCostLedgerEntrySnapshot>
+): asserts entry is VehicleCostLedgerEntrySnapshot {
+  if (entry === null || typeof entry !== "object") {
+    throw new TypeError("vehicle cost ledger entry must be an object");
+  }
+  const candidate = entry as Record<string, unknown>;
+  assertNonBlankField(candidate.id, "id");
+  assertNonBlankField(candidate.vehicleId, "vehicleId");
+  assertEnumValue(candidate.entryKind, ["ORIGINAL", "REVERSAL"], "entryKind");
+  assertEnumValue(candidate.actionType, ACTION_TYPES, "actionType");
+  assertEnumValue(candidate.costCategory, COST_CATEGORIES, "costCategory");
+  assertEnumValue(candidate.responsiblePartyType, RESPONSIBILITY_TYPES, "responsiblePartyType");
+  assertVehicleCostAmountCents(candidate.amountCents);
+  if (!(candidate.occurredOn instanceof Date)) {
+    throw new TypeError("vehicle cost occurredOn must be a Date");
+  }
+  if (Number.isNaN(Date.prototype.getTime.call(candidate.occurredOn))) {
+    throw new TypeError("vehicle cost occurredOn must be a valid Date");
+  }
+  assertAccountingPeriod(candidate.accountingPeriod);
+  if (
+    candidate.responsiblePartyId !== undefined &&
+    candidate.responsiblePartyId !== null &&
+    typeof candidate.responsiblePartyId !== "string"
+  ) {
+    throw new TypeError("vehicle cost responsiblePartyId is invalid");
+  }
+
+  if (candidate.entryKind === "ORIGINAL") {
+    if (candidate.amountCents <= 0n) {
+      throw new TypeError("vehicle cost ORIGINAL amount must be positive");
+    }
+    if (candidate.reversalOfEntryId !== undefined && candidate.reversalOfEntryId !== null) {
+      throw new TypeError("vehicle cost ORIGINAL cannot have a reversal target");
+    }
+    return;
+  }
+
+  if (candidate.amountCents >= 0n) {
+    throw new TypeError("vehicle cost REVERSAL amount must be negative");
+  }
+  assertNonBlankField(candidate.reversalOfEntryId, "reversal target");
+  const target = entriesById.get(candidate.reversalOfEntryId);
+  if (!target || target.entryKind !== "ORIGINAL") {
+    throw new TypeError("vehicle cost reversal target must reference an ORIGINAL entry");
+  }
+  if (candidate.amountCents !== -target.amountCents) {
+    throw new TypeError("vehicle cost reversal amount must oppose its target");
+  }
+}
+
 /** Summarize signed facts while retaining each accounting dimension. */
 export function summarizeVehicleCostEntries(
   entries: readonly VehicleCostLedgerEntrySnapshot[]
 ): VehicleCostLedgerSummary {
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const byId = new Map<string, VehicleCostLedgerEntrySnapshot>();
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== "object") {
+      throw new TypeError("vehicle cost ledger entry must be an object");
+    }
+    const id = (entry as { id?: unknown }).id;
+    assertNonBlankField(id, "id");
+    if (byId.has(id)) {
+      throw new TypeError(`vehicle cost ledger entry id ${id} is duplicated`);
+    }
+    byId.set(id, entry);
+  }
   const byActionType = emptyBuckets(ACTION_TYPES) as Record<
     VehicleCostActionType,
     VehicleCostSummaryBucket
@@ -269,6 +363,7 @@ export function summarizeVehicleCostEntries(
   let totalAmountCents = 0n;
 
   for (const entry of entries) {
+    assertVehicleCostLedgerEntry(entry, byId);
     const amount = toSummaryAmount(entry.amountCents);
     const original =
       entry.entryKind === "REVERSAL" && entry.reversalOfEntryId
@@ -277,8 +372,10 @@ export function summarizeVehicleCostEntries(
     const actionType = original?.actionType ?? entry.actionType;
     const costCategory = original?.costCategory ?? entry.costCategory;
     const responsibility = original?.responsiblePartyType ?? entry.responsiblePartyType;
-    const responsibilityId = original?.responsiblePartyId ?? entry.responsiblePartyId ?? null;
-    const signedAmount = entry.entryKind === "REVERSAL" ? -absBigInt(amount) : amount;
+    const responsibilityId = original
+      ? (original.responsiblePartyId ?? null)
+      : (entry.responsiblePartyId ?? null);
+    const signedAmount = amount;
 
     totalAmountCents += signedAmount;
     addBucket(byActionType, actionType, signedAmount);
@@ -294,10 +391,6 @@ export function summarizeVehicleCostEntries(
     byResponsibleParty,
     byCategory
   };
-}
-
-function absBigInt(value: bigint): bigint {
-  return value < 0n ? -value : value;
 }
 
 // Keep the snapshot-value type referenced in this module so future callers

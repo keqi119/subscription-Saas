@@ -36,6 +36,28 @@ import type {
 const NOW = new Date("2026-08-20T02:00:00.000Z");
 
 describe("AssetOperationsRepository", () => {
+  it("exposes the unified source-ownership lock with the repository transaction contract", async () => {
+    const sourceIdentity = source("service-source-lock");
+
+    await expect(
+      new AssetOperationsRepository().lockSourceOwnership(new FakeDatabase().tx, sourceIdentity)
+    ).resolves.toBeUndefined();
+    await expectCode(
+      new AssetOperationsRepository().lockSourceOwnership(
+        new FakeDatabase({ transactionIds: ["tx-1", "tx-2"] }).tx,
+        sourceIdentity
+      ),
+      ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+    await expectCode(
+      new AssetOperationsRepository().lockSourceOwnership(
+        new FakeDatabase({ advisoryLockError: { code: "55P03" } }).tx,
+        sourceIdentity
+      ),
+      ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY
+    );
+  });
+
   it("rejects a root client whose probes do not stay in one transaction", async () => {
     const database = new FakeDatabase({ transactionIds: ["tx-1", "tx-2"] });
 

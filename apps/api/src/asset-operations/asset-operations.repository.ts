@@ -163,6 +163,14 @@ type CommandEnvelopeInput = Readonly<{ command: unknown; kind: CommandEnvelopeKi
 export class AssetOperationsRepository {
   constructor(private readonly businessNoFactory = () => createBusinessNo("AWO")) {}
 
+  /** Acquires the repository-wide command source lock before service authority validation. */
+  async lockSourceOwnership(
+    tx: Prisma.TransactionClient,
+    source: StableAssetOperationSource
+  ): Promise<void> {
+    await prepareCommand(tx, source);
+  }
+
   async createWorkOrder(
     tx: Prisma.TransactionClient,
     command: CreateWorkOrderCommand

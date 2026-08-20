@@ -20,6 +20,7 @@ import {
   ASSET_OPERATION_ERROR_CODE,
   AssetOperationsRepository
 } from "../src/asset-operations/asset-operations.repository";
+import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
 import type {
   AppendEvidenceCommand,
   AppendNoteCommand,
@@ -31,6 +32,7 @@ import type {
   TransitionWorkOrderCommand,
   WorkOrderCommandOutcome
 } from "../src/asset-operations/asset-operations.types";
+import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
@@ -701,7 +703,295 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     });
     await expect(countEventsBySource(prisma, release.source)).resolves.toBe(0);
   });
+
+  it("rolls back every service fact and prior audit row when audited commands fail", async () => {
+    const baselineService = createAssetOperationsService(prisma);
+
+    const create = serviceCreateCommand(vehicleId, "service-audit-create");
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 2)).createWorkOrder(
+        create,
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(countWorkOrdersBySource(prisma, create.source)).resolves.toBe(0);
+    await expect(countEventsBySource(prisma, create.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, create.source.key)).resolves.toBe(0);
+
+    const baseline = await baselineService.createWorkOrder(
+      serviceCreateCommand(vehicleId, "service-audit-baseline"),
+      serviceContext(userId)
+    );
+    const assignment = assignmentCommand(
+      baseline.workOrder.id,
+      userId,
+      "service-audit-assignment",
+      0,
+      6
+    );
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 2)).assignWorkOrder(
+        withoutActor(assignment),
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(
+      prisma.assetWorkOrder.findUnique({ where: { id: baseline.workOrder.id } })
+    ).resolves.toMatchObject({ assignedUserId: null, version: 0 });
+    await expect(countEventsBySource(prisma, assignment.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, assignment.source.key)).resolves.toBe(0);
+
+    const note = noteCommand(baseline.workOrder.id, "service-audit-note");
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 1)).appendNote(
+        withoutActor(note),
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(countEventsBySource(prisma, note.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, note.source.key)).resolves.toBe(0);
+
+    const fileId = await createFileFixture(prisma, "service-audit-evidence");
+    const evidence = evidenceCommand(baseline.workOrder.id, fileId, "service-audit-evidence");
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 2)).appendEvidence(
+        withoutActor(evidence),
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(countEvidenceBySource(prisma, evidence.source)).resolves.toBe(0);
+    await expect(countEventsBySource(prisma, evidence.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, evidence.source.key)).resolves.toBe(0);
+
+    const restriction = createRestrictionCommand(
+      vehicleId,
+      "service-audit-restriction",
+      baseline.workOrder.id
+    );
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 2)).createRestriction(
+        withoutActor(restriction),
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(countRestrictionStartsBySource(prisma, restriction.source)).resolves.toBe(0);
+    await expect(countEventsBySource(prisma, restriction.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, restriction.source.key)).resolves.toBe(0);
+
+    const active = await baselineService.createRestriction(
+      withoutActor(createRestrictionCommand(vehicleId, "service-audit-release-baseline")),
+      serviceContext(userId)
+    );
+    const release = releaseRestrictionCommand(
+      active.restriction.id,
+      "service-audit-release",
+      userId
+    );
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 1)).releaseRestriction(
+        withoutActor(release),
+        serviceContext(userId, ["vehicle_restriction:release"])
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(
+      prisma.vehicleOperationalRestriction.findUnique({ where: { id: active.restriction.id } })
+    ).resolves.toMatchObject({
+      releaseSourceKey: null,
+      status: VehicleOperationalRestrictionStatus.ACTIVE
+    });
+    await expect(countRestrictionReleasesBySource(prisma, release.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, release.source.key)).resolves.toBe(0);
+  });
+
+  it("audits one committed work-order and event once across exact service replay", async () => {
+    const service = createAssetOperationsService(prisma);
+    const command = serviceCreateCommand(vehicleId, "service-audit-replay");
+
+    const created = await service.createWorkOrder(command, serviceContext(userId));
+    const replayed = await service.createWorkOrder(command, serviceContext(userId));
+
+    expect(replayed).toEqual({ ...created, wrote: false });
+    await expect(countAuditsBySourceKey(prisma, command.source.key)).resolves.toBe(2);
+  });
+
+  it.each(["order-first", "vehicle-first"] as const)(
+    "fails service authority validation fast behind a %s holder and leaves the holder usable",
+    async (lockOrder) => {
+      const fixture = await createServiceAuthorityFixture(prisma, lockOrder);
+      const result = await runServiceAuthorityContention(prisma, fixture, lockOrder);
+
+      expect(result.commandFinishedFast).toBe(true);
+      expectConflict(rejectedValue(result.command), ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);
+      expect(result.holder).toMatchObject({ followUpAuthorityUpdates: 1, transactionUsable: true });
+      await expect(countWorkOrdersBySource(prisma, result.source)).resolves.toBe(0);
+      await expect(countAuditsBySourceKey(prisma, result.source.key)).resolves.toBe(0);
+    }
+  );
 });
+
+function createAssetOperationsService(
+  prisma: PrismaService,
+  auditService: AuditService = new AuditService(prisma)
+) {
+  return new AssetOperationsService(prisma, new AssetOperationsRepository(), auditService);
+}
+
+function failingAuditService(prisma: PrismaService, failOnCall: number) {
+  const real = new AuditService(prisma);
+  let calls = 0;
+  return {
+    async write(...args: Parameters<AuditService["write"]>) {
+      calls += 1;
+      await real.write(...args);
+      if (calls === failOnCall) throw new Error("AUDIT_STUB_FAILURE");
+    }
+  } as unknown as AuditService;
+}
+
+function serviceContext(actorId: string | null, permissions: readonly string[] = []) {
+  return {
+    actorId,
+    ipAddress: "127.0.0.1",
+    permissions,
+    userAgent: "asset-operations-integration"
+  };
+}
+
+function serviceCreateCommand(vehicleId: string, label: string) {
+  return Object.fromEntries(
+    Object.entries(createCommand(vehicleId, label)).filter(
+      ([key]) => key !== "actorId" && key !== "authoritySnapshot"
+    )
+  ) as Omit<CreateWorkOrderCommand, "actorId" | "authoritySnapshot">;
+}
+
+function withoutActor<T extends { actorId: unknown }>(command: T): Omit<T, "actorId"> {
+  return Object.fromEntries(Object.entries(command).filter(([key]) => key !== "actorId")) as Omit<
+    T,
+    "actorId"
+  >;
+}
+
+async function countAuditsBySourceKey(prisma: PrismaService, sourceKey: string) {
+  const [row] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS "count"
+    FROM "audit_log"
+    WHERE "module" = 'asset_operations'
+      AND "after_snapshot"::text LIKE ${`%${sourceKey}%`}
+  `);
+  return Number(row?.count ?? 0n);
+}
+
+type ServiceAuthorityFixture = {
+  customerId: string;
+  orderId: string;
+  vehicleId: string;
+};
+
+async function createServiceAuthorityFixture(
+  prisma: PrismaService,
+  label: string
+): Promise<ServiceAuthorityFixture> {
+  const customerId = randomUUID();
+  const orderId = randomUUID();
+  const vehicleId = await createVehicleFixture(prisma, label === "order-first" ? "O" : "R");
+  const token = randomUUID().replaceAll("-", "").slice(0, 12);
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "customer" (
+        "id", "customer_no", "name", "mobile", "status", "created_at", "updated_at"
+      ) VALUES (
+        ${customerId}::uuid, ${`${FIXTURE_PREFIX}C${token}`}, 'Stage 1C-B Contention',
+        '13800000000', 'ACTIVE', clock_timestamp(), clock_timestamp()
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "subscription_order" (
+        "id", "order_no", "customer_id", "application_id", "quote_id", "vehicle_id",
+        "product_id", "product_version_id", "vehicle_purchase_price_amount", "monthly_fee_amount",
+        "deposit_amount", "period_months", "mileage_limit_km", "over_mileage_fee_amount",
+        "model_definition_id_snapshot", "model_code_snapshot", "model_display_name_snapshot",
+        "quote_snapshot", "order_status", "created_at", "updated_at"
+      ) VALUES (
+        ${orderId}::uuid, ${`${FIXTURE_PREFIX}O${token}`}, ${customerId}::uuid,
+        ${randomUUID()}::uuid, ${randomUUID()}::uuid, ${vehicleId}::uuid,
+        ${randomUUID()}::uuid, ${randomUUID()}::uuid, 20000000, 100, 0, 6, 1500, 100,
+        ${randomUUID()}::uuid, 'NIO_ET5_2024', 'NIO ET5', '{}'::jsonb,
+        'ACTIVE', clock_timestamp(), clock_timestamp()
+      )
+    `);
+  });
+  return { customerId, orderId, vehicleId };
+}
+
+async function runServiceAuthorityContention(
+  prisma: PrismaService,
+  fixture: ServiceAuthorityFixture,
+  lockOrder: "order-first" | "vehicle-first"
+) {
+  const lockReached = deferred<void>();
+  const allowFollowUp = deferred<void>();
+  const holderPromise = readCommitted(prisma, async (tx) => {
+    if (lockOrder === "order-first") {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "subscription_order" WHERE "id" = ${fixture.orderId}::uuid FOR UPDATE`
+      );
+    } else {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${fixture.vehicleId}::uuid FOR UPDATE`
+      );
+    }
+    lockReached.resolve();
+    await allowFollowUp.promise;
+    const [probe] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+      Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+    );
+    const followUpAuthorityUpdates =
+      lockOrder === "order-first"
+        ? await tx.$executeRaw(
+            Prisma.sql`UPDATE "vehicle" SET "updated_at" = clock_timestamp() WHERE "id" = ${fixture.vehicleId}::uuid`
+          )
+        : await tx.$executeRaw(
+            Prisma.sql`UPDATE "subscription_order" SET "updated_at" = clock_timestamp() WHERE "id" = ${fixture.orderId}::uuid`
+          );
+    return { followUpAuthorityUpdates, transactionUsable: Boolean(probe?.transactionId) };
+  });
+  void holderPromise.catch(lockReached.reject);
+  await lockReached.promise;
+
+  const create = {
+    ...serviceCreateCommand(fixture.vehicleId, `service-contention-${lockOrder}`),
+    customerId: fixture.customerId,
+    orderId: fixture.orderId
+  };
+  const commandPromise = settled(
+    createAssetOperationsService(prisma).createWorkOrder(create, serviceContext(null))
+  );
+  const early = await settlesWithin(commandPromise, 750);
+  allowFollowUp.resolve();
+  const [holder, command] = await Promise.all([
+    holderPromise,
+    early.finished ? Promise.resolve(early.value) : commandPromise
+  ]);
+  return {
+    command,
+    commandFinishedFast: early.finished,
+    holder,
+    source: create.source
+  };
+}
+
+async function settlesWithin<T>(promise: Promise<T>, timeoutMs: number) {
+  const marker = Symbol("timeout");
+  const value = await Promise.race([
+    promise,
+    new Promise<typeof marker>((resolve) => setTimeout(() => resolve(marker), timeoutMs))
+  ]);
+  return value === marker
+    ? { finished: false as const, value: undefined }
+    : { finished: true as const, value };
+}
 
 function createCommand(vehicleId: string, label: string): CreateWorkOrderCommand {
   return {
@@ -928,6 +1218,11 @@ async function deleteFixtures(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
+      DELETE FROM "audit_log"
+      WHERE "module" = 'asset_operations'
+        AND "after_snapshot"::text LIKE ${`%${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
       DELETE FROM "vehicle_operational_restriction"
       WHERE "start_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
          OR "release_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
@@ -951,6 +1246,14 @@ async function deleteFixtures(prisma: PrismaService) {
     await tx.$executeRaw`
       DELETE FROM "file_object"
       WHERE "object_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "subscription_order"
+      WHERE "order_no" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "customer"
+      WHERE "customer_no" LIKE ${`${FIXTURE_PREFIX}%`}
     `;
     await tx.$executeRaw`
       DELETE FROM "vehicle"

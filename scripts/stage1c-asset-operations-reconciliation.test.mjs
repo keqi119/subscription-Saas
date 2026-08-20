@@ -97,6 +97,17 @@ const stage1cBEnums = {
   VehicleOperationalRestrictionStatus: ["ACTIVE", "RELEASED", "VOIDED"]
 };
 
+const materialPairEventTypes = [
+  "CREATED",
+  "EVIDENCE_ATTACHED",
+  "RESTRICTION_CREATED",
+  "RESTRICTION_RELEASED"
+];
+
+const eventOnlyEventTypes = stage1cBEnums.AssetWorkOrderEventType.filter(
+  (eventType) => !materialPairEventTypes.includes(eventType)
+);
+
 async function readOrEmpty(path) {
   try {
     return await readFile(path, "utf8");
@@ -156,6 +167,17 @@ function requireSqlFragments(blocks, name, fragments) {
       `${name} missing SQL contract: ${fragment}`
     );
   }
+}
+
+function extractValuesCte(sql, cteName) {
+  const match = sql.match(
+    new RegExp(
+      `${cteName}\\(event_type\\)\\s+AS\\s*\\(\\s*VALUES([\\s\\S]*?)\\n\\),\\s*[a-z_]`,
+      "i"
+    )
+  );
+  assert.ok(match, `missing values CTE: ${cteName}`);
+  return [...match[1].matchAll(/\('([A-Z_]+)'\)/g)].map((value) => value[1]);
 }
 
 function validateEnumContracts(runbook, schema) {
@@ -226,12 +248,18 @@ function validateRunbookSql(runbook) {
     requireSqlFragments(blocks, name, [
       ...candidateFragments,
       "FROM asset_work_order_event AS event",
-      "COUNT(link.claim_id) = 0",
-      "COUNT(link.claim_id) = 1",
+      "authoritative_link_owner AS (",
+      "collision_material_owner AS (",
+      "source_integrity AS (",
+      "COALESCE(SUM(link.authoritative_owner_count), 0) = 0",
+      "COALESCE(SUM(link.material_owner_count), 0) = 0",
+      "COALESCE(SUM(link.authoritative_owner_count), 0) = 1",
+      "COALESCE(SUM(link.material_owner_count), 0) = 1",
       "BOOL_AND(link.source_key = expected.source_key)",
       "BOOL_AND(link.vehicle_id = expected.vehicle_id)",
       "BOOL_AND(NOT link.source_conflict)",
-      "WHEN event.id IS NULL THEN material.event_required",
+      "owner_kind = 'ASSET_WORK_ORDER'",
+      "owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'",
       "'CREATED'",
       "'EVIDENCE_ATTACHED'",
       "'RESTRICTION_CREATED'",
@@ -269,16 +297,29 @@ function validateRunbookSql(runbook) {
   ]);
   requireSqlFragments(blocks, "12-source-integrity", [
     "FROM asset_work_order_event AS event",
+    "event_only_type(event_type) AS (",
+    "material_pair_type(event_type) AS (",
     "'CREATED'",
     "'EVIDENCE_ATTACHED'",
     "'RESTRICTION_CREATED'",
     "'RESTRICTION_RELEASED'",
-    "event.work_order_id = material.work_order_id",
+    "event.work_order_id IS DISTINCT FROM material.work_order_id",
     "source_conflict",
     "material_owner_count",
-    "event_owner_count"
+    "event_owner_count",
+    "WHERE owner_kind = 'ASSET_WORK_ORDER'",
+    "OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'"
   ]);
-  assert.doesNotMatch(blocks.get("12-source-integrity"), /'NOTE_ADDED'/);
+  assert.deepEqual(
+    extractValuesCte(blocks.get("12-source-integrity"), "material_pair_type"),
+    materialPairEventTypes,
+    "material-pair event types must remain exact and ordered"
+  );
+  assert.deepEqual(
+    extractValuesCte(blocks.get("12-source-integrity"), "event_only_type"),
+    eventOnlyEventTypes,
+    "event-only event types must remain exact and ordered"
+  );
   requireSqlFragments(blocks, "13-event-sequence", [
     "row_number() OVER",
     "PARTITION BY event.work_order_id",
@@ -319,18 +360,42 @@ function validateRunbookSql(runbook) {
     "current_schema()",
     "trigger.tgfoid",
     "trigger.tgtype = 27",
+    "btrim(regexp_replace(",
     "pg_get_functiondef",
     "pg_get_constraintdef",
-    "pg_indexes",
+    "pg_get_indexdef",
+    "FROM pg_constraint",
+    "FROM pg_index",
     "actual.enabled IS DISTINCT FROM 'O'",
-    "actual.function_definition !~ 'ERRCODE = ''55000'''",
-    "actual.function_definition !~ 'TG_TABLE_NAME'",
-    "actual.function_definition !~ 'TG_OP = ''DELETE'''",
-    "actual.function_definition !~ 'OLD\\.\"status\" <> ''ACTIVE'''",
-    "actual.function_definition !~ 'NEW\\.\"status\" = ''ACTIVE'''",
-    "actual.function_definition !~ 'NEW\\.\"scopes\"'",
-    "actual.function_definition !~ 'OLD\\.\"scopes\"'",
-    "actual.function_definition !~ 'RETURN NEW'",
+    "actual.normalized_function_definition IS DISTINCT FROM expected.normalized_function_definition",
+    "actual.normalized_constraint_definition IS DISTINCT FROM expected.normalized_constraint_definition",
+    "actual.normalized_index_definition IS DISTINCT FROM expected.normalized_index_definition",
+    "actual.convalidated IS NOT TRUE",
+    "actual.indisvalid IS NOT TRUE",
+    "actual.indisready IS NOT TRUE",
+    "actual.indisunique IS DISTINCT FROM expected.expected_unique",
+    "CREATE OR REPLACE FUNCTION reject_asset_operation_append_only_mutation()",
+    "CREATE OR REPLACE FUNCTION enforce_vehicle_operational_restriction_release()",
+    "CREATE OR REPLACE FUNCTION reject_asset_operation_append_only_mutation() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = format('%I is append-only', TG_TABLE_NAME); END; $function$",
+    'CREATE OR REPLACE FUNCTION enforce_vehicle_operational_restriction_release() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF TG_OP = \'DELETE\' THEN RAISE EXCEPTION USING ERRCODE = \'55000\', MESSAGE = \'vehicle_operational_restriction cannot be deleted\'; END IF; IF OLD."status" <> \'ACTIVE\' OR NEW."status" = \'ACTIVE\' THEN RAISE EXCEPTION USING ERRCODE = \'55000\', MESSAGE = \'vehicle_operational_restriction can be released only once\'; END IF; IF ROW( NEW."id", NEW."vehicle_id", NEW."work_order_id", NEW."restriction_type", NEW."severity", NEW."scopes", NEW."started_at", NEW."conditions_snapshot", NEW."evidence_snapshot", NEW."start_source_type", NEW."start_source_id", NEW."start_source_key", NEW."created_at", NEW."created_by" ) IS DISTINCT FROM ROW( OLD."id", OLD."vehicle_id", OLD."work_order_id", OLD."restriction_type", OLD."severity", OLD."scopes", OLD."started_at", OLD."conditions_snapshot", OLD."evidence_snapshot", OLD."start_source_type", OLD."start_source_id", OLD."start_source_key", OLD."created_at", OLD."created_by" ) THEN RAISE EXCEPTION USING ERRCODE = \'55000\', MESSAGE = \'vehicle_operational_restriction start facts are immutable\'; END IF; RETURN NEW; END; $function$',
+    "CHECK ((version >= 0))",
+    "CHECK ((sequence > 0))",
+    "CHECK ((occurred_at <= recorded_at))",
+    "CHECK (((content_sha256 IS NULL) OR ((content_sha256)::text ~ '^[0-9a-f]{64}$'::text)))",
+    "CHECK ((((action = 'REMOVE'::asset_work_order_evidence_action) AND (file_id IS NULL) AND (content_sha256 IS NULL) AND (supersedes_evidence_id IS NOT NULL)) OR ((action = 'ATTACH'::asset_work_order_evidence_action) AND (file_id IS NOT NULL) AND (content_sha256 IS NOT NULL) AND (supersedes_evidence_id IS NULL)) OR ((action = 'SUPERSEDE'::asset_work_order_evidence_action) AND (file_id IS NOT NULL) AND (content_sha256 IS NOT NULL) AND (supersedes_evidence_id IS NOT NULL))))",
+    "CHECK ((((file_id IS NULL) AND (file_bucket IS NULL) AND (file_object_key IS NULL) AND (file_size_bytes IS NULL) AND (file_mime_type IS NULL)) OR ((file_id IS NOT NULL) AND (file_bucket IS NOT NULL) AND (file_object_key IS NOT NULL) AND (file_size_bytes IS NOT NULL))))",
+    "CHECK (((file_size_bytes IS NULL) OR (file_size_bytes >= 0)))",
+    "CHECK ((cardinality(scopes) > 0))",
+    "CHECK (((released_at IS NULL) OR (released_at >= started_at)))",
+    "CHECK ((((status = 'ACTIVE'::vehicle_operational_restriction_status) AND (released_at IS NULL) AND (released_by IS NULL) AND (release_reason IS NULL) AND (release_snapshot IS NULL) AND (release_source_type IS NULL) AND (release_source_id IS NULL) AND (release_source_key IS NULL)) OR ((status = ANY (ARRAY['RELEASED'::vehicle_operational_restriction_status, 'VOIDED'::vehicle_operational_restriction_status])) AND (released_at IS NOT NULL) AND (released_by IS NOT NULL) AND (release_reason IS NOT NULL) AND (release_snapshot IS NOT NULL) AND (release_source_type IS NOT NULL) AND (release_source_id IS NOT NULL) AND (release_source_key IS NOT NULL))))",
+    "CREATE UNIQUE INDEX asset_work_order_create_source_key ON asset_work_order USING btree (create_source_type, create_source_id, create_source_key)",
+    "CREATE UNIQUE INDEX asset_work_order_event_work_order_sequence_key ON asset_work_order_event USING btree (work_order_id, sequence)",
+    "CREATE UNIQUE INDEX asset_work_order_event_source_key ON asset_work_order_event USING btree (source_type, source_id, source_key)",
+    "CREATE UNIQUE INDEX asset_work_order_evidence_source_key ON asset_work_order_evidence USING btree (source_type, source_id, source_key)",
+    "CREATE UNIQUE INDEX asset_work_order_evidence_supersedes_evidence_id_key ON asset_work_order_evidence USING btree (supersedes_evidence_id)",
+    "CREATE UNIQUE INDEX vehicle_operational_restriction_start_source_key ON vehicle_operational_restriction USING btree (start_source_type, start_source_id, start_source_key)",
+    "CREATE UNIQUE INDEX vehicle_operational_restriction_release_source_key ON vehicle_operational_restriction USING btree (release_source_type, release_source_id, release_source_key)",
+    "CREATE INDEX vehicle_operational_restriction_active_vehicle_idx ON vehicle_operational_restriction USING btree (vehicle_id, severity) WHERE (status = 'ACTIVE'::vehicle_operational_restriction_status)",
     ...catalogNames
   ]);
   requireSqlFragments(blocks, "16-audit-integrity", [
@@ -352,6 +417,30 @@ function mutateSqlBlock(runbook, blockName, mutation) {
   const match = runbook.match(pattern);
   assert.ok(match, `cannot mutate missing SQL block ${blockName}`);
   return runbook.replace(pattern, () => `${match[1]}${mutation(match[2])}${match[3]}`);
+}
+
+function classifySyntheticSourceShape(materials, events) {
+  const authoritativeKinds = new Set(["ASSET_WORK_ORDER", "VEHICLE_OPERATIONAL_RESTRICTION_START"]);
+  const material = materials.length === 1 ? materials[0] : undefined;
+  const event = events.length === 1 ? events[0] : undefined;
+  const sourceConflict =
+    materials.length === 0
+      ? events.length !== 1 || !eventOnlyEventTypes.includes(event?.eventType)
+      : materials.length !== 1 ||
+        (material.eventRequired
+          ? events.length !== 1 ||
+            event.eventType !== material.expectedEventType ||
+            event.workOrderId !== material.workOrderId ||
+            event.reference !== material.ownerId
+          : events.length !== 0);
+  const authoritativeOwnerCount = materials.filter((owner) =>
+    authoritativeKinds.has(owner.kind)
+  ).length;
+
+  if (sourceConflict || (materials.length > 0 && authoritativeOwnerCount === 0)) {
+    return "SOURCE_CONFLICT";
+  }
+  return authoritativeOwnerCount === 1 ? "LINKED" : "UNLINKED_REVIEW_REQUIRED";
 }
 
 test("pins non-goals, rollout stop gates, and forward-only recovery", async () => {
@@ -503,7 +592,10 @@ test("rejects dangerous reconciliation SQL mutations", async () => {
     [
       "accepts multiple material claims",
       mutateSqlBlock(runbook, "03-handover-source", (sql) =>
-        sql.replace("COUNT(link.claim_id) = 1", "COUNT(link.claim_id) >= 1")
+        sql.replace(
+          "COALESCE(SUM(link.authoritative_owner_count), 0) = 1",
+          "COALESCE(SUM(link.authoritative_owner_count), 0) >= 1"
+        )
       )
     ],
     [
@@ -557,7 +649,7 @@ test("rejects dangerous reconciliation SQL mutations", async () => {
     [
       "drops an immutable restriction field from function-body validation",
       mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
-        sql.replace('NEW\\."scopes"', "restriction_scope_body_check_removed")
+        sql.replace('NEW."scopes"', "restriction_scope_body_check_removed")
       )
     ],
     [
@@ -627,14 +719,158 @@ test("rejects AVAILABLE-scope and ordered-enum mutations", async () => {
 test("pins semantic restriction-function body validation", async () => {
   const runbook = await readOrEmpty(rolloutPath);
   const mutated = mutateSqlBlock(runbook, "15-database-catalog", (sql) =>
-    sql.replace('NEW\\."scopes"', "restriction_scope_body_check_removed")
+    sql.replace('NEW."scopes"', "restriction_scope_body_check_removed")
   );
 
   assert.notEqual(mutated, runbook);
-  assert.throws(
-    () => validateRunbookSql(mutated),
-    /15-database-catalog missing SQL contract: actual\.function_definition !~ 'NEW/
+  assert.throws(() => validateRunbookSql(mutated));
+});
+
+test("rejects catalog definition and validity-state mutations", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  const mutations = [
+    [
+      "removes the normalized function comparator",
+      "actual.normalized_function_definition IS DISTINCT FROM\n         expected.normalized_function_definition",
+      "false"
+    ],
+    [
+      "removes the normalized constraint comparator",
+      "actual.normalized_constraint_definition IS DISTINCT FROM\n           expected.normalized_constraint_definition",
+      "false"
+    ],
+    [
+      "removes the normalized index comparator",
+      "actual.normalized_index_definition IS DISTINCT FROM\n           expected.normalized_index_definition",
+      "false"
+    ],
+    ["weakens a CHECK with OR TRUE", "CHECK ((version >= 0))", "CHECK ((version >= 0) OR TRUE)"],
+    [
+      "moves append-only rejection into a dead branch",
+      "BEGIN RAISE EXCEPTION USING ERRCODE = '55000'",
+      "BEGIN IF false THEN RAISE EXCEPTION USING ERRCODE = '55000'"
+    ],
+    [
+      "turns the release function live return into a no-op old row",
+      "RETURN NEW; END; $function$",
+      "RETURN OLD; END; $function$"
+    ],
+    ["drops convalidated enforcement", "actual.convalidated IS NOT TRUE", "false"],
+    ["drops indisvalid enforcement", "actual.indisvalid IS NOT TRUE", "false"],
+    ["drops indisready enforcement", "actual.indisready IS NOT TRUE", "false"]
+  ];
+
+  for (const [name, from, to] of mutations) {
+    const mutated = mutateSqlBlock(runbook, "15-database-catalog", (sql) => sql.replace(from, to));
+    assert.notEqual(mutated, runbook, `catalog mutation did not alter SQL: ${name}`);
+    assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
+});
+
+test("pins event-only and material-pair source-integrity shapes", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  validateRunbookSql(runbook);
+
+  const createOwner = {
+    kind: "ASSET_WORK_ORDER",
+    ownerId: "work-order-1",
+    workOrderId: "work-order-1",
+    expectedEventType: "CREATED",
+    eventRequired: true
+  };
+  const startOwner = {
+    kind: "VEHICLE_OPERATIONAL_RESTRICTION_START",
+    ownerId: "restriction-1",
+    workOrderId: "work-order-1",
+    expectedEventType: "RESTRICTION_CREATED",
+    eventRequired: true
+  };
+  const evidenceOwner = {
+    kind: "ASSET_WORK_ORDER_EVIDENCE",
+    ownerId: "evidence-1",
+    workOrderId: "work-order-1",
+    expectedEventType: "EVIDENCE_ATTACHED",
+    eventRequired: true
+  };
+  const releaseOwner = {
+    kind: "VEHICLE_OPERATIONAL_RESTRICTION_RELEASE",
+    ownerId: "restriction-1",
+    workOrderId: "work-order-1",
+    expectedEventType: "RESTRICTION_RELEASED",
+    eventRequired: true
+  };
+
+  assert.equal(
+    classifySyntheticSourceShape([], [{ eventType: "NOTE_ADDED" }]),
+    "UNLINKED_REVIEW_REQUIRED"
   );
+  assert.equal(
+    classifySyntheticSourceShape([createOwner], [{ eventType: "NOTE_ADDED" }]),
+    "SOURCE_CONFLICT"
+  );
+  for (const owner of [evidenceOwner, releaseOwner]) {
+    assert.equal(
+      classifySyntheticSourceShape(
+        [owner],
+        [
+          {
+            eventType: owner.expectedEventType,
+            workOrderId: owner.workOrderId,
+            reference: owner.ownerId
+          }
+        ]
+      ),
+      "SOURCE_CONFLICT"
+    );
+  }
+  for (const owner of [createOwner, startOwner]) {
+    assert.equal(
+      classifySyntheticSourceShape(
+        [owner],
+        [
+          {
+            eventType: owner.expectedEventType,
+            workOrderId: owner.workOrderId,
+            reference: owner.ownerId
+          }
+        ]
+      ),
+      "LINKED"
+    );
+    assert.equal(classifySyntheticSourceShape([owner], []), "SOURCE_CONFLICT");
+    assert.equal(
+      classifySyntheticSourceShape(
+        [owner],
+        [
+          {
+            eventType: "NOTE_ADDED",
+            workOrderId: owner.workOrderId,
+            reference: owner.ownerId
+          }
+        ]
+      ),
+      "SOURCE_CONFLICT"
+    );
+  }
+
+  const sourceMutations = [
+    ["removes the NOTE event-only exemption", "('NOTE_ADDED')", "('NOTE_REMOVED')"],
+    [
+      "moves evidence into authoritative ownership",
+      "owner_kind = 'ASSET_WORK_ORDER'",
+      "owner_kind IN ('ASSET_WORK_ORDER', 'ASSET_WORK_ORDER_EVIDENCE')"
+    ],
+    [
+      "moves release into authoritative ownership",
+      "owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'",
+      "owner_kind IN ('VEHICLE_OPERATIONAL_RESTRICTION_START', 'VEHICLE_OPERATIONAL_RESTRICTION_RELEASE')"
+    ]
+  ];
+  for (const [name, from, to] of sourceMutations) {
+    const mutated = mutateSqlBlock(runbook, "12-source-integrity", (sql) => sql.replace(from, to));
+    assert.notEqual(mutated, runbook, `source mutation did not alter SQL: ${name}`);
+    assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
 });
 
 test("cross-links the Stage 1C-A period rollout and pins evidence redaction", async () => {

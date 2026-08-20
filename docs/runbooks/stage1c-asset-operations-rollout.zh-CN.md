@@ -334,7 +334,17 @@ WITH expected_source AS (
     'stage1c-b:legacy:vehicle-handover-work-order:' || handover.id::text AS source_key
   FROM vehicle_handover_work_order AS handover
   JOIN subscription_order AS source_order ON source_order.id = handover.order_id
-), material_owner AS (
+), event_only_type(event_type) AS (
+  VALUES
+    ('ASSIGNED'), ('STARTED'), ('WAITING_EXTERNAL'), ('RESUMED'),
+    ('SUBMITTED_FOR_ACCEPTANCE'), ('ACCEPTED'), ('COST_CONFIRMED'),
+    ('PHYSICAL_CONTROL_CONFIRMED'), ('INSPECTION_RECORDED'), ('CLOSED'),
+    ('CANCELLED'), ('NOTE_ADDED')
+), material_pair_type(event_type) AS (
+  VALUES
+    ('CREATED'), ('EVIDENCE_ATTACHED'),
+    ('RESTRICTION_CREATED'), ('RESTRICTION_RELEASED')
+), collision_material_owner AS (
   SELECT
     work_order.create_source_type AS source_type,
     work_order.create_source_id AS source_id,
@@ -375,21 +385,36 @@ WITH expected_source AS (
   WHERE restriction.release_source_type IS NOT NULL
     AND restriction.release_source_id IS NOT NULL
     AND restriction.release_source_key IS NOT NULL
+), authoritative_link_owner AS (
+  SELECT *
+  FROM collision_material_owner
+  WHERE owner_kind = 'ASSET_WORK_ORDER'
+     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
 ), source_event AS (
   SELECT
     event.source_type, event.source_id, event.source_key,
     event.id, event.work_order_id, event.event_type::text AS event_type,
     event.detail_snapshot
   FROM asset_work_order_event AS event
-), source_claim AS (
+), joined_claim AS (
   SELECT
     COALESCE(material.source_type, event.source_type) AS source_type,
     COALESCE(material.source_id, event.source_id) AS source_id,
     COALESCE(material.source_key, event.source_key) AS source_key,
     material.vehicle_id,
-    COALESCE(material.claim_id, event.id) AS claim_id,
+    material.owner_kind,
+    material.claim_id,
+    authority.claim_id AS authoritative_claim_id,
+    material.event_required,
+    event.id AS event_id,
     CASE
-      WHEN material.claim_id IS NULL THEN true
+      WHEN material.claim_id IS NULL THEN NOT EXISTS (
+        SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+      )
+      WHEN NOT EXISTS (
+        SELECT 1 FROM material_pair_type
+        WHERE event_type = material.expected_event_type
+      ) THEN true
       WHEN event.id IS NULL THEN material.event_required
       WHEN NOT material.event_required THEN true
       WHEN event.work_order_id IS DISTINCT FROM material.work_order_id THEN true
@@ -399,28 +424,60 @@ WITH expected_source AS (
           IS DISTINCT FROM material.claim_id::text THEN true
       ELSE false
     END AS source_conflict
-  FROM material_owner AS material
+  FROM collision_material_owner AS material
   FULL JOIN source_event AS event
     ON event.source_type = material.source_type
    AND event.source_id = material.source_id
    AND event.source_key = material.source_key
+  LEFT JOIN authoritative_link_owner AS authority
+    ON authority.owner_kind = material.owner_kind
+   AND authority.claim_id = material.claim_id
+   AND authority.source_type = material.source_type
+   AND authority.source_id = material.source_id
+   AND authority.source_key = material.source_key
+), source_integrity AS (
+  SELECT
+    source_type,
+    source_id,
+    source_key,
+    (MIN(vehicle_id::text) FILTER (
+      WHERE authoritative_claim_id IS NOT NULL
+    ))::uuid AS vehicle_id,
+    COUNT(DISTINCT owner_kind || ':' || claim_id::text) AS material_owner_count,
+    COUNT(DISTINCT owner_kind || ':' || authoritative_claim_id::text)
+      AS authoritative_owner_count,
+    COUNT(DISTINCT event_id) AS event_owner_count,
+    BOOL_OR(source_conflict)
+      OR COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1
+      OR CASE
+        WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1
+        WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1
+        ELSE COUNT(DISTINCT event_id) <> 0
+      END AS source_conflict
+  FROM joined_claim
+  GROUP BY source_type, source_id, source_key
 )
 SELECT
   expected.source_type,
   expected.source_id,
   expected.source_key,
   CASE
-    WHEN COUNT(link.claim_id) = 0 THEN 'UNLINKED_REVIEW_REQUIRED'
-    WHEN COUNT(link.claim_id) = 1
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 0
+      AND COALESCE(SUM(link.material_owner_count), 0) = 0
+      AND BOOL_AND(NOT COALESCE(link.source_conflict, false))
+      THEN 'UNLINKED_REVIEW_REQUIRED'
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 1
+      AND COALESCE(SUM(link.material_owner_count), 0) = 1
       AND BOOL_AND(link.source_key = expected.source_key)
       AND BOOL_AND(link.vehicle_id = expected.vehicle_id)
       AND BOOL_AND(NOT link.source_conflict)
       THEN 'LINKED'
     ELSE 'SOURCE_CONFLICT'
   END AS classification,
-  COUNT(link.claim_id) AS source_claim_count
+  COALESCE(SUM(link.material_owner_count + link.event_owner_count), 0)
+    AS source_claim_count
 FROM expected_source AS expected
-LEFT JOIN source_claim AS link
+LEFT JOIN source_integrity AS link
   ON link.source_type = expected.source_type
  AND link.source_id = expected.source_id
 GROUP BY expected.source_type, expected.source_id, expected.source_key, expected.vehicle_id
@@ -442,7 +499,17 @@ WITH expected_source AS (
     'stage1c-b:legacy:vehicle-return:' || source_return.id::text AS source_key
   FROM vehicle_return AS source_return
   WHERE source_return.deleted_at IS NULL
-), material_owner AS (
+), event_only_type(event_type) AS (
+  VALUES
+    ('ASSIGNED'), ('STARTED'), ('WAITING_EXTERNAL'), ('RESUMED'),
+    ('SUBMITTED_FOR_ACCEPTANCE'), ('ACCEPTED'), ('COST_CONFIRMED'),
+    ('PHYSICAL_CONTROL_CONFIRMED'), ('INSPECTION_RECORDED'), ('CLOSED'),
+    ('CANCELLED'), ('NOTE_ADDED')
+), material_pair_type(event_type) AS (
+  VALUES
+    ('CREATED'), ('EVIDENCE_ATTACHED'),
+    ('RESTRICTION_CREATED'), ('RESTRICTION_RELEASED')
+), collision_material_owner AS (
   SELECT create_source_type AS source_type, create_source_id AS source_id,
     create_source_key AS source_key, vehicle_id, 'ASSET_WORK_ORDER'::text AS owner_kind,
     id AS claim_id, id AS work_order_id, 'CREATED'::text AS expected_event_type,
@@ -467,18 +534,31 @@ WITH expected_source AS (
   WHERE release_source_type IS NOT NULL
     AND release_source_id IS NOT NULL
     AND release_source_key IS NOT NULL
+), authoritative_link_owner AS (
+  SELECT *
+  FROM collision_material_owner
+  WHERE owner_kind = 'ASSET_WORK_ORDER'
+     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
 ), source_event AS (
   SELECT source_type, source_id, source_key, event.id, event.work_order_id,
     event.event_type::text AS event_type, event.detail_snapshot
   FROM asset_work_order_event AS event
-), source_claim AS (
+), joined_claim AS (
   SELECT
     COALESCE(material.source_type, event.source_type) AS source_type,
     COALESCE(material.source_id, event.source_id) AS source_id,
     COALESCE(material.source_key, event.source_key) AS source_key,
-    material.vehicle_id, COALESCE(material.claim_id, event.id) AS claim_id,
+    material.vehicle_id, material.owner_kind, material.claim_id,
+    authority.claim_id AS authoritative_claim_id,
+    material.event_required, event.id AS event_id,
     CASE
-      WHEN material.claim_id IS NULL THEN true
+      WHEN material.claim_id IS NULL THEN NOT EXISTS (
+        SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+      )
+      WHEN NOT EXISTS (
+        SELECT 1 FROM material_pair_type
+        WHERE event_type = material.expected_event_type
+      ) THEN true
       WHEN event.id IS NULL THEN material.event_required
       WHEN NOT material.event_required THEN true
       WHEN event.work_order_id IS DISTINCT FROM material.work_order_id THEN true
@@ -488,28 +568,60 @@ WITH expected_source AS (
           IS DISTINCT FROM material.claim_id::text THEN true
       ELSE false
     END AS source_conflict
-  FROM material_owner AS material
+  FROM collision_material_owner AS material
   FULL JOIN source_event AS event
     ON event.source_type = material.source_type
    AND event.source_id = material.source_id
    AND event.source_key = material.source_key
+  LEFT JOIN authoritative_link_owner AS authority
+    ON authority.owner_kind = material.owner_kind
+   AND authority.claim_id = material.claim_id
+   AND authority.source_type = material.source_type
+   AND authority.source_id = material.source_id
+   AND authority.source_key = material.source_key
+), source_integrity AS (
+  SELECT
+    source_type,
+    source_id,
+    source_key,
+    (MIN(vehicle_id::text) FILTER (
+      WHERE authoritative_claim_id IS NOT NULL
+    ))::uuid AS vehicle_id,
+    COUNT(DISTINCT owner_kind || ':' || claim_id::text) AS material_owner_count,
+    COUNT(DISTINCT owner_kind || ':' || authoritative_claim_id::text)
+      AS authoritative_owner_count,
+    COUNT(DISTINCT event_id) AS event_owner_count,
+    BOOL_OR(source_conflict)
+      OR COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1
+      OR CASE
+        WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1
+        WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1
+        ELSE COUNT(DISTINCT event_id) <> 0
+      END AS source_conflict
+  FROM joined_claim
+  GROUP BY source_type, source_id, source_key
 )
 SELECT
   expected.source_type,
   expected.source_id,
   expected.source_key,
   CASE
-    WHEN COUNT(link.claim_id) = 0 THEN 'UNLINKED_REVIEW_REQUIRED'
-    WHEN COUNT(link.claim_id) = 1
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 0
+      AND COALESCE(SUM(link.material_owner_count), 0) = 0
+      AND BOOL_AND(NOT COALESCE(link.source_conflict, false))
+      THEN 'UNLINKED_REVIEW_REQUIRED'
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 1
+      AND COALESCE(SUM(link.material_owner_count), 0) = 1
       AND BOOL_AND(link.source_key = expected.source_key)
       AND BOOL_AND(link.vehicle_id = expected.vehicle_id)
       AND BOOL_AND(NOT link.source_conflict)
       THEN 'LINKED'
     ELSE 'SOURCE_CONFLICT'
   END AS classification,
-  COUNT(link.claim_id) AS source_claim_count
+  COALESCE(SUM(link.material_owner_count + link.event_owner_count), 0)
+    AS source_claim_count
 FROM expected_source AS expected
-LEFT JOIN source_claim AS link
+LEFT JOIN source_integrity AS link
   ON link.source_type = expected.source_type
  AND link.source_id = expected.source_id
 GROUP BY expected.source_type, expected.source_id, expected.source_key, expected.vehicle_id
@@ -536,7 +648,17 @@ WITH expected_source AS (
   FROM service_case AS service
   WHERE service.deleted_at IS NULL
     AND service.case_status IN ('SUBMITTED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_CUSTOMER')
-), material_owner AS (
+), event_only_type(event_type) AS (
+  VALUES
+    ('ASSIGNED'), ('STARTED'), ('WAITING_EXTERNAL'), ('RESUMED'),
+    ('SUBMITTED_FOR_ACCEPTANCE'), ('ACCEPTED'), ('COST_CONFIRMED'),
+    ('PHYSICAL_CONTROL_CONFIRMED'), ('INSPECTION_RECORDED'), ('CLOSED'),
+    ('CANCELLED'), ('NOTE_ADDED')
+), material_pair_type(event_type) AS (
+  VALUES
+    ('CREATED'), ('EVIDENCE_ATTACHED'),
+    ('RESTRICTION_CREATED'), ('RESTRICTION_RELEASED')
+), collision_material_owner AS (
   SELECT create_source_type AS source_type, create_source_id AS source_id,
     create_source_key AS source_key, vehicle_id, 'ASSET_WORK_ORDER'::text AS owner_kind,
     id AS claim_id, id AS work_order_id, 'CREATED'::text AS expected_event_type,
@@ -561,18 +683,31 @@ WITH expected_source AS (
   WHERE release_source_type IS NOT NULL
     AND release_source_id IS NOT NULL
     AND release_source_key IS NOT NULL
+), authoritative_link_owner AS (
+  SELECT *
+  FROM collision_material_owner
+  WHERE owner_kind = 'ASSET_WORK_ORDER'
+     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
 ), source_event AS (
   SELECT source_type, source_id, source_key, event.id, event.work_order_id,
     event.event_type::text AS event_type, event.detail_snapshot
   FROM asset_work_order_event AS event
-), source_claim AS (
+), joined_claim AS (
   SELECT
     COALESCE(material.source_type, event.source_type) AS source_type,
     COALESCE(material.source_id, event.source_id) AS source_id,
     COALESCE(material.source_key, event.source_key) AS source_key,
-    material.vehicle_id, COALESCE(material.claim_id, event.id) AS claim_id,
+    material.vehicle_id, material.owner_kind, material.claim_id,
+    authority.claim_id AS authoritative_claim_id,
+    material.event_required, event.id AS event_id,
     CASE
-      WHEN material.claim_id IS NULL THEN true
+      WHEN material.claim_id IS NULL THEN NOT EXISTS (
+        SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+      )
+      WHEN NOT EXISTS (
+        SELECT 1 FROM material_pair_type
+        WHERE event_type = material.expected_event_type
+      ) THEN true
       WHEN event.id IS NULL THEN material.event_required
       WHEN NOT material.event_required THEN true
       WHEN event.work_order_id IS DISTINCT FROM material.work_order_id THEN true
@@ -582,29 +717,61 @@ WITH expected_source AS (
           IS DISTINCT FROM material.claim_id::text THEN true
       ELSE false
     END AS source_conflict
-  FROM material_owner AS material
+  FROM collision_material_owner AS material
   FULL JOIN source_event AS event
     ON event.source_type = material.source_type
    AND event.source_id = material.source_id
    AND event.source_key = material.source_key
+  LEFT JOIN authoritative_link_owner AS authority
+    ON authority.owner_kind = material.owner_kind
+   AND authority.claim_id = material.claim_id
+   AND authority.source_type = material.source_type
+   AND authority.source_id = material.source_id
+   AND authority.source_key = material.source_key
+), source_integrity AS (
+  SELECT
+    source_type,
+    source_id,
+    source_key,
+    (MIN(vehicle_id::text) FILTER (
+      WHERE authoritative_claim_id IS NOT NULL
+    ))::uuid AS vehicle_id,
+    COUNT(DISTINCT owner_kind || ':' || claim_id::text) AS material_owner_count,
+    COUNT(DISTINCT owner_kind || ':' || authoritative_claim_id::text)
+      AS authoritative_owner_count,
+    COUNT(DISTINCT event_id) AS event_owner_count,
+    BOOL_OR(source_conflict)
+      OR COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1
+      OR CASE
+        WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1
+        WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1
+        ELSE COUNT(DISTINCT event_id) <> 0
+      END AS source_conflict
+  FROM joined_claim
+  GROUP BY source_type, source_id, source_key
 )
 SELECT
   expected.source_type,
   expected.source_id,
   expected.source_key,
   CASE
-    WHEN COUNT(link.claim_id) = 0 THEN 'UNLINKED_REVIEW_REQUIRED'
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 0
+      AND COALESCE(SUM(link.material_owner_count), 0) = 0
+      AND BOOL_AND(NOT COALESCE(link.source_conflict, false))
+      THEN 'UNLINKED_REVIEW_REQUIRED'
     WHEN expected.vehicle_id IS NOT NULL
-      AND COUNT(link.claim_id) = 1
+      AND COALESCE(SUM(link.authoritative_owner_count), 0) = 1
+      AND COALESCE(SUM(link.material_owner_count), 0) = 1
       AND BOOL_AND(link.source_key = expected.source_key)
       AND BOOL_AND(link.vehicle_id = expected.vehicle_id)
       AND BOOL_AND(NOT link.source_conflict)
       THEN 'LINKED'
     ELSE 'SOURCE_CONFLICT'
   END AS classification,
-  COUNT(link.claim_id) AS source_claim_count
+  COALESCE(SUM(link.material_owner_count + link.event_owner_count), 0)
+    AS source_claim_count
 FROM expected_source AS expected
-LEFT JOIN source_claim AS link
+LEFT JOIN source_integrity AS link
   ON link.source_type = expected.source_type
  AND link.source_id = expected.source_id
 GROUP BY expected.source_type, expected.source_id, expected.source_key, expected.vehicle_id
@@ -649,7 +816,17 @@ WITH expected_source AS (
           )
       )
     )
-), material_owner AS (
+), event_only_type(event_type) AS (
+  VALUES
+    ('ASSIGNED'), ('STARTED'), ('WAITING_EXTERNAL'), ('RESUMED'),
+    ('SUBMITTED_FOR_ACCEPTANCE'), ('ACCEPTED'), ('COST_CONFIRMED'),
+    ('PHYSICAL_CONTROL_CONFIRMED'), ('INSPECTION_RECORDED'), ('CLOSED'),
+    ('CANCELLED'), ('NOTE_ADDED')
+), material_pair_type(event_type) AS (
+  VALUES
+    ('CREATED'), ('EVIDENCE_ATTACHED'),
+    ('RESTRICTION_CREATED'), ('RESTRICTION_RELEASED')
+), collision_material_owner AS (
   SELECT create_source_type AS source_type, create_source_id AS source_id,
     create_source_key AS source_key, vehicle_id, 'ASSET_WORK_ORDER'::text AS owner_kind,
     id AS claim_id, id AS work_order_id, 'CREATED'::text AS expected_event_type,
@@ -674,18 +851,31 @@ WITH expected_source AS (
   WHERE release_source_type IS NOT NULL
     AND release_source_id IS NOT NULL
     AND release_source_key IS NOT NULL
+), authoritative_link_owner AS (
+  SELECT *
+  FROM collision_material_owner
+  WHERE owner_kind = 'ASSET_WORK_ORDER'
+     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
 ), source_event AS (
   SELECT source_type, source_id, source_key, event.id, event.work_order_id,
     event.event_type::text AS event_type, event.detail_snapshot
   FROM asset_work_order_event AS event
-), source_claim AS (
+), joined_claim AS (
   SELECT
     COALESCE(material.source_type, event.source_type) AS source_type,
     COALESCE(material.source_id, event.source_id) AS source_id,
     COALESCE(material.source_key, event.source_key) AS source_key,
-    material.vehicle_id, COALESCE(material.claim_id, event.id) AS claim_id,
+    material.vehicle_id, material.owner_kind, material.claim_id,
+    authority.claim_id AS authoritative_claim_id,
+    material.event_required, event.id AS event_id,
     CASE
-      WHEN material.claim_id IS NULL THEN true
+      WHEN material.claim_id IS NULL THEN NOT EXISTS (
+        SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+      )
+      WHEN NOT EXISTS (
+        SELECT 1 FROM material_pair_type
+        WHERE event_type = material.expected_event_type
+      ) THEN true
       WHEN event.id IS NULL THEN material.event_required
       WHEN NOT material.event_required THEN true
       WHEN event.work_order_id IS DISTINCT FROM material.work_order_id THEN true
@@ -695,28 +885,60 @@ WITH expected_source AS (
           IS DISTINCT FROM material.claim_id::text THEN true
       ELSE false
     END AS source_conflict
-  FROM material_owner AS material
+  FROM collision_material_owner AS material
   FULL JOIN source_event AS event
     ON event.source_type = material.source_type
    AND event.source_id = material.source_id
    AND event.source_key = material.source_key
+  LEFT JOIN authoritative_link_owner AS authority
+    ON authority.owner_kind = material.owner_kind
+   AND authority.claim_id = material.claim_id
+   AND authority.source_type = material.source_type
+   AND authority.source_id = material.source_id
+   AND authority.source_key = material.source_key
+), source_integrity AS (
+  SELECT
+    source_type,
+    source_id,
+    source_key,
+    (MIN(vehicle_id::text) FILTER (
+      WHERE authoritative_claim_id IS NOT NULL
+    ))::uuid AS vehicle_id,
+    COUNT(DISTINCT owner_kind || ':' || claim_id::text) AS material_owner_count,
+    COUNT(DISTINCT owner_kind || ':' || authoritative_claim_id::text)
+      AS authoritative_owner_count,
+    COUNT(DISTINCT event_id) AS event_owner_count,
+    BOOL_OR(source_conflict)
+      OR COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1
+      OR CASE
+        WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1
+        WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1
+        ELSE COUNT(DISTINCT event_id) <> 0
+      END AS source_conflict
+  FROM joined_claim
+  GROUP BY source_type, source_id, source_key
 )
 SELECT
   expected.source_type,
   expected.source_id,
   expected.source_key,
   CASE
-    WHEN COUNT(link.claim_id) = 0 THEN 'UNLINKED_REVIEW_REQUIRED'
-    WHEN COUNT(link.claim_id) = 1
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 0
+      AND COALESCE(SUM(link.material_owner_count), 0) = 0
+      AND BOOL_AND(NOT COALESCE(link.source_conflict, false))
+      THEN 'UNLINKED_REVIEW_REQUIRED'
+    WHEN COALESCE(SUM(link.authoritative_owner_count), 0) = 1
+      AND COALESCE(SUM(link.material_owner_count), 0) = 1
       AND BOOL_AND(link.source_key = expected.source_key)
       AND BOOL_AND(link.vehicle_id = expected.vehicle_id)
       AND BOOL_AND(NOT link.source_conflict)
       THEN 'LINKED'
     ELSE 'SOURCE_CONFLICT'
   END AS classification,
-  COUNT(link.claim_id) AS source_claim_count
+  COALESCE(SUM(link.material_owner_count + link.event_owner_count), 0)
+    AS source_claim_count
 FROM expected_source AS expected
-LEFT JOIN source_claim AS link
+LEFT JOIN source_integrity AS link
   ON link.source_type = expected.source_type
  AND link.source_id = expected.source_id
 GROUP BY expected.source_type, expected.source_id, expected.source_key, expected.vehicle_id
@@ -927,21 +1149,33 @@ COMMIT;
 
 ### 7.3 重复来源元组
 
-来源只能有一个 material owner。工单创建必须精确配对同工单 `CREATED`；证据必须精确配对同工单、
+每个 exact source tuple 只能有一个 material owner。工单创建必须精确配对同工单 `CREATED`；证据必须精确配对同工单、
 `detail_snapshot.evidenceId` 相同的 `EVIDENCE_ATTACHED`；关联工单的限制开始/解除必须精确配对同工单、
 `detail_snapshot.restrictionId` 相同的 `RESTRICTION_CREATED`/`RESTRICTION_RELEASED`。无关联工单的限制
-不得有配对 event。event-only assignment/transition/note 也不得占用任何 material source tuple。
-以下**来源 owner 与合法 event 配对完整性**查询预期零行；event-only、缺失/错误/多个 event、无关联限制
-却有 event、多个 material owner 或跨工单/错误引用全部是 `SOURCE_CONFLICT`：
+不得有配对 event。唯一且零 material 的 assignment、transition/lifecycle、physical-control、inspection、
+note event 是合法 event-only source；一旦与 material 共用 tuple 即冲突。只有工单 create 与限制 START 是
+`authoritative_link_owner`；证据与限制 RELEASE 即使合法配对也只能形成 collision claim，绝不能建立 legacy link。
+以下**来源 owner 与合法 event 配对完整性**查询预期零行；缺失/错误/多个 event、无关联限制却有 event、
+多个 material owner 或跨工单/错误引用全部是 `SOURCE_CONFLICT`：
 
 <!-- stage1c-sql:12-source-integrity -->
 
 ```sql
 BEGIN TRANSACTION READ ONLY;
-WITH material_owner AS (
+WITH event_only_type(event_type) AS (
+  VALUES
+    ('ASSIGNED'), ('STARTED'), ('WAITING_EXTERNAL'), ('RESUMED'),
+    ('SUBMITTED_FOR_ACCEPTANCE'), ('ACCEPTED'), ('COST_CONFIRMED'),
+    ('PHYSICAL_CONTROL_CONFIRMED'), ('INSPECTION_RECORDED'), ('CLOSED'),
+    ('CANCELLED'), ('NOTE_ADDED')
+), material_pair_type(event_type) AS (
+  VALUES
+    ('CREATED'), ('EVIDENCE_ATTACHED'),
+    ('RESTRICTION_CREATED'), ('RESTRICTION_RELEASED')
+), collision_material_owner AS (
   SELECT create_source_type AS source_type, create_source_id AS source_id,
-    create_source_key AS source_key, 'ASSET_WORK_ORDER'::text AS owner_type,
-    id AS owner_id, id AS work_order_id, 'CREATED'::text AS expected_event_type,
+    create_source_key AS source_key, 'ASSET_WORK_ORDER'::text AS owner_kind,
+    id AS claim_id, id AS work_order_id, 'CREATED'::text AS expected_event_type,
     NULL::text AS reference_key, true AS event_required
   FROM asset_work_order
   UNION ALL
@@ -961,7 +1195,12 @@ WITH material_owner AS (
   WHERE release_source_type IS NOT NULL
     AND release_source_id IS NOT NULL
     AND release_source_key IS NOT NULL
-), event_owner AS (
+), authoritative_link_owner AS (
+  SELECT *
+  FROM collision_material_owner
+  WHERE owner_kind = 'ASSET_WORK_ORDER'
+     OR owner_kind = 'VEHICLE_OPERATIONAL_RESTRICTION_START'
+), source_event AS (
   SELECT
     event.source_type, event.source_id, event.source_key, event.id AS event_id,
     event.work_order_id, event.event_type::text AS event_type, event.detail_snapshot
@@ -971,51 +1210,71 @@ WITH material_owner AS (
     COALESCE(material.source_type, event.source_type) AS source_type,
     COALESCE(material.source_id, event.source_id) AS source_id,
     COALESCE(material.source_key, event.source_key) AS source_key,
-    material.owner_type, material.owner_id, material.event_required,
-    event.event_id, event.event_type,
-    event.work_order_id = material.work_order_id AS same_work_order,
-    material.reference_key IS NULL
-      OR event.detail_snapshot ->> material.reference_key = material.owner_id::text
-      AS same_material_reference,
-    material.expected_event_type
-  FROM material_owner AS material
-  FULL JOIN event_owner AS event
+    material.owner_kind, material.claim_id,
+    authority.claim_id AS authoritative_claim_id,
+    material.event_required, event.event_id,
+    CASE
+      WHEN material.claim_id IS NULL THEN NOT EXISTS (
+        SELECT 1 FROM event_only_type WHERE event_type = event.event_type
+      )
+      WHEN NOT EXISTS (
+        SELECT 1 FROM material_pair_type
+        WHERE event_type = material.expected_event_type
+      ) THEN true
+      WHEN event.event_id IS NULL THEN material.event_required
+      WHEN NOT material.event_required THEN true
+      WHEN event.work_order_id IS DISTINCT FROM material.work_order_id THEN true
+      WHEN event.event_type IS DISTINCT FROM material.expected_event_type THEN true
+      WHEN material.reference_key IS NOT NULL
+        AND event.detail_snapshot ->> material.reference_key
+          IS DISTINCT FROM material.claim_id::text THEN true
+      ELSE false
+    END AS row_source_conflict,
+    event.event_type
+  FROM collision_material_owner AS material
+  FULL JOIN source_event AS event
     ON event.source_type = material.source_type
    AND event.source_id = material.source_id
    AND event.source_key = material.source_key
+  LEFT JOIN authoritative_link_owner AS authority
+    ON authority.owner_kind = material.owner_kind
+   AND authority.claim_id = material.claim_id
+   AND authority.source_type = material.source_type
+   AND authority.source_id = material.source_id
+   AND authority.source_key = material.source_key
+), source_integrity AS (
+  SELECT
+    source_type,
+    source_id,
+    source_key,
+    COUNT(DISTINCT owner_kind || ':' || claim_id::text) AS material_owner_count,
+    COUNT(DISTINCT owner_kind || ':' || authoritative_claim_id::text)
+      AS authoritative_owner_count,
+    COUNT(DISTINCT event_id) AS event_owner_count,
+    BOOL_OR(row_source_conflict)
+      OR COUNT(DISTINCT owner_kind || ':' || claim_id::text) > 1
+      OR CASE
+        WHEN COUNT(DISTINCT claim_id) = 0 THEN COUNT(DISTINCT event_id) <> 1
+        WHEN BOOL_AND(event_required) THEN COUNT(DISTINCT event_id) <> 1
+        ELSE COUNT(DISTINCT event_id) <> 0
+      END AS source_conflict,
+    string_agg(
+      DISTINCT owner_kind || ':' || claim_id::text,
+      ',' ORDER BY owner_kind || ':' || claim_id::text
+    ) AS material_owners,
+    string_agg(
+      DISTINCT event_type || ':' || event_id::text,
+      ',' ORDER BY event_type || ':' || event_id::text
+    ) AS event_owners
+  FROM joined_claim
+  GROUP BY source_type, source_id, source_key
 )
 SELECT
-  source_type,
-  source_id,
-  source_key,
-  COUNT(DISTINCT owner_type || ':' || owner_id::text) AS material_owner_count,
-  COUNT(DISTINCT event_id) AS event_owner_count,
-  true AS source_conflict,
-  string_agg(
-    DISTINCT owner_type || ':' || owner_id::text,
-    ',' ORDER BY owner_type || ':' || owner_id::text
-  ) AS material_owners,
-  string_agg(
-    DISTINCT event_type || ':' || event_id::text,
-    ',' ORDER BY event_type || ':' || event_id::text
-  ) AS event_owners
-FROM joined_claim
-GROUP BY source_type, source_id, source_key
-HAVING COUNT(DISTINCT owner_type || ':' || owner_id::text) <> 1
-   OR BOOL_OR(owner_id IS NULL)
-   OR BOOL_OR(
-     owner_id IS NOT NULL AND (
-       (event_required AND event_id IS NULL)
-       OR (NOT event_required AND event_id IS NOT NULL)
-       OR (event_id IS NOT NULL AND event_type IS DISTINCT FROM expected_event_type)
-       OR (event_id IS NOT NULL AND same_work_order IS NOT TRUE)
-       OR (event_id IS NOT NULL AND same_material_reference IS NOT TRUE)
-     )
-   )
-   OR COUNT(DISTINCT event_id) IS DISTINCT FROM CASE
-     WHEN BOOL_AND(event_required) THEN 1::bigint
-     ELSE 0::bigint
-   END
+  source_type, source_id, source_key,
+  material_owner_count, authoritative_owner_count, event_owner_count,
+  source_conflict, material_owners, event_owners
+FROM source_integrity
+WHERE source_conflict
 ORDER BY source_type, source_id, source_key;
 COMMIT;
 ```
@@ -1085,6 +1344,16 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
       'reject_asset_operation_append_only_mutation'),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_release_only',
       'enforce_vehicle_operational_restriction_release')
+), expected_function_raw(function_name, function_definition) AS (
+  VALUES
+    ('reject_asset_operation_append_only_mutation', $definition$CREATE OR REPLACE FUNCTION reject_asset_operation_append_only_mutation() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = format('%I is append-only', TG_TABLE_NAME); END; $function$$definition$),
+    ('enforce_vehicle_operational_restriction_release', $definition$CREATE OR REPLACE FUNCTION enforce_vehicle_operational_restriction_release() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF TG_OP = 'DELETE' THEN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'vehicle_operational_restriction cannot be deleted'; END IF; IF OLD."status" <> 'ACTIVE' OR NEW."status" = 'ACTIVE' THEN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'vehicle_operational_restriction can be released only once'; END IF; IF ROW( NEW."id", NEW."vehicle_id", NEW."work_order_id", NEW."restriction_type", NEW."severity", NEW."scopes", NEW."started_at", NEW."conditions_snapshot", NEW."evidence_snapshot", NEW."start_source_type", NEW."start_source_id", NEW."start_source_key", NEW."created_at", NEW."created_by" ) IS DISTINCT FROM ROW( OLD."id", OLD."vehicle_id", OLD."work_order_id", OLD."restriction_type", OLD."severity", OLD."scopes", OLD."started_at", OLD."conditions_snapshot", OLD."evidence_snapshot", OLD."start_source_type", OLD."start_source_id", OLD."start_source_key", OLD."created_at", OLD."created_by" ) THEN RAISE EXCEPTION USING ERRCODE = '55000', MESSAGE = 'vehicle_operational_restriction start facts are immutable'; END IF; RETURN NEW; END; $function$$definition$)
+), expected_function AS (
+  SELECT
+    function_name,
+    btrim(regexp_replace(function_definition, '\s+', ' ', 'g'))
+      AS normalized_function_definition
+  FROM expected_function_raw
 ), actual_trigger AS (
   SELECT
     table_schema.nspname AS table_schema,
@@ -1095,62 +1364,112 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     function_schema.nspname AS function_schema,
     function_name.proname AS function_name,
     pg_get_triggerdef(trigger.oid) AS trigger_definition,
-    pg_get_functiondef(trigger.tgfoid) AS function_definition
+    btrim(regexp_replace(
+      replace(pg_get_functiondef(trigger.tgfoid), function_schema.nspname || '.', ''),
+      '\s+', ' ', 'g'
+    )) AS normalized_function_definition
   FROM pg_trigger AS trigger
   JOIN pg_class AS table_name ON table_name.oid = trigger.tgrelid
   JOIN pg_namespace AS table_schema ON table_schema.oid = table_name.relnamespace
   JOIN pg_proc AS function_name ON function_name.oid = trigger.tgfoid
   JOIN pg_namespace AS function_schema ON function_schema.oid = function_name.pronamespace
   WHERE NOT trigger.tgisinternal
-), expected_constraint(table_name, constraint_name, definition_regex) AS (
+), actual_function AS (
+  SELECT
+    namespace.nspname AS function_schema,
+    function_name.proname AS function_name,
+    btrim(regexp_replace(
+      replace(pg_get_functiondef(function_name.oid), namespace.nspname || '.', ''),
+      '\s+', ' ', 'g'
+    )) AS normalized_function_definition
+  FROM pg_proc AS function_name
+  JOIN pg_namespace AS namespace ON namespace.oid = function_name.pronamespace
+  WHERE function_name.proname IN (
+    'reject_asset_operation_append_only_mutation',
+    'enforce_vehicle_operational_restriction_release'
+  )
+), expected_constraint_raw(table_name, constraint_name, constraint_definition) AS (
   VALUES
     ('asset_work_order', 'asset_work_order_version_nonnegative_chk',
-      'CHECK.*version.*>= 0'),
+      $definition$CHECK ((version >= 0))$definition$),
     ('asset_work_order_event', 'asset_work_order_event_sequence_positive_chk',
-      'CHECK.*sequence.*> 0'),
+      $definition$CHECK ((sequence > 0))$definition$),
     ('asset_work_order_event', 'asset_work_order_event_occurred_not_future_chk',
-      'CHECK.*occurred_at.*<=.*recorded_at'),
+      $definition$CHECK ((occurred_at <= recorded_at))$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_sha256_chk',
-      'CHECK.*content_sha256.*\^\[0-9a-f\].*64'),
+      $definition$CHECK (((content_sha256 IS NULL) OR ((content_sha256)::text ~ '^[0-9a-f]{64}$'::text)))$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_action_shape_chk',
-      'CHECK.*REMOVE.*ATTACH.*SUPERSEDE'),
+      $definition$CHECK ((((action = 'REMOVE'::asset_work_order_evidence_action) AND (file_id IS NULL) AND (content_sha256 IS NULL) AND (supersedes_evidence_id IS NOT NULL)) OR ((action = 'ATTACH'::asset_work_order_evidence_action) AND (file_id IS NOT NULL) AND (content_sha256 IS NOT NULL) AND (supersedes_evidence_id IS NULL)) OR ((action = 'SUPERSEDE'::asset_work_order_evidence_action) AND (file_id IS NOT NULL) AND (content_sha256 IS NOT NULL) AND (supersedes_evidence_id IS NOT NULL))))$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_file_snapshot_shape_chk',
-      'CHECK.*file_id.*file_bucket.*file_object_key.*file_size_bytes.*file_mime_type'),
+      $definition$CHECK ((((file_id IS NULL) AND (file_bucket IS NULL) AND (file_object_key IS NULL) AND (file_size_bytes IS NULL) AND (file_mime_type IS NULL)) OR ((file_id IS NOT NULL) AND (file_bucket IS NOT NULL) AND (file_object_key IS NOT NULL) AND (file_size_bytes IS NOT NULL))))$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_file_size_nonnegative_chk',
-      'CHECK.*file_size_bytes.*>= 0'),
+      $definition$CHECK (((file_size_bytes IS NULL) OR (file_size_bytes >= 0)))$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_scopes_not_empty_chk',
-      'CHECK.*cardinality.*scopes.*> 0'),
+      $definition$CHECK ((cardinality(scopes) > 0))$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_release_after_start_chk',
-      'CHECK.*released_at.*>=.*started_at'),
+      $definition$CHECK (((released_at IS NULL) OR (released_at >= started_at)))$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_release_tuple_chk',
-      'CHECK.*ACTIVE.*released_at.*released_by.*release_reason.*release_snapshot.*release_source_type.*release_source_id.*release_source_key.*RELEASED.*VOIDED')
+      $definition$CHECK ((((status = 'ACTIVE'::vehicle_operational_restriction_status) AND (released_at IS NULL) AND (released_by IS NULL) AND (release_reason IS NULL) AND (release_snapshot IS NULL) AND (release_source_type IS NULL) AND (release_source_id IS NULL) AND (release_source_key IS NULL)) OR ((status = ANY (ARRAY['RELEASED'::vehicle_operational_restriction_status, 'VOIDED'::vehicle_operational_restriction_status])) AND (released_at IS NOT NULL) AND (released_by IS NOT NULL) AND (release_reason IS NOT NULL) AND (release_snapshot IS NOT NULL) AND (release_source_type IS NOT NULL) AND (release_source_id IS NOT NULL) AND (release_source_key IS NOT NULL))))$definition$)
+), expected_constraint AS (
+  SELECT
+    table_name,
+    constraint_name,
+    btrim(regexp_replace(constraint_definition, '\s+', ' ', 'g'))
+      AS normalized_constraint_definition
+  FROM expected_constraint_raw
 ), actual_constraint AS (
   SELECT
     namespace.nspname AS table_schema, table_name.relname AS table_name,
     constraint_name.conname AS constraint_name,
-    pg_get_constraintdef(constraint_name.oid) AS constraint_definition
+    constraint_name.convalidated,
+    btrim(regexp_replace(pg_get_constraintdef(constraint_name.oid), '\s+', ' ', 'g'))
+      AS normalized_constraint_definition
   FROM pg_constraint AS constraint_name
   JOIN pg_class AS table_name ON table_name.oid = constraint_name.conrelid
   JOIN pg_namespace AS namespace ON namespace.oid = table_name.relnamespace
   WHERE constraint_name.contype = 'c'
-), expected_index(table_name, index_name, definition_regex) AS (
+), expected_index_raw(table_name, index_name, expected_unique, index_definition) AS (
   VALUES
     ('asset_work_order', 'asset_work_order_create_source_key',
-      '^CREATE UNIQUE INDEX.*\(create_source_type, create_source_id, create_source_key\)$'),
+      true, $definition$CREATE UNIQUE INDEX asset_work_order_create_source_key ON asset_work_order USING btree (create_source_type, create_source_id, create_source_key)$definition$),
     ('asset_work_order_event', 'asset_work_order_event_work_order_sequence_key',
-      '^CREATE UNIQUE INDEX.*\(work_order_id, sequence\)$'),
+      true, $definition$CREATE UNIQUE INDEX asset_work_order_event_work_order_sequence_key ON asset_work_order_event USING btree (work_order_id, sequence)$definition$),
     ('asset_work_order_event', 'asset_work_order_event_source_key',
-      '^CREATE UNIQUE INDEX.*\(source_type, source_id, source_key\)$'),
+      true, $definition$CREATE UNIQUE INDEX asset_work_order_event_source_key ON asset_work_order_event USING btree (source_type, source_id, source_key)$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_source_key',
-      '^CREATE UNIQUE INDEX.*\(source_type, source_id, source_key\)$'),
+      true, $definition$CREATE UNIQUE INDEX asset_work_order_evidence_source_key ON asset_work_order_evidence USING btree (source_type, source_id, source_key)$definition$),
     ('asset_work_order_evidence', 'asset_work_order_evidence_supersedes_evidence_id_key',
-      '^CREATE UNIQUE INDEX.*\(supersedes_evidence_id\)$'),
+      true, $definition$CREATE UNIQUE INDEX asset_work_order_evidence_supersedes_evidence_id_key ON asset_work_order_evidence USING btree (supersedes_evidence_id)$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_start_source_key',
-      '^CREATE UNIQUE INDEX.*\(start_source_type, start_source_id, start_source_key\)$'),
+      true, $definition$CREATE UNIQUE INDEX vehicle_operational_restriction_start_source_key ON vehicle_operational_restriction USING btree (start_source_type, start_source_id, start_source_key)$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_release_source_key',
-      '^CREATE UNIQUE INDEX.*\(release_source_type, release_source_id, release_source_key\)$'),
+      true, $definition$CREATE UNIQUE INDEX vehicle_operational_restriction_release_source_key ON vehicle_operational_restriction USING btree (release_source_type, release_source_id, release_source_key)$definition$),
     ('vehicle_operational_restriction', 'vehicle_operational_restriction_active_vehicle_idx',
-      '^CREATE INDEX.*\(vehicle_id, severity\) WHERE .*status.*ACTIVE')
+      false, $definition$CREATE INDEX vehicle_operational_restriction_active_vehicle_idx ON vehicle_operational_restriction USING btree (vehicle_id, severity) WHERE (status = 'ACTIVE'::vehicle_operational_restriction_status)$definition$)
+), expected_index AS (
+  SELECT
+    table_name,
+    index_name,
+    expected_unique,
+    btrim(regexp_replace(index_definition, '\s+', ' ', 'g'))
+      AS normalized_index_definition
+  FROM expected_index_raw
+), actual_index AS (
+  SELECT
+    table_namespace.nspname AS table_schema,
+    table_name.relname AS table_name,
+    index_name.relname AS index_name,
+    index_state.indisunique,
+    index_state.indisvalid,
+    index_state.indisready,
+    btrim(regexp_replace(
+      replace(pg_get_indexdef(index_name.oid), table_namespace.nspname || '.', ''),
+      '\s+', ' ', 'g'
+    )) AS normalized_index_definition
+  FROM pg_index AS index_state
+  JOIN pg_class AS index_name ON index_name.oid = index_state.indexrelid
+  JOIN pg_class AS table_name ON table_name.oid = index_state.indrelid
+  JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_name.relnamespace
 ), trigger_anomaly AS (
   SELECT
     'TRIGGER'::text AS object_kind,
@@ -1158,14 +1477,17 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     expected.trigger_name AS object_name,
     string_agg(DISTINCT actual.table_schema, ',' ORDER BY actual.table_schema) AS actual_schemas,
     md5(COALESCE(string_agg(
-      actual.trigger_definition || ':' || actual.function_definition,
+      actual.trigger_definition || ':' || actual.normalized_function_definition,
       ',' ORDER BY actual.table_schema, actual.trigger_name
     ), '')) AS definition_fingerprint
   FROM expected_trigger AS expected
+  JOIN expected_function AS expected_body
+    ON expected_body.function_name = expected.function_name
   LEFT JOIN actual_trigger AS actual
     ON actual.table_name = expected.table_name
    AND actual.trigger_name = expected.trigger_name
-  GROUP BY expected.table_name, expected.trigger_name, expected.function_name
+  GROUP BY expected.table_name, expected.trigger_name, expected.function_name,
+    expected_body.normalized_function_definition
   HAVING COUNT(*) FILTER (WHERE actual.table_schema = current_schema()) <> 1
      OR COUNT(*) FILTER (WHERE actual.table_schema <> current_schema()) > 0
      OR BOOL_OR(
@@ -1175,47 +1497,30 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
          OR actual.enabled IS DISTINCT FROM 'O'
          OR actual.exact_row_before_update_delete IS NOT TRUE
          OR actual.trigger_definition !~ 'FOR EACH ROW EXECUTE FUNCTION'
-         OR CASE expected.function_name
-           WHEN 'reject_asset_operation_append_only_mutation' THEN
-             actual.function_definition !~ 'ERRCODE = ''55000'''
-             OR actual.function_definition !~ 'TG_TABLE_NAME'
-             OR actual.function_definition !~ 'append-only'
-           WHEN 'enforce_vehicle_operational_restriction_release' THEN
-             actual.function_definition !~ 'TG_OP = ''DELETE'''
-             OR actual.function_definition !~ 'OLD\."status" <> ''ACTIVE'''
-             OR actual.function_definition !~ 'NEW\."status" = ''ACTIVE'''
-             OR actual.function_definition !~ 'NEW\."id"'
-             OR actual.function_definition !~ 'OLD\."id"'
-             OR actual.function_definition !~ 'NEW\."vehicle_id"'
-             OR actual.function_definition !~ 'OLD\."vehicle_id"'
-             OR actual.function_definition !~ 'NEW\."work_order_id"'
-             OR actual.function_definition !~ 'OLD\."work_order_id"'
-             OR actual.function_definition !~ 'NEW\."restriction_type"'
-             OR actual.function_definition !~ 'OLD\."restriction_type"'
-             OR actual.function_definition !~ 'NEW\."severity"'
-             OR actual.function_definition !~ 'OLD\."severity"'
-             OR actual.function_definition !~ 'NEW\."scopes"'
-             OR actual.function_definition !~ 'OLD\."scopes"'
-             OR actual.function_definition !~ 'NEW\."started_at"'
-             OR actual.function_definition !~ 'OLD\."started_at"'
-             OR actual.function_definition !~ 'NEW\."conditions_snapshot"'
-             OR actual.function_definition !~ 'OLD\."conditions_snapshot"'
-             OR actual.function_definition !~ 'NEW\."evidence_snapshot"'
-             OR actual.function_definition !~ 'OLD\."evidence_snapshot"'
-             OR actual.function_definition !~ 'NEW\."start_source_type"'
-             OR actual.function_definition !~ 'OLD\."start_source_type"'
-             OR actual.function_definition !~ 'NEW\."start_source_id"'
-             OR actual.function_definition !~ 'OLD\."start_source_id"'
-             OR actual.function_definition !~ 'NEW\."start_source_key"'
-             OR actual.function_definition !~ 'OLD\."start_source_key"'
-             OR actual.function_definition !~ 'NEW\."created_at"'
-             OR actual.function_definition !~ 'OLD\."created_at"'
-             OR actual.function_definition !~ 'NEW\."created_by"'
-             OR actual.function_definition !~ 'OLD\."created_by"'
-             OR actual.function_definition !~ 'RETURN NEW'
-           ELSE true
-         END
+         OR actual.normalized_function_definition IS DISTINCT FROM
+           expected_body.normalized_function_definition
        )
+     )
+), function_anomaly AS (
+  SELECT
+    'FUNCTION'::text AS object_kind,
+    '<none>'::text AS table_name,
+    expected.function_name AS object_name,
+    string_agg(DISTINCT actual.function_schema, ',' ORDER BY actual.function_schema)
+      AS actual_schemas,
+    md5(COALESCE(string_agg(
+      actual.normalized_function_definition,
+      ',' ORDER BY actual.function_schema, actual.function_name
+    ), '')) AS definition_fingerprint
+  FROM expected_function AS expected
+  LEFT JOIN actual_function AS actual ON actual.function_name = expected.function_name
+  GROUP BY expected.function_name, expected.normalized_function_definition
+  HAVING COUNT(*) FILTER (WHERE actual.function_schema = current_schema()) <> 1
+     OR COUNT(*) FILTER (WHERE actual.function_schema <> current_schema()) > 0
+     OR BOOL_OR(
+       actual.function_schema = current_schema()
+       AND actual.normalized_function_definition IS DISTINCT FROM
+         expected.normalized_function_definition
      )
 ), constraint_anomaly AS (
   SELECT
@@ -1224,43 +1529,57 @@ WITH expected_trigger(table_name, trigger_name, function_name) AS (
     expected.constraint_name AS object_name,
     string_agg(DISTINCT actual.table_schema, ',' ORDER BY actual.table_schema) AS actual_schemas,
     md5(COALESCE(string_agg(
-      actual.constraint_definition,
+      actual.normalized_constraint_definition,
       ',' ORDER BY actual.table_schema, actual.constraint_name
     ), '')) AS definition_fingerprint
   FROM expected_constraint AS expected
   LEFT JOIN actual_constraint AS actual
     ON actual.table_name = expected.table_name
    AND actual.constraint_name = expected.constraint_name
-  GROUP BY expected.table_name, expected.constraint_name, expected.definition_regex
+  GROUP BY expected.table_name, expected.constraint_name,
+    expected.normalized_constraint_definition
   HAVING COUNT(*) FILTER (WHERE actual.table_schema = current_schema()) <> 1
      OR COUNT(*) FILTER (WHERE actual.table_schema <> current_schema()) > 0
      OR BOOL_OR(
        actual.table_schema = current_schema()
-       AND actual.constraint_definition !~ expected.definition_regex
+       AND (
+         actual.convalidated IS NOT TRUE
+         OR actual.normalized_constraint_definition IS DISTINCT FROM
+           expected.normalized_constraint_definition
+       )
      )
 ), index_anomaly AS (
   SELECT
     'INDEX'::text AS object_kind,
     expected.table_name,
     expected.index_name AS object_name,
-    string_agg(DISTINCT actual.schemaname, ',' ORDER BY actual.schemaname) AS actual_schemas,
+    string_agg(DISTINCT actual.table_schema, ',' ORDER BY actual.table_schema) AS actual_schemas,
     md5(COALESCE(string_agg(
-      actual.indexdef,
-      ',' ORDER BY actual.schemaname, actual.indexname
+      actual.normalized_index_definition,
+      ',' ORDER BY actual.table_schema, actual.index_name
     ), '')) AS definition_fingerprint
   FROM expected_index AS expected
-  LEFT JOIN pg_indexes AS actual
-    ON actual.tablename = expected.table_name
-   AND actual.indexname = expected.index_name
-  GROUP BY expected.table_name, expected.index_name, expected.definition_regex
-  HAVING COUNT(*) FILTER (WHERE actual.schemaname = current_schema()) <> 1
-     OR COUNT(*) FILTER (WHERE actual.schemaname <> current_schema()) > 0
+  LEFT JOIN actual_index AS actual
+    ON actual.table_name = expected.table_name
+   AND actual.index_name = expected.index_name
+  GROUP BY expected.table_name, expected.index_name, expected.expected_unique,
+    expected.normalized_index_definition
+  HAVING COUNT(*) FILTER (WHERE actual.table_schema = current_schema()) <> 1
+     OR COUNT(*) FILTER (WHERE actual.table_schema <> current_schema()) > 0
      OR BOOL_OR(
-       actual.schemaname = current_schema()
-       AND actual.indexdef !~ expected.definition_regex
+       actual.table_schema = current_schema()
+       AND (
+         actual.indisvalid IS NOT TRUE
+         OR actual.indisready IS NOT TRUE
+         OR actual.indisunique IS DISTINCT FROM expected.expected_unique
+         OR actual.normalized_index_definition IS DISTINCT FROM
+           expected.normalized_index_definition
+       )
      )
 )
 SELECT * FROM trigger_anomaly
+UNION ALL
+SELECT * FROM function_anomaly
 UNION ALL
 SELECT * FROM constraint_anomaly
 UNION ALL

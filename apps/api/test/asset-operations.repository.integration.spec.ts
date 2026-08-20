@@ -351,6 +351,89 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     await expect(countEvidenceBySource(prisma, occupiedSource)).resolves.toBe(0);
   });
 
+  it("serializes restriction start against release for exact source ownership", async () => {
+    const repository = new AssetOperationsRepository();
+    const releaseTarget = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(vehicleId, "source-race-release-target")
+      )
+    );
+    const sharedSource = source("source-race-start-release");
+    const first = await holdFirstTransaction(prisma, (tx) =>
+      repository.createRestriction(tx, {
+        ...createRestrictionCommand(vehicleId, "source-race-start-owner"),
+        source: sharedSource
+      })
+    );
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) =>
+        repository.releaseRestriction(tx, {
+          ...releaseRestrictionCommand(
+            releaseTarget.restriction.id,
+            "source-race-release-loser",
+            userId
+          ),
+          source: sharedSource
+        })
+      )
+    );
+    let waitedOnOwnershipLock: boolean;
+    try {
+      waitedOnOwnershipLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
+    } finally {
+      first.release.resolve();
+    }
+    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+
+    expect(waitedOnOwnershipLock).toBe(true);
+    expect(firstResult.wrote).toBe(true);
+    expectConflict(rejectedValue(secondResult), ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    await expect(countRestrictionStartsBySource(prisma, sharedSource)).resolves.toBe(1);
+    await expect(countRestrictionReleasesBySource(prisma, sharedSource)).resolves.toBe(0);
+    await expect(
+      prisma.vehicleOperationalRestriction.findUnique({
+        select: { status: true },
+        where: { id: releaseTarget.restriction.id }
+      })
+    ).resolves.toEqual({ status: VehicleOperationalRestrictionStatus.ACTIVE });
+  });
+
+  it("serializes restriction start against work-order event for exact source ownership", async () => {
+    const repository = new AssetOperationsRepository();
+    const workOrder = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "source-race-event-work-order"))
+    );
+    const sharedSource = source("source-race-start-event");
+    const first = await holdFirstTransaction(prisma, (tx) =>
+      repository.createRestriction(tx, {
+        ...createRestrictionCommand(vehicleId, "source-race-start-event-owner"),
+        source: sharedSource
+      })
+    );
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) =>
+        repository.appendNote(tx, {
+          ...noteCommand(workOrder.workOrder.id, "source-race-event-loser"),
+          source: sharedSource
+        })
+      )
+    );
+    let waitedOnOwnershipLock: boolean;
+    try {
+      waitedOnOwnershipLock = await waitForDatabaseLock(prisma, "pg_advisory_xact_lock");
+    } finally {
+      first.release.resolve();
+    }
+    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+
+    expect(waitedOnOwnershipLock).toBe(true);
+    expect(firstResult.wrote).toBe(true);
+    expectConflict(rejectedValue(secondResult), ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    await expect(countRestrictionStartsBySource(prisma, sharedSource)).resolves.toBe(1);
+    await expect(countEventsBySource(prisma, sharedSource)).resolves.toBe(0);
+  });
+
   it("enforces linked acceptance and exactly replays immutable restriction outcomes", async () => {
     const repository = new AssetOperationsRepository();
     const workOrder = await readCommitted(prisma, (tx) =>
@@ -912,6 +995,32 @@ async function countEvidenceBySource(
       sourceId: sourceValue.id,
       sourceKey: sourceValue.key,
       sourceType: sourceValue.type
+    }
+  });
+}
+
+async function countRestrictionStartsBySource(
+  prisma: PrismaService,
+  sourceValue: StableAssetOperationSource
+) {
+  return prisma.vehicleOperationalRestriction.count({
+    where: {
+      startSourceId: sourceValue.id,
+      startSourceKey: sourceValue.key,
+      startSourceType: sourceValue.type
+    }
+  });
+}
+
+async function countRestrictionReleasesBySource(
+  prisma: PrismaService,
+  sourceValue: StableAssetOperationSource
+) {
+  return prisma.vehicleOperationalRestriction.count({
+    where: {
+      releaseSourceId: sourceValue.id,
+      releaseSourceKey: sourceValue.key,
+      releaseSourceType: sourceValue.type
     }
   });
 }

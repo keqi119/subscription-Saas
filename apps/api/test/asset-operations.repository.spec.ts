@@ -732,6 +732,30 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("rejects a work-order event when a restriction owns the exact source", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const occupiedSource = source("restriction-owned-event-source");
+    await repository.createRestriction(database.tx, {
+      ...createRestrictionCommand(vehicleId, "restriction-owned-event"),
+      source: occupiedSource
+    });
+    const workOrder = await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId
+    });
+
+    await expectCode(
+      repository.appendNote(database.tx, {
+        ...noteCommand(workOrder.workOrder.id, "collision", "restriction-owned-event"),
+        source: occupiedSource
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+    expect(database.events).toHaveLength(1);
+  });
+
   it("loads a deterministic as-of availability snapshot", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();

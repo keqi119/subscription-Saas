@@ -168,10 +168,11 @@ export class AssetOperationsRepository {
     command: CreateWorkOrderCommand
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = normalizeCreateCommand(command);
-    await prepareCommand(tx, "work-order:create", normalized.source);
+    await prepareCommand(tx, normalized.source);
     await lockAuthorityRows(tx, createAuthorityRows(normalized));
     const existing = await findWorkOrderByCreateSource(tx, normalized.source);
     if (existing) return replayCreate(tx, existing, normalized);
+    await assertSourceNotOwnedByRestriction(tx, normalized.source);
     await assertEventTime(tx, normalized.occurredAt);
     const workOrder = await this.createHeaderWithUniqueBusinessNo(tx, normalized);
     const event = await createEventRow(tx, {
@@ -200,10 +201,11 @@ export class AssetOperationsRepository {
     command: AssignWorkOrderCommand
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
-    await prepareCommand(tx, "work-order:assign", normalized.source);
+    await prepareCommand(tx, normalized.source);
     await lockAuthorityRows(tx, [{ id: normalized.assignedUserId, table: "user" }]);
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayAssignment(replay, normalized);
+    await assertSourceNotOwnedByRestriction(tx, normalized.source);
     const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
     assertVersion(current, normalized.expectedVersion);
     if (TERMINAL_STATUSES.has(current.status)) {
@@ -239,9 +241,10 @@ export class AssetOperationsRepository {
     command: TransitionWorkOrderCommand
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
-    await prepareCommand(tx, "work-order:transition", normalized.source);
+    await prepareCommand(tx, normalized.source);
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayTransition(replay, normalized);
+    await assertSourceNotOwnedByRestriction(tx, normalized.source);
     const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
     assertVersion(current, normalized.expectedVersion);
     assertTransition(current, normalized.targetStatus);
@@ -292,7 +295,7 @@ export class AssetOperationsRepository {
     envelope: CommandEnvelopeInput = { command, kind: "event" }
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
-    await prepareCommand(tx, "work-order:event", normalized.source);
+    await prepareCommand(tx, normalized.source);
     if (!DIRECT_EVENT_TYPES.has(command.eventType)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_INVALID);
     }
@@ -303,7 +306,7 @@ export class AssetOperationsRepository {
     tx: Prisma.TransactionClient,
     command: AppendEvidenceCommand
   ): Promise<EvidenceCommandOutcome> {
-    await prepareCommand(tx, "work-order:evidence", command.source);
+    await prepareCommand(tx, command.source);
     const normalized = normalizeEvidenceCommand(command);
     assertEvidenceShape(normalized);
     if (normalized.fileId) {
@@ -315,6 +318,7 @@ export class AssetOperationsRepository {
       : null;
     const replay = await findEvidenceBySource(tx, normalized.source);
     if (replay) return replayEvidence(tx, replay, normalized);
+    await assertSourceNotOwnedByRestriction(tx, normalized.source);
     assertEvidencePredecessor(predecessor, normalized);
     if (predecessor) {
       const successor = await tx.assetWorkOrderEvidence.findFirst({
@@ -394,7 +398,7 @@ export class AssetOperationsRepository {
     tx: Prisma.TransactionClient,
     command: CreateRestrictionCommand
   ): Promise<RestrictionCommandOutcome> {
-    await prepareCommand(tx, "restriction:create", command.source);
+    await prepareCommand(tx, command.source);
     const normalized = normalizeCreateRestrictionCommand(command);
     assertCreateRestrictionShape(normalized);
     await lockAuthorityRows(tx, restrictionAuthorityRows(normalized));
@@ -482,7 +486,7 @@ export class AssetOperationsRepository {
     tx: Prisma.TransactionClient,
     command: ReleaseRestrictionCommand
   ): Promise<RestrictionCommandOutcome> {
-    await prepareCommand(tx, "restriction:release", command.source);
+    await prepareCommand(tx, command.source);
     const normalized = normalizeReleaseRestrictionCommand(command);
     assertReleaseRestrictionShape(normalized);
     const replay = await findRestrictionByReleaseSource(tx, normalized.source);
@@ -740,15 +744,11 @@ type NormalizedReleaseRestrictionCommand = Omit<ReleaseRestrictionCommand, "rele
   releaseSnapshot: Prisma.JsonObject;
 };
 
-async function prepareCommand(
-  tx: Prisma.TransactionClient,
-  namespace: string,
-  source: StableAssetOperationSource
-) {
+async function prepareCommand(tx: Prisma.TransactionClient, source: StableAssetOperationSource) {
   await assertTransactionContract(tx);
   await acquireAdvisoryLock(tx, [
     "asset-operations",
-    namespace,
+    "source-ownership",
     source.type,
     source.id,
     source.key
@@ -891,6 +891,9 @@ async function appendEventCommand(
   const replay = await findEventBySource(tx, command.source);
   const envelope = options.envelope ?? { command, kind: "event" };
   if (replay) return replayEvent(replay, command, envelope);
+  if (!options.allowGovernedEvent) {
+    await assertSourceNotOwnedByRestriction(tx, command.source);
+  }
   const workOrder =
     options.headerAlreadyLocked ?? (await lockAndLoadWorkOrder(tx, command.workOrderId));
   await assertEventTime(tx, command.occurredAt);
@@ -1620,6 +1623,18 @@ function findRestrictionByReleaseSource(
       releaseSourceType: source.type
     }
   });
+}
+
+async function assertSourceNotOwnedByRestriction(
+  tx: Prisma.TransactionClient,
+  source: StableAssetOperationSource
+) {
+  if (
+    (await findRestrictionByStartSource(tx, source)) ||
+    (await findRestrictionByReleaseSource(tx, source))
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
 }
 
 function normalizeWriteError(

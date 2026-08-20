@@ -205,6 +205,9 @@ describe("VehicleOperationalStateResolver", () => {
         VehicleComputedOperationalState.LEASED_ACTIVE
       ])
     );
+    expect(
+      retired.conflicts.find(({ source }) => source === "OPERATIONAL_RESTRICTION")?.priority
+    ).toBe(95);
   });
 
   it("does not turn an advisory restriction into an operational block", () => {

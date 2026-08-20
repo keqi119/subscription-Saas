@@ -38,7 +38,7 @@ export type AssetAccountingSnapshotObject = Readonly<{
 
 export type BusinessExceptionSnapshot = AssetAccountingSnapshotObject;
 
-/** Public, source-free projection of an immutable vehicle cost fact. */
+/** Public, traceable projection of an immutable vehicle cost fact. */
 export interface VehicleCostLedgerEntrySnapshot {
   readonly id: string;
   readonly vehicleId: string;
@@ -59,7 +59,12 @@ export interface VehicleCostLedgerEntrySnapshot {
   readonly responsiblePartyId?: string | null;
   readonly occurredOn: Date;
   readonly accountingPeriod: string;
+  readonly confirmedAt: Date;
+  readonly confirmedBy: string;
   readonly reversalOfEntryId?: string | null;
+  readonly sourceType: string;
+  readonly sourceId: string;
+  readonly sourceKey: string;
 }
 
 export interface VehicleCostSummaryBucket {

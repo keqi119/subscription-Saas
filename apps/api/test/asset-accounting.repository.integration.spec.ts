@@ -67,6 +67,15 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
 
     expect(first.wrote).toBe(true);
     expect(replay).toEqual({ outcome: first.outcome, wrote: false });
+    expect(first.outcome).toMatchObject({
+      confirmedAt: CONFIRMED_AT,
+      confirmedBy: fixture.userId,
+      sourceId: command.source.id,
+      sourceKey: command.source.key,
+      sourceType: command.source.type
+    });
+    expect(first.outcome).not.toHaveProperty("createdAt");
+    expect(first.outcome).not.toHaveProperty("payloadHash");
     await expect(countReceipts(prisma, command.source)).resolves.toBe(1);
     await expect(countEntries(prisma, command.source)).resolves.toBe(1);
   });
@@ -194,6 +203,62 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     }
   });
 
+  it("locks a contract authoritative order when orderId is omitted and preserves null", async () => {
+    const repository = new AssetAccountingRepository();
+    const command: AppendCostEntryCommand = {
+      ...appendCommand(fixture, "contract-authoritative-order"),
+      assetOwnerId: null,
+      assetOwnerSnapshot: null,
+      customerId: null,
+      evidenceId: null,
+      evidenceSnapshot: null,
+      orderId: null,
+      responsiblePartyId: null,
+      workOrderId: null
+    };
+    const ready = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "subscription_order" WHERE "id" = ${fixture.orderId}::uuid FOR UPDATE`
+      );
+      ready.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+    try {
+      await expectCode(
+        readCommitted(prisma, (tx) => repository.appendCostEntry(tx, command)),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+      );
+    } finally {
+      release.resolve();
+      await holder;
+    }
+
+    const created = await readCommitted(prisma, (tx) => repository.appendCostEntry(tx, command));
+    expect(created.outcome.orderId).toBeNull();
+    await expect(
+      prisma.vehicleCostLedgerEntry.findUniqueOrThrow({ where: { id: created.outcome.id } })
+    ).resolves.toMatchObject({ orderId: null });
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendCostEntry(tx, {
+          ...command,
+          source: {
+            ...command.source,
+            id: randomUUID(),
+            key: `${FIXTURE_PREFIX}:contract-authoritative-order-mismatch`
+          },
+          vehicleId: fixture.otherVehicleId
+        })
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH
+    );
+  });
+
   it("takes a NOWAIT share lock on the original row before reversing", async () => {
     const repository = new AssetAccountingRepository();
     const original = await readCommitted(prisma, (tx) =>
@@ -217,6 +282,39 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
           repository.reverseCostEntry(
             tx,
             reverseCommand(fixture, original.outcome.id, "original-lock-reverse")
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+      );
+    } finally {
+      release.resolve();
+      await holder;
+    }
+  });
+
+  it("takes a NOWAIT share lock on the original work order before reversing", async () => {
+    const repository = new AssetAccountingRepository();
+    const original = await readCommitted(prisma, (tx) =>
+      repository.appendCostEntry(tx, appendCommand(fixture, "work-order-lock-original"))
+    );
+    const ready = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "asset_work_order" WHERE "id" = ${fixture.workOrderId}::uuid FOR UPDATE`
+      );
+      ready.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+
+    try {
+      await expectCode(
+        readCommitted(prisma, (tx) =>
+          repository.reverseCostEntry(
+            tx,
+            reverseCommand(fixture, original.outcome.id, "work-order-lock-reverse")
           )
         ),
         ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
@@ -329,6 +427,63 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     }
   });
 
+  it("accepts effective SUPERSEDE evidence and rejects a REMOVE tombstone", async () => {
+    const repository = new AssetAccountingRepository();
+    const attachedId = randomUUID();
+    const supersedeId = randomUUID();
+    const removeId = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "asset_work_order_evidence" (
+          "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
+          "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
+          "supersedes_evidence_id", "source_type", "source_id", "source_key"
+        ) VALUES
+          (${attachedId}::uuid, ${fixture.workOrderId}::uuid, 'ATTACH', 'PHOTO', ${randomUUID()}::uuid,
+           'fixture', ${`${FIXTURE_PREFIX}/liveness-attach.jpg`}, 1, 'image/jpeg', ${"c".repeat(64)},
+           NULL, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:liveness-attach`}),
+          (${supersedeId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${randomUUID()}::uuid,
+           'fixture', ${`${FIXTURE_PREFIX}/liveness-supercede.jpg`}, 1, 'image/jpeg', ${"d".repeat(64)},
+           ${attachedId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:liveness-supercede`})
+      `);
+    });
+
+    const effective = await readCommitted(prisma, (tx) =>
+      repository.appendCostEntry(tx, {
+        ...appendCommand(fixture, "effective-supercede"),
+        evidenceId: supersedeId,
+        evidenceSnapshot: { evidenceId: supersedeId }
+      })
+    );
+    expect(effective.outcome.evidenceId).toBe(supersedeId);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "asset_work_order_evidence" (
+          "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
+          "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
+          "supersedes_evidence_id", "source_type", "source_id", "source_key"
+        ) VALUES (
+          ${removeId}::uuid, ${fixture.workOrderId}::uuid, 'REMOVE', 'PHOTO', NULL,
+          NULL, NULL, NULL, NULL, NULL,
+          ${supersedeId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:liveness-remove`}
+        )
+      `);
+    });
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendCostEntry(tx, {
+          ...appendCommand(fixture, "remove-tombstone"),
+          evidenceId: removeId,
+          evidenceSnapshot: { evidenceId: removeId }
+        })
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_LIVE
+    );
+  });
+
   it("rejects raw ledger and receipt UPDATE/DELETE with SQLSTATE 55000", async () => {
     const repository = new AssetAccountingRepository();
     const command = appendCommand(fixture, "raw-immutability");
@@ -381,6 +536,29 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     ).rejects.toSatisfy(
       (error) => databaseConstraint(error) === "vehicle_cost_ledger_entry_reversal_reference_chk"
     );
+
+    for (const [suffix, drift] of [
+      ["occurred-on", { occurredOn: new Date("2026-08-18T00:00:00.000Z") }],
+      ["accounting-period", { accountingPeriod: "2026-07" }]
+    ] as const) {
+      const id = randomUUID();
+      try {
+        await expect(
+          rawReversal(prisma, original.outcome.id, {
+            amountCents: -100n,
+            costCategory: "REPAIR",
+            id,
+            key: `${FIXTURE_PREFIX}:raw:${suffix}`,
+            ...drift
+          })
+        ).rejects.toSatisfy(
+          (error) =>
+            databaseConstraint(error) === "vehicle_cost_ledger_entry_reversal_reference_chk"
+        );
+      } finally {
+        await forceDeleteLedgerEntry(prisma, id);
+      }
+    }
 
     const valid = await readCommitted(prisma, (tx) =>
       repository.reverseCostEntry(
@@ -496,6 +674,73 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
         where: { sourceKey: { startsWith: `${FIXTURE_PREFIX}:raw-shape:` } }
       })
     ).resolves.toBe(0);
+  });
+
+  it("reverses after normal historical authority drift while retaining frozen dimensions", async () => {
+    const repository = new AssetAccountingRepository();
+    const original = await readCommitted(prisma, (tx) =>
+      repository.appendCostEntry(tx, appendCommand(fixture, "historical-drift-original"))
+    );
+    const successorId = randomUUID();
+    await prisma.subscriptionOrder.update({
+      data: { vehicleId: fixture.otherVehicleId },
+      where: { id: fixture.orderId }
+    });
+    await prisma.assetOwner.update({
+      data: { status: "INACTIVE" },
+      where: { id: fixture.assetOwnerId }
+    });
+    await prisma.assetWorkOrder.update({
+      data: { status: "CANCELLED" },
+      where: { id: fixture.workOrderId }
+    });
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      await tx.$executeRaw(Prisma.sql`
+        INSERT INTO "asset_work_order_evidence" (
+          "id", "work_order_id", "action", "evidence_type", "file_id", "file_bucket",
+          "file_object_key", "file_size_bytes", "file_mime_type", "content_sha256",
+          "supersedes_evidence_id", "source_type", "source_id", "source_key"
+        ) VALUES (
+          ${successorId}::uuid, ${fixture.workOrderId}::uuid, 'SUPERSEDE', 'PHOTO', ${randomUUID()}::uuid,
+          'fixture', ${`${FIXTURE_PREFIX}/historical-successor.jpg`}, 1, 'image/jpeg', ${"f".repeat(64)},
+          ${fixture.evidenceId}::uuid, 'FIXTURE', ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:historical-successor`}
+        )
+      `);
+    });
+    try {
+      const reversal = await readCommitted(prisma, (tx) =>
+        repository.reverseCostEntry(
+          tx,
+          reverseCommand(fixture, original.outcome.id, "historical-drift-reverse")
+        )
+      );
+      expect(reversal.outcome).toMatchObject({
+        accountingPeriod: original.outcome.accountingPeriod,
+        evidenceId: original.outcome.evidenceId,
+        occurredOn: original.outcome.occurredOn,
+        orderId: original.outcome.orderId,
+        vehicleId: original.outcome.vehicleId,
+        workOrderId: original.outcome.workOrderId
+      });
+    } finally {
+      await prisma.subscriptionOrder.update({
+        data: { vehicleId: fixture.vehicleId },
+        where: { id: fixture.orderId }
+      });
+      await prisma.assetOwner.update({
+        data: { status: "ACTIVE" },
+        where: { id: fixture.assetOwnerId }
+      });
+      await prisma.assetWorkOrder.update({
+        data: { status: "PENDING_COST_CONFIRMATION" },
+        where: { id: fixture.workOrderId }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.assetWorkOrderEvidence.delete({ where: { id: successorId } });
+      });
+    }
   });
 });
 
@@ -675,10 +920,12 @@ async function rawReversal(
   prisma: PrismaService,
   originalEntryId: string,
   input: {
+    accountingPeriod?: string;
     amountCents: bigint;
     costCategory: "CLEANING" | "REPAIR";
     id: string;
     key: string;
+    occurredOn?: Date;
   }
 ) {
   const original = await prisma.vehicleCostLedgerEntry.findUniqueOrThrow({
@@ -699,11 +946,21 @@ async function rawReversal(
       'REVERSAL', ${original.actionType}::vehicle_cost_action_type,
       ${input.costCategory}::vehicle_cost_category, ${input.amountCents},
       ${original.responsiblePartyType}::vehicle_cost_responsible_party_type,
-      ${original.responsiblePartyId}::uuid, ${original.occurredOn}::date, ${original.accountingPeriod},
+      ${original.responsiblePartyId}::uuid, ${input.occurredOn ?? original.occurredOn}::date,
+      ${input.accountingPeriod ?? original.accountingPeriod},
       ${CONFIRMED_AT}::timestamptz, ${original.confirmedBy}::uuid, ${originalEntryId}::uuid,
       'RAW_FIXTURE', ${randomUUID()}::uuid, ${input.key}
     )
   `);
+}
+
+async function forceDeleteLedgerEntry(prisma: PrismaService, entryId: string) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw(
+      Prisma.sql`DELETE FROM "vehicle_cost_ledger_entry" WHERE "id" = ${entryId}::uuid`
+    );
+  });
 }
 
 async function rawOriginal(

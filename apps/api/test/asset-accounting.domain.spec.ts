@@ -20,6 +20,13 @@ const source: AssetAccountingSource = {
   id: "00000000-0000-0000-0000-000000000001",
   key: "cost-append-1"
 };
+const ledgerTrace = {
+  confirmedAt: new Date("2026-08-20T01:00:00.000Z"),
+  confirmedBy: "user-1",
+  sourceId: "source-1",
+  sourceKey: "cost-entry-1",
+  sourceType: "asset-work-order"
+} as const;
 
 describe("asset accounting canonical snapshots", () => {
   it("sorts object keys, converts Date and BigInt, omits undefined, and keeps arrays ordered", () => {
@@ -116,6 +123,7 @@ describe("vehicle cost summaries", () => {
   it("keeps action, responsibility, and category buckets distinct and applies reversal signs", () => {
     const entries: VehicleCostLedgerEntrySnapshot[] = [
       {
+        ...ledgerTrace,
         id: "original",
         vehicleId: "vehicle-1",
         entryKind: "ORIGINAL",
@@ -129,6 +137,7 @@ describe("vehicle cost summaries", () => {
         reversalOfEntryId: null
       },
       {
+        ...ledgerTrace,
         id: "reversal",
         vehicleId: "vehicle-1",
         entryKind: "REVERSAL",
@@ -142,6 +151,7 @@ describe("vehicle cost summaries", () => {
         reversalOfEntryId: "original"
       },
       {
+        ...ledgerTrace,
         id: "recovery",
         vehicleId: "vehicle-1",
         entryKind: "ORIGINAL",
@@ -185,6 +195,7 @@ describe("vehicle cost summaries", () => {
 
   it("rejects invalid ledger signs, targets, and enum values instead of normalizing them", () => {
     const original: VehicleCostLedgerEntrySnapshot = {
+      ...ledgerTrace,
       id: "original",
       vehicleId: "vehicle-1",
       entryKind: "ORIGINAL",

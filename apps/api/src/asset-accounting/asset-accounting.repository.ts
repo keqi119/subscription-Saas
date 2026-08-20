@@ -183,8 +183,9 @@ export class AssetAccountingRepository {
     const replay = await replayReceipt(tx, normalized.source, "COST_APPEND", payload);
     if (replay) return replay;
 
-    await lockAuthorityRows(tx, appendAuthorityLocks(normalized));
-    await validateAppendAuthorities(tx, normalized);
+    const authoritativeOrderId = await contractAuthoritativeOrderId(tx, normalized.contractId);
+    await lockAuthorityRows(tx, appendAuthorityLocks(normalized, authoritativeOrderId));
+    await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
 
     try {
       const entry = await tx.vehicleCostLedgerEntry.create({
@@ -251,8 +252,8 @@ export class AssetAccountingRepository {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
 
-    await lockAuthorityRows(tx, originalAuthorityLocks(original, normalized.actorId));
-    await validateOriginalAuthorities(tx, original, normalized.actorId);
+    await lockAuthorityRows(tx, reverseAuthorityLocks(original, normalized.actorId));
+    await validateReverseActor(tx, normalized.actorId);
 
     try {
       const reversal = await tx.vehicleCostLedgerEntry.create({
@@ -490,7 +491,10 @@ async function createReceipt(
   });
 }
 
-function appendAuthorityLocks(command: NormalizedAppendCommand): AuthorityLock[] {
+function appendAuthorityLocks(
+  command: NormalizedAppendCommand,
+  authoritativeOrderId: string | null
+): AuthorityLock[] {
   return compactLocks([
     lock(command.assetOwnerId, "asset_owner"),
     lock(command.workOrderId, "asset_work_order"),
@@ -498,6 +502,7 @@ function appendAuthorityLocks(command: NormalizedAppendCommand): AuthorityLock[]
     lock(command.contractId, "contract"),
     lock(responsibleAuthorityId(command, "CUSTOMER"), "customer"),
     lock(command.customerId, "customer"),
+    lock(authoritativeOrderId, "subscription_order"),
     lock(command.orderId, "subscription_order"),
     lock(command.actorId, "user"),
     lock(command.vehicleId, "vehicle"),
@@ -505,28 +510,8 @@ function appendAuthorityLocks(command: NormalizedAppendCommand): AuthorityLock[]
   ]);
 }
 
-function originalAuthorityLocks(
-  original: VehicleCostLedgerEntry,
-  actorId: string
-): AuthorityLock[] {
-  return compactLocks([
-    lock(original.assetOwnerId, "asset_owner"),
-    lock(original.workOrderId, "asset_work_order"),
-    lock(original.evidenceId, "asset_work_order_evidence"),
-    lock(original.contractId, "contract"),
-    lock(original.customerId, "customer"),
-    lock(original.orderId, "subscription_order"),
-    lock(actorId, "user"),
-    lock(original.vehicleId, "vehicle"),
-    lock(
-      original.responsiblePartyType === "CUSTOMER" ? original.responsiblePartyId : null,
-      "customer"
-    ),
-    lock(
-      original.responsiblePartyType === "ASSET_OWNER" ? original.responsiblePartyId : null,
-      "asset_owner"
-    )
-  ]);
+function reverseAuthorityLocks(original: VehicleCostLedgerEntry, actorId: string): AuthorityLock[] {
+  return compactLocks([lock(original.workOrderId, "asset_work_order"), lock(actorId, "user")]);
 }
 
 function responsibleAuthorityId(
@@ -578,7 +563,8 @@ async function lockOriginalEntry(tx: Prisma.TransactionClient, originalEntryId: 
 
 async function validateAppendAuthorities(
   tx: Prisma.TransactionClient,
-  command: NormalizedAppendCommand
+  command: NormalizedAppendCommand,
+  authoritativeOrderId: string | null
 ) {
   const actor = await tx.user.findUnique({ where: { id: command.actorId } });
   const vehicle = await tx.vehicle.findUnique({ where: { id: command.vehicleId } });
@@ -587,6 +573,11 @@ async function validateAppendAuthorities(
     : null;
   const contract = command.contractId
     ? await tx.contract.findUnique({ where: { id: command.contractId } })
+    : null;
+  const authoritativeOrder = authoritativeOrderId
+    ? authoritativeOrderId === command.orderId
+      ? order
+      : await tx.subscriptionOrder.findUnique({ where: { id: authoritativeOrderId } })
     : null;
   const customer = command.customerId
     ? await tx.customer.findUnique({ where: { id: command.customerId } })
@@ -608,6 +599,15 @@ async function validateAppendAuthorities(
   requireAuthority(vehicle, hasNoDeletion(vehicle));
   if (command.orderId) requireAuthority(order, hasNoDeletion(order));
   if (command.contractId) requireAuthority(contract, hasNoDeletion(contract));
+  if (contract) {
+    if (contract.orderId !== authoritativeOrderId) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+    }
+    if (command.orderId && contract.orderId !== command.orderId) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+    requireAuthority(authoritativeOrder, hasNoDeletion(authoritativeOrder));
+  }
   if (command.customerId) requireAuthority(customer, hasNoDeletion(customer));
   if (command.assetOwnerId) requireAuthority(owner, owner?.status === "ACTIVE");
   if (command.workOrderId) requireAuthority(workOrder, workOrder?.status !== "CANCELLED");
@@ -616,7 +616,7 @@ async function validateAppendAuthorities(
   if (
     (order && order.vehicleId !== command.vehicleId) ||
     (order && command.customerId && order.customerId !== command.customerId) ||
-    (contract && command.orderId && contract.orderId !== command.orderId) ||
+    (authoritativeOrder && authoritativeOrder.vehicleId !== command.vehicleId) ||
     (contract && command.customerId && contract.customerId !== command.customerId) ||
     (workOrder && workOrder.vehicleId !== command.vehicleId) ||
     (workOrder && command.orderId && workOrder.orderId !== command.orderId) ||
@@ -658,37 +658,21 @@ async function validateAppendAuthorities(
   }
 }
 
-async function validateOriginalAuthorities(
+async function contractAuthoritativeOrderId(
   tx: Prisma.TransactionClient,
-  original: VehicleCostLedgerEntry,
-  actorId: string
+  contractId: string | null
 ) {
-  await validateAppendAuthorities(tx, {
-    actionType: original.actionType,
-    accountingPeriod: original.accountingPeriod,
-    actorId,
-    amountCents: original.amountCents,
-    assetOwnerId: original.assetOwnerId,
-    assetOwnerSnapshot: jsonObjectOrNull(original.assetOwnerSnapshot),
-    confirmedAt: original.confirmedAt,
-    contractId: original.contractId,
-    costCategory: original.costCategory,
-    customerId: original.customerId,
-    evidenceId: original.evidenceId,
-    evidenceSnapshot: jsonObjectOrNull(original.evidenceSnapshot),
-    occurredOn: original.occurredOn,
-    orderId: original.orderId,
-    responsiblePartyId: original.responsiblePartyId,
-    responsiblePartyType: original.responsiblePartyType,
-    responsibilitySnapshot: jsonObject(original.responsibilitySnapshot),
-    source: {
-      id: original.sourceId,
-      key: original.sourceKey,
-      type: original.sourceType
-    },
-    vehicleId: original.vehicleId,
-    workOrderId: original.workOrderId
+  if (!contractId) return null;
+  const contract = await tx.contract.findUnique({
+    select: { orderId: true },
+    where: { id: contractId }
   });
+  return contract?.orderId ?? null;
+}
+
+async function validateReverseActor(tx: Prisma.TransactionClient, actorId: string) {
+  const actor = await tx.user.findUnique({ where: { id: actorId } });
+  requireAuthority(actor, isLiveUser(actor));
 }
 
 function requireAuthority(value: unknown, live: boolean) {
@@ -706,6 +690,7 @@ function isLiveUser(value: { deletedAt?: Date | null; status?: string } | null) 
 
 function evidenceIsLive(value: unknown) {
   if (!isRecord(value)) return false;
+  if (value.action === "REMOVE") return false;
   if ("supersededBy" in value) return value.supersededBy === null;
   return value.supersededById === null || value.supersededById === undefined;
 }
@@ -717,6 +702,8 @@ function projectEntry(entry: VehicleCostLedgerEntry): VehicleCostLedgerEntrySnap
     amountCents: entry.amountCents,
     assetOwnerId: entry.assetOwnerId,
     assetOwnerSnapshot: jsonSnapshotValue(entry.assetOwnerSnapshot),
+    confirmedAt: entry.confirmedAt,
+    confirmedBy: entry.confirmedBy,
     contractId: entry.contractId,
     costCategory: entry.costCategory,
     customerId: entry.customerId,
@@ -730,6 +717,9 @@ function projectEntry(entry: VehicleCostLedgerEntry): VehicleCostLedgerEntrySnap
     responsiblePartyType: entry.responsiblePartyType,
     responsibilitySnapshot: jsonSnapshotValue(entry.responsibilitySnapshot),
     reversalOfEntryId: entry.reversalOfEntryId,
+    sourceId: entry.sourceId,
+    sourceKey: entry.sourceKey,
+    sourceType: entry.sourceType,
     vehicleId: entry.vehicleId,
     workOrderId: entry.workOrderId
   };
@@ -742,18 +732,28 @@ function publicOutcomeJson(outcome: VehicleCostLedgerEntrySnapshot): Prisma.Json
 function outcomeFromReceipt(value: Prisma.JsonValue): VehicleCostLedgerEntrySnapshot {
   if (!isRecord(value)) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
   const amountCents = value.amountCents;
+  const confirmedAt = value.confirmedAt;
   const occurredOn = value.occurredOn;
-  if (typeof amountCents !== "string" || typeof occurredOn !== "string") {
+  if (
+    typeof amountCents !== "string" ||
+    typeof confirmedAt !== "string" ||
+    typeof occurredOn !== "string"
+  ) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
   }
-  const date = new Date(occurredOn);
-  if (Number.isNaN(date.getTime())) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  const confirmedDate = new Date(confirmedAt);
+  const occurredDate = new Date(occurredOn);
+  if (Number.isNaN(confirmedDate.getTime()) || Number.isNaN(occurredDate.getTime())) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
   return {
     actionType: value.actionType as VehicleCostActionType,
     accountingPeriod: String(value.accountingPeriod),
     amountCents: BigInt(amountCents),
     assetOwnerId: nullableString(value.assetOwnerId),
     assetOwnerSnapshot: jsonSnapshotValue(value.assetOwnerSnapshot),
+    confirmedAt: confirmedDate,
+    confirmedBy: String(value.confirmedBy),
     contractId: nullableString(value.contractId),
     costCategory: value.costCategory as VehicleCostCategory,
     customerId: nullableString(value.customerId),
@@ -761,83 +761,140 @@ function outcomeFromReceipt(value: Prisma.JsonValue): VehicleCostLedgerEntrySnap
     evidenceId: nullableString(value.evidenceId),
     evidenceSnapshot: jsonSnapshotValue(value.evidenceSnapshot),
     id: String(value.id),
-    occurredOn: date,
+    occurredOn: occurredDate,
     orderId: nullableString(value.orderId),
     responsiblePartyId: nullableString(value.responsiblePartyId),
     responsiblePartyType: value.responsiblePartyType as VehicleCostResponsiblePartyType,
     responsibilitySnapshot: jsonSnapshotValue(value.responsibilitySnapshot),
     reversalOfEntryId: nullableString(value.reversalOfEntryId),
+    sourceId: String(value.sourceId),
+    sourceKey: String(value.sourceKey),
+    sourceType: String(value.sourceType),
     vehicleId: String(value.vehicleId),
     workOrderId: nullableString(value.workOrderId)
   };
 }
 
-function normalizeDatabaseError(error: unknown): Error {
-  const constraint = knownConstraint(error);
-  if (constraint) return conflict(CONSTRAINT_CODES[constraint]!);
+function normalizeDatabaseError(error: unknown): unknown {
   const code = databaseCode(error);
+  const constraint = code ? knownConstraint(error, code) : undefined;
+  if (constraint) return conflict(CONSTRAINT_CODES[constraint]!);
   if (code === "23514") {
-    const message = collectStrings(error).join(" ");
-    if (message.includes("reversal amount must be the exact opposite of the original")) {
+    const message = databaseMessage(error, code);
+    if (message === "reversal amount must be the exact opposite of the original") {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
-    if (
-      message.includes("reversal must preserve the original accounting and authority references")
-    ) {
+    if (message === "reversal must preserve the original accounting and authority references") {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
-    if (message.includes("a reversal cannot target another reversal")) {
+    if (message === "a reversal cannot target another reversal") {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
   }
   if (code === "55P03") {
     return conflict(ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
   }
-  if (code === "23505" || prismaErrorCode(error) === "P2002") {
-    const target = collectStrings(error)
-      .map((value) => value.toLowerCase())
-      .join(" ");
-    if (target.includes("reversalofentryid") || target.includes("reversal_of_entry_id")) {
+  if (prismaErrorCode(error) === "P2002") {
+    const target = prismaUniqueTarget(error);
+    if (isReversalUniqueTarget(target)) {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS);
     }
-    if (
-      target.includes("sourcetype") ||
-      target.includes("source_type") ||
-      target.includes("sourcekey") ||
-      target.includes("source_key")
-    ) {
+    if (isSourceUniqueTarget(target)) {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
     }
     return conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
   }
-  return error instanceof Error
-    ? error
-    : new Error("Asset-accounting database write failed", { cause: error });
+  if (code === "23505") return conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  return error;
 }
 
-function knownConstraint(error: unknown) {
-  const strings = collectStrings(error);
-  return Object.keys(CONSTRAINT_CODES)
-    .sort((left, right) => right.length - left.length)
-    .find((name) => strings.some((value) => value.includes(name)));
+function knownConstraint(error: unknown, code: string) {
+  const candidate =
+    exactConstraint(error) ?? constraintFromServerMessage(databaseMessage(error, code));
+  return candidate && candidate in CONSTRAINT_CODES ? candidate : undefined;
 }
 
 function databaseCode(error: unknown) {
-  return collectStrings(error).find((value) =>
-    ["23505", "23514", "23503", "55000", "55P03"].includes(value)
-  );
+  if (!isRecord(error)) return undefined;
+  if (isSqlState(error.code)) return error.code;
+  const cause = driverAdapterCause(error);
+  return cause && isSqlState(cause.originalCode) ? cause.originalCode : undefined;
 }
 
 function prismaErrorCode(error: unknown) {
   return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
 }
 
-function collectStrings(value: unknown, seen = new WeakSet<object>()): string[] {
-  if (typeof value === "string") return [value];
-  if (!value || typeof value !== "object" || seen.has(value)) return [];
-  seen.add(value);
-  return Object.values(value as Record<string, unknown>).flatMap((child) =>
-    collectStrings(child, seen)
+function driverAdapterCause(error: Record<string, unknown>) {
+  const meta = error.meta;
+  if (!isRecord(meta)) return undefined;
+  const adapterError = meta.driverAdapterError;
+  if (!isRecord(adapterError) || !isRecord(adapterError.cause)) return undefined;
+  return adapterError.cause;
+}
+
+function isSqlState(value: unknown): value is string {
+  return typeof value === "string" && ["23503", "23505", "23514", "55000", "55P03"].includes(value);
+}
+
+function exactConstraint(error: unknown) {
+  if (!isRecord(error)) return undefined;
+  if (typeof error.constraint === "string") return error.constraint;
+  if (isRecord(error.meta) && typeof error.meta.constraint === "string") {
+    return error.meta.constraint;
+  }
+  const cause = driverAdapterCause(error);
+  return cause && typeof cause.constraint === "string" ? cause.constraint : undefined;
+}
+
+function databaseMessage(error: unknown, code: string) {
+  if (!isRecord(error)) return undefined;
+  if (error.code === code && typeof error.message === "string") return error.message;
+  const cause = driverAdapterCause(error);
+  if (!cause || cause.originalCode !== code) return undefined;
+  if (typeof cause.originalMessage === "string") return cause.originalMessage;
+  return typeof cause.message === "string" ? cause.message : undefined;
+}
+
+function constraintFromServerMessage(message: string | undefined) {
+  if (!message) return undefined;
+  for (const pattern of [
+    /^duplicate key value violates unique constraint "([a-z0-9_]+)"$/,
+    /^new row(?: for relation "[a-z0-9_]+")? violates check constraint "([a-z0-9_]+)"$/,
+    /^insert or update on table "[a-z0-9_]+" violates foreign key constraint "([a-z0-9_]+)"$/
+  ]) {
+    const match = pattern.exec(message);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+function prismaUniqueTarget(error: unknown): readonly string[] {
+  if (!isRecord(error) || !isRecord(error.meta)) return [];
+  const target = error.meta.target;
+  if (typeof target === "string") return [target];
+  return Array.isArray(target) && target.every((value) => typeof value === "string") ? target : [];
+}
+
+function isReversalUniqueTarget(target: readonly string[]) {
+  return (
+    target.length === 1 &&
+    [
+      "reversalOfEntryId",
+      "reversal_of_entry_id",
+      "vehicle_cost_ledger_entry_reversal_of_entry_id_key"
+    ].includes(target[0] ?? "")
+  );
+}
+
+function isSourceUniqueTarget(target: readonly string[]) {
+  if (target.length === 1 && target[0] === "asset_accounting_command_receipt_source_key") {
+    return true;
+  }
+  const normalized = [...target].sort().join(":");
+  return (
+    normalized === ["sourceId", "sourceKey", "sourceType"].sort().join(":") ||
+    normalized === ["source_id", "source_key", "source_type"].sort().join(":")
   );
 }
 
@@ -850,10 +907,6 @@ function jsonNullable(
 function jsonObject(value: Prisma.JsonValue): Prisma.JsonObject {
   if (!isRecord(value)) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
   return value as Prisma.JsonObject;
-}
-
-function jsonObjectOrNull(value: Prisma.JsonValue | null): Prisma.JsonObject | null {
-  return value === null ? null : jsonObject(value);
 }
 
 function jsonSnapshotValue(value: unknown): AssetAccountingSnapshotValue {

@@ -10,6 +10,7 @@ import {
   Prisma,
   VehicleOperationalRestrictionStatus,
   VehicleOperationalRestrictionType,
+  VehicleStatus,
   type AssetWorkOrder,
   type AssetWorkOrderEvidence,
   type AssetWorkOrderEvent,
@@ -415,10 +416,18 @@ export class AssetOperationsService {
     tx: Prisma.TransactionClient,
     vehicleId: string,
     purpose: VehicleAvailabilityPurpose,
-    asOf = new Date()
+    asOf = new Date(),
+    lifecycleStatusOverride?: VehicleStatus
   ): Promise<VehicleAvailabilityDecision> {
     const snapshot = await this.repository.loadAvailabilitySnapshot(tx, vehicleId, asOf);
-    const decision = evaluateVehicleAvailability({ ...snapshot, purpose });
+    const decision = evaluateVehicleAvailability({
+      ...snapshot,
+      purpose,
+      vehicle:
+        snapshot.vehicle && lifecycleStatusOverride
+          ? { ...snapshot.vehicle, status: lifecycleStatusOverride }
+          : snapshot.vehicle
+    });
     if (!decision.available) {
       const operationallyRestricted = decision.reasons.some(
         ({ code }) => code === "ACTIVE_OPERATIONAL_RESTRICTION"

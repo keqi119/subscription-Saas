@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { DeliveryHandoverEvidenceArtifactService } from "../delivery-handover/delivery-handover-evidence-artifact.service";
 import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
@@ -48,6 +49,7 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
   ],
   imports: [
     AuthModule,
+    AssetOperationsModule,
     DeliveryEvidenceModule,
     ESignModule,
     FinanceModule,

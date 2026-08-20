@@ -13,6 +13,7 @@ import {
   VehicleStatus
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
@@ -575,6 +576,148 @@ describe("AssetOperationsService", () => {
       ]
     });
     expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("keeps the real lifecycle status by default and overrides only that evaluator field", async () => {
+    const harness = createHarness();
+    const snapshot = {
+      activeRestrictions: [],
+      activeSubscriptionPeriods: [],
+      vehicle: {
+        currentSalePriceAmount: 100n,
+        deletedAt: null,
+        id: harness.ids.vehicleId,
+        salePriceStatus: "EFFECTIVE" as const,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
+    };
+    vi.mocked(harness.repository.loadAvailabilitySnapshot).mockResolvedValue(snapshot);
+
+    await expect(
+      harness.service.assertVehicleAvailable(
+        harness.tx as never,
+        harness.ids.vehicleId,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        NOW
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "VEHICLE_NOT_AVAILABLE",
+        reasons: [{ code: "LIFECYCLE_STATUS_BLOCKED" }]
+      })
+    });
+
+    await expect(
+      harness.service.assertVehicleAvailable(
+        harness.tx as never,
+        harness.ids.vehicleId,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        NOW,
+        VehicleStatus.AVAILABLE
+      )
+    ).resolves.toEqual({
+      available: true,
+      purpose: VehicleAvailabilityPurpose.ALLOCATION,
+      reasons: []
+    });
+    expect(snapshot.vehicle.status).toBe(VehicleStatus.REVIEW_RESERVED);
+  });
+
+  it.each([
+    {
+      label: "missing vehicle",
+      snapshot: { activeRestrictions: [], activeSubscriptionPeriods: [], vehicle: null },
+      expectedCode: "VEHICLE_NOT_FOUND"
+    },
+    {
+      label: "deleted vehicle",
+      snapshot: {
+        activeRestrictions: [],
+        activeSubscriptionPeriods: [],
+        vehicle: {
+          currentSalePriceAmount: 100n,
+          deletedAt: NOW,
+          id: "vehicle-1",
+          salePriceStatus: "EFFECTIVE",
+          status: VehicleStatus.REVIEW_RESERVED
+        }
+      },
+      expectedCode: "VEHICLE_DELETED"
+    },
+    {
+      label: "invalid price",
+      snapshot: {
+        activeRestrictions: [],
+        activeSubscriptionPeriods: [],
+        vehicle: {
+          currentSalePriceAmount: 0n,
+          deletedAt: null,
+          id: "vehicle-1",
+          salePriceStatus: "PENDING_INITIALIZE",
+          status: VehicleStatus.REVIEW_RESERVED
+        }
+      },
+      expectedCode: "SALE_PRICE_NOT_EFFECTIVE"
+    },
+    {
+      label: "open occupancy",
+      snapshot: {
+        activeRestrictions: [],
+        activeSubscriptionPeriods: [{ id: "period-1", orderId: "order-1" }],
+        vehicle: {
+          currentSalePriceAmount: 100n,
+          deletedAt: null,
+          id: "vehicle-1",
+          salePriceStatus: "EFFECTIVE",
+          status: VehicleStatus.REVIEW_RESERVED
+        }
+      },
+      expectedCode: "ACTIVE_SUBSCRIPTION_PERIOD"
+    },
+    {
+      label: "blocking restriction",
+      snapshot: {
+        activeRestrictions: [
+          {
+            id: "restriction-1",
+            restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+            scopes: [VehicleOperationalRestrictionScope.ALLOCATION],
+            severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+            sourceId: "source-1",
+            sourceKey: "source-key-1",
+            sourceType: "TEST",
+            workOrderId: null
+          }
+        ],
+        activeSubscriptionPeriods: [],
+        vehicle: {
+          currentSalePriceAmount: 100n,
+          deletedAt: null,
+          id: "vehicle-1",
+          salePriceStatus: "EFFECTIVE",
+          status: VehicleStatus.REVIEW_RESERVED
+        }
+      },
+      expectedCode: "ACTIVE_OPERATIONAL_RESTRICTION"
+    }
+  ])("does not let a lifecycle override mask $label", async ({ expectedCode, snapshot }) => {
+    const harness = createHarness();
+    vi.mocked(harness.repository.loadAvailabilitySnapshot).mockResolvedValueOnce(snapshot as never);
+
+    const error = await harness.service
+      .assertVehicleAvailable(
+        harness.tx as never,
+        harness.ids.vehicleId,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        NOW,
+        VehicleStatus.AVAILABLE
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({
+      reasons: expect.arrayContaining([expect.objectContaining({ code: expectedCode })])
+    });
   });
 });
 

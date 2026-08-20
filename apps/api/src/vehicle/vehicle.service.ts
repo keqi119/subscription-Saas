@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import {
   AuditAction,
   FinancingAllocationStatus,
@@ -13,12 +13,17 @@ import {
   VehicleCapitalEventType,
   VehicleDepreciationMethod,
   VehicleMileageSourceType,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -125,7 +130,8 @@ export class VehicleService {
   constructor(
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
-    private readonly vehicleMileageService: VehicleMileageService
+    private readonly vehicleMileageService: VehicleMileageService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   async listVehicles() {
@@ -139,14 +145,29 @@ export class VehicleService {
   }
 
   async listAvailableVehicles() {
+    const asOf = new Date();
     const vehicles = await this.prisma.vehicle.findMany({
       include: vehicleInclude,
       orderBy: { vehicleNo: "asc" },
       where: {
         currentSalePriceAmount: { gt: 0 },
         deletedAt: null,
+        operationalRestrictions: {
+          none: {
+            scopes: { has: VehicleOperationalRestrictionScope.ALLOCATION },
+            severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+            startedAt: { lte: asOf },
+            status: VehicleOperationalRestrictionStatus.ACTIVE
+          }
+        },
         salePriceStatus: SalePriceStatus.EFFECTIVE,
-        status: VehicleStatus.AVAILABLE
+        status: VehicleStatus.AVAILABLE,
+        subscriptionPeriods: {
+          none: {
+            OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
+            startedAt: { lte: asOf }
+          }
+        }
       }
     });
 
@@ -233,7 +254,6 @@ export class VehicleService {
     if (dto.currentMileageKm !== undefined) {
       throw new BadRequestException("车辆创建后只能通过里程流程单据更新当前里程。");
     }
-    const before = await this.findVehicleOrThrow(id);
     assertBatteryCapacity(dto.batteryCapacityKwh);
     assertBatteryUsageType(dto.batteryUsageType);
     assertAcquisitionMode(dto.acquisitionMode);
@@ -246,25 +266,41 @@ export class VehicleService {
               dto.modelDefinitionId
             )
           ).modelDefinitionId;
-    const data = updateVehicleData(dto, user.id, {
-      modelDefinitionId
-    });
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, id);
+        }
+        const before = await this.findVehicleOrThrow(id, tx);
+        const data = updateVehicleData(dto, user.id, { modelDefinitionId });
 
-    if (dto.status) {
-      assertCanEnterAvailable(dto.status, before);
-      markSalePriceReinitRequired(data, before.status, dto.status);
-    }
+        if (dto.status) {
+          assertCanEnterAvailable(dto.status, before);
+          markSalePriceReinitRequired(data, before.status, dto.status);
+          if (dto.status === VehicleStatus.AVAILABLE) {
+            await this.assetOperationsService?.assertVehicleAvailable(
+              tx,
+              id,
+              VehicleAvailabilityPurpose.MARK_AVAILABLE,
+              new Date()
+            );
+          }
+        }
 
-    const vehicle = await this.prisma.vehicle.update({
-      data,
-      include: vehicleInclude,
-      where: { id }
-    });
+        const vehicle = await tx.vehicle.update({
+          data,
+          include: vehicleInclude,
+          where: { id }
+        });
+        return { before, vehicle };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
 
     await this.auditService.write({
       action: AuditAction.UPDATE,
-      after: toVehicleView(vehicle),
-      before: toVehicleView(before),
+      after: toVehicleView(result.vehicle),
+      before: toVehicleView(result.before),
       entityId: id,
       entityType: "vehicle",
       ipAddress: context.ipAddress,
@@ -273,7 +309,7 @@ export class VehicleService {
       userAgent: context.userAgent
     });
 
-    return toVehicleView(vehicle);
+    return toVehicleView(result.vehicle);
   }
 
   async initializeSalePrice(
@@ -444,26 +480,43 @@ export class VehicleService {
     user: RequestUser,
     context: RequestContext
   ) {
-    const before = await this.findVehicleOrThrow(id);
-    assertCanEnterAvailable(dto.status, before);
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        if (this.assetOperationsService) {
+          await lockVehicleAvailabilityAuthority(tx, id);
+        }
+        const before = await this.findVehicleOrThrow(id, tx);
+        assertCanEnterAvailable(dto.status, before);
 
-    const data: Prisma.VehicleUpdateInput = {
-      remark: dto.remark ?? undefined,
-      status: dto.status,
-      updatedBy: user.id
-    };
-    markSalePriceReinitRequired(data, before.status, dto.status);
+        const data: Prisma.VehicleUpdateInput = {
+          remark: dto.remark ?? undefined,
+          status: dto.status,
+          updatedBy: user.id
+        };
+        markSalePriceReinitRequired(data, before.status, dto.status);
+        if (dto.status === VehicleStatus.AVAILABLE) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            id,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date()
+          );
+        }
 
-    const vehicle = await this.prisma.vehicle.update({
-      data,
-      include: vehicleInclude,
-      where: { id }
-    });
+        const vehicle = await tx.vehicle.update({
+          data,
+          include: vehicleInclude,
+          where: { id }
+        });
+        return { before, vehicle };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
 
     await this.auditService.write({
       action: AuditAction.UPDATE,
-      after: toVehicleView(vehicle),
-      before: toVehicleView(before),
+      after: toVehicleView(result.vehicle),
+      before: toVehicleView(result.before),
       entityId: id,
       entityType: "vehicle",
       ipAddress: context.ipAddress,
@@ -472,7 +525,7 @@ export class VehicleService {
       userAgent: context.userAgent
     });
 
-    return toVehicleView(vehicle);
+    return toVehicleView(result.vehicle);
   }
 
   async listSalePriceHistory(id: string) {
@@ -723,8 +776,11 @@ export class VehicleService {
     return buildCapitalStructurePreview(vehicle, capitalEvents, financingAllocations);
   }
 
-  private async findVehicleOrThrow(id: string) {
-    const vehicle = await this.prisma.vehicle.findUnique({
+  private async findVehicleOrThrow(
+    id: string,
+    db: Prisma.TransactionClient | PrismaService = this.prisma
+  ) {
+    const vehicle = await db.vehicle.findUnique({
       include: vehicleInclude,
       where: { id }
     });
@@ -798,6 +854,12 @@ export class VehicleService {
     return financingInstrument;
   }
 
+}
+
+async function lockVehicleAvailabilityAuthority(tx: Prisma.TransactionClient, vehicleId: string) {
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+  );
 }
 
 async function createVehicleWithRetry(

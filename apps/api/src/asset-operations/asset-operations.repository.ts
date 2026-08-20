@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from "@nestjs/common";
+import { ConflictException, Injectable, Optional } from "@nestjs/common";
 import {
   AssetWorkOrderEvidenceAction,
   AssetWorkOrderEventType,
@@ -161,7 +161,7 @@ type CommandEnvelopeInput = Readonly<{ command: unknown; kind: CommandEnvelopeKi
 /** Caller-owned READ COMMITTED transaction only; this repository never opens a transaction. */
 @Injectable()
 export class AssetOperationsRepository {
-  constructor(private readonly businessNoFactory = () => createBusinessNo("AWO")) {}
+  constructor(@Optional() private readonly businessNoFactory = () => createBusinessNo("AWO")) {}
 
   /** Acquires the repository-wide command source lock before service authority validation. */
   async lockSourceOwnership(

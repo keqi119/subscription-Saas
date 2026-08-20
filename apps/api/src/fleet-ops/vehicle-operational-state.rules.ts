@@ -43,6 +43,7 @@ const BLOCKING_SERVICE_CASE_PRIORITIES: readonly ServiceCasePriority[] = [
 
 export const VEHICLE_OPERATIONAL_STATE_PRIORITY: Record<VehicleComputedOperationalState, number> = {
   [VehicleComputedOperationalState.RETIRED_OR_INACTIVE]: 100,
+  [VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED]: 95,
   [VehicleComputedOperationalState.LEASED_ACTIVE]: 90,
   [VehicleComputedOperationalState.SERVICE_BLOCKED]: 80,
   [VehicleComputedOperationalState.CONDITION_BLOCKED]: 70,
@@ -55,6 +56,7 @@ export const VEHICLE_OPERATIONAL_STATE_PRIORITY: Record<VehicleComputedOperation
 export const VEHICLE_OPERATIONAL_SOURCE_BASE_SCORE: Record<VehicleOperationalStateSource, number> = {
   CONDITION_REPORT: 20,
   LEASE: 30,
+  OPERATIONAL_RESTRICTION: 45,
   ORDER: 25,
   SERVICE_CASE: 20,
   SYSTEM: 0,

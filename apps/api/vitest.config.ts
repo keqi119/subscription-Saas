@@ -6,6 +6,7 @@ const databaseTestFiles = [
   "test/auto-debit-settlement.integration.spec.ts",
   "test/billing-automation.integration.spec.ts",
   "test/contract-segment.integration.spec.ts",
+  "test/vehicle-availability.integration.spec.ts",
   "test/mileage-review-e2e.spec.ts",
   "test/sms.integration.spec.ts",
   "test/stage2-handover-pdf.integration.spec.ts",

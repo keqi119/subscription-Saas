@@ -1,4 +1,9 @@
 import {
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus
+} from "@prisma/client";
+
+import {
   MINIMUM_RESOLUTION_CONFIDENCE,
   isActiveLeaseStatus,
   isActiveOrderStatus,
@@ -64,10 +69,48 @@ function buildSignals(input: VehicleOperationalStateInput) {
   return sortSignals([
     ...vehicleSignals(input),
     ...leaseSignals(input),
+    ...operationalRestrictionSignals(input),
     ...orderSignals(input),
     ...serviceCaseSignals(input),
     ...conditionReportSignals(input)
   ]);
+}
+
+function operationalRestrictionSignals(
+  input: VehicleOperationalStateInput
+): VehicleOperationalStateSignal[] {
+  return input.operationalRestrictions
+    .filter(
+      (restriction) =>
+        restriction.status === VehicleOperationalRestrictionStatus.ACTIVE &&
+        restriction.severity === VehicleOperationalRestrictionSeverity.BLOCKING &&
+        restriction.startedAt <= (input.asOf ?? new Date())
+    )
+    .map((restriction) =>
+      signal({
+        evidence: {
+          fields: {
+            restrictionType: restriction.restrictionType,
+            scopes: restriction.scopes,
+            severity: restriction.severity,
+            source: {
+              id: restriction.startSourceId,
+              key: restriction.startSourceKey,
+              type: restriction.startSourceType
+            },
+            workOrderId: restriction.workOrderId
+          },
+          reason: "Active blocking operational restriction governs vehicle availability.",
+          recordedAt: restriction.startedAt,
+          source: "OPERATIONAL_RESTRICTION",
+          sourceId: restriction.id
+        },
+        freshnessDate: restriction.startedAt,
+        source: "OPERATIONAL_RESTRICTION",
+        sourceId: restriction.id,
+        state: VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED
+      })
+    );
 }
 
 function vehicleSignals(input: VehicleOperationalStateInput): VehicleOperationalStateSignal[] {

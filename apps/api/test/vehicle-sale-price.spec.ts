@@ -13,6 +13,9 @@ import {
   VehicleDepreciationMethod,
   VehicleInsurancePolicyStatus,
   VehicleInsurancePolicyType,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
   VehicleSalePriceHistory,
   VehicleSalePriceReviewType,
   VehicleStatus
@@ -568,8 +571,22 @@ describe("VehicleService sale price baseline", () => {
         where: {
           currentSalePriceAmount: { gt: 0 },
           deletedAt: null,
+          operationalRestrictions: {
+            none: {
+              scopes: { has: VehicleOperationalRestrictionScope.ALLOCATION },
+              severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+              startedAt: { lte: expect.any(Date) },
+              status: VehicleOperationalRestrictionStatus.ACTIVE
+            }
+          },
           salePriceStatus: SalePriceStatus.EFFECTIVE,
-          status: VehicleStatus.AVAILABLE
+          status: VehicleStatus.AVAILABLE,
+          subscriptionPeriods: {
+            none: {
+              OR: [{ endedAt: null }, { endedAt: { gt: expect.any(Date) } }],
+              startedAt: { lte: expect.any(Date) }
+            }
+          }
         }
       })
     );

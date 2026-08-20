@@ -2,6 +2,7 @@ import { ConflictException, Injectable } from "@nestjs/common";
 import {
   Prisma,
   type BusinessExceptionApproval,
+  type BusinessExceptionApprovalStatus,
   type BusinessExceptionDecision,
   type BusinessExceptionSubjectType,
   type BusinessExceptionType,
@@ -132,6 +133,12 @@ export interface BusinessExceptionSubjectIdentity {
   readonly subjectType: BusinessExceptionSubjectType;
   readonly subjectId: string;
   readonly subjectField: string;
+}
+
+export interface BusinessExceptionApprovalFilters {
+  readonly status?: BusinessExceptionApprovalStatus;
+  readonly subjectId?: string;
+  readonly subjectType?: BusinessExceptionSubjectType;
 }
 
 export interface RequestExceptionApprovalCommand {
@@ -618,6 +625,35 @@ export class AssetAccountingRepository {
     await assertTransactionContract(tx);
     const entry = await tx.vehicleCostLedgerEntry.findUnique({ where: { id: entryId } });
     return entry ? projectEntry(entry) : null;
+  }
+
+  async getExceptionApproval(
+    tx: Prisma.TransactionClient,
+    approvalId: string
+  ): Promise<BusinessExceptionApprovalSnapshot | null> {
+    await assertTransactionContract(tx);
+    const approval = await tx.businessExceptionApproval.findUnique({
+      where: { id: canonicalApprovalUuid(approvalId) }
+    });
+    return approval ? projectApproval(approval) : null;
+  }
+
+  async listExceptionApprovals(
+    tx: Prisma.TransactionClient,
+    filters: BusinessExceptionApprovalFilters
+  ): Promise<BusinessExceptionApprovalSnapshot[]> {
+    await assertTransactionContract(tx);
+    const approvals = await tx.businessExceptionApproval.findMany({
+      orderBy: [{ requestedAt: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+      where: {
+        ...(filters.status === undefined ? {} : { status: filters.status }),
+        ...(filters.subjectId === undefined
+          ? {}
+          : { subjectId: canonicalApprovalUuid(filters.subjectId) }),
+        ...(filters.subjectType === undefined ? {} : { subjectType: filters.subjectType })
+      }
+    });
+    return approvals.map(projectApproval);
   }
 
   async listVehicleEntries(tx: Prisma.TransactionClient, vehicleId: string) {

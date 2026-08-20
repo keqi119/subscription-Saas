@@ -1,6 +1,5 @@
 import {
   STAGE1C_PERMISSION_DEFINITIONS,
-  STAGE1C_PLATFORM_OWNER,
   STAGE1C_REQUIRED_ROLE_CODES,
   classifyStage1cAccessBaseline,
   isStage1cAccessBaselineConverged,
@@ -56,64 +55,45 @@ export async function executeStage1cAccessBaseline({
 
 export async function loadStage1cAccessBaselineSnapshot(db) {
   const permissionCodes = STAGE1C_PERMISSION_DEFINITIONS.map(({ code }) => code);
-  const [roles, permissions, rolePermissionRows, assetOwners, ownershipPeriodCount] =
-    await Promise.all([
-      db.role.findMany({
-        orderBy: { code: "asc" },
-        select: { code: true, deletedAt: true, id: true, status: true },
-        where: { code: { in: STAGE1C_REQUIRED_ROLE_CODES } }
-      }),
-      db.permission.findMany({
-        orderBy: { code: "asc" },
-        select: {
-          action: true,
-          code: true,
-          deletedAt: true,
-          id: true,
-          module: true,
-          name: true,
-          status: true
-        },
-        where: { code: { in: permissionCodes } }
-      }),
-      db.rolePermission.findMany({
-        orderBy: [{ role: { code: "asc" } }, { permission: { code: "asc" } }],
-        select: {
-          deletedAt: true,
-          id: true,
-          permission: { select: { code: true } },
-          permissionId: true,
-          role: { select: { code: true } },
-          roleId: true
-        },
-        where: {
-          permission: { code: { in: permissionCodes } },
-          role: { code: { in: STAGE1C_REQUIRED_ROLE_CODES } }
-        }
-      }),
-      db.assetOwner.findMany({
-        orderBy: { ownerNo: "asc" },
-        select: {
-          id: true,
-          legalName: true,
-          name: true,
-          ownerNo: true,
-          ownerType: true,
-          registrationIdentifier: true,
-          status: true
-        },
-        where: {
-          OR: [
-            { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo },
-            { ownerType: STAGE1C_PLATFORM_OWNER.ownerType }
-          ]
-        }
-      }),
-      db.vehicleOwnershipPeriod.count()
-    ]);
+  const [roles, permissions, rolePermissionRows, ownershipPeriodCount] = await Promise.all([
+    db.role.findMany({
+      orderBy: { code: "asc" },
+      select: { code: true, deletedAt: true, id: true, status: true },
+      where: { code: { in: STAGE1C_REQUIRED_ROLE_CODES } }
+    }),
+    db.permission.findMany({
+      orderBy: { code: "asc" },
+      select: {
+        action: true,
+        code: true,
+        deletedAt: true,
+        id: true,
+        module: true,
+        name: true,
+        status: true
+      },
+      where: { code: { in: permissionCodes } }
+    }),
+    db.rolePermission.findMany({
+      orderBy: [{ role: { code: "asc" } }, { permission: { code: "asc" } }],
+      select: {
+        deletedAt: true,
+        id: true,
+        permission: { select: { code: true } },
+        permissionId: true,
+        role: { select: { code: true } },
+        roleId: true
+      },
+      where: {
+        permission: { code: { in: permissionCodes } },
+        role: { code: { in: STAGE1C_REQUIRED_ROLE_CODES } }
+      }
+    }),
+    db.vehicleOwnershipPeriod.count()
+  ]);
 
   return {
-    assetOwners,
+    assetOwners: [],
     ownershipPeriodCount,
     permissions,
     rolePermissions: rolePermissionRows.map((row) => ({
@@ -131,7 +111,7 @@ export async function loadStage1cAccessBaselineSnapshot(db) {
 export async function applyStage1cAccessBaseline(tx, classification, { generatedAt }) {
   let permissionsChanged = 0;
   let grantsChanged = 0;
-  let ownerChanged = 0;
+  const ownerChanged = 0;
   const changedAt = new Date(generatedAt);
 
   for (const permission of classification.permissions) {
@@ -180,21 +160,7 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
     grantsChanged += 1;
   }
 
-  let owner = await tx.assetOwner.findUnique({
-    where: { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo }
-  });
-  if (classification.platformOwner.disposition === "CREATE") {
-    owner = await tx.assetOwner.create({ data: STAGE1C_PLATFORM_OWNER });
-    ownerChanged = 1;
-  } else if (classification.platformOwner.disposition === "CONVERGE") {
-    owner = await tx.assetOwner.update({
-      data: { status: STAGE1C_PLATFORM_OWNER.status },
-      where: { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo }
-    });
-    ownerChanged = 1;
-  }
-
-  const changed = permissionsChanged + grantsChanged + ownerChanged;
+  const changed = permissionsChanged + grantsChanged;
   let auditsCreated = 0;
   if (changed > 0) {
     await tx.auditLog.create({
@@ -203,11 +169,9 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
         afterSnapshot: {
           grantsChanged,
           ownerChanged,
-          ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo,
           permissionCodes: STAGE1C_PERMISSION_DEFINITIONS.map(({ code }) => code),
           permissionsChanged
         },
-        entityId: owner?.id,
         entityType: "stage1c_access_baseline",
         module: "system"
       }
@@ -219,7 +183,7 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
 }
 
 async function lockStage1cAccessBaseline(tx) {
-  await tx.$executeRaw`LOCK TABLE "role", "permission", "role_permission", "asset_owner", "audit_log" IN SHARE ROW EXCLUSIVE MODE`;
+  await tx.$executeRaw`LOCK TABLE "role", "permission", "role_permission", "audit_log" IN SHARE ROW EXCLUSIVE MODE`;
   await tx.$executeRaw`LOCK TABLE "vehicle_ownership_period" IN SHARE MODE`;
   await tx.$queryRaw`SELECT TRUE AS locked FROM pg_advisory_xact_lock(hashtextextended(${APPLY_LOCK_KEY}, 0))`;
 }

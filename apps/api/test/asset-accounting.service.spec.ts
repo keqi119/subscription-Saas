@@ -252,6 +252,57 @@ describe("AssetAccountingService", () => {
     );
   });
 
+  it("enforces business_exception:view and returns redacted JSON-safe approval reads", async () => {
+    const harness = serviceHarness();
+    const approval = {
+      ...approvalSnapshot(),
+      decisionComment: "private committee deliberation",
+      decidedAt: CONFIRMED_AT,
+      requestEvidenceSnapshot: { amountCents: 9007199254740993n, capturedAt: CONFIRMED_AT }
+    };
+    harness.repository.approval = approval;
+    harness.repository.approvals = [approval];
+    const deniedContext = context(IDS.actor, ASSET_ACCOUNTING_PERMISSION.COST_VIEW, undefined);
+
+    await expectServiceCode(
+      harness.service.getExceptionApproval(IDS.approval, deniedContext),
+      ForbiddenException,
+      ASSET_ACCOUNTING_SERVICE_CODE.PERMISSION_REQUIRED
+    );
+    expect(harness.transactions).toHaveLength(0);
+
+    const readContext = context(IDS.actor, ASSET_ACCOUNTING_PERMISSION.EXCEPTION_VIEW, undefined);
+    const detail = await harness.service.getExceptionApproval(IDS.approval, readContext);
+    const listed = await harness.service.listExceptionApprovals(
+      { status: "PENDING", subjectId: IDS.vehicle, subjectType: "VEHICLE" },
+      readContext
+    );
+
+    expect(detail).toMatchObject({
+      decidedAt: CONFIRMED_AT.toISOString(),
+      requestEvidenceSnapshot: {
+        amountCents: "9007199254740993",
+        capturedAt: CONFIRMED_AT.toISOString()
+      },
+      requestedAt: CONFIRMED_AT.toISOString()
+    });
+    expect(detail).not.toHaveProperty("decisionComment");
+    expect(JSON.stringify(detail)).not.toContain("private committee deliberation");
+    expect(listed).toEqual([detail]);
+    expect(harness.repository.lastApprovalFilters).toEqual({
+      status: "PENDING",
+      subjectId: IDS.vehicle,
+      subjectType: "VEHICLE"
+    });
+
+    harness.repository.approval = null;
+    await expectServiceCode(
+      harness.service.getExceptionApproval(IDS.approval, readContext),
+      NotFoundException,
+      ASSET_ACCOUNTING_SERVICE_CODE.APPROVAL_NOT_FOUND
+    );
+  });
+
   it("requires an unreversed ACTUAL_COST only when the work order requires cost confirmation", async () => {
     const harness = serviceHarness();
     harness.workOrder.costConfirmationRequired = true;
@@ -574,6 +625,9 @@ class FakeRepository {
   };
   entry: VehicleCostLedgerEntrySnapshot | null = costEntry();
   entries: VehicleCostLedgerEntrySnapshot[] = [costEntry()];
+  approval: BusinessExceptionApprovalSnapshot | null = approvalSnapshot();
+  approvals: BusinessExceptionApprovalSnapshot[] = [approvalSnapshot()];
+  lastApprovalFilters?: Record<string, unknown>;
   lastAppendActor?: string;
   lastAppendSource?: unknown;
   lastExpire?: ExpireExceptionApprovalCommand;
@@ -615,6 +669,15 @@ class FakeRepository {
 
   async getCostEntry() {
     return this.entry;
+  }
+
+  async getExceptionApproval() {
+    return this.approval;
+  }
+
+  async listExceptionApprovals(_tx: Prisma.TransactionClient, filters: Record<string, unknown>) {
+    this.lastApprovalFilters = filters;
+    return this.approvals;
   }
 
   async listVehicleEntries() {

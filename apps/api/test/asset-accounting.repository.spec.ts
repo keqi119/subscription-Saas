@@ -1087,6 +1087,50 @@ describe("AssetAccountingRepository", () => {
   );
 
   describe("snapshot-bound business exception approvals", () => {
+    it("gets and filters approval projections with the exact stable newest-first order", async () => {
+      const database = fakeTransaction();
+      const repository = new AssetAccountingRepository();
+      const first = await repository.requestExceptionApproval(
+        database.tx,
+        requestApprovalCommand(database.ids, "approval-read-first")
+      );
+      const second = await repository.requestExceptionApproval(database.tx, {
+        ...requestApprovalCommand(database.ids, "approval-read-second"),
+        subject: { ...approvalSubject(database.ids), subjectField: "secondaryField" }
+      });
+      const tie = new Date("2026-08-20T12:00:00.000Z");
+      for (const approvalId of [first.outcome.id, second.outcome.id]) {
+        const row = database.approvals.get(approvalId)!;
+        row.requestedAt = tie;
+        row.createdAt = tie;
+      }
+
+      await expect(repository.getExceptionApproval(database.tx, first.outcome.id)).resolves.toEqual(
+        { ...first.outcome, requestedAt: tie }
+      );
+      await expect(
+        repository.getExceptionApproval(database.tx, "00000000-0000-4000-8000-000000000099")
+      ).resolves.toBeNull();
+
+      const approvals = await repository.listExceptionApprovals(database.tx, {
+        status: "PENDING",
+        subjectId: database.ids.vehicleId,
+        subjectType: "VEHICLE"
+      });
+
+      expect(database.lastApprovalFindManyArgs).toEqual({
+        orderBy: [{ requestedAt: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+        where: {
+          status: "PENDING",
+          subjectId: database.ids.vehicleId,
+          subjectType: "VEHICLE"
+        }
+      });
+      expect(approvals.map(({ id }) => id)).toEqual(
+        [first.outcome.id, second.outcome.id].sort((left, right) => left.localeCompare(right))
+      );
+    });
+
     it("rejects root-like approval commands and exports the exact reusable subject lock identity", async () => {
       const database = fakeTransaction({ secondTransactionId: "tx-2" });
       const command = requestApprovalCommand(database.ids, "approval-root");
@@ -1695,6 +1739,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     lockedOriginalIds,
     nextEntryCreateError: undefined as unknown,
     nextApprovalCreateError: undefined as unknown,
+    lastApprovalFindManyArgs: undefined as unknown,
     nextReceiptCreateError: undefined as unknown,
     operationTimeline,
     receipts,
@@ -1797,6 +1842,27 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
         return row;
       },
       findUnique: async ({ where }: { where: { id: string } }) => approvals.get(where.id) ?? null,
+      findMany: async (args: {
+        orderBy: Array<Record<string, "asc" | "desc">>;
+        where: Record<string, unknown>;
+      }) => {
+        database.lastApprovalFindManyArgs = structuredClone(args);
+        return [...approvals.values()]
+          .filter((row) => Object.entries(args.where).every(([key, value]) => row[key] === value))
+          .sort((left, right) => {
+            for (const order of args.orderBy) {
+              const [key, direction] = Object.entries(order)[0]!;
+              const leftValue = left[key];
+              const rightValue = right[key];
+              const comparison =
+                leftValue instanceof Date && rightValue instanceof Date
+                  ? leftValue.getTime() - rightValue.getTime()
+                  : String(leftValue).localeCompare(String(rightValue));
+              if (comparison !== 0) return direction === "asc" ? comparison : -comparison;
+            }
+            return 0;
+          });
+      },
       update: async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
         const current = approvals.get(where.id);
         if (!current) throw new Error("missing approval fixture");

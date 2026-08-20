@@ -18,6 +18,7 @@ import {
   AssetAccountingRepository,
   canonicalAssetAccountingSource,
   type AppendCostEntryCommand,
+  type BusinessExceptionApprovalFilters,
   type BusinessExceptionSubjectIdentity,
   type DecideExceptionApprovalCommand,
   type ExpireExceptionApprovalCommand,
@@ -39,12 +40,14 @@ export const ASSET_ACCOUNTING_PERMISSION = {
   COST_REVERSE: "vehicle_cost_ledger:reverse",
   COST_VIEW: "vehicle_cost_ledger:view",
   EXCEPTION_APPROVE: "business_exception:approve",
-  EXCEPTION_REQUEST: "business_exception:request"
+  EXCEPTION_REQUEST: "business_exception:request",
+  EXCEPTION_VIEW: "business_exception:view"
 } as const;
 
 export const ASSET_ACCOUNTING_SERVICE_CODE = {
   AUTHENTICATION_REQUIRED: "ASSET_ACCOUNTING_AUTHENTICATION_REQUIRED",
   APPROVAL_NOT_STALE: "ASSET_ACCOUNTING_APPROVAL_NOT_STALE",
+  APPROVAL_NOT_FOUND: "ASSET_ACCOUNTING_APPROVAL_NOT_FOUND",
   COST_ENTRY_NOT_FOUND: "ASSET_ACCOUNTING_COST_ENTRY_NOT_FOUND",
   IDEMPOTENCY_KEY_INVALID: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_INVALID",
   IDEMPOTENCY_KEY_MISMATCH: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_MISMATCH",
@@ -292,6 +295,33 @@ export class AssetAccountingService {
     assertReadContext(context);
     return this.runReadCommitted(async (tx) =>
       projectCostEntries(await this.repository.listWorkOrderEntries(tx, workOrderId))
+    );
+  }
+
+  async getExceptionApproval(
+    approvalId: string,
+    context: AssetAccountingCommandContext
+  ): Promise<PublicBusinessExceptionApproval> {
+    assertReadContext(context, ASSET_ACCOUNTING_PERMISSION.EXCEPTION_VIEW);
+    return this.runReadCommitted(async (tx) => {
+      const approval = await this.repository.getExceptionApproval(tx, approvalId);
+      if (!approval) {
+        throw notFound(
+          ASSET_ACCOUNTING_SERVICE_CODE.APPROVAL_NOT_FOUND,
+          "The business exception approval was not found."
+        );
+      }
+      return projectApproval(approval);
+    });
+  }
+
+  async listExceptionApprovals(
+    filters: BusinessExceptionApprovalFilters,
+    context: AssetAccountingCommandContext
+  ): Promise<PublicBusinessExceptionApproval[]> {
+    assertReadContext(context, ASSET_ACCOUNTING_PERMISSION.EXCEPTION_VIEW);
+    return this.runReadCommitted(async (tx) =>
+      (await this.repository.listExceptionApprovals(tx, filters)).map(projectApproval)
     );
   }
 
@@ -600,9 +630,12 @@ export class AssetAccountingService {
   }
 }
 
-function assertReadContext(context: AssetAccountingCommandContext): string {
+function assertReadContext(
+  context: AssetAccountingCommandContext,
+  permission: string = ASSET_ACCOUNTING_PERMISSION.COST_VIEW
+): string {
   const actorId = requireActor(context);
-  requirePermission(context, ASSET_ACCOUNTING_PERMISSION.COST_VIEW);
+  requirePermission(context, permission);
   return actorId;
 }
 

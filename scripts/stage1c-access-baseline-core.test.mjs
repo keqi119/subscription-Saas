@@ -8,6 +8,98 @@ function requiredExport(name) {
   return core[name];
 }
 
+test("publishes the exact fourteen permission-only definitions including Task 6", () => {
+  assert.deepEqual(
+    core.STAGE1C_PERMISSION_DEFINITIONS.map(({ action, code, module, name }) => ({
+      action,
+      code,
+      module,
+      name
+    })),
+    [
+      { action: "view", code: "asset_facts:view", module: "asset_facts", name: "查看车辆事实台账" },
+      {
+        action: "owner_manage",
+        code: "asset_owner:manage",
+        module: "asset_facts",
+        name: "管理车辆权属期间"
+      },
+      {
+        action: "period_manage",
+        code: "vehicle_period:manage",
+        module: "asset_facts",
+        name: "修复车辆订阅期间"
+      },
+      {
+        action: "view",
+        code: "asset_operations:view",
+        module: "asset_operations",
+        name: "查看资产运营工单与限制"
+      },
+      {
+        action: "work_order_manage",
+        code: "asset_work_order:manage",
+        module: "asset_operations",
+        name: "管理资产运营工单"
+      },
+      {
+        action: "restriction_manage",
+        code: "vehicle_restriction:manage",
+        module: "asset_operations",
+        name: "管理车辆运营限制"
+      },
+      {
+        action: "restriction_release",
+        code: "vehicle_restriction:release",
+        module: "asset_operations",
+        name: "解除车辆运营限制"
+      },
+      {
+        action: "restriction_approve_release",
+        code: "vehicle_restriction:approve_release",
+        module: "asset_operations",
+        name: "审批高风险车辆运营限制解除"
+      },
+      {
+        action: "view",
+        code: "vehicle_cost_ledger:view",
+        module: "vehicle_cost_ledger",
+        name: "查看车辆成本台账"
+      },
+      {
+        action: "confirm",
+        code: "vehicle_cost_ledger:confirm",
+        module: "vehicle_cost_ledger",
+        name: "确认车辆成本台账"
+      },
+      {
+        action: "reverse",
+        code: "vehicle_cost_ledger:reverse",
+        module: "vehicle_cost_ledger",
+        name: "冲正车辆成本台账"
+      },
+      {
+        action: "view",
+        code: "business_exception:view",
+        module: "business_exception",
+        name: "查看业务例外审批"
+      },
+      {
+        action: "request",
+        code: "business_exception:request",
+        module: "business_exception",
+        name: "发起业务例外审批"
+      },
+      {
+        action: "approve",
+        code: "business_exception:approve",
+        module: "business_exception",
+        name: "审批业务例外"
+      }
+    ]
+  );
+});
+
 test("plans the exact positive and negative Stage 1C role matrix without touching unrelated grants", () => {
   const classify = requiredExport("classifyStage1cAccessBaseline");
   const snapshot = baselineSnapshot();
@@ -27,6 +119,12 @@ test("plans the exact positive and negative Stage 1C role matrix without touchin
       "asset_operations:view",
       "asset_owner:manage",
       "asset_work_order:manage",
+      "business_exception:approve",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:approve_release",
       "vehicle_restriction:manage",
@@ -37,23 +135,52 @@ test("plans the exact positive and negative Stage 1C role matrix without touchin
       "asset_operations:view",
       "asset_owner:manage",
       "asset_work_order:manage",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:approve_release",
       "vehicle_restriction:manage",
       "vehicle_restriction:release"
     ],
     CS: [],
-    FI: ["asset_facts:view", "asset_operations:view"],
-    GM: ["asset_facts:view", "asset_operations:view", "vehicle_restriction:approve_release"],
+    FI: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view"
+    ],
+    GM: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "business_exception:approve",
+      "business_exception:view",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view",
+      "vehicle_restriction:approve_release"
+    ],
     OP: [
       "asset_facts:view",
       "asset_operations:view",
       "asset_work_order:manage",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:manage",
       "vehicle_restriction:release"
     ],
-    RC: ["asset_operations:view"],
+    RC: [
+      "asset_operations:view",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:view"
+    ],
     SA: []
   });
   assert.equal(
@@ -144,43 +271,24 @@ test("permission identity drift is a blocker while lifecycle drift remains conve
     convergent.permissions.find(({ code }) => code === "asset_operations:view").disposition,
     "CONVERGE"
   );
+
+  const task6IdentityDrift = baselineSnapshot();
+  task6IdentityDrift.permissions.find(({ code }) => code === "business_exception:view").action =
+    "approve";
+  assert.deepEqual(classify(task6IdentityDrift).blockers, [
+    { code: "PERMISSION_IDENTITY_DRIFT", permissionCode: "business_exception:view" }
+  ]);
 });
 
-test("creates one stable platform owner and exact replay is unchanged without ownership-period planning", () => {
+test("superseding Task 6 scope reports owner management as disabled and never plans ownership writes", () => {
   const classify = requiredExport("classifyStage1cAccessBaseline");
   const first = classify(baselineSnapshot());
 
   assert.deepEqual(first.platformOwner, {
-    disposition: "CREATE",
-    name: "平台资产主体",
-    ownerNo: "PLATFORM",
-    ownerType: "PLATFORM",
-    status: "ACTIVE"
+    disposition: "NOT_MANAGED"
   });
   assert.equal("ownershipPeriods" in first, false);
-
-  const replaySnapshot = baselineSnapshot();
-  replaySnapshot.assetOwners.push(platformOwner());
-  const replay = classify(replaySnapshot);
-  assert.equal(replay.platformOwner.disposition, "UNCHANGED");
-  assert.deepEqual(replay.blockers, []);
-});
-
-test("refuses owner-number material identity/type drift and another active platform owner", () => {
-  const classify = requiredExport("classifyStage1cAccessBaseline");
-  const cases = [
-    { ...platformOwner(), name: "另一法律主体" },
-    { ...platformOwner(), ownerType: "EXTERNAL_COMPANY" },
-    { ...platformOwner(), ownerNo: "OTHER-PLATFORM" }
-  ];
-
-  for (const owner of cases) {
-    const snapshot = baselineSnapshot();
-    snapshot.assetOwners.push(owner);
-    const report = classify(snapshot);
-    assert.equal(report.blockers.length, 1);
-    assert.match(report.blockers[0].code, /^PLATFORM_OWNER_(IDENTITY_DRIFT|COLLISION)$/);
-  }
+  assert.deepEqual(first.blockers, []);
 });
 
 function baselineSnapshot() {
@@ -214,6 +322,12 @@ function baselineSnapshot() {
       "restriction_approve_release",
       "asset_operations"
     ),
+    permission("vehicle_cost_ledger:view", "查看车辆成本台账", "view", "vehicle_cost_ledger"),
+    permission("vehicle_cost_ledger:confirm", "确认车辆成本台账", "confirm", "vehicle_cost_ledger"),
+    permission("vehicle_cost_ledger:reverse", "冲正车辆成本台账", "reverse", "vehicle_cost_ledger"),
+    permission("business_exception:view", "查看业务例外审批", "view", "business_exception"),
+    permission("business_exception:request", "发起业务例外审批", "request", "business_exception"),
+    permission("business_exception:approve", "审批业务例外", "approve", "business_exception"),
     permission("unrelated:keep", "不相关权限", "keep", "other")
   ];
   return {
@@ -250,18 +364,6 @@ function grant(roleCode, permissionCode, deletedAt = null) {
     permissionId: `permission-${permissionCode}`,
     roleCode,
     roleId: `role-${roleCode}`
-  };
-}
-
-function platformOwner() {
-  return {
-    id: "owner-platform",
-    legalName: null,
-    name: "平台资产主体",
-    ownerNo: "PLATFORM",
-    ownerType: "PLATFORM",
-    registrationIdentifier: null,
-    status: "ACTIVE"
   };
 }
 

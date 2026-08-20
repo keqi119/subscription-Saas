@@ -22,7 +22,7 @@ test("dry-run reports planned convergence and performs zero writes", async () =>
       applyCalls += 1;
       throw new Error("dry-run must not apply");
     },
-    classify: () => cleanClassification({ platformOwner: { disposition: "CREATE" } }),
+    classify: () => cleanClassification(),
     generatedAt: "2026-08-20T00:00:00.000Z",
     loadSnapshot: async () => emptySnapshot(),
     mode: "dry-run",
@@ -56,7 +56,7 @@ test("apply refuses blockers before writes", async () => {
 });
 
 test("apply verifies replay, preserves ownership-period count, and rolls back on audit failure", async () => {
-  const persisted = { audit: 0, grants: 0, ownershipPeriods: 11, owners: 0 };
+  const persisted = { audit: 0, grants: 0, ownershipPeriods: 11 };
   const prisma = transactionHarness(persisted);
 
   await assert.rejects(
@@ -66,10 +66,9 @@ test("apply verifies replay, preserves ownership-period count, and rolls back on
     )({
       apply: async (tx) => {
         tx.state.grants += 3;
-        tx.state.owners += 1;
         throw new Error("INJECTED_AUDIT_FAILURE");
       },
-      classify: () => cleanClassification({ platformOwner: { disposition: "CREATE" } }),
+      classify: () => cleanClassification(),
       loadSnapshot: async (tx) => ({
         ...emptySnapshot(),
         ownershipPeriodCount: tx.state.ownershipPeriods
@@ -80,10 +79,10 @@ test("apply verifies replay, preserves ownership-period count, and rolls back on
     /INJECTED_AUDIT_FAILURE/
   );
 
-  assert.deepEqual(persisted, { audit: 0, grants: 0, ownershipPeriods: 11, owners: 0 });
+  assert.deepEqual(persisted, { audit: 0, grants: 0, ownershipPeriods: 11 });
 });
 
-test("apply uses the production writer, verifies exact replay, and never calls ownership-period writes", async () => {
+test("apply uses the production writer, verifies exact replay, and preserves result compatibility with ownerChanged zero", async () => {
   const calls = [];
   let pass = 0;
   const result = await requiredExport(
@@ -92,13 +91,11 @@ test("apply uses the production writer, verifies exact replay, and never calls o
   )({
     apply: async (tx, classification) => {
       calls.push(["apply", tx, classification]);
-      return { auditsCreated: 1, grantsChanged: 2, ownerChanged: 1, permissionsChanged: 3 };
+      return { auditsCreated: 1, grantsChanged: 2, ownerChanged: 0, permissionsChanged: 3 };
     },
     classify: () => {
       pass += 1;
-      return pass === 1
-        ? cleanClassification({ platformOwner: { disposition: "CREATE" } })
-        : cleanClassification();
+      return cleanClassification();
     },
     loadSnapshot: async () => emptySnapshot(),
     mode: "apply",
@@ -109,7 +106,7 @@ test("apply uses the production writer, verifies exact replay, and never calls o
   assert.deepEqual(result.report.applied, {
     auditsCreated: 1,
     grantsChanged: 2,
-    ownerChanged: 1,
+    ownerChanged: 0,
     permissionsChanged: 3
   });
   assert.equal(calls.length, 1);
@@ -244,7 +241,7 @@ test("stdout stream failures reject so the redacted process wrapper can return n
   await assert.rejects(writeStdout("report\n", stdout), /INJECTED_STDOUT_FAILURE/);
 });
 
-test("generic disposable-local seed hook executes real convergence and exact replay", async () => {
+test("generic disposable-local seed hook executes permission-only convergence and exact replay", async () => {
   const state = databaseState();
   state.permissions.find(({ code }) => code === "asset_facts:view").status = "INACTIVE";
   state.rolePermissions.push(
@@ -261,7 +258,7 @@ test("generic disposable-local seed hook executes real convergence and exact rep
   const replay = await synchronize({ prisma });
 
   assert.equal(first.exitCode, 0);
-  assert.equal(first.report.applied.ownerChanged, 1);
+  assert.equal(first.report.applied.ownerChanged, 0);
   assert.equal(replay.exitCode, 0);
   assert.deepEqual(replay.report.applied, {
     auditsCreated: 0,
@@ -277,22 +274,7 @@ test("generic disposable-local seed hook executes real convergence and exact rep
     ).deletedAt,
     null
   );
-  assert.deepEqual(
-    state.assetOwners.map(({ name, ownerNo, ownerType, status }) => ({
-      name,
-      ownerNo,
-      ownerType,
-      status
-    })),
-    [
-      {
-        name: "平台资产主体",
-        ownerNo: "PLATFORM",
-        ownerType: "PLATFORM",
-        status: "ACTIVE"
-      }
-    ]
-  );
+  assert.deepEqual(state.assetOwners, []);
   assert.deepEqual(state.ownershipPeriods, originalOwnershipPeriods);
 });
 
@@ -322,7 +304,7 @@ test("generic seed hook fails closed when shared convergence refuses the baselin
   );
 });
 
-test("real writer transaction rolls back permission, grant, owner, and audit changes together", async () => {
+test("real writer transaction rolls back permission, grant, and audit changes together", async () => {
   const state = databaseState();
   const before = structuredClone(state);
   const prisma = inMemoryPrisma(state, { failAudit: true });
@@ -371,8 +353,20 @@ function transactionHarness(persisted = {}) {
       });
       const staged = structuredClone(persisted);
       const tx = {
-        $executeRaw: async () => 0,
+        $executeRaw: async (query) => {
+          const sql = String(query?.strings?.join(" ") ?? query ?? "");
+          assert.equal(sql.includes("asset_owner"), false);
+          return 0;
+        },
         $queryRaw: async () => [{ locked: true }],
+        assetOwner: new Proxy(
+          {},
+          {
+            get() {
+              throw new Error("assetOwner access is forbidden by Task 6 permission-only scope");
+            }
+          }
+        ),
         state: staged,
         vehicleOwnershipPeriod: new Proxy(
           {},
@@ -405,7 +399,7 @@ function cleanClassification(overrides = {}) {
     blockers: [],
     ownershipPeriodCount: 0,
     permissions: [],
-    platformOwner: { disposition: "UNCHANGED" },
+    platformOwner: { disposition: "NOT_MANAGED" },
     rolePermissions: [],
     ...overrides
   };
@@ -446,6 +440,27 @@ function databaseState() {
         "restriction_approve_release",
         "asset_operations"
       ),
+      permissionRow("vehicle_cost_ledger:view", "查看车辆成本台账", "view", "vehicle_cost_ledger"),
+      permissionRow(
+        "vehicle_cost_ledger:confirm",
+        "确认车辆成本台账",
+        "confirm",
+        "vehicle_cost_ledger"
+      ),
+      permissionRow(
+        "vehicle_cost_ledger:reverse",
+        "冲正车辆成本台账",
+        "reverse",
+        "vehicle_cost_ledger"
+      ),
+      permissionRow("business_exception:view", "查看业务例外审批", "view", "business_exception"),
+      permissionRow(
+        "business_exception:request",
+        "发起业务例外审批",
+        "request",
+        "business_exception"
+      ),
+      permissionRow("business_exception:approve", "审批业务例外", "approve", "business_exception"),
       permissionRow("unrelated:keep", "不相关权限", "keep", "other")
     ],
     rolePermissions: [],
@@ -495,33 +510,20 @@ function inMemoryPrisma(persisted, { failAudit = false } = {}) {
 
 function inMemoryTransaction(state, { failAudit }) {
   return {
-    $executeRaw: async () => 0,
-    $queryRaw: async () => [{ locked: true }],
-    assetOwner: {
-      async create({ data }) {
-        const row = {
-          ...data,
-          id: "owner-platform",
-          legalName: null,
-          registrationIdentifier: null
-        };
-        state.assetOwners.push(row);
-        return structuredClone(row);
-      },
-      async findMany() {
-        return structuredClone(state.assetOwners);
-      },
-      async findUnique({ where }) {
-        return structuredClone(
-          state.assetOwners.find(({ ownerNo }) => ownerNo === where.ownerNo) ?? null
-        );
-      },
-      async update({ data, where }) {
-        const row = state.assetOwners.find(({ ownerNo }) => ownerNo === where.ownerNo);
-        Object.assign(row, data);
-        return structuredClone(row);
-      }
+    $executeRaw: async (query) => {
+      const sql = String(query?.strings?.join(" ") ?? query ?? "");
+      assert.equal(sql.includes("asset_owner"), false);
+      return 0;
     },
+    $queryRaw: async () => [{ locked: true }],
+    assetOwner: new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("assetOwner access is forbidden by Task 6 permission-only scope");
+        }
+      }
+    ),
     auditLog: {
       async create({ data }) {
         if (failAudit) throw new Error("INJECTED_AUDIT_FAILURE");
@@ -607,7 +609,11 @@ function inMemoryTransaction(state, { failAudit }) {
 function activeStage1cMatrix(state) {
   const codes = new Set(
     state.permissions
-      .filter(({ module }) => ["asset_facts", "asset_operations"].includes(module))
+      .filter(({ module }) =>
+        ["asset_facts", "asset_operations", "business_exception", "vehicle_cost_ledger"].includes(
+          module
+        )
+      )
       .map(({ code }) => code)
   );
   return Object.fromEntries(
@@ -631,6 +637,12 @@ function expectedMatrix() {
       "asset_operations:view",
       "asset_owner:manage",
       "asset_work_order:manage",
+      "business_exception:approve",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:approve_release",
       "vehicle_restriction:manage",
@@ -641,23 +653,52 @@ function expectedMatrix() {
       "asset_operations:view",
       "asset_owner:manage",
       "asset_work_order:manage",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:approve_release",
       "vehicle_restriction:manage",
       "vehicle_restriction:release"
     ],
     CS: [],
-    FI: ["asset_facts:view", "asset_operations:view"],
-    GM: ["asset_facts:view", "asset_operations:view", "vehicle_restriction:approve_release"],
+    FI: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view"
+    ],
+    GM: [
+      "asset_facts:view",
+      "asset_operations:view",
+      "business_exception:approve",
+      "business_exception:view",
+      "vehicle_cost_ledger:reverse",
+      "vehicle_cost_ledger:view",
+      "vehicle_restriction:approve_release"
+    ],
     OP: [
       "asset_facts:view",
       "asset_operations:view",
       "asset_work_order:manage",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:view",
       "vehicle_period:manage",
       "vehicle_restriction:manage",
       "vehicle_restriction:release"
     ],
-    RC: ["asset_operations:view"],
+    RC: [
+      "asset_operations:view",
+      "business_exception:request",
+      "business_exception:view",
+      "vehicle_cost_ledger:view"
+    ],
     SA: []
   };
 }

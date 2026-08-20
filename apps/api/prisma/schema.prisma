@@ -1706,6 +1706,119 @@ enum VehicleSubscriptionPeriodEndReason {
   @@map("vehicle_subscription_period_end_reason")
 }
 
+enum AssetWorkOrderType {
+  DELIVERY_OUTBOUND
+  RETURN_INBOUND
+  SWAP_OUTBOUND
+  SWAP_INBOUND
+  RECOVERY
+  RECONDITIONING
+  MAINTENANCE
+
+  @@map("asset_work_order_type")
+}
+
+enum AssetWorkOrderStatus {
+  PENDING
+  IN_PROGRESS
+  WAITING_EXTERNAL
+  PENDING_ACCEPTANCE
+  PENDING_COST_CONFIRMATION
+  CLOSED
+  CANCELLED
+
+  @@map("asset_work_order_status")
+}
+
+enum AssetWorkOrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+
+  @@map("asset_work_order_priority")
+}
+
+enum AssetWorkOrderEventType {
+  CREATED
+  ASSIGNED
+  STARTED
+  WAITING_EXTERNAL
+  RESUMED
+  EVIDENCE_ATTACHED
+  SUBMITTED_FOR_ACCEPTANCE
+  ACCEPTED
+  COST_CONFIRMED
+  PHYSICAL_CONTROL_CONFIRMED
+  INSPECTION_RECORDED
+  RESTRICTION_CREATED
+  RESTRICTION_RELEASED
+  CLOSED
+  CANCELLED
+  NOTE_ADDED
+
+  @@map("asset_work_order_event_type")
+}
+
+enum AssetWorkOrderEvidenceAction {
+  ATTACH
+  SUPERSEDE
+  REMOVE
+
+  @@map("asset_work_order_evidence_action")
+}
+
+enum AssetWorkOrderEvidenceType {
+  PHOTO
+  VIDEO
+  DOCUMENT
+  SIGNATURE
+  LOCATION_PROOF
+  THIRD_PARTY_RECEIPT
+  INSPECTION_REPORT
+  OTHER
+
+  @@map("asset_work_order_evidence_type")
+}
+
+enum VehicleOperationalRestrictionType {
+  RETURN_INSPECTION_PENDING
+  REINSPECTION_PENDING
+  RECONDITIONING_PENDING
+  MAINTENANCE_OR_ACCIDENT
+  RECOVERY_IN_PROGRESS
+  LEGAL_HOLD
+  EVIDENCE_EXCEPTION
+  OWNERSHIP_EXCEPTION
+  OTHER
+
+  @@map("vehicle_operational_restriction_type")
+}
+
+enum VehicleOperationalRestrictionSeverity {
+  ADVISORY
+  BLOCKING
+
+  @@map("vehicle_operational_restriction_severity")
+}
+
+enum VehicleOperationalRestrictionScope {
+  ALLOCATION
+  DELIVERY
+  CUSTOMER_USE
+  INVENTORY_RELEASE
+
+  @@map("vehicle_operational_restriction_scope")
+}
+
+enum VehicleOperationalRestrictionStatus {
+  ACTIVE
+  RELEASED
+  VOIDED
+
+  @@map("vehicle_operational_restriction_status")
+}
+
 enum VehicleStatus {
   DRAFT
   IN_PREPARATION
@@ -2294,58 +2407,66 @@ enum BenefitType {
 }
 
 model User {
-  id                                          String                         @id @default(uuid()) @db.Uuid
-  username                                    String                         @unique @db.VarChar(64)
-  name                                        String                         @db.VarChar(64)
-  mobile                                      String?                        @db.VarChar(32)
-  email                                       String?                        @unique @db.VarChar(128)
-  passwordHash                                String                         @map("password_hash") @db.VarChar(255)
-  status                                      UserStatus                     @default(ACTIVE)
-  lastLoginAt                                 DateTime?                      @map("last_login_at") @db.Timestamptz(6)
-  createdAt                                   DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                                   DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                                   String?                        @map("created_by") @db.Uuid
-  updatedBy                                   String?                        @map("updated_by") @db.Uuid
-  deletedAt                                   DateTime?                      @map("deleted_at") @db.Timestamptz(6)
+  id                                          String                          @id @default(uuid()) @db.Uuid
+  username                                    String                          @unique @db.VarChar(64)
+  name                                        String                          @db.VarChar(64)
+  mobile                                      String?                         @db.VarChar(32)
+  email                                       String?                         @unique @db.VarChar(128)
+  passwordHash                                String                          @map("password_hash") @db.VarChar(255)
+  status                                      UserStatus                      @default(ACTIVE)
+  lastLoginAt                                 DateTime?                       @map("last_login_at") @db.Timestamptz(6)
+  createdAt                                   DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                                   DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                                   String?                         @map("created_by") @db.Uuid
+  updatedBy                                   String?                         @map("updated_by") @db.Uuid
+  deletedAt                                   DateTime?                       @map("deleted_at") @db.Timestamptz(6)
   roles                                       UserRole[]
-  customers                                   Customer[]                     @relation("CustomerOwner")
-  applications                                Application[]                  @relation("ApplicationSales")
-  uploadedFiles                               FileObject[]                   @relation("FileUploader")
-  followups                                   CustomerFollowup[]             @relation("FollowupUser")
-  riskResults                                 RiskResult[]                   @relation("RiskResultApprover")
-  reviewedMaterials                           ApplicationMaterial[]          @relation("MaterialReviewer")
-  reviewedMaterialGroups                      ApplicationMaterialGroup[]     @relation("MaterialGroupReviewer")
-  uploadedMaterialFiles                       ApplicationMaterialFile[]      @relation("MaterialFileUploader")
-  deletedMaterialFiles                        ApplicationMaterialFile[]      @relation("MaterialFileDeleter")
-  reviewedDeliveryEvidenceItems               VehicleDeliveryEvidenceItem[]  @relation("DeliveryEvidenceReviewer")
-  uploadedDeliveryEvidenceFiles               VehicleDeliveryEvidenceFile[]  @relation("DeliveryEvidenceFileUploader")
-  assignedHandoverWorkOrders                  VehicleHandoverWorkOrder[]     @relation("HandoverWorkOrderInternalOperator")
-  opsReviewedHandoverWorkOrders               VehicleHandoverWorkOrder[]     @relation("HandoverWorkOrderOpsReviewer")
-  acknowledgedHandoverReviewAttempts          VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptAdminAcknowledgedBy")
-  resubmissionRequestedHandoverReviewAttempts VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptResubmissionRequestedBy")
-  sentBackHandoverReviewAttempts              VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptSentBackBy")
-  resolvedHandoverReviewAttempts              VehicleHandoverReviewAttempt[] @relation("HandoverReviewAttemptResolvedBy")
-  applicationActionLogs                       ApplicationActionLog[]         @relation("ApplicationActionOperator")
-  approvedProductVersions                     ProductVersion[]               @relation("ProductVersionApprover")
-  confirmedQuotes                             SubscriptionQuote[]            @relation("QuoteConfirmer")
-  approvedContractVersions                    ContractVersion[]              @relation("ContractVersionApprover")
-  approvedOrderChanges                        OrderChange[]                  @relation("OrderChangeApprover")
-  approvedSubscriptionChanges                 SubscriptionChangeOrder[]      @relation("SubscriptionChangePriceOverrideApprover")
-  takenOverSubscriptionChanges                SubscriptionChangeOrder[]      @relation("SubscriptionChangeManualTakeoverUser")
-  confirmedMileageReadings                    VehicleMileageReading[]        @relation("VehicleMileageReadingConfirmer")
-  voidedMileageReadings                       VehicleMileageReading[]        @relation("VehicleMileageReadingVoider")
-  submittedMileageReviews                     OrderMileageReview[]           @relation("MileageReviewSubmittedByUser")
-  reviewedMileageReviews                      OrderMileageReview[]           @relation("MileageReviewReviewedBy")
-  voidedMileageReviews                        OrderMileageReview[]           @relation("MileageReviewVoidedBy")
-  mileageReviewEvidence                       OrderMileageReviewEvidence[]   @relation("MileageReviewEvidenceUploadedByUser")
-  createdAssetOwners                          AssetOwner[]                   @relation("AssetOwnerCreatedBy")
-  updatedAssetOwners                          AssetOwner[]                   @relation("AssetOwnerUpdatedBy")
-  createdVehicleOwnershipPeriods              VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodCreatedBy")
-  startConfirmedVehicleOwnershipPeriods       VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodStartConfirmedBy")
-  endConfirmedVehicleOwnershipPeriods         VehicleOwnershipPeriod[]       @relation("VehicleOwnershipPeriodEndConfirmedBy")
-  createdVehicleSubscriptionPeriods           VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodCreatedBy")
-  startConfirmedVehicleSubscriptionPeriods    VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodStartConfirmedBy")
-  endConfirmedVehicleSubscriptionPeriods      VehicleSubscriptionPeriod[]    @relation("VehicleSubscriptionPeriodEndConfirmedBy")
+  customers                                   Customer[]                      @relation("CustomerOwner")
+  applications                                Application[]                   @relation("ApplicationSales")
+  uploadedFiles                               FileObject[]                    @relation("FileUploader")
+  followups                                   CustomerFollowup[]              @relation("FollowupUser")
+  riskResults                                 RiskResult[]                    @relation("RiskResultApprover")
+  reviewedMaterials                           ApplicationMaterial[]           @relation("MaterialReviewer")
+  reviewedMaterialGroups                      ApplicationMaterialGroup[]      @relation("MaterialGroupReviewer")
+  uploadedMaterialFiles                       ApplicationMaterialFile[]       @relation("MaterialFileUploader")
+  deletedMaterialFiles                        ApplicationMaterialFile[]       @relation("MaterialFileDeleter")
+  reviewedDeliveryEvidenceItems               VehicleDeliveryEvidenceItem[]   @relation("DeliveryEvidenceReviewer")
+  uploadedDeliveryEvidenceFiles               VehicleDeliveryEvidenceFile[]   @relation("DeliveryEvidenceFileUploader")
+  assignedHandoverWorkOrders                  VehicleHandoverWorkOrder[]      @relation("HandoverWorkOrderInternalOperator")
+  opsReviewedHandoverWorkOrders               VehicleHandoverWorkOrder[]      @relation("HandoverWorkOrderOpsReviewer")
+  acknowledgedHandoverReviewAttempts          VehicleHandoverReviewAttempt[]  @relation("HandoverReviewAttemptAdminAcknowledgedBy")
+  resubmissionRequestedHandoverReviewAttempts VehicleHandoverReviewAttempt[]  @relation("HandoverReviewAttemptResubmissionRequestedBy")
+  sentBackHandoverReviewAttempts              VehicleHandoverReviewAttempt[]  @relation("HandoverReviewAttemptSentBackBy")
+  resolvedHandoverReviewAttempts              VehicleHandoverReviewAttempt[]  @relation("HandoverReviewAttemptResolvedBy")
+  applicationActionLogs                       ApplicationActionLog[]          @relation("ApplicationActionOperator")
+  approvedProductVersions                     ProductVersion[]                @relation("ProductVersionApprover")
+  confirmedQuotes                             SubscriptionQuote[]             @relation("QuoteConfirmer")
+  approvedContractVersions                    ContractVersion[]               @relation("ContractVersionApprover")
+  approvedOrderChanges                        OrderChange[]                   @relation("OrderChangeApprover")
+  approvedSubscriptionChanges                 SubscriptionChangeOrder[]       @relation("SubscriptionChangePriceOverrideApprover")
+  takenOverSubscriptionChanges                SubscriptionChangeOrder[]       @relation("SubscriptionChangeManualTakeoverUser")
+  confirmedMileageReadings                    VehicleMileageReading[]         @relation("VehicleMileageReadingConfirmer")
+  voidedMileageReadings                       VehicleMileageReading[]         @relation("VehicleMileageReadingVoider")
+  submittedMileageReviews                     OrderMileageReview[]            @relation("MileageReviewSubmittedByUser")
+  reviewedMileageReviews                      OrderMileageReview[]            @relation("MileageReviewReviewedBy")
+  voidedMileageReviews                        OrderMileageReview[]            @relation("MileageReviewVoidedBy")
+  mileageReviewEvidence                       OrderMileageReviewEvidence[]    @relation("MileageReviewEvidenceUploadedByUser")
+  createdAssetOwners                          AssetOwner[]                    @relation("AssetOwnerCreatedBy")
+  updatedAssetOwners                          AssetOwner[]                    @relation("AssetOwnerUpdatedBy")
+  createdVehicleOwnershipPeriods              VehicleOwnershipPeriod[]        @relation("VehicleOwnershipPeriodCreatedBy")
+  startConfirmedVehicleOwnershipPeriods       VehicleOwnershipPeriod[]        @relation("VehicleOwnershipPeriodStartConfirmedBy")
+  endConfirmedVehicleOwnershipPeriods         VehicleOwnershipPeriod[]        @relation("VehicleOwnershipPeriodEndConfirmedBy")
+  createdVehicleSubscriptionPeriods           VehicleSubscriptionPeriod[]     @relation("VehicleSubscriptionPeriodCreatedBy")
+  startConfirmedVehicleSubscriptionPeriods    VehicleSubscriptionPeriod[]     @relation("VehicleSubscriptionPeriodStartConfirmedBy")
+  endConfirmedVehicleSubscriptionPeriods      VehicleSubscriptionPeriod[]     @relation("VehicleSubscriptionPeriodEndConfirmedBy")
+  assignedAssetWorkOrders                     AssetWorkOrder[]                @relation("AssetWorkOrderAssignee")
+  createdAssetWorkOrders                      AssetWorkOrder[]                @relation("AssetWorkOrderCreatedBy")
+  updatedAssetWorkOrders                      AssetWorkOrder[]                @relation("AssetWorkOrderUpdatedBy")
+  assetWorkOrderEvents                        AssetWorkOrderEvent[]           @relation("AssetWorkOrderEventActor")
+  assetWorkOrderEvidence                      AssetWorkOrderEvidence[]        @relation("AssetWorkOrderEvidenceActor")
+  releasedVehicleOperationalRestrictions      VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionReleasedBy")
+  createdVehicleOperationalRestrictions       VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionCreatedBy")
+  updatedVehicleOperationalRestrictions       VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionUpdatedBy")
 
   @@index([status])
   @@map("user")
@@ -2525,6 +2646,7 @@ model Customer {
   esignProviderAccounts   CustomerESignProviderAccount[]
   insuranceClaims         InsuranceClaim[]
   subscriptionPeriods     VehicleSubscriptionPeriod[]
+  assetWorkOrders         AssetWorkOrder[]
   createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy               String?                        @map("created_by") @db.Uuid
@@ -3321,33 +3443,33 @@ model ProductPriceRule {
 }
 
 model Vehicle {
-  id                            String                        @id @default(uuid()) @db.Uuid
-  vehicleNo                     String                        @unique @map("vehicle_no") @db.VarChar(64)
-  vin                           String?                       @unique @db.VarChar(64)
-  plateNo                       String?                       @unique @map("plate_no") @db.VarChar(32)
-  brand                         String                        @db.VarChar(64)
-  series                        String?                       @db.VarChar(64)
-  model                         String?                       @db.VarChar(64)
-  modelYear                     Int?                          @map("model_year")
-  modelDefinitionId             String                        @map("model_definition_id") @db.Uuid
-  modelDefinition               VehicleModelDefinition        @relation(fields: [modelDefinitionId], references: [id])
-  batteryCapacityKwh            Decimal?                      @map("battery_capacity_kwh") @db.Decimal(6, 2)
-  batteryUsageType              VehicleBatteryUsageType       @default(BUYOUT) @map("battery_usage_type")
-  acquisitionMode               VehicleAcquisitionMode        @default(OWNED_CASH) @map("acquisition_mode")
-  purchasePriceAmount           BigInt                        @map("purchase_price_amount")
-  purchaseDate                  DateTime?                     @map("purchase_date") @db.Date
-  currentSalePriceAmount        BigInt?                       @map("current_sale_price_amount")
-  currentSalePriceInitializedAt DateTime?                     @map("current_sale_price_initialized_at") @db.Timestamptz(6)
-  currentSalePriceReviewedAt    DateTime?                     @map("current_sale_price_reviewed_at") @db.Timestamptz(6)
-  nextSalePriceReviewAt         DateTime?                     @map("next_sale_price_review_at") @db.Date
-  salePriceReinitRequiredAt     DateTime?                     @map("sale_price_reinit_required_at") @db.Timestamptz(6)
-  salePriceStatus               SalePriceStatus               @default(PENDING_INITIALIZE) @map("sale_price_status")
-  registrationDate              DateTime?                     @map("registration_date") @db.Date
-  latestRegistrationDate        DateTime?                     @map("latest_registration_date") @db.Date
-  status                        VehicleStatus                 @default(DRAFT)
-  currentMileageKm              Int                           @default(0) @map("current_mileage_km")
-  assetLocation                 String?                       @map("asset_location") @db.VarChar(128)
-  remark                        String?                       @db.Text
+  id                            String                          @id @default(uuid()) @db.Uuid
+  vehicleNo                     String                          @unique @map("vehicle_no") @db.VarChar(64)
+  vin                           String?                         @unique @db.VarChar(64)
+  plateNo                       String?                         @unique @map("plate_no") @db.VarChar(32)
+  brand                         String                          @db.VarChar(64)
+  series                        String?                         @db.VarChar(64)
+  model                         String?                         @db.VarChar(64)
+  modelYear                     Int?                            @map("model_year")
+  modelDefinitionId             String                          @map("model_definition_id") @db.Uuid
+  modelDefinition               VehicleModelDefinition          @relation(fields: [modelDefinitionId], references: [id])
+  batteryCapacityKwh            Decimal?                        @map("battery_capacity_kwh") @db.Decimal(6, 2)
+  batteryUsageType              VehicleBatteryUsageType         @default(BUYOUT) @map("battery_usage_type")
+  acquisitionMode               VehicleAcquisitionMode          @default(OWNED_CASH) @map("acquisition_mode")
+  purchasePriceAmount           BigInt                          @map("purchase_price_amount")
+  purchaseDate                  DateTime?                       @map("purchase_date") @db.Date
+  currentSalePriceAmount        BigInt?                         @map("current_sale_price_amount")
+  currentSalePriceInitializedAt DateTime?                       @map("current_sale_price_initialized_at") @db.Timestamptz(6)
+  currentSalePriceReviewedAt    DateTime?                       @map("current_sale_price_reviewed_at") @db.Timestamptz(6)
+  nextSalePriceReviewAt         DateTime?                       @map("next_sale_price_review_at") @db.Date
+  salePriceReinitRequiredAt     DateTime?                       @map("sale_price_reinit_required_at") @db.Timestamptz(6)
+  salePriceStatus               SalePriceStatus                 @default(PENDING_INITIALIZE) @map("sale_price_status")
+  registrationDate              DateTime?                       @map("registration_date") @db.Date
+  latestRegistrationDate        DateTime?                       @map("latest_registration_date") @db.Date
+  status                        VehicleStatus                   @default(DRAFT)
+  currentMileageKm              Int                             @default(0) @map("current_mileage_km")
+  assetLocation                 String?                         @map("asset_location") @db.VarChar(128)
+  remark                        String?                         @db.Text
   quotes                        SubscriptionQuote[]
   orders                        SubscriptionOrder[]
   deliveries                    VehicleDelivery[]
@@ -3382,11 +3504,13 @@ model Vehicle {
   mileageReviews                OrderMileageReview[]
   ownershipPeriods              VehicleOwnershipPeriod[]
   subscriptionPeriods           VehicleSubscriptionPeriod[]
-  createdAt                     DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                     DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  createdBy                     String?                       @map("created_by") @db.Uuid
-  updatedBy                     String?                       @map("updated_by") @db.Uuid
-  deletedAt                     DateTime?                     @map("deleted_at") @db.Timestamptz(6)
+  assetWorkOrders               AssetWorkOrder[]
+  operationalRestrictions       VehicleOperationalRestriction[]
+  createdAt                     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                     String?                         @map("created_by") @db.Uuid
+  updatedBy                     String?                         @map("updated_by") @db.Uuid
+  deletedAt                     DateTime?                       @map("deleted_at") @db.Timestamptz(6)
 
   @@index([modelDefinitionId])
   @@index([status])
@@ -3406,6 +3530,7 @@ model AssetOwner {
   status                 AssetOwnerStatus         @default(ACTIVE)
   onboardingSnapshot     Json?                    @map("onboarding_snapshot")
   ownershipPeriods       VehicleOwnershipPeriod[]
+  assetWorkOrders        AssetWorkOrder[]
   createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy              String?                  @map("created_by") @db.Uuid
@@ -3418,6 +3543,172 @@ model AssetOwner {
   @@index([createdBy], map: "asset_owner_created_by_idx")
   @@index([updatedBy], map: "asset_owner_updated_by_idx")
   @@map("asset_owner")
+}
+
+model AssetWorkOrder {
+  id                       String                          @id @default(uuid()) @db.Uuid
+  workOrderNo              String                          @unique(map: "asset_work_order_work_order_no_key") @map("work_order_no") @db.VarChar(64)
+  vehicleId                String                          @map("vehicle_id") @db.Uuid
+  vehicle                  Vehicle                         @relation(fields: [vehicleId], references: [id])
+  orderId                  String?                         @map("order_id") @db.Uuid
+  order                    SubscriptionOrder?              @relation(fields: [orderId], references: [id])
+  contractId               String?                         @map("contract_id") @db.Uuid
+  contract                 Contract?                       @relation(fields: [contractId], references: [id])
+  customerId               String?                         @map("customer_id") @db.Uuid
+  customer                 Customer?                       @relation(fields: [customerId], references: [id])
+  assetOwnerId             String?                         @map("asset_owner_id") @db.Uuid
+  assetOwner               AssetOwner?                     @relation(fields: [assetOwnerId], references: [id])
+  relatedWorkOrderId       String?                         @map("related_work_order_id") @db.Uuid
+  relatedWorkOrder         AssetWorkOrder?                 @relation("AssetWorkOrderRelationship", fields: [relatedWorkOrderId], references: [id])
+  relatedWorkOrders        AssetWorkOrder[]                @relation("AssetWorkOrderRelationship")
+  workOrderType            AssetWorkOrderType              @map("work_order_type")
+  status                   AssetWorkOrderStatus            @default(PENDING)
+  priority                 AssetWorkOrderPriority          @default(NORMAL)
+  costConfirmationRequired Boolean                         @default(false) @map("cost_confirmation_required")
+  assignedUserId           String?                         @map("assigned_user_id") @db.Uuid
+  assignedUser             User?                           @relation("AssetWorkOrderAssignee", fields: [assignedUserId], references: [id])
+  scheduledAt              DateTime?                       @map("scheduled_at") @db.Timestamptz(6)
+  slaDueAt                 DateTime?                       @map("sla_due_at") @db.Timestamptz(6)
+  startedAt                DateTime?                       @map("started_at") @db.Timestamptz(6)
+  acceptedAt               DateTime?                       @map("accepted_at") @db.Timestamptz(6)
+  costConfirmedAt          DateTime?                       @map("cost_confirmed_at") @db.Timestamptz(6)
+  closedAt                 DateTime?                       @map("closed_at") @db.Timestamptz(6)
+  cancelledAt              DateTime?                       @map("cancelled_at") @db.Timestamptz(6)
+  description              String?                         @db.Text
+  solution                 String?                         @db.Text
+  closeReason              String?                         @map("close_reason") @db.Text
+  createSourceType         String                          @map("create_source_type") @db.VarChar(64)
+  createSourceId           String                          @map("create_source_id") @db.Uuid
+  createSourceKey          String                          @map("create_source_key") @db.VarChar(255)
+  authoritySnapshot        Json                            @map("authority_snapshot")
+  metadata                 Json?
+  version                  Int                             @default(0)
+  events                   AssetWorkOrderEvent[]
+  evidence                 AssetWorkOrderEvidence[]
+  restrictions             VehicleOperationalRestriction[]
+  createdAt                DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy                String?                         @map("created_by") @db.Uuid
+  creator                  User?                           @relation("AssetWorkOrderCreatedBy", fields: [createdBy], references: [id])
+  updatedBy                String?                         @map("updated_by") @db.Uuid
+  updater                  User?                           @relation("AssetWorkOrderUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@unique([createSourceType, createSourceId, createSourceKey], map: "asset_work_order_create_source_key")
+  @@index([vehicleId, status], map: "asset_work_order_vehicle_status_idx")
+  @@index([orderId], map: "asset_work_order_order_id_idx")
+  @@index([contractId], map: "asset_work_order_contract_id_idx")
+  @@index([customerId], map: "asset_work_order_customer_id_idx")
+  @@index([assetOwnerId], map: "asset_work_order_asset_owner_id_idx")
+  @@index([relatedWorkOrderId], map: "asset_work_order_related_work_order_id_idx")
+  @@index([assignedUserId, slaDueAt], map: "asset_work_order_assignee_sla_idx")
+  @@index([status, slaDueAt], map: "asset_work_order_status_sla_idx")
+  @@index([createdBy], map: "asset_work_order_created_by_idx")
+  @@index([updatedBy], map: "asset_work_order_updated_by_idx")
+  @@map("asset_work_order")
+}
+
+model AssetWorkOrderEvent {
+  id             String                   @id @default(uuid()) @db.Uuid
+  workOrderId    String                   @map("work_order_id") @db.Uuid
+  workOrder      AssetWorkOrder           @relation(fields: [workOrderId], references: [id])
+  sequence       Int
+  eventType      AssetWorkOrderEventType  @map("event_type")
+  beforeStatus   AssetWorkOrderStatus?    @map("before_status")
+  afterStatus    AssetWorkOrderStatus?    @map("after_status")
+  actorId        String?                  @map("actor_id") @db.Uuid
+  actor          User?                    @relation("AssetWorkOrderEventActor", fields: [actorId], references: [id])
+  occurredAt     DateTime                 @map("occurred_at") @db.Timestamptz(6)
+  recordedAt     DateTime                 @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  sourceType     String                   @map("source_type") @db.VarChar(64)
+  sourceId       String                   @map("source_id") @db.Uuid
+  sourceKey      String                   @map("source_key") @db.VarChar(255)
+  detailSnapshot Json                     @map("detail_snapshot")
+  evidence       AssetWorkOrderEvidence[]
+
+  @@unique([workOrderId, sequence], map: "asset_work_order_event_work_order_sequence_key")
+  @@unique([sourceType, sourceId, sourceKey], map: "asset_work_order_event_source_key")
+  @@index([workOrderId, occurredAt, sequence], map: "asset_work_order_event_work_order_timeline_idx")
+  @@index([eventType, recordedAt], map: "asset_work_order_event_type_recorded_at_idx")
+  @@index([actorId], map: "asset_work_order_event_actor_id_idx")
+  @@map("asset_work_order_event")
+}
+
+model AssetWorkOrderEvidence {
+  id                   String                       @id @default(uuid()) @db.Uuid
+  workOrderId          String                       @map("work_order_id") @db.Uuid
+  workOrder            AssetWorkOrder               @relation(fields: [workOrderId], references: [id])
+  eventId              String?                      @map("event_id") @db.Uuid
+  event                AssetWorkOrderEvent?         @relation(fields: [eventId], references: [id])
+  action               AssetWorkOrderEvidenceAction
+  evidenceType         AssetWorkOrderEvidenceType   @map("evidence_type")
+  fileId               String?                      @map("file_id") @db.Uuid
+  file                 FileObject?                  @relation(fields: [fileId], references: [id])
+  supersedesEvidenceId String?                      @map("supersedes_evidence_id") @db.Uuid
+  supersedesEvidence   AssetWorkOrderEvidence?      @relation("AssetWorkOrderEvidenceSupersession", fields: [supersedesEvidenceId], references: [id])
+  supersededBy         AssetWorkOrderEvidence?      @relation("AssetWorkOrderEvidenceSupersession")
+  fileBucket           String?                      @map("file_bucket") @db.VarChar(64)
+  fileObjectKey        String?                      @map("file_object_key") @db.VarChar(255)
+  fileSizeBytes        BigInt?                      @map("file_size_bytes")
+  fileMimeType         String?                      @map("file_mime_type") @db.VarChar(128)
+  contentSha256        String?                      @map("content_sha256") @db.VarChar(64)
+  capturedAt           DateTime?                    @map("captured_at") @db.Timestamptz(6)
+  captureMetadata      Json?                        @map("capture_metadata")
+  sourceType           String                       @map("source_type") @db.VarChar(64)
+  sourceId             String                       @map("source_id") @db.Uuid
+  sourceKey            String                       @map("source_key") @db.VarChar(255)
+  actorId              String?                      @map("actor_id") @db.Uuid
+  actor                User?                        @relation("AssetWorkOrderEvidenceActor", fields: [actorId], references: [id])
+  recordedAt           DateTime                     @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  @@unique([sourceType, sourceId, sourceKey], map: "asset_work_order_evidence_source_key")
+  @@unique([supersedesEvidenceId], map: "asset_work_order_evidence_supersedes_evidence_id_key")
+  @@index([workOrderId, recordedAt], map: "asset_work_order_evidence_work_order_recorded_at_idx")
+  @@index([eventId], map: "asset_work_order_evidence_event_id_idx")
+  @@index([fileId], map: "asset_work_order_evidence_file_id_idx")
+  @@index([actorId], map: "asset_work_order_evidence_actor_id_idx")
+  @@map("asset_work_order_evidence")
+}
+
+model VehicleOperationalRestriction {
+  id                 String                                @id @default(uuid()) @db.Uuid
+  vehicleId          String                                @map("vehicle_id") @db.Uuid
+  vehicle            Vehicle                               @relation(fields: [vehicleId], references: [id])
+  workOrderId        String?                               @map("work_order_id") @db.Uuid
+  workOrder          AssetWorkOrder?                       @relation(fields: [workOrderId], references: [id])
+  restrictionType    VehicleOperationalRestrictionType     @map("restriction_type")
+  severity           VehicleOperationalRestrictionSeverity
+  scopes             VehicleOperationalRestrictionScope[]
+  status             VehicleOperationalRestrictionStatus   @default(ACTIVE)
+  startedAt          DateTime                              @map("started_at") @db.Timestamptz(6)
+  conditionsSnapshot Json                                  @map("conditions_snapshot")
+  evidenceSnapshot   Json?                                 @map("evidence_snapshot")
+  startSourceType    String                                @map("start_source_type") @db.VarChar(64)
+  startSourceId      String                                @map("start_source_id") @db.Uuid
+  startSourceKey     String                                @map("start_source_key") @db.VarChar(255)
+  releasedAt         DateTime?                             @map("released_at") @db.Timestamptz(6)
+  releasedBy         String?                               @map("released_by") @db.Uuid
+  releaser           User?                                 @relation("VehicleOperationalRestrictionReleasedBy", fields: [releasedBy], references: [id])
+  releaseReason      String?                               @map("release_reason") @db.Text
+  releaseSnapshot    Json?                                 @map("release_snapshot")
+  releaseSourceType  String?                               @map("release_source_type") @db.VarChar(64)
+  releaseSourceId    String?                               @map("release_source_id") @db.Uuid
+  releaseSourceKey   String?                               @map("release_source_key") @db.VarChar(255)
+  createdAt          DateTime                              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy          String?                               @map("created_by") @db.Uuid
+  creator            User?                                 @relation("VehicleOperationalRestrictionCreatedBy", fields: [createdBy], references: [id])
+  updatedBy          String?                               @map("updated_by") @db.Uuid
+  updater            User?                                 @relation("VehicleOperationalRestrictionUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@unique([startSourceType, startSourceId, startSourceKey], map: "vehicle_operational_restriction_start_source_key")
+  @@unique([releaseSourceType, releaseSourceId, releaseSourceKey], map: "vehicle_operational_restriction_release_source_key")
+  @@index([vehicleId, status], map: "vehicle_operational_restriction_vehicle_status_idx")
+  @@index([workOrderId], map: "vehicle_operational_restriction_work_order_id_idx")
+  @@index([restrictionType, status], map: "vehicle_operational_restriction_type_status_idx")
+  @@index([releasedBy], map: "vehicle_operational_restriction_released_by_idx")
+  @@index([createdBy], map: "vehicle_operational_restriction_created_by_idx")
+  @@index([updatedBy], map: "vehicle_operational_restriction_updated_by_idx")
+  @@map("vehicle_operational_restriction")
 }
 
 model VehicleOwnershipPeriod {
@@ -5023,6 +5314,7 @@ model SubscriptionOrder {
   mileageReviews             OrderMileageReview[]
   subscriptionJourney        SubscriptionJourney?
   subscriptionPeriods        VehicleSubscriptionPeriod[]
+  assetWorkOrders            AssetWorkOrder[]
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -6533,6 +6825,7 @@ model Contract {
   subscriptionChange       SubscriptionChangeOrder?
   contractSegments         SubscriptionContractSegment[]
   subscriptionPeriods      VehicleSubscriptionPeriod[]
+  assetWorkOrders          AssetWorkOrder[]
   createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                       @map("created_by") @db.Uuid
@@ -6907,19 +7200,20 @@ model OrderChange {
 }
 
 model FileObject {
-  id                    String                        @id @default(uuid()) @db.Uuid
-  bucket                String                        @db.VarChar(64)
-  objectKey             String                        @map("object_key") @db.VarChar(255)
-  originalName          String                        @map("original_name") @db.VarChar(255)
-  mimeType              String?                       @map("mime_type") @db.VarChar(128)
-  sizeBytes             BigInt                        @map("size_bytes")
-  uploadedBy            String?                       @map("uploaded_by") @db.Uuid
-  uploader              User?                         @relation("FileUploader", fields: [uploadedBy], references: [id])
-  materials             ApplicationMaterial[]
-  materialFiles         ApplicationMaterialFile[]
-  deliveryEvidenceFiles VehicleDeliveryEvidenceFile[]
-  mileageReviewEvidence OrderMileageReviewEvidence[]
-  createdAt             DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                     String                        @id @default(uuid()) @db.Uuid
+  bucket                 String                        @db.VarChar(64)
+  objectKey              String                        @map("object_key") @db.VarChar(255)
+  originalName           String                        @map("original_name") @db.VarChar(255)
+  mimeType               String?                       @map("mime_type") @db.VarChar(128)
+  sizeBytes              BigInt                        @map("size_bytes")
+  uploadedBy             String?                       @map("uploaded_by") @db.Uuid
+  uploader               User?                         @relation("FileUploader", fields: [uploadedBy], references: [id])
+  materials              ApplicationMaterial[]
+  materialFiles          ApplicationMaterialFile[]
+  deliveryEvidenceFiles  VehicleDeliveryEvidenceFile[]
+  mileageReviewEvidence  OrderMileageReviewEvidence[]
+  assetWorkOrderEvidence AssetWorkOrderEvidence[]
+  createdAt              DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([bucket])
   @@index([uploadedBy])

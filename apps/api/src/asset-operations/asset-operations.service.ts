@@ -510,7 +510,8 @@ export class AssetOperationsService {
     }
     const authority = await loadAuthority(tx, current);
     assertAuthorityConsistency(authority);
-    return { authority, before: current, lockHandle, workOrder: current };
+    const before = await loadWorkOrderAuditPreimage(tx, workOrderId);
+    return { authority, before, lockHandle, workOrder: current };
   }
 
   private async auditWorkOrderOutcome(
@@ -775,6 +776,20 @@ async function loadWorkOrderHeader(
   return workOrder;
 }
 
+async function loadWorkOrderAuditPreimage(
+  tx: Prisma.TransactionClient,
+  workOrderId: string
+): Promise<AssetWorkOrder> {
+  const workOrder = await tx.assetWorkOrder.findUnique({ where: { id: workOrderId } });
+  if (!workOrder) {
+    throw notFound(
+      ASSET_OPERATION_SERVICE_CODE.WORK_ORDER_NOT_FOUND,
+      "Asset work order not found."
+    );
+  }
+  return deepFreeze(structuredClone(workOrder));
+}
+
 function workOrderAuthorityRows(workOrder: WorkOrderAuthorityHeader) {
   return [
     workOrder.assetOwnerId ? { id: workOrder.assetOwnerId, table: "asset_owner" as const } : null,
@@ -963,6 +978,12 @@ function toAuditSnapshot(value: unknown): unknown {
       toAuditSnapshot(item)
     ])
   );
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) deepFreeze(Reflect.get(value, key));
+  return Object.freeze(value);
 }
 
 function authorityMismatch() {

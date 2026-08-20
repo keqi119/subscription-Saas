@@ -143,7 +143,7 @@ describe("AssetOperationsRepository", () => {
       []
     );
     const otherDatabase = new FakeDatabase();
-    otherDatabase.workOrders.push(structuredClone(database.workOrders[0]));
+    otherDatabase.workOrders.push(structuredClone(database.workOrders[0]!));
     await repository.appendNote(
       otherDatabase.tx,
       noteCommand(created.workOrder.id, "wrong transaction", "wrong-transaction-capability"),
@@ -216,7 +216,7 @@ describe("AssetOperationsRepository", () => {
       releaseDatabase.tx,
       createCommand()
     );
-    Object.assign(releaseDatabase.workOrders[0], {
+    Object.assign(releaseDatabase.workOrders[0]!, {
       status: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
       version: 1
     });

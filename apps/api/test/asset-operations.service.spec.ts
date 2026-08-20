@@ -369,26 +369,45 @@ describe("AssetOperationsService", () => {
     }
   });
 
-  it("captures the locked pre-update work-order snapshot in header update audit", async () => {
-    const harness = createHarness();
+  it("captures the select-faithful full locked preimage for assignment and transition audits", async () => {
+    const assignmentHarness = createHarness();
 
-    await harness.service.assignWorkOrder(
+    await assignmentHarness.service.assignWorkOrder(
       {
-        assignedUserId: harness.ids.actorId,
+        assignedUserId: assignmentHarness.ids.actorId,
         detailSnapshot: { reason: "dispatch" },
         expectedVersion: 0,
         occurredAt: NOW,
         scheduledAt: null,
         slaDueAt: null,
-        source: nextSource(harness, "assignment-before"),
-        workOrderId: harness.ids.workOrderId
+        source: nextSource(assignmentHarness, "assignment-before"),
+        workOrderId: assignmentHarness.ids.workOrderId
       },
-      harness.context
+      assignmentHarness.context
     );
 
-    expect(harness.auditInputs[0]).toMatchObject({
-      before: { id: harness.ids.workOrderId, status: AssetWorkOrderStatus.PENDING, version: 0 }
-    });
+    expect((assignmentHarness.auditInputs[0] as { before: unknown }).before).toEqual(
+      auditSnapshot(assignmentHarness.workOrder)
+    );
+
+    const transitionHarness = createHarness();
+    await transitionHarness.service.transitionWorkOrder(
+      {
+        closeReason: null,
+        detailSnapshot: { reason: "start" },
+        expectedVersion: 0,
+        occurredAt: NOW,
+        solution: null,
+        source: nextSource(transitionHarness, "transition-before"),
+        targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+        workOrderId: transitionHarness.ids.workOrderId
+      },
+      transitionHarness.context
+    );
+
+    expect((transitionHarness.auditInputs[0] as { before: unknown }).before).toEqual(
+      auditSnapshot(transitionHarness.workOrder)
+    );
   });
 
   it("locks an explicitly related work order as authority without inferring one", async () => {
@@ -756,6 +775,10 @@ function nextSource(harness: ReturnType<typeof createHarness>, label: string) {
   return { id, key: `task-4:${label}:${id}`, type: "STAGE1C_TASK4_TEST" };
 }
 
+function auditSnapshot(value: unknown) {
+  return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
 function fullCreateCommand(harness: ReturnType<typeof createHarness>) {
   return {
     assetOwnerId: harness.ids.assetOwnerId,
@@ -955,7 +978,17 @@ function createHarness(
         status: "ACTIVE"
       }))
     },
-    assetWorkOrder: { findUnique: vi.fn(async () => workOrder) },
+    assetWorkOrder: {
+      findUnique: vi.fn(async ({ select }: { select?: Record<string, boolean> } = {}) =>
+        select
+          ? Object.fromEntries(
+              Object.entries(select)
+                .filter(([, included]) => included)
+                .map(([key]) => [key, workOrder[key as keyof typeof workOrder]])
+            )
+          : structuredClone(workOrder)
+      )
+    },
     contract: {
       findUnique: vi.fn(async () => ({
         contractNo: "CT-1",

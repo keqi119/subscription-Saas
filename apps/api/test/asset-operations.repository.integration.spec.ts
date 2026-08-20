@@ -7,6 +7,7 @@ import {
   AssetWorkOrderPriority,
   AssetWorkOrderStatus,
   AssetWorkOrderType,
+  AuditAction,
   Prisma,
   VehicleOperationalRestrictionScope,
   VehicleOperationalRestrictionSeverity,
@@ -866,6 +867,71 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     await expect(countAuditsBySourceKey(prisma, release.source.key)).resolves.toBe(0);
   });
 
+  it("persists exact full assignment and transition audit preimages without replay duplicates", async () => {
+    const service = createAssetOperationsService(prisma);
+    const assignmentCreated = await service.createWorkOrder(
+      serviceCreateCommand(vehicleId, "service-audit-assignment-preimage"),
+      serviceContext(userId)
+    );
+    const assignment = withoutActor(
+      assignmentCommand(
+        assignmentCreated.workOrder.id,
+        userId,
+        "service-audit-assignment-preimage",
+        0,
+        31
+      )
+    );
+    const assigned = await service.assignWorkOrder(assignment, serviceContext(userId));
+    const assignmentAuditCount = await countAuditsForWorkOrder(
+      prisma,
+      assignmentCreated.workOrder.id
+    );
+    const assignmentAudits = await workOrderUpdateAudits(prisma, assignmentCreated.workOrder.id);
+
+    expect(assignmentAudits).toEqual([
+      {
+        afterSnapshot: auditSnapshot(assigned.workOrder),
+        beforeSnapshot: auditSnapshot(assignmentCreated.workOrder)
+      }
+    ]);
+    await expect(service.assignWorkOrder(assignment, serviceContext(userId))).resolves.toEqual({
+      ...assigned,
+      wrote: false
+    });
+    await expect(countAuditsForWorkOrder(prisma, assignmentCreated.workOrder.id)).resolves.toBe(
+      assignmentAuditCount
+    );
+
+    const transitionCreated = await service.createWorkOrder(
+      serviceCreateCommand(vehicleId, "service-audit-transition-preimage"),
+      serviceContext(userId)
+    );
+    const transition = withoutActor(
+      transitionCommand(transitionCreated.workOrder.id, "service-audit-transition-preimage")
+    );
+    const transitioned = await service.transitionWorkOrder(transition, serviceContext(userId));
+    const transitionAuditCount = await countAuditsForWorkOrder(
+      prisma,
+      transitionCreated.workOrder.id
+    );
+    const transitionAudits = await workOrderUpdateAudits(prisma, transitionCreated.workOrder.id);
+
+    expect(transitionAudits).toEqual([
+      {
+        afterSnapshot: auditSnapshot(transitioned.workOrder),
+        beforeSnapshot: auditSnapshot(transitionCreated.workOrder)
+      }
+    ]);
+    await expect(service.transitionWorkOrder(transition, serviceContext(userId))).resolves.toEqual({
+      ...transitioned,
+      wrote: false
+    });
+    await expect(countAuditsForWorkOrder(prisma, transitionCreated.workOrder.id)).resolves.toBe(
+      transitionAuditCount
+    );
+  });
+
   it("audits one committed work-order and event once across exact service replay", async () => {
     const service = createAssetOperationsService(prisma);
     const command = serviceCreateCommand(vehicleId, "service-audit-replay");
@@ -1091,6 +1157,23 @@ async function countAuditsForWorkOrder(prisma: PrismaService, workOrderId: strin
       )
   `);
   return Number(row?.count ?? 0n);
+}
+
+function workOrderUpdateAudits(prisma: PrismaService, workOrderId: string) {
+  return prisma.auditLog.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { afterSnapshot: true, beforeSnapshot: true },
+    where: {
+      action: AuditAction.UPDATE,
+      entityId: workOrderId,
+      entityType: "asset_work_order",
+      module: "asset_operations"
+    }
+  });
+}
+
+function auditSnapshot(value: unknown) {
+  return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
 type ServiceAuthorityFixture = {

@@ -6,6 +6,12 @@ import {
   AssetWorkOrderPriority,
   AssetWorkOrderStatus,
   AssetWorkOrderType,
+  SalePriceStatus,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType,
+  VehicleStatus,
   type Prisma
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
@@ -19,7 +25,10 @@ import type {
   AppendEvidenceCommand,
   AppendNoteCommand,
   AppendWorkOrderEventCommand,
+  AssetOperationSnapshot,
+  CreateRestrictionCommand,
   CreateWorkOrderCommand,
+  ReleaseRestrictionCommand,
   TransitionWorkOrderCommand,
   WorkOrderCommandOutcome
 } from "../src/asset-operations/asset-operations.types";
@@ -525,6 +534,261 @@ describe("AssetOperationsRepository", () => {
       new AssetOperationsRepository().createWorkOrder(database.tx, createCommand())
     ).rejects.toBe(lockError);
   });
+
+  it("requires the caller transaction before restriction create or release validation", async () => {
+    const database = new FakeDatabase({ transactionIds: ["tx-1", "tx-2", "tx-3", "tx-4"] });
+    const vehicleId = database.addVehicle();
+    const repository = new AssetOperationsRepository();
+
+    await expectCode(
+      repository.createRestriction(
+        database.tx,
+        createRestrictionCommand(vehicleId, "transaction-create")
+      ),
+      ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+    await expectCode(
+      repository.releaseRestriction(
+        database.tx,
+        releaseRestrictionCommand(randomUUID(), "transaction-release", {})
+      ),
+      ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+  });
+
+  it("fails fast when a linked work-order authority row is busy", async () => {
+    const database = new FakeDatabase({ workOrderNowaitError: { code: "55P03" } });
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const workOrder = await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId
+    });
+
+    await expectCode(
+      repository.createRestriction(
+        database.tx,
+        createRestrictionCommand(vehicleId, "busy-linked", workOrder.workOrder.id)
+      ),
+      ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY
+    );
+    expect(database.restrictions).toHaveLength(0);
+  });
+
+  it("creates distinct same-type restriction incidents and exactly replays the immutable start result", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const first = createRestrictionCommand(vehicleId, "incident-one");
+    const second = createRestrictionCommand(vehicleId, "incident-two");
+
+    const created = await repository.createRestriction(database.tx, first);
+    expect(await repository.createRestriction(database.tx, first)).toEqual({
+      ...created,
+      wrote: false
+    });
+    const secondCreated = await repository.createRestriction(database.tx, second);
+
+    expect(created).toMatchObject({
+      event: null,
+      restriction: {
+        restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+        status: VehicleOperationalRestrictionStatus.ACTIVE
+      },
+      workOrder: null,
+      wrote: true
+    });
+    expect(secondCreated.restriction.id).not.toBe(created.restriction.id);
+    expect(database.restrictions).toHaveLength(2);
+
+    await expectCode(
+      repository.createRestriction(database.tx, {
+        ...first,
+        scopes: [VehicleOperationalRestrictionScope.DELIVERY]
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it("requires release evidence and an accepted linked work order", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const workOrder = await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId
+    });
+    const created = await repository.createRestriction(
+      database.tx,
+      createRestrictionCommand(vehicleId, "linked-gate", workOrder.workOrder.id)
+    );
+
+    expect(created.event).toMatchObject({
+      eventType: AssetWorkOrderEventType.RESTRICTION_CREATED,
+      sequence: 2
+    });
+    await expectCode(
+      repository.releaseRestriction(
+        database.tx,
+        releaseRestrictionCommand(created.restriction.id, "missing-evidence", {})
+      ),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_EVIDENCE_REQUIRED
+    );
+    await expectCode(
+      repository.releaseRestriction(
+        database.tx,
+        releaseRestrictionCommand(created.restriction.id, "not-accepted")
+      ),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+  });
+
+  it("releases once with an exact replay, conflicts on drift, and preserves create replay", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const create = createRestrictionCommand(vehicleId, "release-create");
+    const created = await repository.createRestriction(database.tx, create);
+    const release = releaseRestrictionCommand(created.restriction.id, "release");
+
+    const released = await repository.releaseRestriction(database.tx, release);
+    expect(await repository.releaseRestriction(database.tx, release)).toEqual({
+      ...released,
+      wrote: false
+    });
+    expect(released).toMatchObject({
+      event: null,
+      restriction: {
+        releaseReason: "inspection completed",
+        status: VehicleOperationalRestrictionStatus.RELEASED
+      },
+      workOrder: null,
+      wrote: true
+    });
+    expect(await repository.createRestriction(database.tx, create)).toEqual({
+      ...created,
+      wrote: false
+    });
+    await expectCode(
+      repository.releaseRestriction(database.tx, {
+        ...releaseRestrictionCommand(created.restriction.id, "release-drift"),
+        source: release.source
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+    await expectCode(
+      repository.releaseRestriction(
+        database.tx,
+        releaseRestrictionCommand(created.restriction.id, "second-release")
+      ),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_CONFLICT
+    );
+  });
+
+  it("rejects cross-command reuse of a restriction start or release source", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    const create = createRestrictionCommand(vehicleId, "cross-source-create");
+    const created = await repository.createRestriction(database.tx, create);
+
+    await expectCode(
+      repository.releaseRestriction(database.tx, {
+        ...releaseRestrictionCommand(created.restriction.id, "cross-source-release-invalid"),
+        source: create.source
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+    const release = releaseRestrictionCommand(created.restriction.id, "cross-source-release");
+    await repository.releaseRestriction(database.tx, release);
+    await expectCode(
+      repository.createRestriction(database.tx, {
+        ...createRestrictionCommand(vehicleId, "cross-source-create-invalid"),
+        source: release.source
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+    expect(database.restrictions).toHaveLength(1);
+
+    const other = await repository.createRestriction(
+      database.tx,
+      createRestrictionCommand(vehicleId, "cross-event-create")
+    );
+    const workOrder = await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId
+    });
+    const occupiedSource = source("cross-event-note");
+    await repository.appendNote(database.tx, {
+      ...noteCommand(workOrder.workOrder.id, "occupied", "cross-event-note"),
+      source: occupiedSource
+    });
+    await expectCode(
+      repository.releaseRestriction(database.tx, {
+        ...releaseRestrictionCommand(other.restriction.id, "cross-event-release"),
+        source: occupiedSource
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it("loads a deterministic as-of availability snapshot", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const vehicleId = database.addVehicle();
+    database.periods.push(
+      {
+        endedAt: null,
+        id: "period-b",
+        orderId: "order-b",
+        startedAt: new Date("2026-08-19T00:00:00.000Z"),
+        vehicleId
+      },
+      {
+        endedAt: new Date("2026-08-20T02:00:00.000Z"),
+        id: "period-a",
+        orderId: "order-a",
+        startedAt: new Date("2026-08-18T00:00:00.000Z"),
+        vehicleId
+      },
+      {
+        endedAt: new Date("2026-08-20T01:59:59.000Z"),
+        id: "period-ended",
+        orderId: "order-ended",
+        startedAt: new Date("2026-08-18T00:00:00.000Z"),
+        vehicleId
+      }
+    );
+    database.restrictions.push(
+      fakeRestriction(vehicleId, "restriction-b"),
+      fakeRestriction(vehicleId, "restriction-a"),
+      {
+        ...fakeRestriction(vehicleId, "restriction-released"),
+        status: VehicleOperationalRestrictionStatus.RELEASED
+      },
+      {
+        ...fakeRestriction(vehicleId, "restriction-voided"),
+        status: VehicleOperationalRestrictionStatus.VOIDED
+      },
+      {
+        ...fakeRestriction(vehicleId, "restriction-future"),
+        startedAt: new Date("2026-08-20T02:00:00.001Z")
+      }
+    );
+
+    const snapshot = await repository.loadAvailabilitySnapshot(
+      database.tx,
+      vehicleId,
+      new Date("2026-08-20T02:00:00.000Z")
+    );
+
+    expect(snapshot.vehicle).toMatchObject({ id: vehicleId, status: VehicleStatus.AVAILABLE });
+    expect(snapshot.activeSubscriptionPeriods.map((period) => period.id)).toEqual(["period-b"]);
+    expect(snapshot.activeRestrictions.map((restriction) => restriction.id)).toEqual([
+      "restriction-a",
+      "restriction-b"
+    ]);
+  });
 });
 
 function createCommand(): CreateWorkOrderCommand {
@@ -596,6 +860,42 @@ function evidenceCommand(
   };
 }
 
+function createRestrictionCommand(
+  vehicleId: string,
+  label: string,
+  workOrderId: string | null = null
+): CreateRestrictionCommand {
+  return {
+    actorId: null,
+    conditionsSnapshot: { releaseCondition: "inspection completed" },
+    evidenceSnapshot: { evidenceIds: [`evidence-${label}`] },
+    occurredAt: new Date("2026-08-20T01:40:00.000Z"),
+    restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+    scopes: [VehicleOperationalRestrictionScope.ALLOCATION],
+    severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+    source: source(`restriction-create-${label}`),
+    startedAt: new Date("2026-08-20T01:39:00.000Z"),
+    vehicleId,
+    workOrderId
+  };
+}
+
+function releaseRestrictionCommand(
+  restrictionId: string,
+  label: string,
+  releaseSnapshot: AssetOperationSnapshot = { evidenceIds: [`release-evidence-${label}`] }
+): ReleaseRestrictionCommand {
+  return {
+    actorId: randomUUID(),
+    occurredAt: new Date("2026-08-20T01:50:00.000Z"),
+    releaseReason: "inspection completed",
+    releaseSnapshot,
+    restrictionId,
+    source: source(`restriction-release-${label}`),
+    targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+  };
+}
+
 function source(label: string) {
   const id = randomUUID();
   return { id, key: `stage1c-task2:${label}:${id}`, type: "STAGE1C_TASK2_TEST" };
@@ -626,12 +926,16 @@ type FakeDatabaseOptions = {
   advisoryLockError?: unknown;
   isolationLevel?: string;
   transactionIds?: string[];
+  workOrderNowaitError?: unknown;
 };
 
 class FakeDatabase {
   readonly evidence: Array<Record<string, unknown>> = [];
   readonly events: Array<Record<string, unknown>> = [];
   readonly files: Array<Record<string, unknown>> = [];
+  readonly periods: Array<Record<string, unknown>> = [];
+  readonly restrictions: Array<Record<string, unknown>> = [];
+  readonly vehicles: Array<Record<string, unknown>> = [];
   readonly workOrders: Array<Record<string, unknown>> = [];
   readonly tx: Prisma.TransactionClient;
   private readonly options: FakeDatabaseOptions;
@@ -650,6 +954,18 @@ class FakeDatabase {
       mimeType: "image/jpeg",
       objectKey: "work-orders/photo.jpg",
       sizeBytes: 1234n
+    });
+    return id;
+  }
+
+  addVehicle() {
+    const id = randomUUID();
+    this.vehicles.push({
+      currentSalePriceAmount: 10_000_000n,
+      deletedAt: null,
+      id,
+      salePriceStatus: SalePriceStatus.EFFECTIVE,
+      status: VehicleStatus.AVAILABLE
     });
     return id;
   }
@@ -674,6 +990,13 @@ class FakeDatabase {
       }
       if (sql.includes("pg_advisory_xact_lock") && this.options.advisoryLockError) {
         throw this.options.advisoryLockError;
+      }
+      if (
+        sql.includes('FROM "asset_work_order"') &&
+        sql.includes("FOR UPDATE NOWAIT") &&
+        this.options.workOrderNowaitError
+      ) {
+        throw this.options.workOrderNowaitError;
       }
       if (sql.includes("transaction_timestamp()")) return [{ transactionNow: NOW }];
       return [{ locked: true }];
@@ -767,8 +1090,55 @@ class FakeDatabase {
         findUnique: async ({ where }: { where: Record<string, unknown> }) =>
           this.files.find((row) => matches(row, where)) ?? null
       },
+      vehicle: {
+        findUnique: async ({ where }: { where: Record<string, unknown> }) =>
+          this.vehicles.find((row) => matches(row, where)) ?? null
+      },
+      vehicleSubscriptionPeriod: {
+        findMany: async ({ where }: { where: Record<string, unknown> }) =>
+          this.periods
+            .filter((row) => matches(row, where))
+            .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+      },
       vehicleOperationalRestriction: {
-        findMany: async () => []
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          const row = {
+            ...data,
+            createdAt: data.createdAt ?? NOW,
+            id: data.id ?? randomUUID(),
+            releaseReason: null,
+            releaseSnapshot: null,
+            releaseSourceId: null,
+            releaseSourceKey: null,
+            releaseSourceType: null,
+            releasedAt: null,
+            releasedBy: null,
+            status: VehicleOperationalRestrictionStatus.ACTIVE,
+            updatedAt: data.updatedAt ?? NOW
+          };
+          this.restrictions.push(row);
+          return row;
+        },
+        findFirst: async ({ where }: { where: Record<string, unknown> }) =>
+          this.restrictions.find((row) => matches(row, where)) ?? null,
+        findMany: async ({ where }: { where: Record<string, unknown> }) =>
+          this.restrictions
+            .filter((row) => matches(row, where))
+            .sort((left, right) => String(left.id).localeCompare(String(right.id))),
+        findUnique: async ({ where }: { where: Record<string, unknown> }) =>
+          this.restrictions.find((row) => matches(row, where)) ?? null,
+        update: async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          const row = this.restrictions.find((candidate) => matches(candidate, where));
+          if (!row) throw new Error("Restriction fixture not found");
+          Object.assign(row, data, { updatedAt: NOW });
+          return { ...row };
+        }
       }
     } as unknown as Prisma.TransactionClient;
   }
@@ -776,12 +1146,50 @@ class FakeDatabase {
 
 function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, value]) => {
+    if (key === "OR" && Array.isArray(value)) {
+      return value.some((candidate) => matches(row, candidate as Record<string, unknown>));
+    }
     if (value === undefined) return true;
     if (value && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date)) {
+      if ("lte" in value && row[key] instanceof Date) {
+        return row[key].getTime() <= (value.lte as Date).getTime();
+      }
+      if ("gt" in value && row[key] instanceof Date) {
+        return row[key].getTime() > (value.gt as Date).getTime();
+      }
       return matches(row, value as Record<string, unknown>);
     }
     return row[key] === value;
   });
+}
+
+function fakeRestriction(vehicleId: string, id: string) {
+  return {
+    conditionsSnapshot: { fixture: id },
+    createdAt: NOW,
+    createdBy: null,
+    evidenceSnapshot: null,
+    id,
+    releaseReason: null,
+    releaseSnapshot: null,
+    releaseSourceId: null,
+    releaseSourceKey: null,
+    releaseSourceType: null,
+    releasedAt: null,
+    releasedBy: null,
+    restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+    scopes: [VehicleOperationalRestrictionScope.ALLOCATION],
+    severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+    startSourceId: randomUUID(),
+    startSourceKey: `source-${id}`,
+    startSourceType: "UNIT_TEST",
+    startedAt: new Date("2026-08-19T00:00:00.000Z"),
+    status: VehicleOperationalRestrictionStatus.ACTIVE,
+    updatedAt: NOW,
+    updatedBy: null,
+    vehicleId,
+    workOrderId: null
+  };
 }
 
 function appendInternalEvent(

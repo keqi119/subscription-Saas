@@ -7,7 +7,11 @@ import {
   AssetWorkOrderPriority,
   AssetWorkOrderStatus,
   AssetWorkOrderType,
-  Prisma
+  Prisma,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -20,7 +24,9 @@ import type {
   AppendEvidenceCommand,
   AppendNoteCommand,
   AppendWorkOrderEventCommand,
+  CreateRestrictionCommand,
   CreateWorkOrderCommand,
+  ReleaseRestrictionCommand,
   StableAssetOperationSource,
   TransitionWorkOrderCommand,
   WorkOrderCommandOutcome
@@ -344,6 +350,274 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     );
     await expect(countEvidenceBySource(prisma, occupiedSource)).resolves.toBe(0);
   });
+
+  it("enforces linked acceptance and exactly replays immutable restriction outcomes", async () => {
+    const repository = new AssetOperationsRepository();
+    const workOrder = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, {
+        ...createCommand(vehicleId, "restriction-linked-work-order"),
+        costConfirmationRequired: true
+      })
+    );
+    const create = createRestrictionCommand(
+      vehicleId,
+      "restriction-linked-create",
+      workOrder.workOrder.id
+    );
+    const created = await readCommitted(prisma, (tx) => repository.createRestriction(tx, create));
+    expect(created.event).toMatchObject({
+      eventType: AssetWorkOrderEventType.RESTRICTION_CREATED,
+      sequence: 2
+    });
+
+    const release = releaseRestrictionCommand(
+      created.restriction.id,
+      "restriction-linked-release",
+      userId
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) => repository.releaseRestriction(tx, release)),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-start",
+          0,
+          AssetWorkOrderStatus.IN_PROGRESS
+        )
+      )
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-submit",
+          1,
+          AssetWorkOrderStatus.PENDING_ACCEPTANCE
+        )
+      )
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-accept",
+          2,
+          AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+        )
+      )
+    );
+
+    const released = await readCommitted(prisma, (tx) =>
+      repository.releaseRestriction(tx, release)
+    );
+    await expect(
+      readCommitted(prisma, (tx) => repository.releaseRestriction(tx, release))
+    ).resolves.toEqual({ ...released, wrote: false });
+    await expect(
+      readCommitted(prisma, (tx) => repository.createRestriction(tx, create))
+    ).resolves.toEqual({ ...created, wrote: false });
+    expect(released).toMatchObject({
+      event: { eventType: AssetWorkOrderEventType.RESTRICTION_RELEASED },
+      restriction: { status: VehicleOperationalRestrictionStatus.RELEASED },
+      wrote: true
+    });
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.releaseRestriction(tx, {
+          ...releaseRestrictionCommand(created.restriction.id, "restriction-linked-drift", userId),
+          source: release.source
+        })
+      ),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it("allows concurrent release and a distinct active incident of the same type", async () => {
+    const repository = new AssetOperationsRepository();
+    const first = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(vehicleId, "restriction-concurrent-first")
+      )
+    );
+    const release = await holdFirstTransaction(prisma, (tx) =>
+      repository.releaseRestriction(
+        tx,
+        releaseRestrictionCommand(first.restriction.id, "restriction-concurrent-release", userId)
+      )
+    );
+    const secondPromise = readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(vehicleId, "restriction-concurrent-second")
+      )
+    );
+    const second = await secondPromise;
+    release.release.resolve();
+    const released = await release.result;
+
+    expect(released.restriction.status).toBe(VehicleOperationalRestrictionStatus.RELEASED);
+    expect(second.restriction.status).toBe(VehicleOperationalRestrictionStatus.ACTIVE);
+    await expect(
+      prisma.vehicleOperationalRestriction.count({
+        where: {
+          restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+          startSourceKey: { startsWith: FIXTURE_PREFIX },
+          vehicleId
+        }
+      })
+    ).resolves.toBeGreaterThanOrEqual(2);
+  });
+
+  it("loads only deterministic as-of occupancy and active restrictions", async () => {
+    const repository = new AssetOperationsRepository();
+    const loaderVehicleId = await createVehicleFixture(prisma, "L");
+    const asOf = new Date("2026-08-20T02:00:00.000Z");
+    const periodB = randomUUID();
+    const periodEnded = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      for (const [id, orderId, startedAt, endedAt] of [
+        [periodEnded, randomUUID(), new Date("2026-08-18T00:00:00.000Z"), asOf],
+        [periodB, randomUUID(), asOf, null]
+      ] as const) {
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "vehicle_subscription_period" (
+            "id", "vehicle_id", "order_id", "customer_id", "started_at", "ended_at",
+            "start_reason", "start_source_type", "start_source_id", "start_source_key",
+            "start_snapshot", "created_at", "updated_at"
+          ) VALUES (
+            ${id}::uuid, ${loaderVehicleId}::uuid, ${orderId}::uuid, ${randomUUID()}::uuid,
+            ${startedAt}, ${endedAt}, 'LEASE_ACTIVATED', 'STAGE1C_TASK3_TEST',
+            ${randomUUID()}::uuid, ${`${FIXTURE_PREFIX}:period:${id}`}, '{}'::jsonb,
+            clock_timestamp(), clock_timestamp()
+          )
+        `);
+      }
+    });
+    const restrictionB = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(loaderVehicleId, "restriction-loader-b")
+      )
+    );
+    const restrictionA = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(loaderVehicleId, "restriction-loader-a")
+      )
+    );
+    const released = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(loaderVehicleId, "restriction-loader-released")
+      )
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.releaseRestriction(
+        tx,
+        releaseRestrictionCommand(released.restriction.id, "restriction-loader-release", userId)
+      )
+    );
+    const future = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(tx, {
+        ...createRestrictionCommand(loaderVehicleId, "restriction-loader-future"),
+        occurredAt: asOf,
+        startedAt: new Date("2026-08-20T02:00:00.001Z")
+      })
+    );
+
+    const snapshot = await readCommitted(prisma, (tx) =>
+      repository.loadAvailabilitySnapshot(tx, loaderVehicleId, asOf)
+    );
+
+    expect(snapshot.activeSubscriptionPeriods.map((period) => period.id)).toEqual([periodB]);
+    expect(snapshot.activeRestrictions.map((restriction) => restriction.id)).not.toContain(
+      released.restriction.id
+    );
+    expect(snapshot.activeRestrictions.map((restriction) => restriction.id)).not.toContain(
+      future.restriction.id
+    );
+    expect(snapshot.activeRestrictions.map((restriction) => restriction.id)).toEqual(
+      [restrictionA.restriction.id, restrictionB.restriction.id].sort()
+    );
+  });
+
+  it("rolls back a restriction release and its linked event with the caller transaction", async () => {
+    const repository = new AssetOperationsRepository();
+    const workOrder = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, {
+        ...createCommand(vehicleId, "restriction-rollback-work-order"),
+        costConfirmationRequired: true
+      })
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-rollback-start",
+          0,
+          AssetWorkOrderStatus.IN_PROGRESS
+        )
+      )
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-rollback-submit",
+          1,
+          AssetWorkOrderStatus.PENDING_ACCEPTANCE
+        )
+      )
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(
+        tx,
+        transitionTo(
+          workOrder.workOrder.id,
+          "restriction-rollback-accept",
+          2,
+          AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+        )
+      )
+    );
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createRestriction(
+        tx,
+        createRestrictionCommand(vehicleId, "restriction-rollback-create", workOrder.workOrder.id)
+      )
+    );
+    const release = releaseRestrictionCommand(
+      created.restriction.id,
+      "restriction-rollback-release",
+      userId
+    );
+
+    await expect(
+      readCommitted(prisma, async (tx) => {
+        await repository.releaseRestriction(tx, release);
+        throw new Error("AUDIT_STUB_FAILURE");
+      })
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(
+      prisma.vehicleOperationalRestriction.findUnique({
+        where: { id: created.restriction.id }
+      })
+    ).resolves.toMatchObject({
+      releaseSourceKey: null,
+      status: VehicleOperationalRestrictionStatus.ACTIVE
+    });
+    await expect(countEventsBySource(prisma, release.source)).resolves.toBe(0);
+  });
 });
 
 function createCommand(vehicleId: string, label: string): CreateWorkOrderCommand {
@@ -378,6 +652,15 @@ function transitionCommand(workOrderId: string, label: string): TransitionWorkOr
     targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
     workOrderId
   };
+}
+
+function transitionTo(
+  workOrderId: string,
+  label: string,
+  expectedVersion: number,
+  targetStatus: AssetWorkOrderStatus
+): TransitionWorkOrderCommand {
+  return { ...transitionCommand(workOrderId, label), expectedVersion, targetStatus };
 }
 
 function assignmentCommand(
@@ -444,6 +727,42 @@ function evidenceCommand(
   };
 }
 
+function createRestrictionCommand(
+  vehicleId: string,
+  label: string,
+  workOrderId: string | null = null
+): CreateRestrictionCommand {
+  return {
+    actorId: null,
+    conditionsSnapshot: { releaseCondition: "inspection completed" },
+    evidenceSnapshot: { evidenceIds: [`${FIXTURE_PREFIX}:${label}`] },
+    occurredAt: new Date("2026-08-20T01:40:00.000Z"),
+    restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT,
+    scopes: [VehicleOperationalRestrictionScope.ALLOCATION],
+    severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+    source: source(label),
+    startedAt: new Date("2026-08-20T01:39:00.000Z"),
+    vehicleId,
+    workOrderId
+  };
+}
+
+function releaseRestrictionCommand(
+  restrictionId: string,
+  label: string,
+  actorId: string
+): ReleaseRestrictionCommand {
+  return {
+    actorId,
+    occurredAt: new Date("2026-08-20T01:50:00.000Z"),
+    releaseReason: "inspection completed",
+    releaseSnapshot: { evidenceIds: [`${FIXTURE_PREFIX}:${label}`] },
+    restrictionId,
+    source: source(label),
+    targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+  };
+}
+
 function source(label: string): StableAssetOperationSource {
   const id = randomUUID();
   return { id, key: `${FIXTURE_PREFIX}:${label}:${id}`, type: "STAGE1C_TASK2_TEST" };
@@ -477,7 +796,7 @@ async function holdFirstTransaction<T>(
   return { release, result };
 }
 
-async function createVehicleFixture(prisma: PrismaService) {
+async function createVehicleFixture(prisma: PrismaService, label = "") {
   const id = randomUUID();
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -486,7 +805,7 @@ async function createVehicleFixture(prisma: PrismaService) {
         "id", "vehicle_no", "plate_no", "brand", "model_definition_id",
         "purchase_price_amount", "status", "created_at", "updated_at"
       ) VALUES (
-        ${id}::uuid, ${`${FIXTURE_PREFIX}V`}, ${`沪T${FIXTURE_PREFIX.slice(-6)}`},
+        ${id}::uuid, ${`${FIXTURE_PREFIX}V${label}`}, ${`沪T${FIXTURE_PREFIX.slice(-5)}${label}`},
         'NIO', ${randomUUID()}::uuid, 20000000, 'RETURNED', clock_timestamp(), clock_timestamp()
       )
     `);
@@ -526,6 +845,11 @@ async function deleteFixtures(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
+      DELETE FROM "vehicle_operational_restriction"
+      WHERE "start_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+         OR "release_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
       DELETE FROM "asset_work_order_evidence"
       WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
     `;
@@ -536,6 +860,10 @@ async function deleteFixtures(prisma: PrismaService) {
     await tx.$executeRaw`
       DELETE FROM "asset_work_order"
       WHERE "create_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle_subscription_period"
+      WHERE "start_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
     `;
     await tx.$executeRaw`
       DELETE FROM "file_object"

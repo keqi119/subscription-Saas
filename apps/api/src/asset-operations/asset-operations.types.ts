@@ -6,6 +6,10 @@ import {
   AssetWorkOrderStatus,
   AssetWorkOrderType,
   Prisma,
+  VehicleOperationalRestrictionScope,
+  VehicleOperationalRestrictionSeverity,
+  VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType,
   type AssetWorkOrder,
   type AssetWorkOrderEvidence,
   type AssetWorkOrderEvent,
@@ -84,6 +88,25 @@ export interface AppendEvidenceCommand extends AssetOperationCommandMetadata {
   readonly workOrderId: string;
 }
 
+export interface CreateRestrictionCommand extends AssetOperationCommandMetadata {
+  readonly conditionsSnapshot: AssetOperationSnapshot;
+  readonly evidenceSnapshot: AssetOperationSnapshot | null;
+  readonly restrictionType: VehicleOperationalRestrictionType;
+  readonly scopes: readonly VehicleOperationalRestrictionScope[];
+  readonly severity: VehicleOperationalRestrictionSeverity;
+  readonly startedAt: Date;
+  readonly vehicleId: string;
+  readonly workOrderId: string | null;
+}
+
+export interface ReleaseRestrictionCommand extends AssetOperationCommandMetadata {
+  readonly actorId: string;
+  readonly releaseReason: string;
+  readonly releaseSnapshot: AssetOperationSnapshot;
+  readonly restrictionId: string;
+  readonly targetStatus: Exclude<VehicleOperationalRestrictionStatus, "ACTIVE">;
+}
+
 export interface WorkOrderCommandOutcome {
   readonly event: AssetWorkOrderEvent;
   readonly workOrder: AssetWorkOrder;
@@ -92,6 +115,13 @@ export interface WorkOrderCommandOutcome {
 
 export interface EvidenceCommandOutcome extends WorkOrderCommandOutcome {
   readonly evidence: AssetWorkOrderEvidence;
+}
+
+export interface RestrictionCommandOutcome {
+  readonly event: AssetWorkOrderEvent | null;
+  readonly restriction: VehicleOperationalRestriction;
+  readonly workOrder: AssetWorkOrder | null;
+  readonly wrote: boolean;
 }
 
 export interface AssetWorkOrderDetailProjection {

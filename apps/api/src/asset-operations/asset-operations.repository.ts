@@ -4,10 +4,13 @@ import {
   AssetWorkOrderEventType,
   AssetWorkOrderStatus,
   Prisma,
+  VehicleOperationalRestrictionStatus,
   type AssetWorkOrder,
   type AssetWorkOrderEvidence,
-  type AssetWorkOrderEvent
+  type AssetWorkOrderEvent,
+  type VehicleOperationalRestriction
 } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import { BUSINESS_NO_RETRY_LIMIT, createBusinessNo } from "../common/business-number";
@@ -19,11 +22,15 @@ import type {
   AssetWorkOrderDetailProjection,
   AssignWorkOrderCommand,
   CreateWorkOrderCommand,
+  CreateRestrictionCommand,
   EvidenceCommandOutcome,
+  ReleaseRestrictionCommand,
+  RestrictionCommandOutcome,
   StableAssetOperationSource,
   TransitionWorkOrderCommand,
   WorkOrderCommandOutcome
 } from "./asset-operations.types";
+import type { VehicleAvailabilitySnapshot } from "./vehicle-availability";
 
 export const ASSET_OPERATION_ERROR_CODE = {
   AUTHORITY_BUSY: "ASSET_OPERATION_AUTHORITY_BUSY",
@@ -33,6 +40,12 @@ export const ASSET_OPERATION_ERROR_CODE = {
   EVENT_INVALID: "ASSET_WORK_ORDER_EVENT_INVALID",
   EVENT_TIME_INVALID: "ASSET_WORK_ORDER_EVENT_TIME_INVALID",
   FILE_NOT_FOUND: "ASSET_WORK_ORDER_FILE_NOT_FOUND",
+  RESTRICTION_INVALID: "VEHICLE_OPERATIONAL_RESTRICTION_INVALID",
+  RESTRICTION_NOT_FOUND: "VEHICLE_OPERATIONAL_RESTRICTION_NOT_FOUND",
+  RESTRICTION_RELEASE_CONFLICT: "VEHICLE_OPERATIONAL_RESTRICTION_RELEASE_CONFLICT",
+  RESTRICTION_RELEASE_EVIDENCE_REQUIRED:
+    "VEHICLE_OPERATIONAL_RESTRICTION_RELEASE_EVIDENCE_REQUIRED",
+  RESTRICTION_WORK_ORDER_NOT_ACCEPTED: "VEHICLE_OPERATIONAL_RESTRICTION_WORK_ORDER_NOT_ACCEPTED",
   SOURCE_CONFLICT: "ASSET_OPERATION_SOURCE_CONFLICT",
   TRANSACTION_REQUIRED: "ASSET_OPERATION_TRANSACTION_REQUIRED",
   WORK_ORDER_NOT_FOUND: "ASSET_WORK_ORDER_NOT_FOUND",
@@ -56,6 +69,16 @@ const ERROR_MESSAGES: Readonly<Record<AssetOperationErrorCode, string>> = {
   [ASSET_OPERATION_ERROR_CODE.EVENT_TIME_INVALID]:
     "The event occurrence time cannot be later than the transaction clock.",
   [ASSET_OPERATION_ERROR_CODE.FILE_NOT_FOUND]: "The referenced file is not live.",
+  [ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID]:
+    "The vehicle operational restriction command is invalid.",
+  [ASSET_OPERATION_ERROR_CODE.RESTRICTION_NOT_FOUND]:
+    "The vehicle operational restriction was not found.",
+  [ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_CONFLICT]:
+    "The vehicle operational restriction is no longer active.",
+  [ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_EVIDENCE_REQUIRED]:
+    "Restriction release requires a non-empty evidence snapshot.",
+  [ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED]:
+    "A linked work order must be accepted before its restriction can be released.",
   [ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT]:
     "The stable asset-operation source is already bound to a different payload.",
   [ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED]:
@@ -124,7 +147,15 @@ const WORK_ORDER_DATE_FIELDS = [
   "updatedAt"
 ] as const;
 
-type CommandEnvelopeKind = "assign" | "create" | "event" | "evidence" | "note" | "transition";
+type CommandEnvelopeKind =
+  | "assign"
+  | "create"
+  | "event"
+  | "evidence"
+  | "note"
+  | "restriction-create"
+  | "restriction-release"
+  | "transition";
 type CommandEnvelopeInput = Readonly<{ command: unknown; kind: CommandEnvelopeKind }>;
 
 /** Caller-owned READ COMMITTED transaction only; this repository never opens a transaction. */
@@ -359,6 +390,258 @@ export class AssetOperationsRepository {
     };
   }
 
+  async createRestriction(
+    tx: Prisma.TransactionClient,
+    command: CreateRestrictionCommand
+  ): Promise<RestrictionCommandOutcome> {
+    await prepareCommand(tx, "restriction:create", command.source);
+    const normalized = normalizeCreateRestrictionCommand(command);
+    assertCreateRestrictionShape(normalized);
+    await lockAuthorityRows(tx, restrictionAuthorityRows(normalized));
+    const vehicle = await tx.vehicle.findUnique({
+      select: { id: true },
+      where: { id: normalized.vehicleId }
+    });
+    if (!vehicle) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
+    const linkedWorkOrder = normalized.workOrderId
+      ? await lockAndLoadWorkOrderNowait(tx, normalized.workOrderId)
+      : null;
+    if (
+      normalized.workOrderId &&
+      (!linkedWorkOrder || linkedWorkOrder.vehicleId !== normalized.vehicleId)
+    ) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
+    }
+    const existing = await findRestrictionByStartSource(tx, normalized.source);
+    if (existing) return replayRestrictionCreate(tx, existing, normalized);
+    if (await findRestrictionByReleaseSource(tx, normalized.source)) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    const eventCollision = await findEventBySource(tx, normalized.source);
+    if (eventCollision) throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    const transactionNow = await transactionClock(tx);
+    assertNotFuture(normalized.occurredAt, transactionNow);
+    const workOrder = linkedWorkOrder;
+    const restriction = createRestrictionResult(normalized, transactionNow);
+    let stored: VehicleOperationalRestriction;
+    try {
+      stored = await tx.vehicleOperationalRestriction.create({
+        data: {
+          ...restriction,
+          conditionsSnapshot: restrictionEnvelopeSnapshot(
+            restriction.conditionsSnapshot,
+            { command: normalized, kind: "restriction-create" },
+            restriction
+          ),
+          evidenceSnapshot: restriction.evidenceSnapshot ?? Prisma.DbNull,
+          releaseSnapshot: Prisma.DbNull
+        }
+      });
+    } catch (error) {
+      throw normalizeWriteError(error, "restriction");
+    }
+    const publicRestriction = restrictionEnvelopeResult(stored.conditionsSnapshot, {
+      command: normalized,
+      kind: "restriction-create"
+    });
+    if (!workOrder) {
+      return { event: null, restriction: publicRestriction, workOrder: null, wrote: true };
+    }
+    const eventOutcome = await appendEventCommand(
+      tx,
+      {
+        actorId: normalized.actorId,
+        afterStatus: null,
+        beforeStatus: null,
+        detailSnapshot: {
+          restrictionId: publicRestriction.id,
+          restrictionType: publicRestriction.restrictionType,
+          scopes: publicRestriction.scopes,
+          severity: publicRestriction.severity
+        },
+        eventType: AssetWorkOrderEventType.RESTRICTION_CREATED,
+        occurredAt: normalized.occurredAt,
+        source: normalized.source,
+        workOrderId: workOrder.id
+      },
+      {
+        allowGovernedEvent: true,
+        envelope: { command: normalized, kind: "restriction-create" },
+        headerAlreadyLocked: workOrder
+      }
+    );
+    return {
+      event: eventOutcome.event,
+      restriction: publicRestriction,
+      workOrder: eventOutcome.workOrder,
+      wrote: true
+    };
+  }
+
+  async releaseRestriction(
+    tx: Prisma.TransactionClient,
+    command: ReleaseRestrictionCommand
+  ): Promise<RestrictionCommandOutcome> {
+    await prepareCommand(tx, "restriction:release", command.source);
+    const normalized = normalizeReleaseRestrictionCommand(command);
+    assertReleaseRestrictionShape(normalized);
+    const replay = await findRestrictionByReleaseSource(tx, normalized.source);
+    if (replay) return replayRestrictionRelease(tx, replay, normalized);
+    if (await findRestrictionByStartSource(tx, normalized.source)) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    if (await findEventBySource(tx, normalized.source)) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    const candidate = await tx.vehicleOperationalRestriction.findUnique({
+      where: { id: normalized.restrictionId }
+    });
+    if (!candidate) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_NOT_FOUND);
+    const workOrder = candidate.workOrderId
+      ? await lockAndLoadWorkOrderNowait(tx, candidate.workOrderId)
+      : null;
+    const current = await lockAndLoadRestriction(tx, normalized.restrictionId);
+    if (current.status !== VehicleOperationalRestrictionStatus.ACTIVE) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_CONFLICT);
+    }
+    const transactionNow = await transactionClock(tx);
+    assertNotFuture(normalized.occurredAt, transactionNow);
+    if (normalized.occurredAt.getTime() < current.startedAt.getTime()) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
+    }
+    if (current.workOrderId !== workOrder?.id && current.workOrderId !== null) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
+    }
+    if (
+      workOrder &&
+      workOrder.status !== AssetWorkOrderStatus.PENDING_COST_CONFIRMATION &&
+      workOrder.status !== AssetWorkOrderStatus.CLOSED
+    ) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED);
+    }
+    const publicResult = releaseRestrictionResult(current, normalized, transactionNow);
+    let stored: VehicleOperationalRestriction;
+    try {
+      stored = await tx.vehicleOperationalRestriction.update({
+        data: {
+          releaseReason: normalized.releaseReason,
+          releaseSnapshot: restrictionEnvelopeSnapshot(
+            normalized.releaseSnapshot,
+            { command: normalized, kind: "restriction-release" },
+            publicResult
+          ),
+          releaseSourceId: normalized.source.id,
+          releaseSourceKey: normalized.source.key,
+          releaseSourceType: normalized.source.type,
+          releasedAt: normalized.occurredAt,
+          releasedBy: normalized.actorId,
+          status: normalized.targetStatus,
+          updatedAt: transactionNow,
+          updatedBy: normalized.actorId
+        },
+        where: { id: current.id }
+      });
+    } catch (error) {
+      throw normalizeWriteError(error, "restriction");
+    }
+    const publicRestriction = restrictionEnvelopeResult(stored.releaseSnapshot, {
+      command: normalized,
+      kind: "restriction-release"
+    });
+    if (!workOrder) {
+      return { event: null, restriction: publicRestriction, workOrder: null, wrote: true };
+    }
+    const eventOutcome = await appendEventCommand(
+      tx,
+      {
+        actorId: normalized.actorId,
+        afterStatus: null,
+        beforeStatus: null,
+        detailSnapshot: {
+          releaseReason: normalized.releaseReason,
+          restrictionId: publicRestriction.id,
+          status: normalized.targetStatus
+        },
+        eventType: AssetWorkOrderEventType.RESTRICTION_RELEASED,
+        occurredAt: normalized.occurredAt,
+        source: normalized.source,
+        workOrderId: workOrder.id
+      },
+      {
+        allowGovernedEvent: true,
+        envelope: { command: normalized, kind: "restriction-release" },
+        headerAlreadyLocked: workOrder
+      }
+    );
+    return {
+      event: eventOutcome.event,
+      restriction: publicRestriction,
+      workOrder: eventOutcome.workOrder,
+      wrote: true
+    };
+  }
+
+  async loadAvailabilitySnapshot(
+    tx: Prisma.TransactionClient,
+    vehicleId: string,
+    asOf: Date
+  ): Promise<VehicleAvailabilitySnapshot> {
+    await assertTransactionContract(tx);
+    const [vehicle, activeSubscriptionPeriods, restrictions] = await Promise.all([
+      tx.vehicle.findUnique({
+        select: {
+          currentSalePriceAmount: true,
+          deletedAt: true,
+          id: true,
+          salePriceStatus: true,
+          status: true
+        },
+        where: { id: vehicleId }
+      }),
+      tx.vehicleSubscriptionPeriod.findMany({
+        orderBy: { id: "asc" },
+        select: { id: true, orderId: true },
+        where: {
+          OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
+          startedAt: { lte: asOf },
+          vehicleId
+        }
+      }),
+      tx.vehicleOperationalRestriction.findMany({
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          restrictionType: true,
+          scopes: true,
+          severity: true,
+          startSourceId: true,
+          startSourceKey: true,
+          startSourceType: true,
+          workOrderId: true
+        },
+        where: {
+          startedAt: { lte: asOf },
+          status: VehicleOperationalRestrictionStatus.ACTIVE,
+          vehicleId
+        }
+      })
+    ]);
+    return {
+      activeRestrictions: restrictions.map((restriction) => ({
+        id: restriction.id,
+        restrictionType: restriction.restrictionType,
+        scopes: restriction.scopes,
+        severity: restriction.severity,
+        sourceId: restriction.startSourceId,
+        sourceKey: restriction.startSourceKey,
+        sourceType: restriction.startSourceType,
+        workOrderId: restriction.workOrderId
+      })),
+      activeSubscriptionPeriods,
+      vehicle
+    };
+  }
+
   async getWorkOrderDetail(
     tx: Prisma.TransactionClient,
     workOrderId: string
@@ -442,6 +725,19 @@ type AuthorityTable =
 
 type NormalizedEvidenceCommand = Omit<AppendEvidenceCommand, "captureMetadata"> & {
   captureMetadata: Prisma.JsonObject | null;
+};
+
+type NormalizedCreateRestrictionCommand = Omit<
+  CreateRestrictionCommand,
+  "conditionsSnapshot" | "evidenceSnapshot" | "scopes"
+> & {
+  conditionsSnapshot: Prisma.JsonObject;
+  evidenceSnapshot: Prisma.JsonObject | null;
+  scopes: CreateRestrictionCommand["scopes"];
+};
+
+type NormalizedReleaseRestrictionCommand = Omit<ReleaseRestrictionCommand, "releaseSnapshot"> & {
+  releaseSnapshot: Prisma.JsonObject;
 };
 
 async function prepareCommand(
@@ -536,6 +832,20 @@ async function lockAndLoadWorkOrder(tx: Prisma.TransactionClient, workOrderId: s
   return workOrder;
 }
 
+async function lockAndLoadWorkOrderNowait(tx: Prisma.TransactionClient, workOrderId: string) {
+  try {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "asset_work_order" WHERE "id" = ${workOrderId}::uuid FOR UPDATE NOWAIT`
+    );
+  } catch (error) {
+    if (isLockUnavailableError(error)) throw conflict(ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);
+    throw error;
+  }
+  const workOrder = await tx.assetWorkOrder.findUnique({ where: { id: workOrderId } });
+  if (!workOrder) throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND);
+  return workOrder;
+}
+
 async function lockAndLoadEvidence(tx: Prisma.TransactionClient, evidenceId: string) {
   try {
     await tx.$queryRaw(
@@ -548,6 +858,22 @@ async function lockAndLoadEvidence(tx: Prisma.TransactionClient, evidenceId: str
   const evidence = await tx.assetWorkOrderEvidence.findFirst({ where: { id: evidenceId } });
   if (!evidence) throw conflict(ASSET_OPERATION_ERROR_CODE.EVIDENCE_NOT_FOUND);
   return evidence;
+}
+
+async function lockAndLoadRestriction(tx: Prisma.TransactionClient, restrictionId: string) {
+  try {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "vehicle_operational_restriction" WHERE "id" = ${restrictionId}::uuid FOR UPDATE`
+    );
+  } catch (error) {
+    if (isLockUnavailableError(error)) throw conflict(ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);
+    throw error;
+  }
+  const restriction = await tx.vehicleOperationalRestriction.findUnique({
+    where: { id: restrictionId }
+  });
+  if (!restriction) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_NOT_FOUND);
+  return restriction;
 }
 
 async function appendEventCommand(
@@ -625,10 +951,21 @@ async function updateHeader(
 }
 
 async function assertEventTime(tx: Prisma.TransactionClient, occurredAt: Date) {
+  assertNotFuture(occurredAt, await transactionClock(tx));
+}
+
+async function transactionClock(tx: Prisma.TransactionClient) {
   const [clock] = await tx.$queryRaw<Array<{ transactionNow: Date }>>(
     Prisma.sql`SELECT transaction_timestamp() AS "transactionNow"`
   );
-  if (!clock?.transactionNow || occurredAt.getTime() > clock.transactionNow.getTime()) {
+  if (!clock?.transactionNow) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_TIME_INVALID);
+  }
+  return clock.transactionNow;
+}
+
+function assertNotFuture(value: Date, transactionNow: Date) {
+  if (value.getTime() > transactionNow.getTime()) {
     throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_TIME_INVALID);
   }
 }
@@ -719,6 +1056,149 @@ function normalizeEvidenceCommand(command: AppendEvidenceCommand): NormalizedEvi
     captureMetadata: command.captureMetadata ? normalizeSnapshot(command.captureMetadata) : null,
     contentSha256: command.contentSha256 ? normalizeSha256(command.contentSha256) : null
   };
+}
+
+function normalizeCreateRestrictionCommand(
+  command: CreateRestrictionCommand
+): NormalizedCreateRestrictionCommand {
+  return {
+    ...command,
+    conditionsSnapshot: normalizeSnapshot(command.conditionsSnapshot),
+    evidenceSnapshot: command.evidenceSnapshot ? normalizeSnapshot(command.evidenceSnapshot) : null,
+    scopes: [...new Set(command.scopes)].sort(compare)
+  };
+}
+
+function normalizeReleaseRestrictionCommand(
+  command: ReleaseRestrictionCommand
+): NormalizedReleaseRestrictionCommand {
+  return { ...command, releaseSnapshot: normalizeSnapshot(command.releaseSnapshot) };
+}
+
+function assertCreateRestrictionShape(command: NormalizedCreateRestrictionCommand) {
+  if (command.scopes.length === 0 || Object.keys(command.conditionsSnapshot).length === 0) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
+  }
+}
+
+function assertReleaseRestrictionShape(command: NormalizedReleaseRestrictionCommand) {
+  if (
+    !command.actorId ||
+    !command.releaseReason.trim() ||
+    Object.keys(command.releaseSnapshot).length === 0 ||
+    (command.targetStatus !== VehicleOperationalRestrictionStatus.RELEASED &&
+      command.targetStatus !== VehicleOperationalRestrictionStatus.VOIDED)
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_RELEASE_EVIDENCE_REQUIRED);
+  }
+}
+
+function restrictionAuthorityRows(command: NormalizedCreateRestrictionCommand) {
+  return [{ id: command.vehicleId, table: "vehicle" }] as const;
+}
+
+function createRestrictionResult(
+  command: NormalizedCreateRestrictionCommand,
+  transactionNow: Date
+): VehicleOperationalRestriction {
+  return {
+    conditionsSnapshot: command.conditionsSnapshot,
+    createdAt: transactionNow,
+    createdBy: command.actorId,
+    evidenceSnapshot: command.evidenceSnapshot,
+    id: randomUUID(),
+    releaseReason: null,
+    releaseSnapshot: null,
+    releaseSourceId: null,
+    releaseSourceKey: null,
+    releaseSourceType: null,
+    releasedAt: null,
+    releasedBy: null,
+    restrictionType: command.restrictionType,
+    scopes: [...command.scopes],
+    severity: command.severity,
+    startSourceId: command.source.id,
+    startSourceKey: command.source.key,
+    startSourceType: command.source.type,
+    startedAt: command.startedAt,
+    status: VehicleOperationalRestrictionStatus.ACTIVE,
+    updatedAt: transactionNow,
+    updatedBy: command.actorId,
+    vehicleId: command.vehicleId,
+    workOrderId: command.workOrderId
+  };
+}
+
+function releaseRestrictionResult(
+  current: VehicleOperationalRestriction,
+  command: NormalizedReleaseRestrictionCommand,
+  transactionNow: Date
+): VehicleOperationalRestriction {
+  return {
+    ...current,
+    conditionsSnapshot: publicSnapshot(current.conditionsSnapshot),
+    releaseReason: command.releaseReason,
+    releaseSnapshot: command.releaseSnapshot,
+    releaseSourceId: command.source.id,
+    releaseSourceKey: command.source.key,
+    releaseSourceType: command.source.type,
+    releasedAt: command.occurredAt,
+    releasedBy: command.actorId,
+    status: command.targetStatus,
+    updatedAt: transactionNow,
+    updatedBy: command.actorId
+  };
+}
+
+function restrictionEnvelopeSnapshot(
+  publicValue: Prisma.JsonValue,
+  envelope: CommandEnvelopeInput,
+  restriction: VehicleOperationalRestriction
+) {
+  const publicObject = normalizeSnapshot(publicValue);
+  return normalizeSnapshot({
+    ...publicObject,
+    [COMMAND_ENVELOPE_KEY]: {
+      command: normalizeSnapshot(envelope.command),
+      kind: envelope.kind,
+      result: { restriction: normalizeSnapshot(restriction) },
+      version: 1
+    }
+  });
+}
+
+function restrictionEnvelopeResult(
+  snapshot: Prisma.JsonValue | null,
+  expected: CommandEnvelopeInput
+) {
+  if (!isRecord(snapshot)) throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  const envelope = snapshot[COMMAND_ENVELOPE_KEY];
+  if (
+    !isRecord(envelope) ||
+    envelope.version !== 1 ||
+    envelope.kind !== expected.kind ||
+    !isDeepStrictEqual(envelope.command, normalizeSnapshot(expected.command)) ||
+    !isRecord(envelope.result) ||
+    !isRecord(envelope.result.restriction)
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  const restriction = normalizeSnapshot(envelope.result.restriction) as Record<string, unknown>;
+  for (const field of ["createdAt", "releasedAt", "startedAt", "updatedAt"] as const) {
+    const value = restriction[field];
+    if (value === null || value === undefined) continue;
+    if (typeof value !== "string" || Number.isNaN(Date.parse(value))) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    restriction[field] = new Date(value);
+  }
+  return restriction as VehicleOperationalRestriction;
+}
+
+function publicSnapshot(snapshot: Prisma.JsonValue) {
+  const value = normalizeSnapshot(snapshot);
+  delete value[COMMAND_ENVELOPE_KEY];
+  return value;
 }
 
 function commandEventDetail(
@@ -846,6 +1326,101 @@ async function replayCreate(
     return replayEventWorkOrder(event, { command, kind: "create" });
   }
   throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+}
+
+async function replayRestrictionCreate(
+  tx: Prisma.TransactionClient,
+  existing: VehicleOperationalRestriction,
+  command: NormalizedCreateRestrictionCommand
+): Promise<RestrictionCommandOutcome> {
+  const restriction = restrictionEnvelopeResult(existing.conditionsSnapshot, {
+    command,
+    kind: "restriction-create"
+  });
+  if (restriction.id !== existing.id || restriction.workOrderId !== command.workOrderId) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  const event = await findEventBySource(tx, command.source);
+  if (!command.workOrderId) {
+    if (event) throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    return { event: null, restriction, workOrder: null, wrote: false };
+  }
+  if (
+    !event ||
+    !sameRestrictionEvent(
+      event,
+      command,
+      AssetWorkOrderEventType.RESTRICTION_CREATED,
+      "restriction-create"
+    )
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  return {
+    event,
+    restriction,
+    workOrder: envelopeWorkOrder(event, { command, kind: "restriction-create" }),
+    wrote: false
+  };
+}
+
+async function replayRestrictionRelease(
+  tx: Prisma.TransactionClient,
+  existing: VehicleOperationalRestriction,
+  command: NormalizedReleaseRestrictionCommand
+): Promise<RestrictionCommandOutcome> {
+  const restriction = restrictionEnvelopeResult(existing.releaseSnapshot, {
+    command,
+    kind: "restriction-release"
+  });
+  if (restriction.id !== command.restrictionId || restriction.id !== existing.id) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  const event = await findEventBySource(tx, command.source);
+  if (!existing.workOrderId) {
+    if (event) throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+    return { event: null, restriction, workOrder: null, wrote: false };
+  }
+  if (
+    !event ||
+    !sameRestrictionEvent(
+      event,
+      command,
+      AssetWorkOrderEventType.RESTRICTION_RELEASED,
+      "restriction-release",
+      existing.workOrderId
+    )
+  ) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  return {
+    event,
+    restriction,
+    workOrder: envelopeWorkOrder(event, { command, kind: "restriction-release" }),
+    wrote: false
+  };
+}
+
+function sameRestrictionEvent(
+  event: AssetWorkOrderEvent,
+  command: NormalizedCreateRestrictionCommand | NormalizedReleaseRestrictionCommand,
+  eventType: AssetWorkOrderEventType,
+  kind: "restriction-create" | "restriction-release",
+  workOrderId = "workOrderId" in command && typeof command.workOrderId === "string"
+    ? command.workOrderId
+    : null
+) {
+  return (
+    workOrderId !== null &&
+    event.workOrderId === workOrderId &&
+    event.eventType === eventType &&
+    event.beforeStatus === null &&
+    event.afterStatus === null &&
+    event.actorId === command.actorId &&
+    sameDate(event.occurredAt, command.occurredAt) &&
+    sameSource(event, command.source) &&
+    sameCommandEnvelope(event, { command, kind })
+  );
 }
 
 function replayAssignment(event: AssetWorkOrderEvent, command: AssignWorkOrderCommand) {
@@ -1021,7 +1596,36 @@ function findEvidenceBySource(tx: Prisma.TransactionClient, source: StableAssetO
   });
 }
 
-function normalizeWriteError(error: unknown, kind: "evidence" | "event" | "work-order") {
+function findRestrictionByStartSource(
+  tx: Prisma.TransactionClient,
+  source: StableAssetOperationSource
+) {
+  return tx.vehicleOperationalRestriction.findFirst({
+    where: {
+      startSourceId: source.id,
+      startSourceKey: source.key,
+      startSourceType: source.type
+    }
+  });
+}
+
+function findRestrictionByReleaseSource(
+  tx: Prisma.TransactionClient,
+  source: StableAssetOperationSource
+) {
+  return tx.vehicleOperationalRestriction.findFirst({
+    where: {
+      releaseSourceId: source.id,
+      releaseSourceKey: source.key,
+      releaseSourceType: source.type
+    }
+  });
+}
+
+function normalizeWriteError(
+  error: unknown,
+  kind: "evidence" | "event" | "restriction" | "work-order"
+) {
   if (prismaErrorCode(error) !== "P2002") {
     return error instanceof Error
       ? error

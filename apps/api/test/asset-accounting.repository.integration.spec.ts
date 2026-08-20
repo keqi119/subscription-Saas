@@ -1,6 +1,6 @@
 import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma } from "@prisma/client";
+import { AuditAction, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -18,6 +18,12 @@ import {
   canonicalAssetAccountingJson,
   hashBusinessExceptionSnapshot
 } from "../src/asset-accounting/asset-accounting.domain";
+import {
+  ASSET_ACCOUNTING_PERMISSION,
+  AssetAccountingService,
+  type AssetAccountingCommandContext
+} from "../src/asset-accounting/asset-accounting.service";
+import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
@@ -36,7 +42,7 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
 
   afterAll(async () => {
     try {
-      await deleteFixtures(prisma);
+      await deleteFixtures(prisma, fixture);
     } finally {
       await prisma.onModuleDestroy();
     }
@@ -1289,6 +1295,383 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       )
     );
   });
+
+  it("audits service append, replay, reverse, reads, and summaries with exact request context", async () => {
+    const service = realService(prisma);
+    const appendRepositoryCommand = appendCommand(fixture, "service-cost-append");
+    const append = omitFields(appendRepositoryCommand, "actorId");
+    const appendContext = serviceContext(
+      fixture.userId,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      append.source.key
+    );
+
+    const created = await service.appendCost(append, appendContext);
+    const replay = await service.appendCost(append, appendContext);
+    expect(replay).toEqual(created);
+    expect(created).toMatchObject({
+      amountCents: "100",
+      confirmedAt: CONFIRMED_AT.toISOString(),
+      occurredOn: "2026-08-19T00:00:00.000Z"
+    });
+    expect(created).not.toHaveProperty("wrote");
+    expect(created).not.toHaveProperty("receipt");
+
+    const appendAudits = await prisma.auditLog.findMany({
+      where: {
+        action: AuditAction.CREATE,
+        entityId: created.id,
+        entityType: "vehicle_cost_ledger_entry",
+        module: "asset_accounting"
+      }
+    });
+    expect(appendAudits).toHaveLength(1);
+    expect(appendAudits[0]).toMatchObject({
+      ipAddress: "203.0.113.18",
+      operatorId: fixture.userId,
+      userAgent: "asset-accounting-integration"
+    });
+    expect(appendAudits[0]?.afterSnapshot).toEqual({
+      fact: created,
+      permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      reason: "Confirmed ACTUAL_COST vehicle cost fact.",
+      requestContext: {
+        idempotencyKey: append.source.key,
+        ipAddress: "203.0.113.18",
+        requestId: `${FIXTURE_PREFIX}:request`,
+        userAgent: "asset-accounting-integration"
+      },
+      snapshotHash: hashBusinessExceptionSnapshot(created),
+      source: append.source
+    });
+
+    const readContext = serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_VIEW);
+    await expect(service.getEntry(created.id, readContext)).resolves.toEqual(created);
+    await expect(
+      service.listVehicleEntries(fixture.vehicleId, readContext)
+    ).resolves.toContainEqual(created);
+    await expect(service.listOrderEntries(fixture.orderId, readContext)).resolves.toContainEqual(
+      created
+    );
+    await expect(
+      service.listWorkOrderEntries(fixture.workOrderId, readContext)
+    ).resolves.toContainEqual(created);
+    await expect(
+      service.summarizeOrderCostFacts(fixture.orderId, readContext)
+    ).resolves.toMatchObject({
+      byActionType: { ACTUAL_COST: { amountCents: expect.any(String) } },
+      totalAmountCents: expect.any(String)
+    });
+
+    const reverseRepositoryCommand = reverseCommand(fixture, created.id, "service-cost-reverse");
+    const reverse = omitFields(reverseRepositoryCommand, "actorId");
+    const reversed = await service.reverseCost(
+      reverse,
+      serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reverse.source.key)
+    );
+    expect(reversed).toMatchObject({
+      amountCents: "-100",
+      entryKind: "REVERSAL",
+      reversalOfEntryId: created.id
+    });
+    const reverseAudits = await prisma.auditLog.findMany({
+      where: {
+        action: AuditAction.CREATE,
+        entityId: reversed.id,
+        entityType: "vehicle_cost_ledger_entry",
+        module: "asset_accounting"
+      }
+    });
+    expect(reverseAudits).toHaveLength(1);
+    expect(reverseAudits[0]).toMatchObject({
+      ipAddress: "203.0.113.18",
+      operatorId: fixture.userId,
+      userAgent: "asset-accounting-integration"
+    });
+    expect(reverseAudits[0]?.afterSnapshot).toEqual({
+      fact: reversed,
+      permission: ASSET_ACCOUNTING_PERMISSION.COST_REVERSE,
+      reason: `Reversed vehicle cost fact ${created.id}.`,
+      requestContext: {
+        idempotencyKey: reverse.source.key,
+        ipAddress: "203.0.113.18",
+        requestId: `${FIXTURE_PREFIX}:request`,
+        userAgent: "asset-accounting-integration"
+      },
+      snapshotHash: hashBusinessExceptionSnapshot(reversed),
+      source: reverse.source
+    });
+  });
+
+  it("audits internal request, decide, automatic expiry, and exact replay without public comments", async () => {
+    const service = realService(prisma);
+    const requestRepositoryCommand = requestApprovalCommand(fixture, "service-approval-request");
+    const request = omitFields(requestRepositoryCommand, "authoritySnapshot", "requestedBy");
+    const requestContext = serviceContext(
+      fixture.userId,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      request.source.key
+    );
+    const requestAuthoritySnapshot = await currentVehicleRemarkSnapshot(prisma, fixture.vehicleId);
+    const requested = await readCommitted(prisma, (tx) =>
+      service.requestApprovalInTransaction(tx, request, requestContext, (resolverTx) =>
+        lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+      )
+    );
+    const requestReplay = await readCommitted(prisma, (tx) =>
+      service.requestApprovalInTransaction(tx, request, requestContext, (resolverTx) =>
+        lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+      )
+    );
+    expect(requestReplay).toEqual(requested);
+    expect(requested).not.toHaveProperty("decisionComment");
+
+    const decisionRepositoryCommand = decideApprovalCommand(
+      fixture,
+      requested.id,
+      "service-approval-decision"
+    );
+    const decision = omitFields(decisionRepositoryCommand, "authoritySnapshot", "decidedBy");
+    const decisionContext = serviceContext(
+      fixture.deciderId,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+      decision.source.key
+    );
+    const decisionAuthoritySnapshot = await currentVehicleRemarkSnapshot(prisma, fixture.vehicleId);
+    const decided = await readCommitted(prisma, (tx) =>
+      service.decideApprovalInTransaction(tx, decision, decisionContext, (resolverTx) =>
+        lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+      )
+    );
+    expect(decided).toMatchObject({ decision: "APPROVED", status: "APPROVED" });
+    expect(decided).not.toHaveProperty("decisionComment");
+
+    const requireRepositoryCommand = requireCurrentCommand(
+      fixture,
+      requested.id,
+      decided.version,
+      "service-approval-require",
+      { ignoredClientSnapshot: true }
+    );
+    const requireCommand = omitFields(requireRepositoryCommand, "authoritySnapshot", "expiredBy");
+    const requireContext = serviceContext(
+      fixture.deciderId,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      requireCommand.source.key
+    );
+    let staleAuthoritySnapshot:
+      | Awaited<ReturnType<typeof currentVehicleRemarkSnapshot>>
+      | undefined;
+    const stale = await readCommitted(prisma, (tx) =>
+      service.requireApprovedExceptionInTransaction(
+        tx,
+        requireCommand,
+        requireContext,
+        async (resolverTx) => {
+          await lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId);
+          await resolverTx.vehicle.update({
+            data: { remark: `${FIXTURE_PREFIX}:service-stale` },
+            where: { id: fixture.vehicleId }
+          });
+          staleAuthoritySnapshot = await currentVehicleRemarkSnapshot(
+            resolverTx,
+            fixture.vehicleId
+          );
+          return staleAuthoritySnapshot;
+        }
+      )
+    );
+    expect(stale).toBe(false);
+    const staleReplay = await readCommitted(prisma, (tx) =>
+      service.requireApprovedExceptionInTransaction(
+        tx,
+        requireCommand,
+        requireContext,
+        (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+      )
+    );
+    expect(staleReplay).toBe(false);
+
+    const audits = await prisma.auditLog.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: { entityId: requested.id, module: "asset_accounting" }
+    });
+    expect(audits.map(({ action }) => action)).toEqual([
+      AuditAction.CREATE,
+      AuditAction.APPROVE,
+      AuditAction.UPDATE
+    ]);
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entityId: requested.id,
+          entityType: "business_exception_approval",
+          ipAddress: "203.0.113.18",
+          module: "asset_accounting",
+          operatorId: fixture.userId,
+          userAgent: "asset-accounting-integration"
+        }),
+        expect.objectContaining({
+          entityId: requested.id,
+          entityType: "business_exception_approval",
+          ipAddress: "203.0.113.18",
+          module: "asset_accounting",
+          operatorId: fixture.deciderId,
+          userAgent: "asset-accounting-integration"
+        })
+      ])
+    );
+    expect(audits[0]?.beforeSnapshot).toBeNull();
+    expect(audits[0]?.afterSnapshot).toEqual({
+      fact: requested,
+      permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      reason: request.requestReason,
+      requestContext: {
+        idempotencyKey: request.source.key,
+        ipAddress: "203.0.113.18",
+        requestId: `${FIXTURE_PREFIX}:request`,
+        userAgent: "asset-accounting-integration"
+      },
+      snapshotHash: hashBusinessExceptionSnapshot(requestAuthoritySnapshot),
+      source: request.source
+    });
+    expect(audits[1]).toMatchObject({
+      ipAddress: "203.0.113.18",
+      operatorId: fixture.deciderId,
+      userAgent: "asset-accounting-integration"
+    });
+    expect(audits[1]?.beforeSnapshot).toEqual(requested);
+    expect(audits[1]?.afterSnapshot).toEqual({
+      fact: decided,
+      permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+      reason: decision.decisionComment,
+      requestContext: {
+        idempotencyKey: decision.source.key,
+        ipAddress: "203.0.113.18",
+        requestId: `${FIXTURE_PREFIX}:request`,
+        userAgent: "asset-accounting-integration"
+      },
+      snapshotHash: hashBusinessExceptionSnapshot(decisionAuthoritySnapshot),
+      source: decision.source
+    });
+    expect(audits[2]).toMatchObject({
+      entityId: requested.id,
+      entityType: "business_exception_approval",
+      ipAddress: "203.0.113.18",
+      module: "asset_accounting",
+      operatorId: fixture.deciderId,
+      userAgent: "asset-accounting-integration"
+    });
+    expect(audits[2]?.beforeSnapshot).toEqual(decided);
+    expect(audits[2]?.afterSnapshot).toMatchObject({
+      fact: expect.objectContaining({
+        id: requested.id,
+        status: "EXPIRED",
+        version: 2
+      }),
+      permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      reason: requireCommand.expiryReason,
+      requestContext: {
+        idempotencyKey: requireCommand.source.key,
+        ipAddress: "203.0.113.18",
+        requestId: `${FIXTURE_PREFIX}:request`,
+        userAgent: "asset-accounting-integration"
+      },
+      snapshotHash: hashBusinessExceptionSnapshot(staleAuthoritySnapshot),
+      source: requireCommand.source
+    });
+    expect(
+      JSON.stringify(
+        audits.map(
+          ({ afterSnapshot }) => (afterSnapshot as { fact?: unknown } | null)?.fact ?? null
+        )
+      )
+    ).not.toContain("fixture approval reviewed");
+  });
+
+  it("rolls back service cost and approval writes completely when audit fails", async () => {
+    const auditFailure = new Error("SERVICE_AUDIT_FAILURE");
+    const failingAudit = { write: async () => Promise.reject(auditFailure) } as AuditService;
+    const service = realService(prisma, failingAudit);
+    const appendRepositoryCommand = appendCommand(fixture, "service-audit-failure-cost");
+    const append = omitFields(appendRepositoryCommand, "actorId");
+
+    await expect(
+      service.appendCost(
+        append,
+        serviceContext(fixture.userId, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM, append.source.key)
+      )
+    ).rejects.toBe(auditFailure);
+    await expect(countEntries(prisma, append.source)).resolves.toBe(0);
+    await expect(countReceipts(prisma, append.source)).resolves.toBe(0);
+
+    const requestRepositoryCommand = requestApprovalCommand(
+      fixture,
+      "service-audit-failure-approval"
+    );
+    const request = omitFields(requestRepositoryCommand, "authoritySnapshot", "requestedBy");
+    await expect(
+      readCommitted(prisma, (tx) =>
+        service.requestApprovalInTransaction(
+          tx,
+          request,
+          serviceContext(
+            fixture.userId,
+            ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+            request.source.key
+          ),
+          (resolverTx) => lockVehicleRemarkSnapshot(resolverTx, fixture.vehicleId)
+        )
+      )
+    ).rejects.toBe(auditFailure);
+    await expect(
+      prisma.businessExceptionApproval.count({
+        where: { requestSourceKey: request.source.key }
+      })
+    ).resolves.toBe(0);
+    await expect(countReceipts(prisma, request.source)).resolves.toBe(0);
+  });
+
+  it("returns a stable NOWAIT loser while the holder transaction remains usable", async () => {
+    const service = realService(prisma);
+    const ready = deferred<void>();
+    const continueHolder = deferred<void>();
+    const holderUsable = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${fixture.vehicleId}::uuid FOR UPDATE`
+      );
+      ready.resolve();
+      await continueHolder.promise;
+      await tx.$queryRaw`SELECT 1`;
+      holderUsable.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+
+    const appendRepositoryCommand = appendCommand(fixture, "service-nowait-loser");
+    const append = omitFields(appendRepositoryCommand, "actorId");
+    try {
+      await expectCode(
+        service.appendCost(
+          append,
+          serviceContext(
+            fixture.userId,
+            ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+            append.source.key
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+      );
+      continueHolder.resolve();
+      await holderUsable.promise;
+    } finally {
+      release.resolve();
+      await holder;
+    }
+  });
 });
 
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
@@ -1494,9 +1877,15 @@ async function createFixture(prisma: PrismaService) {
   return fixture;
 }
 
-async function deleteFixtures(prisma: PrismaService) {
+async function deleteFixtures(prisma: PrismaService, fixtureValue: Fixture) {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.auditLog.deleteMany({
+      where: {
+        module: "asset_accounting",
+        operatorId: { in: [fixtureValue.userId, fixtureValue.deciderId] }
+      }
+    });
     await tx.$executeRaw`
       DELETE FROM "asset_accounting_command_receipt"
       WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
@@ -1542,6 +1931,34 @@ async function deleteFixtures(prisma: PrismaService) {
       WHERE "username" LIKE ${`${FIXTURE_PREFIX.toLowerCase()}%`}
     `;
   });
+}
+
+function realService(prisma: PrismaService, audit = new AuditService(prisma)) {
+  return new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+}
+
+function serviceContext(
+  actorId: string,
+  permission: string,
+  idempotencyKey?: string
+): AssetAccountingCommandContext {
+  return {
+    actorId,
+    idempotencyKey,
+    ipAddress: "203.0.113.18",
+    permissions: [permission],
+    requestId: `${FIXTURE_PREFIX}:request`,
+    userAgent: "asset-accounting-integration"
+  };
+}
+
+function omitFields<T extends object, K extends keyof T>(
+  value: T,
+  ...keys: readonly K[]
+): Omit<T, K> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !keys.includes(key as K))
+  ) as Omit<T, K>;
 }
 
 async function rawReversal(

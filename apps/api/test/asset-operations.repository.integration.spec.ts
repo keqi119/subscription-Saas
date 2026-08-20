@@ -1,0 +1,583 @@
+import { ConflictException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import {
+  AssetWorkOrderEvidenceAction,
+  AssetWorkOrderEvidenceType,
+  AssetWorkOrderEventType,
+  AssetWorkOrderPriority,
+  AssetWorkOrderStatus,
+  AssetWorkOrderType,
+  Prisma
+} from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import {
+  ASSET_OPERATION_ERROR_CODE,
+  AssetOperationsRepository
+} from "../src/asset-operations/asset-operations.repository";
+import type {
+  AppendEvidenceCommand,
+  AppendWorkOrderEventCommand,
+  CreateWorkOrderCommand,
+  StableAssetOperationSource,
+  TransitionWorkOrderCommand,
+  WorkOrderCommandOutcome
+} from "../src/asset-operations/asset-operations.types";
+import { PrismaService } from "../src/prisma/prisma.service";
+
+const TEST_DATABASE_URL = requiredTestDatabaseUrl();
+const FIXTURE_PREFIX = `S1CB${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+const OCCURRED_AT = new Date("2026-08-20T01:00:00.000Z");
+
+describe("AssetOperationsRepository PostgreSQL command behavior", () => {
+  let prisma: PrismaService;
+  let userId: string;
+  let vehicleId: string;
+
+  beforeAll(async () => {
+    prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
+    await prisma.onModuleInit();
+    vehicleId = await createVehicleFixture(prisma);
+    userId = await createUserFixture(prisma);
+  });
+
+  afterAll(async () => {
+    try {
+      await deleteFixtures(prisma);
+    } finally {
+      await prisma.onModuleDestroy();
+    }
+  });
+
+  it("rejects root and non-READ-COMMITTED clients with a stable transaction error", async () => {
+    const repository = new AssetOperationsRepository();
+
+    await expectCode(
+      repository.createWorkOrder(
+        prisma as unknown as Prisma.TransactionClient,
+        createCommand(vehicleId, "root")
+      ),
+      ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+    await expectCode(
+      prisma.$transaction(
+        (tx) => repository.createWorkOrder(tx, createCommand(vehicleId, "serializable")),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      ),
+      ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+  });
+
+  it("serializes concurrent create replay and rejects payload drift without an aborted reread", async () => {
+    const repository = new AssetOperationsRepository();
+    const exact = createCommand(vehicleId, "create-exact");
+    const replayRace = await holdFirstTransaction(prisma, (tx) =>
+      repository.createWorkOrder(tx, exact)
+    );
+    const replayPromise = readCommitted(prisma, (tx) => repository.createWorkOrder(tx, exact));
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    replayRace.release.resolve();
+    const [created, replayed] = await Promise.all([replayRace.result, replayPromise]);
+
+    expect(replayed.workOrder.id).toBe(created.workOrder.id);
+    expect(replayed.event.id).toBe(created.event.id);
+    await expect(countWorkOrdersBySource(prisma, exact.source)).resolves.toBe(1);
+    await expect(countEventsBySource(prisma, exact.source)).resolves.toBe(1);
+
+    const conflicting = createCommand(vehicleId, "create-drift");
+    const driftRace = await holdFirstTransaction(prisma, (tx) =>
+      repository.createWorkOrder(tx, conflicting)
+    );
+    const driftPromise = settled(
+      readCommitted(prisma, (tx) =>
+        repository.createWorkOrder(tx, {
+          ...conflicting,
+          authoritySnapshot: { lifecycle: "MAINTENANCE" }
+        })
+      )
+    );
+    try {
+      expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    } finally {
+      driftRace.release.resolve();
+    }
+    await driftRace.result;
+    expectConflict(rejectedValue(await driftPromise), ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT);
+  });
+
+  it("assigns the governed fields once and exactly replays the assignment", async () => {
+    const repository = new AssetOperationsRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "assignment-create"))
+    );
+    const command = {
+      actorId: userId,
+      assignedUserId: userId,
+      detailSnapshot: { fixture: FIXTURE_PREFIX },
+      expectedVersion: 0,
+      occurredAt: new Date("2026-08-20T01:05:00.000Z"),
+      scheduledAt: new Date("2026-08-21T01:00:00.000Z"),
+      slaDueAt: new Date("2026-08-22T01:00:00.000Z"),
+      source: source("assignment"),
+      workOrderId: created.workOrder.id
+    };
+
+    const assigned = await readCommitted(prisma, (tx) => repository.assignWorkOrder(tx, command));
+    const replayed = await readCommitted(prisma, (tx) => repository.assignWorkOrder(tx, command));
+
+    expect(assigned.workOrder).toMatchObject({
+      assignedUserId: userId,
+      scheduledAt: command.scheduledAt,
+      slaDueAt: command.slaDueAt,
+      version: 1
+    });
+    expect(replayed.event.id).toBe(assigned.event.id);
+    expect(replayed.wrote).toBe(false);
+  });
+
+  it("serializes a concurrent same-version transition into one exact event", async () => {
+    const repository = new AssetOperationsRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "transition-create"))
+    );
+    const transition = transitionCommand(created.workOrder.id, "transition-exact");
+    const first = await holdFirstTransaction(prisma, (tx) =>
+      repository.transitionWorkOrder(tx, transition)
+    );
+    const secondPromise = readCommitted(prisma, (tx) =>
+      repository.transitionWorkOrder(tx, transition)
+    );
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    first.release.resolve();
+    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+
+    expect(secondResult.event.id).toBe(firstResult.event.id);
+    expect(secondResult.workOrder.version).toBe(1);
+    await expect(countEventsBySource(prisma, transition.source)).resolves.toBe(1);
+  });
+
+  it("serializes concurrent appendEvent replay and keeps sequence monotonic", async () => {
+    const repository = new AssetOperationsRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "event-create"))
+    );
+    const command = eventCommand(created.workOrder.id, "event-exact");
+    const first = await holdFirstTransaction(prisma, (tx) =>
+      appendInternalEvent(repository, tx, command)
+    );
+    const secondPromise = readCommitted(prisma, (tx) =>
+      appendInternalEvent(repository, tx, command)
+    );
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    first.release.resolve();
+    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+
+    expect(secondResult.event.id).toBe(firstResult.event.id);
+    expect(firstResult.event.sequence).toBe(2);
+    await expect(workOrderSequences(prisma, created.workOrder.id)).resolves.toEqual([1, 2]);
+  });
+
+  it("allows one concurrent successor for an immutable evidence row", async () => {
+    const repository = new AssetOperationsRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "evidence-create"))
+    );
+    const originalFileId = await createFileFixture(prisma, "original");
+    const original = await readCommitted(prisma, (tx) =>
+      repository.appendEvidence(
+        tx,
+        evidenceCommand(created.workOrder.id, originalFileId, "evidence-original")
+      )
+    );
+    const firstFileId = await createFileFixture(prisma, "successor-1");
+    const secondFileId = await createFileFixture(prisma, "successor-2");
+    const firstCommand = {
+      ...evidenceCommand(created.workOrder.id, firstFileId, "evidence-successor-1"),
+      action: AssetWorkOrderEvidenceAction.SUPERSEDE,
+      supersedesEvidenceId: original.evidence.id
+    };
+    const secondCommand = {
+      ...evidenceCommand(created.workOrder.id, secondFileId, "evidence-successor-2"),
+      action: AssetWorkOrderEvidenceAction.SUPERSEDE,
+      supersedesEvidenceId: original.evidence.id
+    };
+    const first = await holdFirstTransaction(prisma, (tx) =>
+      repository.appendEvidence(tx, firstCommand)
+    );
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) => repository.appendEvidence(tx, secondCommand))
+    );
+    let waitedOnHeaderLock: boolean;
+    try {
+      waitedOnHeaderLock = await waitForDatabaseLock(prisma, "asset_work_order");
+    } finally {
+      first.release.resolve();
+    }
+    const [firstResult, secondResult] = await Promise.all([first.result, secondPromise]);
+
+    expect(waitedOnHeaderLock).toBe(true);
+    expect(firstResult.evidence.supersedesEvidenceId).toBe(original.evidence.id);
+    expectConflict(rejectedValue(secondResult), ASSET_OPERATION_ERROR_CODE.EVIDENCE_CHAIN_CONFLICT);
+    await expect(countEvidenceSuccessors(prisma, original.evidence.id)).resolves.toBe(1);
+  });
+
+  it("rolls back domain facts when the caller audit stub or the paired event append fails", async () => {
+    const repository = new AssetOperationsRepository();
+    const auditFailure = createCommand(vehicleId, "rollback-audit");
+
+    await expect(
+      readCommitted(prisma, async (tx) => {
+        await repository.createWorkOrder(tx, auditFailure);
+        throw new Error("AUDIT_STUB_FAILURE");
+      })
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+    await expect(countWorkOrdersBySource(prisma, auditFailure.source)).resolves.toBe(0);
+    await expect(countEventsBySource(prisma, auditFailure.source)).resolves.toBe(0);
+
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "rollback-evidence-create"))
+    );
+    const occupiedSource = source("rollback-paired-event");
+    await readCommitted(prisma, (tx) =>
+      appendInternalEvent(repository, tx, {
+        ...eventCommand(created.workOrder.id, "rollback-event-seed"),
+        source: occupiedSource
+      })
+    );
+    const fileId = await createFileFixture(prisma, "rollback");
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendEvidence(tx, {
+          ...evidenceCommand(created.workOrder.id, fileId, "rollback-evidence"),
+          source: occupiedSource
+        })
+      ),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+    await expect(countEvidenceBySource(prisma, occupiedSource)).resolves.toBe(0);
+  });
+});
+
+function createCommand(vehicleId: string, label: string): CreateWorkOrderCommand {
+  return {
+    actorId: null,
+    assetOwnerId: null,
+    authoritySnapshot: { lifecycle: "RETURNED" },
+    contractId: null,
+    costConfirmationRequired: false,
+    customerId: null,
+    description: `Stage 1C-B ${label}`,
+    metadata: { fixture: FIXTURE_PREFIX },
+    occurredAt: OCCURRED_AT,
+    orderId: null,
+    priority: AssetWorkOrderPriority.NORMAL,
+    relatedWorkOrderId: null,
+    source: source(label),
+    vehicleId,
+    workOrderType: AssetWorkOrderType.RECONDITIONING
+  };
+}
+
+function transitionCommand(workOrderId: string, label: string): TransitionWorkOrderCommand {
+  return {
+    actorId: null,
+    closeReason: null,
+    detailSnapshot: { fixture: FIXTURE_PREFIX },
+    expectedVersion: 0,
+    occurredAt: new Date("2026-08-20T01:10:00.000Z"),
+    solution: null,
+    source: source(label),
+    targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+    workOrderId
+  };
+}
+
+function eventCommand(workOrderId: string, label: string): AppendWorkOrderEventCommand {
+  return {
+    actorId: null,
+    afterStatus: null,
+    beforeStatus: null,
+    detailSnapshot: { note: label },
+    eventType: AssetWorkOrderEventType.NOTE_ADDED,
+    occurredAt: new Date("2026-08-20T01:20:00.000Z"),
+    source: source(label),
+    workOrderId
+  };
+}
+
+function evidenceCommand(
+  workOrderId: string,
+  fileId: string,
+  label: string
+): AppendEvidenceCommand {
+  return {
+    action: AssetWorkOrderEvidenceAction.ATTACH,
+    actorId: null,
+    capturedAt: new Date("2026-08-20T01:30:00.000Z"),
+    captureMetadata: { fixture: FIXTURE_PREFIX },
+    contentSha256: "a".repeat(64),
+    eventId: null,
+    evidenceType: AssetWorkOrderEvidenceType.PHOTO,
+    fileId,
+    occurredAt: new Date("2026-08-20T01:31:00.000Z"),
+    source: source(label),
+    supersedesEvidenceId: null,
+    workOrderId
+  };
+}
+
+function source(label: string): StableAssetOperationSource {
+  const id = randomUUID();
+  return { id, key: `${FIXTURE_PREFIX}:${label}:${id}`, type: "STAGE1C_TASK2_TEST" };
+}
+
+function readCommitted<T>(
+  prisma: PrismaService,
+  work: (tx: Prisma.TransactionClient) => Promise<T>
+) {
+  return prisma.$transaction(work, {
+    isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+    maxWait: 5_000,
+    timeout: 15_000
+  });
+}
+
+async function holdFirstTransaction<T>(
+  prisma: PrismaService,
+  work: (tx: Prisma.TransactionClient) => Promise<T>
+) {
+  const reached = deferred<T>();
+  const release = deferred<void>();
+  const result = readCommitted(prisma, async (tx) => {
+    const value = await work(tx);
+    reached.resolve(value);
+    await release.promise;
+    return value;
+  });
+  void result.catch(reached.reject);
+  await reached.promise;
+  return { release, result };
+}
+
+async function createVehicleFixture(prisma: PrismaService) {
+  const id = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "vehicle" (
+        "id", "vehicle_no", "plate_no", "brand", "model_definition_id",
+        "purchase_price_amount", "status", "created_at", "updated_at"
+      ) VALUES (
+        ${id}::uuid, ${`${FIXTURE_PREFIX}V`}, ${`沪T${FIXTURE_PREFIX.slice(-6)}`},
+        'NIO', ${randomUUID()}::uuid, 20000000, 'RETURNED', clock_timestamp(), clock_timestamp()
+      )
+    `);
+  });
+  return id;
+}
+
+async function createFileFixture(prisma: PrismaService, label: string) {
+  const id = randomUUID();
+  await prisma.fileObject.create({
+    data: {
+      bucket: "asset-evidence",
+      id,
+      mimeType: "image/jpeg",
+      objectKey: `${FIXTURE_PREFIX}/${label}.jpg`,
+      originalName: `${label}.jpg`,
+      sizeBytes: 1234n
+    }
+  });
+  return id;
+}
+
+async function createUserFixture(prisma: PrismaService) {
+  const id = randomUUID();
+  await prisma.user.create({
+    data: {
+      id,
+      name: "Stage 1C-B Operator",
+      passwordHash: "not-used-by-test",
+      username: `${FIXTURE_PREFIX.toLowerCase()}_op`
+    }
+  });
+  return id;
+}
+
+async function deleteFixtures(prisma: PrismaService) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.$executeRaw`
+      DELETE FROM "asset_work_order_evidence"
+      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "asset_work_order_event"
+      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "asset_work_order"
+      WHERE "create_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "file_object"
+      WHERE "object_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle"
+      WHERE "vehicle_no" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "user"
+      WHERE "username" LIKE ${`${FIXTURE_PREFIX.toLowerCase()}%`}
+    `;
+  });
+}
+
+async function countWorkOrdersBySource(
+  prisma: PrismaService,
+  sourceValue: StableAssetOperationSource
+) {
+  return prisma.assetWorkOrder.count({
+    where: {
+      createSourceId: sourceValue.id,
+      createSourceKey: sourceValue.key,
+      createSourceType: sourceValue.type
+    }
+  });
+}
+
+async function countEventsBySource(prisma: PrismaService, sourceValue: StableAssetOperationSource) {
+  return prisma.assetWorkOrderEvent.count({
+    where: {
+      sourceId: sourceValue.id,
+      sourceKey: sourceValue.key,
+      sourceType: sourceValue.type
+    }
+  });
+}
+
+async function countEvidenceBySource(
+  prisma: PrismaService,
+  sourceValue: StableAssetOperationSource
+) {
+  return prisma.assetWorkOrderEvidence.count({
+    where: {
+      sourceId: sourceValue.id,
+      sourceKey: sourceValue.key,
+      sourceType: sourceValue.type
+    }
+  });
+}
+
+async function countEvidenceSuccessors(prisma: PrismaService, evidenceId: string) {
+  return prisma.assetWorkOrderEvidence.count({ where: { supersedesEvidenceId: evidenceId } });
+}
+
+async function workOrderSequences(prisma: PrismaService, workOrderId: string) {
+  const rows = await prisma.assetWorkOrderEvent.findMany({
+    orderBy: { sequence: "asc" },
+    select: { sequence: true },
+    where: { workOrderId }
+  });
+  return rows.map((row) => row.sequence);
+}
+
+async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [status] = await prisma.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE "pid" <> pg_backend_pid()
+          AND "datname" = current_database()
+          AND "state" = 'active'
+          AND "wait_event_type" = 'Lock'
+          AND "query" ILIKE ${`%${queryFragment}%`}
+      ) AS "waiting"
+    `);
+    if (status?.waiting) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+async function settled<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { reason, status: "rejected" };
+  }
+}
+
+function rejectedValue(result: PromiseSettledResult<unknown>) {
+  if (result.status === "fulfilled") throw new Error("Expected rejection.");
+  return result.reason;
+}
+
+async function expectCode(promise: Promise<unknown>, code: string) {
+  try {
+    await promise;
+    throw new Error(`Expected conflict ${code}.`);
+  } catch (error) {
+    expectConflict(error, code);
+  }
+}
+
+function expectConflict(error: unknown, code: string) {
+  expect(error).toBeInstanceOf(ConflictException);
+  expect((error as ConflictException).getResponse()).toMatchObject({ code });
+}
+
+function appendInternalEvent(
+  repository: AssetOperationsRepository,
+  tx: Prisma.TransactionClient,
+  command: AppendWorkOrderEventCommand
+): Promise<WorkOrderCommandOutcome> {
+  return (
+    repository as unknown as {
+      appendEvent(
+        tx: Prisma.TransactionClient,
+        command: AppendWorkOrderEventCommand
+      ): Promise<WorkOrderCommandOutcome>;
+    }
+  ).appendEvent(tx, command);
+}
+
+function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
+  if (!value) throw new Error("DATABASE_URL is required for asset operations integration tests");
+  const url = new URL(value);
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("Asset operations integration tests require PostgreSQL");
+  }
+  if (!isLoopbackHostname(url.hostname)) {
+    throw new Error("Asset operations integration tests require a loopback PostgreSQL host");
+  }
+  const databaseName = decodeURIComponent(url.pathname.slice(1));
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*_(test|codex)$/.test(databaseName)) {
+    throw new Error("Asset operations integration tests require a test-only database");
+  }
+  if (url.hostname === "localhost") url.hostname = "127.0.0.1";
+  return url.toString();
+}
+
+function isLoopbackHostname(hostname: string) {
+  if (hostname === "localhost" || hostname === "[::1]") return true;
+  const octets = hostname.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+  );
+}

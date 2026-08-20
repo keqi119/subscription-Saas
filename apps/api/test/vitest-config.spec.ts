@@ -22,4 +22,15 @@ describe("API Vitest project boundaries", () => {
     expect(databaseProject?.test?.fileParallelism).toBe(false);
     expect(unitProject?.test?.exclude).toContain(integrationSuite);
   });
+
+  it("runs the asset operations repository integration suite only in the serial database project", () => {
+    const projects = (config.test?.projects ?? []) as ProjectConfig[];
+    const databaseProject = projects.find((project) => project.test?.name === "database");
+    const unitProject = projects.find((project) => project.test?.name === "unit");
+    const integrationSuite = "test/asset-operations.repository.integration.spec.ts";
+
+    expect(databaseProject?.test?.include).toContain(integrationSuite);
+    expect(databaseProject?.test?.fileParallelism).toBe(false);
+    expect(unitProject?.test?.exclude).toContain(integrationSuite);
+  });
 });

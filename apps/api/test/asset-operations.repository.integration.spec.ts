@@ -827,13 +827,143 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
       await expect(countAuditsBySourceKey(prisma, result.source.key)).resolves.toBe(0);
     }
   );
+
+  it.each(["note", "assignment", "evidence"] as const)(
+    "fails a distinct-source service %s command fast while another command owns the mutable header",
+    async (competingKind) => {
+      const repository = new PausingTransitionRepository(competingKind);
+      const service = createAssetOperationsService(prisma, new AuditService(prisma), repository);
+      const created = await service.createWorkOrder(
+        serviceCreateCommand(vehicleId, `service-header-${competingKind}-create`),
+        serviceContext(userId)
+      );
+      const auditCountBefore = await countAuditsForWorkOrder(prisma, created.workOrder.id);
+      const winnerCommand = withoutActor(
+        transitionCommand(created.workOrder.id, `service-header-${competingKind}-winner`)
+      );
+      const winnerPromise = settled(
+        service.transitionWorkOrder(winnerCommand, serviceContext(userId))
+      );
+      await repository.transitionReached.promise;
+
+      const competitor = await createCompetingServiceCommand(
+        prisma,
+        service,
+        competingKind,
+        created.workOrder.id,
+        userId
+      );
+      const loserPromise = settled(competitor.run());
+      const early = await settlesWithin(loserPromise, 750);
+      const repositoryEntry = await settlesWithin(repository.competingReached.promise, 50);
+      repository.releaseTransition.resolve();
+      const [winner, loser] = await Promise.all([
+        winnerPromise,
+        early.finished ? Promise.resolve(early.value) : loserPromise
+      ]);
+
+      expect(
+        early.finished,
+        `command did not fail fast; final settlements were winner=${settlementCode(winner)}, loser=${settlementCode(loser)}`
+      ).toBe(true);
+      expect(repositoryEntry.finished).toBe(false);
+      expectConflict(rejectedValue(loser), ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);
+      expect(winner.status).toBe("fulfilled");
+      if (winner.status === "rejected") throw winner.reason;
+      expect(winner.value.workOrder).toMatchObject({
+        status: AssetWorkOrderStatus.IN_PROGRESS,
+        version: 1
+      });
+      await expect(
+        service.transitionWorkOrder(winnerCommand, serviceContext(userId))
+      ).resolves.toEqual({ ...winner.value, wrote: false });
+      await expect(countEventsBySource(prisma, winnerCommand.source)).resolves.toBe(1);
+      await expect(countEventsBySource(prisma, competitor.source)).resolves.toBe(0);
+      await expect(countEvidenceBySource(prisma, competitor.source)).resolves.toBe(0);
+      await expect(countAuditsBySourceKey(prisma, competitor.source.key)).resolves.toBe(0);
+      await expect(countAuditsForWorkOrder(prisma, created.workOrder.id)).resolves.toBe(
+        auditCountBefore + 2
+      );
+      await expect(workOrderSequences(prisma, created.workOrder.id)).resolves.toEqual([1, 2]);
+    }
+  );
 });
 
 function createAssetOperationsService(
   prisma: PrismaService,
-  auditService: AuditService = new AuditService(prisma)
+  auditService: AuditService = new AuditService(prisma),
+  repository: AssetOperationsRepository = new AssetOperationsRepository()
 ) {
-  return new AssetOperationsService(prisma, new AssetOperationsRepository(), auditService);
+  return new AssetOperationsService(prisma, repository, auditService);
+}
+
+class PausingTransitionRepository extends AssetOperationsRepository {
+  readonly competingReached = deferred<void>();
+  readonly releaseTransition = deferred<void>();
+  readonly transitionReached = deferred<void>();
+
+  constructor(private readonly competingKind: "assignment" | "evidence" | "note") {
+    super();
+  }
+
+  override async transitionWorkOrder(
+    ...args: Parameters<AssetOperationsRepository["transitionWorkOrder"]>
+  ) {
+    this.transitionReached.resolve();
+    await this.releaseTransition.promise;
+    return super.transitionWorkOrder(...args);
+  }
+
+  override assignWorkOrder(...args: Parameters<AssetOperationsRepository["assignWorkOrder"]>) {
+    if (this.competingKind === "assignment") this.competingReached.resolve();
+    return super.assignWorkOrder(...args);
+  }
+
+  override appendEvidence(...args: Parameters<AssetOperationsRepository["appendEvidence"]>) {
+    if (this.competingKind === "evidence") this.competingReached.resolve();
+    return super.appendEvidence(...args);
+  }
+
+  override appendNote(...args: Parameters<AssetOperationsRepository["appendNote"]>) {
+    if (this.competingKind === "note") this.competingReached.resolve();
+    return super.appendNote(...args);
+  }
+}
+
+async function createCompetingServiceCommand(
+  prisma: PrismaService,
+  service: AssetOperationsService,
+  kind: "assignment" | "evidence" | "note",
+  workOrderId: string,
+  actorId: string
+) {
+  if (kind === "assignment") {
+    const command = withoutActor(
+      assignmentCommand(workOrderId, actorId, "service-header-assignment-loser", 0, 42)
+    );
+    return {
+      run: () => service.assignWorkOrder(command, serviceContext(actorId)),
+      source: command.source
+    };
+  }
+  if (kind === "evidence") {
+    const command = withoutActor(
+      evidenceCommand(
+        workOrderId,
+        await createFileFixture(prisma, "service-header-evidence-loser"),
+        "service-header-evidence-loser"
+      )
+    );
+    return {
+      run: () => service.appendEvidence(command, serviceContext(actorId)),
+      source: command.source
+    };
+  }
+  const command = withoutActor(noteCommand(workOrderId, "service-header-note-loser"));
+  return {
+    run: () => service.appendNote(command, serviceContext(actorId)),
+    source: command.source
+  };
 }
 
 function failingAuditService(prisma: PrismaService, failOnCall: number) {
@@ -878,6 +1008,24 @@ async function countAuditsBySourceKey(prisma: PrismaService, sourceKey: string) 
     FROM "audit_log"
     WHERE "module" = 'asset_operations'
       AND "after_snapshot"::text LIKE ${`%${sourceKey}%`}
+  `);
+  return Number(row?.count ?? 0n);
+}
+
+async function countAuditsForWorkOrder(prisma: PrismaService, workOrderId: string) {
+  const [row] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS "count"
+    FROM "audit_log"
+    WHERE "module" = 'asset_operations'
+      AND (
+        "entity_id" = ${workOrderId}::uuid
+        OR "entity_id" IN (
+          SELECT "id" FROM "asset_work_order_event" WHERE "work_order_id" = ${workOrderId}::uuid
+        )
+        OR "entity_id" IN (
+          SELECT "id" FROM "asset_work_order_evidence" WHERE "work_order_id" = ${workOrderId}::uuid
+        )
+      )
   `);
   return Number(row?.count ?? 0n);
 }
@@ -1381,6 +1529,21 @@ async function settled<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>>
 function rejectedValue(result: PromiseSettledResult<unknown>) {
   if (result.status === "fulfilled") throw new Error("Expected rejection.");
   return result.reason;
+}
+
+function settlementCode(result: PromiseSettledResult<unknown>) {
+  if (result.status === "fulfilled") return "fulfilled";
+  const error = result.reason;
+  if (error instanceof ConflictException) {
+    const response = error.getResponse();
+    if (typeof response === "object" && response && "code" in response) {
+      return `rejected:${String(response.code)}`;
+    }
+  }
+  if (typeof error === "object" && error && "code" in error) {
+    return `rejected:${String(error.code)}`;
+  }
+  return `rejected:${error instanceof Error ? error.constructor.name : typeof error}`;
 }
 
 async function expectCode(promise: Promise<unknown>, code: string) {

@@ -1699,8 +1699,10 @@ COMMIT;
 ## 8. 竞争、错误与重试语义
 
 所有写命令要求调用方持有的 `READ COMMITTED` interactive transaction。锁顺序固定为：统一 source
-ownership advisory lock；按表名/UUID 稳定排序的 authority `FOR SHARE NOWAIT`；最后是可变领域行
-`FOR UPDATE`。不得改变顺序或自行开启嵌套事务。
+ownership advisory lock；再把 immutable/external authority、related work-order authority 和 current
+mutable work-order header 放入同一个按表名/UUID 稳定排序的锁集合。immutable/external authority 与
+related work-order authority 使用 `FOR SHARE NOWAIT`；current mutable work-order header 使用
+`FOR UPDATE NOWAIT`，且后续仓储命令复用这个已锁定头。不得改变顺序、自行升级共享锁或开启嵌套事务。
 
 - 缺少调用方 transaction 或隔离级别不是 `READ COMMITTED` 时返回
   `ASSET_OPERATION_TRANSACTION_REQUIRED`；不得降级执行。

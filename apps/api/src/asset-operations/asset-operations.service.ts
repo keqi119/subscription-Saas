@@ -76,6 +76,9 @@ export type AppendNoteServiceCommand = Omit<AppendNoteCommand, "actorId">;
 export type AppendEvidenceServiceCommand = Omit<AppendEvidenceCommand, "actorId">;
 export type CreateRestrictionServiceCommand = Omit<CreateRestrictionCommand, "actorId">;
 export type ReleaseRestrictionServiceCommand = Omit<ReleaseRestrictionCommand, "actorId">;
+type LockedWorkOrderCommandHandle = Awaited<
+  ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>
+>;
 
 const VEHICLE_SELECT = {
   deletedAt: true,
@@ -179,7 +182,7 @@ export class AssetOperationsService {
     return this.runWorkOrderCommand(
       command,
       [{ id: command.assignedUserId, table: "user" }],
-      async (tx, before) => {
+      async (tx, before, lockHandle) => {
         const user = await tx.user.findUnique({
           select: { deletedAt: true, id: true, status: true },
           where: { id: command.assignedUserId }
@@ -187,10 +190,14 @@ export class AssetOperationsService {
         if (!user || user.deletedAt || user.status !== "ACTIVE") {
           throw notFound(ASSET_OPERATION_SERVICE_CODE.USER_NOT_FOUND, "Assigned user not found.");
         }
-        const outcome = await this.repository.assignWorkOrder(tx, {
-          ...command,
-          actorId: context.actorId
-        });
+        const outcome = await this.repository.assignWorkOrder(
+          tx,
+          {
+            ...command,
+            actorId: context.actorId
+          },
+          lockHandle
+        );
         await this.auditWorkOrderOutcome(tx, outcome, context, before);
         return outcome;
       }
@@ -201,11 +208,15 @@ export class AssetOperationsService {
     command: TransitionWorkOrderServiceCommand,
     context: AssetOperationCommandContext
   ): Promise<WorkOrderCommandOutcome> {
-    return this.runWorkOrderCommand(command, [], async (tx, before) => {
-      const outcome = await this.repository.transitionWorkOrder(tx, {
-        ...command,
-        actorId: context.actorId
-      });
+    return this.runWorkOrderCommand(command, [], async (tx, before, lockHandle) => {
+      const outcome = await this.repository.transitionWorkOrder(
+        tx,
+        {
+          ...command,
+          actorId: context.actorId
+        },
+        lockHandle
+      );
       await this.auditWorkOrderOutcome(tx, outcome, context, before);
       return outcome;
     });
@@ -215,11 +226,15 @@ export class AssetOperationsService {
     command: AppendNoteServiceCommand,
     context: AssetOperationCommandContext
   ): Promise<WorkOrderCommandOutcome> {
-    return this.runWorkOrderCommand(command, [], async (tx) => {
-      const outcome = await this.repository.appendNote(tx, {
-        ...command,
-        actorId: context.actorId
-      });
+    return this.runWorkOrderCommand(command, [], async (tx, before, lockHandle) => {
+      const outcome = await this.repository.appendNote(
+        tx,
+        {
+          ...command,
+          actorId: context.actorId
+        },
+        lockHandle
+      );
       if (outcome.wrote) {
         await this.writeAudit(
           tx,
@@ -238,7 +253,7 @@ export class AssetOperationsService {
     context: AssetOperationCommandContext
   ): Promise<EvidenceCommandOutcome> {
     const extraRows = command.fileId ? [{ id: command.fileId, table: "file_object" as const }] : [];
-    return this.runWorkOrderCommand(command, extraRows, async (tx) => {
+    return this.runWorkOrderCommand(command, extraRows, async (tx, before, lockHandle) => {
       if (command.fileId) {
         const file = await tx.fileObject.findUnique({
           select: { id: true },
@@ -248,10 +263,14 @@ export class AssetOperationsService {
           throw notFound(ASSET_OPERATION_SERVICE_CODE.FILE_NOT_FOUND, "File object not found.");
         }
       }
-      const outcome = await this.repository.appendEvidence(tx, {
-        ...command,
-        actorId: context.actorId
-      });
+      const outcome = await this.repository.appendEvidence(
+        tx,
+        {
+          ...command,
+          actorId: context.actorId
+        },
+        lockHandle
+      );
       if (outcome.wrote) {
         await this.writeAudit(
           tx,
@@ -278,10 +297,12 @@ export class AssetOperationsService {
   ): Promise<RestrictionCommandOutcome> {
     return this.runCommand(async (tx) => {
       await this.repository.lockSourceOwnership(tx, command.source);
+      let lockHandle: LockedWorkOrderCommandHandle | undefined;
       if (command.workOrderId) {
         const linked = await this.validateWorkOrderAuthority(tx, command.workOrderId, [
           { id: command.vehicleId, table: "vehicle" }
         ]);
+        lockHandle = linked.lockHandle;
         if (linked.workOrder.vehicleId !== command.vehicleId) {
           throw authorityMismatch();
         }
@@ -289,10 +310,14 @@ export class AssetOperationsService {
         await lockAuthorityRows(tx, [{ id: command.vehicleId, table: "vehicle" }]);
         await loadLiveVehicle(tx, command.vehicleId);
       }
-      const outcome = await this.repository.createRestriction(tx, {
-        ...command,
-        actorId: context.actorId
-      });
+      const outcome = await this.repository.createRestriction(
+        tx,
+        {
+          ...command,
+          actorId: context.actorId
+        },
+        lockHandle
+      );
       if (outcome.wrote) {
         await this.writeAudit(
           tx,
@@ -321,6 +346,7 @@ export class AssetOperationsService {
   ): Promise<RestrictionCommandOutcome> {
     return this.runCommand(async (tx) => {
       await this.repository.lockSourceOwnership(tx, command.source);
+      let lockHandle: LockedWorkOrderCommandHandle | undefined;
       const candidate = await tx.vehicleOperationalRestriction.findUnique({
         where: { id: command.restrictionId }
       });
@@ -334,6 +360,7 @@ export class AssetOperationsService {
         const linked = await this.validateWorkOrderAuthority(tx, candidate.workOrderId, [
           { id: candidate.vehicleId, table: "vehicle" }
         ]);
+        lockHandle = linked.lockHandle;
         if (candidate.vehicleId !== linked.workOrder.vehicleId) {
           throw authorityMismatch();
         }
@@ -342,10 +369,14 @@ export class AssetOperationsService {
         await loadLiveVehicle(tx, candidate.vehicleId);
       }
       assertReleasePermission(candidate.restrictionType, context.permissions);
-      const outcome = await this.repository.releaseRestriction(tx, {
-        ...command,
-        actorId: requireActor(context)
-      });
+      const outcome = await this.repository.releaseRestriction(
+        tx,
+        {
+          ...command,
+          actorId: requireActor(context)
+        },
+        lockHandle
+      );
       if (outcome.wrote) {
         await this.writeAudit(
           tx,
@@ -446,19 +477,20 @@ export class AssetOperationsService {
   private async runWorkOrderCommand<T>(
     command: { source: StableAssetOperationSource; workOrderId: string },
     extraRows: ReadonlyArray<{ id: string; table: AuthorityTable }>,
-    work: (tx: Prisma.TransactionClient, before: AssetWorkOrder) => Promise<T>
+    work: (
+      tx: Prisma.TransactionClient,
+      before: AssetWorkOrder,
+      lockHandle: LockedWorkOrderCommandHandle
+    ) => Promise<T>
   ) {
     return this.runCommand(async (tx) => {
       await this.repository.lockSourceOwnership(tx, command.source);
-      await this.validateWorkOrderAuthority(tx, command.workOrderId, extraRows);
-      const before = await tx.assetWorkOrder.findUnique({ where: { id: command.workOrderId } });
-      if (!before) {
-        throw notFound(
-          ASSET_OPERATION_SERVICE_CODE.WORK_ORDER_NOT_FOUND,
-          "Asset work order not found."
-        );
-      }
-      return work(tx, before);
+      const { before, lockHandle } = await this.validateWorkOrderAuthority(
+        tx,
+        command.workOrderId,
+        extraRows
+      );
+      return work(tx, before, lockHandle);
     });
   }
 
@@ -468,14 +500,17 @@ export class AssetOperationsService {
     extraRows: ReadonlyArray<{ id: string; table: AuthorityTable }>
   ) {
     const seed = await loadWorkOrderHeader(tx, workOrderId);
-    await lockAuthorityRows(tx, [...workOrderAuthorityRows(seed), ...extraRows]);
+    const lockHandle = await this.repository.lockWorkOrderForCommand(tx, workOrderId, [
+      ...workOrderAuthorityRows(seed),
+      ...extraRows
+    ]);
     const current = await loadWorkOrderHeader(tx, workOrderId);
     if (!sameWorkOrderAuthority(seed, current)) {
       throw authorityMismatch();
     }
     const authority = await loadAuthority(tx, current);
     assertAuthorityConsistency(authority);
-    return { authority, workOrder: current };
+    return { authority, before: lockHandle.header, lockHandle, workOrder: current };
   }
 
   private async auditWorkOrderOutcome(
@@ -743,7 +778,6 @@ async function loadWorkOrderHeader(
 function workOrderAuthorityRows(workOrder: WorkOrderAuthorityHeader) {
   return [
     workOrder.assetOwnerId ? { id: workOrder.assetOwnerId, table: "asset_owner" as const } : null,
-    { id: workOrder.id, table: "asset_work_order" as const },
     workOrder.relatedWorkOrderId
       ? { id: workOrder.relatedWorkOrderId, table: "asset_work_order" as const }
       : null,

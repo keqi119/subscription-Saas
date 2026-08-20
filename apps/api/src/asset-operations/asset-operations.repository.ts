@@ -157,10 +157,22 @@ type CommandEnvelopeKind =
   | "restriction-release"
   | "transition";
 type CommandEnvelopeInput = Readonly<{ command: unknown; kind: CommandEnvelopeKind }>;
+type AuthorityLockMode = "share" | "update";
+type AuthorityLockRow = Readonly<{
+  id: string;
+  mode?: AuthorityLockMode;
+  table: AuthorityTable;
+}>;
+type LockedWorkOrderCommandHandle = Readonly<{
+  header: AssetWorkOrder;
+  transaction: Prisma.TransactionClient;
+}>;
 
 /** Caller-owned READ COMMITTED transaction only; this repository never opens a transaction. */
 @Injectable()
 export class AssetOperationsRepository {
+  private readonly lockedWorkOrderHandles = new WeakSet<LockedWorkOrderCommandHandle>();
+
   constructor(@Optional() private readonly businessNoFactory = () => createBusinessNo("AWO")) {}
 
   /** Acquires the repository-wide command source lock before service authority validation. */
@@ -169,6 +181,23 @@ export class AssetOperationsRepository {
     source: StableAssetOperationSource
   ): Promise<void> {
     await prepareCommand(tx, source);
+  }
+
+  /** Locks current mutable header exclusively with its stable authority set and returns a reusable handle. */
+  async lockWorkOrderForCommand(
+    tx: Prisma.TransactionClient,
+    workOrderId: string,
+    authorityRows: ReadonlyArray<AuthorityLockRow | null>
+  ) {
+    await lockAuthorityRows(tx, [
+      ...authorityRows,
+      { id: workOrderId, mode: "update", table: "asset_work_order" }
+    ]);
+    const header = await tx.assetWorkOrder.findUnique({ where: { id: workOrderId } });
+    if (!header) throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND);
+    const handle = { header, transaction: tx } satisfies LockedWorkOrderCommandHandle;
+    this.lockedWorkOrderHandles.add(handle);
+    return handle;
   }
 
   async createWorkOrder(
@@ -206,7 +235,8 @@ export class AssetOperationsRepository {
 
   async assignWorkOrder(
     tx: Prisma.TransactionClient,
-    command: AssignWorkOrderCommand
+    command: AssignWorkOrderCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
@@ -214,7 +244,7 @@ export class AssetOperationsRepository {
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayAssignment(replay, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
-    const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
+    const current = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
     assertVersion(current, normalized.expectedVersion);
     if (TERMINAL_STATUSES.has(current.status)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_TRANSITION_INVALID);
@@ -246,14 +276,15 @@ export class AssetOperationsRepository {
 
   async transitionWorkOrder(
     tx: Prisma.TransactionClient,
-    command: TransitionWorkOrderCommand
+    command: TransitionWorkOrderCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayTransition(replay, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
-    const current = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
+    const current = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
     assertVersion(current, normalized.expectedVersion);
     assertTransition(current, normalized.targetStatus);
     await assertEventTime(tx, normalized.occurredAt);
@@ -280,7 +311,11 @@ export class AssetOperationsRepository {
     return { event, workOrder: updated, wrote: true };
   }
 
-  appendNote(tx: Prisma.TransactionClient, command: AppendNoteCommand) {
+  appendNote(
+    tx: Prisma.TransactionClient,
+    command: AppendNoteCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
+  ) {
     return this.appendEvent(
       tx,
       {
@@ -293,26 +328,32 @@ export class AssetOperationsRepository {
         source: command.source,
         workOrderId: command.workOrderId
       },
-      { command, kind: "note" }
+      { command, kind: "note" },
+      lockHandle
     );
   }
 
   private async appendEvent(
     tx: Prisma.TransactionClient,
     command: AppendWorkOrderEventCommand,
-    envelope: CommandEnvelopeInput = { command, kind: "event" }
+    envelope: CommandEnvelopeInput = { command, kind: "event" },
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
     if (!DIRECT_EVENT_TYPES.has(command.eventType)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_INVALID);
     }
-    return appendEventCommand(tx, normalized, { envelope });
+    return appendEventCommand(tx, normalized, {
+      envelope,
+      headerAlreadyLocked: this.lockedHeader(tx, normalized.workOrderId, lockHandle)
+    });
   }
 
   async appendEvidence(
     tx: Prisma.TransactionClient,
-    command: AppendEvidenceCommand
+    command: AppendEvidenceCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<EvidenceCommandOutcome> {
     await prepareCommand(tx, command.source);
     const normalized = normalizeEvidenceCommand(command);
@@ -320,7 +361,7 @@ export class AssetOperationsRepository {
     if (normalized.fileId) {
       await lockAuthorityRows(tx, [{ id: normalized.fileId, table: "file_object" }]);
     }
-    const workOrder = await lockAndLoadWorkOrder(tx, normalized.workOrderId);
+    const workOrder = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
     const predecessor = normalized.supersedesEvidenceId
       ? await lockAndLoadEvidence(tx, normalized.supersedesEvidenceId)
       : null;
@@ -404,7 +445,8 @@ export class AssetOperationsRepository {
 
   async createRestriction(
     tx: Prisma.TransactionClient,
-    command: CreateRestrictionCommand
+    command: CreateRestrictionCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<RestrictionCommandOutcome> {
     await prepareCommand(tx, command.source);
     const normalized = normalizeCreateRestrictionCommand(command);
@@ -416,7 +458,7 @@ export class AssetOperationsRepository {
     });
     if (!vehicle) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
     const linkedWorkOrder = normalized.workOrderId
-      ? await lockAndLoadWorkOrderNowait(tx, normalized.workOrderId)
+      ? await this.lockedHeaderOrLoadNowait(tx, normalized.workOrderId, lockHandle)
       : null;
     if (
       normalized.workOrderId &&
@@ -492,7 +534,8 @@ export class AssetOperationsRepository {
 
   async releaseRestriction(
     tx: Prisma.TransactionClient,
-    command: ReleaseRestrictionCommand
+    command: ReleaseRestrictionCommand,
+    lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<RestrictionCommandOutcome> {
     await prepareCommand(tx, command.source);
     const normalized = normalizeReleaseRestrictionCommand(command);
@@ -510,7 +553,7 @@ export class AssetOperationsRepository {
     });
     if (!candidate) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_NOT_FOUND);
     const workOrder = candidate.workOrderId
-      ? await lockAndLoadWorkOrderNowait(tx, candidate.workOrderId)
+      ? await this.lockedHeaderOrLoadNowait(tx, candidate.workOrderId, lockHandle)
       : null;
     const current = await lockAndLoadRestriction(tx, normalized.restrictionId);
     if (current.status !== VehicleOperationalRestrictionStatus.ACTIVE) {
@@ -591,6 +634,40 @@ export class AssetOperationsRepository {
       workOrder: eventOutcome.workOrder,
       wrote: true
     };
+  }
+
+  private lockedHeader(
+    tx: Prisma.TransactionClient,
+    workOrderId: string,
+    lockHandle?: LockedWorkOrderCommandHandle
+  ) {
+    const header =
+      lockHandle &&
+      this.lockedWorkOrderHandles.has(lockHandle) &&
+      lockHandle.transaction === tx &&
+      lockHandle.header.id === workOrderId
+        ? lockHandle.header
+        : undefined;
+    if (header && lockHandle) this.lockedWorkOrderHandles.delete(lockHandle);
+    return header;
+  }
+
+  private lockedHeaderOrLoad(
+    tx: Prisma.TransactionClient,
+    workOrderId: string,
+    lockHandle?: LockedWorkOrderCommandHandle
+  ) {
+    return this.lockedHeader(tx, workOrderId, lockHandle) ?? lockAndLoadWorkOrder(tx, workOrderId);
+  }
+
+  private lockedHeaderOrLoadNowait(
+    tx: Prisma.TransactionClient,
+    workOrderId: string,
+    lockHandle?: LockedWorkOrderCommandHandle
+  ) {
+    return (
+      this.lockedHeader(tx, workOrderId, lockHandle) ?? lockAndLoadWorkOrderNowait(tx, workOrderId)
+    );
   }
 
   async loadAvailabilitySnapshot(
@@ -796,16 +873,30 @@ async function acquireAdvisoryLock(tx: Prisma.TransactionClient, parts: readonly
 
 async function lockAuthorityRows(
   tx: Prisma.TransactionClient,
-  rows: ReadonlyArray<{ id: string; table: AuthorityTable }>
+  rows: ReadonlyArray<AuthorityLockRow | null>
 ) {
-  const ordered = [...rows].sort((left, right) =>
+  const byIdentity = new Map<string, Required<AuthorityLockRow>>();
+  for (const row of rows) {
+    if (!row) continue;
+    const identity = `${row.table}:${row.id}`;
+    const mode = row.mode ?? "share";
+    const existing = byIdentity.get(identity);
+    if (!existing || mode === "update") byIdentity.set(identity, { ...row, mode });
+  }
+  const ordered = [...byIdentity.values()].sort((left, right) =>
     left.table === right.table ? compare(left.id, right.id) : compare(left.table, right.table)
   );
   try {
     for (const row of ordered) {
-      await tx.$queryRaw(
-        Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`
-      );
+      if (row.mode === "update") {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR UPDATE NOWAIT`
+        );
+      } else {
+        await tx.$queryRaw(
+          Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`
+        );
+      }
     }
   } catch (error) {
     if (isLockUnavailableError(error)) throw conflict(ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);

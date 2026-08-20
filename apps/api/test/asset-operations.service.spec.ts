@@ -410,6 +410,36 @@ describe("AssetOperationsService", () => {
     );
   });
 
+  it("locks the current mutable header exclusively NOWAIT while related authority stays shared", async () => {
+    const harness = createHarness();
+    const relatedWorkOrderId = randomUUID();
+    (harness.workOrder as { relatedWorkOrderId: string | null }).relatedWorkOrderId =
+      relatedWorkOrderId;
+
+    await harness.service.appendNote(
+      {
+        note: "exclusive current header",
+        occurredAt: NOW,
+        source: nextSource(harness, "exclusive-current-header"),
+        workOrderId: harness.ids.workOrderId
+      },
+      harness.context
+    );
+
+    const workOrderLocks = harness.lockQueries.filter(({ sql }) =>
+      sql.includes('FROM "asset_work_order"')
+    );
+    expect(workOrderLocks.map(({ id }) => id)).toEqual(
+      [harness.ids.workOrderId, relatedWorkOrderId].sort()
+    );
+    expect(workOrderLocks.find(({ id }) => id === harness.ids.workOrderId)?.sql).toContain(
+      "FOR UPDATE NOWAIT"
+    );
+    expect(workOrderLocks.find(({ id }) => id === relatedWorkOrderId)?.sql).toContain(
+      "FOR SHARE NOWAIT"
+    );
+  });
+
   it.each([
     VehicleOperationalRestrictionType.LEGAL_HOLD,
     VehicleOperationalRestrictionType.OWNERSHIP_EXCEPTION,
@@ -768,6 +798,7 @@ function createHarness(
     type: "VEHICLE_HANDOVER_WORK_ORDER"
   };
   const sequence: string[] = [];
+  const lockQueries: Array<{ id: string | undefined; sql: string }> = [];
   const auditInputs: unknown[] = [];
   const workOrder = {
     acceptedAt: null,
@@ -903,10 +934,16 @@ function createHarness(
     }
   ];
   const tx = {
-    $queryRaw: vi.fn(async (query: { strings: readonly string[] }) => {
+    $queryRaw: vi.fn(async (query: { strings: readonly string[]; values?: readonly unknown[] }) => {
       const sql = query.strings.join("?");
       const match = sql.match(/FROM "([a-z_]+)"/);
-      if (match) sequence.push(`authority:${match[1]}`);
+      if (match) {
+        sequence.push(`authority:${match[1]}`);
+        lockQueries.push({
+          id: query.values?.find((value): value is string => typeof value === "string"),
+          sql
+        });
+      }
       return [{ id: randomUUID() }];
     }),
     assetOwner: {
@@ -1065,6 +1102,16 @@ function createHarness(
     lockSourceOwnership: vi.fn(async () => {
       sequence.push("source-lock");
     }),
+    lockWorkOrderForCommand: vi.fn(
+      async (client: typeof tx, workOrderId: string, authorityRows: readonly unknown[]) => {
+        const realRepository = new AssetOperationsRepository();
+        return realRepository.lockWorkOrderForCommand(
+          client as never,
+          workOrderId,
+          authorityRows as never
+        );
+      }
+    ),
     releaseRestriction: vi.fn(async () => ({
       event,
       restriction: { ...activeRestriction, status: VehicleOperationalRestrictionStatus.RELEASED },
@@ -1088,6 +1135,7 @@ function createHarness(
     auditInputs,
     context,
     ids,
+    lockQueries,
     repository,
     restriction: activeRestriction,
     sequence,

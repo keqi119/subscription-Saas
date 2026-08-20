@@ -90,7 +90,11 @@ describe("SubscriptionJourneyWorker", () => {
       eventType: SubscriptionJourneyEventType.STEP_COMPLETED,
       id: "notification-outbox"
     });
-    const harness = createWorkerHarness({ jobs: [job], notifications: [notification], signals: [signal] });
+    const harness = createWorkerHarness({
+      jobs: [job],
+      notifications: [notification],
+      signals: [signal]
+    });
 
     await harness.worker.runOnce();
 
@@ -99,20 +103,13 @@ describe("SubscriptionJourneyWorker", () => {
       10,
       120_000
     );
-    expect(harness.repository.claimJobs).toHaveBeenCalledWith(
-      expect.anything(),
-      10,
-      120_000
-    );
+    expect(harness.repository.claimJobs).toHaveBeenCalledWith(expect.anything(), 10, 120_000);
     expect(harness.repository.claimNotificationOutbox).toHaveBeenCalledWith(
       expect.anything(),
       10,
       120_000
     );
-    expect(harness.service.dispatchSignalOutbox).toHaveBeenCalledWith(
-      expect.anything(),
-      signal
-    );
+    expect(harness.service.dispatchSignalOutbox).toHaveBeenCalledWith(expect.anything(), signal);
     expect(harness.handlers.handle).toHaveBeenCalledWith(job);
     expect(harness.service.dispatchNotificationOutbox).toHaveBeenCalledWith(
       expect.anything(),
@@ -125,6 +122,27 @@ describe("SubscriptionJourneyWorker", () => {
       { action: "COMPLETED" }
     );
     expect(harness.repository.completeOutbox).toHaveBeenCalledTimes(2);
+  });
+
+  it("completes a durable operational-clearance wait without retry or dead-letter", async () => {
+    const job = claimedJob({ jobType: SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION });
+    const harness = createWorkerHarness({ jobs: [job] });
+    harness.handlers.handle.mockResolvedValueOnce({
+      action: "SUBSCRIPTION_ACTIVATION_WAITING_OPERATIONAL_CLEARANCE"
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.completeJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job.id,
+      job.leaseToken,
+      expect.objectContaining({
+        action: "SUBSCRIPTION_ACTIVATION_WAITING_OPERATIONAL_CLEARANCE"
+      })
+    );
+    expect(harness.repository.rescheduleJob).not.toHaveBeenCalled();
+    expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
   });
 
   it("applies bounded jitter when rescheduling a retryable job", async () => {
@@ -178,28 +196,25 @@ describe("SubscriptionJourneyWorker", () => {
     [0, 300_000],
     [1, 1_800_000],
     [2, 21_600_000]
-  ])(
-    "uses the Fadada observation delay after attemptCount %s",
-    async (attemptCount, delayMs) => {
-      const job = claimedJob({
-        attemptCount,
-        jobType: SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING
-      });
-      const harness = createWorkerHarness({
-        handlerError: new Error("Fadada signing is still pending."),
-        jobs: [job]
-      });
+  ])("uses the Fadada observation delay after attemptCount %s", async (attemptCount, delayMs) => {
+    const job = claimedJob({
+      attemptCount,
+      jobType: SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING
+    });
+    const harness = createWorkerHarness({
+      handlerError: new Error("Fadada signing is still pending."),
+      jobs: [job]
+    });
 
-      await harness.worker.runOnce();
+    await harness.worker.runOnce();
 
-      expect(harness.repository.rescheduleJob).toHaveBeenCalledWith(
-        expect.anything(),
-        job.id,
-        job.leaseToken,
-        expect.objectContaining({ delayMs })
-      );
-    }
-  );
+    expect(harness.repository.rescheduleJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job.id,
+      job.leaseToken,
+      expect.objectContaining({ delayMs })
+    );
+  });
 
   it("dead-letters the fifth failed execution", async () => {
     const job = claimedJob({ attemptCount: 4, maxAttempts: 5 });
@@ -314,9 +329,7 @@ interface HarnessOptions {
 function createWorkerHarness(options: HarnessOptions = {}) {
   const tx = {};
   const prisma = {
-    $transaction: vi.fn(async (operation: (transaction: unknown) => unknown) =>
-      operation(tx)
-    )
+    $transaction: vi.fn(async (operation: (transaction: unknown) => unknown) => operation(tx))
   };
   const repository = {
     claimJobs: vi.fn(async () => options.jobs ?? []),
@@ -383,9 +396,7 @@ function claimedJob(overrides: Partial<ClaimedJourneyJob> = {}): ClaimedJourneyJ
   };
 }
 
-function claimedOutbox(
-  overrides: Partial<ClaimedJourneyOutbox> = {}
-): ClaimedJourneyOutbox {
+function claimedOutbox(overrides: Partial<ClaimedJourneyOutbox> = {}): ClaimedJourneyOutbox {
   const now = new Date("2026-08-06T00:00:00.000Z");
   return {
     aggregateId: "journey-1",

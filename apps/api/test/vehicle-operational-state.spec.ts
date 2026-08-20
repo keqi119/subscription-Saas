@@ -171,6 +171,42 @@ describe("VehicleOperationalStateResolver", () => {
     ]);
   });
 
+  it("orders retired 100 above operational restriction 95 above active lease 90", () => {
+    const resolver = new VehicleOperationalStateResolver();
+    const restrictedLease = resolver.resolve({
+      asOf,
+      conditionReports: [],
+      leases: [lease({ status: LeaseStatus.ACTIVE })],
+      operationalRestrictions: [restriction()],
+      orders: [order({ orderStatus: OrderStatus.ACTIVE })],
+      serviceCases: [],
+      vehicle: vehicle({ status: VehicleStatus.AVAILABLE })
+    });
+    const retired = resolver.resolve({
+      asOf,
+      conditionReports: [],
+      leases: [lease({ status: LeaseStatus.ACTIVE })],
+      operationalRestrictions: [restriction()],
+      orders: [order({ orderStatus: OrderStatus.ACTIVE })],
+      serviceCases: [],
+      vehicle: vehicle({ status: VehicleStatus.RETIRED })
+    });
+
+    expect(restrictedLease.computedState).toBe(
+      VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED
+    );
+    expect(restrictedLease.conflicts.map(({ state }) => state)).toContain(
+      VehicleComputedOperationalState.LEASED_ACTIVE
+    );
+    expect(retired.computedState).toBe(VehicleComputedOperationalState.RETIRED_OR_INACTIVE);
+    expect(retired.conflicts.map(({ state }) => state)).toEqual(
+      expect.arrayContaining([
+        VehicleComputedOperationalState.OPERATIONALLY_RESTRICTED,
+        VehicleComputedOperationalState.LEASED_ACTIVE
+      ])
+    );
+  });
+
   it("does not turn an advisory restriction into an operational block", () => {
     const result = new VehicleOperationalStateResolver().resolve({
       asOf,
@@ -202,6 +238,15 @@ describe("VehicleOperationalStateRepository", () => {
     expect(prisma.subscriptionOrder.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.serviceCase.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.vehicleOperationalRestriction.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.vehicleOperationalRestriction.findMany).toHaveBeenCalledWith({
+      orderBy: [{ startedAt: "desc" }, { id: "asc" }],
+      select: expect.any(Object),
+      where: {
+        startedAt: { lte: asOf },
+        status: "ACTIVE",
+        vehicleId: "vehicle-1"
+      }
+    });
     expect(snapshot.operationalRestrictions).toEqual([restriction()]);
     expect(prisma.vehicleConditionReport.findMany).toHaveBeenCalledTimes(1);
     expect(prisma.vehicle.create).not.toHaveBeenCalled();

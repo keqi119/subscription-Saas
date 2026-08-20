@@ -28,6 +28,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { CustomerService } from "../src/customer/customer.service";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 interface ApprovalRiskInput {
   applicationId: string;
@@ -100,13 +101,9 @@ describe("application self-service review APIs", () => {
         customerProfileDisplaySource: expectedSource,
         customerProfileReadiness: { complete: true, missingFields: [] },
         customerProfileSnapshot:
-          expectedSource === "SNAPSHOT"
-            ? expect.objectContaining({ snapshotVersion: 1 })
-            : null,
+          expectedSource === "SNAPSHOT" ? expect.objectContaining({ snapshotVersion: 1 }) : null,
         customerProfileUpdatedAt:
-          expectedSource === "SNAPSHOT"
-            ? "2026-06-05T09:00:00.000Z"
-            : "2026-06-05T10:00:00.000Z"
+          expectedSource === "SNAPSHOT" ? "2026-06-05T09:00:00.000Z" : "2026-06-05T10:00:00.000Z"
       });
     }
   );
@@ -144,20 +141,13 @@ describe("application self-service review APIs", () => {
         profile: null
       },
       application: {
-        materialGroups: approvedRequiredMaterialGroups(
-          new Date("2026-06-05T10:00:00.000Z")
-        ),
+        materialGroups: approvedRequiredMaterialGroups(new Date("2026-06-05T10:00:00.000Z")),
         status: ApplicationStatus.DRAFT
       }
     });
 
     await expect(
-      harness.service.submitApplication(
-        harness.application.id,
-        {},
-        harness.user,
-        harness.context
-      )
+      harness.service.submitApplication(harness.application.id, {}, harness.user, harness.context)
     ).rejects.toThrow("CUSTOMER_APPLICATION_PROFILE_INCOMPLETE");
     expect(harness.tx.application.update).not.toHaveBeenCalled();
   });
@@ -166,9 +156,7 @@ describe("application self-service review APIs", () => {
     const harness = createApplicationReviewHarness({
       application: {
         applicationSource: ApplicationSource.SALES_ASSISTED,
-        materialGroups: approvedRequiredMaterialGroups(
-          new Date("2026-06-05T10:00:00.000Z")
-        ),
+        materialGroups: approvedRequiredMaterialGroups(new Date("2026-06-05T10:00:00.000Z")),
         status: ApplicationStatus.DRAFT
       }
     });
@@ -202,9 +190,7 @@ describe("application self-service review APIs", () => {
           snapshotVersion: 1,
           source: "CUSTOMER_PORTAL_PROFILE"
         },
-        materialGroups: approvedRequiredMaterialGroups(
-          new Date("2026-06-05T10:00:00.000Z")
-        ),
+        materialGroups: approvedRequiredMaterialGroups(new Date("2026-06-05T10:00:00.000Z")),
         status: ApplicationStatus.NEED_MORE_INFO
       }
     });
@@ -274,8 +260,7 @@ describe("application self-service review APIs", () => {
     );
     expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
       applicationId: harness.application.id,
-      eventKey:
-        "application:application-1:facts:credit:application-action-1",
+      eventKey: "application:application-1:facts:credit:application-action-1",
       payload: { fact: "credit", status: OrderReviewStatus.APPROVED },
       type: "APPLICATION_FACTS_CHANGED"
     });
@@ -512,15 +497,12 @@ describe("application self-service review APIs", () => {
     expect(application.finalPlanSnapshot).toEqual(
       expect.objectContaining({ finalPlanRevision: 1 })
     );
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledWith(
-      harness.tx,
-      {
-        actorId: harness.user.id,
-        applicationId: harness.application.id,
-        expectedStepCode: "FINAL_PLAN_DECISION",
-        payload: { finalPlanRevision: 1 }
-      }
-    );
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledWith(harness.tx, {
+      actorId: harness.user.id,
+      applicationId: harness.application.id,
+      expectedStepCode: "FINAL_PLAN_DECISION",
+      payload: { finalPlanRevision: 1 }
+    });
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
   });
 
@@ -604,18 +586,15 @@ describe("application self-service review APIs", () => {
         vehicleReviewStatus: OrderReviewStatus.APPROVED
       })
     );
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenLastCalledWith(
-      harness.tx,
-      {
-        actorId: harness.user.id,
-        applicationId: harness.application.id,
-        expectedStepCode: "FINAL_VEHICLE_ALLOCATION",
-        payload: {
-          finalPlanRevision: 1,
-          vehicleId: harness.vehicle.id
-        }
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenLastCalledWith(harness.tx, {
+      actorId: harness.user.id,
+      applicationId: harness.application.id,
+      expectedStepCode: "FINAL_VEHICLE_ALLOCATION",
+      payload: {
+        finalPlanRevision: 1,
+        vehicleId: harness.vehicle.id
       }
-    );
+    });
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
   });
 
@@ -636,8 +615,7 @@ describe("application self-service review APIs", () => {
         planConfirmStatus: PlanConfirmStatus.CONFIRMED
       }
     });
-    harness.state.journeyStep =
-      SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION;
+    harness.state.journeyStep = SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION;
 
     const application = await harness.service.reviewApplication(
       harness.application.id,
@@ -728,15 +706,14 @@ describe("application self-service review APIs", () => {
     });
     harness.state.vehicleStatus = VehicleStatus.AVAILABLE;
     harness.vehicle.currentSalePriceAmount += 100000n;
-    harness.tx.vehicle.findUnique.mockImplementation(
-      async (...args: unknown[]) =>
-        (args[0] as { where: { id: string } }).where.id === "vehicle-old"
-          ? {
-              ...harness.vehicle,
-              id: "vehicle-old",
-              status: VehicleStatus.REVIEW_RESERVED
-            }
-          : { ...harness.vehicle, status: harness.state.vehicleStatus }
+    harness.tx.vehicle.findUnique.mockImplementation(async (...args: unknown[]) =>
+      (args[0] as { where: { id: string } }).where.id === "vehicle-old"
+        ? {
+            ...harness.vehicle,
+            id: "vehicle-old",
+            status: VehicleStatus.REVIEW_RESERVED
+          }
+        : { ...harness.vehicle, status: harness.state.vehicleStatus }
     );
 
     const result = await harness.service.allocateJourneyVehicle(
@@ -790,15 +767,14 @@ describe("application self-service review APIs", () => {
       }
     });
     harness.state.vehicleStatus = VehicleStatus.RESERVED;
-    harness.tx.vehicle.findUnique.mockImplementation(
-      async (...args: unknown[]) =>
-        (args[0] as { where: { id: string } }).where.id === "vehicle-old"
-          ? {
-              ...harness.vehicle,
-              id: "vehicle-old",
-              status: VehicleStatus.REVIEW_RESERVED
-            }
-          : { ...harness.vehicle, status: harness.state.vehicleStatus }
+    harness.tx.vehicle.findUnique.mockImplementation(async (...args: unknown[]) =>
+      (args[0] as { where: { id: string } }).where.id === "vehicle-old"
+        ? {
+            ...harness.vehicle,
+            id: "vehicle-old",
+            status: VehicleStatus.REVIEW_RESERVED
+          }
+        : { ...harness.vehicle, status: harness.state.vehicleStatus }
     );
 
     await expect(
@@ -824,11 +800,7 @@ describe("application self-service review APIs", () => {
     });
 
     await expect(
-      harness.service.finalizeApplicationPlan(
-        harness.application.id,
-        harness.user,
-        harness.context
-      )
+      harness.service.finalizeApplicationPlan(harness.application.id, harness.user, harness.context)
     ).rejects.toThrow("所选订阅套餐当前不可用");
 
     expect(harness.state.application.productReviewStatus).toBe(OrderReviewStatus.PENDING);
@@ -842,11 +814,7 @@ describe("application self-service review APIs", () => {
     });
 
     await expect(
-      harness.service.finalizeApplicationPlan(
-        harness.application.id,
-        harness.user,
-        harness.context
-      )
+      harness.service.finalizeApplicationPlan(harness.application.id, harness.user, harness.context)
     ).rejects.toThrow("当前车辆不再处于审核占用状态，请重新选择车辆。");
 
     expect(harness.state.application.productReviewStatus).toBe(OrderReviewStatus.PENDING);
@@ -909,6 +877,13 @@ describe("application self-service review APIs", () => {
       })
     );
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      harness.vehicle.id,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date),
+      VehicleStatus.AVAILABLE
+    );
   });
 
   it("creates and reuses a journey order in the caller transaction", async () => {
@@ -939,6 +914,13 @@ describe("application self-service review APIs", () => {
     expect(harness.tx.subscriptionOrder.create).toHaveBeenCalledOnce();
     expect(harness.prisma.$transaction).not.toHaveBeenCalled();
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      harness.vehicle.id,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      expect.any(Date),
+      VehicleStatus.AVAILABLE
+    );
   });
 
   it("rejects a stale confirmed plan revision before journey order creation", async () => {
@@ -1057,13 +1039,15 @@ describe("application self-service review APIs", () => {
   });
 });
 
-function createApplicationReviewHarness(overrides: {
-  application?: Record<string, unknown>;
-  customer?: Record<string, unknown>;
-  journeyStep?: SubscriptionJourneyStepCode;
-  plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
-  vehicle?: Record<string, unknown>;
-} = {}) {
+function createApplicationReviewHarness(
+  overrides: {
+    application?: Record<string, unknown>;
+    customer?: Record<string, unknown>;
+    journeyStep?: SubscriptionJourneyStepCode;
+    plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
+    vehicle?: Record<string, unknown>;
+  } = {}
+) {
   const now = new Date("2026-06-05T10:00:00.000Z");
   const user = {
     id: "00000000-0000-4000-8000-000000000001",
@@ -1125,25 +1109,33 @@ function createApplicationReviewHarness(overrides: {
       })
     },
     customerIdentity: {
-      upsert: vi.fn(async ({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
-        state.customer = {
-          ...state.customer,
-          identity: {
-            ...(state.customer.identity ?? {}),
-            ...create,
-            ...update
-          }
-        };
-        state.application = makeApplication(now, {
-          ...state.application,
-          customer: makeCustomerForApplication({
-            identity: state.customer.identity,
-            mobile: state.customer.mobile,
-            name: state.customer.name
-          })
-        });
-        return state.customer.identity;
-      })
+      upsert: vi.fn(
+        async ({
+          create,
+          update
+        }: {
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          state.customer = {
+            ...state.customer,
+            identity: {
+              ...(state.customer.identity ?? {}),
+              ...create,
+              ...update
+            }
+          };
+          state.application = makeApplication(now, {
+            ...state.application,
+            customer: makeCustomerForApplication({
+              identity: state.customer.identity,
+              mobile: state.customer.mobile,
+              name: state.customer.name
+            })
+          });
+          return state.customer.identity;
+        }
+      )
     },
     depositRule: {
       findFirst: vi.fn(async () => ({
@@ -1190,9 +1182,7 @@ function createApplicationReviewHarness(overrides: {
     },
     subscriptionJourney: {
       findUnique: vi.fn(async () =>
-        state.journeyStep
-          ? { currentStepCode: state.journeyStep, id: "journey-1" }
-          : null
+        state.journeyStep ? { currentStepCode: state.journeyStep, id: "journey-1" } : null
       )
     },
     subscriptionPlan: {
@@ -1215,17 +1205,27 @@ function createApplicationReviewHarness(overrides: {
         state.vehicleStatus = data.status as VehicleStatus;
         return { ...vehicle, status: state.vehicleStatus, updatedBy: data.updatedBy };
       }),
-      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
-        if (state.vehicleStatus !== where.status) {
-          return { count: 0 };
+      updateMany: vi.fn(
+        async ({
+          data,
+          where
+        }: {
+          data: Record<string, unknown>;
+          where: Record<string, unknown>;
+        }) => {
+          if (state.vehicleStatus !== where.status) {
+            return { count: 0 };
+          }
+          state.vehicleStatus = data.status as VehicleStatus;
+          return { count: 1 };
         }
-        state.vehicleStatus = data.status as VehicleStatus;
-        return { count: 1 };
-      })
+      )
     }
   };
   const prisma = {
-    $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),
+    $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) =>
+      callback(tx)
+    ),
     application: {
       findMany: vi.fn(async () =>
         state.application.applicationSource === ApplicationSource.SELF_SERVICE
@@ -1242,9 +1242,7 @@ function createApplicationReviewHarness(overrides: {
   const journeySignal = {
     completeManualDecision: vi.fn(async () => undefined),
     record: vi.fn(async () => undefined),
-    requireCustomerReconfirmationAfterManualDecision: vi.fn(
-      async () => undefined
-    )
+    requireCustomerReconfirmationAfterManualDecision: vi.fn(async () => undefined)
   };
   const riskService = {
     createApprovalRiskResult: vi.fn(async (_tx: typeof tx, input: ApprovalRiskInput) => ({
@@ -1273,17 +1271,22 @@ function createApplicationReviewHarness(overrides: {
     }))
   };
   const notificationService = { notifyCustomer: vi.fn(async () => []) };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => undefined)
+  };
   const service = new CustomerService(
     auditService as never,
     prisma as never,
     riskService as never,
     {} as never,
     notificationService as never,
-    journeySignal as never
+    journeySignal as never,
+    assetOperationsService as never
   );
 
   return {
     application: state.application,
+    assetOperationsService,
     auditService,
     context,
     journeySignal,
@@ -1563,7 +1566,10 @@ function makeVehicle(now: Date, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}) {
+function makePlan(
+  now: Date,
+  overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}
+) {
   const { vehiclePackage: vehiclePackageOverrides, ...planOverrides } = overrides;
   const product = {
     deletedAt: null,

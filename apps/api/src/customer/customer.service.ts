@@ -38,6 +38,8 @@ import { PermissionCode } from "@subscription-saas/shared";
 import type { Readable } from "node:stream";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import {
@@ -278,14 +280,10 @@ type ApplicationFinalPlanDetails = {
 
 const SELF_SERVICE_APPLICATION_DEPOSIT_NOTICE =
   "当前选择为意向订阅方案，押金金额将根据您的资质审核结果最终确认。";
-const SELF_SERVICE_APPLICATION_SUCCESS_MESSAGE =
-  "自助进件已提交，押金金额将在资质审核后确认。";
-const SELF_SERVICE_APPLICATION_MATERIALS_HINT =
-  "请继续上传身份证、驾驶证等资质材料。";
-const SELF_SERVICE_MANUAL_QUOTE_MESSAGE =
-  "该套餐需后台报价确认，暂不支持客户自助提交。";
-const SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE =
-  "所选车辆当前不可租用，请重新选择车辆";
+const SELF_SERVICE_APPLICATION_SUCCESS_MESSAGE = "自助进件已提交，押金金额将在资质审核后确认。";
+const SELF_SERVICE_APPLICATION_MATERIALS_HINT = "请继续上传身份证、驾驶证等资质材料。";
+const SELF_SERVICE_MANUAL_QUOTE_MESSAGE = "该套餐需后台报价确认，暂不支持客户自助提交。";
+const SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE = "所选车辆当前不可租用，请重新选择车辆";
 
 export interface UploadedMaterialFile {
   buffer: Buffer;
@@ -316,7 +314,8 @@ export class CustomerService {
     private readonly storageService: StorageService,
     @Optional() private readonly notificationService?: NotificationService,
     @Optional()
-    private readonly subscriptionJourneySignal?: SubscriptionJourneySignalService
+    private readonly subscriptionJourneySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
   private async safeNotifyCustomer(input: {
@@ -384,50 +383,52 @@ export class CustomerService {
   async createCustomer(dto: CreateCustomerDto, user: RequestUser, context: RequestContext) {
     const hasFullScope = canViewAll(user);
     const ownerUserId = hasFullScope && dto.ownerUserId ? dto.ownerUserId : user.id;
-    const customer = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const created = await tx.customer.create({
-        data: {
-          createdBy: user.id,
-          customerNo: createBusinessNo("CUS"),
-          customerType: dto.customerType,
-          grade: hasFullScope ? dto.grade : undefined,
-          mobile: dto.mobile,
-          name: dto.name,
-          ownerUserId,
-          remark: dto.remark,
-          sourceChannel: dto.sourceChannel,
-          status: hasFullScope ? (dto.status ?? CustomerStatus.LEAD) : CustomerStatus.LEAD,
-          updatedBy: user.id
+    const customer = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const created = await tx.customer.create({
+          data: {
+            createdBy: user.id,
+            customerNo: createBusinessNo("CUS"),
+            customerType: dto.customerType,
+            grade: hasFullScope ? dto.grade : undefined,
+            mobile: dto.mobile,
+            name: dto.name,
+            ownerUserId,
+            remark: dto.remark,
+            sourceChannel: dto.sourceChannel,
+            status: hasFullScope ? (dto.status ?? CustomerStatus.LEAD) : CustomerStatus.LEAD,
+            updatedBy: user.id
+          }
+        });
+
+        if (dto.identity) {
+          await tx.customerIdentity.create({
+            data: {
+              ...identityData(dto.identity),
+              createdBy: user.id,
+              customerId: created.id,
+              updatedBy: user.id
+            }
+          });
         }
-      });
 
-      if (dto.identity) {
-        await tx.customerIdentity.create({
-          data: {
-            ...identityData(dto.identity),
-            createdBy: user.id,
-            customerId: created.id,
-            updatedBy: user.id
-          }
+        if (dto.profile) {
+          await tx.customerProfile.create({
+            data: {
+              ...profileData(dto.profile),
+              createdBy: user.id,
+              customerId: created.id,
+              updatedBy: user.id
+            }
+          });
+        }
+
+        return tx.customer.findUniqueOrThrow({
+          include: customerInclude,
+          where: { id: created.id }
         });
-      }
-
-      if (dto.profile) {
-        await tx.customerProfile.create({
-          data: {
-            ...profileData(dto.profile),
-            createdBy: user.id,
-            customerId: created.id,
-            updatedBy: user.id
-          }
-        });
-      }
-
-      return tx.customer.findUniqueOrThrow({
-        include: customerInclude,
-        where: { id: created.id }
-      });
-    }));
+      })
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -698,7 +699,9 @@ export class CustomerService {
       const result = await this.prisma.$transaction(async (tx) => {
         const depositRule = await findActiveApplicationDepositRule(tx, customerGrade);
         if (!depositRule) {
-          throw new BadRequestException(`No active deposit rule configured for grade ${customerGrade}.`);
+          throw new BadRequestException(
+            `No active deposit rule configured for grade ${customerGrade}.`
+          );
         }
 
         const depositRuleSnapshot = toJsonSnapshot({
@@ -766,7 +769,13 @@ export class CustomerService {
           userAgent: context.userAgent
         });
       }
-      await this.auditApplicationChange(AuditAction.APPROVE, before, result.application, user, context);
+      await this.auditApplicationChange(
+        AuditAction.APPROVE,
+        before,
+        result.application,
+        user,
+        context
+      );
       return toApplicationView(result.application, user);
     }
 
@@ -886,13 +895,7 @@ export class CustomerService {
             "The journey is not waiting for a final-plan decision."
           );
         }
-        const application = await this.applyJourneyFinalPlanDecision(
-          tx,
-          id,
-          {},
-          user,
-          context
-        );
+        const application = await this.applyJourneyFinalPlanDecision(tx, id, {}, user, context);
         return { application, details: null };
       }
       const details = await loadApplicationFinalPlanDetails(tx, before);
@@ -936,7 +939,13 @@ export class CustomerService {
       return { application, details };
     });
 
-    await this.auditApplicationChange(AuditAction.APPROVE, before, result.application, user, context);
+    await this.auditApplicationChange(
+      AuditAction.APPROVE,
+      before,
+      result.application,
+      user,
+      context
+    );
     await this.safeNotifyCustomer({
       aggregateId: result.application.id,
       aggregateNo: result.application.applicationNo,
@@ -965,123 +974,140 @@ export class CustomerService {
       throw new BadRequestException("押金确认后才可以生成订单。");
     }
 
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const details = await loadApplicationFinalPlanDetails(tx, before);
-      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
-      assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const details = await loadApplicationFinalPlanDetails(tx, before);
+        await lockVehicleAvailabilityAuthorities(tx, [details.vehicle.id]);
+        const vehicleBefore = await tx.vehicle.findUnique({ where: { id: details.vehicle.id } });
+        assertApplicationVehicleCanEnterOrder(before, vehicleBefore);
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          details.vehicle.id,
+          VehicleAvailabilityPurpose.ALLOCATION,
+          new Date(),
+          before.applicationSource === ApplicationSource.SELF_SERVICE
+            ? VehicleStatus.AVAILABLE
+            : undefined
+        );
 
-      const vehicleUpdate = await tx.vehicle.updateMany({
-        data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
-        where: {
-          deletedAt: null,
-          id: details.vehicle.id,
-          status:
-            before.applicationSource === ApplicationSource.SELF_SERVICE
-              ? VehicleStatus.REVIEW_RESERVED
-              : VehicleStatus.AVAILABLE
+        const vehicleUpdate = await tx.vehicle.updateMany({
+          data: { status: VehicleStatus.RESERVED, updatedBy: user.id },
+          where: {
+            deletedAt: null,
+            id: details.vehicle.id,
+            status:
+              before.applicationSource === ApplicationSource.SELF_SERVICE
+                ? VehicleStatus.REVIEW_RESERVED
+                : VehicleStatus.AVAILABLE
+          }
+        });
+        if (vehicleUpdate.count !== 1) {
+          throw new BadRequestException("车辆当前状态不允许生成订单。");
         }
-      });
-      if (vehicleUpdate.count !== 1) {
-        throw new BadRequestException("车辆当前状态不允许生成订单。");
-      }
-      const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: details.vehicle.id } });
+        const vehicleAfter = await tx.vehicle.findUniqueOrThrow({
+          where: { id: details.vehicle.id }
+        });
 
-      const finalPlanSnapshot = (before.finalPlanSnapshot ?? details.finalPlanSnapshot) as Prisma.InputJsonValue;
-      const modelSnapshot = buildVehicleModelSnapshot(
-        toCanonicalModelIdentity(details.vehicle)
-      );
-      const quote = await tx.subscriptionQuote.create({
-        data: {
-          applicationId: before.id,
-          benefitPackageId: details.plan.benefitPackage?.id ?? null,
-          benefitPackagePriceAmount: details.benefitPackagePriceAmount,
-          confirmedAt: new Date(),
-          confirmedBy: user.id,
-          createdBy: user.id,
-          customerId: before.customerId,
-          customerSelectedSnapshot: before.customerSelectedSnapshot as Prisma.InputJsonValue | undefined,
-          depositAmount: finalDepositAmount,
-          depositRuleSnapshot: before.depositRuleSnapshot as Prisma.InputJsonValue | undefined,
-          energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
-          energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
-          energyPackageId: details.plan.energyPackage.id,
-          energyPackagePriceAmount: details.energyPackagePriceAmount,
-          mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
-          mileagePackageId: details.plan.mileagePackage.id,
-          mileagePackagePriceAmount: details.mileagePackagePriceAmount,
-          monthlyFeeAmount: details.monthlyFeeAmount,
-          monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
-          monthlyFeeRate: details.plan.monthlyFeeRate,
-          ...modelSnapshot,
-          overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
-          packageSnapshot: details.packageSnapshot,
-          periodMonths: details.periodMonths,
-          productId: details.plan.productId,
-          productVersionId: details.plan.productVersionId,
-          quoteNo: createBusinessNo("QUO"),
-          riskResultId: null,
-          status: QuoteStatus.CONFIRMED,
-          subscriptionPlanId: details.plan.id,
-          updatedBy: user.id,
-          vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
-          vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
-          vehicleId: details.vehicle.id,
-          vehiclePackageId: details.plan.vehiclePackage.id,
-          vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
-          vehicleSalePriceAmount: details.vehicleSalePriceAmount,
-          vehicleSnapshot: details.vehicleSnapshot
-        }
-      });
+        const finalPlanSnapshot = (before.finalPlanSnapshot ??
+          details.finalPlanSnapshot) as Prisma.InputJsonValue;
+        const modelSnapshot = buildVehicleModelSnapshot(toCanonicalModelIdentity(details.vehicle));
+        const quote = await tx.subscriptionQuote.create({
+          data: {
+            applicationId: before.id,
+            benefitPackageId: details.plan.benefitPackage?.id ?? null,
+            benefitPackagePriceAmount: details.benefitPackagePriceAmount,
+            confirmedAt: new Date(),
+            confirmedBy: user.id,
+            createdBy: user.id,
+            customerId: before.customerId,
+            customerSelectedSnapshot: before.customerSelectedSnapshot as
+              | Prisma.InputJsonValue
+              | undefined,
+            depositAmount: finalDepositAmount,
+            depositRuleSnapshot: before.depositRuleSnapshot as Prisma.InputJsonValue | undefined,
+            energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+            energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+            energyPackageId: details.plan.energyPackage.id,
+            energyPackagePriceAmount: details.energyPackagePriceAmount,
+            mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+            mileagePackageId: details.plan.mileagePackage.id,
+            mileagePackagePriceAmount: details.mileagePackagePriceAmount,
+            monthlyFeeAmount: details.monthlyFeeAmount,
+            monthlyFeeCapAmount: details.vehicleBaseFeeCapAmount,
+            monthlyFeeRate: details.plan.monthlyFeeRate,
+            ...modelSnapshot,
+            overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+            packageSnapshot: details.packageSnapshot,
+            periodMonths: details.periodMonths,
+            productId: details.plan.productId,
+            productVersionId: details.plan.productVersionId,
+            quoteNo: createBusinessNo("QUO"),
+            riskResultId: null,
+            status: QuoteStatus.CONFIRMED,
+            subscriptionPlanId: details.plan.id,
+            updatedBy: user.id,
+            vehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
+            vehicleBaseFeeCapAmount: details.vehicleBaseFeeCapAmount,
+            vehicleId: details.vehicle.id,
+            vehiclePackageId: details.plan.vehiclePackage.id,
+            vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+            vehicleSalePriceAmount: details.vehicleSalePriceAmount,
+            vehicleSnapshot: details.vehicleSnapshot
+          }
+        });
 
-      const confirmedAt = before.finalPlanConfirmedAt ?? new Date();
-      const order = await tx.subscriptionOrder.create({
-        data: {
-          applicationId: before.id,
-          businessType: BusinessType.SUBSCRIPTION,
-          createdBy: user.id,
-          creditReviewStatus: OrderReviewStatus.APPROVED,
-          customerConfirmedAt: confirmedAt,
-          customerId: before.customerId,
-          customerSelectedSnapshot: before.customerSelectedSnapshot as Prisma.InputJsonValue | undefined,
-          depositAmount: finalDepositAmount,
-          depositStatus: DepositStatus.CONFIRMED,
-          energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
-          energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
-          finalDepositAmount,
-          finalPlanConfirmedAt: confirmedAt,
-          finalPlanSnapshot,
-          mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
-          monthlyFeeAmount: details.monthlyFeeAmount,
-          ...modelSnapshot,
-          orderNo: createBusinessNo("ORD"),
-          orderSource: mapApplicationSourceToOrderSource(before.applicationSource),
-          orderStatus: OrderStatus.PENDING_CONTRACT,
-          overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
-          periodMonths: details.periodMonths,
-          productId: details.plan.productId,
-          productReviewStatus: OrderReviewStatus.APPROVED,
-          productVersionId: details.plan.productVersionId,
-          quoteId: quote.id,
-          quoteSnapshot: finalPlanSnapshot,
-          riskResultId: null,
-          updatedBy: user.id,
-          vehicleId: details.vehicle.id,
-          vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
-          vehicleReviewStatus: OrderReviewStatus.APPROVED
-        }
-      });
+        const confirmedAt = before.finalPlanConfirmedAt ?? new Date();
+        const order = await tx.subscriptionOrder.create({
+          data: {
+            applicationId: before.id,
+            businessType: BusinessType.SUBSCRIPTION,
+            createdBy: user.id,
+            creditReviewStatus: OrderReviewStatus.APPROVED,
+            customerConfirmedAt: confirmedAt,
+            customerId: before.customerId,
+            customerSelectedSnapshot: before.customerSelectedSnapshot as
+              | Prisma.InputJsonValue
+              | undefined,
+            depositAmount: finalDepositAmount,
+            depositStatus: DepositStatus.CONFIRMED,
+            energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
+            energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
+            finalDepositAmount,
+            finalPlanConfirmedAt: confirmedAt,
+            finalPlanSnapshot,
+            mileageLimitKm: details.plan.mileagePackage.monthlyMileageKm,
+            monthlyFeeAmount: details.monthlyFeeAmount,
+            ...modelSnapshot,
+            orderNo: createBusinessNo("ORD"),
+            orderSource: mapApplicationSourceToOrderSource(before.applicationSource),
+            orderStatus: OrderStatus.PENDING_CONTRACT,
+            overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
+            periodMonths: details.periodMonths,
+            productId: details.plan.productId,
+            productReviewStatus: OrderReviewStatus.APPROVED,
+            productVersionId: details.plan.productVersionId,
+            quoteId: quote.id,
+            quoteSnapshot: finalPlanSnapshot,
+            riskResultId: null,
+            updatedBy: user.id,
+            vehicleId: details.vehicle.id,
+            vehiclePurchasePriceAmount: details.vehicle.purchasePriceAmount,
+            vehicleReviewStatus: OrderReviewStatus.APPROVED
+          }
+        });
 
-      await createApplicationActionLog(tx, {
-        actionType: ApplicationActionType.APPROVE,
-        applicationId: id,
-        comment: "生成正式订单",
-        fromStatus: before.status,
-        operator: user,
-        toStatus: before.status
-      });
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.APPROVE,
+          applicationId: id,
+          comment: "生成正式订单",
+          fromStatus: before.status,
+          operator: user,
+          toStatus: before.status
+        });
 
-      return { order, quote, vehicleAfter, vehicleBefore };
-    }));
+        return { order, quote, vehicleAfter, vehicleBefore };
+      })
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -1141,16 +1167,11 @@ export class CustomerService {
       where: { id: applicationId }
     });
     if (!application || application.deletedAt) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_NOT_FOUND",
-        "The journey application was not found."
-      );
+      throw journeyError("JOURNEY_APPLICATION_NOT_FOUND", "The journey application was not found.");
     }
     ensureCanAccessApplication(application, user);
 
-    const existingOrder = application.orders.find(
-      (order) => !order.deletedAt
-    );
+    const existingOrder = application.orders.find((order) => !order.deletedAt);
     if (existingOrder) {
       const existing = await tx.subscriptionOrder.findUnique({
         where: { id: existingOrder.id }
@@ -1197,6 +1218,7 @@ export class CustomerService {
         "The journey application has no allocated concrete vehicle."
       );
     }
+    await lockVehicleAvailabilityAuthorities(tx, [application.finalVehicleId]);
     const allocatedVehicle = await tx.vehicle.findUnique({
       where: { id: application.finalVehicleId }
     });
@@ -1210,6 +1232,13 @@ export class CustomerService {
         "The allocated journey vehicle is no longer reserved for review."
       );
     }
+    await this.assetOperationsService?.assertVehicleAvailable(
+      tx,
+      application.finalVehicleId,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      new Date(),
+      VehicleStatus.AVAILABLE
+    );
 
     assertApplicationCanCreateOrder(application);
     const finalDepositAmount = application.finalDepositAmount;
@@ -1255,9 +1284,7 @@ export class CustomerService {
 
     const finalPlanSnapshot = (application.finalPlanSnapshot ??
       details.finalPlanSnapshot) as Prisma.InputJsonValue;
-    const modelSnapshot = buildVehicleModelSnapshot(
-      toCanonicalModelIdentity(details.vehicle)
-    );
+    const modelSnapshot = buildVehicleModelSnapshot(toCanonicalModelIdentity(details.vehicle));
     const quote = await tx.subscriptionQuote.create({
       data: {
         applicationId: application.id,
@@ -1271,9 +1298,7 @@ export class CustomerService {
           | Prisma.InputJsonValue
           | undefined,
         depositAmount: finalDepositAmount,
-        depositRuleSnapshot: application.depositRuleSnapshot as
-          | Prisma.InputJsonValue
-          | undefined,
+        depositRuleSnapshot: application.depositRuleSnapshot as Prisma.InputJsonValue | undefined,
         energyLimitCount: details.plan.energyPackage.monthlyEnergyCount,
         energyLimitKwh: details.plan.energyPackage.monthlyEnergyKwh,
         energyPackageId: details.plan.energyPackage.id,
@@ -1326,9 +1351,7 @@ export class CustomerService {
         monthlyFeeAmount: details.monthlyFeeAmount,
         ...modelSnapshot,
         orderNo: createBusinessNo("ORD"),
-        orderSource: mapApplicationSourceToOrderSource(
-          application.applicationSource
-        ),
+        orderSource: mapApplicationSourceToOrderSource(application.applicationSource),
         orderStatus: OrderStatus.PENDING_CONTRACT,
         overMileageFeeAmount: details.plan.mileagePackage.overMileageFeeAmount,
         periodMonths: details.periodMonths,
@@ -1359,42 +1382,44 @@ export class CustomerService {
     const customer = await this.findCustomerOrThrow(dto.customerId);
     ensureCanAccessCustomer(customer, user);
 
-    const application = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const created = await tx.application.create({
-        data: {
-          applicationNo: createBusinessNo("APP"),
-          createdBy: user.id,
-          customerId: dto.customerId,
-          intendedModel: dto.intendedModel,
-          intendedPeriodMonths: dto.intendedPeriodMonths,
-          salesUserId: customer.ownerUserId ?? user.id,
-          updatedBy: user.id
-        }
-      });
+    const application = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const created = await tx.application.create({
+          data: {
+            applicationNo: createBusinessNo("APP"),
+            createdBy: user.id,
+            customerId: dto.customerId,
+            intendedModel: dto.intendedModel,
+            intendedPeriodMonths: dto.intendedPeriodMonths,
+            salesUserId: customer.ownerUserId ?? user.id,
+            updatedBy: user.id
+          }
+        });
 
-      await tx.customer.update({
-        data: {
-          status:
-            customer.status === CustomerStatus.LEAD
-              ? CustomerStatus.PENDING_APPLICATION
-              : customer.status,
-          updatedBy: user.id
-        },
-        where: { id: customer.id }
-      });
+        await tx.customer.update({
+          data: {
+            status:
+              customer.status === CustomerStatus.LEAD
+                ? CustomerStatus.PENDING_APPLICATION
+                : customer.status,
+            updatedBy: user.id
+          },
+          where: { id: customer.id }
+        });
 
-      await createApplicationActionLog(tx, {
-        actionType: ApplicationActionType.CREATE,
-        applicationId: created.id,
-        operator: user,
-        toStatus: ApplicationStatus.DRAFT
-      });
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.CREATE,
+          applicationId: created.id,
+          operator: user,
+          toStatus: ApplicationStatus.DRAFT
+        });
 
-      return tx.application.findUniqueOrThrow({
-        include: applicationInclude,
-        where: { id: created.id }
-      });
-    }));
+        return tx.application.findUniqueOrThrow({
+          include: applicationInclude,
+          where: { id: created.id }
+        });
+      })
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -1438,10 +1463,7 @@ export class CustomerService {
     const vehicleSalePriceAmount = requireSelfServiceCurrentSalePriceAmount(
       vehicle.currentSalePriceAmount
     );
-    const vehicleBaseFeePricing = calculateSelfServiceVehicleBaseFee(
-      plan,
-      vehicleSalePriceAmount
-    );
+    const vehicleBaseFeePricing = calculateSelfServiceVehicleBaseFee(plan, vehicleSalePriceAmount);
     const mileagePackagePriceAmount = plan.mileagePackage.priceAmount;
     const energyPackagePriceAmount = plan.energyPackage.priceAmount;
     const benefitPackagePriceAmount = plan.benefitPackage?.priceAmount ?? 0n;
@@ -1470,7 +1492,9 @@ export class CustomerService {
       vin: vehicle.vin
     });
     const packageSnapshot = toJsonSnapshot({
-      benefitPackage: plan.benefitPackage ? toSelfServicePackageSnapshot(plan.benefitPackage) : null,
+      benefitPackage: plan.benefitPackage
+        ? toSelfServicePackageSnapshot(plan.benefitPackage)
+        : null,
       energyPackage: toSelfServicePackageSnapshot(plan.energyPackage),
       mileagePackage: toSelfServicePackageSnapshot(plan.mileagePackage),
       pricing: {
@@ -1507,92 +1531,101 @@ export class CustomerService {
     });
     const customerSelectedSnapshot = intentSnapshot;
 
-    const result = await withUniqueBusinessNoRetry(() => this.prisma.$transaction(async (tx) => {
-      const currentCustomer = await tx.customer.findUniqueOrThrow({
-        include: { identity: true, profile: true },
-        where: { id: customer.id }
-      });
-      const customerProfileSnapshot = toJsonSnapshot(
-        buildApplicationCustomerProfileSnapshot(currentCustomer, null, now)
-      );
-      const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
-      assertSelfServiceVehicleAvailable(vehicleBefore);
-
-      const application = await tx.application.create({
-        data: {
-          applicationNo: createBusinessNo("APP"),
-          applicationSource: ApplicationSource.SELF_SERVICE,
-          createdBy: user.id,
-          creditReviewStatus: OrderReviewStatus.PENDING,
-          customerId: customer.id,
-          customerProfileSnapshot,
-          customerSelectedSnapshot,
-          depositStatus: DepositStatus.PENDING_CONFIRM,
-          finalDepositAmount: null,
-          intentPeriodMonths: dto.periodMonths,
-          intentSnapshot,
-          intentSubscriptionPlanId: plan.id,
-          intentVehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
-          intentVehicleId: vehicle.id,
-          intendedModel: vehicle.modelDefinition.displayName,
-          intendedPeriodMonths: dto.periodMonths,
-          materialReviewStatus: OrderReviewStatus.PENDING,
-          planConfirmStatus: PlanConfirmStatus.PENDING,
-          productReviewStatus: OrderReviewStatus.PENDING,
-          salesUserId: customer.ownerUserId ?? user.id,
-          softReservationExpiresAt,
-          softReservedAt: now,
-          softReservedVehicleId: vehicle.id,
-          status: ApplicationStatus.SUBMITTED,
-          submittedAt: now,
-          updatedBy: user.id,
-          vehicleReviewStatus: OrderReviewStatus.PENDING
-        },
-        include: applicationInclude
-      });
-
-      await createApplicationActionLog(tx, {
-        actionType: ApplicationActionType.CREATE,
-        applicationId: application.id,
-        comment: "客户自助进件提交",
-        operator: user,
-        toStatus: ApplicationStatus.SUBMITTED
-      });
-
-      await this.subscriptionJourneySignal?.record(tx, {
-        applicationId: application.id,
-        eventKey: `application:${application.id}:submitted`,
-        payload: { source: application.applicationSource },
-        type: "APPLICATION_SUBMITTED"
-      });
-
-      if (customer.status === CustomerStatus.LEAD) {
-        await tx.customer.update({
-          data: {
-            status: CustomerStatus.PENDING_APPLICATION,
-            updatedBy: user.id
-          },
+    const result = await withUniqueBusinessNoRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        const currentCustomer = await tx.customer.findUniqueOrThrow({
+          include: { identity: true, profile: true },
           where: { id: customer.id }
         });
-      }
+        const customerProfileSnapshot = toJsonSnapshot(
+          buildApplicationCustomerProfileSnapshot(currentCustomer, null, now)
+        );
+        await lockVehicleAvailabilityAuthorities(tx, [dto.vehicleId]);
+        const vehicleBefore = await tx.vehicle.findUnique({ where: { id: dto.vehicleId } });
+        assertSelfServiceVehicleAvailable(vehicleBefore);
+        await this.assetOperationsService?.assertVehicleAvailable(
+          tx,
+          dto.vehicleId,
+          VehicleAvailabilityPurpose.ALLOCATION,
+          new Date()
+        );
 
-      const vehicleUpdate = await tx.vehicle.updateMany({
-        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: user.id },
-        where: {
-          deletedAt: null,
-          id: vehicle.id,
-          status: VehicleStatus.AVAILABLE
+        const application = await tx.application.create({
+          data: {
+            applicationNo: createBusinessNo("APP"),
+            applicationSource: ApplicationSource.SELF_SERVICE,
+            createdBy: user.id,
+            creditReviewStatus: OrderReviewStatus.PENDING,
+            customerId: customer.id,
+            customerProfileSnapshot,
+            customerSelectedSnapshot,
+            depositStatus: DepositStatus.PENDING_CONFIRM,
+            finalDepositAmount: null,
+            intentPeriodMonths: dto.periodMonths,
+            intentSnapshot,
+            intentSubscriptionPlanId: plan.id,
+            intentVehicleBaseFeeAmount: vehicleBaseFeePricing.vehicleBaseFeeAmount,
+            intentVehicleId: vehicle.id,
+            intendedModel: vehicle.modelDefinition.displayName,
+            intendedPeriodMonths: dto.periodMonths,
+            materialReviewStatus: OrderReviewStatus.PENDING,
+            planConfirmStatus: PlanConfirmStatus.PENDING,
+            productReviewStatus: OrderReviewStatus.PENDING,
+            salesUserId: customer.ownerUserId ?? user.id,
+            softReservationExpiresAt,
+            softReservedAt: now,
+            softReservedVehicleId: vehicle.id,
+            status: ApplicationStatus.SUBMITTED,
+            submittedAt: now,
+            updatedBy: user.id,
+            vehicleReviewStatus: OrderReviewStatus.PENDING
+          },
+          include: applicationInclude
+        });
+
+        await createApplicationActionLog(tx, {
+          actionType: ApplicationActionType.CREATE,
+          applicationId: application.id,
+          comment: "客户自助进件提交",
+          operator: user,
+          toStatus: ApplicationStatus.SUBMITTED
+        });
+
+        await this.subscriptionJourneySignal?.record(tx, {
+          applicationId: application.id,
+          eventKey: `application:${application.id}:submitted`,
+          payload: { source: application.applicationSource },
+          type: "APPLICATION_SUBMITTED"
+        });
+
+        if (customer.status === CustomerStatus.LEAD) {
+          await tx.customer.update({
+            data: {
+              status: CustomerStatus.PENDING_APPLICATION,
+              updatedBy: user.id
+            },
+            where: { id: customer.id }
+          });
         }
-      });
 
-      if (vehicleUpdate.count !== 1) {
-        throw new BadRequestException(SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE);
-      }
+        const vehicleUpdate = await tx.vehicle.updateMany({
+          data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: user.id },
+          where: {
+            deletedAt: null,
+            id: vehicle.id,
+            status: VehicleStatus.AVAILABLE
+          }
+        });
 
-      const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+        if (vehicleUpdate.count !== 1) {
+          throw new BadRequestException(SELF_SERVICE_VEHICLE_UNAVAILABLE_MESSAGE);
+        }
 
-      return { application, vehicleAfter, vehicleBefore };
-    }));
+        const vehicleAfter = await tx.vehicle.findUniqueOrThrow({ where: { id: vehicle.id } });
+
+        return { application, vehicleAfter, vehicleBefore };
+      })
+    );
 
     await this.auditService.write({
       action: AuditAction.CREATE,
@@ -1663,10 +1696,7 @@ export class CustomerService {
       where: { id: applicationId }
     });
     if (!application || application.deletedAt) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_NOT_FOUND",
-        "The journey application was not found."
-      );
+      throw journeyError("JOURNEY_APPLICATION_NOT_FOUND", "The journey application was not found.");
     }
     if (application.materialReviewStatus !== OrderReviewStatus.APPROVED) {
       throw journeyError(
@@ -1754,10 +1784,7 @@ export class CustomerService {
       where: { id: applicationId }
     });
     if (!before || before.deletedAt) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_NOT_FOUND",
-        "The journey application was not found."
-      );
+      throw journeyError("JOURNEY_APPLICATION_NOT_FOUND", "The journey application was not found.");
     }
     ensureCanAccessApplication(before, actor);
     ensureApplicationReviewWorkflowAllowed(before);
@@ -1827,13 +1854,11 @@ export class CustomerService {
       where: { id: applicationId }
     });
     if (!before || before.deletedAt) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_NOT_FOUND",
-        "The journey application was not found."
-      );
+      throw journeyError("JOURNEY_APPLICATION_NOT_FOUND", "The journey application was not found.");
     }
     ensureCanAccessApplication(before, actor);
     assertApplicationHasNoOrder(before);
+    await lockVehicleAvailabilityAuthorities(tx, [vehicleId, before.softReservedVehicleId]);
     if (
       before.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
       before.customerConfirmedPlanRevision !== before.finalPlanRevision ||
@@ -1849,13 +1874,18 @@ export class CustomerService {
       finalVehicleId: vehicleId
     });
     await assertJourneyVehicleAllocationAllowed(tx, before, details.vehicle);
-    const termsChanged = commercialPlanChanged(
-      before.finalPlanSnapshot,
-      details.finalPlanSnapshot
-    );
+    const termsChanged = commercialPlanChanged(before.finalPlanSnapshot, details.finalPlanSnapshot);
     const alreadyHeld =
       before.softReservedVehicleId === details.vehicle.id &&
       details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
+    if (!alreadyHeld) {
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        details.vehicle.id,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        new Date()
+      );
+    }
     if (termsChanged) {
       if (!alreadyHeld) {
         const reserved = await tx.vehicle.updateMany({
@@ -1872,11 +1902,13 @@ export class CustomerService {
             "The journey vehicle could not be reserved."
           );
         }
-        if (
-          before.softReservedVehicleId &&
-          before.softReservedVehicleId !== details.vehicle.id
-        ) {
-          await releaseApplicationSoftReservedVehicle(tx, before, actor);
+        if (before.softReservedVehicleId && before.softReservedVehicleId !== details.vehicle.id) {
+          await releaseApplicationSoftReservedVehicle(
+            tx,
+            before,
+            actor,
+            this.assetOperationsService
+          );
         }
       }
       const finalPlanRevision = before.finalPlanRevision + 1;
@@ -1899,9 +1931,7 @@ export class CustomerService {
           finalVehicleBaseFeeAmount: details.vehicleBaseFeeAmount,
           finalVehicleId: details.vehicle.id,
           planConfirmStatus: PlanConfirmStatus.PENDING,
-          softReservedAt: alreadyHeld
-            ? (before.softReservedAt ?? new Date())
-            : new Date(),
+          softReservedAt: alreadyHeld ? (before.softReservedAt ?? new Date()) : new Date(),
           softReservedVehicleId: details.vehicle.id,
           updatedBy: actor.id,
           vehicleReviewStatus: OrderReviewStatus.APPROVED
@@ -1917,15 +1947,12 @@ export class CustomerService {
         operator: actor,
         toStatus: application.status
       });
-      await this.subscriptionJourneySignal?.requireCustomerReconfirmationAfterManualDecision(
-        tx,
-        {
-          actorId: actor.id,
-          applicationId,
-          finalPlanRevision,
-          vehicleId: details.vehicle.id
-        }
-      );
+      await this.subscriptionJourneySignal?.requireCustomerReconfirmationAfterManualDecision(tx, {
+        actorId: actor.id,
+        applicationId,
+        finalPlanRevision,
+        vehicleId: details.vehicle.id
+      });
       return { application, requiresCustomerReconfirmation: true };
     }
 
@@ -2671,13 +2698,21 @@ export class CustomerService {
     const before = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(before, user);
     assertApplicationHasNoOrder(before);
-    if (before.status === ApplicationStatus.CANCELLED || before.status === ApplicationStatus.REJECTED) {
+    if (
+      before.status === ApplicationStatus.CANCELLED ||
+      before.status === ApplicationStatus.REJECTED
+    ) {
       throw new BadRequestException("当前进件状态不允许取消。");
     }
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(
+        tx,
+        before,
+        user,
+        this.assetOperationsService
+      );
       const application = await tx.application.update({
         data: {
           rejectedReason: comment,
@@ -2700,7 +2735,13 @@ export class CustomerService {
       return { application, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.UPDATE, before, result.application, user, context);
+    await this.auditApplicationChange(
+      AuditAction.UPDATE,
+      before,
+      result.application,
+      user,
+      context
+    );
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -2725,14 +2766,19 @@ export class CustomerService {
     reviewType?: ApplicationReviewType,
     beforeApplication?: ApplicationWithDetails
   ) {
-    const before = beforeApplication ?? await this.findApplicationOrThrow(id);
+    const before = beforeApplication ?? (await this.findApplicationOrThrow(id));
     ensureCanAccessApplication(before, user);
     ensureApplicationReviewWorkflowAllowed(before);
     assertApplicationHasNoOrder(before);
     const comment = normalizeRequiredText(dto.comment ?? dto.reason ?? dto.remark, "comment");
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const vehicleRelease = await releaseApplicationSoftReservedVehicle(tx, before, user);
+      const vehicleRelease = await releaseApplicationSoftReservedVehicle(
+        tx,
+        before,
+        user,
+        this.assetOperationsService
+      );
       const data: Prisma.ApplicationUpdateInput = {
         rejectedReason: comment,
         status: ApplicationStatus.REJECTED,
@@ -2765,7 +2811,13 @@ export class CustomerService {
       return { application, vehicleRelease };
     });
 
-    await this.auditApplicationChange(AuditAction.REJECT, before, result.application, user, context);
+    await this.auditApplicationChange(
+      AuditAction.REJECT,
+      before,
+      result.application,
+      user,
+      context
+    );
     if (result.vehicleRelease) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -2841,7 +2893,6 @@ export class CustomerService {
       userAgent: context.userAgent
     });
   }
-
 }
 
 function applicationReviewDecision(dto: ReviewApplicationDto) {
@@ -2880,7 +2931,10 @@ function applicationReviewStatusField(reviewType: ApplicationReviewType) {
 }
 
 function ensureApplicationReviewWorkflowAllowed(application: ApplicationWithDetails) {
-  if (application.status === ApplicationStatus.REJECTED || application.status === ApplicationStatus.CANCELLED) {
+  if (
+    application.status === ApplicationStatus.REJECTED ||
+    application.status === ApplicationStatus.CANCELLED
+  ) {
     throw new BadRequestException("当前进件状态不允许审核。");
   }
   if (
@@ -2916,16 +2970,26 @@ async function findActiveApplicationDepositRule(tx: Tx, grade: CustomerGrade) {
 async function releaseApplicationSoftReservedVehicle(
   tx: Tx,
   application: ApplicationWithDetails,
-  user: RequestUser
+  user: RequestUser,
+  assetOperationsService?: AssetOperationsService
 ) {
   if (!application.softReservedVehicleId) {
     return null;
   }
 
+  await lockVehicleAvailabilityAuthorities(tx, [application.softReservedVehicleId]);
   const before = await tx.vehicle.findUnique({ where: { id: application.softReservedVehicleId } });
   if (!before || before.deletedAt || before.status !== VehicleStatus.REVIEW_RESERVED) {
     return null;
   }
+
+  await assetOperationsService?.assertVehicleAvailable(
+    tx,
+    before.id,
+    VehicleAvailabilityPurpose.MARK_AVAILABLE,
+    new Date(),
+    VehicleStatus.AVAILABLE
+  );
 
   const after = await tx.vehicle.update({
     data: { status: VehicleStatus.AVAILABLE, updatedBy: user.id },
@@ -2933,6 +2997,18 @@ async function releaseApplicationSoftReservedVehicle(
   });
 
   return { after, before };
+}
+
+async function lockVehicleAvailabilityAuthorities(
+  tx: Tx,
+  vehicleIds: ReadonlyArray<string | null | undefined>
+) {
+  const ids = [...new Set(vehicleIds.filter((id): id is string => Boolean(id)))].sort();
+  for (const vehicleId of ids) {
+    await tx.$queryRaw(
+      Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+    );
+  }
 }
 
 async function lockJourneyApplication(tx: Tx, applicationId: string) {
@@ -2943,10 +3019,7 @@ async function lockJourneyApplication(tx: Tx, applicationId: string) {
     FOR UPDATE
   `);
   if (rows.length !== 1) {
-    throw journeyError(
-      "JOURNEY_APPLICATION_NOT_FOUND",
-      "The journey application was not found."
-    );
+    throw journeyError("JOURNEY_APPLICATION_NOT_FOUND", "The journey application was not found.");
   }
 }
 
@@ -3032,7 +3105,8 @@ async function loadApplicationFinalPlanDetails(
     applicationSource: application.applicationSource,
     customerGrade: application.customerGrade,
     customerId: application.customerId,
-    depositAmount: application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
+    depositAmount:
+      application.finalDepositAmount === null ? null : Number(application.finalDepositAmount),
     depositRuleSnapshot: application.depositRuleSnapshot,
     depositStatus: application.depositStatus,
     finalPlanConfirmedAt: application.finalPlanConfirmedAt?.toISOString() ?? null,
@@ -3150,7 +3224,14 @@ async function assertApplicationVehicleReviewAllowed(
   const occupiedByOrderCount = await tx.subscriptionOrder.count({
     where: {
       deletedAt: null,
-      orderStatus: { notIn: [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.COMPLETED, OrderStatus.TERMINATED] },
+      orderStatus: {
+        notIn: [
+          OrderStatus.CANCELLED,
+          OrderStatus.REJECTED,
+          OrderStatus.COMPLETED,
+          OrderStatus.TERMINATED
+        ]
+      },
       vehicleId: vehicle.id
     }
   });
@@ -3210,7 +3291,10 @@ function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails)
   ) {
     throw new BadRequestException("资料审核和客户资质审核通过后才可以确认最终方案。");
   }
-  if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
+  if (
+    application.depositStatus !== DepositStatus.CONFIRMED ||
+    application.finalDepositAmount === null
+  ) {
     throw new BadRequestException("押金确认后才可以确认最终方案。");
   }
   resolveApplicationFinalPlanInput(application);
@@ -3223,7 +3307,10 @@ function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails)
 }
 
 function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {
-  if (application.status === ApplicationStatus.REJECTED || application.status === ApplicationStatus.CANCELLED) {
+  if (
+    application.status === ApplicationStatus.REJECTED ||
+    application.status === ApplicationStatus.CANCELLED
+  ) {
     throw new BadRequestException("当前进件状态不允许生成订单。");
   }
   assertApplicationHasNoOrder(application);
@@ -3233,10 +3320,16 @@ function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {
   if (!allApplicationReviewsApproved(applicationReviewStatuses(application))) {
     throw new BadRequestException("进件审核全部通过后才可以生成订单。");
   }
-  if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
+  if (
+    application.depositStatus !== DepositStatus.CONFIRMED ||
+    application.finalDepositAmount === null
+  ) {
     throw new BadRequestException("押金确认后才可以生成订单。");
   }
-  if (application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED || !application.finalPlanSnapshot) {
+  if (
+    application.planConfirmStatus !== PlanConfirmStatus.CONFIRMED ||
+    !application.finalPlanSnapshot
+  ) {
     throw new BadRequestException("最终方案确认后才可以生成订单。");
   }
   resolveApplicationFinalPlanInput(application);
@@ -3375,7 +3468,10 @@ export function canDeleteMaterialFile(
     return true;
   }
 
-  if (application.status === ApplicationStatus.DRAFT || application.status === ApplicationStatus.NEED_MORE_INFO) {
+  if (
+    application.status === ApplicationStatus.DRAFT ||
+    application.status === ApplicationStatus.NEED_MORE_INFO
+  ) {
     return canViewAll(user) || application.salesUserId === user.id;
   }
 
@@ -3508,7 +3604,11 @@ export function assertCanSubmitApplication(application: ApplicationWithDetails) 
 export function assertCanApproveApplication(application: ApplicationWithDetails) {
   const invalidTypes = requiredMaterialTypes.filter((type) => {
     const group = materialGroupByType(application.materialGroups).get(type);
-    return !group || activeMaterialFiles(group).length === 0 || !isApprovedMaterialStatus(group.reviewStatus);
+    return (
+      !group ||
+      activeMaterialFiles(group).length === 0 ||
+      !isApprovedMaterialStatus(group.reviewStatus)
+    );
   });
 
   if (invalidTypes.length > 0) {
@@ -3522,7 +3622,9 @@ function materialGroupByType(groups: ApplicationWithDetails["materialGroups"]) {
   return new Map(groups.map((group) => [group.materialType, group]));
 }
 
-function activeMaterialFiles(group: Pick<ApplicationWithDetails["materialGroups"][number], "files">) {
+function activeMaterialFiles(
+  group: Pick<ApplicationWithDetails["materialGroups"][number], "files">
+) {
   return group.files.filter((file) => !file.isDeleted);
 }
 
@@ -3536,7 +3638,9 @@ export function assertReviewMaterialInput(status: MaterialStatus, comment?: stri
     status !== MaterialStatus.NEED_MORE_INFO &&
     status !== MaterialStatus.REJECTED
   ) {
-    throw new BadRequestException("Material review status must be APPROVED, NEED_MORE_INFO, or REJECTED.");
+    throw new BadRequestException(
+      "Material review status must be APPROVED, NEED_MORE_INFO, or REJECTED."
+    );
   }
 
   if (
@@ -3653,7 +3757,11 @@ function isSelfServicePackageActiveForPlan(
   );
 }
 
-function assertSelfServicePeriodInRange(periodMonths: number, minPeriodMonths: number, maxPeriodMonths: number) {
+function assertSelfServicePeriodInRange(
+  periodMonths: number,
+  minPeriodMonths: number,
+  maxPeriodMonths: number
+) {
   if (periodMonths < minPeriodMonths || periodMonths > maxPeriodMonths) {
     throw new BadRequestException("订阅周期不在套餐允许范围内");
   }
@@ -3678,7 +3786,9 @@ function calculateSelfServiceVehicleBaseFee(
   if (!Number.isFinite(vehiclePackageRate) || vehiclePackageRate <= 0) {
     throw new BadRequestException("车型包车辆基础费上限率必须大于 0");
   }
-  const vehicleBaseFeeCapAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate));
+  const vehicleBaseFeeCapAmount = BigInt(
+    Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate)
+  );
   let fixedRate: number | null = null;
   let vehicleBaseFeeAmount: bigint;
 
@@ -3723,7 +3833,8 @@ function assertSelfServiceVehicleBaseFeeWithinCap(vehicleBaseFeeAmount: bigint, 
 
 function toSelfServiceSubscriptionPlanSnapshot(plan: SelfServiceSubscriptionPlan) {
   return {
-    baseMonthlyFeeAmount: plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
+    baseMonthlyFeeAmount:
+      plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
     benefitPackageId: plan.benefitPackageId,
     effectiveFrom: plan.effectiveFrom.toISOString().slice(0, 10),
     effectiveTo: plan.effectiveTo?.toISOString().slice(0, 10) ?? null,
@@ -4079,7 +4190,9 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
     intendedModel: application.intendedModel,
     intendedPeriodMonths: application.intendedPeriodMonths,
     materialReviewStatus: application.materialReviewStatus,
-    materials: application.materialGroups.map((group) => toMaterialGroupView(group, application, user)),
+    materials: application.materialGroups.map((group) =>
+      toMaterialGroupView(group, application, user)
+    ),
     orders: (application.orders ?? [])
       .filter((order) => !order.deletedAt)
       .map((order) => ({
@@ -4103,9 +4216,7 @@ export function toApplicationView(application: ApplicationWithDetails, user?: Re
 }
 
 function applicationCustomerProfileView(application: ApplicationWithDetails) {
-  const snapshot = parseApplicationCustomerProfileSnapshot(
-    application.customerProfileSnapshot
-  );
+  const snapshot = parseApplicationCustomerProfileSnapshot(application.customerProfileSnapshot);
   const usesCurrent =
     application.status === ApplicationStatus.DRAFT ||
     application.status === ApplicationStatus.NEED_MORE_INFO;
@@ -4124,8 +4235,8 @@ function applicationCustomerProfileView(application: ApplicationWithDetails) {
     customerProfileSnapshot: snapshot,
     customerProfileUpdatedAt:
       customerProfileDisplaySource === "SNAPSHOT"
-        ? snapshot?.capturedAt ?? null
-        : application.customer.profile?.updatedAt.toISOString() ?? null
+        ? (snapshot?.capturedAt ?? null)
+        : (application.customer.profile?.updatedAt.toISOString() ?? null)
   };
 }
 
@@ -4208,9 +4319,7 @@ function toMaterialFileView(
   };
 }
 
-function toApplicationActionLogView(
-  actionLog: ApplicationWithDetails["actionLogs"][number]
-) {
+function toApplicationActionLogView(actionLog: ApplicationWithDetails["actionLogs"][number]) {
   return {
     actionType: actionLog.actionType,
     comment: actionLog.comment,

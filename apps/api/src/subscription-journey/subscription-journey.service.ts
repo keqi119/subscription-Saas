@@ -25,6 +25,8 @@ import {
 } from "@prisma/client";
 
 import { journeyError } from "./subscription-journey.errors";
+import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { SubscriptionJourneyRepository } from "./subscription-journey.repository";
 import { manualTaskTypeFor } from "./subscription-journey-state-machine";
 import {
@@ -119,21 +121,14 @@ type PortalJourney = Prisma.SubscriptionJourneyGetPayload<{
   select: typeof portalJourneySelect;
 }>;
 
-const JOB_TYPE_BY_STEP: Partial<
-  Record<SubscriptionJourneyStepCode, SubscriptionJourneyJobType>
-> = {
+const JOB_TYPE_BY_STEP: Partial<Record<SubscriptionJourneyStepCode, SubscriptionJourneyJobType>> = {
   APPLICATION_VALIDATION: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
-  AUTHORITATIVE_ACTIVATION:
-    SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION,
-  CUSTOMER_JSAPI_PAYMENT:
-    SubscriptionJourneyJobType.EVALUATE_PAYMENT_SETTLEMENT,
-  FADADA_SIGNING_AND_ARCHIVE:
-    SubscriptionJourneyJobType.START_FADADA_SIGNING,
-  HANDOVER_AND_STAGE2_CREATION:
-    SubscriptionJourneyJobType.CREATE_HANDOVER,
+  AUTHORITATIVE_ACTIVATION: SubscriptionJourneyJobType.ACTIVATE_SUBSCRIPTION,
+  CUSTOMER_JSAPI_PAYMENT: SubscriptionJourneyJobType.EVALUATE_PAYMENT_SETTLEMENT,
+  FADADA_SIGNING_AND_ARCHIVE: SubscriptionJourneyJobType.START_FADADA_SIGNING,
+  HANDOVER_AND_STAGE2_CREATION: SubscriptionJourneyJobType.CREATE_HANDOVER,
   INITIAL_BILLING: SubscriptionJourneyJobType.GENERATE_INITIAL_BILLS,
-  ORDER_AND_CONTRACT_CREATION:
-    SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
+  ORDER_AND_CONTRACT_CREATION: SubscriptionJourneyJobType.CREATE_ORDER_AND_CONTRACT
 };
 
 const CUSTOMER_NOTIFICATION_STEPS = new Set<SubscriptionJourneyStepCode>([
@@ -156,13 +151,11 @@ export class SubscriptionJourneyService {
     @Optional() private readonly financeService?: FinanceService,
     @Optional() private readonly handoverWorkOrderService?: HandoverWorkOrderService,
     @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine,
-    @Optional() private readonly auditService?: AuditService
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
-  async dispatchSignalOutbox(
-    tx: Tx,
-    outbox: ClaimedJourneyOutbox
-  ): Promise<void> {
+  async dispatchSignalOutbox(tx: Tx, outbox: ClaimedJourneyOutbox): Promise<void> {
     if (!outbox.journeyId) {
       throw journeyError(
         "JOURNEY_NOT_FOUND",
@@ -171,10 +164,7 @@ export class SubscriptionJourneyService {
     }
     const current = await this.readCurrentJourney(tx, outbox.journeyId);
     await this.repository.enqueueNotificationOutbox(tx, outbox);
-    if (
-      current.currentStepCode ===
-      SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
-    ) {
+    if (current.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION) {
       const isExactConfirmation =
         outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
         isRecord(outbox.payload) &&
@@ -192,10 +182,7 @@ export class SubscriptionJourneyService {
         });
         return;
       }
-      if (
-        current.currentStepStatus ===
-        "WAITING_CUSTOMER"
-      ) {
+      if (current.currentStepStatus === "WAITING_CUSTOMER") {
         return;
       }
       await this.repository.waitForCustomer(tx, {
@@ -207,10 +194,7 @@ export class SubscriptionJourneyService {
       });
       return;
     }
-    if (
-      current.currentStepCode ===
-      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
-    ) {
+    if (current.currentStepCode === SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE) {
       const payload = isRecord(outbox.payload) ? outbox.payload : {};
       if (
         outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
@@ -251,10 +235,7 @@ export class SubscriptionJourneyService {
         return;
       }
     }
-    if (
-      current.currentStepCode ===
-      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION
-    ) {
+    if (current.currentStepCode === SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION) {
       const payload = isRecord(outbox.payload) ? outbox.payload : {};
       if (
         outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
@@ -279,8 +260,7 @@ export class SubscriptionJourneyService {
     }
     if (manualTaskTypeFor(current.currentStepCode)) {
       const evidenceSnapshot =
-        current.currentStepCode ===
-        SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
+        current.currentStepCode === SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
           ? readHandoverEvidenceSnapshot(outbox.payload)
           : {};
       await this.repository.openManualTask(tx, {
@@ -309,10 +289,8 @@ export class SubscriptionJourneyService {
         current.id,
         current.currentStepCode,
         current.application.finalPlanRevision,
-        (current.currentStepCode ===
-          SubscriptionJourneyStepCode.APPLICATION_VALIDATION ||
-          current.currentStepCode ===
-            SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT) &&
+        (current.currentStepCode === SubscriptionJourneyStepCode.APPLICATION_VALIDATION ||
+          current.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT) &&
           isRecord(outbox.payload) &&
           typeof outbox.payload.journeyVersion === "number"
           ? outbox.payload.journeyVersion
@@ -322,10 +300,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async dispatchNotificationOutbox(
-    tx: Tx,
-    outbox: ClaimedJourneyOutbox
-  ): Promise<void> {
+  async dispatchNotificationOutbox(tx: Tx, outbox: ClaimedJourneyOutbox): Promise<void> {
     if (!outbox.journeyId) return;
     const current = await this.readCurrentJourney(tx, outbox.journeyId);
     if (
@@ -340,9 +315,7 @@ export class SubscriptionJourneyService {
       journeyId: current.id,
       payload: {
         eventKey:
-          typeof sourcePayload.eventKey === "string"
-            ? sourcePayload.eventKey
-            : outbox.eventKey,
+          typeof sourcePayload.eventKey === "string" ? sourcePayload.eventKey : outbox.eventKey,
         finalPlanRevision: current.application.finalPlanRevision,
         stepCode: current.currentStepCode
       },
@@ -379,24 +352,15 @@ export class SubscriptionJourneyService {
     return this.readAdminJourney({ orderId }, user);
   }
 
-  async getPortalByApplication(
-    applicationId: string,
-    currentCustomer: CurrentCustomer
-  ) {
-    return this.readPortalJourney(
-      { applicationId },
-      currentCustomer.customerId
-    );
+  async getPortalByApplication(applicationId: string, currentCustomer: CurrentCustomer) {
+    return this.readPortalJourney({ applicationId }, currentCustomer.customerId);
   }
 
   async getPortalByOrder(orderId: string, currentCustomer: CurrentCustomer) {
     return this.readPortalJourney({ orderId }, currentCustomer.customerId);
   }
 
-  async listJourneys(
-    query: ListSubscriptionJourneysQueryDto,
-    user: RequestUser
-  ) {
+  async listJourneys(query: ListSubscriptionJourneysQueryDto, user: RequestUser) {
     const prisma = this.requirePrisma();
     const rows = await prisma.subscriptionJourney.findMany({
       include: adminJourneyInclude,
@@ -417,8 +381,8 @@ export class SubscriptionJourneyService {
       SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
       SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
     ];
-    const [journeys, steps, oldestException, retryAggregate, completed, failed] =
-      await Promise.all([
+    const [journeys, steps, oldestException, retryAggregate, completed, failed] = await Promise.all(
+      [
         prisma.subscriptionJourney.groupBy({
           _count: { _all: true },
           by: ["status"]
@@ -452,14 +416,12 @@ export class SubscriptionJourneyService {
             }
           }
         })
-      ]);
+      ]
+    );
     const denominator = completed + failed;
     return {
-      automatedProgressRate:
-        denominator === 0 ? 1 : Number((completed / denominator).toFixed(4)),
-      journeyCounts: Object.fromEntries(
-        journeys.map((row) => [row.status, row._count._all])
-      ),
+      automatedProgressRate: denominator === 0 ? 1 : Number((completed / denominator).toFixed(4)),
+      journeyCounts: Object.fromEntries(journeys.map((row) => [row.status, row._count._all])),
       oldestOpenExceptionAt: oldestException?.firstOccurredAt ?? null,
       retryCount: retryAggregate._sum.attemptCount ?? 0,
       stepCounts: steps.map((row) => ({
@@ -482,10 +444,7 @@ export class SubscriptionJourneyService {
     }
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId, dto.version);
-      this.requireCurrentStep(
-        journey,
-        SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
-      );
+      this.requireCurrentStep(journey, SubscriptionJourneyStepCode.FINAL_PLAN_DECISION);
       const application = await this.customerService!.applyJourneyFinalPlanDecision(
         tx,
         journey.applicationId,
@@ -497,13 +456,7 @@ export class SubscriptionJourneyService {
         user,
         context
       );
-      await this.writeAdminAudit(
-        tx,
-        journey,
-        "FINAL_PLAN_DECISION",
-        user,
-        context
-      );
+      await this.writeAdminAudit(tx, journey, "FINAL_PLAN_DECISION", user, context);
       return { applicationId: application.id, journeyId };
     });
   }
@@ -520,10 +473,7 @@ export class SubscriptionJourneyService {
     }
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId, dto.version);
-      this.requireCurrentStep(
-        journey,
-        SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
-      );
+      this.requireCurrentStep(journey, SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION);
       const result = await this.customerService!.allocateJourneyVehicle(
         tx,
         journey.applicationId,
@@ -531,13 +481,7 @@ export class SubscriptionJourneyService {
         user,
         context
       );
-      await this.writeAdminAudit(
-        tx,
-        journey,
-        "FINAL_VEHICLE_ALLOCATION",
-        user,
-        context
-      );
+      await this.writeAdminAudit(tx, journey, "FINAL_VEHICLE_ALLOCATION", user, context);
       return {
         applicationId: result.application.id,
         journeyId,
@@ -558,10 +502,7 @@ export class SubscriptionJourneyService {
     }
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId, dto.version);
-      this.requireCurrentStep(
-        journey,
-        SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
-      );
+      this.requireCurrentStep(journey, SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION);
       if (!journey.orderId) {
         throw new BadRequestException("JOURNEY_ORDER_REQUIRED");
       }
@@ -576,13 +517,7 @@ export class SubscriptionJourneyService {
       if (workOrder.orderId !== journey.orderId) {
         throw new ConflictException("JOURNEY_EVIDENCE_BINDING_CONFLICT");
       }
-      await this.writeAdminAudit(
-        tx,
-        journey,
-        "DELIVERY_EVIDENCE_DECISION",
-        user,
-        context
-      );
+      await this.writeAdminAudit(tx, journey, "DELIVERY_EVIDENCE_DECISION", user, context);
       return { journeyId, workOrderId: workOrder.id };
     });
   }
@@ -635,10 +570,7 @@ export class SubscriptionJourneyService {
     const prisma = this.requirePrisma();
     return prisma.$transaction(async (tx) => {
       const journey = await this.lockAdminJourney(tx, journeyId, dto.version);
-      if (
-        journey.status !== SubscriptionJourneyStatus.PAUSED ||
-        !journey.pausedFromStatus
-      ) {
+      if (journey.status !== SubscriptionJourneyStatus.PAUSED || !journey.pausedFromStatus) {
         throw new BadRequestException("JOURNEY_RESUME_NOT_ALLOWED");
       }
       await this.assertResumeFacts(tx, journey);
@@ -650,15 +582,14 @@ export class SubscriptionJourneyService {
       });
       if (restoredStatus === SubscriptionJourneyStatus.RUNNING) {
         const jobType = JOB_TYPE_BY_STEP[journey.currentStepCode];
-        const step = journey.steps.find(
-          ({ code }) => code === journey.currentStepCode
-        );
+        const step = journey.steps.find(({ code }) => code === journey.currentStepCode);
         if (jobType && step) {
           await this.repository.enqueueJob(tx, {
             jobType,
             journeyId: journey.id,
             payload: {
               applicationId: journey.applicationId,
+              finalPlanRevision: journey.application.finalPlanRevision,
               orderId: journey.orderId,
               recoveryVersion: journey.version + 1
             },
@@ -787,12 +718,9 @@ export class SubscriptionJourneyService {
       const contract = journey.order?.contract;
       if (
         contract &&
-        (contract.status === ContractStatus.SIGNED ||
-          contract.status === ContractStatus.ARCHIVED)
+        (contract.status === ContractStatus.SIGNED || contract.status === ContractStatus.ARCHIVED)
       ) {
-        throw new BadRequestException(
-          "JOURNEY_CONTRACT_TERMINATION_REQUIRED"
-        );
+        throw new BadRequestException("JOURNEY_CONTRACT_TERMINATION_REQUIRED");
       }
       await this.cancelJourneyBusinessFacts(tx, journey, dto.reason, user.id);
       await tx.subscriptionJourneyJob.updateMany({
@@ -804,7 +732,9 @@ export class SubscriptionJourneyService {
         },
         where: {
           journeyId,
-          status: { notIn: [SubscriptionJourneyJobStatus.COMPLETED, SubscriptionJourneyJobStatus.CANCELLED] }
+          status: {
+            notIn: [SubscriptionJourneyJobStatus.COMPLETED, SubscriptionJourneyJobStatus.CANCELLED]
+          }
         }
       });
       await tx.subscriptionJourneyOutbox.updateMany({
@@ -815,7 +745,12 @@ export class SubscriptionJourneyService {
         },
         where: {
           journeyId,
-          status: { in: [SubscriptionJourneyOutboxStatus.PENDING, SubscriptionJourneyOutboxStatus.PROCESSING] }
+          status: {
+            in: [
+              SubscriptionJourneyOutboxStatus.PENDING,
+              SubscriptionJourneyOutboxStatus.PROCESSING
+            ]
+          }
         }
       });
       await tx.subscriptionJourneyManualTask.updateMany({
@@ -829,7 +764,12 @@ export class SubscriptionJourneyService {
         data: { status: SubscriptionJourneyStepStatus.CANCELLED },
         where: {
           journeyId,
-          status: { notIn: [SubscriptionJourneyStepStatus.COMPLETED, SubscriptionJourneyStepStatus.CANCELLED] }
+          status: {
+            notIn: [
+              SubscriptionJourneyStepStatus.COMPLETED,
+              SubscriptionJourneyStepStatus.CANCELLED
+            ]
+          }
         }
       });
       await this.updateJourneyVersioned(tx, journey, {
@@ -856,9 +796,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async validateApplicationJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async validateApplicationJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.customerService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
@@ -871,15 +809,9 @@ export class SubscriptionJourneyService {
         where: { id: job.journeyId }
       });
       if (!journey) {
-        throw journeyError(
-          "JOURNEY_NOT_FOUND",
-          "The subscription journey was not found."
-        );
+        throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
       }
-      if (
-        journey.currentStepCode !==
-        SubscriptionJourneyStepCode.APPLICATION_VALIDATION
-      ) {
+      if (journey.currentStepCode !== SubscriptionJourneyStepCode.APPLICATION_VALIDATION) {
         return {
           action: "APPLICATION_VALIDATION_ALREADY_COMPLETED",
           applicationId: journey.applicationId
@@ -894,10 +826,7 @@ export class SubscriptionJourneyService {
           "The application validation job does not match the current journey step."
         );
       }
-      await this.customerService!.validateJourneyApplication(
-        tx,
-        journey.applicationId
-      );
+      await this.customerService!.validateJourneyApplication(tx, journey.applicationId);
       await this.repository.completeStep(tx, {
         eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:completed`,
         expectedVersion: journey.version,
@@ -912,9 +841,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async createOrderAndContractJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async createOrderAndContractJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (
       !this.prisma ||
       !this.customerService ||
@@ -943,15 +870,9 @@ export class SubscriptionJourneyService {
         where: { id: job.journeyId }
       });
       if (!journey) {
-        throw journeyError(
-          "JOURNEY_NOT_FOUND",
-          "The subscription journey was not found."
-        );
+        throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
       }
-      if (
-        journey.currentStepCode !==
-        SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
-      ) {
+      if (journey.currentStepCode !== SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION) {
         if (!journey.orderId) {
           throw journeyError(
             "JOURNEY_IDEMPOTENCY_CONFLICT",
@@ -965,8 +886,7 @@ export class SubscriptionJourneyService {
         };
       }
       const step = journey.steps.find(
-        ({ code }) =>
-          code === SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
+        ({ code }) => code === SubscriptionJourneyStepCode.ORDER_AND_CONTRACT_CREATION
       );
       if (!step || step.id !== job.stepId) {
         throw journeyError(
@@ -974,13 +894,8 @@ export class SubscriptionJourneyService {
           "The order bootstrap job does not match the current journey step."
         );
       }
-      const requestedRevision = isRecord(job.payload)
-        ? job.payload.finalPlanRevision
-        : undefined;
-      if (
-        requestedRevision !== journey.application.finalPlanRevision ||
-        requestedRevision < 1
-      ) {
+      const requestedRevision = isRecord(job.payload) ? job.payload.finalPlanRevision : undefined;
+      if (requestedRevision !== journey.application.finalPlanRevision || requestedRevision < 1) {
         throw journeyError(
           "FINAL_PLAN_REVISION_STALE",
           "The order bootstrap job targets a stale final-plan revision."
@@ -1011,11 +926,7 @@ export class SubscriptionJourneyService {
         actor.id,
         job.sourceKey
       );
-      await this.orderEntitlementService!.ensureInitialEntitlements(
-        tx,
-        order.id,
-        actor.id
-      );
+      await this.orderEntitlementService!.ensureInitialEntitlements(tx, order.id, actor.id);
       await this.repository.completeStep(tx, {
         eventKey: `${job.sourceKey}:completed`,
         expectedVersion: journey.version,
@@ -1032,9 +943,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async generateInitialBillsJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async generateInitialBillsJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.financeService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
@@ -1075,9 +984,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async evaluatePaymentSettlementJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async evaluatePaymentSettlementJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.financeService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
@@ -1096,11 +1003,10 @@ export class SubscriptionJourneyService {
           orderId: current.orderId
         };
       }
-      const settlement =
-        await this.financeService!.evaluateInitialBillSettlement(
-          tx,
-          current.orderId
-        );
+      const settlement = await this.financeService!.evaluateInitialBillSettlement(
+        tx,
+        current.orderId
+      );
       if (settlement.paid) {
         await this.repository.completeStep(tx, {
           eventKey: `${job.sourceKey}:completed`,
@@ -1115,9 +1021,7 @@ export class SubscriptionJourneyService {
         };
       }
       const remainingAmount = settlement.remainingAmount.toString();
-      if (
-        current.stepStatus !== SubscriptionJourneyStepStatus.WAITING_CUSTOMER
-      ) {
+      if (current.stepStatus !== SubscriptionJourneyStepStatus.WAITING_CUSTOMER) {
         await this.repository.waitForCustomer(tx, {
           eventKey: `${job.sourceKey}:waiting`,
           expectedVersion: current.version,
@@ -1134,9 +1038,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async createHandoverJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async createHandoverJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.handoverWorkOrderService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
@@ -1151,13 +1053,12 @@ export class SubscriptionJourneyService {
           orderId: current.orderId
         };
       }
-      const workOrder =
-        await this.handoverWorkOrderService!.createJourneyHandoverInTransaction(
-          tx,
-          current.orderId,
-          current.actorId,
-          job.sourceKey
-        );
+      const workOrder = await this.handoverWorkOrderService!.createJourneyHandoverInTransaction(
+        tx,
+        current.orderId,
+        current.actorId,
+        job.sourceKey
+      );
       return {
         action: "HANDOVER_CREATED",
         handoverId: workOrder.handoverId ?? null,
@@ -1168,9 +1069,7 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async activateSubscriptionJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async activateSubscriptionJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.leaseActivationEngine) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
@@ -1200,8 +1099,7 @@ export class SubscriptionJourneyService {
         );
       }
       const step = journey.steps.find(
-        ({ code }) =>
-          code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+        ({ code }) => code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
       );
       if (!step || step.id !== job.stepId) {
         throw journeyError(
@@ -1215,10 +1113,7 @@ export class SubscriptionJourneyService {
           orderId: journey.orderId
         };
       }
-      if (
-        journey.currentStepCode !==
-        SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
-      ) {
+      if (journey.currentStepCode !== SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION) {
         throw journeyError(
           "JOURNEY_INVALID_TRANSITION",
           "The journey is not at authoritative activation."
@@ -1234,15 +1129,28 @@ export class SubscriptionJourneyService {
           "The activation job targets a stale order or final-plan revision."
         );
       }
-      const result =
-        await this.leaseActivationEngine!.activateFromAuthoritativeHandover(
-          tx,
-          {
-            actorId: journey.application.salesUserId,
-            journeyId: journey.id,
-            orderId: journey.orderId
-          }
-        );
+      let result;
+      try {
+        result = await this.leaseActivationEngine!.activateFromAuthoritativeHandover(tx, {
+          actorId: journey.application.salesUserId,
+          journeyId: journey.id,
+          orderId: journey.orderId
+        });
+      } catch (error) {
+        const reasons = operationalRestrictionReasons(error);
+        if (!reasons) throw error;
+        await this.repository.pauseForOperationalRestriction(tx, {
+          expectedVersion: journey.version,
+          journeyId: journey.id,
+          reasons: reasons as Prisma.InputJsonValue,
+          stepId: step.id
+        });
+        return {
+          action: "SUBSCRIPTION_ACTIVATION_WAITING_OPERATIONAL_CLEARANCE",
+          journeyId: journey.id,
+          orderId: journey.orderId
+        };
+      }
       return {
         action: "SUBSCRIPTION_ACTIVATED",
         deliveryId: result.deliveryId,
@@ -1253,22 +1161,15 @@ export class SubscriptionJourneyService {
     });
   }
 
-  async startFadadaSigningJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async startFadadaSigningJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.orderService || !this.esignService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
         "The subscription journey Fadada signer is not configured."
       );
     }
-    const current = await this.prisma.$transaction((tx) =>
-      this.readFadadaJobContext(tx, job)
-    );
-    await this.orderService.ensureJourneyContractPdfArtifact(
-      current.contractId,
-      current.actorId
-    );
+    const current = await this.prisma.$transaction((tx) => this.readFadadaJobContext(tx, job));
+    await this.orderService.ensureJourneyContractPdfArtifact(current.contractId, current.actorId);
     const task = await this.esignService.startJourneyFadadaSigning(
       current.contractId,
       current.actorId
@@ -1296,18 +1197,14 @@ export class SubscriptionJourneyService {
     };
   }
 
-  async reconcileFadadaSigningJob(
-    job: ClaimedJourneyJob
-  ): Promise<Prisma.InputJsonValue> {
+  async reconcileFadadaSigningJob(job: ClaimedJourneyJob): Promise<Prisma.InputJsonValue> {
     if (!this.prisma || !this.esignService || !this.fadadaSignedArtifactService) {
       throw journeyError(
         "JOURNEY_CONFIGURATION_ERROR",
         "The subscription journey Fadada reconciler is not configured."
       );
     }
-    const current = await this.prisma.$transaction((tx) =>
-      this.readFadadaJobContext(tx, job)
-    );
+    const current = await this.prisma.$transaction((tx) => this.readFadadaJobContext(tx, job));
     const task = await this.esignService.reconcileJourneyFadadaSigning(
       current.contractId,
       current.actorId
@@ -1389,10 +1286,7 @@ export class SubscriptionJourneyService {
     return journey;
   }
 
-  private requireCurrentStep(
-    journey: AdminJourney,
-    expected: SubscriptionJourneyStepCode
-  ) {
+  private requireCurrentStep(journey: AdminJourney, expected: SubscriptionJourneyStepCode) {
     if (
       journey.currentStepCode !== expected ||
       !journey.steps.some(({ code }) => code === expected)
@@ -1519,13 +1413,24 @@ export class SubscriptionJourneyService {
     if (!journey.orderId) {
       const vehicleId = journey.application.softReservedVehicleId;
       if (vehicleId) {
-        await tx.vehicle.updateMany({
-          data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
-          where: {
-            id: vehicleId,
-            status: VehicleStatus.REVIEW_RESERVED
-          }
-        });
+        await lockJourneyVehicle(tx, vehicleId);
+        const vehicle = await tx.vehicle.findUnique({ where: { id: vehicleId } });
+        if (vehicle && !vehicle.deletedAt && vehicle.status === VehicleStatus.REVIEW_RESERVED) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            vehicleId,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date(),
+            VehicleStatus.AVAILABLE
+          );
+          await tx.vehicle.updateMany({
+            data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
+            where: {
+              id: vehicleId,
+              status: VehicleStatus.REVIEW_RESERVED
+            }
+          });
+        }
       }
       await tx.application.update({
         data: {
@@ -1541,6 +1446,40 @@ export class SubscriptionJourneyService {
       return;
     }
 
+    let releasableVehicleId: string | null = null;
+    if (journey.order?.vehicleId) {
+      await lockJourneyVehicle(tx, journey.order.vehicleId);
+      const otherOccupants = await tx.subscriptionOrder.count({
+        where: {
+          deletedAt: null,
+          id: { not: journey.orderId },
+          orderStatus: {
+            notIn: [
+              OrderStatus.CANCELLED,
+              OrderStatus.REJECTED,
+              OrderStatus.TERMINATED,
+              OrderStatus.COMPLETED
+            ]
+          },
+          vehicleId: journey.order.vehicleId
+        }
+      });
+      if (otherOccupants === 0) {
+        const vehicle = await tx.vehicle.findUnique({
+          where: { id: journey.order.vehicleId }
+        });
+        if (vehicle && !vehicle.deletedAt && vehicle.status === VehicleStatus.RESERVED) {
+          await this.assetOperationsService?.assertVehicleAvailable(
+            tx,
+            vehicle.id,
+            VehicleAvailabilityPurpose.MARK_AVAILABLE,
+            new Date(),
+            VehicleStatus.AVAILABLE
+          );
+          releasableVehicleId = vehicle.id;
+        }
+      }
+    }
     await tx.subscriptionOrder.update({
       data: {
         orderStatus: OrderStatus.CANCELLED,
@@ -1562,31 +1501,14 @@ export class SubscriptionJourneyService {
         }
       }
     });
-    if (journey.order?.vehicleId) {
-      const otherOccupants = await tx.subscriptionOrder.count({
+    if (releasableVehicleId) {
+      await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
         where: {
-          deletedAt: null,
-          id: { not: journey.orderId },
-          orderStatus: {
-            notIn: [
-              OrderStatus.CANCELLED,
-              OrderStatus.REJECTED,
-              OrderStatus.TERMINATED,
-              OrderStatus.COMPLETED
-            ]
-          },
-          vehicleId: journey.order.vehicleId
+          id: releasableVehicleId,
+          status: VehicleStatus.RESERVED
         }
       });
-      if (otherOccupants === 0) {
-        await tx.vehicle.updateMany({
-          data: { status: VehicleStatus.AVAILABLE, updatedBy: actorId },
-          where: {
-            id: journey.order.vehicleId,
-            status: VehicleStatus.RESERVED
-          }
-        });
-      }
     }
     await tx.application.update({
       data: {
@@ -1619,16 +1541,10 @@ export class SubscriptionJourneyService {
       where: { id: job.journeyId }
     });
     if (!journey) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey was not found."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
     }
     if (!journey.orderId) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey does not have an order."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey does not have an order.");
     }
     const step = journey.steps.find(({ code }) => code === expectedStepCode);
     if (!step || step.id !== job.stepId) {
@@ -1697,8 +1613,7 @@ export class SubscriptionJourneyService {
         "The subscription journey handover order was not found."
       );
     }
-    const expectedStepCode =
-      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION;
+    const expectedStepCode = SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION;
     const step = journey.steps.find(({ code }) => code === expectedStepCode);
     if (!step || step.id !== job.stepId) {
       throw journeyError(
@@ -1750,15 +1665,9 @@ export class SubscriptionJourneyService {
       where: { id: job.journeyId }
     });
     if (!journey) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey was not found."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
     }
-    if (
-      journey.currentStepCode !==
-      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
-    ) {
+    if (journey.currentStepCode !== SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE) {
       throw journeyError(
         "JOURNEY_INVALID_TRANSITION",
         "The journey is not waiting for Fadada signing and archive."
@@ -1773,9 +1682,7 @@ export class SubscriptionJourneyService {
         "The Fadada job does not match the current journey step."
       );
     }
-    const requestedRevision = isRecord(job.payload)
-      ? job.payload.finalPlanRevision
-      : undefined;
+    const requestedRevision = isRecord(job.payload) ? job.payload.finalPlanRevision : undefined;
     if (
       requestedRevision !== undefined &&
       requestedRevision !== journey.application.finalPlanRevision
@@ -1788,19 +1695,10 @@ export class SubscriptionJourneyService {
     const order = journey.order;
     const contract = order?.contract;
     if (!order || !contract || order.contractId !== contract.id) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The journey does not have its current contract."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The journey does not have its current contract.");
     }
-    if (
-      contract.status === "CANCELLED" ||
-      contract.status === "DRAFT"
-    ) {
-      throw journeyError(
-        "JOURNEY_INVALID_TRANSITION",
-        "The journey contract is not signable."
-      );
+    if (contract.status === "CANCELLED" || contract.status === "DRAFT") {
+      throw journeyError("JOURNEY_INVALID_TRANSITION", "The journey contract is not signable.");
     }
     return {
       actorId: journey.application.salesUserId,
@@ -1820,10 +1718,7 @@ export class SubscriptionJourneyService {
       where: { id: journeyId }
     });
     if (!journey) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey was not found."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
     }
     const step =
       journey.steps.find(({ code }) => code === journey.currentStepCode) ??
@@ -1842,6 +1737,12 @@ export class SubscriptionJourneyService {
       }));
     return { ...journey, step };
   }
+}
+
+async function lockJourneyVehicle(tx: Tx, vehicleId: string) {
+  await tx.$queryRaw(
+    Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE`
+  );
 }
 
 const SAFE_JOURNEY_PAYLOAD_KEYS = new Set([
@@ -1935,9 +1836,7 @@ function toAdminJourneyProjection(journey: AdminJourney, user: RequestUser) {
 
 function toPortalJourneyProjection(journey: PortalJourney) {
   const applicationHref = `/portal/applications/${encodeURIComponent(journey.application.id)}`;
-  const orderHref = journey.order
-    ? `/portal/orders/${encodeURIComponent(journey.order.id)}`
-    : null;
+  const orderHref = journey.order ? `/portal/orders/${encodeURIComponent(journey.order.id)}` : null;
   const contractHref = journey.order?.contractId
     ? `/portal/contracts/${encodeURIComponent(journey.order.contractId)}`
     : null;
@@ -1961,8 +1860,7 @@ function toPortalJourneyProjection(journey: PortalJourney) {
     polling: {
       enabled:
         journey.status === SubscriptionJourneyStatus.RUNNING &&
-        journey.currentStepCode ===
-          SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+        journey.currentStepCode === SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
       intervalMs: 5_000,
       maxAttempts: 24
     },
@@ -1996,10 +1894,8 @@ function portalJourneyNextAction(
     };
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION &&
-    journey.currentStepStatus ===
-      SubscriptionJourneyStepStatus.WAITING_CUSTOMER
+    journey.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION &&
+    journey.currentStepStatus === SubscriptionJourneyStepStatus.WAITING_CUSTOMER
   ) {
     return {
       href: links.application,
@@ -2008,8 +1904,7 @@ function portalJourneyNextAction(
     };
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE &&
+    journey.currentStepCode === SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE &&
     links.contractSign
   ) {
     return {
@@ -2019,8 +1914,7 @@ function portalJourneyNextAction(
     };
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT &&
+    journey.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT &&
     links.order
   ) {
     return {
@@ -2030,8 +1924,7 @@ function portalJourneyNextAction(
     };
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION &&
+    journey.currentStepCode === SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION &&
     links.order
   ) {
     return {
@@ -2069,11 +1962,7 @@ function sanitizeJourneyPayload(value: unknown): Record<string, unknown> {
 }
 
 function sanitizeJourneyValue(value: unknown): unknown {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "number"
-  ) {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
     return value;
   }
   if (typeof value === "string") return value.slice(0, 256);
@@ -2092,15 +1981,13 @@ function availableJourneyActions(journey: AdminJourney, user: RequestUser) {
     actions.push("FINAL_PLAN_DECISION");
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION &&
+    journey.currentStepCode === SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION &&
     can(user, PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE)
   ) {
     actions.push("FINAL_VEHICLE_ALLOCATION");
   }
   if (
-    journey.currentStepCode ===
-      SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION &&
+    journey.currentStepCode === SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION &&
     can(user, PermissionCode.SUBSCRIPTION_JOURNEY_DELIVERY_EVIDENCE_DECIDE)
   ) {
     actions.push("DELIVERY_EVIDENCE_DECISION");
@@ -2134,25 +2021,17 @@ function customerNextAction(journey: AdminJourney) {
   if (journey.currentStepStatus !== SubscriptionJourneyStepStatus.WAITING_CUSTOMER) {
     return null;
   }
-  if (
-    journey.currentStepCode ===
-    SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
-  ) {
+  if (journey.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION) {
     return "CONFIRM_FINAL_PLAN";
   }
-  if (
-    journey.currentStepCode ===
-    SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT
-  ) {
+  if (journey.currentStepCode === SubscriptionJourneyStepCode.CUSTOMER_JSAPI_PAYMENT) {
     return "PAY_INITIAL_BILLS";
   }
   return "CONTINUE_IN_PORTAL";
 }
 
 function can(user: RequestUser, permission: PermissionCode) {
-  return (
-    user.roles.includes("ADMIN") || user.permissions.includes(permission)
-  );
+  return user.roles.includes("ADMIN") || user.permissions.includes(permission);
 }
 
 function stableStepSourceKey(
@@ -2169,9 +2048,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readHandoverEvidenceSnapshot(
-  outboxPayload: Prisma.JsonValue
-): {
+function operationalRestrictionReasons(error: unknown) {
+  if (!(error instanceof ConflictException)) return null;
+  const response = error.getResponse();
+  if (!isRecord(response) || response.code !== "VEHICLE_OPERATIONALLY_RESTRICTED") {
+    return null;
+  }
+  return Array.isArray(response.reasons) ? response.reasons : [];
+}
+
+function readHandoverEvidenceSnapshot(outboxPayload: Prisma.JsonValue): {
   handoverId: string;
   manifestHash: string;
   workOrderId: string;

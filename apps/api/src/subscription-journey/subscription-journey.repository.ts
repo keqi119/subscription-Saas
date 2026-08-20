@@ -53,6 +53,45 @@ type LockedJourneyStep = {
 
 @Injectable()
 export class SubscriptionJourneyRepository {
+  async pauseForOperationalRestriction(
+    tx: Tx,
+    input: {
+      expectedVersion: number;
+      journeyId: string;
+      reasons: Prisma.InputJsonValue;
+      stepId: string;
+    }
+  ): Promise<void> {
+    assertSafePayload(input.reasons);
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    validateCurrentStep(locked, input.expectedVersion);
+    if (
+      locked.stepCode !== SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
+      locked.journeyStatus !== SubscriptionJourneyStatus.RUNNING
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "Only a running authoritative activation can wait for operational clearance."
+      );
+    }
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+      status: SubscriptionJourneyStatus.PAUSED,
+      version: { increment: 1 }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: `journey:${input.journeyId}:activation:operational-clearance:version:${input.expectedVersion}`,
+      eventType: SubscriptionJourneyEventType.JOURNEY_PAUSED,
+      journeyId: input.journeyId,
+      payload: safePayload({
+        operation: "WAIT_FOR_OPERATIONAL_CLEARANCE",
+        reasons: input.reasons,
+        stepId: input.stepId
+      }),
+      sequence: input.expectedVersion + 1
+    });
+  }
+
   async createOrGetForApplication(
     tx: Tx,
     applicationId: string,
@@ -111,16 +150,9 @@ export class SubscriptionJourneyRepository {
     return journey;
   }
 
-  async completeStep(
-    tx: Tx,
-    input: CompleteJourneyStepInput
-  ): Promise<SubscriptionJourneyStep> {
+  async completeStep(tx: Tx, input: CompleteJourneyStepInput): Promise<SubscriptionJourneyStep> {
     assertSafePayload(input.payload);
-    const eventPayload = transitionPayload(
-      "COMPLETE_STEP",
-      input.stepId,
-      input.payload
-    );
+    const eventPayload = transitionPayload("COMPLETE_STEP", input.stepId, input.payload);
     await lockIdempotencyKey(tx, "journey-event", input.eventKey);
     const duplicate = await tx.subscriptionJourneyEvent.findUnique({
       where: { eventKey: input.eventKey }
@@ -187,12 +219,9 @@ export class SubscriptionJourneyRepository {
       });
       return step;
     }
-    await this.updateJourneyVersion(
-      tx,
-      input.journeyId,
-      input.expectedVersion + 1,
-      { version: { increment: 1 } }
-    );
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion + 1, {
+      version: { increment: 1 }
+    });
     await this.writeEventAndOutbox(tx, {
       eventKey: completionEventKey,
       eventType: SubscriptionJourneyEventType.JOURNEY_COMPLETED,
@@ -203,16 +232,9 @@ export class SubscriptionJourneyRepository {
     return step;
   }
 
-  async waitForCustomer(
-    tx: Tx,
-    input: WaitForCustomerInput
-  ): Promise<SubscriptionJourneyStep> {
+  async waitForCustomer(tx: Tx, input: WaitForCustomerInput): Promise<SubscriptionJourneyStep> {
     assertSafePayload(input.payload);
-    const eventPayload = transitionPayload(
-      "WAIT_FOR_CUSTOMER",
-      input.stepId,
-      input.payload
-    );
+    const eventPayload = transitionPayload("WAIT_FOR_CUSTOMER", input.stepId, input.payload);
     await lockIdempotencyKey(tx, "journey-event", input.eventKey);
     const duplicate = await tx.subscriptionJourneyEvent.findUnique({
       where: { eventKey: input.eventKey }
@@ -252,10 +274,7 @@ export class SubscriptionJourneyRepository {
     return step;
   }
 
-  async openManualTask(
-    tx: Tx,
-    input: OpenManualTaskInput
-  ): Promise<SubscriptionJourneyManualTask> {
+  async openManualTask(tx: Tx, input: OpenManualTaskInput): Promise<SubscriptionJourneyManualTask> {
     assertSafePayload(input.inputSnapshot);
     const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
     validateCurrentStep(locked, locked.journeyVersion);
@@ -283,17 +302,12 @@ export class SubscriptionJourneyRepository {
           taskType
         }
       });
-      await this.updateJourneyVersion(
-        tx,
-        input.journeyId,
-        locked.journeyVersion,
-        {
-          currentStepCode: locked.stepCode,
-          currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
-          status: SubscriptionJourneyStatus.WAITING_MANUAL,
-          version: { increment: 1 }
-        }
-      );
+      await this.updateJourneyVersion(tx, input.journeyId, locked.journeyVersion, {
+        currentStepCode: locked.stepCode,
+        currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+        status: SubscriptionJourneyStatus.WAITING_MANUAL,
+        version: { increment: 1 }
+      });
       await tx.subscriptionJourneyStep.update({
         data: {
           status: SubscriptionJourneyStepStatus.WAITING_MANUAL,
@@ -396,19 +410,12 @@ export class SubscriptionJourneyRepository {
         }
       });
       if (!existing) {
-        throw journeyError(
-          "JOURNEY_NOT_FOUND",
-          "The customer-confirmation step was not found."
-        );
+        throw journeyError("JOURNEY_NOT_FOUND", "The customer-confirmation step was not found.");
       }
       return existing;
     }
 
-    const locked = await lockJourneyStep(
-      tx,
-      input.journeyId,
-      input.vehicleStepId
-    );
+    const locked = await lockJourneyStep(tx, input.journeyId, input.vehicleStepId);
     validateCurrentStep(locked, input.expectedVersion);
     if (locked.stepCode !== SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION) {
       throw journeyError(
@@ -447,17 +454,12 @@ export class SubscriptionJourneyRepository {
         }
       }
     });
-    await this.updateJourneyVersion(
-      tx,
-      input.journeyId,
-      input.expectedVersion,
-      {
-        currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
-        currentStepStatus: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
-        status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
-        version: { increment: 1 }
-      }
-    );
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+      currentStepStatus: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+      status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
+      version: { increment: 1 }
+    });
     await this.writeEventAndOutbox(tx, {
       eventKey: input.eventKey,
       eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
@@ -510,16 +512,9 @@ export class SubscriptionJourneyRepository {
       }
       return existing;
     }
-    const locked = await lockJourneyStep(
-      tx,
-      input.journeyId,
-      input.decisionStepId
-    );
+    const locked = await lockJourneyStep(tx, input.journeyId, input.decisionStepId);
     validateCurrentStep(locked, input.expectedVersion);
-    if (
-      locked.stepCode !==
-      SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION
-    ) {
+    if (locked.stepCode !== SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION) {
       throw journeyError(
         "JOURNEY_INVALID_TRANSITION",
         "Only a delivery-evidence rejection can return to handover preparation."
@@ -558,18 +553,12 @@ export class SubscriptionJourneyRepository {
         }
       }
     });
-    await this.updateJourneyVersion(
-      tx,
-      input.journeyId,
-      input.expectedVersion,
-      {
-        currentStepCode:
-          SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
-        currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
-        status: SubscriptionJourneyStatus.RUNNING,
-        version: { increment: 1 }
-      }
-    );
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      currentStepCode: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+      currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+      status: SubscriptionJourneyStatus.RUNNING,
+      version: { increment: 1 }
+    });
     await this.writeEventAndOutbox(tx, {
       eventKey: input.eventKey,
       eventType: SubscriptionJourneyEventType.MANUAL_TASK_DECIDED,
@@ -580,10 +569,7 @@ export class SubscriptionJourneyRepository {
     return handoverStep;
   }
 
-  async enqueueJob(
-    tx: Tx,
-    input: EnqueueJourneyJobInput
-  ): Promise<SubscriptionJourneyJob> {
+  async enqueueJob(tx: Tx, input: EnqueueJourneyJobInput): Promise<SubscriptionJourneyJob> {
     assertSafePayload(input.payload);
     await lockIdempotencyKey(tx, "journey-job", input.sourceKey);
     const existing = await tx.subscriptionJourneyJob.findUnique({
@@ -687,10 +673,7 @@ export class SubscriptionJourneyRepository {
         : { orderId: input.orderId }
     });
     if (!journey) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey was not found."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey was not found.");
     }
     const existing = await tx.subscriptionJourneyEvent.findUnique({
       where: { eventKey: input.eventKey }
@@ -705,9 +688,7 @@ export class SubscriptionJourneyRepository {
         : journey.version + 1;
     const sourcePayload = input.payload;
     const payload = safePayload({
-      ...(sourcePayload &&
-      typeof sourcePayload === "object" &&
-      !Array.isArray(sourcePayload)
+      ...(sourcePayload && typeof sourcePayload === "object" && !Array.isArray(sourcePayload)
         ? sourcePayload
         : { value: sourcePayload ?? null }),
       journeyVersion,
@@ -770,19 +751,11 @@ export class SubscriptionJourneyRepository {
     return rows.filter(hasLease);
   }
 
-  async claimOutbox(
-    tx: Tx,
-    limit: number,
-    leaseMs: number
-  ): Promise<ClaimedJourneyOutbox[]> {
+  async claimOutbox(tx: Tx, limit: number, leaseMs: number): Promise<ClaimedJourneyOutbox[]> {
     return this.claimOutboxByMode(tx, limit, leaseMs, "all");
   }
 
-  async claimSignalOutbox(
-    tx: Tx,
-    limit: number,
-    leaseMs: number
-  ): Promise<ClaimedJourneyOutbox[]> {
+  async claimSignalOutbox(tx: Tx, limit: number, leaseMs: number): Promise<ClaimedJourneyOutbox[]> {
     return this.claimOutboxByMode(tx, limit, leaseMs, "signal");
   }
 
@@ -842,10 +815,7 @@ export class SubscriptionJourneyRepository {
     return rows.filter(hasLease);
   }
 
-  async enqueueNotificationOutbox(
-    tx: Tx,
-    source: ClaimedJourneyOutbox
-  ): Promise<void> {
+  async enqueueNotificationOutbox(tx: Tx, source: ClaimedJourneyOutbox): Promise<void> {
     if (!source.journeyId) {
       throw journeyError(
         "JOURNEY_NOT_FOUND",
@@ -896,11 +866,7 @@ export class SubscriptionJourneyRepository {
     requireLease(updated);
   }
 
-  async completeOutbox(
-    tx: Tx,
-    outboxId: string,
-    leaseToken: string
-  ): Promise<void> {
+  async completeOutbox(tx: Tx, outboxId: string, leaseToken: string): Promise<void> {
     const updated = await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_journey_outbox"
       SET
@@ -993,10 +959,7 @@ export class SubscriptionJourneyRepository {
         {
           availableAt: { lte: now },
           status: {
-            in: [
-              SubscriptionJourneyJobStatus.PENDING,
-              SubscriptionJourneyJobStatus.RETRY_SCHEDULED
-            ]
+            in: [SubscriptionJourneyJobStatus.PENDING, SubscriptionJourneyJobStatus.RETRY_SCHEDULED]
           }
         },
         {
@@ -1050,10 +1013,7 @@ export class SubscriptionJourneyRepository {
       openExceptionCount,
       pendingJobCount,
       pendingOutboxCount,
-      workerHeartbeatAt: latestDate(
-        jobActivity._max.updatedAt,
-        outboxActivity._max.updatedAt
-      )
+      workerHeartbeatAt: latestDate(jobActivity._max.updatedAt, outboxActivity._max.updatedAt)
     };
   }
 
@@ -1111,16 +1071,10 @@ export class SubscriptionJourneyRepository {
     return this.recordException(tx, { ...input, error: failure });
   }
 
-  private async advanceJourney(
-    tx: Tx,
-    input: CompleteJourneyStepInput,
-    locked: LockedJourneyStep
-  ) {
+  private async advanceJourney(tx: Tx, input: CompleteJourneyStepInput, locked: LockedJourneyStep) {
     let followingStep = nextStep(locked.stepCode, "COMPLETED");
     let skippedCompletedVehicleStep = false;
-    if (
-      followingStep === SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
-    ) {
+    if (followingStep === SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION) {
       const vehicleStep = await tx.subscriptionJourneyStep.findUnique({
         where: {
           journeyId_code: {
@@ -1168,10 +1122,7 @@ export class SubscriptionJourneyRepository {
       where: { id_journeyId: { id: stepId, journeyId } }
     });
     if (!step) {
-      throw journeyError(
-        "JOURNEY_NOT_FOUND",
-        "The subscription journey step was not found."
-      );
+      throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey step was not found.");
     }
     return step;
   }
@@ -1259,11 +1210,7 @@ function idempotencyConflict() {
   );
 }
 
-async function lockIdempotencyKey(
-  tx: Tx,
-  namespace: string,
-  key: string
-): Promise<void> {
+async function lockIdempotencyKey(tx: Tx, namespace: string, key: string): Promise<void> {
   await tx.$queryRaw(Prisma.sql`
     SELECT
       pg_advisory_xact_lock(
@@ -1295,18 +1242,12 @@ async function lockJourneyStep(
     FOR UPDATE OF journey, step
   `);
   if (!row) {
-    throw journeyError(
-      "JOURNEY_NOT_FOUND",
-      "The subscription journey step was not found."
-    );
+    throw journeyError("JOURNEY_NOT_FOUND", "The subscription journey step was not found.");
   }
   return row;
 }
 
-function validateCurrentStep(
-  locked: LockedJourneyStep,
-  expectedVersion: number
-): void {
+function validateCurrentStep(locked: LockedJourneyStep, expectedVersion: number): void {
   if (locked.journeyVersion !== expectedVersion) {
     throw optimisticConflict();
   }
@@ -1315,13 +1256,15 @@ function validateCurrentStep(
     locked.journeyStatus === SubscriptionJourneyStatus.CANCELLED ||
     locked.currentStepCode !== locked.stepCode ||
     locked.currentStepStatus !== locked.stepStatus ||
-    !([
-      SubscriptionJourneyStepStatus.PENDING,
-      SubscriptionJourneyStepStatus.RUNNING,
-      SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
-      SubscriptionJourneyStepStatus.WAITING_MANUAL,
-      SubscriptionJourneyStepStatus.RETRY_SCHEDULED
-    ] as SubscriptionJourneyStepStatus[]).includes(locked.stepStatus)
+    !(
+      [
+        SubscriptionJourneyStepStatus.PENDING,
+        SubscriptionJourneyStepStatus.RUNNING,
+        SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+        SubscriptionJourneyStepStatus.WAITING_MANUAL,
+        SubscriptionJourneyStepStatus.RETRY_SCHEDULED
+      ] as SubscriptionJourneyStepStatus[]
+    ).includes(locked.stepStatus)
   ) {
     throw journeyError(
       "JOURNEY_INVALID_TRANSITION",
@@ -1376,12 +1319,7 @@ function canonicalJson(value: unknown): unknown {
 }
 
 function isUniqueConflict(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "P2002"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
 }
 
 const FORBIDDEN_KEYS = new Set([
@@ -1455,12 +1393,13 @@ function safePayload(value: Prisma.InputJsonValue): Prisma.InputJsonValue {
 }
 
 function safeFailure(error: JourneyFailure): JourneyFailure {
-  const code = error.code.toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
+  const code = error.code
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "_")
+    .slice(0, 64);
   const rawMessage = error.message.trim();
   const message =
-    rawMessage && !unsafeText(rawMessage)
-      ? safeText(rawMessage)!
-      : "Journey operation failed.";
+    rawMessage && !unsafeText(rawMessage) ? safeText(rawMessage)! : "Journey operation failed.";
   return {
     code: code || "JOURNEY_OPERATION_FAILED",
     message,

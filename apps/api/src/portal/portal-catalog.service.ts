@@ -20,6 +20,7 @@ import {
 import type { Readable } from "node:stream";
 
 import { PrismaService } from "../prisma/prisma.service";
+import { buildAllocationAvailabilityWhere } from "../asset-operations/vehicle-availability-query";
 import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
 
@@ -91,7 +92,11 @@ const portalVehicleInclude = {
   listingProfile: {
     include: {
       media: {
-        orderBy: [{ isCover: "desc" as const }, { sortOrder: "asc" as const }, { createdAt: "asc" as const }],
+        orderBy: [
+          { isCover: "desc" as const },
+          { sortOrder: "asc" as const },
+          { createdAt: "asc" as const }
+        ],
         where: {
           customerVisible: true,
           deletedAt: null
@@ -136,7 +141,8 @@ const portalVehicleInclude = {
 } satisfies Prisma.VehicleInclude;
 
 const SOURCE_DOCUMENT_TYPE_BY_SECTION = {
-  [VehicleListingSourceSection.CONFIGURATION_SHEET]: VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
+  [VehicleListingSourceSection.CONFIGURATION_SHEET]:
+    VehicleDocumentType.VEHICLE_CONFIGURATION_SHEET,
   [VehicleListingSourceSection.CONDITION_REPORT]: VehicleDocumentType.VEHICLE_INSPECTION_REPORT
 } satisfies Record<VehicleListingSourceSection, VehicleDocumentType>;
 
@@ -194,7 +200,9 @@ export class PortalCatalogService {
 
     return {
       ...toPortalVehicleDetail(vehicle, plans),
-      subscriptionPlans: plans.map((plan) => toPortalSubscriptionPlanView(plan.plan, vehicle, plan.listingPlan))
+      subscriptionPlans: plans.map((plan) =>
+        toPortalSubscriptionPlanView(plan.plan, vehicle, plan.listingPlan)
+      )
     };
   }
 
@@ -228,7 +236,10 @@ export class PortalCatalogService {
     return rows;
   }
 
-  async previewVehicleMedia(vehicleId: string, mediaId: string): Promise<PortalCatalogMediaPreview> {
+  async previewVehicleMedia(
+    vehicleId: string,
+    mediaId: string
+  ): Promise<PortalCatalogMediaPreview> {
     if (!this.storageService) {
       throw new NotFoundException("vehicle media storage is not available");
     }
@@ -246,11 +257,19 @@ export class PortalCatalogService {
       }
     });
 
-    if (!media || !isProfileCustomerVisible(media.listingProfile) || !media.bucket || !media.objectKey) {
+    if (
+      !media ||
+      !isProfileCustomerVisible(media.listingProfile) ||
+      !media.bucket ||
+      !media.objectKey
+    ) {
       throw new NotFoundException("vehicle media is not available");
     }
 
-    const downloaded = await this.storageService.getVehicleListingMediaStream(media.bucket, media.objectKey);
+    const downloaded = await this.storageService.getVehicleListingMediaStream(
+      media.bucket,
+      media.objectKey
+    );
     return {
       filename: media.originalName ?? media.fileName,
       mimeType: downloaded.contentType ?? media.mimeType,
@@ -279,7 +298,10 @@ export class PortalCatalogService {
     const document = binding.document;
     let downloaded: Awaited<ReturnType<StorageService["getVehicleDocumentStream"]>>;
     try {
-      downloaded = await this.storageService.getVehicleDocumentStream(document.bucket!, document.objectKey!);
+      downloaded = await this.storageService.getVehicleDocumentStream(
+        document.bucket!,
+        document.objectKey!
+      );
     } catch {
       throw new NotFoundException("vehicle source document is not available");
     }
@@ -351,9 +373,7 @@ export class PortalCatalogService {
     return fallbackPlans.map((plan) => ({ plan }));
   }
 
-  private async findAvailablePlansForVehicle(
-    vehicle: Pick<PortalVehicle, "modelDefinitionId">
-  ) {
+  private async findAvailablePlansForVehicle(vehicle: Pick<PortalVehicle, "modelDefinitionId">) {
     const plans = await this.findAvailablePlans();
     return plans.filter((plan) => isPlanAvailableForVehicle(plan, vehicle));
   }
@@ -392,7 +412,9 @@ export class PortalCatalogService {
     return catalogVehicleWhere(query, id, modelFilter);
   }
 
-  private async resolveCatalogModelFilter(query: PortalVehicleCatalogQueryDto): Promise<Prisma.VehicleWhereInput> {
+  private async resolveCatalogModelFilter(
+    query: PortalVehicleCatalogQueryDto
+  ): Promise<Prisma.VehicleWhereInput> {
     if (!query.modelDefinitionId) {
       return {};
     }
@@ -405,11 +427,13 @@ function catalogVehicleWhere(
   id?: string,
   modelFilter: Prisma.VehicleWhereInput = {}
 ): Prisma.VehicleWhereInput {
+  const asOf = new Date();
   return {
     currentSalePriceAmount: { gt: 0 },
     deletedAt: null,
     id,
     ...modelFilter,
+    ...buildAllocationAvailabilityWhere(asOf),
     salePriceStatus: SalePriceStatus.EFFECTIVE,
     status: VehicleStatus.AVAILABLE,
     ...(query.brand ? { brand: { contains: query.brand, mode: "insensitive" } } : {}),
@@ -454,7 +478,8 @@ function toPortalVehicleListItem(vehicle: PortalVehicle, plans: PortalPlanOption
     coverImageUrl: cover?.previewUrl ?? null,
     currentMileageKm: vehicle.currentMileageKm,
     customerTags,
-    displayName: profile?.displayName ?? profile?.shortTitle ?? portalCustomerModelDisplayName(vehicle),
+    displayName:
+      profile?.displayName ?? profile?.shortTitle ?? portalCustomerModelDisplayName(vehicle),
     estimatedRangeKm: profile?.estimatedRangeKm ?? null,
     gallery,
     hasFireDamage: profile?.hasFireDamage ?? null,
@@ -499,7 +524,11 @@ function toPortalVehicleDetail(vehicle: PortalVehicle, plans: PortalPlanOption[]
     applicationProcess: DEFAULT_APPLICATION_PROCESS,
     battery,
     condition,
-    conditionDisplayMode: conditionSource ? "SOURCE_DOCUMENT" : report ? "STRUCTURED_REPORT" : "NONE",
+    conditionDisplayMode: conditionSource
+      ? "SOURCE_DOCUMENT"
+      : report
+        ? "STRUCTURED_REPORT"
+        : "NONE",
     conditionReportSummary: report ? toConditionReportSummary(report) : null,
     coreHighlights: buildCoreHighlights(vehicle, profile),
     depositNotice: "押金金额将根据审核结果最终确认。",
@@ -614,7 +643,10 @@ function calculateEstimatedMonthlyFee(
   vehicle: PortalVehicle,
   listingPlan?: PortalListingPlan
 ) {
-  if (listingPlan?.displayMonthlyFeeAmount !== null && listingPlan?.displayMonthlyFeeAmount !== undefined) {
+  if (
+    listingPlan?.displayMonthlyFeeAmount !== null &&
+    listingPlan?.displayMonthlyFeeAmount !== undefined
+  ) {
     return { monthlyFeeAmount: Number(listingPlan.displayMonthlyFeeAmount) };
   }
 
@@ -637,7 +669,10 @@ function calculateEstimatedMonthlyFee(
   };
 }
 
-function calculateVehicleBaseFeeAmount(plan: PortalSubscriptionPlan, vehicleSalePriceAmount: bigint) {
+function calculateVehicleBaseFeeAmount(
+  plan: PortalSubscriptionPlan,
+  vehicleSalePriceAmount: bigint
+) {
   if (plan.monthlyFeeMode === MonthlyFeeMode.MANUAL_QUOTE) {
     return null;
   }
@@ -651,16 +686,18 @@ function calculateVehicleBaseFeeAmount(plan: PortalSubscriptionPlan, vehicleSale
   let amount: bigint | null = null;
 
   if (plan.monthlyFeeMode === MonthlyFeeMode.FIXED_AMOUNT) {
-    amount = plan.baseMonthlyFeeAmount && plan.baseMonthlyFeeAmount > 0n
-      ? plan.baseMonthlyFeeAmount
-      : null;
+    amount =
+      plan.baseMonthlyFeeAmount && plan.baseMonthlyFeeAmount > 0n
+        ? plan.baseMonthlyFeeAmount
+        : null;
   }
 
   if (plan.monthlyFeeMode === MonthlyFeeMode.RATE_FORMULA) {
     const rate = Number(plan.monthlyFeeRate);
-    amount = Number.isFinite(rate) && rate > 0
-      ? BigInt(Math.floor(Number(vehicleSalePriceAmount) * rate))
-      : null;
+    amount =
+      Number.isFinite(rate) && rate > 0
+        ? BigInt(Math.floor(Number(vehicleSalePriceAmount) * rate))
+        : null;
   }
 
   if (amount === null || amount > capAmount) {
@@ -697,7 +734,12 @@ function isPlanAvailableForVehicle(
 
 function packageBelongsToPlan(
   plan: PortalSubscriptionPlan,
-  item: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus }
+  item: {
+    deletedAt: Date | null;
+    productId: string;
+    productVersionId: string;
+    status: RecordStatus;
+  }
 ) {
   return (
     !item.deletedAt &&
@@ -737,9 +779,9 @@ function describeBenefitPackage(plan: PortalSubscriptionPlan) {
 }
 
 function buildPeriodOptions(min: number, max: number) {
-  return Array.from(new Set([min, 12, 24, 36, max].filter((value) => value >= min && value <= max))).sort(
-    (left, right) => left - right
-  );
+  return Array.from(
+    new Set([min, 12, 24, 36, max].filter((value) => value >= min && value <= max))
+  ).sort((left, right) => left - right);
 }
 
 function buildGallery(vehicle: PortalVehicle, profile: PortalListingProfile | null) {
@@ -766,14 +808,19 @@ function latestConditionReport(vehicle: PortalVehicle) {
   );
 }
 
-function buildConditionView(profile: PortalListingProfile | null, report: PortalConditionReport | null) {
+function buildConditionView(
+  profile: PortalListingProfile | null,
+  report: PortalConditionReport | null
+) {
   return {
     grade: report?.overallGrade ?? profile?.conditionGrade ?? null,
     hasFireDamage: report?.hasFireDamage ?? profile?.hasFireDamage ?? null,
     hasFloodDamage: report?.hasFloodDamage ?? profile?.hasFloodDamage ?? null,
     hasMajorAccident: report?.hasMajorAccident ?? profile?.hasMajorAccident ?? null,
     hasStructuralDamage: report?.hasStructuralDamage ?? profile?.hasStructuralDamage ?? null,
-    knownDefectsSummary: report ? buildReportDefectSummary(report) : profile?.knownDefectsSummary ?? null,
+    knownDefectsSummary: report
+      ? buildReportDefectSummary(report)
+      : (profile?.knownDefectsSummary ?? null),
     summary: report?.customerSummary ?? report?.summary ?? profile?.conditionSummary ?? null
   };
 }
@@ -788,7 +835,9 @@ function buildBatteryView(
     checkedAt: report?.batteryCheckedAt ?? profile?.batteryHealthCheckedAt ?? null,
     cycleCount: report?.batteryCycleCount ?? null,
     estimatedRangeKm: report?.batteryEstimatedRangeKm ?? profile?.estimatedRangeKm ?? null,
-    healthPercent: decimalToNumber(report?.batteryHealthPercent ?? profile?.batteryHealthPercent ?? null),
+    healthPercent: decimalToNumber(
+      report?.batteryHealthPercent ?? profile?.batteryHealthPercent ?? null
+    ),
     remark: report?.batteryRemark ?? profile?.batteryRemark ?? null,
     usageType: vehicle.batteryUsageType,
     usageTypeLabel: VEHICLE_BATTERY_USAGE_TYPE_LABELS[vehicle.batteryUsageType],
@@ -933,13 +982,25 @@ function portalCustomerModelDisplayName(
 ) {
   const definition = toPortalModelDefinitionSummary(vehicle.modelDefinition);
   const modelName = definition?.customerDisplayName ?? definition?.displayName ?? vehicle.model;
-  return [vehicle.brand, vehicle.series, modelName, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
+  return [
+    vehicle.brand,
+    vehicle.series,
+    modelName,
+    vehicle.modelYear ? `${vehicle.modelYear}款` : null
+  ]
     .filter(Boolean)
     .join(" ");
 }
 
-function buildVehicleDisplayName(vehicle: Pick<PortalVehicle, "brand" | "model" | "modelYear" | "series">) {
-  return [vehicle.brand, vehicle.series, vehicle.model, vehicle.modelYear ? `${vehicle.modelYear}款` : null]
+function buildVehicleDisplayName(
+  vehicle: Pick<PortalVehicle, "brand" | "model" | "modelYear" | "series">
+) {
+  return [
+    vehicle.brand,
+    vehicle.series,
+    vehicle.model,
+    vehicle.modelYear ? `${vehicle.modelYear}款` : null
+  ]
     .filter(Boolean)
     .join(" ");
 }
@@ -966,7 +1027,9 @@ function buildCoreHighlights(vehicle: PortalVehicle, profile: PortalListingProfi
     vehicle.registrationDate ? `上牌 ${formatDateOnly(vehicle.registrationDate)}` : null,
     `${vehicle.currentMileageKm.toLocaleString("zh-CN")} km`,
     profile?.conditionGrade ? `车况 ${profile.conditionGrade}` : null,
-    profile?.batteryHealthPercent ? `电池健康度 ${decimalToNumber(profile.batteryHealthPercent)}%` : null
+    profile?.batteryHealthPercent
+      ? `电池健康度 ${decimalToNumber(profile.batteryHealthPercent)}%`
+      : null
   ].filter(Boolean) as string[];
 
   return Array.from(new Set(highlights));
@@ -985,17 +1048,23 @@ function buildVehicleHistorySummary(condition: {
     condition.hasStructuralDamage ? "结构件损伤" : null
   ].filter(Boolean);
 
-  return risks.length > 0 ? `已标记：${risks.join("、")}` : "后台未标记重大事故、水泡、火烧或结构件损伤。";
+  return risks.length > 0
+    ? `已标记：${risks.join("、")}`
+    : "后台未标记重大事故、水泡、火烧或结构件损伤。";
 }
 
 function monthlyFeeFrom(plans: PortalPlanOption[], vehicle: PortalVehicle) {
   const amounts = plans
-    .map((item) => calculateEstimatedMonthlyFee(item.plan, vehicle, item.listingPlan).monthlyFeeAmount)
+    .map(
+      (item) => calculateEstimatedMonthlyFee(item.plan, vehicle, item.listingPlan).monthlyFeeAmount
+    )
     .filter((amount): amount is number => amount !== null);
   return amounts.length > 0 ? Math.min(...amounts) : null;
 }
 
-function customerVisibleProfile(profile: PortalVehicle["listingProfile"]): PortalListingProfile | null {
+function customerVisibleProfile(
+  profile: PortalVehicle["listingProfile"]
+): PortalListingProfile | null {
   return profile && isProfileCustomerVisible(profile) ? profile : null;
 }
 
@@ -1011,9 +1080,9 @@ function isProfileCustomerVisible(
 ) {
   return Boolean(
     profile &&
-      !profile.deletedAt &&
-      profile.portalVisible &&
-      profile.listingStatus === VehicleListingStatus.PUBLISHED
+    !profile.deletedAt &&
+    profile.portalVisible &&
+    profile.listingStatus === VehicleListingStatus.PUBLISHED
   );
 }
 
@@ -1021,7 +1090,9 @@ function stringArray(value: unknown, fallback: string[] = []) {
   if (!Array.isArray(value)) {
     return fallback;
   }
-  const rows = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const rows = value.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0
+  );
   return rows.length > 0 ? rows : fallback;
 }
 
@@ -1091,7 +1162,11 @@ const DEFAULT_APPLICATION_PROCESS = [
   "开始订阅"
 ];
 
-const DEFAULT_SERVICE_HIGHLIGHTS = ["合同期内账单线上查看", "事故报案与救援可在 Portal 提交", "押金与权益信息线上可查"];
+const DEFAULT_SERVICE_HIGHLIGHTS = [
+  "合同期内账单线上查看",
+  "事故报案与救援可在 Portal 提交",
+  "押金与权益信息线上可查"
+];
 
 const DEFAULT_FAQ = [
   {

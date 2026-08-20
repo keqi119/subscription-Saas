@@ -71,6 +71,44 @@ describe("SubscriptionJourneyRepository", () => {
     expect(tx.subscriptionJourneyOutbox.upsert).toHaveBeenCalledTimes(2);
   });
 
+  it("persists an activation operational-clearance wait without completing the step", async () => {
+    const step = journeyStep({
+      code: SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+    });
+    const tx = completeStepTransaction(step, new Map(), {
+      currentStepCode: SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION,
+      currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+      status: SubscriptionJourneyStatus.RUNNING,
+      version: 5
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.pauseForOperationalRestriction(tx as never, {
+      expectedVersion: 5,
+      journeyId: step.journeyId,
+      reasons: [{ code: "ACTIVE_OPERATIONAL_RESTRICTION", restrictionId: "restriction-1" }],
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+        status: SubscriptionJourneyStatus.PAUSED,
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 5 }
+    });
+    expect(tx.subscriptionJourneyStep.update).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          eventType: SubscriptionJourneyEventType.JOURNEY_PAUSED,
+          sequence: 6
+        })
+      })
+    );
+  });
+
   it("creates one application journey and one durable start event for producer retries", async () => {
     const applicationId = randomUUID();
     const journeys = new Map<string, ReturnType<typeof journey>>();
@@ -220,9 +258,7 @@ describe("SubscriptionJourneyRepository", () => {
           events.set(input.data.eventKey, input.data);
           return input.data;
         }),
-        findUnique: vi.fn(async (input) =>
-          events.get(input.where.eventKey) ?? null
-        )
+        findUnique: vi.fn(async (input) => events.get(input.where.eventKey) ?? null)
       },
       subscriptionJourneyOutbox: {
         upsert: vi.fn(async (input) => {
@@ -322,12 +358,15 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.openManualTask(tx as never, {
-        inputSnapshot: { vehicleId: randomUUID() },
-        journeyId: step.journeyId,
-        stepCode: step.code,
-        stepId: step.id
-      } as never)
+      repository.openManualTask(
+        tx as never,
+        {
+          inputSnapshot: { vehicleId: randomUUID() },
+          journeyId: step.journeyId,
+          stepCode: step.code,
+          stepId: step.id
+        } as never
+      )
     ).rejects.toMatchObject({ code: "JOURNEY_MANUAL_TASK_ALREADY_OPEN" });
   });
 
@@ -406,11 +445,7 @@ describe("SubscriptionJourneyRepository", () => {
       code: SubscriptionJourneyStepCode.DELIVERY_EVIDENCE_DECISION,
       id: "step-delivery-decision"
     });
-    const tx = completeStepTransaction(
-      decisionStep,
-      new Map(),
-      { version: 11 } as never
-    );
+    const tx = completeStepTransaction(decisionStep, new Map(), { version: 11 } as never);
     const handoverStep = journeyStep({
       code: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
       id: "step-handover"
@@ -432,8 +467,7 @@ describe("SubscriptionJourneyRepository", () => {
 
     expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
       data: {
-        currentStepCode:
-          SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+        currentStepCode: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
         currentStepStatus: "RUNNING",
         status: "RUNNING",
         version: { increment: 1 }
@@ -550,13 +584,12 @@ describe("SubscriptionJourneyRepository", () => {
           return 1;
         }
       ),
-      $queryRaw: vi.fn(async (query: {
-        strings: readonly string[];
-        values: readonly unknown[];
-      }) => {
-        queries.push(query);
-        return queries.length === 1 ? [{ id: job.id }] : [{ id: outbox.id }];
-      }),
+      $queryRaw: vi.fn(
+        async (query: { strings: readonly string[]; values: readonly unknown[] }) => {
+          queries.push(query);
+          return queries.length === 1 ? [{ id: job.id }] : [{ id: outbox.id }];
+        }
+      ),
       subscriptionJourneyJob: {
         findMany: vi.fn(async () => [job])
       },
@@ -566,28 +599,24 @@ describe("SubscriptionJourneyRepository", () => {
     };
     const repository = new SubscriptionJourneyRepository();
 
-    await expect(repository.claimJobs(tx as never, 1, 120_000)).resolves.toEqual([
-      job
-    ]);
-    await expect(
-      repository.claimOutbox(tx as never, 1, 120_000)
-    ).resolves.toEqual([outbox]);
+    await expect(repository.claimJobs(tx as never, 1, 120_000)).resolves.toEqual([job]);
+    await expect(repository.claimOutbox(tx as never, 1, 120_000)).resolves.toEqual([outbox]);
 
     expect(queries).toHaveLength(2);
     for (const [index, query] of queries.entries()) {
       const sql = query.strings.join(" ");
       expect(sql).toContain(
-        index === 0
-          ? "FOR UPDATE OF job SKIP LOCKED"
-          : "FOR UPDATE SKIP LOCKED"
+        index === 0 ? "FOR UPDATE OF job SKIP LOCKED" : "FOR UPDATE SKIP LOCKED"
       );
       expect(sql).toContain("clock_timestamp()");
       expect(sql).toContain("ORDER BY");
       expect(query.values).toContain(1);
-      const updateSql = (tx.$executeRaw.mock.calls[index]?.[0] as {
-        strings: readonly string[];
-        values: readonly unknown[];
-      }).strings.join(" ");
+      const updateSql = (
+        tx.$executeRaw.mock.calls[index]?.[0] as {
+          strings: readonly string[];
+          values: readonly unknown[];
+        }
+      ).strings.join(" ");
       const updateWhere = updateSql.split("WHERE")[1] ?? "";
       expect(updateWhere).toContain("lease_expires_at");
       expect(updateWhere).toContain("clock_timestamp()");
@@ -623,9 +652,7 @@ describe("SubscriptionJourneyRepository", () => {
   it.each(["completeOutbox", "rescheduleOutbox", "deadLetterOutbox"] as const)(
     "requires an unexpired outbox lease for %s",
     async (operation) => {
-      const executeRaw = vi
-        .fn<(query: unknown) => Promise<number>>()
-        .mockResolvedValue(0);
+      const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(0);
       const repository = new SubscriptionJourneyRepository();
       const tx = { $executeRaw: executeRaw };
 
@@ -633,29 +660,19 @@ describe("SubscriptionJourneyRepository", () => {
         operation === "completeOutbox"
           ? repository.completeOutbox(tx as never, "outbox-1", "lease-1")
           : operation === "rescheduleOutbox"
-            ? repository.rescheduleOutbox(
-                tx as never,
-                "outbox-1",
-                "lease-1",
-                {
-                  delayMs: 1_000,
-                  error: {
-                    code: "TIMEOUT",
-                    message: "Timed out.",
-                    retryable: true
-                  }
+            ? repository.rescheduleOutbox(tx as never, "outbox-1", "lease-1", {
+                delayMs: 1_000,
+                error: {
+                  code: "TIMEOUT",
+                  message: "Timed out.",
+                  retryable: true
                 }
-              )
-            : repository.deadLetterOutbox(
-                tx as never,
-                "outbox-1",
-                "lease-1",
-                {
-                  code: "FAILED",
-                  message: "Failed.",
-                  retryable: false
-                }
-              );
+              })
+            : repository.deadLetterOutbox(tx as never, "outbox-1", "lease-1", {
+                code: "FAILED",
+                message: "Failed.",
+                retryable: false
+              });
 
       await expect(result).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
       const query = executeRaw.mock.calls[0]![0] as {
@@ -739,17 +756,12 @@ describe("SubscriptionJourneyRepository", () => {
   });
 
   it("preserves the idempotency input payload when completing a job", async () => {
-    const executeRaw = vi
-      .fn<(query: unknown) => Promise<number>>()
-      .mockResolvedValue(1);
+    const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
-    await repository.completeJob(
-      { $executeRaw: executeRaw } as never,
-      "job-1",
-      "lease-1",
-      { resultId: "domain-result-1" }
-    );
+    await repository.completeJob({ $executeRaw: executeRaw } as never, "job-1", "lease-1", {
+      resultId: "domain-result-1"
+    });
 
     const query = executeRaw.mock.calls[0]![0] as {
       strings: readonly string[];
@@ -762,19 +774,17 @@ describe("SubscriptionJourneyRepository", () => {
   it.each(["completeJob", "rescheduleJob", "deadLetterJob"] as const)(
     "requires an unexpired lease for %s",
     async (operation) => {
-      const executeRaw = vi
-        .fn<(query: unknown) => Promise<number>>()
-        .mockResolvedValue(0);
+      const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(0);
       const tx = {
         $executeRaw: executeRaw,
-        subscriptionJourneyException: { create: vi.fn() },
+        subscriptionJourneyException: { create: vi.fn() }
       };
       const repository = new SubscriptionJourneyRepository();
 
       if (operation === "completeJob") {
-        await expect(
-          repository.completeJob(tx as never, "job-1", "lease-1")
-        ).rejects.toMatchObject({ code: "JOURNEY_LEASE_LOST" });
+        await expect(repository.completeJob(tx as never, "job-1", "lease-1")).rejects.toMatchObject(
+          { code: "JOURNEY_LEASE_LOST" }
+        );
       } else if (operation === "rescheduleJob") {
         await expect(
           repository.rescheduleJob(tx as never, "job-1", "lease-1", {
@@ -808,24 +818,17 @@ describe("SubscriptionJourneyRepository", () => {
   );
 
   it("schedules retry with a safe error and clears the lease", async () => {
-    const executeRaw = vi
-      .fn<(query: unknown) => Promise<number>>()
-      .mockResolvedValue(1);
+    const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
-    await repository.rescheduleJob(
-      { $executeRaw: executeRaw } as never,
-      "job-1",
-      "lease-1",
-      {
-        delayMs: 30_000,
-        error: {
-          code: "PROVIDER_TIMEOUT",
-          message: "Provider request failed.",
-          retryable: true
-        }
+    await repository.rescheduleJob({ $executeRaw: executeRaw } as never, "job-1", "lease-1", {
+      delayMs: 30_000,
+      error: {
+        code: "PROVIDER_TIMEOUT",
+        message: "Provider request failed.",
+        retryable: true
       }
-    );
+    });
 
     const query = executeRaw.mock.calls[0]![0] as {
       strings: readonly string[];
@@ -850,9 +853,7 @@ describe("SubscriptionJourneyRepository", () => {
 
   it("dead-letters under the lease and creates a composite-linked exception", async () => {
     const create = vi.fn(async (input) => ({ id: "exception-1", ...input.data }));
-    const executeRaw = vi
-      .fn<(query: unknown) => Promise<number>>()
-      .mockResolvedValue(1);
+    const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(1);
     const updateStep = vi.fn(async (input) => input.data);
     const updateJourney = vi.fn(async () => ({ count: 1 }));
     const repository = new SubscriptionJourneyRepository();
@@ -928,16 +929,13 @@ describe("SubscriptionJourneyRepository", () => {
     const step = journeyStep();
 
     await expect(
-      repository.enqueueJob(
-        { subscriptionJourneyJob: { upsert } } as never,
-        {
-          jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
-          journeyId: step.journeyId,
-          payload: { nested: { accessToken: "must-not-be-stored" } },
-          sourceKey: "unsafe-job",
-          stepId: step.id
-        }
-      )
+      repository.enqueueJob({ subscriptionJourneyJob: { upsert } } as never, {
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: step.journeyId,
+        payload: { nested: { accessToken: "must-not-be-stored" } },
+        sourceKey: "unsafe-job",
+        stepId: step.id
+      })
     ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
     expect(upsert).not.toHaveBeenCalled();
   });
@@ -952,16 +950,13 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.enqueueJob(
-        { subscriptionJourneyJob: { upsert } } as never,
-        {
-          jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
-          journeyId: "journey-1",
-          payload,
-          sourceKey: "unsafe-container",
-          stepId: "step-1"
-        }
-      )
+      repository.enqueueJob({ subscriptionJourneyJob: { upsert } } as never, {
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: "journey-1",
+        payload,
+        sourceKey: "unsafe-container",
+        stepId: "step-1"
+      })
     ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
     expect(upsert).not.toHaveBeenCalled();
   });
@@ -976,73 +971,52 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.enqueueJob(
-        { subscriptionJourneyJob: { upsert } } as never,
-        {
-          jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
-          journeyId: "journey-1",
-          payload: { value },
-          sourceKey: "unsafe-string",
-          stepId: "step-1"
-        }
-      )
+      repository.enqueueJob({ subscriptionJourneyJob: { upsert } } as never, {
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: "journey-1",
+        payload: { value },
+        sourceKey: "unsafe-string",
+        stepId: "step-1"
+      })
     ).rejects.toMatchObject({ code: "JOURNEY_SENSITIVE_PAYLOAD" });
     expect(upsert).not.toHaveBeenCalled();
   });
 
   it("stores a bounded generic failure instead of a raw provider response", async () => {
-    const executeRaw = vi
-      .fn<(query: unknown) => Promise<number>>()
-      .mockResolvedValue(1);
+    const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
-    await repository.rescheduleJob(
-      { $executeRaw: executeRaw } as never,
-      "job-1",
-      "lease-1",
-      {
-        delayMs: 1_000,
-        error: {
-          code: "provider-http-500/body",
-          message:
-            'Bearer abc.def.ghi {"customerPhone":"13800138000","rawBody":"provider callback"}',
-          retryable: true
-        }
+    await repository.rescheduleJob({ $executeRaw: executeRaw } as never, "job-1", "lease-1", {
+      delayMs: 1_000,
+      error: {
+        code: "provider-http-500/body",
+        message: 'Bearer abc.def.ghi {"customerPhone":"13800138000","rawBody":"provider callback"}',
+        retryable: true
       }
-    );
+    });
 
     const query = executeRaw.mock.calls[0]![0] as {
       values: readonly unknown[];
     };
     expect(query.values).toEqual(
-      expect.arrayContaining([
-        "PROVIDER_HTTP_500_BODY",
-        "Journey operation failed."
-      ])
+      expect.arrayContaining(["PROVIDER_HTTP_500_BODY", "Journey operation failed."])
     );
   });
 
   it("does not persist a truncated raw JSON provider error", async () => {
-    const executeRaw = vi
-      .fn<(query: unknown) => Promise<number>>()
-      .mockResolvedValue(1);
+    const executeRaw = vi.fn<(query: unknown) => Promise<number>>().mockResolvedValue(1);
     const repository = new SubscriptionJourneyRepository();
 
-    await repository.rescheduleJob(
-      { $executeRaw: executeRaw } as never,
-      "job-1",
-      "lease-1",
-      {
-        delayMs: 1_000,
-        error: {
-          code: "PROVIDER_HTTP_500",
-          message: JSON.stringify({
-            providerResponse: "x".repeat(800)
-          }),
-          retryable: true
-        }
+    await repository.rescheduleJob({ $executeRaw: executeRaw } as never, "job-1", "lease-1", {
+      delayMs: 1_000,
+      error: {
+        code: "PROVIDER_HTTP_500",
+        message: JSON.stringify({
+          providerResponse: "x".repeat(800)
+        }),
+        retryable: true
       }
-    );
+    });
 
     const query = executeRaw.mock.calls[0]![0] as {
       values: readonly unknown[];
@@ -1052,13 +1026,9 @@ describe("SubscriptionJourneyRepository", () => {
 
   it("rejects a persisted journey/step mismatch before completing", async () => {
     const step = journeyStep();
-    const tx = completeStepTransaction(
-      step,
-      new Map(),
-      {
-        currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
-      } as never
-    );
+    const tx = completeStepTransaction(step, new Map(), {
+      currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    } as never);
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
@@ -1080,12 +1050,15 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.openManualTask(tx as never, {
-        inputSnapshot: { planRevision: 2 },
-        journeyId: step.journeyId,
-        stepCode: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
-        stepId: step.id
-      } as never)
+      repository.openManualTask(
+        tx as never,
+        {
+          inputSnapshot: { planRevision: 2 },
+          journeyId: step.journeyId,
+          stepCode: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+          stepId: step.id
+        } as never
+      )
     ).rejects.toMatchObject({ code: "JOURNEY_INVALID_TRANSITION" });
     expect(tx.subscriptionJourneyManualTask.create).not.toHaveBeenCalled();
   });
@@ -1114,13 +1087,16 @@ describe("SubscriptionJourneyRepository", () => {
     const tx = completeStepTransaction(step, events);
     const repository = new SubscriptionJourneyRepository();
 
-    const result = await repository.waitForCustomer(tx as never, {
-      eventKey: "customer:waiting:retry",
-      expectedVersion: 1,
-      journeyId: step.journeyId,
-      payload,
-      stepId: step.id
-    } as never);
+    const result = await repository.waitForCustomer(
+      tx as never,
+      {
+        eventKey: "customer:waiting:retry",
+        expectedVersion: 1,
+        journeyId: step.journeyId,
+        payload,
+        stepId: step.id
+      } as never
+    );
 
     expect(result).toEqual(step);
     expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
@@ -1150,13 +1126,16 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.waitForCustomer(tx as never, {
-        eventKey: "customer:waiting:conflict",
-        expectedVersion: 1,
-        journeyId: step.journeyId,
-        payload: { planRevision: 3 },
-        stepId: step.id
-      } as never)
+      repository.waitForCustomer(
+        tx as never,
+        {
+          eventKey: "customer:waiting:conflict",
+          expectedVersion: 1,
+          journeyId: step.journeyId,
+          payload: { planRevision: 3 },
+          stepId: step.id
+        } as never
+      )
     ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
     expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
   });
@@ -1225,16 +1204,13 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await expect(
-      repository.decideManualTask(
-        { subscriptionJourneyManualTask: { updateMany } } as never,
-        {
-          decidedBy: randomUUID(),
-          decision: SubscriptionJourneyManualDecision.APPROVED,
-          expectedVersion: 2,
-          journeyId: "journey-1",
-          taskId: "task-1"
-        }
-      )
+      repository.decideManualTask({ subscriptionJourneyManualTask: { updateMany } } as never, {
+        decidedBy: randomUUID(),
+        decision: SubscriptionJourneyManualDecision.APPROVED,
+        expectedVersion: 2,
+        journeyId: "journey-1",
+        taskId: "task-1"
+      })
     ).rejects.toMatchObject({ code: "JOURNEY_OPTIMISTIC_LOCK_CONFLICT" });
   });
 });
@@ -1366,8 +1342,9 @@ function completeStepTransaction(
         eventRows.set(input.data.eventKey, input.data);
         return input.data;
       }),
-      findUnique: vi.fn(async (input: { where: { eventKey: string } }) =>
-        eventRows.get(input.where.eventKey) ?? null
+      findUnique: vi.fn(
+        async (input: { where: { eventKey: string } }) =>
+          eventRows.get(input.where.eventKey) ?? null
       )
     },
     subscriptionJourneyOutbox: {

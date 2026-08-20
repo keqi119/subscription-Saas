@@ -12,9 +12,11 @@ import {
   VehicleInsurancePolicyType,
   VehicleStatus
 } from "@prisma/client";
+import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { LeaseActivationEngine } from "../src/lease/lease-activation.engine";
+import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 
 describe("LeaseActivationEngine authoritative gate", () => {
   it("evaluates the complete authoritative fact set inside the caller transaction", async () => {
@@ -59,9 +61,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
 
     const result = await harness.engine.evaluate(harness.orderId);
 
-    expect(result.missingConditions).toContain(
-      "CONTRACT_ARCHIVED_ARTIFACT_MISSING"
-    );
+    expect(result.missingConditions).toContain("CONTRACT_ARCHIVED_ARTIFACT_MISSING");
     expect(harness.state.writeCount).toBe(0);
   });
 
@@ -76,10 +76,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
     const result = await harness.engine.evaluate(harness.orderId);
 
     expect(result.missingConditions).toEqual(
-      expect.arrayContaining([
-        "DEPOSIT_PAYMENT_MISSING",
-        "FIRST_RENT_PAYMENT_MISSING"
-      ])
+      expect.arrayContaining(["DEPOSIT_PAYMENT_MISSING", "FIRST_RENT_PAYMENT_MISSING"])
     );
     expect(harness.state.writeCount).toBe(0);
   });
@@ -94,10 +91,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
     const result = await harness.engine.evaluate(harness.orderId);
 
     expect(result.missingConditions).toEqual(
-      expect.arrayContaining([
-        "DEPOSIT_PAYMENT_MISSING",
-        "FIRST_RENT_PAYMENT_MISSING"
-      ])
+      expect.arrayContaining(["DEPOSIT_PAYMENT_MISSING", "FIRST_RENT_PAYMENT_MISSING"])
     );
   });
 
@@ -107,7 +101,11 @@ describe("LeaseActivationEngine authoritative gate", () => {
     ["lapsed insurance", { insuranceCovered: false }, "INSURANCE_NOT_COVERED"],
     ["mismatched vehicle", { deliveryVehicleMatches: false }, "VEHICLE_MISMATCH"],
     ["missing delivery mileage", { handoverMileageKm: null }, "DELIVERY_MILEAGE_MISSING"],
-    ["unarchived Stage 2 artifact", { handoverArchived: false }, "HANDOVER_ARCHIVED_ARTIFACT_MISSING"]
+    [
+      "unarchived Stage 2 artifact",
+      { handoverArchived: false },
+      "HANDOVER_ARCHIVED_ARTIFACT_MISSING"
+    ]
   ] as const)("rejects %s with a stable blocker", async (_name, overrides, blocker) => {
     const harness = createHarness(overrides);
 
@@ -144,6 +142,22 @@ describe("LeaseActivationEngine authoritative gate", () => {
     );
   });
 
+  it("blocks central activation before every write when DELIVERY is operationally restricted", async () => {
+    const harness = createHarness({ operationallyRestricted: true });
+
+    await expect(harness.engine.activate(harness.orderId, harness.user)).rejects.toMatchObject({
+      response: expect.objectContaining({ code: "VEHICLE_OPERATIONALLY_RESTRICTED" })
+    });
+
+    expect(harness.assetOperationsService.assertVehicleAvailable).toHaveBeenCalledWith(
+      harness.tx,
+      "vehicle-1",
+      VehicleAvailabilityPurpose.DELIVERY,
+      expect.any(Date)
+    );
+    expect(harness.state.writeCount).toBe(0);
+  });
+
   it("keeps all authoritative activation records singular on retry", async () => {
     const harness = createHarness({ journey: true });
 
@@ -159,9 +173,9 @@ describe("LeaseActivationEngine authoritative gate", () => {
   it("rolls every aggregate back when a write fails after the vehicle update", async () => {
     const harness = createHarness({ failAfterVehicleUpdate: true, journey: true });
 
-    await expect(
-      harness.engine.activate(harness.orderId, harness.user)
-    ).rejects.toThrow("injected post-vehicle failure");
+    await expect(harness.engine.activate(harness.orderId, harness.user)).rejects.toThrow(
+      "injected post-vehicle failure"
+    );
 
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
@@ -215,6 +229,7 @@ function createHarness(overrides: Partial<State> = {}) {
     journey: false,
     journeyCompletedEventCount: 0,
     journeyStatus: SubscriptionJourneyStatus.RUNNING,
+    operationallyRestricted: false,
     leaseCount: 0,
     legacyMoneyBooleans: false,
     orderStatus: OrderStatus.PENDING_DELIVERY,
@@ -283,10 +298,7 @@ function createHarness(overrides: Partial<State> = {}) {
     deliveryNo: "DLV-1",
     deliveryStatus: state.deliveryStatus,
     depositReceivedConfirmed: state.legacyMoneyBooleans,
-    deliveredAt:
-      state.deliveryStatus === DeliveryStatus.DELIVERED
-        ? state.completedAt
-        : null,
+    deliveredAt: state.deliveryStatus === DeliveryStatus.DELIVERED ? state.completedAt : null,
     firstMonthlyFeeReceivedConfirmed: state.legacyMoneyBooleans,
     handoverDocumentsConfirmed: true,
     handoverMileageKm: state.deliveryMileageKm,
@@ -470,11 +482,8 @@ function createHarness(overrides: Partial<State> = {}) {
   };
   const financeService = {
     evaluateInitialBillSettlement: vi.fn(async () => ({
-      paid:
-        state.depositRemainingAmount === 0n &&
-        state.firstRentRemainingAmount === 0n,
-      remainingAmount:
-        state.depositRemainingAmount + state.firstRentRemainingAmount
+      paid: state.depositRemainingAmount === 0n && state.firstRentRemainingAmount === 0n,
+      remainingAmount: state.depositRemainingAmount + state.firstRentRemainingAmount
     }))
   };
   const mileageService = {
@@ -498,6 +507,16 @@ function createHarness(overrides: Partial<State> = {}) {
       }
     })
   };
+  const assetOperationsService = {
+    assertVehicleAvailable: vi.fn(async () => {
+      if (state.operationallyRestricted) {
+        throw new ConflictException({
+          code: "VEHICLE_OPERATIONALLY_RESTRICTED",
+          message: "Vehicle is operationally restricted."
+        });
+      }
+    })
+  };
   const engine = new LeaseActivationEngine(
     auditService as never,
     prisma as never,
@@ -509,10 +528,12 @@ function createHarness(overrides: Partial<State> = {}) {
     mileageService as never,
     mileageReviewService as never,
     entitlementService as never,
-    journeyRepository as never
+    journeyRepository as never,
+    assetOperationsService as never
   );
 
   return {
+    assetOperationsService,
     auditService,
     engine,
     orderId,
@@ -553,18 +574,17 @@ function buildInsurancePolicies(state: State, now: Date) {
   const effectiveTo = state.insuranceCovered
     ? new Date("2027-08-06T00:00:00.000Z")
     : new Date("2026-08-01T00:00:00.000Z");
-  return [
-    VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
-    VehicleInsurancePolicyType.COMMERCIAL
-  ].map((policyType, index) => ({
-    deletedAt: null,
-    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
-    effectiveTo,
-    id: `policy-${index}`,
-    policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
-    policyType,
-    updatedAt: now
-  }));
+  return [VehicleInsurancePolicyType.COMPULSORY_TRAFFIC, VehicleInsurancePolicyType.COMMERCIAL].map(
+    (policyType, index) => ({
+      deletedAt: null,
+      effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+      effectiveTo,
+      id: `policy-${index}`,
+      policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+      policyType,
+      updatedAt: now
+    })
+  );
 }
 
 function snapshotState(state: State): State {
@@ -600,6 +620,7 @@ interface State {
   leaseCount: number;
   legacyMoneyBooleans: boolean;
   orderStatus: OrderStatus;
+  operationallyRestricted: boolean;
   vehicleStatus: VehicleStatus;
   workOrderApproved: boolean;
   writeCount: number;

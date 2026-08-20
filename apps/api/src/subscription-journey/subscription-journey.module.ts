@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { CustomerModule } from "../customer/customer.module";
 import { ESignModule } from "../esign/esign.module";
@@ -22,13 +23,11 @@ import { SubscriptionJourneySignalModule } from "./subscription-journey-signal.m
 import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
 
 @Module({
-  controllers: [
-    PortalSubscriptionJourneyController,
-    SubscriptionJourneyController
-  ],
+  controllers: [PortalSubscriptionJourneyController, SubscriptionJourneyController],
   exports: [SubscriptionJourneyService],
   imports: [
     AuditModule,
+    AssetOperationsModule,
     AuthModule,
     CustomerModule,
     ESignModule,

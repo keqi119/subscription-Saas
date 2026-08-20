@@ -81,9 +81,7 @@ import {
   MAX_FIELD_PHOTO_SIZE_BYTES,
   MAX_FIELD_VIDEO_SIZE_BYTES
 } from "./handover-work-order.constants";
-import {
-  normalizeFieldOperatorPhone
-} from "../field-operator/field-operator-phone";
+import { normalizeFieldOperatorPhone } from "../field-operator/field-operator-phone";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { FinanceService } from "../finance/finance.service";
@@ -97,9 +95,7 @@ import {
   STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
   validateStage2SourceArtifactBinding
 } from "./stage2-handover-source-artifact";
-import {
-  buildAuthoritativeStage2TaskWhere
-} from "./stage2-handover-task-binding";
+import { buildAuthoritativeStage2TaskWhere } from "./stage2-handover-task-binding";
 import {
   getFieldHandoverDisplayPriority,
   projectFieldHandoverWorkflow,
@@ -201,17 +197,18 @@ const HANDOVER_FIELD_FACT_KEYS = [
   "scheduledAt"
 ] as const;
 
-export type HandoverFieldFactKey = typeof HANDOVER_FIELD_FACT_KEYS[number];
+export type HandoverFieldFactKey = (typeof HANDOVER_FIELD_FACT_KEYS)[number];
 
 type HandoverType = "DELIVERY_OUTBOUND" | "RETURN_INBOUND";
-type WorkOrderStatus = typeof TERMINAL_WORK_ORDER_STATUSES[number] |
-  typeof READY_FOR_STAGE2_STATUSES[number] |
-  "DRAFT" |
-  "ASSIGNED" |
-  "FIELD_IN_PROGRESS" |
-  "EVIDENCE_SUBMITTED" |
-  "CUSTOMER_REVIEWING" |
-  "CUSTOMER_OBJECTED";
+type WorkOrderStatus =
+  | (typeof TERMINAL_WORK_ORDER_STATUSES)[number]
+  | (typeof READY_FOR_STAGE2_STATUSES)[number]
+  | "DRAFT"
+  | "ASSIGNED"
+  | "FIELD_IN_PROGRESS"
+  | "EVIDENCE_SUBMITTED"
+  | "CUSTOMER_REVIEWING"
+  | "CUSTOMER_OBJECTED";
 
 export interface WorkOrderRecord {
   accessTokenExpiresAt?: Date | null;
@@ -398,7 +395,11 @@ export class HandoverWorkOrderService {
     @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
 
-  async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
+  async createDraft(
+    orderId: string,
+    handoverType: HandoverType = "DELIVERY_OUTBOUND",
+    actorId?: string
+  ) {
     if (handoverType !== "DELIVERY_OUTBOUND") {
       throw new BadRequestException("RETURN_INBOUND 工单流程尚未启用。");
     }
@@ -417,13 +418,21 @@ export class HandoverWorkOrderService {
           orderId,
           scheduledAt: delivery && !delivery.deletedAt ? delivery.scheduledAt : null,
           status: "DRAFT",
-          vehicleDeliveryId: handover.vehicleDeliveryId ?? (delivery && !delivery.deletedAt ? delivery.id : null)
+          vehicleDeliveryId:
+            handover.vehicleDeliveryId ?? (delivery && !delivery.deletedAt ? delivery.id : null)
         }
       });
-      await this.recordEvent(workOrder, VehicleHandoverEventType.WORK_ORDER_CREATED, {
-        actorId,
-        actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM
-      }, tx);
+      await this.recordEvent(
+        workOrder,
+        VehicleHandoverEventType.WORK_ORDER_CREATED,
+        {
+          actorId,
+          actorType: actorId
+            ? VehicleHandoverEventActorType.ADMIN
+            : VehicleHandoverEventActorType.SYSTEM
+        },
+        tx
+      );
       return workOrder;
     });
     return created;
@@ -444,12 +453,11 @@ export class HandoverWorkOrderService {
       WHERE "id" = ${orderId}::uuid
       FOR UPDATE
     `);
-    const settlement = await this.financeService.evaluateInitialBillSettlement(
-      tx,
-      orderId
-    );
+    const settlement = await this.financeService.evaluateInitialBillSettlement(tx, orderId);
     if (!settlement.paid) {
-      throw new BadRequestException("Initial bills must be fully settled before handover creation.");
+      throw new BadRequestException(
+        "Initial bills must be fully settled before handover creation."
+      );
     }
     const order = await tx.subscriptionOrder.findUnique({
       include: {
@@ -468,7 +476,9 @@ export class HandoverWorkOrderService {
       !order.contract.archivedAt ||
       !order.contract.fileId
     ) {
-      throw new BadRequestException("Stage 1 contract must have an archived PDF before handover creation.");
+      throw new BadRequestException(
+        "Stage 1 contract must have an archived PDF before handover creation."
+      );
     }
     if (
       !order.vehicleId ||
@@ -488,7 +498,9 @@ export class HandoverWorkOrderService {
       evaluationDate
     );
     if (!insurance.covered) {
-      throw new BadRequestException("Valid compulsory and commercial insurance is required before handover creation.");
+      throw new BadRequestException(
+        "Valid compulsory and commercial insurance is required before handover creation."
+      );
     }
     if (!delivery || delivery.deletedAt) {
       delivery = await tx.vehicleDelivery.create({
@@ -518,11 +530,7 @@ export class HandoverWorkOrderService {
       actorId,
       tx
     );
-    await this.deliveryEvidenceService.initializeChecklist(
-      orderId,
-      handover.id,
-      tx
-    );
+    await this.deliveryEvidenceService.initializeChecklist(orderId, handover.id, tx);
     const existing = await tx.vehicleHandoverWorkOrder.findFirst({
       where: {
         handoverType: "DELIVERY_OUTBOUND",
@@ -538,15 +546,17 @@ export class HandoverWorkOrderService {
       ) {
         return existing;
       }
-      return this.updateWorkOrderVersioned(existing, {
-        handoverId: existing.handoverId ?? handover.id,
-        metadata: mergeMetadata(existing.metadata, {
-          journeySourceKey:
-            readMetadataString(existing.metadata, "journeySourceKey") ??
-            sourceKey
-        }),
-        vehicleDeliveryId: existing.vehicleDeliveryId ?? delivery.id
-      }, tx);
+      return this.updateWorkOrderVersioned(
+        existing,
+        {
+          handoverId: existing.handoverId ?? handover.id,
+          metadata: mergeMetadata(existing.metadata, {
+            journeySourceKey: readMetadataString(existing.metadata, "journeySourceKey") ?? sourceKey
+          }),
+          vehicleDeliveryId: existing.vehicleDeliveryId ?? delivery.id
+        },
+        tx
+      );
     }
     const workOrder = await tx.vehicleHandoverWorkOrder.create({
       data: {
@@ -601,24 +611,29 @@ export class HandoverWorkOrderService {
     const operator = await this.getAssignableInternalUser(userId);
     const workOrder = await this.getWorkOrderOrThrow(id);
     await this.assertAssignmentMutable(workOrder);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      accessTokenExpiresAt: null,
-      accessTokenHash: null,
-      accessTokenRevokedAt: null,
-      assignedInternalUserId: userId,
-      externalOperatorName: null,
-      externalOperatorOrganization: null,
-      externalOperatorPhone: null,
-      fieldOperatorName: operator.name,
-      fieldOperatorPhone: operator.phone,
-      metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
-      operatorType: "INTERNAL",
-      status: nextStatus(workOrder.status, "ASSIGNED")
-    }, VehicleHandoverEventType.INTERNAL_OPERATOR_ASSIGNED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: { assignedInternalUserId: userId }
-    });
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        accessTokenExpiresAt: null,
+        accessTokenHash: null,
+        accessTokenRevokedAt: null,
+        assignedInternalUserId: userId,
+        externalOperatorName: null,
+        externalOperatorOrganization: null,
+        externalOperatorPhone: null,
+        fieldOperatorName: operator.name,
+        fieldOperatorPhone: operator.phone,
+        metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
+        operatorType: "INTERNAL",
+        status: nextStatus(workOrder.status, "ASSIGNED")
+      },
+      VehicleHandoverEventType.INTERNAL_OPERATOR_ASSIGNED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: { assignedInternalUserId: userId }
+      }
+    );
   }
 
   async assignExternalOperator(id: string, input: AssignExternalOperatorInput, actorId?: string) {
@@ -627,24 +642,30 @@ export class HandoverWorkOrderService {
     await this.assertAssignmentMutable(workOrder);
     const accessToken = randomBytes(32).toString("base64url");
     const accessTokenHash = hashAccessToken(accessToken);
-    const expiresAt = input.expiresAt ? parseDate(input.expiresAt, "accessTokenExpiresAt") : defaultTokenExpiry();
+    const expiresAt = input.expiresAt
+      ? parseDate(input.expiresAt, "accessTokenExpiresAt")
+      : defaultTokenExpiry();
     const phone = normalizeFieldOperatorPhone(input.phone ?? "");
 
     const updated = await this.runSerializableTransaction(async (tx) => {
-      const assigned = await this.updateWorkOrderVersioned(workOrder, {
-        accessTokenExpiresAt: expiresAt,
-        accessTokenHash,
-        accessTokenRevokedAt: null,
-        assignedInternalUserId: null,
-        externalOperatorName: name,
-        externalOperatorOrganization: normalizeOptionalText(input.organization),
-        externalOperatorPhone: phone,
-        fieldOperatorName: name,
-        fieldOperatorPhone: phone,
-        metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
-        operatorType: "EXTERNAL",
-        status: nextStatus(workOrder.status, "ASSIGNED")
-      }, tx);
+      const assigned = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          accessTokenExpiresAt: expiresAt,
+          accessTokenHash,
+          accessTokenRevokedAt: null,
+          assignedInternalUserId: null,
+          externalOperatorName: name,
+          externalOperatorOrganization: normalizeOptionalText(input.organization),
+          externalOperatorPhone: phone,
+          fieldOperatorName: name,
+          fieldOperatorPhone: phone,
+          metadata: mergeMetadata(workOrder.metadata, { assignedBy: actorId ?? null }),
+          operatorType: "EXTERNAL",
+          status: nextStatus(workOrder.status, "ASSIGNED")
+        },
+        tx
+      );
       const assignmentEvent = await this.recordEvent(
         assigned,
         VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED,
@@ -659,9 +680,7 @@ export class HandoverWorkOrderService {
         },
         tx
       );
-      const assignmentEventId = assignmentEvent
-        ? readString(assignmentEvent, "id")
-        : null;
+      const assignmentEventId = assignmentEvent ? readString(assignmentEvent, "id") : null;
       if (!assignmentEventId) {
         throw new Error("HANDOVER_ASSIGNMENT_EVENT_MISSING");
       }
@@ -671,8 +690,7 @@ export class HandoverWorkOrderService {
       await this.workflowRepository.enqueue(tx, {
         handoverId: assigned.handoverId ?? undefined,
         idempotencyKey: `field-assigned:${assigned.id}:${assignmentEventId}`,
-        jobType:
-          VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+        jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
         maxAttempts: 6,
         payload: { assignmentEventId },
         workOrderId: assigned.id
@@ -688,13 +706,18 @@ export class HandoverWorkOrderService {
 
   async revokeExternalAccess(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      accessTokenRevokedAt: new Date(),
-      metadata: mergeMetadata(workOrder.metadata, { revokedBy: actorId ?? null })
-    }, VehicleHandoverEventType.EXTERNAL_ACCESS_REVOKED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.ADMIN
-    });
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        accessTokenRevokedAt: new Date(),
+        metadata: mergeMetadata(workOrder.metadata, { revokedBy: actorId ?? null })
+      },
+      VehicleHandoverEventType.EXTERNAL_ACCESS_REVOKED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN
+      }
+    );
   }
 
   async verifyExternalAccess(token: string) {
@@ -716,12 +739,7 @@ export class HandoverWorkOrderService {
 
     const authorizedWorkOrders = [];
     for (const workOrder of workOrders) {
-      if (
-        await this.hasCurrentFieldOperatorAssignment(
-          workOrder,
-          normalizedPhone
-        )
-      ) {
+      if (await this.hasCurrentFieldOperatorAssignment(workOrder, normalizedPhone)) {
         authorizedWorkOrders.push(workOrder);
       }
     }
@@ -761,14 +779,21 @@ export class HandoverWorkOrderService {
     if (hasActiveCustomerObjection(workOrder) && isFieldResubmissionRequested(workOrder)) {
       return workOrder;
     }
-    return this.updateWorkOrderWithEvent(workOrder, {
-      fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
-      metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
-      status: "FIELD_IN_PROGRESS"
-    }, VehicleHandoverEventType.FIELD_STARTED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
-    }, (tx) => this.assertDeliveryStartAvailable(tx, workOrder));
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
+        metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
+        status: "FIELD_IN_PROGRESS"
+      },
+      VehicleHandoverEventType.FIELD_STARTED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
+      },
+      (tx) => this.assertDeliveryStartAvailable(tx, workOrder),
+      Prisma.TransactionIsolationLevel.ReadCommitted
+    );
   }
 
   async updateFieldAccessibleFacts(
@@ -816,7 +841,8 @@ export class HandoverWorkOrderService {
       );
       try {
         prepared = await this.getEvidenceArtifactService().prepareUpload({
-          evidenceType: readString(mutation as unknown as Record<string, unknown>, "evidenceType") ?? "UNKNOWN",
+          evidenceType:
+            readString(mutation as unknown as Record<string, unknown>, "evidenceType") ?? "UNKNOWN",
           file,
           mediaType
         });
@@ -826,9 +852,7 @@ export class HandoverWorkOrderService {
           throw new UnprocessableEntityException(qualityMessage);
         }
         if (isDeliveryEvidenceArtifactProcessingError(error)) {
-          throw new UnprocessableEntityException(
-            "资料文件处理失败，请重新选择文件后重试。"
-          );
+          throw new UnprocessableEntityException("资料文件处理失败，请重新选择文件后重试。");
         }
         throw error;
       }
@@ -848,19 +872,20 @@ export class HandoverWorkOrderService {
           }
         > = [];
         for (const derivative of prepared.derivatives) {
-          const derivativeStored = await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
-            contentType: derivative.contentType,
-            filePath: derivative.filePath,
-            kind: derivative.kind,
-            metadata: {
-              artifactKind: derivative.kind,
-              sourceOriginalName: file.originalname
-            },
-            orderId: workOrder.orderId,
-            originalName: derivative.originalName,
-            sizeBytes: derivative.sizeBytes,
-            workOrderId: workOrder.id
-          });
+          const derivativeStored =
+            await this.getStorageService().putDeliveryEvidenceDerivativeFromPath({
+              contentType: derivative.contentType,
+              filePath: derivative.filePath,
+              kind: derivative.kind,
+              metadata: {
+                artifactKind: derivative.kind,
+                sourceOriginalName: file.originalname
+              },
+              orderId: workOrder.orderId,
+              originalName: derivative.originalName,
+              sizeBytes: derivative.sizeBytes,
+              workOrderId: workOrder.id
+            });
           storedObjects.push({
             bucket: derivativeStored.bucket,
             objectKey: derivativeStored.objectKey
@@ -886,16 +911,18 @@ export class HandoverWorkOrderService {
           });
           const derivativeFileObjects = [];
           for (const derivative of storedDerivatives) {
-            derivativeFileObjects.push(await tx.fileObject.create({
-              data: {
-                bucket: derivative.stored.bucket,
-                mimeType: derivative.contentType,
-                objectKey: derivative.stored.objectKey,
-                originalName: derivative.originalName,
-                sizeBytes: BigInt(derivative.sizeBytes),
-                uploadedBy: null
-              }
-            }));
+            derivativeFileObjects.push(
+              await tx.fileObject.create({
+                data: {
+                  bucket: derivative.stored.bucket,
+                  mimeType: derivative.contentType,
+                  objectKey: derivative.stored.objectKey,
+                  originalName: derivative.originalName,
+                  sizeBytes: BigInt(derivative.sizeBytes),
+                  uploadedBy: null
+                }
+              })
+            );
           }
           const artifactMetadata = {
             ...prepared!.metadata,
@@ -965,10 +992,7 @@ export class HandoverWorkOrderService {
   ) {
     const workOrder = await this.getWorkOrderOrThrow(input.workOrderId);
     assertFieldSessionEditable(workOrder);
-    const item = await this.assertEvidenceItemBelongsToWorkOrder(
-      workOrder,
-      input.evidenceItemId
-    );
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(workOrder, input.evidenceItemId);
     const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
       item.id,
       DeliveryEvidenceMediaType.VIDEO,
@@ -1007,11 +1031,7 @@ export class HandoverWorkOrderService {
       return await this.runSerializableTransaction(async (tx) => {
         const current = await this.updateWorkOrderVersioned(workOrder, {}, tx);
         assertFieldSessionEditable(current);
-        const currentItem = await this.assertEvidenceItemBelongsToWorkOrder(
-          current,
-          item.id,
-          tx
-        );
+        const currentItem = await this.assertEvidenceItemBelongsToWorkOrder(current, item.id, tx);
         const fileObject = await tx.fileObject.create({
           data: {
             bucket: input.storedSource.bucket,
@@ -1041,9 +1061,7 @@ export class HandoverWorkOrderService {
           ...input.prepared.metadata,
           photoPreviewFileId: null,
           videoFrameFileIds: derivativeFileObjects
-            .map((entry) =>
-              readString(entry as unknown as Record<string, unknown>, "id")
-            )
+            .map((entry) => readString(entry as unknown as Record<string, unknown>, "id"))
             .filter((value): value is string => Boolean(value))
         } as Prisma.InputJsonValue;
         const result = input.replaceEvidenceFileId
@@ -1147,15 +1165,9 @@ export class HandoverWorkOrderService {
     replaceEvidenceFileId?: string;
     workOrderId: string;
   }) {
-    const workOrder = await this.getFieldAccessibleWorkOrderRecord(
-      input.workOrderId,
-      input.phone
-    );
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(input.workOrderId, input.phone);
     assertFieldSessionEditable(workOrder);
-    const item = await this.assertEvidenceItemBelongsToWorkOrder(
-      workOrder,
-      input.evidenceItemId
-    );
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(workOrder, input.evidenceItemId);
     const mutation = await this.deliveryEvidenceService.validateEvidenceFileMutation(
       item.id,
       DeliveryEvidenceMediaType.VIDEO,
@@ -1181,14 +1193,8 @@ export class HandoverWorkOrderService {
     phone: string;
     workOrderId: string;
   }) {
-    const workOrder = await this.getFieldAccessibleWorkOrderRecord(
-      input.workOrderId,
-      input.phone
-    );
-    const item = await this.assertEvidenceItemBelongsToWorkOrder(
-      workOrder,
-      input.evidenceItemId
-    );
+    const workOrder = await this.getFieldAccessibleWorkOrderRecord(input.workOrderId, input.phone);
+    const item = await this.assertEvidenceItemBelongsToWorkOrder(workOrder, input.evidenceItemId);
     if (item.evidenceType !== DeliveryEvidenceType.WALKAROUND_VIDEO) {
       throw new BadRequestException({
         code: "FIELD_VIDEO_EVIDENCE_TYPE_REQUIRED",
@@ -1259,14 +1265,19 @@ export class HandoverWorkOrderService {
         actorId,
         tx
       );
-      await this.recordEvent(current, VehicleHandoverEventType.EVIDENCE_FILE_REMOVED, {
-        actorId,
-        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-        detail: {
-          evidenceFileId,
-          evidenceItemId: item.id
-        }
-      }, tx);
+      await this.recordEvent(
+        current,
+        VehicleHandoverEventType.EVIDENCE_FILE_REMOVED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+          detail: {
+            evidenceFileId,
+            evidenceItemId: item.id
+          }
+        },
+        tx
+      );
       return result;
     });
   }
@@ -1301,11 +1312,16 @@ export class HandoverWorkOrderService {
         },
         where: { id: current.id }
       });
-      await this.recordEvent(updated, VehicleHandoverEventType.NO_VISIBLE_DAMAGE_DECLARED, {
-        actorId,
-        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-        detail: { remark: normalizeOptionalText(remark) }
-      }, tx);
+      await this.recordEvent(
+        updated,
+        VehicleHandoverEventType.NO_VISIBLE_DAMAGE_DECLARED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+          detail: { remark: normalizeOptionalText(remark) }
+        },
+        tx
+      );
       return updated;
     });
   }
@@ -1314,15 +1330,14 @@ export class HandoverWorkOrderService {
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: true });
   }
 
-  async downloadEvidenceFile(id: string, evidenceFileId: string): Promise<EvidenceFileStreamResult> {
+  async downloadEvidenceFile(
+    id: string,
+    evidenceFileId: string
+  ): Promise<EvidenceFileStreamResult> {
     return this.getEvidenceFileStream(id, evidenceFileId, { preview: false });
   }
 
-  async prepareExistingEvidenceFileArtifacts(
-    id: string,
-    evidenceFileId: string,
-    actorId?: string
-  ) {
+  async prepareExistingEvidenceFileArtifacts(id: string, evidenceFileId: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertEvidenceArtifactRepairAllowed(workOrder);
     const evidenceFile = await this.findScopedActiveEvidenceFile(workOrder, evidenceFileId);
@@ -1334,19 +1349,24 @@ export class HandoverWorkOrderService {
       };
     }
 
-    const mediaType = evidenceFile.mediaType === DeliveryEvidenceMediaType.VIDEO
-      ? DeliveryEvidenceMediaType.VIDEO
-      : DeliveryEvidenceMediaType.PHOTO;
-    const maxBytes = mediaType === DeliveryEvidenceMediaType.VIDEO
-      ? MAX_FIELD_VIDEO_SIZE_BYTES
-      : MAX_FIELD_PHOTO_SIZE_BYTES;
+    const mediaType =
+      evidenceFile.mediaType === DeliveryEvidenceMediaType.VIDEO
+        ? DeliveryEvidenceMediaType.VIDEO
+        : DeliveryEvidenceMediaType.PHOTO;
+    const maxBytes =
+      mediaType === DeliveryEvidenceMediaType.VIDEO
+        ? MAX_FIELD_VIDEO_SIZE_BYTES
+        : MAX_FIELD_PHOTO_SIZE_BYTES;
     const sourceSizeBytes = toNumberOrNull(evidenceFile.file.sizeBytes);
     if (sourceSizeBytes !== null && sourceSizeBytes > maxBytes) {
       throw new BadRequestException("历史交接证据源文件超出当前处理大小限制。");
     }
 
     const directory = await mkdtemp(path.join(os.tmpdir(), "stage2-evidence-repair-"));
-    const sourcePath = path.join(directory, sanitizeTempEvidenceFileName(evidenceFile.file.originalName));
+    const sourcePath = path.join(
+      directory,
+      sanitizeTempEvidenceFileName(evidenceFile.file.originalName)
+    );
     const storedDerivatives: Array<{ bucket: string; objectKey: string }> = [];
     let prepared: PreparedDeliveryEvidenceArtifacts | undefined;
     try {
@@ -1416,22 +1436,24 @@ export class HandoverWorkOrderService {
         }
         const derivativeFileObjects = [];
         for (const item of derivatives) {
-          derivativeFileObjects.push(await tx.fileObject.create({
-            data: {
-              bucket: item.stored.bucket,
-              mimeType: item.derivative.contentType,
-              objectKey: item.stored.objectKey,
-              originalName: item.derivative.originalName,
-              sizeBytes: BigInt(item.derivative.sizeBytes),
-              uploadedBy: actorId ?? null
-            }
-          }));
+          derivativeFileObjects.push(
+            await tx.fileObject.create({
+              data: {
+                bucket: item.stored.bucket,
+                mimeType: item.derivative.contentType,
+                objectKey: item.stored.objectKey,
+                originalName: item.derivative.originalName,
+                sizeBytes: BigInt(item.derivative.sizeBytes),
+                uploadedBy: actorId ?? null
+              }
+            })
+          );
         }
         const metadata = {
           ...prepared!.metadata,
           photoPreviewFileId:
             mediaType === DeliveryEvidenceMediaType.PHOTO
-              ? derivativeFileObjects[0]?.id ?? null
+              ? (derivativeFileObjects[0]?.id ?? null)
               : null,
           videoFrameFileIds:
             mediaType === DeliveryEvidenceMediaType.VIDEO
@@ -1504,15 +1526,11 @@ export class HandoverWorkOrderService {
     input: FieldStage2ESignReviewInput
   ): Promise<FieldStage2ESignReview> {
     if (input.acknowledgement !== true) {
-      throw new BadRequestException(
-        "The Stage 2 source PDF review acknowledgement is required."
-      );
+      throw new BadRequestException("The Stage 2 source PDF review acknowledgement is required.");
     }
     const workOrder = await this.getFieldAccessibleWorkOrderRecord(id, phone);
     if (workOrder.status !== "CUSTOMER_CONFIRMED") {
-      throw new BadRequestException(
-        "The handover is not ready for Field eSign initiation."
-      );
+      throw new BadRequestException("The handover is not ready for Field eSign initiation.");
     }
     const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
     const requestedHash = normalizeStage2Sha256(input.sourcePdfHash);
@@ -1520,9 +1538,7 @@ export class HandoverWorkOrderService {
       input.artifactVersion !== binding.artifactVersion ||
       requestedHash !== binding.sourcePdfHash
     ) {
-      throw new ConflictException(
-        "The reviewed Stage 2 source PDF is stale."
-      );
+      throw new ConflictException("The reviewed Stage 2 source PDF is stale.");
     }
     return {
       acknowledgement: true,
@@ -1550,17 +1566,24 @@ export class HandoverWorkOrderService {
     actorDisplay?: string | null,
     expectedWorkOrder?: WorkOrderRecord
   ) {
-    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
+    const workOrder = expectedWorkOrder ?? (await this.getWorkOrderOrThrow(id));
     this.assertMutable(workOrder);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
-      metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
-      status: "FIELD_IN_PROGRESS"
-    }, VehicleHandoverEventType.FIELD_STARTED, {
-      actorDisplay,
-      actorId,
-      actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
-    }, (tx) => this.assertDeliveryStartAvailable(tx, workOrder));
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        fieldStartedAt: workOrder.fieldStartedAt ?? new Date(),
+        metadata: mergeMetadata(workOrder.metadata, { fieldStartedBy: actorId ?? null }),
+        status: "FIELD_IN_PROGRESS"
+      },
+      VehicleHandoverEventType.FIELD_STARTED,
+      {
+        actorDisplay,
+        actorId,
+        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR
+      },
+      (tx) => this.assertDeliveryStartAvailable(tx, workOrder),
+      Prisma.TransactionIsolationLevel.ReadCommitted
+    );
   }
 
   async startFieldWorkByToken(token: string) {
@@ -1585,56 +1608,88 @@ export class HandoverWorkOrderService {
     expectedWorkOrder?: WorkOrderRecord,
     expectedFieldPhone?: string
   ) {
-    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
+    const workOrder = expectedWorkOrder ?? (await this.getWorkOrderOrThrow(id));
     this.assertMutable(workOrder);
     if (expectedFieldPhone) {
       assertFieldSessionEditable(workOrder);
     }
     assertDamageState(input.damageDeclared, input.noVisibleDamageDeclared);
-    const switchesToDamage = input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
-    return this.runSerializableTransaction(async (tx) => {
-      if (workOrder.status === "DRAFT") {
-        await this.assertDeliveryStartAvailable(tx, workOrder);
-      }
-      const updated = await this.updateWorkOrderVersioned(workOrder, compactUndefined({
-        accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
-        damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
-        deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
-        energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
-        fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
-        fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
-        handoverMileageKm: input.handoverMileageKm,
-        metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
-        noVisibleDamageDeclared: input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
-        scheduledAt: input.scheduledAt === undefined ? undefined : (
-          input.scheduledAt ? parseDate(input.scheduledAt, "scheduledAt") : null
-        ),
-        status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status
-      }), tx);
-      if (expectedFieldPhone) {
-        if (!isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
-          throw new UnauthorizedException("No access to this field handover work order.");
+    const switchesToDamage =
+      input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
+    return this.runTransaction(
+      async (tx) => {
+        if (workOrder.status === "DRAFT") {
+          await this.assertDeliveryStartAvailable(tx, workOrder);
         }
-        assertFieldSessionEditable(updated);
-      }
-      if (switchesToDamage) {
-        await this.deliveryEvidenceService.retractNoVisibleDamageDeclaration(
-          updated.orderId,
-          actorId,
-          updated.handoverId ?? null,
+        const updated = await this.updateWorkOrderVersioned(
+          workOrder,
+          compactUndefined({
+            accessoryChecklist:
+              input.accessoryChecklist === undefined
+                ? undefined
+                : toJsonValue(input.accessoryChecklist),
+            damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
+            deliveryLocation:
+              input.deliveryLocation === undefined
+                ? undefined
+                : normalizeOptionalText(input.deliveryLocation),
+            energyLevelText:
+              input.energyLevelText === undefined
+                ? undefined
+                : normalizeOptionalText(input.energyLevelText),
+            fieldNotes:
+              input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
+            fuelLevelText:
+              input.fuelLevelText === undefined
+                ? undefined
+                : normalizeOptionalText(input.fuelLevelText),
+            handoverMileageKm: input.handoverMileageKm,
+            metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
+            noVisibleDamageDeclared:
+              input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
+            scheduledAt:
+              input.scheduledAt === undefined
+                ? undefined
+                : input.scheduledAt
+                  ? parseDate(input.scheduledAt, "scheduledAt")
+                  : null,
+            status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status
+          }),
           tx
         );
-      }
-      await this.recordEvent(updated, VehicleHandoverEventType.FIELD_FACTS_UPDATED, {
-        actorDisplay,
-        actorId,
-        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-        detail: {
-          changedFieldKeys: HANDOVER_FIELD_FACT_KEYS.filter((key) => input[key] !== undefined)
+        if (expectedFieldPhone) {
+          if (!isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
+            throw new UnauthorizedException("No access to this field handover work order.");
+          }
+          assertFieldSessionEditable(updated);
         }
-      }, tx);
-      return updated;
-    });
+        if (switchesToDamage) {
+          await this.deliveryEvidenceService.retractNoVisibleDamageDeclaration(
+            updated.orderId,
+            actorId,
+            updated.handoverId ?? null,
+            tx
+          );
+        }
+        await this.recordEvent(
+          updated,
+          VehicleHandoverEventType.FIELD_FACTS_UPDATED,
+          {
+            actorDisplay,
+            actorId,
+            actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+            detail: {
+              changedFieldKeys: HANDOVER_FIELD_FACT_KEYS.filter((key) => input[key] !== undefined)
+            }
+          },
+          tx
+        );
+        return updated;
+      },
+      workOrder.status === "DRAFT"
+        ? Prisma.TransactionIsolationLevel.ReadCommitted
+        : Prisma.TransactionIsolationLevel.Serializable
+    );
   }
 
   async updateFieldFactsByToken(token: string, input: UpdateFieldFactsInput) {
@@ -1649,12 +1704,18 @@ export class HandoverWorkOrderService {
     );
   }
 
-  async attachEvidenceFileWithExternalToken(token: string, itemId: string, input: AttachFieldEvidenceFileInput) {
+  async attachEvidenceFileWithExternalToken(
+    token: string,
+    itemId: string,
+    input: AttachFieldEvidenceFileInput
+  ) {
     const workOrder = await this.resolveExternalWorkOrder(token);
     assertFieldSessionEditable(workOrder);
     void itemId;
     void input;
-    throw new BadRequestException("该文件绑定入口已停用，请使用现场证据文件上传接口完成预处理后再提交。");
+    throw new BadRequestException(
+      "该文件绑定入口已停用，请使用现场证据文件上传接口完成预处理后再提交。"
+    );
   }
 
   async acknowledgeCustomerObjection(id: string, actorId: string, note?: string | null) {
@@ -1664,26 +1725,41 @@ export class HandoverWorkOrderService {
     }
     const now = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const current = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.ACKNOWLEDGED,
-        metadata: mergeMetadata(workOrder.metadata, {
-          handoverReviewAdminAcknowledgedAt: now.toISOString(),
-          handoverReviewAdminAcknowledgedBy: actorId,
-          handoverReviewAdminNote: normalizeOptionalText(note),
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
-        })
-      }, tx);
-      await this.upsertLatestReviewAttempt(current, "CUSTOMER_OBJECTED", {
-        adminAcknowledgedAt: now,
-        adminAcknowledgedById: actorId,
-        adminNotes: normalizeOptionalText(note),
-        adminStatus: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
-      }, {}, tx);
-      await this.recordEvent(current, VehicleHandoverEventType.OBJECTION_ACKNOWLEDGED, {
-        actorId,
-        actorType: VehicleHandoverEventActorType.ADMIN,
-        detail: { note: normalizeOptionalText(note) }
-      }, tx);
+      const current = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.ACKNOWLEDGED,
+          metadata: mergeMetadata(workOrder.metadata, {
+            handoverReviewAdminAcknowledgedAt: now.toISOString(),
+            handoverReviewAdminAcknowledgedBy: actorId,
+            handoverReviewAdminNote: normalizeOptionalText(note),
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+          })
+        },
+        tx
+      );
+      await this.upsertLatestReviewAttempt(
+        current,
+        "CUSTOMER_OBJECTED",
+        {
+          adminAcknowledgedAt: now,
+          adminAcknowledgedById: actorId,
+          adminNotes: normalizeOptionalText(note),
+          adminStatus: ADMIN_REVIEW_STATUS_ACKNOWLEDGED
+        },
+        {},
+        tx
+      );
+      await this.recordEvent(
+        current,
+        VehicleHandoverEventType.OBJECTION_ACKNOWLEDGED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: { note: normalizeOptionalText(note) }
+        },
+        tx
+      );
       return current;
     });
     return this.toAdminWorkOrderDetail(updated);
@@ -1711,38 +1787,55 @@ export class HandoverWorkOrderService {
       : await this.buildReviewAttemptSnapshot(workOrder);
     const now = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const current = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMISSION_REQUESTED,
-        metadata: mergeMetadata(workOrder.metadata, {
-          handoverReviewAdminNote: note,
-          handoverReviewResubmissionRequestedAt: now.toISOString(),
-          handoverReviewResubmissionRequestedBy: actorId,
-          handoverReviewTargetEvidenceItemIds: targetEvidenceItemIds,
-          handoverReviewTargetFieldKeys: targetFieldKeys,
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
-        }),
-        status: "CUSTOMER_OBJECTED"
-      }, tx);
-      await this.upsertLatestReviewAttempt(current, "RESUBMISSION_REQUESTED", {
-        adminNotes: note,
-        adminStatus: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED,
-        metadata: toJsonValue(mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
-          resubmissionBaseline: baseline,
-          resubmissionRequestedEvidenceItemIds: targetEvidenceItemIds,
-          resubmissionRequestedFieldKeys: targetFieldKeys
-        })),
-        resubmissionRequestedAt: now,
-        resubmissionRequestedById: actorId
-      }, {}, tx);
-      await this.recordEvent(current, VehicleHandoverEventType.RESUBMISSION_REQUESTED, {
-        actorId,
-        actorType: VehicleHandoverEventActorType.ADMIN,
-        detail: {
-          note,
-          targetEvidenceItemIds,
-          targetFieldKeys
-        }
-      }, tx);
+      const current = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMISSION_REQUESTED,
+          metadata: mergeMetadata(workOrder.metadata, {
+            handoverReviewAdminNote: note,
+            handoverReviewResubmissionRequestedAt: now.toISOString(),
+            handoverReviewResubmissionRequestedBy: actorId,
+            handoverReviewTargetEvidenceItemIds: targetEvidenceItemIds,
+            handoverReviewTargetFieldKeys: targetFieldKeys,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+          }),
+          status: "CUSTOMER_OBJECTED"
+        },
+        tx
+      );
+      await this.upsertLatestReviewAttempt(
+        current,
+        "RESUBMISSION_REQUESTED",
+        {
+          adminNotes: note,
+          adminStatus: ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED,
+          metadata: toJsonValue(
+            mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+              resubmissionBaseline: baseline,
+              resubmissionRequestedEvidenceItemIds: targetEvidenceItemIds,
+              resubmissionRequestedFieldKeys: targetFieldKeys
+            })
+          ),
+          resubmissionRequestedAt: now,
+          resubmissionRequestedById: actorId
+        },
+        {},
+        tx
+      );
+      await this.recordEvent(
+        current,
+        VehicleHandoverEventType.RESUBMISSION_REQUESTED,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: {
+            note,
+            targetEvidenceItemIds,
+            targetFieldKeys
+          }
+        },
+        tx
+      );
       return current;
     });
     return this.toAdminWorkOrderDetail(updated);
@@ -1755,34 +1848,48 @@ export class HandoverWorkOrderService {
     }
     const now = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const current = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.SENT_BACK_TO_CUSTOMER_REVIEW,
-        customerConfirmedAt: null,
-        customerObjectedAt: null,
-        customerObjectionReason: null,
-        customerReviewStartedAt: now,
-        metadata: mergeMetadata(workOrder.metadata, {
-          customerObjectionDetails: null,
-          handoverReviewAdminNote: normalizeOptionalText(note),
-          handoverReviewSentBackToCustomerReviewAt: now.toISOString(),
-          handoverReviewSentBackToCustomerReviewBy: actorId,
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
-        }),
-        status: "CUSTOMER_REVIEWING"
-      }, tx);
-      const attempt = await this.createReviewAttempt(current, "CUSTOMER_REVIEWING", {
-        adminNotes: normalizeOptionalText(note),
-        adminStatus: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
-        customerReviewStartedAt: now,
-        sentBackToCustomerReviewAt: now,
-        sentBackToCustomerReviewById: actorId
-      }, tx);
-      await this.recordEvent(current, VehicleHandoverEventType.SENT_BACK_TO_CUSTOMER_REVIEW, {
-        actorId,
-        actorType: VehicleHandoverEventActorType.ADMIN,
-        detail: { note: normalizeOptionalText(note) },
-        reviewAttemptId: attempt ? String(attempt.id) : null
-      }, tx);
+      const current = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.SENT_BACK_TO_CUSTOMER_REVIEW,
+          customerConfirmedAt: null,
+          customerObjectedAt: null,
+          customerObjectionReason: null,
+          customerReviewStartedAt: now,
+          metadata: mergeMetadata(workOrder.metadata, {
+            customerObjectionDetails: null,
+            handoverReviewAdminNote: normalizeOptionalText(note),
+            handoverReviewSentBackToCustomerReviewAt: now.toISOString(),
+            handoverReviewSentBackToCustomerReviewBy: actorId,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
+          }),
+          status: "CUSTOMER_REVIEWING"
+        },
+        tx
+      );
+      const attempt = await this.createReviewAttempt(
+        current,
+        "CUSTOMER_REVIEWING",
+        {
+          adminNotes: normalizeOptionalText(note),
+          adminStatus: ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
+          customerReviewStartedAt: now,
+          sentBackToCustomerReviewAt: now,
+          sentBackToCustomerReviewById: actorId
+        },
+        tx
+      );
+      await this.recordEvent(
+        current,
+        VehicleHandoverEventType.SENT_BACK_TO_CUSTOMER_REVIEW,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: { note: normalizeOptionalText(note) },
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
       return current;
     });
     return this.toAdminWorkOrderDetail(updated);
@@ -1834,7 +1941,7 @@ export class HandoverWorkOrderService {
     expectedWorkOrder?: WorkOrderRecord,
     expectedFieldPhone?: string
   ) {
-    const workOrder = expectedWorkOrder ?? await this.getWorkOrderOrThrow(id);
+    const workOrder = expectedWorkOrder ?? (await this.getWorkOrderOrThrow(id));
     this.assertMutable(workOrder);
     if (expectedFieldPhone) {
       assertFieldSessionEditable(workOrder);
@@ -1856,67 +1963,99 @@ export class HandoverWorkOrderService {
         throw new BadRequestException("请至少更新一项后台要求复检的现场资料。");
       }
       return this.prisma.$transaction(async (tx) => {
-        const updated = await this.updateWorkOrderVersioned(workOrder, {
-          adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMITTED_PENDING_ADMIN,
-          fieldSubmittedAt: now,
-          metadata: mergeMetadata(workOrder.metadata, {
-            fieldSubmittedBy: actorId ?? null,
-            handoverReviewResubmittedAt: now.toISOString(),
-            handoverReviewResubmissionChangeSummary: changeSummary,
-            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN
-          }),
-          status: "CUSTOMER_OBJECTED"
-        }, tx);
+        const updated = await this.updateWorkOrderVersioned(
+          workOrder,
+          {
+            adminReviewStatus: VehicleHandoverAdminReviewStatus.RESUBMITTED_PENDING_ADMIN,
+            fieldSubmittedAt: now,
+            metadata: mergeMetadata(workOrder.metadata, {
+              fieldSubmittedBy: actorId ?? null,
+              handoverReviewResubmittedAt: now.toISOString(),
+              handoverReviewResubmissionChangeSummary: changeSummary,
+              [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN
+            }),
+            status: "CUSTOMER_OBJECTED"
+          },
+          tx
+        );
         if (expectedFieldPhone && !isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
           throw new UnauthorizedException("No access to this field handover work order.");
         }
-        const attempt = await this.upsertLatestReviewAttempt(updated, "RESUBMITTED_PENDING_ADMIN", {
-          adminStatus: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
-          fieldSubmittedAt: now,
-          metadata: toJsonValue(mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
-            resubmissionChangeSummary: changeSummary,
-            resubmittedEvidenceSnapshot: changeSummary.currentEvidenceSnapshot,
-            resubmittedFieldFactsSnapshot: changeSummary.currentFieldFactsSnapshot
-          }))
-        }, {}, tx);
-        await this.recordEvent(updated, VehicleHandoverEventType.FIELD_RESUBMITTED, {
-          actorDisplay,
-          actorId,
-          actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-          detail: {
-            changedEvidenceItemIds: changeSummary.changedEvidenceItemIds,
-            changedFieldKeys: changeSummary.changedFieldKeys
+        const attempt = await this.upsertLatestReviewAttempt(
+          updated,
+          "RESUBMITTED_PENDING_ADMIN",
+          {
+            adminStatus: ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
+            fieldSubmittedAt: now,
+            metadata: toJsonValue(
+              mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+                resubmissionChangeSummary: changeSummary,
+                resubmittedEvidenceSnapshot: changeSummary.currentEvidenceSnapshot,
+                resubmittedFieldFactsSnapshot: changeSummary.currentFieldFactsSnapshot
+              })
+            )
           },
-          reviewAttemptId: attempt ? String(attempt.id) : null
-        }, tx);
+          {},
+          tx
+        );
+        await this.recordEvent(
+          updated,
+          VehicleHandoverEventType.FIELD_RESUBMITTED,
+          {
+            actorDisplay,
+            actorId,
+            actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+            detail: {
+              changedEvidenceItemIds: changeSummary.changedEvidenceItemIds,
+              changedFieldKeys: changeSummary.changedFieldKeys
+            },
+            reviewAttemptId: attempt ? String(attempt.id) : null
+          },
+          tx
+        );
         return updated;
       });
     }
     return this.prisma.$transaction(async (tx) => {
-      const updated = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
-        customerReviewStartedAt: workOrder.customerReviewStartedAt ?? now,
-        fieldSubmittedAt: workOrder.fieldSubmittedAt ?? now,
-        metadata: mergeMetadata(workOrder.metadata, {
-          fieldSubmittedBy: actorId ?? null,
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
-        }),
-        status: "CUSTOMER_REVIEWING"
-      }, tx);
+      const updated = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
+          customerReviewStartedAt: workOrder.customerReviewStartedAt ?? now,
+          fieldSubmittedAt: workOrder.fieldSubmittedAt ?? now,
+          metadata: mergeMetadata(workOrder.metadata, {
+            fieldSubmittedBy: actorId ?? null,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
+          }),
+          status: "CUSTOMER_REVIEWING"
+        },
+        tx
+      );
       if (expectedFieldPhone && !isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
         throw new UnauthorizedException("No access to this field handover work order.");
       }
-      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_REVIEWING", {
-        adminStatus: null,
-        customerReviewStartedAt: updated.customerReviewStartedAt ?? now,
-        fieldSubmittedAt: updated.fieldSubmittedAt ?? now
-      }, { refreshSnapshot: true }, tx);
-      await this.recordEvent(updated, VehicleHandoverEventType.FIELD_SUBMITTED, {
-        actorDisplay,
-        actorId,
-        actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
-        reviewAttemptId: attempt ? String(attempt.id) : null
-      }, tx);
+      const attempt = await this.upsertLatestReviewAttempt(
+        updated,
+        "CUSTOMER_REVIEWING",
+        {
+          adminStatus: null,
+          customerReviewStartedAt: updated.customerReviewStartedAt ?? now,
+          fieldSubmittedAt: updated.fieldSubmittedAt ?? now
+        },
+        { refreshSnapshot: true },
+        tx
+      );
+      await this.recordEvent(
+        updated,
+        VehicleHandoverEventType.FIELD_SUBMITTED,
+        {
+          actorDisplay,
+          actorId,
+          actorType: VehicleHandoverEventActorType.FIELD_OPERATOR,
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
       return updated;
     });
   }
@@ -1934,15 +2073,26 @@ export class HandoverWorkOrderService {
   async startCustomerReview(id: string, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    assertStatusIn(workOrder, ["EVIDENCE_SUBMITTED", "CUSTOMER_REVIEWING"], "当前工单尚不能进入客户复核。");
-    return this.updateWorkOrderWithEvent(workOrder, {
-      customerReviewStartedAt: workOrder.customerReviewStartedAt ?? new Date(),
-      metadata: mergeMetadata(workOrder.metadata, { customerReviewStartedBy: actorId ?? null }),
-      status: "CUSTOMER_REVIEWING"
-    }, VehicleHandoverEventType.CUSTOMER_REVIEW_STARTED, {
-      actorId,
-      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM
-    });
+    assertStatusIn(
+      workOrder,
+      ["EVIDENCE_SUBMITTED", "CUSTOMER_REVIEWING"],
+      "当前工单尚不能进入客户复核。"
+    );
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        customerReviewStartedAt: workOrder.customerReviewStartedAt ?? new Date(),
+        metadata: mergeMetadata(workOrder.metadata, { customerReviewStartedBy: actorId ?? null }),
+        status: "CUSTOMER_REVIEWING"
+      },
+      VehicleHandoverEventType.CUSTOMER_REVIEW_STARTED,
+      {
+        actorId,
+        actorType: actorId
+          ? VehicleHandoverEventActorType.ADMIN
+          : VehicleHandoverEventActorType.SYSTEM
+      }
+    );
   }
 
   async customerConfirmNoObjection(id: string, customerId: string, manifestHash: string) {
@@ -1969,10 +2119,13 @@ export class HandoverWorkOrderService {
     );
     const confirmedAt = workOrder.customerConfirmedAt ?? new Date();
     return this.runSerializableTransaction(async (tx) => {
-      const evidenceChecklist = await this.deliveryEvidenceService.getChecklist({
-        handoverId: workOrder.handoverId ?? null,
-        orderId: workOrder.orderId
-      }, tx);
+      const evidenceChecklist = await this.deliveryEvidenceService.getChecklist(
+        {
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        },
+        tx
+      );
       const evidencePackage = await this.buildCurrentEvidencePackage(
         workOrder,
         evidenceChecklist,
@@ -1981,35 +2134,50 @@ export class HandoverWorkOrderService {
       if (evidencePackage.manifestHash !== manifestHash) {
         throw new ConflictException("交接证据已变化，请刷新并重新查看全部资料后再确认。");
       }
-      const updated = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.RESOLVED,
-        customerConfirmedAt: confirmedAt,
-        customerObjectedAt: null,
-        customerObjectionReason: null,
-        metadata: mergeMetadata(workOrder.metadata, {
-          customerConfirmedBy: customerId,
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESOLVED
-        }),
-        status: "CUSTOMER_CONFIRMED"
-      }, tx);
-      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_CONFIRMED", {
-        adminStatus: ADMIN_REVIEW_STATUS_RESOLVED,
-        customerConfirmedAt: confirmedAt,
-        resolvedAt: confirmedAt,
-        resolvedById: null
-      }, {
-        snapshot: await this.buildReviewAttemptSnapshot(
-          updated,
-          tx,
-          evidenceChecklist,
-          evidencePackage
-        )
-      }, tx);
-      await this.recordEvent(updated, VehicleHandoverEventType.CUSTOMER_CONFIRMED, {
-        actorId: customerId,
-        actorType: VehicleHandoverEventActorType.CUSTOMER,
-        reviewAttemptId: attempt ? String(attempt.id) : null
-      }, tx);
+      const updated = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.RESOLVED,
+          customerConfirmedAt: confirmedAt,
+          customerObjectedAt: null,
+          customerObjectionReason: null,
+          metadata: mergeMetadata(workOrder.metadata, {
+            customerConfirmedBy: customerId,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: ADMIN_REVIEW_STATUS_RESOLVED
+          }),
+          status: "CUSTOMER_CONFIRMED"
+        },
+        tx
+      );
+      const attempt = await this.upsertLatestReviewAttempt(
+        updated,
+        "CUSTOMER_CONFIRMED",
+        {
+          adminStatus: ADMIN_REVIEW_STATUS_RESOLVED,
+          customerConfirmedAt: confirmedAt,
+          resolvedAt: confirmedAt,
+          resolvedById: null
+        },
+        {
+          snapshot: await this.buildReviewAttemptSnapshot(
+            updated,
+            tx,
+            evidenceChecklist,
+            evidencePackage
+          )
+        },
+        tx
+      );
+      await this.recordEvent(
+        updated,
+        VehicleHandoverEventType.CUSTOMER_CONFIRMED,
+        {
+          actorId: customerId,
+          actorType: VehicleHandoverEventActorType.CUSTOMER,
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
       if (!this.isStage2HandoverWorkflowEnabled()) {
         return updated;
       }
@@ -2026,10 +2194,7 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async replayCustomerConfirmation(
-    workOrder: WorkOrderRecord,
-    manifestHash: string
-  ) {
+  private async replayCustomerConfirmation(workOrder: WorkOrderRecord, manifestHash: string) {
     return this.runSerializableTransaction(async (tx) => {
       const attempt = await this.findLatestReviewAttempt(workOrder.id, tx);
       const confirmedManifestHash = readEvidencePackageManifestHash(
@@ -2040,9 +2205,7 @@ export class HandoverWorkOrderService {
         readString(attempt, "status") !== "CUSTOMER_CONFIRMED" ||
         confirmedManifestHash !== manifestHash
       ) {
-        throw new ConflictException(
-          "客户确认未绑定当前交接证据，请刷新后重试。"
-        );
+        throw new ConflictException("客户确认未绑定当前交接证据，请刷新后重试。");
       }
       const job = await this.enqueueStage2SourcePdf(
         tx,
@@ -2068,8 +2231,7 @@ export class HandoverWorkOrderService {
     }
     return this.workflowRepository.enqueue(tx, {
       handoverId: workOrder.handoverId ?? undefined,
-      idempotencyKey:
-        `pdf:${workOrder.id}:${reviewAttemptId}:${manifestHash}`,
+      idempotencyKey: `pdf:${workOrder.id}:${reviewAttemptId}:${manifestHash}`,
       jobType: VehicleHandoverWorkflowJobType.GENERATE_SOURCE_PDF,
       payload: {
         manifestHash,
@@ -2080,10 +2242,12 @@ export class HandoverWorkOrderService {
   }
 
   private isStage2HandoverWorkflowEnabled() {
-    return this.configService
-      ?.get<string>(STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV)
-      ?.trim()
-      .toLowerCase() === "true";
+    return (
+      this.configService
+        ?.get<string>(STAGE2_HANDOVER_WORKFLOW_ENABLED_ENV)
+        ?.trim()
+        .toLowerCase() === "true"
+    );
   }
 
   async customerObject(id: string, customerId: string, reason: string, details?: string | null) {
@@ -2103,32 +2267,47 @@ export class HandoverWorkOrderService {
     const objectionReason = normalizeRequiredText(reason, "请填写客户异议原因。");
     const objectionDetails = normalizeOptionalText(details);
     return this.prisma.$transaction(async (tx) => {
-      const updated = await this.updateWorkOrderVersioned(workOrder, {
-        adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
-        customerObjectedAt: now,
-        customerObjectionReason: objectionReason,
-        metadata: mergeMetadata(workOrder.metadata, {
-          customerObjectedBy: customerId,
-          customerObjectionDetails: objectionDetails,
-          [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
-        }),
-        status: "CUSTOMER_OBJECTED"
-      }, tx);
-      const attempt = await this.upsertLatestReviewAttempt(updated, "CUSTOMER_OBJECTED", {
-        adminStatus: null,
-        customerObjectedAt: now,
-        customerObjectionDetails: objectionDetails,
-        customerObjectionReason: objectionReason
-      }, {}, tx);
-      await this.recordEvent(updated, VehicleHandoverEventType.CUSTOMER_OBJECTED, {
-        actorId: customerId,
-        actorType: VehicleHandoverEventActorType.CUSTOMER,
-        detail: {
-          details: objectionDetails,
-          reason: objectionReason
+      const updated = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
+          customerObjectedAt: now,
+          customerObjectionReason: objectionReason,
+          metadata: mergeMetadata(workOrder.metadata, {
+            customerObjectedBy: customerId,
+            customerObjectionDetails: objectionDetails,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: null
+          }),
+          status: "CUSTOMER_OBJECTED"
         },
-        reviewAttemptId: attempt ? String(attempt.id) : null
-      }, tx);
+        tx
+      );
+      const attempt = await this.upsertLatestReviewAttempt(
+        updated,
+        "CUSTOMER_OBJECTED",
+        {
+          adminStatus: null,
+          customerObjectedAt: now,
+          customerObjectionDetails: objectionDetails,
+          customerObjectionReason: objectionReason
+        },
+        {},
+        tx
+      );
+      await this.recordEvent(
+        updated,
+        VehicleHandoverEventType.CUSTOMER_OBJECTED,
+        {
+          actorId: customerId,
+          actorType: VehicleHandoverEventActorType.CUSTOMER,
+          detail: {
+            details: objectionDetails,
+            reason: objectionReason
+          },
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
       return updated;
     });
   }
@@ -2136,48 +2315,81 @@ export class HandoverWorkOrderService {
   async markCustomerSigned(id: string, signedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    assertStatusIn(workOrder, ["CUSTOMER_CONFIRMED", "SIGNING", "CUSTOMER_SIGNED"], "客户尚不能进入已签署状态。");
-    return this.updateWorkOrderWithEvent(workOrder, {
-      fieldCompletedAt: workOrder.fieldCompletedAt ?? signedAt,
-      metadata: mergeMetadata(workOrder.metadata, { customerSignedMarkedBy: actorId ?? null }),
-      status: "CUSTOMER_SIGNED"
-    }, VehicleHandoverEventType.CUSTOMER_SIGNED, {
-      actorId,
-      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
-      detail: { signedAt: signedAt.toISOString() }
-    });
+    assertStatusIn(
+      workOrder,
+      ["CUSTOMER_CONFIRMED", "SIGNING", "CUSTOMER_SIGNED"],
+      "客户尚不能进入已签署状态。"
+    );
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        fieldCompletedAt: workOrder.fieldCompletedAt ?? signedAt,
+        metadata: mergeMetadata(workOrder.metadata, { customerSignedMarkedBy: actorId ?? null }),
+        status: "CUSTOMER_SIGNED"
+      },
+      VehicleHandoverEventType.CUSTOMER_SIGNED,
+      {
+        actorId,
+        actorType: actorId
+          ? VehicleHandoverEventActorType.ADMIN
+          : VehicleHandoverEventActorType.SYSTEM,
+        detail: { signedAt: signedAt.toISOString() }
+      }
+    );
   }
 
   async markPlatformSealed(id: string, sealedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    assertStatusIn(workOrder, ["CUSTOMER_SIGNED", "PLATFORM_SEALED"], "客户签署完成后才能执行平台盖章。");
-    return this.updateWorkOrderWithEvent(workOrder, {
-      metadata: mergeMetadata(workOrder.metadata, {
-        platformSealedAt: sealedAt.toISOString(),
-        platformSealedMarkedBy: actorId ?? null
-      }),
-      status: "PLATFORM_SEALED"
-    }, VehicleHandoverEventType.PLATFORM_SEALED, {
-      actorId,
-      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
-      detail: { sealedAt: sealedAt.toISOString() }
-    });
+    assertStatusIn(
+      workOrder,
+      ["CUSTOMER_SIGNED", "PLATFORM_SEALED"],
+      "客户签署完成后才能执行平台盖章。"
+    );
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        metadata: mergeMetadata(workOrder.metadata, {
+          platformSealedAt: sealedAt.toISOString(),
+          platformSealedMarkedBy: actorId ?? null
+        }),
+        status: "PLATFORM_SEALED"
+      },
+      VehicleHandoverEventType.PLATFORM_SEALED,
+      {
+        actorId,
+        actorType: actorId
+          ? VehicleHandoverEventActorType.ADMIN
+          : VehicleHandoverEventActorType.SYSTEM,
+        detail: { sealedAt: sealedAt.toISOString() }
+      }
+    );
   }
 
   async markFieldCompleted(id: string, completedAt: Date, actorId?: string) {
     const workOrder = await this.getWorkOrderOrThrow(id);
     this.assertMutable(workOrder);
-    assertStatusIn(workOrder, ["PLATFORM_SEALED", "FIELD_COMPLETED"], "平台盖章完成后才能完成现场交接。");
-    return this.updateWorkOrderWithEvent(workOrder, {
-      fieldCompletedAt: workOrder.fieldCompletedAt ?? completedAt,
-      metadata: mergeMetadata(workOrder.metadata, { fieldCompletedBy: actorId ?? null }),
-      status: "FIELD_COMPLETED"
-    }, VehicleHandoverEventType.FIELD_COMPLETED, {
-      actorId,
-      actorType: actorId ? VehicleHandoverEventActorType.ADMIN : VehicleHandoverEventActorType.SYSTEM,
-      detail: { completedAt: completedAt.toISOString() }
-    });
+    assertStatusIn(
+      workOrder,
+      ["PLATFORM_SEALED", "FIELD_COMPLETED"],
+      "平台盖章完成后才能完成现场交接。"
+    );
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        fieldCompletedAt: workOrder.fieldCompletedAt ?? completedAt,
+        metadata: mergeMetadata(workOrder.metadata, { fieldCompletedBy: actorId ?? null }),
+        status: "FIELD_COMPLETED"
+      },
+      VehicleHandoverEventType.FIELD_COMPLETED,
+      {
+        actorId,
+        actorType: actorId
+          ? VehicleHandoverEventActorType.ADMIN
+          : VehicleHandoverEventActorType.SYSTEM,
+        detail: { completedAt: completedAt.toISOString() }
+      }
+    );
   }
 
   async reconcileArchivedStage2JourneyEvidence(
@@ -2205,26 +2417,17 @@ export class HandoverWorkOrderService {
           orderId: workOrder.orderId
         }
       });
-      if (
-        !handover ||
-        !handover.archivedAt ||
-        !hasCompleteStage2HandoverArchive(handover)
-      ) {
+      if (!handover || !handover.archivedAt || !hasCompleteStage2HandoverArchive(handover)) {
         throw new ConflictException("STAGE2_HANDOVER_ARCHIVE_INCOMPLETE");
       }
 
-      const evidencePackage = await this.buildCurrentEvidencePackage(
-        workOrder,
-        undefined,
-        tx
-      );
+      const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, undefined, tx);
       const persistedManifestHash = readMetadataString(
         workOrder.metadata,
         "journeyEvidenceManifestHash"
       );
       if (
-        (workOrder.status === "OPS_REVIEW_PENDING" ||
-          workOrder.status === "OPS_REVIEWED") &&
+        (workOrder.status === "OPS_REVIEW_PENDING" || workOrder.status === "OPS_REVIEWED") &&
         persistedManifestHash &&
         persistedManifestHash !== evidencePackage.manifestHash
       ) {
@@ -2237,19 +2440,21 @@ export class HandoverWorkOrderService {
           persistedManifestHash === evidencePackage.manifestHash) ||
         workOrder.status === "OPS_REVIEWED";
       if (!alreadyReady) {
-        const updated = await this.updateWorkOrderVersioned(workOrder, {
-          fieldCompletedAt:
-            workOrder.fieldCompletedAt ??
-            handover.completedAt ??
-            handover.archivedAt,
-          metadata: mergeMetadata(workOrder.metadata, {
-            journeyEvidenceManifestHash: evidencePackage.manifestHash,
-            opsReviewRequestedBy: null,
-            opsReviewSource: "STAGE2_AUTHORITATIVE_ARCHIVE"
-          }),
-          opsReviewStatus: "PENDING",
-          status: "OPS_REVIEW_PENDING"
-        }, tx);
+        const updated = await this.updateWorkOrderVersioned(
+          workOrder,
+          {
+            fieldCompletedAt:
+              workOrder.fieldCompletedAt ?? handover.completedAt ?? handover.archivedAt,
+            metadata: mergeMetadata(workOrder.metadata, {
+              journeyEvidenceManifestHash: evidencePackage.manifestHash,
+              opsReviewRequestedBy: null,
+              opsReviewSource: "STAGE2_AUTHORITATIVE_ARCHIVE"
+            }),
+            opsReviewStatus: "PENDING",
+            status: "OPS_REVIEW_PENDING"
+          },
+          tx
+        );
         await this.recordEvent(
           updated,
           VehicleHandoverEventType.OPS_REVIEW_UPDATED,
@@ -2287,10 +2492,7 @@ export class HandoverWorkOrderService {
     limit = MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
   ): Promise<{ failed: number; processed: number; scanned: number }> {
     const safeLimit = Number.isSafeInteger(limit)
-      ? Math.min(
-          Math.max(limit, 1),
-          MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE
-        )
+      ? Math.min(Math.max(limit, 1), MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE)
       : MAX_STAGE2_ARCHIVE_RECONCILIATION_BATCH_SIZE;
     const candidates = await this.prisma.vehicleHandoverWorkOrder.findMany({
       orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
@@ -2313,13 +2515,9 @@ export class HandoverWorkOrderService {
           is: {
             subscriptionJourney: {
               is: {
-                currentStepCode:
-                  SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
+                currentStepCode: SubscriptionJourneyStepCode.HANDOVER_AND_STAGE2_CREATION,
                 status: {
-                  notIn: [
-                    SubscriptionJourneyStatus.COMPLETED,
-                    SubscriptionJourneyStatus.CANCELLED
-                  ]
+                  notIn: [SubscriptionJourneyStatus.COMPLETED, SubscriptionJourneyStatus.CANCELLED]
                 }
               }
             }
@@ -2363,19 +2561,19 @@ export class HandoverWorkOrderService {
     return this.runSerializableTransaction(async (tx) => {
       const workOrder = await this.getWorkOrderOrThrow(id, tx);
       assertCanMarkOpsReviewPending(workOrder);
-      const evidencePackage = await this.buildCurrentEvidencePackage(
+      const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, undefined, tx);
+      const updated = await this.updateWorkOrderVersioned(
         workOrder,
-        undefined,
+        {
+          metadata: mergeMetadata(workOrder.metadata, {
+            journeyEvidenceManifestHash: evidencePackage.manifestHash,
+            opsReviewRequestedBy: actorId ?? null
+          }),
+          opsReviewStatus: "PENDING",
+          status: "OPS_REVIEW_PENDING"
+        },
         tx
       );
-      const updated = await this.updateWorkOrderVersioned(workOrder, {
-        metadata: mergeMetadata(workOrder.metadata, {
-          journeyEvidenceManifestHash: evidencePackage.manifestHash,
-          opsReviewRequestedBy: actorId ?? null
-        }),
-        opsReviewStatus: "PENDING",
-        status: "OPS_REVIEW_PENDING"
-      }, tx);
       await this.recordEvent(
         updated,
         VehicleHandoverEventType.OPS_REVIEW_UPDATED,
@@ -2404,25 +2602,13 @@ export class HandoverWorkOrderService {
 
   async markOpsReviewApproved(id: string, reviewerId: string, notes?: string | null) {
     return this.runSerializableTransaction((tx) =>
-      this.decideJourneyDeliveryEvidence(
-        tx,
-        id,
-        "APPROVED",
-        reviewerId,
-        notes ?? undefined
-      )
+      this.decideJourneyDeliveryEvidence(tx, id, "APPROVED", reviewerId, notes ?? undefined)
     );
   }
 
   async markOpsReviewRejected(id: string, reviewerId: string, notes?: string | null) {
     return this.runSerializableTransaction((tx) =>
-      this.decideJourneyDeliveryEvidence(
-        tx,
-        id,
-        "REJECTED",
-        reviewerId,
-        notes ?? undefined
-      )
+      this.decideJourneyDeliveryEvidence(tx, id, "REJECTED", reviewerId, notes ?? undefined)
     );
   }
 
@@ -2436,47 +2622,36 @@ export class HandoverWorkOrderService {
   ): Promise<WorkOrderRecord> {
     const workOrder = await this.getWorkOrderOrThrow(workOrderId, tx);
     assertOpsReviewPending(workOrder);
-    const evidencePackage = await this.buildCurrentEvidencePackage(
-      workOrder,
-      undefined,
-      tx
-    );
-    if (
-      decisionManifestHash &&
-      decisionManifestHash !== evidencePackage.manifestHash
-    ) {
+    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, undefined, tx);
+    if (decisionManifestHash && decisionManifestHash !== evidencePackage.manifestHash) {
       throw new BadRequestException("JOURNEY_EVIDENCE_MANIFEST_STALE");
     }
     const expectedManifestHash = readMetadataString(
       workOrder.metadata,
       "journeyEvidenceManifestHash"
     );
-    if (
-      expectedManifestHash &&
-      expectedManifestHash !== evidencePackage.manifestHash
-    ) {
-      throw new BadRequestException(
-        "交付证据已发生变化，请重新发起运营复核。"
-      );
+    if (expectedManifestHash && expectedManifestHash !== evidencePackage.manifestHash) {
+      throw new BadRequestException("交付证据已发生变化，请重新发起运营复核。");
     }
     const normalizedNotes = normalizeOptionalText(notes);
     const manifestHash = expectedManifestHash ?? evidencePackage.manifestHash;
     const reviewedAt = new Date();
-    const updated = await this.updateWorkOrderVersioned(workOrder, {
-      customerConfirmedAt:
-        decision === "REJECTED" ? null : workOrder.customerConfirmedAt,
-      metadata: mergeMetadata(workOrder.metadata, {
-        journeyEvidenceManifestHash: manifestHash,
-        ...(decision === "REJECTED"
-          ? { journeyRejectedManifestHash: manifestHash }
-          : {})
-      }),
-      opsReviewNotes: normalizedNotes,
-      opsReviewStatus: decision,
-      opsReviewedAt: reviewedAt,
-      opsReviewedBy: actorId,
-      status: decision === "REJECTED" ? "FIELD_IN_PROGRESS" : "OPS_REVIEWED"
-    }, tx);
+    const updated = await this.updateWorkOrderVersioned(
+      workOrder,
+      {
+        customerConfirmedAt: decision === "REJECTED" ? null : workOrder.customerConfirmedAt,
+        metadata: mergeMetadata(workOrder.metadata, {
+          journeyEvidenceManifestHash: manifestHash,
+          ...(decision === "REJECTED" ? { journeyRejectedManifestHash: manifestHash } : {})
+        }),
+        opsReviewNotes: normalizedNotes,
+        opsReviewStatus: decision,
+        opsReviewedAt: reviewedAt,
+        opsReviewedBy: actorId,
+        status: decision === "REJECTED" ? "FIELD_IN_PROGRESS" : "OPS_REVIEWED"
+      },
+      tx
+    );
     if (decision === "APPROVED") {
       await tx.vehicleInspection.upsert({
         create: {
@@ -2522,22 +2697,32 @@ export class HandoverWorkOrderService {
     return updated;
   }
 
-  async voidOrCancel(id: string, status: Extract<WorkOrderStatus, "VOIDED" | "FAILED" | "CANCELLED">, actorId?: string, reason?: string | null) {
+  async voidOrCancel(
+    id: string,
+    status: Extract<WorkOrderStatus, "VOIDED" | "FAILED" | "CANCELLED">,
+    actorId?: string,
+    reason?: string | null
+  ) {
     const workOrder = await this.getWorkOrderOrThrow(id);
-    return this.updateWorkOrderWithEvent(workOrder, {
-      metadata: mergeMetadata(workOrder.metadata, {
-        terminalReason: normalizeOptionalText(reason),
-        terminalUpdatedBy: actorId ?? null
-      }),
-      status
-    }, VehicleHandoverEventType.WORK_ORDER_TERMINATED, {
-      actorId,
-      actorType: VehicleHandoverEventActorType.ADMIN,
-      detail: {
-        reason: normalizeOptionalText(reason),
+    return this.updateWorkOrderWithEvent(
+      workOrder,
+      {
+        metadata: mergeMetadata(workOrder.metadata, {
+          terminalReason: normalizeOptionalText(reason),
+          terminalUpdatedBy: actorId ?? null
+        }),
         status
+      },
+      VehicleHandoverEventType.WORK_ORDER_TERMINATED,
+      {
+        actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: {
+          reason: normalizeOptionalText(reason),
+          status
+        }
       }
-    });
+    );
   }
 
   async getReadiness(id: string) {
@@ -2567,14 +2752,19 @@ export class HandoverWorkOrderService {
 
   async getStage2HandoverPdf(id: string): Promise<Stage2HandoverPdfArtifactView> {
     const workOrder = await this.getWorkOrderOrThrow(id);
-    const handover = await this.findStage2HandoverForWorkOrder(workOrder, { includeHandoverContract: true });
+    const handover = await this.findStage2HandoverForWorkOrder(workOrder, {
+      includeHandoverContract: true
+    });
     if (handover && readString(handover, "sourceDocumentFileId")) {
       await this.assertGeneratedStage2PdfMatchesCurrentEvidence(workOrder, handover);
     }
     return this.toStage2HandoverPdfArtifactView(workOrder, handover);
   }
 
-  async generateStage2HandoverPdf(id: string, actorId?: string): Promise<Stage2HandoverPdfArtifactView> {
+  async generateStage2HandoverPdf(
+    id: string,
+    actorId?: string
+  ): Promise<Stage2HandoverPdfArtifactView> {
     const evidencePackage = await this.getCurrentEvidencePackage(id);
     return this.ensureStage2HandoverPdf(id, evidencePackage.manifestHash, {
       actorId,
@@ -2600,21 +2790,10 @@ export class HandoverWorkOrderService {
       handoverId: workOrder.handoverId ?? null,
       orderId: workOrder.orderId
     });
-    const evidencePackage = await this.buildCurrentEvidencePackage(
-      workOrder,
-      evidenceChecklist
-    );
-    await this.assertEvidencePackageMatchesLatestConfirmation(
-      workOrder,
-      evidencePackage
-    );
-    if (
-      requireSha256Digest(evidencePackage.manifestHash) !==
-      expectedManifestDigest
-    ) {
-      throw new ConflictException(
-        "Current evidence does not match the queued manifest."
-      );
+    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist);
+    await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage);
+    if (requireSha256Digest(evidencePackage.manifestHash) !== expectedManifestDigest) {
+      throw new ConflictException("Current evidence does not match the queued manifest.");
     }
 
     const order = await this.getStage2PdfOrderOrThrow(workOrder.orderId);
@@ -2660,9 +2839,7 @@ export class HandoverWorkOrderService {
       activeTemplate?.id ?? null,
       options.lease
     );
-    const template = await this.findStage2HandoverTemplateById(
-      reservation.templateId
-    );
+    const template = await this.findStage2HandoverTemplateById(reservation.templateId);
     if (!template) {
       throw new ConflictException("The reserved Stage 2 template is unavailable.");
     }
@@ -2673,13 +2850,9 @@ export class HandoverWorkOrderService {
     };
 
     let renderedFile: DeliveryHandoverPdfRenderFileResult | null = null;
-    let stored:
-      | Awaited<
-          ReturnType<
-            StorageService["putGeneratedContractPdfArtifactFromPath"]
-          >
-        >
-      | null = null;
+    let stored: Awaited<
+      ReturnType<StorageService["putGeneratedContractPdfArtifactFromPath"]>
+    > | null = null;
     try {
       const loadAsset = await this.buildStage2EvidenceAssetLoader(evidencePackage);
       const renderModel = buildDeliveryHandoverPdfRenderModel(
@@ -2726,10 +2899,7 @@ export class HandoverWorkOrderService {
       await options.lease?.assertLease();
       const finalized = await this.runStage2SourcePdfFinalizationTransaction(async (tx) => {
         await this.assertStage2PdfLease(tx, options.lease);
-        const lockedHandover = await this.lockStage2HandoverForSourcePdf(
-          tx,
-          handoverId
-        );
+        const lockedHandover = await this.lockStage2HandoverForSourcePdf(tx, handoverId);
         if (hasStage2SourceArtifactState(lockedHandover)) {
           throw new Stage2SourcePdfClaimLostError();
         }
@@ -2743,7 +2913,7 @@ export class HandoverWorkOrderService {
             sizeBytes: BigInt(storedArtifact.sizeBytes),
             uploadedBy: options.actorId ?? null
           }
-      });
+        });
         const createdContract = await tx.contract.create({
           data: {
             businessType: BusinessType.SUBSCRIPTION,
@@ -2813,7 +2983,7 @@ export class HandoverWorkOrderService {
           );
         }
         return { createdContract, createdFileObject };
-        });
+      });
 
       return this.toStage2HandoverPdfArtifactView(
         workOrder,
@@ -2834,11 +3004,7 @@ export class HandoverWorkOrderService {
       const authoritative = stored
         ? await this.findStage2HandoverForWorkOrderOrThrow(workOrder)
         : null;
-      if (
-        error instanceof Stage2SourcePdfClaimLostError &&
-        authoritative &&
-        stored
-      ) {
+      if (error instanceof Stage2SourcePdfClaimLostError && authoritative && stored) {
         const concurrentResult = await this.resolveReusableStage2HandoverPdf(
           workOrder,
           authoritative,
@@ -2880,7 +3046,10 @@ export class HandoverWorkOrderService {
     const workOrder = await this.getWorkOrderOrThrow(id);
     const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
     await this.assertGeneratedStage2PdfMatchesCurrentEvidence(workOrder, handover);
-    const fileId = readString(handover as unknown as Record<string, unknown>, "sourceDocumentFileId");
+    const fileId = readString(
+      handover as unknown as Record<string, unknown>,
+      "sourceDocumentFileId"
+    );
     if (!fileId) {
       throw new NotFoundException("车辆交接确认单 PDF 尚未生成。");
     }
@@ -2888,7 +3057,10 @@ export class HandoverWorkOrderService {
     if (!fileObject?.bucket || !fileObject.objectKey) {
       throw new NotFoundException("车辆交接确认单 PDF 文件不存在。");
     }
-    const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+    const downloaded = await this.getStorageService().getObject(
+      fileObject.bucket,
+      fileObject.objectKey
+    );
     return {
       filename: fileObject.originalName ?? "handover.pdf",
       mimeType: downloaded.contentType ?? fileObject.mimeType ?? "application/pdf",
@@ -2897,20 +3069,13 @@ export class HandoverWorkOrderService {
     };
   }
 
-  async downloadStage2SignedHandoverPdf(
-    id: string
-  ): Promise<EvidenceFileStreamResult> {
+  async downloadStage2SignedHandoverPdf(id: string): Promise<EvidenceFileStreamResult> {
     const workOrder = await this.getWorkOrderOrThrow(id);
     const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
     const handoverRecord = handover as unknown as Record<string, unknown>;
-    const signedDocumentFileId = readString(
-      handoverRecord,
-      "signedDocumentFileId"
-    );
+    const signedDocumentFileId = readString(handoverRecord, "signedDocumentFileId");
     const signedObjectKey = readString(handoverRecord, "signedObjectKey");
-    const signedPdfHash = normalizeStage2Sha256(
-      readString(handoverRecord, "signedPdfHash")
-    );
+    const signedPdfHash = normalizeStage2Sha256(readString(handoverRecord, "signedPdfHash"));
     const archiveState: Stage2HandoverArchiveState = {
       archiveStatus: readString(
         handoverRecord,
@@ -2919,10 +3084,7 @@ export class HandoverWorkOrderService {
       signedDocumentFileId,
       signedObjectKey,
       signedPdfHash,
-      status: readString(
-        handoverRecord,
-        "status"
-      ) as DeliveryHandoverStatus | null
+      status: readString(handoverRecord, "status") as DeliveryHandoverStatus | null
     };
     if (!hasCompleteStage2HandoverArchive(archiveState)) {
       throw new ConflictException({
@@ -2952,9 +3114,7 @@ export class HandoverWorkOrderService {
     return {
       filename: fileObject.originalName ?? "handover-signed.pdf",
       mimeType: fileObject.mimeType,
-      sizeBytes: toNumberOrNull(
-        fileObject.sizeBytes ?? downloaded.contentLength ?? null
-      ),
+      sizeBytes: toNumberOrNull(fileObject.sizeBytes ?? downloaded.contentLength ?? null),
       stream: downloaded.stream
     };
   }
@@ -2964,30 +3124,18 @@ export class HandoverWorkOrderService {
   ): Promise<EvidenceFileStreamResult> {
     const binding = await this.resolveFieldStage2SourceArtifact(workOrder);
     const bucket = readRequiredString(binding.fileObject, "bucket");
-    const downloaded = await this.getStorageService().getObject(
-      bucket,
-      binding.sourceObjectKey
-    );
+    const downloaded = await this.getStorageService().getObject(bucket, binding.sourceObjectKey);
     return {
-      filename:
-        readString(binding.fileObject, "originalName") ?? "handover.pdf",
+      filename: readString(binding.fileObject, "originalName") ?? "handover.pdf",
       mimeType:
-        downloaded.contentType ??
-        readString(binding.fileObject, "mimeType") ??
-        "application/pdf",
-      sizeBytes: toNumberOrNull(
-        binding.fileObject.sizeBytes ?? downloaded.contentLength ?? null
-      ),
+        downloaded.contentType ?? readString(binding.fileObject, "mimeType") ?? "application/pdf",
+      sizeBytes: toNumberOrNull(binding.fileObject.sizeBytes ?? downloaded.contentLength ?? null),
       stream: downloaded.stream
     };
   }
 
-  private async resolveFieldStage2SourceArtifact(
-    workOrder: WorkOrderRecord
-  ) {
-    const handover = await this.findStage2HandoverForWorkOrderOrThrow(
-      workOrder
-    );
+  private async resolveFieldStage2SourceArtifact(workOrder: WorkOrderRecord) {
+    const handover = await this.findStage2HandoverForWorkOrderOrThrow(workOrder);
     const currentPackage = await this.buildCurrentEvidencePackage(workOrder);
     const fileId = readString(handover, "sourceDocumentFileId");
     const fileObject = fileId
@@ -2995,17 +3143,13 @@ export class HandoverWorkOrderService {
       : null;
     const order = await this.getOrderOrThrow(workOrder.orderId);
     const binding = validateStage2SourceArtifactBinding({
-      allowedContractStatuses: [
-        ContractStatus.GENERATED,
-        ContractStatus.SIGNING
-      ],
+      allowedContractStatuses: [ContractStatus.GENERATED, ContractStatus.SIGNING],
       allowedHandoverStatuses: [
         DeliveryHandoverStatus.SOURCE_GENERATED,
         DeliveryHandoverStatus.PENDING_CUSTOMER_SIGNATURE,
         DeliveryHandoverStatus.PENDING_PLATFORM_SEAL
       ],
-      expectedCustomerId:
-        readString(order as unknown as Record<string, unknown>, "customerId"),
+      expectedCustomerId: readString(order as unknown as Record<string, unknown>, "customerId"),
       expectedHandoverId: workOrder.handoverId ?? "",
       expectedManifestHash: currentPackage.manifestHash,
       expectedOrderId: workOrder.orderId,
@@ -3015,15 +3159,15 @@ export class HandoverWorkOrderService {
       maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
     });
     if (!binding) {
-      throw new ConflictException(
-        "The current Stage 2 source PDF binding is invalid."
-      );
+      throw new ConflictException("The current Stage 2 source PDF binding is invalid.");
     }
     return binding;
   }
 
   async assertReadyForStage2Pdf(orderId: string, handoverId?: string | null) {
-    await this.assertWorkOrderReadyForStage2(await this.findActiveWorkOrderOrThrow(orderId, handoverId));
+    await this.assertWorkOrderReadyForStage2(
+      await this.findActiveWorkOrderOrThrow(orderId, handoverId)
+    );
   }
 
   async assertReadyForStage2ESign(
@@ -3042,23 +3186,11 @@ export class HandoverWorkOrderService {
     handoverId?: string | null,
     db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const workOrder = await this.findActiveWorkOrderOrThrow(
-      orderId,
-      handoverId,
-      db
-    );
+    const workOrder = await this.findActiveWorkOrderOrThrow(orderId, handoverId, db);
     const confirmedEvidenceManifestHash =
-      await this.assertWorkOrderReadyForStage2(workOrder, db) ??
-      (
-        await this.buildCurrentEvidencePackage(
-          workOrder,
-          undefined,
-          db
-        )
-      ).manifestHash;
-    const confirmedEvidenceManifestDigest = requireSha256Digest(
-      confirmedEvidenceManifestHash
-    );
+      (await this.assertWorkOrderReadyForStage2(workOrder, db)) ??
+      (await this.buildCurrentEvidencePackage(workOrder, undefined, db)).manifestHash;
+    const confirmedEvidenceManifestDigest = requireSha256Digest(confirmedEvidenceManifestHash);
     if (this.deliveryHandoverService) {
       await this.deliveryHandoverService.assertDeliveryCanBeConfirmed(
         orderId,
@@ -3109,16 +3241,8 @@ export class HandoverWorkOrderService {
     if (!this.getReviewAttemptModel(db)) {
       return null;
     }
-    const evidencePackage = await this.buildCurrentEvidencePackage(
-      workOrder,
-      undefined,
-      db
-    );
-    await this.assertEvidencePackageMatchesLatestConfirmation(
-      workOrder,
-      evidencePackage,
-      db
-    );
+    const evidencePackage = await this.buildCurrentEvidencePackage(workOrder, undefined, db);
+    await this.assertEvidencePackageMatchesLatestConfirmation(workOrder, evidencePackage, db);
     return evidencePackage.manifestHash;
   }
 
@@ -3220,10 +3344,7 @@ export class HandoverWorkOrderService {
         businessType: BusinessType.SUBSCRIPTION,
         deletedAt: null,
         effectiveFrom: { lte: now },
-        OR: [
-          { effectiveTo: null },
-          { effectiveTo: { gte: now } }
-        ],
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
         status: ContractVersionStatus.ACTIVE,
         templateType: ContractTemplateType.DELIVERY_HANDOVER
       }
@@ -3252,27 +3373,20 @@ export class HandoverWorkOrderService {
   ): Promise<Stage2SourcePdfReservation> {
     return this.runSerializableTransaction(async (tx) => {
       await this.assertStage2PdfLease(tx, lease);
-      const handover = await this.lockStage2HandoverForSourcePdf(
-        tx,
-        handoverId
-      );
+      const handover = await this.lockStage2HandoverForSourcePdf(tx, handoverId);
       if (hasStage2SourceArtifactState(handover)) {
         throw new Stage2SourcePdfClaimLostError();
       }
 
       const metadata = asRecord(handover.metadata) ?? {};
-      const existing = readStage2SourcePdfReservation(
-        metadata.stage2SourcePdfReservation
-      );
+      const existing = readStage2SourcePdfReservation(metadata.stage2SourcePdfReservation);
       if (existing) {
         if (
           existing.artifactVersion !== artifactVersion ||
           existing.contractId !== contractId ||
           existing.manifestHash !== manifestHash
         ) {
-          throw new ConflictException(
-            "The reserved Stage 2 source PDF identity is invalid."
-          );
+          throw new ConflictException("The reserved Stage 2 source PDF identity is invalid.");
         }
         return existing;
       }
@@ -3290,9 +3404,7 @@ export class HandoverWorkOrderService {
           legacyContract.orderId !== workOrder.orderId ||
           legacyContract.status !== ContractStatus.CANCELLED
         ) {
-          throw new ConflictException(
-            "The legacy Stage 2 source Contract reservation is invalid."
-          );
+          throw new ConflictException("The legacy Stage 2 source Contract reservation is invalid.");
         }
         contractNo = legacyContract.contractNo;
         generatedAt = legacyContract.createdAt;
@@ -3331,10 +3443,7 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async lockStage2HandoverForSourcePdf(
-    tx: Prisma.TransactionClient,
-    handoverId: string
-  ) {
+  private async lockStage2HandoverForSourcePdf(tx: Prisma.TransactionClient, handoverId: string) {
     const [handover] = await tx.$queryRaw<Array<Record<string, unknown>>>(
       Prisma.sql`
         SELECT
@@ -3362,15 +3471,12 @@ export class HandoverWorkOrderService {
   }
 
   private async cleanupLosingStage2SourceObject(
-    stored: Awaited<
-      ReturnType<StorageService["putGeneratedContractPdfArtifactFromPath"]>
-    >,
+    stored: Awaited<ReturnType<StorageService["putGeneratedContractPdfArtifactFromPath"]>>,
     authoritative: Record<string, unknown>
   ) {
     const winnerKey = readString(authoritative, "sourceObjectKey");
     if (
-      readString(authoritative, "status") !==
-        DeliveryHandoverStatus.SOURCE_GENERATED ||
+      readString(authoritative, "status") !== DeliveryHandoverStatus.SOURCE_GENERATED ||
       !winnerKey ||
       winnerKey === stored.objectKey
     ) {
@@ -3395,11 +3501,15 @@ export class HandoverWorkOrderService {
     options: { includeHandoverContract?: boolean } = {},
     db: Prisma.TransactionClient | PrismaService = this.prisma
   ) {
-    const handoverModel = (db as unknown as {
-      vehicleDeliveryHandover?: {
-        findFirst: (args: Prisma.VehicleDeliveryHandoverFindFirstArgs) => Promise<null | Record<string, unknown>>;
-      };
-    }).vehicleDeliveryHandover;
+    const handoverModel = (
+      db as unknown as {
+        vehicleDeliveryHandover?: {
+          findFirst: (
+            args: Prisma.VehicleDeliveryHandoverFindFirstArgs
+          ) => Promise<null | Record<string, unknown>>;
+        };
+      }
+    ).vehicleDeliveryHandover;
     if (!handoverModel) {
       return null;
     }
@@ -3443,9 +3553,7 @@ export class HandoverWorkOrderService {
       throw new BadRequestException("车辆交接记录尚未创建。");
     }
     const stage1Contract = asRecord(record.stage1Contract);
-    const stage1ContractStatus = stage1Contract
-      ? readString(stage1Contract, "status")
-      : null;
+    const stage1ContractStatus = stage1Contract ? readString(stage1Contract, "status") : null;
     if (
       !stage1Contract ||
       (stage1ContractStatus !== ContractStatus.SIGNED &&
@@ -3480,9 +3588,7 @@ export class HandoverWorkOrderService {
       maxSizeBytes: STAGE2_HANDOVER_PDF_HARD_MAX_BYTES
     });
     if (!historicalBinding) {
-      throw new ConflictException(
-        "The persisted Stage 2 source PDF artifact binding is invalid."
-      );
+      throw new ConflictException("The persisted Stage 2 source PDF artifact binding is invalid.");
     }
     const binding = validateStage2SourceArtifactBinding({
       expectedArtifactVersion: STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION,
@@ -3498,23 +3604,13 @@ export class HandoverWorkOrderService {
     });
     if (!binding) {
       if (
-        historicalBinding.artifactVersion >
-          STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
-        (
-          historicalBinding.rendererVersion !== null &&
-          historicalBinding.rendererVersion >
-            STAGE2_HANDOVER_PDF_RENDERER_VERSION
-        )
+        historicalBinding.artifactVersion > STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION ||
+        (historicalBinding.rendererVersion !== null &&
+          historicalBinding.rendererVersion > STAGE2_HANDOVER_PDF_RENDERER_VERSION)
       ) {
-        throw new ConflictException(
-          "The persisted Stage 2 source PDF uses a newer renderer."
-        );
+        throw new ConflictException("The persisted Stage 2 source PDF uses a newer renderer.");
       }
-      await this.supersedeLegacyUnsignedStage2Source(
-        workOrder,
-        handover,
-        historicalBinding
-      );
+      await this.supersedeLegacyUnsignedStage2Source(workOrder, handover, historicalBinding);
       return null;
     }
 
@@ -3526,17 +3622,13 @@ export class HandoverWorkOrderService {
       downloaded.contentType &&
       downloaded.contentType.trim().toLowerCase() !== "application/pdf"
     ) {
-      throw new ConflictException(
-        "The persisted Stage 2 source PDF storage binding is invalid."
-      );
+      throw new ConflictException("The persisted Stage 2 source PDF storage binding is invalid.");
     }
     if (
       downloaded.contentLength !== undefined &&
       downloaded.contentLength !== toNumberOrNull(binding.fileObject.sizeBytes)
     ) {
-      throw new ConflictException(
-        "The persisted Stage 2 source PDF storage size is invalid."
-      );
+      throw new ConflictException("The persisted Stage 2 source PDF storage size is invalid.");
     }
     const storedSource = await calculateReadableSha256(
       downloaded.stream,
@@ -3546,9 +3638,7 @@ export class HandoverWorkOrderService {
       storedSource.sizeBytes !== toNumberOrNull(binding.fileObject.sizeBytes) ||
       storedSource.sha256 !== binding.sourcePdfHash
     ) {
-      throw new ConflictException(
-        "The persisted Stage 2 source PDF SHA-256 is invalid."
-      );
+      throw new ConflictException("The persisted Stage 2 source PDF SHA-256 is invalid.");
     }
     return {
       fileObject: binding.fileObject,
@@ -3559,9 +3649,7 @@ export class HandoverWorkOrderService {
   private async supersedeLegacyUnsignedStage2Source(
     workOrder: WorkOrderRecord,
     handover: Record<string, unknown>,
-    binding: NonNullable<
-      ReturnType<typeof validateStage2SourceArtifactBinding>
-    >
+    binding: NonNullable<ReturnType<typeof validateStage2SourceArtifactBinding>>
   ) {
     await this.runSerializableTransaction(async (tx) => {
       const locked = await this.lockStage2HandoverForSourcePdf(
@@ -3571,12 +3659,9 @@ export class HandoverWorkOrderService {
       if (
         !sameStage2SourceBinding(locked, handover) ||
         readString(locked, "handoverESignTaskId") ||
-        readString(locked, "status") !==
-          DeliveryHandoverStatus.SOURCE_GENERATED
+        readString(locked, "status") !== DeliveryHandoverStatus.SOURCE_GENERATED
       ) {
-        throw new ConflictException(
-          "The legacy Stage 2 source PDF has already entered signing."
-        );
+        throw new ConflictException("The legacy Stage 2 source PDF has already entered signing.");
       }
       const contract = await tx.contract.findUnique({
         where: { id: readRequiredString(locked, "handoverContractId") }
@@ -3588,9 +3673,7 @@ export class HandoverWorkOrderService {
         contract.fileId !== binding.fileObject.id ||
         contract.status !== ContractStatus.GENERATED
       ) {
-        throw new ConflictException(
-          "The legacy Stage 2 source Contract cannot be superseded."
-        );
+        throw new ConflictException("The legacy Stage 2 source Contract cannot be superseded.");
       }
       await tx.contract.update({
         data: {
@@ -3632,10 +3715,7 @@ export class HandoverWorkOrderService {
   ) {
     await this.runSerializableTransaction(async (tx) => {
       await this.assertStage2PdfLease(tx, lease);
-      const authoritative = await this.findStage2HandoverForWorkOrderOrThrow(
-        workOrder,
-        tx
-      );
+      const authoritative = await this.findStage2HandoverForWorkOrderOrThrow(workOrder, tx);
       if (!sameStage2SourceBinding(authoritative, expectedHandover)) {
         throw new ConflictException(
           "The Stage 2 source PDF binding changed before notification enqueue."
@@ -3676,10 +3756,7 @@ export class HandoverWorkOrderService {
     });
   }
 
-  private async assertStage2PdfLease(
-    tx: Prisma.TransactionClient,
-    lease?: Stage2HandoverPdfLease
-  ) {
+  private async assertStage2PdfLease(tx: Prisma.TransactionClient, lease?: Stage2HandoverPdfLease) {
     if (!lease) {
       return;
     }
@@ -3776,7 +3853,8 @@ export class HandoverWorkOrderService {
     }
 
     const resolvedFileObject =
-      fileObject ?? await this.prisma.fileObject.findUnique({ where: { id: sourceDocumentFileId } });
+      fileObject ??
+      (await this.prisma.fileObject.findUnique({ where: { id: sourceDocumentFileId } }));
     const handoverContract = asRecord(handover.handoverContract);
     const fileRecord = asRecord(resolvedFileObject);
 
@@ -3786,7 +3864,9 @@ export class HandoverWorkOrderService {
       artifactVersion: readPositiveInteger(handover, "artifactVersion"),
       documentNo: handoverContract ? readString(handoverContract, "contractNo") : null,
       downloadUrl: `/api/handover-work-orders/${encodeURIComponent(workOrder.id)}/pdf/download`,
-      fileName: fileRecord ? readString(fileRecord, "originalName") ?? "handover.pdf" : "handover.pdf",
+      fileName: fileRecord
+        ? (readString(fileRecord, "originalName") ?? "handover.pdf")
+        : "handover.pdf",
       fileSize: toNumberOrNull(fileRecord?.sizeBytes ?? null),
       generatedAt:
         toDateOrNull(fileRecord?.createdAt) ??
@@ -3800,22 +3880,12 @@ export class HandoverWorkOrderService {
           handover,
           "archiveStatus"
         ) as DeliveryHandoverArchiveStatus | null,
-        signedDocumentFileId: readString(
-          handover,
-          "signedDocumentFileId"
-        ),
+        signedDocumentFileId: readString(handover, "signedDocumentFileId"),
         signedObjectKey: readString(handover, "signedObjectKey"),
-        signedPdfHash: normalizeStage2Sha256(
-          readString(handover, "signedPdfHash")
-        ),
-        status: readString(
-          handover,
-          "status"
-        ) as DeliveryHandoverStatus | null
+        signedPdfHash: normalizeStage2Sha256(readString(handover, "signedPdfHash")),
+        status: readString(handover, "status") as DeliveryHandoverStatus | null
       }),
-      sourcePdfHash: normalizeStage2Sha256(
-        readString(handover, "sourcePdfHash")
-      ),
+      sourcePdfHash: normalizeStage2Sha256(readString(handover, "sourcePdfHash")),
       status: "GENERATED",
       workOrderId: workOrder.id
     };
@@ -3829,7 +3899,9 @@ export class HandoverWorkOrderService {
   }
 
   private buildStage2EvidencePackageUrl(workOrderId: string) {
-    const configured = this.configService?.get<string>(STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV)?.trim();
+    const configured = this.configService
+      ?.get<string>(STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV)
+      ?.trim();
     if (!configured) {
       throw new BadRequestException(
         `${STAGE2_HANDOVER_PUBLIC_WEB_BASE_URL_ENV} 未配置，无法生成稳定的证据包查阅地址。`
@@ -3839,9 +3911,9 @@ export class HandoverWorkOrderService {
   }
 
   private async buildStage2EvidenceAssetLoader(evidencePackage: DeliveryHandoverEvidencePackage) {
-    const derivativeIds = Array.from(new Set(
-      evidencePackage.manifest.files.flatMap((file) => file.derivativeFileIds)
-    ));
+    const derivativeIds = Array.from(
+      new Set(evidencePackage.manifest.files.flatMap((file) => file.derivativeFileIds))
+    );
     const allowedIds = new Set(derivativeIds);
     const fileObjects = await this.prisma.fileObject.findMany({
       where: { id: { in: derivativeIds } }
@@ -3873,7 +3945,10 @@ export class HandoverWorkOrderService {
       if (fileObject.mimeType !== "image/jpeg") {
         throw new BadRequestException(`交接证据衍生文件格式无效：${fileId}`);
       }
-      const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+      const downloaded = await this.getStorageService().getObject(
+        fileObject.bucket,
+        fileObject.objectKey
+      );
       return readStreamToBoundedBuffer(
         downloaded.stream,
         MAX_STAGE2_EVIDENCE_DERIVATIVE_BYTES,
@@ -3928,7 +4003,10 @@ export class HandoverWorkOrderService {
     if (options.preview && !isPreviewableEvidenceMime(mimeType)) {
       throw new UnsupportedMediaTypeException("该资料类型暂不支持预览，请下载后查看。");
     }
-    const downloaded = await this.getStorageService().getObject(fileObject.bucket, fileObject.objectKey);
+    const downloaded = await this.getStorageService().getObject(
+      fileObject.bucket,
+      fileObject.objectKey
+    );
     return {
       filename: fileObject.originalName ?? "evidence-file",
       mimeType: downloaded.contentType ?? mimeType,
@@ -3977,11 +4055,13 @@ export class HandoverWorkOrderService {
     },
     db: Pick<PrismaService, "fileObject">
   ) {
-    if (!isEvidenceArtifactMetadataReady(
-      evidenceFile.metadata,
-      String(evidenceFile.mediaType),
-      String(evidenceFile.evidenceItem.evidenceType)
-    )) {
+    if (
+      !isEvidenceArtifactMetadataReady(
+        evidenceFile.metadata,
+        String(evidenceFile.mediaType),
+        String(evidenceFile.evidenceItem.evidenceType)
+      )
+    ) {
       return false;
     }
     const derivativeFileIds = getEvidenceArtifactDerivativeFileIds(
@@ -4028,18 +4108,18 @@ export class HandoverWorkOrderService {
       workflowJobs,
       fieldReceipt
     ] = await Promise.all([
-        this.getOrderOrThrow(workOrder.orderId),
-        this.deliveryEvidenceService.getChecklist({
-          handoverId: workOrder.handoverId ?? null,
-          orderId: workOrder.orderId
-        }),
-        this.listReviewAttempts(workOrder.id),
-        this.listEvents(workOrder.id),
-        this.getReadiness(workOrder.id),
-        this.getStage2HandoverPdf(workOrder.id),
-        this.listSafeStage2WorkflowJobs(workOrder.id),
-        this.getFieldTaskReceipt(workOrder)
-      ]);
+      this.getOrderOrThrow(workOrder.orderId),
+      this.deliveryEvidenceService.getChecklist({
+        handoverId: workOrder.handoverId ?? null,
+        orderId: workOrder.orderId
+      }),
+      this.listReviewAttempts(workOrder.id),
+      this.listEvents(workOrder.id),
+      this.getReadiness(workOrder.id),
+      this.getStage2HandoverPdf(workOrder.id),
+      this.listSafeStage2WorkflowJobs(workOrder.id),
+      this.getFieldTaskReceipt(workOrder)
+    ]);
 
     return {
       adminReview: toAdminReviewView(workOrder, reviewAttempts),
@@ -4102,7 +4182,7 @@ export class HandoverWorkOrderService {
     return {
       firstOpenedAt,
       lastOpenedAt,
-      status: firstOpenedAt ? "OPENED" as const : "NOT_OPENED" as const
+      status: firstOpenedAt ? ("OPENED" as const) : ("NOT_OPENED" as const)
     };
   }
 
@@ -4140,14 +4220,19 @@ export class HandoverWorkOrderService {
   }
 
   private getReviewAttemptModel(db: Prisma.TransactionClient | PrismaService = this.prisma) {
-    return (db as unknown as {
-      vehicleHandoverReviewAttempt?: {
-        create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
-        findFirst: (args: Record<string, unknown>) => Promise<null | Record<string, unknown>>;
-        findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
-        update: (args: { data: Record<string, unknown>; where: { id: string } }) => Promise<Record<string, unknown>>;
-      };
-    }).vehicleHandoverReviewAttempt;
+    return (
+      db as unknown as {
+        vehicleHandoverReviewAttempt?: {
+          create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
+          findFirst: (args: Record<string, unknown>) => Promise<null | Record<string, unknown>>;
+          findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+          update: (args: {
+            data: Record<string, unknown>;
+            where: { id: string };
+          }) => Promise<Record<string, unknown>>;
+        };
+      }
+    ).vehicleHandoverReviewAttempt;
   }
 
   private async listReviewAttempts(workOrderId: string) {
@@ -4212,20 +4297,23 @@ export class HandoverWorkOrderService {
     }
     const latest = await this.findLatestReviewAttempt(workOrder.id, db);
     if (!latest) {
-      return this.createReviewAttempt(workOrder, status, {
-        ...(options.snapshot ?? {}),
-        ...data
-      }, db);
+      return this.createReviewAttempt(
+        workOrder,
+        status,
+        {
+          ...(options.snapshot ?? {}),
+          ...data
+        },
+        db
+      );
     }
     return model.update({
       data: compactUndefined({
-        ...(
-          "snapshot" in options && options.snapshot
-            ? options.snapshot
-            : options.refreshSnapshot
-              ? await this.buildReviewAttemptSnapshot(workOrder, db)
-              : {}
-        ),
+        ...("snapshot" in options && options.snapshot
+          ? options.snapshot
+          : options.refreshSnapshot
+            ? await this.buildReviewAttemptSnapshot(workOrder, db)
+            : {}),
         ...data,
         status
       }),
@@ -4238,10 +4326,15 @@ export class HandoverWorkOrderService {
     evidenceChecklist?: unknown,
     db: Prisma.TransactionClient | PrismaService = this.prisma
   ): Promise<DeliveryHandoverEvidencePackage> {
-    const checklist = evidenceChecklist ?? await this.deliveryEvidenceService.getChecklist({
-      handoverId: workOrder.handoverId ?? null,
-      orderId: workOrder.orderId
-    }, db);
+    const checklist =
+      evidenceChecklist ??
+      (await this.deliveryEvidenceService.getChecklist(
+        {
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        },
+        db
+      ));
     if (!workOrder.handoverId) {
       throw new BadRequestException("交接工单尚未关联车辆交接记录。");
     }
@@ -4259,12 +4352,18 @@ export class HandoverWorkOrderService {
     suppliedEvidenceChecklist?: unknown,
     suppliedEvidencePackage?: DeliveryHandoverEvidencePackage
   ) {
-    const evidenceChecklist = suppliedEvidenceChecklist ?? await this.deliveryEvidenceService.getChecklist({
-      handoverId: workOrder.handoverId ?? null,
-      orderId: workOrder.orderId
-    }, db);
-    const evidencePackage = suppliedEvidencePackage ??
-      await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist, db);
+    const evidenceChecklist =
+      suppliedEvidenceChecklist ??
+      (await this.deliveryEvidenceService.getChecklist(
+        {
+          handoverId: workOrder.handoverId ?? null,
+          orderId: workOrder.orderId
+        },
+        db
+      ));
+    const evidencePackage =
+      suppliedEvidencePackage ??
+      (await this.buildCurrentEvidencePackage(workOrder, evidenceChecklist, db));
     return {
       customerConfirmedAt: workOrder.customerConfirmedAt ?? null,
       customerObjectedAt: workOrder.customerObjectedAt ?? null,
@@ -4328,23 +4427,32 @@ export class HandoverWorkOrderService {
     }
     const attemptMetadata = asRecord(readUnknownRecordValue(latestAttempt, "metadata"));
     const baseline = asRecord(attemptMetadata?.resubmissionBaseline);
-    const baselineEvidenceSnapshot = baseline?.evidenceSnapshot ?? latestAttempt.evidenceSnapshot ?? null;
-    const baselineFieldFactsSnapshot = baseline?.fieldFactsSnapshot ?? latestAttempt.fieldFactsSnapshot ?? null;
-    const requestedEvidenceItemIds = readStringArray(attemptMetadata, "resubmissionRequestedEvidenceItemIds");
-    const requestedFieldKeys = readStringArray(attemptMetadata, "resubmissionRequestedFieldKeys")
-      .filter(isHandoverFieldFactKey);
+    const baselineEvidenceSnapshot =
+      baseline?.evidenceSnapshot ?? latestAttempt.evidenceSnapshot ?? null;
+    const baselineFieldFactsSnapshot =
+      baseline?.fieldFactsSnapshot ?? latestAttempt.fieldFactsSnapshot ?? null;
+    const requestedEvidenceItemIds = readStringArray(
+      attemptMetadata,
+      "resubmissionRequestedEvidenceItemIds"
+    );
+    const requestedFieldKeys = readStringArray(
+      attemptMetadata,
+      "resubmissionRequestedFieldKeys"
+    ).filter(isHandoverFieldFactKey);
     const current = await this.buildReviewAttemptSnapshot(workOrder);
     const baselineEvidence = evidenceItemFingerprintMap(baselineEvidenceSnapshot);
     const currentEvidence = evidenceItemFingerprintMap(current.evidenceSnapshot);
-    const evidenceScope = requestedEvidenceItemIds.length > 0
-      ? requestedEvidenceItemIds
-      : Array.from(new Set([...baselineEvidence.keys(), ...currentEvidence.keys()]));
+    const evidenceScope =
+      requestedEvidenceItemIds.length > 0
+        ? requestedEvidenceItemIds
+        : Array.from(new Set([...baselineEvidence.keys(), ...currentEvidence.keys()]));
     const changedEvidenceItemIds = evidenceScope.filter(
       (itemId) => baselineEvidence.get(itemId) !== currentEvidence.get(itemId)
     );
     const baselineFacts = asRecord(baselineFieldFactsSnapshot) ?? {};
     const currentFacts = asRecord(current.fieldFactsSnapshot) ?? {};
-    const fieldScope = requestedFieldKeys.length > 0 ? requestedFieldKeys : [...HANDOVER_FIELD_FACT_KEYS];
+    const fieldScope =
+      requestedFieldKeys.length > 0 ? requestedFieldKeys : [...HANDOVER_FIELD_FACT_KEYS];
     const changedFieldKeys = fieldScope.filter(
       (key) => stableSerialize(baselineFacts[key]) !== stableSerialize(currentFacts[key])
     );
@@ -4369,19 +4477,25 @@ export class HandoverWorkOrderService {
       handoverId: workOrder.handoverId ?? null,
       orderId: workOrder.orderId
     });
-    const validIds = new Set(getChecklistItems(checklist).map((item) => readString(item, "id")).filter(Boolean));
+    const validIds = new Set(
+      getChecklistItems(checklist)
+        .map((item) => readString(item, "id"))
+        .filter(Boolean)
+    );
     if (targetEvidenceItemIds.some((itemId) => !validIds.has(itemId))) {
       throw new BadRequestException("复检资料项不属于当前交接工单。");
     }
   }
 
   private getEventModel(db: Prisma.TransactionClient | PrismaService = this.prisma) {
-    return (db as unknown as {
-      vehicleHandoverEvent?: {
-        create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
-        findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
-      };
-    }).vehicleHandoverEvent;
+    return (
+      db as unknown as {
+        vehicleHandoverEvent?: {
+          create: (args: { data: Record<string, unknown> }) => Promise<Record<string, unknown>>;
+          findMany: (args: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>;
+        };
+      }
+    ).vehicleHandoverEvent;
   }
 
   private async recordEvent(
@@ -4453,7 +4567,9 @@ export class HandoverWorkOrderService {
       workOrder.customerReviewStartedAt ||
       (currentAttempt && readUnknown(currentAttempt, "customerReviewStartedAt"))
     ) {
-      throw new BadRequestException("Field operator assignment is frozen after customer review starts.");
+      throw new BadRequestException(
+        "Field operator assignment is frozen after customer review starts."
+      );
     }
   }
 
@@ -4475,10 +4591,7 @@ export class HandoverWorkOrderService {
     if (
       !workOrder ||
       !isFieldAccessibleWorkOrder(workOrder, normalizedPhone) ||
-      !await this.hasCurrentFieldOperatorAssignment(
-        workOrder,
-        normalizedPhone
-      )
+      !(await this.hasCurrentFieldOperatorAssignment(workOrder, normalizedPhone))
     ) {
       throw new UnauthorizedException("No access to this field handover work order.");
     }
@@ -4493,10 +4606,7 @@ export class HandoverWorkOrderService {
     if (workOrder.operatorType === "EXTERNAL") {
       return true;
     }
-    if (
-      workOrder.operatorType !== "INTERNAL" ||
-      !workOrder.assignedInternalUserId
-    ) {
+    if (workOrder.operatorType !== "INTERNAL" || !workOrder.assignedInternalUserId) {
       return false;
     }
     const user = await this.prisma.user.findFirst({
@@ -4697,13 +4807,15 @@ export class HandoverWorkOrderService {
   private async getFieldHandoverWorkflowProjection(
     workOrder: WorkOrderRecord
   ): Promise<FieldHandoverWorkflowProjection> {
-    const handoverModel = (this.prisma as unknown as {
-      vehicleDeliveryHandover?: {
-        findFirst: (
-          args: Prisma.VehicleDeliveryHandoverFindFirstArgs
-        ) => Promise<null | Record<string, unknown>>;
-      };
-    }).vehicleDeliveryHandover;
+    const handoverModel = (
+      this.prisma as unknown as {
+        vehicleDeliveryHandover?: {
+          findFirst: (
+            args: Prisma.VehicleDeliveryHandoverFindFirstArgs
+          ) => Promise<null | Record<string, unknown>>;
+        };
+      }
+    ).vehicleDeliveryHandover;
     const handover = handoverModel
       ? await handoverModel.findFirst({
           select: {
@@ -4749,58 +4861,50 @@ export class HandoverWorkOrderService {
           }
         }
       : null;
-    const taskModel = (this.prisma as unknown as {
-      contractESignTask?: {
-        findFirst: (
-          args: Prisma.ContractESignTaskFindFirstArgs
-        ) => Promise<null | {
-          signers: Array<{
-            signedAt: Date | null;
-            signerStatus: string;
-            slotId: string;
+    const taskModel = (
+      this.prisma as unknown as {
+        contractESignTask?: {
+          findFirst: (args: Prisma.ContractESignTaskFindFirstArgs) => Promise<null | {
+            signers: Array<{
+              signedAt: Date | null;
+              signerStatus: string;
+              slotId: string;
+            }>;
+            taskStatus: string;
           }>;
-          taskStatus: string;
-        }>;
-      };
-    }).contractESignTask;
-    const task = taskWhere && taskModel
-      ? await taskModel.findFirst({
-          orderBy: { createdAt: "desc" },
-          select: {
-            signers: {
-              select: {
-                signedAt: true,
-                signerStatus: true,
-                slotId: true
-              },
-              where: {
-                slotId: {
-                  in: [
-                    "STAGE2_HANDOVER_CUSTOMER",
-                    "STAGE2_HANDOVER_PLATFORM"
-                  ]
+        };
+      }
+    ).contractESignTask;
+    const task =
+      taskWhere && taskModel
+        ? await taskModel.findFirst({
+            orderBy: { createdAt: "desc" },
+            select: {
+              signers: {
+                select: {
+                  signedAt: true,
+                  signerStatus: true,
+                  slotId: true
+                },
+                where: {
+                  slotId: {
+                    in: ["STAGE2_HANDOVER_CUSTOMER", "STAGE2_HANDOVER_PLATFORM"]
+                  }
                 }
-              }
+              },
+              taskStatus: true
             },
-            taskStatus: true
-          },
-          where: taskWhere
-        })
-      : null;
+            where: taskWhere
+          })
+        : null;
     const projection = projectFieldHandoverWorkflow({
       handover: handoverRecord
         ? {
             archiveStatus: readString(handoverRecord, "archiveStatus") ?? "",
             archivedAt: readDateValue(handoverRecord, "archivedAt"),
-            signedDocumentFileId: readString(
-              handoverRecord,
-              "signedDocumentFileId"
-            ),
+            signedDocumentFileId: readString(handoverRecord, "signedDocumentFileId"),
             signedPdfHash: readString(handoverRecord, "signedPdfHash"),
-            sourceDocumentFileId: readString(
-              handoverRecord,
-              "sourceDocumentFileId"
-            ),
+            sourceDocumentFileId: readString(handoverRecord, "sourceDocumentFileId"),
             status: readString(handoverRecord, "status") ?? "",
             updatedAt: readDateValue(handoverRecord, "updatedAt")
           }
@@ -4810,33 +4914,24 @@ export class HandoverWorkOrderService {
     });
 
     if (projection.displayStatus === "INCONSISTENT") {
-      this.logger.warn(JSON.stringify({
-        archiveStatus: handoverRecord
-          ? readString(handoverRecord, "archiveStatus")
-          : null,
-        displayStatus: projection.displayStatus,
-        handoverId: handoverRecord ? readString(handoverRecord, "id") : null,
-        handoverStatus: handoverRecord
-          ? readString(handoverRecord, "status")
-          : null,
-        taskStatus: task?.taskStatus ?? null,
-        workOrderId: workOrder.id,
-        workOrderStatus: workOrder.status
-      }));
+      this.logger.warn(
+        JSON.stringify({
+          archiveStatus: handoverRecord ? readString(handoverRecord, "archiveStatus") : null,
+          displayStatus: projection.displayStatus,
+          handoverId: handoverRecord ? readString(handoverRecord, "id") : null,
+          handoverStatus: handoverRecord ? readString(handoverRecord, "status") : null,
+          taskStatus: task?.taskStatus ?? null,
+          workOrderId: workOrder.id,
+          workOrderStatus: workOrder.status
+        })
+      );
     }
     return projection;
   }
 
   private async toFieldTaskDetail(workOrder: WorkOrderRecord) {
-    const evidenceRouteBase =
-      `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
-    const [
-      listItem,
-      evidenceChecklist,
-      latestAttempt,
-      stage2Pdf,
-      stage2Workflow
-    ] =
+    const evidenceRouteBase = `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/evidence-files`;
+    const [listItem, evidenceChecklist, latestAttempt, stage2Pdf, stage2Workflow] =
       await Promise.all([
         this.toFieldTaskListItem(workOrder),
         this.deliveryEvidenceService.getChecklist({
@@ -4847,8 +4942,7 @@ export class HandoverWorkOrderService {
         this.getStage2HandoverPdf(workOrder.id),
         this.getFieldStage2WorkflowProjection(workOrder)
       ]);
-    const fieldPdfRouteBase =
-      `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/pdf`;
+    const fieldPdfRouteBase = `/api/field/handover/work-orders/${encodeURIComponent(workOrder.id)}/pdf`;
 
     return {
       ...listItem,
@@ -4867,56 +4961,46 @@ export class HandoverWorkOrderService {
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
         scheduledAt: workOrder.scheduledAt
       },
-      reviewContext: toFieldReviewContext(
-        workOrder,
-        latestAttempt,
-        evidenceChecklist
-      ),
+      reviewContext: toFieldReviewContext(workOrder, latestAttempt, evidenceChecklist),
       stage2ESign: stage2Workflow.eSign,
       stage2Notification: stage2Workflow.notification,
       stage2Pdf: {
         ...stage2Pdf,
-        downloadUrl:
-          stage2Pdf.status === "GENERATED"
-            ? `${fieldPdfRouteBase}/download`
-            : null,
-        previewUrl:
-          stage2Pdf.status === "GENERATED"
-            ? `${fieldPdfRouteBase}/preview`
-            : null
+        downloadUrl: stage2Pdf.status === "GENERATED" ? `${fieldPdfRouteBase}/download` : null,
+        previewUrl: stage2Pdf.status === "GENERATED" ? `${fieldPdfRouteBase}/preview` : null
       }
     };
   }
 
-  private async getFieldStage2WorkflowProjection(
-    workOrder: WorkOrderRecord
-  ) {
+  private async getFieldStage2WorkflowProjection(workOrder: WorkOrderRecord) {
     const handover = await this.findStage2HandoverForWorkOrder(workOrder);
     const handoverRecord = asRecord(handover);
-    const taskModel = (this.prisma as unknown as {
-      contractESignTask?: {
-        findFirst: (
-          args: Prisma.ContractESignTaskFindFirstArgs
-        ) => Promise<null | {
-          id: string;
-          signers: Array<{
-            claimExpiresAt: Date | null;
-            providerTransactionId: string | null;
+    const taskModel = (
+      this.prisma as unknown as {
+        contractESignTask?: {
+          findFirst: (args: Prisma.ContractESignTaskFindFirstArgs) => Promise<null | {
+            id: string;
+            signers: Array<{
+              claimExpiresAt: Date | null;
+              providerTransactionId: string | null;
+            }>;
+            taskStatus: string;
           }>;
-          taskStatus: string;
-        }>;
-      };
-    }).contractESignTask;
-    const notificationModel = (this.prisma as unknown as {
-      vehicleHandoverWorkflowJob?: {
-        findFirst: (
-          args: Prisma.VehicleHandoverWorkflowJobFindFirstArgs
-        ) => Promise<null | { jobStatus: string }>;
-        findMany?: (
-          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
-        ) => Promise<Array<{ jobType: VehicleHandoverWorkflowJobType }>>;
-      };
-    }).vehicleHandoverWorkflowJob;
+        };
+      }
+    ).contractESignTask;
+    const notificationModel = (
+      this.prisma as unknown as {
+        vehicleHandoverWorkflowJob?: {
+          findFirst: (
+            args: Prisma.VehicleHandoverWorkflowJobFindFirstArgs
+          ) => Promise<null | { jobStatus: string }>;
+          findMany?: (
+            args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
+          ) => Promise<Array<{ jobType: VehicleHandoverWorkflowJobType }>>;
+        };
+      }
+    ).vehicleHandoverWorkflowJob;
     const handoverTaskId = handoverRecord
       ? readString(handoverRecord, "handoverESignTaskId")
       : null;
@@ -4954,9 +5038,7 @@ export class HandoverWorkOrderService {
             orderBy: { createdAt: "desc" },
             select: { jobStatus: true },
             where: {
-              jobType:
-                VehicleHandoverWorkflowJobType
-                  .NOTIFY_FIELD_ESIGN_READY,
+              jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_ESIGN_READY,
               workOrderId: workOrder.id
             }
           })
@@ -4979,21 +5061,13 @@ export class HandoverWorkOrderService {
         : Promise.resolve([])
     ]);
     const customerSigner = task?.signers?.[0] ?? null;
-    const customerJobTypes = new Set(
-      customerJobs.map((job) => job.jobType)
-    );
+    const customerJobTypes = new Set(customerJobs.map((job) => job.jobType));
     const finalizationPending = Boolean(
       task?.taskStatus === "WAITING_CUSTOMER" &&
       customerSigner?.providerTransactionId &&
-      (
-        customerSigner.claimExpiresAt ||
-        !customerJobTypes.has(
-          VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY
-        ) ||
-        !customerJobTypes.has(
-          VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE
-        )
-      )
+      (customerSigner.claimExpiresAt ||
+        !customerJobTypes.has(VehicleHandoverWorkflowJobType.NOTIFY_CUSTOMER_ESIGN_READY) ||
+        !customerJobTypes.has(VehicleHandoverWorkflowJobType.RECONCILE_CUSTOMER_SIGNATURE))
     );
     return {
       eSign: {
@@ -5008,31 +5082,30 @@ export class HandoverWorkOrderService {
   }
 
   private async listSafeStage2WorkflowJobs(workOrderId: string) {
-    const model = (this.prisma as unknown as {
-      vehicleHandoverWorkflowJob?: {
-        findMany: (
-          args: Prisma.VehicleHandoverWorkflowJobFindManyArgs
-        ) => Promise<Array<{
-          attemptCount: number;
-          availableAt: Date;
-          createdAt: Date;
-          id: string;
-          jobStatus: string;
-          jobType: string;
-          lastErrorCode: string | null;
-          maxAttempts: number;
-          updatedAt: Date;
-        }>>;
-      };
-    }).vehicleHandoverWorkflowJob;
+    const model = (
+      this.prisma as unknown as {
+        vehicleHandoverWorkflowJob?: {
+          findMany: (args: Prisma.VehicleHandoverWorkflowJobFindManyArgs) => Promise<
+            Array<{
+              attemptCount: number;
+              availableAt: Date;
+              createdAt: Date;
+              id: string;
+              jobStatus: string;
+              jobType: string;
+              lastErrorCode: string | null;
+              maxAttempts: number;
+              updatedAt: Date;
+            }>
+          >;
+        };
+      }
+    ).vehicleHandoverWorkflowJob;
     if (typeof model?.findMany !== "function") {
       return [];
     }
     const jobs = await model.findMany({
-      orderBy: [
-        { updatedAt: "desc" },
-        { createdAt: "desc" }
-      ],
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
       select: {
         attemptCount: true,
         availableAt: true,
@@ -5077,14 +5150,15 @@ export class HandoverWorkOrderService {
       detail?: Record<string, unknown>;
       reviewAttemptId?: string | null;
     },
-    beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>
+    beforeWrite?: (tx: Prisma.TransactionClient) => Promise<void>,
+    isolationLevel: Prisma.TransactionIsolationLevel = Prisma.TransactionIsolationLevel.Serializable
   ) {
-    return this.runSerializableTransaction(async (tx) => {
+    return this.runTransaction(async (tx) => {
       await beforeWrite?.(tx);
       const updated = await this.updateWorkOrderVersioned(workOrder, data, tx);
       await this.recordEvent(updated, eventType, event, tx);
       return updated;
-    });
+    }, isolationLevel);
   }
 
   private async assertDeliveryStartAvailable(
@@ -5116,9 +5190,16 @@ export class HandoverWorkOrderService {
   private async runSerializableTransaction<T>(
     callback: (transaction: Prisma.TransactionClient) => Promise<T>
   ): Promise<T> {
+    return this.runTransaction(callback, Prisma.TransactionIsolationLevel.Serializable);
+  }
+
+  private async runTransaction<T>(
+    callback: (transaction: Prisma.TransactionClient) => Promise<T>,
+    isolationLevel: Prisma.TransactionIsolationLevel
+  ): Promise<T> {
     try {
       return await this.prisma.$transaction(callback, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        isolationLevel
       });
     } catch (error) {
       if (isPrismaSerializationConflict(error)) {
@@ -5131,11 +5212,7 @@ export class HandoverWorkOrderService {
   private async runStage2SourcePdfFinalizationTransaction<T>(
     callback: (transaction: Prisma.TransactionClient) => Promise<T>
   ): Promise<T> {
-    for (
-      let attempt = 1;
-      attempt <= STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS;
-      attempt += 1
-    ) {
+    for (let attempt = 1; attempt <= STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS; attempt += 1) {
       try {
         return await this.prisma.$transaction(callback, {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable
@@ -5144,9 +5221,7 @@ export class HandoverWorkOrderService {
         if (!isPrismaSerializationConflict(error)) {
           throw error;
         }
-        if (
-          attempt === STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS
-        ) {
+        if (attempt === STAGE2_SOURCE_PDF_FINALIZATION_ATTEMPTS) {
           throw new Stage2SourcePdfClaimLostError();
         }
       }
@@ -5218,7 +5293,10 @@ function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
   } else if (typeof workOrder.handoverMileageKm !== "number" || workOrder.handoverMileageKm <= 0) {
     reasons.push("交付里程不合法。");
   }
-  if (!normalizeOptionalText(workOrder.energyLevelText) && !normalizeOptionalText(workOrder.fuelLevelText)) {
+  if (
+    !normalizeOptionalText(workOrder.energyLevelText) &&
+    !normalizeOptionalText(workOrder.fuelLevelText)
+  ) {
     reasons.push("请填写能源/油量状态。");
   }
   if (!hasAccessoryChecklist(workOrder.accessoryChecklist)) {
@@ -5271,10 +5349,10 @@ function compareProjectedFieldWorkOrders(
   if (leftEnded && rightEnded) {
     const leftCompletedAt = left.item.completedAt
       ? Date.parse(left.item.completedAt)
-      : left.workOrder.updatedAt?.getTime() ?? 0;
+      : (left.workOrder.updatedAt?.getTime() ?? 0);
     const rightCompletedAt = right.item.completedAt
       ? Date.parse(right.item.completedAt)
-      : right.workOrder.updatedAt?.getTime() ?? 0;
+      : (right.workOrder.updatedAt?.getTime() ?? 0);
     if (leftCompletedAt !== rightCompletedAt) {
       return rightCompletedAt - leftCompletedAt;
     }
@@ -5293,10 +5371,8 @@ function compareProjectedFieldWorkOrders(
     return rightCreated - leftCreated;
   }
 
-  const leftScheduled =
-    left.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
-  const rightScheduled =
-    right.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const leftScheduled = left.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+  const rightScheduled = right.workOrder.scheduledAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
   if (leftScheduled !== rightScheduled) {
     return leftScheduled - rightScheduled;
   }
@@ -5313,8 +5389,9 @@ function summarizeEvidenceChecklist(checklist: unknown) {
     const status = readString(item, "status");
     return getFileCount(item) > 0 || Boolean(status && status !== "NOT_STARTED");
   }).length;
-  const approved = items.filter((item) =>
-    readString(item, "status") === "APPROVED" || readString(item, "reviewStatus") === "APPROVED"
+  const approved = items.filter(
+    (item) =>
+      readString(item, "status") === "APPROVED" || readString(item, "reviewStatus") === "APPROVED"
   ).length;
   return {
     approved,
@@ -5366,7 +5443,10 @@ function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
   const previewAvailable = isPreviewableEvidenceMime(mimeType);
   return {
     displayName,
-    downloadUrl: routeBase && evidenceFileId ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/download` : null,
+    downloadUrl:
+      routeBase && evidenceFileId
+        ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/download`
+        : null,
     evidenceFileId,
     file: linkedFile
       ? {
@@ -5381,11 +5461,15 @@ function toSafeEvidenceFile(file: Record<string, unknown>, routeBase?: string) {
     lifecycleStatus: readString(file, "lifecycleStatus"),
     mimeType,
     mediaType,
-    metadata: mediaType === "VIDEO"
-      ? toSafeEvidenceVideoQualityMetadata(readUnknown(file, "metadata"))
-      : null,
+    metadata:
+      mediaType === "VIDEO"
+        ? toSafeEvidenceVideoQualityMetadata(readUnknown(file, "metadata"))
+        : null,
     previewAvailable,
-    previewUrl: routeBase && evidenceFileId && previewAvailable ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/preview` : null,
+    previewUrl:
+      routeBase && evidenceFileId && previewAvailable
+        ? `${routeBase}/${encodeURIComponent(evidenceFileId)}/preview`
+        : null,
     sizeBytes,
     uploadedAt: readUnknown(file, "uploadedAt")
   };
@@ -5410,9 +5494,7 @@ function toSafeEvidenceVideoQualityMetadata(metadata: unknown) {
 }
 
 function toPositiveSafeInteger(value: unknown) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function getChecklistItems(checklist: unknown) {
@@ -5460,7 +5542,9 @@ function readNullableBoolean(record: Record<string, unknown>, key: string) {
 function readStringArray(value: unknown, key: string) {
   const record = asRecord(value);
   const entry = record?.[key];
-  return Array.isArray(entry) ? entry.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(entry)
+    ? entry.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function readUnknown(record: Record<string, unknown>, key: string) {
@@ -5485,7 +5569,11 @@ function uniqueStrings(values: unknown) {
   if (!Array.isArray(values)) {
     return [];
   }
-  return Array.from(new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0)));
+  return Array.from(
+    new Set(
+      values.filter((value): value is string => typeof value === "string" && value.length > 0)
+    )
+  );
 }
 
 function uniqueFieldFactKeys(values: unknown): HandoverFieldFactKey[] {
@@ -5510,10 +5598,13 @@ function evidenceItemFingerprintMap(snapshot: unknown) {
         mediaType: readString(file, "mediaType")
       }))
       .sort((left, right) => stableSerialize(left).localeCompare(stableSerialize(right)));
-    map.set(itemId, stableSerialize({
-      declaredNoDamage: readNullableBoolean(item, "declaredNoDamage"),
-      files
-    }));
+    map.set(
+      itemId,
+      stableSerialize({
+        declaredNoDamage: readNullableBoolean(item, "declaredNoDamage"),
+        files
+      })
+    );
   }
   return map;
 }
@@ -5545,7 +5636,10 @@ function stableSerialize(value: unknown): string {
     return `[${value.map(stableSerialize).join(",")}]`;
   }
   if (isPlainObject(value)) {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(",")}}`;
   }
   return JSON.stringify(value) ?? "undefined";
 }
@@ -5563,7 +5657,10 @@ function toObjectionView(workOrder: WorkOrderRecord) {
   };
 }
 
-function toAdminReviewView(workOrder: WorkOrderRecord, reviewAttempts: Array<Record<string, unknown>>) {
+function toAdminReviewView(
+  workOrder: WorkOrderRecord,
+  reviewAttempts: Array<Record<string, unknown>>
+) {
   const status = getHandoverReviewAdminStatus(workOrder);
   return {
     canAcknowledge:
@@ -5575,7 +5672,10 @@ function toAdminReviewView(workOrder: WorkOrderRecord, reviewAttempts: Array<Rec
     canSendBackToCustomerReview:
       (workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt)) &&
       status === ADMIN_REVIEW_STATUS_RESUBMITTED_PENDING_ADMIN,
-    currentAttemptNo: reviewAttempts.length > 0 ? toNumberOrNull(reviewAttempts[reviewAttempts.length - 1]?.attemptNo) : null,
+    currentAttemptNo:
+      reviewAttempts.length > 0
+        ? toNumberOrNull(reviewAttempts[reviewAttempts.length - 1]?.attemptNo)
+        : null,
     status,
     totalAttempts: reviewAttempts.length
   };
@@ -5590,7 +5690,10 @@ function toFieldReviewContext(
     return null;
   }
   const metadata = asRecord(latestAttempt.metadata);
-  const requestedEvidenceItemIds = readStringArray(metadata, "resubmissionRequestedEvidenceItemIds");
+  const requestedEvidenceItemIds = readStringArray(
+    metadata,
+    "resubmissionRequestedEvidenceItemIds"
+  );
   const requestedFieldKeys = readStringArray(metadata, "resubmissionRequestedFieldKeys");
   const titleById = new Map(
     getChecklistItems(checklist)
@@ -5603,7 +5706,9 @@ function toFieldReviewContext(
     attemptNo: toNumberOrNull(latestAttempt.attemptNo),
     customerObjectionDetails: readNullableString(latestAttempt, "customerObjectionDetails"),
     customerObjectionReason:
-      readNullableString(latestAttempt, "customerObjectionReason") ?? workOrder.customerObjectionReason ?? null,
+      readNullableString(latestAttempt, "customerObjectionReason") ??
+      workOrder.customerObjectionReason ??
+      null,
     requestedEvidenceItems: requestedEvidenceItemIds.map((itemId) => ({
       id: itemId,
       title: titleById.get(itemId) ?? "现场资料"
@@ -5630,7 +5735,10 @@ function toSafeReviewAttempt(attempt: Record<string, unknown>) {
     fieldFactsSnapshot: readUnknown(attempt, "fieldFactsSnapshot"),
     id: readString(attempt, "id"),
     resubmissionChangeSummary: metadata?.resubmissionChangeSummary ?? null,
-    resubmissionRequestedEvidenceItemIds: readStringArray(metadata, "resubmissionRequestedEvidenceItemIds"),
+    resubmissionRequestedEvidenceItemIds: readStringArray(
+      metadata,
+      "resubmissionRequestedEvidenceItemIds"
+    ),
     resubmissionRequestedFieldKeys: readStringArray(metadata, "resubmissionRequestedFieldKeys"),
     resubmissionRequestedAt: readUnknown(attempt, "resubmissionRequestedAt"),
     sentBackToCustomerReviewAt: readUnknown(attempt, "sentBackToCustomerReviewAt"),
@@ -5692,12 +5800,18 @@ function toDateOrNull(value: unknown) {
   return null;
 }
 
-function isTerminalWorkOrderStatus(status: unknown): status is typeof TERMINAL_WORK_ORDER_STATUSES[number] {
-  return TERMINAL_WORK_ORDER_STATUSES.includes(status as typeof TERMINAL_WORK_ORDER_STATUSES[number]);
+function isTerminalWorkOrderStatus(
+  status: unknown
+): status is (typeof TERMINAL_WORK_ORDER_STATUSES)[number] {
+  return TERMINAL_WORK_ORDER_STATUSES.includes(
+    status as (typeof TERMINAL_WORK_ORDER_STATUSES)[number]
+  );
 }
 
-function isReadyForStage2Status(status: unknown): status is typeof READY_FOR_STAGE2_STATUSES[number] {
-  return READY_FOR_STAGE2_STATUSES.includes(status as typeof READY_FOR_STAGE2_STATUSES[number]);
+function isReadyForStage2Status(
+  status: unknown
+): status is (typeof READY_FOR_STAGE2_STATUSES)[number] {
+  return READY_FOR_STAGE2_STATUSES.includes(status as (typeof READY_FOR_STAGE2_STATUSES)[number]);
 }
 
 function assertCanMarkOpsReviewPending(workOrder: WorkOrderRecord) {
@@ -5712,9 +5826,7 @@ function assertCanMarkOpsReviewPending(workOrder: WorkOrderRecord) {
   }
 }
 
-function assertCanReconcileArchivedStage2Evidence(
-  workOrder: WorkOrderRecord
-) {
+function assertCanReconcileArchivedStage2Evidence(workOrder: WorkOrderRecord) {
   if (isTerminalWorkOrderStatus(workOrder.status)) {
     throw new BadRequestException("交付工单已终止，不能收敛归档证据。");
   }
@@ -5828,9 +5940,7 @@ async function calculateReadableSha256(stream: Readable, maxBytes: number) {
     sizeBytes += buffer.length;
     if (sizeBytes > maxBytes) {
       stream.destroy();
-      throw new ConflictException(
-        "The persisted Stage 2 source PDF exceeds the size limit."
-      );
+      throw new ConflictException("The persisted Stage 2 source PDF exceeds the size limit.");
     }
     hash.update(buffer);
   }
@@ -5841,7 +5951,10 @@ async function calculateReadableSha256(stream: Readable, maxBytes: number) {
 }
 
 function requireSha256Digest(value: string) {
-  const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
+  const digest = value
+    .trim()
+    .toLowerCase()
+    .replace(/^sha256:/, "");
   if (!/^[0-9a-f]{64}$/.test(digest)) {
     throw new Error("STAGE2_HANDOVER_MANIFEST_HASH_INVALID");
   }
@@ -5852,7 +5965,10 @@ function normalizeSha256Digest(value: unknown) {
   if (typeof value !== "string") {
     return null;
   }
-  const digest = value.trim().toLowerCase().replace(/^sha256:/, "");
+  const digest = value
+    .trim()
+    .toLowerCase()
+    .replace(/^sha256:/, "");
   return /^[0-9a-f]{64}$/.test(digest) ? digest : null;
 }
 
@@ -5863,8 +5979,7 @@ function buildStage2PdfArtifactIdentity(
   rendererVersion: number
 ) {
   const identity =
-    `${workOrder.id}:${artifactVersion}:renderer-${rendererVersion}:` +
-    manifestDigest;
+    `${workOrder.id}:${artifactVersion}:renderer-${rendererVersion}:` + manifestDigest;
   return {
     contractId: deterministicUuid(`stage2-contract:${identity}`)
   };
@@ -5876,20 +5991,15 @@ function buildStage2PdfStoredIdentity(
   sourcePdfHash: string
 ) {
   return {
-    fileObjectId: deterministicUuid(
-      `stage2-file:${contractId}:${sourcePdfHash}`
-    ),
-    objectKey:
-      `contracts/${contractId}/generated/handover-v${artifactVersion}-${sourcePdfHash}.pdf`
+    fileObjectId: deterministicUuid(`stage2-file:${contractId}:${sourcePdfHash}`),
+    objectKey: `contracts/${contractId}/generated/handover-v${artifactVersion}-${sourcePdfHash}.pdf`
   };
 }
 
 function deterministicUuid(value: string) {
   const hex = createHash("sha256").update(value, "utf8").digest("hex").slice(0, 32);
   const versioned = `${hex.slice(0, 12)}5${hex.slice(13)}`;
-  const variant = (
-    (Number.parseInt(versioned[16]!, 16) & 0x3) | 0x8
-  ).toString(16);
+  const variant = ((Number.parseInt(versioned[16]!, 16) & 0x3) | 0x8).toString(16);
   const normalized = `${versioned.slice(0, 16)}${variant}${versioned.slice(17)}`;
   return [
     normalized.slice(0, 8),
@@ -5901,18 +6011,14 @@ function deterministicUuid(value: string) {
 }
 
 async function readStage2DatabaseNow(tx: Prisma.TransactionClient) {
-  const [row] = await tx.$queryRaw<Array<{ now: Date }>>(
-    Prisma.sql`SELECT now() AS "now"`
-  );
+  const [row] = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`SELECT now() AS "now"`);
   if (!row?.now) {
     throw new Error("STAGE2_SOURCE_PDF_RESERVATION_TIME_UNAVAILABLE");
   }
   return row.now;
 }
 
-function readStage2SourcePdfReservation(
-  value: unknown
-): Stage2SourcePdfReservation | null {
+function readStage2SourcePdfReservation(value: unknown): Stage2SourcePdfReservation | null {
   const record = asRecord(value);
   if (!record) {
     return null;
@@ -5931,9 +6037,7 @@ function readStage2SourcePdfReservation(
     !manifestHash ||
     !templateId
   ) {
-    throw new ConflictException(
-      "The persisted Stage 2 source PDF reservation is invalid."
-    );
+    throw new ConflictException("The persisted Stage 2 source PDF reservation is invalid.");
   }
   return {
     artifactVersion,
@@ -5949,10 +6053,7 @@ function createReservedStage2ContractNo(contractId: string) {
   return `HDV-${contractId.replaceAll("-", "").toLowerCase()}`;
 }
 
-function sameStage2SourceBinding(
-  left: Record<string, unknown>,
-  right: Record<string, unknown>
-) {
+function sameStage2SourceBinding(left: Record<string, unknown>, right: Record<string, unknown>) {
   return [
     "artifactVersion",
     "handoverContractId",
@@ -5965,15 +6066,10 @@ function sameStage2SourceBinding(
 
 function readPositiveInteger(record: Record<string, unknown>, key: string) {
   const value = record[key];
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-function readRequiredPositiveInteger(
-  record: Record<string, unknown>,
-  key: string
-) {
+function readRequiredPositiveInteger(record: Record<string, unknown>, key: string) {
   const value = readPositiveInteger(record, key);
   if (value === null) {
     throw new ConflictException(`Invalid Stage 2 artifact ${key}.`);
@@ -6046,15 +6142,14 @@ async function writeStreamToBoundedFile(
 }
 
 function sanitizeTempEvidenceFileName(value: null | string) {
-  const extension = path.extname(value ?? "").replace(/[^\w.]+/g, "").slice(0, 12);
+  const extension = path
+    .extname(value ?? "")
+    .replace(/[^\w.]+/g, "")
+    .slice(0, 12);
   return `source${extension && extension !== "." ? extension : ".bin"}`;
 }
 
-function isEvidenceArtifactMetadataReady(
-  value: unknown,
-  mediaType: string,
-  evidenceType: string
-) {
+function isEvidenceArtifactMetadataReady(value: unknown, mediaType: string, evidenceType: string) {
   const metadata = asRecord(value);
   if (
     metadata?.processingStatus !== "READY" ||
@@ -6067,8 +6162,8 @@ function isEvidenceArtifactMetadataReady(
     return Boolean(readString(metadata, "photoPreviewFileId"));
   }
   const frameIds = Array.isArray(metadata.videoFrameFileIds)
-    ? metadata.videoFrameFileIds.filter((entry): entry is string =>
-        typeof entry === "string" && Boolean(entry.trim())
+    ? metadata.videoFrameFileIds.filter(
+        (entry): entry is string => typeof entry === "string" && Boolean(entry.trim())
       )
     : [];
   return frameIds.length === (evidenceType === "WALKAROUND_VIDEO" ? 4 : 2);
@@ -6084,8 +6179,8 @@ function getEvidenceArtifactDerivativeFileIds(value: unknown, mediaType: string)
     return photoPreviewFileId ? [photoPreviewFileId] : [];
   }
   return Array.isArray(metadata?.videoFrameFileIds)
-    ? metadata.videoFrameFileIds.filter((entry): entry is string =>
-        typeof entry === "string" && Boolean(entry.trim())
+    ? metadata.videoFrameFileIds.filter(
+        (entry): entry is string => typeof entry === "string" && Boolean(entry.trim())
       )
     : [];
 }

@@ -242,13 +242,20 @@ WITH expected_role(role_code) AS (
     ('RC', 'vehicle_cost_ledger:view'),
     ('RC', 'business_exception:view'),
     ('RC', 'business_exception:request')
-), actual_grant AS (
+), actual_stage1c_c_permission AS (
+  SELECT permission.code, permission.name, permission.module, permission.action,
+    permission.status::text AS status, permission.deleted_at
+  FROM permission
+  WHERE permission.module IN ('vehicle_cost_ledger', 'business_exception')
+     OR permission.code LIKE 'vehicle_cost_ledger:%'
+     OR permission.code LIKE 'business_exception:%'
+), actual_relevant_grant AS (
   SELECT role.code::text AS role_code, permission.code AS permission_code
   FROM role_permission AS grant_row
   JOIN "role" AS role ON role.id = grant_row.role_id
   JOIN permission ON permission.id = grant_row.permission_id
-  JOIN expected_role ON expected_role.role_code = role.code::text
-  JOIN all_stage1c_permission ON all_stage1c_permission.code = permission.code
+  WHERE permission.code IN (SELECT code FROM all_stage1c_permission)
+     OR permission.code IN (SELECT code FROM actual_stage1c_c_permission)
 ), matrix_cell AS (
   SELECT
     role.role_code,
@@ -260,7 +267,7 @@ WITH expected_role(role_code) AS (
   LEFT JOIN expected_grant AS expected
     ON expected.role_code = role.role_code
    AND expected.permission_code = permission.code
-  LEFT JOIN actual_grant AS actual
+  LEFT JOIN actual_relevant_grant AS actual
     ON actual.role_code = role.role_code
    AND actual.permission_code = permission.code
 ), anomaly AS (
@@ -274,6 +281,27 @@ WITH expected_role(role_code) AS (
   WHERE actual.id IS NULL
      OR actual.status::text IS DISTINCT FROM 'ACTIVE'
      OR actual.deleted_at IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    'UNEXPECTED_PERMISSION_DEFINITION',
+    NULL,
+    actual.code,
+    'unexpected module/namespace permission; active/inactive/deleted all block'
+  FROM actual_stage1c_c_permission AS actual
+  LEFT JOIN stage1c_c_permission_definition AS expected ON expected.code = actual.code
+  WHERE expected.code IS NULL
+
+  UNION ALL
+
+  SELECT
+    'PERMISSION_DEFINITION_COUNT',
+    NULL,
+    NULL,
+    'expected=6,actual=' || COUNT(*)::text
+  FROM actual_stage1c_c_permission
+  HAVING COUNT(*) <> 6
 
   UNION ALL
 
@@ -304,11 +332,25 @@ WITH expected_role(role_code) AS (
   UNION ALL
 
   SELECT
+    'UNEXPECTED_ROLE_PERMISSION',
+    actual.role_code,
+    actual.permission_code,
+    'grant is outside the exact 54-grant matrix'
+  FROM actual_relevant_grant AS actual
+  LEFT JOIN expected_grant AS expected
+    ON expected.role_code = actual.role_code
+   AND expected.permission_code = actual.permission_code
+  WHERE expected.role_code IS NULL
+
+  UNION ALL
+
+  SELECT
     'MATRIX_CONTRACT',
     NULL,
     NULL,
-    'expected grant count is not 54'
+    'expected=54,actual=' || (SELECT COUNT(*) FROM actual_relevant_grant)::text
   WHERE (SELECT COUNT(*) FROM expected_grant) <> 54
+     OR (SELECT COUNT(*) FROM actual_relevant_grant) <> 54
 )
 SELECT anomaly_kind, role_code, permission_code, detail
 FROM anomaly
@@ -318,16 +360,18 @@ COMMIT;
 
 ## 4. API、source、replay 与 redaction contract
 
-公开 API 精确为：
+公开 API 的 verb/path/permission 精确 inventory 为：
 
-- `POST /asset-accounting/cost-entries`
-- `POST /asset-accounting/cost-entries/:id/reverse`
-- `GET /asset-accounting/cost-entries/:id`
-- `GET /asset-accounting/vehicles/:vehicleId/cost-entries`
-- `GET /asset-accounting/orders/:orderId/cost-summary`
-- `GET /asset-accounting/work-orders/:workOrderId/cost-summary`
-- `GET /asset-accounting/exception-approvals/:id`
-- `GET /asset-accounting/exception-approvals`
+| verb | path                                                      | permission                    |
+| ---- | --------------------------------------------------------- | ----------------------------- |
+| POST | `/asset-accounting/cost-entries`                          | `vehicle_cost_ledger:confirm` |
+| POST | `/asset-accounting/cost-entries/:id/reverse`              | `vehicle_cost_ledger:reverse` |
+| GET  | `/asset-accounting/cost-entries/:id`                      | `vehicle_cost_ledger:view`    |
+| GET  | `/asset-accounting/vehicles/:vehicleId/cost-entries`      | `vehicle_cost_ledger:view`    |
+| GET  | `/asset-accounting/orders/:orderId/cost-entries`          | `vehicle_cost_ledger:view`    |
+| GET  | `/asset-accounting/work-orders/:workOrderId/cost-entries` | `vehicle_cost_ledger:view`    |
+| GET  | `/asset-accounting/exception-approvals/:id`               | `business_exception:view`     |
+| GET  | `/asset-accounting/exception-approvals`                   | `business_exception:view`     |
 
 没有 public approval mutation endpoint；审批 request/decide/expire/require-current 只能由 owning workflow 在
 同一 caller-owned `READ COMMITTED` transaction 中调用 service。只接受 server-side authority resolver。
@@ -376,8 +420,9 @@ ADMIN 也不能绕过。决定使用 `expectedVersion` CAS；合法状态仅为
 
 以下查询预期零行。它绑定 `current_schema()`，要求四个 trigger 的 table/function/schema、完整规范化定义、
 `tgtype`、普通启用状态、空 `tgattr` 和空 `tgqual` 精确一致；要求三个函数完整正文（包括固定
-`search_path`）、11 个 validated CHECK 和 15 个 valid/ready index 精确一致。仅同名、错误 schema、
-disabled trigger、`UPDATE OF` 缩窄、额外 `WHEN`、无效 index 或部分函数正文都阻断。
+`search_path`）、11 个 validated CHECK、Task 1 全部 15 个 validated FK（名称、本地列、引用表/列、
+`ON DELETE RESTRICT`）和 15 个 valid/ready index 精确一致。仅同名、错误 schema、disabled trigger、
+`UPDATE OF` 缩窄、额外 `WHEN`、无效 FK/index 或部分函数正文都阻断。
 
 <!-- stage1c-accounting-sql:03-database-catalog -->
 
@@ -557,6 +602,26 @@ $definition$)
     table_name, constraint_name,
     btrim(regexp_replace(constraint_definition, '\s+', ' ', 'g')) AS normalized_definition
   FROM expected_constraint_raw
+), expected_foreign_key(
+  constraint_name, table_name, local_columns,
+  referenced_table, referenced_columns, confdeltype
+) AS (
+  VALUES
+    ('vehicle_cost_ledger_entry_vehicle_id_fkey', 'vehicle_cost_ledger_entry', 'vehicle_id', 'vehicle', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_order_id_fkey', 'vehicle_cost_ledger_entry', 'order_id', 'subscription_order', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_contract_id_fkey', 'vehicle_cost_ledger_entry', 'contract_id', 'contract', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_customer_id_fkey', 'vehicle_cost_ledger_entry', 'customer_id', 'customer', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_asset_owner_id_fkey', 'vehicle_cost_ledger_entry', 'asset_owner_id', 'asset_owner', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_work_order_id_fkey', 'vehicle_cost_ledger_entry', 'work_order_id', 'asset_work_order', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_evidence_id_fkey', 'vehicle_cost_ledger_entry', 'evidence_id', 'asset_work_order_evidence', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_confirmed_by_fkey', 'vehicle_cost_ledger_entry', 'confirmed_by', 'user', 'id', 'r'),
+    ('vehicle_cost_ledger_entry_reversal_of_entry_id_fkey', 'vehicle_cost_ledger_entry', 'reversal_of_entry_id', 'vehicle_cost_ledger_entry', 'id', 'r'),
+    ('business_exception_approval_requested_by_fkey', 'business_exception_approval', 'requested_by', 'user', 'id', 'r'),
+    ('business_exception_approval_decided_by_fkey', 'business_exception_approval', 'decided_by', 'user', 'id', 'r'),
+    ('business_exception_approval_expired_by_fkey', 'business_exception_approval', 'expired_by', 'user', 'id', 'r'),
+    ('asset_accounting_command_receipt_cost_entry_id_fkey', 'asset_accounting_command_receipt', 'cost_entry_id', 'vehicle_cost_ledger_entry', 'id', 'r'),
+    ('asset_accounting_command_receipt_approval_id_fkey', 'asset_accounting_command_receipt', 'approval_id', 'business_exception_approval', 'id', 'r'),
+    ('asset_accounting_command_receipt_actor_id_fkey', 'asset_accounting_command_receipt', 'actor_id', 'user', 'id', 'r')
 ), expected_index_raw(table_name, index_name, expected_unique, index_definition) AS (
   VALUES
     ('vehicle_cost_ledger_entry', 'vehicle_cost_ledger_entry_vehicle_occurred_on_idx', false,
@@ -643,6 +708,35 @@ $definition$)
   JOIN pg_class AS table_name ON table_name.oid = constraint_name.conrelid
   JOIN pg_namespace AS namespace ON namespace.oid = table_name.relnamespace
   WHERE constraint_name.contype = 'c'
+), actual_foreign_key AS (
+  SELECT
+    table_namespace.nspname AS table_schema,
+    table_name.relname AS table_name,
+    foreign_constraint.conname AS constraint_name,
+    array_to_string(ARRAY(
+      SELECT attribute.attname
+      FROM unnest(foreign_constraint.conkey) WITH ORDINALITY AS key(attnum, position)
+      JOIN pg_attribute AS attribute
+        ON attribute.attrelid = foreign_constraint.conrelid
+       AND attribute.attnum = key.attnum
+      ORDER BY key.position
+    ), ',') AS local_columns,
+    referenced_table.relname AS referenced_table,
+    array_to_string(ARRAY(
+      SELECT attribute.attname
+      FROM unnest(foreign_constraint.confkey) WITH ORDINALITY AS key(attnum, position)
+      JOIN pg_attribute AS attribute
+        ON attribute.attrelid = foreign_constraint.confrelid
+       AND attribute.attnum = key.attnum
+      ORDER BY key.position
+    ), ',') AS referenced_columns,
+    foreign_constraint.confdeltype,
+    foreign_constraint.convalidated
+  FROM pg_constraint AS foreign_constraint
+  JOIN pg_class AS table_name ON table_name.oid = foreign_constraint.conrelid
+  JOIN pg_namespace AS table_namespace ON table_namespace.oid = table_name.relnamespace
+  JOIN pg_class AS referenced_table ON referenced_table.oid = foreign_constraint.confrelid
+  WHERE foreign_constraint.contype = 'f'
 ), actual_index AS (
   SELECT
     table_namespace.nspname AS table_schema,
@@ -717,6 +811,47 @@ $definition$)
          OR actual.normalized_definition IS DISTINCT FROM expected.normalized_definition
        )
      )
+), foreign_key_anomaly AS (
+  SELECT
+    'FOREIGN_KEY'::text AS object_kind,
+    expected.table_name,
+    expected.constraint_name AS object_name
+  FROM expected_foreign_key AS expected
+  LEFT JOIN actual_foreign_key AS foreign_key
+    ON foreign_key.table_name = expected.table_name
+   AND foreign_key.constraint_name = expected.constraint_name
+  GROUP BY expected.table_name, expected.constraint_name, expected.local_columns,
+    expected.referenced_table, expected.referenced_columns, expected.confdeltype
+  HAVING COUNT(*) FILTER (WHERE foreign_key.table_schema = current_schema()) <> 1
+     OR COUNT(*) FILTER (WHERE foreign_key.table_schema <> current_schema()) > 0
+     OR BOOL_OR(
+       foreign_key.table_schema = current_schema()
+       AND (
+         foreign_key.local_columns IS DISTINCT FROM expected.local_columns
+         OR foreign_key.referenced_table IS DISTINCT FROM expected.referenced_table
+         OR foreign_key.referenced_columns IS DISTINCT FROM expected.referenced_columns
+         OR foreign_key.confdeltype IS DISTINCT FROM expected.confdeltype::"char"
+         OR foreign_key.convalidated IS NOT TRUE
+       )
+     )
+
+  UNION ALL
+
+  SELECT
+    'UNEXPECTED_FOREIGN_KEY',
+    foreign_key.table_name,
+    foreign_key.constraint_name
+  FROM actual_foreign_key AS foreign_key
+  LEFT JOIN expected_foreign_key AS expected
+    ON expected.table_name = foreign_key.table_name
+   AND expected.constraint_name = foreign_key.constraint_name
+  WHERE foreign_key.table_schema = current_schema()
+    AND foreign_key.table_name IN (
+      'vehicle_cost_ledger_entry',
+      'business_exception_approval',
+      'asset_accounting_command_receipt'
+    )
+    AND expected.constraint_name IS NULL
 ), index_anomaly AS (
   SELECT
     'INDEX'::text AS object_kind,
@@ -746,6 +881,8 @@ SELECT * FROM function_anomaly
 UNION ALL
 SELECT * FROM constraint_anomaly
 UNION ALL
+SELECT * FROM foreign_key_anomaly
+UNION ALL
 SELECT * FROM index_anomaly
 ORDER BY object_kind, table_name, object_name;
 COMMIT;
@@ -753,9 +890,12 @@ COMMIT;
 
 ## 8. receipt uniqueness、target、event kind 与 source pairing
 
-每个 source tuple 只能有一个 receipt。成本 entry 必须恰有一个正确 command/target/source receipt；审批必须
-恰有一个 request receipt，且终态 receipt 数量与状态路径精确一致。decision/expiry 的 source 由第 11 节
-AuditLog 配对验证，不回写 request source。以下查询预期零行：
+每个 source tuple 只能有一个 receipt。成本 entry 必须恰有一个正确 command/target/source receipt，且
+outcome 的全部 public 字段、confirmed/source identity、target id 与 immutable row 精确一致，actor 必须是
+confirmer。审批 request/decide/expire receipt 的完整内部 outcome、精确 version/status、immutable request、
+decision/expiry facts 与命令生命周期匹配；actor 分别绑定 requester/decider/expirer，并支持
+APPROVED 后 EXPIRED。审批必须恰有一个 request receipt，且终态 receipt 数量与状态路径精确一致。
+decision/expiry 的 source 由第 11 节 AuditLog 配对验证，不回写 request source。以下查询预期零行：
 
 <!-- stage1c-accounting-sql:04-receipt-integrity -->
 
@@ -766,17 +906,126 @@ WITH duplicate_source AS (
   FROM asset_accounting_command_receipt
   GROUP BY source_type, source_id, source_key
   HAVING COUNT(*) <> 1
+), cost_target AS (
+  SELECT entry.*,
+    jsonb_build_object(
+      'actionType', entry.action_type::text,
+      'accountingPeriod', entry.accounting_period,
+      'amountCents', entry.amount_cents::text,
+      'assetOwnerId', entry.asset_owner_id,
+      'assetOwnerSnapshot', entry.asset_owner_snapshot,
+      'confirmedAt', to_char(
+        entry.confirmed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ),
+      'confirmedBy', entry.confirmed_by,
+      'contractId', entry.contract_id,
+      'costCategory', entry.cost_category::text,
+      'customerId', entry.customer_id,
+      'entryKind', entry.entry_kind::text,
+      'evidenceId', entry.evidence_id,
+      'evidenceSnapshot', entry.evidence_snapshot,
+      'id', entry.id,
+      'occurredOn', to_char(entry.occurred_on, 'YYYY-MM-DD') || 'T00:00:00.000Z',
+      'orderId', entry.order_id,
+      'responsiblePartyId', entry.responsible_party_id,
+      'responsiblePartyType', entry.responsible_party_type::text,
+      'responsibilitySnapshot', entry.responsibility_snapshot,
+      'reversalOfEntryId', entry.reversal_of_entry_id,
+      'sourceId', entry.source_id,
+      'sourceKey', entry.source_key,
+      'sourceType', entry.source_type,
+      'vehicleId', entry.vehicle_id,
+      'workOrderId', entry.work_order_id
+    ) AS expected_outcome
+  FROM vehicle_cost_ledger_entry AS entry
+), approval_target AS (
+  SELECT approval.*,
+    jsonb_build_object(
+      'approvalNo', approval.approval_no,
+      'decidedAt', CASE WHEN approval.decided_at IS NULL THEN NULL ELSE to_char(
+        approval.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ) END,
+      'decidedBy', approval.decided_by,
+      'decision', approval.decision::text,
+      'decisionComment', approval.decision_comment,
+      'exceptionType', approval.exception_type::text,
+      'expiredAt', CASE WHEN approval.expired_at IS NULL THEN NULL ELSE to_char(
+        approval.expired_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ) END,
+      'expiredBy', approval.expired_by,
+      'expiryReason', approval.expiry_reason,
+      'id', approval.id,
+      'requestEvidenceSnapshot', approval.request_evidence_snapshot,
+      'requestReason', approval.request_reason,
+      'requestedAt', to_char(
+        approval.requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ),
+      'requestedBy', approval.requested_by,
+      'requestSourceId', approval.request_source_id,
+      'requestSourceKey', approval.request_source_key,
+      'requestSourceType', approval.request_source_type,
+      'status', approval.status::text,
+      'subjectField', approval.subject_field,
+      'subjectId', approval.subject_id,
+      'subjectSnapshot', approval.subject_snapshot,
+      'subjectSnapshotHash', approval.subject_snapshot_hash,
+      'subjectType', approval.subject_type::text,
+      'version', approval.version
+    ) AS current_outcome
+  FROM business_exception_approval AS approval
+), approval_command_target AS (
+  SELECT
+    approval.id AS approval_id,
+    'EXCEPTION_REQUEST'::text AS command_type,
+    approval.requested_by AS expected_actor_id,
+    approval.current_outcome || jsonb_build_object(
+      'decidedAt', NULL, 'decidedBy', NULL, 'decision', NULL, 'decisionComment', NULL,
+      'expiredAt', NULL, 'expiredBy', NULL, 'expiryReason', NULL,
+      'status', 'PENDING', 'version', 0
+    ) AS expected_outcome
+  FROM approval_target AS approval
+
+  UNION ALL
+
+  SELECT
+    approval.id,
+    'EXCEPTION_DECIDE',
+    approval.decided_by,
+    approval.current_outcome || jsonb_build_object(
+      'expiredAt', NULL, 'expiredBy', NULL, 'expiryReason', NULL,
+      'status', approval.decision::text, 'version', 1
+    )
+  FROM approval_target AS approval
+  WHERE approval.decision IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    approval.id,
+    'EXCEPTION_EXPIRE',
+    approval.expired_by,
+    approval.current_outcome
+  FROM approval_target AS approval
+  WHERE approval.status = 'EXPIRED'
 ), receipt_target_anomaly AS (
   SELECT receipt.id AS receipt_id
   FROM asset_accounting_command_receipt AS receipt
-  LEFT JOIN vehicle_cost_ledger_entry AS entry ON entry.id = receipt.cost_entry_id
-  LEFT JOIN business_exception_approval AS approval ON approval.id = receipt.approval_id
+  LEFT JOIN cost_target AS entry ON entry.id = receipt.cost_entry_id
+  LEFT JOIN approval_target AS approval ON approval.id = receipt.approval_id
+  LEFT JOIN approval_command_target AS target
+    ON target.approval_id = receipt.approval_id
+   AND target.command_type = receipt.command_type::text
+  LEFT JOIN "user" AS actor ON actor.id = receipt.actor_id
   WHERE (
       receipt.command_type::text IN ('COST_APPEND', 'COST_REVERSE')
       AND (
         receipt.cost_entry_id IS NULL
         OR receipt.approval_id IS NOT NULL
         OR entry.id IS NULL
+        OR actor.id IS NULL
+        OR receipt.outcome_snapshot ->> 'id' IS DISTINCT FROM entry.id::text
+        OR receipt.outcome_snapshot IS DISTINCT FROM entry.expected_outcome
+        OR receipt.actor_id IS DISTINCT FROM entry.confirmed_by
         OR (receipt.command_type::text = 'COST_APPEND'
           AND entry.entry_kind IS DISTINCT FROM 'ORIGINAL')
         OR (receipt.command_type::text = 'COST_REVERSE'
@@ -794,6 +1043,17 @@ WITH duplicate_source AS (
         receipt.approval_id IS NULL
         OR receipt.cost_entry_id IS NOT NULL
         OR approval.id IS NULL
+        OR actor.id IS NULL
+        OR target.approval_id IS NULL
+        OR receipt.outcome_snapshot ->> 'id' IS DISTINCT FROM approval.id::text
+        OR receipt.outcome_snapshot IS DISTINCT FROM target.expected_outcome
+        OR receipt.actor_id IS DISTINCT FROM target.expected_actor_id
+        OR (receipt.command_type::text = 'EXCEPTION_REQUEST'
+          AND receipt.actor_id IS DISTINCT FROM approval.requested_by)
+        OR (receipt.command_type::text = 'EXCEPTION_DECIDE'
+          AND receipt.actor_id IS DISTINCT FROM approval.decided_by)
+        OR (receipt.command_type::text = 'EXCEPTION_EXPIRE'
+          AND receipt.actor_id IS DISTINCT FROM approval.expired_by)
         OR (receipt.command_type::text = 'EXCEPTION_REQUEST' AND (
           receipt.source_type IS DISTINCT FROM approval.request_source_type
           OR receipt.source_id IS DISTINCT FROM approval.request_source_id
@@ -901,10 +1161,12 @@ ORDER BY anomaly_kind, target_id;
 COMMIT;
 ```
 
-## 9. ledger 只追加、单次冲正与 16 维相等
+## 9. ledger 只追加、authority existence/cross-ID、单次冲正与 16 维相等
 
-以下查询检查 base shape、orphan、单次冲正、金额符号，以及 reversal 对 original 的全部 16 维相等；预期
-零行。append-only trigger 的完整 catalog 身份由第 7 节单独核对。
+以下查询检查 base shape、authority existence、创建时已冻结的 cross-ID、单次冲正、金额符号，以及
+reversal 对 original 的全部 16 维相等；预期零行。这里只核对引用存在和不可变 identity，不把 authority
+后来 soft-delete、状态变化或历史 ownership projection 漂移误报为 orphan。append-only trigger 的完整
+catalog 身份由第 7 节单独核对。
 
 <!-- stage1c-accounting-sql:05-ledger-integrity -->
 
@@ -954,12 +1216,70 @@ WITH reversal_row AS (
      OR (entry.entry_kind = 'REVERSAL' AND (
        entry.amount_cents >= 0 OR entry.reversal_of_entry_id IS NULL
      ))
+), authority_anomaly AS (
+  SELECT entry.id AS entry_id
+  FROM vehicle_cost_ledger_entry AS entry
+  LEFT JOIN vehicle AS vehicle ON vehicle.id = entry.vehicle_id
+  LEFT JOIN subscription_order AS order_row ON order_row.id = entry.order_id
+  LEFT JOIN contract AS contract_row ON contract_row.id = entry.contract_id
+  LEFT JOIN customer AS customer ON customer.id = entry.customer_id
+  LEFT JOIN asset_owner AS owner_row ON owner_row.id = entry.asset_owner_id
+  LEFT JOIN asset_work_order AS work_order ON work_order.id = entry.work_order_id
+  LEFT JOIN asset_work_order_evidence AS evidence ON evidence.id = entry.evidence_id
+  LEFT JOIN "user" AS confirmer ON confirmer.id = entry.confirmed_by
+  LEFT JOIN customer AS responsible_customer
+    ON entry.responsible_party_type = 'CUSTOMER'
+   AND responsible_customer.id = entry.responsible_party_id
+  LEFT JOIN asset_owner AS responsible_owner
+    ON entry.responsible_party_type = 'ASSET_OWNER'
+   AND responsible_owner.id = entry.responsible_party_id
+  WHERE vehicle.id IS NULL
+     OR (entry.order_id IS NOT NULL AND order_row.id IS NULL)
+     OR (entry.contract_id IS NOT NULL AND contract_row.id IS NULL)
+     OR (entry.customer_id IS NOT NULL AND customer.id IS NULL)
+     OR (entry.asset_owner_id IS NOT NULL AND owner_row.id IS NULL)
+     OR (entry.work_order_id IS NOT NULL AND work_order.id IS NULL)
+     OR (entry.evidence_id IS NOT NULL AND evidence.id IS NULL)
+     OR confirmer.id IS NULL
+     OR (entry.responsible_party_type = 'CUSTOMER'
+       AND entry.responsible_party_id IS NOT NULL AND responsible_customer.id IS NULL)
+     OR (entry.responsible_party_type = 'ASSET_OWNER'
+       AND entry.responsible_party_id IS NOT NULL AND responsible_owner.id IS NULL)
+     OR (order_row.id IS NOT NULL
+       AND order_row.vehicle_id IS DISTINCT FROM entry.vehicle_id)
+     OR (order_row.id IS NOT NULL AND entry.customer_id IS NOT NULL
+       AND order_row.customer_id IS DISTINCT FROM entry.customer_id)
+     OR (contract_row.id IS NOT NULL AND entry.order_id IS NOT NULL
+       AND contract_row.order_id IS DISTINCT FROM entry.order_id)
+     OR (contract_row.id IS NOT NULL AND entry.customer_id IS NOT NULL
+       AND contract_row.customer_id IS DISTINCT FROM entry.customer_id)
+     OR (work_order.id IS NOT NULL
+       AND work_order.vehicle_id IS DISTINCT FROM entry.vehicle_id)
+     OR (work_order.id IS NOT NULL AND entry.order_id IS NOT NULL
+       AND work_order.order_id IS DISTINCT FROM entry.order_id)
+     OR (work_order.id IS NOT NULL AND entry.contract_id IS NOT NULL
+       AND work_order.contract_id IS DISTINCT FROM entry.contract_id)
+     OR (work_order.id IS NOT NULL AND entry.customer_id IS NOT NULL
+       AND work_order.customer_id IS DISTINCT FROM entry.customer_id)
+     OR (work_order.id IS NOT NULL AND entry.asset_owner_id IS NOT NULL
+       AND work_order.asset_owner_id IS DISTINCT FROM entry.asset_owner_id)
+     OR (evidence.id IS NOT NULL
+       AND evidence.work_order_id IS DISTINCT FROM entry.work_order_id)
+     OR (entry.responsible_party_type = 'CUSTOMER'
+       AND entry.responsible_party_id IS NOT NULL AND entry.customer_id IS NOT NULL
+       AND entry.responsible_party_id IS DISTINCT FROM entry.customer_id)
+     OR (entry.responsible_party_type = 'ASSET_OWNER'
+       AND entry.responsible_party_id IS NOT NULL AND entry.asset_owner_id IS NOT NULL
+       AND entry.responsible_party_id IS DISTINCT FROM entry.asset_owner_id)
 )
 SELECT 'BASE_SHAPE'::text AS anomaly_kind, entry_id
 FROM base_shape_anomaly
 UNION ALL
 SELECT 'REVERSAL_EQUALITY_OR_ORPHAN', entry_id
 FROM reversal_anomaly
+UNION ALL
+SELECT 'AUTHORITY_ORPHAN_OR_MISMATCH', entry_id
+FROM authority_anomaly
 ORDER BY anomaly_kind, entry_id;
 COMMIT;
 ```
@@ -1041,6 +1361,15 @@ WITH registered_resolver(subject_type, subject_id, subject_field, authoritative_
     WHERE status IN ('PENDING', 'APPROVED')
   ) AS live
   WHERE live_count <> 1
+), approval_actor_anomaly AS (
+  SELECT approval.id AS approval_id
+  FROM business_exception_approval AS approval
+  LEFT JOIN "user" AS requester ON requester.id = approval.requested_by
+  LEFT JOIN "user" AS decider ON decider.id = approval.decided_by
+  LEFT JOIN "user" AS expirer ON expirer.id = approval.expired_by
+  WHERE requester.id IS NULL
+     OR (approval.decided_by IS NOT NULL AND decider.id IS NULL)
+     OR (approval.expired_by IS NOT NULL AND expirer.id IS NULL)
 ), resolver_anomaly AS (
   SELECT
     approval.id AS approval_id,
@@ -1064,6 +1393,9 @@ UNION ALL
 SELECT 'LIVE_DUPLICATE', approval_id
 FROM live_duplicate
 UNION ALL
+SELECT 'APPROVAL_ACTOR_ORPHAN', approval_id
+FROM approval_actor_anomaly
+UNION ALL
 SELECT anomaly_kind, approval_id
 FROM resolver_anomaly
 WHERE anomaly_kind IS NOT NULL
@@ -1073,20 +1405,132 @@ COMMIT;
 
 ## 11. AuditLog exact cardinality、source、fact 与 hash
 
-每个新 receipt 必须精确对应一个 audit；exact replay 不产生第二条。查询检查 missing、duplicate、extra、
-orphan，以及 module/entity/action/operator/permission/reason/fact/source/idempotency key/hash。审批 hash 可与
-保存 subject hash 或 expiry resolver hash 精确比较；成本 hash 由于数据库没有注册应用 canonical JSON
-resolver，必须是小写 64 位并同时要求 audit fact 与 receipt outcome 精确相等，不能伪造通用 SQL hash。
-以下查询预期零行：
+每个新 receipt 必须精确对应一个 `module = asset_accounting` audit；exact replay 不产生第二条，其他 module
+即使复用同一 source 也不计入该 cardinality。该 module 的每条 audit 都必须带结构合法的 top-level source；
+无 source 或 malformed source 自身就是 anomaly，不能被过滤隐藏。查询检查 missing、duplicate、extra、
+orphan，以及 entity/action/operator/permission/reason/source/idempotency key/hash，并从真实 target row 与命令
+lifecycle 构造 public fact/version，不能拿 receipt outcome 自证。审批 hash 可与保存 subject hash 或 expiry
+resolver hash 精确比较；成本 hash 由于数据库没有注册应用 canonical JSON resolver，必须是小写 64 位并
+同时要求 audit fact 与 target-derived public fact 精确相等，不能伪造通用 SQL hash。以下查询预期零行：
 
 <!-- stage1c-accounting-sql:07-audit-integrity -->
 
 ```sql
 BEGIN TRANSACTION READ ONLY;
-WITH expected_audit AS (
+WITH cost_target AS (
+  SELECT entry.*,
+    jsonb_build_object(
+      'actionType', entry.action_type::text,
+      'accountingPeriod', entry.accounting_period,
+      'amountCents', entry.amount_cents::text,
+      'assetOwnerId', entry.asset_owner_id,
+      'assetOwnerSnapshot', entry.asset_owner_snapshot,
+      'confirmedAt', to_char(
+        entry.confirmed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ),
+      'confirmedBy', entry.confirmed_by,
+      'contractId', entry.contract_id,
+      'costCategory', entry.cost_category::text,
+      'customerId', entry.customer_id,
+      'entryKind', entry.entry_kind::text,
+      'evidenceId', entry.evidence_id,
+      'evidenceSnapshot', entry.evidence_snapshot,
+      'id', entry.id,
+      'occurredOn', to_char(entry.occurred_on, 'YYYY-MM-DD') || 'T00:00:00.000Z',
+      'orderId', entry.order_id,
+      'responsiblePartyId', entry.responsible_party_id,
+      'responsiblePartyType', entry.responsible_party_type::text,
+      'responsibilitySnapshot', entry.responsibility_snapshot,
+      'reversalOfEntryId', entry.reversal_of_entry_id,
+      'sourceId', entry.source_id,
+      'sourceKey', entry.source_key,
+      'sourceType', entry.source_type,
+      'vehicleId', entry.vehicle_id,
+      'workOrderId', entry.work_order_id
+    ) AS expected_public_fact
+  FROM vehicle_cost_ledger_entry AS entry
+), approval_target AS (
+  SELECT approval.*,
+    jsonb_build_object(
+      'approvalNo', approval.approval_no,
+      'decidedAt', CASE WHEN approval.decided_at IS NULL THEN NULL ELSE to_char(
+        approval.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ) END,
+      'decidedBy', approval.decided_by,
+      'decision', approval.decision::text,
+      'decisionComment', approval.decision_comment,
+      'exceptionType', approval.exception_type::text,
+      'expiredAt', CASE WHEN approval.expired_at IS NULL THEN NULL ELSE to_char(
+        approval.expired_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ) END,
+      'expiredBy', approval.expired_by,
+      'expiryReason', approval.expiry_reason,
+      'id', approval.id,
+      'requestEvidenceSnapshot', approval.request_evidence_snapshot,
+      'requestReason', approval.request_reason,
+      'requestedAt', to_char(
+        approval.requested_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+      ),
+      'requestedBy', approval.requested_by,
+      'requestSourceId', approval.request_source_id,
+      'requestSourceKey', approval.request_source_key,
+      'requestSourceType', approval.request_source_type,
+      'status', approval.status::text,
+      'subjectField', approval.subject_field,
+      'subjectId', approval.subject_id,
+      'subjectSnapshot', approval.subject_snapshot,
+      'subjectSnapshotHash', approval.subject_snapshot_hash,
+      'subjectType', approval.subject_type::text,
+      'version', approval.version
+    ) AS current_outcome
+  FROM business_exception_approval AS approval
+), approval_command_target AS (
+  SELECT
+    approval.id AS approval_id,
+    'EXCEPTION_REQUEST'::text AS command_type,
+    approval.requested_by AS expected_actor_id,
+    (approval.current_outcome || jsonb_build_object(
+      'decidedAt', NULL, 'decidedBy', NULL, 'decision', NULL, 'decisionComment', NULL,
+      'expiredAt', NULL, 'expiredBy', NULL, 'expiryReason', NULL,
+      'status', 'PENDING', 'version', 0
+    )) - 'decisionComment' AS expected_public_fact,
+    0 AS expected_version,
+    approval.subject_snapshot_hash,
+    approval.request_reason AS target_reason
+  FROM approval_target AS approval
+
+  UNION ALL
+
+  SELECT
+    approval.id,
+    'EXCEPTION_DECIDE',
+    approval.decided_by,
+    (approval.current_outcome || jsonb_build_object(
+      'expiredAt', NULL, 'expiredBy', NULL, 'expiryReason', NULL,
+      'status', approval.decision::text, 'version', 1
+    )) - 'decisionComment',
+    1,
+    approval.subject_snapshot_hash,
+    approval.decision_comment
+  FROM approval_target AS approval
+  WHERE approval.decision IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    approval.id,
+    'EXCEPTION_EXPIRE',
+    approval.expired_by,
+    approval.current_outcome - 'decisionComment',
+    approval.version,
+    approval.subject_snapshot_hash,
+    approval.expiry_reason
+  FROM approval_target AS approval
+  WHERE approval.status = 'EXPIRED'
+), expected_audit AS (
   SELECT
     receipt.id AS receipt_id,
-    receipt.actor_id,
+    COALESCE(cost.confirmed_by, approval.expected_actor_id) AS actor_id,
     COALESCE(receipt.cost_entry_id, receipt.approval_id) AS expected_entity_id,
     CASE
       WHEN receipt.command_type::text IN ('COST_APPEND', 'COST_REVERSE')
@@ -1097,7 +1541,7 @@ WITH expected_audit AS (
       WHEN 'COST_APPEND' THEN 'CREATE'
       WHEN 'COST_REVERSE' THEN 'CREATE'
       WHEN 'EXCEPTION_REQUEST' THEN 'CREATE'
-      WHEN 'EXCEPTION_DECIDE' THEN CASE receipt.outcome_snapshot ->> 'decision'
+      WHEN 'EXCEPTION_DECIDE' THEN CASE approval.expected_public_fact ->> 'decision'
         WHEN 'APPROVED' THEN 'APPROVE'
         WHEN 'REJECTED' THEN 'REJECT'
       END
@@ -1110,27 +1554,20 @@ WITH expected_audit AS (
       WHEN 'EXCEPTION_DECIDE' THEN 'business_exception:approve'
       WHEN 'EXCEPTION_EXPIRE' THEN 'business_exception:request'
     END AS expected_permission,
-    CASE receipt.command_type::text
-      WHEN 'COST_APPEND' THEN receipt.payload_snapshot ->> 'reason'
-      WHEN 'COST_REVERSE' THEN receipt.payload_snapshot ->> 'reason'
-      WHEN 'EXCEPTION_REQUEST' THEN receipt.payload_snapshot ->> 'requestReason'
-      WHEN 'EXCEPTION_DECIDE' THEN receipt.payload_snapshot ->> 'decisionComment'
-      WHEN 'EXCEPTION_EXPIRE' THEN receipt.payload_snapshot ->> 'expiryReason'
+    CASE WHEN receipt.command_type::text IN ('COST_APPEND', 'COST_REVERSE')
+      THEN receipt.payload_snapshot ->> 'reason'
+      ELSE approval.target_reason
     END AS expected_reason,
-    CASE
-      WHEN receipt.command_type::text IN (
-        'EXCEPTION_REQUEST', 'EXCEPTION_DECIDE', 'EXCEPTION_EXPIRE'
-      ) THEN receipt.outcome_snapshot - 'decisionComment'
-      ELSE receipt.outcome_snapshot
-    END AS expected_fact,
+    COALESCE(cost.expected_public_fact, approval.expected_public_fact) AS expected_fact,
+    approval.expected_version,
     jsonb_build_object(
       'type', receipt.source_type,
       'id', receipt.source_id::text,
       'key', receipt.source_key
     ) AS expected_source,
     CASE receipt.command_type::text
-      WHEN 'EXCEPTION_REQUEST' THEN receipt.outcome_snapshot ->> 'subjectSnapshotHash'
-      WHEN 'EXCEPTION_DECIDE' THEN receipt.outcome_snapshot ->> 'subjectSnapshotHash'
+      WHEN 'EXCEPTION_REQUEST' THEN approval.subject_snapshot_hash
+      WHEN 'EXCEPTION_DECIDE' THEN approval.subject_snapshot_hash
       WHEN 'EXCEPTION_EXPIRE' THEN receipt.payload_snapshot ->> 'authoritySnapshotHash'
       ELSE NULL
     END AS expected_hash,
@@ -1138,20 +1575,48 @@ WITH expected_audit AS (
     receipt.source_id,
     receipt.source_key
   FROM asset_accounting_command_receipt AS receipt
-), audit_with_source AS (
+  LEFT JOIN cost_target AS cost ON cost.id = receipt.cost_entry_id
+  LEFT JOIN approval_command_target AS approval
+    ON approval.approval_id = receipt.approval_id
+   AND approval.command_type = receipt.command_type::text
+), module_audit AS (
   SELECT
     audit.*,
+    CASE
+      WHEN jsonb_typeof(audit.after_snapshot) IS DISTINCT FROM 'object' THEN false
+      WHEN jsonb_typeof(audit.after_snapshot -> 'source') IS DISTINCT FROM 'object' THEN false
+      WHEN jsonb_typeof(audit.after_snapshot -> 'source' -> 'type') IS DISTINCT FROM 'string'
+        THEN false
+      WHEN jsonb_typeof(audit.after_snapshot -> 'source' -> 'id') IS DISTINCT FROM 'string'
+        THEN false
+      WHEN jsonb_typeof(audit.after_snapshot -> 'source' -> 'key') IS DISTINCT FROM 'string'
+        THEN false
+      WHEN btrim(audit.after_snapshot -> 'source' ->> 'type') = '' THEN false
+      WHEN btrim(audit.after_snapshot -> 'source' ->> 'key') = '' THEN false
+      WHEN audit.after_snapshot -> 'source' ->> 'id'
+        !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN false
+      ELSE true
+    END AS source_is_valid,
     audit.after_snapshot -> 'source' ->> 'type' AS source_type,
     audit.after_snapshot -> 'source' ->> 'id' AS source_id,
     audit.after_snapshot -> 'source' ->> 'key' AS source_key
   FROM audit_log AS audit
-  WHERE audit.after_snapshot -> 'source' IS NOT NULL
+  WHERE audit.module = 'asset_accounting'
+), valid_module_audit AS (
+  SELECT *
+  FROM module_audit
+  WHERE source_is_valid
+), malformed_module_audit AS (
+  SELECT id AS audit_id
+  FROM module_audit
+  WHERE NOT source_is_valid
 ), audit_cardinality AS (
   SELECT
     expected.receipt_id,
     COUNT(audit.id) AS audit_count
   FROM expected_audit AS expected
-  LEFT JOIN audit_with_source AS audit
+  LEFT JOIN valid_module_audit AS audit
     ON audit.source_type = expected.source_type
    AND audit.source_id = expected.source_id::text
    AND audit.source_key = expected.source_key
@@ -1160,30 +1625,28 @@ WITH expected_audit AS (
   SELECT expected.*, audit.id AS audit_id, audit.module, audit.entity_type,
     audit.entity_id, audit.action, audit.operator_id, audit.after_snapshot
   FROM expected_audit AS expected
-  JOIN audit_with_source AS audit
+  JOIN valid_module_audit AS audit
     ON audit.source_type = expected.source_type
    AND audit.source_id = expected.source_id::text
    AND audit.source_key = expected.source_key
 ), extra_audit AS (
   SELECT audit.id AS audit_id
-  FROM audit_with_source AS audit
+  FROM valid_module_audit AS audit
   LEFT JOIN expected_audit AS expected
     ON audit.source_type = expected.source_type
    AND audit.source_id = expected.source_id::text
    AND audit.source_key = expected.source_key
-  WHERE audit.module = 'asset_accounting'
-    AND expected.receipt_id IS NULL
+  WHERE expected.receipt_id IS NULL
 ), orphan_audit AS (
   SELECT audit.id AS audit_id
-  FROM audit_log AS audit
+  FROM module_audit AS audit
   LEFT JOIN vehicle_cost_ledger_entry AS entry
     ON audit.entity_type = 'vehicle_cost_ledger_entry'
    AND entry.id = audit.entity_id
   LEFT JOIN business_exception_approval AS approval
     ON audit.entity_type = 'business_exception_approval'
    AND approval.id = audit.entity_id
-  WHERE audit.module = 'asset_accounting'
-    AND (
+  WHERE (
       audit.entity_type NOT IN (
         'vehicle_cost_ledger_entry', 'business_exception_approval'
       )
@@ -1195,7 +1658,6 @@ WITH expected_audit AS (
     paired.receipt_id,
     paired.audit_id,
     CASE
-      WHEN paired.module IS DISTINCT FROM 'asset_accounting' THEN 'MODULE_MISMATCH'
       WHEN paired.entity_type IS DISTINCT FROM paired.expected_entity_type
         OR paired.entity_id IS DISTINCT FROM paired.expected_entity_id THEN 'ENTITY_MISMATCH'
       WHEN paired.action::text IS DISTINCT FROM paired.expected_action THEN 'ACTION_MISMATCH'
@@ -1206,6 +1668,9 @@ WITH expected_audit AS (
         THEN 'REASON_MISMATCH'
       WHEN paired.after_snapshot -> 'fact' IS DISTINCT FROM paired.expected_fact
         THEN 'FACT_MISMATCH'
+      WHEN paired.expected_version IS NOT NULL
+        AND paired.after_snapshot -> 'fact' ->> 'version'
+          IS DISTINCT FROM paired.expected_version::text THEN 'VERSION_MISMATCH'
       WHEN paired.after_snapshot -> 'source' IS DISTINCT FROM paired.expected_source
         OR paired.after_snapshot #>> '{requestContext,idempotencyKey}'
           IS DISTINCT FROM paired.source_key THEN 'SOURCE_MISMATCH'
@@ -1230,6 +1695,9 @@ FROM extra_audit
 UNION ALL
 SELECT 'ORPHAN_AUDIT', audit_id
 FROM orphan_audit
+UNION ALL
+SELECT 'MALFORMED_AUDIT_SOURCE', audit_id
+FROM malformed_module_audit
 UNION ALL
 SELECT anomaly_kind, audit_id
 FROM mismatch
@@ -1316,12 +1784,12 @@ secret。未运行 seed、apply、deploy、修复 SQL、网络或 Production 操
 | SQL block                  | 脱敏结果 | 结论                                                                                                                                             |
 | -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `01-migration-catalog`     | 1 行     | applied `96`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `3`、fingerprint `5f71cc9e30cc4671361349250e3fc73e`；rolled-back 阻断。 |
-| `02-permission-matrix`     | 60 行    | `PERMISSION_DEFINITION=6`、`ROLE_PERMISSION=54`；角色本身无异常，permissions-only baseline 未部署，阻断。                                        |
-| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、15 个 index 的 schema/定义/状态均匹配。                                                                 |
-| `04-receipt-integrity`     | 0 行     | 无 source 重复、target/event-kind/source pairing 或 receipt cardinality 异常。                                                                   |
-| `05-ledger-integrity`      | 0 行     | 无 base shape、orphan、重复冲正、金额/日期/期间/16 维相等异常。                                                                                  |
-| `06-approval-integrity`    | 0 行     | 无 approval tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                                     |
-| `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan 或 module/entity/action/source/fact/hash 异常。                                                                |
+| `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。             |
+| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK、15 个 index 的 schema/定义/状态均匹配。                                           |
+| `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                       |
+| `05-ledger-integrity`      | 0 行     | 无 base shape、authority orphan/cross-ID、重复冲正、金额/日期/期间/16 维相等异常。                                                               |
+| `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                               |
+| `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                               |
 | `08-closed-cost-integrity` | 2 行     | 两个 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`；阻断且未修复。                                                    |
 
 四个命令门禁的最终脱敏结果：
@@ -1334,5 +1802,6 @@ secret。未运行 seed、apply、deploy、修复 SQL、网络或 Production 操
 | datasource→schema diff                | `2`    | diff 非空；未打印、接受或修复 drift 内容。                                      |
 
 因此该 Local 数据库同时被 rolled-back `1`、checksum mismatch `58`、非空 drift、六个缺失 definition、
-54 个缺失 grant 和两个 CLOSED-cost 不变量异常阻断，明确 rollout-ineligible。零行不能证明真实业务样本已
-覆盖；非零也不授权 backfill/apply/UPDATE。原始结果未提交 Git，控制台仅保留以上脱敏计数。
+54 个缺失 grant、两个 exact-count contract anomaly 和两个 CLOSED-cost 不变量异常阻断，明确
+rollout-ineligible。零行不能证明真实业务样本已覆盖；非零也不授权 backfill/apply/UPDATE。原始结果未提交
+Git，控制台仅保留以上脱敏计数。

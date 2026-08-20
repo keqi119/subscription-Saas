@@ -11,6 +11,11 @@ const operationsRunbookPath = resolve(
   "docs/runbooks/stage1c-asset-operations-rollout.zh-CN.md"
 );
 const schemaPath = resolve(repoRoot, "apps/api/prisma/schema.prisma");
+const controllerPath = resolve(
+  repoRoot,
+  "apps/api/src/asset-accounting/asset-accounting.controller.ts"
+);
+const sharedAuthPath = resolve(repoRoot, "packages/shared/src/auth.ts");
 const accessCorePath = resolve(repoRoot, "scripts/stage1c-access-baseline-core.mjs");
 const accessExecutorPath = resolve(repoRoot, "scripts/stage1c-access-baseline-executor.mjs");
 
@@ -97,6 +102,129 @@ const permissionDefinitions = [
   ["business_exception:view", "查看业务例外审批", "business_exception", "view"],
   ["business_exception:request", "发起业务例外审批", "business_exception", "request"],
   ["business_exception:approve", "审批业务例外", "business_exception", "approve"]
+];
+
+const foreignKeyDefinitions = [
+  [
+    "vehicle_cost_ledger_entry_vehicle_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "vehicle_id",
+    "vehicle",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_order_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "order_id",
+    "subscription_order",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_contract_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "contract_id",
+    "contract",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_customer_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "customer_id",
+    "customer",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_asset_owner_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "asset_owner_id",
+    "asset_owner",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_work_order_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "work_order_id",
+    "asset_work_order",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_evidence_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "evidence_id",
+    "asset_work_order_evidence",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_confirmed_by_fkey",
+    "vehicle_cost_ledger_entry",
+    "confirmed_by",
+    "user",
+    "id",
+    "r"
+  ],
+  [
+    "vehicle_cost_ledger_entry_reversal_of_entry_id_fkey",
+    "vehicle_cost_ledger_entry",
+    "reversal_of_entry_id",
+    "vehicle_cost_ledger_entry",
+    "id",
+    "r"
+  ],
+  [
+    "business_exception_approval_requested_by_fkey",
+    "business_exception_approval",
+    "requested_by",
+    "user",
+    "id",
+    "r"
+  ],
+  [
+    "business_exception_approval_decided_by_fkey",
+    "business_exception_approval",
+    "decided_by",
+    "user",
+    "id",
+    "r"
+  ],
+  [
+    "business_exception_approval_expired_by_fkey",
+    "business_exception_approval",
+    "expired_by",
+    "user",
+    "id",
+    "r"
+  ],
+  [
+    "asset_accounting_command_receipt_cost_entry_id_fkey",
+    "asset_accounting_command_receipt",
+    "cost_entry_id",
+    "vehicle_cost_ledger_entry",
+    "id",
+    "r"
+  ],
+  [
+    "asset_accounting_command_receipt_approval_id_fkey",
+    "asset_accounting_command_receipt",
+    "approval_id",
+    "business_exception_approval",
+    "id",
+    "r"
+  ],
+  [
+    "asset_accounting_command_receipt_actor_id_fkey",
+    "asset_accounting_command_receipt",
+    "actor_id",
+    "user",
+    "id",
+    "r"
+  ]
 ];
 
 const allStage1cPermissions = [
@@ -228,6 +356,18 @@ function requireSqlFragments(blocks, name, fragments) {
   }
 }
 
+function requireSqlInvariant(blocks, name, invariant, fragments) {
+  const sql = blocks.get(name);
+  assert.ok(sql, `${invariant}: missing SQL block ${name}`);
+  const normalized = normalizeSql(sql);
+  for (const fragment of fragments) {
+    assert.ok(
+      normalized.includes(normalizeSql(fragment)),
+      `${invariant}: ${name} missing ${fragment}`
+    );
+  }
+}
+
 function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
@@ -281,6 +421,34 @@ function extractValuesTuples(sql, cteName, arity) {
   return [...match[1].matchAll(tuplePattern)].map((tuple) => tuple.slice(1));
 }
 
+function extractControllerApiTuples(controller, sharedAuth) {
+  const controllerMatch = controller.match(/@Controller\("([^"]+)"\)/);
+  assert.ok(controllerMatch, "API_INVENTORY: controller root is missing");
+  const permissionMap = new Map(
+    [...sharedAuth.matchAll(/^\s*([A-Z][A-Z0-9_]+)\s*=\s*"([^"]+)"/gm)].map((match) => [
+      match[1],
+      match[2]
+    ])
+  );
+  const tuples = [
+    ...controller.matchAll(
+      /@(Get|Post)\("([^"]+)"\)\s*@RequirePermissions\(PermissionCode\.([A-Z0-9_]+)\)/g
+    )
+  ].map((match) => {
+    const permission = permissionMap.get(match[3]);
+    assert.ok(permission, `API_INVENTORY: unmapped PermissionCode.${match[3]}`);
+    return [match[1].toUpperCase(), `/${controllerMatch[1]}/${match[2]}`, permission];
+  });
+  assert.equal(tuples.length, 8, "API_INVENTORY: expected eight controller decorator blocks");
+  return tuples;
+}
+
+function extractDocumentedApiTuples(runbook) {
+  return [...runbook.matchAll(/^\|\s*(GET|POST)\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gm)].map(
+    (match) => [match[1], match[2], match[3]]
+  );
+}
+
 function validateEnums(runbook, schema) {
   for (const [enumName, expected] of Object.entries(stage1cCEnums)) {
     const schemaMatch = schema.match(new RegExp(`enum\\s+${enumName}\\s*\\{([\\s\\S]*?)\\n\\}`));
@@ -318,6 +486,31 @@ function validatePermissionSql(blocks) {
     expectedGrants,
     "the full Stage 1C 54-grant matrix must remain exact and ordered"
   );
+  requireSqlInvariant(blocks, "02-permission-matrix", "PERMISSION_EXACTNESS", [
+    "actual_stage1c_c_permission",
+    "UNEXPECTED_PERMISSION_DEFINITION",
+    "UNEXPECTED_ROLE_PERMISSION",
+    "permission.module IN ('vehicle_cost_ledger', 'business_exception')",
+    "permission.code LIKE 'vehicle_cost_ledger:%'",
+    "permission.code LIKE 'business_exception:%'"
+  ]);
+}
+
+function validateForeignKeySql(blocks) {
+  const sql = blocks.get("03-database-catalog");
+  assert.ok(sql);
+  assert.deepEqual(
+    extractValuesTuples(sql, "expected_foreign_key", 6),
+    foreignKeyDefinitions,
+    "FK_CATALOG_IDENTITY: the 15 foreign keys must remain exact and ordered"
+  );
+  requireSqlInvariant(blocks, "03-database-catalog", "FK_CATALOG_VALIDATION", [
+    "foreign_constraint.contype = 'f'",
+    "foreign_constraint.confdeltype",
+    "foreign_constraint.convalidated",
+    "foreign_key.convalidated IS NOT TRUE",
+    "UNEXPECTED_FOREIGN_KEY"
+  ]);
 }
 
 function validateRunbookSql(runbook) {
@@ -404,8 +597,24 @@ function validateRunbookSql(runbook) {
     ...reversalDimensions.map((name) => `original.\"${name}\"`)
   ]);
   validateCatalogDefinitionDigests(blocks);
+  validateForeignKeySql(blocks);
 
-  requireSqlFragments(blocks, "04-receipt-integrity", [
+  requireSqlInvariant(blocks, "04-receipt-integrity", "RECEIPT_TARGET_OUTCOME_ID", [
+    "receipt.outcome_snapshot ->> 'id' IS DISTINCT FROM entry.id::text",
+    "receipt.outcome_snapshot ->> 'id' IS DISTINCT FROM approval.id::text"
+  ]);
+  requireSqlInvariant(blocks, "04-receipt-integrity", "RECEIPT_TARGET_OUTCOME_FACT", [
+    "receipt.outcome_snapshot IS DISTINCT FROM target.expected_outcome",
+    "cost_target",
+    "approval_command_target"
+  ]);
+  requireSqlInvariant(blocks, "04-receipt-integrity", "RECEIPT_COMMAND_ACTOR", [
+    "receipt.actor_id IS DISTINCT FROM entry.confirmed_by",
+    "receipt.actor_id IS DISTINCT FROM approval.requested_by",
+    "receipt.actor_id IS DISTINCT FROM approval.decided_by",
+    "receipt.actor_id IS DISTINCT FROM approval.expired_by"
+  ]);
+  requireSqlInvariant(blocks, "04-receipt-integrity", "RECEIPT_TERMINAL_LIFECYCLE", [
     "COST_APPEND",
     "COST_REVERSE",
     "EXCEPTION_REQUEST",
@@ -419,7 +628,9 @@ function validateRunbookSql(runbook) {
     "entry.entry_kind IS DISTINCT FROM 'REVERSAL'",
     "cost_receipt_count <> 1",
     "request_receipt_count <> 1",
-    "terminal_receipt_count"
+    "terminal_receipt_count",
+    "WHEN status = 'PENDING' THEN 0",
+    "WHEN status = 'EXPIRED' AND decision = 'APPROVED' THEN 2"
   ]);
 
   requireSqlFragments(blocks, "05-ledger-integrity", [
@@ -431,6 +642,21 @@ function validateRunbookSql(runbook) {
     "COUNT(*) OVER (PARTITION BY reversal_of_entry_id) AS reversal_count",
     "reversal.reversal_count <> 1",
     ...reversalDimensions.map((name) => `reversal.${name} IS DISTINCT FROM original.${name}`)
+  ]);
+  requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_ORPHAN", [
+    "authority_anomaly",
+    "LEFT JOIN vehicle AS vehicle ON vehicle.id = entry.vehicle_id",
+    "LEFT JOIN subscription_order AS order_row ON order_row.id = entry.order_id",
+    "LEFT JOIN contract AS contract_row ON contract_row.id = entry.contract_id",
+    "LEFT JOIN customer AS customer ON customer.id = entry.customer_id",
+    "LEFT JOIN asset_owner AS owner_row ON owner_row.id = entry.asset_owner_id",
+    "LEFT JOIN asset_work_order AS work_order ON work_order.id = entry.work_order_id",
+    "LEFT JOIN asset_work_order_evidence AS evidence ON evidence.id = entry.evidence_id",
+    'LEFT JOIN "user" AS confirmer ON confirmer.id = entry.confirmed_by',
+    "vehicle.id IS NULL",
+    "evidence.work_order_id IS DISTINCT FROM entry.work_order_id",
+    "order_row.vehicle_id IS DISTINCT FROM entry.vehicle_id",
+    "work_order.vehicle_id IS DISTINCT FROM entry.vehicle_id"
   ]);
 
   requireSqlFragments(blocks, "06-approval-integrity", [
@@ -446,9 +672,31 @@ function validateRunbookSql(runbook) {
     "STALE_ACTIVE_APPROVAL",
     "resolver.authoritative_snapshot_hash IS DISTINCT FROM approval.subject_snapshot_hash"
   ]);
+  requireSqlInvariant(blocks, "06-approval-integrity", "APPROVAL_DECISION_COMMENT", [
+    "approval.status IN ('APPROVED', 'REJECTED')",
+    "btrim(COALESCE(approval.decision_comment, '')) = ''"
+  ]);
+  requireSqlInvariant(blocks, "06-approval-integrity", "APPROVAL_ACTOR_ORPHAN", [
+    'LEFT JOIN "user" AS requester ON requester.id = approval.requested_by',
+    'LEFT JOIN "user" AS decider ON decider.id = approval.decided_by',
+    'LEFT JOIN "user" AS expirer ON expirer.id = approval.expired_by'
+  ]);
 
+  requireSqlInvariant(blocks, "07-audit-integrity", "AUDIT_SOURCE_VALIDITY", [
+    "FROM audit_log AS audit WHERE audit.module = 'asset_accounting'",
+    "jsonb_typeof(audit.after_snapshot -> 'source') IS DISTINCT FROM 'object'",
+    "MALFORMED_AUDIT_SOURCE",
+    "valid_module_audit",
+    "WHERE NOT source_is_valid"
+  ]);
+  requireSqlInvariant(blocks, "07-audit-integrity", "AUDIT_TARGET_FACT", [
+    "cost_target",
+    "approval_command_target",
+    "cost.expected_public_fact",
+    "approval.expected_public_fact",
+    "approval.expected_version"
+  ]);
   requireSqlFragments(blocks, "07-audit-integrity", [
-    "module IS DISTINCT FROM 'asset_accounting'",
     "MISSING_AUDIT",
     "DUPLICATE_AUDIT",
     "EXTRA_AUDIT",
@@ -460,6 +708,7 @@ function validateRunbookSql(runbook) {
     "paired.after_snapshot -> 'fact' IS DISTINCT FROM paired.expected_fact",
     "paired.after_snapshot -> 'source' IS DISTINCT FROM paired.expected_source",
     "after_snapshot #>> '{requestContext,idempotencyKey}'",
+    "paired.after_snapshot -> 'fact' ->> 'version' IS DISTINCT FROM paired.expected_version::text",
     "^[0-9a-f]{64}$"
   ]);
 
@@ -518,16 +767,17 @@ test("pins exact enums, six definitions, and the eight-role Stage 1C-C matrix", 
 });
 
 test("pins API, source, replay, approval, redaction, and contention contracts", async () => {
-  const runbook = await readOrEmpty(rolloutPath);
+  const [runbook, controller, sharedAuth] = await Promise.all([
+    readOrEmpty(rolloutPath),
+    readOrEmpty(controllerPath),
+    readOrEmpty(sharedAuthPath)
+  ]);
+  assert.deepEqual(
+    extractDocumentedApiTuples(runbook),
+    extractControllerApiTuples(controller, sharedAuth),
+    "API_INVENTORY: runbook verb/path/permission tuples differ from controller decorators"
+  );
   assertIncludesEvery(runbook, [
-    "POST /asset-accounting/cost-entries",
-    "POST /asset-accounting/cost-entries/:id/reverse",
-    "GET /asset-accounting/cost-entries/:id",
-    "GET /asset-accounting/vehicles/:vehicleId/cost-entries",
-    "GET /asset-accounting/orders/:orderId/cost-summary",
-    "GET /asset-accounting/work-orders/:workOrderId/cost-summary",
-    "GET /asset-accounting/exception-approvals/:id",
-    "GET /asset-accounting/exception-approvals",
     "没有 public approval mutation endpoint",
     "exact source tuple `{ type, id, key }`",
     "UUID 小写 canonical",
@@ -687,6 +937,89 @@ test("kills structural mutations in actual reconciliation SQL", async () => {
     const mutated = mutateSqlBlock(runbook, block, mutate);
     assert.notEqual(mutated, runbook, `mutation did not alter SQL: ${name}`);
     assert.throws(() => validateRunbookSql(mutated), undefined, name);
+  }
+});
+
+test("kills finding-specific mutations with the intended invariant labels", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  validateRunbookSql(runbook);
+  const mutations = [
+    [
+      "RECEIPT_TARGET_OUTCOME_ID",
+      "04-receipt-integrity",
+      (sql) =>
+        sql.replace("receipt.outcome_snapshot ->> 'id' IS DISTINCT FROM entry.id::text", "false")
+    ],
+    [
+      "RECEIPT_TARGET_OUTCOME_FACT",
+      "04-receipt-integrity",
+      (sql) =>
+        sql.replace("receipt.outcome_snapshot IS DISTINCT FROM target.expected_outcome", "false")
+    ],
+    [
+      "RECEIPT_COMMAND_ACTOR",
+      "04-receipt-integrity",
+      (sql) => sql.replace("receipt.actor_id IS DISTINCT FROM entry.confirmed_by", "false")
+    ],
+    [
+      "RECEIPT_TERMINAL_LIFECYCLE",
+      "04-receipt-integrity",
+      (sql) => sql.replace("WHEN status = 'PENDING' THEN 0", "WHEN status = 'PENDING' THEN 1")
+    ],
+    [
+      "FK_CATALOG_IDENTITY",
+      "03-database-catalog",
+      (sql) => sql.replace(/\s*\('vehicle_cost_ledger_entry_vehicle_id_fkey',[\s\S]*?'r'\),/, "")
+    ],
+    [
+      "FK_CATALOG_VALIDATION",
+      "03-database-catalog",
+      (sql) => sql.replace("foreign_key.convalidated IS NOT TRUE", "false")
+    ],
+    [
+      "FK_CATALOG_IDENTITY",
+      "03-database-catalog",
+      (sql) =>
+        sql.replace(
+          "'vehicle_cost_ledger_entry_vehicle_id_fkey', 'vehicle_cost_ledger_entry', 'vehicle_id', 'vehicle', 'id', 'r'",
+          "'vehicle_cost_ledger_entry_vehicle_id_fkey', 'vehicle_cost_ledger_entry', 'vehicle_id', 'vehicle', 'id', 'c'"
+        )
+    ],
+    [
+      "AUTHORITY_ORPHAN",
+      "05-ledger-integrity",
+      (sql) => sql.replace("vehicle.id IS NULL", "false")
+    ],
+    [
+      "AUDIT_SOURCE_VALIDITY",
+      "07-audit-integrity",
+      (sql) => sql.replace("WHERE NOT source_is_valid", "WHERE false")
+    ],
+    [
+      "PERMISSION_EXACTNESS",
+      "02-permission-matrix",
+      (sql) => sql.replace("UNEXPECTED_PERMISSION_DEFINITION", "IGNORED_PERMISSION_DEFINITION")
+    ],
+    [
+      "PERMISSION_EXACTNESS",
+      "02-permission-matrix",
+      (sql) => sql.replace("UNEXPECTED_ROLE_PERMISSION", "IGNORED_ROLE_PERMISSION")
+    ],
+    [
+      "APPROVAL_DECISION_COMMENT",
+      "06-approval-integrity",
+      (sql) => sql.replace("btrim(COALESCE(approval.decision_comment, '')) = ''", "false")
+    ]
+  ];
+
+  for (const [invariant, block, mutate] of mutations) {
+    const mutated = mutateSqlBlock(runbook, block, mutate);
+    assert.notEqual(mutated, runbook, `${invariant}: mutation did not alter actual SQL`);
+    assert.throws(
+      () => validateRunbookSql(mutated),
+      (error) => error instanceof Error && error.message.includes(invariant),
+      `${invariant}: mutation must fail through its intended invariant`
+    );
   }
 });
 

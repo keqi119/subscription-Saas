@@ -48,6 +48,31 @@ describe("AssetAccountingRepository", () => {
     );
   });
 
+  it("orders reverse probes, source ownership, receipt, original, and stable authority locks", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const original = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "reverse-operation-timeline-original")
+    );
+    database.operationTimeline.length = 0;
+
+    await repository.reverseCostEntry(
+      database.tx,
+      reverseCommand(database.ids, original.outcome.id, "reverse-operation-timeline")
+    );
+
+    expect(database.operationTimeline).toEqual([
+      "transaction-probe",
+      "transaction-probe",
+      "source-lock",
+      "receipt-lookup",
+      `original-lock:${original.outcome.id}`,
+      `authority-lock:asset_work_order:${database.ids.workOrderId}`,
+      `authority-lock:user:${database.ids.actorId}`
+    ]);
+  });
+
   it("locks the exact source tuple, replays the stored outcome, and rejects payload or command drift", async () => {
     const repository = new AssetAccountingRepository();
     const database = fakeTransaction();
@@ -752,7 +777,15 @@ describe("AssetAccountingRepository", () => {
 
     const rollback = Object.assign(new Error("transaction closed"), {
       code: "P2028",
-      meta: { unrelated: { code: "55P03" } }
+      meta: {
+        driverAdapterError: {
+          cause: {
+            constraint: "vehicle_cost_ledger_entry_reversal_amount_chk",
+            message: "reversal amount must be the exact opposite of the original",
+            originalCode: "55P03"
+          }
+        }
+      }
     });
     const rollbackDatabase = fakeTransaction();
     rollbackDatabase.nextEntryCreateError = rollback;
@@ -762,6 +795,31 @@ describe("AssetAccountingRepository", () => {
         appendCommand(rollbackDatabase.ids, "rollback-error")
       )
     ).rejects.toBe(rollback);
+
+    const directSqlStateDatabase = fakeTransaction();
+    directSqlStateDatabase.nextEntryCreateError = Object.assign(new Error("lock unavailable"), {
+      code: "55P03"
+    });
+    await expectCode(
+      repository.appendCostEntry(
+        directSqlStateDatabase.tx,
+        appendCommand(directSqlStateDatabase.ids, "direct-sqlstate")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+    );
+
+    const incompatibleDatabase = fakeTransaction();
+    incompatibleDatabase.nextEntryCreateError = databaseError(
+      "55P03",
+      "vehicle_cost_ledger_entry_reversal_amount_chk"
+    );
+    await expectCode(
+      repository.appendCostEntry(
+        incompatibleDatabase.tx,
+        appendCommand(incompatibleDatabase.ids, "incompatible-code-constraint")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+    );
 
     const p2002Database = fakeTransaction();
     p2002Database.nextEntryCreateError = Object.assign(
@@ -909,8 +967,10 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
       const table = /FROM "([a-z_]+)"/.exec(text)?.[1];
       if (table) {
         const id = String(values[0]);
-        if (table === "vehicle_cost_ledger_entry") lockedOriginalIds.push(id);
-        else {
+        if (table === "vehicle_cost_ledger_entry") {
+          lockedOriginalIds.push(id);
+          operationTimeline.push(`original-lock:${id}`);
+        } else {
           lockedAuthorities.push({ id, table });
           operationTimeline.push(`authority-lock:${table}:${id}`);
         }

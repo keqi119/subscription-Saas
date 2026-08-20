@@ -811,7 +811,9 @@ function normalizeDatabaseError(error: unknown): unknown {
 function knownConstraint(error: unknown, code: string) {
   const candidate =
     exactConstraint(error) ?? constraintFromServerMessage(databaseMessage(error, code));
-  return candidate && candidate in CONSTRAINT_CODES ? candidate : undefined;
+  return candidate && candidate in CONSTRAINT_CODES && constraintSupportsCode(candidate, code)
+    ? candidate
+    : undefined;
 }
 
 function databaseCode(error: unknown) {
@@ -826,11 +828,19 @@ function prismaErrorCode(error: unknown) {
 }
 
 function driverAdapterCause(error: Record<string, unknown>) {
+  if (error.code !== "P2010") return undefined;
   const meta = error.meta;
   if (!isRecord(meta)) return undefined;
   const adapterError = meta.driverAdapterError;
   if (!isRecord(adapterError) || !isRecord(adapterError.cause)) return undefined;
   return adapterError.cause;
+}
+
+function constraintSupportsCode(constraint: string, code: string) {
+  if (constraint.endsWith("_fkey")) return code === "23503";
+  if (constraint.endsWith("_key")) return code === "23505";
+  if (constraint.endsWith("_chk")) return code === "23514";
+  return false;
 }
 
 function isSqlState(value: unknown): value is string {

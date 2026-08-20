@@ -163,15 +163,23 @@ type AuthorityLockRow = Readonly<{
   mode?: AuthorityLockMode;
   table: AuthorityTable;
 }>;
+declare const lockedWorkOrderCommandHandleBrand: unique symbol;
 type LockedWorkOrderCommandHandle = Readonly<{
+  [lockedWorkOrderCommandHandleBrand]: true;
+}>;
+type LockedWorkOrderCommandState = Readonly<{
   header: AssetWorkOrder;
   transaction: Prisma.TransactionClient;
+  workOrderId: string;
 }>;
 
 /** Caller-owned READ COMMITTED transaction only; this repository never opens a transaction. */
 @Injectable()
 export class AssetOperationsRepository {
-  private readonly lockedWorkOrderHandles = new WeakSet<LockedWorkOrderCommandHandle>();
+  private readonly lockedWorkOrderHandles = new WeakMap<
+    LockedWorkOrderCommandHandle,
+    LockedWorkOrderCommandState
+  >();
 
   constructor(@Optional() private readonly businessNoFactory = () => createBusinessNo("AWO")) {}
 
@@ -195,8 +203,15 @@ export class AssetOperationsRepository {
     ]);
     const header = await tx.assetWorkOrder.findUnique({ where: { id: workOrderId } });
     if (!header) throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND);
-    const handle = { header, transaction: tx } satisfies LockedWorkOrderCommandHandle;
-    this.lockedWorkOrderHandles.add(handle);
+    const handle = Object.freeze({}) as LockedWorkOrderCommandHandle;
+    this.lockedWorkOrderHandles.set(
+      handle,
+      Object.freeze({
+        header: deepFreeze(structuredClone(header)),
+        transaction: tx,
+        workOrderId
+      })
+    );
     return handle;
   }
 
@@ -240,11 +255,12 @@ export class AssetOperationsRepository {
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
+    const lockedHeader = this.consumeLockedHeader(tx, normalized.workOrderId, lockHandle);
     await lockAuthorityRows(tx, [{ id: normalized.assignedUserId, table: "user" }]);
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayAssignment(replay, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
-    const current = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
+    const current = await lockedHeaderOrLoad(tx, normalized.workOrderId, lockedHeader);
     assertVersion(current, normalized.expectedVersion);
     if (TERMINAL_STATUSES.has(current.status)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_TRANSITION_INVALID);
@@ -281,10 +297,11 @@ export class AssetOperationsRepository {
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
+    const lockedHeader = this.consumeLockedHeader(tx, normalized.workOrderId, lockHandle);
     const replay = await findEventBySource(tx, normalized.source);
     if (replay) return replayTransition(replay, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
-    const current = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
+    const current = await lockedHeaderOrLoad(tx, normalized.workOrderId, lockedHeader);
     assertVersion(current, normalized.expectedVersion);
     assertTransition(current, normalized.targetStatus);
     await assertEventTime(tx, normalized.occurredAt);
@@ -341,12 +358,13 @@ export class AssetOperationsRepository {
   ): Promise<WorkOrderCommandOutcome> {
     const normalized = { ...command, detailSnapshot: normalizeSnapshot(command.detailSnapshot) };
     await prepareCommand(tx, normalized.source);
+    const lockedHeader = this.consumeLockedHeader(tx, normalized.workOrderId, lockHandle);
     if (!DIRECT_EVENT_TYPES.has(command.eventType)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_INVALID);
     }
     return appendEventCommand(tx, normalized, {
       envelope,
-      headerAlreadyLocked: this.lockedHeader(tx, normalized.workOrderId, lockHandle)
+      headerAlreadyLocked: lockedHeader
     });
   }
 
@@ -356,12 +374,13 @@ export class AssetOperationsRepository {
     lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<EvidenceCommandOutcome> {
     await prepareCommand(tx, command.source);
+    const lockedHeader = this.consumeLockedHeader(tx, command.workOrderId, lockHandle);
     const normalized = normalizeEvidenceCommand(command);
     assertEvidenceShape(normalized);
     if (normalized.fileId) {
       await lockAuthorityRows(tx, [{ id: normalized.fileId, table: "file_object" }]);
     }
-    const workOrder = await this.lockedHeaderOrLoad(tx, normalized.workOrderId, lockHandle);
+    const workOrder = await lockedHeaderOrLoad(tx, normalized.workOrderId, lockedHeader);
     const predecessor = normalized.supersedesEvidenceId
       ? await lockAndLoadEvidence(tx, normalized.supersedesEvidenceId)
       : null;
@@ -449,6 +468,7 @@ export class AssetOperationsRepository {
     lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<RestrictionCommandOutcome> {
     await prepareCommand(tx, command.source);
+    const lockedHeader = this.consumeLockedHeader(tx, command.workOrderId ?? undefined, lockHandle);
     const normalized = normalizeCreateRestrictionCommand(command);
     assertCreateRestrictionShape(normalized);
     await lockAuthorityRows(tx, restrictionAuthorityRows(normalized));
@@ -458,7 +478,7 @@ export class AssetOperationsRepository {
     });
     if (!vehicle) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
     const linkedWorkOrder = normalized.workOrderId
-      ? await this.lockedHeaderOrLoadNowait(tx, normalized.workOrderId, lockHandle)
+      ? await lockedHeaderOrLoadNowait(tx, normalized.workOrderId, lockedHeader)
       : null;
     if (
       normalized.workOrderId &&
@@ -538,6 +558,7 @@ export class AssetOperationsRepository {
     lockHandle?: LockedWorkOrderCommandHandle
   ): Promise<RestrictionCommandOutcome> {
     await prepareCommand(tx, command.source);
+    const lockedWorkOrder = this.consumeLockedWorkOrder(tx, lockHandle);
     const normalized = normalizeReleaseRestrictionCommand(command);
     assertReleaseRestrictionShape(normalized);
     const replay = await findRestrictionByReleaseSource(tx, normalized.source);
@@ -553,7 +574,13 @@ export class AssetOperationsRepository {
     });
     if (!candidate) throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_NOT_FOUND);
     const workOrder = candidate.workOrderId
-      ? await this.lockedHeaderOrLoadNowait(tx, candidate.workOrderId, lockHandle)
+      ? await lockedHeaderOrLoadNowait(
+          tx,
+          candidate.workOrderId,
+          lockedWorkOrder?.workOrderId === candidate.workOrderId
+            ? lockedWorkOrder.header
+            : undefined
+        )
       : null;
     const current = await lockAndLoadRestriction(tx, normalized.restrictionId);
     if (current.status !== VehicleOperationalRestrictionStatus.ACTIVE) {
@@ -636,38 +663,24 @@ export class AssetOperationsRepository {
     };
   }
 
-  private lockedHeader(
+  private consumeLockedHeader(
     tx: Prisma.TransactionClient,
-    workOrderId: string,
+    workOrderId: string | undefined,
     lockHandle?: LockedWorkOrderCommandHandle
   ) {
-    const header =
-      lockHandle &&
-      this.lockedWorkOrderHandles.has(lockHandle) &&
-      lockHandle.transaction === tx &&
-      lockHandle.header.id === workOrderId
-        ? lockHandle.header
-        : undefined;
-    if (header && lockHandle) this.lockedWorkOrderHandles.delete(lockHandle);
-    return header;
+    const locked = this.consumeLockedWorkOrder(tx, lockHandle);
+    return locked && workOrderId && locked.workOrderId === workOrderId ? locked.header : undefined;
   }
 
-  private lockedHeaderOrLoad(
+  private consumeLockedWorkOrder(
     tx: Prisma.TransactionClient,
-    workOrderId: string,
     lockHandle?: LockedWorkOrderCommandHandle
   ) {
-    return this.lockedHeader(tx, workOrderId, lockHandle) ?? lockAndLoadWorkOrder(tx, workOrderId);
-  }
-
-  private lockedHeaderOrLoadNowait(
-    tx: Prisma.TransactionClient,
-    workOrderId: string,
-    lockHandle?: LockedWorkOrderCommandHandle
-  ) {
-    return (
-      this.lockedHeader(tx, workOrderId, lockHandle) ?? lockAndLoadWorkOrderNowait(tx, workOrderId)
-    );
+    if (!lockHandle) return undefined;
+    const locked = this.lockedWorkOrderHandles.get(lockHandle);
+    if (!locked) return undefined;
+    this.lockedWorkOrderHandles.delete(lockHandle);
+    return locked.transaction === tx ? locked : undefined;
   }
 
   async loadAvailabilitySnapshot(
@@ -915,6 +928,22 @@ function createAuthorityRows(command: CreateWorkOrderCommand) {
   }
   rows.push({ id: command.vehicleId, table: "vehicle" });
   return rows;
+}
+
+function lockedHeaderOrLoad(
+  tx: Prisma.TransactionClient,
+  workOrderId: string,
+  lockedHeader?: AssetWorkOrder
+) {
+  return lockedHeader ?? lockAndLoadWorkOrder(tx, workOrderId);
+}
+
+function lockedHeaderOrLoadNowait(
+  tx: Prisma.TransactionClient,
+  workOrderId: string,
+  lockedHeader?: AssetWorkOrder
+) {
+  return lockedHeader ?? lockAndLoadWorkOrderNowait(tx, workOrderId);
 }
 
 async function lockAndLoadWorkOrder(tx: Prisma.TransactionClient, workOrderId: string) {
@@ -1790,6 +1819,12 @@ function sameDate(left: Date, right: Date) {
 
 function sameNullableDate(left: Date | null, right: Date | null) {
   return left?.getTime() === right?.getTime();
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const key of Reflect.ownKeys(value)) deepFreeze(Reflect.get(value, key));
+  return Object.freeze(value);
 }
 
 function compare(left: string, right: string) {

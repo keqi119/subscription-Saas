@@ -145,6 +145,69 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     expect(replayed.wrote).toBe(false);
   });
 
+  it("cannot retarget an opaque A capability to write B without waiting for B's own lock", async () => {
+    const repository = new AssetOperationsRepository();
+    const first = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "capability-retarget-a"))
+    );
+    const second = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "capability-retarget-b"))
+    );
+    const holderReached = deferred<void>();
+    const releaseHolder = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "asset_work_order" WHERE "id" = ${second.workOrder.id}::uuid FOR UPDATE`
+      );
+      holderReached.resolve();
+      await releaseHolder.promise;
+    });
+    void holder.catch(holderReached.reject);
+    await holderReached.promise;
+
+    const commandPromise = readCommitted(prisma, async (tx) => {
+      const handle = await repository.lockWorkOrderForCommand(tx, first.workOrder.id, []);
+      const callerReplacement = structuredClone(second.workOrder);
+      const callerCouldRetarget = Reflect.set(handle, "header", callerReplacement);
+      const outcome = await repository.transitionWorkOrder(
+        tx,
+        transitionCommand(second.workOrder.id, "capability-retarget-b-transition"),
+        handle
+      );
+      return { callerCouldRetarget, outcome };
+    });
+    const early = await settlesWithin(commandPromise, 250);
+    const beforeRelease = await prisma.assetWorkOrder.findUnique({
+      where: { id: second.workOrder.id }
+    });
+    releaseHolder.resolve();
+    const result = early.finished ? early.value : await commandPromise;
+    await holder;
+
+    expect(early.finished).toBe(false);
+    expect(result.callerCouldRetarget).toBe(false);
+    expect(beforeRelease).toMatchObject({ status: AssetWorkOrderStatus.PENDING, version: 0 });
+    expect(result.outcome.workOrder).toMatchObject({
+      id: second.workOrder.id,
+      status: AssetWorkOrderStatus.IN_PROGRESS,
+      version: 1
+    });
+    await expect(
+      prisma.assetWorkOrder.findUnique({ where: { id: first.workOrder.id } })
+    ).resolves.toMatchObject({ status: AssetWorkOrderStatus.PENDING, version: 0 });
+
+    const note = noteCommand(first.workOrder.id, "capability-retarget-a-note");
+    const [written, replayed] = await readCommitted(prisma, async (tx) => {
+      const writeHandle = await repository.lockWorkOrderForCommand(tx, first.workOrder.id, []);
+      const write = await repository.appendNote(tx, note, writeHandle);
+      const replayHandle = await repository.lockWorkOrderForCommand(tx, first.workOrder.id, []);
+      const replay = await repository.appendNote(tx, note, replayHandle);
+      return [write, replay];
+    });
+    expect(replayed).toEqual({ ...written, wrote: false });
+    await expect(countEventsBySource(prisma, note.source)).resolves.toBe(1);
+  });
+
   it("replays immutable post-command outcomes after later governed header changes", async () => {
     const repository = new AssetOperationsRepository();
     const create = createCommand(vehicleId, "snapshot-create");

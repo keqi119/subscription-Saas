@@ -26,6 +26,7 @@ import type {
   AppendNoteCommand,
   AppendWorkOrderEventCommand,
   AssetOperationSnapshot,
+  AssignWorkOrderCommand,
   CreateRestrictionCommand,
   CreateWorkOrderCommand,
   ReleaseRestrictionCommand,
@@ -73,6 +74,226 @@ describe("AssetOperationsRepository", () => {
     await expectCode(
       new AssetOperationsRepository().createWorkOrder(database.tx, createCommand()),
       ASSET_OPERATION_ERROR_CODE.TRANSACTION_REQUIRED
+    );
+  });
+
+  it("does not let a caller mutate or retarget a locked work-order capability", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const first = await repository.createWorkOrder(database.tx, createCommand());
+    const second = await repository.createWorkOrder(database.tx, createCommand());
+    const handle = await repository.lockWorkOrderForCommand(database.tx, first.workOrder.id, []);
+    const exposedHeader = (handle as unknown as { header?: Record<string, unknown> }).header;
+
+    if (exposedHeader) {
+      const authoritySnapshot = exposedHeader.authoritySnapshot as Record<string, unknown>;
+      authoritySnapshot.vehicleStatus = "CALLER_MUTATED";
+      exposedHeader.id = second.workOrder.id;
+      exposedHeader.status = AssetWorkOrderStatus.PENDING;
+      exposedHeader.version = 0;
+    }
+    const outcome = await repository.transitionWorkOrder(
+      database.tx,
+      transitionCommand(second.workOrder.id, AssetWorkOrderStatus.IN_PROGRESS, 0),
+      handle
+    );
+
+    expect.soft(Object.isFrozen(handle)).toBe(true);
+    expect.soft(handle).not.toHaveProperty("header");
+    expect.soft(first.workOrder.authoritySnapshot).toEqual({ vehicleStatus: "RETURNED" });
+    expect.soft(workOrderUpdateLockCount(database, second.workOrder.id)).toBe(1);
+    expect(outcome.workOrder).toMatchObject({
+      id: second.workOrder.id,
+      status: AssetWorkOrderStatus.IN_PROGRESS,
+      version: 1
+    });
+  });
+
+  it("falls back safely for forged, foreign-repository, and wrong-transaction capabilities", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const created = await repository.createWorkOrder(database.tx, createCommand());
+    const forged = Object.freeze({}) as Awaited<
+      ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>
+    >;
+
+    await repository.appendNote(
+      database.tx,
+      noteCommand(created.workOrder.id, "forged", "forged-capability"),
+      forged
+    );
+    expect(workOrderUpdateLockCount(database, created.workOrder.id)).toBe(1);
+
+    const foreignHandle = await repository.lockWorkOrderForCommand(
+      database.tx,
+      created.workOrder.id,
+      []
+    );
+    const foreignRepository = new AssetOperationsRepository();
+    await foreignRepository.appendNote(
+      database.tx,
+      noteCommand(created.workOrder.id, "foreign", "foreign-capability"),
+      foreignHandle
+    );
+    expect(workOrderUpdateLockCount(database, created.workOrder.id)).toBe(3);
+
+    const wrongTransactionHandle = await repository.lockWorkOrderForCommand(
+      database.tx,
+      created.workOrder.id,
+      []
+    );
+    const otherDatabase = new FakeDatabase();
+    otherDatabase.workOrders.push(structuredClone(database.workOrders[0]));
+    await repository.appendNote(
+      otherDatabase.tx,
+      noteCommand(created.workOrder.id, "wrong transaction", "wrong-transaction-capability"),
+      wrongTransactionHandle
+    );
+    expect(workOrderUpdateLockCount(otherDatabase, created.workOrder.id)).toBe(1);
+  });
+
+  it("consumes a locked work-order capability after a successful command", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const created = await repository.createWorkOrder(database.tx, createCommand());
+    const handle = await repository.lockWorkOrderForCommand(database.tx, created.workOrder.id, []);
+
+    await repository.appendNote(
+      database.tx,
+      noteCommand(created.workOrder.id, "first", "capability-success-first"),
+      handle
+    );
+    await repository.appendNote(
+      database.tx,
+      noteCommand(created.workOrder.id, "second", "capability-success-second"),
+      handle
+    );
+
+    expect(workOrderUpdateLockCount(database, created.workOrder.id)).toBe(2);
+  });
+
+  it("consumes a locked capability before assignment, transition, and release replay returns", async () => {
+    const assignmentDatabase = new FakeDatabase();
+    const assignmentRepository = new AssetOperationsRepository();
+    const assignmentCreated = await assignmentRepository.createWorkOrder(
+      assignmentDatabase.tx,
+      createCommand()
+    );
+    const assignment = assignCommand(assignmentCreated.workOrder.id, "capability-replay-assign");
+    await assignmentRepository.assignWorkOrder(assignmentDatabase.tx, assignment);
+    await expectReplayConsumesHandle(
+      assignmentDatabase,
+      assignmentRepository,
+      assignmentCreated.workOrder.id,
+      (handle) => assignmentRepository.assignWorkOrder(assignmentDatabase.tx, assignment, handle),
+      "assign"
+    );
+
+    const transitionDatabase = new FakeDatabase();
+    const transitionRepository = new AssetOperationsRepository();
+    const transitionCreated = await transitionRepository.createWorkOrder(
+      transitionDatabase.tx,
+      createCommand()
+    );
+    const transition = transitionCommand(
+      transitionCreated.workOrder.id,
+      AssetWorkOrderStatus.IN_PROGRESS,
+      0
+    );
+    await transitionRepository.transitionWorkOrder(transitionDatabase.tx, transition);
+    await expectReplayConsumesHandle(
+      transitionDatabase,
+      transitionRepository,
+      transitionCreated.workOrder.id,
+      (handle) =>
+        transitionRepository.transitionWorkOrder(transitionDatabase.tx, transition, handle),
+      "transition"
+    );
+
+    const releaseDatabase = new FakeDatabase();
+    const releaseRepository = new AssetOperationsRepository();
+    const releaseCreated = await releaseRepository.createWorkOrder(
+      releaseDatabase.tx,
+      createCommand()
+    );
+    Object.assign(releaseDatabase.workOrders[0], {
+      status: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      version: 1
+    });
+    releaseDatabase.vehicles.push({ id: releaseCreated.workOrder.vehicleId });
+    const restriction = await releaseRepository.createRestriction(
+      releaseDatabase.tx,
+      createRestrictionCommand(
+        releaseCreated.workOrder.vehicleId,
+        "capability-release",
+        releaseCreated.workOrder.id
+      )
+    );
+    const release = releaseRestrictionCommand(restriction.restriction.id, "capability-release");
+    await releaseRepository.releaseRestriction(releaseDatabase.tx, release);
+    await expectReplayConsumesHandle(
+      releaseDatabase,
+      releaseRepository,
+      releaseCreated.workOrder.id,
+      (handle) => releaseRepository.releaseRestriction(releaseDatabase.tx, release, handle),
+      "release"
+    );
+  });
+
+  it("consumes a locked capability before note, evidence, and restriction-create replay returns", async () => {
+    const noteDatabase = new FakeDatabase();
+    const noteRepository = new AssetOperationsRepository();
+    const noteCreated = await noteRepository.createWorkOrder(noteDatabase.tx, createCommand());
+    const note = noteCommand(noteCreated.workOrder.id, "replay", "capability-replay-note");
+    await noteRepository.appendNote(noteDatabase.tx, note);
+    await expectReplayConsumesHandle(
+      noteDatabase,
+      noteRepository,
+      noteCreated.workOrder.id,
+      (handle) => noteRepository.appendNote(noteDatabase.tx, note, handle),
+      "note"
+    );
+
+    const evidenceDatabase = new FakeDatabase();
+    const evidenceRepository = new AssetOperationsRepository();
+    const evidenceCreated = await evidenceRepository.createWorkOrder(
+      evidenceDatabase.tx,
+      createCommand()
+    );
+    const evidence = evidenceCommand(
+      evidenceCreated.workOrder.id,
+      evidenceDatabase.addFile(),
+      "capability-replay"
+    );
+    await evidenceRepository.appendEvidence(evidenceDatabase.tx, evidence);
+    await expectReplayConsumesHandle(
+      evidenceDatabase,
+      evidenceRepository,
+      evidenceCreated.workOrder.id,
+      (handle) => evidenceRepository.appendEvidence(evidenceDatabase.tx, evidence, handle),
+      "evidence"
+    );
+
+    const restrictionDatabase = new FakeDatabase();
+    const restrictionRepository = new AssetOperationsRepository();
+    const restrictionCreated = await restrictionRepository.createWorkOrder(
+      restrictionDatabase.tx,
+      createCommand()
+    );
+    restrictionDatabase.vehicles.push({ id: restrictionCreated.workOrder.vehicleId });
+    const createRestriction = createRestrictionCommand(
+      restrictionCreated.workOrder.vehicleId,
+      "capability-replay",
+      restrictionCreated.workOrder.id
+    );
+    await restrictionRepository.createRestriction(restrictionDatabase.tx, createRestriction);
+    await expectReplayConsumesHandle(
+      restrictionDatabase,
+      restrictionRepository,
+      restrictionCreated.workOrder.id,
+      (handle) =>
+        restrictionRepository.createRestriction(restrictionDatabase.tx, createRestriction, handle),
+      "restriction-create"
     );
   });
 
@@ -857,6 +1078,20 @@ function createCommand(): CreateWorkOrderCommand {
   };
 }
 
+function assignCommand(workOrderId: string, label: string): AssignWorkOrderCommand {
+  return {
+    actorId: null,
+    assignedUserId: randomUUID(),
+    detailSnapshot: { reason: label },
+    expectedVersion: 0,
+    occurredAt: new Date("2026-08-20T01:15:00.000Z"),
+    scheduledAt: new Date("2026-08-21T01:00:00.000Z"),
+    slaDueAt: new Date("2026-08-22T01:00:00.000Z"),
+    source: source(label),
+    workOrderId
+  };
+}
+
 function transitionCommand(
   workOrderId: string,
   targetStatus: AssetWorkOrderStatus,
@@ -968,6 +1203,38 @@ async function expectCode(promise: Promise<unknown>, code: string) {
   }
 }
 
+async function expectReplayConsumesHandle(
+  database: FakeDatabase,
+  repository: AssetOperationsRepository,
+  workOrderId: string,
+  replay: (
+    handle: Awaited<ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>>
+  ) => Promise<{ wrote: boolean }>,
+  label: string
+) {
+  const baselineLockCount = workOrderUpdateLockCount(database, workOrderId);
+  const handle = await repository.lockWorkOrderForCommand(database.tx, workOrderId, []);
+  const replayed = await replay(handle);
+  expect(replayed.wrote, `${label} must be an exact replay`).toBe(false);
+  await repository.appendNote(
+    database.tx,
+    noteCommand(workOrderId, `after ${label} replay`, `after-${label}-replay`),
+    handle
+  );
+  expect
+    .soft(workOrderUpdateLockCount(database, workOrderId), `${label} replay must consume`)
+    .toBe(baselineLockCount + 2);
+}
+
+function workOrderUpdateLockCount(database: FakeDatabase, workOrderId: string) {
+  return database.rawQueries.filter(
+    ({ sql, values }) =>
+      sql.includes('FROM "asset_work_order"') &&
+      sql.includes("FOR UPDATE") &&
+      values.includes(workOrderId)
+  ).length;
+}
+
 type FakeDatabaseOptions = {
   advisoryLockError?: unknown;
   isolationLevel?: string;
@@ -980,6 +1247,7 @@ class FakeDatabase {
   readonly events: Array<Record<string, unknown>> = [];
   readonly files: Array<Record<string, unknown>> = [];
   readonly periods: Array<Record<string, unknown>> = [];
+  readonly rawQueries: Array<{ sql: string; values: readonly unknown[] }> = [];
   readonly restrictions: Array<Record<string, unknown>> = [];
   readonly vehicles: Array<Record<string, unknown>> = [];
   readonly workOrders: Array<Record<string, unknown>> = [];
@@ -1019,6 +1287,7 @@ class FakeDatabase {
   private buildTransaction() {
     const queryRaw = async (query: Prisma.Sql) => {
       const sql = query.strings.join("?");
+      this.rawQueries.push({ sql, values: query.values });
       if (sql.includes("current_setting('transaction_isolation')")) {
         return [
           {

@@ -510,7 +510,7 @@ export class AssetOperationsService {
     }
     const authority = await loadAuthority(tx, current);
     assertAuthorityConsistency(authority);
-    return { authority, before: lockHandle.header, lockHandle, workOrder: current };
+    return { authority, before: current, lockHandle, workOrder: current };
   }
 
   private async auditWorkOrderOutcome(

@@ -23,9 +23,11 @@ function enumValues(name: string) {
     .filter((line) => line.length > 0 && !line.startsWith("@@"));
 }
 
-describe("Stage 1C-B asset operations persistence contract", () => {
-  it("defines the approved work-order enums exactly", () => {
-    expect(enumValues("AssetWorkOrderType")).toEqual([
+const enumContracts = [
+  {
+    prismaName: "AssetWorkOrderType",
+    sqlName: "asset_work_order_type",
+    values: [
       "DELIVERY_OUTBOUND",
       "RETURN_INBOUND",
       "SWAP_OUTBOUND",
@@ -33,8 +35,12 @@ describe("Stage 1C-B asset operations persistence contract", () => {
       "RECOVERY",
       "RECONDITIONING",
       "MAINTENANCE"
-    ]);
-    expect(enumValues("AssetWorkOrderStatus")).toEqual([
+    ]
+  },
+  {
+    prismaName: "AssetWorkOrderStatus",
+    sqlName: "asset_work_order_status",
+    values: [
       "PENDING",
       "IN_PROGRESS",
       "WAITING_EXTERNAL",
@@ -42,14 +48,17 @@ describe("Stage 1C-B asset operations persistence contract", () => {
       "PENDING_COST_CONFIRMATION",
       "CLOSED",
       "CANCELLED"
-    ]);
-    expect(enumValues("AssetWorkOrderPriority")).toEqual([
-      "LOW",
-      "NORMAL",
-      "HIGH",
-      "URGENT"
-    ]);
-    expect(enumValues("AssetWorkOrderEventType")).toEqual([
+    ]
+  },
+  {
+    prismaName: "AssetWorkOrderPriority",
+    sqlName: "asset_work_order_priority",
+    values: ["LOW", "NORMAL", "HIGH", "URGENT"]
+  },
+  {
+    prismaName: "AssetWorkOrderEventType",
+    sqlName: "asset_work_order_event_type",
+    values: [
       "CREATED",
       "ASSIGNED",
       "STARTED",
@@ -66,13 +75,17 @@ describe("Stage 1C-B asset operations persistence contract", () => {
       "CLOSED",
       "CANCELLED",
       "NOTE_ADDED"
-    ]);
-    expect(enumValues("AssetWorkOrderEvidenceAction")).toEqual([
-      "ATTACH",
-      "SUPERSEDE",
-      "REMOVE"
-    ]);
-    expect(enumValues("AssetWorkOrderEvidenceType")).toEqual([
+    ]
+  },
+  {
+    prismaName: "AssetWorkOrderEvidenceAction",
+    sqlName: "asset_work_order_evidence_action",
+    values: ["ATTACH", "SUPERSEDE", "REMOVE"]
+  },
+  {
+    prismaName: "AssetWorkOrderEvidenceType",
+    sqlName: "asset_work_order_evidence_type",
+    values: [
       "PHOTO",
       "VIDEO",
       "DOCUMENT",
@@ -81,11 +94,12 @@ describe("Stage 1C-B asset operations persistence contract", () => {
       "THIRD_PARTY_RECEIPT",
       "INSPECTION_REPORT",
       "OTHER"
-    ]);
-  });
-
-  it("defines the approved operational-restriction enums exactly", () => {
-    expect(enumValues("VehicleOperationalRestrictionType")).toEqual([
+    ]
+  },
+  {
+    prismaName: "VehicleOperationalRestrictionType",
+    sqlName: "vehicle_operational_restriction_type",
+    values: [
       "RETURN_INSPECTION_PENDING",
       "REINSPECTION_PENDING",
       "RECONDITIONING_PENDING",
@@ -95,22 +109,62 @@ describe("Stage 1C-B asset operations persistence contract", () => {
       "EVIDENCE_EXCEPTION",
       "OWNERSHIP_EXCEPTION",
       "OTHER"
-    ]);
-    expect(enumValues("VehicleOperationalRestrictionSeverity")).toEqual([
-      "ADVISORY",
-      "BLOCKING"
-    ]);
-    expect(enumValues("VehicleOperationalRestrictionScope")).toEqual([
-      "ALLOCATION",
-      "DELIVERY",
-      "CUSTOMER_USE",
-      "INVENTORY_RELEASE"
-    ]);
-    expect(enumValues("VehicleOperationalRestrictionStatus")).toEqual([
-      "ACTIVE",
-      "RELEASED",
-      "VOIDED"
-    ]);
+    ]
+  },
+  {
+    prismaName: "VehicleOperationalRestrictionSeverity",
+    sqlName: "vehicle_operational_restriction_severity",
+    values: ["ADVISORY", "BLOCKING"]
+  },
+  {
+    prismaName: "VehicleOperationalRestrictionScope",
+    sqlName: "vehicle_operational_restriction_scope",
+    values: ["ALLOCATION", "DELIVERY", "CUSTOMER_USE", "INVENTORY_RELEASE"]
+  },
+  {
+    prismaName: "VehicleOperationalRestrictionStatus",
+    sqlName: "vehicle_operational_restriction_status",
+    values: ["ACTIVE", "RELEASED", "VOIDED"]
+  }
+] as const;
+
+function migrationEnumValues(name: string) {
+  const body = migration.match(new RegExp(`CREATE TYPE "${name}" AS ENUM \\(([^;]+)\\);`))?.[1];
+  return body ? Array.from(body.matchAll(/'([^']+)'/g), (match) => match[1]) : [];
+}
+
+function migrationFunction(name: string) {
+  return (
+    migration.match(new RegExp(`CREATE FUNCTION "${name}"\\(\\)[\\s\\S]*?\\n\\$\\$;`))?.[0] ?? ""
+  );
+}
+
+function migrationTrigger(name: string) {
+  return migration.match(new RegExp(`CREATE TRIGGER "${name}"[\\s\\S]*?;`))?.[0] ?? "";
+}
+
+function immutableRowFields(sql: string, prefix: "NEW" | "OLD") {
+  return Array.from(sql.matchAll(new RegExp(`${prefix}\\."([^"]+)"`, "g")), (match) => match[1]);
+}
+
+describe("Stage 1C-B asset operations persistence contract", () => {
+  it("defines all ten approved Prisma enums exactly", () => {
+    for (const contract of enumContracts) {
+      expect(enumValues(contract.prismaName), contract.prismaName).toEqual(contract.values);
+    }
+  });
+
+  it("ships all ten approved PostgreSQL enum definitions exactly", () => {
+    for (const contract of enumContracts) {
+      const sqlValues = migrationEnumValues(contract.sqlName);
+      expect(sqlValues, contract.sqlName).toEqual(contract.values);
+      expect(sqlValues, `${contract.sqlName} differs from Prisma`).toEqual(
+        enumValues(contract.prismaName)
+      );
+      expect(sqlValues, `${contract.sqlName} must not expose DEAD_LETTER`).not.toContain(
+        "DEAD_LETTER"
+      );
+    }
   });
 
   it("defines the four mapped fact models and their stable source identities", () => {
@@ -196,7 +250,9 @@ describe("Stage 1C-B asset operations persistence contract", () => {
 
     expect(restriction).toContain('@@map("vehicle_operational_restriction")');
     expect(restriction).toContain("@@unique([startSourceType, startSourceId, startSourceKey]");
-    expect(restriction).toContain("@@unique([releaseSourceType, releaseSourceId, releaseSourceKey]");
+    expect(restriction).toContain(
+      "@@unique([releaseSourceType, releaseSourceId, releaseSourceKey]"
+    );
     for (const field of [
       "vehicleId",
       "workOrderId",
@@ -253,25 +309,23 @@ describe("Stage 1C-B asset operations persistence contract", () => {
   it("enforces append-only event/evidence and the evidence action contract", () => {
     expect(migration).toContain('CREATE TRIGGER "asset_work_order_event_append_only"');
     expect(migration).toContain('CREATE TRIGGER "asset_work_order_evidence_append_only"');
-    expect(migration).toContain("BEFORE UPDATE OR DELETE ON \"asset_work_order_event\"");
-    expect(migration).toContain("BEFORE UPDATE OR DELETE ON \"asset_work_order_evidence\"");
+    expect(migration).toContain('BEFORE UPDATE OR DELETE ON "asset_work_order_event"');
+    expect(migration).toContain('BEFORE UPDATE OR DELETE ON "asset_work_order_evidence"');
     expect(migration).toContain(
       'CONSTRAINT "asset_work_order_event_occurred_not_future_chk" CHECK ("occurred_at" <= "recorded_at")'
     );
     expect(migration).toContain(
       'CONSTRAINT "asset_work_order_evidence_sha256_chk" CHECK ("content_sha256" IS NULL OR "content_sha256" ~ \'^[0-9a-f]{64}$\')'
     );
+    expect(migration).toContain('CONSTRAINT "asset_work_order_evidence_action_shape_chk"');
     expect(migration).toContain(
-      'CONSTRAINT "asset_work_order_evidence_action_shape_chk"'
+      '("action" = \'REMOVE\' AND "file_id" IS NULL AND "content_sha256" IS NULL AND "supersedes_evidence_id" IS NOT NULL)'
     );
     expect(migration).toContain(
-      "(\"action\" = 'REMOVE' AND \"file_id\" IS NULL AND \"content_sha256\" IS NULL AND \"supersedes_evidence_id\" IS NOT NULL)"
+      '("action" = \'ATTACH\' AND "file_id" IS NOT NULL AND "content_sha256" IS NOT NULL AND "supersedes_evidence_id" IS NULL)'
     );
     expect(migration).toContain(
-      "(\"action\" = 'ATTACH' AND \"file_id\" IS NOT NULL AND \"content_sha256\" IS NOT NULL AND \"supersedes_evidence_id\" IS NULL)"
-    );
-    expect(migration).toContain(
-      "(\"action\" = 'SUPERSEDE' AND \"file_id\" IS NOT NULL AND \"content_sha256\" IS NOT NULL AND \"supersedes_evidence_id\" IS NOT NULL)"
+      '("action" = \'SUPERSEDE\' AND "file_id" IS NOT NULL AND "content_sha256" IS NOT NULL AND "supersedes_evidence_id" IS NOT NULL)'
     );
     expect(migration).toContain(
       'CREATE UNIQUE INDEX "asset_work_order_evidence_supersedes_evidence_id_key" ON "asset_work_order_evidence"("supersedes_evidence_id")'
@@ -285,14 +339,58 @@ describe("Stage 1C-B asset operations persistence contract", () => {
     expect(migration).toContain(
       'CONSTRAINT "vehicle_operational_restriction_release_after_start_chk" CHECK ("released_at" IS NULL OR "released_at" >= "started_at")'
     );
+    expect(migration).toContain('CONSTRAINT "vehicle_operational_restriction_release_tuple_chk"');
     expect(migration).toContain(
-      'CONSTRAINT "vehicle_operational_restriction_release_tuple_chk"'
+      '("status" = \'ACTIVE\' AND "released_at" IS NULL AND "released_by" IS NULL AND "release_reason" IS NULL AND "release_snapshot" IS NULL AND "release_source_type" IS NULL AND "release_source_id" IS NULL AND "release_source_key" IS NULL)'
     );
     expect(migration).toContain(
-      "(\"status\" = 'ACTIVE' AND \"released_at\" IS NULL AND \"released_by\" IS NULL AND \"release_reason\" IS NULL AND \"release_snapshot\" IS NULL AND \"release_source_type\" IS NULL AND \"release_source_id\" IS NULL AND \"release_source_key\" IS NULL)"
+      '("status" IN (\'RELEASED\', \'VOIDED\') AND "released_at" IS NOT NULL AND "released_by" IS NOT NULL AND "release_reason" IS NOT NULL AND "release_snapshot" IS NOT NULL AND "release_source_type" IS NOT NULL AND "release_source_id" IS NOT NULL AND "release_source_key" IS NOT NULL)'
     );
-    expect(migration).toContain(
-      "(\"status\" IN ('RELEASED', 'VOIDED') AND \"released_at\" IS NOT NULL AND \"released_by\" IS NOT NULL AND \"release_reason\" IS NOT NULL AND \"release_snapshot\" IS NOT NULL AND \"release_source_type\" IS NOT NULL AND \"release_source_id\" IS NOT NULL AND \"release_source_key\" IS NOT NULL)"
+  });
+
+  it("installs the named restriction trigger and rejects deletes", () => {
+    const functionSql = migrationFunction("enforce_vehicle_operational_restriction_release");
+    const triggerSql = migrationTrigger("vehicle_operational_restriction_release_only");
+
+    expect(functionSql).toContain("IF TG_OP = 'DELETE' THEN");
+    expect(triggerSql).toContain('CREATE TRIGGER "vehicle_operational_restriction_release_only"');
+    expect(triggerSql).toContain('BEFORE UPDATE OR DELETE ON "vehicle_operational_restriction"');
+    expect(triggerSql).toContain(
+      'EXECUTE FUNCTION "enforce_vehicle_operational_restriction_release"()'
     );
+  });
+
+  it("allows a restriction to close only once from ACTIVE", () => {
+    const functionSql = migrationFunction("enforce_vehicle_operational_restriction_release");
+
+    expect(functionSql).toContain(
+      "IF OLD.\"status\" <> 'ACTIVE' OR NEW.\"status\" = 'ACTIVE' THEN"
+    );
+  });
+
+  it("compares every immutable restriction-start field on release", () => {
+    const functionSql = migrationFunction("enforce_vehicle_operational_restriction_release");
+    const comparison = functionSql.match(
+      /IF ROW\(([\s\S]*?)\)\s+IS DISTINCT FROM ROW\(([\s\S]*?)\)\s+THEN/
+    );
+    expect(comparison, "missing immutable restriction-start row comparison").not.toBeNull();
+    const immutableFields = [
+      "id",
+      "vehicle_id",
+      "work_order_id",
+      "restriction_type",
+      "severity",
+      "scopes",
+      "started_at",
+      "conditions_snapshot",
+      "evidence_snapshot",
+      "start_source_type",
+      "start_source_id",
+      "start_source_key",
+      "created_at",
+      "created_by"
+    ];
+    expect(immutableRowFields(comparison?.[1] ?? "", "NEW")).toEqual(immutableFields);
+    expect(immutableRowFields(comparison?.[2] ?? "", "OLD")).toEqual(immutableFields);
   });
 });

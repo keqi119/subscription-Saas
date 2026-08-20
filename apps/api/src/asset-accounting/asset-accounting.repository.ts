@@ -289,20 +289,23 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     source: AssetAccountingSource
   ): Promise<void> {
-    assertAssetAccountingSource(source);
+    const normalized = normalizeAssetAccountingSource(source);
     await assertTransactionContract(tx);
-    const exactTuple = JSON.stringify([source.type, source.id, source.key]);
+    const exactTuple = JSON.stringify([normalized.type, normalized.id, normalized.key]);
     await tx.$queryRaw(
       Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${exactTuple}, 0))`
     );
   }
 
-  async lockBusinessExceptionSubject(
+  async lockBusinessExceptionSourceAndSubject(
     tx: Prisma.TransactionClient,
+    source: AssetAccountingSource,
     subject: BusinessExceptionSubjectIdentity
   ): Promise<void> {
-    await assertTransactionContract(tx);
-    await takeBusinessExceptionSubjectLock(tx, subject);
+    const normalizedSource = normalizeApprovalSource(source);
+    const normalizedSubject = normalizeApprovalSubject(subject);
+    await this.lockSourceOwnership(tx, normalizedSource);
+    await takeBusinessExceptionSubjectLock(tx, normalizedSubject);
   }
 
   async requestExceptionApproval(
@@ -653,16 +656,16 @@ async function assertTransactionContract(tx: Prisma.TransactionClient) {
 }
 
 function normalizeAppendCommand(command: AppendCostEntryCommand): NormalizedAppendCommand {
-  assertAssetAccountingSource(command.source);
-  requireNonBlank(command.actorId);
-  requireNonBlank(command.vehicleId);
+  const source = normalizeAssetAccountingSource(command.source);
+  const actorId = canonicalUuid(command.actorId, "actorId");
+  const vehicleId = canonicalUuid(command.vehicleId, "vehicleId");
   assertVehicleCostAmountCents(command.amountCents);
   if (command.amountCents <= 0n) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND);
   assertAccountingPeriod(command.accountingPeriod);
   assertValidDate(command.occurredOn);
   assertValidDate(command.confirmedAt);
-  const assetOwnerId = command.assetOwnerId ?? null;
-  const evidenceId = command.evidenceId ?? null;
+  const assetOwnerId = canonicalOptionalUuid(command.assetOwnerId, "assetOwnerId");
+  const evidenceId = canonicalOptionalUuid(command.evidenceId, "evidenceId");
   const assetOwnerSnapshot = normalizeNullableSnapshot(command.assetOwnerSnapshot);
   const evidenceSnapshot = normalizeNullableSnapshot(command.evidenceSnapshot);
   if ((assetOwnerId === null) !== (assetOwnerSnapshot === null)) {
@@ -673,25 +676,28 @@ function normalizeAppendCommand(command: AppendCostEntryCommand): NormalizedAppe
   }
   return {
     ...command,
+    actorId,
     assetOwnerId,
     assetOwnerSnapshot,
-    contractId: command.contractId ?? null,
-    customerId: command.customerId ?? null,
+    contractId: canonicalOptionalUuid(command.contractId, "contractId"),
+    customerId: canonicalOptionalUuid(command.customerId, "customerId"),
     evidenceId,
     evidenceSnapshot,
-    orderId: command.orderId ?? null,
-    responsiblePartyId: command.responsiblePartyId ?? null,
+    orderId: canonicalOptionalUuid(command.orderId, "orderId"),
+    responsiblePartyId: canonicalOptionalUuid(command.responsiblePartyId, "responsiblePartyId"),
     responsibilitySnapshot: normalizeSnapshot(command.responsibilitySnapshot),
-    workOrderId: command.workOrderId ?? null
+    source,
+    vehicleId,
+    workOrderId: canonicalOptionalUuid(command.workOrderId, "workOrderId")
   };
 }
 
 function normalizeReverseCommand(command: ReverseCostEntryCommand): ReverseCostEntryCommand {
-  assertAssetAccountingSource(command.source);
-  requireNonBlank(command.actorId);
-  requireNonBlank(command.originalEntryId);
+  const source = normalizeAssetAccountingSource(command.source);
+  const actorId = canonicalUuid(command.actorId, "actorId");
+  const originalEntryId = canonicalUuid(command.originalEntryId, "originalEntryId");
   assertValidDate(command.confirmedAt);
-  return command;
+  return { ...command, actorId, originalEntryId, source };
 }
 
 const BUSINESS_EXCEPTION_TYPES: readonly BusinessExceptionType[] = [
@@ -718,17 +724,17 @@ function normalizeApprovalSubject(
   if (!subject || typeof subject !== "object") {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
-  requireApprovalNonBlank(subject.subjectId);
+  const subjectId = canonicalApprovalUuid(subject.subjectId);
   requireApprovalNonBlank(subject.subjectField);
   if (!BUSINESS_EXCEPTION_SUBJECT_TYPES.includes(subject.subjectType)) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
-  return subject;
+  return { ...subject, subjectId };
 }
 
 function normalizeApprovalSource(source: AssetAccountingSource) {
   try {
-    assertAssetAccountingSource(source);
+    return normalizeAssetAccountingSource(source);
   } catch {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
@@ -745,8 +751,8 @@ function normalizeApprovalSnapshot(snapshot: unknown): Prisma.JsonObject {
 function normalizeRequestApprovalCommand(
   command: RequestExceptionApprovalCommand
 ): NormalizedRequestApprovalCommand {
-  normalizeApprovalSource(command.source);
-  requireApprovalNonBlank(command.requestedBy);
+  const source = normalizeApprovalSource(command.source);
+  const requestedBy = canonicalApprovalUuid(command.requestedBy);
   requireApprovalNonBlank(command.requestReason);
   assertApprovalDate(command.requestedAt);
   if (!BUSINESS_EXCEPTION_TYPES.includes(command.exceptionType)) {
@@ -759,6 +765,8 @@ function normalizeRequestApprovalCommand(
       command.requestEvidenceSnapshot === null || command.requestEvidenceSnapshot === undefined
         ? null
         : normalizeApprovalSnapshot(command.requestEvidenceSnapshot),
+    requestedBy,
+    source,
     subject: normalizeApprovalSubject(command.subject)
   };
 }
@@ -766,9 +774,9 @@ function normalizeRequestApprovalCommand(
 function normalizeDecisionCommand(
   command: DecideExceptionApprovalCommand
 ): NormalizedDecisionCommand {
-  normalizeApprovalSource(command.source);
-  requireApprovalNonBlank(command.approvalId);
-  requireApprovalNonBlank(command.decidedBy);
+  const source = normalizeApprovalSource(command.source);
+  const approvalId = canonicalApprovalUuid(command.approvalId);
+  const decidedBy = canonicalApprovalUuid(command.decidedBy);
   requireApprovalNonBlank(command.decisionComment);
   assertApprovalDate(command.decidedAt);
   assertExpectedApprovalVersion(command.expectedVersion);
@@ -780,7 +788,10 @@ function normalizeDecisionCommand(
   }
   return {
     ...command,
+    approvalId,
     authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot),
+    decidedBy,
+    source,
     subject: normalizeApprovalSubject(command.subject)
   };
 }
@@ -788,16 +799,22 @@ function normalizeDecisionCommand(
 function normalizeExpireCommand(
   command: ExpireExceptionApprovalCommand
 ): ExpireExceptionApprovalCommand {
-  normalizeApprovalSource(command.source);
-  requireApprovalNonBlank(command.approvalId);
-  requireApprovalNonBlank(command.expiredBy);
+  const source = normalizeApprovalSource(command.source);
+  const approvalId = canonicalApprovalUuid(command.approvalId);
+  const expiredBy = canonicalApprovalUuid(command.expiredBy);
   requireApprovalNonBlank(command.expiryReason);
   assertApprovalDate(command.expiredAt);
   assertExpectedApprovalVersion(command.expectedVersion);
   if (!BUSINESS_EXCEPTION_TYPES.includes(command.exceptionType)) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
-  return { ...command, subject: normalizeApprovalSubject(command.subject) };
+  return {
+    ...command,
+    approvalId,
+    expiredBy,
+    source,
+    subject: normalizeApprovalSubject(command.subject)
+  };
 }
 
 function normalizeRequireCurrentCommand(
@@ -1542,6 +1559,9 @@ function normalizeDatabaseError(error: unknown): unknown {
     if (isSourceUniqueTarget(target)) {
       return conflict(ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
     }
+    if (isLiveApprovalUniqueTarget(target)) {
+      return conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE);
+    }
     return conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
   }
   if (code === "23505") return conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
@@ -1635,7 +1655,10 @@ function prismaUniqueTarget(error: unknown): readonly string[] {
   }
   const kind = consistentUniqueTargetKind(evidence);
   if (kind === "reversal") return ["vehicle_cost_ledger_entry_reversal_of_entry_id_key"];
-  return kind === "source" ? ["asset_accounting_command_receipt_source_key"] : [];
+  if (kind === "source") return ["asset_accounting_command_receipt_source_key"];
+  return kind === "live-approval"
+    ? ["business_exception_approval_live_subject_field_snapshot_key"]
+    : [];
 }
 
 function p2002AdapterCause(error: Record<string, unknown>) {
@@ -1682,11 +1705,12 @@ function adapterConstraintTarget(value: unknown) {
   return isRecord(value) ? directStringTarget(value.fields) : undefined;
 }
 
-type UniqueTargetKind = "reversal" | "source";
+type UniqueTargetKind = "live-approval" | "reversal" | "source";
 
 function uniqueTargetKind(target: readonly string[]): UniqueTargetKind | undefined {
   if (isReversalUniqueTarget(target)) return "reversal";
   if (isSourceUniqueTarget(target)) return "source";
+  if (isLiveApprovalUniqueTarget(target)) return "live-approval";
   return undefined;
 }
 
@@ -1714,6 +1738,22 @@ function isSourceUniqueTarget(target: readonly string[]) {
   return (
     normalized === ["sourceId", "sourceKey", "sourceType"].sort().join(":") ||
     normalized === ["source_id", "source_key", "source_type"].sort().join(":")
+  );
+}
+
+function isLiveApprovalUniqueTarget(target: readonly string[]) {
+  if (
+    target.length === 1 &&
+    target[0] === "business_exception_approval_live_subject_field_snapshot_key"
+  ) {
+    return true;
+  }
+  const normalized = [...target].sort().join(":");
+  return (
+    normalized ===
+      ["subjectType", "subjectId", "subjectField", "subjectSnapshotHash"].sort().join(":") ||
+    normalized ===
+      ["subject_type", "subject_id", "subject_field", "subject_snapshot_hash"].sort().join(":")
   );
 }
 
@@ -1761,9 +1801,29 @@ function nullableString(value: unknown) {
   return value === null || value === undefined ? null : String(value);
 }
 
-function requireNonBlank(value: unknown) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function canonicalUuid(value: unknown, field: string) {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value.trim())) {
+    throw new TypeError(`${field} must be a UUID`);
+  }
+  return value.trim().toLowerCase();
+}
+
+function canonicalOptionalUuid(value: unknown, field: string) {
+  return value === null || value === undefined ? null : canonicalUuid(value, field);
+}
+
+function normalizeAssetAccountingSource(source: AssetAccountingSource): AssetAccountingSource {
+  assertAssetAccountingSource(source);
+  return { ...source, id: canonicalUuid(source.id, "source.id") };
+}
+
+function canonicalApprovalUuid(value: unknown) {
+  try {
+    return canonicalUuid(value, "approval identity");
+  } catch {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
 }
 

@@ -14,6 +14,10 @@ import {
   type RequireCurrentApprovedExceptionCommand,
   type ReverseCostEntryCommand
 } from "../src/asset-accounting/asset-accounting.repository";
+import {
+  canonicalAssetAccountingJson,
+  hashBusinessExceptionSnapshot
+} from "../src/asset-accounting/asset-accounting.domain";
 import { PrismaService } from "../src/prisma/prisma.service";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
@@ -792,6 +796,205 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     ).resolves.toBe(1);
   });
 
+  it("rolls back both a requested approval and its receipt when the caller aborts", async () => {
+    const repository = new AssetAccountingRepository();
+    const command = requestApprovalCommand(fixture, "approval-request-caller-rollback");
+    const abort = new Error("abort request fixture transaction");
+
+    await expect(
+      readCommitted(prisma, async (tx) => {
+        await repository.requestExceptionApproval(tx, command);
+        throw abort;
+      })
+    ).rejects.toBe(abort);
+    await expect(
+      prisma.businessExceptionApproval.count({
+        where: { requestSourceKey: command.source.key }
+      })
+    ).resolves.toBe(0);
+    await expect(countReceipts(prisma, command.source)).resolves.toBe(0);
+  });
+
+  it("rolls back a decision to PENDING v0 with no decision receipt when the caller aborts", async () => {
+    const repository = new AssetAccountingRepository();
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        tx,
+        requestApprovalCommand(fixture, "approval-decision-rollback-request")
+      )
+    );
+    const command = decideApprovalCommand(
+      fixture,
+      request.outcome.id,
+      "approval-decision-caller-rollback"
+    );
+    const abort = new Error("abort decision fixture transaction");
+
+    await expect(
+      readCommitted(prisma, async (tx) => {
+        await repository.decideExceptionApproval(tx, command);
+        throw abort;
+      })
+    ).rejects.toBe(abort);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
+    ).resolves.toMatchObject({ decision: null, status: "PENDING", version: 0 });
+    await expect(countReceipts(prisma, command.source)).resolves.toBe(0);
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
+        tx,
+        expireApprovalCommand(fixture, request.outcome.id, 0, "approval-decision-rollback-cleanup")
+      )
+    );
+  });
+
+  it("rolls back expiry from both PENDING and APPROVED with no expiry receipt", async () => {
+    const repository = new AssetAccountingRepository();
+
+    for (const priorStatus of ["PENDING", "APPROVED"] as const) {
+      const request = await readCommitted(prisma, (tx) =>
+        repository.requestExceptionApproval(
+          tx,
+          requestApprovalCommand(fixture, `approval-${priorStatus}-expiry-rollback-request`)
+        )
+      );
+      const prior =
+        priorStatus === "APPROVED"
+          ? await readCommitted(prisma, (tx) =>
+              repository.decideExceptionApproval(
+                tx,
+                decideApprovalCommand(
+                  fixture,
+                  request.outcome.id,
+                  `approval-${priorStatus}-expiry-rollback-approve`
+                )
+              )
+            )
+          : request;
+      const command = expireApprovalCommand(
+        fixture,
+        prior.outcome.id,
+        prior.outcome.version,
+        `approval-${priorStatus}-expiry-caller-rollback`
+      );
+      const abort = new Error(`abort ${priorStatus} expiry fixture transaction`);
+
+      await expect(
+        readCommitted(prisma, async (tx) => {
+          await repository.expireExceptionApproval(tx, command);
+          throw abort;
+        })
+      ).rejects.toBe(abort);
+      await expect(
+        prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: prior.outcome.id } })
+      ).resolves.toMatchObject({
+        status: priorStatus,
+        version: prior.outcome.version
+      });
+      await expect(countReceipts(prisma, command.source)).resolves.toBe(0);
+      await readCommitted(prisma, (tx) =>
+        repository.expireExceptionApproval(
+          tx,
+          expireApprovalCommand(
+            fixture,
+            prior.outcome.id,
+            prior.outcome.version,
+            `approval-${priorStatus}-expiry-rollback-cleanup`
+          )
+        )
+      );
+    }
+  });
+
+  it("rolls back a decision when its immutable receipt loses a real unique race", async () => {
+    const repository = new AssetAccountingRepository();
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        tx,
+        requestApprovalCommand(fixture, "approval-receipt-failure-request")
+      )
+    );
+    const command = decideApprovalCommand(
+      fixture,
+      request.outcome.id,
+      "approval-decision-receipt-failure"
+    );
+    const receiptTargetRequestCommand = {
+      ...requestApprovalCommand(fixture, "approval-receipt-failure-target-request"),
+      subject: {
+        ...approvalSubject(fixture),
+        subjectField: "fixtureReceiptFailureTarget"
+      }
+    };
+    const receiptTarget = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(tx, receiptTargetRequestCommand)
+    );
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(tx, {
+        ...expireApprovalCommand(
+          fixture,
+          receiptTarget.outcome.id,
+          0,
+          "approval-receipt-failure-target-expire"
+        ),
+        subject: receiptTargetRequestCommand.subject
+      })
+    );
+    const rawReady = deferred<void>();
+    const releaseRaw = deferred<void>();
+    const rawReceipt = readCommitted(prisma, async (tx) => {
+      await tx.assetAccountingCommandReceipt.create({
+        data: {
+          actorId: fixture.userId,
+          approvalId: receiptTarget.outcome.id,
+          commandType: "EXCEPTION_REQUEST",
+          costEntryId: null,
+          id: randomUUID(),
+          outcomeSnapshot: {},
+          payloadHash: "a".repeat(64),
+          payloadSnapshot: {},
+          sourceId: command.source.id,
+          sourceKey: command.source.key,
+          sourceType: command.source.type
+        }
+      });
+      rawReady.resolve();
+      await releaseRaw.promise;
+    });
+    void rawReceipt.catch(rawReady.reject);
+    await rawReady.promise;
+
+    const decision = settled(
+      readCommitted(prisma, (tx) => repository.decideExceptionApproval(tx, command))
+    );
+    const waitedForReceipt = await waitForDatabaseLock(prisma, "asset_accounting_command_receipt");
+    releaseRaw.resolve();
+    await rawReceipt;
+    const decisionResult = await decision;
+
+    expect(waitedForReceipt).toBe(true);
+    expectConflict(rejectedValue(decisionResult), ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
+    ).resolves.toMatchObject({ decision: null, status: "PENDING", version: 0 });
+    await expect(
+      prisma.assetAccountingCommandReceipt.count({
+        where: {
+          commandType: "EXCEPTION_DECIDE",
+          sourceId: command.source.id,
+          sourceKey: command.source.key,
+          sourceType: command.source.type
+        }
+      })
+    ).resolves.toBe(0);
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
+        tx,
+        expireApprovalCommand(fixture, request.outcome.id, 0, "approval-receipt-failure-cleanup")
+      )
+    );
+  });
+
   it("serializes different-source requests on the shared subject lock and leaves one live approval", async () => {
     const repository = new AssetAccountingRepository();
     const firstCommand = requestApprovalCommand(fixture, "approval-request-race-first");
@@ -836,88 +1039,131 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     );
   });
 
-  it("serializes decision versus fact-revision expiry and cannot leave stale APPROVED authority", async () => {
+  it("serializes case-only source UUID retries as one request write and one exact replay", async () => {
     const repository = new AssetAccountingRepository();
-    const request = await readCommitted(prisma, (tx) =>
-      repository.requestExceptionApproval(
-        tx,
-        requestApprovalCommand(fixture, "approval-decision-first-request")
-      )
+    const command = requestApprovalCommand(fixture, "approval-source-case-retry");
+    const holder = await holdCompletedCommand(prisma, (tx) =>
+      repository.requestExceptionApproval(tx, command)
     );
-    const decideCommand = decideApprovalCommand(
-      fixture,
-      request.outcome.id,
-      "approval-decision-first-decide"
+    const retryPromise = readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(tx, {
+        ...command,
+        source: { ...command.source, id: command.source.id.toUpperCase() }
+      })
     );
-    const decisionHolder = await holdCompletedCommand(prisma, (tx) =>
-      repository.decideExceptionApproval(tx, decideCommand)
-    );
-    const expiryCommand = expireApprovalCommand(
-      fixture,
-      request.outcome.id,
-      1,
-      "approval-decision-first-revision-expire"
-    );
-    const expiryPromise = readCommitted(prisma, async (tx) => {
-      await repository.lockBusinessExceptionSubject(tx, approvalSubject(fixture));
-      return repository.expireExceptionApproval(tx, expiryCommand);
-    });
 
     expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
-    decisionHolder.release.resolve();
-    const [decision, expiry] = await Promise.all([decisionHolder.result, expiryPromise]);
-    expect(decision.outcome).toMatchObject({ status: "APPROVED", version: 1 });
-    expect(expiry.outcome).toMatchObject({ status: "EXPIRED", version: 2 });
+    holder.release.resolve();
+    const [first, retry] = await Promise.all([holder.result, retryPromise]);
+    expect(first.wrote).toBe(true);
+    expect(retry).toEqual({ outcome: first.outcome, wrote: false });
+    await expect(countReceipts(prisma, command.source)).resolves.toBe(1);
     await expect(
-      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
-    ).resolves.toMatchObject({ status: "EXPIRED", version: 2 });
-    const replay = await readCommitted(prisma, (tx) =>
-      repository.expireExceptionApproval(tx, expiryCommand)
-    );
-    expect(replay).toEqual({ outcome: expiry.outcome, wrote: false });
-    await expect(countReceipts(prisma, decideCommand.source)).resolves.toBe(1);
-    await expect(countReceipts(prisma, expiryCommand.source)).resolves.toBe(1);
-  });
-
-  it("lets fact-revision expiry win the subject lock and leaves no losing decision receipt", async () => {
-    const repository = new AssetAccountingRepository();
-    const request = await readCommitted(prisma, (tx) =>
-      repository.requestExceptionApproval(
+      prisma.businessExceptionApproval.count({
+        where: { requestSourceKey: command.source.key }
+      })
+    ).resolves.toBe(1);
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
         tx,
-        requestApprovalCommand(fixture, "approval-expiry-first-request")
+        expireApprovalCommand(
+          fixture,
+          first.outcome.id,
+          first.outcome.version,
+          "approval-source-case-cleanup"
+        )
       )
     );
+  });
+
+  it("uses source-first owning-fact composition for revision, exact retry, and a racing decision", async () => {
+    const repository = new AssetAccountingRepository();
+    const initialRemark = `${FIXTURE_PREFIX}:approval-fact-v1`;
+    const revisedRemark = `${FIXTURE_PREFIX}:approval-fact-v2`;
+    await prisma.vehicle.update({
+      data: { remark: initialRemark },
+      where: { id: fixture.vehicleId }
+    });
+    const requestCommand = requestApprovalCommand(fixture, "approval-fact-revision-request");
+    const request = await readCommitted(prisma, async (tx) => {
+      await repository.lockBusinessExceptionSourceAndSubject(
+        tx,
+        requestCommand.source,
+        requestCommand.subject
+      );
+      const authoritySnapshot = await lockVehicleRemarkSnapshot(tx, fixture.vehicleId);
+      return repository.requestExceptionApproval(tx, { ...requestCommand, authoritySnapshot });
+    });
     const expiryCommand = expireApprovalCommand(
       fixture,
       request.outcome.id,
       0,
-      "approval-expiry-first-revision"
+      "approval-fact-revision-expire"
     );
-    const expiryHolder = await holdCompletedCommand(prisma, async (tx) => {
-      await repository.lockBusinessExceptionSubject(tx, approvalSubject(fixture));
-      return repository.expireExceptionApproval(tx, expiryCommand);
+    const revisionReady = deferred<RequireCurrentApprovedExceptionCommand["authoritySnapshot"]>();
+    const releaseRevision = deferred<void>();
+    const revisionResult = readCommitted(prisma, async (tx) => {
+      await repository.lockBusinessExceptionSourceAndSubject(
+        tx,
+        expiryCommand.source,
+        expiryCommand.subject
+      );
+      await lockVehicleRemarkSnapshot(tx, fixture.vehicleId);
+      await tx.vehicle.update({
+        data: { remark: revisedRemark },
+        where: { id: fixture.vehicleId }
+      });
+      const authoritySnapshot = await currentVehicleRemarkSnapshot(tx, fixture.vehicleId);
+      revisionReady.resolve(authoritySnapshot);
+      await releaseRevision.promise;
+      const expiry = await repository.expireExceptionApproval(tx, expiryCommand);
+      return { authoritySnapshot, expiry };
     });
+    void revisionResult.catch(revisionReady.reject);
+    const revisedSnapshot = await revisionReady.promise;
+    expect(revisedSnapshot).toEqual({ remark: revisedRemark });
+
+    const retryPromise = readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(tx, expiryCommand)
+    );
     const decisionCommand = decideApprovalCommand(
       fixture,
       request.outcome.id,
-      "approval-expiry-first-decision"
+      "approval-fact-revision-decision"
     );
     const decisionPromise = settled(
-      readCommitted(prisma, (tx) => repository.decideExceptionApproval(tx, decisionCommand))
+      readCommitted(prisma, async (tx) => {
+        await repository.lockBusinessExceptionSourceAndSubject(
+          tx,
+          decisionCommand.source,
+          decisionCommand.subject
+        );
+        const authoritySnapshot = await lockVehicleRemarkSnapshot(tx, fixture.vehicleId);
+        return repository.decideExceptionApproval(tx, {
+          ...decisionCommand,
+          authoritySnapshot
+        });
+      })
     );
 
-    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
-    expiryHolder.release.resolve();
-    const expiry = await expiryHolder.result;
-    expect(expiry.outcome).toMatchObject({ status: "EXPIRED", version: 1 });
-    expectConflict(
-      rejectedValue(await decisionPromise),
-      ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_VERSION_CONFLICT
-    );
+    expect(await waitForDatabaseLockCount(prisma, "pg_advisory_xact_lock", 2)).toBe(true);
+    releaseRevision.resolve();
+    const [revision, retry, decision] = await Promise.all([
+      revisionResult,
+      retryPromise,
+      decisionPromise
+    ]);
+    expect(revision.expiry.outcome).toMatchObject({ status: "EXPIRED", version: 1 });
+    expect(retry).toEqual({ outcome: revision.expiry.outcome, wrote: false });
+    expectConflict(rejectedValue(decision), ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_VERSION_CONFLICT);
     await expect(countReceipts(prisma, decisionCommand.source)).resolves.toBe(0);
+    await expect(countReceipts(prisma, expiryCommand.source)).resolves.toBe(1);
     await expect(
       prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
     ).resolves.toMatchObject({ status: "EXPIRED", version: 1 });
+    await expect(
+      prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } })
+    ).resolves.toMatchObject({ remark: revisedRemark });
   });
 
   it("uses FOR UPDATE NOWAIT for an existing approval row", async () => {
@@ -954,6 +1200,94 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       release.resolve();
       await holder;
     }
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
+        tx,
+        expireApprovalCommand(fixture, request.outcome.id, 0, "approval-nowait-cleanup")
+      )
+    );
+  });
+
+  it("normalizes the real Prisma adapter shape for the live-approval partial unique index", async () => {
+    const repository = new AssetAccountingRepository();
+    const command = requestApprovalCommand(fixture, "approval-live-index-contender");
+    const rawApprovalId = randomUUID();
+    const requestEvidenceSnapshot = JSON.parse(
+      canonicalAssetAccountingJson(command.requestEvidenceSnapshot)
+    ) as Prisma.InputJsonObject;
+    const subjectSnapshot = JSON.parse(
+      canonicalAssetAccountingJson(command.authoritySnapshot)
+    ) as Prisma.InputJsonObject;
+    const rawReady = deferred<void>();
+    const releaseRaw = deferred<void>();
+    const rawHolder = readCommitted(prisma, async (tx) => {
+      await tx.businessExceptionApproval.create({
+        data: {
+          approvalNo: `BEA-${rawApprovalId}`,
+          exceptionType: command.exceptionType,
+          id: rawApprovalId,
+          requestEvidenceSnapshot,
+          requestReason: "unregistered writer fixture",
+          requestSourceId: randomUUID(),
+          requestSourceKey: `${FIXTURE_PREFIX}:approval-live-index-holder`,
+          requestSourceType: "RAW_FIXTURE",
+          requestedAt: command.requestedAt,
+          requestedBy: fixture.userId,
+          status: "PENDING",
+          subjectField: command.subject.subjectField,
+          subjectId: command.subject.subjectId,
+          subjectSnapshot,
+          subjectSnapshotHash: hashBusinessExceptionSnapshot(command.authoritySnapshot),
+          subjectType: command.subject.subjectType,
+          version: 0
+        }
+      });
+      rawReady.resolve();
+      await releaseRaw.promise;
+    });
+    void rawHolder.catch(rawReady.reject);
+    await rawReady.promise;
+
+    let observedAdapterError: unknown;
+    const contender = settled(
+      readCommitted(prisma, (tx) =>
+        repository.requestExceptionApproval(
+          observeApprovalCreateError(tx, (error) => {
+            observedAdapterError = error;
+          }),
+          command
+        )
+      )
+    );
+    expect(await waitForDatabaseLock(prisma, "business_exception_approval")).toBe(true);
+    releaseRaw.resolve();
+    await rawHolder;
+    const normalized = rejectedValue(await contender);
+
+    expect(observedAdapterError).toMatchObject({
+      code: "P2002",
+      meta: {
+        driverAdapterError: {
+          cause: {
+            constraint: {
+              fields: ["subject_type", "subject_id", "subject_field", "subject_snapshot_hash"]
+            },
+            kind: "UniqueConstraintViolation",
+            originalCode: "23505",
+            originalMessage:
+              'duplicate key value violates unique constraint "business_exception_approval_live_subject_field_snapshot_key"'
+          }
+        }
+      }
+    });
+    expectConflict(normalized, ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE);
+    await expect(countReceipts(prisma, command.source)).resolves.toBe(0);
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
+        tx,
+        expireApprovalCommand(fixture, rawApprovalId, 0, "approval-live-index-cleanup")
+      )
+    );
   });
 });
 
@@ -1328,6 +1662,35 @@ function readCommitted<T>(
   });
 }
 
+function observeApprovalCreateError(
+  tx: Prisma.TransactionClient,
+  observe: (error: unknown) => void
+) {
+  const approvalDelegate = new Proxy(tx.businessExceptionApproval, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (property === "create" && typeof value === "function") {
+        return async (...args: unknown[]) => {
+          try {
+            return await value.apply(target, args);
+          } catch (error) {
+            observe(error);
+            throw error;
+          }
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  return new Proxy(tx, {
+    get(target, property) {
+      if (property === "businessExceptionApproval") return approvalDelegate;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
 async function holdCompletedCommand<T>(
   prisma: PrismaService,
   callback: (tx: Prisma.TransactionClient) => Promise<T>
@@ -1345,6 +1708,25 @@ async function holdCompletedCommand<T>(
   return { release, result };
 }
 
+async function lockVehicleRemarkSnapshot(tx: Prisma.TransactionClient, vehicleId: string) {
+  const [vehicle] = await tx.$queryRaw<Array<{ remark: string | null }>>(Prisma.sql`
+    SELECT "remark"
+    FROM "vehicle"
+    WHERE "id" = ${vehicleId}::uuid
+    FOR UPDATE NOWAIT
+  `);
+  if (!vehicle) throw new Error("missing vehicle fact fixture");
+  return { remark: vehicle.remark };
+}
+
+async function currentVehicleRemarkSnapshot(tx: Prisma.TransactionClient, vehicleId: string) {
+  const vehicle = await tx.vehicle.findUniqueOrThrow({
+    select: { remark: true },
+    where: { id: vehicleId }
+  });
+  return { remark: vehicle.remark };
+}
+
 async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const [status] = await prisma.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
@@ -1359,6 +1741,27 @@ async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string)
       ) AS "waiting"
     `);
     if (status?.waiting) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
+async function waitForDatabaseLockCount(
+  prisma: PrismaService,
+  queryFragment: string,
+  minimumCount: number
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [status] = await prisma.$queryRaw<Array<{ waitingCount: bigint }>>(Prisma.sql`
+      SELECT count(*)::bigint AS "waitingCount"
+      FROM pg_stat_activity
+      WHERE "pid" <> pg_backend_pid()
+        AND "datname" = current_database()
+        AND "state" = 'active'
+        AND "wait_event_type" = 'Lock'
+        AND "query" ILIKE ${`%${queryFragment}%`}
+    `);
+    if (Number(status?.waitingCount ?? 0n) >= minimumCount) return true;
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
   return false;

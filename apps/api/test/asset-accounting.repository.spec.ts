@@ -1055,10 +1055,132 @@ describe("AssetAccountingRepository", () => {
           command.subject.subjectField
         ])
       );
+      expect(
+        businessExceptionSubjectLockIdentity({
+          ...command.subject,
+          subjectId: command.subject.subjectId.toUpperCase()
+        })
+      ).toBe(businessExceptionSubjectLockIdentity(command.subject));
       await expectCode(
         new AssetAccountingRepository().requestExceptionApproval(database.tx, command),
         ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED
       );
+    });
+
+    it("exports only a source-first subject-lock composition for owning-domain resolvers", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const command = requestApprovalCommand(database.ids, "owning-domain-scope");
+
+      await repository.lockBusinessExceptionSourceAndSubject(
+        database.tx,
+        { ...command.source, id: command.source.id.toUpperCase() },
+        { ...command.subject, subjectId: command.subject.subjectId.toUpperCase() }
+      );
+
+      expect(database.operationTimeline).toEqual([
+        "transaction-probe",
+        "transaction-probe",
+        "source-lock",
+        "subject-lock"
+      ]);
+      expect(database.sourceLockKeys).toEqual([
+        JSON.stringify([command.source.type, command.source.id, command.source.key])
+      ]);
+      expect(database.subjectLockKeys).toEqual([
+        businessExceptionSubjectLockIdentity(command.subject)
+      ]);
+    });
+
+    it("canonicalizes every approval UUID identity before locks, payloads, comparisons, and row lookup", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const request = await repository.requestExceptionApproval(database.tx, {
+        ...requestApprovalCommand(database.ids, "canonical-request"),
+        requestedBy: database.ids.actorId.toUpperCase(),
+        source: {
+          id: database.ids.sourceId.toUpperCase(),
+          key: "canonical-request",
+          type: "HANDOVER_FIXTURE"
+        },
+        subject: {
+          ...approvalSubject(database.ids),
+          subjectId: database.ids.vehicleId.toUpperCase()
+        }
+      });
+
+      expect(request.outcome).toMatchObject({
+        requestSourceId: database.ids.sourceId,
+        requestedBy: database.ids.actorId,
+        subjectId: database.ids.vehicleId
+      });
+      const decided = await repository.decideExceptionApproval(database.tx, {
+        ...decideApprovalCommand(
+          database.ids,
+          request.outcome.id.toUpperCase(),
+          "canonical-decision"
+        ),
+        decidedBy: database.ids.deciderId.toUpperCase(),
+        source: {
+          id: database.ids.sourceId.toUpperCase(),
+          key: "canonical-decision",
+          type: "HANDOVER_FIXTURE"
+        },
+        subject: {
+          ...approvalSubject(database.ids),
+          subjectId: database.ids.vehicleId.toUpperCase()
+        }
+      });
+      expect(decided.outcome).toMatchObject({
+        decidedBy: database.ids.deciderId,
+        id: request.outcome.id,
+        subjectId: database.ids.vehicleId
+      });
+      const expired = await repository.expireExceptionApproval(database.tx, {
+        ...expireApprovalCommand(
+          database.ids,
+          request.outcome.id.toUpperCase(),
+          decided.outcome.version,
+          "canonical-expiry"
+        ),
+        expiredBy: database.ids.deciderId.toUpperCase(),
+        source: {
+          id: database.ids.sourceId.toUpperCase(),
+          key: "canonical-expiry",
+          type: "HANDOVER_FIXTURE"
+        },
+        subject: {
+          ...approvalSubject(database.ids),
+          subjectId: database.ids.vehicleId.toUpperCase()
+        }
+      });
+      expect(expired.outcome).toMatchObject({
+        expiredBy: database.ids.deciderId,
+        id: request.outcome.id,
+        subjectId: database.ids.vehicleId
+      });
+    });
+
+    it("forbids semantic UUID self-approval across case spellings without a decision receipt", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const request = await repository.requestExceptionApproval(
+        database.tx,
+        requestApprovalCommand(database.ids, "case-self-request")
+      );
+
+      await expectCode(
+        repository.decideExceptionApproval(database.tx, {
+          ...decideApprovalCommand(database.ids, request.outcome.id, "case-self-decision"),
+          decidedBy: database.ids.actorId.toUpperCase()
+        }),
+        ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN
+      );
+      expect(
+        [...database.receipts.values()].filter(
+          (receipt) => receipt.commandType === "EXCEPTION_DECIDE"
+        )
+      ).toHaveLength(0);
     });
 
     it("takes source then subject ownership, stores an internally hashed request, and exactly replays it", async () => {
@@ -1353,6 +1475,82 @@ describe("AssetAccountingRepository", () => {
         ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
       );
     });
+
+    it("normalizes only unanimous live-approval P2002 target evidence", async () => {
+      const liveConstraint = "business_exception_approval_live_subject_field_snapshot_key";
+      const liveMessage = `duplicate key value violates unique constraint "${liveConstraint}"`;
+      const positiveErrors = [
+        Object.assign(new Error("direct live constraint"), {
+          code: "P2002",
+          meta: { target: [liveConstraint] }
+        }),
+        Object.assign(new Error("direct live camel fields"), {
+          code: "P2002",
+          meta: {
+            target: ["subjectType", "subjectId", "subjectField", "subjectSnapshotHash"]
+          }
+        }),
+        Object.assign(new Error("direct live snake fields"), {
+          code: "P2002",
+          meta: {
+            target: ["subject_type", "subject_id", "subject_field", "subject_snapshot_hash"]
+          }
+        }),
+        p2002AdapterError(
+          ["subjectType", "subjectId", "subjectField", "subjectSnapshotHash"],
+          liveMessage
+        ),
+        p2002AdapterError(
+          ["subject_type", "subject_id", "subject_field", "subject_snapshot_hash"],
+          liveMessage
+        ),
+        p2002NamedConstraintError(liveConstraint)
+      ];
+
+      for (const [index, error] of positiveErrors.entries()) {
+        const repository = new AssetAccountingRepository();
+        const database = fakeTransaction();
+        database.nextApprovalCreateError = error;
+        await expectCode(
+          repository.requestExceptionApproval(
+            database.tx,
+            requestApprovalCommand(database.ids, `live-p2002-positive-${index}`)
+          ),
+          ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE
+        );
+      }
+
+      const contradictoryErrors = [
+        p2002AdapterError(
+          ["subject_type", "subject_id", "subject_field", "subject_snapshot_hash"],
+          'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"'
+        ),
+        p2002AdapterError(
+          ["source_type", "source_id", "source_key"],
+          'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"',
+          "23505",
+          "UniqueConstraintViolation",
+          ["subjectType", "subjectId", "subjectField", "subjectSnapshotHash"]
+        ),
+        p2002NamedConstraintError(
+          liveConstraint,
+          'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"'
+        )
+      ];
+
+      for (const [index, error] of contradictoryErrors.entries()) {
+        const repository = new AssetAccountingRepository();
+        const database = fakeTransaction();
+        database.nextApprovalCreateError = error;
+        await expectCode(
+          repository.requestExceptionApproval(
+            database.tx,
+            requestApprovalCommand(database.ids, `live-p2002-negative-${index}`)
+          ),
+          ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT
+        );
+      }
+    });
   });
 });
 
@@ -1445,6 +1643,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     lockedAuthorities,
     lockedOriginalIds,
     nextEntryCreateError: undefined as unknown,
+    nextApprovalCreateError: undefined as unknown,
     nextReceiptCreateError: undefined as unknown,
     operationTimeline,
     receipts,
@@ -1537,6 +1736,11 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     },
     businessExceptionApproval: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
+        if (database.nextApprovalCreateError) {
+          const error = database.nextApprovalCreateError;
+          database.nextApprovalCreateError = undefined;
+          throw error;
+        }
         const row = { ...data, createdAt: NOW, id: String(data.id ?? randomUUID()) };
         approvals.set(String(row.id), row);
         return row;

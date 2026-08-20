@@ -67,6 +67,21 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
   afterAll(async () => {
     try {
       await deleteFixtures(prisma);
+      expect(await fixtureResidueCounts(prisma)).toEqual({
+        accountingReceipts: 0,
+        audits: 0,
+        customers: 0,
+        evidence: 0,
+        files: 0,
+        ledgerEntries: 0,
+        orders: 0,
+        periods: 0,
+        restrictions: 0,
+        users: 0,
+        vehicles: 0,
+        workOrderEvents: 0,
+        workOrders: 0
+      });
     } finally {
       await prisma.onModuleDestroy();
     }
@@ -2235,6 +2250,84 @@ async function deleteFixtures(prisma: PrismaService) {
       WHERE "username" LIKE ${`${FIXTURE_PREFIX.toLowerCase()}%`}
     `;
   });
+}
+
+async function fixtureResidueCounts(prisma: PrismaService) {
+  const [
+    accountingReceipts,
+    audits,
+    customers,
+    evidence,
+    files,
+    ledgerEntries,
+    orders,
+    periods,
+    restrictions,
+    users,
+    vehicles,
+    workOrderEvents,
+    workOrders
+  ] = await Promise.all([
+    prisma.assetAccountingCommandReceipt.count({
+      where: { sourceKey: { startsWith: FIXTURE_PREFIX } }
+    }),
+    countFixtureAudits(prisma),
+    prisma.customer.count({ where: { customerNo: { startsWith: FIXTURE_PREFIX } } }),
+    prisma.assetWorkOrderEvidence.count({
+      where: { sourceKey: { startsWith: FIXTURE_PREFIX } }
+    }),
+    prisma.fileObject.count({ where: { objectKey: { startsWith: FIXTURE_PREFIX } } }),
+    prisma.vehicleCostLedgerEntry.count({
+      where: { sourceKey: { startsWith: FIXTURE_PREFIX } }
+    }),
+    prisma.subscriptionOrder.count({ where: { orderNo: { startsWith: FIXTURE_PREFIX } } }),
+    prisma.vehicleSubscriptionPeriod.count({
+      where: { startSourceKey: { startsWith: FIXTURE_PREFIX } }
+    }),
+    prisma.vehicleOperationalRestriction.count({
+      where: {
+        OR: [
+          { startSourceKey: { startsWith: FIXTURE_PREFIX } },
+          { releaseSourceKey: { startsWith: FIXTURE_PREFIX } }
+        ]
+      }
+    }),
+    prisma.user.count({
+      where: { username: { startsWith: FIXTURE_PREFIX.toLowerCase() } }
+    }),
+    prisma.vehicle.count({ where: { vehicleNo: { startsWith: FIXTURE_PREFIX } } }),
+    prisma.assetWorkOrderEvent.count({
+      where: { sourceKey: { startsWith: FIXTURE_PREFIX } }
+    }),
+    prisma.assetWorkOrder.count({
+      where: { createSourceKey: { startsWith: FIXTURE_PREFIX } }
+    })
+  ]);
+  return {
+    accountingReceipts,
+    audits,
+    customers,
+    evidence,
+    files,
+    ledgerEntries,
+    orders,
+    periods,
+    restrictions,
+    users,
+    vehicles,
+    workOrderEvents,
+    workOrders
+  };
+}
+
+async function countFixtureAudits(prisma: PrismaService) {
+  const [result] = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT count(*)::bigint AS "count"
+    FROM "audit_log"
+    WHERE "module" IN ('asset_accounting', 'asset_operations')
+      AND "after_snapshot"::text LIKE ${`%${FIXTURE_PREFIX}%`}
+  `);
+  return Number(result?.count ?? 0n);
 }
 
 async function countWorkOrdersBySource(

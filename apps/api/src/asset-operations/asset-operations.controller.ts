@@ -277,8 +277,12 @@ function optionalDate(value?: string | null) {
   return value ? new Date(value) : null;
 }
 
-function publicCommandOutcome<T>(outcome: Promise<T>) {
-  return outcome.then(sanitizeAssetOperationPublicValue);
+function publicCommandOutcome<T extends { readonly wrote: boolean }>(outcome: Promise<T>) {
+  return outcome.then((value) => {
+    const publicValue = sanitizeAssetOperationPublicValue(value);
+    Reflect.deleteProperty(publicValue, "wrote");
+    return publicValue;
+  });
 }
 
 function uuidPipe() {

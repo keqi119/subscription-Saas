@@ -303,8 +303,8 @@ describe("AssetOperationsController governed boundary", () => {
 
   it("returns JSON-safe evidence outcomes without private replay envelopes", async () => {
     service.appendEvidence
-      .mockResolvedValueOnce(evidenceCommandOutcome() as never)
-      .mockResolvedValueOnce(evidenceCommandOutcome() as never);
+      .mockResolvedValueOnce(evidenceCommandOutcome(true) as never)
+      .mockResolvedValueOnce(evidenceCommandOutcome(false) as never);
 
     const firstResponse = await post(
       `/api/asset-operations/work-orders/${WORK_ORDER_ID}/evidence`,
@@ -328,10 +328,10 @@ describe("AssetOperationsController governed boundary", () => {
         fileSizeBytes: "12",
         recordedAt: "2026-08-20T00:04:00.000Z"
       },
-      event: { detailSnapshot: { evidenceType: "PHOTO" } },
-      wrote: true
+      event: { detailSnapshot: { evidenceType: "PHOTO" } }
     });
     expect(JSON.stringify(first)).not.toContain("__assetOperationCommandV1");
+    expect(first).not.toHaveProperty("wrote");
     expect(replay).toEqual(first);
   });
 
@@ -362,11 +362,30 @@ describe("AssetOperationsController governed boundary", () => {
         detailSnapshot: { workOrderType: AssetWorkOrderType.MAINTENANCE },
         id: SOURCE_ID
       },
-      workOrder: { id: WORK_ORDER_ID },
-      wrote: true
+      workOrder: { id: WORK_ORDER_ID }
     });
     expect(JSON.stringify(body)).not.toContain("__assetOperationCommandV1");
+    expect(body).not.toHaveProperty("wrote");
   });
+
+  it.each(writeCases())(
+    "returns an exact stable public %s outcome for first-write and replay",
+    async (method, path, body, token) => {
+      service[method]
+        .mockResolvedValueOnce(commandOutcome(method, true) as never)
+        .mockResolvedValueOnce(commandOutcome(method, false) as never);
+
+      const firstResponse = await post(path, body, token, SOURCE_KEY);
+      const replayResponse = await post(path, body, token, SOURCE_KEY);
+
+      expect(firstResponse.status).toBe(201);
+      expect(replayResponse.status).toBe(201);
+      const first = await firstResponse.json();
+      const replay = await replayResponse.json();
+      expect(first).not.toHaveProperty("wrote");
+      expect(replay).toEqual(first);
+    }
+  );
 
   it.each(writeCases())(
     "forwards %s with path authority, normalized dates, and authenticated request context",
@@ -624,7 +643,7 @@ function evidenceBody() {
   };
 }
 
-function evidenceCommandOutcome() {
+function evidenceCommandOutcome(wrote: boolean) {
   return {
     evidence: {
       action: AssetWorkOrderEvidenceAction.ATTACH,
@@ -644,8 +663,27 @@ function evidenceCommandOutcome() {
       id: SOURCE_ID
     },
     workOrder: { id: WORK_ORDER_ID },
-    wrote: true
+    wrote
   };
+}
+
+function commandOutcome(method: string, wrote: boolean) {
+  if (method === "appendEvidence") return evidenceCommandOutcome(wrote);
+  const common = {
+    event: {
+      detailSnapshot: {
+        __assetOperationCommandV1: { command: "private" },
+        operation: method
+      },
+      id: SOURCE_ID
+    },
+    workOrder: { id: WORK_ORDER_ID },
+    wrote
+  };
+  if (method === "createRestriction" || method === "releaseRestriction") {
+    return { ...common, restriction: { id: RESTRICTION_ID } };
+  }
+  return common;
 }
 
 function restrictionBody() {

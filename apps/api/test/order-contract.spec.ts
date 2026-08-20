@@ -676,6 +676,9 @@ describe("subscription order and contract rules", () => {
     );
 
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    expect(harness.tx.vehicle.findUnique).toHaveBeenCalledWith({
+      where: { id: harness.vehicleId }
+    });
     expect(harness.tx.vehicle.update).toHaveBeenCalledWith({
       data: { status: VehicleStatus.AVAILABLE, updatedBy: harness.user.id },
       where: { id: harness.vehicleId }
@@ -1158,6 +1161,7 @@ function createOrderServiceHarness(options: {
       )
     },
     vehicle: {
+      findUnique: vi.fn(async ({ where }) => (where.id === vehicleId ? buildVehicle() : null)),
       update: vi.fn(async ({ data }) => {
         if (data.status) {
           state.vehicleStatus = data.status;

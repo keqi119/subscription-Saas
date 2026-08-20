@@ -798,7 +798,7 @@ function projectWorkOrderDetail(detail: {
     evidence: projectEvidence(detail.evidence),
     events: [...detail.events]
       .sort((left, right) => left.sequence - right.sequence || compare(left.id, right.id))
-      .map(sanitizeFact),
+      .map(sanitizeAssetOperationPublicValue),
     restrictions: projectRestrictions(detail.restrictions),
     ...projectWorkOrderSummary(detail.workOrder)
   };
@@ -813,7 +813,7 @@ function projectWorkOrderSummary(workOrder: AssetWorkOrder) {
   return {
     source,
     specialistDeepLink: specialistDeepLink(source),
-    workOrder: sanitizeFact(workOrder)
+    workOrder: sanitizeAssetOperationPublicValue(workOrder)
   };
 }
 
@@ -823,7 +823,7 @@ function projectEvidence(rows: readonly AssetWorkOrderEvidence[]) {
       (left, right) =>
         left.recordedAt.getTime() - right.recordedAt.getTime() || compare(left.id, right.id)
     )
-    .map(sanitizeFact);
+    .map(sanitizeAssetOperationPublicValue);
   const superseded = new Set(
     rows.map(({ supersedesEvidenceId }) => supersedesEvidenceId).filter(Boolean)
   );
@@ -833,7 +833,7 @@ function projectEvidence(rows: readonly AssetWorkOrderEvidence[]) {
       (left, right) =>
         left.recordedAt.getTime() - right.recordedAt.getTime() || compare(left.id, right.id)
     )
-    .map(sanitizeFact);
+    .map(sanitizeAssetOperationPublicValue);
   return { all, effective };
 }
 
@@ -844,7 +844,7 @@ function projectRestriction(row: VehicleOperationalRestriction) {
     type: row.startSourceType
   };
   return {
-    ...sanitizeFact(row),
+    ...sanitizeAssetOperationPublicValue(row),
     source,
     specialistDeepLink: specialistDeepLink(source)
   };
@@ -884,27 +884,29 @@ function specialistDeepLink(source: StableAssetOperationSource) {
   }
 }
 
-type JsonSafe<T> = T extends bigint
+export type AssetOperationJsonSafe<T> = T extends bigint
   ? string
   : T extends Date
     ? T
     : T extends readonly (infer Item)[]
-      ? JsonSafe<Item>[]
+      ? AssetOperationJsonSafe<Item>[]
       : T extends object
-        ? { [Key in keyof T]: JsonSafe<T[Key]> }
+        ? { [Key in keyof T]: AssetOperationJsonSafe<T[Key]> }
         : T;
 
-function sanitizeFact<T>(value: T): JsonSafe<T> {
-  if (typeof value === "bigint") return value.toString() as JsonSafe<T>;
-  if (Array.isArray(value)) return value.map(sanitizeFact) as JsonSafe<T>;
+export function sanitizeAssetOperationPublicValue<T>(value: T): AssetOperationJsonSafe<T> {
+  if (typeof value === "bigint") return value.toString() as AssetOperationJsonSafe<T>;
+  if (Array.isArray(value)) {
+    return value.map(sanitizeAssetOperationPublicValue) as AssetOperationJsonSafe<T>;
+  }
   if (value instanceof Date || value === null || typeof value !== "object") {
-    return value as JsonSafe<T>;
+    return value as AssetOperationJsonSafe<T>;
   }
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([key]) => key !== "__assetOperationCommandV1")
-      .map(([key, item]) => [key, sanitizeFact(item)])
-  ) as JsonSafe<T>;
+      .map(([key, item]) => [key, sanitizeAssetOperationPublicValue(item)])
+  ) as AssetOperationJsonSafe<T>;
 }
 
 function toAuditSnapshot(value: unknown): unknown {

@@ -301,6 +301,73 @@ describe("AssetOperationsController governed boundary", () => {
     );
   });
 
+  it("returns JSON-safe evidence outcomes without private replay envelopes", async () => {
+    service.appendEvidence
+      .mockResolvedValueOnce(evidenceCommandOutcome() as never)
+      .mockResolvedValueOnce(evidenceCommandOutcome() as never);
+
+    const firstResponse = await post(
+      `/api/asset-operations/work-orders/${WORK_ORDER_ID}/evidence`,
+      evidenceBody(),
+      "work",
+      SOURCE_KEY
+    );
+    const replayResponse = await post(
+      `/api/asset-operations/work-orders/${WORK_ORDER_ID}/evidence`,
+      evidenceBody(),
+      "work",
+      SOURCE_KEY
+    );
+
+    expect(firstResponse.status).toBe(201);
+    expect(replayResponse.status).toBe(201);
+    const first = await firstResponse.json();
+    const replay = await replayResponse.json();
+    expect(first).toMatchObject({
+      evidence: {
+        fileSizeBytes: "12",
+        recordedAt: "2026-08-20T00:04:00.000Z"
+      },
+      event: { detailSnapshot: { evidenceType: "PHOTO" } },
+      wrote: true
+    });
+    expect(JSON.stringify(first)).not.toContain("__assetOperationCommandV1");
+    expect(replay).toEqual(first);
+  });
+
+  it("omits private replay envelopes from non-evidence write outcomes", async () => {
+    service.createWorkOrder.mockResolvedValueOnce({
+      event: {
+        detailSnapshot: {
+          __assetOperationCommandV1: { command: "private" },
+          workOrderType: AssetWorkOrderType.MAINTENANCE
+        },
+        id: SOURCE_ID
+      },
+      workOrder: { id: WORK_ORDER_ID },
+      wrote: true
+    } as never);
+
+    const response = await post(
+      "/api/asset-operations/work-orders",
+      createWorkOrderBody(),
+      "work",
+      SOURCE_KEY
+    );
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      event: {
+        detailSnapshot: { workOrderType: AssetWorkOrderType.MAINTENANCE },
+        id: SOURCE_ID
+      },
+      workOrder: { id: WORK_ORDER_ID },
+      wrote: true
+    });
+    expect(JSON.stringify(body)).not.toContain("__assetOperationCommandV1");
+  });
+
   it.each(writeCases())(
     "forwards %s with path authority, normalized dates, and authenticated request context",
     async (method, path, body, token) => {
@@ -554,6 +621,30 @@ function evidenceBody() {
     occurredAt: "2026-08-20T00:04:00.000Z",
     source: source(),
     supersedesEvidenceId: null
+  };
+}
+
+function evidenceCommandOutcome() {
+  return {
+    evidence: {
+      action: AssetWorkOrderEvidenceAction.ATTACH,
+      captureMetadata: { camera: "field" },
+      contentSha256: "a".repeat(64),
+      fileId: FILE_ID,
+      fileSizeBytes: 12n,
+      id: EVIDENCE_ID,
+      recordedAt: new Date("2026-08-20T00:04:00.000Z"),
+      workOrderId: WORK_ORDER_ID
+    },
+    event: {
+      detailSnapshot: {
+        __assetOperationCommandV1: { command: "private" },
+        evidenceType: AssetWorkOrderEvidenceType.PHOTO
+      },
+      id: SOURCE_ID
+    },
+    workOrder: { id: WORK_ORDER_ID },
+    wrote: true
   };
 }
 

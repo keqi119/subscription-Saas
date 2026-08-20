@@ -15,7 +15,10 @@ import { PermissionCode } from "@subscription-saas/shared";
 import { RequireAnyPermissions, RequirePermissions } from "../auth/auth.decorators";
 import { type AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
 import { PermissionsGuard } from "../auth/permissions.guard";
-import { AssetOperationsService } from "./asset-operations.service";
+import {
+  AssetOperationsService,
+  sanitizeAssetOperationPublicValue
+} from "./asset-operations.service";
 import {
   AppendAssetWorkOrderEvidenceDto,
   AppendAssetWorkOrderNoteDto,
@@ -72,19 +75,21 @@ export class AssetOperationsController {
   @RequirePermissions(PermissionCode.ASSET_WORK_ORDER_MANAGE)
   createWorkOrder(@Body() dto: CreateAssetWorkOrderDto, @Req() request: AuthenticatedRequest) {
     const command = authoritativeCommand(dto, request);
-    return this.service.createWorkOrder(
-      {
-        ...command,
-        assetOwnerId: command.assetOwnerId ?? null,
-        contractId: command.contractId ?? null,
-        customerId: command.customerId ?? null,
-        description: command.description ?? null,
-        metadata: command.metadata ?? null,
-        occurredAt: new Date(command.occurredAt),
-        orderId: command.orderId ?? null,
-        relatedWorkOrderId: command.relatedWorkOrderId ?? null
-      },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.createWorkOrder(
+        {
+          ...command,
+          assetOwnerId: command.assetOwnerId ?? null,
+          contractId: command.contractId ?? null,
+          customerId: command.customerId ?? null,
+          description: command.description ?? null,
+          metadata: command.metadata ?? null,
+          occurredAt: new Date(command.occurredAt),
+          orderId: command.orderId ?? null,
+          relatedWorkOrderId: command.relatedWorkOrderId ?? null
+        },
+        commandContext(request)
+      )
     );
   }
 
@@ -96,15 +101,17 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.assignWorkOrder(
-      {
-        ...command,
-        occurredAt: new Date(command.occurredAt),
-        scheduledAt: optionalDate(command.scheduledAt),
-        slaDueAt: optionalDate(command.slaDueAt),
-        workOrderId
-      },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.assignWorkOrder(
+        {
+          ...command,
+          occurredAt: new Date(command.occurredAt),
+          scheduledAt: optionalDate(command.scheduledAt),
+          slaDueAt: optionalDate(command.slaDueAt),
+          workOrderId
+        },
+        commandContext(request)
+      )
     );
   }
 
@@ -116,15 +123,17 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.transitionWorkOrder(
-      {
-        ...command,
-        closeReason: command.closeReason ?? null,
-        occurredAt: new Date(command.occurredAt),
-        solution: command.solution ?? null,
-        workOrderId
-      },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.transitionWorkOrder(
+        {
+          ...command,
+          closeReason: command.closeReason ?? null,
+          occurredAt: new Date(command.occurredAt),
+          solution: command.solution ?? null,
+          workOrderId
+        },
+        commandContext(request)
+      )
     );
   }
 
@@ -136,9 +145,11 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.appendNote(
-      { ...command, occurredAt: new Date(command.occurredAt), workOrderId },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.appendNote(
+        { ...command, occurredAt: new Date(command.occurredAt), workOrderId },
+        commandContext(request)
+      )
     );
   }
 
@@ -150,19 +161,21 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.appendEvidence(
-      {
-        ...command,
-        captureMetadata: command.captureMetadata ?? null,
-        capturedAt: optionalDate(command.capturedAt),
-        contentSha256: command.contentSha256 ?? null,
-        eventId: command.eventId ?? null,
-        fileId: command.fileId ?? null,
-        occurredAt: new Date(command.occurredAt),
-        supersedesEvidenceId: command.supersedesEvidenceId ?? null,
-        workOrderId
-      },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.appendEvidence(
+        {
+          ...command,
+          captureMetadata: command.captureMetadata ?? null,
+          capturedAt: optionalDate(command.capturedAt),
+          contentSha256: command.contentSha256 ?? null,
+          eventId: command.eventId ?? null,
+          fileId: command.fileId ?? null,
+          occurredAt: new Date(command.occurredAt),
+          supersedesEvidenceId: command.supersedesEvidenceId ?? null,
+          workOrderId
+        },
+        commandContext(request)
+      )
     );
   }
 
@@ -174,16 +187,18 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.createRestriction(
-      {
-        ...command,
-        evidenceSnapshot: command.evidenceSnapshot ?? null,
-        occurredAt: new Date(command.occurredAt),
-        startedAt: new Date(command.startedAt),
-        vehicleId,
-        workOrderId: command.workOrderId ?? null
-      },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.createRestriction(
+        {
+          ...command,
+          evidenceSnapshot: command.evidenceSnapshot ?? null,
+          occurredAt: new Date(command.occurredAt),
+          startedAt: new Date(command.startedAt),
+          vehicleId,
+          workOrderId: command.workOrderId ?? null
+        },
+        commandContext(request)
+      )
     );
   }
 
@@ -198,9 +213,11 @@ export class AssetOperationsController {
     @Req() request: AuthenticatedRequest
   ) {
     const command = authoritativeCommand(dto, request);
-    return this.service.releaseRestriction(
-      { ...command, occurredAt: new Date(command.occurredAt), restrictionId },
-      commandContext(request)
+    return publicCommandOutcome(
+      this.service.releaseRestriction(
+        { ...command, occurredAt: new Date(command.occurredAt), restrictionId },
+        commandContext(request)
+      )
     );
   }
 }
@@ -258,6 +275,10 @@ function commandContext(request: AuthenticatedRequest) {
 
 function optionalDate(value?: string | null) {
   return value ? new Date(value) : null;
+}
+
+function publicCommandOutcome<T>(outcome: Promise<T>) {
+  return outcome.then(sanitizeAssetOperationPublicValue);
 }
 
 function uuidPipe() {

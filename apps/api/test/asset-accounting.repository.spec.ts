@@ -846,6 +846,19 @@ describe("AssetAccountingRepository", () => {
       ),
       ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
     );
+
+    const objectTargetDatabase = fakeTransaction();
+    objectTargetDatabase.nextEntryCreateError = Object.assign(new Error("invalid target shape"), {
+      code: "P2002",
+      meta: { target: { fields: ["sourceType", "sourceId", "sourceKey"] } }
+    });
+    await expectCode(
+      repository.appendCostEntry(
+        objectTargetDatabase.tx,
+        appendCommand(objectTargetDatabase.ids, "object-target-p2002")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT
+    );
   });
 
   it.each([
@@ -869,6 +882,80 @@ describe("AssetAccountingRepository", () => {
       await expectCode(
         repository.appendCostEntry(database.tx, appendCommand(database.ids, `adapter-${expected}`)),
         ASSET_ACCOUNTING_ERROR_CODE[expected]
+      );
+    }
+  );
+
+  it.each([
+    [
+      "source target versus reversal adapter",
+      ["sourceType", "sourceId", "sourceKey"],
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"',
+      "23505",
+      "UniqueConstraintViolation"
+    ],
+    [
+      "source target versus wrong adapter SQLSTATE",
+      ["sourceType", "sourceId", "sourceKey"],
+      ["source_type", "source_id", "source_key"],
+      'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"',
+      "23514",
+      "UniqueConstraintViolation"
+    ],
+    [
+      "reversal target versus wrong adapter kind",
+      ["reversalOfEntryId"],
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"',
+      "23505",
+      "CheckConstraintViolation"
+    ]
+  ] as const)(
+    "fails closed for contradictory P2002 %s",
+    async (_name, target, fields, message, originalCode, kind) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = p2002AdapterError(
+        fields,
+        message,
+        originalCode,
+        kind,
+        target
+      );
+
+      await expectCode(
+        repository.appendCostEntry(
+          database.tx,
+          appendCommand(database.ids, `adapter-channel-conflict-${originalCode}-${kind}`)
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT
+      );
+    }
+  );
+
+  it.each([
+    [
+      "asset_accounting_command_receipt_source_key",
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"'
+    ],
+    [
+      "vehicle_cost_ledger_entry_reversal_of_entry_id_key",
+      'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"'
+    ]
+  ] as const)(
+    "fails closed when P2002 constraint %s contradicts its exact server message",
+    async (constraint, message) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = p2002NamedConstraintError(constraint, message);
+
+      await expectCode(
+        repository.appendCostEntry(
+          database.tx,
+          appendCommand(database.ids, `adapter-name-message-conflict-${constraint}`)
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT
       );
     }
   );
@@ -921,6 +1008,12 @@ describe("AssetAccountingRepository", () => {
     [
       ["reversal_of_entry_id"],
       'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"',
+      "23505",
+      "UniqueConstraintViolation"
+    ],
+    [
+      ["source_type", "source_id", "source_key"],
+      'duplicate key value violates unique constraint "unrelated_unique_key"',
       "23505",
       "UniqueConstraintViolation"
     ]
@@ -1248,11 +1341,13 @@ function p2002AdapterError(
   fields: readonly string[],
   originalMessage: string,
   originalCode = "23505",
-  kind = "UniqueConstraintViolation"
+  kind = "UniqueConstraintViolation",
+  target?: readonly string[]
 ) {
   return Object.assign(new Error(originalMessage), {
     code: "P2002",
     meta: {
+      ...(target ? { target: [...target] } : {}),
       driverAdapterError: {
         cause: {
           constraint: { fields: [...fields] },
@@ -1265,8 +1360,8 @@ function p2002AdapterError(
   });
 }
 
-function p2002NamedConstraintError(constraint: string) {
-  return Object.assign(new Error("unique violation"), {
+function p2002NamedConstraintError(constraint: string, originalMessage = "unique violation") {
+  return Object.assign(new Error(originalMessage), {
     code: "P2002",
     meta: {
       driverAdapterError: {
@@ -1274,7 +1369,7 @@ function p2002NamedConstraintError(constraint: string) {
           constraint,
           kind: "UniqueConstraintViolation",
           originalCode: "23505",
-          originalMessage: "unique violation"
+          originalMessage
         }
       }
     }

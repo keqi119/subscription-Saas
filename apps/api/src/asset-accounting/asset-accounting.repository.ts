@@ -881,22 +881,21 @@ function constraintFromServerMessage(message: string | undefined) {
 
 function prismaUniqueTarget(error: unknown): readonly string[] {
   if (!isRecord(error) || !isRecord(error.meta)) return [];
-  const target = error.meta.target;
-  if (typeof target === "string") return [target];
-  if (Array.isArray(target) && target.every((value) => typeof value === "string")) return target;
-  if (target !== undefined) return [];
-
-  const cause = p2002AdapterCause(error);
-  if (!cause) return [];
-  const fields = p2002ConstraintFields(cause);
-  const namedConstraint = p2002NamedConstraint(cause);
-  if (fields) {
-    const fieldsKind = uniqueTargetKind(fields);
-    if (!fieldsKind) return [];
-    if (namedConstraint && uniqueTargetKind([namedConstraint]) !== fieldsKind) return [];
-    return fields;
+  const evidence: UniqueTargetKind[] = [];
+  if (error.meta.target !== undefined) {
+    const target = directStringTarget(error.meta.target);
+    const targetKind = target ? uniqueTargetKind(target) : undefined;
+    if (!targetKind) return [];
+    evidence.push(targetKind);
   }
-  return namedConstraint ? [namedConstraint] : [];
+  if (error.meta.driverAdapterError !== undefined) {
+    const adapterEvidence = p2002AdapterEvidence(error);
+    if (!adapterEvidence) return [];
+    evidence.push(...adapterEvidence);
+  }
+  const kind = consistentUniqueTargetKind(evidence);
+  if (kind === "reversal") return ["vehicle_cost_ledger_entry_reversal_of_entry_id_key"];
+  return kind === "source" ? ["asset_accounting_command_receipt_source_key"] : [];
 }
 
 function p2002AdapterCause(error: Record<string, unknown>) {
@@ -909,32 +908,51 @@ function p2002AdapterCause(error: Record<string, unknown>) {
     : undefined;
 }
 
-function p2002ConstraintFields(cause: Record<string, unknown>) {
-  if (!isRecord(cause.constraint)) return undefined;
-  const fields = cause.constraint.fields;
-  return Array.isArray(fields) && fields.every((value) => typeof value === "string")
-    ? fields
+function p2002AdapterEvidence(error: Record<string, unknown>) {
+  const cause = p2002AdapterCause(error);
+  if (!cause) return undefined;
+  const evidence: UniqueTargetKind[] = [];
+  if (cause.constraint !== undefined) {
+    const target = adapterConstraintTarget(cause.constraint);
+    const constraintKind = target ? uniqueTargetKind(target) : undefined;
+    if (!constraintKind) return undefined;
+    evidence.push(constraintKind);
+  }
+  for (const candidate of [cause.originalMessage, cause.message]) {
+    if (candidate === undefined) continue;
+    if (typeof candidate !== "string") return undefined;
+    const constraint = constraintFromServerMessage(candidate);
+    if (!constraint) continue;
+    const messageKind = uniqueTargetKind([constraint]);
+    if (!messageKind) return undefined;
+    evidence.push(messageKind);
+  }
+  return consistentUniqueTargetKind(evidence) ? evidence : undefined;
+}
+
+function directStringTarget(value: unknown): readonly string[] | undefined {
+  if (typeof value === "string") return [value];
+  return Array.isArray(value) && value.every((candidate) => typeof candidate === "string")
+    ? value
     : undefined;
 }
 
-function p2002NamedConstraint(cause: Record<string, unknown>) {
-  if (typeof cause.constraint === "string" && cause.constraint in CONSTRAINT_CODES) {
-    return cause.constraint;
-  }
-  const message =
-    typeof cause.originalMessage === "string"
-      ? cause.originalMessage
-      : typeof cause.message === "string"
-        ? cause.message
-        : undefined;
-  const constraint = constraintFromServerMessage(message);
-  return constraint && constraint in CONSTRAINT_CODES ? constraint : undefined;
+function adapterConstraintTarget(value: unknown) {
+  if (typeof value === "string") return [value];
+  return isRecord(value) ? directStringTarget(value.fields) : undefined;
 }
 
-function uniqueTargetKind(target: readonly string[]) {
+type UniqueTargetKind = "reversal" | "source";
+
+function uniqueTargetKind(target: readonly string[]): UniqueTargetKind | undefined {
   if (isReversalUniqueTarget(target)) return "reversal";
   if (isSourceUniqueTarget(target)) return "source";
   return undefined;
+}
+
+function consistentUniqueTargetKind(evidence: readonly UniqueTargetKind[]) {
+  const first = evidence[0];
+  return first && evidence.every((kind) => kind === first) ? first : undefined;
 }
 
 function isReversalUniqueTarget(target: readonly string[]) {

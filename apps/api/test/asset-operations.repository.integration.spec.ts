@@ -18,6 +18,18 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  ASSET_ACCOUNTING_ERROR_CODE,
+  AssetAccountingRepository,
+  type AppendCostEntryCommand,
+  type ReverseCostEntryCommand
+} from "../src/asset-accounting/asset-accounting.repository";
+import {
+  ASSET_ACCOUNTING_PERMISSION,
+  ASSET_ACCOUNTING_SERVICE_CODE,
+  AssetAccountingService,
+  type AssetAccountingCommandContext
+} from "../src/asset-accounting/asset-accounting.service";
+import {
   ASSET_OPERATION_ERROR_CODE,
   AssetOperationsRepository
 } from "../src/asset-operations/asset-operations.repository";
@@ -943,6 +955,261 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     await expect(countAuditsBySourceKey(prisma, command.source.key)).resolves.toBe(2);
   });
 
+  it("uses active unreversed ACTUAL_COST facts rather than legacy events to gate closure", async () => {
+    const operations = createAssetOperationsService(prisma);
+    const accounting = createAssetAccountingService(prisma);
+
+    const legacyOnly = await createClosureFixture(
+      operations,
+      vehicleId,
+      userId,
+      "cost-gate-legacy",
+      true
+    );
+    await insertLegacyCostConfirmedEvent(prisma, legacyOnly.workOrder.id, userId);
+    await expectCode(
+      operations.transitionWorkOrder(
+        closeCommand(legacyOnly.workOrder.id, "cost-gate-legacy-close", 3),
+        serviceContext(userId)
+      ),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+    await expect(currentWorkOrderStatus(prisma, legacyOnly.workOrder.id)).resolves.toBe(
+      AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+    );
+
+    const active = await createClosureFixture(
+      operations,
+      vehicleId,
+      userId,
+      "cost-gate-active",
+      true
+    );
+    await appendActualCost(accounting, active.workOrder.id, vehicleId, userId, "cost-gate-active");
+    await expect(
+      operations.transitionWorkOrder(
+        closeCommand(active.workOrder.id, "cost-gate-active-close", 3),
+        serviceContext(userId)
+      )
+    ).resolves.toMatchObject({
+      workOrder: { status: AssetWorkOrderStatus.CLOSED, version: 4 },
+      wrote: true
+    });
+
+    const reversed = await createClosureFixture(
+      operations,
+      vehicleId,
+      userId,
+      "cost-gate-reversed",
+      true
+    );
+    const reversedOriginal = await appendActualCost(
+      accounting,
+      reversed.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversed-original"
+    );
+    await reverseActualCost(accounting, reversedOriginal.id, userId, "cost-gate-reversed-entry");
+    await expectCode(
+      operations.transitionWorkOrder(
+        closeCommand(reversed.workOrder.id, "cost-gate-reversed-close", 3),
+        serviceContext(userId)
+      ),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+    await expect(currentWorkOrderStatus(prisma, reversed.workOrder.id)).resolves.toBe(
+      AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+    );
+
+    const noCost = await createClosureFixture(
+      operations,
+      vehicleId,
+      userId,
+      "cost-gate-no-cost",
+      false
+    );
+    await expect(
+      operations.transitionWorkOrder(
+        closeCommand(noCost.workOrder.id, "cost-gate-no-cost-close", 2),
+        serviceContext(userId)
+      )
+    ).resolves.toMatchObject({
+      workOrder: { status: AssetWorkOrderStatus.CLOSED, version: 3 },
+      wrote: true
+    });
+  });
+
+  it("rolls back a gated close on audit failure and exactly replays the later committed close", async () => {
+    const accounting = createAssetAccountingService(prisma);
+    const baselineOperations = createAssetOperationsService(prisma);
+    const fixture = await createClosureFixture(
+      baselineOperations,
+      vehicleId,
+      userId,
+      "cost-gate-audit",
+      true
+    );
+    await appendActualCost(accounting, fixture.workOrder.id, vehicleId, userId, "cost-gate-audit");
+    const close = closeCommand(fixture.workOrder.id, "cost-gate-audit-close", 3);
+    const eventCountBefore = (await workOrderSequences(prisma, fixture.workOrder.id)).length;
+    const auditCountBefore = await countAuditsForWorkOrder(prisma, fixture.workOrder.id);
+    const accountingFactsBefore = await countAccountingFacts(prisma, fixture.workOrder.id);
+
+    await expect(
+      createAssetOperationsService(prisma, failingAuditService(prisma, 2)).transitionWorkOrder(
+        close,
+        serviceContext(userId)
+      )
+    ).rejects.toThrow("AUDIT_STUB_FAILURE");
+
+    await expect(
+      prisma.assetWorkOrder.findUnique({ where: { id: fixture.workOrder.id } })
+    ).resolves.toMatchObject({
+      status: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      version: 3
+    });
+    await expect(countEventsBySource(prisma, close.source)).resolves.toBe(0);
+    await expect(countAuditsBySourceKey(prisma, close.source.key)).resolves.toBe(0);
+    await expect(workOrderSequences(prisma, fixture.workOrder.id)).resolves.toHaveLength(
+      eventCountBefore
+    );
+    await expect(countAuditsForWorkOrder(prisma, fixture.workOrder.id)).resolves.toBe(
+      auditCountBefore
+    );
+    await expect(countAccountingFacts(prisma, fixture.workOrder.id)).resolves.toEqual(
+      accountingFactsBefore
+    );
+
+    const committed = await baselineOperations.transitionWorkOrder(close, serviceContext(userId));
+    const committedAuditCount = await countAuditsForWorkOrder(prisma, fixture.workOrder.id);
+    await expect(
+      baselineOperations.transitionWorkOrder(close, serviceContext(userId))
+    ).resolves.toEqual({ ...committed, wrote: false });
+    await expect(countEventsBySource(prisma, close.source)).resolves.toBe(1);
+    await expect(countAuditsForWorkOrder(prisma, fixture.workOrder.id)).resolves.toBe(
+      committedAuditCount
+    );
+    await expect(countAccountingFacts(prisma, fixture.workOrder.id)).resolves.toEqual(
+      accountingFactsBefore
+    );
+  });
+
+  it("lets a locked close finish after reversal loses fast without aborting the close holder", async () => {
+    const accounting = createAssetAccountingService(prisma);
+    const setupOperations = createAssetOperationsService(prisma);
+    const fixture = await createClosureFixture(
+      setupOperations,
+      vehicleId,
+      userId,
+      "cost-gate-close-first",
+      true
+    );
+    const original = await appendActualCost(
+      accounting,
+      fixture.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-close-first-original"
+    );
+    const repository = new PausingCloseRepository();
+    const closeOperations = createAssetOperationsService(
+      prisma,
+      new AuditService(prisma),
+      repository
+    );
+    const close = closeCommand(fixture.workOrder.id, "cost-gate-close-first-close", 3);
+    const closePromise = settled(
+      closeOperations.transitionWorkOrder(close, serviceContext(userId))
+    );
+    await repository.closeReached.promise;
+
+    const reversal = reverseCostCommand(original.id, "cost-gate-close-first-reversal");
+    const reversalPromise = settled(
+      accounting.reverseCost(
+        reversal,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reversal.source.key)
+      )
+    );
+    const reversalEarly = await settlesWithin(reversalPromise, 750);
+    repository.releaseClose.resolve();
+    const [closeResult, reversalResult, holderUsable] = await Promise.all([
+      closePromise,
+      reversalEarly.finished ? Promise.resolve(reversalEarly.value) : reversalPromise,
+      repository.holderUsable.promise
+    ]);
+
+    expect(reversalEarly.finished).toBe(true);
+    expectConflict(rejectedValue(reversalResult), ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
+    expect(holderUsable).toBe(true);
+    expect(closeResult.status).toBe("fulfilled");
+    if (closeResult.status === "rejected") throw closeResult.reason;
+    expect(closeResult.value.workOrder.status).toBe(AssetWorkOrderStatus.CLOSED);
+    await expect(countReversals(prisma, original.id)).resolves.toBe(0);
+  });
+
+  it("never closes over a reversal that won the work-order lock", async () => {
+    const setupOperations = createAssetOperationsService(prisma);
+    const fixture = await createClosureFixture(
+      setupOperations,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-first",
+      true
+    );
+    const setupAccounting = createAssetAccountingService(prisma);
+    const original = await appendActualCost(
+      setupAccounting,
+      fixture.workOrder.id,
+      vehicleId,
+      userId,
+      "cost-gate-reversal-first-original"
+    );
+    const repository = new PausingReverseRepository();
+    const reversingAccounting = createAssetAccountingService(
+      prisma,
+      new AuditService(prisma),
+      repository
+    );
+    const reversal = reverseCostCommand(original.id, "cost-gate-reversal-first-reversal");
+    const reversalPromise = settled(
+      reversingAccounting.reverseCost(
+        reversal,
+        accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, reversal.source.key)
+      )
+    );
+    await repository.reversalReached.promise;
+
+    const close = closeCommand(fixture.workOrder.id, "cost-gate-reversal-first-close", 3);
+    const operations = createAssetOperationsService(prisma);
+    const closePromise = settled(operations.transitionWorkOrder(close, serviceContext(userId)));
+    const closeEarly = await settlesWithin(closePromise, 750);
+    repository.releaseReversal.resolve();
+    const [firstClose, reversalResult, holderUsable] = await Promise.all([
+      closeEarly.finished ? Promise.resolve(closeEarly.value) : closePromise,
+      reversalPromise,
+      repository.holderUsable.promise
+    ]);
+
+    expect(closeEarly.finished).toBe(true);
+    expectConflict(rejectedValue(firstClose), ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY);
+    expect(reversalResult.status).toBe("fulfilled");
+    if (reversalResult.status === "rejected") throw reversalResult.reason;
+    expect(holderUsable).toBe(true);
+    await expectCode(
+      operations.transitionWorkOrder(close, serviceContext(userId)),
+      ASSET_ACCOUNTING_SERVICE_CODE.WORK_ORDER_COST_NOT_CONFIRMED
+    );
+    await expect(
+      prisma.assetWorkOrder.findUnique({ where: { id: fixture.workOrder.id } })
+    ).resolves.toMatchObject({
+      status: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      version: 3
+    });
+    await expect(countEventsBySource(prisma, close.source)).resolves.toBe(0);
+    await expect(countReversals(prisma, original.id)).resolves.toBe(1);
+  });
+
   it.each(["order-first", "vehicle-first"] as const)(
     "fails service authority validation fast behind a %s holder and leaves the holder usable",
     async (lockOrder) => {
@@ -1021,9 +1288,55 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
 function createAssetOperationsService(
   prisma: PrismaService,
   auditService: AuditService = new AuditService(prisma),
-  repository: AssetOperationsRepository = new AssetOperationsRepository()
+  repository: AssetOperationsRepository = new AssetOperationsRepository(),
+  accountingService: AssetAccountingService = createAssetAccountingService(prisma)
 ) {
-  return new AssetOperationsService(prisma, repository, auditService);
+  return new AssetOperationsService(prisma, repository, auditService, accountingService);
+}
+
+function createAssetAccountingService(
+  prisma: PrismaService,
+  auditService: AuditService = new AuditService(prisma),
+  repository: AssetAccountingRepository = new AssetAccountingRepository()
+) {
+  return new AssetAccountingService(prisma, repository, auditService);
+}
+
+class PausingCloseRepository extends AssetOperationsRepository {
+  readonly closeReached = deferred<void>();
+  readonly holderUsable = deferred<boolean>();
+  readonly releaseClose = deferred<void>();
+
+  override async transitionWorkOrder(
+    ...args: Parameters<AssetOperationsRepository["transitionWorkOrder"]>
+  ) {
+    this.closeReached.resolve();
+    await this.releaseClose.promise;
+    const [probe] = await args[0].$queryRaw<Array<{ transactionId: string }>>(
+      Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+    );
+    this.holderUsable.resolve(Boolean(probe?.transactionId));
+    return super.transitionWorkOrder(...args);
+  }
+}
+
+class PausingReverseRepository extends AssetAccountingRepository {
+  readonly holderUsable = deferred<boolean>();
+  readonly releaseReversal = deferred<void>();
+  readonly reversalReached = deferred<void>();
+
+  override async reverseCostEntry(
+    ...args: Parameters<AssetAccountingRepository["reverseCostEntry"]>
+  ) {
+    const result = await super.reverseCostEntry(...args);
+    this.reversalReached.resolve();
+    await this.releaseReversal.promise;
+    const [probe] = await args[0].$queryRaw<Array<{ transactionId: string }>>(
+      Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+    );
+    this.holderUsable.resolve(Boolean(probe?.transactionId));
+    return result;
+  }
 }
 
 class PausingTransitionRepository extends AssetOperationsRepository {
@@ -1129,6 +1442,171 @@ function withoutActor<T extends { actorId: unknown }>(command: T): Omit<T, "acto
     T,
     "actorId"
   >;
+}
+
+async function createClosureFixture(
+  service: AssetOperationsService,
+  vehicleId: string,
+  actorId: string,
+  label: string,
+  costConfirmationRequired: boolean
+) {
+  const created = await service.createWorkOrder(
+    { ...serviceCreateCommand(vehicleId, `${label}-create`), costConfirmationRequired },
+    serviceContext(actorId)
+  );
+  await service.transitionWorkOrder(
+    withoutActor(
+      transitionTo(created.workOrder.id, `${label}-start`, 0, AssetWorkOrderStatus.IN_PROGRESS)
+    ),
+    serviceContext(actorId)
+  );
+  const pendingAcceptance = await service.transitionWorkOrder(
+    withoutActor(
+      transitionTo(
+        created.workOrder.id,
+        `${label}-acceptance`,
+        1,
+        AssetWorkOrderStatus.PENDING_ACCEPTANCE
+      )
+    ),
+    serviceContext(actorId)
+  );
+  if (!costConfirmationRequired) return pendingAcceptance;
+  return service.transitionWorkOrder(
+    withoutActor(
+      transitionTo(
+        created.workOrder.id,
+        `${label}-pending-cost`,
+        2,
+        AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+      )
+    ),
+    serviceContext(actorId)
+  );
+}
+
+function closeCommand(workOrderId: string, label: string, expectedVersion: number) {
+  return withoutActor({
+    ...transitionTo(workOrderId, label, expectedVersion, AssetWorkOrderStatus.CLOSED),
+    closeReason: "cost facts settled",
+    solution: "work completed"
+  });
+}
+
+function actualCostCommand(
+  workOrderId: string,
+  vehicleId: string,
+  userId: string,
+  label: string
+): Omit<AppendCostEntryCommand, "actorId"> {
+  const value: AppendCostEntryCommand = {
+    actionType: "ACTUAL_COST",
+    accountingPeriod: "2026-08",
+    actorId: userId,
+    amountCents: 100n,
+    assetOwnerId: null,
+    assetOwnerSnapshot: null,
+    confirmedAt: new Date("2026-08-20T03:00:00.000Z"),
+    contractId: null,
+    costCategory: "REPAIR",
+    customerId: null,
+    evidenceId: null,
+    evidenceSnapshot: null,
+    occurredOn: new Date("2026-08-19T00:00:00.000Z"),
+    orderId: null,
+    reason: "confirmed task-7 work-order cost",
+    responsiblePartyId: null,
+    responsiblePartyType: "PLATFORM",
+    responsibilitySnapshot: { fixture: FIXTURE_PREFIX },
+    source: source(label),
+    vehicleId,
+    workOrderId
+  };
+  return withoutActor(value);
+}
+
+function reverseCostCommand(
+  originalEntryId: string,
+  label: string
+): Omit<ReverseCostEntryCommand, "actorId"> {
+  const value: ReverseCostEntryCommand = {
+    actorId: randomUUID(),
+    confirmedAt: new Date("2026-08-20T04:00:00.000Z"),
+    originalEntryId,
+    reason: "reverse task-7 work-order cost",
+    source: source(label)
+  };
+  return withoutActor(value);
+}
+
+async function appendActualCost(
+  service: AssetAccountingService,
+  workOrderId: string,
+  vehicleId: string,
+  userId: string,
+  label: string
+) {
+  const command = actualCostCommand(workOrderId, vehicleId, userId, label);
+  return service.appendCost(
+    command,
+    accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM, command.source.key)
+  );
+}
+
+async function reverseActualCost(
+  service: AssetAccountingService,
+  originalEntryId: string,
+  userId: string,
+  label: string
+) {
+  const command = reverseCostCommand(originalEntryId, label);
+  return service.reverseCost(
+    command,
+    accountingContext(userId, ASSET_ACCOUNTING_PERMISSION.COST_REVERSE, command.source.key)
+  );
+}
+
+function accountingContext(
+  actorId: string,
+  permission: string,
+  idempotencyKey: string
+): AssetAccountingCommandContext {
+  return {
+    actorId,
+    idempotencyKey,
+    ipAddress: "127.0.0.1",
+    permissions: [permission],
+    requestId: `${FIXTURE_PREFIX}:accounting-request`,
+    userAgent: "asset-operations-integration"
+  };
+}
+
+async function insertLegacyCostConfirmedEvent(
+  prisma: PrismaService,
+  workOrderId: string,
+  actorId: string
+) {
+  const aggregate = await prisma.assetWorkOrderEvent.aggregate({
+    _max: { sequence: true },
+    where: { workOrderId }
+  });
+  const legacySource = source("legacy-cost-confirmed");
+  return prisma.assetWorkOrderEvent.create({
+    data: {
+      actorId,
+      afterStatus: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      beforeStatus: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      detailSnapshot: { fixture: FIXTURE_PREFIX, legacy: true },
+      eventType: AssetWorkOrderEventType.COST_CONFIRMED,
+      occurredAt: new Date("2026-08-20T02:00:00.000Z"),
+      sequence: (aggregate._max.sequence ?? 0) + 1,
+      sourceId: legacySource.id,
+      sourceKey: legacySource.key,
+      sourceType: legacySource.type,
+      workOrderId
+    }
+  });
 }
 
 async function countAuditsBySourceKey(prisma: PrismaService, sourceKey: string) {
@@ -1513,8 +1991,21 @@ async function deleteFixtures(prisma: PrismaService) {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw`
       DELETE FROM "audit_log"
+      WHERE "module" = 'asset_accounting'
+        AND "after_snapshot"::text LIKE ${`%${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "audit_log"
       WHERE "module" = 'asset_operations'
         AND "after_snapshot"::text LIKE ${`%${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "asset_accounting_command_receipt"
+      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "vehicle_cost_ledger_entry"
+      WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
     `;
     await tx.$executeRaw`
       DELETE FROM "vehicle_operational_restriction"
@@ -1571,6 +2062,26 @@ async function countWorkOrdersBySource(
       createSourceType: sourceValue.type
     }
   });
+}
+
+async function currentWorkOrderStatus(prisma: PrismaService, workOrderId: string) {
+  const workOrder = await prisma.assetWorkOrder.findUnique({
+    select: { status: true },
+    where: { id: workOrderId }
+  });
+  return workOrder?.status;
+}
+
+async function countAccountingFacts(prisma: PrismaService, workOrderId: string) {
+  const [entries, receipts] = await Promise.all([
+    prisma.vehicleCostLedgerEntry.count({ where: { workOrderId } }),
+    prisma.assetAccountingCommandReceipt.count({ where: { costEntry: { workOrderId } } })
+  ]);
+  return { entries, receipts };
+}
+
+function countReversals(prisma: PrismaService, originalEntryId: string) {
+  return prisma.vehicleCostLedgerEntry.count({ where: { reversalOfEntryId: originalEntryId } });
 }
 
 async function countEventsBySource(prisma: PrismaService, sourceValue: StableAssetOperationSource) {

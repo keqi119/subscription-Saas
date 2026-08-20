@@ -35,6 +35,7 @@ import { AuthGuard, type AuthenticatedRequest } from "../src/auth/auth.guard";
 import { AuthService } from "../src/auth/auth.service";
 import { PermissionsGuard } from "../src/auth/permissions.guard";
 import { AppModule } from "../src/app.module";
+import { AssetAccountingModule } from "../src/asset-accounting/asset-accounting.module";
 import {
   ASSET_OPERATION_API_CODE,
   AssetOperationsController
@@ -545,6 +546,7 @@ describe("AssetOperationsModule registration", () => {
       AssetOperationsService
     ]);
     expect(Reflect.getMetadata(MODULE_METADATA.IMPORTS, AssetOperationsModule)).toEqual([
+      AssetAccountingModule,
       AuditModule,
       AuthModule,
       PrismaModule

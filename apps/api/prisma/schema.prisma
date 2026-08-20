@@ -1819,6 +1819,99 @@ enum VehicleOperationalRestrictionStatus {
   @@map("vehicle_operational_restriction_status")
 }
 
+enum VehicleCostEntryKind {
+  ORIGINAL
+  REVERSAL
+
+  @@map("vehicle_cost_entry_kind")
+}
+
+enum VehicleCostActionType {
+  ACTUAL_COST
+  RESPONSIBILITY_CONFIRMED
+  RECOVERY_EXPOSURE
+  RECOVERY_RECEIVED
+  WAIVER
+  WRITE_OFF
+
+  @@map("vehicle_cost_action_type")
+}
+
+enum VehicleCostCategory {
+  DAMAGE
+  CLEANING
+  REPAIR
+  MAINTENANCE
+  EXCESS_MILEAGE
+  VIOLATION
+  TOWING
+  INSURANCE
+  BAAS
+  DEPRECIATION
+  OTHER
+
+  @@map("vehicle_cost_category")
+}
+
+enum VehicleCostResponsiblePartyType {
+  CUSTOMER
+  INSURER
+  SUPPLIER
+  ASSET_OWNER
+  PLATFORM
+  OTHER
+
+  @@map("vehicle_cost_responsible_party_type")
+}
+
+enum BusinessExceptionType {
+  VEHICLE_REGISTRATION_DOCUMENT_MISSING
+  HANDOVER_EVIDENCE_EXCEPTION
+  SETTLEMENT_WAIVER
+  SETTLEMENT_WRITE_OFF
+  RECOVERY_EXECUTION_APPROVAL
+
+  @@map("business_exception_type")
+}
+
+enum BusinessExceptionSubjectType {
+  VEHICLE
+  ORDER
+  CONTRACT
+  ASSET_WORK_ORDER
+  HANDOVER_WORK_ORDER
+  SETTLEMENT_CASE
+  RECOVERY_CASE
+
+  @@map("business_exception_subject_type")
+}
+
+enum BusinessExceptionApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+
+  @@map("business_exception_approval_status")
+}
+
+enum BusinessExceptionDecision {
+  APPROVED
+  REJECTED
+
+  @@map("business_exception_decision")
+}
+
+enum AssetAccountingCommandType {
+  COST_APPEND
+  COST_REVERSE
+  EXCEPTION_REQUEST
+  EXCEPTION_DECIDE
+  EXCEPTION_EXPIRE
+
+  @@map("asset_accounting_command_type")
+}
+
 enum VehicleStatus {
   DRAFT
   IN_PREPARATION
@@ -2467,6 +2560,11 @@ model User {
   releasedVehicleOperationalRestrictions      VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionReleasedBy")
   createdVehicleOperationalRestrictions       VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionCreatedBy")
   updatedVehicleOperationalRestrictions       VehicleOperationalRestriction[] @relation("VehicleOperationalRestrictionUpdatedBy")
+  confirmedVehicleCostLedgerEntries           VehicleCostLedgerEntry[]        @relation("VehicleCostLedgerEntryConfirmedBy")
+  requestedBusinessExceptionApprovals         BusinessExceptionApproval[]     @relation("BusinessExceptionApprovalRequestedBy")
+  decidedBusinessExceptionApprovals           BusinessExceptionApproval[]     @relation("BusinessExceptionApprovalDecidedBy")
+  expiredBusinessExceptionApprovals           BusinessExceptionApproval[]     @relation("BusinessExceptionApprovalExpiredBy")
+  assetAccountingCommandReceipts              AssetAccountingCommandReceipt[] @relation("AssetAccountingCommandReceiptActor")
 
   @@index([status])
   @@map("user")
@@ -2647,6 +2745,7 @@ model Customer {
   insuranceClaims         InsuranceClaim[]
   subscriptionPeriods     VehicleSubscriptionPeriod[]
   assetWorkOrders         AssetWorkOrder[]
+  costLedgerEntries       VehicleCostLedgerEntry[]
   createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy               String?                        @map("created_by") @db.Uuid
@@ -3506,6 +3605,7 @@ model Vehicle {
   subscriptionPeriods           VehicleSubscriptionPeriod[]
   assetWorkOrders               AssetWorkOrder[]
   operationalRestrictions       VehicleOperationalRestriction[]
+  costLedgerEntries             VehicleCostLedgerEntry[]
   createdAt                     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                         @map("created_by") @db.Uuid
@@ -3531,6 +3631,7 @@ model AssetOwner {
   onboardingSnapshot     Json?                    @map("onboarding_snapshot")
   ownershipPeriods       VehicleOwnershipPeriod[]
   assetWorkOrders        AssetWorkOrder[]
+  costLedgerEntries      VehicleCostLedgerEntry[]
   createdAt              DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy              String?                  @map("created_by") @db.Uuid
@@ -3586,6 +3687,7 @@ model AssetWorkOrder {
   events                   AssetWorkOrderEvent[]
   evidence                 AssetWorkOrderEvidence[]
   restrictions             VehicleOperationalRestriction[]
+  costLedgerEntries        VehicleCostLedgerEntry[]
   createdAt                DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                         @map("created_by") @db.Uuid
@@ -3659,6 +3761,7 @@ model AssetWorkOrderEvidence {
   actorId              String?                      @map("actor_id") @db.Uuid
   actor                User?                        @relation("AssetWorkOrderEvidenceActor", fields: [actorId], references: [id])
   recordedAt           DateTime                     @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  costLedgerEntries    VehicleCostLedgerEntry[]
 
   @@unique([sourceType, sourceId, sourceKey], map: "asset_work_order_evidence_source_key")
   @@unique([supersedesEvidenceId], map: "asset_work_order_evidence_supersedes_evidence_id_key")
@@ -3709,6 +3812,115 @@ model VehicleOperationalRestriction {
   @@index([createdBy], map: "vehicle_operational_restriction_created_by_idx")
   @@index([updatedBy], map: "vehicle_operational_restriction_updated_by_idx")
   @@map("vehicle_operational_restriction")
+}
+
+model VehicleCostLedgerEntry {
+  id                      String                           @id @default(uuid()) @db.Uuid
+  vehicleId               String                           @map("vehicle_id") @db.Uuid
+  vehicle                 Vehicle                          @relation(fields: [vehicleId], references: [id])
+  orderId                 String?                          @map("order_id") @db.Uuid
+  order                   SubscriptionOrder?               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  contractId              String?                          @map("contract_id") @db.Uuid
+  contract                Contract?                        @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  customerId              String?                          @map("customer_id") @db.Uuid
+  customer                Customer?                        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  assetOwnerId            String?                          @map("asset_owner_id") @db.Uuid
+  assetOwner              AssetOwner?                      @relation(fields: [assetOwnerId], references: [id], onDelete: Restrict)
+  workOrderId             String?                          @map("work_order_id") @db.Uuid
+  workOrder               AssetWorkOrder?                  @relation(fields: [workOrderId], references: [id], onDelete: Restrict)
+  evidenceId              String?                          @map("evidence_id") @db.Uuid
+  evidence                AssetWorkOrderEvidence?          @relation(fields: [evidenceId], references: [id], onDelete: Restrict)
+  assetOwnerSnapshot      Json?                            @map("asset_owner_snapshot")
+  evidenceSnapshot        Json?                            @map("evidence_snapshot")
+  responsibilitySnapshot  Json                             @map("responsibility_snapshot")
+  entryKind               VehicleCostEntryKind             @map("entry_kind")
+  actionType              VehicleCostActionType            @map("action_type")
+  costCategory            VehicleCostCategory              @map("cost_category")
+  amountCents             BigInt                           @map("amount_cents")
+  responsiblePartyType    VehicleCostResponsiblePartyType  @map("responsible_party_type")
+  responsiblePartyId      String?                          @map("responsible_party_id") @db.Uuid
+  occurredOn              DateTime                         @map("occurred_on") @db.Date
+  accountingPeriod        String                           @map("accounting_period") @db.VarChar(7)
+  confirmedAt             DateTime                         @map("confirmed_at") @db.Timestamptz(6)
+  confirmedBy             String?                          @map("confirmed_by") @db.Uuid
+  confirmer               User?                            @relation("VehicleCostLedgerEntryConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict)
+  reversalOfEntryId       String?                          @map("reversal_of_entry_id") @db.Uuid
+  reversalOfEntry         VehicleCostLedgerEntry?          @relation("VehicleCostLedgerEntryReversal", fields: [reversalOfEntryId], references: [id], onDelete: Restrict)
+  reversals               VehicleCostLedgerEntry[]         @relation("VehicleCostLedgerEntryReversal")
+  sourceType              String                           @map("source_type") @db.VarChar(64)
+  sourceId                String                           @map("source_id") @db.Uuid
+  sourceKey               String                           @map("source_key") @db.VarChar(255)
+  receipts                AssetAccountingCommandReceipt[]
+  createdAt               DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([vehicleId, occurredOn], map: "vehicle_cost_ledger_entry_vehicle_occurred_on_idx")
+  @@index([orderId], map: "vehicle_cost_ledger_entry_order_id_idx")
+  @@index([contractId], map: "vehicle_cost_ledger_entry_contract_id_idx")
+  @@index([customerId], map: "vehicle_cost_ledger_entry_customer_id_idx")
+  @@index([assetOwnerId], map: "vehicle_cost_ledger_entry_asset_owner_id_idx")
+  @@index([workOrderId], map: "vehicle_cost_ledger_entry_work_order_id_idx")
+  @@index([sourceType, sourceId, sourceKey], map: "vehicle_cost_ledger_entry_source_key_idx")
+  @@map("vehicle_cost_ledger_entry")
+}
+
+model BusinessExceptionApproval {
+  id                      String                          @id @default(uuid()) @db.Uuid
+  approvalNo              String                          @map("approval_no") @db.VarChar(64)
+  exceptionType           BusinessExceptionType           @map("exception_type")
+  subjectType             BusinessExceptionSubjectType    @map("subject_type")
+  subjectId               String                          @map("subject_id") @db.Uuid
+  subjectField            String                          @map("subject_field") @db.VarChar(128)
+  subjectSnapshot         Json                            @map("subject_snapshot")
+  subjectSnapshotHash     String                          @map("subject_snapshot_hash") @db.VarChar(64)
+  requestReason           String                          @map("request_reason") @db.Text
+  requestEvidenceSnapshot Json?                           @map("request_evidence_snapshot")
+  requestedBy             String                          @map("requested_by") @db.Uuid
+  requester               User                            @relation("BusinessExceptionApprovalRequestedBy", fields: [requestedBy], references: [id])
+  requestedAt             DateTime                        @map("requested_at") @db.Timestamptz(6)
+  requestSourceType       String                          @map("request_source_type") @db.VarChar(64)
+  requestSourceId         String                          @map("request_source_id") @db.Uuid
+  requestSourceKey        String                          @map("request_source_key") @db.VarChar(255)
+  status                  BusinessExceptionApprovalStatus @default(PENDING)
+  version                 Int                             @default(0)
+  decision                BusinessExceptionDecision?      @map("decision")
+  decisionComment         String?                         @map("decision_comment") @db.Text
+  decidedBy               String?                         @map("decided_by") @db.Uuid
+  decider                 User?                           @relation("BusinessExceptionApprovalDecidedBy", fields: [decidedBy], references: [id], onDelete: Restrict)
+  decidedAt               DateTime?                       @map("decided_at") @db.Timestamptz(6)
+  expiryReason            String?                         @map("expiry_reason") @db.Text
+  expiredBy               String?                         @map("expired_by") @db.Uuid
+  expirer                 User?                           @relation("BusinessExceptionApprovalExpiredBy", fields: [expiredBy], references: [id], onDelete: Restrict)
+  expiredAt               DateTime?                       @map("expired_at") @db.Timestamptz(6)
+  receipts                AssetAccountingCommandReceipt[]
+  createdAt               DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([approvalNo], map: "business_exception_approval_approval_no_key")
+  @@index([subjectType, subjectId, subjectField], map: "business_exception_approval_subject_idx")
+  @@index([status], map: "business_exception_approval_status_idx")
+  @@map("business_exception_approval")
+}
+
+model AssetAccountingCommandReceipt {
+  id              String                     @id @default(uuid()) @db.Uuid
+  sourceType      String                     @map("source_type") @db.VarChar(64)
+  sourceId        String                     @map("source_id") @db.Uuid
+  sourceKey       String                     @map("source_key") @db.VarChar(255)
+  commandType     AssetAccountingCommandType @map("command_type")
+  payloadHash     String                     @map("payload_hash") @db.VarChar(64)
+  payloadSnapshot Json                       @map("payload_snapshot")
+  outcomeSnapshot Json                       @map("outcome_snapshot")
+  costEntryId     String?                    @map("cost_entry_id") @db.Uuid
+  costEntry       VehicleCostLedgerEntry?    @relation(fields: [costEntryId], references: [id], onDelete: Restrict)
+  approvalId      String?                    @map("approval_id") @db.Uuid
+  approval        BusinessExceptionApproval? @relation(fields: [approvalId], references: [id], onDelete: Restrict)
+  actorId         String                     @map("actor_id") @db.Uuid
+  actor           User                       @relation("AssetAccountingCommandReceiptActor", fields: [actorId], references: [id])
+  createdAt       DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([sourceType, sourceId, sourceKey], map: "asset_accounting_command_receipt_source_key")
+  @@index([costEntryId], map: "asset_accounting_command_receipt_cost_entry_id_idx")
+  @@index([approvalId], map: "asset_accounting_command_receipt_approval_id_idx")
+  @@map("asset_accounting_command_receipt")
 }
 
 model VehicleOwnershipPeriod {
@@ -5315,6 +5527,7 @@ model SubscriptionOrder {
   subscriptionJourney        SubscriptionJourney?
   subscriptionPeriods        VehicleSubscriptionPeriod[]
   assetWorkOrders            AssetWorkOrder[]
+  costLedgerEntries          VehicleCostLedgerEntry[]
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -6826,6 +7039,7 @@ model Contract {
   contractSegments         SubscriptionContractSegment[]
   subscriptionPeriods      VehicleSubscriptionPeriod[]
   assetWorkOrders          AssetWorkOrder[]
+  costLedgerEntries        VehicleCostLedgerEntry[]
   createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                       @map("created_by") @db.Uuid

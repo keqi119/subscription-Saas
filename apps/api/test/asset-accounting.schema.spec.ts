@@ -51,13 +51,21 @@ function migrationTrigger(name: string) {
 }
 
 function latestMigrationFunction(source: string, name: string) {
-  return Array.from(
-    source.matchAll(new RegExp(`CREATE OR REPLACE FUNCTION "public"\\."${name}"\\(\\)[\\s\\S]*?\\n\\$\\$;`, "g"))
-  ).at(-1)?.[0] ?? "";
+  return (
+    Array.from(
+      source.matchAll(
+        new RegExp(`CREATE OR REPLACE FUNCTION "public"\\."${name}"\\(\\)[\\s\\S]*?\\n\\$\\$;`, "g")
+      )
+    ).at(-1)?.[0] ?? ""
+  );
 }
 
 function latestMigrationTrigger(source: string, name: string) {
-  return Array.from(source.matchAll(new RegExp(`CREATE TRIGGER "${name}"[\\s\\S]*?;`, "g"))).at(-1)?.[0] ?? "";
+  return (
+    Array.from(source.matchAll(new RegExp(`CREATE TRIGGER "${name}"[\\s\\S]*?;`, "g"))).at(
+      -1
+    )?.[0] ?? ""
+  );
 }
 
 function normalizeWhitespace(value: string) {
@@ -77,32 +85,38 @@ const restrictivePrismaRelations = [
   {
     model: "VehicleCostLedgerEntry",
     field: "order",
-    definition: "order SubscriptionOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)"
+    definition:
+      "order SubscriptionOrder? @relation(fields: [orderId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
     field: "contract",
-    definition: "contract Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)"
+    definition:
+      "contract Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
     field: "customer",
-    definition: "customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)"
+    definition:
+      "customer Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
     field: "assetOwner",
-    definition: "assetOwner AssetOwner? @relation(fields: [assetOwnerId], references: [id], onDelete: Restrict)"
+    definition:
+      "assetOwner AssetOwner? @relation(fields: [assetOwnerId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
     field: "workOrder",
-    definition: "workOrder AssetWorkOrder? @relation(fields: [workOrderId], references: [id], onDelete: Restrict)"
+    definition:
+      "workOrder AssetWorkOrder? @relation(fields: [workOrderId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
     field: "evidence",
-    definition: "evidence AssetWorkOrderEvidence? @relation(fields: [evidenceId], references: [id], onDelete: Restrict)"
+    definition:
+      "evidence AssetWorkOrderEvidence? @relation(fields: [evidenceId], references: [id], onDelete: Restrict)"
   },
   {
     model: "VehicleCostLedgerEntry",
@@ -143,21 +157,96 @@ const restrictivePrismaRelations = [
 ] as const;
 
 const finalForeignKeyContracts = [
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_vehicle_id_fkey", "vehicle_id", "vehicle"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_order_id_fkey", "order_id", "subscription_order"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_contract_id_fkey", "contract_id", "contract"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_customer_id_fkey", "customer_id", "customer"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_asset_owner_id_fkey", "asset_owner_id", "asset_owner"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_work_order_id_fkey", "work_order_id", "asset_work_order"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_evidence_id_fkey", "evidence_id", "asset_work_order_evidence"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_confirmed_by_fkey", "confirmed_by", "user"],
-  ["vehicle_cost_ledger_entry", "vehicle_cost_ledger_entry_reversal_of_entry_id_fkey", "reversal_of_entry_id", "vehicle_cost_ledger_entry"],
-  ["business_exception_approval", "business_exception_approval_requested_by_fkey", "requested_by", "user"],
-  ["business_exception_approval", "business_exception_approval_decided_by_fkey", "decided_by", "user"],
-  ["business_exception_approval", "business_exception_approval_expired_by_fkey", "expired_by", "user"],
-  ["asset_accounting_command_receipt", "asset_accounting_command_receipt_cost_entry_id_fkey", "cost_entry_id", "vehicle_cost_ledger_entry"],
-  ["asset_accounting_command_receipt", "asset_accounting_command_receipt_approval_id_fkey", "approval_id", "business_exception_approval"],
-  ["asset_accounting_command_receipt", "asset_accounting_command_receipt_actor_id_fkey", "actor_id", "user"]
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_vehicle_id_fkey",
+    "vehicle_id",
+    "vehicle"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_order_id_fkey",
+    "order_id",
+    "subscription_order"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_contract_id_fkey",
+    "contract_id",
+    "contract"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_customer_id_fkey",
+    "customer_id",
+    "customer"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_asset_owner_id_fkey",
+    "asset_owner_id",
+    "asset_owner"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_work_order_id_fkey",
+    "work_order_id",
+    "asset_work_order"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_evidence_id_fkey",
+    "evidence_id",
+    "asset_work_order_evidence"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_confirmed_by_fkey",
+    "confirmed_by",
+    "user"
+  ],
+  [
+    "vehicle_cost_ledger_entry",
+    "vehicle_cost_ledger_entry_reversal_of_entry_id_fkey",
+    "reversal_of_entry_id",
+    "vehicle_cost_ledger_entry"
+  ],
+  [
+    "business_exception_approval",
+    "business_exception_approval_requested_by_fkey",
+    "requested_by",
+    "user"
+  ],
+  [
+    "business_exception_approval",
+    "business_exception_approval_decided_by_fkey",
+    "decided_by",
+    "user"
+  ],
+  [
+    "business_exception_approval",
+    "business_exception_approval_expired_by_fkey",
+    "expired_by",
+    "user"
+  ],
+  [
+    "asset_accounting_command_receipt",
+    "asset_accounting_command_receipt_cost_entry_id_fkey",
+    "cost_entry_id",
+    "vehicle_cost_ledger_entry"
+  ],
+  [
+    "asset_accounting_command_receipt",
+    "asset_accounting_command_receipt_approval_id_fkey",
+    "approval_id",
+    "business_exception_approval"
+  ],
+  [
+    "asset_accounting_command_receipt",
+    "asset_accounting_command_receipt_actor_id_fkey",
+    "actor_id",
+    "user"
+  ]
 ] as const;
 
 type ForeignKeyContract = (typeof finalForeignKeyContracts)[number];
@@ -166,7 +255,10 @@ function expectedForeignKeyStatement([table, name, column, referencedTable]: For
   return `ALTER TABLE "${table}" ADD CONSTRAINT "${name}" FOREIGN KEY ("${column}") REFERENCES "${referencedTable}"("id") ON DELETE RESTRICT ON UPDATE CASCADE;`;
 }
 
-function finalForeignKeyStatement(source: string, [table, name, column, referencedTable]: ForeignKeyContract) {
+function finalForeignKeyStatement(
+  source: string,
+  [table, name, column, referencedTable]: ForeignKeyContract
+) {
   const statement = new RegExp(
     `ALTER TABLE (?:"public"\\.)?"${table}" ADD CONSTRAINT "${name}" FOREIGN KEY \\("${column}"\\) REFERENCES "${referencedTable}"\\("id"\\) ON DELETE (?:RESTRICT|CASCADE|SET NULL) ON UPDATE CASCADE;`,
     "g"
@@ -211,14 +303,17 @@ function mutateReversalOriginalDimensionFields(
   const comparison = functionSql.match(
     /(IF ROW\([\s\S]*?\) IS DISTINCT FROM ROW\(\s*)([\s\S]*?)(\s*\) THEN)/
   );
-  if (!comparison) {
+  if (!comparison || comparison[2] === undefined) {
     return source;
   }
 
-  const originalFields = Array.from(
-    comparison[2].matchAll(/original\."([^"]+)"/g),
-    (match) => match[1]
-  );
+  const originalFields = Array.from(comparison[2].matchAll(/original\."([^"]+)"/g), (match) => {
+    const field = match[1];
+    if (field === undefined) {
+      throw new Error("reversal original dimension capture is missing");
+    }
+    return field;
+  });
   const replacement = `\n        ${mutation(originalFields)
     .map((field) => `original."${field}"`)
     .join(", ")}\n    `;
@@ -306,9 +401,12 @@ function expectFinalPersistenceContract(source: string, prismaSchema: string) {
     "reversal dimension pairs"
   ).toEqual(reversalDimensionFields.map((field) => `${field}:${field}`));
 
-  const approval = latestMigrationFunction(source, "enforce_business_exception_approval_transition");
+  const approval = latestMigrationFunction(
+    source,
+    "enforce_business_exception_approval_transition"
+  );
   expect(approval, "approval insert guard").toContain("IF TG_OP = 'INSERT' THEN");
-  expect(approval).toContain('NEW."status" = \'PENDING\'');
+  expect(approval).toContain("NEW.\"status\" = 'PENDING'");
   expect(approval).toContain('NEW."version" = 0');
   for (const column of [
     "decision",
@@ -321,9 +419,7 @@ function expectFinalPersistenceContract(source: string, prismaSchema: string) {
   ]) {
     expect(approval).toContain(`NEW."${column}" IS NULL`);
   }
-  expect(approval, "approval version increment").toContain(
-    "NEW.\"version\" <> OLD.\"version\" + 1"
-  );
+  expect(approval, "approval version increment").toContain('NEW."version" <> OLD."version" + 1');
   expect(normalizeWhitespace(approval), "approval update transition predicate").toContain(
     normalizeWhitespace(approvalUpdateTransitionPredicate)
   );
@@ -553,7 +649,6 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
     expect(ledger).toContain("reversals");
     expect(ledger).toContain("receipts");
     expect(approval).toContain("receipts");
-
   });
 
   it("declares the source, target, date/hash, amount, and approval status shapes", () => {
@@ -694,7 +789,10 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       const statement = expectedForeignKeyStatement(foreignKey);
       expectMigrationMutationToFail(
         foreignKey[1],
-        finalMigration.replace(statement, statement.replace("ON DELETE RESTRICT", "ON DELETE CASCADE"))
+        finalMigration.replace(
+          statement,
+          statement.replace("ON DELETE RESTRICT", "ON DELETE CASCADE")
+        )
       );
       expectMigrationMutationToFail(foreignKey[1], finalMigration.replace(statement, ""));
     }
@@ -721,7 +819,12 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
         "reversal original dimension pairing",
         `${migration}\n${mutateReversalOriginalDimensionFields(hardeningMigration, (fields) => {
           const swapped = [...fields];
-          [swapped[index], swapped[nextIndex]] = [swapped[nextIndex], swapped[index]];
+          const currentField = swapped[index];
+          const nextField = swapped[nextIndex];
+          if (currentField === undefined || nextField === undefined) {
+            throw new Error("reversal dimension swap index is out of bounds");
+          }
+          [swapped[index], swapped[nextIndex]] = [nextField, currentField];
           return swapped;
         })}`
       );
@@ -738,9 +841,15 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       ' AND "decision_comment" IS NULL',
       ""
     );
-    expectMigrationMutationToFail("pending decision comment", `${migration}\n${pendingCommentMutation}`);
+    expectMigrationMutationToFail(
+      "pending decision comment",
+      `${migration}\n${pendingCommentMutation}`
+    );
 
-    const insertGuardMutation = finalMigration.replace("IF TG_OP = 'INSERT' THEN", "IF TG_OP = 'CREATE' THEN");
+    const insertGuardMutation = finalMigration.replace(
+      "IF TG_OP = 'INSERT' THEN",
+      "IF TG_OP = 'CREATE' THEN"
+    );
     expectMigrationMutationToFail("approval insert guard", insertGuardMutation);
 
     for (const [label, before, after] of [
@@ -757,14 +866,20 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       ["approval update transition predicate", ")\n        OR (OLD.", ")\n        AND (OLD."],
       ["approval update transition predicate", "IF NOT (\n        (OLD.", "IF (\n        (OLD."]
     ] as const) {
-      expectMigrationMutationToFail(label, `${migration}\n${hardeningMigration.replace(before, after)}`);
+      expectMigrationMutationToFail(
+        label,
+        `${migration}\n${hardeningMigration.replace(before, after)}`
+      );
     }
 
     const appendOnlyWiringMutation = hardeningMigration.replace(
       'EXECUTE FUNCTION "public"."reject_asset_accounting_append_only_mutation"()',
       'EXECUTE FUNCTION "public"."enforce_vehicle_cost_ledger_reversal"()'
     );
-    expectMigrationMutationToFail("vehicle_cost_ledger_entry_append_only", `${migration}\n${appendOnlyWiringMutation}`);
+    expectMigrationMutationToFail(
+      "vehicle_cost_ledger_entry_append_only",
+      `${migration}\n${appendOnlyWiringMutation}`
+    );
 
     const finalReversalTrigger = latestMigrationTrigger(
       hardeningMigration,

@@ -1565,6 +1565,8 @@ describe("seed permission calibration", () => {
     expect(seedSource).toContain("const businessExceptionApprovePermissions");
     expect(seedSource).not.toContain("vehicleCostLedgerMenuCodes");
     expect(seedSource).not.toContain("businessExceptionMenuCodes");
+    expect(webLabelsSource).toContain('vehicle_cost_ledger: "车辆成本台账"');
+    expect(webLabelsSource).toContain('business_exception: "业务例外审批"');
     for (const [permissionCode, label, description] of [
       ["vehicle_cost_ledger:view", "查看车辆成本台账", "允许查看车辆成本台账"],
       ["vehicle_cost_ledger:confirm", "确认车辆成本台账", "允许确认车辆成本台账"],

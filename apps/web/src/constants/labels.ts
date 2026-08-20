@@ -1266,6 +1266,7 @@ export const MODULE_LABELS: Record<string, string> = {
   audit_log: "操作日志",
   auto_debit: "自动扣款",
   billing: "应收账单",
+  business_exception: "业务例外审批",
   collection: "催收管理",
   contract: "合同管理",
   contract_template: "合同模板",
@@ -1288,6 +1289,7 @@ export const MODULE_LABELS: Record<string, string> = {
   risk: "风控中心",
   system: "系统管理",
   vehicle: "车辆资产",
+  vehicle_cost_ledger: "车辆成本台账",
   vehicle_valuation_review: "车辆估值复核"
 };
 

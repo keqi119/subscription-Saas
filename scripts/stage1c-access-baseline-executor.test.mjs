@@ -137,15 +137,26 @@ test("apply confirmation accepts only the exact dedicated value", () => {
 test("access CLI parsing keeps one optional output and rejects unusable path values", () => {
   const parse = requiredExport(cli, "parseStage1cAccessBaselineArgs");
 
-  assert.deepEqual(parse(["--dry-run"]), { mode: "dry-run", output: null });
+  assert.deepEqual(parse(["--dry-run"]), {
+    mode: "dry-run",
+    output: null,
+    permissionsOnly: false
+  });
   assert.deepEqual(parse(["--apply", "--output", "reports/access.json"]), {
     mode: "apply",
-    output: "reports/access.json"
+    output: "reports/access.json",
+    permissionsOnly: false
   });
-  assert.deepEqual(parse(["--dry-run", "--output=reports/access.json"]), {
+  assert.deepEqual(parse(["--permissions-only", "--dry-run", "--output=reports/access.json"]), {
     mode: "dry-run",
-    output: "reports/access.json"
+    output: "reports/access.json",
+    permissionsOnly: true
   });
+
+  assert.throws(
+    () => parse(["--dry-run", "--permissions-only", "--permissions-only"]),
+    /STAGE1C_ACCESS_BASELINE_SCOPE_DUPLICATE/
+  );
 
   for (const args of [
     ["--dry-run", "--output"],
@@ -163,6 +174,29 @@ test("access CLI parsing keeps one optional output and rejects unusable path val
       `expected ${JSON.stringify(args)} to reject an invalid output path`
     );
   }
+});
+
+test("CLI passes permission-only scope only when the explicit flag is present", async () => {
+  const executeCalls = [];
+  const run = requiredExport(cli, "runStage1cAccessBaselineCli");
+  const options = {
+    createPrisma: async () => "cli-prisma",
+    env: {},
+    execute: async (input) => {
+      executeCalls.push(input);
+      return { exitCode: 0, report: { safeToApply: true } };
+    },
+    writeOutput: async () => {},
+    writeStdout: async () => {}
+  };
+
+  await run({ ...options, args: ["--dry-run"] });
+  await run({ ...options, args: ["--dry-run", "--permissions-only"] });
+
+  assert.deepEqual(executeCalls, [
+    { mode: "dry-run", permissionsOnly: false, prisma: "cli-prisma" },
+    { mode: "dry-run", permissionsOnly: true, prisma: "cli-prisma" }
+  ]);
 });
 
 test("process rejects a flag-shaped access output before database or report side effects", async () => {
@@ -241,7 +275,7 @@ test("stdout stream failures reject so the redacted process wrapper can return n
   await assert.rejects(writeStdout("report\n", stdout), /INJECTED_STDOUT_FAILURE/);
 });
 
-test("generic disposable-local seed hook executes permission-only convergence and exact replay", async () => {
+test("generic disposable-local seed hook preserves legacy owner convergence and exact replay", async () => {
   const state = databaseState();
   state.permissions.find(({ code }) => code === "asset_facts:view").status = "INACTIVE";
   state.rolePermissions.push(
@@ -258,7 +292,7 @@ test("generic disposable-local seed hook executes permission-only convergence an
   const replay = await synchronize({ prisma });
 
   assert.equal(first.exitCode, 0);
-  assert.equal(first.report.applied.ownerChanged, 0);
+  assert.equal(first.report.applied.ownerChanged, 1);
   assert.equal(replay.exitCode, 0);
   assert.deepEqual(replay.report.applied, {
     auditsCreated: 0,
@@ -274,7 +308,81 @@ test("generic disposable-local seed hook executes permission-only convergence an
     ).deletedAt,
     null
   );
-  assert.deepEqual(state.assetOwners, []);
+  assert.deepEqual(
+    state.assetOwners.map(({ name, ownerNo, ownerType, status }) => ({
+      name,
+      ownerNo,
+      ownerType,
+      status
+    })),
+    [
+      {
+        name: "平台资产主体",
+        ownerNo: "PLATFORM",
+        ownerType: "PLATFORM",
+        status: "ACTIVE"
+      }
+    ]
+  );
+  assert.deepEqual(state.ownershipPeriods, originalOwnershipPeriods);
+});
+
+test("default executor converges inactive owner and fails closed on owner drift or collision", async () => {
+  const execute = requiredExport(executor, "executeStage1cAccessBaseline");
+  const inactive = databaseState();
+  inactive.assetOwners.push({ ...platformOwner(), status: "INACTIVE" });
+  const inactivePeriods = structuredClone(inactive.ownershipPeriods);
+
+  const converged = await execute({ mode: "apply", prisma: inMemoryPrisma(inactive) });
+
+  assert.equal(converged.exitCode, 0);
+  assert.equal(converged.report.applied.ownerChanged, 1);
+  assert.equal(inactive.assetOwners[0].status, "ACTIVE");
+  assert.deepEqual(inactive.ownershipPeriods, inactivePeriods);
+
+  for (const owner of [
+    { ...platformOwner(), name: "另一法律主体" },
+    { ...platformOwner(), ownerNo: "OTHER-PLATFORM" }
+  ]) {
+    const state = databaseState();
+    state.assetOwners.push(owner);
+    const before = structuredClone(state);
+    const result = await execute({ mode: "apply", prisma: inMemoryPrisma(state) });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.report.classification.blockers[0].code, /^PLATFORM_OWNER_/);
+    assert.deepEqual(state, before);
+  }
+});
+
+test("explicit permission-only dry-run/apply/replay never touches or reports ownership state", async () => {
+  const execute = requiredExport(executor, "executeStage1cAccessBaseline");
+  const state = databaseState();
+  state.assetOwners.push({ ...platformOwner(), name: "must remain unread" });
+  const originalOwners = structuredClone(state.assetOwners);
+  const originalOwnershipPeriods = structuredClone(state.ownershipPeriods);
+  const prisma = inMemoryPrisma(state, { forbidOwnershipAccess: true });
+
+  const dryRun = await execute({ mode: "dry-run", permissionsOnly: true, prisma });
+  assert.equal(dryRun.exitCode, 0);
+  assert.equal(dryRun.report.permissionsOnly, true);
+  assert.deepEqual(dryRun.report.classification.platformOwner, { disposition: "NOT_MANAGED" });
+  assert.equal("ownershipPeriodCount" in dryRun.report.classification, false);
+
+  const applied = await execute({ mode: "apply", permissionsOnly: true, prisma });
+  const auditCount = state.auditLogs.length;
+  const replay = await execute({ mode: "apply", permissionsOnly: true, prisma });
+
+  assert.equal(applied.exitCode, 0);
+  assert.equal(applied.report.applied.ownerChanged, 0);
+  assert.equal("ownershipPeriodCount" in applied.report.classification, false);
+  assert.deepEqual(replay.report.applied, {
+    auditsCreated: 0,
+    grantsChanged: 0,
+    ownerChanged: 0,
+    permissionsChanged: 0
+  });
+  assert.equal(state.auditLogs.length, auditCount);
+  assert.deepEqual(state.assetOwners, originalOwners);
   assert.deepEqual(state.ownershipPeriods, originalOwnershipPeriods);
 });
 
@@ -353,20 +461,8 @@ function transactionHarness(persisted = {}) {
       });
       const staged = structuredClone(persisted);
       const tx = {
-        $executeRaw: async (query) => {
-          const sql = String(query?.strings?.join(" ") ?? query ?? "");
-          assert.equal(sql.includes("asset_owner"), false);
-          return 0;
-        },
+        $executeRaw: async () => 0,
         $queryRaw: async () => [{ locked: true }],
-        assetOwner: new Proxy(
-          {},
-          {
-            get() {
-              throw new Error("assetOwner access is forbidden by Task 6 permission-only scope");
-            }
-          }
-        ),
         state: staged,
         vehicleOwnershipPeriod: new Proxy(
           {},
@@ -399,7 +495,7 @@ function cleanClassification(overrides = {}) {
     blockers: [],
     ownershipPeriodCount: 0,
     permissions: [],
-    platformOwner: { disposition: "NOT_MANAGED" },
+    platformOwner: { disposition: "UNCHANGED" },
     rolePermissions: [],
     ...overrides
   };
@@ -496,11 +592,11 @@ function grantRow(roleCode, permissionCode, deletedAt = null) {
   };
 }
 
-function inMemoryPrisma(persisted, { failAudit = false } = {}) {
+function inMemoryPrisma(persisted, { failAudit = false, forbidOwnershipAccess = false } = {}) {
   return {
     async $transaction(work) {
       const staged = structuredClone(persisted);
-      const tx = inMemoryTransaction(staged, { failAudit });
+      const tx = inMemoryTransaction(staged, { failAudit, forbidOwnershipAccess });
       const result = await work(tx);
       for (const key of Object.keys(persisted)) persisted[key] = staged[key];
       return result;
@@ -508,22 +604,41 @@ function inMemoryPrisma(persisted, { failAudit = false } = {}) {
   };
 }
 
-function inMemoryTransaction(state, { failAudit }) {
-  return {
+function inMemoryTransaction(state, { failAudit, forbidOwnershipAccess }) {
+  const tx = {
     $executeRaw: async (query) => {
       const sql = String(query?.strings?.join(" ") ?? query ?? "");
-      assert.equal(sql.includes("asset_owner"), false);
+      if (forbidOwnershipAccess && /asset_owner|vehicle_ownership_period/.test(sql)) {
+        throw new Error(`permission-only SQL touched ownership state: ${sql}`);
+      }
       return 0;
     },
     $queryRaw: async () => [{ locked: true }],
-    assetOwner: new Proxy(
-      {},
-      {
-        get() {
-          throw new Error("assetOwner access is forbidden by Task 6 permission-only scope");
-        }
+    assetOwner: {
+      async create({ data }) {
+        const row = {
+          ...data,
+          id: "owner-platform",
+          legalName: null,
+          registrationIdentifier: null
+        };
+        state.assetOwners.push(row);
+        return structuredClone(row);
+      },
+      async findMany() {
+        return structuredClone(state.assetOwners);
+      },
+      async findUnique({ where }) {
+        return structuredClone(
+          state.assetOwners.find(({ ownerNo }) => ownerNo === where.ownerNo) ?? null
+        );
+      },
+      async update({ data, where }) {
+        const row = state.assetOwners.find(({ ownerNo }) => ownerNo === where.ownerNo);
+        Object.assign(row, data);
+        return structuredClone(row);
       }
-    ),
+    },
     auditLog: {
       async create({ data }) {
         if (failAudit) throw new Error("INJECTED_AUDIT_FAILURE");
@@ -603,6 +718,27 @@ function inMemoryTransaction(state, { failAudit }) {
         return state.ownershipPeriods.length;
       }
     }
+  };
+  if (!forbidOwnershipAccess) return tx;
+  return new Proxy(tx, {
+    get(target, property, receiver) {
+      if (property === "assetOwner" || property === "vehicleOwnershipPeriod") {
+        throw new Error(`permission-only client touched ownership state: ${String(property)}`);
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+}
+
+function platformOwner() {
+  return {
+    id: "owner-platform",
+    legalName: null,
+    name: "平台资产主体",
+    ownerNo: "PLATFORM",
+    ownerType: "PLATFORM",
+    registrationIdentifier: null,
+    status: "ACTIVE"
   };
 }
 

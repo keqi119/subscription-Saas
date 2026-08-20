@@ -1,5 +1,6 @@
 import {
   STAGE1C_PERMISSION_DEFINITIONS,
+  STAGE1C_PLATFORM_OWNER,
   STAGE1C_REQUIRED_ROLE_CODES,
   classifyStage1cAccessBaseline,
   isStage1cAccessBaselineConverged,
@@ -19,43 +20,44 @@ export async function executeStage1cAccessBaseline({
   generatedAt = new Date().toISOString(),
   loadSnapshot = loadStage1cAccessBaselineSnapshot,
   mode,
+  permissionsOnly = false,
   prisma
 }) {
   if (mode === "dry-run") {
     const classification = await prisma.$transaction(
-      async (tx) => classify(await loadSnapshot(tx)),
+      async (tx) => classify(await loadSnapshot(tx, { permissionsOnly }), { permissionsOnly }),
       TRANSACTION_OPTIONS
     );
-    return buildResult({ applied: null, classification, generatedAt, mode });
+    return buildResult({ applied: null, classification, generatedAt, mode, permissionsOnly });
   }
   if (mode !== "apply") throw new Error("STAGE1C_ACCESS_BASELINE_MODE_INVALID");
 
   const outcome = await prisma.$transaction(async (tx) => {
-    await lockStage1cAccessBaseline(tx);
-    const before = await loadSnapshot(tx);
-    const classification = classify(before);
+    await lockStage1cAccessBaseline(tx, { permissionsOnly });
+    const before = await loadSnapshot(tx, { permissionsOnly });
+    const classification = classify(before, { permissionsOnly });
     if (!isStage1cAccessBaselineSafe(classification)) {
       return { applied: blockedApplyResult(), classification };
     }
 
-    const applied = await apply(tx, classification, { generatedAt });
-    const after = await loadSnapshot(tx);
-    const verification = classify(after);
+    const applied = await apply(tx, classification, { generatedAt, permissionsOnly });
+    const after = await loadSnapshot(tx, { permissionsOnly });
+    const verification = classify(after, { permissionsOnly });
     if (
-      after.ownershipPeriodCount !== before.ownershipPeriodCount ||
-      !isStage1cAccessBaselineConverged(verification)
+      (!permissionsOnly && after.ownershipPeriodCount !== before.ownershipPeriodCount) ||
+      !isStage1cAccessBaselineConverged(verification, { permissionsOnly })
     ) {
       throw new Error("STAGE1C_ACCESS_BASELINE_POST_VERIFICATION_FAILED");
     }
     return { applied, classification };
   }, TRANSACTION_OPTIONS);
 
-  return buildResult({ ...outcome, generatedAt, mode });
+  return buildResult({ ...outcome, generatedAt, mode, permissionsOnly });
 }
 
-export async function loadStage1cAccessBaselineSnapshot(db) {
+export async function loadStage1cAccessBaselineSnapshot(db, { permissionsOnly = false } = {}) {
   const permissionCodes = STAGE1C_PERMISSION_DEFINITIONS.map(({ code }) => code);
-  const [roles, permissions, rolePermissionRows, ownershipPeriodCount] = await Promise.all([
+  const [roles, permissions, rolePermissionRows] = await Promise.all([
     db.role.findMany({
       orderBy: { code: "asc" },
       select: { code: true, deletedAt: true, id: true, status: true },
@@ -88,13 +90,10 @@ export async function loadStage1cAccessBaselineSnapshot(db) {
         permission: { code: { in: permissionCodes } },
         role: { code: { in: STAGE1C_REQUIRED_ROLE_CODES } }
       }
-    }),
-    db.vehicleOwnershipPeriod.count()
+    })
   ]);
 
-  return {
-    assetOwners: [],
-    ownershipPeriodCount,
+  const common = {
     permissions,
     rolePermissions: rolePermissionRows.map((row) => ({
       deletedAt: row.deletedAt,
@@ -106,12 +105,40 @@ export async function loadStage1cAccessBaselineSnapshot(db) {
     })),
     roles
   };
+  if (permissionsOnly) return common;
+
+  const [assetOwners, ownershipPeriodCount] = await Promise.all([
+    db.assetOwner.findMany({
+      orderBy: { ownerNo: "asc" },
+      select: {
+        id: true,
+        legalName: true,
+        name: true,
+        ownerNo: true,
+        ownerType: true,
+        registrationIdentifier: true,
+        status: true
+      },
+      where: {
+        OR: [
+          { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo },
+          { ownerType: STAGE1C_PLATFORM_OWNER.ownerType }
+        ]
+      }
+    }),
+    db.vehicleOwnershipPeriod.count()
+  ]);
+  return { ...common, assetOwners, ownershipPeriodCount };
 }
 
-export async function applyStage1cAccessBaseline(tx, classification, { generatedAt }) {
+export async function applyStage1cAccessBaseline(
+  tx,
+  classification,
+  { generatedAt, permissionsOnly = false }
+) {
   let permissionsChanged = 0;
   let grantsChanged = 0;
-  const ownerChanged = 0;
+  let ownerChanged = 0;
   const changedAt = new Date(generatedAt);
 
   for (const permission of classification.permissions) {
@@ -160,7 +187,24 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
     grantsChanged += 1;
   }
 
-  const changed = permissionsChanged + grantsChanged;
+  let owner = null;
+  if (!permissionsOnly) {
+    owner = await tx.assetOwner.findUnique({
+      where: { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo }
+    });
+    if (classification.platformOwner.disposition === "CREATE") {
+      owner = await tx.assetOwner.create({ data: STAGE1C_PLATFORM_OWNER });
+      ownerChanged = 1;
+    } else if (classification.platformOwner.disposition === "CONVERGE") {
+      owner = await tx.assetOwner.update({
+        data: { status: STAGE1C_PLATFORM_OWNER.status },
+        where: { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo }
+      });
+      ownerChanged = 1;
+    }
+  }
+
+  const changed = permissionsChanged + grantsChanged + ownerChanged;
   let auditsCreated = 0;
   if (changed > 0) {
     await tx.auditLog.create({
@@ -169,9 +213,11 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
         afterSnapshot: {
           grantsChanged,
           ownerChanged,
+          ...(!permissionsOnly ? { ownerNo: STAGE1C_PLATFORM_OWNER.ownerNo } : {}),
           permissionCodes: STAGE1C_PERMISSION_DEFINITIONS.map(({ code }) => code),
           permissionsChanged
         },
+        ...(!permissionsOnly ? { entityId: owner?.id } : {}),
         entityType: "stage1c_access_baseline",
         module: "system"
       }
@@ -182,9 +228,13 @@ export async function applyStage1cAccessBaseline(tx, classification, { generated
   return { auditsCreated, grantsChanged, ownerChanged, permissionsChanged };
 }
 
-async function lockStage1cAccessBaseline(tx) {
-  await tx.$executeRaw`LOCK TABLE "role", "permission", "role_permission", "audit_log" IN SHARE ROW EXCLUSIVE MODE`;
-  await tx.$executeRaw`LOCK TABLE "vehicle_ownership_period" IN SHARE MODE`;
+async function lockStage1cAccessBaseline(tx, { permissionsOnly }) {
+  if (permissionsOnly) {
+    await tx.$executeRaw`LOCK TABLE "role", "permission", "role_permission", "audit_log" IN SHARE ROW EXCLUSIVE MODE`;
+  } else {
+    await tx.$executeRaw`LOCK TABLE "role", "permission", "role_permission", "asset_owner", "audit_log" IN SHARE ROW EXCLUSIVE MODE`;
+    await tx.$executeRaw`LOCK TABLE "vehicle_ownership_period" IN SHARE MODE`;
+  }
   await tx.$queryRaw`SELECT TRUE AS locked FROM pg_advisory_xact_lock(hashtextextended(${APPLY_LOCK_KEY}, 0))`;
 }
 
@@ -198,10 +248,10 @@ function blockedApplyResult() {
   };
 }
 
-function buildResult({ applied, classification, generatedAt, mode }) {
+function buildResult({ applied, classification, generatedAt, mode, permissionsOnly }) {
   const safeToApply = isStage1cAccessBaselineSafe(classification);
   return {
     exitCode: safeToApply ? 0 : 1,
-    report: { applied, classification, generatedAt, mode, safeToApply }
+    report: { applied, classification, generatedAt, mode, permissionsOnly, safeToApply }
   };
 }

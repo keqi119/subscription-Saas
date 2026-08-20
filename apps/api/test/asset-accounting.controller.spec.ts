@@ -1,6 +1,6 @@
 import "reflect-metadata";
 
-import { INestApplication, RequestMethod, ValidationPipe } from "@nestjs/common";
+import { INestApplication, Patch, Post, RequestMethod, ValidationPipe } from "@nestjs/common";
 import { METHOD_METADATA, MODULE_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { Reflector } from "@nestjs/core";
 import { Test } from "@nestjs/testing";
@@ -24,7 +24,7 @@ import { AssetAccountingModule } from "../src/asset-accounting/asset-accounting.
 import { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
 import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
 import { AuditModule } from "../src/audit/audit.module";
-import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
+import { REQUIRED_PERMISSIONS_KEY, RequirePermissions } from "../src/auth/auth.decorators";
 import { type AuthenticatedRequest, AuthGuard } from "../src/auth/auth.guard";
 import { AuthModule } from "../src/auth/auth.module";
 import { AuthService } from "../src/auth/auth.service";
@@ -138,6 +138,138 @@ describe("AssetAccountingController governed boundary", () => {
       expect(response.status, JSON.stringify(body)).toBe(400);
     }
     expect(service.appendCost).not.toHaveBeenCalled();
+  });
+
+  it("rejects every financial write boundary before append or reverse service delegation", async () => {
+    const invalidOptionalUuidFields = [
+      "assetOwnerId",
+      "contractId",
+      "customerId",
+      "evidenceId",
+      "orderId",
+      "responsiblePartyId",
+      "workOrderId"
+    ] as const;
+    const appendCases: Array<{
+      body: Record<string, unknown>;
+      idempotencyKey?: string;
+      label: string;
+    }> = [
+      {
+        body: { ...appendBody(), amountCents: "9223372036854775808" },
+        label: "amount above signed int64"
+      },
+      { body: { ...appendBody(), reason: " " }, label: "blank append reason" },
+      {
+        body: { ...appendBody(), reason: "x".repeat(2001) },
+        label: "overlong append reason"
+      },
+      {
+        body: { ...appendBody(), source: { ...source(), type: " " } },
+        label: "blank append source type"
+      },
+      {
+        body: { ...appendBody(), source: { ...source(), type: "x".repeat(65) } },
+        label: "overlong append source type"
+      },
+      {
+        body: { ...appendBody(), source: { ...source(), key: " " } },
+        idempotencyKey: " ",
+        label: "blank append source key"
+      },
+      {
+        body: { ...appendBody(), source: { ...source(), key: "x".repeat(256) } },
+        idempotencyKey: "x".repeat(256),
+        label: "overlong append source key"
+      },
+      {
+        body: { ...appendBody(), actionType: "UNKNOWN_ACTION" },
+        label: "invalid action type"
+      },
+      {
+        body: { ...appendBody(), costCategory: "UNKNOWN_CATEGORY" },
+        label: "invalid cost category"
+      },
+      {
+        body: { ...appendBody(), responsiblePartyType: "UNKNOWN_PARTY" },
+        label: "invalid responsible party type"
+      },
+      {
+        body: { ...appendBody(), responsibilitySnapshot: nestedSnapshot(33) },
+        label: "snapshot above maximum depth"
+      },
+      ...invalidOptionalUuidFields.map((field) => ({
+        body: { ...appendBody(), [field]: "not-a-uuid" },
+        label: `invalid optional UUID ${field}`
+      }))
+    ];
+
+    for (const { body, idempotencyKey = SOURCE_KEY, label } of appendCases) {
+      const response = await post(
+        "/api/asset-accounting/cost-entries",
+        body,
+        "confirm",
+        idempotencyKey
+      );
+      expect(response.status, label).toBe(400);
+    }
+
+    const nonFiniteJson = JSON.stringify({
+      ...appendBody(),
+      responsibilitySnapshot: { nonFinite: "__NON_FINITE__" }
+    }).replace('"__NON_FINITE__"', "1e400");
+    expect(
+      (await postRaw("/api/asset-accounting/cost-entries", nonFiniteJson, "confirm", SOURCE_KEY))
+        .status,
+      "non-finite JSON number"
+    ).toBe(400);
+
+    const reverseCases: Array<{
+      body: Record<string, unknown>;
+      idempotencyKey?: string;
+      label: string;
+    }> = [
+      { body: { ...reverseBody(), confirmedAt: "not-a-date" }, label: "reverse date" },
+      { body: { ...reverseBody(), reason: " " }, label: "blank reverse reason" },
+      {
+        body: { ...reverseBody(), reason: "x".repeat(2001) },
+        label: "overlong reverse reason"
+      },
+      {
+        body: { ...reverseBody(), source: { ...source(), id: "not-a-uuid" } },
+        label: "reverse source UUID"
+      },
+      {
+        body: { ...reverseBody(), source: { ...source(), type: " " } },
+        label: "blank reverse source type"
+      },
+      {
+        body: { ...reverseBody(), source: { ...source(), type: "x".repeat(65) } },
+        label: "overlong reverse source type"
+      },
+      {
+        body: { ...reverseBody(), source: { ...source(), key: " " } },
+        idempotencyKey: " ",
+        label: "blank reverse source key"
+      },
+      {
+        body: { ...reverseBody(), source: { ...source(), key: "x".repeat(256) } },
+        idempotencyKey: "x".repeat(256),
+        label: "overlong reverse source key"
+      }
+    ];
+    for (const { body, idempotencyKey = SOURCE_KEY, label } of reverseCases) {
+      const response = await post(
+        `/api/asset-accounting/cost-entries/${IDS.entry}/reverse`,
+        body,
+        "reverse",
+        idempotencyKey
+      );
+      expect(response.status, label).toBe(400);
+    }
+
+    expect(service.appendCost).not.toHaveBeenCalled();
+    expect(service.reverseCost).not.toHaveBeenCalled();
   });
 
   it("requires one scalar Idempotency-Key that exactly matches nested source.key", async () => {
@@ -286,11 +418,39 @@ describe("AssetAccountingController governed boundary", () => {
     }
   );
 
-  it("exposes no generic approval mutation handler", () => {
-    const prototype = AssetAccountingController.prototype as unknown as Record<string, unknown>;
-    for (const method of ["requestApproval", "approveApproval", "rejectApproval", "expireApproval"])
-      expect(prototype[method]).toBeUndefined();
+  it("exposes exactly the approved eight-route inventory and keeps every approval route read-only", () => {
+    expect(controllerRouteInventory()).toEqual(expectedRouteInventory());
+    expect(
+      controllerRouteInventory()
+        .filter(([, path]) => path.includes("exception-approvals"))
+        .every(([, , verb]) => verb === RequestMethod.GET)
+    ).toBe(true);
   });
+
+  it.each([
+    ["arbitraryPostMutation", Post("exception-approvals/:id/arbitrary")],
+    ["arbitraryPatchMutation", Patch("exception-approvals/:id/arbitrary")]
+  ] as const)(
+    "mutation probe rejects an arbitrary decorated approval handler: %s",
+    (name, route) => {
+      const prototype = AssetAccountingController.prototype as unknown as Record<string, unknown>;
+      const handler = () => undefined;
+      Object.defineProperty(prototype, name, { configurable: true, value: handler });
+      route(prototype, name, Object.getOwnPropertyDescriptor(prototype, name)!);
+      RequirePermissions(PermissionCode.BUSINESS_EXCEPTION_APPROVE)(
+        prototype,
+        name,
+        Object.getOwnPropertyDescriptor(prototype, name)!
+      );
+      try {
+        expect(() =>
+          expect(controllerRouteInventory()).toEqual(expectedRouteInventory())
+        ).toThrow();
+      } finally {
+        delete prototype[name];
+      }
+    }
+  );
 
   function get(path: string, token?: string) {
     return fetch(`${baseUrl}${path}`, {
@@ -299,8 +459,12 @@ describe("AssetAccountingController governed boundary", () => {
   }
 
   function post(path: string, body: object, token: string, idempotencyKey?: string) {
+    return postRaw(path, JSON.stringify(body), token, idempotencyKey);
+  }
+
+  function postRaw(path: string, body: string, token: string, idempotencyKey?: string) {
     return fetch(`${baseUrl}${path}`, {
-      body: JSON.stringify(body),
+      body,
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
@@ -422,6 +586,12 @@ function reverseBody() {
   };
 }
 
+function nestedSnapshot(depth: number): Record<string, unknown> {
+  let snapshot: Record<string, unknown> = {};
+  for (let index = 0; index < depth; index += 1) snapshot = { nested: snapshot };
+  return snapshot;
+}
+
 function publicCostEntry() {
   return {
     actionType: VehicleCostActionType.ACTUAL_COST,
@@ -502,4 +672,75 @@ function routeMetadata() {
       PermissionCode.BUSINESS_EXCEPTION_VIEW
     ]
   ] as const;
+}
+
+function controllerRouteInventory() {
+  const rootPath = Reflect.getMetadata(PATH_METADATA, AssetAccountingController) as string;
+  const prototype = AssetAccountingController.prototype as unknown as Record<string, unknown>;
+  return Object.getOwnPropertyNames(prototype)
+    .flatMap((methodName) => {
+      const handler = prototype[methodName];
+      if (typeof handler !== "function") return [];
+      const verb = Reflect.getMetadata(METHOD_METADATA, handler) as RequestMethod | undefined;
+      if (verb === undefined) return [];
+      const methodPath = Reflect.getMetadata(PATH_METADATA, handler) as string;
+      const permissions = Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler) as
+        | PermissionCode[]
+        | undefined;
+      return [[methodName, `${rootPath}/${methodPath}`, verb, permissions] as const];
+    })
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
+function expectedRouteInventory() {
+  return [
+    [
+      "appendCostEntry",
+      "asset-accounting/cost-entries",
+      RequestMethod.POST,
+      [PermissionCode.VEHICLE_COST_LEDGER_CONFIRM]
+    ],
+    [
+      "getCostEntry",
+      "asset-accounting/cost-entries/:id",
+      RequestMethod.GET,
+      [PermissionCode.VEHICLE_COST_LEDGER_VIEW]
+    ],
+    [
+      "getExceptionApproval",
+      "asset-accounting/exception-approvals/:id",
+      RequestMethod.GET,
+      [PermissionCode.BUSINESS_EXCEPTION_VIEW]
+    ],
+    [
+      "listExceptionApprovals",
+      "asset-accounting/exception-approvals",
+      RequestMethod.GET,
+      [PermissionCode.BUSINESS_EXCEPTION_VIEW]
+    ],
+    [
+      "listOrderCostEntries",
+      "asset-accounting/orders/:orderId/cost-entries",
+      RequestMethod.GET,
+      [PermissionCode.VEHICLE_COST_LEDGER_VIEW]
+    ],
+    [
+      "listVehicleCostEntries",
+      "asset-accounting/vehicles/:vehicleId/cost-entries",
+      RequestMethod.GET,
+      [PermissionCode.VEHICLE_COST_LEDGER_VIEW]
+    ],
+    [
+      "listWorkOrderCostEntries",
+      "asset-accounting/work-orders/:workOrderId/cost-entries",
+      RequestMethod.GET,
+      [PermissionCode.VEHICLE_COST_LEDGER_VIEW]
+    ],
+    [
+      "reverseCostEntry",
+      "asset-accounting/cost-entries/:id/reverse",
+      RequestMethod.POST,
+      [PermissionCode.VEHICLE_COST_LEDGER_REVERSE]
+    ]
+  ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }

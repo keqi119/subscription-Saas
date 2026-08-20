@@ -174,7 +174,7 @@ export const STAGE1C_PLATFORM_OWNER = Object.freeze({
   status: "ACTIVE"
 });
 
-export function classifyStage1cAccessBaseline(snapshot) {
+export function classifyStage1cAccessBaseline(snapshot, { permissionsOnly = false } = {}) {
   const blockers = classifyRoleBlockers(snapshot.roles);
   const permissionsByCode = new Map(snapshot.permissions.map((row) => [row.code, row]));
   const grantsByIdentity = new Map(
@@ -208,12 +208,18 @@ export function classifyStage1cAccessBaseline(snapshot) {
       return { disposition, expected, permissionCode, roleCode };
     })
   );
-  return {
+  const common = {
     blockers,
-    ownershipPeriodCount: snapshot.ownershipPeriodCount,
     permissions,
-    platformOwner: { disposition: "NOT_MANAGED" },
     rolePermissions
+  };
+  if (permissionsOnly) {
+    return { ...common, platformOwner: { disposition: "NOT_MANAGED" } };
+  }
+  return {
+    ...common,
+    ownershipPeriodCount: snapshot.ownershipPeriodCount,
+    platformOwner: classifyPlatformOwner(snapshot.assetOwners, blockers)
   };
 }
 
@@ -221,12 +227,12 @@ export function isStage1cAccessBaselineSafe(report) {
   return report.blockers.length === 0;
 }
 
-export function isStage1cAccessBaselineConverged(report) {
+export function isStage1cAccessBaselineConverged(report, { permissionsOnly = false } = {}) {
   return (
     isStage1cAccessBaselineSafe(report) &&
     report.permissions.every(({ disposition }) => disposition === "UNCHANGED") &&
     report.rolePermissions.every(({ disposition }) => disposition === "UNCHANGED") &&
-    report.platformOwner.disposition === "NOT_MANAGED"
+    report.platformOwner.disposition === (permissionsOnly ? "NOT_MANAGED" : "UNCHANGED")
   );
 }
 
@@ -242,6 +248,35 @@ function classifyRoleBlockers(roles) {
   });
 }
 
+function classifyPlatformOwner(assetOwners, blockers) {
+  const canonical = assetOwners.find(({ ownerNo }) => ownerNo === STAGE1C_PLATFORM_OWNER.ownerNo);
+  const otherActivePlatformOwners = assetOwners.filter(
+    ({ ownerNo, ownerType, status }) =>
+      ownerNo !== STAGE1C_PLATFORM_OWNER.ownerNo &&
+      ownerType === STAGE1C_PLATFORM_OWNER.ownerType &&
+      status === "ACTIVE"
+  );
+
+  if (canonical !== undefined && !ownerIdentityMatches(canonical)) {
+    blockers.push({ code: "PLATFORM_OWNER_IDENTITY_DRIFT", ownerNo: canonical.ownerNo });
+  }
+  if (otherActivePlatformOwners.length > 0) {
+    blockers.push({
+      code: "PLATFORM_OWNER_COLLISION",
+      ownerNos: otherActivePlatformOwners.map(({ ownerNo }) => ownerNo).sort()
+    });
+  }
+
+  let disposition = "UNCHANGED";
+  if (canonical === undefined) disposition = "CREATE";
+  if (canonical !== undefined && ownerIdentityMatches(canonical) && canonical.status !== "ACTIVE") {
+    disposition = "CONVERGE";
+  }
+  if (blockers.some(({ code }) => code.startsWith("PLATFORM_OWNER_"))) disposition = "BLOCKED";
+
+  return { ...STAGE1C_PLATFORM_OWNER, disposition };
+}
+
 function permissionMatches(current, definition) {
   return (
     permissionIdentityMatches(current, definition) &&
@@ -255,6 +290,13 @@ function permissionIdentityMatches(current, definition) {
     current.action === definition.action &&
     current.module === definition.module &&
     current.name === definition.name
+  );
+}
+
+function ownerIdentityMatches(current) {
+  return (
+    current.name === STAGE1C_PLATFORM_OWNER.name &&
+    current.ownerType === STAGE1C_PLATFORM_OWNER.ownerType
   );
 }
 

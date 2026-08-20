@@ -280,15 +280,64 @@ test("permission identity drift is a blocker while lifecycle drift remains conve
   ]);
 });
 
-test("superseding Task 6 scope reports owner management as disabled and never plans ownership writes", () => {
+test("default classification preserves legacy PLATFORM owner create, converge, replay, and blockers", () => {
   const classify = requiredExport("classifyStage1cAccessBaseline");
-  const first = classify(baselineSnapshot());
+  const missing = classify(baselineSnapshot());
 
-  assert.deepEqual(first.platformOwner, {
+  assert.deepEqual(missing.platformOwner, {
+    disposition: "CREATE",
+    name: "平台资产主体",
+    ownerNo: "PLATFORM",
+    ownerType: "PLATFORM",
+    status: "ACTIVE"
+  });
+  assert.equal(missing.ownershipPeriodCount, 7);
+
+  const inactiveSnapshot = baselineSnapshot();
+  inactiveSnapshot.assetOwners.push({ ...platformOwner(), status: "INACTIVE" });
+  assert.equal(classify(inactiveSnapshot).platformOwner.disposition, "CONVERGE");
+
+  const replaySnapshot = baselineSnapshot();
+  replaySnapshot.assetOwners.push(platformOwner());
+  assert.equal(classify(replaySnapshot).platformOwner.disposition, "UNCHANGED");
+
+  for (const owner of [
+    { ...platformOwner(), name: "另一法律主体" },
+    { ...platformOwner(), ownerType: "EXTERNAL_COMPANY" },
+    { ...platformOwner(), ownerNo: "OTHER-PLATFORM" }
+  ]) {
+    const snapshot = baselineSnapshot();
+    snapshot.assetOwners.push(owner);
+    const report = classify(snapshot);
+    assert.equal(report.platformOwner.disposition, "BLOCKED");
+    assert.equal(report.blockers.length, 1);
+    assert.match(report.blockers[0].code, /^PLATFORM_OWNER_(IDENTITY_DRIFT|COLLISION)$/);
+  }
+});
+
+test("explicit permission-only classification never reads or reports ownership state", () => {
+  const classify = requiredExport("classifyStage1cAccessBaseline");
+  const snapshot = baselineSnapshot();
+  Object.defineProperties(snapshot, {
+    assetOwners: {
+      get() {
+        throw new Error("permission-only classification touched assetOwners");
+      }
+    },
+    ownershipPeriodCount: {
+      get() {
+        throw new Error("permission-only classification touched ownershipPeriodCount");
+      }
+    }
+  });
+
+  const report = classify(snapshot, { permissionsOnly: true });
+
+  assert.deepEqual(report.platformOwner, {
     disposition: "NOT_MANAGED"
   });
-  assert.equal("ownershipPeriods" in first, false);
-  assert.deepEqual(first.blockers, []);
+  assert.equal("ownershipPeriodCount" in report, false);
+  assert.deepEqual(report.blockers, []);
 });
 
 function baselineSnapshot() {
@@ -364,6 +413,18 @@ function grant(roleCode, permissionCode, deletedAt = null) {
     permissionId: `permission-${permissionCode}`,
     roleCode,
     roleId: `role-${roleCode}`
+  };
+}
+
+function platformOwner() {
+  return {
+    id: "owner-platform",
+    legalName: null,
+    name: "平台资产主体",
+    ownerNo: "PLATFORM",
+    ownerType: "PLATFORM",
+    registrationIdentifier: null,
+    status: "ACTIVE"
   };
 }
 

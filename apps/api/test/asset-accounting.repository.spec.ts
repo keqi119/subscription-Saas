@@ -6,7 +6,12 @@ import { describe, expect, it } from "vitest";
 import {
   ASSET_ACCOUNTING_ERROR_CODE,
   AssetAccountingRepository,
+  businessExceptionSubjectLockIdentity,
   type AppendCostEntryCommand,
+  type DecideExceptionApprovalCommand,
+  type ExpireExceptionApprovalCommand,
+  type RequestExceptionApprovalCommand,
+  type RequireCurrentApprovedExceptionCommand,
   type ReverseCostEntryCommand
 } from "../src/asset-accounting/asset-accounting.repository";
 
@@ -1036,6 +1041,319 @@ describe("AssetAccountingRepository", () => {
       );
     }
   );
+
+  describe("snapshot-bound business exception approvals", () => {
+    it("rejects root-like approval commands and exports the exact reusable subject lock identity", async () => {
+      const database = fakeTransaction({ secondTransactionId: "tx-2" });
+      const command = requestApprovalCommand(database.ids, "approval-root");
+
+      expect(businessExceptionSubjectLockIdentity(command.subject)).toBe(
+        JSON.stringify([
+          "business-exception-subject",
+          command.subject.subjectType,
+          command.subject.subjectId,
+          command.subject.subjectField
+        ])
+      );
+      await expectCode(
+        new AssetAccountingRepository().requestExceptionApproval(database.tx, command),
+        ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED
+      );
+    });
+
+    it("takes source then subject ownership, stores an internally hashed request, and exactly replays it", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const command = requestApprovalCommand(database.ids, "approval-request-replay");
+
+      const created = await repository.requestExceptionApproval(database.tx, command);
+      database.operationTimeline.length = 0;
+      database.approvals.set(created.outcome.id, {
+        ...database.approvals.get(created.outcome.id)!,
+        requestReason: "mutated outside repository"
+      });
+      database.authorities.user.delete(database.ids.actorId);
+      const replay = await repository.requestExceptionApproval(database.tx, command);
+
+      expect(created.wrote).toBe(true);
+      expect(created.outcome).toMatchObject({
+        requestReason: "registration evidence is pending",
+        requestSourceId: command.source.id,
+        requestSourceKey: command.source.key,
+        requestSourceType: command.source.type,
+        status: "PENDING",
+        subjectSnapshot: { factRevision: 1, state: "PENDING" },
+        version: 0
+      });
+      expect(created.outcome.subjectSnapshotHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(replay).toEqual({ outcome: created.outcome, wrote: false });
+      await expectCode(
+        repository.requestExceptionApproval(database.tx, {
+          ...command,
+          requestReason: "changed request reason"
+        }),
+        ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+      );
+      expect(database.operationTimeline).toEqual([
+        "transaction-probe",
+        "transaction-probe",
+        "source-lock",
+        "receipt-lookup",
+        "transaction-probe",
+        "transaction-probe",
+        "source-lock",
+        "receipt-lookup"
+      ]);
+      expect(database.receipts.size).toBe(1);
+    });
+
+    it("orders request and decision locks and rejects a second live request for the same subject field snapshot", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const firstCommand = requestApprovalCommand(database.ids, "approval-lock-order");
+      const first = await repository.requestExceptionApproval(database.tx, firstCommand);
+
+      expect(database.operationTimeline.slice(0, 6)).toEqual([
+        "transaction-probe",
+        "transaction-probe",
+        "source-lock",
+        "receipt-lookup",
+        "subject-lock",
+        `authority-lock:user:${database.ids.actorId}`
+      ]);
+      database.operationTimeline.length = 0;
+      await expectCode(
+        repository.requestExceptionApproval(database.tx, {
+          ...firstCommand,
+          exceptionType: "SETTLEMENT_WAIVER",
+          source: {
+            id: randomUUID(),
+            key: "approval-lock-order-duplicate",
+            type: "SETTLEMENT"
+          }
+        }),
+        ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE
+      );
+      expect(database.operationTimeline).toContain(`approval-lock:${first.outcome.id}`);
+      expect(database.approvals.size).toBe(1);
+
+      database.operationTimeline.length = 0;
+      await repository.decideExceptionApproval(
+        database.tx,
+        decideApprovalCommand(database.ids, first.outcome.id, "approval-decision-order")
+      );
+      expect(database.operationTimeline).toEqual([
+        "transaction-probe",
+        "transaction-probe",
+        "source-lock",
+        "receipt-lookup",
+        "subject-lock",
+        `approval-lock:${first.outcome.id}`,
+        `authority-lock:user:${database.ids.deciderId}`
+      ]);
+    });
+
+    it("enforces exact decision replay, current snapshot, expected version, subject, and requester/decider separation", async () => {
+      const repository = new AssetAccountingRepository();
+
+      const self = fakeTransaction();
+      const selfRequest = await repository.requestExceptionApproval(
+        self.tx,
+        requestApprovalCommand(self.ids, "self-request")
+      );
+      await expectCode(
+        repository.decideExceptionApproval(self.tx, {
+          ...decideApprovalCommand(self.ids, selfRequest.outcome.id, "self-decision"),
+          decidedBy: self.ids.actorId
+        }),
+        ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN
+      );
+
+      for (const [name, patch, code] of [
+        ["version", { expectedVersion: 1 }, "APPROVAL_VERSION_CONFLICT"],
+        [
+          "subject",
+          { subject: { ...approvalSubject(self.ids), subjectField: "other" } },
+          "APPROVAL_SUBJECT_MISMATCH"
+        ],
+        [
+          "snapshot",
+          { authoritySnapshot: { factRevision: 2, state: "PENDING" } },
+          "APPROVAL_SNAPSHOT_MISMATCH"
+        ]
+      ] as const) {
+        const database = fakeTransaction();
+        const request = await repository.requestExceptionApproval(
+          database.tx,
+          requestApprovalCommand(database.ids, `${name}-request`)
+        );
+        await expectCode(
+          repository.decideExceptionApproval(database.tx, {
+            ...decideApprovalCommand(database.ids, request.outcome.id, `${name}-decision`),
+            ...patch
+          }),
+          ASSET_ACCOUNTING_ERROR_CODE[code]
+        );
+      }
+
+      const database = fakeTransaction();
+      const request = await repository.requestExceptionApproval(
+        database.tx,
+        requestApprovalCommand(database.ids, "decision-replay-request")
+      );
+      const command = decideApprovalCommand(database.ids, request.outcome.id, "decision-replay");
+      const decided = await repository.decideExceptionApproval(database.tx, command);
+      const replay = await repository.decideExceptionApproval(database.tx, command);
+      expect(decided).toMatchObject({
+        outcome: { decision: "APPROVED", status: "APPROVED", version: 1 },
+        wrote: true
+      });
+      expect(replay).toEqual({ outcome: decided.outcome, wrote: false });
+      for (const drift of [
+        { decision: "REJECTED" as const },
+        { decisionComment: "changed decision comment" },
+        { authoritySnapshot: { factRevision: 2, state: "PENDING" } }
+      ]) {
+        await expectCode(
+          repository.decideExceptionApproval(database.tx, { ...command, ...drift }),
+          ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+        );
+      }
+    });
+
+    it("supports PENDING decisions and PENDING/APPROVED expiry but rejects terminal transitions", async () => {
+      const repository = new AssetAccountingRepository();
+
+      const rejectedDatabase = fakeTransaction();
+      const rejectedRequest = await repository.requestExceptionApproval(
+        rejectedDatabase.tx,
+        requestApprovalCommand(rejectedDatabase.ids, "reject-request")
+      );
+      const rejected = await repository.decideExceptionApproval(rejectedDatabase.tx, {
+        ...decideApprovalCommand(rejectedDatabase.ids, rejectedRequest.outcome.id, "reject"),
+        decision: "REJECTED",
+        decisionComment: "insufficient evidence"
+      });
+      expect(rejected.outcome).toMatchObject({ decision: "REJECTED", status: "REJECTED" });
+      await expectCode(
+        repository.expireExceptionApproval(
+          rejectedDatabase.tx,
+          expireApprovalCommand(rejectedDatabase.ids, rejected.outcome.id, 1, "expire-rejected")
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_STATUS_CONFLICT
+      );
+
+      for (const status of ["PENDING", "APPROVED"] as const) {
+        const database = fakeTransaction();
+        const request = await repository.requestExceptionApproval(
+          database.tx,
+          requestApprovalCommand(database.ids, `${status}-expire-request`)
+        );
+        const current =
+          status === "APPROVED"
+            ? await repository.decideExceptionApproval(
+                database.tx,
+                decideApprovalCommand(database.ids, request.outcome.id, `${status}-approve`)
+              )
+            : request;
+        const command = expireApprovalCommand(
+          database.ids,
+          request.outcome.id,
+          current.outcome.version,
+          `${status}-expire`
+        );
+        const expired = await repository.expireExceptionApproval(database.tx, command);
+        const replay = await repository.expireExceptionApproval(database.tx, command);
+        expect(expired).toMatchObject({
+          outcome: { status: "EXPIRED", version: current.outcome.version + 1 },
+          wrote: true
+        });
+        expect(replay).toEqual({ outcome: expired.outcome, wrote: false });
+        await expectCode(
+          repository.expireExceptionApproval(database.tx, {
+            ...command,
+            expiryReason: "drifted reason"
+          }),
+          ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+        );
+      }
+    });
+
+    it("commits stale APPROVED expiry and returns false without throwing, while a current snapshot returns true", async () => {
+      const repository = new AssetAccountingRepository();
+
+      const currentDatabase = fakeTransaction();
+      const currentRequest = await repository.requestExceptionApproval(
+        currentDatabase.tx,
+        requestApprovalCommand(currentDatabase.ids, "current-request")
+      );
+      const currentApproval = await repository.decideExceptionApproval(
+        currentDatabase.tx,
+        decideApprovalCommand(currentDatabase.ids, currentRequest.outcome.id, "current-approve")
+      );
+      const current = await repository.requireCurrentApprovedException(
+        currentDatabase.tx,
+        requireCurrentCommand(
+          currentDatabase.ids,
+          currentApproval.outcome.id,
+          currentApproval.outcome.version,
+          "current-check",
+          { factRevision: 1, state: "PENDING" }
+        )
+      );
+      expect(current).toEqual({ approval: currentApproval.outcome, valid: true });
+
+      const staleDatabase = fakeTransaction();
+      const staleRequest = await repository.requestExceptionApproval(
+        staleDatabase.tx,
+        requestApprovalCommand(staleDatabase.ids, "stale-request")
+      );
+      const staleApproval = await repository.decideExceptionApproval(
+        staleDatabase.tx,
+        decideApprovalCommand(staleDatabase.ids, staleRequest.outcome.id, "stale-approve")
+      );
+      const command = requireCurrentCommand(
+        staleDatabase.ids,
+        staleApproval.outcome.id,
+        staleApproval.outcome.version,
+        "stale-check",
+        { factRevision: 2, state: "CHANGED" }
+      );
+      const stale = await repository.requireCurrentApprovedException(staleDatabase.tx, command);
+      const replay = await repository.requireCurrentApprovedException(staleDatabase.tx, command);
+
+      expect(stale).toMatchObject({
+        expiredApproval: { status: "EXPIRED", version: 2 },
+        valid: false
+      });
+      expect(replay).toEqual(stale);
+      expect(staleDatabase.approvals.get(staleApproval.outcome.id)).toMatchObject({
+        expiryReason: "authoritative snapshot changed",
+        status: "EXPIRED",
+        version: 2
+      });
+      expect(
+        [...staleDatabase.receipts.values()].filter(
+          (receipt) => receipt.commandType === "EXCEPTION_EXPIRE"
+        )
+      ).toHaveLength(1);
+    });
+
+    it("keeps the receipt namespace global across approval command kinds", async () => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      const requestCommand = requestApprovalCommand(database.ids, "global-approval-source");
+      const request = await repository.requestExceptionApproval(database.tx, requestCommand);
+
+      await expectCode(
+        repository.decideExceptionApproval(database.tx, {
+          ...decideApprovalCommand(database.ids, request.outcome.id, "unused"),
+          source: requestCommand.source
+        }),
+        ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
+      );
+    });
+  });
 });
 
 type AuthorityRecord = Record<string, unknown> & { id: string };
@@ -1105,17 +1423,23 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
         }
       ]
     ]),
-    user: new Map([[ids.actorId, { deletedAt: null, id: ids.actorId, status: "ACTIVE" }]]),
+    user: new Map([
+      [ids.actorId, { deletedAt: null, id: ids.actorId, status: "ACTIVE" }],
+      [ids.deciderId, { deletedAt: null, id: ids.deciderId, status: "ACTIVE" }]
+    ]),
     vehicle: new Map([[ids.vehicleId, { deletedAt: null, id: ids.vehicleId }]])
   };
   const entries = new Map<string, VehicleCostLedgerEntry>();
+  const approvals = new Map<string, Record<string, unknown>>();
   const receipts = new Map<string, Record<string, unknown>>();
   const sourceLockKeys: string[] = [];
+  const subjectLockKeys: string[] = [];
   const operationTimeline: string[] = [];
   const lockedAuthorities: Array<{ id: string; table: string }> = [];
   const lockedOriginalIds: string[] = [];
   const database = {
     authorities,
+    approvals,
     entries,
     ids,
     lockedAuthorities,
@@ -1125,6 +1449,7 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     operationTimeline,
     receipts,
     sourceLockKeys,
+    subjectLockKeys,
     tx: undefined as unknown as Prisma.TransactionClient
   };
   let probeCount = 0;
@@ -1149,12 +1474,32 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
       }
       const values = sqlValues(query);
       if (text.includes("pg_advisory_xact_lock")) {
-        sourceLockKeys.push(String(values[0]));
-        operationTimeline.push("source-lock");
+        const identity = String(values[0]);
+        if (identity.includes("business-exception-subject")) {
+          subjectLockKeys.push(identity);
+          operationTimeline.push("subject-lock");
+        } else {
+          sourceLockKeys.push(identity);
+          operationTimeline.push("source-lock");
+        }
         return [{ locked: true }];
       }
       const table = /FROM "([a-z_]+)"/.exec(text)?.[1];
       if (table) {
+        if (table === "business_exception_approval") {
+          const approval = text.includes('"subject_snapshot_hash"')
+            ? [...approvals.values()].find(
+                (candidate) =>
+                  candidate.subjectType === values[0] &&
+                  candidate.subjectId === values[1] &&
+                  candidate.subjectField === values[2] &&
+                  candidate.subjectSnapshotHash === values[3] &&
+                  ["PENDING", "APPROVED"].includes(String(candidate.status))
+              )
+            : approvals.get(String(values[0]));
+          if (approval) operationTimeline.push(`approval-lock:${String(approval.id)}`);
+          return approval ? [{ id: approval.id }] : [];
+        }
         const id = String(values[0]);
         if (table === "vehicle_cost_ledger_entry") {
           lockedOriginalIds.push(id);
@@ -1188,6 +1533,29 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
         return (
           receipts.get(receiptKey(source.sourceType, source.sourceId, source.sourceKey)) ?? null
         );
+      }
+    },
+    businessExceptionApproval: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        const row = { ...data, createdAt: NOW, id: String(data.id ?? randomUUID()) };
+        approvals.set(String(row.id), row);
+        return row;
+      },
+      findUnique: async ({ where }: { where: { id: string } }) => approvals.get(where.id) ?? null,
+      update: async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+        const current = approvals.get(where.id);
+        if (!current) throw new Error("missing approval fixture");
+        const version = data.version;
+        const next = {
+          ...current,
+          ...data,
+          version:
+            isIncrement(version) && typeof current.version === "number"
+              ? current.version + version.increment
+              : version
+        };
+        approvals.set(where.id, next);
+        return next;
       }
     },
     assetOwner: delegate(authorities.assetOwner),
@@ -1292,12 +1660,93 @@ function fixtureIds() {
     assetOwnerId: randomUUID(),
     contractId: randomUUID(),
     customerId: randomUUID(),
+    deciderId: randomUUID(),
     evidenceId: randomUUID(),
     orderId: randomUUID(),
     sourceId: randomUUID(),
     vehicleId: randomUUID(),
     workOrderId: randomUUID()
   };
+}
+
+function approvalSubject(ids: FixtureIds) {
+  return {
+    subjectField: "fixtureApprovalField",
+    subjectId: ids.vehicleId,
+    subjectType: "VEHICLE" as const
+  };
+}
+
+function requestApprovalCommand(ids: FixtureIds, key: string): RequestExceptionApprovalCommand {
+  return {
+    authoritySnapshot: { factRevision: 1, state: "PENDING" },
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    requestEvidenceSnapshot: { evidenceRevision: 1 },
+    requestReason: "registration evidence is pending",
+    requestedAt: NOW,
+    requestedBy: ids.actorId,
+    source: { id: ids.sourceId, key, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(ids)
+  };
+}
+
+function decideApprovalCommand(
+  ids: FixtureIds,
+  approvalId: string,
+  key: string
+): DecideExceptionApprovalCommand {
+  return {
+    approvalId,
+    authoritySnapshot: { factRevision: 1, state: "PENDING" },
+    decidedAt: new Date("2026-08-20T10:10:00.000Z"),
+    decidedBy: ids.deciderId,
+    decision: "APPROVED",
+    decisionComment: "reviewed fixture evidence",
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    expectedVersion: 0,
+    source: { id: ids.sourceId, key, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(ids)
+  };
+}
+
+function expireApprovalCommand(
+  ids: FixtureIds,
+  approvalId: string,
+  expectedVersion: number,
+  key: string
+): ExpireExceptionApprovalCommand {
+  return {
+    approvalId,
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    expectedVersion,
+    expiredAt: new Date("2026-08-20T10:20:00.000Z"),
+    expiredBy: ids.deciderId,
+    expiryReason: "authoritative snapshot changed",
+    source: { id: ids.sourceId, key, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(ids)
+  };
+}
+
+function requireCurrentCommand(
+  ids: FixtureIds,
+  approvalId: string,
+  expectedVersion: number,
+  key: string,
+  authoritySnapshot: RequireCurrentApprovedExceptionCommand["authoritySnapshot"]
+): RequireCurrentApprovedExceptionCommand {
+  return {
+    ...expireApprovalCommand(ids, approvalId, expectedVersion, key),
+    authoritySnapshot
+  };
+}
+
+function isIncrement(value: unknown): value is { increment: number } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "increment" in value &&
+    typeof value.increment === "number"
+  );
 }
 
 function receiptKey(type: unknown, id: unknown, key: unknown) {

@@ -1,6 +1,10 @@
 import { ConflictException, Injectable } from "@nestjs/common";
 import {
   Prisma,
+  type BusinessExceptionApproval,
+  type BusinessExceptionDecision,
+  type BusinessExceptionSubjectType,
+  type BusinessExceptionType,
   type VehicleCostActionType,
   type VehicleCostCategory,
   type VehicleCostLedgerEntry,
@@ -19,19 +23,29 @@ import type {
   AssetAccountingSnapshotObject,
   AssetAccountingSnapshotValue,
   AssetAccountingSource,
+  BusinessExceptionApprovalSnapshot,
+  BusinessExceptionSnapshot,
   VehicleCostLedgerEntrySnapshot
 } from "./asset-accounting.types";
 
 export const ASSET_ACCOUNTING_ERROR_CODE = {
+  APPROVAL_ALREADY_LIVE: "ASSET_ACCOUNTING_APPROVAL_ALREADY_LIVE",
+  APPROVAL_NOT_FOUND: "ASSET_ACCOUNTING_APPROVAL_NOT_FOUND",
+  APPROVAL_SNAPSHOT_MISMATCH: "ASSET_ACCOUNTING_APPROVAL_SNAPSHOT_MISMATCH",
+  APPROVAL_STATUS_CONFLICT: "ASSET_ACCOUNTING_APPROVAL_STATUS_CONFLICT",
+  APPROVAL_SUBJECT_MISMATCH: "ASSET_ACCOUNTING_APPROVAL_SUBJECT_MISMATCH",
+  APPROVAL_VERSION_CONFLICT: "ASSET_ACCOUNTING_APPROVAL_VERSION_CONFLICT",
   AUTHORITY_BUSY: "ASSET_ACCOUNTING_AUTHORITY_BUSY",
   AUTHORITY_MISMATCH: "ASSET_ACCOUNTING_AUTHORITY_MISMATCH",
   AUTHORITY_NOT_FOUND: "ASSET_ACCOUNTING_AUTHORITY_NOT_FOUND",
   AUTHORITY_NOT_LIVE: "ASSET_ACCOUNTING_AUTHORITY_NOT_LIVE",
   COST_ENTRY_NOT_FOUND: "ASSET_ACCOUNTING_COST_ENTRY_NOT_FOUND",
   INVALID_COST_COMMAND: "ASSET_ACCOUNTING_INVALID_COST_COMMAND",
+  INVALID_APPROVAL_COMMAND: "ASSET_ACCOUNTING_INVALID_APPROVAL_COMMAND",
   REVERSAL_ALREADY_EXISTS: "ASSET_ACCOUNTING_REVERSAL_ALREADY_EXISTS",
   REVERSAL_INVALID: "ASSET_ACCOUNTING_REVERSAL_INVALID",
   SOURCE_CONFLICT: "ASSET_ACCOUNTING_SOURCE_CONFLICT",
+  SELF_APPROVAL_FORBIDDEN: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN",
   TRANSACTION_REQUIRED: "ASSET_ACCOUNTING_TRANSACTION_REQUIRED",
   WRITE_CONFLICT: "ASSET_ACCOUNTING_WRITE_CONFLICT"
 } as const;
@@ -40,6 +54,17 @@ type AssetAccountingErrorCode =
   (typeof ASSET_ACCOUNTING_ERROR_CODE)[keyof typeof ASSET_ACCOUNTING_ERROR_CODE];
 
 const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE]:
+    "A live exception approval already exists for this subject field and snapshot.",
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND]: "The exception approval was not found.",
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_SNAPSHOT_MISMATCH]:
+    "The exception approval is not bound to the current authoritative snapshot.",
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_STATUS_CONFLICT]:
+    "The exception approval status does not allow this transition.",
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_SUBJECT_MISMATCH]:
+    "The supplied exception approval identity does not match the stored approval.",
+  [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_VERSION_CONFLICT]:
+    "The exception approval version has changed.",
   [ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY]:
     "An asset-accounting authority row is being updated. Review the current state and retry.",
   [ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_MISMATCH]:
@@ -51,11 +76,15 @@ const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
   [ASSET_ACCOUNTING_ERROR_CODE.COST_ENTRY_NOT_FOUND]:
     "The vehicle cost ledger entry was not found.",
   [ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND]: "The vehicle cost command is invalid.",
+  [ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND]:
+    "The business exception approval command is invalid.",
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS]:
     "The vehicle cost ledger entry already has a reversal.",
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID]: "The requested vehicle cost reversal is invalid.",
   [ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT]:
     "The stable asset-accounting source is already bound to a different command or payload.",
+  [ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN]:
+    "The requester cannot decide the same exception approval.",
   [ASSET_ACCOUNTING_ERROR_CODE.TRANSACTION_REQUIRED]:
     "Asset-accounting commands require a caller-provided PostgreSQL READ COMMITTED interactive transaction.",
   [ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT]:
@@ -97,6 +126,60 @@ export interface AssetAccountingCostCommandOutcome {
   readonly wrote: boolean;
 }
 
+export interface BusinessExceptionSubjectIdentity {
+  readonly subjectType: BusinessExceptionSubjectType;
+  readonly subjectId: string;
+  readonly subjectField: string;
+}
+
+export interface RequestExceptionApprovalCommand {
+  readonly authoritySnapshot: BusinessExceptionSnapshot;
+  readonly exceptionType: BusinessExceptionType;
+  readonly requestEvidenceSnapshot?: AssetAccountingSnapshotObject | null;
+  readonly requestReason: string;
+  readonly requestedAt: Date;
+  readonly requestedBy: string;
+  readonly source: AssetAccountingSource;
+  readonly subject: BusinessExceptionSubjectIdentity;
+}
+
+export interface DecideExceptionApprovalCommand {
+  readonly approvalId: string;
+  readonly authoritySnapshot: BusinessExceptionSnapshot;
+  readonly decidedAt: Date;
+  readonly decidedBy: string;
+  readonly decision: BusinessExceptionDecision;
+  readonly decisionComment: string;
+  readonly exceptionType: BusinessExceptionType;
+  readonly expectedVersion: number;
+  readonly source: AssetAccountingSource;
+  readonly subject: BusinessExceptionSubjectIdentity;
+}
+
+export interface ExpireExceptionApprovalCommand {
+  readonly approvalId: string;
+  readonly exceptionType: BusinessExceptionType;
+  readonly expectedVersion: number;
+  readonly expiredAt: Date;
+  readonly expiredBy: string;
+  readonly expiryReason: string;
+  readonly source: AssetAccountingSource;
+  readonly subject: BusinessExceptionSubjectIdentity;
+}
+
+export interface RequireCurrentApprovedExceptionCommand extends ExpireExceptionApprovalCommand {
+  readonly authoritySnapshot: BusinessExceptionSnapshot;
+}
+
+export interface AssetAccountingApprovalCommandOutcome {
+  readonly outcome: BusinessExceptionApprovalSnapshot;
+  readonly wrote: boolean;
+}
+
+export type RequireCurrentApprovedExceptionOutcome =
+  | Readonly<{ approval: BusinessExceptionApprovalSnapshot; valid: true }>
+  | Readonly<{ expiredApproval: BusinessExceptionApprovalSnapshot; valid: false }>;
+
 type NormalizedAppendCommand = Omit<
   AppendCostEntryCommand,
   "assetOwnerSnapshot" | "evidenceSnapshot" | "responsibilitySnapshot"
@@ -113,6 +196,20 @@ type NormalizedAppendCommand = Omit<
   readonly workOrderId: string | null;
 };
 
+type NormalizedRequestApprovalCommand = Omit<
+  RequestExceptionApprovalCommand,
+  "authoritySnapshot" | "requestEvidenceSnapshot"
+> & {
+  readonly authoritySnapshot: Prisma.JsonObject;
+  readonly requestEvidenceSnapshot: Prisma.JsonObject | null;
+};
+
+type NormalizedDecisionCommand = Omit<DecideExceptionApprovalCommand, "authoritySnapshot"> & {
+  readonly authoritySnapshot: Prisma.JsonObject;
+};
+
+type ApprovalCommandType = "EXCEPTION_REQUEST" | "EXCEPTION_DECIDE" | "EXCEPTION_EXPIRE";
+
 type AuthorityTable =
   | "asset_owner"
   | "asset_work_order"
@@ -126,6 +223,20 @@ type AuthorityTable =
 type AuthorityLock = Readonly<{ id: string; table: AuthorityTable }>;
 
 const CONSTRAINT_CODES: Readonly<Record<string, AssetAccountingErrorCode>> = {
+  business_exception_approval_approval_no_key: ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT,
+  business_exception_approval_decided_by_fkey: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND,
+  business_exception_approval_expired_by_fkey: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND,
+  business_exception_approval_live_subject_field_snapshot_key:
+    ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE,
+  business_exception_approval_request_source_key_not_blank_chk:
+    ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND,
+  business_exception_approval_requested_by_fkey: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND,
+  business_exception_approval_snapshot_hash_chk:
+    ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND,
+  business_exception_approval_status_shape_chk:
+    ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND,
+  business_exception_approval_version_nonnegative_chk:
+    ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND,
   asset_accounting_command_receipt_payload_hash_chk: ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT,
   asset_accounting_command_receipt_source_key: ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT,
   asset_accounting_command_receipt_source_key_not_blank_chk:
@@ -154,6 +265,19 @@ const CONSTRAINT_CODES: Readonly<Record<string, AssetAccountingErrorCode>> = {
   vehicle_cost_ledger_entry_work_order_id_fkey: ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
 };
 
+/** Stable subject-lock identity reused by owning-domain fact writers. */
+export function businessExceptionSubjectLockIdentity(
+  subject: BusinessExceptionSubjectIdentity
+): string {
+  const normalized = normalizeApprovalSubject(subject);
+  return JSON.stringify([
+    "business-exception-subject",
+    normalized.subjectType,
+    normalized.subjectId,
+    normalized.subjectField
+  ]);
+}
+
 /**
  * Immutable vehicle-cost persistence. Mutations require a caller-owned
  * PostgreSQL READ COMMITTED interactive transaction; this repository never
@@ -171,6 +295,180 @@ export class AssetAccountingRepository {
     await tx.$queryRaw(
       Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${exactTuple}, 0))`
     );
+  }
+
+  async lockBusinessExceptionSubject(
+    tx: Prisma.TransactionClient,
+    subject: BusinessExceptionSubjectIdentity
+  ): Promise<void> {
+    await assertTransactionContract(tx);
+    await takeBusinessExceptionSubjectLock(tx, subject);
+  }
+
+  async requestExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const normalized = normalizeRequestApprovalCommand(command);
+    const payload = requestApprovalPayload(normalized);
+    await this.lockSourceOwnership(tx, normalized.source);
+    const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_REQUEST", payload);
+    if (replay) return replay;
+
+    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const subjectSnapshotHash = hashBusinessExceptionSnapshot(normalized.authoritySnapshot);
+    const liveApprovalId = await lockLiveApprovalForSnapshot(
+      tx,
+      normalized.subject,
+      subjectSnapshotHash
+    );
+    if (liveApprovalId) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE);
+    }
+    await lockAndValidateApprovalActor(tx, normalized.requestedBy);
+
+    const id = randomUUID();
+    try {
+      const approval = await tx.businessExceptionApproval.create({
+        data: {
+          approvalNo: `BEA-${id}`,
+          decision: null,
+          decisionComment: null,
+          decidedAt: null,
+          decidedBy: null,
+          exceptionType: normalized.exceptionType,
+          expiredAt: null,
+          expiredBy: null,
+          expiryReason: null,
+          id,
+          requestEvidenceSnapshot: jsonNullable(normalized.requestEvidenceSnapshot),
+          requestReason: normalized.requestReason,
+          requestSourceId: normalized.source.id,
+          requestSourceKey: normalized.source.key,
+          requestSourceType: normalized.source.type,
+          requestedAt: normalized.requestedAt,
+          requestedBy: normalized.requestedBy,
+          status: "PENDING",
+          subjectField: normalized.subject.subjectField,
+          subjectId: normalized.subject.subjectId,
+          subjectSnapshot: normalized.authoritySnapshot,
+          subjectSnapshotHash,
+          subjectType: normalized.subject.subjectType,
+          version: 0
+        }
+      });
+      const outcome = projectApproval(approval);
+      await createApprovalReceipt(
+        tx,
+        normalized.source,
+        "EXCEPTION_REQUEST",
+        payload,
+        outcome,
+        approval.id,
+        normalized.requestedBy
+      );
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeDatabaseError(error);
+    }
+  }
+
+  async decideExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const normalized = normalizeDecisionCommand(command);
+    const payload = decisionPayload(normalized);
+    await this.lockSourceOwnership(tx, normalized.source);
+    const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_DECIDE", payload);
+    if (replay) return replay;
+
+    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
+    validateApprovalVersion(approval, normalized.expectedVersion);
+    if (approval.status !== "PENDING") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_STATUS_CONFLICT);
+    }
+    if (approval.requestedBy === normalized.decidedBy) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN);
+    }
+    validateApprovalSnapshot(approval, normalized.authoritySnapshot);
+    await lockAndValidateApprovalActor(tx, normalized.decidedBy);
+
+    try {
+      const decided = await tx.businessExceptionApproval.update({
+        data: {
+          decision: normalized.decision,
+          decisionComment: normalized.decisionComment,
+          decidedAt: normalized.decidedAt,
+          decidedBy: normalized.decidedBy,
+          status: normalized.decision,
+          version: { increment: 1 }
+        },
+        where: { id: approval.id }
+      });
+      const outcome = projectApproval(decided);
+      await createApprovalReceipt(
+        tx,
+        normalized.source,
+        "EXCEPTION_DECIDE",
+        payload,
+        outcome,
+        approval.id,
+        normalized.decidedBy
+      );
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeDatabaseError(error);
+    }
+  }
+
+  async expireExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: ExpireExceptionApprovalCommand
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const normalized = normalizeExpireCommand(command);
+    const payload = expiryPayload(normalized);
+    await this.lockSourceOwnership(tx, normalized.source);
+    const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_EXPIRE", payload);
+    if (replay) return replay;
+
+    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
+    validateApprovalVersion(approval, normalized.expectedVersion);
+    if (approval.status !== "PENDING" && approval.status !== "APPROVED") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_STATUS_CONFLICT);
+    }
+    await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+
+    return expireLockedApproval(tx, normalized, payload, approval);
+  }
+
+  async requireCurrentApprovedException(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand
+  ): Promise<RequireCurrentApprovedExceptionOutcome> {
+    const normalized = normalizeRequireCurrentCommand(command);
+    const payload = requireCurrentPayload(normalized);
+    await this.lockSourceOwnership(tx, normalized.source);
+    const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_EXPIRE", payload);
+    if (replay) return { expiredApproval: replay.outcome, valid: false };
+
+    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
+    validateApprovalVersion(approval, normalized.expectedVersion);
+    if (approval.status !== "APPROVED") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_STATUS_CONFLICT);
+    }
+    if (approvalHasSnapshot(approval, normalized.authoritySnapshot)) {
+      return { approval: projectApproval(approval), valid: true };
+    }
+    await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+    const expired = await expireLockedApproval(tx, normalized, payload, approval);
+    return { expiredApproval: expired.outcome, valid: false };
   }
 
   async appendCostEntry(
@@ -396,6 +694,309 @@ function normalizeReverseCommand(command: ReverseCostEntryCommand): ReverseCostE
   return command;
 }
 
+const BUSINESS_EXCEPTION_TYPES: readonly BusinessExceptionType[] = [
+  "VEHICLE_REGISTRATION_DOCUMENT_MISSING",
+  "HANDOVER_EVIDENCE_EXCEPTION",
+  "SETTLEMENT_WAIVER",
+  "SETTLEMENT_WRITE_OFF",
+  "RECOVERY_EXECUTION_APPROVAL"
+];
+
+const BUSINESS_EXCEPTION_SUBJECT_TYPES: readonly BusinessExceptionSubjectType[] = [
+  "VEHICLE",
+  "ORDER",
+  "CONTRACT",
+  "ASSET_WORK_ORDER",
+  "HANDOVER_WORK_ORDER",
+  "SETTLEMENT_CASE",
+  "RECOVERY_CASE"
+];
+
+function normalizeApprovalSubject(
+  subject: BusinessExceptionSubjectIdentity
+): BusinessExceptionSubjectIdentity {
+  if (!subject || typeof subject !== "object") {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+  requireApprovalNonBlank(subject.subjectId);
+  requireApprovalNonBlank(subject.subjectField);
+  if (!BUSINESS_EXCEPTION_SUBJECT_TYPES.includes(subject.subjectType)) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+  return subject;
+}
+
+function normalizeApprovalSource(source: AssetAccountingSource) {
+  try {
+    assertAssetAccountingSource(source);
+  } catch {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+}
+
+function normalizeApprovalSnapshot(snapshot: unknown): Prisma.JsonObject {
+  try {
+    return normalizeSnapshot(snapshot);
+  } catch {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+}
+
+function normalizeRequestApprovalCommand(
+  command: RequestExceptionApprovalCommand
+): NormalizedRequestApprovalCommand {
+  normalizeApprovalSource(command.source);
+  requireApprovalNonBlank(command.requestedBy);
+  requireApprovalNonBlank(command.requestReason);
+  assertApprovalDate(command.requestedAt);
+  if (!BUSINESS_EXCEPTION_TYPES.includes(command.exceptionType)) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+  return {
+    ...command,
+    authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot),
+    requestEvidenceSnapshot:
+      command.requestEvidenceSnapshot === null || command.requestEvidenceSnapshot === undefined
+        ? null
+        : normalizeApprovalSnapshot(command.requestEvidenceSnapshot),
+    subject: normalizeApprovalSubject(command.subject)
+  };
+}
+
+function normalizeDecisionCommand(
+  command: DecideExceptionApprovalCommand
+): NormalizedDecisionCommand {
+  normalizeApprovalSource(command.source);
+  requireApprovalNonBlank(command.approvalId);
+  requireApprovalNonBlank(command.decidedBy);
+  requireApprovalNonBlank(command.decisionComment);
+  assertApprovalDate(command.decidedAt);
+  assertExpectedApprovalVersion(command.expectedVersion);
+  if (
+    !BUSINESS_EXCEPTION_TYPES.includes(command.exceptionType) ||
+    !(["APPROVED", "REJECTED"] as const).includes(command.decision)
+  ) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+  return {
+    ...command,
+    authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot),
+    subject: normalizeApprovalSubject(command.subject)
+  };
+}
+
+function normalizeExpireCommand(
+  command: ExpireExceptionApprovalCommand
+): ExpireExceptionApprovalCommand {
+  normalizeApprovalSource(command.source);
+  requireApprovalNonBlank(command.approvalId);
+  requireApprovalNonBlank(command.expiredBy);
+  requireApprovalNonBlank(command.expiryReason);
+  assertApprovalDate(command.expiredAt);
+  assertExpectedApprovalVersion(command.expectedVersion);
+  if (!BUSINESS_EXCEPTION_TYPES.includes(command.exceptionType)) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+  return { ...command, subject: normalizeApprovalSubject(command.subject) };
+}
+
+function normalizeRequireCurrentCommand(
+  command: RequireCurrentApprovedExceptionCommand
+): RequireCurrentApprovedExceptionCommand & { readonly authoritySnapshot: Prisma.JsonObject } {
+  const normalized = normalizeExpireCommand(command);
+  return {
+    ...normalized,
+    authoritySnapshot: normalizeApprovalSnapshot(command.authoritySnapshot)
+  };
+}
+
+function requestApprovalPayload(command: NormalizedRequestApprovalCommand) {
+  return {
+    authoritySnapshot: command.authoritySnapshot,
+    exceptionType: command.exceptionType,
+    requestEvidenceSnapshot: command.requestEvidenceSnapshot,
+    requestReason: command.requestReason,
+    requestedAt: command.requestedAt,
+    requestedBy: command.requestedBy,
+    subject: command.subject
+  };
+}
+
+function decisionPayload(command: NormalizedDecisionCommand) {
+  return {
+    approvalId: command.approvalId,
+    authoritySnapshot: command.authoritySnapshot,
+    decidedAt: command.decidedAt,
+    decidedBy: command.decidedBy,
+    decision: command.decision,
+    decisionComment: command.decisionComment,
+    exceptionType: command.exceptionType,
+    expectedVersion: command.expectedVersion,
+    subject: command.subject
+  };
+}
+
+function expiryPayload(command: ExpireExceptionApprovalCommand) {
+  return {
+    approvalId: command.approvalId,
+    exceptionType: command.exceptionType,
+    expectedVersion: command.expectedVersion,
+    expiredAt: command.expiredAt,
+    expiredBy: command.expiredBy,
+    expiryReason: command.expiryReason,
+    subject: command.subject
+  };
+}
+
+function requireCurrentPayload(
+  command: RequireCurrentApprovedExceptionCommand & {
+    readonly authoritySnapshot: Prisma.JsonObject;
+  }
+) {
+  return { ...expiryPayload(command), authoritySnapshot: command.authoritySnapshot };
+}
+
+async function takeBusinessExceptionSubjectLock(
+  tx: Prisma.TransactionClient,
+  subject: BusinessExceptionSubjectIdentity
+) {
+  const identity = businessExceptionSubjectLockIdentity(subject);
+  await tx.$queryRaw(
+    Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${identity}, 0))`
+  );
+}
+
+async function lockLiveApprovalForSnapshot(
+  tx: Prisma.TransactionClient,
+  subject: BusinessExceptionSubjectIdentity,
+  subjectSnapshotHash: string
+) {
+  try {
+    const [row] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "business_exception_approval"
+      WHERE "subject_type" = ${subject.subjectType}::business_exception_subject_type
+        AND "subject_id" = ${subject.subjectId}::uuid
+        AND "subject_field" = ${subject.subjectField}
+        AND "subject_snapshot_hash" = ${subjectSnapshotHash}
+        AND "status" IN ('PENDING', 'APPROVED')
+      ORDER BY "created_at", "id"
+      LIMIT 1
+      FOR UPDATE NOWAIT
+    `);
+    return row?.id ?? null;
+  } catch (error) {
+    if (databaseCode(error) === "55P03") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
+    }
+    throw error;
+  }
+}
+
+async function lockAndLoadApproval(tx: Prisma.TransactionClient, approvalId: string) {
+  try {
+    const [locked] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "business_exception_approval"
+      WHERE "id" = ${approvalId}::uuid
+      FOR UPDATE NOWAIT
+    `);
+    if (!locked) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND);
+  } catch (error) {
+    if (databaseCode(error) === "55P03") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY);
+    }
+    throw error;
+  }
+  const approval = await tx.businessExceptionApproval.findUnique({ where: { id: approvalId } });
+  if (!approval) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND);
+  return approval;
+}
+
+async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
+  await lockAuthorityRows(tx, [{ id: actorId, table: "user" }]);
+  const actor = await tx.user.findUnique({ where: { id: actorId } });
+  requireAuthority(actor, isLiveUser(actor));
+}
+
+function validateApprovalIdentity(
+  approval: BusinessExceptionApproval,
+  exceptionType: BusinessExceptionType,
+  subject: BusinessExceptionSubjectIdentity
+) {
+  if (
+    approval.exceptionType !== exceptionType ||
+    approval.subjectType !== subject.subjectType ||
+    approval.subjectId !== subject.subjectId ||
+    approval.subjectField !== subject.subjectField
+  ) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_SUBJECT_MISMATCH);
+  }
+}
+
+function validateApprovalVersion(approval: BusinessExceptionApproval, expectedVersion: number) {
+  if (approval.version !== expectedVersion) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_VERSION_CONFLICT);
+  }
+}
+
+function approvalHasSnapshot(
+  approval: BusinessExceptionApproval,
+  authoritySnapshot: BusinessExceptionSnapshot | Prisma.JsonObject
+) {
+  try {
+    return (
+      approval.subjectSnapshotHash === hashBusinessExceptionSnapshot(authoritySnapshot) &&
+      canonicalAssetAccountingJson(approval.subjectSnapshot) ===
+        canonicalAssetAccountingJson(authoritySnapshot)
+    );
+  } catch {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
+}
+
+function validateApprovalSnapshot(
+  approval: BusinessExceptionApproval,
+  authoritySnapshot: BusinessExceptionSnapshot | Prisma.JsonObject
+) {
+  if (!approvalHasSnapshot(approval, authoritySnapshot)) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_SNAPSHOT_MISMATCH);
+  }
+}
+
+async function expireLockedApproval(
+  tx: Prisma.TransactionClient,
+  command: ExpireExceptionApprovalCommand,
+  payload: object,
+  approval: BusinessExceptionApproval
+): Promise<AssetAccountingApprovalCommandOutcome> {
+  try {
+    const expired = await tx.businessExceptionApproval.update({
+      data: {
+        expiredAt: command.expiredAt,
+        expiredBy: command.expiredBy,
+        expiryReason: command.expiryReason,
+        status: "EXPIRED",
+        version: { increment: 1 }
+      },
+      where: { id: approval.id }
+    });
+    const outcome = projectApproval(expired);
+    await createApprovalReceipt(
+      tx,
+      command.source,
+      "EXCEPTION_EXPIRE",
+      payload,
+      outcome,
+      approval.id,
+      command.expiredBy
+    );
+    return { outcome, wrote: true };
+  } catch (error) {
+    throw normalizeDatabaseError(error);
+  }
+}
+
 function normalizeSnapshot(snapshot: unknown): Prisma.JsonObject {
   return JSON.parse(canonicalAssetAccountingJson(snapshot)) as Prisma.JsonObject;
 }
@@ -463,6 +1064,35 @@ async function replayReceipt(
   return { outcome: outcomeFromReceipt(receipt.outcomeSnapshot), wrote: false };
 }
 
+async function replayApprovalReceipt(
+  tx: Prisma.TransactionClient,
+  source: AssetAccountingSource,
+  commandType: ApprovalCommandType,
+  payload: object
+): Promise<AssetAccountingApprovalCommandOutcome | null> {
+  const receipt = await tx.assetAccountingCommandReceipt.findUnique({
+    where: {
+      sourceType_sourceId_sourceKey: {
+        sourceId: source.id,
+        sourceKey: source.key,
+        sourceType: source.type
+      }
+    }
+  });
+  if (!receipt) return null;
+  const canonicalPayload = canonicalAssetAccountingJson(payload);
+  if (
+    receipt.commandType !== commandType ||
+    receipt.payloadHash !== hashBusinessExceptionSnapshot(payload) ||
+    canonicalAssetAccountingJson(receipt.payloadSnapshot) !== canonicalPayload ||
+    !receipt.approvalId ||
+    receipt.costEntryId
+  ) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  return { outcome: approvalOutcomeFromReceipt(receipt.outcomeSnapshot), wrote: false };
+}
+
 async function createReceipt(
   tx: Prisma.TransactionClient,
   source: AssetAccountingSource,
@@ -480,6 +1110,34 @@ async function createReceipt(
       approvalId: null,
       commandType,
       costEntryId,
+      id: randomUUID(),
+      outcomeSnapshot,
+      payloadHash: hashBusinessExceptionSnapshot(payload),
+      payloadSnapshot,
+      sourceId: source.id,
+      sourceKey: source.key,
+      sourceType: source.type
+    }
+  });
+}
+
+async function createApprovalReceipt(
+  tx: Prisma.TransactionClient,
+  source: AssetAccountingSource,
+  commandType: ApprovalCommandType,
+  payload: object,
+  outcome: BusinessExceptionApprovalSnapshot,
+  approvalId: string,
+  actorId: string
+) {
+  const payloadSnapshot = JSON.parse(canonicalAssetAccountingJson(payload)) as Prisma.JsonObject;
+  const outcomeSnapshot = publicApprovalOutcomeJson(outcome);
+  await tx.assetAccountingCommandReceipt.create({
+    data: {
+      actorId,
+      approvalId,
+      commandType,
+      costEntryId: null,
       id: randomUUID(),
       outcomeSnapshot,
       payloadHash: hashBusinessExceptionSnapshot(payload),
@@ -725,7 +1383,40 @@ function projectEntry(entry: VehicleCostLedgerEntry): VehicleCostLedgerEntrySnap
   };
 }
 
+function projectApproval(approval: BusinessExceptionApproval): BusinessExceptionApprovalSnapshot {
+  return {
+    approvalNo: approval.approvalNo,
+    decidedAt: approval.decidedAt,
+    decidedBy: approval.decidedBy,
+    decision: approval.decision,
+    decisionComment: approval.decisionComment,
+    exceptionType: approval.exceptionType,
+    expiredAt: approval.expiredAt,
+    expiredBy: approval.expiredBy,
+    expiryReason: approval.expiryReason,
+    id: approval.id,
+    requestEvidenceSnapshot: jsonSnapshotValue(approval.requestEvidenceSnapshot),
+    requestReason: approval.requestReason,
+    requestedAt: approval.requestedAt,
+    requestedBy: approval.requestedBy,
+    requestSourceId: approval.requestSourceId,
+    requestSourceKey: approval.requestSourceKey,
+    requestSourceType: approval.requestSourceType,
+    status: approval.status,
+    subjectField: approval.subjectField,
+    subjectId: approval.subjectId,
+    subjectSnapshot: jsonObject(approval.subjectSnapshot) as BusinessExceptionSnapshot,
+    subjectSnapshotHash: approval.subjectSnapshotHash,
+    subjectType: approval.subjectType,
+    version: approval.version
+  };
+}
+
 function publicOutcomeJson(outcome: VehicleCostLedgerEntrySnapshot): Prisma.JsonObject {
+  return JSON.parse(canonicalAssetAccountingJson(outcome)) as Prisma.JsonObject;
+}
+
+function publicApprovalOutcomeJson(outcome: BusinessExceptionApprovalSnapshot): Prisma.JsonObject {
   return JSON.parse(canonicalAssetAccountingJson(outcome)) as Prisma.JsonObject;
 }
 
@@ -772,6 +1463,55 @@ function outcomeFromReceipt(value: Prisma.JsonValue): VehicleCostLedgerEntrySnap
     sourceType: String(value.sourceType),
     vehicleId: String(value.vehicleId),
     workOrderId: nullableString(value.workOrderId)
+  };
+}
+
+function approvalOutcomeFromReceipt(value: Prisma.JsonValue): BusinessExceptionApprovalSnapshot {
+  if (!isRecord(value)) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  const requestedAt = storedDate(value.requestedAt);
+  const decidedAt = storedNullableDate(value.decidedAt);
+  const expiredAt = storedNullableDate(value.expiredAt);
+  const version = value.version;
+  if (!Number.isSafeInteger(version) || Number(version) < 0) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
+  const status = requiredStoredString(value.status);
+  const decision = nullableStoredString(value.decision);
+  if (
+    !["PENDING", "APPROVED", "REJECTED", "EXPIRED"].includes(status) ||
+    (decision !== null && !["APPROVED", "REJECTED"].includes(decision))
+  ) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
+  return {
+    approvalNo: requiredStoredString(value.approvalNo),
+    decidedAt,
+    decidedBy: nullableStoredString(value.decidedBy),
+    decision: decision as BusinessExceptionDecision | null,
+    decisionComment: nullableStoredString(value.decisionComment),
+    exceptionType: requiredStoredString(value.exceptionType) as BusinessExceptionType,
+    expiredAt,
+    expiredBy: nullableStoredString(value.expiredBy),
+    expiryReason: nullableStoredString(value.expiryReason),
+    id: requiredStoredString(value.id),
+    requestEvidenceSnapshot: jsonSnapshotValue(value.requestEvidenceSnapshot),
+    requestReason: requiredStoredString(value.requestReason),
+    requestedAt,
+    requestedBy: requiredStoredString(value.requestedBy),
+    requestSourceId: requiredStoredString(value.requestSourceId),
+    requestSourceKey: requiredStoredString(value.requestSourceKey),
+    requestSourceType: requiredStoredString(value.requestSourceType),
+    status: status as BusinessExceptionApprovalSnapshot["status"],
+    subjectField: requiredStoredString(value.subjectField),
+    subjectId: requiredStoredString(value.subjectId),
+    subjectSnapshot: jsonObject(
+      value.subjectSnapshot as Prisma.JsonValue
+    ) as BusinessExceptionSnapshot,
+    subjectSnapshotHash: requiredStoredString(value.subjectSnapshotHash),
+    subjectType: requiredStoredString(
+      value.subjectType
+    ) as BusinessExceptionApprovalSnapshot["subjectType"],
+    version: Number(version)
   };
 }
 
@@ -992,6 +1732,31 @@ function jsonSnapshotValue(value: unknown): AssetAccountingSnapshotValue {
   return value as AssetAccountingSnapshotValue;
 }
 
+function requiredStoredString(value: unknown) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
+  return value;
+}
+
+function nullableStoredString(value: unknown) {
+  if (value === null || value === undefined) return null;
+  return requiredStoredString(value);
+}
+
+function storedDate(value: unknown) {
+  const text = requiredStoredString(value);
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT);
+  }
+  return date;
+}
+
+function storedNullableDate(value: unknown) {
+  return value === null || value === undefined ? null : storedDate(value);
+}
+
 function nullableString(value: unknown) {
   return value === null || value === undefined ? null : String(value);
 }
@@ -999,6 +1764,24 @@ function nullableString(value: unknown) {
 function requireNonBlank(value: unknown) {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_COST_COMMAND);
+  }
+}
+
+function requireApprovalNonBlank(value: unknown) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+}
+
+function assertApprovalDate(value: unknown): asserts value is Date {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
+  }
+}
+
+function assertExpectedApprovalVersion(value: unknown): asserts value is number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.INVALID_APPROVAL_COMMAND);
   }
 }
 

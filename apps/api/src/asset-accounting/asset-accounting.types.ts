@@ -91,11 +91,20 @@ export interface BusinessExceptionApprovalSnapshot {
   readonly subjectField: string;
   readonly subjectSnapshot: BusinessExceptionSnapshot;
   readonly subjectSnapshotHash: string;
+  readonly requestReason: string;
+  readonly requestEvidenceSnapshot?: AssetAccountingSnapshotValue;
   readonly status: BusinessExceptionApprovalStatus;
   readonly version: number;
   readonly decision?: BusinessExceptionDecision | null;
+  readonly decisionComment?: string | null;
   readonly requestedBy: string;
   readonly requestedAt: Date;
+  readonly requestSourceType: string;
+  readonly requestSourceId: string;
+  readonly requestSourceKey: string;
   readonly decidedBy?: string | null;
   readonly decidedAt?: Date | null;
+  readonly expiryReason?: string | null;
+  readonly expiredBy?: string | null;
+  readonly expiredAt?: Date | null;
 }

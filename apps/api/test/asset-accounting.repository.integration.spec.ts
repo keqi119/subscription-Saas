@@ -8,6 +8,10 @@ import {
   ASSET_ACCOUNTING_ERROR_CODE,
   AssetAccountingRepository,
   type AppendCostEntryCommand,
+  type DecideExceptionApprovalCommand,
+  type ExpireExceptionApprovalCommand,
+  type RequestExceptionApprovalCommand,
+  type RequireCurrentApprovedExceptionCommand,
   type ReverseCostEntryCommand
 } from "../src/asset-accounting/asset-accounting.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -742,6 +746,215 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       });
     }
   });
+
+  it("commits stale approved expiry, exactly replays it, and creates no duplicate receipt", async () => {
+    const repository = new AssetAccountingRepository();
+    const requestCommand = requestApprovalCommand(fixture, "approval-stale-request");
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(tx, requestCommand)
+    );
+    const approveCommand = decideApprovalCommand(
+      fixture,
+      request.outcome.id,
+      "approval-stale-approve"
+    );
+    const approved = await readCommitted(prisma, (tx) =>
+      repository.decideExceptionApproval(tx, approveCommand)
+    );
+    const requireCommand = requireCurrentCommand(
+      fixture,
+      approved.outcome.id,
+      approved.outcome.version,
+      "approval-stale-require",
+      { factRevision: 2, state: "CHANGED" }
+    );
+
+    const stale = await readCommitted(prisma, (tx) =>
+      repository.requireCurrentApprovedException(tx, requireCommand)
+    );
+    const replay = await readCommitted(prisma, (tx) =>
+      repository.requireCurrentApprovedException(tx, requireCommand)
+    );
+
+    expect(stale).toMatchObject({
+      expiredApproval: { status: "EXPIRED", version: 2 },
+      valid: false
+    });
+    expect(replay).toEqual(stale);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: approved.outcome.id } })
+    ).resolves.toMatchObject({ status: "EXPIRED", version: 2 });
+    await expect(countReceipts(prisma, requireCommand.source)).resolves.toBe(1);
+    await expect(
+      prisma.businessExceptionApproval.count({
+        where: { requestSourceKey: { startsWith: FIXTURE_PREFIX } }
+      })
+    ).resolves.toBe(1);
+  });
+
+  it("serializes different-source requests on the shared subject lock and leaves one live approval", async () => {
+    const repository = new AssetAccountingRepository();
+    const firstCommand = requestApprovalCommand(fixture, "approval-request-race-first");
+    const holder = await holdCompletedCommand(prisma, (tx) =>
+      repository.requestExceptionApproval(tx, firstCommand)
+    );
+    const secondCommand = requestApprovalCommand(fixture, "approval-request-race-second");
+    const secondPromise = settled(
+      readCommitted(prisma, (tx) => repository.requestExceptionApproval(tx, secondCommand))
+    );
+
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    holder.release.resolve();
+    const first = await holder.result;
+    expectConflict(
+      rejectedValue(await secondPromise),
+      ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE
+    );
+    await expect(
+      prisma.businessExceptionApproval.count({
+        where: {
+          status: { in: ["PENDING", "APPROVED"] },
+          subjectField: first.outcome.subjectField,
+          subjectId: first.outcome.subjectId,
+          subjectSnapshotHash: first.outcome.subjectSnapshotHash,
+          subjectType: first.outcome.subjectType
+        }
+      })
+    ).resolves.toBe(1);
+    await expect(countReceipts(prisma, firstCommand.source)).resolves.toBe(1);
+    await expect(countReceipts(prisma, secondCommand.source)).resolves.toBe(0);
+    await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(
+        tx,
+        expireApprovalCommand(
+          fixture,
+          first.outcome.id,
+          first.outcome.version,
+          "approval-request-race-cleanup"
+        )
+      )
+    );
+  });
+
+  it("serializes decision versus fact-revision expiry and cannot leave stale APPROVED authority", async () => {
+    const repository = new AssetAccountingRepository();
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        tx,
+        requestApprovalCommand(fixture, "approval-decision-first-request")
+      )
+    );
+    const decideCommand = decideApprovalCommand(
+      fixture,
+      request.outcome.id,
+      "approval-decision-first-decide"
+    );
+    const decisionHolder = await holdCompletedCommand(prisma, (tx) =>
+      repository.decideExceptionApproval(tx, decideCommand)
+    );
+    const expiryCommand = expireApprovalCommand(
+      fixture,
+      request.outcome.id,
+      1,
+      "approval-decision-first-revision-expire"
+    );
+    const expiryPromise = readCommitted(prisma, async (tx) => {
+      await repository.lockBusinessExceptionSubject(tx, approvalSubject(fixture));
+      return repository.expireExceptionApproval(tx, expiryCommand);
+    });
+
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    decisionHolder.release.resolve();
+    const [decision, expiry] = await Promise.all([decisionHolder.result, expiryPromise]);
+    expect(decision.outcome).toMatchObject({ status: "APPROVED", version: 1 });
+    expect(expiry.outcome).toMatchObject({ status: "EXPIRED", version: 2 });
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
+    ).resolves.toMatchObject({ status: "EXPIRED", version: 2 });
+    const replay = await readCommitted(prisma, (tx) =>
+      repository.expireExceptionApproval(tx, expiryCommand)
+    );
+    expect(replay).toEqual({ outcome: expiry.outcome, wrote: false });
+    await expect(countReceipts(prisma, decideCommand.source)).resolves.toBe(1);
+    await expect(countReceipts(prisma, expiryCommand.source)).resolves.toBe(1);
+  });
+
+  it("lets fact-revision expiry win the subject lock and leaves no losing decision receipt", async () => {
+    const repository = new AssetAccountingRepository();
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        tx,
+        requestApprovalCommand(fixture, "approval-expiry-first-request")
+      )
+    );
+    const expiryCommand = expireApprovalCommand(
+      fixture,
+      request.outcome.id,
+      0,
+      "approval-expiry-first-revision"
+    );
+    const expiryHolder = await holdCompletedCommand(prisma, async (tx) => {
+      await repository.lockBusinessExceptionSubject(tx, approvalSubject(fixture));
+      return repository.expireExceptionApproval(tx, expiryCommand);
+    });
+    const decisionCommand = decideApprovalCommand(
+      fixture,
+      request.outcome.id,
+      "approval-expiry-first-decision"
+    );
+    const decisionPromise = settled(
+      readCommitted(prisma, (tx) => repository.decideExceptionApproval(tx, decisionCommand))
+    );
+
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+    expiryHolder.release.resolve();
+    const expiry = await expiryHolder.result;
+    expect(expiry.outcome).toMatchObject({ status: "EXPIRED", version: 1 });
+    expectConflict(
+      rejectedValue(await decisionPromise),
+      ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_VERSION_CONFLICT
+    );
+    await expect(countReceipts(prisma, decisionCommand.source)).resolves.toBe(0);
+    await expect(
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: request.outcome.id } })
+    ).resolves.toMatchObject({ status: "EXPIRED", version: 1 });
+  });
+
+  it("uses FOR UPDATE NOWAIT for an existing approval row", async () => {
+    const repository = new AssetAccountingRepository();
+    const request = await readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        tx,
+        requestApprovalCommand(fixture, "approval-nowait-request")
+      )
+    );
+    const ready = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "business_exception_approval" WHERE "id" = ${request.outcome.id}::uuid FOR UPDATE`
+      );
+      ready.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+
+    try {
+      await expectCode(
+        readCommitted(prisma, (tx) =>
+          repository.decideExceptionApproval(
+            tx,
+            decideApprovalCommand(fixture, request.outcome.id, "approval-nowait-decision")
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_BUSY
+      );
+    } finally {
+      release.resolve();
+      await holder;
+    }
+  });
 });
 
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
@@ -784,11 +997,86 @@ function reverseCommand(
   };
 }
 
+function approvalSubject(fixtureValue: Fixture) {
+  return {
+    subjectField: "fixtureApprovalField",
+    subjectId: fixtureValue.vehicleId,
+    subjectType: "VEHICLE" as const
+  };
+}
+
+function requestApprovalCommand(
+  fixtureValue: Fixture,
+  suffix: string
+): RequestExceptionApprovalCommand {
+  return {
+    authoritySnapshot: { factRevision: 1, state: "PENDING" },
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    requestEvidenceSnapshot: { evidenceRevision: 1 },
+    requestReason: "fixture exception requires review",
+    requestedAt: CONFIRMED_AT,
+    requestedBy: fixtureValue.userId,
+    source: { id: randomUUID(), key: `${FIXTURE_PREFIX}:${suffix}`, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(fixtureValue)
+  };
+}
+
+function decideApprovalCommand(
+  fixtureValue: Fixture,
+  approvalId: string,
+  suffix: string
+): DecideExceptionApprovalCommand {
+  return {
+    approvalId,
+    authoritySnapshot: { factRevision: 1, state: "PENDING" },
+    decidedAt: new Date("2026-08-20T10:10:00.000Z"),
+    decidedBy: fixtureValue.deciderId,
+    decision: "APPROVED",
+    decisionComment: "fixture approval reviewed",
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    expectedVersion: 0,
+    source: { id: randomUUID(), key: `${FIXTURE_PREFIX}:${suffix}`, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(fixtureValue)
+  };
+}
+
+function expireApprovalCommand(
+  fixtureValue: Fixture,
+  approvalId: string,
+  expectedVersion: number,
+  suffix: string
+): ExpireExceptionApprovalCommand {
+  return {
+    approvalId,
+    exceptionType: "HANDOVER_EVIDENCE_EXCEPTION",
+    expectedVersion,
+    expiredAt: new Date("2026-08-20T10:20:00.000Z"),
+    expiredBy: fixtureValue.deciderId,
+    expiryReason: "authoritative snapshot changed",
+    source: { id: randomUUID(), key: `${FIXTURE_PREFIX}:${suffix}`, type: "HANDOVER_FIXTURE" },
+    subject: approvalSubject(fixtureValue)
+  };
+}
+
+function requireCurrentCommand(
+  fixtureValue: Fixture,
+  approvalId: string,
+  expectedVersion: number,
+  suffix: string,
+  authoritySnapshot: RequireCurrentApprovedExceptionCommand["authoritySnapshot"]
+): RequireCurrentApprovedExceptionCommand {
+  return {
+    ...expireApprovalCommand(fixtureValue, approvalId, expectedVersion, suffix),
+    authoritySnapshot
+  };
+}
+
 async function createFixture(prisma: PrismaService) {
   const fixture = {
     assetOwnerId: randomUUID(),
     contractId: randomUUID(),
     customerId: randomUUID(),
+    deciderId: randomUUID(),
     evidenceId: randomUUID(),
     evidenceKey: `${FIXTURE_PREFIX}:evidence`,
     orderId: randomUUID(),
@@ -802,7 +1090,9 @@ async function createFixture(prisma: PrismaService) {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "user" ("id", "username", "name", "password_hash", "updated_at")
-      VALUES (${fixture.userId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_operator`}, 'Stage 1C-C Operator', 'not-used-by-test', CURRENT_TIMESTAMP)
+      VALUES
+        (${fixture.userId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_operator`}, 'Stage 1C-C Operator', 'not-used-by-test', CURRENT_TIMESTAMP),
+        (${fixture.deciderId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_decider`}, 'Stage 1C-C Decider', 'not-used-by-test', CURRENT_TIMESTAMP)
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "vehicle" ("id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount", "updated_at")
@@ -876,6 +1166,10 @@ async function deleteFixtures(prisma: PrismaService) {
     await tx.$executeRaw`
       DELETE FROM "asset_accounting_command_receipt"
       WHERE "source_key" LIKE ${`${FIXTURE_PREFIX}%`}
+    `;
+    await tx.$executeRaw`
+      DELETE FROM "business_exception_approval"
+      WHERE "request_source_key" LIKE ${`${FIXTURE_PREFIX}%`}
     `;
     await tx.$executeRaw`
       DELETE FROM "vehicle_cost_ledger_entry"

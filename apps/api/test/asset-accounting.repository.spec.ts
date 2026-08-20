@@ -847,6 +847,102 @@ describe("AssetAccountingRepository", () => {
       ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT
     );
   });
+
+  it.each([
+    [
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"',
+      "REVERSAL_ALREADY_EXISTS"
+    ],
+    [
+      ["source_key", "source_type", "source_id"],
+      'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"',
+      "SOURCE_CONFLICT"
+    ]
+  ] as const)(
+    "normalizes Prisma 7 P2002 adapter fields %j with exact message %s as %s",
+    async (fields, message, expected) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = p2002AdapterError(fields, message);
+
+      await expectCode(
+        repository.appendCostEntry(database.tx, appendCommand(database.ids, `adapter-${expected}`)),
+        ASSET_ACCOUNTING_ERROR_CODE[expected]
+      );
+    }
+  );
+
+  it.each([
+    ["vehicle_cost_ledger_entry_reversal_of_entry_id_key", "REVERSAL_ALREADY_EXISTS"],
+    ["asset_accounting_command_receipt_source_key", "SOURCE_CONFLICT"]
+  ] as const)(
+    "normalizes Prisma P2002 exact adapter constraint %s as %s",
+    async (constraint, expected) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = p2002NamedConstraintError(constraint);
+
+      await expectCode(
+        repository.appendCostEntry(
+          database.tx,
+          appendCommand(database.ids, `adapter-constraint-${expected}`)
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE[expected]
+      );
+    }
+  );
+
+  it.each([
+    [
+      ["source_type", "source_id"],
+      "duplicate source tuple mentioning asset_accounting_command_receipt_source_key",
+      "23505",
+      "UniqueConstraintViolation"
+    ],
+    [
+      ["unrelated_field"],
+      "diagnostic mentions vehicle_cost_ledger_entry_reversal_of_entry_id_key",
+      "23505",
+      "UniqueConstraintViolation"
+    ],
+    [
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"',
+      "23514",
+      "UniqueConstraintViolation"
+    ],
+    [
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "vehicle_cost_ledger_entry_reversal_of_entry_id_key"',
+      "23505",
+      "CheckConstraintViolation"
+    ],
+    [
+      ["reversal_of_entry_id"],
+      'duplicate key value violates unique constraint "asset_accounting_command_receipt_source_key"',
+      "23505",
+      "UniqueConstraintViolation"
+    ]
+  ] as const)(
+    "keeps incompatible Prisma P2002 adapter evidence generic for fields %j, message %s, SQLSTATE %s, kind %s",
+    async (fields, message, originalCode, kind) => {
+      const repository = new AssetAccountingRepository();
+      const database = fakeTransaction();
+      database.nextEntryCreateError = p2002AdapterError(fields, message, originalCode, kind);
+
+      await expectCode(
+        repository.appendCostEntry(
+          database.tx,
+          appendCommand(
+            database.ids,
+            `adapter-negative-${originalCode}-${kind}-${fields.join("-")}`
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.WRITE_CONFLICT
+      );
+    }
+  );
 });
 
 type AuthorityRecord = Record<string, unknown> & { id: string };
@@ -1146,6 +1242,43 @@ function databaseMessageError(code: string, message: string) {
       }
     }
   };
+}
+
+function p2002AdapterError(
+  fields: readonly string[],
+  originalMessage: string,
+  originalCode = "23505",
+  kind = "UniqueConstraintViolation"
+) {
+  return Object.assign(new Error(originalMessage), {
+    code: "P2002",
+    meta: {
+      driverAdapterError: {
+        cause: {
+          constraint: { fields: [...fields] },
+          kind,
+          originalCode,
+          originalMessage
+        }
+      }
+    }
+  });
+}
+
+function p2002NamedConstraintError(constraint: string) {
+  return Object.assign(new Error("unique violation"), {
+    code: "P2002",
+    meta: {
+      driverAdapterError: {
+        cause: {
+          constraint,
+          kind: "UniqueConstraintViolation",
+          originalCode: "23505",
+          originalMessage: "unique violation"
+        }
+      }
+    }
+  });
 }
 
 async function expectCode(promise: Promise<unknown>, code: string) {

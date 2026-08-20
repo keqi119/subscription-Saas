@@ -883,7 +883,58 @@ function prismaUniqueTarget(error: unknown): readonly string[] {
   if (!isRecord(error) || !isRecord(error.meta)) return [];
   const target = error.meta.target;
   if (typeof target === "string") return [target];
-  return Array.isArray(target) && target.every((value) => typeof value === "string") ? target : [];
+  if (Array.isArray(target) && target.every((value) => typeof value === "string")) return target;
+  if (target !== undefined) return [];
+
+  const cause = p2002AdapterCause(error);
+  if (!cause) return [];
+  const fields = p2002ConstraintFields(cause);
+  const namedConstraint = p2002NamedConstraint(cause);
+  if (fields) {
+    const fieldsKind = uniqueTargetKind(fields);
+    if (!fieldsKind) return [];
+    if (namedConstraint && uniqueTargetKind([namedConstraint]) !== fieldsKind) return [];
+    return fields;
+  }
+  return namedConstraint ? [namedConstraint] : [];
+}
+
+function p2002AdapterCause(error: Record<string, unknown>) {
+  if (error.code !== "P2002" || !isRecord(error.meta)) return undefined;
+  const adapterError = error.meta.driverAdapterError;
+  if (!isRecord(adapterError) || !isRecord(adapterError.cause)) return undefined;
+  const cause = adapterError.cause;
+  return cause.originalCode === "23505" && cause.kind === "UniqueConstraintViolation"
+    ? cause
+    : undefined;
+}
+
+function p2002ConstraintFields(cause: Record<string, unknown>) {
+  if (!isRecord(cause.constraint)) return undefined;
+  const fields = cause.constraint.fields;
+  return Array.isArray(fields) && fields.every((value) => typeof value === "string")
+    ? fields
+    : undefined;
+}
+
+function p2002NamedConstraint(cause: Record<string, unknown>) {
+  if (typeof cause.constraint === "string" && cause.constraint in CONSTRAINT_CODES) {
+    return cause.constraint;
+  }
+  const message =
+    typeof cause.originalMessage === "string"
+      ? cause.originalMessage
+      : typeof cause.message === "string"
+        ? cause.message
+        : undefined;
+  const constraint = constraintFromServerMessage(message);
+  return constraint && constraint in CONSTRAINT_CODES ? constraint : undefined;
+}
+
+function uniqueTargetKind(target: readonly string[]) {
+  if (isReversalUniqueTarget(target)) return "reversal";
+  if (isSourceUniqueTarget(target)) return "source";
+  return undefined;
 }
 
 function isReversalUniqueTarget(target: readonly string[]) {

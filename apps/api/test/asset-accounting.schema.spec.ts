@@ -10,6 +10,14 @@ const migrationPath = resolve(
   "prisma/migrations/20260821000000_stage1c_cost_ledger_exception_approval/migration.sql"
 );
 const migration = existsSync(migrationPath) ? readFileSync(migrationPath, "utf8") : "";
+const hardeningMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260821000100_stage1c_cost_ledger_exception_approval_hardening/migration.sql"
+);
+const hardeningMigration = existsSync(hardeningMigrationPath)
+  ? readFileSync(hardeningMigrationPath, "utf8")
+  : "";
+const finalMigration = `${migration}\n${hardeningMigration}`;
 
 function prismaBlock(kind: "enum" | "model", name: string) {
   return schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -36,6 +44,106 @@ function migrationFunction(name: string) {
 
 function migrationTrigger(name: string) {
   return migration.match(new RegExp(`CREATE TRIGGER "${name}"[\\s\\S]*?;`))?.[0] ?? "";
+}
+
+function latestMigrationFunction(source: string, name: string) {
+  return Array.from(
+    source.matchAll(new RegExp(`CREATE OR REPLACE FUNCTION "public"\\."${name}"\\(\\)[\\s\\S]*?\\n\\$\\$;`, "g"))
+  ).at(-1)?.[0] ?? "";
+}
+
+function latestMigrationTrigger(source: string, name: string) {
+  return Array.from(source.matchAll(new RegExp(`CREATE TRIGGER "${name}"[\\s\\S]*?;`, "g"))).at(-1)?.[0] ?? "";
+}
+
+function finalForeignKeyStatement(source: string, name: string) {
+  return Array.from(
+    source.matchAll(
+      new RegExp(`ALTER TABLE (?:"public"\\.)?"[^"]+" ADD CONSTRAINT "${name}"[\\s\\S]*?;`, "g")
+    )
+  ).at(-1)?.[0] ?? "";
+}
+
+function expectFinalPersistenceContract(source: string, prismaSchema: string) {
+  const ledger = prismaSchema.match(/model VehicleCostLedgerEntry \{[\s\S]*?\n\}/)?.[0] ?? "";
+  expect(ledger).toMatch(
+    /^\s*confirmedBy\s+String\s+@map\("confirmed_by"\)\s+@db\.Uuid$/m
+  );
+  expect(ledger).toMatch(
+    /^\s*confirmer\s+User\s+@relation\("VehicleCostLedgerEntryConfirmedBy", fields: \[confirmedBy\], references: \[id\], onDelete: Restrict\)$/m
+  );
+  expect(ledger).toMatch(
+    /^\s*order\s+SubscriptionOrder\?\s+@relation\(fields: \[orderId\], references: \[id\], onDelete: Restrict\)$/m
+  );
+
+  for (const name of [
+    "enforce_vehicle_cost_ledger_reversal",
+    "reject_asset_accounting_append_only_mutation",
+    "enforce_business_exception_approval_transition"
+  ]) {
+    expect(latestMigrationFunction(source, name), `${name} safe search path`).toContain(
+      "SET search_path = pg_catalog, public, pg_temp"
+    );
+  }
+
+  const reversal = latestMigrationFunction(source, "enforce_vehicle_cost_ledger_reversal");
+  expect(reversal).toContain('original "public"."vehicle_cost_ledger_entry"%ROWTYPE');
+  expect(reversal).toContain('FROM "public"."vehicle_cost_ledger_entry"');
+  expect(reversal).toContain('NEW."amount_cents" <> -original."amount_cents"');
+  expect(reversal).toMatch(
+    /IF ROW\([\s\S]*?NEW\."vehicle_id"[\s\S]*?NEW\."responsibility_snapshot"\n\s*\) IS DISTINCT FROM ROW\([\s\S]*?original\."vehicle_id"[\s\S]*?original\."responsibility_snapshot"/
+  );
+
+  const approval = latestMigrationFunction(source, "enforce_business_exception_approval_transition");
+  expect(approval).toContain("IF TG_OP = 'INSERT' THEN");
+  expect(approval).toContain('NEW."status" = \'PENDING\'');
+  expect(approval).toContain('NEW."version" = 0');
+  for (const column of [
+    "decision",
+    "decision_comment",
+    "decided_by",
+    "decided_at",
+    "expiry_reason",
+    "expired_by",
+    "expired_at"
+  ]) {
+    expect(approval).toContain(`NEW."${column}" IS NULL`);
+  }
+  expect(approval).toContain("NEW.\"version\" <> OLD.\"version\" + 1");
+
+  expect(source).toMatch(
+    /ALTER TABLE "public"\."vehicle_cost_ledger_entry"\s+ALTER COLUMN "confirmed_by" SET NOT NULL;/
+  );
+  expect(source).toContain(
+    '("status" = \'PENDING\' AND "decision" IS NULL AND "decision_comment" IS NULL AND "decided_by" IS NULL AND "decided_at" IS NULL AND "expiry_reason" IS NULL AND "expired_by" IS NULL AND "expired_at" IS NULL)'
+  );
+  expect(source).toContain(
+    '("status" = \'EXPIRED\' AND "expiry_reason" IS NOT NULL AND "expired_by" IS NOT NULL AND "expired_at" IS NOT NULL AND ('
+  );
+
+  for (const name of [
+    "vehicle_cost_ledger_entry_append_only",
+    "asset_accounting_command_receipt_append_only"
+  ]) {
+    expect(latestMigrationTrigger(source, name)).toContain(
+      'EXECUTE FUNCTION "public"."reject_asset_accounting_append_only_mutation"()'
+    );
+  }
+  expect(latestMigrationTrigger(source, "business_exception_approval_transition_only")).toContain(
+    'BEFORE INSERT OR UPDATE OR DELETE ON "public"."business_exception_approval"'
+  );
+  expect(latestMigrationTrigger(source, "business_exception_approval_transition_only")).toContain(
+    'EXECUTE FUNCTION "public"."enforce_business_exception_approval_transition"()'
+  );
+
+  for (const foreignKey of [
+    "vehicle_cost_ledger_entry_order_id_fkey",
+    "vehicle_cost_ledger_entry_confirmed_by_fkey",
+    "asset_accounting_command_receipt_cost_entry_id_fkey",
+    "asset_accounting_command_receipt_approval_id_fkey"
+  ]) {
+    expect(finalForeignKeyStatement(source, foreignKey), foreignKey).toMatch(/ON DELETE RESTRICT\s+ON UPDATE CASCADE;$/);
+  }
 }
 
 const enumContracts = [
@@ -385,5 +493,52 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
     expect(migrationTrigger("business_exception_approval_transition_only")).toContain(
       'BEFORE UPDATE OR DELETE ON "business_exception_approval"'
     );
+  });
+
+  it("rejects one-line mutations that weaken the final persistence authority", () => {
+    expectFinalPersistenceContract(finalMigration, schema);
+
+    const ledgerRelationMutation = schema.replace(
+      "order                   SubscriptionOrder?               @relation(fields: [orderId], references: [id], onDelete: Restrict)",
+      "order                   SubscriptionOrder?               @relation(fields: [orderId], references: [id], onDelete: SetNull)"
+    );
+    expect(() => expectFinalPersistenceContract(finalMigration, ledgerRelationMutation)).toThrow();
+
+    const foreignKeyMutation = finalMigration.replace(
+      'CONSTRAINT "vehicle_cost_ledger_entry_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "subscription_order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;',
+      'CONSTRAINT "vehicle_cost_ledger_entry_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "subscription_order"("id") ON DELETE SET NULL ON UPDATE CASCADE;'
+    );
+    expect(() => expectFinalPersistenceContract(foreignKeyMutation, schema)).toThrow();
+
+    const reversalComparatorMutation = hardeningMigration.replace(
+      'NEW."amount_cents" <> -original."amount_cents"',
+      'NEW."amount_cents" = -original."amount_cents"'
+    );
+    expect(() =>
+      expectFinalPersistenceContract(`${migration}\n${reversalComparatorMutation}`, schema)
+    ).toThrow();
+
+    const versionMutation = hardeningMigration.replace(
+      'NEW."version" <> OLD."version" + 1',
+      'NEW."version" <> OLD."version" + 2'
+    );
+    expect(() => expectFinalPersistenceContract(`${migration}\n${versionMutation}`, schema)).toThrow();
+
+    const pendingCommentMutation = hardeningMigration.replace(
+      ' AND "decision_comment" IS NULL',
+      ""
+    );
+    expect(() => expectFinalPersistenceContract(`${migration}\n${pendingCommentMutation}`, schema)).toThrow();
+
+    const insertGuardMutation = finalMigration.replace("IF TG_OP = 'INSERT' THEN", "IF TG_OP = 'CREATE' THEN");
+    expect(() => expectFinalPersistenceContract(insertGuardMutation, schema)).toThrow();
+
+    const appendOnlyWiringMutation = hardeningMigration.replace(
+      'EXECUTE FUNCTION "public"."reject_asset_accounting_append_only_mutation"()',
+      'EXECUTE FUNCTION "public"."enforce_vehicle_cost_ledger_reversal"()'
+    );
+    expect(() =>
+      expectFinalPersistenceContract(`${migration}\n${appendOnlyWiringMutation}`, schema)
+    ).toThrow();
   });
 });

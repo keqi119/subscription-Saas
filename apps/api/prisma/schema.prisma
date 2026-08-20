@@ -3842,8 +3842,8 @@ model VehicleCostLedgerEntry {
   occurredOn              DateTime                         @map("occurred_on") @db.Date
   accountingPeriod        String                           @map("accounting_period") @db.VarChar(7)
   confirmedAt             DateTime                         @map("confirmed_at") @db.Timestamptz(6)
-  confirmedBy             String?                          @map("confirmed_by") @db.Uuid
-  confirmer               User?                            @relation("VehicleCostLedgerEntryConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict)
+  confirmedBy             String                           @map("confirmed_by") @db.Uuid
+  confirmer               User                             @relation("VehicleCostLedgerEntryConfirmedBy", fields: [confirmedBy], references: [id], onDelete: Restrict)
   reversalOfEntryId       String?                          @map("reversal_of_entry_id") @db.Uuid
   reversalOfEntry         VehicleCostLedgerEntry?          @relation("VehicleCostLedgerEntryReversal", fields: [reversalOfEntryId], references: [id], onDelete: Restrict)
   reversals               VehicleCostLedgerEntry[]         @relation("VehicleCostLedgerEntryReversal")

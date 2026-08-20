@@ -1172,8 +1172,9 @@ COMMIT;
 ledger 内部 responsible-party identity、单次冲正、金额符号，以及 reversal 对 original 的全部 16 维相等；
 预期零行。这里只核对引用存在和能证明不可变的 identity；不得把 authority 后来 soft-delete、状态变化、
 order vehicle/customer、contract/work-order 当前 projection 或历史 ownership projection 漂移误报为 orphan。
-内嵌 fixture 明确要求正常的 post-append order vehicle/customer drift 为零 anomaly，同时 missing vehicle 与
-evidence/work-order mismatch 必须命中。append-only trigger 的完整 catalog 身份由第 7 节单独核对。
+内嵌 fixture 明确要求正常的 post-append order vehicle/customer drift 为零 anomaly，同时 missing vehicle、
+missing evidence、两个非空且不同的 evidence/work-order，以及 evidence 存在但 ledger work-order 为 NULL
+都必须命中。append-only trigger 的完整 catalog 身份由第 7 节单独核对。
 
 <!-- stage1c-accounting-sql:05-ledger-integrity -->
 
@@ -1226,9 +1227,10 @@ WITH reversal_row AS (
 ), authority_candidate(
   entry_id, fixture_name, expected_anomaly,
   missing_vehicle, missing_order, missing_contract, missing_customer, missing_owner,
-  missing_work_order, missing_evidence, missing_confirmer,
+  missing_work_order, missing_confirmer,
   missing_responsible_customer, missing_responsible_owner,
-  evidence_work_order_mismatch, responsible_customer_mismatch,
+  evidence_id, resolved_evidence_id, ledger_work_order_id, evidence_work_order_id,
+  responsible_customer_mismatch,
   responsible_owner_mismatch, order_vehicle_drift, order_customer_drift
 ) AS (
   SELECT
@@ -1241,15 +1243,15 @@ WITH reversal_row AS (
     entry.customer_id IS NOT NULL AND customer.id IS NULL,
     entry.asset_owner_id IS NOT NULL AND owner_row.id IS NULL,
     entry.work_order_id IS NOT NULL AND work_order.id IS NULL,
-    entry.evidence_id IS NOT NULL AND evidence.id IS NULL,
     confirmer.id IS NULL,
     entry.responsible_party_type = 'CUSTOMER'
       AND entry.responsible_party_id IS NOT NULL AND responsible_customer.id IS NULL,
     entry.responsible_party_type = 'ASSET_OWNER'
       AND entry.responsible_party_id IS NOT NULL AND responsible_owner.id IS NULL,
-    entry.evidence_id IS NOT NULL AND entry.work_order_id IS NOT NULL
-      AND evidence.id IS NOT NULL
-      AND evidence.work_order_id IS DISTINCT FROM entry.work_order_id,
+    entry.evidence_id,
+    evidence.id,
+    entry.work_order_id,
+    evidence.work_order_id,
     entry.responsible_party_type = 'CUSTOMER'
       AND entry.responsible_party_id IS NOT NULL AND entry.customer_id IS NOT NULL
       AND entry.responsible_party_id IS DISTINCT FROM entry.customer_id,
@@ -1278,33 +1280,69 @@ WITH reversal_row AS (
 
   VALUES
     (NULL::uuid, 'NORMAL_POST_APPEND_ORDER_DRIFT', false,
-      false, false, false, false, false, false, false, false, false, false,
-      false, false, false, true, true),
+      false, false, false, false, false, false, false, false, false,
+      NULL::uuid, NULL::uuid, NULL::uuid, NULL::uuid,
+      false, false, true, true),
     (NULL::uuid, 'MISSING_VEHICLE', true,
-      true, false, false, false, false, false, false, false, false, false,
-      false, false, false, false, false),
+      true, false, false, false, false, false, false, false, false,
+      NULL::uuid, NULL::uuid, NULL::uuid, NULL::uuid,
+      false, false, false, false),
+    (NULL::uuid, 'MISSING_EVIDENCE', true,
+      false, false, false, false, false, false, false, false, false,
+      '00000000-0000-4000-8000-000000000101'::uuid,
+      NULL::uuid,
+      '00000000-0000-4000-8000-000000000201'::uuid,
+      NULL::uuid,
+      false, false, false, false),
     (NULL::uuid, 'EVIDENCE_WORK_ORDER_MISMATCH', true,
-      false, false, false, false, false, false, false, false, false, false,
-      true, false, false, false, false)
-), authority_evaluation AS (
+      false, false, false, false, false, false, false, false, false,
+      '00000000-0000-4000-8000-000000000101'::uuid,
+      '00000000-0000-4000-8000-000000000101'::uuid,
+      '00000000-0000-4000-8000-000000000201'::uuid,
+      '00000000-0000-4000-8000-000000000202'::uuid,
+      false, false, false, false),
+    (NULL::uuid, 'EVIDENCE_WITH_NULL_LEDGER_WORK_ORDER', true,
+      false, false, false, false, false, false, false, false, false,
+      '00000000-0000-4000-8000-000000000101'::uuid,
+      '00000000-0000-4000-8000-000000000101'::uuid,
+      NULL::uuid,
+      '00000000-0000-4000-8000-000000000202'::uuid,
+      false, false, false, false)
+), authority_derived AS (
   SELECT
     candidate.*,
     (
-      candidate.missing_vehicle
-      OR candidate.missing_order
-      OR candidate.missing_contract
-      OR candidate.missing_customer
-      OR candidate.missing_owner
-      OR candidate.missing_work_order
-      OR candidate.missing_evidence
-      OR candidate.missing_confirmer
-      OR candidate.missing_responsible_customer
-      OR candidate.missing_responsible_owner
-      OR candidate.evidence_work_order_mismatch
-      OR candidate.responsible_customer_mismatch
-      OR candidate.responsible_owner_mismatch
-    ) AS is_anomaly
+      candidate.evidence_id IS NOT NULL
+      AND candidate.resolved_evidence_id IS NULL
+    ) AS missing_evidence,
+    (
+      candidate.evidence_id IS NOT NULL
+      AND candidate.resolved_evidence_id IS NOT NULL
+      AND (
+        candidate.ledger_work_order_id IS NULL
+        OR candidate.evidence_work_order_id IS DISTINCT FROM candidate.ledger_work_order_id
+      )
+    ) AS evidence_work_order_mismatch
   FROM authority_candidate AS candidate
+), authority_evaluation AS (
+  SELECT
+    derived.*,
+    (
+      derived.missing_vehicle
+      OR derived.missing_order
+      OR derived.missing_contract
+      OR derived.missing_customer
+      OR derived.missing_owner
+      OR derived.missing_work_order
+      OR derived.missing_evidence
+      OR derived.missing_confirmer
+      OR derived.missing_responsible_customer
+      OR derived.missing_responsible_owner
+      OR derived.evidence_work_order_mismatch
+      OR derived.responsible_customer_mismatch
+      OR derived.responsible_owner_mismatch
+    ) AS is_anomaly
+  FROM authority_derived AS derived
 ), authority_anomaly AS (
   SELECT entry_id
   FROM authority_evaluation
@@ -1834,7 +1872,7 @@ secret。未运行 seed、apply、deploy、修复 SQL、网络或 Production 操
 | `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。             |
 | `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK（含 owning/referenced schema）、15 个 index 均匹配。                               |
 | `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                       |
-| `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity、fixture contract、重复冲正或 16 维相等异常。                                     |
+| `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity（含 NULL ledger work-order fixture）、重复冲正或 16 维相等异常。                  |
 | `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                               |
 | `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                               |
 | `08-closed-cost-integrity` | 2 行     | 两个 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`；阻断且未修复。                                                    |

@@ -37,25 +37,43 @@ const catalogDefinitionDigests = {
   expected_trigger_raw: "4e7c1e0270d318a67d339e8af5ae3b2ffc8b645912138d7985ceaaa9df968482"
 };
 
-const authorityEvaluationContract = `
+const authorityDerivedContract = `
 SELECT
   candidate.*,
   (
-    candidate.missing_vehicle
-    OR candidate.missing_order
-    OR candidate.missing_contract
-    OR candidate.missing_customer
-    OR candidate.missing_owner
-    OR candidate.missing_work_order
-    OR candidate.missing_evidence
-    OR candidate.missing_confirmer
-    OR candidate.missing_responsible_customer
-    OR candidate.missing_responsible_owner
-    OR candidate.evidence_work_order_mismatch
-    OR candidate.responsible_customer_mismatch
-    OR candidate.responsible_owner_mismatch
-  ) AS is_anomaly
+    candidate.evidence_id IS NOT NULL
+    AND candidate.resolved_evidence_id IS NULL
+  ) AS missing_evidence,
+  (
+    candidate.evidence_id IS NOT NULL
+    AND candidate.resolved_evidence_id IS NOT NULL
+    AND (
+      candidate.ledger_work_order_id IS NULL
+      OR candidate.evidence_work_order_id IS DISTINCT FROM candidate.ledger_work_order_id
+    )
+  ) AS evidence_work_order_mismatch
 FROM authority_candidate AS candidate
+`;
+
+const authorityEvaluationContract = `
+SELECT
+  derived.*,
+  (
+    derived.missing_vehicle
+    OR derived.missing_order
+    OR derived.missing_contract
+    OR derived.missing_customer
+    OR derived.missing_owner
+    OR derived.missing_work_order
+    OR derived.missing_evidence
+    OR derived.missing_confirmer
+    OR derived.missing_responsible_customer
+    OR derived.missing_responsible_owner
+    OR derived.evidence_work_order_mismatch
+    OR derived.responsible_customer_mismatch
+    OR derived.responsible_owner_mismatch
+  ) AS is_anomaly
+FROM authority_derived AS derived
 `;
 
 const stage1cCEnums = {
@@ -413,6 +431,15 @@ function extractBoundedCteBody(sql, cteName, nextCteName) {
   return normalizeSql(match[1]);
 }
 
+function extractCteColumns(sql, cteName) {
+  const match = sql.match(new RegExp(`${cteName}\\(([\\s\\S]*?)\\)\\s+AS\\s*\\(`));
+  assert.ok(match, `missing SQL CTE column list: ${cteName}`);
+  return match[1]
+    .split(",")
+    .map((column) => column.trim())
+    .filter(Boolean);
+}
+
 function validateCatalogDefinitionDigests(blocks) {
   const sql = blocks.get("03-database-catalog");
   assert.ok(sql);
@@ -574,16 +601,42 @@ function validateAuthoritySql(blocks) {
   requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_HISTORY_FIXTURES", [
     "NORMAL_POST_APPEND_ORDER_DRIFT",
     "MISSING_VEHICLE",
+    "MISSING_EVIDENCE",
     "EVIDENCE_WORK_ORDER_MISMATCH",
+    "EVIDENCE_WITH_NULL_LEDGER_WORK_ORDER",
     "authority_fixture_contract",
     "is_anomaly IS DISTINCT FROM expected_anomaly"
   ]);
+  assert.deepEqual(
+    extractCteColumns(sql, "authority_candidate").filter((column) =>
+      [
+        "evidence_id",
+        "resolved_evidence_id",
+        "ledger_work_order_id",
+        "evidence_work_order_id"
+      ].includes(column)
+    ),
+    ["evidence_id", "resolved_evidence_id", "ledger_work_order_id", "evidence_work_order_id"],
+    "AUTHORITY_FIXTURE_DERIVATION: candidate must expose raw evidence/work-order identities"
+  );
+  assert.ok(
+    !extractCteColumns(sql, "authority_candidate").includes("evidence_work_order_mismatch"),
+    "AUTHORITY_FIXTURE_DERIVATION: candidate must not inject a precomputed mismatch boolean"
+  );
   requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_ORPHAN", [
-    "candidate.missing_vehicle"
+    "derived.missing_vehicle"
   ]);
   requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_EVIDENCE_WORK_ORDER", [
-    "candidate.evidence_work_order_mismatch"
+    "derived.evidence_work_order_mismatch"
   ]);
+  requireSqlInvariant(blocks, "05-ledger-integrity", "AUTHORITY_EVIDENCE_WORK_ORDER_NULL_LEDGER", [
+    "candidate.ledger_work_order_id IS NULL"
+  ]);
+  assert.equal(
+    extractBoundedCteBody(sql, "authority_derived", "authority_evaluation"),
+    normalizeSql(authorityDerivedContract),
+    "AUTHORITY_EVIDENCE_DERIVATION: evidence identity must derive from raw candidate IDs"
+  );
   assert.equal(
     extractBoundedCteBody(sql, "authority_evaluation", "authority_anomaly"),
     normalizeSql(authorityEvaluationContract),
@@ -737,7 +790,7 @@ function validateRunbookSql(runbook) {
     "LEFT JOIN asset_work_order_evidence AS evidence ON evidence.id = entry.evidence_id",
     'LEFT JOIN "user" AS confirmer ON confirmer.id = entry.confirmed_by',
     "vehicle.id IS NULL",
-    "evidence.work_order_id IS DISTINCT FROM entry.work_order_id"
+    "candidate.evidence_work_order_id IS DISTINCT FROM candidate.ledger_work_order_id"
   ]);
   validateAuthoritySql(blocks);
 
@@ -1101,21 +1154,26 @@ test("kills finding-specific mutations with the intended invariant labels", asyn
     [
       "AUTHORITY_ORPHAN",
       "05-ledger-integrity",
-      (sql) => sql.replace("candidate.missing_vehicle", "false")
+      (sql) => sql.replace("derived.missing_vehicle", "false")
     ],
     [
       "AUTHORITY_HISTORICAL_PROJECTION",
       "05-ledger-integrity",
       (sql) =>
         sql.replace(
-          "OR candidate.responsible_owner_mismatch",
-          "OR candidate.responsible_owner_mismatch OR candidate.order_vehicle_drift"
+          "OR derived.responsible_owner_mismatch",
+          "OR derived.responsible_owner_mismatch OR derived.order_vehicle_drift"
         )
     ],
     [
       "AUTHORITY_EVIDENCE_WORK_ORDER",
       "05-ledger-integrity",
-      (sql) => sql.replace("candidate.evidence_work_order_mismatch", "false")
+      (sql) => sql.replace("derived.evidence_work_order_mismatch", "false")
+    ],
+    [
+      "AUTHORITY_EVIDENCE_WORK_ORDER_NULL_LEDGER",
+      "05-ledger-integrity",
+      (sql) => sql.replace("candidate.ledger_work_order_id IS NULL", "false")
     ],
     [
       "AUDIT_SOURCE_VALIDITY",

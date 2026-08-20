@@ -28,6 +28,10 @@ import { LeaseController } from "./lease.controller";
     MileageReviewModule,
     VehicleMileageModule
   ],
-  providers: [LeaseActivationEngine, OrderEntitlementService, SubscriptionJourneyRepository]
+  providers: [
+    LeaseActivationEngine,
+    OrderEntitlementService,
+    SubscriptionJourneyRepository
+  ]
 })
 export class LeaseModule {}

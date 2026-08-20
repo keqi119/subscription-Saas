@@ -123,16 +123,7 @@ const subscriptionPlanInclude = {
   benefitPackage: { include: packageInclude },
   energyPackage: { include: packageInclude },
   mileagePackage: { include: packageInclude },
-  product: {
-    select: {
-      id: true,
-      name: true,
-      productNo: true,
-      productType: true,
-      status: true,
-      deletedAt: true
-    }
-  },
+  product: { select: { id: true, name: true, productNo: true, productType: true, status: true, deletedAt: true } },
   productVersion: {
     select: {
       deletedAt: true,
@@ -183,15 +174,12 @@ const quoteInclude = {
 
 type ProductWithDetails = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
 type VersionWithDetails = Prisma.ProductVersionGetPayload<{ include: typeof versionInclude }>;
-type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{
-  include: typeof subscriptionPlanInclude;
-}>;
+type SubscriptionPlanWithDetails = Prisma.SubscriptionPlanGetPayload<{ include: typeof subscriptionPlanInclude }>;
 type QuoteWithDetails = Prisma.SubscriptionQuoteGetPayload<{ include: typeof quoteInclude }>;
 type ProductListVersion = ProductWithDetails["versions"][number];
 const CURRENT_PRODUCT_TYPE = ProductType.SUBSCRIPTION;
 const RENT_TO_OWN_NOT_OPEN_MESSAGE = "当前阶段暂未开放以租代购产品线。";
-const SELF_SERVICE_APPLICATION_QUOTE_MESSAGE =
-  "客户自助进件请使用确认最终方案 / 生成正式订单流程。";
+const SELF_SERVICE_APPLICATION_QUOTE_MESSAGE = "客户自助进件请使用确认最终方案 / 生成正式订单流程。";
 const productMapperLogger = new Logger("ProductService");
 
 @Injectable()
@@ -218,39 +206,24 @@ export class ProductService {
 
   async createProduct(dto: CreateProductDto, user: RequestUser, context: RequestContext) {
     const productType = ensureSubscriptionProductType(dto.productType);
-    const product = await withUniqueBusinessNoRetry(() =>
-      this.prisma.product.create({
-        data: {
-          createdBy: user.id,
-          description: dto.description,
-          name: dto.name,
-          productNo: createBusinessNo("PRD"),
-          productType,
-          status: dto.status ?? ProductStatus.DRAFT,
-          updatedBy: user.id
-        },
-        include: productInclude
-      })
-    );
+    const product = await withUniqueBusinessNoRetry(() => this.prisma.product.create({
+      data: {
+        createdBy: user.id,
+        description: dto.description,
+        name: dto.name,
+        productNo: createBusinessNo("PRD"),
+        productType,
+        status: dto.status ?? ProductStatus.DRAFT,
+        updatedBy: user.id
+      },
+      include: productInclude
+    }));
 
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "product",
-      product.id,
-      undefined,
-      toProductView(product),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, "product", product.id, undefined, toProductView(product), user, context);
     return toProductView(product);
   }
 
-  async updateProduct(
-    id: string,
-    dto: UpdateProductDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async updateProduct(id: string, dto: UpdateProductDto, user: RequestUser, context: RequestContext) {
     const before = await this.findProductOrThrow(id);
     const productType =
       dto.productType === undefined ? undefined : ensureSubscriptionProductType(dto.productType);
@@ -265,15 +238,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product",
-      id,
-      toProductView(before),
-      toProductView(product),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product", id, toProductView(before), toProductView(product), user, context);
     return toProductView(product);
   }
 
@@ -290,15 +255,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product",
-      id,
-      toProductView(before),
-      toProductView(product),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product", id, toProductView(before), toProductView(product), user, context);
     return toProductView(product);
   }
 
@@ -342,23 +299,11 @@ export class ProductService {
       include: versionInclude
     });
 
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "product_version",
-      version.id,
-      undefined,
-      toVersionView(version),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, "product_version", version.id, undefined, toVersionView(version), user, context);
     return toVersionView(version);
   }
 
-  async createVersionGlobal(
-    dto: CreateProductVersionDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async createVersionGlobal(dto: CreateProductVersionDto, user: RequestUser, context: RequestContext) {
     if (!dto.productId) {
       throw new BadRequestException("请选择产品后再创建产品版本");
     }
@@ -398,15 +343,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product_version",
-      id,
-      toVersionView(before),
-      toVersionView(version),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product_version", id, toVersionView(before), toVersionView(version), user, context);
     return toVersionView(version);
   }
 
@@ -423,15 +360,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.APPROVE,
-      "product_version",
-      id,
-      toVersionView(before),
-      toVersionView(version),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.APPROVE, "product_version", id, toVersionView(before), toVersionView(version), user, context);
     return toVersionView(version);
   }
 
@@ -467,15 +396,7 @@ export class ProductService {
       });
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product_version",
-      id,
-      toVersionView(before),
-      toVersionView(version),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product_version", id, toVersionView(before), toVersionView(version), user, context);
     return toVersionView(version);
   }
 
@@ -487,15 +408,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product_version",
-      id,
-      toVersionView(before),
-      toVersionView(version),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product_version", id, toVersionView(before), toVersionView(version), user, context);
     return toVersionView(version);
   }
 
@@ -540,15 +453,7 @@ export class ProductService {
       include: priceRuleInclude
     });
 
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "product_price_rule",
-      rule.id,
-      undefined,
-      toPriceRuleView(rule),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, "product_price_rule", rule.id, undefined, toPriceRuleView(rule), user, context);
     return toPriceRuleView(rule);
   }
 
@@ -566,8 +471,12 @@ export class ProductService {
     const modelDefinitionId =
       dto.modelDefinitionId === undefined
         ? undefined
-        : (await requireActiveVehicleModelDefinition(this.prisma, dto.modelDefinitionId))
-            .modelDefinitionId;
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
 
     const rule = await this.prisma.productPriceRule.update({
       data: {
@@ -580,7 +489,9 @@ export class ProductService {
         monthlyFeeRate:
           dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         overMileageFeeAmount:
-          dto.overMileageFeeAmount === undefined ? undefined : BigInt(dto.overMileageFeeAmount),
+          dto.overMileageFeeAmount === undefined
+            ? undefined
+            : BigInt(dto.overMileageFeeAmount),
         status: dto.status,
         updatedBy: user.id
       },
@@ -588,15 +499,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "product_price_rule",
-      id,
-      toPriceRuleView(before),
-      toPriceRuleView(rule),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "product_price_rule", id, toPriceRuleView(before), toPriceRuleView(rule), user, context);
     return toPriceRuleView(rule);
   }
 
@@ -607,15 +510,7 @@ export class ProductService {
       include: priceRuleInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "product_price_rule",
-      id,
-      toPriceRuleView(before),
-      toPriceRuleView(rule),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.DELETE, "product_price_rule", id, toPriceRuleView(before), toPriceRuleView(rule), user, context);
     return { id };
   }
 
@@ -660,87 +555,62 @@ export class ProductService {
     return rows.map(toPackageView);
   }
 
-  async createVehiclePackage(
-    dto: CreateVehiclePackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
     const modelIdentity = await requireActiveVehicleModelDefinition(
       this.prisma,
       dto.modelDefinitionId
     );
-    const row = await withUniqueBusinessNoRetry(() =>
-      this.prisma.vehiclePackage.create({
-        data: {
-          brand: dto.brand,
-          configName: dto.configName,
-          createdBy: user.id,
-          maxPeriodMonths: dto.maxPeriodMonths,
-          maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
-          minPeriodMonths: dto.minPeriodMonths,
-          minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
-          modelDefinitionId: modelIdentity.modelDefinitionId,
-          monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
-          packageName: dto.packageName,
-          packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
-          productId: version.productId,
-          productVersionId: version.id,
-          remark: dto.remark,
-          series: dto.series,
-          status: dto.status ?? RecordStatus.ACTIVE,
-          updatedBy: user.id,
-          vehicleModelName: dto.vehicleModelName
-        },
-        include: vehiclePackageInclude
-      })
-    );
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "vehicle_package",
-      row.id,
-      undefined,
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
+      data: {
+        brand: dto.brand,
+        configName: dto.configName,
+        createdBy: user.id,
+        maxPeriodMonths: dto.maxPeriodMonths,
+        maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
+        minPeriodMonths: dto.minPeriodMonths,
+        minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
+        modelDefinitionId: modelIdentity.modelDefinitionId,
+        monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
+        packageName: dto.packageName,
+        packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
+        productId: version.productId,
+        productVersionId: version.id,
+        remark: dto.remark,
+        series: dto.series,
+        status: dto.status ?? RecordStatus.ACTIVE,
+        updatedBy: user.id,
+        vehicleModelName: dto.vehicleModelName
+      },
+      include: vehiclePackageInclude
+    }));
+    await this.writeAudit(AuditAction.CREATE, "vehicle_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async updateVehiclePackage(
-    id: string,
-    dto: UpdateVehiclePackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async updateVehiclePackage(id: string, dto: UpdateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
-    ensureValidPeriod(
-      dto.minPeriodMonths ?? before.minPeriodMonths,
-      dto.maxPeriodMonths ?? before.maxPeriodMonths
-    );
+    ensureValidPeriod(dto.minPeriodMonths ?? before.minPeriodMonths, dto.maxPeriodMonths ?? before.maxPeriodMonths);
     const modelDefinitionId =
       dto.modelDefinitionId === undefined
         ? undefined
-        : (await requireActiveVehicleModelDefinition(this.prisma, dto.modelDefinitionId))
-            .modelDefinitionId;
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
     const row = await this.prisma.vehiclePackage.update({
       data: {
         brand: dto.brand,
         configName: dto.configName,
         maxPeriodMonths: dto.maxPeriodMonths,
-        maxPurchasePriceAmount:
-          dto.maxPurchasePriceAmount === undefined
-            ? undefined
-            : optionalBigInt(dto.maxPurchasePriceAmount),
+        maxPurchasePriceAmount: dto.maxPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
-        minPurchasePriceAmount:
-          dto.minPurchasePriceAmount === undefined
-            ? undefined
-            : optionalBigInt(dto.minPurchasePriceAmount),
+        minPurchasePriceAmount: dto.minPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.minPurchasePriceAmount),
         modelDefinitionId,
-        monthlyFeeRate:
-          dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
+        monthlyFeeRate: dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         packageName: dto.packageName,
         remark: dto.remark,
         series: dto.series,
@@ -750,118 +620,57 @@ export class ProductService {
       include: vehiclePackageInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "vehicle_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async setVehiclePackageStatus(
-    id: string,
-    status: RecordStatus,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async setVehiclePackageStatus(id: string, status: RecordStatus, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
-    const row = await this.prisma.vehiclePackage.update({
-      data: { status, updatedBy: user.id },
-      include: vehiclePackageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "vehicle_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.vehiclePackage.update({ data: { status, updatedBy: user.id }, include: vehiclePackageInclude, where: { id } });
+    await this.writeAudit(AuditAction.UPDATE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async deleteVehiclePackage(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findVehiclePackageOrThrow(id);
-    const row = await this.prisma.vehiclePackage.update({
-      data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id },
-      include: vehiclePackageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "vehicle_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.vehiclePackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: vehiclePackageInclude, where: { id } });
+    await this.writeAudit(AuditAction.DELETE, "vehicle_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async listMileagePackages() {
-    const rows = await this.prisma.mileagePackage.findMany({
-      include: packageInclude,
-      orderBy: { createdAt: "desc" },
-      where: { deletedAt: null }
-    });
+    const rows = await this.prisma.mileagePackage.findMany({ include: packageInclude, orderBy: { createdAt: "desc" }, where: { deletedAt: null } });
     return rows.map(toPackageView);
   }
 
-  async createMileagePackage(
-    dto: CreateMileagePackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async createMileagePackage(dto: CreateMileagePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await withUniqueBusinessNoRetry(() =>
-      this.prisma.mileagePackage.create({
-        data: {
-          createdBy: user.id,
-          monthlyMileageKm: dto.monthlyMileageKm,
-          overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
-          packageName: dto.packageName,
-          packageNo: this.nextPackageNo("mileagePackage", "MPK"),
-          priceAmount: BigInt(dto.priceAmount ?? 0),
-          productId: version.productId,
-          productVersionId: version.id,
-          remark: dto.remark,
-          status: dto.status ?? RecordStatus.ACTIVE,
-          updatedBy: user.id
-        },
-        include: packageInclude
-      })
-    );
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "mileage_package",
-      row.id,
-      undefined,
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.mileagePackage.create({
+      data: {
+        createdBy: user.id,
+        monthlyMileageKm: dto.monthlyMileageKm,
+        overMileageFeeAmount: BigInt(dto.overMileageFeeAmount),
+        packageName: dto.packageName,
+        packageNo: this.nextPackageNo("mileagePackage", "MPK"),
+        priceAmount: BigInt(dto.priceAmount ?? 0),
+        productId: version.productId,
+        productVersionId: version.id,
+        remark: dto.remark,
+        status: dto.status ?? RecordStatus.ACTIVE,
+        updatedBy: user.id
+      },
+      include: packageInclude
+    }));
+    await this.writeAudit(AuditAction.CREATE, "mileage_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async updateMileagePackage(
-    id: string,
-    dto: UpdateMileagePackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async updateMileagePackage(id: string, dto: UpdateMileagePackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findMileagePackageOrThrow(id);
     const row = await this.prisma.mileagePackage.update({
       data: {
         monthlyMileageKm: dto.monthlyMileageKm,
-        overMileageFeeAmount:
-          dto.overMileageFeeAmount === undefined ? undefined : BigInt(dto.overMileageFeeAmount),
+        overMileageFeeAmount: dto.overMileageFeeAmount === undefined ? undefined : BigInt(dto.overMileageFeeAmount),
         packageName: dto.packageName,
         priceAmount: dto.priceAmount === undefined ? undefined : BigInt(dto.priceAmount),
         remark: dto.remark,
@@ -870,114 +679,54 @@ export class ProductService {
       include: packageInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "mileage_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "mileage_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async setMileagePackageStatus(
-    id: string,
-    status: RecordStatus,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async setMileagePackageStatus(id: string, status: RecordStatus, user: RequestUser, context: RequestContext) {
     const before = await this.findMileagePackageOrThrow(id);
-    const row = await this.prisma.mileagePackage.update({
-      data: { status, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "mileage_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.mileagePackage.update({ data: { status, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.UPDATE, "mileage_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async deleteMileagePackage(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findMileagePackageOrThrow(id);
-    const row = await this.prisma.mileagePackage.update({
-      data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "mileage_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.mileagePackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.DELETE, "mileage_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async listEnergyPackages() {
-    const rows = await this.prisma.energyPackage.findMany({
-      include: packageInclude,
-      orderBy: { createdAt: "desc" },
-      where: { deletedAt: null }
-    });
+    const rows = await this.prisma.energyPackage.findMany({ include: packageInclude, orderBy: { createdAt: "desc" }, where: { deletedAt: null } });
     return rows.map(toPackageView);
   }
 
-  async createEnergyPackage(
-    dto: CreateEnergyPackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async createEnergyPackage(dto: CreateEnergyPackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await withUniqueBusinessNoRetry(() =>
-      this.prisma.energyPackage.create({
-        data: {
-          createdBy: user.id,
-          monthlyEnergyCount: dto.monthlyEnergyCount,
-          monthlyEnergyKwh: dto.monthlyEnergyKwh,
-          packageName: dto.packageName,
-          packageNo: this.nextPackageNo("energyPackage", "EPK"),
-          priceAmount: BigInt(dto.priceAmount ?? 0),
-          productId: version.productId,
-          productVersionId: version.id,
-          remark: dto.remark,
-          serviceDescription: dto.serviceDescription,
-          stationScope: dto.stationScope,
-          status: dto.status ?? RecordStatus.ACTIVE,
-          updatedBy: user.id
-        },
-        include: packageInclude
-      })
-    );
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "energy_package",
-      row.id,
-      undefined,
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.energyPackage.create({
+      data: {
+        createdBy: user.id,
+        monthlyEnergyCount: dto.monthlyEnergyCount,
+        monthlyEnergyKwh: dto.monthlyEnergyKwh,
+        packageName: dto.packageName,
+        packageNo: this.nextPackageNo("energyPackage", "EPK"),
+        priceAmount: BigInt(dto.priceAmount ?? 0),
+        productId: version.productId,
+        productVersionId: version.id,
+        remark: dto.remark,
+        serviceDescription: dto.serviceDescription,
+        stationScope: dto.stationScope,
+        status: dto.status ?? RecordStatus.ACTIVE,
+        updatedBy: user.id
+      },
+      include: packageInclude
+    }));
+    await this.writeAudit(AuditAction.CREATE, "energy_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async updateEnergyPackage(
-    id: string,
-    dto: UpdateEnergyPackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async updateEnergyPackage(id: string, dto: UpdateEnergyPackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findEnergyPackageOrThrow(id);
     const row = await this.prisma.energyPackage.update({
       data: {
@@ -993,113 +742,53 @@ export class ProductService {
       include: packageInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "energy_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "energy_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async setEnergyPackageStatus(
-    id: string,
-    status: RecordStatus,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async setEnergyPackageStatus(id: string, status: RecordStatus, user: RequestUser, context: RequestContext) {
     const before = await this.findEnergyPackageOrThrow(id);
-    const row = await this.prisma.energyPackage.update({
-      data: { status, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "energy_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.energyPackage.update({ data: { status, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.UPDATE, "energy_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async deleteEnergyPackage(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findEnergyPackageOrThrow(id);
-    const row = await this.prisma.energyPackage.update({
-      data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "energy_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.energyPackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.DELETE, "energy_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async listBenefitPackages() {
-    const rows = await this.prisma.benefitPackage.findMany({
-      include: packageInclude,
-      orderBy: { createdAt: "desc" },
-      where: { deletedAt: null }
-    });
+    const rows = await this.prisma.benefitPackage.findMany({ include: packageInclude, orderBy: { createdAt: "desc" }, where: { deletedAt: null } });
     return rows.map(toPackageView);
   }
 
-  async createBenefitPackage(
-    dto: CreateBenefitPackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async createBenefitPackage(dto: CreateBenefitPackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
-    const row = await withUniqueBusinessNoRetry(() =>
-      this.prisma.benefitPackage.create({
-        data: {
-          benefitCount: dto.benefitCount,
-          benefitType: dto.benefitType,
-          createdBy: user.id,
-          description: dto.description,
-          packageName: dto.packageName,
-          packageNo: this.nextPackageNo("benefitPackage", "BPK"),
-          priceAmount: BigInt(dto.priceAmount ?? 0),
-          productId: version.productId,
-          productVersionId: version.id,
-          remark: dto.remark,
-          status: dto.status ?? RecordStatus.ACTIVE,
-          updatedBy: user.id
-        },
-        include: packageInclude
-      })
-    );
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "benefit_package",
-      row.id,
-      undefined,
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await withUniqueBusinessNoRetry(() => this.prisma.benefitPackage.create({
+      data: {
+        benefitCount: dto.benefitCount,
+        benefitType: dto.benefitType,
+        createdBy: user.id,
+        description: dto.description,
+        packageName: dto.packageName,
+        packageNo: this.nextPackageNo("benefitPackage", "BPK"),
+        priceAmount: BigInt(dto.priceAmount ?? 0),
+        productId: version.productId,
+        productVersionId: version.id,
+        remark: dto.remark,
+        status: dto.status ?? RecordStatus.ACTIVE,
+        updatedBy: user.id
+      },
+      include: packageInclude
+    }));
+    await this.writeAudit(AuditAction.CREATE, "benefit_package", row.id, undefined, toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async updateBenefitPackage(
-    id: string,
-    dto: UpdateBenefitPackageDto,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async updateBenefitPackage(id: string, dto: UpdateBenefitPackageDto, user: RequestUser, context: RequestContext) {
     const before = await this.findBenefitPackageOrThrow(id);
     const row = await this.prisma.benefitPackage.update({
       data: {
@@ -1114,58 +803,21 @@ export class ProductService {
       include: packageInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "benefit_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "benefit_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
-  async setBenefitPackageStatus(
-    id: string,
-    status: RecordStatus,
-    user: RequestUser,
-    context: RequestContext
-  ) {
+  async setBenefitPackageStatus(id: string, status: RecordStatus, user: RequestUser, context: RequestContext) {
     const before = await this.findBenefitPackageOrThrow(id);
-    const row = await this.prisma.benefitPackage.update({
-      data: { status, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "benefit_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.benefitPackage.update({ data: { status, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.UPDATE, "benefit_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
   async deleteBenefitPackage(id: string, user: RequestUser, context: RequestContext) {
     const before = await this.findBenefitPackageOrThrow(id);
-    const row = await this.prisma.benefitPackage.update({
-      data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id },
-      include: packageInclude,
-      where: { id }
-    });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "benefit_package",
-      id,
-      toPackageView(before),
-      toPackageView(row),
-      user,
-      context
-    );
+    const row = await this.prisma.benefitPackage.update({ data: { deletedAt: new Date(), status: RecordStatus.INACTIVE, updatedBy: user.id }, include: packageInclude, where: { id } });
+    await this.writeAudit(AuditAction.DELETE, "benefit_package", id, toPackageView(before), toPackageView(row), user, context);
     return toPackageView(row);
   }
 
@@ -1208,51 +860,39 @@ export class ProductService {
       });
     }
 
-    const plan = await withUniqueBusinessNoRetry(() =>
-      this.prisma.subscriptionPlan.create({
-        data: {
-          baseMonthlyFeeAmount:
-            dto.baseMonthlyFeeAmount === undefined || dto.baseMonthlyFeeAmount === null
-              ? null
-              : BigInt(dto.baseMonthlyFeeAmount),
-          benefitPackageId: packages.benefitPackage?.id ?? null,
-          createdBy: user.id,
-          effectiveFrom,
-          effectiveTo,
-          energyPackageId: packages.energyPackage.id,
-          maxPeriodMonths: dto.maxPeriodMonths,
-          mileagePackageId: packages.mileagePackage.id,
-          minPeriodMonths: dto.minPeriodMonths,
-          monthlyFeeCapRate:
-            dto.monthlyFeeCapRate === undefined || dto.monthlyFeeCapRate === null
-              ? null
-              : new Prisma.Decimal(dto.monthlyFeeCapRate),
-          monthlyFeeMode: dto.monthlyFeeMode ?? MonthlyFeeMode.MANUAL_QUOTE,
-          monthlyFeeRate: new Prisma.Decimal(
-            dto.monthlyFeeRate ?? packages.vehiclePackage.monthlyFeeRate
-          ),
-          planName: dto.planName,
-          planNo: createBusinessNo("PLAN"),
-          productId: packages.product.id,
-          productVersionId: packages.productVersion.id,
-          remark: dto.remark,
-          status: dto.status ?? SubscriptionPlanStatus.DRAFT,
-          updatedBy: user.id,
-          vehiclePackageId: packages.vehiclePackage.id
-        },
-        include: subscriptionPlanInclude
-      })
-    );
+    const plan = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionPlan.create({
+      data: {
+        baseMonthlyFeeAmount:
+          dto.baseMonthlyFeeAmount === undefined || dto.baseMonthlyFeeAmount === null
+            ? null
+            : BigInt(dto.baseMonthlyFeeAmount),
+        benefitPackageId: packages.benefitPackage?.id ?? null,
+        createdBy: user.id,
+        effectiveFrom,
+        effectiveTo,
+        energyPackageId: packages.energyPackage.id,
+        maxPeriodMonths: dto.maxPeriodMonths,
+        mileagePackageId: packages.mileagePackage.id,
+        minPeriodMonths: dto.minPeriodMonths,
+        monthlyFeeCapRate:
+          dto.monthlyFeeCapRate === undefined || dto.monthlyFeeCapRate === null
+            ? null
+            : new Prisma.Decimal(dto.monthlyFeeCapRate),
+        monthlyFeeMode: dto.monthlyFeeMode ?? MonthlyFeeMode.MANUAL_QUOTE,
+        monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? packages.vehiclePackage.monthlyFeeRate),
+        planName: dto.planName,
+        planNo: createBusinessNo("PLAN"),
+        productId: packages.product.id,
+        productVersionId: packages.productVersion.id,
+        remark: dto.remark,
+        status: dto.status ?? SubscriptionPlanStatus.DRAFT,
+        updatedBy: user.id,
+        vehiclePackageId: packages.vehiclePackage.id
+      },
+      include: subscriptionPlanInclude
+    }));
 
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "subscription_plan",
-      plan.id,
-      undefined,
-      toSubscriptionPlanView(plan),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, "subscription_plan", plan.id, undefined, toSubscriptionPlanView(plan), user, context);
     return toSubscriptionPlanView(plan);
   }
 
@@ -1269,16 +909,14 @@ export class ProductService {
     const effectiveFrom = dto.effectiveFrom
       ? parseDateOnly(dto.effectiveFrom, "effectiveFrom")
       : before.effectiveFrom;
-    const effectiveTo =
-      dto.effectiveTo === undefined
-        ? before.effectiveTo
-        : dto.effectiveTo
-          ? parseDateOnly(dto.effectiveTo, "effectiveTo")
-          : null;
+    const effectiveTo = dto.effectiveTo === undefined
+      ? before.effectiveTo
+      : dto.effectiveTo
+        ? parseDateOnly(dto.effectiveTo, "effectiveTo")
+        : null;
     ensureValidDateRange(effectiveFrom, effectiveTo);
     const packages = await this.resolveSubscriptionPlanPackages({
-      benefitPackageId:
-        dto.benefitPackageId === undefined ? before.benefitPackageId : dto.benefitPackageId,
+      benefitPackageId: dto.benefitPackageId === undefined ? before.benefitPackageId : dto.benefitPackageId,
       energyPackageId: dto.energyPackageId ?? before.energyPackageId,
       mileagePackageId: dto.mileagePackageId ?? before.mileagePackageId,
       productId: before.productId,
@@ -1326,15 +964,7 @@ export class ProductService {
       where: { id }
     });
 
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "subscription_plan",
-      id,
-      toSubscriptionPlanView(before),
-      toSubscriptionPlanView(plan),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
     return toSubscriptionPlanView(plan);
   }
 
@@ -1353,15 +983,7 @@ export class ProductService {
       include: subscriptionPlanInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "subscription_plan",
-      id,
-      toSubscriptionPlanView(before),
-      toSubscriptionPlanView(plan),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
     return toSubscriptionPlanView(plan);
   }
 
@@ -1376,31 +998,13 @@ export class ProductService {
       include: subscriptionPlanInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.DELETE,
-      "subscription_plan",
-      id,
-      toSubscriptionPlanView(before),
-      toSubscriptionPlanView(plan),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.DELETE, "subscription_plan", id, toSubscriptionPlanView(before), toSubscriptionPlanView(plan), user, context);
     return toSubscriptionPlanView(plan);
   }
 
-  async listAvailableSubscriptionPlans(
-    applicationId: string,
-    user: RequestUser,
-    vehicleId?: string
-  ) {
+  async listAvailableSubscriptionPlans(applicationId: string, user: RequestUser, vehicleId?: string) {
     const application = await this.prisma.application.findUnique({
-      select: {
-        applicationSource: true,
-        deletedAt: true,
-        id: true,
-        salesUserId: true,
-        status: true
-      },
+      select: { applicationSource: true, deletedAt: true, id: true, salesUserId: true, status: true },
       where: { id: applicationId }
     });
     if (!application || application.deletedAt) {
@@ -1434,7 +1038,9 @@ export class ProductService {
     return plans
       .filter(isSubscriptionPlanCurrentlyAvailable)
       .filter((plan) =>
-        vehicle ? vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId : true
+        vehicle
+          ? vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId
+          : true
       )
       .map(toAvailableSubscriptionPlanView);
   }
@@ -1510,9 +1116,7 @@ export class ProductService {
       }
     });
     if (!depositRule) {
-      throw new BadRequestException(
-        `No active deposit rule configured for grade ${application.customer.grade}.`
-      );
+      throw new BadRequestException(`No active deposit rule configured for grade ${application.customer.grade}.`);
     }
 
     const depositRuleSnapshot = toJsonValue({
@@ -1522,11 +1126,7 @@ export class ProductService {
       grade: depositRule.grade,
       id: depositRule.id
     });
-    const componentQuote =
-      !dto.subscriptionPlanId &&
-      Boolean(
-        dto.vehiclePackageId || dto.mileagePackageId || dto.energyPackageId || dto.benefitPackageId
-      );
+    const componentQuote = !dto.subscriptionPlanId && Boolean(dto.vehiclePackageId || dto.mileagePackageId || dto.energyPackageId || dto.benefitPackageId);
     let quoteData: {
       benefitPackageId?: string | null;
       depositRuleSnapshot?: Prisma.InputJsonValue;
@@ -1658,74 +1258,36 @@ export class ProductService {
         vehicleSnapshot
       };
     } else if (componentQuote) {
-      const vehiclePurchasePriceAmount = requirePositiveInteger(
-        dto.vehiclePurchasePriceAmount,
-        "车辆采购价必须大于 0"
-      );
+      const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
       const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
       if (!dto.productVersionId) {
         throw new BadRequestException("请选择产品版本。");
       }
-      if (
-        !dto.productId ||
-        !dto.vehiclePackageId ||
-        !dto.mileagePackageId ||
-        !dto.energyPackageId
-      ) {
+      if (!dto.productId || !dto.vehiclePackageId || !dto.mileagePackageId || !dto.energyPackageId) {
         throw new BadRequestException("请选择完整的订阅产品、产品版本、车型包、里程包和补能包");
       }
       const version = await this.findVersionOrThrow(dto.productVersionId);
       ensureSubscriptionProductType(version.product.productType);
-      if (
-        version.status !== ProductVersionStatus.ACTIVE ||
-        version.product.status !== ProductStatus.ACTIVE
-      ) {
+      if (version.status !== ProductVersionStatus.ACTIVE || version.product.status !== ProductStatus.ACTIVE) {
         throw new BadRequestException("产品版本必须为启用状态");
       }
       if (version.productId !== dto.productId) {
         throw new BadRequestException("产品与产品版本不一致");
       }
       const [vehiclePackage, mileagePackage, energyPackage, benefitPackage] = await Promise.all([
-        this.prisma.vehiclePackage.findFirst({
-          include: vehiclePackageInclude,
-          where: { deletedAt: null, id: dto.vehiclePackageId, status: RecordStatus.ACTIVE }
-        }),
-        this.prisma.mileagePackage.findFirst({
-          include: packageInclude,
-          where: { deletedAt: null, id: dto.mileagePackageId, status: RecordStatus.ACTIVE }
-        }),
-        this.prisma.energyPackage.findFirst({
-          include: packageInclude,
-          where: { deletedAt: null, id: dto.energyPackageId, status: RecordStatus.ACTIVE }
-        }),
+        this.prisma.vehiclePackage.findFirst({ include: vehiclePackageInclude, where: { deletedAt: null, id: dto.vehiclePackageId, status: RecordStatus.ACTIVE } }),
+        this.prisma.mileagePackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.mileagePackageId, status: RecordStatus.ACTIVE } }),
+        this.prisma.energyPackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.energyPackageId, status: RecordStatus.ACTIVE } }),
         dto.benefitPackageId
-          ? this.prisma.benefitPackage.findFirst({
-              include: packageInclude,
-              where: { deletedAt: null, id: dto.benefitPackageId, status: RecordStatus.ACTIVE }
-            })
+          ? this.prisma.benefitPackage.findFirst({ include: packageInclude, where: { deletedAt: null, id: dto.benefitPackageId, status: RecordStatus.ACTIVE } })
           : Promise.resolve(null)
       ]);
-      if (
-        !vehiclePackage ||
-        !mileagePackage ||
-        !energyPackage ||
-        (dto.benefitPackageId && !benefitPackage)
-      ) {
+      if (!vehiclePackage || !mileagePackage || !energyPackage || (dto.benefitPackageId && !benefitPackage)) {
         throw new BadRequestException("所选订阅组件不存在或未启用");
       }
-      ensurePackagesSameVersion(
-        dto.productVersionId,
-        vehiclePackage,
-        mileagePackage,
-        energyPackage,
-        benefitPackage
-      );
+      ensurePackagesSameVersion(dto.productVersionId, vehiclePackage, mileagePackage, energyPackage, benefitPackage);
       ensurePeriodInRange(dto.periodMonths, vehiclePackage);
-      assertMonthlyFeeWithinCap(
-        monthlyFeeAmount,
-        vehiclePurchasePriceAmount,
-        vehiclePackage.monthlyFeeRate
-      );
+      assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, vehiclePackage.monthlyFeeRate);
       ensurePurchasePriceInRange(vehiclePurchasePriceAmount, vehiclePackage);
       const modelSnapshot = buildVehicleModelSnapshot({
         modelCode: vehiclePackage.modelDefinition.modelCode,
@@ -1753,9 +1315,7 @@ export class ProductService {
           },
           energyPackage: toPackageView(energyPackage),
           mileagePackage: toPackageView(mileagePackage),
-          monthlyFeeCapAmount: Math.floor(
-            vehiclePurchasePriceAmount * Number(vehiclePackage.monthlyFeeRate)
-          ),
+          monthlyFeeCapAmount: Math.floor(vehiclePurchasePriceAmount * Number(vehiclePackage.monthlyFeeRate)),
           vehiclePackage: toPackageView(vehiclePackage)
         }),
         productId: version.productId,
@@ -1764,10 +1324,7 @@ export class ProductService {
         vehiclePurchasePriceAmount: BigInt(vehiclePurchasePriceAmount)
       };
     } else {
-      const vehiclePurchasePriceAmount = requirePositiveInteger(
-        dto.vehiclePurchasePriceAmount,
-        "车辆采购价必须大于 0"
-      );
+      const vehiclePurchasePriceAmount = requirePositiveInteger(dto.vehiclePurchasePriceAmount, "车辆采购价必须大于 0");
       const monthlyFeeAmount = requirePositiveInteger(dto.monthlyFeeAmount, "报价月费必须大于 0");
       if (!dto.productVersionId || !dto.modelDefinitionId) {
         throw new BadRequestException("请选择产品版本和车辆型号。");
@@ -1781,11 +1338,7 @@ export class ProductService {
         modelIdentity.modelDefinitionId
       );
       ensurePeriodInRange(dto.periodMonths, priceRule);
-      assertMonthlyFeeWithinCap(
-        monthlyFeeAmount,
-        vehiclePurchasePriceAmount,
-        priceRule.monthlyFeeRate
-      );
+      assertMonthlyFeeWithinCap(monthlyFeeAmount, vehiclePurchasePriceAmount, priceRule.monthlyFeeRate);
       const modelSnapshot = buildVehicleModelSnapshot(modelIdentity);
       quoteData = {
         energyLimitCount: dto.energyLimitCount ?? priceRule.energyLimitCount,
@@ -1801,59 +1354,49 @@ export class ProductService {
       };
     }
 
-    const quote = await withUniqueBusinessNoRetry(() =>
-      this.prisma.subscriptionQuote.create({
-        data: {
-          applicationId,
-          createdBy: user.id,
-          customerId: application.customerId,
-          depositAmount: depositRule.depositAmount,
-          benefitPackageId: quoteData.benefitPackageId,
-          depositRuleSnapshot: quoteData.depositRuleSnapshot,
-          energyLimitCount: quoteData.energyLimitCount,
-          energyLimitKwh: quoteData.energyLimitKwh,
-          energyPackageId: quoteData.energyPackageId,
-          energyPackagePriceAmount: quoteData.energyPackagePriceAmount,
-          benefitPackagePriceAmount: quoteData.benefitPackagePriceAmount,
-          mileageLimitKm: quoteData.mileageLimitKm,
-          mileagePackageId: quoteData.mileagePackageId,
-          mileagePackagePriceAmount: quoteData.mileagePackagePriceAmount,
-          monthlyFeeAmount: quoteData.monthlyFeeAmount,
-          monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
-          monthlyFeeRate: quoteData.monthlyFeeRate,
-          modelCodeSnapshot: quoteData.modelCodeSnapshot,
-          modelDefinitionIdSnapshot: quoteData.modelDefinitionIdSnapshot,
-          modelDisplayNameSnapshot: quoteData.modelDisplayNameSnapshot,
-          overMileageFeeAmount: quoteData.overMileageFeeAmount,
-          packageSnapshot: quoteData.packageSnapshot,
-          periodMonths: dto.periodMonths,
-          productId: quoteData.productId,
-          productVersionId: quoteData.productVersionId,
-          quoteNo: createBusinessNo("QUO"),
-          riskResultId: riskResult.id,
-          subscriptionPlanId: quoteData.subscriptionPlanId,
-          updatedBy: user.id,
-          vehicleBaseFeeAmount: quoteData.vehicleBaseFeeAmount,
-          vehicleBaseFeeCapAmount: quoteData.vehicleBaseFeeCapAmount,
-          vehicleId: quoteData.vehicleId,
-          vehiclePackageId: quoteData.vehiclePackageId,
-          vehiclePurchasePriceAmount: quoteData.vehiclePurchasePriceAmount,
-          vehicleSalePriceAmount: quoteData.vehicleSalePriceAmount,
-          vehicleSnapshot: quoteData.vehicleSnapshot
-        },
-        include: quoteInclude
-      })
-    );
+    const quote = await withUniqueBusinessNoRetry(() => this.prisma.subscriptionQuote.create({
+      data: {
+        applicationId,
+        createdBy: user.id,
+        customerId: application.customerId,
+        depositAmount: depositRule.depositAmount,
+        benefitPackageId: quoteData.benefitPackageId,
+        depositRuleSnapshot: quoteData.depositRuleSnapshot,
+        energyLimitCount: quoteData.energyLimitCount,
+        energyLimitKwh: quoteData.energyLimitKwh,
+        energyPackageId: quoteData.energyPackageId,
+        energyPackagePriceAmount: quoteData.energyPackagePriceAmount,
+        benefitPackagePriceAmount: quoteData.benefitPackagePriceAmount,
+        mileageLimitKm: quoteData.mileageLimitKm,
+        mileagePackageId: quoteData.mileagePackageId,
+        mileagePackagePriceAmount: quoteData.mileagePackagePriceAmount,
+        monthlyFeeAmount: quoteData.monthlyFeeAmount,
+        monthlyFeeCapAmount: quoteData.monthlyFeeCapAmount,
+        monthlyFeeRate: quoteData.monthlyFeeRate,
+        modelCodeSnapshot: quoteData.modelCodeSnapshot,
+        modelDefinitionIdSnapshot: quoteData.modelDefinitionIdSnapshot,
+        modelDisplayNameSnapshot: quoteData.modelDisplayNameSnapshot,
+        overMileageFeeAmount: quoteData.overMileageFeeAmount,
+        packageSnapshot: quoteData.packageSnapshot,
+        periodMonths: dto.periodMonths,
+        productId: quoteData.productId,
+        productVersionId: quoteData.productVersionId,
+        quoteNo: createBusinessNo("QUO"),
+        riskResultId: riskResult.id,
+        subscriptionPlanId: quoteData.subscriptionPlanId,
+        updatedBy: user.id,
+        vehicleBaseFeeAmount: quoteData.vehicleBaseFeeAmount,
+        vehicleBaseFeeCapAmount: quoteData.vehicleBaseFeeCapAmount,
+        vehicleId: quoteData.vehicleId,
+        vehiclePackageId: quoteData.vehiclePackageId,
+        vehiclePurchasePriceAmount: quoteData.vehiclePurchasePriceAmount,
+        vehicleSalePriceAmount: quoteData.vehicleSalePriceAmount,
+        vehicleSnapshot: quoteData.vehicleSnapshot
+      },
+      include: quoteInclude
+    }));
 
-    await this.writeAudit(
-      AuditAction.CREATE,
-      "subscription_quote",
-      quote.id,
-      undefined,
-      toQuoteView(quote),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.CREATE, "subscription_quote", quote.id, undefined, toQuoteView(quote), user, context);
     return toQuoteView(quote);
   }
 
@@ -1895,15 +1438,7 @@ export class ProductService {
       include: quoteInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.UPDATE,
-      "subscription_quote",
-      id,
-      toQuoteView(before),
-      toQuoteView(quote),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.UPDATE, "subscription_quote", id, toQuoteView(before), toQuoteView(quote), user, context);
     return toQuoteView(quote);
   }
 
@@ -1922,11 +1457,7 @@ export class ProductService {
           Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${before.vehicleId}::uuid FOR UPDATE`
         );
         vehicleBefore = await tx.vehicle.findUnique({ where: { id: before.vehicleId } });
-        if (
-          !vehicleBefore ||
-          vehicleBefore.deletedAt ||
-          vehicleBefore.status !== VehicleStatus.AVAILABLE
-        ) {
+        if (!vehicleBefore || vehicleBefore.deletedAt || vehicleBefore.status !== VehicleStatus.AVAILABLE) {
           throw new BadRequestException("所选车辆已不可租用，请重新选择车辆");
         }
         await this.assetOperationsService?.assertVehicleAvailable(
@@ -1955,15 +1486,7 @@ export class ProductService {
       return { quote, vehicleAfter, vehicleBefore };
     });
     const quote = result.quote;
-    await this.writeAudit(
-      AuditAction.APPROVE,
-      "subscription_quote",
-      id,
-      toQuoteView(before),
-      toQuoteView(quote),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.APPROVE, "subscription_quote", id, toQuoteView(before), toQuoteView(quote), user, context);
     if (result.vehicleBefore && result.vehicleAfter) {
       await this.auditService.write({
         action: AuditAction.UPDATE,
@@ -1991,23 +1514,12 @@ export class ProductService {
       include: quoteInclude,
       where: { id }
     });
-    await this.writeAudit(
-      AuditAction.REJECT,
-      "subscription_quote",
-      id,
-      toQuoteView(before),
-      toQuoteView(quote),
-      user,
-      context
-    );
+    await this.writeAudit(AuditAction.REJECT, "subscription_quote", id, toQuoteView(before), toQuoteView(quote), user, context);
     return toQuoteView(quote);
   }
 
   private async findProductOrThrow(id: string) {
-    const product = await this.prisma.product.findUnique({
-      include: productInclude,
-      where: { id }
-    });
+    const product = await this.prisma.product.findUnique({ include: productInclude, where: { id } });
     if (!product || product.deletedAt) {
       throw new NotFoundException("Product not found.");
     }
@@ -2037,10 +1549,7 @@ export class ProductService {
   }
 
   private async findVehiclePackageOrThrow(id: string) {
-    const row = await this.prisma.vehiclePackage.findUnique({
-      include: vehiclePackageInclude,
-      where: { id }
-    });
+    const row = await this.prisma.vehiclePackage.findUnique({ include: vehiclePackageInclude, where: { id } });
     if (!row || row.deletedAt) {
       throw new NotFoundException("Vehicle package not found.");
     }
@@ -2048,10 +1557,7 @@ export class ProductService {
   }
 
   private async findMileagePackageOrThrow(id: string) {
-    const row = await this.prisma.mileagePackage.findUnique({
-      include: packageInclude,
-      where: { id }
-    });
+    const row = await this.prisma.mileagePackage.findUnique({ include: packageInclude, where: { id } });
     if (!row || row.deletedAt) {
       throw new NotFoundException("Mileage package not found.");
     }
@@ -2059,10 +1565,7 @@ export class ProductService {
   }
 
   private async findEnergyPackageOrThrow(id: string) {
-    const row = await this.prisma.energyPackage.findUnique({
-      include: packageInclude,
-      where: { id }
-    });
+    const row = await this.prisma.energyPackage.findUnique({ include: packageInclude, where: { id } });
     if (!row || row.deletedAt) {
       throw new NotFoundException("Energy package not found.");
     }
@@ -2070,10 +1573,7 @@ export class ProductService {
   }
 
   private async findBenefitPackageOrThrow(id: string) {
-    const row = await this.prisma.benefitPackage.findUnique({
-      include: packageInclude,
-      where: { id }
-    });
+    const row = await this.prisma.benefitPackage.findUnique({ include: packageInclude, where: { id } });
     if (!row || row.deletedAt) {
       throw new NotFoundException("Benefit package not found.");
     }
@@ -2135,29 +1635,16 @@ export class ProductService {
     productVersionId: string;
     vehiclePackageId: string;
   }) {
-    const [product, productVersion, vehiclePackage, mileagePackage, energyPackage, benefitPackage] =
-      await Promise.all([
-        this.prisma.product.findUnique({ where: { id: input.productId } }),
-        this.prisma.productVersion.findUnique({ where: { id: input.productVersionId } }),
-        this.prisma.vehiclePackage.findUnique({
-          include: vehiclePackageInclude,
-          where: { id: input.vehiclePackageId }
-        }),
-        this.prisma.mileagePackage.findUnique({
-          include: packageInclude,
-          where: { id: input.mileagePackageId }
-        }),
-        this.prisma.energyPackage.findUnique({
-          include: packageInclude,
-          where: { id: input.energyPackageId }
-        }),
-        input.benefitPackageId
-          ? this.prisma.benefitPackage.findUnique({
-              include: packageInclude,
-              where: { id: input.benefitPackageId }
-            })
-          : Promise.resolve(null)
-      ]);
+    const [product, productVersion, vehiclePackage, mileagePackage, energyPackage, benefitPackage] = await Promise.all([
+      this.prisma.product.findUnique({ where: { id: input.productId } }),
+      this.prisma.productVersion.findUnique({ where: { id: input.productVersionId } }),
+      this.prisma.vehiclePackage.findUnique({ include: vehiclePackageInclude, where: { id: input.vehiclePackageId } }),
+      this.prisma.mileagePackage.findUnique({ include: packageInclude, where: { id: input.mileagePackageId } }),
+      this.prisma.energyPackage.findUnique({ include: packageInclude, where: { id: input.energyPackageId } }),
+      input.benefitPackageId
+        ? this.prisma.benefitPackage.findUnique({ include: packageInclude, where: { id: input.benefitPackageId } })
+        : Promise.resolve(null)
+    ]);
 
     if (!product || product.deletedAt || !productVersion || productVersion.deletedAt) {
       throw new NotFoundException("Product or product version not found.");
@@ -2177,8 +1664,7 @@ export class ProductService {
     if (
       productVersion.productId !== product.id ||
       [vehiclePackage, mileagePackage, energyPackage, benefitPackage].some(
-        (item) =>
-          item && (item.productId !== product.id || item.productVersionId !== productVersion.id)
+        (item) => item && (item.productId !== product.id || item.productVersionId !== productVersion.id)
       )
     ) {
       throw new BadRequestException("所选订阅组件不属于同一个产品版本。");
@@ -2206,10 +1692,7 @@ export class ProductService {
 
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
-    if (
-      version.product.status !== ProductStatus.ACTIVE ||
-      version.status !== ProductVersionStatus.ACTIVE
-    ) {
+    if (version.product.status !== ProductStatus.ACTIVE || version.status !== ProductVersionStatus.ACTIVE) {
       throw new BadRequestException("An active product and product version are required.");
     }
     const rule = await this.prisma.productPriceRule.findFirst({
@@ -2222,9 +1705,7 @@ export class ProductService {
       }
     });
     if (!rule) {
-      throw new BadRequestException(
-        `No active price rule found for modelDefinitionId ${modelDefinitionId}.`
-      );
+      throw new BadRequestException(`No active price rule found for modelDefinitionId ${modelDefinitionId}.`);
     }
     return rule;
   }
@@ -2320,9 +1801,7 @@ function calculateVehicleBaseFeeForSubscriptionPlan(
     throw new BadRequestException("车型包车辆基础费上限率必须大于 0");
   }
 
-  const vehicleBaseFeeCapAmount = BigInt(
-    Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate)
-  );
+  const vehicleBaseFeeCapAmount = BigInt(Math.floor(Number(vehicleSalePriceAmount) * vehiclePackageRate));
   let fixedRate: number | null = null;
   let vehicleBaseFeeAmount: bigint;
 
@@ -2369,9 +1848,7 @@ function assertVehicleBaseFeeAmountWithinCap(vehicleBaseFeeAmount: bigint, capAm
 }
 
 function toJsonValue(value: unknown) {
-  return JSON.parse(
-    JSON.stringify(value, (_, item) => (typeof item === "bigint" ? Number(item) : item))
-  ) as Prisma.InputJsonValue;
+  return JSON.parse(JSON.stringify(value, (_, item) => (typeof item === "bigint" ? Number(item) : item))) as Prisma.InputJsonValue;
 }
 
 function ensureProductAllowsVersion(product: Pick<ProductWithDetails, "productType" | "status">) {
@@ -2397,42 +1874,18 @@ export function ensurePeriodInRange(
 }
 
 function ensureSubscriptionPlanCanActivate(plan: {
-  benefitPackage?: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  } | null;
+  benefitPackage?: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus } | null;
   effectiveFrom: Date;
   effectiveTo: Date | null;
-  energyPackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
-  mileagePackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
+  energyPackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  mileagePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
   product: { deletedAt: Date | null; id: string; productType: ProductType; status: ProductStatus };
   productVersion: { deletedAt: Date | null; id: string; productId: string };
-  vehiclePackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
+  vehiclePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
 }) {
   ensureSubscriptionProductType(plan.product.productType);
   ensureValidDateRange(plan.effectiveFrom, plan.effectiveTo);
-  if (
-    plan.product.deletedAt ||
-    plan.product.status === ProductStatus.INACTIVE ||
-    plan.productVersion.deletedAt
-  ) {
+  if (plan.product.deletedAt || plan.product.status === ProductStatus.INACTIVE || plan.productVersion.deletedAt) {
     throw new BadRequestException("产品或产品版本状态不允许启用订阅套餐。");
   }
   if (!isSubscriptionPlanComponentsActive(plan)) {
@@ -2457,39 +1910,14 @@ function isSubscriptionPlanCurrentlyAvailable(plan: SubscriptionPlanWithDetails)
 }
 
 function isSubscriptionPlanComponentsActive(plan: {
-  benefitPackage?: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  } | null;
-  energyPackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
-  mileagePackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
+  benefitPackage?: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus } | null;
+  energyPackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
+  mileagePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
   product: { id: string };
   productVersion: { id: string; productId: string };
-  vehiclePackage: {
-    deletedAt: Date | null;
-    productId: string;
-    productVersionId: string;
-    status: RecordStatus;
-  };
+  vehiclePackage: { deletedAt: Date | null; productId: string; productVersionId: string; status: RecordStatus };
 }) {
-  const packages = [
-    plan.vehiclePackage,
-    plan.mileagePackage,
-    plan.energyPackage,
-    plan.benefitPackage
-  ].filter(Boolean);
+  const packages = [plan.vehiclePackage, plan.mileagePackage, plan.energyPackage, plan.benefitPackage].filter(Boolean);
   return (
     plan.productVersion.productId === plan.product.id &&
     packages.every(
@@ -2505,10 +1933,7 @@ function isSubscriptionPlanComponentsActive(plan: {
 
 function isDateInRange(effectiveFrom: Date, effectiveTo: Date | null, today = new Date()) {
   const todayTime = dateOnlyTime(today);
-  return (
-    dateOnlyTime(effectiveFrom) <= todayTime &&
-    (!effectiveTo || dateOnlyTime(effectiveTo) >= todayTime)
-  );
+  return dateOnlyTime(effectiveFrom) <= todayTime && (!effectiveTo || dateOnlyTime(effectiveTo) >= todayTime);
 }
 
 function dateOnlyTime(date: Date) {
@@ -2620,19 +2045,13 @@ function toRecordArray(value: unknown, field: string, context: Record<string, un
     return [];
   }
   if (!Array.isArray(value)) {
-    warnProductMapper("Expected relation array while building product view.", {
-      ...context,
-      field
-    });
+    warnProductMapper("Expected relation array while building product view.", { ...context, field });
     return [];
   }
   return value.filter((item): item is RecordSource => {
     const valid = isRecord(item);
     if (!valid) {
-      warnProductMapper("Skipped invalid relation item while building product view.", {
-        ...context,
-        field
-      });
+      warnProductMapper("Skipped invalid relation item while building product view.", { ...context, field });
     }
     return valid;
   });
@@ -2702,14 +2121,11 @@ function toDateOrNull(value: unknown) {
 
 function toProductView(product: ProductWithDetails) {
   const source = product as ProductViewSource;
-  const versionSources = toRecordArray(source.versions, "product.versions", {
-    productId: source.id
-  });
+  const versionSources = toRecordArray(source.versions, "product.versions", { productId: source.id });
   const versions = versionSources
     .map((version) => safeToVersionView(version, source.id))
     .filter(isNonNullable);
-  const activeVersion =
-    versions.find((version) => version.status === ProductVersionStatus.ACTIVE) ?? null;
+  const activeVersion = versions.find((version) => version.status === ProductVersionStatus.ACTIVE) ?? null;
 
   return {
     activeVersion,
@@ -2724,10 +2140,7 @@ function toProductView(product: ProductWithDetails) {
   };
 }
 
-function safeToVersionView(
-  version: ProductVersionViewSource | null | undefined,
-  productId?: string | null
-) {
+function safeToVersionView(version: ProductVersionViewSource | null | undefined, productId?: string | null) {
   try {
     return toVersionView(version, productId);
   } catch (error) {
@@ -2745,23 +2158,18 @@ function toVersionView(version?: ProductVersionViewSource | null, parentProductI
     return null;
   }
   if (!isRecord(version)) {
-    warnProductMapper("Skipped non-object product version while building product view.", {
-      productId: parentProductId
-    });
+    warnProductMapper("Skipped non-object product version while building product view.", { productId: parentProductId });
     return null;
   }
 
   const versionId = toStringOrNull(version.id);
   if (!versionId) {
-    warnProductMapper("Skipped product version without id while building product view.", {
-      productId: parentProductId
-    });
+    warnProductMapper("Skipped product version without id while building product view.", { productId: parentProductId });
     return null;
   }
 
   const product = isRecord(version.product) ? version.product : null;
-  const productId =
-    toStringOrNull(version.productId) ?? toStringOrNull(product?.id) ?? parentProductId ?? "-";
+  const productId = toStringOrNull(version.productId) ?? toStringOrNull(product?.id) ?? parentProductId ?? "-";
 
   return {
     approvedAt: version.approvedAt,
@@ -2769,18 +2177,9 @@ function toVersionView(version?: ProductVersionViewSource | null, parentProductI
     effectiveFrom: formatDateOnly(version.effectiveFrom),
     effectiveTo: formatOptionalDateOnly(version.effectiveTo),
     id: versionId,
-    benefitPackages: toRecordArray(version.benefitPackages, "version.benefitPackages", {
-      productId,
-      versionId
-    }).map(toPackageView),
-    energyPackages: toRecordArray(version.energyPackages, "version.energyPackages", {
-      productId,
-      versionId
-    }).map(toPackageView),
-    mileagePackages: toRecordArray(version.mileagePackages, "version.mileagePackages", {
-      productId,
-      versionId
-    }).map(toPackageView),
+    benefitPackages: toRecordArray(version.benefitPackages, "version.benefitPackages", { productId, versionId }).map(toPackageView),
+    energyPackages: toRecordArray(version.energyPackages, "version.energyPackages", { productId, versionId }).map(toPackageView),
+    mileagePackages: toRecordArray(version.mileagePackages, "version.mileagePackages", { productId, versionId }).map(toPackageView),
     priceRules: toRecordArray(version.priceRules, "version.priceRules", { productId, versionId })
       .map(toPriceRuleView)
       .filter(isNonNullable),
@@ -2794,10 +2193,7 @@ function toVersionView(version?: ProductVersionViewSource | null, parentProductI
       : null,
     productId,
     status: toStringOrDash(version.status),
-    vehiclePackages: toRecordArray(version.vehiclePackages, "version.vehiclePackages", {
-      productId,
-      versionId
-    }).map(toPackageView),
+    vehiclePackages: toRecordArray(version.vehiclePackages, "version.vehiclePackages", { productId, versionId }).map(toPackageView),
     versionNo: toStringOrDash(version.versionNo)
   };
 }
@@ -2835,9 +2231,7 @@ function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
 
   return {
     baseMonthlyFeeAmount: toNumberOrNull(source.baseMonthlyFeeAmount),
-    benefitPackage: source.benefitPackageId
-      ? toPackageView(isRecord(source.benefitPackage) ? source.benefitPackage : null)
-      : null,
+    benefitPackage: source.benefitPackageId ? toPackageView(isRecord(source.benefitPackage) ? source.benefitPackage : null) : null,
     benefitPackageId: source.benefitPackageId ?? null,
     createdAt: source.createdAt,
     deletedAt: source.deletedAt,
@@ -2852,8 +2246,7 @@ function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
     minPeriodMonths: source.minPeriodMonths ?? 0,
     monthlyFeeCapRate: toNumberOrNull(source.monthlyFeeCapRate),
     monthlyFeeMode,
-    monthlyFeeModeLabel:
-      VEHICLE_BASE_FEE_MODE_LABELS[monthlyFeeMode as MonthlyFeeMode] ?? monthlyFeeMode,
+    monthlyFeeModeLabel: VEHICLE_BASE_FEE_MODE_LABELS[monthlyFeeMode as MonthlyFeeMode] ?? monthlyFeeMode,
     monthlyFeeRate: toNumberOrZero(source.monthlyFeeRate),
     planName: toStringOrDash(source.planName),
     planNo: toStringOrDash(source.planNo),
@@ -2886,22 +2279,17 @@ function toSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
 
 function toAvailableSubscriptionPlanView(plan: SubscriptionPlanWithDetails) {
   return {
-    benefitDescription:
-      plan.benefitPackage?.description ?? plan.benefitPackage?.packageName ?? null,
+    benefitDescription: plan.benefitPackage?.description ?? plan.benefitPackage?.packageName ?? null,
     benefitPackagePriceAmount: plan.benefitPackage ? Number(plan.benefitPackage.priceAmount) : 0,
     energyPackagePriceAmount: Number(plan.energyPackage.priceAmount),
     maxPeriodMonths: plan.maxPeriodMonths,
     baseMonthlyFeeAmount:
       plan.baseMonthlyFeeAmount === null ? null : Number(plan.baseMonthlyFeeAmount),
     maxPurchasePriceAmount:
-      plan.vehiclePackage.maxPurchasePriceAmount === null
-        ? null
-        : Number(plan.vehiclePackage.maxPurchasePriceAmount),
+      plan.vehiclePackage.maxPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.maxPurchasePriceAmount),
     minPeriodMonths: plan.minPeriodMonths,
     minPurchasePriceAmount:
-      plan.vehiclePackage.minPurchasePriceAmount === null
-        ? null
-        : Number(plan.vehiclePackage.minPurchasePriceAmount),
+      plan.vehiclePackage.minPurchasePriceAmount === null ? null : Number(plan.vehiclePackage.minPurchasePriceAmount),
     monthlyEnergyCount: plan.energyPackage.monthlyEnergyCount,
     monthlyEnergyKwh: plan.energyPackage.monthlyEnergyKwh,
     monthlyFeeCapRate: Number(plan.vehiclePackage.monthlyFeeRate),
@@ -2974,11 +2362,9 @@ function toPackageView(row?: RecordSource | null) {
     result.brand = row.brand;
     result.configName = row.configName;
     result.maxPeriodMonths = row.maxPeriodMonths;
-    result.maxPurchasePriceAmount =
-      row.maxPurchasePriceAmount === null ? null : toNumberOrZero(row.maxPurchasePriceAmount);
+    result.maxPurchasePriceAmount = row.maxPurchasePriceAmount === null ? null : toNumberOrZero(row.maxPurchasePriceAmount);
     result.minPeriodMonths = row.minPeriodMonths;
-    result.minPurchasePriceAmount =
-      row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
+    result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
     result.modelDefinition = modelDefinition;
     result.modelDefinitionId = toStringOrNull(row.modelDefinitionId);
     result.modelCode = modelDefinition?.modelCode ?? "-";
@@ -3051,14 +2437,13 @@ function toQuoteView(quote: QuoteWithDetails) {
     modelDisplayName: quote.modelDisplayNameSnapshot,
     modelDisplayNameSnapshot: quote.modelDisplayNameSnapshot,
     modelDisplaySource: "SNAPSHOT",
-    order:
-      quote.order && !quote.order.deletedAt
-        ? {
-            id: quote.order.id,
-            orderNo: quote.order.orderNo,
-            orderStatus: quote.order.orderStatus
-          }
-        : null,
+    order: quote.order && !quote.order.deletedAt
+      ? {
+          id: quote.order.id,
+          orderNo: quote.order.orderNo,
+          orderStatus: quote.order.orderStatus
+        }
+      : null,
     overMileageFeeAmount: Number(quote.overMileageFeeAmount),
     packageSnapshot: quote.packageSnapshot,
     periodMonths: quote.periodMonths,
@@ -3072,9 +2457,7 @@ function toQuoteView(quote: QuoteWithDetails) {
     quoteNo: quote.quoteNo,
     riskResultId: quote.riskResultId,
     status: quote.status,
-    subscriptionPlan: quote.subscriptionPlan
-      ? toSubscriptionPlanView(quote.subscriptionPlan)
-      : null,
+    subscriptionPlan: quote.subscriptionPlan ? toSubscriptionPlanView(quote.subscriptionPlan) : null,
     subscriptionPlanId: quote.subscriptionPlanId,
     benefitPackage: quote.benefitPackage ? toPackageView(quote.benefitPackage) : null,
     benefitPackageId: quote.benefitPackageId,
@@ -3085,8 +2468,7 @@ function toQuoteView(quote: QuoteWithDetails) {
     vehiclePackage: quote.vehiclePackage ? toPackageView(quote.vehiclePackage) : null,
     vehiclePackageId: quote.vehiclePackageId,
     vehicle: quote.vehicle ? toQuoteVehicleView(quote.vehicle) : null,
-    vehicleBaseFeeAmount:
-      quote.vehicleBaseFeeAmount === null ? null : Number(quote.vehicleBaseFeeAmount),
+    vehicleBaseFeeAmount: quote.vehicleBaseFeeAmount === null ? null : Number(quote.vehicleBaseFeeAmount),
     vehicleBaseFeeCapAmount:
       quote.vehicleBaseFeeCapAmount === null ? null : Number(quote.vehicleBaseFeeCapAmount),
     vehicleId: quote.vehicleId,

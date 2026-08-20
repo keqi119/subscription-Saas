@@ -120,9 +120,7 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
   it("maps private source storage failures to not found", async () => {
     const vehicle = createVehicle({ listingSourceBindings: [conditionBinding()] });
     const { service, storageService } = createHarness({ vehicle });
-    storageService.getVehicleDocumentStream.mockRejectedValueOnce(
-      new Error("private storage unavailable")
-    );
+    storageService.getVehicleDocumentStream.mockRejectedValueOnce(new Error("private storage unavailable"));
 
     await expect(
       service.previewSourceDocument("vehicle-1", VehicleListingSourceSection.CONDITION_REPORT)
@@ -261,9 +259,7 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
 
     expect(detail.conditionReportSummary).toBeNull();
     expect(detail.condition.summary).toBe("车况良好");
-    await expect(service.getVehicleConditionReport("vehicle-1")).rejects.toBeInstanceOf(
-      NotFoundException
-    );
+    await expect(service.getVehicleConditionReport("vehicle-1")).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it("falls back to active plans when listing plans are not configured", async () => {
@@ -337,11 +333,7 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
     const { service } = createHarness({
       modelDefinitions: [definition],
       vehicles: [
-        createVehicle({
-          id: "vehicle-master",
-          modelDefinition: definition,
-          modelDefinitionId: definition.id
-        }),
+        createVehicle({ id: "vehicle-master", modelDefinition: definition, modelDefinitionId: definition.id }),
         createVehicle({
           id: "vehicle-et5",
           modelDefinition: createModelDefinition({
@@ -421,16 +413,8 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
 
   it("lists only enabled portal-visible model definitions for filters", async () => {
     const visible = createModelDefinition({ id: "model-visible", modelCode: "VISIBLE" });
-    const disabled = createModelDefinition({
-      enabled: false,
-      id: "model-disabled",
-      modelCode: "DISABLED"
-    });
-    const hidden = createModelDefinition({
-      id: "model-hidden",
-      modelCode: "HIDDEN",
-      portalVisible: false
-    });
+    const disabled = createModelDefinition({ enabled: false, id: "model-disabled", modelCode: "DISABLED" });
+    const hidden = createModelDefinition({ id: "model-hidden", modelCode: "HIDDEN", portalVisible: false });
     const { service } = createHarness({ modelDefinitions: [visible, disabled, hidden] });
 
     const rows = await service.listModelDefinitions();
@@ -455,9 +439,7 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       "private-bucket",
       "vehicle-listings/vehicle-1/2026/cover.jpg"
     );
-    await expect(service.previewVehicleMedia("vehicle-1", "media-hidden")).rejects.toBeInstanceOf(
-      NotFoundException
-    );
+    await expect(service.previewVehicleMedia("vehicle-1", "media-hidden")).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 
@@ -480,94 +462,61 @@ function createHarness(
       findMany: vi.fn(async () => plans)
     },
     vehicle: {
-      findFirst: vi.fn(
-        async ({ where }: { where: Record<string, unknown> }) =>
-          filterCatalogVehicles(vehicles, where)[0] ?? null
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        filterCatalogVehicles(vehicles, where)[0] ?? null
       ),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
         filterCatalogVehicles(vehicles, where)
       )
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(
-        async ({
-          where
-        }: {
-          where: {
-            deletedAt?: null;
-            id?: string;
-            modelCode?: string;
-          };
-        }) =>
-          modelDefinitions.find(
-            (definition) =>
-              (!where.id || definition.id === where.id) &&
-              (!where.modelCode || definition.modelCode === where.modelCode) &&
-              (where.deletedAt !== null || definition.deletedAt === null)
-          ) ?? null
+      findFirst: vi.fn(async ({ where }: {
+        where: {
+          deletedAt?: null;
+          id?: string;
+          modelCode?: string;
+        };
+      }) =>
+        modelDefinitions.find(
+          (definition) =>
+            (!where.id || definition.id === where.id) &&
+            (!where.modelCode || definition.modelCode === where.modelCode) &&
+            (where.deletedAt !== null || definition.deletedAt === null)
+        ) ?? null
       ),
-      findMany: vi.fn(
-        async ({
-          where
-        }: {
-          where: { deletedAt?: null; enabled?: boolean; portalVisible?: boolean };
-        }) =>
-          modelDefinitions
-            .filter((definition) => where.deletedAt !== null || definition.deletedAt === null)
-            .filter(
-              (definition) => where.enabled === undefined || definition.enabled === where.enabled
-            )
-            .filter(
-              (definition) =>
-                where.portalVisible === undefined ||
-                definition.portalVisible === where.portalVisible
-            )
-            .map((definition) => ({
-              customerDisplayName: definition.customerDisplayName,
-              displayName: definition.displayName,
-              id: definition.id,
-              modelCode: definition.modelCode
-            }))
+      findMany: vi.fn(async ({ where }: { where: { deletedAt?: null; enabled?: boolean; portalVisible?: boolean } }) =>
+        modelDefinitions
+          .filter((definition) => where.deletedAt !== null || definition.deletedAt === null)
+          .filter((definition) => where.enabled === undefined || definition.enabled === where.enabled)
+          .filter((definition) => where.portalVisible === undefined || definition.portalVisible === where.portalVisible)
+          .map((definition) => ({
+            customerDisplayName: definition.customerDisplayName,
+            displayName: definition.displayName,
+            id: definition.id,
+            modelCode: definition.modelCode
+          }))
       )
     },
     vehicleListingMedia: {
-      findFirst: vi.fn(
-        async ({
-          where
-        }: {
-          where: { customerVisible?: boolean; id?: string; vehicleId?: string };
-        }) => {
-          const vehicle = vehicles.find((item) => item.id === where.vehicleId);
-          const media = vehicle?.listingProfile?.media.find((item) => item.id === where.id);
-          if (
-            !vehicle ||
-            !media ||
-            media.vehicleId !== where.vehicleId ||
-            media.customerVisible !== where.customerVisible
-          ) {
-            return null;
-          }
-          return {
-            ...media,
-            listingProfile: vehicle.listingProfile
-          };
+      findFirst: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: string; vehicleId?: string } }) => {
+        const vehicle = vehicles.find((item) => item.id === where.vehicleId);
+        const media = vehicle?.listingProfile?.media.find((item) => item.id === where.id);
+        if (!vehicle || !media || media.vehicleId !== where.vehicleId || media.customerVisible !== where.customerVisible) {
+          return null;
         }
-      ),
-      findMany: vi.fn(
-        async ({
-          where
-        }: {
-          where: { customerVisible?: boolean; id?: { in: string[] }; vehicleId?: string };
-        }) =>
-          (
-            vehicles.find((item) => item.id === where.vehicleId)?.listingProfile?.media ?? []
-          ).filter(
-            (item) =>
-              item.vehicleId === where.vehicleId &&
-              item.customerVisible === where.customerVisible &&
-              !item.deletedAt &&
-              (!where.id?.in || where.id.in.includes(item.id))
-          )
+        return {
+          ...media,
+          listingProfile: vehicle.listingProfile
+        };
+      }),
+      findMany: vi.fn(async ({ where }: { where: { customerVisible?: boolean; id?: { in: string[] }; vehicleId?: string } }) =>
+        (vehicles.find((item) => item.id === where.vehicleId)?.listingProfile?.media ?? []).filter(
+          (item) =>
+            item.vehicleId === where.vehicleId &&
+            item.customerVisible === where.customerVisible &&
+            !item.deletedAt &&
+            (!where.id?.in || where.id.in.includes(item.id))
+        )
       )
     }
   };
@@ -599,7 +548,10 @@ function filterCatalogVehicles(
     if (where.id && vehicle.id !== where.id) {
       return false;
     }
-    if (where.modelDefinitionId && vehicle.modelDefinitionId !== where.modelDefinitionId) {
+    if (
+      where.modelDefinitionId &&
+      vehicle.modelDefinitionId !== where.modelDefinitionId
+    ) {
       return false;
     }
     return true;

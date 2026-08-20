@@ -139,9 +139,7 @@ describe("self-service application intake API rules", () => {
       harness.context
     );
 
-    expect(harness.tx.application.create.mock.calls[0]?.[0].data.intentVehicleBaseFeeAmount).toBe(
-      600000n
-    );
+    expect(harness.tx.application.create.mock.calls[0]?.[0].data.intentVehicleBaseFeeAmount).toBe(600000n);
     expect(harness.tx.application.create.mock.calls[0]?.[0].data.intentSnapshot).toEqual(
       expect.objectContaining({ vehicleBaseFeeAmount: 600000 })
     );
@@ -309,13 +307,11 @@ describe("self-service application intake API rules", () => {
   });
 });
 
-function createSelfServiceApplicationHarness(
-  overrides: {
-    customer?: Record<string, unknown>;
-    plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
-    vehicle?: Record<string, unknown>;
-  } = {}
-) {
+function createSelfServiceApplicationHarness(overrides: {
+  customer?: Record<string, unknown>;
+  plan?: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> };
+  vehicle?: Record<string, unknown>;
+} = {}) {
   const now = new Date("2026-06-05T10:00:00.000Z");
   const user = {
     id: "user-1",
@@ -471,10 +467,7 @@ function createSelfServiceApplicationHarness(
   };
 }
 
-function makePlan(
-  now: Date,
-  overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}
-) {
+function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePackage?: Record<string, unknown> } = {}) {
   const { vehiclePackage: vehiclePackageOverrides, ...planOverrides } = overrides;
   const product = {
     deletedAt: null,

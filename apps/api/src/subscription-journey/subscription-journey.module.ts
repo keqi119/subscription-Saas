@@ -23,7 +23,10 @@ import { SubscriptionJourneySignalModule } from "./subscription-journey-signal.m
 import { SubscriptionJourneyWorker } from "./subscription-journey.worker";
 
 @Module({
-  controllers: [PortalSubscriptionJourneyController, SubscriptionJourneyController],
+  controllers: [
+    PortalSubscriptionJourneyController,
+    SubscriptionJourneyController
+  ],
   exports: [SubscriptionJourneyService],
   imports: [
     AuditModule,

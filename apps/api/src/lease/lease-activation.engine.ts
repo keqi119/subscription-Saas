@@ -61,11 +61,14 @@ import {
   SubscriptionActivationResult
 } from "./lease-activation.types";
 
-const LEASE_ACTIVATION_REJECTED_REASON = "MISSING_LEASE_ACTIVATION_CONDITIONS";
+const LEASE_ACTIVATION_REJECTED_REASON =
+  "MISSING_LEASE_ACTIVATION_CONDITIONS";
 
 type Tx = Prisma.TransactionClient;
 
-type AuthorityFacts = Awaited<ReturnType<LeaseActivationEngine["readAuthorityFacts"]>>;
+type AuthorityFacts = Awaited<
+  ReturnType<LeaseActivationEngine["readAuthorityFacts"]>
+>;
 
 @Injectable()
 export class LeaseActivationEngine {
@@ -95,10 +98,15 @@ export class LeaseActivationEngine {
   ) {}
 
   async evaluate(orderId: string): Promise<LeaseActivationEvaluation> {
-    return this.prisma.$transaction((tx) => this.evaluateInTransaction(tx, orderId));
+    return this.prisma.$transaction((tx) =>
+      this.evaluateInTransaction(tx, orderId)
+    );
   }
 
-  async evaluateInTransaction(tx: Tx, orderId: string): Promise<LeaseActivationEvaluation> {
+  async evaluateInTransaction(
+    tx: Tx,
+    orderId: string
+  ): Promise<LeaseActivationEvaluation> {
     await lockDeliveryConfirmationGateRows(tx, orderId);
     const facts = await this.readAuthorityFacts(tx, orderId);
     return this.evaluateFacts(facts);
@@ -137,7 +145,10 @@ export class LeaseActivationEngine {
       });
     }
     const journey = facts.order.subscriptionJourney;
-    if (input.journeyId && (!journey || journey.id !== input.journeyId)) {
+    if (
+      input.journeyId &&
+      (!journey || journey.id !== input.journeyId)
+    ) {
       throw new BadRequestException("JOURNEY_ORDER_MISMATCH");
     }
 
@@ -210,8 +221,16 @@ export class LeaseActivationEngine {
       actorId,
       orderId: input.orderId
     });
-    await billingAutomationService.ensureActiveSchedule(tx, input.orderId, activatedAt);
-    await entitlementService.ensureInitialEntitlements(tx, input.orderId, actorId);
+    await billingAutomationService.ensureActiveSchedule(
+      tx,
+      input.orderId,
+      activatedAt
+    );
+    await entitlementService.ensureInitialEntitlements(
+      tx,
+      input.orderId,
+      actorId
+    );
     await tx.orderEntitlementAccount.updateMany({
       data: {
         accountStatus: EntitlementAccountStatus.ACTIVE,
@@ -225,14 +244,16 @@ export class LeaseActivationEngine {
 
     if (journey) {
       const activationStep = journey.steps.find(
-        ({ code }) => code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+        ({ code }) =>
+          code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
       );
       if (!activationStep || !this.journeyRepository) {
         throw new Error("Subscription journey activation is unavailable.");
       }
       if (journey.status !== SubscriptionJourneyStatus.COMPLETED) {
         if (
-          journey.currentStepCode !== SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
+          journey.currentStepCode !==
+            SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
           journey.currentStepStatus === SubscriptionJourneyStepStatus.COMPLETED
         ) {
           throw new BadRequestException("JOURNEY_ACTIVATION_STEP_MISMATCH");
@@ -291,7 +312,11 @@ export class LeaseActivationEngine {
     };
   }
 
-  async activate(orderId: string, user?: RequestUser, context?: RequestContext) {
+  async activate(
+    orderId: string,
+    user?: RequestUser,
+    context?: RequestContext
+  ) {
     void context;
     const actorId = user?.id;
     if (!actorId) {
@@ -366,7 +391,13 @@ export class LeaseActivationEngine {
         }
       })
     ]);
-    const [contractFile, workOrder, evidenceReadiness, settlement, handoverAuthorityValid] =
+    const [
+      contractFile,
+      workOrder,
+      evidenceReadiness,
+      settlement,
+      handoverAuthorityValid
+    ] =
       await Promise.all([
         order.contract?.fileId
           ? tx.fileObject.findUnique({ where: { id: order.contract.fileId } })
@@ -423,12 +454,20 @@ export class LeaseActivationEngine {
     const requiredDeposit = order.finalDepositAmount ?? order.depositAmount;
     if (
       requiredDeposit > 0n &&
-      !isAuthoritativelySettled(facts.bills, BillType.DEPOSIT, requiredDeposit)
+      !isAuthoritativelySettled(
+        facts.bills,
+        BillType.DEPOSIT,
+        requiredDeposit
+      )
     ) {
       pushUnique(missingConditions, "DEPOSIT_PAYMENT_MISSING");
     }
     if (
-      !isAuthoritativelySettled(facts.bills, BillType.FIRST_MONTHLY_FEE, order.monthlyFeeAmount) ||
+      !isAuthoritativelySettled(
+        facts.bills,
+        BillType.FIRST_MONTHLY_FEE,
+        order.monthlyFeeAmount
+      ) ||
       !facts.settlement.paid
     ) {
       pushUnique(missingConditions, "FIRST_RENT_PAYMENT_MISSING");
@@ -468,7 +507,10 @@ export class LeaseActivationEngine {
     ) {
       pushUnique(missingConditions, "HANDOVER_ARCHIVED_ARTIFACT_MISSING");
     }
-    appendEvidenceMissingConditions(missingConditions, facts.evidenceReadiness);
+    appendEvidenceMissingConditions(
+      missingConditions,
+      facts.evidenceReadiness
+    );
     if (
       !workOrder ||
       !facts.handoverAuthorityValid ||
@@ -504,7 +546,10 @@ export class LeaseActivationEngine {
     if (
       !deliveryAt ||
       !order.vehicle ||
-      !resolveVehicleInsuranceCoverage(order.vehicle.insurancePolicies, deliveryAt).covered
+      !resolveVehicleInsuranceCoverage(
+        order.vehicle.insurancePolicies,
+        deliveryAt
+      ).covered
     ) {
       pushUnique(missingConditions, "INSURANCE_NOT_COVERED");
     }
@@ -518,18 +563,30 @@ export class LeaseActivationEngine {
     return {
       canActivate: missingConditions.length === 0,
       missingConditions,
-      ...(missingConditions.length > 0 ? { reason: LEASE_ACTIVATION_REJECTED_REASON } : {})
+      ...(missingConditions.length > 0
+        ? { reason: LEASE_ACTIVATION_REJECTED_REASON }
+        : {})
     };
   }
 
   private getDeliveryEvidenceService() {
-    return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
+    return (
+      this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma)
+    );
   }
 
-  private async validateHandoverAuthority(tx: Tx, orderId: string, handoverId: string | null) {
+  private async validateHandoverAuthority(
+    tx: Tx,
+    orderId: string,
+    handoverId: string | null
+  ) {
     if (!this.handoverWorkOrderService) return true;
     try {
-      await this.handoverWorkOrderService.assertDeliveryCanBeConfirmed(orderId, handoverId, tx);
+      await this.handoverWorkOrderService.assertDeliveryCanBeConfirmed(
+        orderId,
+        handoverId,
+        tx
+      );
       return true;
     } catch {
       return false;
@@ -548,9 +605,14 @@ function isAuthoritativelySettled(
   requiredAmount: bigint
 ) {
   const bill = bills.find(
-    (candidate) => candidate.billType === billType && candidate.amount === requiredAmount
+    (candidate) =>
+      candidate.billType === billType && candidate.amount === requiredAmount
   );
-  if (!bill || bill.billStatus !== BillStatus.PAID || bill.remainingAmount !== 0n) {
+  if (
+    !bill ||
+    bill.billStatus !== BillStatus.PAID ||
+    bill.remainingAmount !== 0n
+  ) {
     return false;
   }
   const confirmedWriteOffAmount = bill.writeOffs.reduce(
@@ -588,10 +650,7 @@ function normalizeSha256(value: unknown) {
   if (typeof value !== "string") {
     return null;
   }
-  const normalized = value
-    .trim()
-    .replace(/^sha256:/i, "")
-    .toLowerCase();
+  const normalized = value.trim().replace(/^sha256:/i, "").toLowerCase();
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 

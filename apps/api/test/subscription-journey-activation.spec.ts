@@ -49,7 +49,9 @@ describe("subscription journey authoritative activation", () => {
       }
     };
     const prisma = {
-      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx))
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) =>
+        callback(tx)
+      )
     };
     const activation = {
       activateFromAuthoritativeHandover: vi.fn(async () => ({
@@ -85,11 +87,14 @@ describe("subscription journey authoritative activation", () => {
       orderId: "order-1",
       vehicleId: "vehicle-1"
     });
-    expect(activation.activateFromAuthoritativeHandover).toHaveBeenCalledWith(tx, {
-      actorId: "user-1",
-      journeyId: "journey-1",
-      orderId: "order-1"
-    });
+    expect(activation.activateFromAuthoritativeHandover).toHaveBeenCalledWith(
+      tx,
+      {
+        actorId: "user-1",
+        journeyId: "journey-1",
+        orderId: "order-1"
+      }
+    );
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 

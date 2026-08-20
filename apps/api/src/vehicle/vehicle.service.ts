@@ -245,8 +245,12 @@ export class VehicleService {
     const modelDefinitionId =
       dto.modelDefinitionId === undefined
         ? undefined
-        : (await requireActiveVehicleModelDefinition(this.prisma, dto.modelDefinitionId))
-            .modelDefinitionId;
+        : (
+            await requireActiveVehicleModelDefinition(
+              this.prisma,
+              dto.modelDefinitionId
+            )
+          ).modelDefinitionId;
     const result = await this.prisma.$transaction(
       async (tx) => {
         if (this.assetOperationsService) {
@@ -325,9 +329,7 @@ export class VehicleService {
           currentSalePriceReviewedAt: reviewedAt,
           nextSalePriceReviewAt,
           salePriceReinitRequiredAt:
-            reviewType === VehicleSalePriceReviewType.RETURN_REINIT
-              ? null
-              : before.salePriceReinitRequiredAt,
+            reviewType === VehicleSalePriceReviewType.RETURN_REINIT ? null : before.salePriceReinitRequiredAt,
           salePriceStatus: SalePriceStatus.EFFECTIVE,
           updatedBy: user.id
         },
@@ -572,9 +574,7 @@ export class VehicleService {
     await this.auditService.write({
       action: result.action,
       after: toAssetCostProfileAuditSnapshot(result.profile, dto.remark),
-      before: result.before
-        ? toAssetCostProfileAuditSnapshot(result.before, dto.remark)
-        : undefined,
+      before: result.before ? toAssetCostProfileAuditSnapshot(result.before, dto.remark) : undefined,
       entityId: result.profile.id,
       entityType: "vehicle_asset_cost_profile",
       ipAddress: context.ipAddress,
@@ -626,9 +626,7 @@ export class VehicleService {
     const vehicle = await this.findVehicleOrThrow(id);
     assertCapitalEventInput(dto);
 
-    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(
-      dto.financingInstrumentId
-    );
+    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(dto.financingInstrumentId);
     const data = buildCapitalEventData(dto, vehicle, financingInstrument);
     await this.assertNoDuplicateActiveCapitalEvent(id, data);
     const event = await withUniqueBusinessNoRetry(() =>
@@ -673,9 +671,7 @@ export class VehicleService {
 
     const nextDto = mergeCapitalEventUpdateInput(dto, before);
     assertCapitalEventInput(nextDto);
-    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(
-      nextDto.financingInstrumentId
-    );
+    const financingInstrument = await this.resolveCapitalEventFinancingInstrument(nextDto.financingInstrumentId);
     const data = buildCapitalEventData(nextDto, vehicle, financingInstrument, before.eventStatus);
     await this.assertNoDuplicateActiveCapitalEvent(id, data, eventId);
     const event = await this.prisma.vehicleCapitalEvent.update({
@@ -800,10 +796,7 @@ export class VehicleService {
 
   private async assertNoDuplicateActiveCapitalEvent(
     vehicleId: string,
-    data: Omit<
-      Prisma.VehicleCapitalEventUncheckedCreateInput,
-      "createdBy" | "eventNo" | "updatedBy" | "vehicleId"
-    >,
+    data: Omit<Prisma.VehicleCapitalEventUncheckedCreateInput, "createdBy" | "eventNo" | "updatedBy" | "vehicleId">,
     excludeEventId?: string
   ) {
     const duplicate = await this.prisma.vehicleCapitalEvent.findFirst({
@@ -826,15 +819,11 @@ export class VehicleService {
     });
 
     if (duplicate) {
-      throw new BadRequestException(
-        "已存在相同融资工具、事件类型、事件时间和金额的生效资本事件，请勿重复补录。"
-      );
+      throw new BadRequestException("已存在相同融资工具、事件类型、事件时间和金额的生效资本事件，请勿重复补录。");
     }
   }
 
-  private async resolveCapitalEventFinancingInstrument(
-    financingInstrumentId: string | null | undefined
-  ) {
+  private async resolveCapitalEventFinancingInstrument(financingInstrumentId: string | null | undefined) {
     if (!financingInstrumentId) {
       return null;
     }
@@ -849,6 +838,7 @@ export class VehicleService {
 
     return financingInstrument;
   }
+
 }
 
 async function lockVehicleAvailabilityAuthority(tx: Prisma.TransactionClient, vehicleId: string) {
@@ -910,10 +900,7 @@ function createVehicleData(
     acquisitionMode: dto.acquisitionMode ?? VehicleAcquisitionMode.OWNED_CASH,
     brand: dto.brand,
     currentMileageKm: dto.currentMileageKm ?? 0,
-    latestRegistrationDate: parseOptionalDateOnly(
-      dto.latestRegistrationDate,
-      "latestRegistrationDate"
-    ),
+    latestRegistrationDate: parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"),
     model: dto.model,
     modelYear: dto.modelYear,
     plateNo: dto.plateNo,
@@ -950,11 +937,7 @@ function updateVehicleData(
   assignIfDefined(data, "batteryUsageType", dto.batteryUsageType);
   assignIfDefined(data, "acquisitionMode", dto.acquisitionMode);
   assignIfDefined(data, "brand", dto.brand);
-  assignIfDefined(
-    data,
-    "latestRegistrationDate",
-    parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate")
-  );
+  assignIfDefined(data, "latestRegistrationDate", parseOptionalDateOnly(dto.latestRegistrationDate, "latestRegistrationDate"));
   assignIfDefined(data, "model", dto.model);
   assignIfDefined(data, "modelYear", dto.modelYear);
   assignIfDefined(data, "plateNo", dto.plateNo);
@@ -964,11 +947,7 @@ function updateVehicleData(
     "purchasePriceAmount",
     dto.purchasePriceAmount === undefined ? undefined : BigInt(dto.purchasePriceAmount)
   );
-  assignIfDefined(
-    data,
-    "registrationDate",
-    parseOptionalDateOnly(dto.registrationDate, "registrationDate")
-  );
+  assignIfDefined(data, "registrationDate", parseOptionalDateOnly(dto.registrationDate, "registrationDate"));
   assignIfDefined(data, "remark", dto.remark);
   assignIfDefined(data, "series", dto.series);
   assignIfDefined(data, "status", dto.status);
@@ -980,11 +959,7 @@ function updateVehicleData(
   return data;
 }
 
-function assignIfDefined<T extends object, K extends keyof T>(
-  target: T,
-  key: K,
-  value: T[K] | undefined
-) {
+function assignIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined) {
   if (value !== undefined) {
     target[key] = value;
   }
@@ -1027,17 +1002,11 @@ function assertCanEnterAvailable(status: VehicleStatus, vehicle: VehicleWithHist
     throw new BadRequestException("当前车辆状态不允许直接入池");
   }
 
-  if (
-    RETURN_REINIT_ALLOWED_STATUSES.has(vehicle.status) &&
-    !hasReturnReinitForCurrentPool(vehicle)
-  ) {
+  if (RETURN_REINIT_ALLOWED_STATUSES.has(vehicle.status) && !hasReturnReinitForCurrentPool(vehicle)) {
     throw new BadRequestException(RETURN_REINIT_BEFORE_AVAILABLE_MESSAGE);
   }
 
-  if (
-    !isPositiveBigInt(vehicle.currentSalePriceAmount) ||
-    vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE
-  ) {
+  if (!isPositiveBigInt(vehicle.currentSalePriceAmount) || vehicle.salePriceStatus !== SalePriceStatus.EFFECTIVE) {
     throw new BadRequestException(INITIALIZE_BEFORE_AVAILABLE_MESSAGE);
   }
 }
@@ -1121,9 +1090,7 @@ function throwVehicleUniqueError(error: unknown): never {
     throw error;
   }
 
-  const target = Array.isArray(error.meta?.target)
-    ? error.meta.target.join(",")
-    : String(error.meta?.target ?? "");
+  const target = Array.isArray(error.meta?.target) ? error.meta.target.join(",") : String(error.meta?.target ?? "");
   if (target.includes("vin")) {
     throw new BadRequestException("VIN 已存在");
   }
@@ -1133,9 +1100,7 @@ function throwVehicleUniqueError(error: unknown): never {
   throw new BadRequestException("车辆编号已存在，请重试");
 }
 
-function isPrismaUniqueError(
-  error: unknown
-): error is { code: string; meta?: { target?: unknown } } {
+function isPrismaUniqueError(error: unknown): error is { code: string; meta?: { target?: unknown } } {
   return (
     typeof error === "object" &&
     error !== null &&
@@ -1221,9 +1186,7 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     },
     latestRegistrationDate: vehicle.latestRegistrationDate,
     model: vehicle.model,
-    modelDefinition: vehicle.modelDefinition
-      ? toVehicleModelDefinitionView(vehicle.modelDefinition)
-      : null,
+    modelDefinition: vehicle.modelDefinition ? toVehicleModelDefinitionView(vehicle.modelDefinition) : null,
     modelCode: vehicle.modelDefinition.modelCode,
     modelDefinitionId: vehicle.modelDefinitionId,
     modelDisplayName: vehicle.modelDefinition.displayName,
@@ -1236,11 +1199,7 @@ function toVehicleView(vehicle: VehicleWithHistory, today = todayDateOnly()) {
     remark: vehicle.remark,
     salePriceReinitRequiredAt: vehicle.salePriceReinitRequiredAt,
     salePriceHistories: vehicle.salePriceHistories?.map(toSalePriceHistoryView) ?? [],
-    salePriceStatus: resolveSalePriceStatus(
-      vehicle.salePriceStatus,
-      vehicle.nextSalePriceReviewAt,
-      today
-    ),
+    salePriceStatus: resolveSalePriceStatus(vehicle.salePriceStatus, vehicle.nextSalePriceReviewAt, today),
     series: vehicle.series,
     status: vehicle.status,
     updatedAt: vehicle.updatedAt,
@@ -1283,8 +1242,7 @@ function resolveSalePriceStatus(
 ) {
   if (
     nextSalePriceReviewAt &&
-    (salePriceStatus === SalePriceStatus.EFFECTIVE ||
-      salePriceStatus === SalePriceStatus.REVIEW_DUE) &&
+    (salePriceStatus === SalePriceStatus.EFFECTIVE || salePriceStatus === SalePriceStatus.REVIEW_DUE) &&
     nextSalePriceReviewAt.getTime() <= today.getTime()
   ) {
     return SalePriceStatus.REVIEW_DUE;
@@ -1318,10 +1276,7 @@ function activeAssetCostProfileWhere(vehicleId: string): Prisma.VehicleAssetCost
   };
 }
 
-function activeCapitalEventWhere(
-  vehicleId: string,
-  today: Date
-): Prisma.VehicleCapitalEventWhereInput {
+function activeCapitalEventWhere(vehicleId: string, today: Date): Prisma.VehicleCapitalEventWhereInput {
   return {
     deletedAt: null,
     effectiveFrom: { lte: today },
@@ -1363,10 +1318,7 @@ function mergeCapitalEventUpdateInput(
 ): CreateVehicleCapitalEventDto {
   return {
     acquisitionMode: valueOrExisting(dto.acquisitionMode, before.acquisitionMode),
-    debtPrincipalAmount: valueOrExisting(
-      dto.debtPrincipalAmount,
-      numberOrNull(before.debtPrincipalAmount)
-    ),
+    debtPrincipalAmount: valueOrExisting(dto.debtPrincipalAmount, numberOrNull(before.debtPrincipalAmount)),
     effectiveFrom: dto.effectiveFrom ?? formatDateOnly(before.effectiveFrom),
     effectiveTo:
       dto.effectiveTo === undefined
@@ -1374,10 +1326,7 @@ function mergeCapitalEventUpdateInput(
           ? formatDateOnly(before.effectiveTo)
           : null
         : dto.effectiveTo,
-    equityCapitalAmount: valueOrExisting(
-      dto.equityCapitalAmount,
-      numberOrNull(before.equityCapitalAmount)
-    ),
+    equityCapitalAmount: valueOrExisting(dto.equityCapitalAmount, numberOrNull(before.equityCapitalAmount)),
     eventType: dto.eventType ?? before.eventType,
     externalOwnerName: valueOrExisting(dto.externalOwnerName, before.externalOwnerName),
     financingInstrumentId: valueOrExisting(dto.financingInstrumentId, before.financingInstrumentId),
@@ -1392,10 +1341,7 @@ function buildCapitalEventData(
   vehicle: VehicleWithHistory,
   financingInstrument: FinancingInstrument | null,
   eventStatus: VehicleCapitalEventStatus = VehicleCapitalEventStatus.ACTIVE
-): Omit<
-  Prisma.VehicleCapitalEventUncheckedCreateInput,
-  "createdBy" | "eventNo" | "updatedBy" | "vehicleId"
-> {
+): Omit<Prisma.VehicleCapitalEventUncheckedCreateInput, "createdBy" | "eventNo" | "updatedBy" | "vehicleId"> {
   const effectiveFrom = parseDateOnly(dto.effectiveFrom, "effectiveFrom");
   const effectiveTo = parseOptionalDateOnly(dto.effectiveTo, "effectiveTo") ?? null;
 
@@ -1509,10 +1455,7 @@ function buildCapitalStructurePreview(
   const purchasePriceAmount = vehicle.purchasePriceAmount;
   const annualDebtInterestAmount = sumBigInt(
     financingAllocations.map((allocation) =>
-      calculateInterestAmount(
-        allocation.allocatedPrincipalAmount,
-        allocation.instrument?.annualRateBps ?? 0
-      )
+      calculateInterestAmount(allocation.allocatedPrincipalAmount, allocation.instrument?.annualRateBps ?? 0)
     )
   );
   const missingReasons = buildCapitalStructureMissingReasons(
@@ -1528,8 +1471,7 @@ function buildCapitalStructurePreview(
     activeFinancingAllocations: financingAllocations.map(toFinancingAllocationView),
     annualDebtInterestAmount: Number(annualDebtInterestAmount),
     capitalCoverageAmount: Number(capitalCoverageAmount),
-    capitalCoverageIncomplete:
-      purchasePriceAmount > 0n && capitalCoverageAmount < purchasePriceAmount,
+    capitalCoverageIncomplete: purchasePriceAmount > 0n && capitalCoverageAmount < purchasePriceAmount,
     capitalCoverageRatio: ratioOrNull(capitalCoverageAmount, purchasePriceAmount),
     debtPrincipalAmount: Number(debtPrincipalAmount),
     debtRatio: ratioOrNull(debtPrincipalAmount, purchasePriceAmount),
@@ -1594,9 +1536,7 @@ function toCapitalEventView(event: VehicleCapitalEventWithInstrument) {
     eventStatus: event.eventStatus,
     eventType: event.eventType,
     externalOwnerName: event.externalOwnerName,
-    financingInstrument: event.financingInstrument
-      ? toFinancingInstrumentSummaryView(event.financingInstrument)
-      : null,
+    financingInstrument: event.financingInstrument ? toFinancingInstrumentSummaryView(event.financingInstrument) : null,
     financingInstrumentId: event.financingInstrumentId,
     id: event.id,
     lessorName: event.lessorName,
@@ -1609,10 +1549,7 @@ function toCapitalEventView(event: VehicleCapitalEventWithInstrument) {
   };
 }
 
-function toCapitalEventAuditSnapshot(
-  event: VehicleCapitalEventWithInstrument,
-  remark: string | null | undefined
-) {
+function toCapitalEventAuditSnapshot(event: VehicleCapitalEventWithInstrument, remark: string | null | undefined) {
   return {
     event: toCapitalEventView(event),
     eventId: event.id,
@@ -1663,10 +1600,7 @@ function uniqueFinancingInstruments(financingAllocations: FinancingAllocationWit
   const instruments = new Map<string, ReturnType<typeof toFinancingInstrumentSummaryView>>();
 
   for (const allocation of financingAllocations) {
-    instruments.set(
-      allocation.instrument.id,
-      toFinancingInstrumentSummaryView(allocation.instrument)
-    );
+    instruments.set(allocation.instrument.id, toFinancingInstrumentSummaryView(allocation.instrument));
   }
 
   return Array.from(instruments.values());
@@ -1686,10 +1620,7 @@ function assertAssetCostProfileInput(
   }
   assertOptionalNonNegativeInteger(dto.capitalCostRateBps, "资金成本率必须大于等于 0。");
   assertOptionalNonNegativeInteger(dto.annualInsuranceCostAmount, "年度保险成本必须大于等于 0。");
-  assertOptionalNonNegativeInteger(
-    dto.annualMaintenanceReserveAmount,
-    "年度维修准备金必须大于等于 0。"
-  );
+  assertOptionalNonNegativeInteger(dto.annualMaintenanceReserveAmount, "年度维修准备金必须大于等于 0。");
   assertOptionalNonNegativeInteger(dto.otherMonthlyCostAmount, "其他月度成本必须大于等于 0。");
 }
 

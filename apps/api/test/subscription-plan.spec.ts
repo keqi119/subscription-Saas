@@ -17,7 +17,7 @@ import {
   SalePriceStatus,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
-  VehicleStatus
+  VehicleStatus,
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -74,7 +74,11 @@ describe("subscription plan backend flow", () => {
   it("creates a subscription plan with packages from the same product version", async () => {
     const { audit, prisma, service } = makeService();
 
-    const plan = await service.createSubscriptionPlan(createPlanDto(), user, context);
+    const plan = await service.createSubscriptionPlan(
+      createPlanDto(),
+      user,
+      context
+    );
 
     expect(plan).toMatchObject({
       planName: "ET5 standard 12 months",
@@ -98,9 +102,9 @@ describe("subscription plan backend flow", () => {
       mileagePackage: makeMileagePackage({ productVersionId: "version-2" })
     });
 
-    await expect(service.createSubscriptionPlan(createPlanDto(), user, context)).rejects.toThrow(
-      "所选订阅组件不属于同一个产品版本"
-    );
+    await expect(
+      service.createSubscriptionPlan(createPlanDto(), user, context)
+    ).rejects.toThrow("所选订阅组件不属于同一个产品版本");
   });
 
   it("rejects activating a subscription plan while related packages are inactive", async () => {
@@ -142,9 +146,7 @@ describe("subscription plan backend flow", () => {
       plans: [makeSubscriptionPlan({ status: SubscriptionPlanStatus.ACTIVE })]
     });
 
-    await expect(
-      service.listAvailableSubscriptionPlans("application-1", user)
-    ).resolves.toMatchObject([
+    await expect(service.listAvailableSubscriptionPlans("application-1", user)).resolves.toMatchObject([
       {
         monthlyFeeCapRate: 0.035,
         monthlyFeeMode: MonthlyFeeMode.MANUAL_QUOTE,
@@ -177,7 +179,7 @@ describe("subscription plan backend flow", () => {
     ).resolves.toMatchObject([
       {
         modelCode: "NIO_ET5",
-        subscriptionPlanId: "plan-1"
+        subscriptionPlanId: "plan-1",
       }
     ]);
     expect(prisma.subscriptionPlan.findMany).toHaveBeenCalledWith(
@@ -279,8 +281,8 @@ describe("subscription plan backend flow", () => {
     });
 
     const quote = await service.createQuote(
-      "application-1",
-      {
+        "application-1",
+        {
         periodMonths: 12,
         subscriptionPlanId: "plan-1",
         vehicleBaseFeeAmount: 420000,
@@ -374,10 +376,7 @@ describe("subscription plan backend flow", () => {
   });
 
   it("quote response exposes snapshot display metadata before runtime vehicle display", async () => {
-    const runtimeDefinition = makeModelDefinition({
-      displayName: "Runtime ET5",
-      id: "runtime-model"
-    });
+    const runtimeDefinition = makeModelDefinition({ displayName: "Runtime ET5", id: "runtime-model" });
     const { service } = makeService({
       quote: makeQuote({
         modelCodeSnapshot: "NIO_ET5",
@@ -758,18 +757,10 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findFirst: vi.fn().mockResolvedValue(seed.activePlan === undefined ? plan : seed.activePlan),
       findMany: vi.fn().mockResolvedValue(seed.plans ?? []),
       findUnique: vi.fn().mockResolvedValue(plan),
-      update: vi
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve(makeSubscriptionPlan({ ...plan, ...data }))
-        )
+      update: vi.fn().mockImplementation(({ data }) => Promise.resolve(makeSubscriptionPlan({ ...plan, ...data })))
     },
     subscriptionQuote: {
-      create: vi
-        .fn()
-        .mockImplementation(({ data }) =>
-          Promise.resolve(makeQuote({ ...data, subscriptionPlan: plan }))
-        ),
+      create: vi.fn().mockImplementation(({ data }) => Promise.resolve(makeQuote({ ...data, subscriptionPlan: plan }))),
       findUnique: vi.fn().mockResolvedValue(quote),
       update: vi.fn().mockResolvedValue(makeQuote({ ...quote, status: QuoteStatus.CONFIRMED }))
     },
@@ -781,25 +772,20 @@ function makeService(seed: Partial<MockSeed> = {}) {
       findUnique: vi.fn().mockResolvedValue(seed.vehiclePackage ?? makeVehiclePackage())
     },
     vehicleModelDefinition: {
-      findFirst: vi.fn(
-        async ({
-          where
-        }: {
-          where: {
-            id?: string;
-          };
-        }) =>
-          (seed.modelDefinitions ?? [makeModelDefinition()]).find(
-            (definition) =>
-              (where.id === undefined || definition.id === where.id) &&
-              definition.deletedAt === null
-          ) ?? null
+      findFirst: vi.fn(async ({ where }: {
+        where: {
+          id?: string;
+        };
+      }) =>
+        (seed.modelDefinitions ?? [makeModelDefinition()]).find(
+          (definition) =>
+            (where.id === undefined || definition.id === where.id) &&
+            definition.deletedAt === null
+        ) ?? null
       )
     }
   };
-  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) =>
-    callback(prisma)
-  );
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) => callback(prisma));
   const assetOperationsService = {
     assertVehicleAvailable: vi.fn(async () => undefined)
   };
@@ -828,17 +814,13 @@ function createPlanDto() {
 }
 
 function makeSubscriptionPlan(overrides: Record<string, unknown> = {}) {
-  const vehiclePackage =
-    (overrides.vehiclePackage as ReturnType<typeof makeVehiclePackage>) ?? makeVehiclePackage();
-  const mileagePackage =
-    (overrides.mileagePackage as ReturnType<typeof makeMileagePackage>) ?? makeMileagePackage();
-  const energyPackage =
-    (overrides.energyPackage as ReturnType<typeof makeEnergyPackage>) ?? makeEnergyPackage();
+  const vehiclePackage = (overrides.vehiclePackage as ReturnType<typeof makeVehiclePackage>) ?? makeVehiclePackage();
+  const mileagePackage = (overrides.mileagePackage as ReturnType<typeof makeMileagePackage>) ?? makeMileagePackage();
+  const energyPackage = (overrides.energyPackage as ReturnType<typeof makeEnergyPackage>) ?? makeEnergyPackage();
   const benefitPackage =
     overrides.benefitPackage === null
       ? null
-      : ((overrides.benefitPackage as ReturnType<typeof makeBenefitPackage>) ??
-        makeBenefitPackage());
+      : ((overrides.benefitPackage as ReturnType<typeof makeBenefitPackage>) ?? makeBenefitPackage());
   return {
     baseMonthlyFeeAmount: null,
     benefitPackage,
@@ -1099,15 +1081,9 @@ function makeQuote(overrides: Record<string, unknown> = {}) {
   const subscriptionPlan =
     overrides.subscriptionPlan === null
       ? null
-      : ((overrides.subscriptionPlan as ReturnType<typeof makeSubscriptionPlan>) ??
-        makeSubscriptionPlan());
+      : ((overrides.subscriptionPlan as ReturnType<typeof makeSubscriptionPlan>) ?? makeSubscriptionPlan());
   return {
-    application: {
-      applicationNo: "APP2026060200001",
-      id: "application-1",
-      salesUserId: "user-1",
-      status: ApplicationStatus.APPROVED
-    },
+    application: { applicationNo: "APP2026060200001", id: "application-1", salesUserId: "user-1", status: ApplicationStatus.APPROVED },
     applicationId: "application-1",
     benefitPackage: subscriptionPlan?.benefitPackage ?? null,
     benefitPackageId: subscriptionPlan?.benefitPackageId ?? null,

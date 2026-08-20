@@ -90,11 +90,7 @@ describe("Field handover workflow projection", () => {
         },
         task: {
           signers: [
-            {
-              signedAt: new Date("2026-08-16T08:05:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_CUSTOMER"
-            },
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
             { signedAt: null, signerStatus: "PENDING", slotId: "STAGE2_HANDOVER_PLATFORM" }
           ],
           taskStatus: "SIGNING"
@@ -117,16 +113,8 @@ describe("Field handover workflow projection", () => {
         },
         task: {
           signers: [
-            {
-              signedAt: new Date("2026-08-16T08:05:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_CUSTOMER"
-            },
-            {
-              signedAt: new Date("2026-08-16T08:06:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_PLATFORM"
-            }
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
           ],
           taskStatus: "COMPLETED"
         }
@@ -148,16 +136,8 @@ describe("Field handover workflow projection", () => {
         },
         task: {
           signers: [
-            {
-              signedAt: new Date("2026-08-16T08:05:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_CUSTOMER"
-            },
-            {
-              signedAt: new Date("2026-08-16T08:06:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_PLATFORM"
-            }
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
           ],
           taskStatus: "COMPLETED"
         }
@@ -179,16 +159,8 @@ describe("Field handover workflow projection", () => {
         },
         task: {
           signers: [
-            {
-              signedAt: new Date("2026-08-16T08:05:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_CUSTOMER"
-            },
-            {
-              signedAt: new Date("2026-08-16T08:06:00.000Z"),
-              signerStatus: "SIGNED",
-              slotId: "STAGE2_HANDOVER_PLATFORM"
-            }
+            { signedAt: new Date("2026-08-16T08:05:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_CUSTOMER" },
+            { signedAt: new Date("2026-08-16T08:06:00.000Z"), signerStatus: "SIGNED", slotId: "STAGE2_HANDOVER_PLATFORM" }
           ],
           taskStatus: "COMPLETED"
         }
@@ -196,11 +168,7 @@ describe("Field handover workflow projection", () => {
       name: "fully archived handover"
     },
     ...(["CANCELLED", "VOIDED", "FAILED"] as const).map((status) => ({
-      expected: [
-        status,
-        status === "CANCELLED" ? "已取消" : status === "VOIDED" ? "已作废" : "处理失败",
-        "ENDED"
-      ],
+      expected: [status, status === "CANCELLED" ? "已取消" : status === "VOIDED" ? "已作废" : "处理失败", "ENDED"],
       facts: { ...base, workOrderStatus: status },
       name: `terminal ${status.toLowerCase()} work order`
     })),
@@ -242,11 +210,7 @@ describe("HandoverWorkOrderService", () => {
   it("creates one active delivery-outbound work order, links Stage 2 handover, and initializes evidence checklist", async () => {
     const harness = createHandoverWorkOrderHarness();
 
-    const workOrder = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const workOrder = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
 
     expect(workOrder).toMatchObject({
       handoverId: "handover-1",
@@ -266,11 +230,7 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toThrow("进行中的交付工单");
 
     await harness.service.voidOrCancel(workOrder.id, "CANCELLED", harness.admin.id, "重新派单");
-    const replacement = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const replacement = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     expect(replacement.id).toBe("work-order-2");
   });
 
@@ -295,11 +255,14 @@ describe("HandoverWorkOrderService", () => {
     expect(first).toMatchObject({
       handoverId: "handover-1",
       metadata: expect.objectContaining({
-        journeySourceKey: "journey:journey-1:step:HANDOVER_AND_STAGE2_CREATION:revision:1"
+        journeySourceKey:
+          "journey:journey-1:step:HANDOVER_AND_STAGE2_CREATION:revision:1"
       }),
       vehicleDeliveryId: "delivery-1"
     });
-    expect(harness.financeService.evaluateInitialBillSettlement).toHaveBeenCalledTimes(2);
+    expect(
+      harness.financeService.evaluateInitialBillSettlement
+    ).toHaveBeenCalledTimes(2);
   });
 
   it("does not create a Journey handover for partial payment or incomplete delivery prerequisites", async () => {
@@ -402,17 +365,9 @@ describe("HandoverWorkOrderService", () => {
 
   it("assigns internal and external operators without storing plaintext external tokens", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
 
-    const internal = await harness.service.assignInternalOperator(
-      draft.id,
-      harness.internalUser.id,
-      harness.admin.id
-    );
+    const internal = await harness.service.assignInternalOperator(draft.id, harness.internalUser.id, harness.admin.id);
     expect(internal).toMatchObject({
       assignedInternalUserId: harness.internalUser.id,
       operatorType: "INTERNAL",
@@ -451,7 +406,8 @@ describe("HandoverWorkOrderService", () => {
     );
 
     const assignmentEvent = harness.state.events.find(
-      (event) => event.eventType === VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED
+      (event) =>
+        event.eventType === VehicleHandoverEventType.EXTERNAL_OPERATOR_ASSIGNED
     );
     expect(assignmentEvent?.id).toBeTruthy();
     expect(harness.workflowRepository.enqueue).toHaveBeenCalledWith(
@@ -459,7 +415,8 @@ describe("HandoverWorkOrderService", () => {
       expect.objectContaining({
         handoverId: draft.handoverId,
         idempotencyKey: `field-assigned:${draft.id}:${assignmentEvent!.id}`,
-        jobType: VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
+        jobType:
+          VehicleHandoverWorkflowJobType.NOTIFY_FIELD_HANDOVER_ASSIGNED,
         maxAttempts: 6,
         payload: { assignmentEventId: assignmentEvent!.id },
         workOrderId: draft.id
@@ -526,11 +483,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("verifies external access, updates access timestamps, and returns only a limited masked task view", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       {
@@ -563,11 +516,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("rejects revoked and expired external tokens", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       {
@@ -579,9 +528,7 @@ describe("HandoverWorkOrderService", () => {
     );
 
     await harness.service.revokeExternalAccess(draft.id, harness.admin.id);
-    await expect(harness.service.verifyExternalAccess(assigned.accessToken)).rejects.toThrow(
-      UnauthorizedException
-    );
+    await expect(harness.service.verifyExternalAccess(assigned.accessToken)).rejects.toThrow(UnauthorizedException);
 
     const expiredHarness = createHandoverWorkOrderHarness();
     const expiredDraft = await expiredHarness.service.createDraft(
@@ -598,18 +545,12 @@ describe("HandoverWorkOrderService", () => {
       },
       expiredHarness.admin.id
     );
-    await expect(expiredHarness.service.verifyExternalAccess(expired.accessToken)).rejects.toThrow(
-      UnauthorizedException
-    );
+    await expect(expiredHarness.service.verifyExternalAccess(expired.accessToken)).rejects.toThrow(UnauthorizedException);
   });
 
   it("rejects an external token when it is revoked or reassigned during access refresh", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       { name: "External field operator", phone: "13900001111" },
@@ -624,11 +565,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("rejects an external token revoked after the conditional access refresh", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       { name: "External field operator", phone: "13900001111" },
@@ -811,21 +748,9 @@ describe("HandoverWorkOrderService", () => {
     );
 
     await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([
-      expect.objectContaining({
-        id: "work-order-field-completed",
-        status: "FIELD_COMPLETED",
-        taskGroup: "ACTIVE"
-      }),
-      expect.objectContaining({
-        id: "work-order-ops-reviewed",
-        status: "OPS_REVIEWED",
-        taskGroup: "ACTIVE"
-      }),
-      expect.objectContaining({
-        id: "work-order-cancelled",
-        status: "CANCELLED",
-        taskGroup: "ENDED"
-      }),
+      expect.objectContaining({ id: "work-order-field-completed", status: "FIELD_COMPLETED", taskGroup: "ACTIVE" }),
+      expect.objectContaining({ id: "work-order-ops-reviewed", status: "OPS_REVIEWED", taskGroup: "ACTIVE" }),
+      expect.objectContaining({ id: "work-order-cancelled", status: "CANCELLED", taskGroup: "ENDED" }),
       expect.objectContaining({ id: "work-order-failed", status: "FAILED", taskGroup: "ENDED" }),
       expect.objectContaining({ id: "work-order-voided", status: "VOIDED", taskGroup: "ENDED" })
     ]);
@@ -889,7 +814,9 @@ describe("HandoverWorkOrderService", () => {
       }
     });
 
-    const [item] = await harness.service.listFieldAccessibleWorkOrders(harness.internalUser.mobile);
+    const [item] = await harness.service.listFieldAccessibleWorkOrders(
+      harness.internalUser.mobile
+    );
 
     expect(item).toMatchObject({
       completedAt: "2026-08-16T08:10:00.000Z",
@@ -927,12 +854,20 @@ describe("HandoverWorkOrderService", () => {
       });
     }
 
-    await expect(harness.service.listFieldAccessibleWorkOrders("13800000000")).resolves.toEqual([]);
     await expect(
-      harness.service.getFieldAccessibleWorkOrder("work-order-user-disabled", "13800000000")
+      harness.service.listFieldAccessibleWorkOrders("13800000000")
+    ).resolves.toEqual([]);
+    await expect(
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-disabled",
+        "13800000000"
+      )
     ).rejects.toBeInstanceOf(UnauthorizedException);
     await expect(
-      harness.service.getFieldAccessibleWorkOrder("work-order-user-deleted", "13800000000")
+      harness.service.getFieldAccessibleWorkOrder(
+        "work-order-user-deleted",
+        "13800000000"
+      )
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -1091,10 +1026,7 @@ describe("HandoverWorkOrderService", () => {
       status: "FIELD_IN_PROGRESS"
     });
 
-    const detail = await harness.service.getFieldAccessibleWorkOrder(
-      "work-order-visible",
-      "13800000000"
-    );
+    const detail = await harness.service.getFieldAccessibleWorkOrder("work-order-visible", "13800000000");
 
     expect(detail).toMatchObject({
       fieldFacts: {
@@ -1185,9 +1117,7 @@ describe("HandoverWorkOrderService", () => {
       handoverMileageKm: 28700
     });
     await expect(
-      harness.service.updateFieldAccessibleFacts("work-order-visible", "13900000000", {
-        handoverMileageKm: 1
-      })
+      harness.service.updateFieldAccessibleFacts("work-order-visible", "13900000000", { handoverMileageKm: 1 })
     ).rejects.toThrow(UnauthorizedException);
   });
 
@@ -1534,11 +1464,9 @@ describe("HandoverWorkOrderService", () => {
       expect.objectContaining({ processingStatus: "READY" })
     );
     expect(result).toMatchObject({ id: "evidence-item-owned", status: "UPLOADED" });
-    expect(harness.state.events).toContainEqual(
-      expect.objectContaining({
-        eventType: "EVIDENCE_FILE_REPLACED"
-      })
-    );
+    expect(harness.state.events).toContainEqual(expect.objectContaining({
+      eventType: "EVIDENCE_FILE_REPLACED"
+    }));
   });
 
   it("uses the disk-backed storage path for field evidence uploads", async () => {
@@ -1562,14 +1490,12 @@ describe("HandoverWorkOrderService", () => {
       "work-order-visible",
       "13800000000",
       "evidence-item-owned",
-      [
-        {
-          mimetype: "video/mp4",
-          originalname: "walkaround.mp4",
-          path: "C:/tmp/nonexistent-multer-upload.tmp",
-          size: 1024
-        }
-      ],
+      [{
+        mimetype: "video/mp4",
+        originalname: "walkaround.mp4",
+        path: "C:/tmp/nonexistent-multer-upload.tmp",
+        size: 1024
+      }],
       {},
       "field-session-1"
     );
@@ -1680,10 +1606,7 @@ describe("HandoverWorkOrderService", () => {
     );
     expect(harness.storageService.putDeliveryEvidenceFile).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({
-        contentType: "video/quicktime",
-        originalName: "vehicle-walkaround.mov"
-      })
+      expect.objectContaining({ contentType: "video/quicktime", originalName: "vehicle-walkaround.mov" })
     );
     expect(harness.evidenceService.attachEvidenceFile).toHaveBeenNthCalledWith(
       1,
@@ -1723,9 +1646,7 @@ describe("HandoverWorkOrderService", () => {
       id: "evidence-item-owned",
       orderId: harness.orderId
     });
-    harness.prisma.vehicleHandoverEvent.create.mockRejectedValueOnce(
-      new Error("audit unavailable")
-    );
+    harness.prisma.vehicleHandoverEvent.create.mockRejectedValueOnce(new Error("audit unavailable"));
 
     await expect(
       harness.service.uploadAndAttachFieldAccessibleEvidenceFile(
@@ -1877,11 +1798,7 @@ describe("HandoverWorkOrderService", () => {
 
   it("rejects the legacy external file-id binding route before evidence can bypass artifact processing", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       {
@@ -1892,23 +1809,17 @@ describe("HandoverWorkOrderService", () => {
       harness.admin.id
     );
 
-    await expect(
-      harness.service.attachEvidenceFileWithExternalToken(
-        assigned.accessToken,
-        "evidence-item-owned",
-        { fileId: "unsafe-existing-file", mediaType: "PHOTO" }
-      )
-    ).rejects.toThrow(BadRequestException);
+    await expect(harness.service.attachEvidenceFileWithExternalToken(
+      assigned.accessToken,
+      "evidence-item-owned",
+      { fileId: "unsafe-existing-file", mediaType: "PHOTO" }
+    )).rejects.toThrow(BadRequestException);
     expect(harness.evidenceService.attachEvidenceFile).not.toHaveBeenCalled();
   });
 
   it("records legacy token operators as display names instead of UUID actor ids", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
     const assigned = await harness.service.assignExternalOperator(
       draft.id,
       {
@@ -1920,13 +1831,11 @@ describe("HandoverWorkOrderService", () => {
 
     await harness.service.startFieldWorkByToken(assigned.accessToken);
 
-    expect(harness.state.events).toContainEqual(
-      expect.objectContaining({
-        actorDisplay: "External field operator",
-        actorId: null,
-        eventType: "FIELD_STARTED"
-      })
-    );
+    expect(harness.state.events).toContainEqual(expect.objectContaining({
+      actorDisplay: "External field operator",
+      actorId: null,
+      eventType: "FIELD_STARTED"
+    }));
   });
 
   it("rejects SVG and mismatched active-content MIME types before storage", async () => {
@@ -2034,10 +1943,7 @@ describe("HandoverWorkOrderService", () => {
       status: "FIELD_IN_PROGRESS"
     });
 
-    const readiness = await harness.service.getFieldAccessibleReadiness(
-      "work-order-visible",
-      "13800000000"
-    );
+    const readiness = await harness.service.getFieldAccessibleReadiness("work-order-visible", "13800000000");
 
     expect(readiness.ready).toBe(false);
     expect(readiness.blockingReasons).toContain("请上传损伤/瑕疵近拍");
@@ -2084,38 +1990,22 @@ describe("HandoverWorkOrderService", () => {
 
   it("requires field facts, evidence completeness, and a resolved damage state before customer review", async () => {
     const harness = createHandoverWorkOrderHarness();
-    const draft = await harness.service.createDraft(
-      harness.orderId,
-      "DELIVERY_OUTBOUND",
-      harness.admin.id
-    );
-    await harness.service.assignInternalOperator(
-      draft.id,
-      harness.internalUser.id,
-      harness.admin.id
-    );
+    const draft = await harness.service.createDraft(harness.orderId, "DELIVERY_OUTBOUND", harness.admin.id);
+    await harness.service.assignInternalOperator(draft.id, harness.internalUser.id, harness.admin.id);
     await harness.service.startFieldWork(draft.id, harness.internalUser.id);
 
-    await expect(harness.service.submitEvidence(draft.id, harness.internalUser.id)).rejects.toThrow(
-      BadRequestException
-    );
+    await expect(harness.service.submitEvidence(draft.id, harness.internalUser.id)).rejects.toThrow(BadRequestException);
 
-    await harness.service.updateFieldFacts(
-      draft.id,
-      {
-        accessoryChecklist: { chargingCable: true, keys: 2 },
-        deliveryLocation: "上海市测试交付点",
-        energyLevelText: "80%",
-        handoverMileageKm: 28500,
-        noVisibleDamageDeclared: true
-      },
-      harness.internalUser.id
-    );
+    await harness.service.updateFieldFacts(draft.id, {
+      accessoryChecklist: { chargingCable: true, keys: 2 },
+      deliveryLocation: "上海市测试交付点",
+      energyLevelText: "80%",
+      handoverMileageKm: 28500,
+      noVisibleDamageDeclared: true
+    }, harness.internalUser.id);
 
     harness.evidenceService.setFieldComplete(false);
-    await expect(harness.service.submitEvidence(draft.id, harness.internalUser.id)).rejects.toThrow(
-      "证据尚未完整"
-    );
+    await expect(harness.service.submitEvidence(draft.id, harness.internalUser.id)).rejects.toThrow("证据尚未完整");
 
     harness.evidenceService.setFieldComplete(true);
     const submitted = await harness.service.submitEvidence(draft.id, harness.internalUser.id);
@@ -2134,12 +2024,9 @@ describe("HandoverWorkOrderService", () => {
     const harness = createReadyForCustomerReviewHarness();
     harness.state.vehicleInspection = null;
 
-    await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
-      "客户尚未确认"
-    );
+    await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("客户尚未确认");
 
-    const manifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1"))
-      .manifestHash;
+    const manifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
     const confirmed = await harness.service.customerConfirmNoObjection(
       "work-order-1",
       "customer-1",
@@ -2150,20 +2037,14 @@ describe("HandoverWorkOrderService", () => {
       status: "CUSTOMER_CONFIRMED"
     });
 
-    await expect(
-      harness.service.markOpsReviewPending("work-order-1", harness.admin.id)
-    ).rejects.toThrow(BadRequestException);
-
-    await harness.service.markCustomerSigned(
-      "work-order-1",
-      new Date("2026-07-21T04:10:00.000Z"),
-      harness.admin.id
+    await expect(harness.service.markOpsReviewPending("work-order-1", harness.admin.id)).rejects.toThrow(
+      BadRequestException
     );
+
+    await harness.service.markCustomerSigned("work-order-1", new Date("2026-07-21T04:10:00.000Z"), harness.admin.id);
     await harness.service.markOpsReviewPending("work-order-1", harness.admin.id);
     await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).resolves.toBeUndefined();
-    await expect(
-      harness.service.assertReadyForStage2ESign(harness.orderId)
-    ).resolves.toBeUndefined();
+    await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).resolves.toBeUndefined();
 
     await harness.service.markOpsReviewRejected("work-order-1", harness.admin.id, "抽检后补材料");
     await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).rejects.toThrow();
@@ -2193,9 +2074,9 @@ describe("HandoverWorkOrderService", () => {
       const harness = createConfirmedWorkOrderHarness();
       Object.assign(harness.state.workOrders[0]!, { status });
 
-      await expect(
-        harness.service.markOpsReviewPending("work-order-1", harness.admin.id)
-      ).rejects.toThrow(BadRequestException);
+      await expect(harness.service.markOpsReviewPending("work-order-1", harness.admin.id)).rejects.toThrow(
+        BadRequestException
+      );
     }
   });
 
@@ -2212,13 +2093,7 @@ describe("HandoverWorkOrderService", () => {
   });
 
   it("allows ops review pending after customer signing, platform seal, or field completion", async () => {
-    const allowedStatuses = [
-      "CUSTOMER_SIGNED",
-      "PLATFORM_SEALED",
-      "FIELD_COMPLETED",
-      "OPS_REVIEW_PENDING",
-      "OPS_REVIEWED"
-    ];
+    const allowedStatuses = ["CUSTOMER_SIGNED", "PLATFORM_SEALED", "FIELD_COMPLETED", "OPS_REVIEW_PENDING", "OPS_REVIEWED"];
 
     for (const status of allowedStatuses) {
       const harness = createConfirmedWorkOrderHarness();
@@ -2240,34 +2115,48 @@ describe("HandoverWorkOrderService", () => {
   it("publishes readiness and decides the exact aggregate review in the same transaction", async () => {
     const harness = createReadyForCustomerReviewHarness();
     harness.state.vehicleInspection = null;
-    const manifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1"))
-      .manifestHash;
-    await harness.service.customerConfirmNoObjection("work-order-1", "customer-1", manifestHash);
-    await harness.service.markCustomerSigned("work-order-1", harness.now, harness.admin.id);
-
-    await harness.service.markOpsReviewPending("work-order-1", harness.admin.id);
-    expect(harness.evidenceService.recordJourneyEvidenceReady).toHaveBeenCalledWith(
-      harness.prisma,
-      {
-        handoverId: "handover-1",
-        manifestHash,
-        orderId: harness.orderId,
-        workOrderId: "work-order-1"
-      }
+    const manifestHash = (
+      await harness.service.getCurrentEvidencePackage("work-order-1")
+    ).manifestHash;
+    await harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      manifestHash
+    );
+    await harness.service.markCustomerSigned(
+      "work-order-1",
+      harness.now,
+      harness.admin.id
     );
 
-    await harness.service.markOpsReviewApproved("work-order-1", harness.admin.id, "approved");
-    expect(harness.journeySignal.completeHandoverEvidenceDecision).toHaveBeenCalledWith(
-      harness.prisma,
-      {
-        actorId: harness.admin.id,
-        decision: "APPROVED",
-        manifestHash,
-        notes: "approved",
-        orderId: harness.orderId,
-        workOrderId: "work-order-1"
-      }
+    await harness.service.markOpsReviewPending(
+      "work-order-1",
+      harness.admin.id
     );
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledWith(harness.prisma, {
+      handoverId: "handover-1",
+      manifestHash,
+      orderId: harness.orderId,
+      workOrderId: "work-order-1"
+    });
+
+    await harness.service.markOpsReviewApproved(
+      "work-order-1",
+      harness.admin.id,
+      "approved"
+    );
+    expect(
+      harness.journeySignal.completeHandoverEvidenceDecision
+    ).toHaveBeenCalledWith(harness.prisma, {
+      actorId: harness.admin.id,
+      decision: "APPROVED",
+      manifestHash,
+      notes: "approved",
+      orderId: harness.orderId,
+      workOrderId: "work-order-1"
+    });
     expect(harness.state.vehicleInspection).toMatchObject({
       inspectedAt: harness.now,
       orderId: harness.orderId,
@@ -2279,7 +2168,9 @@ describe("HandoverWorkOrderService", () => {
     const harness = createConfirmedWorkOrderHarness();
     setCompleteArchivedHandover(harness);
 
-    const result = await harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1");
+    const result = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
 
     const manifestHash = buildDeliveryHandoverEvidencePackage({
       evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
@@ -2297,7 +2188,9 @@ describe("HandoverWorkOrderService", () => {
       opsReviewStatus: "PENDING",
       status: "OPS_REVIEW_PENDING"
     });
-    expect(harness.evidenceService.recordJourneyEvidenceReady).toHaveBeenCalledWith(
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledWith(
       harness.prisma,
       {
         handoverId: "handover-1",
@@ -2327,7 +2220,9 @@ describe("HandoverWorkOrderService", () => {
     await expect(
       harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1")
     ).rejects.toThrow("STAGE2_HANDOVER_ARCHIVE_INCOMPLETE");
-    expect(harness.evidenceService.recordJourneyEvidenceReady).not.toHaveBeenCalled();
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).not.toHaveBeenCalled();
     expect(harness.state.workOrders[0]).toMatchObject({
       opsReviewStatus: "NOT_REQUIRED",
       status: "CUSTOMER_CONFIRMED"
@@ -2340,14 +2235,17 @@ describe("HandoverWorkOrderService", () => {
       const harness = createConfirmedWorkOrderHarness();
       setCompleteArchivedHandover(harness);
       Object.assign(harness.state.workOrders[0]!, {
-        customerObjectedAt: status === "CUSTOMER_OBJECTED" ? harness.now : null,
+        customerObjectedAt:
+          status === "CUSTOMER_OBJECTED" ? harness.now : null,
         status
       });
 
       await expect(
         harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1")
       ).rejects.toThrow(BadRequestException);
-      expect(harness.evidenceService.recordJourneyEvidenceReady).not.toHaveBeenCalled();
+      expect(
+        harness.evidenceService.recordJourneyEvidenceReady
+      ).not.toHaveBeenCalled();
     }
   );
 
@@ -2355,8 +2253,12 @@ describe("HandoverWorkOrderService", () => {
     const harness = createConfirmedWorkOrderHarness();
     setCompleteArchivedHandover(harness);
 
-    const first = await harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1");
-    const second = await harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1");
+    const first = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
+    const second = await harness.service.reconcileArchivedStage2JourneyEvidence(
+      "work-order-1"
+    );
 
     expect(first.outcome).toBe("SIGNALLED");
     expect(second).toEqual({ ...first, outcome: "ALREADY_READY" });
@@ -2365,8 +2267,12 @@ describe("HandoverWorkOrderService", () => {
         (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
       )
     ).toHaveLength(1);
-    expect(harness.evidenceService.recordJourneyEvidenceReady).toHaveBeenCalledTimes(2);
-    expect(harness.evidenceService.recordJourneyEvidenceReady).toHaveBeenNthCalledWith(
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenNthCalledWith(
       2,
       harness.prisma,
       {
@@ -2386,9 +2292,12 @@ describe("HandoverWorkOrderService", () => {
       { id: "work-order-1" }
     ]);
 
-    const result = await harness.service.reconcileArchivedStage2JourneyEvidenceBatch(10);
+    const result = await harness.service
+      .reconcileArchivedStage2JourneyEvidenceBatch(10);
 
-    expect(harness.prisma.vehicleHandoverWorkOrder.findMany).toHaveBeenCalledWith({
+    expect(
+      harness.prisma.vehicleHandoverWorkOrder.findMany
+    ).toHaveBeenCalledWith({
       orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
       select: { id: true },
       take: 10,
@@ -2433,18 +2342,20 @@ describe("HandoverWorkOrderService", () => {
   it("continues bounded archive convergence after one candidate fails", async () => {
     const harness = createConfirmedWorkOrderHarness();
     setCompleteArchivedHandover(harness);
-    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(
+      () => undefined
+    );
     harness.prisma.vehicleHandoverWorkOrder.findMany.mockResolvedValueOnce([
       { id: "missing-work-order" },
       { id: "work-order-1" }
     ]);
 
-    await expect(harness.service.reconcileArchivedStage2JourneyEvidenceBatch(2)).resolves.toEqual({
-      failed: 1,
-      processed: 1,
-      scanned: 2
-    });
-    expect(harness.evidenceService.recordJourneyEvidenceReady).toHaveBeenCalledTimes(1);
+    await expect(
+      harness.service.reconcileArchivedStage2JourneyEvidenceBatch(2)
+    ).resolves.toEqual({ failed: 1, processed: 1, scanned: 2 });
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith({
       errorCode: "STAGE2_ARCHIVE_CONVERGENCE_FAILED",
       operation: "RECONCILE_ARCHIVED_STAGE2_EVIDENCE",
@@ -2458,24 +2369,15 @@ describe("HandoverWorkOrderService", () => {
 
     await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议");
 
-    await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).rejects.toThrow(
-      "客户存在异议"
-    );
+    await expect(harness.service.assertReadyForStage2ESign(harness.orderId)).rejects.toThrow("客户存在异议");
     expect(harness.state.workOrders[0]!).toMatchObject({
       customerObjectionReason: "车辆外观有异议",
       status: "CUSTOMER_OBJECTED"
     });
 
     const cancelledHarness = createReadyForCustomerReviewHarness();
-    await cancelledHarness.service.voidOrCancel(
-      "work-order-1",
-      "CANCELLED",
-      cancelledHarness.admin.id,
-      "取消测试"
-    );
-    await expect(
-      cancelledHarness.service.assertReadyForStage2Pdf(cancelledHarness.orderId)
-    ).rejects.toThrow("交付工单已终止");
+    await cancelledHarness.service.voidOrCancel("work-order-1", "CANCELLED", cancelledHarness.admin.id, "取消测试");
+    await expect(cancelledHarness.service.assertReadyForStage2Pdf(cancelledHarness.orderId)).rejects.toThrow("交付工单已终止");
   });
 
   it("requires Admin intervention before an objected handover can be resubmitted to customer review", async () => {
@@ -2487,19 +2389,10 @@ describe("HandoverWorkOrderService", () => {
       operatorType: "EXTERNAL"
     });
 
-    await harness.service.customerObject(
-      "work-order-1",
-      "customer-1",
-      "车辆外观有异议",
-      "右前轮毂需复核"
-    );
+    await harness.service.customerObject("work-order-1", "customer-1", "车辆外观有异议", "右前轮毂需复核");
 
     await expect(
-      harness.service.submitFieldAccessibleEvidence(
-        "work-order-1",
-        "13800000000",
-        "field-session-1"
-      )
+      harness.service.submitFieldAccessibleEvidence("work-order-1", "13800000000", "field-session-1")
     ).rejects.toThrow(BadRequestException);
 
     await harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "已受理");
@@ -2510,11 +2403,7 @@ describe("HandoverWorkOrderService", () => {
     });
 
     await expect(
-      harness.service.submitFieldAccessibleEvidence(
-        "work-order-1",
-        "13800000000",
-        "field-session-1"
-      )
+      harness.service.submitFieldAccessibleEvidence("work-order-1", "13800000000", "field-session-1")
     ).rejects.toThrow("请至少更新一项后台要求复检的现场资料");
 
     await harness.service.updateFieldAccessibleFacts(
@@ -2540,16 +2429,14 @@ describe("HandoverWorkOrderService", () => {
     expect(resubmitted).toMatchObject({
       adminReviewStatus: "RESUBMITTED_PENDING_ADMIN"
     });
-    await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow(
-      "现场资料已重新提交"
+    await expect(harness.service.assertReadyForStage2Pdf(harness.orderId)).rejects.toThrow("现场资料已重新提交");
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      `sha256:${"0".repeat(64)}`
+    )).rejects.toThrow(
+      "客户已提交异议"
     );
-    await expect(
-      harness.service.customerConfirmNoObjection(
-        "work-order-1",
-        "customer-1",
-        `sha256:${"0".repeat(64)}`
-      )
-    ).rejects.toThrow("客户已提交异议");
 
     await harness.service.sendCustomerObjectionBackToReview(
       "work-order-1",
@@ -2575,28 +2462,24 @@ describe("HandoverWorkOrderService", () => {
         })
       ])
     );
-    const refreshedManifestHash = (await harness.service.getCurrentEvidencePackage("work-order-1"))
-      .manifestHash;
-    await expect(
-      harness.service.customerConfirmNoObjection(
-        "work-order-1",
-        "customer-1",
-        refreshedManifestHash
-      )
-    ).resolves.toMatchObject({
+    const refreshedManifestHash =
+      (await harness.service.getCurrentEvidencePackage("work-order-1")).manifestHash;
+    await expect(harness.service.customerConfirmNoObjection(
+      "work-order-1",
+      "customer-1",
+      refreshedManifestHash
+    )).resolves.toMatchObject({
       status: "CUSTOMER_CONFIRMED"
     });
-    expect(harness.state.events.map((event) => event.eventType)).toEqual(
-      expect.arrayContaining([
-        "CUSTOMER_OBJECTED",
-        "OBJECTION_ACKNOWLEDGED",
-        "RESUBMISSION_REQUESTED",
-        "FIELD_FACTS_UPDATED",
-        "FIELD_RESUBMITTED",
-        "SENT_BACK_TO_CUSTOMER_REVIEW",
-        "CUSTOMER_CONFIRMED"
-      ])
-    );
+    expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "CUSTOMER_OBJECTED",
+      "OBJECTION_ACKNOWLEDGED",
+      "RESUBMISSION_REQUESTED",
+      "FIELD_FACTS_UPDATED",
+      "FIELD_RESUBMITTED",
+      "SENT_BACK_TO_CUSTOMER_REVIEW",
+      "CUSTOMER_CONFIRMED"
+    ]));
   });
 
   it("rejects skipped, repeated, and regressive objection transitions", async () => {
@@ -2622,11 +2505,7 @@ describe("HandoverWorkOrderService", () => {
       harness.service.acknowledgeCustomerObjection("work-order-1", harness.admin.id, "重复受理")
     ).rejects.toThrow("当前异议状态不能重复受理");
     await expect(
-      harness.service.sendCustomerObjectionBackToReview(
-        "work-order-1",
-        harness.admin.id,
-        "跳步送回"
-      )
+      harness.service.sendCustomerObjectionBackToReview("work-order-1", harness.admin.id, "跳步送回")
     ).rejects.toThrow("现场资料重新提交后，后台才能送回客户复核");
   });
 
@@ -2782,41 +2661,25 @@ describe("HandoverWorkOrderService", () => {
   it("keeps field completion tied to customer signing and delivery confirmation tied to completed Stage 2 signing", async () => {
     const harness = createConfirmedWorkOrderHarness();
 
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(
-      BadRequestException
-    );
+    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(BadRequestException);
 
-    await harness.service.markCustomerSigned(
-      "work-order-1",
-      new Date("2026-07-21T04:10:00.000Z"),
-      harness.admin.id
-    );
+    await harness.service.markCustomerSigned("work-order-1", new Date("2026-07-21T04:10:00.000Z"), harness.admin.id);
     expect(harness.state.workOrders[0]!).toMatchObject({
       fieldCompletedAt: expect.any(Date),
       status: "CUSTOMER_SIGNED"
     });
-    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(
-      BadRequestException
-    );
+    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).rejects.toThrow(BadRequestException);
 
     harness.state.handover.status = "SIGNED";
     harness.state.handover.archiveStatus = "FAILED";
-    await harness.service.markPlatformSealed(
-      "work-order-1",
-      new Date("2026-07-21T04:12:00.000Z"),
-      harness.admin.id
-    );
-    await expect(
-      harness.service.assertDeliveryCanBeConfirmed(harness.orderId)
-    ).resolves.toBeUndefined();
-    await harness.service.markFieldCompleted(
-      "work-order-1",
-      new Date("2026-07-21T04:15:00.000Z"),
-      harness.admin.id
-    );
-    expect(harness.state.events.map((event) => event.eventType)).toEqual(
-      expect.arrayContaining(["CUSTOMER_SIGNED", "PLATFORM_SEALED", "FIELD_COMPLETED"])
-    );
+    await harness.service.markPlatformSealed("work-order-1", new Date("2026-07-21T04:12:00.000Z"), harness.admin.id);
+    await expect(harness.service.assertDeliveryCanBeConfirmed(harness.orderId)).resolves.toBeUndefined();
+    await harness.service.markFieldCompleted("work-order-1", new Date("2026-07-21T04:15:00.000Z"), harness.admin.id);
+    expect(harness.state.events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "CUSTOMER_SIGNED",
+      "PLATFORM_SEALED",
+      "FIELD_COMPLETED"
+    ]));
   });
 
   it("rejects signing and completion state jumps from a draft work order", async () => {
@@ -2874,7 +2737,10 @@ function createConfirmedWorkOrderHarness() {
     orderId: harness.orderId,
     workOrderId: "work-order-1"
   });
-  harness.state.handover.manifestHash = evidencePackage.manifestHash.replace(/^sha256:/, "");
+  harness.state.handover.manifestHash = evidencePackage.manifestHash.replace(
+    /^sha256:/,
+    ""
+  );
   harness.state.reviewAttempts.push({
     attemptNo: 1,
     evidenceSnapshot: {
@@ -2893,7 +2759,9 @@ function createConfirmedWorkOrderHarness() {
   return harness;
 }
 
-function setCompleteArchivedHandover(harness: ReturnType<typeof createHandoverWorkOrderHarness>) {
+function setCompleteArchivedHandover(
+  harness: ReturnType<typeof createHandoverWorkOrderHarness>
+) {
   Object.assign(harness.state.handover, {
     archiveStatus: "ARCHIVED",
     archivedAt: harness.now,
@@ -3080,22 +2948,27 @@ function createHandoverWorkOrderHarness() {
   const handoverService = {
     getOrCreateDraftHandover: vi.fn(async () => state.handover),
     isDeliveryReady: vi.fn(),
-    assertDeliveryCanBeConfirmed: vi.fn(
-      async (_orderId: string, _db: unknown, currentEvidenceManifestDigest: string) => {
-        if (
-          (state.handover.status !== "SIGNED" && state.handover.status !== "ARCHIVED") ||
-          state.handover.manifestHash !== currentEvidenceManifestDigest
-        ) {
-          throw new BadRequestException("交付交接确认书尚未完成签署。");
-        }
+    assertDeliveryCanBeConfirmed: vi.fn(async (
+      _orderId: string,
+      _db: unknown,
+      currentEvidenceManifestDigest: string
+    ) => {
+      if (
+        (state.handover.status !== "SIGNED" &&
+          state.handover.status !== "ARCHIVED") ||
+        state.handover.manifestHash !== currentEvidenceManifestDigest
+      ) {
+        throw new BadRequestException("交付交接确认书尚未完成签署。");
       }
-    )
+    })
   };
   const prisma = {
     fieldOperatorAuditLog: {
       aggregate: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         const rows = state.fieldOperatorAuditLogs.filter(
-          (row) => row.workOrderId === where.workOrderId && row.eventType === where.eventType
+          (row) =>
+            row.workOrderId === where.workOrderId &&
+            row.eventType === where.eventType
         );
         const createdTimes = rows
           .map((row) => row.createdAt)
@@ -3117,40 +2990,40 @@ function createHandoverWorkOrderHarness() {
     },
     vehicleInspection: {
       findUnique: vi.fn(async () => state.vehicleInspection),
-      upsert: vi.fn(
-        async ({
-          create,
-          update
-        }: {
-          create: Record<string, unknown>;
-          update: Record<string, unknown>;
-        }) => {
-          if (state.vehicleInspection) {
-            Object.assign(state.vehicleInspection, update);
-          } else {
-            state.vehicleInspection = {
-              createdBy: String(create.createdBy),
-              deletedAt: null,
-              id: "inspection-1",
-              inspectedAt: create.inspectedAt as Date,
-              orderId: String(create.orderId),
-              status: create.status as "PASSED",
-              updatedBy: String(create.updatedBy)
-            };
-          }
-          return state.vehicleInspection;
+      upsert: vi.fn(async ({
+        create,
+        update
+      }: {
+        create: Record<string, unknown>;
+        update: Record<string, unknown>;
+      }) => {
+        if (state.vehicleInspection) {
+          Object.assign(state.vehicleInspection, update);
+        } else {
+          state.vehicleInspection = {
+            createdBy: String(create.createdBy),
+            deletedAt: null,
+            id: "inspection-1",
+            inspectedAt: create.inspectedAt as Date,
+            orderId: String(create.orderId),
+            status: create.status as "PASSED",
+            updatedBy: String(create.updatedBy)
+          };
         }
-      )
+        return state.vehicleInspection;
+      })
     },
     user: {
-      findFirst: vi.fn(
-        async ({ where }: { where: { deletedAt?: null; id?: string; status?: UserStatus } }) =>
-          state.users.find(
-            (user) =>
-              user.id === where.id &&
-              (where.deletedAt === undefined || user.deletedAt === where.deletedAt) &&
-              (where.status === undefined || user.status === where.status)
-          ) ?? null
+      findFirst: vi.fn(async ({
+        where
+      }: {
+        where: { deletedAt?: null; id?: string; status?: UserStatus };
+      }) =>
+        state.users.find((user) =>
+          user.id === where.id &&
+          (where.deletedAt === undefined || user.deletedAt === where.deletedAt) &&
+          (where.status === undefined || user.status === where.status)
+        ) ?? null
       )
     },
     vehicleDelivery: {
@@ -3162,10 +3035,14 @@ function createHandoverWorkOrderHarness() {
     },
     vehicleDeliveryHandover: {
       findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        !where.id || where.id === state.handover.id ? state.handover : null
+        (!where.id || where.id === state.handover.id)
+          ? state.handover
+          : null
       ),
       findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        !where.id || where.id === state.handover.id ? state.handover : null
+        (!where.id || where.id === state.handover.id)
+          ? state.handover
+          : null
       )
     },
     fileObject: {
@@ -3186,30 +3063,25 @@ function createHandoverWorkOrderHarness() {
       updateMany: vi.fn(async () => ({ count: 1 }))
     },
     vehicleDeliveryEvidenceItem: {
-      findFirst: vi.fn(
-        async ({ where }: { where: Record<string, unknown> }) =>
-          state.evidenceItems.find((item) => matchesEvidenceItemWhere(item, where)) ?? null
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceItems.find((item) => matchesEvidenceItemWhere(item, where)) ?? null
       )
     },
     vehicleDeliveryEvidenceFile: {
-      findFirst: vi.fn(
-        async ({ where }: { where: Record<string, unknown> }) =>
-          state.evidenceFiles.find(
-            (file) =>
-              (!where.id || file.id === where.id) &&
-              (!where.lifecycleStatus || file.lifecycleStatus === where.lifecycleStatus)
-          ) ?? null
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        state.evidenceFiles.find((file) =>
+          (!where.id || file.id === where.id) &&
+          (!where.lifecycleStatus || file.lifecycleStatus === where.lifecycleStatus)
+        ) ?? null
       ),
-      update: vi.fn(
-        async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
-          const evidenceFile = state.evidenceFiles.find((row) => row.id === where.id);
-          if (!evidenceFile) {
-            throw new Error("evidence file not found");
-          }
-          Object.assign(evidenceFile, data);
-          return evidenceFile;
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const evidenceFile = state.evidenceFiles.find((row) => row.id === where.id);
+        if (!evidenceFile) {
+          throw new Error("evidence file not found");
         }
-      )
+        Object.assign(evidenceFile, data);
+        return evidenceFile;
+      })
     },
     vehicleHandoverWorkOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -3225,39 +3097,27 @@ function createHandoverWorkOrderHarness() {
         return state.workOrders.find((row) => matchesWorkOrderWhere(row, where)) ?? null;
       }),
       findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
-        state.workOrders.filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
+        state.workOrders
+          .filter((workOrder) => matchesWorkOrderWhere(workOrder, where))
       ),
-      findUnique: vi.fn(
-        async ({ where }: { where: { id?: string } }) =>
-          state.workOrders.find((workOrder) => workOrder.id === where.id) ?? null
+      findUnique: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        state.workOrders.find((workOrder) => workOrder.id === where.id) ?? null
       ),
-      update: vi.fn(
-        async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
-          const workOrder = state.workOrders.find((row) => row.id === where.id);
-          if (!workOrder) {
-            throw new Error("work order not found");
-          }
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const workOrder = state.workOrders.find((row) => row.id === where.id);
+        if (!workOrder) {
+          throw new Error("work order not found");
+        }
+        Object.assign(workOrder, applyAtomicUpdates(workOrder, data), { updatedAt: now });
+        return workOrder;
+      }),
+      updateMany: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+        const rows = state.workOrders.filter((workOrder) => matchesWorkOrderWhere(workOrder, where));
+        for (const workOrder of rows) {
           Object.assign(workOrder, applyAtomicUpdates(workOrder, data), { updatedAt: now });
-          return workOrder;
         }
-      ),
-      updateMany: vi.fn(
-        async ({
-          data,
-          where
-        }: {
-          data: Record<string, unknown>;
-          where: Record<string, unknown>;
-        }) => {
-          const rows = state.workOrders.filter((workOrder) =>
-            matchesWorkOrderWhere(workOrder, where)
-          );
-          for (const workOrder of rows) {
-            Object.assign(workOrder, applyAtomicUpdates(workOrder, data), { updatedAt: now });
-          }
-          return { count: rows.length };
-        }
-      )
+        return { count: rows.length };
+      })
     },
     vehicleHandoverEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -3284,43 +3144,21 @@ function createHandoverWorkOrderHarness() {
         state.reviewAttempts.push(attempt);
         return attempt;
       }),
-      findFirst: vi.fn(
-        async ({
-          orderBy,
-          where
-        }: {
-          orderBy?: Record<string, string>;
-          where: Record<string, unknown>;
-        }) => {
-          const rows = state.reviewAttempts.filter((attempt) =>
-            matchesReviewAttemptWhere(attempt, where)
-          );
-          return sortReviewAttempts(rows, orderBy)[0] ?? null;
-        }
+      findFirst: vi.fn(async ({ orderBy, where }: { orderBy?: Record<string, string>; where: Record<string, unknown> }) => {
+        const rows = state.reviewAttempts.filter((attempt) => matchesReviewAttemptWhere(attempt, where));
+        return sortReviewAttempts(rows, orderBy)[0] ?? null;
+      }),
+      findMany: vi.fn(async ({ orderBy, where }: { orderBy?: Record<string, string>; where: Record<string, unknown> }) =>
+        sortReviewAttempts(state.reviewAttempts.filter((attempt) => matchesReviewAttemptWhere(attempt, where)), orderBy)
       ),
-      findMany: vi.fn(
-        async ({
-          orderBy,
-          where
-        }: {
-          orderBy?: Record<string, string>;
-          where: Record<string, unknown>;
-        }) =>
-          sortReviewAttempts(
-            state.reviewAttempts.filter((attempt) => matchesReviewAttemptWhere(attempt, where)),
-            orderBy
-          )
-      ),
-      update: vi.fn(
-        async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
-          const attempt = state.reviewAttempts.find((row) => row.id === where.id);
-          if (!attempt) {
-            throw new Error("review attempt not found");
-          }
-          Object.assign(attempt, data, { updatedAt: now });
-          return attempt;
+      update: vi.fn(async ({ data, where }: { data: Record<string, unknown>; where: { id?: string } }) => {
+        const attempt = state.reviewAttempts.find((row) => row.id === where.id);
+        if (!attempt) {
+          throw new Error("review attempt not found");
         }
-      )
+        Object.assign(attempt, data, { updatedAt: now });
+        return attempt;
+      })
     },
     vehicleHandoverWorkflowJob: {
       findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
@@ -3380,65 +3218,58 @@ function createHandoverWorkOrderHarness() {
     }))
   };
   const artifactService = {
-    prepareUpload: vi.fn(
-      async (input: {
-        evidenceType: string;
-        file: { mimetype?: string; originalname?: string; size: number };
-        mediaType: "PHOTO" | "VIDEO";
-      }) => {
-        const extension = input.file.originalname?.split(".").pop()?.toLowerCase();
-        const detectedMimeType =
-          input.mediaType === "PHOTO"
-            ? extension === "heic"
-              ? "image/heic"
-              : extension === "heif"
-                ? "image/heif"
-                : input.file.mimetype || "image/jpeg"
-            : extension === "mov"
-              ? "video/quicktime"
-              : extension === "m4v"
-                ? "video/x-m4v"
-                : input.file.mimetype || "video/mp4";
-        return {
-          cleanup: vi.fn(async () => undefined),
-          derivatives:
-            input.mediaType === "PHOTO"
-              ? [
-                  {
-                    contentType: "image/jpeg",
-                    filePath: "C:/tmp/stage2-photo-preview.jpg",
-                    kind: "PHOTO_PREVIEW",
-                    originalName: "front-preview.jpg",
-                    sizeBytes: 8
-                  }
-                ]
-              : [
-                  {
-                    contentType: "image/jpeg",
-                    filePath: "C:/tmp/stage2-video-frame-01.jpg",
-                    kind: "VIDEO_FRAME",
-                    originalName: "video-frame-01.jpg",
-                    sizeBytes: 8
-                  }
-                ],
-          metadata: {
-            artifactVersion: 1,
-            detectedCodec: input.mediaType === "VIDEO" ? "h264" : null,
-            detectedMimeType,
-            processedAt: "2026-07-25T00:00:00.000Z",
-            processingStatus: "READY",
-            sourceSha256: `sha256:${"a".repeat(64)}`,
-            sourceSizeBytes: input.file.size,
-            videoBitRateBps: input.mediaType === "VIDEO" ? 8_000_000 : null,
-            videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null,
-            videoFrameRate: input.mediaType === "VIDEO" ? 30 : null,
-            videoHeightPx: input.mediaType === "VIDEO" ? 1080 : null,
-            videoQualityStatus: input.evidenceType === "WALKAROUND_VIDEO" ? "PASSED" : null,
-            videoWidthPx: input.mediaType === "VIDEO" ? 1920 : null
-          }
-        };
-      }
-    )
+    prepareUpload: vi.fn(async (input: {
+      evidenceType: string;
+      file: { mimetype?: string; originalname?: string; size: number };
+      mediaType: "PHOTO" | "VIDEO";
+    }) => {
+      const extension = input.file.originalname?.split(".").pop()?.toLowerCase();
+      const detectedMimeType = input.mediaType === "PHOTO"
+        ? extension === "heic"
+          ? "image/heic"
+          : extension === "heif"
+            ? "image/heif"
+            : input.file.mimetype || "image/jpeg"
+        : extension === "mov"
+          ? "video/quicktime"
+          : extension === "m4v"
+            ? "video/x-m4v"
+            : input.file.mimetype || "video/mp4";
+      return {
+        cleanup: vi.fn(async () => undefined),
+        derivatives: input.mediaType === "PHOTO"
+          ? [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-photo-preview.jpg",
+              kind: "PHOTO_PREVIEW",
+              originalName: "front-preview.jpg",
+              sizeBytes: 8
+            }]
+          : [{
+              contentType: "image/jpeg",
+              filePath: "C:/tmp/stage2-video-frame-01.jpg",
+              kind: "VIDEO_FRAME",
+              originalName: "video-frame-01.jpg",
+              sizeBytes: 8
+            }],
+        metadata: {
+          artifactVersion: 1,
+          detectedCodec: input.mediaType === "VIDEO" ? "h264" : null,
+          detectedMimeType,
+          processedAt: "2026-07-25T00:00:00.000Z",
+          processingStatus: "READY",
+          sourceSha256: `sha256:${"a".repeat(64)}`,
+          sourceSizeBytes: input.file.size,
+          videoBitRateBps: input.mediaType === "VIDEO" ? 8_000_000 : null,
+          videoDurationMs: input.mediaType === "VIDEO" ? 1_000 : null,
+          videoFrameRate: input.mediaType === "VIDEO" ? 30 : null,
+          videoHeightPx: input.mediaType === "VIDEO" ? 1080 : null,
+          videoQualityStatus:
+            input.evidenceType === "WALKAROUND_VIDEO" ? "PASSED" : null,
+          videoWidthPx: input.mediaType === "VIDEO" ? 1920 : null
+        }
+      };
+    })
   };
   const workflowRepository = {
     enqueue: vi.fn(async (_tx: unknown, input: Record<string, unknown>) => {
@@ -3500,7 +3331,8 @@ function createHandoverWorkOrderHarness() {
     orderId,
     prisma,
     service,
-    state,
+    state
+    ,
     storageService,
     workflowRepository
   };
@@ -3520,32 +3352,30 @@ function createEvidenceService() {
     items: [
       {
         evidenceType: "VEHICLE_FRONT",
-        files: [
-          {
-            file: {
-              id: "file-default",
-              mimeType: "image/jpeg",
-              originalName: "front.jpg",
-              sizeBytes: 1024
-            },
-            fileId: "file-default",
-            id: "evidence-file-default",
-            mediaType: "PHOTO",
-            metadata: {
-              artifactVersion: 1,
-              detectedMimeType: "image/jpeg",
-              photoPreviewFileId: "preview-file-default",
-              processedAt: "2026-07-22T08:00:00.000Z",
-              processingStatus: "READY",
-              sourceSha256: `sha256:${"1".repeat(64)}`,
-              sourceSizeBytes: 1024,
-              videoDurationMs: null,
-              videoFrameFileIds: []
-            },
-            objectKey: "oss/internal/evidence.jpg",
-            uploadedAt: new Date("2026-07-22T08:00:00.000Z")
-          }
-        ],
+        files: [{
+          file: {
+            id: "file-default",
+            mimeType: "image/jpeg",
+            originalName: "front.jpg",
+            sizeBytes: 1024
+          },
+          fileId: "file-default",
+          id: "evidence-file-default",
+          mediaType: "PHOTO",
+          metadata: {
+            artifactVersion: 1,
+            detectedMimeType: "image/jpeg",
+            photoPreviewFileId: "preview-file-default",
+            processedAt: "2026-07-22T08:00:00.000Z",
+            processingStatus: "READY",
+            sourceSha256: `sha256:${"1".repeat(64)}`,
+            sourceSizeBytes: 1024,
+            videoDurationMs: null,
+            videoFrameFileIds: []
+          },
+          objectKey: "oss/internal/evidence.jpg",
+          uploadedAt: new Date("2026-07-22T08:00:00.000Z")
+        }],
         id: "evidence-item-default",
         isRequired: true,
         reviewStatus: "PENDING",
@@ -3616,29 +3446,19 @@ function createEvidenceService() {
   };
 }
 
-function matchesEvidenceItemWhere(
-  item: Record<string, unknown>,
-  where: Record<string, unknown>
-): boolean {
+function matchesEvidenceItemWhere(item: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (key === "OR") {
-      return (expected as Array<Record<string, unknown>>).some((branch) =>
-        matchesEvidenceItemWhere(item, branch)
-      );
+      return (expected as Array<Record<string, unknown>>).some((branch) => matchesEvidenceItemWhere(item, branch));
     }
     return item[key] === expected;
   });
 }
 
-function matchesWorkOrderWhere(
-  workOrder: Record<string, unknown>,
-  where: Record<string, unknown>
-): boolean {
+function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (key === "OR") {
-      return (expected as Array<Record<string, unknown>>).some((branch) =>
-        matchesWorkOrderWhere(workOrder, branch)
-      );
+      return (expected as Array<Record<string, unknown>>).some((branch) => matchesWorkOrderWhere(workOrder, branch));
     }
     if (key === "id") {
       return workOrder.id === expected;
@@ -3661,12 +3481,7 @@ function matchesWorkOrderWhere(
     if (key === "accessTokenExpiresAt" && expected === null) {
       return workOrder.accessTokenExpiresAt === null;
     }
-    if (
-      key === "accessTokenExpiresAt" &&
-      expected &&
-      typeof expected === "object" &&
-      "gt" in expected
-    ) {
+    if (key === "accessTokenExpiresAt" && expected && typeof expected === "object" && "gt" in expected) {
       const expiresAt = workOrder.accessTokenExpiresAt as Date | null | undefined;
       return Boolean(expiresAt && expiresAt.getTime() > (expected.gt as Date).getTime());
     }
@@ -3679,12 +3494,7 @@ function matchesWorkOrderWhere(
     if (key === "status") {
       return workOrder.status === expected;
     }
-    if (
-      key === "customerObjectedAt" &&
-      expected &&
-      typeof expected === "object" &&
-      "not" in expected
-    ) {
+    if (key === "customerObjectedAt" && expected && typeof expected === "object" && "not" in expected) {
       return expected.not === null ? workOrder.customerObjectedAt !== null : true;
     }
     if (key === "handoverType") {
@@ -3700,10 +3510,7 @@ function matchesWorkOrderWhere(
   });
 }
 
-function matchesHandoverEventWhere(
-  event: Record<string, unknown>,
-  where: Record<string, unknown>
-): boolean {
+function matchesHandoverEventWhere(event: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => event[key] === expected);
 }
 
@@ -3719,10 +3526,7 @@ function applyAtomicUpdates(
   return next;
 }
 
-function matchesReviewAttemptWhere(
-  attempt: Record<string, unknown>,
-  where: Record<string, unknown>
-): boolean {
+function matchesReviewAttemptWhere(attempt: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
     if (key === "workOrderId") {
       return attempt.workOrderId === expected;
@@ -3734,10 +3538,7 @@ function matchesReviewAttemptWhere(
   });
 }
 
-function sortReviewAttempts(
-  rows: Array<Record<string, unknown>>,
-  orderBy?: Record<string, string>
-) {
+function sortReviewAttempts(rows: Array<Record<string, unknown>>, orderBy?: Record<string, string>) {
   const direction = orderBy?.attemptNo === "desc" ? -1 : 1;
   return [...rows].sort((left, right) => {
     const leftNo = typeof left.attemptNo === "number" ? left.attemptNo : 0;

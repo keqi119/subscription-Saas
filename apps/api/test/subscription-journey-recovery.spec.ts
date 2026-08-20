@@ -32,7 +32,9 @@ describe("SubscriptionJourneyService recovery", () => {
     );
 
     await service.listOrders(user);
-    const secondCall = findMany.mock.calls[1] as unknown as [{ where: Record<string, unknown> }];
+    const secondCall = findMany.mock.calls[1] as unknown as [
+      { where: Record<string, unknown> }
+    ];
     expect(secondCall[0].where).toEqual({ deletedAt: null });
   });
 
@@ -133,10 +135,7 @@ describe("SubscriptionJourneyService recovery", () => {
   });
 
   it("rejects retry when the exception is not open", async () => {
-    const harness = createRecoveryHarness({
-      exceptionOpen: false,
-      status: SubscriptionJourneyStatus.EXCEPTION
-    });
+    const harness = createRecoveryHarness({ exceptionOpen: false, status: SubscriptionJourneyStatus.EXCEPTION });
 
     await expect(
       harness.service.retryJourney(
@@ -219,7 +218,9 @@ describe("SubscriptionJourneyService recovery", () => {
 
   it("excludes customer-waiting work from the automated failure denominator", async () => {
     const firstOccurredAt = new Date("2026-08-01T00:00:00.000Z");
-    const stepCount = vi.fn().mockResolvedValueOnce(8).mockResolvedValueOnce(2);
+    const stepCount = vi.fn()
+      .mockResolvedValueOnce(8)
+      .mockResolvedValueOnce(2);
     const prisma = {
       subscriptionJourney: {
         groupBy: vi.fn(async () => [{ _count: { _all: 4 }, status: "RUNNING" }])
@@ -237,14 +238,19 @@ describe("SubscriptionJourneyService recovery", () => {
         ])
       }
     };
-    const service = new SubscriptionJourneyService({} as never, prisma as never);
+    const service = new SubscriptionJourneyService(
+      {} as never,
+      prisma as never
+    );
 
     await expect(service.getAdminMetrics()).resolves.toEqual({
       automatedProgressRate: 0.8,
       journeyCounts: { RUNNING: 4 },
       oldestOpenExceptionAt: firstOccurredAt,
       retryCount: 6,
-      stepCounts: [{ code: "CUSTOMER_PLAN_CONFIRMATION", count: 3, status: "WAITING_CUSTOMER" }]
+      stepCounts: [
+        { code: "CUSTOMER_PLAN_CONFIRMATION", count: 3, status: "WAITING_CUSTOMER" }
+      ]
     });
     expect(stepCount.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
@@ -275,18 +281,13 @@ describe("SubscriptionJourneyService recovery", () => {
       }
     };
     const findUnique = vi.fn(async (query: unknown) => {
-      const select = (
-        query as {
-          include: { application: { select: Record<string, boolean> } };
-        }
-      ).include.application.select;
+      const select = (query as {
+        include: { application: { select: Record<string, boolean> } };
+      }).include.application.select;
       return {
         ...row,
         application: Object.fromEntries(
-          Object.keys(select).map((key) => [
-            key,
-            row.application[key as keyof typeof row.application]
-          ])
+          Object.keys(select).map((key) => [key, row.application[key as keyof typeof row.application]])
         )
       };
     });
@@ -415,24 +416,13 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
     currentStepCode: state.activation ? "AUTHORITATIVE_ACTIVATION" : "APPLICATION_VALIDATION",
     currentStepStatus: state.status === "EXCEPTION" ? "EXCEPTION" : "RUNNING",
     id: "journey-1",
-    order:
-      state.archivedContract || state.postOrder
-        ? {
-            contract: state.archivedContract ? { status: "ARCHIVED" } : null,
-            id: "order-1",
-            vehicleId: "vehicle-1"
-          }
-        : null,
+    order: state.archivedContract || state.postOrder
+      ? { contract: state.archivedContract ? { status: "ARCHIVED" } : null, id: "order-1", vehicleId: "vehicle-1" }
+      : null,
     orderId: state.archivedContract || state.activation || state.postOrder ? "order-1" : null,
     pausedFromStatus: state.pausedFromStatus,
     status: state.status,
-    steps: [
-      {
-        code: state.activation ? "AUTHORITATIVE_ACTIVATION" : "APPLICATION_VALIDATION",
-        id: "step-1",
-        status: "RUNNING"
-      }
-    ],
+    steps: [{ code: state.activation ? "AUTHORITATIVE_ACTIVATION" : "APPLICATION_VALIDATION", id: "step-1", status: "RUNNING" }],
     version: state.version
   });
   const tx = {
@@ -450,8 +440,7 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
     subscriptionJourney: {
       findUnique: vi.fn(async () => journey()),
       updateMany: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        if (typeof data.status === "string")
-          state.status = data.status as SubscriptionJourneyStatus;
+        if (typeof data.status === "string") state.status = data.status as SubscriptionJourneyStatus;
         if ("pausedFromStatus" in data) {
           state.pausedFromStatus = data.pausedFromStatus as SubscriptionJourneyStatus | null;
         }
@@ -459,14 +448,9 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
         return { count: 1 };
       })
     },
-    subscriptionJourneyEvent: {
-      create: vi.fn(async ({ data }) => data),
-      findUnique: vi.fn(async () => null)
-    },
+    subscriptionJourneyEvent: { create: vi.fn(async ({ data }) => data), findUnique: vi.fn(async () => null) },
     subscriptionJourneyException: {
-      findFirst: vi.fn(async () =>
-        state.exceptionOpen ? { id: "exception-1", jobId: "job-1", status: "OPEN" } : null
-      ),
+      findFirst: vi.fn(async () => state.exceptionOpen ? { id: "exception-1", jobId: "job-1", status: "OPEN" } : null),
       update: vi.fn(async ({ data }) => data)
     },
     subscriptionJourneyJob: {
@@ -489,9 +473,7 @@ function createRecoveryHarness(overrides: Partial<RecoveryState> = {}) {
       updateMany: vi.fn(async () => ({ count: 1 }))
     }
   };
-  const prisma = {
-    $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx))
-  };
+  const prisma = { $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)) };
   const auditService = { write: vi.fn(async () => undefined) };
   const repository = { enqueueJob: vi.fn(async () => ({})) };
   const assetOperationsService = {

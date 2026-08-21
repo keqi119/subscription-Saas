@@ -4,13 +4,27 @@ import {
   allowedSubscriptionClosureTransitions,
   assertSubscriptionClosureEscalation,
   assertSubscriptionClosureTransition,
+  assertRecoveryPauseTransition,
   canonicalSubscriptionClosureJson,
   canonicalSubscriptionClosureSource,
   freezeSubscriptionClosureOutcome,
-  hashSubscriptionClosureSnapshot
+  hashSubscriptionClosureSnapshot,
+  recoveryAssessmentAvailableAt
 } from "../src/subscription-closure/subscription-closure.domain";
 
 describe("subscription closure domain contract", () => {
+  it("calculates recovery D+7 at the Asia/Shanghai calendar-day boundary", () => {
+    expect(recoveryAssessmentAvailableAt(new Date("2026-09-01T00:00:00.000Z"))).toEqual(
+      new Date("2026-09-07T16:00:00.000Z")
+    );
+    expect(recoveryAssessmentAvailableAt(new Date("2026-12-28T00:00:00.000Z"))).toEqual(
+      new Date("2027-01-03T16:00:00.000Z")
+    );
+    expect(recoveryAssessmentAvailableAt(new Date("2026-09-01T20:00:00.000Z"))).toEqual(
+      new Date("2026-09-08T16:00:00.000Z")
+    );
+  });
+
   it("canonicalizes source identity before locks, payloads, and lookups", () => {
     expect(
       canonicalSubscriptionClosureSource({
@@ -253,5 +267,29 @@ describe("subscription closure domain contract", () => {
         /transition/i
       );
     }
+  });
+
+  it("allows durable recovery pause only when resume restores the remembered stage", () => {
+    const recovery = {
+      closureType: "NORMAL_COMPLETION",
+      finalDisposition: "TERMINATE",
+      physicalControlMode: "RECOVERY"
+    } as const;
+    for (const stage of [
+      "RECOVERY_ASSESSMENT_PENDING",
+      "RECOVERY_APPROVAL_PENDING",
+      "RECOVERY_APPROVED",
+      "RECOVERY_IN_PROGRESS",
+      "VEHICLE_SECURED",
+      "RETURN_INSPECTION",
+      "RECONDITIONING",
+      "PENDING_SETTLEMENT"
+    ] as const) {
+      expect(() => assertRecoveryPauseTransition(recovery, stage, "PAUSED", null)).not.toThrow();
+      expect(() => assertRecoveryPauseTransition(recovery, "PAUSED", stage, stage)).not.toThrow();
+    }
+    expect(() =>
+      assertRecoveryPauseTransition(recovery, "PAUSED", "RECOVERY_IN_PROGRESS", "RECOVERY_APPROVED")
+    ).toThrow(/remembered/i);
   });
 });

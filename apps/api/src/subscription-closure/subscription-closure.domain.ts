@@ -117,6 +117,20 @@ export function hashSubscriptionClosureSnapshot(value: unknown): string {
   return createHash("sha256").update(canonicalSubscriptionClosureJson(value)).digest("hex");
 }
 
+export function recoveryAssessmentAvailableAt(dueDate: Date): Date {
+  const time = Date.prototype.getTime.call(dueDate);
+  if (Number.isNaN(time)) throw new TypeError("recovery assessment due date is invalid");
+  const shanghaiDate = new Date(time + 8 * 60 * 60 * 1000);
+  return new Date(
+    Date.UTC(
+      shanghaiDate.getUTCFullYear(),
+      shanghaiDate.getUTCMonth(),
+      shanghaiDate.getUTCDate() + 7
+    ) -
+      8 * 60 * 60 * 1000
+  );
+}
+
 export function canonicalSubscriptionClosureSource(source: unknown): SubscriptionClosureSource {
   if (source === null || typeof source !== "object" || Array.isArray(source)) {
     throw new TypeError("subscription closure source is required");
@@ -247,4 +261,31 @@ export function assertSubscriptionClosureEscalation(
       "only normal voluntary completion may use the approved recovery escalation"
     );
   }
+}
+
+const RECOVERY_PAUSABLE_STATUSES = new Set<SubscriptionClosureStatus>([
+  "RECOVERY_ASSESSMENT_PENDING",
+  "RECOVERY_APPROVAL_PENDING",
+  "RECOVERY_APPROVED",
+  "RECOVERY_IN_PROGRESS",
+  "VEHICLE_SECURED",
+  "RETURN_INSPECTION",
+  "RECONDITIONING",
+  "PENDING_SETTLEMENT"
+]);
+
+export function assertRecoveryPauseTransition(
+  profile: SubscriptionClosureProfile,
+  from: SubscriptionClosureStatus,
+  to: SubscriptionClosureStatus,
+  rememberedStage: SubscriptionClosureStatus | null
+): void {
+  if (profile.physicalControlMode !== "RECOVERY" || profile.finalDisposition !== "TERMINATE") {
+    throw new TypeError("only a recovery case can be paused");
+  }
+  if (to === "PAUSED" && RECOVERY_PAUSABLE_STATUSES.has(from) && rememberedStage === null) return;
+  if (from === "PAUSED" && RECOVERY_PAUSABLE_STATUSES.has(to) && rememberedStage === to) {
+    return;
+  }
+  throw new TypeError("recovery resume must restore its remembered stage");
 }

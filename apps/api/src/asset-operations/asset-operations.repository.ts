@@ -3,8 +3,10 @@ import {
   AssetWorkOrderEvidenceAction,
   AssetWorkOrderEventType,
   AssetWorkOrderStatus,
+  AssetWorkOrderType,
   Prisma,
   VehicleOperationalRestrictionStatus,
+  VehicleOperationalRestrictionType,
   type AssetWorkOrder,
   type AssetWorkOrderEvidence,
   type AssetWorkOrderEvent,
@@ -798,10 +800,16 @@ export class AssetOperationsRepository {
     if (current.workOrderId !== workOrder?.id && current.workOrderId !== null) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID);
     }
+    const preparedRecoveryPhysicalControlRelease =
+      execution === PREPARED_EXECUTION &&
+      current.restrictionType === VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS &&
+      workOrder?.workOrderType === AssetWorkOrderType.RECOVERY &&
+      workOrder.status === AssetWorkOrderStatus.IN_PROGRESS;
     if (
       workOrder &&
       workOrder.status !== AssetWorkOrderStatus.PENDING_COST_CONFIRMATION &&
-      workOrder.status !== AssetWorkOrderStatus.CLOSED
+      workOrder.status !== AssetWorkOrderStatus.CLOSED &&
+      !preparedRecoveryPhysicalControlRelease
     ) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED);
     }

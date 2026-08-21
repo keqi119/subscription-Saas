@@ -529,9 +529,14 @@ async function completeNormalExpiry(
   vehicleReturnId: string,
   capability: NormalExpiryTransactionCapability
 ) {
-  await service.completeNormalExpiryInTransaction(
+  const completion = await service.completeNormalExpiryInTransaction(
     tx,
     { decisionAt, orderId, segmentId, vehicleReturnId },
     capability
   );
+  await service.scheduleRecoveryAssessmentInTransaction(tx, {
+    closureCaseId: completion.closureCaseId,
+    orderId,
+    scheduledAt: decisionAt
+  });
 }

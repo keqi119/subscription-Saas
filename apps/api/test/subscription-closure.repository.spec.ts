@@ -434,6 +434,56 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     expect(database.authorityLocks).toHaveLength(1);
   });
 
+  it("permits only the exact missing work order planned by asset-create in the same session", async () => {
+    const plannedWorkOrderId = UUIDS.workOrder;
+    const vehicleLock = {
+      id: UUIDS.vehicle,
+      mode: "SHARE" as const,
+      table: "vehicle" as const
+    };
+    const plannedLock = {
+      id: plannedWorkOrderId,
+      mode: "UPDATE" as const,
+      table: "asset_work_order" as const
+    };
+    const prepare = (assetCreateWorkOrderId: string, assetCreateKey = "asset-create") => {
+      const database = fakeTransaction({ emptyLock: "asset_work_order" });
+      const repository = new SubscriptionClosureRepository();
+      const session = repository.createAuthoritySessionInTransaction(database.tx);
+      const requirements = [
+        repository.bindAuthorityRequirement(session, {
+          command: { source: SOURCE, workOrderId: assetCreateWorkOrderId },
+          key: assetCreateKey,
+          locks: [vehicleLock]
+        }),
+        repository.bindAuthorityRequirement(session, {
+          command: { source: SOURCE, workOrderId: plannedWorkOrderId },
+          key: "recovery-restriction",
+          locks: [plannedLock]
+        })
+      ];
+      return {
+        database,
+        operation: repository.prepareAuthorityInTransaction(
+          database.tx,
+          session,
+          [vehicleLock, plannedLock],
+          requirements
+        )
+      };
+    };
+
+    await expect(prepare(plannedWorkOrderId).operation).resolves.toBeInstanceOf(Map);
+    await expectCode(
+      prepare(UUIDS.predecessor).operation,
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND
+    );
+    await expectCode(
+      prepare(plannedWorkOrderId, "not-asset-create").operation,
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND
+    );
+  });
+
   it("locks every external document authority before the mutable current-family projection", async () => {
     const database = fakeDocumentTransaction();
     const repository = new SubscriptionClosureRepository();
@@ -641,7 +691,9 @@ const UUIDS = {
   handover: "10000000-0000-4000-8000-000000000007",
   order: "10000000-0000-4000-8000-000000000008",
   predecessor: "10000000-0000-4000-8000-000000000010",
-  vehicleReturn: "10000000-0000-4000-8000-000000000009"
+  vehicle: "10000000-0000-4000-8000-000000000011",
+  vehicleReturn: "10000000-0000-4000-8000-000000000009",
+  workOrder: "10000000-0000-4000-8000-000000000012"
 } as const;
 
 function generatedDocumentCommand() {

@@ -12,6 +12,7 @@ import {
 
 import {
   assertSubscriptionClosureEscalation,
+  assertRecoveryPauseTransition,
   assertSubscriptionClosureTransition,
   canonicalSubscriptionClosureJson,
   canonicalSubscriptionClosureSource,
@@ -64,6 +65,7 @@ export interface AppendSubscriptionClosureEventCommand {
   readonly expectedVersion: number;
   readonly occurredAt: Date;
   readonly reconditioningAssetWorkOrderId?: string | null;
+  readonly recoveryAssetWorkOrderId?: string | null;
   readonly source: SubscriptionClosureSource;
 }
 
@@ -407,7 +409,20 @@ export class SubscriptionClosureRepository {
         .filter(({ table }) => table === "file_object" || table === "contract_esign_task")
         .map(({ id, table }) => `${table}\u0000${id}`)
     );
-    await this.lockCoordinatorAuthorityRows(tx, normalizedLocks, plannedDocumentAuthorities);
+    const plannedWorkOrderAuthorities = new Set(
+      normalizedRequirements.flatMap(({ key }, index) => {
+        if (key !== "asset-create") return [];
+        const workOrderId = requirements[index]?.command.workOrderId;
+        return typeof workOrderId === "string"
+          ? [`asset_work_order\u0000${canonicalUuid(workOrderId, "workOrderId")}`]
+          : [];
+      })
+    );
+    await this.lockCoordinatorAuthorityRows(
+      tx,
+      normalizedLocks,
+      new Set([...plannedDocumentAuthorities, ...plannedWorkOrderAuthorities])
+    );
     const result = new Map<string, ClosureAuthorityAttestation>();
     for (const requirement of normalizedRequirements) {
       const capability = Object.freeze({}) as ClosureAuthorityAttestation;
@@ -628,7 +643,8 @@ export class SubscriptionClosureRepository {
     const current = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
     await assertDatabaseEventTime(tx, current.id, command.occurredAt);
-    validateEventTransition(current, command);
+    await validateEventTransition(tx, current, command);
+    await assertRecoveryWorkOrderLink(tx, current, command);
     assertTerminalSettlementAuthority(current, command.afterStatus);
 
     try {
@@ -648,6 +664,9 @@ export class SubscriptionClosureRepository {
                 reconditioningAssetWorkOrderId:
                   command.reconditioningAssetWorkOrderId ?? current.reconditioningAssetWorkOrderId
               }
+            : {}),
+          ...(command.recoveryAssetWorkOrderId
+            ? { recoveryAssetWorkOrderId: command.recoveryAssetWorkOrderId }
             : {}),
           status: command.afterStatus,
           updatedBy: command.actorId,
@@ -1193,7 +1212,7 @@ export class SubscriptionClosureRepository {
   private async lockCoordinatorAuthorityRows(
     tx: Prisma.TransactionClient,
     locks: readonly SubscriptionClosureAuthorityLock[],
-    plannedDocumentAuthorities: ReadonlySet<string>
+    plannedAuthorities: ReadonlySet<string>
   ): Promise<void> {
     await assertTransactionContract(tx);
     const normalized = normalizeAuthorityLocks(locks);
@@ -1216,7 +1235,7 @@ export class SubscriptionClosureRepository {
       const locked = new Set(rows.map((row) => `${row.authorityTable}\u0000${row.requestedId}`));
       for (const lock of normalized) {
         const key = `${lock.table}\u0000${lock.id}`;
-        if (!locked.has(key) && !plannedDocumentAuthorities.has(key)) {
+        if (!locked.has(key) && !plannedAuthorities.has(key)) {
           throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
         }
       }
@@ -1421,6 +1440,10 @@ function normalizeEventCommand(
     reconditioningAssetWorkOrderId: nullableUuid(
       input.reconditioningAssetWorkOrderId,
       "reconditioningAssetWorkOrderId"
+    ),
+    recoveryAssetWorkOrderId: nullableUuid(
+      input.recoveryAssetWorkOrderId,
+      "recoveryAssetWorkOrderId"
     ),
     source: canonicalSubscriptionClosureSource(input.source)
   };
@@ -2425,16 +2448,87 @@ function profileOf(record: CaseRecord): SubscriptionClosureProfile {
   };
 }
 
-function validateEventTransition(
+async function assertRecoveryWorkOrderLink(
+  tx: Prisma.TransactionClient,
   current: CaseRecord,
   command: AppendSubscriptionClosureEventCommand
-): void {
+): Promise<void> {
+  const workOrderId = command.recoveryAssetWorkOrderId;
+  if (!workOrderId) return;
+  if (
+    command.afterStatus !== "RECOVERY_IN_PROGRESS" ||
+    current.physicalControlMode !== "RECOVERY" ||
+    (current.recoveryAssetWorkOrderId !== null && current.recoveryAssetWorkOrderId !== workOrderId)
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  const workOrder = await tx.assetWorkOrder.findUnique({ where: { id: workOrderId } });
+  if (
+    !workOrder ||
+    workOrder.workOrderType !== "RECOVERY" ||
+    workOrder.orderId !== current.orderId ||
+    workOrder.vehicleId !== current.vehicleId ||
+    workOrder.contractId !== current.contractId ||
+    workOrder.customerId !== current.customerId
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+}
+
+async function validateEventTransition(
+  tx: Prisma.TransactionClient,
+  current: CaseRecord,
+  command: AppendSubscriptionClosureEventCommand
+): Promise<void> {
   if (
     command.eventType === "PHYSICAL_CONTROL_CONFIRMED" &&
     current.physicalControlMode === "RECOVERY" &&
     current.status === "RECOVERY_IN_PROGRESS" &&
     command.afterStatus === "RETURN_INSPECTION"
   ) {
+    return;
+  }
+  if (command.eventType === "STATUS_TRANSITIONED" && command.afterStatus === "PAUSED") {
+    const detail = command.detailSnapshot as Readonly<Record<string, unknown>>;
+    if (detail.recoveryAction !== "PAUSE" || detail.pausedFromStatus !== current.status) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
+    try {
+      assertRecoveryPauseTransition(profileOf(current), current.status, "PAUSED", null);
+    } catch {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
+    return;
+  }
+  if (command.eventType === "STATUS_TRANSITIONED" && current.status === "PAUSED") {
+    const pauseEvent = await tx.subscriptionClosureEvent.findFirst({
+      orderBy: [{ sequence: "desc" }, { id: "desc" }],
+      select: { detailSnapshot: true },
+      where: { afterStatus: "PAUSED", closureCaseId: current.id }
+    });
+    const pauseDetail = pauseEvent?.detailSnapshot;
+    const remembered =
+      pauseDetail && !Array.isArray(pauseDetail) && typeof pauseDetail === "object"
+        ? pauseDetail.pausedFromStatus
+        : null;
+    const detail = command.detailSnapshot as Readonly<Record<string, unknown>>;
+    if (
+      detail.recoveryAction !== "RESUME" ||
+      detail.resumedStage !== remembered ||
+      remembered !== command.afterStatus
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
+    try {
+      assertRecoveryPauseTransition(
+        profileOf(current),
+        "PAUSED",
+        command.afterStatus,
+        remembered as SubscriptionClosureStatus
+      );
+    } catch {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
     return;
   }
   if (

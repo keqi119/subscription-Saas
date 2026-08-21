@@ -162,6 +162,68 @@ describe("AssetAccountingService", () => {
     );
   });
 
+  it("prepares a recovery-case approval against the closure-case authority in the ranked coordinator pass", async () => {
+    const harness = serviceHarness();
+    const command = {
+      ...requireServiceCommand("prepared-recovery-approval"),
+      exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+      subject: {
+        subjectField: "recoveryExecution",
+        subjectId: IDS.order,
+        subjectType: "RECOVERY_CASE" as const
+      }
+    };
+    const requestContext = context(
+      IDS.decider,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      command.source.key
+    );
+    const authoritySnapshot = { recoveryFactRevision: 3, state: "APPROVED" } as const;
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+
+    const requirement = harness.service.approvedExceptionAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      authoritySnapshot
+    );
+
+    expect(requirement.locks).toEqual([
+      { id: IDS.order, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: IDS.approval, mode: "UPDATE", table: "business_exception_approval" },
+      { id: IDS.decider, mode: "SHARE", table: "user" }
+    ]);
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedApprovedExceptionInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      sourceCapability,
+      proofs.get("approved-exception")!
+    );
+
+    await expect(
+      harness.service.requirePreparedApprovedExceptionInTransaction(harness.tx, prepared)
+    ).resolves.toBe(true);
+    expect(harness.repository.operations).toEqual([
+      "source-lock",
+      "repository-prepare-approval",
+      "repository-require"
+    ]);
+  });
+
   it("appends through one caller-owned capability without opening a nested transaction", async () => {
     const harness = serviceHarness();
     const command = appendServiceCommand("caller-owned-append");

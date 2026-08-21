@@ -1118,6 +1118,72 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("releases an in-progress recovery restriction only through the prepared closure path and exactly replays it", async () => {
+    const fixture = await preparedRecoveryReleaseFixture();
+
+    const released = await preparedRelease(fixture, fixture.release);
+
+    expect(released).toMatchObject({
+      restriction: {
+        id: fixture.restriction.id,
+        restrictionType: VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS,
+        status: VehicleOperationalRestrictionStatus.RELEASED
+      },
+      workOrder: {
+        id: fixture.workOrder.id,
+        status: AssetWorkOrderStatus.IN_PROGRESS,
+        workOrderType: AssetWorkOrderType.RECOVERY
+      },
+      wrote: true
+    });
+    await expect(preparedRelease(fixture, fixture.release)).resolves.toEqual({
+      ...released,
+      wrote: false
+    });
+    await expectCode(
+      preparedRelease(fixture, {
+        ...releaseRestrictionCommand(fixture.restriction.id, "prepared-recovery-drift"),
+        source: fixture.release.source
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it.each([
+    {
+      label: "wrong restriction type",
+      options: {
+        restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT
+      }
+    },
+    {
+      label: "wrong work-order type",
+      options: { workOrderType: AssetWorkOrderType.RECONDITIONING }
+    },
+    {
+      label: "wrong work-order status",
+      options: { transitionToInProgress: false }
+    }
+  ])("rejects prepared recovery release for $label", async ({ options }) => {
+    const fixture = await preparedRecoveryReleaseFixture(options);
+
+    await expectCode(
+      preparedRelease(fixture, fixture.release),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+    expect(fixture.restriction.status).toBe(VehicleOperationalRestrictionStatus.ACTIVE);
+  });
+
+  it("keeps the public release path closed for an in-progress recovery work order", async () => {
+    const fixture = await preparedRecoveryReleaseFixture();
+
+    await expectCode(
+      fixture.repository.releaseRestriction(fixture.database.tx, fixture.release),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+    expect(fixture.restriction.status).toBe(VehicleOperationalRestrictionStatus.ACTIVE);
+  });
+
   it("releases once with an exact replay, conflicts on drift, and preserves create replay", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();
@@ -1407,6 +1473,68 @@ function releaseRestrictionCommand(
     source: source(`restriction-release-${label}`),
     targetStatus: VehicleOperationalRestrictionStatus.RELEASED
   };
+}
+
+async function preparedRecoveryReleaseFixture(
+  options: {
+    restrictionType?: VehicleOperationalRestrictionType;
+    transitionToInProgress?: boolean;
+    workOrderType?: AssetWorkOrderType;
+  } = {}
+) {
+  const database = new FakeDatabase();
+  const repository = new AssetOperationsRepository();
+  const vehicleId = database.addVehicle();
+  const workOrder = (
+    await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId,
+      workOrderType: options.workOrderType ?? AssetWorkOrderType.RECOVERY
+    })
+  ).workOrder;
+  const restriction = (
+    await repository.createRestriction(database.tx, {
+      ...createRestrictionCommand(vehicleId, "prepared-recovery", workOrder.id),
+      restrictionType:
+        options.restrictionType ?? VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS
+    })
+  ).restriction;
+  if (options.transitionToInProgress !== false) {
+    await repository.transitionWorkOrder(
+      database.tx,
+      transitionCommand(workOrder.id, AssetWorkOrderStatus.IN_PROGRESS, 0)
+    );
+  }
+  const currentWorkOrder = database.workOrders.find(({ id }) => id === workOrder.id)!;
+  return {
+    database,
+    release: releaseRestrictionCommand(restriction.id, "prepared-recovery-release"),
+    repository,
+    restriction,
+    workOrder: currentWorkOrder
+  };
+}
+
+async function preparedRelease(
+  fixture: Awaited<ReturnType<typeof preparedRecoveryReleaseFixture>>,
+  command: ReleaseRestrictionCommand
+) {
+  if (typeof fixture.workOrder.id !== "string") throw new TypeError("work order id is required");
+  const sourceCapability = await fixture.repository.prepareCallerOwnedCommand(
+    fixture.database.tx,
+    command.source
+  );
+  const workOrderHandle = await fixture.repository.attestCallerOwnedWorkOrderAuthority(
+    fixture.database.tx,
+    fixture.workOrder.id,
+    command.source,
+    sourceCapability
+  );
+  return fixture.repository.releasePreparedRestriction(
+    fixture.database.tx,
+    command,
+    workOrderHandle
+  );
 }
 
 function source(label: string) {

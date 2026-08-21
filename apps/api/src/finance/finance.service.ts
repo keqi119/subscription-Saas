@@ -32,6 +32,8 @@ import {
   PaymentWriteOff,
   Prisma,
   ReceivableBill,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleDamageResponsibleParty,
   VehicleReturn,
   VehicleReturnDamage,
@@ -744,6 +746,41 @@ export class FinanceService {
         },
         tx
       );
+    }
+
+    const settledBillOrders = await tx.receivableBill.findMany({
+      select: { orderId: true },
+      where: { deletedAt: null, id: { in: billIds } }
+    });
+    const orderIds = [...new Set(settledBillOrders.map(({ orderId }) => orderId))];
+    for (const orderId of orderIds) {
+      const outstandingBill = await tx.receivableBill.findFirst({
+        select: { id: true },
+        where: {
+          billStatus: {
+            in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
+          },
+          deletedAt: null,
+          dueDate: { lt: settledAt },
+          orderId,
+          remainingAmount: { gt: 0n }
+        }
+      });
+      if (outstandingBill) continue;
+      await tx.subscriptionAutomationJob.updateMany({
+        data: {
+          cancelledAt: settledAt,
+          completedAt: settledAt,
+          jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+          leaseExpiresAt: null,
+          leaseToken: null
+        },
+        where: {
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          jobType: SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7,
+          orderId
+        }
+      });
     }
   }
 
@@ -1489,6 +1526,12 @@ export class FinanceService {
           updatedBills
             .filter((bill) => bill.remainingAmount === 0n)
             .map((bill) => bill.id)
+        );
+        await this.reconcileCollectionCasesAfterSettlement(
+          tx,
+          billIds,
+          now,
+          user.id
         );
 
         const paymentAfter = await tx.paymentRecord.findUniqueOrThrow({

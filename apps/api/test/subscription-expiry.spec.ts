@@ -38,6 +38,13 @@ describe("SubscriptionExpiryService", () => {
       }),
       harness.normalExpiryCapability
     );
+    expect(
+      harness.closureOrchestrator.scheduleRecoveryAssessmentInTransaction
+    ).toHaveBeenCalledWith(expect.anything(), {
+      closureCaseId: "closure-1",
+      orderId: "order-1",
+      scheduledAt: new Date("2026-09-02T16:00:00.000Z")
+    });
     expect(timeline).not.toContain("expiry:lock");
     expect(timeline.indexOf("closure:prepare")).toBeLessThan(
       timeline.indexOf("vehicle-return:create")
@@ -237,6 +244,9 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.vehicleReturnCreate).toHaveBeenCalledTimes(1);
     expect(harness.closureOrchestrator.prepareNormalExpiryInTransaction).toHaveBeenCalledTimes(2);
     expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(2);
+    expect(
+      harness.closureOrchestrator.scheduleRecoveryAssessmentInTransaction
+    ).toHaveBeenCalledTimes(2);
     expect(harness.notifications.notifyRenewalExpiryInApp).toHaveBeenCalledTimes(2);
   });
 
@@ -289,7 +299,8 @@ function createExpiryHarness(
       options.timeline?.push("closure:prepare");
       return normalExpiryCapability;
     }),
-    preparedNormalExpiryVehicleReturnId: vi.fn(() => "return-1")
+    preparedNormalExpiryVehicleReturnId: vi.fn(() => "return-1"),
+    scheduleRecoveryAssessmentInTransaction: vi.fn(async () => ({ scheduled: true }))
   };
   const state = {
     account: { accountStatus: EntitlementAccountStatus.ACTIVE, id: "account-1" },

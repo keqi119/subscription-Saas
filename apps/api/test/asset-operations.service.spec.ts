@@ -134,6 +134,111 @@ describe("AssetOperationsService", () => {
     ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" } });
   });
 
+  it("executes the prepared recovery transition before its exact restriction release without relocking", async () => {
+    const harness = createHarness({
+      restrictionType: VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS,
+      workOrderType: AssetWorkOrderType.RECOVERY
+    });
+    const transitionSource = nextSource(harness, "prepared-recovery-transition");
+    const releaseSource = nextSource(harness, "prepared-recovery-release");
+    const transition = {
+      closeReason: null,
+      detailSnapshot: { physicalControl: "RECOVERY_CONFIRMED" },
+      expectedVersion: 0,
+      occurredAt: NOW,
+      solution: null,
+      source: transitionSource,
+      targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+      workOrderId: harness.ids.workOrderId
+    };
+    const release = {
+      occurredAt: NOW,
+      releaseReason: "RECOVERY_PHYSICAL_CONTROL_CONFIRMED",
+      releaseSnapshot: { vehicleReturnId: randomUUID() },
+      restrictionId: harness.ids.restrictionId,
+      source: releaseSource,
+      targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+    };
+    const authority = {
+      assetOwnerId: harness.ids.assetOwnerId,
+      contractId: harness.ids.contractId,
+      customerId: harness.ids.customerId,
+      orderId: harness.ids.orderId,
+      relatedWorkOrderId: null,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const transitionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      transitionSource
+    );
+    const releaseSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      releaseSource
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const transitionRequirement = harness.service.workOrderTransitionAuthorityRequirement(
+      session,
+      transition,
+      harness.context.actorId,
+      authority
+    );
+    const releaseRequirement = harness.service.restrictionReleaseAuthorityRequirement(
+      session,
+      release,
+      harness.context.actorId,
+      authority,
+      harness.ids.restrictionId
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      [...transitionRequirement.locks, ...releaseRequirement.locks],
+      [transitionRequirement, releaseRequirement]
+    );
+    const preparedTransition = await harness.service.attestPreparedTransitionInTransaction(
+      harness.tx as never,
+      session,
+      transition,
+      { ...harness.context, permissions: ["vehicle_restriction:release"] },
+      transitionSourceCapability,
+      authority,
+      proofs.get("physical-work-order")!
+    );
+    const preparedRelease = await harness.service.attestPreparedRestrictionReleaseInTransaction(
+      harness.tx as never,
+      session,
+      release,
+      { ...harness.context, permissions: ["vehicle_restriction:release"] },
+      releaseSourceCapability,
+      authority,
+      proofs.get("inspection-restriction-release")!
+    );
+    const authorityCount = harness.sequence.filter((item) => item.startsWith("authority:")).length;
+
+    await harness.service.transitionPreparedWorkOrderInTransaction(
+      harness.tx as never,
+      preparedTransition
+    );
+    await harness.service.releasePreparedRestrictionInTransaction(
+      harness.tx as never,
+      preparedRelease
+    );
+
+    expect(harness.sequence.slice(-2)).toEqual([
+      "repository-transition",
+      "repository-restriction-release"
+    ]);
+    expect(harness.sequence.filter((item) => item === "source-lock")).toHaveLength(2);
+    expect(harness.sequence.filter((item) => item.startsWith("authority:"))).toHaveLength(
+      authorityCount
+    );
+    await expect(
+      harness.service.releasePreparedRestrictionInTransaction(harness.tx as never, preparedRelease)
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" } });
+  });
+
   it("rejects a foreign coordinator repository before reading or mutating asset authority", async () => {
     const harness = createHarness();
     const command = { ...fullCreateCommand(harness), assetOwnerId: null };
@@ -1508,7 +1613,11 @@ function fullCreateCommand(harness: ReturnType<typeof createHarness>) {
 }
 
 function createHarness(
-  options: { restrictionType?: VehicleOperationalRestrictionType; wrote?: boolean } = {}
+  options: {
+    restrictionType?: VehicleOperationalRestrictionType;
+    workOrderType?: AssetWorkOrderType;
+    wrote?: boolean;
+  } = {}
 ) {
   const ids = {
     actorId: randomUUID(),
@@ -1566,7 +1675,7 @@ function createHarness(
     vehicleId: ids.vehicleId,
     version: 0,
     workOrderNo: "AWO-1",
-    workOrderType: AssetWorkOrderType.RECONDITIONING
+    workOrderType: options.workOrderType ?? AssetWorkOrderType.RECONDITIONING
   };
   const event = {
     actorId: ids.actorId,
@@ -1903,6 +2012,18 @@ function createHarness(
       workOrder,
       wrote: options.wrote ?? true
     })),
+    releasePreparedRestriction: vi.fn(async () => {
+      sequence.push("repository-restriction-release");
+      return {
+        event,
+        restriction: {
+          ...activeRestriction,
+          status: VehicleOperationalRestrictionStatus.RELEASED
+        },
+        workOrder,
+        wrote: options.wrote ?? true
+      };
+    }),
     transitionWorkOrder: vi.fn(async () => {
       sequence.push("repository-transition");
       return { event, workOrder, wrote: options.wrote ?? true };

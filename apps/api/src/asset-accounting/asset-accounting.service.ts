@@ -1067,7 +1067,7 @@ function approvalSubjectAuthority(subject: BusinessExceptionSubjectIdentity) {
       case "SETTLEMENT_CASE":
         return "subscription_closure_case" as const;
       case "RECOVERY_CASE":
-        throw callerCapabilityInvalid();
+        return "subscription_closure_case" as const;
     }
   })();
   return { id: subject.subjectId, mode: "UPDATE" as const, table };

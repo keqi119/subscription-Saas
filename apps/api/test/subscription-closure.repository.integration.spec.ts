@@ -1287,13 +1287,26 @@ function documentCommand(
   };
 }
 
-function bindReturnManifestESign(
+async function bindReturnManifestESign(
   tx: Prisma.TransactionClient,
   command: AppendSubscriptionClosureDocumentCommand
 ) {
-  return tx.contractESignTask.update({
+  const [baseTask, file] = await Promise.all([
+    tx.contractESignTask.findUniqueOrThrow({ where: { id: command.contractESignTaskId } }),
+    tx.fileObject.findUniqueOrThrow({ where: { id: command.sourceFileId } })
+  ]);
+  const taskId = randomUUID();
+  (command as { contractESignTaskId: string }).contractESignTaskId = taskId;
+  return tx.contractESignTask.create({
     data: {
+      contractId: baseTask.contractId,
+      customerId: baseTask.customerId,
+      documentName: file.originalName,
+      documentObjectKey: file.objectKey,
       documentType: "DELIVERY_HANDOVER",
+      id: taskId,
+      orderId: baseTask.orderId,
+      provider: baseTask.provider,
       requestSnapshot: {
         closureCaseId: command.closureCaseId,
         documentSnapshotHash: hashSubscriptionClosureSnapshot(command.documentSnapshot),
@@ -1304,9 +1317,10 @@ function bindReturnManifestESign(
       signingStage: "STAGE2_DELIVERY_HANDOVER",
       sourceId: command.source.id,
       sourceKey: command.source.key,
-      sourceType: command.source.type
-    },
-    where: { id: command.contractESignTaskId }
+      sourceType: command.source.type,
+      taskNo: `P0-MANIFEST-${taskId}`,
+      taskStatus: "CREATED"
+    }
   });
 }
 

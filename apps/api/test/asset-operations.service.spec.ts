@@ -28,6 +28,35 @@ import { SubscriptionClosureRepository } from "../src/subscription-closure/subsc
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
 describe("AssetOperationsService", () => {
+  it("rejects a foreign coordinator repository before reading or mutating asset authority", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const targetRepository = new SubscriptionClosureRepository();
+    const foreignRepository = new SubscriptionClosureRepository();
+    const session = targetRepository.createAuthoritySessionInTransaction(harness.tx as never);
+    const requirement = harness.service.createAuthorityRequirement(
+      session,
+      command,
+      harness.context.actorId,
+      harness.ids.workOrderId
+    );
+    const sequenceBeforeForeignIssue = [...harness.sequence];
+
+    await expect(
+      foreignRepository.prepareAuthorityInTransaction(
+        harness.tx as never,
+        session,
+        requirement.locks,
+        [requirement]
+      )
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID" }
+    });
+    expect(harness.sequence).toEqual(sequenceBeforeForeignIssue);
+    expect(harness.sequence).not.toContain("repository-write");
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
   it("attests after coordinator locks and mutates through one-use prepared handles without relocking", async () => {
     const harness = createHarness();
     const command = { ...fullCreateCommand(harness), assetOwnerId: null };
@@ -35,19 +64,24 @@ describe("AssetOperationsService", () => {
       harness.tx as never,
       harness.source
     );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
     const requirement = harness.service.createAuthorityRequirement(
+      session,
       command,
       harness.context.actorId,
       harness.ids.workOrderId
     );
-    const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+    const proofs = await coordinator.prepareAuthorityInTransaction(
       harness.tx as never,
+      session,
       requirement.locks,
       [requirement]
     );
     const sequenceAfterProof = [...harness.sequence];
     const prepared = await harness.service.attestCallerOwnedCreateAuthorityInTransaction(
       harness.tx as never,
+      session,
       command,
       harness.context,
       sourceCapability,
@@ -86,13 +120,17 @@ describe("AssetOperationsService", () => {
       harness.tx as never,
       harness.source
     );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
     const wrongRequirement = harness.service.createAuthorityRequirement(
+      session,
       command,
       harness.context.actorId,
       randomUUID()
     );
-    const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+    const proofs = await coordinator.prepareAuthorityInTransaction(
       harness.tx as never,
+      session,
       wrongRequirement.locks,
       [wrongRequirement]
     );
@@ -102,6 +140,7 @@ describe("AssetOperationsService", () => {
       await expect(
         harness.service.attestCallerOwnedCreateAuthorityInTransaction(
           harness.tx as never,
+          session,
           command,
           harness.context,
           sourceCapability,
@@ -118,14 +157,20 @@ describe("AssetOperationsService", () => {
       foreign.tx as never,
       foreign.source
     );
+    const foreignCoordinator = new SubscriptionClosureRepository();
+    const foreignSession = foreignCoordinator.createAuthoritySessionInTransaction(
+      foreign.tx as never
+    );
     const foreignBoundRequirement = harness.service.createAuthorityRequirement(
+      foreignSession,
       foreignCommand,
       foreign.context.actorId,
       foreign.ids.workOrderId
     );
     const foreignInstanceProof = (
-      await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+      await foreignCoordinator.prepareAuthorityInTransaction(
         foreign.tx as never,
+        foreignSession,
         foreignBoundRequirement.locks,
         [foreignBoundRequirement]
       )
@@ -133,6 +178,7 @@ describe("AssetOperationsService", () => {
     await expect(
       foreign.service.attestCallerOwnedCreateAuthorityInTransaction(
         foreign.tx as never,
+        foreignSession,
         foreignCommand,
         foreign.context,
         foreignSource,

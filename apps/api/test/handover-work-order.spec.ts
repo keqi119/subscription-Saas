@@ -293,13 +293,43 @@ describe("HandoverWorkOrderService", () => {
       command
     );
     const workOrderId = "10000000-0000-4000-8000-000000000001";
-    const proof = await prepareCoordinatorProof(
+    const targetRepository = new SubscriptionClosureRepository();
+    const foreignRepository = new SubscriptionClosureRepository();
+    const foreignIssueSession = targetRepository.createAuthoritySessionInTransaction(
+      harness.prisma as never
+    );
+    const targetRequirement = harness.service.createReturnInboundAuthorityRequirement(
+      foreignIssueSession,
+      command,
+      workOrderId
+    );
+    const lockQueriesBeforeForeignIssue = [...harness.lockQueries];
+    await expect(
+      foreignRepository.prepareAuthorityInTransaction(
+        harness.prisma as never,
+        foreignIssueSession,
+        targetRequirement.locks,
+        [targetRequirement]
+      )
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID" }
+    });
+    expect(harness.lockQueries).toEqual(lockQueriesBeforeForeignIssue);
+    expect(harness.state.workOrders).toHaveLength(0);
+    expect(harness.state.events).toHaveLength(0);
+    const { proof, session } = await prepareCoordinatorProof(
       harness.prisma as never,
-      harness.service.createReturnInboundAuthorityRequirement(command, workOrderId)
+      (authoritySession) =>
+        harness.service.createReturnInboundAuthorityRequirement(
+          authoritySession,
+          command,
+          workOrderId
+        )
     );
     const lockQueryCount = harness.lockQueries.length;
     const prepared = await harness.service.attestReturnInboundAuthorityInTransaction(
       harness.prisma as never,
+      session,
       command,
       sourceCapability,
       proof,
@@ -408,12 +438,18 @@ describe("HandoverWorkOrderService", () => {
       createCommand
     );
     const createWorkOrderId = "10000000-0000-4000-8000-000000000002";
-    const createProof = await prepareCoordinatorProof(
+    const { proof: createProof, session: createSession } = await prepareCoordinatorProof(
       harness.prisma as never,
-      harness.service.createReturnInboundAuthorityRequirement(createCommand, createWorkOrderId)
+      (authoritySession) =>
+        harness.service.createReturnInboundAuthorityRequirement(
+          authoritySession,
+          createCommand,
+          createWorkOrderId
+        )
     );
     const createPrepared = await harness.service.attestReturnInboundAuthorityInTransaction(
       harness.prisma as never,
+      createSession,
       createCommand,
       createSource,
       createProof,
@@ -440,14 +476,42 @@ describe("HandoverWorkOrderService", () => {
         harness.prisma as never,
         updateCommand
       );
-    const updateProof = await prepareCoordinatorProof(
+    const targetRepository = new SubscriptionClosureRepository();
+    const foreignRepository = new SubscriptionClosureRepository();
+    const foreignIssueSession = targetRepository.createAuthoritySessionInTransaction(
+      harness.prisma as never
+    );
+    const targetRequirement = harness.service.createGovernedReturnInboundAuthorityRequirement(
+      foreignIssueSession,
+      updateCommand
+    );
+    const lockQueriesBeforeForeignIssue = [...harness.lockQueries];
+    await expect(
+      foreignRepository.prepareAuthorityInTransaction(
+        harness.prisma as never,
+        foreignIssueSession,
+        targetRequirement.locks,
+        [targetRequirement]
+      )
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID" }
+    });
+    expect(harness.lockQueries).toEqual(lockQueriesBeforeForeignIssue);
+    expect(harness.state.workOrders).toHaveLength(1);
+    expect(harness.state.events).toHaveLength(1);
+    const { proof: updateProof, session: updateSession } = await prepareCoordinatorProof(
       harness.prisma as never,
-      harness.service.createGovernedReturnInboundAuthorityRequirement(updateCommand)
+      (authoritySession) =>
+        harness.service.createGovernedReturnInboundAuthorityRequirement(
+          authoritySession,
+          updateCommand
+        )
     );
     const lockQueryCount = harness.lockQueries.length;
     const updatePrepared =
       await harness.service.attestGovernedReturnInboundAuthorityInTransaction(
         harness.prisma as never,
+        updateSession,
         updateCommand,
         updateSource,
         updateProof
@@ -486,15 +550,21 @@ describe("HandoverWorkOrderService", () => {
       harness.prisma as never,
       command
     );
-    const wrongProof = await prepareCoordinatorProof(
+    const { proof: wrongProof, session: wrongSession } = await prepareCoordinatorProof(
       harness.prisma as never,
-      harness.service.createReturnInboundAuthorityRequirement(command, randomUUID())
+      (authoritySession) =>
+        harness.service.createReturnInboundAuthorityRequirement(
+          authoritySession,
+          command,
+          randomUUID()
+        )
     );
 
     for (const proof of [wrongProof, wrongProof, Object.freeze({})] as const) {
       await expect(
         harness.service.attestReturnInboundAuthorityInTransaction(
           harness.prisma as never,
+          wrongSession,
           command,
           sourceCapability,
           proof as never,
@@ -522,16 +592,19 @@ describe("HandoverWorkOrderService", () => {
       foreignCommand
     );
     const foreignWorkOrderId = randomUUID();
-    const foreignInstanceProof = await prepareCoordinatorProof(
+    const { proof: foreignInstanceProof, session: foreignSession } = await prepareCoordinatorProof(
       foreign.prisma as never,
-      harness.service.createReturnInboundAuthorityRequirement(
-        foreignCommand,
-        foreignWorkOrderId
-      )
+      (authoritySession) =>
+        harness.service.createReturnInboundAuthorityRequirement(
+          authoritySession,
+          foreignCommand,
+          foreignWorkOrderId
+        )
     );
     await expect(
       foreign.service.attestReturnInboundAuthorityInTransaction(
         foreign.prisma as never,
+        foreignSession,
         foreignCommand,
         foreignSource,
         foreignInstanceProof,
@@ -3236,14 +3309,20 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
 
 async function prepareCoordinatorProof(
   tx: Parameters<SubscriptionClosureRepository["prepareAuthorityInTransaction"]>[0],
-  requirement: SubscriptionClosureAuthorityRequirement
+  requirementFactory: (
+    session: ReturnType<SubscriptionClosureRepository["createAuthoritySessionInTransaction"]>
+  ) => SubscriptionClosureAuthorityRequirement
 ) {
-  const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+  const repository = new SubscriptionClosureRepository();
+  const session = repository.createAuthoritySessionInTransaction(tx);
+  const requirement = requirementFactory(session);
+  const proofs = await repository.prepareAuthorityInTransaction(
     tx,
+    session,
     requirement.locks,
     [requirement]
   );
-  return proofs.get(requirement.key)!;
+  return { proof: proofs.get(requirement.key)!, session };
 }
 
 function createHandoverWorkOrderHarness() {

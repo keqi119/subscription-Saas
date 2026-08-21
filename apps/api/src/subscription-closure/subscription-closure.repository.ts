@@ -236,6 +236,11 @@ export type SubscriptionClosureAuthorityRequirement = Readonly<{
   locks: readonly SubscriptionClosureAuthorityLock[];
 }>;
 
+declare const closureAuthoritySessionBrand: unique symbol;
+export type SubscriptionClosureAuthoritySession = Readonly<{
+  [closureAuthoritySessionBrand]: true;
+}>;
+
 declare const preparedClosureSourceCapabilityBrand: unique symbol;
 export type PreparedClosureSourceCapability = Readonly<{
   [preparedClosureSourceCapabilityBrand]: true;
@@ -257,6 +262,12 @@ type ClosureAuthorityAttestationState = Readonly<{
   issuer: SubscriptionClosureRepository;
   key: string;
   lockFingerprint: string;
+  session: SubscriptionClosureAuthoritySession;
+  transaction: Prisma.TransactionClient;
+}>;
+
+type ClosureAuthoritySessionState = Readonly<{
+  issuer: SubscriptionClosureRepository;
   transaction: Prisma.TransactionClient;
 }>;
 
@@ -268,6 +279,15 @@ const CLOSURE_AUTHORITY_REQUIREMENT_CONSUMERS = new WeakMap<
   SubscriptionClosureAuthorityRequirement,
   object
 >();
+const CLOSURE_AUTHORITY_REQUIREMENT_SESSIONS = new WeakMap<
+  SubscriptionClosureAuthorityRequirement,
+  SubscriptionClosureAuthoritySession
+>();
+const CLOSURE_AUTHORITY_SESSIONS = new WeakMap<
+  SubscriptionClosureAuthoritySession,
+  ClosureAuthoritySessionState
+>();
+const CONSUMED_CLOSURE_AUTHORITY_SESSIONS = new WeakSet<SubscriptionClosureAuthoritySession>();
 
 const PREPARED_EXECUTION = Symbol("subscription-closure-prepared-execution");
 
@@ -303,6 +323,25 @@ export class SubscriptionClosureRepository {
     PreparedClosureSourceCapability,
     PreparedClosureSourceState
   >();
+  createAuthoritySessionInTransaction(
+    tx: Prisma.TransactionClient
+  ): SubscriptionClosureAuthoritySession {
+    const session = Object.freeze({}) as SubscriptionClosureAuthoritySession;
+    CLOSURE_AUTHORITY_SESSIONS.set(session, Object.freeze({ issuer: this, transaction: tx }));
+    return session;
+  }
+
+  bindAuthorityRequirement(
+    session: SubscriptionClosureAuthoritySession,
+    requirement: SubscriptionClosureAuthorityRequirement
+  ) {
+    const state = CLOSURE_AUTHORITY_SESSIONS.get(session);
+    if (!state || state.issuer !== this) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+    }
+    return bindSubscriptionClosureAuthoritySession(requirement, session);
+  }
+
   async prepareSourceInTransaction(
     tx: Prisma.TransactionClient,
     source: SubscriptionClosureSource
@@ -316,11 +355,24 @@ export class SubscriptionClosureRepository {
 
   async prepareAuthorityInTransaction(
     tx: Prisma.TransactionClient,
+    session: SubscriptionClosureAuthoritySession,
     locks: readonly SubscriptionClosureAuthorityLock[],
     requirements: readonly SubscriptionClosureAuthorityRequirement[]
   ): Promise<ReadonlyMap<string, ClosureAuthorityAttestation>> {
+    const sessionState = CLOSURE_AUTHORITY_SESSIONS.get(session);
+    if (
+      !sessionState ||
+      sessionState.issuer !== this ||
+      sessionState.transaction !== tx ||
+      CONSUMED_CLOSURE_AUTHORITY_SESSIONS.has(session)
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+    }
+    CONSUMED_CLOSURE_AUTHORITY_SESSIONS.add(session);
     const normalizedLocks = normalizeAuthorityLocks(locks);
-    const normalizedRequirements = requirements.map(normalizeAuthorityRequirement);
+    const normalizedRequirements = requirements.map((requirement) =>
+      normalizeAuthorityRequirement(requirement, session)
+    );
     const normalizedKeys = normalizedRequirements.map(({ key }) => key);
     if (
       normalizedRequirements.length === 0 ||
@@ -350,6 +402,7 @@ export class SubscriptionClosureRepository {
           issuer: this,
           key: requirement.key,
           lockFingerprint: requirement.lockFingerprint,
+          session,
           transaction: tx
         })
       );
@@ -360,14 +413,22 @@ export class SubscriptionClosureRepository {
 
   async consumeAuthorityAttestationInTransaction(
     tx: Prisma.TransactionClient,
+    session: SubscriptionClosureAuthoritySession,
     capability: ClosureAuthorityAttestation,
     requirement: SubscriptionClosureAuthorityRequirement
   ): Promise<void> {
-    consumeSubscriptionClosureAuthorityAttestation(tx, capability, () => requirement, this);
+    consumeSubscriptionClosureAuthorityAttestation(
+      tx,
+      session,
+      capability,
+      () => this.bindAuthorityRequirement(session, requirement),
+      this
+    );
   }
 
   async createPreparedCaseInTransaction(
     tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
     input: CreateSubscriptionClosureCaseCommand,
     sourceCapability: PreparedClosureSourceCapability,
     authorityAttestation: ClosureAuthorityAttestation,
@@ -376,6 +437,7 @@ export class SubscriptionClosureRepository {
   ) {
     await this.consumeAuthorityAttestationInTransaction(
       tx,
+      authoritySession,
       authorityAttestation,
       subscriptionClosureCaseAuthorityRequirement(input, caseId)
     );
@@ -677,6 +739,7 @@ export class SubscriptionClosureRepository {
 
   async appendPreparedDocumentRevisionInTransaction(
     tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
     input: AppendSubscriptionClosureDocumentCommand,
     sourceCapability: PreparedClosureSourceCapability,
     authorityAttestation: ClosureAuthorityAttestation,
@@ -684,6 +747,7 @@ export class SubscriptionClosureRepository {
   ) {
     await this.consumeAuthorityAttestationInTransaction(
       tx,
+      authoritySession,
       authorityAttestation,
       subscriptionClosureDocumentAuthorityRequirement(input)
     );
@@ -1116,16 +1180,26 @@ function normalizeAttestationKey(value: string) {
 
 export function consumeSubscriptionClosureAuthorityAttestation(
   tx: Prisma.TransactionClient,
+  session: SubscriptionClosureAuthoritySession,
   capability: ClosureAuthorityAttestation,
   requirementFactory: () => SubscriptionClosureAuthorityRequirement,
-  issuer?: SubscriptionClosureRepository
+  issuer: SubscriptionClosureRepository | null
 ): void {
   const state = CLOSURE_AUTHORITY_ATTESTATIONS.get(capability);
   CLOSURE_AUTHORITY_ATTESTATIONS.delete(capability);
-  if (!state || state.transaction !== tx || (issuer && state.issuer !== issuer)) {
+  const sessionState = CLOSURE_AUTHORITY_SESSIONS.get(session);
+  if (
+    !state ||
+    !sessionState ||
+    state.transaction !== tx ||
+    sessionState.transaction !== tx ||
+    state.session !== session ||
+    state.issuer !== sessionState.issuer ||
+    (issuer && state.issuer !== issuer)
+  ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
   }
-  const requirement = normalizeAuthorityRequirement(requirementFactory());
+  const requirement = normalizeAuthorityRequirement(requirementFactory(), session);
   if (
     state.key !== requirement.key ||
     state.consumer !== requirement.consumer ||
@@ -1136,10 +1210,18 @@ export function consumeSubscriptionClosureAuthorityAttestation(
   }
 }
 
-function normalizeAuthorityRequirement(requirement: SubscriptionClosureAuthorityRequirement) {
+function normalizeAuthorityRequirement(
+  requirement: SubscriptionClosureAuthorityRequirement,
+  session: SubscriptionClosureAuthoritySession
+) {
   const key = normalizeAttestationKey(requirement.key);
   const locks = normalizeAuthorityLocks(requirement.locks);
-  if (locks.length === 0) throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+  if (
+    locks.length === 0 ||
+    CLOSURE_AUTHORITY_REQUIREMENT_SESSIONS.get(requirement) !== session
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+  }
   return Object.freeze({
     commandFingerprint: canonicalSubscriptionClosureJson(requirement.command),
     consumer: CLOSURE_AUTHORITY_REQUIREMENT_CONSUMERS.get(requirement) ?? null,
@@ -1151,10 +1233,23 @@ function normalizeAuthorityRequirement(requirement: SubscriptionClosureAuthority
 
 export function bindSubscriptionClosureAuthorityConsumer(
   requirement: SubscriptionClosureAuthorityRequirement,
-  consumer: object
+  consumer: object,
+  session: SubscriptionClosureAuthoritySession
 ) {
-  const bound = Object.freeze({ ...requirement });
+  const bound = bindSubscriptionClosureAuthoritySession(requirement, session);
   CLOSURE_AUTHORITY_REQUIREMENT_CONSUMERS.set(bound, consumer);
+  return bound;
+}
+
+export function bindSubscriptionClosureAuthoritySession(
+  requirement: SubscriptionClosureAuthorityRequirement,
+  session: SubscriptionClosureAuthoritySession
+) {
+  if (!CLOSURE_AUTHORITY_SESSIONS.has(session)) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+  }
+  const bound = Object.freeze({ ...requirement });
+  CLOSURE_AUTHORITY_REQUIREMENT_SESSIONS.set(bound, session);
   return bound;
 }
 
@@ -1935,6 +2030,9 @@ async function assertDocumentAuthorityCoherence(
     select: {
       contractId: true,
       customerId: true,
+      deletedAt: true,
+      documentName: true,
+      documentObjectKey: true,
       documentType: true,
       orderId: true,
       requestSnapshot: true,
@@ -1955,7 +2053,10 @@ async function assertDocumentAuthorityCoherence(
   }
   if (
     command.documentType === "RETURN_MANIFEST" &&
-    (esign.documentType !== "DELIVERY_HANDOVER" ||
+    (esign.deletedAt !== null ||
+      !esign.documentName ||
+      !esign.documentObjectKey ||
+      esign.documentType !== "DELIVERY_HANDOVER" ||
       esign.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
       esign.sourceId !== command.source.id ||
       esign.sourceKey !== command.source.key ||
@@ -1970,6 +2071,24 @@ async function assertDocumentAuthorityCoherence(
         }))
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (command.documentType === "RETURN_MANIFEST") {
+    const file = await tx.fileObject.findUnique({
+      select: {
+        id: true,
+        objectKey: true,
+        originalName: true
+      },
+      where: { id: command.sourceFileId }
+    });
+    if (
+      !file ||
+      file.id !== command.sourceFileId ||
+      esign.documentObjectKey !== file.objectKey ||
+      esign.documentName !== file.originalName
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
   }
   if (command.vehicleReturnId !== null && command.vehicleReturnId !== closureCase.vehicleReturnId) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);

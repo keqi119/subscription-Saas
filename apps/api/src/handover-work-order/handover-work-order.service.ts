@@ -110,7 +110,8 @@ import {
   bindSubscriptionClosureAuthorityConsumer,
   consumeSubscriptionClosureAuthorityAttestation,
   type ClosureAuthorityAttestation,
-  type SubscriptionClosureAuthorityRequirement
+  type SubscriptionClosureAuthorityRequirement,
+  type SubscriptionClosureAuthoritySession
 } from "../subscription-closure/subscription-closure.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
@@ -646,13 +647,14 @@ export class HandoverWorkOrderService {
 
   async attestReturnInboundAuthorityInTransaction(
     tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
     input: CreateReturnInboundWorkOrderCommand,
     capability: ReturnInboundTransactionCapability,
     authorityAttestation: ClosureAuthorityAttestation,
     workOrderId: string
   ): Promise<PreparedReturnInboundCapability> {
-    consumeHandoverAuthorityAttestation(tx, authorityAttestation, () =>
-      this.createReturnInboundAuthorityRequirement(input, workOrderId)
+    consumeHandoverAuthorityAttestation(tx, authoritySession, authorityAttestation, () =>
+      this.createReturnInboundAuthorityRequirement(authoritySession, input, workOrderId)
     );
     const capabilityState = this.takeReturnInboundCapability(capability);
     const command = normalizeReturnInboundCommand(input);
@@ -705,19 +707,25 @@ export class HandoverWorkOrderService {
   }
 
   createReturnInboundAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
     input: CreateReturnInboundWorkOrderCommand,
     workOrderId: string
   ) {
     return bindSubscriptionClosureAuthorityConsumer(
       returnInboundCreateAuthorityRequirement(input, workOrderId),
-      this.closureAuthorityConsumer
+      this.closureAuthorityConsumer,
+      authoritySession
     );
   }
 
-  createGovernedReturnInboundAuthorityRequirement(input: GovernedReturnInboundUpdateCommand) {
+  createGovernedReturnInboundAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: GovernedReturnInboundUpdateCommand
+  ) {
     return bindSubscriptionClosureAuthorityConsumer(
       governedReturnInboundAuthorityRequirement(input),
-      this.closureAuthorityConsumer
+      this.closureAuthorityConsumer,
+      authoritySession
     );
   }
 
@@ -821,12 +829,13 @@ export class HandoverWorkOrderService {
 
   async attestGovernedReturnInboundAuthorityInTransaction(
     tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
     input: GovernedReturnInboundUpdateCommand,
     capability: GovernedReturnInboundUpdateCapability,
     authorityAttestation: ClosureAuthorityAttestation
   ): Promise<PreparedGovernedReturnInboundUpdateCapability> {
-    consumeHandoverAuthorityAttestation(tx, authorityAttestation, () =>
-      this.createGovernedReturnInboundAuthorityRequirement(input)
+    consumeHandoverAuthorityAttestation(tx, authoritySession, authorityAttestation, () =>
+      this.createGovernedReturnInboundAuthorityRequirement(authoritySession, input)
     );
     const state = this.governedReturnInboundUpdateCapabilities.get(capability);
     this.governedReturnInboundUpdateCapabilities.delete(capability);
@@ -6020,11 +6029,18 @@ function handoverP0Conflict(code: string, message: string) {
 
 function consumeHandoverAuthorityAttestation(
   tx: Prisma.TransactionClient,
+  authoritySession: SubscriptionClosureAuthoritySession,
   attestation: ClosureAuthorityAttestation,
   requirementFactory: () => SubscriptionClosureAuthorityRequirement
 ) {
   try {
-    consumeSubscriptionClosureAuthorityAttestation(tx, attestation, requirementFactory);
+    consumeSubscriptionClosureAuthorityAttestation(
+      tx,
+      authoritySession,
+      attestation,
+      requirementFactory,
+      null
+    );
   } catch (error) {
     if (error instanceof ConflictException) {
       const response = error.getResponse();

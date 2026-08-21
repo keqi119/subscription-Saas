@@ -46,8 +46,10 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
   it("issues exact one-use authority attestations from one ranked pass", async () => {
     const database = fakeTransaction();
     const repository = new SubscriptionClosureRepository();
+    const session = repository.createAuthoritySessionInTransaction(database.tx);
     const attestations = await repository.prepareAuthorityInTransaction(
       database.tx,
+      session,
       [
         {
           id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
@@ -56,7 +58,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
         }
       ],
       [
-        {
+        repository.bindAuthorityRequirement(session, {
           command: { orderId: UUIDS.order, source: SOURCE },
           key: "case-create",
           locks: [
@@ -66,8 +68,8 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
               table: "subscription_order"
             }
           ]
-        },
-        {
+        }),
+        repository.bindAuthorityRequirement(session, {
           command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
           key: "manifest-create",
           locks: [
@@ -77,7 +79,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
               table: "subscription_order"
             }
           ]
-        }
+        })
       ]
     );
 
@@ -85,6 +87,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     await expect(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
+        session,
         attestations.get("case-create")!,
         {
           command: { orderId: UUIDS.order, source: SOURCE },
@@ -102,6 +105,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
+        session,
         attestations.get("case-create")!,
         {
           command: { orderId: UUIDS.order, source: SOURCE },
@@ -120,6 +124,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
+        session,
         attestations.get("manifest-create")!,
         {
           command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
@@ -138,6 +143,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
+        session,
         attestations.get("manifest-create")!,
         {
           command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
@@ -155,6 +161,39 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     );
   });
 
+  it.each(["case-create", "manifest-create"])(
+    "rejects a foreign issuer for the target repository %s requirement before querying",
+    async (key) => {
+      const database = fakeTransaction();
+      const target = new SubscriptionClosureRepository();
+      const foreign = new SubscriptionClosureRepository();
+      const session = target.createAuthoritySessionInTransaction(database.tx);
+      const lock = { id: UUIDS.order, mode: "UPDATE" as const, table: "subscription_order" as const };
+      const requirement = target.bindAuthorityRequirement(session, {
+        command: { key, orderId: UUIDS.order, source: SOURCE },
+        key,
+        locks: [lock]
+      });
+      const timeline = [...database.timeline];
+
+      await expectCode(
+        foreign.prepareAuthorityInTransaction(database.tx, session, [lock], [requirement]),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+      );
+      expect(database.timeline).toEqual(timeline);
+      expect(database.authorityLocks).toHaveLength(0);
+      await expect(
+        target.prepareAuthorityInTransaction(database.tx, session, [lock], [requirement])
+      ).resolves.toBeInstanceOf(Map);
+      const timelineAfterTargetIssue = [...database.timeline];
+      await expectCode(
+        target.prepareAuthorityInTransaction(database.tx, session, [lock], [requirement]),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+      );
+      expect(database.timeline).toEqual(timelineAfterTargetIssue);
+    }
+  );
+
   it("consumes forged, foreign, wrong-transaction, command, id, and mode retargets fail closed", async () => {
     const database = fakeTransaction();
     const repository = new SubscriptionClosureRepository();
@@ -168,51 +207,64 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       key: "case-create",
       locks: [lock]
     };
-    const prepare = async () =>
-      (await repository.prepareAuthorityInTransaction(database.tx, [lock], [requirement])).get(
-        "case-create"
-      )!;
+    const prepare = async () => {
+      const session = repository.createAuthoritySessionInTransaction(database.tx);
+      const bound = repository.bindAuthorityRequirement(session, requirement);
+      const proof = (
+        await repository.prepareAuthorityInTransaction(database.tx, session, [lock], [bound])
+      ).get("case-create")!;
+      return { proof, session };
+    };
 
+    const forgedSession = repository.createAuthoritySessionInTransaction(database.tx);
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
+        forgedSession,
         Object.freeze({}) as never,
         requirement
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
+    const wrongTransaction = await prepare();
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         fakeTransaction().tx,
-        await prepare(),
+        wrongTransaction.session,
+        wrongTransaction.proof,
         requirement
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
+    const foreign = await prepare();
     await expectCode(
       new SubscriptionClosureRepository().consumeAuthorityAttestationInTransaction(
         database.tx,
-        await prepare(),
+        foreign.session,
+        foreign.proof,
         requirement
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
+    const commandRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+      repository.consumeAuthorityAttestationInTransaction(database.tx, commandRetarget.session, commandRetarget.proof, {
         ...requirement,
         command: { ...requirement.command, operation: "document" }
       }),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
+    const idRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+      repository.consumeAuthorityAttestationInTransaction(database.tx, idRetarget.session, idRetarget.proof, {
         ...requirement,
         locks: [{ ...lock, id: UUIDS.contract }]
       }),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
+    const modeRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+      repository.consumeAuthorityAttestationInTransaction(database.tx, modeRetarget.session, modeRetarget.proof, {
         ...requirement,
         locks: [{ ...lock, mode: "SHARE" }]
       }),
@@ -337,16 +389,24 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     const command = generatedDocumentCommand();
     const sourceCapability = await repository.prepareSourceInTransaction(database.tx, SOURCE);
     const wrongCommand = { ...command, expectedVersion: 1 };
-    const wrongRequirement = subscriptionClosureDocumentAuthorityRequirement(wrongCommand);
+    const session = repository.createAuthoritySessionInTransaction(database.tx);
+    const wrongRequirement = repository.bindAuthorityRequirement(
+      session,
+      subscriptionClosureDocumentAuthorityRequirement(wrongCommand)
+    );
     const proof = (
-      await repository.prepareAuthorityInTransaction(database.tx, wrongRequirement.locks, [
-        wrongRequirement
-      ])
+      await repository.prepareAuthorityInTransaction(
+        database.tx,
+        session,
+        wrongRequirement.locks,
+        [wrongRequirement]
+      )
     ).get("manifest-create")!;
 
     await expectCode(
       repository.appendPreparedDocumentRevisionInTransaction(
         database.tx,
+        session,
         command,
         sourceCapability,
         proof

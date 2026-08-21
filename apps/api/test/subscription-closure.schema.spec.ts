@@ -26,6 +26,13 @@ const esignSourceMigrationPath = resolve(
 const esignSourceMigration = existsSync(esignSourceMigrationPath)
   ? readFileSync(esignSourceMigrationPath, "utf8")
   : "";
+const esignSourceImmutabilityMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260821141000_stage1_p0_contract_esign_source_immutability/migration.sql"
+);
+const esignSourceImmutabilityMigration = existsSync(esignSourceImmutabilityMigrationPath)
+  ? readFileSync(esignSourceImmutabilityMigrationPath, "utf8")
+  : "";
 
 function prismaBlock(kind: "enum" | "model", name: string) {
   return schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -147,6 +154,12 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     expect(esignSourceMigration).toContain('"source_type" IS NULL');
     expect(esignSourceMigration).toContain('"source_id" IS NULL');
     expect(esignSourceMigration).toContain('"source_key" IS NULL');
+    expect(esignSourceImmutabilityMigration).toContain(
+      "contract_esign_task_source_tuple_immutable"
+    );
+    expect(esignSourceImmutabilityMigration).toContain(
+      "contract_esign_task_source_tuple_immutable_trg"
+    );
   });
   it("declares the exact closure, document, settlement, event, and command enums", () => {
     for (const contract of enumContracts) {
@@ -424,6 +437,8 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
   it("enforces legacy active-task and exact source-owned e-sign authorities independently", async () => {
     const contractId = randomUUID();
     const sourceId = randomUUID();
+    const legacyTaskId = randomUUID();
+    const sourceTaskId = randomUUID();
     const insertTask = `INSERT INTO "contract_esign_task" (
       "id", "task_no", "contract_id", "order_id", "customer_id", "provider",
       "task_status", "source_type", "source_id", "source_key", "created_at", "updated_at"
@@ -436,7 +451,7 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
     try {
       await client.query("SET LOCAL session_replication_role = replica");
       await client.query(insertTask, [
-        randomUUID(),
+        legacyTaskId,
         `P0-LEGACY-${randomUUID()}`,
         contractId,
         randomUUID(),
@@ -466,7 +481,7 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
 
       const sourceKey = `p0:return-manifest:${randomUUID()}`;
       await client.query(insertTask, [
-        randomUUID(),
+        sourceTaskId,
         `P0-SOURCE-${randomUUID()}`,
         contractId,
         randomUUID(),
@@ -510,6 +525,32 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         "23514",
         "contract_esign_task_source_tuple_chk"
       );
+      await client.query("SET LOCAL session_replication_role = origin");
+      for (const [taskId, sourceType, nextSourceId, nextSourceKey] of [
+        [legacyTaskId, "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST", randomUUID(), `retarget:${randomUUID()}`],
+        [sourceTaskId, null, null, null],
+        [sourceTaskId, "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST", randomUUID(), sourceKey]
+      ] as const) {
+        await expectPgError(
+          client,
+          `UPDATE "contract_esign_task"
+           SET "source_type" = $2, "source_id" = $3::uuid, "source_key" = $4
+           WHERE "id" = $1::uuid`,
+          [taskId, sourceType, nextSourceId, nextSourceKey],
+          "23514",
+          "contract_esign_task_source_tuple_immutable"
+        );
+      }
+      await client.query("SET LOCAL session_replication_role = replica");
+      await expect(
+        client.query(
+          `UPDATE "contract_esign_task"
+           SET "source_type" = "source_type", "source_id" = "source_id", "source_key" = "source_key",
+               "document_name" = 'allowed-other-field-update'
+           WHERE "id" = $1::uuid`,
+          [sourceTaskId]
+        )
+      ).resolves.toMatchObject({ rowCount: 1 });
     } finally {
       await client.query("ROLLBACK");
     }

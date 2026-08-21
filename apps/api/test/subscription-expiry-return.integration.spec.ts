@@ -382,6 +382,137 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   });
 
+  it("fails replay closed when the dedicated manifest task or exact source file drifts", async () => {
+    const fixture = await createManagedExpiryFixture(prisma);
+    const service = createGovernedExpiryService(prisma);
+    try {
+      await service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+        where: { orderId: fixture.orderId }
+      });
+      const revision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
+        where: {
+          closureCaseId: closureCase.id,
+          documentType: "RETURN_MANIFEST",
+          revisionNumber: 1
+        }
+      });
+      const originalTask = await prisma.contractESignTask.findUniqueOrThrow({
+        where: { id: revision.contractESignTaskId }
+      });
+      const originalFile = await prisma.fileObject.findUniqueOrThrow({
+        where: { id: revision.sourceFileId }
+      });
+      const baseline = await snapshotManagedExpiryTruth(prisma, fixture);
+
+      const drifts = [
+        {
+          mutate: () =>
+            prisma.contractESignTask.update({
+              data: { deletedAt: new Date("2026-08-21T00:00:00.000Z") },
+              where: { id: originalTask.id }
+            }),
+          restore: () =>
+            prisma.contractESignTask.update({
+              data: { deletedAt: originalTask.deletedAt },
+              where: { id: originalTask.id }
+            })
+        },
+        {
+          mutate: () =>
+            prisma.contractESignTask.update({
+              data: { documentObjectKey: `${originalTask.documentObjectKey}.drift` },
+              where: { id: originalTask.id }
+            }),
+          restore: () =>
+            prisma.contractESignTask.update({
+              data: { documentObjectKey: originalTask.documentObjectKey },
+              where: { id: originalTask.id }
+            })
+        },
+        {
+          mutate: () =>
+            prisma.contractESignTask.update({
+              data: { documentName: `${originalTask.documentName}.drift` },
+              where: { id: originalTask.id }
+            }),
+          restore: () =>
+            prisma.contractESignTask.update({
+              data: { documentName: originalTask.documentName },
+              where: { id: originalTask.id }
+            })
+        },
+        {
+          mutate: () =>
+            prisma.fileObject.update({
+              data: { objectKey: `${originalFile.objectKey}.drift` },
+              where: { id: originalFile.id }
+            }),
+          restore: () =>
+            prisma.fileObject.update({
+              data: { objectKey: originalFile.objectKey },
+              where: { id: originalFile.id }
+            })
+        },
+        {
+          mutate: () =>
+            prisma.fileObject.update({
+              data: { originalName: `${originalFile.originalName}.drift` },
+              where: { id: originalFile.id }
+            }),
+          restore: () =>
+            prisma.fileObject.update({
+              data: { originalName: originalFile.originalName },
+              where: { id: originalFile.id }
+            })
+        }
+      ];
+      for (const drift of drifts) {
+        await drift.mutate();
+        try {
+          await expect(
+            service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
+          ).rejects.toMatchObject({
+            response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+            status: 409
+          });
+        } finally {
+          await drift.restore();
+        }
+        await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.fileObject.delete({ where: { id: originalFile.id } });
+      });
+      try {
+        await expect(
+          service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
+        ).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        });
+      } finally {
+        await prisma.fileObject.create({
+          data: {
+            bucket: originalFile.bucket,
+            createdAt: originalFile.createdAt,
+            id: originalFile.id,
+            mimeType: originalFile.mimeType,
+            objectKey: originalFile.objectKey,
+            originalName: originalFile.originalName,
+            sizeBytes: originalFile.sizeBytes,
+            uploadedBy: originalFile.uploadedBy
+          }
+        });
+      }
+      await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, fixture);
+    }
+  });
+
   it("replays the immutable actor and revision one after actor and manifest successors change", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
     const service = createGovernedExpiryService(prisma);

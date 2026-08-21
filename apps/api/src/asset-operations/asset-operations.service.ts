@@ -26,7 +26,8 @@ import {
   bindSubscriptionClosureAuthorityConsumer,
   consumeSubscriptionClosureAuthorityAttestation,
   type ClosureAuthorityAttestation,
-  type SubscriptionClosureAuthorityRequirement
+  type SubscriptionClosureAuthorityRequirement,
+  type SubscriptionClosureAuthoritySession
 } from "../subscription-closure/subscription-closure.repository";
 import {
   ASSET_OPERATION_ERROR_CODE,
@@ -224,6 +225,7 @@ export class AssetOperationsService {
 
   async attestCallerOwnedCreateAuthorityInTransaction(
     tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
     command: CreateWorkOrderServiceCommand,
     context: AssetOperationCommandContext,
     capability: AssetOperationsTransactionCapability,
@@ -231,8 +233,18 @@ export class AssetOperationsService {
     workOrderId: string
   ): Promise<AssetOperationsPreparedCreateCapability> {
     try {
-      consumeSubscriptionClosureAuthorityAttestation(tx, authorityAttestation, () =>
-        this.createAuthorityRequirement(command, context.actorId, workOrderId)
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        authoritySession,
+        authorityAttestation,
+        () =>
+          this.createAuthorityRequirement(
+            authoritySession,
+            command,
+            context.actorId,
+            workOrderId
+          ),
+        null
       );
     } catch (error) {
       if (hasConflictCode(error, "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID")) {
@@ -278,13 +290,15 @@ export class AssetOperationsService {
   }
 
   createAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
     command: CreateWorkOrderServiceCommand,
     actorId: string | null,
     workOrderId: string
   ) {
     return bindSubscriptionClosureAuthorityConsumer(
       assetOperationsCreateAuthorityRequirement(command, actorId, workOrderId),
-      this.closureAuthorityConsumer
+      this.closureAuthorityConsumer,
+      authoritySession
     );
   }
 

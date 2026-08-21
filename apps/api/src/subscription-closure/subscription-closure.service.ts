@@ -32,6 +32,7 @@ import {
   type ClosureAuthorityAttestation,
   type PreparedClosureSourceCapability,
   type SubscriptionClosureAuthorityLock,
+  type SubscriptionClosureAuthoritySession,
   type SubscriptionClosureMutationAuditHook
 } from "./subscription-closure.repository";
 import type { SubscriptionClosureSource } from "./subscription-closure.types";
@@ -98,14 +99,15 @@ type NormalExpiryCapabilityState = Readonly<{
   assetCommand: Parameters<typeof assetOperationsCreateAuthorityRequirement>[0];
   assetContext: Parameters<
     AssetOperationsService["attestCallerOwnedCreateAuthorityInTransaction"]
-  >[2];
+  >[3];
   assetWorkOrderId: string;
   assetSource: SubscriptionClosureSource;
   authorityAttestations: ReadonlyMap<string, ClosureAuthorityAttestation>;
+  authoritySession: SubscriptionClosureAuthoritySession;
   authority: NormalExpiryAuthority;
   caseSource: SubscriptionClosureSource;
   caseSourceCapability: PreparedClosureSourceCapability;
-  caseCommand: Parameters<SubscriptionClosureRepository["createPreparedCaseInTransaction"]>[1];
+  caseCommand: Parameters<SubscriptionClosureRepository["createPreparedCaseInTransaction"]>[2];
   closureCaseId: string;
   documentSource: SubscriptionClosureSource;
   documentSourceCapability: PreparedClosureSourceCapability;
@@ -260,6 +262,14 @@ export class SubscriptionClosureService {
       handoverWorkOrderId,
       vehicleReturnId
     });
+    const manifestDocumentSnapshot = returnManifestDocumentSnapshot({
+      assetWorkOrderId,
+      authority,
+      caseNo: subscriptionClosureCaseNo(caseSource),
+      closureCaseId,
+      handoverWorkOrderId,
+      vehicleReturnId
+    });
     const currentManifest = currentCase
       ? await tx.subscriptionClosureCurrentDocument.findUnique({
           include: { documentRevision: true },
@@ -295,6 +305,7 @@ export class SubscriptionClosureService {
           authority,
           caseNo: subscriptionClosureCaseNo(caseSource),
           closureCaseId,
+          documentSnapshot: manifestDocumentSnapshot,
           documentSource,
           handoverWorkOrderId,
           vehicleReturnId
@@ -306,6 +317,7 @@ export class SubscriptionClosureService {
         manifestCommand,
         authority,
         documentSource,
+        manifestDocumentSnapshot,
         null
       );
     }
@@ -393,19 +405,33 @@ export class SubscriptionClosureService {
       { id: authority.customerId, mode: "SHARE", table: "customer" },
       { id: authority.actorId, mode: "SHARE", table: "user" }
     ];
-    const authorityAttestations = await this.repository.prepareAuthorityInTransaction(tx, locks, [
-      this.assetOperations.createAuthorityRequirement(
-        assetCommand,
-        authority.actorId,
-        assetWorkOrderId
-      ),
-      subscriptionClosureCaseAuthorityRequirement(caseCommand, closureCaseId),
-      this.handoverWorkOrders.createReturnInboundAuthorityRequirement(
-        handoverCommand,
-        handoverWorkOrderId
-      ),
-      subscriptionClosureDocumentAuthorityRequirement(manifestCommand)
-    ]);
+    const authoritySession = this.repository.createAuthoritySessionInTransaction(tx);
+    const authorityAttestations = await this.repository.prepareAuthorityInTransaction(
+      tx,
+      authoritySession,
+      locks,
+      [
+        this.assetOperations.createAuthorityRequirement(
+          authoritySession,
+          assetCommand,
+          authority.actorId,
+          assetWorkOrderId
+        ),
+        this.repository.bindAuthorityRequirement(
+          authoritySession,
+          subscriptionClosureCaseAuthorityRequirement(caseCommand, closureCaseId)
+        ),
+        this.handoverWorkOrders.createReturnInboundAuthorityRequirement(
+          authoritySession,
+          handoverCommand,
+          handoverWorkOrderId
+        ),
+        this.repository.bindAuthorityRequirement(
+          authoritySession,
+          subscriptionClosureDocumentAuthorityRequirement(manifestCommand)
+        )
+      ]
+    );
     const lockedAuthority = await this.loadNormalExpiryAuthority(
       tx,
       command,
@@ -418,7 +444,7 @@ export class SubscriptionClosureService {
     });
     if (lockedCase?.id !== currentCase?.id) throw serviceConflict("AUTHORITY_MISMATCH");
     if (manifestPlan.creation) {
-      const esignTask = await createManifestAuthoritiesInTransaction(
+      const manifestAuthorities = await createManifestAuthoritiesInTransaction(
         tx,
         manifestPlan.command,
         manifestPlan.creation,
@@ -429,12 +455,14 @@ export class SubscriptionClosureService {
         manifestCommand,
         authority,
         documentSource,
-        esignTask
+        manifestDocumentSnapshot,
+        manifestAuthorities
       );
     }
     const handoverCapability =
       await this.handoverWorkOrders.attestReturnInboundAuthorityInTransaction(
         tx,
+        authoritySession,
         handoverCommand,
         handoverSourceCapability as never,
         requiredAttestation(authorityAttestations, "handover-create"),
@@ -451,6 +479,7 @@ export class SubscriptionClosureService {
         assetSource,
         assetWorkOrderId,
         authorityAttestations,
+        authoritySession,
         authority: lockedAuthority,
         caseCommand,
         closureCaseId,
@@ -502,6 +531,7 @@ export class SubscriptionClosureService {
 
     const preparedAsset = await this.assetOperations.attestCallerOwnedCreateAuthorityInTransaction(
       tx,
+      state.authoritySession,
       state.assetCommand,
       state.assetContext,
       state.assetCapability,
@@ -524,6 +554,7 @@ export class SubscriptionClosureService {
     }
     const createdCase = await this.repository.createPreparedCaseInTransaction(
       tx,
+      state.authoritySession,
       state.caseCommand,
       state.caseSourceCapability,
       requiredAttestation(state.authorityAttestations, "case-create"),
@@ -536,6 +567,7 @@ export class SubscriptionClosureService {
     const manifest = (
       await this.repository.appendPreparedDocumentRevisionInTransaction(
         tx,
+        state.authoritySession,
         state.manifestCommand,
         state.documentSourceCapability,
         requiredAttestation(state.authorityAttestations, "manifest-create"),
@@ -609,8 +641,10 @@ export class SubscriptionClosureService {
         tx,
         handoverCommand
       );
+    const authoritySession = this.repository.createAuthoritySessionInTransaction(tx);
     const authority = await this.repository.prepareAuthorityInTransaction(
       tx,
+      authoritySession,
       [
         {
           id: observedCase.id,
@@ -626,7 +660,12 @@ export class SubscriptionClosureService {
         },
         { id: command.actorId, mode: "SHARE", table: "user" }
       ],
-      [this.handoverWorkOrders.createGovernedReturnInboundAuthorityRequirement(handoverCommand)]
+      [
+        this.handoverWorkOrders.createGovernedReturnInboundAuthorityRequirement(
+          authoritySession,
+          handoverCommand
+        )
+      ]
     );
     const closureCase = await tx.subscriptionClosureCase.findUnique({
       select: {
@@ -672,6 +711,7 @@ export class SubscriptionClosureService {
     const handoverCapability =
       await this.handoverWorkOrders.attestGovernedReturnInboundAuthorityInTransaction(
         tx,
+        authoritySession,
         handoverCommand,
         handoverSourceCapability,
         authorityAttestation
@@ -876,6 +916,7 @@ type ManifestAuthorityPlanInput = Readonly<{
   caseNo: string;
   closureCaseId: string;
   documentSource: SubscriptionClosureSource;
+  documentSnapshot: ReturnType<typeof returnManifestDocumentSnapshot>;
   handoverWorkOrderId: string;
   vehicleReturnId: string;
 }>;
@@ -885,19 +926,7 @@ async function planManifestAuthoritiesInTransaction(
   input: ManifestAuthorityPlanInput
 ) {
   const generatedAt = await readDatabaseClock(tx);
-  const documentSnapshot = {
-    assetWorkOrderId: input.assetWorkOrderId,
-    caseNo: input.caseNo,
-    closureCaseId: input.closureCaseId,
-    contractId: input.authority.contractId,
-    customerId: input.authority.customerId,
-    documentType: "RETURN_MANIFEST",
-    handoverWorkOrderId: input.handoverWorkOrderId,
-    orderId: input.authority.orderId,
-    segmentId: input.authority.segmentId,
-    vehicleId: input.authority.vehicleId,
-    vehicleReturnId: input.vehicleReturnId
-  } as const;
+  const documentSnapshot = input.documentSnapshot;
   const canonicalManifest = canonicalSubscriptionClosureJson(documentSnapshot);
   const sourceFileHash = createHash("sha256").update(canonicalManifest).digest("hex");
   const objectKey = `subscription-closure/${input.closureCaseId}/return-manifest-r1.json`;
@@ -947,7 +976,7 @@ async function createManifestAuthoritiesInTransaction(
   }>,
   authority: NormalExpiryAuthority
 ) {
-  await tx.fileObject.create({
+  const file = await tx.fileObject.create({
     data: {
       bucket: "subscription-closure",
       id: command.sourceFileId,
@@ -958,7 +987,7 @@ async function createManifestAuthoritiesInTransaction(
       uploadedBy: authority.actorId
     }
   });
-  return tx.contractESignTask.create({
+  const task = await tx.contractESignTask.create({
     data: {
       contractId: authority.contractId,
       createdBy: authority.actorId,
@@ -983,6 +1012,7 @@ async function createManifestAuthoritiesInTransaction(
       updatedBy: authority.actorId
     }
   });
+  return { file, task };
 }
 
 function replayManifestCommand(
@@ -1043,10 +1073,11 @@ async function assertReturnManifestEsignAuthority(
   command: ReturnType<typeof replayManifestCommand>,
   authority: NormalExpiryAuthority,
   documentSource: SubscriptionClosureSource,
-  txOwnedTask: Awaited<ReturnType<typeof findReturnManifestEsignAuthorities>>[number] | null
+  expectedDocumentSnapshot: ReturnType<typeof returnManifestDocumentSnapshot>,
+  txOwnedAuthorities: Awaited<ReturnType<typeof createManifestAuthoritiesInTransaction>> | null
 ) {
-  const candidates = txOwnedTask
-    ? [txOwnedTask]
+  const candidates = txOwnedAuthorities
+    ? [txOwnedAuthorities.task]
     : await findReturnManifestEsignAuthorities(tx, documentSource);
   const task = candidates[0];
   if (candidates.length !== 1 || !task || task.id !== command.contractESignTaskId) {
@@ -1055,6 +1086,18 @@ async function assertReturnManifestEsignAuthority(
   const snapshotHash = createHash("sha256")
     .update(canonicalSubscriptionClosureJson(command.documentSnapshot))
     .digest("hex");
+  if (
+    canonicalSubscriptionClosureJson(command.documentSnapshot) !==
+    canonicalSubscriptionClosureJson(expectedDocumentSnapshot)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const documentSnapshot = manifestSnapshot(command.documentSnapshot as Prisma.JsonValue);
+  const expectedObjectKey = `subscription-closure/${command.closureCaseId}/return-manifest-r1.json`;
+  const expectedDocumentName = `${documentSnapshot.caseNo}-return-manifest-r1.json`;
+  const file = txOwnedAuthorities
+    ? txOwnedAuthorities.file
+    : await tx.fileObject.findUnique({ where: { id: command.sourceFileId } });
   const expectedSnapshot = returnManifestEsignSnapshot(
     documentSource,
     command.closureCaseId,
@@ -1066,14 +1109,62 @@ async function assertReturnManifestEsignAuthority(
     task.orderId !== authority.orderId ||
     task.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
     task.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    task.deletedAt !== null ||
+    task.documentObjectKey !== expectedObjectKey ||
+    task.documentName !== expectedDocumentName ||
     task.sourceId !== documentSource.id ||
     task.sourceKey !== documentSource.key ||
     task.sourceType !== documentSource.type ||
     canonicalSubscriptionClosureJson(task.requestSnapshot) !==
-      canonicalSubscriptionClosureJson(expectedSnapshot)
+      canonicalSubscriptionClosureJson(expectedSnapshot) ||
+    !file ||
+    file.id !== command.sourceFileId ||
+    file.bucket !== "subscription-closure" ||
+    file.mimeType !== "application/json" ||
+    file.objectKey !== expectedObjectKey ||
+    file.originalName !== expectedDocumentName ||
+    file.sizeBytes !== BigInt(Buffer.byteLength(canonicalSubscriptionClosureJson(command.documentSnapshot))) ||
+    file.uploadedBy !== command.actorId ||
+    command.sourceFileHash !== snapshotHash
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
+}
+
+function returnManifestDocumentSnapshot(
+  input: Readonly<{
+    assetWorkOrderId: string;
+    authority: NormalExpiryAuthority;
+    caseNo: string;
+    closureCaseId: string;
+    handoverWorkOrderId: string;
+    vehicleReturnId: string;
+  }>
+) {
+  return {
+    assetWorkOrderId: input.assetWorkOrderId,
+    caseNo: input.caseNo,
+    closureCaseId: input.closureCaseId,
+    contractId: input.authority.contractId,
+    customerId: input.authority.customerId,
+    documentType: "RETURN_MANIFEST",
+    handoverWorkOrderId: input.handoverWorkOrderId,
+    orderId: input.authority.orderId,
+    segmentId: input.authority.segmentId,
+    vehicleId: input.authority.vehicleId,
+    vehicleReturnId: input.vehicleReturnId
+  } as const;
+}
+
+function manifestSnapshot(value: Prisma.JsonValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const caseNo = value.caseNo;
+  if (typeof caseNo !== "string" || !caseNo.trim()) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return { caseNo };
 }
 
 function findReturnManifestEsignAuthorities(

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
 import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
+import { subscriptionClosureCaseNo } from "../src/subscription-closure/subscription-closure.repository";
 
 const IDS = {
   actor: "10000000-0000-4000-8000-000000000001",
@@ -48,8 +49,11 @@ describe("SubscriptionClosureService normal expiry", () => {
       createAuthorityRequirement: vi.fn(() => ({ key: "asset-create" })),
       prepareCallerOwnedTransaction: vi.fn(async () => Object.freeze({ kind: "source" }))
     };
+    const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {
+      bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
       consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      createAuthoritySessionInTransaction: vi.fn(() => authoritySession),
       prepareAuthorityInTransaction: vi.fn(
         async () => new Map([["handover-create", Object.freeze({})]])
       ),
@@ -84,6 +88,7 @@ describe("SubscriptionClosureService normal expiry", () => {
         Object.freeze({ key })
       ])
     );
+    const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {
       appendPreparedDocumentRevisionInTransaction: vi.fn(async () => ({
         outcome: {
@@ -93,7 +98,9 @@ describe("SubscriptionClosureService normal expiry", () => {
         },
         wrote: true
       })),
-      createPreparedCaseInTransaction: vi.fn(async (_tx, _command, _source, _proof, caseId) => ({
+      bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
+      createAuthoritySessionInTransaction: vi.fn(() => authoritySession),
+      createPreparedCaseInTransaction: vi.fn(async (_tx, _session, _command, _source, _proof, caseId) => ({
         outcome: {
           caseNo: "CLS-1",
           currentDocuments: {},
@@ -116,7 +123,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     };
     const handover = {
       attestReturnInboundAuthorityInTransaction: vi.fn(
-        async (_tx, _command, _source, _proof, workOrderId) => {
+        async (_tx, _session, _command, _source, _proof, workOrderId) => {
           timeline.push("domain-attest:specialist");
           return Object.freeze({ kind: "prepared-handover", workOrderId });
         }
@@ -133,7 +140,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     };
     const assetOperations = {
       attestCallerOwnedCreateAuthorityInTransaction: vi.fn(
-        async (_tx, _command, _context, _source, _proof, workOrderId) => {
+        async (_tx, _session, _command, _context, _source, _proof, workOrderId) => {
           timeline.push("domain-attest:common");
           return Object.freeze({ kind: "prepared-asset", workOrderId });
         }
@@ -198,6 +205,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     });
     expect(repository.createPreparedCaseInTransaction).toHaveBeenCalledWith(
       tx,
+      authoritySession,
       expect.objectContaining({
         returnAssetWorkOrderId: result.returnAssetWorkOrderId,
         returnHandoverWorkOrderId: result.returnHandoverWorkOrderId,
@@ -210,6 +218,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     );
     expect(repository.appendPreparedDocumentRevisionInTransaction).toHaveBeenCalledWith(
       tx,
+      authoritySession,
       expect.objectContaining({
         documentType: "RETURN_MANIFEST",
         expectedCurrentRevisionId: null,
@@ -225,6 +234,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     expect(repository.prepareAuthorityInTransaction).toHaveBeenCalledTimes(1);
     expect(repository.prepareAuthorityInTransaction).toHaveBeenCalledWith(
       tx,
+      authoritySession,
       expect.arrayContaining([
         { id: IDS.order, mode: "UPDATE", table: "subscription_order" },
         { id: IDS.vehicle, mode: "SHARE", table: "vehicle" },
@@ -249,6 +259,7 @@ describe("SubscriptionClosureService normal expiry", () => {
       subscriptionClosureCurrentDocument: { findUnique: ReturnType<typeof vi.fn> };
       subscriptionClosureDocumentRevision: { findFirst: ReturnType<typeof vi.fn> };
       contractESignTask: { findMany: ReturnType<typeof vi.fn> };
+      fileObject: { findUnique: ReturnType<typeof vi.fn> };
     } & Prisma.TransactionClient;
     tx.subscriptionClosureCase.findUnique.mockResolvedValue({
       createSourceId: IDS.segment,
@@ -261,12 +272,30 @@ describe("SubscriptionClosureService normal expiry", () => {
       returnHandoverWorkOrderId: IDS.handoverWorkOrder,
       vehicleReturnId: IDS.return
     });
+    const caseNo = subscriptionClosureCaseNo({
+      id: IDS.segment,
+      key: "normal-closure-case",
+      type: "SUBSCRIPTION_EXPIRY"
+    });
+    const revisionDocumentSnapshot = {
+      assetWorkOrderId: IDS.assetWorkOrder,
+      caseNo,
+      closureCaseId: IDS.closureCase,
+      contractId: IDS.contract,
+      customerId: IDS.customer,
+      documentType: "RETURN_MANIFEST",
+      handoverWorkOrderId: IDS.handoverWorkOrder,
+      orderId: IDS.order,
+      segmentId: IDS.segment,
+      vehicleId: IDS.vehicle,
+      vehicleReturnId: IDS.return
+    };
     const revisionOne = {
       archivedAt: null,
       archivedBy: null,
       closureCaseId: IDS.closureCase,
       contractESignTaskId: IDS.esignTask,
-      documentSnapshot: { revision: 1 },
+      documentSnapshot: revisionDocumentSnapshot,
       documentType: "RETURN_MANIFEST",
       generatedAt: new Date("2026-09-02T16:00:01.000Z"),
       generatedBy: IDS.actor,
@@ -276,7 +305,9 @@ describe("SubscriptionClosureService normal expiry", () => {
       signedBy: null,
       signedFileHash: null,
       signedFileId: null,
-      sourceFileHash: "a".repeat(64),
+      sourceFileHash: createHash("sha256")
+        .update(canonicalSubscriptionClosureJson(revisionDocumentSnapshot))
+        .digest("hex"),
       sourceFileId: IDS.file,
       stage: "GENERATED",
       vehicleReturnId: IDS.return
@@ -286,6 +317,9 @@ describe("SubscriptionClosureService normal expiry", () => {
       {
         contractId: IDS.contract,
         customerId: IDS.customer,
+        deletedAt: null,
+        documentName: `${caseNo}-return-manifest-r1.json`,
+        documentObjectKey: `subscription-closure/${IDS.closureCase}/return-manifest-r1.json`,
         documentType: "DELIVERY_HANDOVER",
         id: IDS.esignTask,
         orderId: IDS.order,
@@ -308,6 +342,17 @@ describe("SubscriptionClosureService normal expiry", () => {
         sourceType: "SUBSCRIPTION_EXPIRY"
       }
     ]);
+    tx.fileObject.findUnique.mockResolvedValue({
+      bucket: "subscription-closure",
+      id: IDS.file,
+      mimeType: "application/json",
+      objectKey: `subscription-closure/${IDS.closureCase}/return-manifest-r1.json`,
+      originalName: `${caseNo}-return-manifest-r1.json`,
+      sizeBytes: BigInt(
+        Buffer.byteLength(canonicalSubscriptionClosureJson(revisionOne.documentSnapshot))
+      ),
+      uploadedBy: IDS.actor
+    });
     tx.subscriptionClosureCurrentDocument.findUnique.mockResolvedValue({
       documentRevision: {
         ...revisionOne,
@@ -328,9 +373,12 @@ describe("SubscriptionClosureService normal expiry", () => {
         Object.freeze({ key })
       ])
     );
+    const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {
       appendPreparedDocumentRevisionInTransaction: appendDocumentRevision,
+      bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
       consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      createAuthoritySessionInTransaction: vi.fn(() => authoritySession),
       createPreparedCaseInTransaction: vi.fn(async () => ({
         outcome: { caseNo: "CLS-1", id: IDS.closureCase, version: 2 },
         wrote: false
@@ -377,6 +425,7 @@ describe("SubscriptionClosureService normal expiry", () => {
 
     expect(appendDocumentRevision).toHaveBeenCalledWith(
       tx,
+      authoritySession,
       expect.objectContaining({
         actorId: IDS.actor,
         archivedAt: null,
@@ -391,8 +440,11 @@ describe("SubscriptionClosureService normal expiry", () => {
 
   it("binds legacy prepare-return to the managed case's exact return and specialist records", async () => {
     const authorityAttestation = Object.freeze({ kind: "managed-authority" });
+    const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {
+      bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
       consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      createAuthoritySessionInTransaction: vi.fn(() => authoritySession),
       prepareAuthorityInTransaction: vi.fn(
         async () => new Map([["managed-return", authorityAttestation]])
       )
@@ -464,6 +516,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     );
     expect(handover.attestGovernedReturnInboundAuthorityInTransaction).toHaveBeenCalledWith(
       tx,
+      authoritySession,
       expect.objectContaining({ workOrderId: IDS.handoverWorkOrder }),
       governedSource,
       authorityAttestation
@@ -494,7 +547,8 @@ function createTransaction() {
       findMany: vi.fn(async () => esignTasks)
     },
     fileObject: {
-      create: vi.fn(async ({ data }) => data)
+      create: vi.fn(async ({ data }) => data),
+      findUnique: vi.fn(async () => null)
     },
     lease: {
       findUnique: vi.fn(async () => ({ id: "10000000-0000-4000-8000-000000000014" }))

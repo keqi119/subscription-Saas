@@ -71,6 +71,21 @@ describe("vehicle return inspection workflow", () => {
       harness.user,
       harness.context
     );
+    expect(harness.closureService.prepareManagedReturnInTransaction).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        actorId: harness.user.id,
+        orderId: harness.orderId
+      })
+    );
+    expect(harness.closureService.completeManagedReturnInTransaction).toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        returnLocation: "静安旺旺大厦",
+        vehicleReturnId: "return-1"
+      }),
+      harness.managedReturnCapability
+    );
     await harness.service.confirmReturn(
       harness.orderId,
       validConfirmReturnDto(),
@@ -85,6 +100,31 @@ describe("vehicle return inspection workflow", () => {
       expect.objectContaining({ entityType: "lease", module: "lease" }),
       harness.tx
     );
+  });
+
+  it("fails closed when a PENDING_RETURN order has no managed closure authority", async () => {
+    const harness = createReturnHarness();
+    harness.state.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.state.returnRecord = {
+      ...buildReadyReturn(harness),
+      returnStatus: VehicleReturnStatus.PENDING
+    };
+    harness.closureService.prepareManagedReturnInTransaction.mockResolvedValueOnce(null);
+
+    await expect(
+      harness.service.prepareReturn(
+        harness.orderId,
+        validPrepareReturnDto(),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND"
+      })
+    });
+
+    expect(harness.tx.vehicleReturn.update).not.toHaveBeenCalled();
   });
 
   it("prepare-return updates the existing READY return record instead of creating another one", async () => {
@@ -306,6 +346,7 @@ function createReturnHarness() {
     username: "admin"
   };
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
+  const managedReturnCapability = Object.freeze({ kind: "managed-return" });
   const state: {
     actualDeliveryAt: Date | null;
     actualReturnAt: Date | null;
@@ -545,6 +586,14 @@ function createReturnHarness() {
       };
     })
   };
+  const closureService = {
+    completeManagedReturnInTransaction: vi.fn(async () => ({
+      handoverWorkOrderId: "return-handover-1"
+    })),
+    prepareManagedReturnInTransaction: vi.fn(async () =>
+      state.orderStatus === OrderStatus.PENDING_RETURN ? managedReturnCapability : null
+    )
+  };
   const service = new OrderService(
     auditService as never,
     prisma as never,
@@ -553,14 +602,22 @@ function createReturnHarness() {
     undefined,
     undefined,
     undefined,
-    vehicleMileageService as never
+    vehicleMileageService as never,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    closureService as never
   );
 
   return {
     auditService,
+    closureService,
     context,
     customerId,
     orderId,
+    managedReturnCapability,
     prisma,
     service,
     state,

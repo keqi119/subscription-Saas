@@ -17,9 +17,12 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
-import { runSerializableTransaction } from "../common/serializable-transaction";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  SubscriptionClosureService,
+  type NormalExpiryTransactionCapability
+} from "../subscription-closure/subscription-closure.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 
 const CANCELLABLE_FUTURE_JOB_TYPES = [
@@ -48,20 +51,44 @@ export class SubscriptionExpiryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationService,
-    private readonly auditService: AuditService
+    private readonly auditService: AuditService,
+    private readonly closureService: SubscriptionClosureService
   ) {}
 
   async expireSegment(
     segmentId: string,
     nowOverride?: Date
   ): Promise<{ outcome: "EXPIRED" | "EXTENDED" | "DUPLICATE"; returnId?: string }> {
-    const decision = await runSerializableTransaction(this.prisma, async (tx) => {
-      await lockExpiryRows(tx, segmentId);
+    const decision = await runReadCommittedTransaction(this.prisma, async (tx) => {
       const decisionAt = nowOverride ?? (await readDatabaseClock(tx));
+      const initialSegment = await tx.subscriptionContractSegment.findUnique({
+        where: { id: segmentId }
+      });
+      if (!initialSegment) {
+        throw new SubscriptionChangeError(
+          "SUBSCRIPTION_EXPIRY_SEGMENT_MISSING",
+          "The expiring contract segment was not found."
+        );
+      }
+      const initialDeadline = shanghaiStartOfDate(addUtcDays(initialSegment.endDate, 1));
+      if (decisionAt.getTime() < initialDeadline.getTime()) {
+        throw new SubscriptionChangeError(
+          "SUBSCRIPTION_EXPIRY_NOT_DUE",
+          "The contract segment has not reached its expiry deadline."
+        );
+      }
+      const committedNextSegment = await findEffectiveNextSegment(tx, initialSegment);
+      if (committedNextSegment) return { outcome: "EXTENDED" as const };
+      const closureCapability = await this.closureService.prepareNormalExpiryInTransaction(tx, {
+        decisionAt,
+        orderId: initialSegment.orderId,
+        segmentId: initialSegment.id
+      });
+      await lockExpiryRows(tx, segmentId);
       const segment = await tx.subscriptionContractSegment.findUnique({
         where: { id: segmentId }
       });
-      if (!segment) {
+      if (!segment || segment.orderId !== initialSegment.orderId) {
         throw new SubscriptionChangeError(
           "SUBSCRIPTION_EXPIRY_SEGMENT_MISSING",
           "The expiring contract segment was not found."
@@ -74,17 +101,7 @@ export class SubscriptionExpiryService {
           "The contract segment has not reached its expiry deadline."
         );
       }
-      const nextSegment = await tx.subscriptionContractSegment.findFirst({
-        orderBy: { sequenceNo: "asc" },
-        where: {
-          orderId: segment.orderId,
-          sequenceNo: { gt: segment.sequenceNo },
-          startDate: addUtcDays(segment.endDate, 1),
-          status: {
-            in: [ContractSegmentStatus.SCHEDULED, ContractSegmentStatus.ACTIVE]
-          }
-        }
-      });
+      const nextSegment = await findEffectiveNextSegment(tx, segment);
       if (nextSegment) return { outcome: "EXTENDED" as const };
 
       const order = await tx.subscriptionOrder.findUnique({
@@ -110,6 +127,15 @@ export class SubscriptionExpiryService {
         !existingReturn.deletedAt &&
         existingReturn.returnStatus !== VehicleReturnStatus.CANCELLED
       ) {
+        await completeNormalExpiry(
+          this.closureService,
+          tx,
+          decisionAt,
+          order.id,
+          segment.id,
+          existingReturn.id,
+          closureCapability
+        );
         return {
           considerationId: null,
           endDate: segment.endDate,
@@ -205,6 +231,16 @@ export class SubscriptionExpiryService {
               vehicleId: order.vehicleId
             }
           });
+
+      await completeNormalExpiry(
+        this.closureService,
+        tx,
+        decisionAt,
+        order.id,
+        segment.id,
+        vehicleReturn.id,
+        closureCapability
+      );
 
       const schedule = await tx.billingSchedule.findUnique({
         where: { orderId: order.id }
@@ -367,48 +403,75 @@ export class SubscriptionExpiryService {
   }
 }
 
+function runReadCommittedTransaction<T>(
+  prisma: PrismaService,
+  operation: (tx: Prisma.TransactionClient) => Promise<T>
+) {
+  return prisma.$transaction(operation, {
+    isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+  });
+}
+
 async function lockExpiryRows(tx: Prisma.TransactionClient, segmentId: string) {
-  await tx.$queryRaw(Prisma.sql`
-    SELECT "id" FROM "subscription_change_order"
-    WHERE "source_segment_id" = ${segmentId}::uuid
-    FOR UPDATE
-  `);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT "id" FROM "renewal_consideration"
-    WHERE "segment_id" = ${segmentId}::uuid
-    FOR UPDATE
-  `);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT "id" FROM "subscription_contract_segment"
-    WHERE "id" = ${segmentId}::uuid OR "source_change_order_id" IN (
+  try {
+    await tx.$queryRaw(Prisma.sql`
       SELECT "id" FROM "subscription_change_order"
       WHERE "source_segment_id" = ${segmentId}::uuid
-    )
-    ORDER BY "sequence_no"
-    FOR UPDATE
-  `);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT subscription_order."id"
-    FROM "subscription_contract_segment" segment
-    JOIN "subscription_order" subscription_order
-      ON subscription_order."id" = segment."order_id"
-    WHERE segment."id" = ${segmentId}::uuid
-    FOR UPDATE OF subscription_order
-  `);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT lease."id"
-    FROM "subscription_contract_segment" segment
-    JOIN "lease" lease ON lease."order_id" = segment."order_id"
-    WHERE segment."id" = ${segmentId}::uuid
-    FOR UPDATE OF lease
-  `);
-  await tx.$queryRaw(Prisma.sql`
-    SELECT vehicle_return."id"
-    FROM "subscription_contract_segment" segment
-    JOIN "vehicle_return" vehicle_return ON vehicle_return."order_id" = segment."order_id"
-    WHERE segment."id" = ${segmentId}::uuid
-    FOR UPDATE OF vehicle_return
-  `);
+      ORDER BY "id"
+      FOR UPDATE NOWAIT
+    `);
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "renewal_consideration"
+      WHERE "segment_id" = ${segmentId}::uuid
+      ORDER BY "id"
+      FOR UPDATE NOWAIT
+    `);
+  } catch (error) {
+    if (databaseCode(error) === "55P03") {
+      throw new SubscriptionChangeError(
+        "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY",
+        "The subscription expiry authority is currently being changed."
+      );
+    }
+    throw error;
+  }
+}
+
+async function findEffectiveNextSegment(
+  tx: Prisma.TransactionClient,
+  segment: { endDate: Date; orderId: string; sequenceNo: number }
+) {
+  return tx.subscriptionContractSegment.findFirst({
+    orderBy: { sequenceNo: "asc" },
+    where: {
+      orderId: segment.orderId,
+      sequenceNo: { gt: segment.sequenceNo },
+      startDate: addUtcDays(segment.endDate, 1),
+      status: {
+        in: [ContractSegmentStatus.SCHEDULED, ContractSegmentStatus.ACTIVE]
+      }
+    }
+  });
+}
+
+function databaseCode(error: unknown) {
+  if (!error || typeof error !== "object") return undefined;
+  if ("meta" in error && error.meta && typeof error.meta === "object") {
+    const driverAdapterError =
+      "driverAdapterError" in error.meta ? error.meta.driverAdapterError : undefined;
+    if (driverAdapterError && typeof driverAdapterError === "object") {
+      const cause = "cause" in driverAdapterError ? driverAdapterError.cause : undefined;
+      if (
+        cause &&
+        typeof cause === "object" &&
+        "originalCode" in cause &&
+        typeof cause.originalCode === "string"
+      ) {
+        return cause.originalCode;
+      }
+    }
+  }
+  return "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
 
 async function readDatabaseClock(tx: Prisma.TransactionClient) {
@@ -437,4 +500,20 @@ function shanghaiStartOfDate(value: Date) {
 
 function dateKey(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+async function completeNormalExpiry(
+  service: SubscriptionClosureService,
+  tx: Prisma.TransactionClient,
+  decisionAt: Date,
+  orderId: string,
+  segmentId: string,
+  vehicleReturnId: string,
+  capability: NormalExpiryTransactionCapability
+) {
+  await service.completeNormalExpiryInTransaction(
+    tx,
+    { decisionAt, orderId, segmentId, vehicleReturnId },
+    capability
+  );
 }

@@ -96,6 +96,10 @@ import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { LeaseActivationEngine } from "../lease/lease-activation.engine";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
+import {
+  SubscriptionClosureService,
+  type ManagedReturnTransactionCapability
+} from "../subscription-closure/subscription-closure.service";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import { OrderEntitlementService } from "./order-entitlement.service";
 import {
@@ -389,7 +393,8 @@ export class OrderService {
     @Optional() private readonly billingAutomationService?: BillingAutomationService,
     @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
     @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine,
-    @Optional() private readonly assetOperationsService?: AssetOperationsService
+    @Optional() private readonly assetOperationsService?: AssetOperationsService,
+    @Optional() private readonly subscriptionClosureService?: SubscriptionClosureService
   ) {}
 
   async listOrders(user: RequestUser, query: ListOrdersQueryDto = {}) {
@@ -2531,6 +2536,20 @@ export class OrderService {
     const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        const managedCapability = this.subscriptionClosureService
+          ? await this.subscriptionClosureService.prepareManagedReturnInTransaction(tx, {
+              actorId: user.id,
+              orderId: id,
+              returnLocation: dto.returnLocation ?? null,
+              scheduledAt
+            })
+          : null;
+        if (beforeOrder.orderStatus === OrderStatus.PENDING_RETURN && !managedCapability) {
+          throw new ConflictException({
+            code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND",
+            message: "The managed normal-return authority is unavailable."
+          });
+        }
         const beforeReturn = await tx.vehicleReturn.findUnique({
           include: returnInclude,
           where: { orderId: id }
@@ -2562,8 +2581,22 @@ export class OrderService {
               include: returnInclude
             });
 
+        if (managedCapability) {
+          await this.subscriptionClosureService!.completeManagedReturnInTransaction(
+            tx,
+            {
+              actorId: user.id,
+              orderId: id,
+              returnLocation: dto.returnLocation ?? null,
+              scheduledAt,
+              vehicleReturnId: vehicleReturn.id
+            },
+            managedCapability as ManagedReturnTransactionCapability
+          );
+        }
+
         return { beforeReturn, vehicleReturn };
-      })
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted })
     );
 
     await this.writeReturnAudit(

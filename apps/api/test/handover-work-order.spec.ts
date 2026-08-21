@@ -266,6 +266,66 @@ describe("HandoverWorkOrderService", () => {
     });
   });
 
+  it("updates the exact RETURN_INBOUND schedule only through a governed caller-owned capability", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const createCommand = {
+      actorId: harness.admin.id,
+      orderId: harness.orderId,
+      source: {
+        id: randomUUID(),
+        key: "normal-expiry:return-inbound",
+        type: "SUBSCRIPTION_EXPIRY"
+      }
+    };
+    const createCapability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      createCommand
+    );
+    const created = await harness.service.createReturnInboundInTransaction(
+      harness.prisma as never,
+      createCommand,
+      createCapability
+    );
+    const updateCommand = {
+      actorId: harness.admin.id,
+      deliveryLocation: "静安旺旺大厦",
+      orderId: harness.orderId,
+      scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
+      source: {
+        id: randomUUID(),
+        key: "legacy-prepare-return",
+        type: "SUBSCRIPTION_CLOSURE"
+      },
+      workOrderId: created.id
+    };
+    const updateCapability = await harness.service.prepareGovernedReturnInboundUpdateInTransaction(
+      harness.prisma as never,
+      updateCommand
+    );
+
+    await expect(
+      harness.service.updateGovernedReturnInboundInTransaction(
+        harness.prisma as never,
+        updateCommand,
+        updateCapability
+      )
+    ).resolves.toMatchObject({
+      deliveryLocation: "静安旺旺大厦",
+      id: created.id,
+      scheduledAt: new Date("2026-07-23T02:00:00.000Z")
+    });
+    expect(harness.state.workOrders).toHaveLength(1);
+    await expect(
+      harness.service.updateGovernedReturnInboundInTransaction(
+        harness.prisma as never,
+        updateCommand,
+        updateCapability
+      )
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+  });
+
   it("consumes a P0 capability before reading a throwing command source", async () => {
     const harness = createHandoverWorkOrderHarness();
     const source = {
@@ -3318,6 +3378,11 @@ function createHandoverWorkOrderHarness() {
       }
       if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
       if (sql.includes('FROM "vehicle_handover_work_order"')) {
+        if (sql.includes('WHERE "id"')) {
+          return state.workOrders
+            .filter((row) => row.id === values[0])
+            .map((row) => ({ id: row.id }));
+        }
         return state.workOrders
           .filter((row) => row.orderId === values[0] && row.handoverType === "RETURN_INBOUND")
           .map((row) => ({ id: row.id }));

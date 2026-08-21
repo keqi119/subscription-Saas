@@ -700,7 +700,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     const repository = new SubscriptionClosureRepository();
     const generatedAt = new Date("2025-01-01T00:00:00.000Z");
     const signedAt = new Date("2026-01-01T00:00:00.000Z");
-    const archivedAt = new Date("2027-01-01T00:00:00.000Z");
+    const archivedAt = new Date("2026-08-01T00:00:00.000Z");
     const created = await readCommitted(prisma, (tx) =>
       repository.createCase(
         tx,

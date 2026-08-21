@@ -544,6 +544,7 @@ export class SubscriptionClosureRepository {
     const command = normalizeDocumentCommand(input);
     const prepared = prepareCommand(command);
     await this.lockSourceOwnership(tx, command.source);
+    await assertDocumentLifecycleAtDatabaseClock(tx, command);
     const replay = await replayReceipt<SubscriptionClosureDocumentSnapshot>(
       tx,
       command.source,
@@ -883,6 +884,24 @@ export class SubscriptionClosureRepository {
         throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
       }
       throw error;
+    }
+  }
+}
+
+async function assertDocumentLifecycleAtDatabaseClock(
+  tx: Prisma.TransactionClient,
+  command: Pick<AppendSubscriptionClosureDocumentCommand, "archivedAt" | "generatedAt" | "signedAt">
+) {
+  const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
+    SELECT clock_timestamp() AS "now"
+  `);
+  const now = rows[0]?.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+  for (const lifecycleAt of [command.generatedAt, command.signedAt, command.archivedAt]) {
+    if (lifecycleAt && lifecycleAt.getTime() > now.getTime()) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
     }
   }
 }

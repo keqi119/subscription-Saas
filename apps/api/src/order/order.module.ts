@@ -12,6 +12,7 @@ import { MileageReviewModule } from "../mileage-review/mileage-review.module";
 import { LeaseModule } from "../lease/lease.module";
 import { ServiceCaseModule } from "../service-case/service-case.module";
 import { StorageModule } from "../storage/storage.module";
+import { SubscriptionClosureModule } from "../subscription-closure/subscription-closure.module";
 import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module";
 import { OrderController } from "./order.controller";
 import { OrderWorkspaceResolver, OrderWorkspaceService } from "./order-workspace.service";
@@ -34,6 +35,7 @@ import { OrderEntitlementService } from "./order-entitlement.service";
     MileageReviewModule,
     ServiceCaseModule,
     StorageModule,
+    SubscriptionClosureModule,
     VehicleMileageModule
   ],
   providers: [

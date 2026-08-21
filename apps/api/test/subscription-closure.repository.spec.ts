@@ -1,6 +1,6 @@
 import { ConflictException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   SUBSCRIPTION_CLOSURE_ERROR_CODE,
@@ -175,6 +175,89 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
   );
 
   it.each([
+    [
+      "generatedAt",
+      {
+        ...generatedDocumentCommand(),
+        generatedAt: new Date("2026-08-21T03:02:00.000Z")
+      }
+    ],
+    [
+      "signedAt",
+      {
+        ...generatedDocumentCommand(),
+        generatedAt: new Date("2026-08-21T03:00:00.000Z"),
+        signedAt: new Date("2026-08-21T03:02:00.000Z"),
+        signedBy: UUIDS.actor,
+        signedFileHash: "b".repeat(64),
+        signedFileId: UUIDS.file,
+        stage: "SIGNED" as const
+      }
+    ],
+    [
+      "archivedAt",
+      {
+        ...generatedDocumentCommand(),
+        archivedAt: new Date("2026-08-21T03:02:00.000Z"),
+        archivedBy: UUIDS.actor,
+        generatedAt: new Date("2026-08-21T02:59:00.000Z"),
+        signedAt: new Date("2026-08-21T03:00:00.000Z"),
+        signedBy: UUIDS.actor,
+        signedFileHash: "b".repeat(64),
+        signedFileId: UUIDS.file,
+        stage: "ARCHIVED" as const
+      }
+    ]
+  ] as const)(
+    "rejects future document lifecycle fact %s against the independent database clock",
+    async (_field, command) => {
+      const database = fakeDocumentTransaction({ currentDocumentRevisionId: null });
+      await expectCode(
+        new SubscriptionClosureRepository().appendDocumentRevision(database.tx, command),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+      );
+      expect(database.receiptFindUnique).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    [
+      "generatedAt -> signedAt",
+      {
+        ...generatedDocumentCommand(),
+        generatedAt: new Date("2026-08-21T03:00:00.000Z"),
+        signedAt: new Date("2026-08-21T02:59:00.000Z"),
+        signedBy: UUIDS.actor,
+        signedFileHash: "b".repeat(64),
+        signedFileId: UUIDS.file,
+        stage: "SIGNED" as const
+      }
+    ],
+    [
+      "signedAt -> archivedAt",
+      {
+        ...generatedDocumentCommand(),
+        archivedAt: new Date("2026-08-21T02:59:00.000Z"),
+        archivedBy: UUIDS.actor,
+        generatedAt: new Date("2026-08-21T02:58:00.000Z"),
+        signedAt: new Date("2026-08-21T03:00:00.000Z"),
+        signedBy: UUIDS.actor,
+        signedFileHash: "b".repeat(64),
+        signedFileId: UUIDS.file,
+        stage: "ARCHIVED" as const
+      }
+    ]
+  ] as const)("rejects reversed document lifecycle adjacency %s", async (_edge, command) => {
+    await expectCode(
+      new SubscriptionClosureRepository().appendDocumentRevision(
+        {} as Prisma.TransactionClient,
+        command
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+    );
+  });
+
+  it.each([
     ["finalizedBy", UUIDS.actor],
     ["finalizedAt", new Date("2026-08-21T03:00:00.000Z")],
     ["settledBy", UUIDS.actor],
@@ -264,8 +347,9 @@ function proposedSettlementCommand() {
   };
 }
 
-function fakeDocumentTransaction() {
+function fakeDocumentTransaction(options: { currentDocumentRevisionId?: string | null } = {}) {
   const timeline: string[] = [];
+  const receiptFindUnique = vi.fn(async () => null);
   const tx = {
     subscriptionClosureCase: {
       async findUnique() {
@@ -286,9 +370,7 @@ function fakeDocumentTransaction() {
       }
     },
     subscriptionClosureCommandReceipt: {
-      async findUnique() {
-        return null;
-      }
+      findUnique: receiptFindUnique
     },
     contractESignTask: {
       async findUnique() {
@@ -303,6 +385,9 @@ function fakeDocumentTransaction() {
       if (sql.includes("txid_current")) return [{ transactionId: "tx-1" }];
       if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
       if (sql.includes("clock_timestamp")) {
+        if (sql.includes('AS "now"')) {
+          return [{ now: new Date("2026-08-21T03:01:00.000Z") }];
+        }
         return [
           {
             clockTimestamp: new Date("2026-08-21T03:01:00.000Z"),
@@ -312,14 +397,18 @@ function fakeDocumentTransaction() {
       }
       if (sql.includes("subscription_closure_current_document")) {
         timeline.push("current-document-projection");
-        return [{ documentRevisionId: UUIDS.predecessor }];
+        const documentRevisionId =
+          options.currentDocumentRevisionId === undefined
+            ? UUIDS.predecessor
+            : options.currentDocumentRevisionId;
+        return documentRevisionId ? [{ documentRevisionId }] : [];
       }
       const table = extractTable(sql);
       timeline.push(`authority-lock:${table}`);
       return [{ id: String(query.values.at(-1)) }];
     }
   } as unknown as Prisma.TransactionClient;
-  return { timeline, tx };
+  return { receiptFindUnique, timeline, tx };
 }
 
 function fakeTransaction(

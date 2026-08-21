@@ -92,6 +92,116 @@ describe("AssetAccountingRepository", () => {
     expect(other.entries.size).toBe(0);
   });
 
+  it("consumes one prepared approval capability without reacquiring source, subject, approval, or actor locks", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const request = await repository.requestExceptionApproval(
+      database.tx,
+      requestApprovalCommand(database.ids, "prepared-require-request")
+    );
+    const approved = await repository.decideExceptionApproval(
+      database.tx,
+      decideApprovalCommand(database.ids, request.outcome.id, "prepared-require-approve")
+    );
+    const command = requireCurrentCommand(
+      database.ids,
+      approved.outcome.id,
+      approved.outcome.version,
+      "prepared-require-current",
+      { factRevision: 1, state: "PENDING" }
+    );
+    const sourceCapability = await repository.prepareCallerOwnedCommand(
+      database.tx,
+      command.source
+    );
+    const lockFingerprint = "prepared-approval-locks-v1";
+    const capability = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      sourceCapability,
+      lockFingerprint
+    );
+    const operationCount = database.operationTimeline.length;
+
+    const foreignRepository = new AssetAccountingRepository();
+    await expectCode(
+      foreignRepository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        capability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const result = await repository.requirePreparedApprovedExceptionInTransaction(
+      database.tx,
+      capability,
+      lockFingerprint
+    );
+
+    expect(result).toEqual({ approval: approved.outcome, valid: true });
+    expect(database.operationTimeline.slice(operationCount)).toEqual(["receipt-lookup"]);
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        capability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const wrongTransactionCapability = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      await repository.prepareCallerOwnedCommand(database.tx, command.source),
+      lockFingerprint
+    );
+    const other = fakeTransaction();
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        other.tx,
+        wrongTransactionCapability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        wrongTransactionCapability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const secondSourceCapability = await repository.prepareCallerOwnedCommand(
+      database.tx,
+      command.source
+    );
+    const fingerprintBound = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      secondSourceCapability,
+      lockFingerprint
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        fingerprintBound,
+        "different-approval-locks"
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        fingerprintBound,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
   it("rejects root-like and non-READ-COMMITTED clients", async () => {
     const repository = new AssetAccountingRepository();
     const rootLike = fakeTransaction({ secondTransactionId: "tx-2" });

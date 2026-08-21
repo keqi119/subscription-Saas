@@ -115,8 +115,10 @@ export interface AppendSubscriptionClosureSettlementCommand {
   readonly finalizedAt: Date | null;
   readonly finalizedBy: string | null;
   readonly ledgerInputSnapshot: SubscriptionClosureSnapshotObject;
+  readonly managedOccurredAt?: Date;
   readonly paidTotalCents: bigint;
   readonly receivableTotalCents: bigint;
+  readonly recordedAt?: Date;
   readonly responsibilitySnapshot: SubscriptionClosureSnapshotObject;
   readonly resultSnapshot: SubscriptionClosureSnapshotObject;
   readonly settledAt: Date | null;
@@ -210,7 +212,9 @@ export type SubscriptionClosureAuthorityTable =
   | "contract"
   | "subscription_contract_segment"
   | "vehicle_return"
+  | "vehicle_return_damage"
   | "vehicle_subscription_period"
+  | "vehicle_mileage_reading"
   | "collection_case"
   | "business_exception_approval"
   | "vehicle_handover_work_order"
@@ -220,7 +224,11 @@ export type SubscriptionClosureAuthorityTable =
   | "subscription_closure_document_revision"
   | "vehicle_operational_restriction"
   | "subscription_closure_settlement_revision"
+  | "vehicle_cost_ledger_entry"
   | "receivable_bill"
+  | "payment_record"
+  | "payment_write_off"
+  | "deposit_ledger"
   | "customer"
   | "file_object"
   | "contract_esign_task"
@@ -303,7 +311,9 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   contract: 50,
   subscription_contract_segment: 60,
   vehicle_return: 70,
+  vehicle_return_damage: 75,
   vehicle_subscription_period: 80,
+  vehicle_mileage_reading: 85,
   collection_case: 90,
   business_exception_approval: 100,
   vehicle_handover_work_order: 110,
@@ -313,7 +323,11 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   subscription_closure_document_revision: 130,
   vehicle_operational_restriction: 150,
   subscription_closure_settlement_revision: 160,
+  vehicle_cost_ledger_entry: 165,
   receivable_bill: 170,
+  payment_record: 172,
+  payment_write_off: 174,
+  deposit_ledger: 176,
   customer: 180,
   file_object: 190,
   contract_esign_task: 200,
@@ -970,11 +984,12 @@ export class SubscriptionClosureRepository {
   async appendSettlementRevision(
     tx: Prisma.TransactionClient,
     input: AppendSubscriptionClosureSettlementCommand,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureSettlementSnapshot>> {
     const command = normalizeSettlementCommand(input);
     const prepared = prepareCommand(command);
-    await this.lockSourceOwnership(tx, command.source);
+    if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     const replay = await replayReceipt<SubscriptionClosureSettlementSnapshot>(
       tx,
       command.source,
@@ -982,9 +997,11 @@ export class SubscriptionClosureRepository {
       prepared
     );
     if (replay) return replay;
-    await this.lockAuthorityRows(tx, [
-      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
-    ]);
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, [
+        { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
+      ]);
+    }
     const currentCase = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(currentCase, command.expectedVersion);
     if (currentCase.currentSettlementRevisionId !== command.expectedCurrentRevisionId) {
@@ -1012,7 +1029,7 @@ export class SubscriptionClosureRepository {
     for (const actorId of [command.finalizedBy, command.settledBy]) {
       if (actorId) authorityLocks.push({ id: actorId, mode: "SHARE", table: "user" });
     }
-    await this.lockAuthorityRows(tx, authorityLocks);
+    if (execution !== PREPARED_EXECUTION) await this.lockAuthorityRows(tx, authorityLocks);
     const predecessor = currentCase.currentSettlementRevisionId
       ? await tx.subscriptionClosureSettlementRevision.findUnique({
           where: { id: currentCase.currentSettlementRevisionId }
@@ -1021,7 +1038,6 @@ export class SubscriptionClosureRepository {
     if (currentCase.currentSettlementRevisionId && !predecessor) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
-
     try {
       const inputSnapshot = {
         bill: command.billInputSnapshot,
@@ -1045,6 +1061,7 @@ export class SubscriptionClosureRepository {
           inputSnapshotHash: hashSubscriptionClosureSnapshot(inputSnapshot),
           ledgerInputSnapshot: jsonInput(command.ledgerInputSnapshot),
           paidTotalCents: command.paidTotalCents,
+          ...(command.recordedAt ? { createdAt: command.recordedAt } : {}),
           receivableTotalCents: command.receivableTotalCents,
           responsibilitySnapshot: jsonInput(command.responsibilitySnapshot),
           resultHash: hashSubscriptionClosureSnapshot(command.resultSnapshot),
@@ -1111,6 +1128,26 @@ export class SubscriptionClosureRepository {
     } catch (error) {
       throw normalizeWriteError(error);
     }
+  }
+
+  async appendPreparedSettlementRevisionInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: AppendSubscriptionClosureSettlementCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    extraAuthorityLocks: readonly SubscriptionClosureAuthorityLock[],
+    audit?: SubscriptionClosureMutationAuditHook,
+    authorityKey = "settlement-revision"
+  ) {
+    await this.consumeAuthorityAttestationInTransaction(
+      tx,
+      authoritySession,
+      authorityAttestation,
+      subscriptionClosureSettlementAuthorityRequirement(input, extraAuthorityLocks, authorityKey)
+    );
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    return this.appendSettlementRevision(tx, input, audit, PREPARED_EXECUTION);
   }
 
   async lockSourceOwnership(
@@ -1458,8 +1495,14 @@ function normalizeSettlementCommand(
     finalizedAt: nullableDate(input.finalizedAt, "finalizedAt"),
     finalizedBy: nullableUuid(input.finalizedBy, "finalizedBy"),
     ledgerInputSnapshot: canonicalSnapshot(input.ledgerInputSnapshot, "ledgerInputSnapshot"),
+    managedOccurredAt:
+      input.managedOccurredAt === undefined
+        ? undefined
+        : validDate(input.managedOccurredAt, "managedOccurredAt"),
     paidTotalCents: nonnegativeBigInt(input.paidTotalCents, "paidTotalCents"),
     receivableTotalCents: nonnegativeBigInt(input.receivableTotalCents, "receivableTotalCents"),
+    recordedAt:
+      input.recordedAt === undefined ? undefined : validDate(input.recordedAt, "recordedAt"),
     responsibilitySnapshot: canonicalSnapshot(
       input.responsibilitySnapshot,
       "responsibilitySnapshot"
@@ -2010,6 +2053,43 @@ export function subscriptionClosureEventAuthorityRequirement(
   };
 }
 
+export function subscriptionClosureSettlementAuthorityRequirement(
+  input: AppendSubscriptionClosureSettlementCommand,
+  extraAuthorityLocks: readonly SubscriptionClosureAuthorityLock[],
+  key = "settlement-revision"
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeSettlementCommand(input);
+  const locks: SubscriptionClosureAuthorityLock[] = [
+    {
+      id: command.closureCaseId,
+      mode: "UPDATE",
+      table: "subscription_closure_case"
+    },
+    ...extraAuthorityLocks,
+    { id: command.actorId, mode: "SHARE", table: "user" }
+  ];
+  if (command.expectedCurrentRevisionId) {
+    locks.push({
+      id: command.expectedCurrentRevisionId,
+      mode: "SHARE",
+      table: "subscription_closure_settlement_revision"
+    });
+  }
+  for (const approvalId of [command.waiverApprovalId, command.writeOffApprovalId]) {
+    if (approvalId) {
+      locks.push({
+        id: approvalId,
+        mode: "SHARE",
+        table: "business_exception_approval"
+      });
+    }
+  }
+  for (const actorId of [command.finalizedBy, command.settledBy]) {
+    if (actorId) locks.push({ id: actorId, mode: "SHARE", table: "user" });
+  }
+  return { command: { ...command }, key, locks };
+}
+
 async function assertCreateLinkCoherence(
   tx: Prisma.TransactionClient,
   command: CreateSubscriptionClosureCaseCommand
@@ -2213,8 +2293,11 @@ async function assertDatabaseEventTime(
   occurredAt: Date
 ): Promise<void> {
   const boundary = await databaseEventBoundary(tx, closureCaseId);
+  const reusesLatestHistoricalTime =
+    boundary.latestOccurredAt !== null &&
+    occurredAt.getTime() === boundary.latestOccurredAt.getTime();
   if (
-    occurredAt.getTime() > boundary.clockTimestamp.getTime() ||
+    (occurredAt.getTime() > boundary.clockTimestamp.getTime() && !reusesLatestHistoricalTime) ||
     (boundary.latestOccurredAt !== null &&
       occurredAt.getTime() < boundary.latestOccurredAt.getTime())
   ) {

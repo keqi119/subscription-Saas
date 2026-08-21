@@ -8,6 +8,9 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
 import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
 import { AuditService } from "../src/audit/audit.service";
+import { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
+import { hashBusinessExceptionSnapshot } from "../src/asset-accounting/asset-accounting.domain";
+import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
 import {
   HANDOVER_P0_CAPABILITY_ERROR_CODE,
   HandoverWorkOrderService
@@ -21,6 +24,8 @@ import {
   type SubscriptionClosureMutationAuditHook
 } from "../src/subscription-closure/subscription-closure.repository";
 import { hashSubscriptionClosureSnapshot } from "../src/subscription-closure/subscription-closure.domain";
+import { SubscriptionClosureSettlementResolver } from "../src/subscription-closure/subscription-closure.settlement-resolver";
+import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
 
 const DATABASE_URL = requiredTestDatabaseUrl();
 const NOW = new Date("2026-08-21T03:00:00.000Z");
@@ -1229,6 +1234,435 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       })
     ).resolves.toBe(2);
   });
+
+  it("resolves, finalizes, settles, and exactly replays the zero-obligation normal closure without touching vehicle availability", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, createCaseCommand(data, "service-settlement"))
+    );
+    await readCommitted(prisma, async (tx) => {
+      const receiptAt = await databaseNow(tx);
+      await repository.appendEvent(tx, {
+        actorId: data.actorId,
+        afterStatus: "RETURN_INSPECTION",
+        closureCaseId: created.outcome.id,
+        detailSnapshot: { fixture: data.marker },
+        eventType: "PHYSICAL_CONTROL_CONFIRMED",
+        expectedStatus: "PREPARING_RETURN",
+        expectedVersion: 0,
+        occurredAt: receiptAt,
+        source: source("service-settlement-receipt")
+      });
+      const inspectionAt = await databaseNow(tx);
+      await repository.appendEvent(tx, {
+        actorId: data.actorId,
+        afterStatus: "PENDING_SETTLEMENT",
+        closureCaseId: created.outcome.id,
+        detailSnapshot: { accepted: true, fixture: data.marker },
+        eventType: "INSPECTION_RECORDED",
+        expectedStatus: "RETURN_INSPECTION",
+        expectedVersion: 1,
+        occurredAt: inspectionAt,
+        source: source("service-settlement-inspection")
+      });
+      await tx.subscriptionOrder.update({
+        data: { orderStatus: "RETURNED_PENDING_SETTLEMENT", updatedBy: data.actorId },
+        where: { id: data.orderId }
+      });
+    });
+    const audit = new AuditService(prisma);
+    const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+    const service = new SubscriptionClosureService(
+      repository,
+      Object.freeze({}) as never,
+      Object.freeze({}) as never,
+      audit,
+      prisma,
+      undefined,
+      accounting,
+      undefined,
+      new SubscriptionClosureSettlementResolver()
+    );
+    const proposedAt = await databaseTimestamp(prisma);
+    const proposalInput = {
+      actorId: data.actorId,
+      closureCaseId: created.outcome.id,
+      idempotencyKey: `service-settlement:${data.marker}:propose`,
+      occurredAt: proposedAt,
+      waiverApprovalId: null,
+      writeOffApprovalId: null
+    };
+    const proposed = await service.proposeManagedSettlement(proposalInput);
+    const proposalReplay = await service.proposeManagedSettlement(proposalInput);
+    const finalizedAt = await databaseTimestamp(prisma);
+    const finalized = await service.finalizeManagedSettlement({
+      ...proposalInput,
+      idempotencyKey: `service-settlement:${data.marker}:finalize`,
+      occurredAt: finalizedAt
+    });
+    const settledAt = await databaseTimestamp(prisma);
+    const settleInput = {
+      ...proposalInput,
+      idempotencyKey: `service-settlement:${data.marker}:settle`,
+      occurredAt: settledAt
+    };
+    const settledRevision = await service.settleManagedSettlement(settleInput);
+    const settledReplay = await service.settleManagedSettlement(settleInput);
+    const [closureCase, order, contract, vehicle, revisions] = await Promise.all([
+      prisma.subscriptionClosureCase.findUnique({ where: { id: created.outcome.id } }),
+      prisma.subscriptionOrder.findUnique({ where: { id: data.orderId } }),
+      prisma.contract.findUnique({ where: { id: data.contractId } }),
+      prisma.vehicle.findUnique({ where: { id: data.vehicleId } }),
+      prisma.subscriptionClosureSettlementRevision.findMany({
+        orderBy: { revisionNumber: "asc" },
+        where: { closureCaseId: created.outcome.id }
+      })
+    ]);
+
+    expect(proposalReplay).toEqual(proposed);
+    expect(settledReplay).toEqual(settledRevision);
+    expect(finalized).toMatchObject({ revisionNumber: 2, stage: "FINALIZED" });
+    expect(settledRevision).toMatchObject({ revisionNumber: 3, stage: "SETTLED" });
+    expect(
+      revisions.map(({ stage, supersedesRevisionId }) => ({ stage, supersedesRevisionId }))
+    ).toEqual([
+      { stage: "PROPOSED", supersedesRevisionId: null },
+      { stage: "FINALIZED", supersedesRevisionId: revisions[0]!.id },
+      { stage: "SETTLED", supersedesRevisionId: revisions[1]!.id }
+    ]);
+    expect(closureCase).toMatchObject({ status: "COMPLETED", version: 6 });
+    expect(order?.orderStatus).toBe("COMPLETED");
+    expect(contract?.status).toBe("COMPLETED");
+    expect(vehicle?.status).toBe("LEASED");
+    await expect(
+      prisma.subscriptionClosureSettlementRevision.update({
+        data: { costTotalCents: 1n },
+        where: { id: revisions[0]!.id }
+      })
+    ).rejects.toBeDefined();
+  });
+
+  it("keeps a partially paid authoritative receivable unsettled on real PostgreSQL", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const closureCaseId = await preparePendingSettlementCase(prisma, repository, data, "partial");
+    await createReceivablePaymentFacts(prisma, data, {
+      amountCents: 100n,
+      paidCents: 40n,
+      suffix: "partial"
+    });
+    const service = settlementService(prisma, repository);
+    const proposed = await service.proposeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "partial-propose")
+    );
+    const finalized = await service.finalizeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "partial-finalize")
+    );
+
+    await expectCode(
+      service.settleManagedSettlement(
+        managedSettlementInput(data, closureCaseId, "partial-settle")
+      ),
+      "SUBSCRIPTION_CLOSURE_SETTLEMENT_NOT_RESOLVED"
+    );
+
+    const [closureCase, order, contract, revisions] = await Promise.all([
+      prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCaseId } }),
+      prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: data.orderId } }),
+      prisma.contract.findUniqueOrThrow({ where: { id: data.contractId } }),
+      prisma.subscriptionClosureSettlementRevision.findMany({
+        orderBy: { revisionNumber: "asc" },
+        where: { closureCaseId }
+      })
+    ]);
+    expect(proposed).toMatchObject({
+      amountDueCents: "60",
+      paidTotalCents: "40",
+      stage: "PROPOSED"
+    });
+    expect(finalized).toMatchObject({
+      amountDueCents: "60",
+      paidTotalCents: "40",
+      stage: "FINALIZED"
+    });
+    expect(revisions.map(({ stage }) => stage)).toEqual(["PROPOSED", "FINALIZED"]);
+    expect(closureCase).toMatchObject({ status: "PENDING_SETTLEMENT", version: 4 });
+    expect(order.orderStatus).toBe("RETURNED_PENDING_SETTLEMENT");
+    expect(contract.status).toBe("ARCHIVED");
+  });
+
+  it("settles mixed payment, approved waiver, approved write-off, and deposit resolutions from server facts", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const closureCaseId = await preparePendingSettlementCase(prisma, repository, data, "mixed");
+    await createReceivablePaymentFacts(prisma, data, {
+      amountCents: 700n,
+      paidCents: 200n,
+      suffix: "mixed"
+    });
+    await createDepositDeduction(prisma, data, 100n, "mixed");
+    await appendSettlementLedgerEntry(prisma, data, "WAIVER", 200n, "mixed-waiver");
+    await appendSettlementLedgerEntry(prisma, data, "WRITE_OFF", 200n, "mixed-write-off");
+    const resolver = new SubscriptionClosureSettlementResolver();
+    const resolved = await readCommitted(prisma, (tx) =>
+      resolver.resolveInTransaction(tx, closureCaseId)
+    );
+    const waiverApprovalId = await createSettlementApproval(prisma, data, resolved, "WAIVER");
+    const writeOffApprovalId = await createSettlementApproval(prisma, data, resolved, "WRITE_OFF");
+    const service = settlementService(prisma, repository, resolver);
+    const input = { waiverApprovalId, writeOffApprovalId };
+
+    await service.proposeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "mixed-propose", input)
+    );
+    await service.finalizeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "mixed-finalize", input)
+    );
+    const settledRevision = await service.settleManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "mixed-settle", input)
+    );
+
+    const [closureCase, revisions] = await Promise.all([
+      prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCaseId } }),
+      prisma.subscriptionClosureSettlementRevision.findMany({
+        orderBy: { revisionNumber: "asc" },
+        where: { closureCaseId }
+      })
+    ]);
+    expect(settledRevision).toMatchObject({
+      amountDueCents: "0",
+      depositAppliedCents: "100",
+      paidTotalCents: "200",
+      receivableTotalCents: "700",
+      stage: "SETTLED",
+      waiverApprovalId,
+      waiverTotalCents: "200",
+      writeOffApprovalId,
+      writeOffTotalCents: "200"
+    });
+    expect(revisions).toHaveLength(3);
+    expect(new Set(revisions.map(({ inputSnapshotHash }) => inputSnapshotHash))).toEqual(
+      new Set([resolved.inputSnapshotHash])
+    );
+    expect(closureCase.status).toBe("COMPLETED");
+  });
+
+  it("commits stale settlement approval expiry while rolling back the attempted proposal", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const closureCaseId = await preparePendingSettlementCase(prisma, repository, data, "stale");
+    await createReceivablePaymentFacts(prisma, data, {
+      amountCents: 100n,
+      paidCents: 0n,
+      suffix: "stale"
+    });
+    await appendSettlementLedgerEntry(prisma, data, "WAIVER", 100n, "stale-waiver");
+    const resolver = new SubscriptionClosureSettlementResolver();
+    const approvedResolution = await readCommitted(prisma, (tx) =>
+      resolver.resolveInTransaction(tx, closureCaseId)
+    );
+    const waiverApprovalId = await createSettlementApproval(
+      prisma,
+      data,
+      approvedResolution,
+      "WAIVER"
+    );
+    await appendSettlementLedgerEntry(prisma, data, "ACTUAL_COST", 1n, "stale-drift");
+    const service = settlementService(prisma, repository, resolver);
+
+    await expectCode(
+      service.proposeManagedSettlement(
+        managedSettlementInput(data, closureCaseId, "stale-propose", {
+          waiverApprovalId,
+          writeOffApprovalId: null
+        })
+      ),
+      "SUBSCRIPTION_CLOSURE_SETTLEMENT_APPROVAL_STALE"
+    );
+
+    const [approval, revisionCount, expiryReceiptCount, closureReceiptCount] = await Promise.all([
+      prisma.businessExceptionApproval.findUniqueOrThrow({ where: { id: waiverApprovalId } }),
+      prisma.subscriptionClosureSettlementRevision.count({ where: { closureCaseId } }),
+      prisma.assetAccountingCommandReceipt.count({
+        where: { approvalId: waiverApprovalId, commandType: "EXCEPTION_EXPIRE" }
+      }),
+      prisma.subscriptionClosureCommandReceipt.count({ where: { closureCaseId } })
+    ]);
+    expect(approval).toMatchObject({ status: "EXPIRED", version: 2 });
+    expect(approval.expiryReason).toBe("Authoritative settlement facts changed.");
+    expect(revisionCount).toBe(0);
+    expect(expiryReceiptCount).toBe(1);
+    expect(closureReceiptCount).toBe(3);
+  });
+
+  it("rolls back a settlement revision and source receipt when its audit write fails", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const closureCaseId = await preparePendingSettlementCase(prisma, repository, data, "audit");
+    const injectedAudit = Object.freeze({
+      write: async () => {
+        throw new Error("injected settlement audit failure");
+      }
+    }) as unknown as AuditService;
+    const failingService = settlementService(
+      prisma,
+      repository,
+      new SubscriptionClosureSettlementResolver(),
+      injectedAudit
+    );
+    const command = managedSettlementInput(data, closureCaseId, "audit-propose");
+
+    await expect(failingService.proposeManagedSettlement(command)).rejects.toThrow(
+      "injected settlement audit failure"
+    );
+    const afterFailure = await settlementResidue(prisma, closureCaseId, data.orderId);
+    expect(afterFailure).toEqual({
+      currentSettlementRevisionId: null,
+      orderStatus: "RETURNED_PENDING_SETTLEMENT",
+      receipts: 3,
+      revisions: 0,
+      version: 2
+    });
+
+    const retried = await settlementService(prisma, repository).proposeManagedSettlement(command);
+    expect(retried).toMatchObject({ revisionNumber: 1, stage: "PROPOSED" });
+  });
+
+  it("lets a ledger reversal win before close and rejects the stale finalized settlement without a deadlock", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const accountingRepository = new AssetAccountingRepository();
+    const closureCaseId = await preparePendingSettlementCase(
+      prisma,
+      repository,
+      data,
+      "race-reverse"
+    );
+    const original = await appendSettlementLedgerEntry(
+      prisma,
+      data,
+      "ACTUAL_COST",
+      100n,
+      "race-reverse-original"
+    );
+    const service = settlementService(prisma, repository);
+    await service.proposeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "race-reverse-propose")
+    );
+    await service.finalizeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "race-reverse-finalize")
+    );
+    const settleInput = managedSettlementInput(data, closureCaseId, "race-reverse-settle");
+    const settleSource = {
+      id: closureCaseId,
+      key: settleInput.idempotencyKey,
+      type: "SUBSCRIPTION_CLOSURE"
+    } as const;
+    const ready = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await repository.lockSourceOwnership(tx, settleSource);
+      ready.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+    const close = settled(service.settleManagedSettlement(settleInput));
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+
+    const reversal = await readCommitted(prisma, (tx) =>
+      accountingRepository.reverseCostEntry(tx, {
+        actorId: data.actorId,
+        confirmedAt: NOW,
+        originalEntryId: original.id,
+        reason: "real PostgreSQL close-versus-ledger reversal proof",
+        source: source("race-reverse-ledger")
+      })
+    );
+    release.resolve();
+    await holder;
+    const closeResult = await close;
+
+    expect(reversal.outcome).toMatchObject({
+      amountCents: -100n,
+      entryKind: "REVERSAL",
+      reversalOfEntryId: original.id
+    });
+    expectConflict(rejectedValue(closeResult), "SUBSCRIPTION_CLOSURE_SETTLEMENT_FACT_DRIFT");
+    await expect(settlementResidue(prisma, closureCaseId, data.orderId)).resolves.toMatchObject({
+      orderStatus: "RETURNED_PENDING_SETTLEMENT",
+      revisions: 2,
+      version: 4
+    });
+  });
+
+  it("serializes a close winner before a waiting ledger reversal and preserves both immutable facts", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const accountingRepository = new AssetAccountingRepository();
+    const closureCaseId = await preparePendingSettlementCase(
+      prisma,
+      repository,
+      data,
+      "race-close"
+    );
+    const original = await appendSettlementLedgerEntry(
+      prisma,
+      data,
+      "ACTUAL_COST",
+      100n,
+      "race-close-original"
+    );
+    const service = settlementService(prisma, repository);
+    await service.proposeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "race-close-propose")
+    );
+    await service.finalizeManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "race-close-finalize")
+    );
+    const reverseSource = source("race-close-ledger");
+    const reverseCommand = {
+      actorId: data.actorId,
+      confirmedAt: NOW,
+      originalEntryId: original.id,
+      reason: "real PostgreSQL close-winner serialization proof",
+      source: reverseSource
+    };
+    const ready = deferred<void>();
+    const release = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      await accountingRepository.lockSourceOwnership(tx, reverseSource);
+      ready.resolve();
+      await release.promise;
+    });
+    void holder.catch(ready.reject);
+    await ready.promise;
+    const reversal = settled(
+      readCommitted(prisma, (tx) => accountingRepository.reverseCostEntry(tx, reverseCommand))
+    );
+    expect(await waitForDatabaseLock(prisma, "pg_advisory_xact_lock")).toBe(true);
+
+    const settledRevision = await service.settleManagedSettlement(
+      managedSettlementInput(data, closureCaseId, "race-close-settle")
+    );
+    release.resolve();
+    await holder;
+    const reversalResult = await reversal;
+
+    expect(settledRevision).toMatchObject({ costTotalCents: "100", stage: "SETTLED" });
+    expect(reversalResult.status).toBe("fulfilled");
+    if (reversalResult.status !== "fulfilled") throw reversalResult.reason;
+    expect(reversalResult.value.outcome).toMatchObject({
+      amountCents: -100n,
+      entryKind: "REVERSAL",
+      reversalOfEntryId: original.id
+    });
+    const persisted = await prisma.subscriptionClosureSettlementRevision.findUniqueOrThrow({
+      where: { id: settledRevision.id }
+    });
+    expect(persisted.costTotalCents).toBe(100n);
+  });
 });
 
 function createCaseCommand(
@@ -1364,6 +1798,296 @@ function settlementCommand(
   };
 }
 
+function settlementService(
+  prisma: PrismaService,
+  repository = new SubscriptionClosureRepository(),
+  resolver = new SubscriptionClosureSettlementResolver(),
+  audit: AuditService = new AuditService(prisma)
+) {
+  const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+  return new SubscriptionClosureService(
+    repository,
+    Object.freeze({}) as never,
+    Object.freeze({}) as never,
+    audit,
+    prisma,
+    undefined,
+    accounting,
+    undefined,
+    resolver
+  );
+}
+
+async function preparePendingSettlementCase(
+  prisma: PrismaService,
+  repository: SubscriptionClosureRepository,
+  fixture: Fixture,
+  suffix: string,
+  closureType: "NORMAL_COMPLETION" | "EARLY_TERMINATION" = "NORMAL_COMPLETION"
+) {
+  const created = await readCommitted(prisma, (tx) =>
+    repository.createCase(tx, createCaseCommand(fixture, `settlement-${suffix}`, closureType))
+  );
+  await readCommitted(prisma, async (tx) => {
+    const receiptAt = await databaseNow(tx);
+    await repository.appendEvent(tx, {
+      actorId: fixture.actorId,
+      afterStatus: "RETURN_INSPECTION",
+      closureCaseId: created.outcome.id,
+      detailSnapshot: { fixture: fixture.marker, suffix },
+      eventType: "PHYSICAL_CONTROL_CONFIRMED",
+      expectedStatus: "PREPARING_RETURN",
+      expectedVersion: 0,
+      occurredAt: receiptAt,
+      source: source(`settlement-${suffix}-receipt`)
+    });
+    const inspectionAt = await databaseNow(tx);
+    await repository.appendEvent(tx, {
+      actorId: fixture.actorId,
+      afterStatus: "PENDING_SETTLEMENT",
+      closureCaseId: created.outcome.id,
+      detailSnapshot: { accepted: true, fixture: fixture.marker, suffix },
+      eventType: "INSPECTION_RECORDED",
+      expectedStatus: "RETURN_INSPECTION",
+      expectedVersion: 1,
+      occurredAt: inspectionAt,
+      source: source(`settlement-${suffix}-inspection`)
+    });
+    await tx.subscriptionOrder.update({
+      data: { orderStatus: "RETURNED_PENDING_SETTLEMENT", updatedBy: fixture.actorId },
+      where: { id: fixture.orderId }
+    });
+  });
+  return created.outcome.id;
+}
+
+function managedSettlementInput(
+  fixture: Fixture,
+  closureCaseId: string,
+  suffix: string,
+  approvals: Readonly<{
+    waiverApprovalId: string | null;
+    writeOffApprovalId: string | null;
+  }> = { waiverApprovalId: null, writeOffApprovalId: null }
+) {
+  return {
+    actorId: fixture.actorId,
+    closureCaseId,
+    idempotencyKey: `${fixture.marker}:${suffix}`,
+    occurredAt: new Date(NOW.getTime() + suffix.length * 1_000),
+    ...approvals
+  };
+}
+
+async function appendSettlementLedgerEntry(
+  prisma: PrismaService,
+  fixture: Fixture,
+  actionType: "ACTUAL_COST" | "WAIVER" | "WRITE_OFF",
+  amountCents: bigint,
+  suffix: string
+) {
+  const result = await readCommitted(prisma, (tx) =>
+    new AssetAccountingRepository().appendCostEntry(tx, {
+      actionType,
+      accountingPeriod: "2026-08",
+      actorId: fixture.actorId,
+      amountCents,
+      confirmedAt: NOW,
+      contractId: fixture.contractId,
+      costCategory: "OTHER",
+      customerId: fixture.customerId,
+      occurredOn: new Date("2026-08-21T00:00:00.000Z"),
+      orderId: fixture.orderId,
+      reason: `Task 5 settlement ${actionType.toLowerCase()} fixture`,
+      responsiblePartyId: fixture.customerId,
+      responsiblePartyType: "CUSTOMER",
+      responsibilitySnapshot: { actionType, fixture: fixture.marker, suffix },
+      source: source(`ledger-${suffix}`),
+      vehicleId: fixture.vehicleId
+    })
+  );
+  return result.outcome;
+}
+
+async function createReceivablePaymentFacts(
+  prisma: PrismaService,
+  fixture: Fixture,
+  input: Readonly<{ amountCents: bigint; paidCents: bigint; suffix: string }>
+) {
+  const billId = randomUUID();
+  const paymentId = randomUUID();
+  await prisma.$transaction(async (tx) => {
+    await tx.receivableBill.create({
+      data: {
+        amount: input.amountCents,
+        billNo: `B-${fixture.marker}-${input.suffix}`,
+        billStatus:
+          input.paidCents === 0n
+            ? "PENDING"
+            : input.paidCents === input.amountCents
+              ? "PAID"
+              : "PARTIALLY_PAID",
+        billType: "OTHER",
+        customerId: fixture.customerId,
+        dueDate: NOW,
+        id: billId,
+        orderId: fixture.orderId,
+        paidAmount: input.paidCents,
+        remainingAmount: input.amountCents - input.paidCents,
+        snapshot: { fixture: fixture.marker, suffix: input.suffix }
+      }
+    });
+    if (input.paidCents > 0n) {
+      await tx.paymentRecord.create({
+        data: {
+          customerId: fixture.customerId,
+          id: paymentId,
+          orderId: fixture.orderId,
+          paymentAmount: input.paidCents,
+          paymentMethod: "BANK_TRANSFER",
+          paymentNo: `P-${fixture.marker}-${input.suffix}`,
+          paymentStatus: "CONFIRMED",
+          receivedAt: NOW
+        }
+      });
+      await tx.paymentWriteOff.create({
+        data: {
+          billId,
+          customerId: fixture.customerId,
+          orderId: fixture.orderId,
+          paymentId,
+          remark: `Task 5 ${input.suffix} allocation`,
+          writeOffAmount: input.paidCents,
+          writeOffAt: NOW
+        }
+      });
+    }
+  });
+  return { billId, paymentId: input.paidCents > 0n ? paymentId : null };
+}
+
+async function createDepositDeduction(
+  prisma: PrismaService,
+  fixture: Fixture,
+  amountCents: bigint,
+  suffix: string
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.subscriptionOrder.update({
+      data: {
+        depositAmount: amountCents,
+        depositStatus: "CONFIRMED",
+        finalDepositAmount: amountCents
+      },
+      where: { id: fixture.orderId }
+    });
+    return tx.depositLedger.create({
+      data: {
+        amount: amountCents,
+        balanceAfter: 0n,
+        customerId: fixture.customerId,
+        ledgerNo: `D-${fixture.marker}-${suffix}`,
+        occurredAt: NOW,
+        orderId: fixture.orderId,
+        snapshot: { fixture: fixture.marker, suffix },
+        transactionStatus: "CONFIRMED",
+        transactionType: "DEDUCT"
+      }
+    });
+  });
+}
+
+async function createSettlementApproval(
+  prisma: PrismaService,
+  fixture: Fixture,
+  resolution: Awaited<ReturnType<SubscriptionClosureSettlementResolver["resolveInTransaction"]>>,
+  kind: "WAIVER" | "WRITE_OFF"
+) {
+  const exceptionType = kind === "WAIVER" ? "SETTLEMENT_WAIVER" : "SETTLEMENT_WRITE_OFF";
+  const subjectField = kind === "WAIVER" ? "settlementWaiver" : "settlementWriteOff";
+  const amountCents =
+    kind === "WAIVER" ? resolution.waiverTotalCents : resolution.writeOffTotalCents;
+  const authoritySnapshot = {
+    amountCents: amountCents.toString(),
+    closureCaseId: resolution.closureCaseId,
+    inputSnapshotHash: resolution.inputSnapshotHash,
+    orderId: resolution.orderId,
+    resolutionType: exceptionType,
+    resultHash: resolution.resultHash
+  };
+  const subject = {
+    subjectField,
+    subjectId: resolution.closureCaseId,
+    subjectType: "SETTLEMENT_CASE" as const
+  };
+  const repository = new AssetAccountingRepository();
+  const requested = await readCommitted(prisma, (tx) =>
+    repository.requestExceptionApproval(tx, {
+      authoritySnapshot,
+      exceptionType,
+      requestEvidenceSnapshot: { fixture: fixture.marker, kind },
+      requestReason: `Task 5 ${kind.toLowerCase()} fixture`,
+      requestedAt: NOW,
+      requestedBy: fixture.actorId,
+      source: source(`approval-${kind.toLowerCase()}-request`),
+      subject
+    })
+  );
+  const decided = await readCommitted(prisma, (tx) =>
+    repository.decideExceptionApproval(tx, {
+      approvalId: requested.outcome.id,
+      authoritySnapshot,
+      decidedAt: NOW,
+      decidedBy: fixture.reviewerId,
+      decision: "APPROVED",
+      decisionComment: "Task 5 approved fixture",
+      exceptionType,
+      expectedVersion: 0,
+      source: source(`approval-${kind.toLowerCase()}-decide`),
+      subject
+    })
+  );
+  expect(hashBusinessExceptionSnapshot(authoritySnapshot)).toBe(
+    decided.outcome.subjectSnapshotHash
+  );
+  return decided.outcome.id;
+}
+
+async function settlementResidue(prisma: PrismaService, closureCaseId: string, orderId: string) {
+  const [closureCase, order, revisions, receipts] = await Promise.all([
+    prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCaseId } }),
+    prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: orderId } }),
+    prisma.subscriptionClosureSettlementRevision.count({ where: { closureCaseId } }),
+    prisma.subscriptionClosureCommandReceipt.count({ where: { closureCaseId } })
+  ]);
+  return {
+    currentSettlementRevisionId: closureCase.currentSettlementRevisionId,
+    orderStatus: order.orderStatus,
+    receipts,
+    revisions,
+    version: closureCase.version
+  };
+}
+
+async function waitForDatabaseLock(prisma: PrismaService, queryFragment: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [status] = await prisma.$queryRaw<Array<{ waiting: boolean }>>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_stat_activity
+        WHERE "pid" <> pg_backend_pid()
+          AND "datname" = current_database()
+          AND "state" = 'active'
+          AND "wait_event_type" = 'Lock'
+          AND "query" ILIKE ${`%${queryFragment}%`}
+      ) AS "waiting"
+    `);
+    if (status?.waiting) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
 function source(key: string) {
   return { id: randomUUID(), key: `p0:${key}`, type: "P0_REPOSITORY_TEST" } as const;
 }
@@ -1483,6 +2207,7 @@ async function createFixture(prisma: PrismaService) {
     handoverWorkOrderId: String(randomUUID()),
     marker,
     orderId: randomUUID(),
+    reviewerId: randomUUID(),
     signedFileId: randomUUID(),
     sourceFileId: randomUUID(),
     vehicleId: randomUUID(),
@@ -1493,6 +2218,10 @@ async function createFixture(prisma: PrismaService) {
     await tx.$executeRaw`
       INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
       VALUES (${fixture.actorId}::uuid, ${marker}, 'P0 repository actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
+    `;
+    await tx.$executeRaw`
+      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
+      VALUES (${fixture.reviewerId}::uuid, ${`${marker}-reviewer`}, 'P0 repository reviewer', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
     `;
     await tx.$executeRaw`
       INSERT INTO "customer" ("id", "customer_no", "name", "mobile", "status", "created_at", "updated_at")
@@ -1575,6 +2304,19 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
       });
       await tx.subscriptionClosureCase.deleteMany({ where: { id: { in: ids } } });
     }
+    await tx.assetAccountingCommandReceipt.deleteMany({
+      where: { actorId: { in: [fixture.actorId, fixture.reviewerId] } }
+    });
+    if (ids.length > 0) {
+      await tx.businessExceptionApproval.deleteMany({
+        where: { subjectId: { in: ids }, subjectType: "SETTLEMENT_CASE" }
+      });
+    }
+    await tx.depositLedger.deleteMany({ where: { orderId: fixture.orderId } });
+    await tx.paymentWriteOff.deleteMany({ where: { orderId: fixture.orderId } });
+    await tx.paymentRecord.deleteMany({ where: { orderId: fixture.orderId } });
+    await tx.receivableBill.deleteMany({ where: { orderId: fixture.orderId } });
+    await tx.vehicleCostLedgerEntry.deleteMany({ where: { orderId: fixture.orderId } });
     await tx.auditLog.deleteMany({ where: { operatorId: fixture.actorId } });
     await tx.vehicleHandoverEvent.deleteMany({ where: { orderId: fixture.orderId } });
     await tx.assetWorkOrderEvent.deleteMany({
@@ -1591,7 +2333,7 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
     await tx.contract.deleteMany({ where: { id: fixture.contractId } });
     await tx.vehicle.deleteMany({ where: { id: fixture.vehicleId } });
     await tx.customer.deleteMany({ where: { id: fixture.customerId } });
-    await tx.user.deleteMany({ where: { id: fixture.actorId } });
+    await tx.user.deleteMany({ where: { id: { in: [fixture.actorId, fixture.reviewerId] } } });
     await tx.$executeRawUnsafe("SET LOCAL session_replication_role = origin");
   });
 }
@@ -1625,7 +2367,7 @@ async function createFixtureWorkOrder(
 async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fixture[]) {
   if (fixtures.length === 0) return 0;
   const orderIds = fixtures.map(({ orderId }) => orderId);
-  const actorIds = fixtures.map(({ actorId }) => actorId);
+  const actorIds = fixtures.flatMap(({ actorId, reviewerId }) => [actorId, reviewerId]);
   const assetWorkOrderIds = fixtures.flatMap(({ assetWorkOrderIds }) => assetWorkOrderIds);
   const closureCaseIds = fixtures.flatMap(({ closureCaseIds }) => closureCaseIds);
   const contractIds = fixtures.map(({ contractId }) => contractId);
@@ -1652,6 +2394,15 @@ async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fi
     prisma.subscriptionClosureSettlementRevision.count({
       where: { closureCaseId: { in: closureCaseIds } }
     }),
+    prisma.assetAccountingCommandReceipt.count({ where: { actorId: { in: actorIds } } }),
+    prisma.businessExceptionApproval.count({
+      where: { subjectId: { in: closureCaseIds }, subjectType: "SETTLEMENT_CASE" }
+    }),
+    prisma.vehicleCostLedgerEntry.count({ where: { orderId: { in: orderIds } } }),
+    prisma.receivableBill.count({ where: { orderId: { in: orderIds } } }),
+    prisma.paymentRecord.count({ where: { orderId: { in: orderIds } } }),
+    prisma.paymentWriteOff.count({ where: { orderId: { in: orderIds } } }),
+    prisma.depositLedger.count({ where: { orderId: { in: orderIds } } }),
     prisma.assetWorkOrder.count({ where: { id: { in: assetWorkOrderIds } } }),
     prisma.assetWorkOrderEvent.count({ where: { workOrderId: { in: assetWorkOrderIds } } }),
     prisma.auditLog.count({ where: { operatorId: { in: actorIds } } }),
@@ -1700,6 +2451,14 @@ async function databaseNow(tx: Prisma.TransactionClient) {
   );
   if (!row) throw new Error("PostgreSQL clock query returned no row");
   return row.clockTimestamp;
+}
+
+async function databaseTimestamp(prisma: PrismaService) {
+  const [row] = await prisma.$queryRaw<Array<{ now: Date }>>(
+    Prisma.sql`SELECT clock_timestamp() AS "now"`
+  );
+  if (!row) throw new Error("PostgreSQL clock query returned no row");
+  return row.now;
 }
 
 function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {

@@ -143,6 +143,15 @@ type AssetAccountingCallerOwnedCommandCapabilityState = Readonly<{
   source: AssetAccountingSource;
   transaction: Prisma.TransactionClient;
 }>;
+declare const assetAccountingPreparedApprovalRepositoryCapabilityBrand: unique symbol;
+export type AssetAccountingPreparedApprovalRepositoryCapability = Readonly<{
+  [assetAccountingPreparedApprovalRepositoryCapabilityBrand]: true;
+}>;
+type AssetAccountingPreparedApprovalRepositoryCapabilityState = Readonly<{
+  authorityLockFingerprint: string;
+  command: RequireCurrentApprovedExceptionCommand;
+  transaction: Prisma.TransactionClient;
+}>;
 
 export interface BusinessExceptionSubjectIdentity {
   readonly subjectType: BusinessExceptionSubjectType;
@@ -305,6 +314,12 @@ export function businessExceptionSubjectLockIdentity(
   ]);
 }
 
+export function canonicalRequireCurrentApprovedExceptionCommand(
+  command: RequireCurrentApprovedExceptionCommand
+) {
+  return normalizeRequireCurrentCommand(command);
+}
+
 /**
  * Immutable vehicle-cost persistence. Mutations require a caller-owned
  * PostgreSQL READ COMMITTED interactive transaction; this repository never
@@ -315,6 +330,10 @@ export class AssetAccountingRepository {
   private readonly callerOwnedCommandCapabilities = new WeakMap<
     AssetAccountingCallerOwnedCommandCapability,
     AssetAccountingCallerOwnedCommandCapabilityState
+  >();
+  private readonly preparedApprovalCapabilities = new WeakMap<
+    AssetAccountingPreparedApprovalRepositoryCapability,
+    AssetAccountingPreparedApprovalRepositoryCapabilityState
   >();
 
   async lockExceptionApproval(
@@ -507,14 +526,68 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: RequireCurrentApprovedExceptionCommand
   ): Promise<RequireCurrentApprovedExceptionOutcome> {
+    return this.executeRequireCurrentApprovedException(tx, command, false, false);
+  }
+
+  async prepareApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeRequireCurrentCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async requirePreparedApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<RequireCurrentApprovedExceptionOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeRequireCurrentApprovedException(tx, state.command, true, true);
+  }
+
+  private async executeRequireCurrentApprovedException(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<RequireCurrentApprovedExceptionOutcome> {
     const normalized = normalizeRequireCurrentCommand(command);
     const payload = requireCurrentPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) {
+      await this.lockSourceOwnership(tx, normalized.source);
+    }
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_EXPIRE", payload);
     if (replay) return { expiredApproval: replay.outcome, valid: false };
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
-    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    if (!authorityAlreadyLocked) {
+      await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    }
+    const approval = authorityAlreadyLocked
+      ? await loadApproval(tx, normalized.approvalId)
+      : await lockAndLoadApproval(tx, normalized.approvalId);
     validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
     validateApprovalVersion(approval, normalized.expectedVersion);
     if (approval.status !== "APPROVED") {
@@ -523,7 +596,11 @@ export class AssetAccountingRepository {
     if (approvalHasSnapshot(approval, normalized.authoritySnapshot)) {
       return { approval: projectApproval(approval), valid: true };
     }
-    await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.expiredBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+    }
     const expired = await expireLockedApproval(tx, normalized, payload, approval);
     return { expiredApproval: expired.outcome, valid: false };
   }
@@ -865,6 +942,13 @@ function normalizeApprovalSource(source: AssetAccountingSource) {
   }
 }
 
+function preparedApprovalLockFingerprint(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 255) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+  }
+  return value;
+}
+
 function normalizeApprovalSnapshot(snapshot: unknown): Prisma.JsonObject {
   try {
     return normalizeSnapshot(snapshot);
@@ -1049,13 +1133,21 @@ async function lockAndLoadApproval(tx: Prisma.TransactionClient, approvalId: str
     }
     throw error;
   }
+  return loadApproval(tx, approvalId);
+}
+
+async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
+  await lockAuthorityRows(tx, [{ id: actorId, mode: "SHARE", table: "user" }]);
+  await validateApprovalActor(tx, actorId);
+}
+
+async function loadApproval(tx: Prisma.TransactionClient, approvalId: string) {
   const approval = await tx.businessExceptionApproval.findUnique({ where: { id: approvalId } });
   if (!approval) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND);
   return approval;
 }
 
-async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
-  await lockAuthorityRows(tx, [{ id: actorId, mode: "SHARE", table: "user" }]);
+async function validateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
   const actor = await tx.user.findUnique({ where: { id: actorId } });
   requireAuthority(actor, isLiveUser(actor));
 }

@@ -8,6 +8,7 @@ import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-or
 import { PrismaModule } from "../prisma/prisma.module";
 import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module";
 import { SubscriptionClosureRepository } from "./subscription-closure.repository";
+import { SubscriptionClosureSettlementResolver } from "./subscription-closure.settlement-resolver";
 import { SubscriptionClosureService } from "./subscription-closure.service";
 
 @Module({
@@ -21,6 +22,10 @@ import { SubscriptionClosureService } from "./subscription-closure.service";
     PrismaModule,
     VehicleMileageModule
   ],
-  providers: [SubscriptionClosureRepository, SubscriptionClosureService]
+  providers: [
+    SubscriptionClosureRepository,
+    SubscriptionClosureService,
+    SubscriptionClosureSettlementResolver
+  ]
 })
 export class SubscriptionClosureModule {}

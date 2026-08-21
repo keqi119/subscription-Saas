@@ -1,7 +1,8 @@
-import { ConflictException, Injectable, Optional } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Optional } from "@nestjs/common";
 import {
   AssetWorkOrderStatus,
   AuditAction,
+  ContractStatus,
   ESignDocumentType,
   ESignProviderType,
   ESignSigningStage,
@@ -35,6 +36,7 @@ import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availabi
 import {
   ASSET_ACCOUNTING_PERMISSION,
   AssetAccountingService,
+  type AssetAccountingPreparedApprovalCapability,
   type AppendCostServiceCommand
 } from "../asset-accounting/asset-accounting.service";
 import { AssetFactsService } from "../asset-facts/asset-facts.service";
@@ -58,6 +60,8 @@ import {
   subscriptionClosureCaseNo,
   subscriptionClosureDocumentAuthorityRequirement,
   subscriptionClosureEventAuthorityRequirement,
+  subscriptionClosureSettlementAuthorityRequirement,
+  type AppendSubscriptionClosureSettlementCommand,
   type AppendSubscriptionClosureDocumentCommand,
   type ClosureAuthorityAttestation,
   type PreparedClosureSourceCapability,
@@ -65,7 +69,14 @@ import {
   type SubscriptionClosureAuthoritySession,
   type SubscriptionClosureMutationAuditHook
 } from "./subscription-closure.repository";
-import type { SubscriptionClosureSource } from "./subscription-closure.types";
+import type {
+  SubscriptionClosureSettlementSnapshot,
+  SubscriptionClosureSource
+} from "./subscription-closure.types";
+import {
+  SubscriptionClosureSettlementResolver,
+  type ResolvedSubscriptionClosureSettlement
+} from "./subscription-closure.settlement-resolver";
 
 export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   AUTHORITY_MISMATCH: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH",
@@ -73,7 +84,13 @@ export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   CAPABILITY_INVALID: "SUBSCRIPTION_CLOSURE_EXPIRY_CAPABILITY_INVALID",
   CLOCK_UNAVAILABLE: "SUBSCRIPTION_CLOSURE_DOCUMENT_CLOCK_UNAVAILABLE",
   MANAGED_RETURN_AUTHORITY_NOT_FOUND: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND",
-  MANAGED_RETURN_CAPABILITY_INVALID: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_CAPABILITY_INVALID"
+  MANAGED_RETURN_CAPABILITY_INVALID: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_CAPABILITY_INVALID",
+  SETTLEMENT_APPROVAL_REQUIRED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_APPROVAL_REQUIRED",
+  SETTLEMENT_APPROVAL_STALE: "SUBSCRIPTION_CLOSURE_SETTLEMENT_APPROVAL_STALE",
+  SETTLEMENT_CLIENT_FACTS_FORBIDDEN: "SUBSCRIPTION_CLOSURE_SETTLEMENT_CLIENT_FACTS_FORBIDDEN",
+  SETTLEMENT_FACT_DRIFT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_FACT_DRIFT",
+  SETTLEMENT_NOT_RESOLVED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_NOT_RESOLVED",
+  SETTLEMENT_STATUS_CONFLICT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_STATUS_CONFLICT"
 } as const;
 
 export type PrepareNormalExpiryInput = Readonly<{
@@ -139,6 +156,15 @@ export type ReleaseManagedInventoryInput = Readonly<{
   closureCaseId: string;
   occurredAt: Date;
   releaseReason: string;
+}>;
+
+export type ManagedSettlementInput = Readonly<{
+  actorId: string;
+  closureCaseId: string;
+  idempotencyKey: string;
+  occurredAt: Date;
+  waiverApprovalId: string | null;
+  writeOffApprovalId: string | null;
 }>;
 
 declare const managedReturnCapabilityBrand: unique symbol;
@@ -217,7 +243,8 @@ export class SubscriptionClosureService {
     @Optional() private readonly prisma?: PrismaService,
     @Optional() private readonly assetFacts?: AssetFactsService,
     @Optional() private readonly assetAccounting?: AssetAccountingService,
-    @Optional() private readonly vehicleMileage?: VehicleMileageService
+    @Optional() private readonly vehicleMileage?: VehicleMileageService,
+    @Optional() private readonly settlementResolver?: SubscriptionClosureSettlementResolver
   ) {}
 
   async prepareNormalExpiryInTransaction(
@@ -1459,6 +1486,389 @@ export class SubscriptionClosureService {
       transitionKey
     );
     return outcome.outcome;
+  }
+
+  async proposeManagedSettlement(
+    input: ManagedSettlementInput
+  ): Promise<SubscriptionClosureSettlementSnapshot> {
+    const command = normalizeManagedSettlementInput(input);
+    if (!this.prisma || !this.assetAccounting || !this.settlementResolver) {
+      throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+    }
+    const transactionResult = await this.prisma.$transaction(
+      async (tx) => this.writeManagedSettlementInTransaction(tx, command, "PROPOSED"),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+    if (transactionResult.staleApproval) {
+      throw serviceConflict("SETTLEMENT_APPROVAL_STALE");
+    }
+    return transactionResult.outcome;
+  }
+
+  async finalizeManagedSettlement(
+    input: ManagedSettlementInput
+  ): Promise<SubscriptionClosureSettlementSnapshot> {
+    return this.runManagedSettlementWrite(input, "FINALIZED");
+  }
+
+  async settleManagedSettlement(
+    input: ManagedSettlementInput
+  ): Promise<SubscriptionClosureSettlementSnapshot> {
+    return this.runManagedSettlementWrite(input, "SETTLED");
+  }
+
+  private async runManagedSettlementWrite(
+    input: ManagedSettlementInput,
+    targetStage: "FINALIZED" | "SETTLED"
+  ): Promise<SubscriptionClosureSettlementSnapshot> {
+    const command = normalizeManagedSettlementInput(input);
+    if (!this.prisma || !this.assetAccounting || !this.settlementResolver) {
+      throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+    }
+    const transactionResult = await this.prisma.$transaction(
+      async (tx) => this.writeManagedSettlementInTransaction(tx, command, targetStage),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+    if (transactionResult.staleApproval) {
+      throw serviceConflict("SETTLEMENT_APPROVAL_STALE");
+    }
+    return transactionResult.outcome;
+  }
+
+  private async writeManagedSettlementInTransaction(
+    tx: Prisma.TransactionClient,
+    command: ManagedSettlementInput,
+    targetStage: "PROPOSED" | "FINALIZED" | "SETTLED"
+  ): Promise<
+    | Readonly<{ outcome: null; staleApproval: true }>
+    | Readonly<{ outcome: SubscriptionClosureSettlementSnapshot; staleApproval: false }>
+  > {
+    const settlementSource = physicalSource(command.closureCaseId, command.idempotencyKey);
+    const replay = await replayManagedSettlement(tx, command, targetStage, settlementSource);
+    if (replay) return Object.freeze({ outcome: replay, staleApproval: false });
+    const observedResolution = await this.settlementResolver!.resolveInTransaction(
+      tx,
+      command.closureCaseId
+    );
+    const observedCase = await tx.subscriptionClosureCase.findUnique({
+      include: { currentSettlementRevision: true },
+      where: { id: command.closureCaseId }
+    });
+    assertSettlementCase(observedCase, observedResolution);
+    assertSettlementPredecessor(targetStage, observedCase, observedResolution);
+    if (targetStage === "SETTLED" && !observedResolution.obligationsResolved) {
+      throw serviceConflict("SETTLEMENT_NOT_RESOLVED");
+    }
+    assertSettlementApprovalShape(command, observedResolution);
+
+    const terminalSource =
+      targetStage === "SETTLED"
+        ? physicalSource(command.closureCaseId, `${command.idempotencyKey}:closure`)
+        : null;
+    const approvalInputs = await this.settlementApprovalInputs(
+      tx,
+      command,
+      observedResolution,
+      settlementSource
+    );
+    let settlementSourceCapability: PreparedClosureSourceCapability | undefined;
+    let terminalSourceCapability: PreparedClosureSourceCapability | undefined;
+    const approvalSourceCapabilities = new Map<string, unknown>();
+    const sourcePreparations: Array<{
+      prepare: () => Promise<void>;
+      source: SubscriptionClosureSource;
+    }> = [
+      {
+        prepare: async () => {
+          settlementSourceCapability = await this.repository.prepareSourceInTransaction(
+            tx,
+            settlementSource
+          );
+        },
+        source: settlementSource
+      },
+      ...(terminalSource
+        ? [
+            {
+              prepare: async () => {
+                terminalSourceCapability = await this.repository.prepareSourceInTransaction(
+                  tx,
+                  terminalSource
+                );
+              },
+              source: terminalSource
+            }
+          ]
+        : []),
+      ...approvalInputs.map((approval) => ({
+        prepare: async () => {
+          approvalSourceCapabilities.set(
+            approval.source.key,
+            await this.assetAccounting!.prepareCallerOwnedTransaction(tx, approval.source)
+          );
+        },
+        source: approval.source
+      }))
+    ].sort((left, right) =>
+      bytewiseCompare(sourceSortKey(left.source), sourceSortKey(right.source))
+    );
+    for (const preparation of sourcePreparations) await preparation.prepare();
+    if (!settlementSourceCapability) throw serviceConflict("CAPABILITY_INVALID");
+    const serializedReplay = await replayManagedSettlement(
+      tx,
+      command,
+      targetStage,
+      settlementSource
+    );
+    if (serializedReplay) {
+      return Object.freeze({ outcome: serializedReplay, staleApproval: false });
+    }
+
+    const authorityKey = `settlement-${targetStage.toLowerCase()}`;
+    const terminalOccurredAt =
+      targetStage === "SETTLED" ? await readSettlementEventClock(tx, command.closureCaseId) : null;
+    const settlementCommand = settlementRevisionCommand(
+      command,
+      observedCase!,
+      observedResolution,
+      settlementSource,
+      targetStage,
+      terminalOccurredAt
+    );
+    const terminalStatus = settlementTerminalStatus(observedCase!);
+    const terminalCommand =
+      targetStage === "SETTLED" && terminalSource
+        ? {
+            actorId: command.actorId,
+            afterStatus: terminalStatus,
+            closureCaseId: command.closureCaseId,
+            detailSnapshot: {
+              inputSnapshotHash: observedResolution.inputSnapshotHash,
+              resultHash: observedResolution.resultHash,
+              settlementSource
+            },
+            eventType: "STATUS_TRANSITIONED" as const,
+            expectedStatus: "PENDING_SETTLEMENT" as const,
+            expectedVersion: observedCase!.version + 1,
+            occurredAt: terminalOccurredAt!,
+            source: terminalSource
+          }
+        : null;
+    const session = this.repository.createAuthoritySessionInTransaction(tx);
+    const settlementRequirement = this.repository.bindAuthorityRequirement(
+      session,
+      subscriptionClosureSettlementAuthorityRequirement(
+        settlementCommand,
+        observedResolution.authorityLocks,
+        authorityKey
+      )
+    );
+    const accountingContext = {
+      actorId: command.actorId,
+      permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST]
+    };
+    const approvalRequirements = approvalInputs.map((approval) =>
+      this.assetAccounting!.approvedExceptionAuthorityRequirement(
+        session,
+        approval.command,
+        { ...accountingContext, idempotencyKey: approval.source.key },
+        approval.authoritySnapshot,
+        approval.key
+      )
+    );
+    const terminalRequirement = terminalCommand
+      ? this.repository.bindAuthorityRequirement(
+          session,
+          subscriptionClosureEventAuthorityRequirement(terminalCommand, "closure-complete")
+        )
+      : null;
+    const requirements = [
+      settlementRequirement,
+      ...approvalRequirements,
+      ...(terminalRequirement ? [terminalRequirement] : [])
+    ];
+    const proofs = await this.repository.prepareAuthorityInTransaction(
+      tx,
+      session,
+      requirements.flatMap(({ locks }) => locks),
+      requirements
+    );
+
+    const lockedResolution = await this.settlementResolver!.resolveInTransaction(
+      tx,
+      command.closureCaseId
+    );
+    const lockedCase = await tx.subscriptionClosureCase.findUnique({
+      include: { currentSettlementRevision: true },
+      where: { id: command.closureCaseId }
+    });
+    if (
+      lockedResolution.inputSnapshotHash !== observedResolution.inputSnapshotHash ||
+      canonicalSubscriptionClosureJson({ locks: lockedResolution.authorityLocks }) !==
+        canonicalSubscriptionClosureJson({ locks: observedResolution.authorityLocks }) ||
+      canonicalSubscriptionClosureJson(settlementCaseIdentity(lockedCase)) !==
+        canonicalSubscriptionClosureJson(settlementCaseIdentity(observedCase))
+    ) {
+      throw serviceConflict("SETTLEMENT_FACT_DRIFT");
+    }
+
+    const preparedApprovals: AssetAccountingPreparedApprovalCapability[] = [];
+    for (const approval of approvalInputs) {
+      preparedApprovals.push(
+        await this.assetAccounting!.attestPreparedApprovedExceptionInTransaction(
+          tx,
+          session,
+          approval.command,
+          { ...accountingContext, idempotencyKey: approval.source.key },
+          approval.authoritySnapshot,
+          requiredCapability(approvalSourceCapabilities, approval.source.key),
+          requiredAttestation(proofs, approval.key),
+          approval.key
+        )
+      );
+    }
+    const approvalResults: boolean[] = [];
+    for (const prepared of preparedApprovals) {
+      approvalResults.push(
+        await this.assetAccounting!.requirePreparedApprovedExceptionInTransaction(tx, prepared)
+      );
+    }
+    if (approvalResults.some((valid) => !valid)) {
+      return Object.freeze({ outcome: null, staleApproval: true });
+    }
+    const appended = await this.repository.appendPreparedSettlementRevisionInTransaction(
+      tx,
+      session,
+      settlementCommand,
+      settlementSourceCapability,
+      requiredAttestation(proofs, authorityKey),
+      observedResolution.authorityLocks,
+      this.closureAudit(command.actorId),
+      authorityKey
+    );
+    if (terminalCommand) {
+      if (!terminalSourceCapability) throw serviceConflict("CAPABILITY_INVALID");
+      const beforeOrder = await tx.subscriptionOrder.findUnique({
+        where: { id: observedResolution.orderId }
+      });
+      const beforeContract = await tx.contract.findUnique({
+        where: { id: observedResolution.contractId }
+      });
+      if (
+        !beforeOrder ||
+        beforeOrder.orderStatus !== OrderStatus.RETURNED_PENDING_SETTLEMENT ||
+        !beforeContract ||
+        beforeContract.status !== ContractStatus.ARCHIVED
+      ) {
+        throw serviceConflict("SETTLEMENT_STATUS_CONFLICT");
+      }
+      const afterOrder = await tx.subscriptionOrder.update({
+        data: { orderStatus: terminalStatus, updatedBy: command.actorId },
+        where: { id: observedResolution.orderId }
+      });
+      const afterContract = await tx.contract.update({
+        data: { status: terminalStatus, updatedBy: command.actorId },
+        where: { id: observedResolution.contractId }
+      });
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: physicalAuditSnapshot(afterOrder),
+          before: physicalAuditSnapshot(beforeOrder),
+          entityId: observedResolution.orderId,
+          entityType: "subscription_order",
+          module: "subscription_closure",
+          operatorId: command.actorId
+        },
+        tx
+      );
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: physicalAuditSnapshot(afterContract),
+          before: physicalAuditSnapshot(beforeContract),
+          entityId: observedResolution.contractId,
+          entityType: "contract",
+          module: "subscription_closure",
+          operatorId: command.actorId
+        },
+        tx
+      );
+      await this.repository.appendPreparedEventInTransaction(
+        tx,
+        session,
+        terminalCommand,
+        terminalSourceCapability,
+        requiredAttestation(proofs, "closure-complete"),
+        this.closureAudit(command.actorId),
+        "closure-complete"
+      );
+    }
+    return Object.freeze({ outcome: appended.outcome, staleApproval: false });
+  }
+
+  private async settlementApprovalInputs(
+    tx: Prisma.TransactionClient,
+    command: ManagedSettlementInput,
+    resolution: ResolvedSubscriptionClosureSettlement,
+    settlementSource: SubscriptionClosureSource
+  ) {
+    const specifications = [
+      {
+        amountCents: resolution.waiverTotalCents,
+        approvalId: command.waiverApprovalId,
+        exceptionType: "SETTLEMENT_WAIVER" as const,
+        key: "waiver-check",
+        sourceKey: `${settlementSource.key}:waiver-current`,
+        subjectField: "settlementWaiver"
+      },
+      {
+        amountCents: resolution.writeOffTotalCents,
+        approvalId: command.writeOffApprovalId,
+        exceptionType: "SETTLEMENT_WRITE_OFF" as const,
+        key: "write-off-check",
+        sourceKey: `${settlementSource.key}:write-off-current`,
+        subjectField: "settlementWriteOff"
+      }
+    ].filter(({ amountCents }) => amountCents > 0n);
+    const approvals = [];
+    for (const specification of specifications) {
+      const approval = await tx.businessExceptionApproval.findUnique({
+        select: { id: true, version: true },
+        where: { id: specification.approvalId! }
+      });
+      if (!approval) throw serviceConflict("SETTLEMENT_APPROVAL_REQUIRED");
+      const source = physicalSource(command.closureCaseId, specification.sourceKey);
+      const authoritySnapshot = {
+        amountCents: specification.amountCents.toString(),
+        closureCaseId: resolution.closureCaseId,
+        inputSnapshotHash: resolution.inputSnapshotHash,
+        orderId: resolution.orderId,
+        resolutionType: specification.exceptionType,
+        resultHash: resolution.resultHash
+      };
+      approvals.push(
+        Object.freeze({
+          authoritySnapshot,
+          command: {
+            approvalId: approval.id,
+            exceptionType: specification.exceptionType,
+            expectedVersion: approval.version,
+            expiredAt: command.occurredAt,
+            expiryReason: "Authoritative settlement facts changed.",
+            source,
+            subject: {
+              subjectField: specification.subjectField,
+              subjectId: command.closureCaseId,
+              subjectType: "SETTLEMENT_CASE" as const
+            }
+          },
+          key: specification.key,
+          source
+        })
+      );
+    }
+    return approvals;
   }
 
   async releaseManagedReturnInventory(
@@ -2989,6 +3399,283 @@ function requiredAttestation(
   return attestation;
 }
 
+const MANAGED_SETTLEMENT_INPUT_KEYS = new Set([
+  "actorId",
+  "closureCaseId",
+  "idempotencyKey",
+  "occurredAt",
+  "waiverApprovalId",
+  "writeOffApprovalId"
+]);
+
+function normalizeManagedSettlementInput(input: ManagedSettlementInput): ManagedSettlementInput {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some((key) => !MANAGED_SETTLEMENT_INPUT_KEYS.has(key))
+  ) {
+    throw settlementBadRequest("SETTLEMENT_CLIENT_FACTS_FORBIDDEN");
+  }
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (!idempotencyKey || idempotencyKey.length > 220) {
+    throw settlementBadRequest("SETTLEMENT_CLIENT_FACTS_FORBIDDEN");
+  }
+  return Object.freeze({
+    actorId: settlementUuid(input.actorId),
+    closureCaseId: settlementUuid(input.closureCaseId),
+    idempotencyKey,
+    occurredAt: validSettlementDate(input.occurredAt),
+    waiverApprovalId: nullableSettlementUuid(input.waiverApprovalId),
+    writeOffApprovalId: nullableSettlementUuid(input.writeOffApprovalId)
+  });
+}
+
+function settlementRevisionCommand(
+  command: ManagedSettlementInput,
+  closureCase: Readonly<{
+    currentSettlementRevision: Readonly<{
+      finalizedAt?: Date | string | null;
+      finalizedBy?: string | null;
+    }> | null;
+    currentSettlementRevisionId: string | null;
+    version: number;
+  }>,
+  resolution: ResolvedSubscriptionClosureSettlement,
+  source: SubscriptionClosureSource,
+  targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
+  recordedAt: Date | null
+): AppendSubscriptionClosureSettlementCommand {
+  const predecessor = closureCase.currentSettlementRevision;
+  const finalizedAt =
+    targetStage === "PROPOSED"
+      ? null
+      : targetStage === "FINALIZED"
+        ? command.occurredAt
+        : predecessor?.finalizedAt
+          ? new Date(predecessor.finalizedAt)
+          : null;
+  const finalizedBy =
+    targetStage === "PROPOSED"
+      ? null
+      : targetStage === "FINALIZED"
+        ? command.actorId
+        : (predecessor?.finalizedBy ?? null);
+  return Object.freeze({
+    actorId: command.actorId,
+    amountDueCents: resolution.amountDueCents,
+    amountRefundableCents: resolution.amountRefundableCents,
+    billInputSnapshot: resolution.billInputSnapshot,
+    closureCaseId: command.closureCaseId,
+    costTotalCents: resolution.costTotalCents,
+    depositAppliedCents: resolution.depositAppliedCents,
+    depositInputSnapshot: resolution.depositInputSnapshot,
+    depositRefundCents: resolution.depositRefundCents,
+    expectedCurrentRevisionId: closureCase.currentSettlementRevisionId,
+    expectedVersion: closureCase.version,
+    finalizedAt,
+    finalizedBy,
+    ledgerInputSnapshot: resolution.ledgerInputSnapshot,
+    managedOccurredAt: command.occurredAt,
+    paidTotalCents: resolution.paidTotalCents,
+    ...(recordedAt ? { recordedAt } : {}),
+    receivableTotalCents: resolution.receivableTotalCents,
+    responsibilitySnapshot: resolution.responsibilitySnapshot,
+    resultSnapshot: resolution.resultSnapshot,
+    settledAt: targetStage === "SETTLED" ? command.occurredAt : null,
+    settledBy: targetStage === "SETTLED" ? command.actorId : null,
+    settlementType: "FINAL",
+    source,
+    stage: targetStage,
+    waiverApprovalId: command.waiverApprovalId,
+    waiverTotalCents: resolution.waiverTotalCents,
+    writeOffApprovalId: command.writeOffApprovalId,
+    writeOffTotalCents: resolution.writeOffTotalCents
+  });
+}
+
+function assertSettlementCase(
+  closureCase: unknown,
+  resolution: ResolvedSubscriptionClosureSettlement
+): asserts closureCase is Readonly<{
+  closureType: string;
+  contractId: string;
+  currentSettlementRevision: Readonly<{
+    finalizedAt?: Date | string | null;
+    finalizedBy?: string | null;
+    inputSnapshotHash?: string;
+    resultHash?: string;
+    stage: string;
+  }> | null;
+  currentSettlementRevisionId: string | null;
+  customerId: string;
+  finalDisposition: string;
+  id: string;
+  orderId: string;
+  physicalControlMode: string;
+  status: string;
+  vehicleId: string;
+  version: number;
+}> {
+  if (!closureCase || typeof closureCase !== "object") {
+    throw serviceConflict("SETTLEMENT_STATUS_CONFLICT");
+  }
+  const candidate = closureCase as Record<string, unknown>;
+  if (
+    candidate.id !== resolution.closureCaseId ||
+    candidate.orderId !== resolution.orderId ||
+    candidate.contractId !== resolution.contractId ||
+    candidate.customerId !== resolution.customerId ||
+    candidate.vehicleId !== resolution.vehicleId ||
+    candidate.status !== "PENDING_SETTLEMENT" ||
+    (candidate.currentSettlementRevision as { stage?: string } | null)?.stage === "SETTLED" ||
+    !Number.isInteger(candidate.version)
+  ) {
+    throw serviceConflict("SETTLEMENT_STATUS_CONFLICT");
+  }
+}
+
+function assertSettlementPredecessor(
+  targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
+  closureCase: Readonly<{
+    currentSettlementRevision: Readonly<{
+      finalizedAt?: Date | string | null;
+      finalizedBy?: string | null;
+      inputSnapshotHash?: string;
+      resultHash?: string;
+      stage: string;
+    }> | null;
+  }>,
+  resolution: ResolvedSubscriptionClosureSettlement
+) {
+  const predecessor = closureCase.currentSettlementRevision;
+  if (targetStage === "PROPOSED") return;
+  const requiredStage = targetStage === "FINALIZED" ? "PROPOSED" : "FINALIZED";
+  if (
+    predecessor?.stage !== requiredStage ||
+    predecessor.inputSnapshotHash !== resolution.inputSnapshotHash ||
+    predecessor.resultHash !== resolution.resultHash ||
+    (targetStage === "SETTLED" && (!predecessor.finalizedBy || !predecessor.finalizedAt))
+  ) {
+    throw serviceConflict("SETTLEMENT_FACT_DRIFT");
+  }
+}
+
+function assertSettlementApprovalShape(
+  command: ManagedSettlementInput,
+  resolution: ResolvedSubscriptionClosureSettlement
+) {
+  if (
+    resolution.waiverTotalCents > 0n !== Boolean(command.waiverApprovalId) ||
+    resolution.writeOffTotalCents > 0n !== Boolean(command.writeOffApprovalId)
+  ) {
+    throw serviceConflict("SETTLEMENT_APPROVAL_REQUIRED");
+  }
+}
+
+function settlementTerminalStatus(closureCase: Readonly<{ finalDisposition: string }>) {
+  return closureCase.finalDisposition === "COMPLETE"
+    ? ("COMPLETED" as const)
+    : ("TERMINATED" as const);
+}
+
+async function replayManagedSettlement(
+  tx: Prisma.TransactionClient,
+  command: ManagedSettlementInput,
+  targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
+  source: SubscriptionClosureSource
+) {
+  const receipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+    select: { commandType: true, outcomeSnapshot: true, payloadSnapshot: true },
+    where: {
+      sourceType_sourceId_sourceKey: {
+        sourceId: source.id,
+        sourceKey: source.key,
+        sourceType: source.type
+      }
+    }
+  });
+  if (!receipt) return null;
+  const payload = receipt.payloadSnapshot as Record<string, unknown>;
+  if (
+    receipt.commandType !== "CREATE_SETTLEMENT_REVISION" ||
+    payload.actorId !== command.actorId ||
+    payload.closureCaseId !== command.closureCaseId ||
+    payload.managedOccurredAt !== command.occurredAt.toISOString() ||
+    payload.stage !== targetStage ||
+    (payload.waiverApprovalId ?? null) !== command.waiverApprovalId ||
+    (payload.writeOffApprovalId ?? null) !== command.writeOffApprovalId ||
+    (targetStage === "FINALIZED" && payload.finalizedAt !== command.occurredAt.toISOString()) ||
+    (targetStage === "SETTLED" && payload.settledAt !== command.occurredAt.toISOString())
+  ) {
+    throw closureSourceConflict();
+  }
+  if (targetStage === "SETTLED") {
+    const terminalSource = physicalSource(
+      command.closureCaseId,
+      `${command.idempotencyKey}:closure`
+    );
+    const terminalReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+      select: { commandType: true },
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceId: terminalSource.id,
+          sourceKey: terminalSource.key,
+          sourceType: terminalSource.type
+        }
+      }
+    });
+    if (terminalReceipt?.commandType !== "TRANSITION_CASE") throw closureSourceConflict();
+  }
+  return deepFreezeReceipt(
+    receipt.outcomeSnapshot
+  ) as unknown as SubscriptionClosureSettlementSnapshot;
+}
+
+function settlementCaseIdentity(value: unknown) {
+  if (!value || typeof value !== "object") return { missing: true };
+  const candidate = value as Record<string, unknown>;
+  return {
+    contractId: candidate.contractId,
+    currentSettlementRevisionId: candidate.currentSettlementRevisionId,
+    customerId: candidate.customerId,
+    id: candidate.id,
+    orderId: candidate.orderId,
+    status: candidate.status,
+    vehicleId: candidate.vehicleId,
+    version: candidate.version
+  };
+}
+
+function settlementUuid(value: unknown) {
+  if (typeof value !== "string") throw settlementBadRequest("SETTLEMENT_CLIENT_FACTS_FORBIDDEN");
+  const normalized = value.trim().toLowerCase();
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)
+  ) {
+    throw settlementBadRequest("SETTLEMENT_CLIENT_FACTS_FORBIDDEN");
+  }
+  return normalized;
+}
+
+function nullableSettlementUuid(value: unknown): string | null {
+  return value === null || value === undefined ? null : settlementUuid(value);
+}
+
+function validSettlementDate(value: unknown) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw settlementBadRequest("SETTLEMENT_CLIENT_FACTS_FORBIDDEN");
+  }
+  return new Date(value);
+}
+
+function settlementBadRequest(code: "SETTLEMENT_CLIENT_FACTS_FORBIDDEN") {
+  return new BadRequestException({
+    code: SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE[code],
+    message: "Settlement totals, hashes, and snapshots are server-resolved facts."
+  });
+}
+
 function isP0ManagedReturnMetadata(value: Prisma.JsonValue | null) {
   if (!value || Array.isArray(value) || typeof value !== "object") return false;
   const marker = value.p0ReturnInbound;
@@ -3063,6 +3750,27 @@ function sameAuthority(left: NormalExpiryAuthority, right: NormalExpiryAuthority
 async function readDatabaseClock(tx: Prisma.TransactionClient) {
   const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
     SELECT clock_timestamp() AS "now"
+  `);
+  const now = rows[0]?.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw serviceConflict("CLOCK_UNAVAILABLE");
+  }
+  return now;
+}
+
+async function readSettlementEventClock(tx: Prisma.TransactionClient, closureCaseId: string) {
+  const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
+    SELECT GREATEST(
+      clock_timestamp(),
+      COALESCE(
+        (
+          SELECT MAX("occurred_at")
+          FROM "subscription_closure_event"
+          WHERE "closure_case_id" = ${closureCaseId}::uuid
+        ),
+        '-infinity'::timestamptz
+      )
+    ) AS "now"
   `);
   const now = rows[0]?.now;
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {

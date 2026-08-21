@@ -6,6 +6,7 @@ import {
   SUBSCRIPTION_CLOSURE_ERROR_CODE,
   SubscriptionClosureRepository,
   subscriptionClosureDocumentAuthorityRequirement,
+  subscriptionClosureSettlementAuthorityRequirement,
   type SubscriptionClosureAuthorityLock
 } from "../src/subscription-closure/subscription-closure.repository";
 
@@ -158,6 +159,50 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
         }
       ),
       "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+  });
+
+  it("binds settlement attestation to the normalized command and exact financial lock set", async () => {
+    const database = fakeTransaction();
+    const repository = new SubscriptionClosureRepository();
+    const session = repository.createAuthoritySessionInTransaction(database.tx);
+    const financialLock = {
+      id: UUIDS.predecessor,
+      mode: "UPDATE" as const,
+      table: "vehicle_cost_ledger_entry" as const
+    };
+    const requirement = repository.bindAuthorityRequirement(
+      session,
+      subscriptionClosureSettlementAuthorityRequirement(
+        proposedSettlementCommand(),
+        [financialLock],
+        "settlement-proposed"
+      )
+    );
+    const attestations = await repository.prepareAuthorityInTransaction(
+      database.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+
+    await expect(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        session,
+        attestations.get("settlement-proposed")!,
+        subscriptionClosureSettlementAuthorityRequirement(
+          proposedSettlementCommand(),
+          [financialLock],
+          "settlement-proposed"
+        )
+      )
+    ).resolves.toBeUndefined();
+    expect(database.authorityLocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: "subscription_closure_case" }),
+        expect.objectContaining({ table: "vehicle_cost_ledger_entry" })
+      ])
     );
   });
 

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ASSET_ACCOUNTING_ERROR_CODE,
   AssetAccountingRepository,
+  businessExceptionSubjectLockIdentity,
   type AppendCostEntryCommand,
   type DecideExceptionApprovalCommand,
   type ExpireExceptionApprovalCommand,
@@ -26,6 +27,7 @@ import {
 } from "../src/asset-accounting/asset-accounting.service";
 import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
 const FIXTURE_PREFIX = `S1CC${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -2288,6 +2290,106 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
       await holderUsable.promise;
     } finally {
       release.resolve();
+      await holder;
+    }
+  });
+
+  it("executes the coordinator-prepared current approval check without reacquiring the held subject advisory lock", async () => {
+    const service = realService(prisma);
+    const requestRepositoryCommand = requestApprovalCommand(fixture, "prepared-approval-request");
+    const requestCommand = omitFields(requestRepositoryCommand, "authoritySnapshot", "requestedBy");
+    const requested = await readCommitted(prisma, (tx) =>
+      service.requestApprovalInTransaction(
+        tx,
+        requestCommand,
+        serviceContext(
+          fixture.userId,
+          ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+          requestCommand.source.key
+        ),
+        async () => requestRepositoryCommand.authoritySnapshot
+      )
+    );
+    const decisionRepositoryCommand = decideApprovalCommand(
+      fixture,
+      requested.id,
+      "prepared-approval-decision"
+    );
+    const decisionCommand = omitFields(decisionRepositoryCommand, "authoritySnapshot", "decidedBy");
+    const approved = await readCommitted(prisma, (tx) =>
+      service.decideApprovalInTransaction(
+        tx,
+        decisionCommand,
+        serviceContext(
+          fixture.deciderId,
+          ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+          decisionCommand.source.key
+        ),
+        async () => requestRepositoryCommand.authoritySnapshot
+      )
+    );
+    const repositoryCommand = requireCurrentCommand(
+      fixture,
+      approved.id,
+      approved.version,
+      "prepared-approval-current",
+      requestRepositoryCommand.authoritySnapshot
+    );
+    const command = omitFields(repositoryCommand, "authoritySnapshot", "expiredBy");
+    const context = serviceContext(
+      fixture.deciderId,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      command.source.key
+    );
+    const authoritySnapshot = requestRepositoryCommand.authoritySnapshot;
+    const subjectLocked = deferred<void>();
+    const releaseSubject = deferred<void>();
+    const holder = readCommitted(prisma, async (tx) => {
+      const identity = businessExceptionSubjectLockIdentity(command.subject);
+      await tx.$queryRaw(
+        Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${identity}, 0))`
+      );
+      subjectLocked.resolve();
+      await releaseSubject.promise;
+    });
+    await subjectLocked.promise;
+    try {
+      const valid = await readCommitted(prisma, async (tx) => {
+        await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '750ms'");
+        const sourceCapability = await service.prepareCallerOwnedTransaction(tx, command.source);
+        const coordinator = new SubscriptionClosureRepository();
+        const session = coordinator.createAuthoritySessionInTransaction(tx);
+        const requirement = service.approvedExceptionAuthorityRequirement(
+          session,
+          command,
+          context,
+          authoritySnapshot
+        );
+        const proofs = await coordinator.prepareAuthorityInTransaction(
+          tx,
+          session,
+          requirement.locks,
+          [requirement]
+        );
+        const prepared = await service.attestPreparedApprovedExceptionInTransaction(
+          tx,
+          session,
+          command,
+          context,
+          authoritySnapshot,
+          sourceCapability,
+          proofs.get("approved-exception")!
+        );
+        const result = await service.requirePreparedApprovedExceptionInTransaction(tx, prepared);
+        await expectCode(
+          service.requirePreparedApprovedExceptionInTransaction(tx, prepared),
+          ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+        );
+        return result;
+      });
+      expect(valid).toBe(true);
+    } finally {
+      releaseSubject.resolve();
       await holder;
     }
   });

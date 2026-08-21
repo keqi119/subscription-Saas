@@ -513,6 +513,113 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   });
 
+  it.each(["task", "file"] as const)(
+    "rejects %s drift committed after replay precheck and before coordinator locks",
+    async (target) => {
+      const fixture = await createManagedExpiryFixture(prisma);
+      const initialService = createGovernedExpiryService(prisma);
+      const barrier = createBarrier();
+      try {
+        await initialService.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+        const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+          where: { orderId: fixture.orderId }
+        });
+        const revision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
+          where: {
+            closureCaseId: closureCase.id,
+            documentType: "RETURN_MANIFEST",
+            revisionNumber: 1
+          }
+        });
+        const baseline = await snapshotManagedExpiryTruth(prisma, fixture);
+        const replayService = createGovernedExpiryService(
+          hookTransaction(prisma, "fileObject", "findUnique", barrier, "after")
+        );
+        const replayPromise = replayService
+          .expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
+          .then(
+            (value) => ({ status: "fulfilled" as const, value }),
+            (reason) => ({ reason, status: "rejected" as const })
+          );
+        await barrier.entered;
+
+        if (target === "task") {
+          const task = await prisma.contractESignTask.findUniqueOrThrow({
+            where: { id: revision.contractESignTaskId }
+          });
+          await prisma.$transaction(async (tx) => {
+            await tx.contractESignTask.update({
+              data: { documentObjectKey: `${task.documentObjectKey}.post-precheck-drift` },
+              where: { id: task.id }
+            });
+          });
+        } else {
+          await prisma.$transaction(async (tx) => {
+            await tx.fileObject.update({
+              data: { mimeType: "application/octet-stream" },
+              where: { id: revision.sourceFileId }
+            });
+          });
+        }
+        barrier.release();
+
+        await expect(replayPromise).resolves.toMatchObject({
+          reason: {
+            response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+            status: 409
+          },
+          status: "rejected"
+        });
+        if (target === "task") {
+          await expect(
+            prisma.contractESignTask.findUniqueOrThrow({
+              select: { documentObjectKey: true },
+              where: { id: revision.contractESignTaskId }
+            })
+          ).resolves.toMatchObject({
+            documentObjectKey: expect.stringContaining(".post-precheck-drift")
+          });
+        } else {
+          await expect(
+            prisma.fileObject.findUniqueOrThrow({
+              select: { mimeType: true },
+              where: { id: revision.sourceFileId }
+            })
+          ).resolves.toEqual({ mimeType: "application/octet-stream" });
+        }
+        await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
+      } finally {
+        barrier.release();
+        await cleanupManagedExpiryFixture(prisma, fixture);
+      }
+    }
+  );
+
+  it("exactly replays when no drift occurs after replay precheck", async () => {
+    const fixture = await createManagedExpiryFixture(prisma);
+    const initialService = createGovernedExpiryService(prisma);
+    const barrier = createBarrier();
+    try {
+      await initialService.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const baseline = await snapshotManagedExpiryTruth(prisma, fixture);
+      const replayService = createGovernedExpiryService(
+        hookTransaction(prisma, "fileObject", "findUnique", barrier, "after")
+      );
+      const replayPromise = replayService.expireSegment(
+        fixture.segmentId,
+        new Date("2026-08-20T16:00:01.000Z")
+      );
+      await barrier.entered;
+      barrier.release();
+
+      await expect(replayPromise).resolves.toMatchObject({ outcome: "DUPLICATE" });
+      await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
+    } finally {
+      barrier.release();
+      await cleanupManagedExpiryFixture(prisma, fixture);
+    }
+  });
+
   it("replays the immutable actor and revision one after actor and manifest successors change", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
     const service = createGovernedExpiryService(prisma);
@@ -2023,7 +2130,8 @@ function hookTransaction(
   prisma: PrismaService,
   model: string,
   method: string,
-  barrier: ReturnType<typeof createBarrier>
+  barrier: ReturnType<typeof createBarrier>,
+  timing: "after" | "before" = "before"
 ) {
   let invoked = false;
   return {
@@ -2045,12 +2153,18 @@ function hookTransaction(
                     : delegateValue;
                 }
                 return async (...args: unknown[]) => {
-                  if (!invoked) {
+                  if (!invoked && timing === "before") {
                     invoked = true;
                     barrier.enter();
                     await barrier.released;
                   }
-                  return delegateValue.apply(delegate, args);
+                  const result = await delegateValue.apply(delegate, args);
+                  if (!invoked && timing === "after") {
+                    invoked = true;
+                    barrier.enter();
+                    await barrier.released;
+                  }
+                  return result;
                 };
               }
             });

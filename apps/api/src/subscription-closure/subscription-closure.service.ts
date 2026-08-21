@@ -443,6 +443,16 @@ export class SubscriptionClosureService {
       where: { orderId: authority.orderId }
     });
     if (lockedCase?.id !== currentCase?.id) throw serviceConflict("AUTHORITY_MISMATCH");
+    if (revisionOne) {
+      await assertReturnManifestEsignAuthority(
+        tx,
+        manifestCommand,
+        authority,
+        documentSource,
+        manifestDocumentSnapshot,
+        null
+      );
+    }
     if (manifestPlan.creation) {
       const manifestAuthorities = await createManifestAuthoritiesInTransaction(
         tx,

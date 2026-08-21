@@ -251,6 +251,8 @@ describe("SubscriptionClosureService normal expiry", () => {
       ])
     );
     expect(timeline.filter((entry) => entry === "authority")).toHaveLength(1);
+    expect(tx.contractESignTask.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.fileObject.findUnique).not.toHaveBeenCalled();
   });
 
   it("replays immutable manifest revision one after the current family advances", async () => {
@@ -435,6 +437,11 @@ describe("SubscriptionClosureService normal expiry", () => {
       expect.anything(),
       authority.get("manifest-create"),
       expect.any(Function)
+    );
+    expect(tx.contractESignTask.findMany).toHaveBeenCalledTimes(2);
+    expect(tx.fileObject.findUnique).toHaveBeenCalledTimes(2);
+    expect(tx.fileObject.findUnique.mock.invocationCallOrder[1]).toBeGreaterThan(
+      repository.prepareAuthorityInTransaction.mock.invocationCallOrder[0]!
     );
   });
 

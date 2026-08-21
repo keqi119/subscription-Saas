@@ -2674,6 +2674,7 @@ model User {
   generatedSubscriptionClosureDocuments       SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentGeneratedBy")
   signedSubscriptionClosureDocuments          SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentSignedBy")
   archivedSubscriptionClosureDocuments        SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentArchivedBy")
+  updatedSubscriptionClosureCurrentDocuments  SubscriptionClosureCurrentDocument[] @relation("SubscriptionClosureCurrentDocumentUpdatedBy")
   createdSubscriptionClosureSettlements       SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementCreatedBy")
   finalizedSubscriptionClosureSettlements     SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementFinalizedBy")
   settledSubscriptionClosureSettlements       SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementSettledBy")
@@ -4061,6 +4062,7 @@ model SubscriptionClosureCase {
   createSourceKey String @map("create_source_key") @db.VarChar(255)
   events SubscriptionClosureEvent[]
   documentRevisions SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentRevisions")
+  currentDocuments SubscriptionClosureCurrentDocument[]
   settlementRevisions SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementRevisions")
   commandReceipts SubscriptionClosureCommandReceipt[]
   createdBy String @map("created_by") @db.Uuid
@@ -4107,6 +4109,7 @@ model SubscriptionClosureDocumentRevision {
   closureCaseId String @map("closure_case_id") @db.Uuid
   closureCase SubscriptionClosureCase @relation("SubscriptionClosureDocumentRevisions", fields: [closureCaseId], references: [id], onDelete: Restrict)
   currentForCase SubscriptionClosureCase? @relation("SubscriptionClosureCurrentDocumentRevision")
+  currentProjection SubscriptionClosureCurrentDocument?
   revisionNumber Int @map("revision_number")
   documentType SubscriptionClosureDocumentType @map("document_type")
   stage SubscriptionClosureDocumentStage
@@ -4141,7 +4144,7 @@ model SubscriptionClosureDocumentRevision {
   archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  @@unique([closureCaseId, revisionNumber], map: "subscription_closure_document_revision_case_revision_key")
+  @@unique([closureCaseId, documentType, revisionNumber], map: "subscription_closure_document_family_revision_key")
   @@unique([supersedesRevisionId], map: "subscription_closure_document_supersedes_key")
   @@unique([sourceType, sourceId, sourceKey], map: "subscription_closure_document_revision_source_key")
   @@index([vehicleReturnId], map: "subscription_closure_document_revision_vehicle_return_id_idx")
@@ -4150,6 +4153,21 @@ model SubscriptionClosureDocumentRevision {
   @@index([sourceFileId], map: "subscription_closure_document_revision_source_file_id_idx")
   @@index([signedFileId], map: "subscription_closure_document_revision_signed_file_id_idx")
   @@map("subscription_closure_document_revision")
+}
+
+model SubscriptionClosureCurrentDocument {
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation(fields: [closureCaseId], references: [id], onDelete: Restrict)
+  documentType SubscriptionClosureDocumentType @map("document_type")
+  documentRevisionId String @unique(map: "subscription_closure_current_document_revision_id_key") @map("document_revision_id") @db.Uuid
+  documentRevision SubscriptionClosureDocumentRevision @relation(fields: [documentRevisionId], references: [id], onDelete: Restrict)
+  updatedBy String @map("updated_by") @db.Uuid
+  updater User @relation("SubscriptionClosureCurrentDocumentUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([closureCaseId, documentType], map: "subscription_closure_current_document_pkey")
+  @@index([updatedBy], map: "subscription_closure_current_document_updated_by_idx")
+  @@map("subscription_closure_current_document")
 }
 
 model SubscriptionClosureSettlementRevision {

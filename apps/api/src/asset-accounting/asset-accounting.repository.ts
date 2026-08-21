@@ -531,7 +531,8 @@ export class AssetAccountingRepository {
   async appendCostEntry(
     tx: Prisma.TransactionClient,
     command: AppendCostEntryCommand,
-    capability?: AssetAccountingCallerOwnedCommandCapability
+    capability?: AssetAccountingCallerOwnedCommandCapability,
+    authorityAlreadyLocked = false
   ): Promise<AssetAccountingCostCommandOutcome> {
     const capabilityState = capability
       ? this.takeCallerOwnedCommandCapability(capability)
@@ -547,11 +548,13 @@ export class AssetAccountingRepository {
     if (replay) return replay;
 
     const authoritativeOrderId = await contractAuthoritativeOrderId(tx, normalized.contractId);
-    await lockAuthorityRows(
-      tx,
-      appendAuthorityLocks(normalized, authoritativeOrderId),
-      capabilityState ? CALLER_OWNED_AUTHORITY_RANK : undefined
-    );
+    if (!authorityAlreadyLocked) {
+      await lockAuthorityRows(
+        tx,
+        appendAuthorityLocks(normalized, authoritativeOrderId),
+        capabilityState ? CALLER_OWNED_AUTHORITY_RANK : undefined
+      );
+    }
     await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
 
     try {

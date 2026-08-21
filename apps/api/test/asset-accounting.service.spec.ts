@@ -30,6 +30,7 @@ import type {
   BusinessExceptionApprovalSnapshot,
   VehicleCostLedgerEntrySnapshot
 } from "../src/asset-accounting/asset-accounting.types";
+import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 
 const IDS = {
   actor: "00000000-0000-4000-8000-000000000101",
@@ -46,6 +47,53 @@ const CONFIRMED_AT = new Date("2026-08-20T10:00:00.000Z");
 const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
 
 describe("AssetAccountingService", () => {
+  it("executes one coordinator-attested append without authority relock and rejects reuse", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("prepared-inspection-cost");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+    const requirement = harness.service.appendCostAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      { authoritativeOrderId: IDS.order }
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedAppendCostInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      sourceCapability,
+      { authoritativeOrderId: IDS.order },
+      proofs.get("inspection-cost")!
+    );
+
+    await harness.service.appendPreparedCostInTransaction(harness.tx, prepared);
+
+    expect(harness.repository.operations).toEqual(["source-lock", "repository-append"]);
+    expect(harness.repository.lastAuthorityAlreadyLocked).toBe(true);
+    await expectServiceCode(
+      harness.service.appendPreparedCostInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
   it("appends through one caller-owned capability without opening a nested transaction", async () => {
     const harness = serviceHarness();
     const command = appendServiceCommand("caller-owned-append");
@@ -643,6 +691,30 @@ function serviceHarness() {
     workOrderExists: true
   };
   const tx = {
+    $queryRaw: async (query: { strings: readonly string[]; values?: readonly unknown[] }) => {
+      const sql = query.strings.join("?");
+      if (sql.includes("transaction_isolation")) {
+        return [{ isolationLevel: "read committed", transactionId: "asset-accounting-tx" }];
+      }
+      if (sql.includes("txid_current")) {
+        return [{ transactionId: "asset-accounting-tx" }];
+      }
+      if (sql.includes('AS "authorityTable"')) {
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        for (let index = 0; index < (query.values?.length ?? 0); index += 2) {
+          rows.push({
+            authorityTable: String(query.values![index]),
+            requestedId: String(query.values![index + 1])
+          });
+        }
+        return rows;
+      }
+      return [
+        {
+          id: query.values?.find((value): value is string => typeof value === "string") ?? IDS.order
+        }
+      ];
+    },
     assetAccountingCommandReceipt: {
       findUnique: async () => (harness.receiptExists ? { id: randomUUID() } : null)
     },
@@ -715,6 +787,7 @@ class FakeRepository {
   approvals: BusinessExceptionApprovalSnapshot[] = [approvalSnapshot()];
   lastApprovalFilters?: Record<string, unknown>;
   lastAppendActor?: string;
+  lastAuthorityAlreadyLocked?: boolean;
   lastAppendSource?: unknown;
   lastExpire?: ExpireExceptionApprovalCommand;
   lastRequest?: RequestExceptionApprovalCommand;
@@ -738,11 +811,14 @@ class FakeRepository {
 
   async appendCostEntry(
     _tx: Prisma.TransactionClient,
-    command: { actorId: string; source: unknown }
+    command: { actorId: string; source: unknown },
+    _capability?: unknown,
+    authorityAlreadyLocked?: boolean
   ) {
     this.operations.push("repository-append");
     this.lastAppendActor = command.actorId;
     this.lastAppendSource = command.source;
+    this.lastAuthorityAlreadyLocked = authorityAlreadyLocked;
     return this.appendOutcome;
   }
 

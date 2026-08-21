@@ -23,6 +23,12 @@ import { isDeepStrictEqual } from "node:util";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthoritySession
+} from "../subscription-closure/subscription-closure.repository";
+import {
   AssetFactsRepository,
   type AssetFactCommandPhase,
   type AssetFactPeriodKind,
@@ -86,6 +92,25 @@ type AssetFactsTransactionCapabilityState = Readonly<{
   repositoryCapability: AssetFactsCallerOwnedCommandCapability;
   source: Readonly<{ id: string; key: string; type: string }>;
   transaction: Prisma.TransactionClient;
+}>;
+declare const assetFactsPreparedCloseCapabilityBrand: unique symbol;
+export type AssetFactsPreparedCloseCapability = Readonly<{
+  [assetFactsPreparedCloseCapabilityBrand]: true;
+}>;
+type AssetFactsPreparedCloseCapabilityState = Readonly<{
+  command: CloseSubscriptionPeriodDto;
+  context: AssetFactCommandContext;
+  repositoryCapability: AssetFactsCallerOwnedCommandCapability;
+  transaction: Prisma.TransactionClient;
+}>;
+
+export type AssetFactsSubscriptionCloseAuthority = Readonly<{
+  contractId: string | null;
+  contractSegmentId: string | null;
+  customerId: string;
+  orderId: string;
+  periodId: string;
+  vehicleId: string;
 }>;
 
 const VEHICLE_SELECT = {
@@ -175,9 +200,14 @@ type OwnershipAuthority = {
 
 @Injectable()
 export class AssetFactsService {
+  private readonly closureAuthorityConsumer = Object.freeze({});
   private readonly callerOwnedCapabilities = new WeakMap<
     AssetFactsTransactionCapability,
     AssetFactsTransactionCapabilityState
+  >();
+  private readonly preparedCloseCapabilities = new WeakMap<
+    AssetFactsPreparedCloseCapability,
+    AssetFactsPreparedCloseCapabilityState
   >();
 
   constructor(
@@ -231,6 +261,108 @@ export class AssetFactsService {
     return this.closeSubscriptionPeriodCommand(tx, dto, context, repositoryCapability);
   }
 
+  subscriptionCloseAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: CloseSubscriptionPeriodDto,
+    authority: AssetFactsSubscriptionCloseAuthority
+  ) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      {
+        command: { authority, command: command as never },
+        key: "physical-period-close",
+        locks: [
+          { id: authority.orderId, mode: "UPDATE" as const, table: "subscription_order" as const },
+          { id: authority.vehicleId, mode: "UPDATE" as const, table: "vehicle" as const },
+          ...(authority.contractId
+            ? [{ id: authority.contractId, mode: "SHARE" as const, table: "contract" as const }]
+            : []),
+          ...(authority.contractSegmentId
+            ? [
+                {
+                  id: authority.contractSegmentId,
+                  mode: "SHARE" as const,
+                  table: "subscription_contract_segment" as const
+                }
+              ]
+            : []),
+          {
+            id: authority.periodId,
+            mode: "UPDATE" as const,
+            table: "vehicle_subscription_period" as const
+          },
+          { id: authority.customerId, mode: "SHARE" as const, table: "customer" as const }
+        ]
+      },
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  async attestSubscriptionCloseAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: CloseSubscriptionPeriodDto,
+    context: AssetFactCommandContext,
+    sourceCapability: AssetFactsTransactionCapability,
+    authority: AssetFactsSubscriptionCloseAuthority,
+    authorityAttestation: ClosureAuthorityAttestation
+  ): Promise<AssetFactsPreparedCloseCapability> {
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        authoritySession,
+        authorityAttestation,
+        () => this.subscriptionCloseAuthorityRequirement(authoritySession, command, authority),
+        null
+      );
+    } catch {
+      throw new ConflictException({
+        code: ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-fact transaction capability is invalid."
+      });
+    }
+    const state = this.takeCallerOwnedCapability(sourceCapability);
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      state,
+      tx,
+      "subscription",
+      "end",
+      command.source
+    );
+    const prepared = Object.freeze({}) as AssetFactsPreparedCloseCapability;
+    this.preparedCloseCapabilities.set(
+      prepared,
+      Object.freeze({
+        command: structuredClone(command),
+        context: Object.freeze({ ...context }),
+        repositoryCapability,
+        transaction: tx
+      })
+    );
+    return prepared;
+  }
+
+  async closePreparedSubscriptionPeriodInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetFactsPreparedCloseCapability
+  ) {
+    const state = this.preparedCloseCapabilities.get(capability);
+    this.preparedCloseCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw new ConflictException({
+        code: ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-fact transaction capability is invalid."
+      });
+    }
+    return this.closeSubscriptionPeriodCommand(
+      tx,
+      state.command,
+      state.context,
+      state.repositoryCapability,
+      true
+    );
+  }
+
   async openSubscriptionPeriod(dto: OpenSubscriptionPeriodDto, context: AssetFactCommandContext) {
     const startedAt = parseDate(dto.startedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
@@ -279,7 +411,8 @@ export class AssetFactsService {
     tx: Prisma.TransactionClient,
     dto: CloseSubscriptionPeriodDto,
     context: AssetFactCommandContext,
-    repositoryCapability?: AssetFactsCallerOwnedCommandCapability
+    repositoryCapability?: AssetFactsCallerOwnedCommandCapability,
+    authorityAlreadyLocked = false
   ) {
     const endedAt = parseDate(dto.endedAt);
     const confirmedAt = parseDate(dto.confirmedAt);
@@ -303,7 +436,7 @@ export class AssetFactsService {
           "Subscription period not found."
         );
       }
-      await lockSubscriptionCloseAuthorityRows(tx, seed);
+      if (!authorityAlreadyLocked) await lockSubscriptionCloseAuthorityRows(tx, seed);
       period = await tx.vehicleSubscriptionPeriod.findFirst({ where: { id: dto.periodId } });
     }
     if (!period) {

@@ -2619,6 +2619,35 @@ export class OrderService {
     assertReturnChecklistConfirmed(dto);
 
     const returnedAt = dto.returnedAt ? parseDateTime(dto.returnedAt, "returnedAt") : new Date();
+    const managedReceipt = this.subscriptionClosureService
+      ? await this.subscriptionClosureService.confirmManagedPhysicalReceipt(
+          {
+            actorId: user.id,
+            checklist: buildReturnChecklistSnapshot(
+              dto,
+              dto.damageFound ?? (dto.damages?.length ?? 0) > 0
+            ),
+            damages: dto.damages ?? [],
+            orderId: id,
+            physicalControlMode: "VOLUNTARY_RETURN",
+            remark: dto.remark ?? null,
+            returnMileageKm: dto.returnMileageKm!,
+            returnType: dto.returnType ?? VehicleReturnType.NORMAL_RETURN,
+            returnedAt
+          },
+          context
+        )
+      : null;
+    if (managedReceipt) {
+      const managedReturn = await this.prisma.vehicleReturn.findUnique({
+        include: returnInclude,
+        where: { id: managedReceipt.vehicleReturnId }
+      });
+      if (!managedReturn || managedReturn.deletedAt) {
+        throw new ConflictException("退车事实已变化，请刷新后重试。");
+      }
+      return toReturnView(managedReturn);
+    }
     const beforeReturn = await this.prisma.vehicleReturn.findUnique({
       include: returnInclude,
       where: { orderId: id }

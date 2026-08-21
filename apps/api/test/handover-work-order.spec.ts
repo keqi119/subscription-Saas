@@ -3687,6 +3687,16 @@ function createHandoverWorkOrderHarness() {
         return [{ transactionId: "handover-capability-tx" }];
       }
       if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
+      if (sql.includes('AS "authorityTable"')) {
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        for (let index = 0; index < values.length; index += 2) {
+          rows.push({
+            authorityTable: String(values[index]),
+            requestedId: String(values[index + 1])
+          });
+        }
+        return rows;
+      }
       if (sql.includes('FROM "vehicle_handover_work_order"')) {
         if (sql.includes('WHERE "id"')) {
           return state.workOrders

@@ -10,6 +10,12 @@ import { AuditAction, Prisma } from "@prisma/client";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthoritySession
+} from "../subscription-closure/subscription-closure.repository";
+import {
   canonicalAssetAccountingJson,
   hashBusinessExceptionSnapshot,
   summarizeVehicleCostEntries
@@ -79,6 +85,19 @@ type AssetAccountingTransactionCapabilityState = Readonly<{
   repositoryCapability: AssetAccountingCallerOwnedCommandCapability;
   source: AssetAccountingSource;
   transaction: Prisma.TransactionClient;
+}>;
+declare const assetAccountingPreparedAppendCapabilityBrand: unique symbol;
+export type AssetAccountingPreparedAppendCapability = Readonly<{
+  [assetAccountingPreparedAppendCapabilityBrand]: true;
+}>;
+type AssetAccountingPreparedAppendCapabilityState = Readonly<{
+  command: AppendCostServiceCommand;
+  context: AssetAccountingCommandContext;
+  repositoryCapability: AssetAccountingCallerOwnedCommandCapability;
+  transaction: Prisma.TransactionClient;
+}>;
+export type AssetAccountingAppendAuthority = Readonly<{
+  authoritativeOrderId: string | null;
 }>;
 export type RequestApprovalServiceCommand = Omit<
   RequestExceptionApprovalCommand,
@@ -198,9 +217,14 @@ type ApprovalWriteCommand = {
 
 @Injectable()
 export class AssetAccountingService {
+  private readonly closureAuthorityConsumer = Object.freeze({});
   private readonly callerOwnedCapabilities = new WeakMap<
     AssetAccountingTransactionCapability,
     AssetAccountingTransactionCapabilityState
+  >();
+  private readonly preparedAppendCapabilities = new WeakMap<
+    AssetAccountingPreparedAppendCapability,
+    AssetAccountingPreparedAppendCapabilityState
   >();
 
   constructor(
@@ -238,6 +262,126 @@ export class AssetAccountingService {
     return this.appendCostCommand(tx, { ...command, source }, context, repositoryCapability);
   }
 
+  appendCostAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: AppendCostServiceCommand,
+    context: AssetAccountingCommandContext,
+    authority: AssetAccountingAppendAuthority,
+    key = "inspection-cost"
+  ) {
+    const actorId = context.actorId;
+    return bindSubscriptionClosureAuthorityConsumer(
+      {
+        command: { actorId, authority, command: command as never },
+        key,
+        locks: [
+          ...(command.orderId
+            ? [
+                {
+                  id: command.orderId,
+                  mode: "SHARE" as const,
+                  table: "subscription_order" as const
+                }
+              ]
+            : []),
+          ...(authority.authoritativeOrderId
+            ? [
+                {
+                  id: authority.authoritativeOrderId,
+                  mode: "SHARE" as const,
+                  table: "subscription_order" as const
+                }
+              ]
+            : []),
+          { id: command.vehicleId, mode: "SHARE" as const, table: "vehicle" as const },
+          ...(command.contractId
+            ? [{ id: command.contractId, mode: "SHARE" as const, table: "contract" as const }]
+            : []),
+          ...(command.workOrderId
+            ? [
+                {
+                  id: command.workOrderId,
+                  mode: "SHARE" as const,
+                  table: "asset_work_order" as const
+                }
+              ]
+            : []),
+          ...(command.assetOwnerId
+            ? [{ id: command.assetOwnerId, mode: "SHARE" as const, table: "asset_owner" as const }]
+            : []),
+          ...(command.evidenceId
+            ? [
+                {
+                  id: command.evidenceId,
+                  mode: "SHARE" as const,
+                  table: "asset_work_order_evidence" as const
+                }
+              ]
+            : []),
+          ...(command.customerId
+            ? [{ id: command.customerId, mode: "SHARE" as const, table: "customer" as const }]
+            : []),
+          ...(actorId ? [{ id: actorId, mode: "SHARE" as const, table: "user" as const }] : [])
+        ]
+      },
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  async attestPreparedAppendCostInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: AppendCostServiceCommand,
+    context: AssetAccountingCommandContext,
+    sourceCapability: AssetAccountingTransactionCapability,
+    authority: AssetAccountingAppendAuthority,
+    authorityAttestation: ClosureAuthorityAttestation,
+    key = "inspection-cost"
+  ): Promise<AssetAccountingPreparedAppendCapability> {
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        authoritySession,
+        authorityAttestation,
+        () =>
+          this.appendCostAuthorityRequirement(authoritySession, command, context, authority, key),
+        null
+      );
+    } catch {
+      throw callerCapabilityInvalid();
+    }
+    const state = this.takeCallerOwnedCapability(sourceCapability);
+    const source = canonicalAssetAccountingSource(command.source);
+    const repositoryCapability = this.assertCallerOwnedCapability(state, tx, source);
+    assertWriteContext(source, context, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM);
+    const prepared = Object.freeze({}) as AssetAccountingPreparedAppendCapability;
+    this.preparedAppendCapabilities.set(prepared, {
+      command: structuredClone({ ...command, source }),
+      context: Object.freeze({ ...context, permissions: Object.freeze([...context.permissions]) }),
+      repositoryCapability,
+      transaction: tx
+    });
+    return prepared;
+  }
+
+  async appendPreparedCostInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedAppendCapability
+  ) {
+    const state = this.preparedAppendCapabilities.get(capability);
+    this.preparedAppendCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) throw callerCapabilityInvalid();
+    return this.appendCostCommand(
+      tx,
+      state.command,
+      state.context,
+      state.repositoryCapability,
+      undefined,
+      true
+    );
+  }
+
   async appendCost(
     command: AppendCostServiceCommand,
     context: AssetAccountingCommandContext
@@ -257,7 +401,8 @@ export class AssetAccountingService {
     command: AppendCostServiceCommand,
     context: AssetAccountingCommandContext,
     repositoryCapability?: AssetAccountingCallerOwnedCommandCapability,
-    preparedWriteContext?: Readonly<{ actorId: string; source: AssetAccountingSource }>
+    preparedWriteContext?: Readonly<{ actorId: string; source: AssetAccountingSource }>,
+    authorityAlreadyLocked = false
   ): Promise<PublicVehicleCostLedgerEntry> {
     const { actorId, source } =
       preparedWriteContext ??
@@ -265,7 +410,8 @@ export class AssetAccountingService {
     const result = await this.repository.appendCostEntry(
       tx,
       { ...command, actorId, source },
-      repositoryCapability
+      repositoryCapability,
+      authorityAlreadyLocked
     );
     const fact = projectCostEntry(result.outcome);
     if (result.wrote) {
@@ -723,6 +869,13 @@ export class AssetAccountingService {
       tx
     );
   }
+}
+
+function callerCapabilityInvalid() {
+  return new ConflictException({
+    code: ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+    message: "The caller-owned asset-accounting transaction capability is invalid."
+  });
 }
 
 function assertReadContext(

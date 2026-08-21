@@ -28,6 +28,112 @@ import { SubscriptionClosureRepository } from "../src/subscription-closure/subsc
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
 describe("AssetOperationsService", () => {
+  it("executes prepared physical transition and restriction without relocking", async () => {
+    const harness = createHarness();
+    const transitionSource = nextSource(harness, "prepared-physical-transition");
+    const restrictionSource = nextSource(harness, "prepared-inspection-restriction");
+    const transition = {
+      closeReason: null,
+      detailSnapshot: { physicalControl: true },
+      expectedVersion: 0,
+      occurredAt: NOW,
+      solution: null,
+      source: transitionSource,
+      targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+      workOrderId: harness.ids.workOrderId
+    };
+    const restriction = {
+      conditionsSnapshot: { releaseCondition: "inspection accepted" },
+      evidenceSnapshot: { vehicleReturnId: randomUUID() },
+      occurredAt: NOW,
+      restrictionType: VehicleOperationalRestrictionType.RETURN_INSPECTION_PENDING,
+      scopes: [VehicleOperationalRestrictionScope.INVENTORY_RELEASE],
+      severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+      source: restrictionSource,
+      startedAt: NOW,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const authority = {
+      assetOwnerId: harness.ids.assetOwnerId,
+      contractId: harness.ids.contractId,
+      customerId: harness.ids.customerId,
+      orderId: harness.ids.orderId,
+      relatedWorkOrderId: null,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const transitionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      transitionSource
+    );
+    const restrictionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      restrictionSource
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const transitionRequirement = harness.service.workOrderTransitionAuthorityRequirement(
+      session,
+      transition,
+      harness.context.actorId,
+      authority
+    );
+    const restrictionRequirement = harness.service.restrictionCreateAuthorityRequirement(
+      session,
+      restriction,
+      harness.context.actorId,
+      authority
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      [...transitionRequirement.locks, ...restrictionRequirement.locks],
+      [transitionRequirement, restrictionRequirement]
+    );
+    const preparedTransition = await harness.service.attestPreparedTransitionInTransaction(
+      harness.tx as never,
+      session,
+      transition,
+      harness.context,
+      transitionSourceCapability,
+      authority,
+      proofs.get("physical-work-order")!
+    );
+    const preparedRestriction = await harness.service.attestPreparedRestrictionCreateInTransaction(
+      harness.tx as never,
+      session,
+      restriction,
+      harness.context,
+      restrictionSourceCapability,
+      authority,
+      proofs.get("return-inspection-restriction")!
+    );
+    const authorityCount = harness.sequence.filter((item) => item.startsWith("authority:")).length;
+
+    await harness.service.transitionPreparedWorkOrderInTransaction(
+      harness.tx as never,
+      preparedTransition
+    );
+    await harness.service.createPreparedRestrictionInTransaction(
+      harness.tx as never,
+      preparedRestriction
+    );
+
+    expect(harness.repository.transitionPreparedWorkOrder).toHaveBeenCalledOnce();
+    expect(harness.repository.createPreparedRestriction).toHaveBeenCalledOnce();
+    expect(harness.sequence.filter((item) => item === "source-lock")).toHaveLength(2);
+    expect(harness.sequence.filter((item) => item.startsWith("authority:"))).toHaveLength(
+      authorityCount
+    );
+    await expect(
+      harness.service.transitionPreparedWorkOrderInTransaction(
+        harness.tx as never,
+        preparedTransition
+      )
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" } });
+  });
+
   it("rejects a foreign coordinator repository before reading or mutating asset authority", async () => {
     const harness = createHarness();
     const command = { ...fullCreateCommand(harness), assetOwnerId: null };
@@ -1567,6 +1673,19 @@ function createHarness(
         return [{ isolationLevel: "read committed", transactionId: "asset-service-tx" }];
       }
       if (sql.includes("txid_current")) return [{ transactionId: "asset-service-tx" }];
+      if (sql.includes('AS "authorityTable"')) {
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        const modes = [...sql.matchAll(/FOR (UPDATE|SHARE) NOWAIT/g)].map((match) => match[1]!);
+        for (let index = 0; index < (query.values?.length ?? 0); index += 2) {
+          const table = String(query.values![index]);
+          const id = String(query.values![index + 1]);
+          const mode = modes[index / 2]!;
+          sequence.push(`authority:${table}`);
+          lockQueries.push({ id, sql: `FROM "${table}" FOR ${mode} NOWAIT` });
+          rows.push({ authorityTable: table, requestedId: id });
+        }
+        return rows;
+      }
       const match = sql.match(/FROM "([a-z_]+)"/);
       if (match) {
         sequence.push(`authority:${match[1]}`);
@@ -1711,6 +1830,12 @@ function createHarness(
       workOrder,
       wrote: options.wrote ?? true
     })),
+    createPreparedRestriction: vi.fn(async () => ({
+      event,
+      restriction: activeRestriction,
+      workOrder,
+      wrote: options.wrote ?? true
+    })),
     getWorkOrderDetail: vi.fn(async () => ({
       evidence,
       events: [{ ...event, sequence: 2 }, event],
@@ -1719,6 +1844,7 @@ function createHarness(
     })),
     listWorkOrdersByVehicle: vi.fn(async () => [workOrder]),
     attestCallerOwnedCreateAuthority: vi.fn(async () => Object.freeze({})),
+    attestCallerOwnedWorkOrderAuthority: vi.fn(async () => Object.freeze({})),
     lockCallerOwnedCreateAuthority: vi.fn(async (_tx, command) => {
       for (const table of [
         command.orderId ? "subscription_order" : null,
@@ -1778,6 +1904,10 @@ function createHarness(
       wrote: options.wrote ?? true
     })),
     transitionWorkOrder: vi.fn(async () => {
+      sequence.push("repository-transition");
+      return { event, workOrder, wrote: options.wrote ?? true };
+    }),
+    transitionPreparedWorkOrder: vi.fn(async () => {
       sequence.push("repository-transition");
       return { event, workOrder, wrote: options.wrote ?? true };
     })

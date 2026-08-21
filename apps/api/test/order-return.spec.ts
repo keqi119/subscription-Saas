@@ -25,7 +25,12 @@ describe("vehicle return inspection workflow", () => {
     harness.state.orderStatus = OrderStatus.PENDING_DELIVERY;
 
     await expect(
-      harness.service.prepareReturn(harness.orderId, validPrepareReturnDto(), harness.user, harness.context)
+      harness.service.prepareReturn(
+        harness.orderId,
+        validPrepareReturnDto(),
+        harness.user,
+        harness.context
+      )
     ).rejects.toThrow("订单尚未起租，不能退车");
   });
 
@@ -34,7 +39,12 @@ describe("vehicle return inspection workflow", () => {
     harness.state.vehicleStatus = VehicleStatus.RETURNED;
 
     await expect(
-      harness.service.prepareReturn(harness.orderId, validPrepareReturnDto(), harness.user, harness.context)
+      harness.service.prepareReturn(
+        harness.orderId,
+        validPrepareReturnDto(),
+        harness.user,
+        harness.context
+      )
     ).rejects.toThrow("车辆状态不是已出租，不能退车");
   });
 
@@ -46,7 +56,11 @@ describe("vehicle return inspection workflow", () => {
       validPrepareReturnDto({ returnLocation: "静安旺旺大厦" }),
       harness.user,
       harness.context
-    )) as { returnLocation: string; returnStatus: VehicleReturnStatus; returnType: VehicleReturnType };
+    )) as {
+      returnLocation: string;
+      returnStatus: VehicleReturnStatus;
+      returnType: VehicleReturnType;
+    };
 
     expect(vehicleReturn.returnStatus).toBe(VehicleReturnStatus.READY);
     expect(vehicleReturn.returnType).toBe(VehicleReturnType.NORMAL_RETURN);
@@ -58,7 +72,7 @@ describe("vehicle return inspection workflow", () => {
     );
   });
 
-  it("allows an expiry-created PENDING return to continue through the normal return workflow", async () => {
+  it("routes an expiry-managed physical receipt through closure orchestration without final settlement", async () => {
     const harness = createReturnHarness();
     harness.state.orderStatus = OrderStatus.PENDING_RETURN;
     harness.state.returnRecord = {
@@ -66,7 +80,12 @@ describe("vehicle return inspection workflow", () => {
       returnStatus: VehicleReturnStatus.PENDING
     };
 
-    await harness.service.prepareReturn(harness.orderId, validPrepareReturnDto(), harness.user, harness.context);
+    await harness.service.prepareReturn(
+      harness.orderId,
+      validPrepareReturnDto(),
+      harness.user,
+      harness.context
+    );
     expect(harness.closureService.prepareManagedReturnInTransaction).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
@@ -89,13 +108,18 @@ describe("vehicle return inspection workflow", () => {
       harness.context
     );
 
-    expect(harness.state.orderStatus).toBe(OrderStatus.COMPLETED);
+    expect(harness.closureService.confirmManagedPhysicalReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: harness.user.id,
+        orderId: harness.orderId,
+        physicalControlMode: "VOLUNTARY_RETURN"
+      }),
+      harness.context
+    );
+    expect(harness.state.orderStatus).toBe(OrderStatus.RETURNED_PENDING_SETTLEMENT);
     expect(harness.state.leaseStatus).toBe(LeaseStatus.COMPLETED);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RETURNED);
-    expect(harness.auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ entityType: "lease", module: "lease" }),
-      harness.tx
-    );
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
   });
 
   it("preserves legacy unmanaged PENDING_RETURN scheduling when no P0 marker exists", async () => {
@@ -198,7 +222,12 @@ describe("vehicle return inspection workflow", () => {
     const harness = createReturnHarness();
 
     await expect(
-      harness.service.confirmReturn(harness.orderId, validConfirmReturnDto(), harness.user, harness.context)
+      harness.service.confirmReturn(
+        harness.orderId,
+        validConfirmReturnDto(),
+        harness.user,
+        harness.context
+      )
     ).rejects.toThrow("请先准备退车验收。");
   });
 
@@ -238,8 +267,12 @@ describe("vehicle return inspection workflow", () => {
       })
     );
 
-    const auditEntityTypes = harness.auditService.write.mock.calls.map(([entry]) => entry.entityType);
-    expect(auditEntityTypes).toEqual(expect.arrayContaining(["subscription_order", "vehicle_return", "vehicle"]));
+    const auditEntityTypes = harness.auditService.write.mock.calls.map(
+      ([entry]) => entry.entityType
+    );
+    expect(auditEntityTypes).toEqual(
+      expect.arrayContaining(["subscription_order", "vehicle_return", "vehicle"])
+    );
   });
 
   it("rolls back return completion when the lease terminal transition loses its race", async () => {
@@ -261,7 +294,9 @@ describe("vehicle return inspection workflow", () => {
 
   it("confirm-return terminates the order for early termination", async () => {
     const harness = createReturnHarness();
-    harness.state.returnRecord = buildReadyReturn(harness, { returnType: VehicleReturnType.EARLY_TERMINATION });
+    harness.state.returnRecord = buildReadyReturn(harness, {
+      returnType: VehicleReturnType.EARLY_TERMINATION
+    });
 
     await harness.service.confirmReturn(
       harness.orderId,
@@ -342,10 +377,20 @@ describe("vehicle return inspection workflow", () => {
     const harness = createReturnHarness();
     harness.state.returnRecord = buildReadyReturn(harness);
 
-    await harness.service.confirmReturn(harness.orderId, validConfirmReturnDto(), harness.user, harness.context);
+    await harness.service.confirmReturn(
+      harness.orderId,
+      validConfirmReturnDto(),
+      harness.user,
+      harness.context
+    );
 
     await expect(
-      harness.service.confirmReturn(harness.orderId, validConfirmReturnDto(), harness.user, harness.context)
+      harness.service.confirmReturn(
+        harness.orderId,
+        validConfirmReturnDto(),
+        harness.user,
+        harness.context
+      )
     ).rejects.toThrow("该订单已完成退车，不能重复退车。");
   });
 });
@@ -645,6 +690,19 @@ function createReturnHarness() {
     })
   };
   const closureService = {
+    confirmManagedPhysicalReceipt: vi.fn(async () => {
+      if (state.orderStatus !== OrderStatus.PENDING_RETURN || !state.returnRecord) return null;
+      state.actualReturnAt = new Date("2026-06-20T03:00:00.000Z");
+      state.orderStatus = OrderStatus.RETURNED_PENDING_SETTLEMENT;
+      state.leaseStatus = LeaseStatus.COMPLETED;
+      state.vehicleStatus = VehicleStatus.RETURNED;
+      applyDefined(state.returnRecord, {
+        returnMileageKm: 32000,
+        returnedAt: state.actualReturnAt,
+        returnStatus: VehicleReturnStatus.CONFIRMED
+      });
+      return { vehicleReturnId: "return-1" };
+    }),
     completeManagedReturnInTransaction: vi.fn(async () => ({
       handoverWorkOrderId: "return-handover-1"
     })),

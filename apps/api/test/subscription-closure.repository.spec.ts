@@ -168,7 +168,11 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       const target = new SubscriptionClosureRepository();
       const foreign = new SubscriptionClosureRepository();
       const session = target.createAuthoritySessionInTransaction(database.tx);
-      const lock = { id: UUIDS.order, mode: "UPDATE" as const, table: "subscription_order" as const };
+      const lock = {
+        id: UUIDS.order,
+        mode: "UPDATE" as const,
+        table: "subscription_order" as const
+      };
       const requirement = target.bindAuthorityRequirement(session, {
         command: { key, orderId: UUIDS.order, source: SOURCE },
         key,
@@ -248,31 +252,46 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     );
     const commandRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, commandRetarget.session, commandRetarget.proof, {
-        ...requirement,
-        command: { ...requirement.command, operation: "document" }
-      }),
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        commandRetarget.session,
+        commandRetarget.proof,
+        {
+          ...requirement,
+          command: { ...requirement.command, operation: "document" }
+        }
+      ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
     const idRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, idRetarget.session, idRetarget.proof, {
-        ...requirement,
-        locks: [{ ...lock, id: UUIDS.contract }]
-      }),
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        idRetarget.session,
+        idRetarget.proof,
+        {
+          ...requirement,
+          locks: [{ ...lock, id: UUIDS.contract }]
+        }
+      ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
     const modeRetarget = await prepare();
     await expectCode(
-      repository.consumeAuthorityAttestationInTransaction(database.tx, modeRetarget.session, modeRetarget.proof, {
-        ...requirement,
-        locks: [{ ...lock, mode: "SHARE" }]
-      }),
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        modeRetarget.session,
+        modeRetarget.proof,
+        {
+          ...requirement,
+          locks: [{ ...lock, mode: "SHARE" }]
+        }
+      ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
   });
 
-  it("orders mixed NOWAIT locks by documented rank and canonical UUID", async () => {
+  it("orders evidence between asset-owner and restriction in the single NOWAIT pass", async () => {
     const database = fakeTransaction();
     const locks: readonly SubscriptionClosureAuthorityLock[] = [
       { id: "B06E8EE8-3D7D-4AA1-B463-59A64F66F890", mode: "SHARE", table: "user" },
@@ -295,6 +314,21 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
         id: "C06E8EE8-3D7D-4AA1-B463-59A64F66F890",
         mode: "UPDATE",
         table: "subscription_order"
+      },
+      {
+        id: "D06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+        mode: "SHARE",
+        table: "asset_work_order_evidence"
+      },
+      {
+        id: "E06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+        mode: "UPDATE",
+        table: "vehicle_operational_restriction"
+      },
+      {
+        id: "F06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+        mode: "SHARE",
+        table: "asset_owner"
       }
     ];
 
@@ -315,6 +349,21 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
         id: "a06e8ee8-3d7d-4aa1-b463-59a64f66f890",
         mode: "SHARE",
         table: "vehicle"
+      },
+      {
+        id: "f06e8ee8-3d7d-4aa1-b463-59a64f66f890",
+        mode: "SHARE",
+        table: "asset_owner"
+      },
+      {
+        id: "d06e8ee8-3d7d-4aa1-b463-59a64f66f890",
+        mode: "SHARE",
+        table: "asset_work_order_evidence"
+      },
+      {
+        id: "e06e8ee8-3d7d-4aa1-b463-59a64f66f890",
+        mode: "UPDATE",
+        table: "vehicle_operational_restriction"
       },
       {
         id: "b06e8ee8-3d7d-4aa1-b463-59a64f66f890",
@@ -395,12 +444,9 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       subscriptionClosureDocumentAuthorityRequirement(wrongCommand)
     );
     const proof = (
-      await repository.prepareAuthorityInTransaction(
-        database.tx,
-        session,
-        wrongRequirement.locks,
-        [wrongRequirement]
-      )
+      await repository.prepareAuthorityInTransaction(database.tx, session, wrongRequirement.locks, [
+        wrongRequirement
+      ])
     ).get("manifest-create")!;
 
     await expectCode(
@@ -658,6 +704,18 @@ function fakeDocumentTransaction(options: { currentDocumentRevisionId?: string |
           }
         ];
       }
+      if (sql.includes('AS "authorityTable"')) {
+        const modes = [...sql.matchAll(/FOR (UPDATE|SHARE) NOWAIT/g)].map((match) => match[1]!);
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        for (let index = 0; index < query.values.length; index += 2) {
+          const table = String(query.values[index]);
+          const id = String(query.values[index + 1]);
+          timeline.push(`authority-lock:${table}`);
+          void modes[index / 2];
+          rows.push({ authorityTable: table, requestedId: id });
+        }
+        return rows;
+      }
       if (sql.includes("subscription_closure_current_document")) {
         timeline.push("current-document-projection");
         const documentRevisionId =
@@ -701,6 +759,21 @@ function fakeTransaction(
         timeline.push("source-lock");
         sourceTuple = String(query.values[0]);
         return [{ locked: true }];
+      }
+      if (sql.includes('AS "authorityTable"')) {
+        const modes = [...sql.matchAll(/FOR (UPDATE|SHARE) NOWAIT/g)].map(
+          (match) => match[1]! as SubscriptionClosureAuthorityLock["mode"]
+        );
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        for (let index = 0; index < query.values.length; index += 2) {
+          const table = String(query.values[index]) as SubscriptionClosureAuthorityLock["table"];
+          const id = String(query.values[index + 1]);
+          const mode = modes[index / 2]!;
+          authorityLocks.push({ id, mode, table });
+          timeline.push(`authority-lock:${table}:${id}:${mode}`);
+          if (table !== options.emptyLock) rows.push({ authorityTable: table, requestedId: id });
+        }
+        return rows;
       }
       const table = extractTable(sql);
       const mode = sql.includes("FOR UPDATE NOWAIT") ? "UPDATE" : "SHARE";

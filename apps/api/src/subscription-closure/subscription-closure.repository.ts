@@ -63,6 +63,7 @@ export interface AppendSubscriptionClosureEventCommand {
   readonly expectedStatus: SubscriptionClosureStatus;
   readonly expectedVersion: number;
   readonly occurredAt: Date;
+  readonly reconditioningAssetWorkOrderId?: string | null;
   readonly source: SubscriptionClosureSource;
 }
 
@@ -215,6 +216,7 @@ export type SubscriptionClosureAuthorityTable =
   | "vehicle_handover_work_order"
   | "asset_work_order"
   | "asset_owner"
+  | "asset_work_order_evidence"
   | "subscription_closure_document_revision"
   | "vehicle_operational_restriction"
   | "subscription_closure_settlement_revision"
@@ -307,6 +309,7 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   vehicle_handover_work_order: 110,
   asset_work_order: 120,
   asset_owner: 140,
+  asset_work_order_evidence: 145,
   subscription_closure_document_revision: 130,
   vehicle_operational_restriction: 150,
   subscription_closure_settlement_revision: 160,
@@ -589,11 +592,12 @@ export class SubscriptionClosureRepository {
   async appendEvent(
     tx: Prisma.TransactionClient,
     input: AppendSubscriptionClosureEventCommand,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureJsonObject>> {
     const command = normalizeEventCommand(input);
     const prepared = prepareCommand(command);
-    await this.lockSourceOwnership(tx, command.source);
+    if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     const replay = await replayReceipt<SubscriptionClosureJsonObject>(
       tx,
       command.source,
@@ -601,10 +605,12 @@ export class SubscriptionClosureRepository {
       prepared
     );
     if (replay) return replay;
-    await this.lockAuthorityRows(tx, [
-      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
-      { id: command.actorId, mode: "SHARE", table: "user" }
-    ]);
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, [
+        { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
+        { id: command.actorId, mode: "SHARE", table: "user" }
+      ]);
+    }
     const current = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
     await assertDatabaseEventTime(tx, current.id, command.occurredAt);
@@ -623,6 +629,12 @@ export class SubscriptionClosureRepository {
             command.afterStatus === "COMPLETED" || command.afterStatus === "TERMINATED"
               ? command.occurredAt
               : current.settledAt,
+          ...(command.eventType === "INSPECTION_RECORDED"
+            ? {
+                reconditioningAssetWorkOrderId:
+                  command.reconditioningAssetWorkOrderId ?? current.reconditioningAssetWorkOrderId
+              }
+            : {}),
           status: command.afterStatus,
           updatedBy: command.actorId,
           version: { increment: 1 }
@@ -653,6 +665,25 @@ export class SubscriptionClosureRepository {
     } catch (error) {
       throw normalizeWriteError(error);
     }
+  }
+
+  async appendPreparedEventInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: AppendSubscriptionClosureEventCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    audit?: SubscriptionClosureMutationAuditHook,
+    authorityKey = "physical-receipt"
+  ) {
+    await this.consumeAuthorityAttestationInTransaction(
+      tx,
+      authoritySession,
+      authorityAttestation,
+      subscriptionClosureEventAuthorityRequirement(input, authorityKey)
+    );
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    return this.appendEvent(tx, input, audit, PREPARED_EXECUTION);
   }
 
   async escalateRecovery(
@@ -1127,14 +1158,26 @@ export class SubscriptionClosureRepository {
   ): Promise<void> {
     await assertTransactionContract(tx);
     const normalized = normalizeAuthorityLocks(locks);
+    if (normalized.length === 0) return;
     try {
-      for (const lock of normalized) {
-        const query =
+      const rankedUnion = normalized.map((lock) => {
+        const lockedRow =
           lock.mode === "UPDATE"
             ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR UPDATE NOWAIT`
             : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR SHARE NOWAIT`;
-        const [row] = await tx.$queryRaw<Array<{ id: string }>>(query);
-        if (!row && !plannedDocumentAuthorities.has(`${lock.table}\u0000${lock.id}`)) {
+        return Prisma.sql`
+          SELECT ${lock.table}::text AS "authorityTable",
+                 ranked_authority."id"::text AS "requestedId"
+          FROM (${lockedRow}) ranked_authority
+        `;
+      });
+      const rows = await tx.$queryRaw<Array<{ authorityTable: string; requestedId: string }>>(
+        Prisma.sql`${Prisma.join(rankedUnion, " UNION ALL ")}`
+      );
+      const locked = new Set(rows.map((row) => `${row.authorityTable}\u0000${row.requestedId}`));
+      for (const lock of normalized) {
+        const key = `${lock.table}\u0000${lock.id}`;
+        if (!locked.has(key) && !plannedDocumentAuthorities.has(key)) {
           throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
         }
       }
@@ -1216,10 +1259,7 @@ function normalizeAuthorityRequirement(
 ) {
   const key = normalizeAttestationKey(requirement.key);
   const locks = normalizeAuthorityLocks(requirement.locks);
-  if (
-    locks.length === 0 ||
-    CLOSURE_AUTHORITY_REQUIREMENT_SESSIONS.get(requirement) !== session
-  ) {
+  if (locks.length === 0 || CLOSURE_AUTHORITY_REQUIREMENT_SESSIONS.get(requirement) !== session) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
   }
   return Object.freeze({
@@ -1339,6 +1379,10 @@ function normalizeEventCommand(
     expectedStatus: closureStatus(input.expectedStatus),
     expectedVersion: version(input.expectedVersion),
     occurredAt: validDate(input.occurredAt, "occurredAt"),
+    reconditioningAssetWorkOrderId: nullableUuid(
+      input.reconditioningAssetWorkOrderId,
+      "reconditioningAssetWorkOrderId"
+    ),
     source: canonicalSubscriptionClosureSource(input.source)
   };
 }
@@ -1947,6 +1991,25 @@ export function subscriptionClosureDocumentAuthorityRequirement(
   };
 }
 
+export function subscriptionClosureEventAuthorityRequirement(
+  input: AppendSubscriptionClosureEventCommand,
+  key = "physical-receipt"
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeEventCommand(input);
+  return {
+    command: { ...command },
+    key,
+    locks: [
+      {
+        id: command.closureCaseId,
+        mode: "UPDATE",
+        table: "subscription_closure_case"
+      },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]
+  };
+}
+
 async function assertCreateLinkCoherence(
   tx: Prisma.TransactionClient,
   command: CreateSubscriptionClosureCaseCommand
@@ -2218,7 +2281,19 @@ function validateEventTransition(
   current: CaseRecord,
   command: AppendSubscriptionClosureEventCommand
 ): void {
-  if (command.eventType === "STATUS_TRANSITIONED") {
+  if (
+    command.eventType === "PHYSICAL_CONTROL_CONFIRMED" &&
+    current.physicalControlMode === "RECOVERY" &&
+    current.status === "RECOVERY_IN_PROGRESS" &&
+    command.afterStatus === "RETURN_INSPECTION"
+  ) {
+    return;
+  }
+  if (
+    command.eventType === "STATUS_TRANSITIONED" ||
+    command.eventType === "PHYSICAL_CONTROL_CONFIRMED" ||
+    command.eventType === "INSPECTION_RECORDED"
+  ) {
     try {
       assertSubscriptionClosureTransition(profileOf(current), current.status, command.afterStatus);
     } catch {

@@ -193,11 +193,12 @@ export class AssetFactsService {
     source: Readonly<{ id: string; key: string; type: string }>
   ): Promise<AssetFactsTransactionCapability> {
     assertSource(source);
+    const sourceSnapshot = snapshotFactSource(source);
     const repositoryCapability = await this.repository.prepareCallerOwnedCommand(
       tx,
       periodKind,
       phase,
-      source
+      sourceSnapshot
     );
     const capability = Object.freeze({}) as AssetFactsTransactionCapability;
     this.callerOwnedCapabilities.set(
@@ -206,7 +207,7 @@ export class AssetFactsService {
         periodKind,
         phase,
         repositoryCapability,
-        source: Object.freeze({ ...source }),
+        source: sourceSnapshot,
         transaction: tx
       })
     );
@@ -1283,6 +1284,10 @@ function assertSource(source: { id: string; key: string; type: string }) {
   if (!source?.id?.trim() || !source.key?.trim() || !source.type?.trim()) {
     throw badRequest(ASSET_FACT_SERVICE_CODE.INVALID_SOURCE, "Stable source identity is required.");
   }
+}
+
+function snapshotFactSource(source: { id: string; key: string; type: string }) {
+  return Object.freeze({ id: source.id, key: source.key, type: source.type });
 }
 
 function toIso(value: Date | null) {

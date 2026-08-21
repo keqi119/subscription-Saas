@@ -800,6 +800,57 @@ describe("AssetFactsRepository database conflict normalization", () => {
 });
 
 describe("AssetFactsRepository transaction contract", () => {
+  it("snapshots a direct caller source before a deferred advisory query", async () => {
+    const row = subscriptionRow();
+    const harness = createHarness({ subscriptionPeriods: [row] });
+    const repository = new AssetFactsRepository();
+    const originalSource = {
+      id: "source-deferred-a",
+      key: "return:source-deferred-a:occupancy:v1",
+      type: "VEHICLE_RETURN"
+    };
+    const lockedSource = { ...originalSource };
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const originalQuery = harness.tx.$queryRaw.bind(harness.tx);
+    (harness.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes("pg_advisory_xact_lock")) {
+          advisoryQueryPending.resolve();
+          await releaseAdvisoryQuery.promise;
+        }
+        return result;
+      };
+    const capabilityPromise = repository.prepareCallerOwnedCommand(
+      harness.tx,
+      "subscription",
+      "end",
+      originalSource
+    );
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, {
+      id: "source-deferred-b",
+      key: "return:source-deferred-b:occupancy:v1",
+      type: "MUTATED_RETURN"
+    });
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+
+    await expectConflictCode(
+      repository.closeSubscriptionPeriod(
+        harness.tx,
+        subscriptionCloseInput({ source: originalSource }),
+        capability
+      ),
+      ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(row.endedAt).toBeNull();
+    expect(
+      harness.rawQueries.find(({ sql }) => sql.includes("pg_advisory_xact_lock"))?.values[0]
+    ).toContain(lockedSource.id);
+  });
+
   it("consumes one prepared subscription-close capability and rejects reuse", async () => {
     const harness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
     const repository = new AssetFactsRepository();
@@ -963,6 +1014,57 @@ describe("Asset fact command DTO validation", () => {
 });
 
 describe("AssetFactsService audited commands", () => {
+  it("snapshots the outer caller source before a deferred advisory query", async () => {
+    const row = subscriptionRow();
+    const harness = createServiceHarness({ subscriptionPeriods: [row] });
+    const originalSource = {
+      id: "source-service-deferred-a",
+      key: "return:source-service-deferred-a:occupancy:v1",
+      type: "VEHICLE_RETURN"
+    };
+    const dto = serviceSubscriptionCloseDto("subscription-period-1", {
+      source: originalSource
+    });
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const originalQuery = harness.tx.$queryRaw.bind(harness.tx);
+    (harness.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes("pg_advisory_xact_lock")) {
+          advisoryQueryPending.resolve();
+          await releaseAdvisoryQuery.promise;
+        }
+        return result;
+      };
+    const capabilityPromise = harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      "subscription",
+      "end",
+      originalSource
+    );
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, {
+      id: "source-service-deferred-b",
+      key: "return:source-service-deferred-b:occupancy:v1",
+      type: "MUTATED_RETURN"
+    });
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+
+    await expectConflictCode(
+      harness.service.closeSubscriptionPeriodInTransaction(
+        harness.tx,
+        dto,
+        serviceContext(),
+        capability
+      ),
+      ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(row.endedAt).toBeNull();
+    expect(harness.auditLogs).toHaveLength(0);
+  });
+
   it("uses one caller-owned close capability without opening a nested transaction", async () => {
     const harness = createServiceHarness({ subscriptionPeriods: [subscriptionRow()] });
     const dto = serviceSubscriptionCloseDto("subscription-period-1");
@@ -2201,6 +2303,16 @@ async function expectConflictCode(promise: Promise<unknown>, expectedCode: strin
     return;
   }
   throw new Error(`Expected conflict code ${expectedCode}`);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 type ServiceVehicleRecord = {

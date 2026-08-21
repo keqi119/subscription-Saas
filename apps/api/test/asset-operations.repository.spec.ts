@@ -102,6 +102,122 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("binds create authority to the frozen tuple locked before a deferred query", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = {
+      ...createCommand(),
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID()
+    };
+    const lockedSource = { ...command.source };
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authorityQueryPending = deferred<void>();
+    const releaseAuthorityQuery = deferred<void>();
+    const originalQuery = database.tx.$queryRaw.bind(database.tx);
+    (database.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes('FROM "subscription_order"')) {
+          authorityQueryPending.resolve();
+          await releaseAuthorityQuery.promise;
+        }
+        return result;
+      };
+    const lockedCommand = {
+      assetOwnerId: command.assetOwnerId,
+      contractId: command.contractId,
+      customerId: command.customerId,
+      orderId: command.orderId,
+      relatedWorkOrderId: command.relatedWorkOrderId,
+      source: lockedSource,
+      vehicleId: command.vehicleId
+    };
+    const authorityPromise = repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
+    await authorityQueryPending.promise;
+    Object.assign(command, {
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID(),
+      source: source("mutated-authority-source"),
+      vehicleId: randomUUID()
+    });
+    releaseAuthorityQuery.resolve();
+    const authority = await authorityPromise;
+
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, authority),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
+    expect(
+      database.rawQueries
+        .filter(({ sql }) => sql.includes(" FOR "))
+        .map(({ sql, values }) => ({
+          id: values[0],
+          mode: sql.includes("FOR UPDATE") ? "UPDATE" : "SHARE",
+          table: sql.match(/FROM "([a-z_]+)"/)?.[1]
+        }))
+    ).toEqual([
+      { id: lockedCommand.orderId, mode: "UPDATE", table: "subscription_order" },
+      { id: lockedCommand.vehicleId, mode: "SHARE", table: "vehicle" },
+      { id: lockedCommand.contractId, mode: "SHARE", table: "contract" },
+      { id: lockedCommand.relatedWorkOrderId, mode: "SHARE", table: "asset_work_order" },
+      { id: lockedCommand.assetOwnerId, mode: "SHARE", table: "asset_owner" },
+      { id: lockedCommand.customerId, mode: "SHARE", table: "customer" }
+    ]);
+  });
+
+  it("snapshots a direct caller source before a deferred advisory query", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const originalSource = source("deferred-repository-source");
+    const lockedSource = { ...originalSource };
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const originalQuery = database.tx.$queryRaw.bind(database.tx);
+    (database.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes("pg_advisory_xact_lock")) {
+          advisoryQueryPending.resolve();
+          await releaseAdvisoryQuery.promise;
+        }
+        return result;
+      };
+    const capabilityPromise = repository.prepareCallerOwnedCommand(database.tx, originalSource);
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, source("mutated-repository-source"));
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+    const command = { ...createCommand(), source: originalSource };
+
+    await expectCode(
+      (async () => {
+        const authority = await repository.lockCallerOwnedCreateAuthority(
+          database.tx,
+          command,
+          capability
+        );
+        return repository.createWorkOrder(database.tx, command, authority);
+      })(),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
+    expect(
+      database.rawQueries.find(({ sql }) => sql.includes("pg_advisory_xact_lock"))?.values[0]
+    ).toContain(lockedSource.id);
+  });
+
   it("consumes a repository capability before throwing command normalization", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();
@@ -1317,6 +1433,16 @@ async function expectCode(promise: Promise<unknown>, code: string) {
     expect(error).toBeInstanceOf(ConflictException);
     expect((error as ConflictException).getResponse()).toMatchObject({ code });
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 async function expectReplayConsumesHandle(

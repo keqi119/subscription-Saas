@@ -166,13 +166,17 @@ export class AssetOperationsService {
     tx: Prisma.TransactionClient,
     source: StableAssetOperationSource
   ): Promise<AssetOperationsTransactionCapability> {
-    const repositoryCapability = await this.repository.prepareCallerOwnedCommand(tx, source);
+    const sourceSnapshot = snapshotAssetOperationSource(source);
+    const repositoryCapability = await this.repository.prepareCallerOwnedCommand(
+      tx,
+      sourceSnapshot
+    );
     const capability = Object.freeze({}) as AssetOperationsTransactionCapability;
     this.callerOwnedCapabilities.set(
       capability,
       Object.freeze({
         repositoryCapability,
-        source: Object.freeze({ ...source }),
+        source: sourceSnapshot,
         transaction: tx
       })
     );
@@ -1115,6 +1119,12 @@ function hasConflictCode(error: unknown, code: string) {
   if (!(error instanceof ConflictException)) return false;
   const response = error.getResponse();
   return isRecord(response) && response.code === code;
+}
+
+function snapshotAssetOperationSource(
+  source: StableAssetOperationSource
+): StableAssetOperationSource {
+  return Object.freeze({ id: source.id, key: source.key, type: source.type });
 }
 
 function isLockUnavailableError(value: unknown) {

@@ -88,6 +88,53 @@ describe("AssetOperationsService", () => {
     ]);
   });
 
+  it("snapshots the outer caller source before a deferred advisory query", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const originalSource = harness.command.source as {
+      id: string;
+      key: string;
+      type: string;
+    };
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const mutableTx = harness.tx as unknown as {
+      $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+    };
+    const originalQuery = mutableTx.$queryRaw.bind(mutableTx);
+    mutableTx.$queryRaw = async (query) => {
+      const result = originalQuery(query);
+      if (query.strings.join("?").includes("pg_advisory_xact_lock")) {
+        advisoryQueryPending.resolve();
+        await releaseAdvisoryQuery.promise;
+      }
+      return result;
+    };
+    const capabilityPromise = harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      originalSource
+    );
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, {
+      id: randomUUID(),
+      key: "mutated:outer-service-source",
+      type: "MUTATED_SOURCE"
+    });
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx,
+        harness.command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.writes()).toBe(0);
+  });
+
   it("consumes a service capability before reading a throwing source", async () => {
     const harness = createHarness();
     const capability = await harness.service.prepareCallerOwnedTransaction(
@@ -1408,6 +1455,7 @@ function createRealRepositoryCreateHarness() {
     $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
   };
   const mutableTx = tx as unknown as Record<string, unknown>;
+  let writeCount = 0;
   mutableTx.$queryRaw = vi.fn(async (query: Prisma.Sql) => {
     const sql = query.strings.join("?");
     if (sql.includes("current_setting('transaction_isolation')")) {
@@ -1428,11 +1476,14 @@ function createRealRepositoryCreateHarness() {
     return [{ id: query.values.find((value) => typeof value === "string") ?? randomUUID() }];
   });
   mutableTx.assetWorkOrder = {
-    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-      ...base.workOrder,
-      ...data,
-      id: base.ids.workOrderId
-    })),
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      writeCount += 1;
+      return {
+        ...base.workOrder,
+        ...data,
+        id: base.ids.workOrderId
+      };
+    }),
     findFirst: vi.fn(async () => null),
     findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
       "workOrderNo" in where ? null : base.workOrder
@@ -1466,6 +1517,17 @@ function createRealRepositoryCreateHarness() {
       base.assetAccountingService
     ),
     sourceLocks,
-    tx
+    tx,
+    writes: () => writeCount
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }

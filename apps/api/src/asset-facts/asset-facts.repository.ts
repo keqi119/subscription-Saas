@@ -126,8 +126,18 @@ export class AssetFactsRepository {
     phase: AssetFactCommandPhase,
     source: StableFactSource
   ) {
+    const sourceSnapshot = snapshotFactSource(source);
+    await this.lockCommandSourceSnapshot(tx, periodKind, phase, sourceSnapshot);
+  }
+
+  private async lockCommandSourceSnapshot(
+    tx: Prisma.TransactionClient,
+    periodKind: AssetFactPeriodKind,
+    phase: AssetFactCommandPhase,
+    sourceSnapshot: StableFactSource
+  ) {
     await assertTransactionContract(tx);
-    await acquireCommandSourceLock(tx, periodKind, phase, source);
+    await acquireCommandSourceLock(tx, periodKind, phase, sourceSnapshot);
   }
 
   async prepareCallerOwnedCommand(
@@ -136,14 +146,15 @@ export class AssetFactsRepository {
     phase: AssetFactCommandPhase,
     source: StableFactSource
   ): Promise<AssetFactsCallerOwnedCommandCapability> {
-    await this.lockCommandSource(tx, periodKind, phase, source);
+    const sourceSnapshot = snapshotFactSource(source);
+    await this.lockCommandSourceSnapshot(tx, periodKind, phase, sourceSnapshot);
     const capability = Object.freeze({}) as AssetFactsCallerOwnedCommandCapability;
     this.callerOwnedCommandCapabilities.set(
       capability,
       Object.freeze({
         periodKind,
         phase,
-        source: Object.freeze({ ...source }),
+        source: sourceSnapshot,
         transaction: tx
       })
     );
@@ -525,6 +536,10 @@ async function acquireCommandSourceLock(
   await tx.$queryRaw(
     Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`
   );
+}
+
+function snapshotFactSource(source: StableFactSource): StableFactSource {
+  return Object.freeze({ id: source.id, key: source.key, type: source.type });
 }
 
 function subscriptionLiveWhere(

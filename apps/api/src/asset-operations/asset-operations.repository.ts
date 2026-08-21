@@ -228,18 +228,20 @@ export class AssetOperationsRepository {
     tx: Prisma.TransactionClient,
     source: StableAssetOperationSource
   ): Promise<void> {
-    await prepareCommand(tx, source);
+    const sourceSnapshot = snapshotAssetOperationSource(source);
+    await prepareCommand(tx, sourceSnapshot);
   }
 
   async prepareCallerOwnedCommand(
     tx: Prisma.TransactionClient,
     source: StableAssetOperationSource
   ): Promise<AssetOperationsCallerOwnedCommandCapability> {
-    await prepareCommand(tx, source);
+    const sourceSnapshot = snapshotAssetOperationSource(source);
+    await prepareCommand(tx, sourceSnapshot);
     const capability = Object.freeze({}) as AssetOperationsCallerOwnedCommandCapability;
     this.callerOwnedCommandCapabilities.set(
       capability,
-      Object.freeze({ source: Object.freeze({ ...source }), transaction: tx })
+      Object.freeze({ source: sourceSnapshot, transaction: tx })
     );
     return capability;
   }
@@ -250,12 +252,18 @@ export class AssetOperationsRepository {
     capability: AssetOperationsCallerOwnedCommandCapability
   ): Promise<AssetOperationsCallerOwnedCreateAuthority> {
     const capabilityState = this.takeCallerOwnedCommandCapability(capability);
-    this.assertCallerOwnedCommandCapability(capabilityState, tx, command.source);
-    await lockAuthorityRows(tx, createAuthorityRows(command), CALLER_OWNED_AUTHORITY_RANK, true);
+    const commandSnapshot = snapshotCallerOwnedCreateAuthorityCommand(command);
+    this.assertCallerOwnedCommandCapability(capabilityState, tx, commandSnapshot.source);
+    await lockAuthorityRows(
+      tx,
+      createAuthorityRows(commandSnapshot, "update"),
+      CALLER_OWNED_AUTHORITY_RANK,
+      true
+    );
     const authority = Object.freeze({}) as AssetOperationsCallerOwnedCreateAuthority;
     this.callerOwnedCreateAuthorities.set(
       authority,
-      Object.freeze({ identity: createAuthorityIdentity(command), transaction: tx })
+      Object.freeze({ identity: createAuthorityIdentity(commandSnapshot), transaction: tx })
     );
     return authority;
   }
@@ -1056,17 +1064,42 @@ const CALLER_OWNED_AUTHORITY_RANK: Readonly<Partial<Record<AuthorityTable, numbe
   customer: 180
 };
 
-function createAuthorityRows(command: CallerOwnedCreateAuthorityCommand) {
-  const rows: Array<{ id: string; table: AuthorityTable }> = [];
+function createAuthorityRows(
+  command: CallerOwnedCreateAuthorityCommand,
+  subscriptionOrderMode?: AuthorityLockMode
+) {
+  const rows: AuthorityLockRow[] = [];
   if (command.assetOwnerId) rows.push({ id: command.assetOwnerId, table: "asset_owner" });
   if (command.contractId) rows.push({ id: command.contractId, table: "contract" });
   if (command.customerId) rows.push({ id: command.customerId, table: "customer" });
-  if (command.orderId) rows.push({ id: command.orderId, table: "subscription_order" });
+  if (command.orderId) {
+    rows.push({ id: command.orderId, mode: subscriptionOrderMode, table: "subscription_order" });
+  }
   if (command.relatedWorkOrderId) {
     rows.push({ id: command.relatedWorkOrderId, table: "asset_work_order" });
   }
   rows.push({ id: command.vehicleId, table: "vehicle" });
   return rows;
+}
+
+function snapshotAssetOperationSource(
+  source: StableAssetOperationSource
+): StableAssetOperationSource {
+  return Object.freeze({ id: source.id, key: source.key, type: source.type });
+}
+
+function snapshotCallerOwnedCreateAuthorityCommand(
+  command: CallerOwnedCreateAuthorityCommand
+): CallerOwnedCreateAuthorityCommand {
+  return Object.freeze({
+    assetOwnerId: command.assetOwnerId,
+    contractId: command.contractId,
+    customerId: command.customerId,
+    orderId: command.orderId,
+    relatedWorkOrderId: command.relatedWorkOrderId,
+    source: snapshotAssetOperationSource(command.source),
+    vehicleId: command.vehicleId
+  });
 }
 
 function createAuthorityIdentity(command: CallerOwnedCreateAuthorityCommand) {

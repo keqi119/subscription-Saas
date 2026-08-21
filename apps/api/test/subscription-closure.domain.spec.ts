@@ -146,7 +146,9 @@ describe("subscription closure domain contract", () => {
         {
           closureType: "NORMAL_COMPLETION",
           finalDisposition: "COMPLETE",
-          physicalControlMode: "VOLUNTARY_RETURN"
+          physicalControlMode: "VOLUNTARY_RETURN",
+          physicalControlledAt: null,
+          status: "PREPARING_RETURN"
         },
         {
           closureType: "NORMAL_COMPLETION",
@@ -161,13 +163,64 @@ describe("subscription closure domain contract", () => {
         {
           closureType: "EARLY_TERMINATION",
           finalDisposition: "TERMINATE",
-          physicalControlMode: "VOLUNTARY_RETURN"
+          physicalControlMode: "VOLUNTARY_RETURN",
+          physicalControlledAt: null,
+          status: "PREPARING_RETURN"
         },
         {
           closureType: "EARLY_TERMINATION",
           finalDisposition: "TERMINATE",
           physicalControlMode: "RECOVERY"
         }
+      )
+    ).toThrow(/escalation/i);
+  });
+
+  it("rejects recovery escalation from every source state except uncontrolled PREPARING_RETURN", () => {
+    const after = {
+      closureType: "NORMAL_COMPLETION",
+      finalDisposition: "TERMINATE",
+      physicalControlMode: "RECOVERY"
+    } as const;
+    for (const status of [
+      "RECOVERY_ASSESSMENT_PENDING",
+      "RECOVERY_APPROVAL_PENDING",
+      "RECOVERY_APPROVED",
+      "RECOVERY_IN_PROGRESS",
+      "VEHICLE_SECURED",
+      "RETURN_INSPECTION",
+      "RECONDITIONING",
+      "PENDING_SETTLEMENT",
+      "COMPLETED",
+      "TERMINATED",
+      "REJECTED",
+      "PAUSED",
+      "CANCELLED",
+      "MANUAL_TAKEOVER"
+    ] as const) {
+      expect(() =>
+        assertSubscriptionClosureEscalation(
+          {
+            closureType: "NORMAL_COMPLETION",
+            finalDisposition: "COMPLETE",
+            physicalControlMode: "VOLUNTARY_RETURN",
+            physicalControlledAt: null,
+            status
+          },
+          after
+        )
+      ).toThrow(/escalation/i);
+    }
+    expect(() =>
+      assertSubscriptionClosureEscalation(
+        {
+          closureType: "NORMAL_COMPLETION",
+          finalDisposition: "COMPLETE",
+          physicalControlMode: "VOLUNTARY_RETURN",
+          physicalControlledAt: new Date("2026-08-21T03:00:00.000Z"),
+          status: "PREPARING_RETURN"
+        },
+        after
       )
     ).toThrow(/escalation/i);
   });

@@ -196,7 +196,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
         createCaseCommand(earlyData, "early-transition", "EARLY_TERMINATION")
       )
     );
-    const transitioned = await readCommitted(prisma, (tx) =>
+    const transitioned = await readCommitted(prisma, async (tx) =>
       repository.appendEvent(tx, {
         actorId: earlyData.actorId,
         afterStatus: "RETURN_INSPECTION",
@@ -205,21 +205,21 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
         eventType: "STATUS_TRANSITIONED",
         expectedStatus: "PREPARING_RETURN",
         expectedVersion: 0,
-        occurredAt: NOW,
+        occurredAt: await databaseNow(tx),
         source: source("early-transition-event")
       })
     );
     const normal = await readCommitted(prisma, (tx) =>
       repository.createCase(tx, createCaseCommand(normalData, "normal-escalation"))
     );
-    const escalated = await readCommitted(prisma, (tx) =>
+    const escalated = await readCommitted(prisma, async (tx) =>
       repository.escalateRecovery(tx, {
         actorId: normalData.actorId,
         closureCaseId: normal.outcome.id,
         detailSnapshot: { authority: "approved recovery escalation" },
         expectedStatus: "PREPARING_RETURN",
         expectedVersion: 0,
-        occurredAt: NOW,
+        occurredAt: await databaseNow(tx),
         source: source("normal-escalation-event")
       })
     );
@@ -244,14 +244,14 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       event: { eventType: "RECOVERY_ESCALATED", sequence: 2 }
     });
     await expectCode(
-      readCommitted(prisma, (tx) =>
+      readCommitted(prisma, async (tx) =>
         repository.escalateRecovery(tx, {
           actorId: earlyData.actorId,
           closureCaseId: early.outcome.id,
           detailSnapshot: { forbidden: true },
           expectedStatus: "RETURN_INSPECTION",
           expectedVersion: 1,
-          occurredAt: NOW,
+          occurredAt: await databaseNow(tx),
           source: source("early-forbidden-escalation")
         })
       ),
@@ -280,7 +280,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     });
 
     await expectCode(
-      readCommitted(prisma, (tx) =>
+      readCommitted(prisma, async (tx) =>
         repository.appendEvent(tx, {
           actorId: normalData.actorId,
           afterStatus: "PENDING_SETTLEMENT",
@@ -289,7 +289,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
           eventType: "STATUS_TRANSITIONED",
           expectedStatus: "PAUSED",
           expectedVersion: 1,
-          occurredAt: NOW,
+          occurredAt: await databaseNow(tx),
           source: source("paused-normal-settlement")
         })
       ),
@@ -302,7 +302,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       "PENDING_SETTLEMENT"
     ] as const) {
       await expectCode(
-        readCommitted(prisma, (tx) =>
+        readCommitted(prisma, async (tx) =>
           repository.appendEvent(tx, {
             actorId: recoveryData.actorId,
             afterStatus: target,
@@ -311,12 +311,73 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
             eventType: "STATUS_TRANSITIONED",
             expectedStatus: "PAUSED",
             expectedVersion: 1,
-            occurredAt: NOW,
+            occurredAt: await databaseNow(tx),
             source: source(`paused-recovery-${target}`)
           })
         ),
         SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT
       );
+    }
+  });
+
+  it("rejects recovery escalation from paused, manual, controlled, and closed source states", async () => {
+    const repository = new SubscriptionClosureRepository();
+    for (const status of ["PAUSED", "MANUAL_TAKEOVER", "RETURN_INSPECTION", "CANCELLED"] as const) {
+      const data = await fixture();
+      const created = await readCommitted(prisma, (tx) =>
+        repository.createCase(tx, createCaseCommand(data, `escalation-source-${status}`))
+      );
+      if (status === "PAUSED") {
+        await readCommitted(prisma, async (tx) => {
+          await tx.subscriptionClosureCase.update({
+            data: { status, version: { increment: 1 } },
+            where: { id: created.outcome.id }
+          });
+        });
+      } else {
+        await readCommitted(prisma, async (tx) =>
+          repository.appendEvent(tx, {
+            actorId: data.actorId,
+            afterStatus: status,
+            closureCaseId: created.outcome.id,
+            detailSnapshot: { status },
+            eventType: "STATUS_TRANSITIONED",
+            expectedStatus: "PREPARING_RETURN",
+            expectedVersion: 0,
+            occurredAt: await databaseNow(tx),
+            source: source(`escalation-source-transition-${status}`)
+          })
+        );
+      }
+      await expectCode(
+        readCommitted(prisma, async (tx) =>
+          repository.escalateRecovery(tx, {
+            actorId: data.actorId,
+            closureCaseId: created.outcome.id,
+            detailSnapshot: { forbiddenSourceStatus: status },
+            expectedStatus: status,
+            expectedVersion: 1,
+            occurredAt: await databaseNow(tx),
+            source: source(`escalation-source-command-${status}`)
+          })
+        ),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT
+      );
+      await expect(
+        prisma.subscriptionClosureCase.findUniqueOrThrow({
+          select: { physicalControlMode: true, status: true, version: true },
+          where: { id: created.outcome.id }
+        })
+      ).resolves.toMatchObject({
+        physicalControlMode: "VOLUNTARY_RETURN",
+        status,
+        version: 1
+      });
+      await expect(countCaseFacts(prisma, data.orderId)).resolves.toEqual({
+        cases: 1,
+        events: status === "PAUSED" ? 1 : 2,
+        receipts: status === "PAUSED" ? 1 : 2
+      });
     }
   });
 
@@ -364,15 +425,97 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
     );
-    await expectCode(
-      readCommitted(prisma, (tx) =>
-        repository.createCase(tx, {
-          ...createCaseCommand(futureCreateData, "event-time-future-create"),
-          effectiveAt: new Date("2099-01-01T00:00:00.000Z")
-        })
-      ),
-      SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+    const futureEffectiveAt = new Date("2099-01-01T00:00:00.000Z");
+    const futureEffective = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, {
+        ...createCaseCommand(futureCreateData, "event-time-future-create", "EARLY_TERMINATION"),
+        effectiveAt: futureEffectiveAt
+      })
     );
+    const createEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
+      where: { closureCaseId: futureEffective.outcome.id, eventType: "CASE_CREATED" }
+    });
+    expect(futureEffective.outcome.effectiveAt).toBe(futureEffectiveAt.toISOString());
+    expect(createEvent.occurredAt.getTime()).toBeLessThan(futureEffectiveAt.getTime());
+  });
+
+  it("keeps document business times while database event occurrences advance monotonically", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const generatedAt = new Date("2025-01-01T00:00:00.000Z");
+    const signedAt = new Date("2026-01-01T00:00:00.000Z");
+    const archivedAt = new Date("2027-01-01T00:00:00.000Z");
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createCase(
+        tx,
+        createCaseCommand(data, "document-business-times", "EARLY_TERMINATION")
+      )
+    );
+    const generated = await readCommitted(prisma, (tx) =>
+      repository.appendDocumentRevision(tx, {
+        ...documentCommand(data, created.outcome.id, {
+          documentType: "EARLY_TERMINATION_AGREEMENT",
+          expectedVersion: 0,
+          key: "document-business-times-r1"
+        }),
+        generatedAt
+      })
+    );
+    const signed = await readCommitted(prisma, (tx) =>
+      repository.appendDocumentRevision(tx, {
+        ...documentCommand(data, created.outcome.id, {
+          documentType: "EARLY_TERMINATION_AGREEMENT",
+          expectedVersion: 1,
+          key: "document-business-times-r2"
+        }),
+        expectedCurrentRevisionId: generated.outcome.id,
+        generatedAt,
+        signedAt,
+        signedBy: data.actorId,
+        signedFileHash: HASH,
+        signedFileId: data.signedFileId,
+        stage: "SIGNED"
+      })
+    );
+    const archived = await readCommitted(prisma, (tx) =>
+      repository.appendDocumentRevision(tx, {
+        ...documentCommand(data, created.outcome.id, {
+          documentType: "EARLY_TERMINATION_AGREEMENT",
+          expectedVersion: 2,
+          key: "document-business-times-r3"
+        }),
+        archivedAt,
+        archivedBy: data.actorId,
+        expectedCurrentRevisionId: signed.outcome.id,
+        generatedAt,
+        signedAt,
+        signedBy: data.actorId,
+        signedFileHash: HASH,
+        signedFileId: data.signedFileId,
+        stage: "ARCHIVED"
+      })
+    );
+    const events = await prisma.subscriptionClosureEvent.findMany({
+      orderBy: { sequence: "asc" },
+      where: { closureCaseId: created.outcome.id }
+    });
+
+    expect(signed.outcome).toMatchObject({
+      generatedAt: generatedAt.toISOString(),
+      signedAt: signedAt.toISOString()
+    });
+    expect(archived.outcome).toMatchObject({
+      archivedAt: archivedAt.toISOString(),
+      generatedAt: generatedAt.toISOString(),
+      signedAt: signedAt.toISOString()
+    });
+    expect(events).toHaveLength(4);
+    for (let index = 1; index < events.length; index += 1) {
+      expect(events[index]!.occurredAt.getTime()).toBeGreaterThanOrEqual(
+        events[index - 1]!.occurredAt.getTime()
+      );
+    }
+    expect(events[1]!.occurredAt.getTime()).toBeGreaterThan(generatedAt.getTime());
   });
 
   it("preflights the current FINAL/SETTLED authority before either terminal transition", async () => {
@@ -396,7 +539,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
         });
       });
       await expectCode(
-        readCommitted(prisma, (tx) =>
+        readCommitted(prisma, async (tx) =>
           repository.appendEvent(tx, {
             actorId: data.actorId,
             afterStatus: closureType === "NORMAL_COMPLETION" ? "COMPLETED" : "TERMINATED",
@@ -405,7 +548,7 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
             eventType: "STATUS_TRANSITIONED",
             expectedStatus: "PENDING_SETTLEMENT",
             expectedVersion: 1,
-            occurredAt: NOW,
+            occurredAt: await databaseNow(tx),
             source: source(`terminal-preflight-event-${closureType}`)
           })
         ),
@@ -585,6 +728,87 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
         })
       ).resolves.toBe(0);
     }
+  });
+
+  it("fails a reverse high-rank document holder race fast without a cycle and keeps the holder usable", async () => {
+    const data = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createCase(
+        tx,
+        createCaseCommand(data, "document-reverse-holder", "EARLY_TERMINATION")
+      )
+    );
+    const first = await readCommitted(prisma, (tx) =>
+      repository.appendDocumentRevision(
+        tx,
+        documentCommand(data, created.outcome.id, {
+          documentType: "EARLY_TERMINATION_AGREEMENT",
+          expectedVersion: 0,
+          key: "document-reverse-holder-r1"
+        })
+      )
+    );
+    const holderEntered = deferred<void>();
+    const raceStarted = deferred<void>();
+    const projectionHeld = deferred<void>();
+    const releaseHolder = deferred<void>();
+    let holderUsable = false;
+    const holder = readCommitted(prisma, async (tx) => {
+      await repository.lockAuthorityRows(tx, [
+        { id: data.sourceFileId, mode: "UPDATE", table: "file_object" }
+      ]);
+      holderEntered.resolve();
+      await raceStarted.promise;
+      await tx.$queryRaw(Prisma.sql`
+        SELECT "document_revision_id"
+        FROM "subscription_closure_current_document"
+        WHERE "closure_case_id" = ${created.outcome.id}::uuid
+          AND "document_type" = 'EARLY_TERMINATION_AGREEMENT'::"subscription_closure_document_type"
+        FOR UPDATE
+      `);
+      projectionHeld.resolve();
+      await releaseHolder.promise;
+      holderUsable =
+        (await tx.subscriptionClosureDocumentRevision.count({
+          where: { closureCaseId: created.outcome.id }
+        })) === 1;
+    });
+    void holder.catch((error) => {
+      holderEntered.reject(error);
+      projectionHeld.reject(error);
+    });
+    await holderEntered.promise;
+
+    const contender = settled(
+      readCommitted(prisma, (tx) =>
+        repository.appendDocumentRevision(tx, {
+          ...documentCommand(data, created.outcome.id, {
+            documentType: "EARLY_TERMINATION_AGREEMENT",
+            expectedVersion: 1,
+            key: "document-reverse-holder-r2"
+          }),
+          expectedCurrentRevisionId: first.outcome.id
+        })
+      )
+    );
+    raceStarted.resolve();
+    const early = await settlesWithin(contender, 1_000);
+    try {
+      expect(early.finished).toBe(true);
+      if (!early.finished) throw new Error("Expected reverse document race to fail fast");
+      expectConflict(rejectedValue(early.value), SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
+      await projectionHeld.promise;
+    } finally {
+      releaseHolder.resolve();
+    }
+    await holder;
+    expect(holderUsable).toBe(true);
+    await expect(
+      prisma.subscriptionClosureDocumentRevision.count({
+        where: { closureCaseId: created.outcome.id }
+      })
+    ).resolves.toBe(1);
   });
 
   it("keeps independent current document families and advances only the successor family", async () => {
@@ -1063,6 +1287,14 @@ function readCommitted<T>(
     isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
     timeout: 10_000
   });
+}
+
+async function databaseNow(tx: Prisma.TransactionClient) {
+  const [row] = await tx.$queryRaw<Array<{ clockTimestamp: Date }>>(
+    Prisma.sql`SELECT clock_timestamp() AS "clockTimestamp"`
+  );
+  if (!row) throw new Error("PostgreSQL clock query returned no row");
+  return row.clockTimestamp;
 }
 
 function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {

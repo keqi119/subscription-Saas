@@ -123,7 +123,7 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
         contractESignTaskId: UUIDS.esign,
         documentSnapshot: { kind: "return manifest" },
         documentType: "RETURN_MANIFEST",
-        expectedCurrentRevisionId: null,
+        expectedCurrentRevisionId: UUIDS.predecessor,
         expectedVersion: 0,
         generatedAt: new Date("2026-08-21T03:00:00.000Z"),
         handoverWorkOrderId: UUIDS.handover,
@@ -141,16 +141,16 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       response: { code: SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH }
     });
 
-    const projection = database.timeline.indexOf("current-document-projection");
-    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:vehicle_return"));
-    expect(projection).toBeGreaterThan(
-      database.timeline.indexOf("authority-lock:vehicle_handover_work_order")
-    );
-    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:file_object"));
-    expect(projection).toBeGreaterThan(
-      database.timeline.indexOf("authority-lock:contract_esign_task")
-    );
-    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:user"));
+    expect(database.timeline).toEqual([
+      "authority-lock:subscription_closure_case",
+      "authority-lock:vehicle_return",
+      "authority-lock:vehicle_handover_work_order",
+      "current-document-projection",
+      "authority-lock:subscription_closure_document_revision",
+      "authority-lock:file_object",
+      "authority-lock:contract_esign_task",
+      "authority-lock:user"
+    ]);
   });
 
   it.each([
@@ -203,6 +203,7 @@ const UUIDS = {
   file: "10000000-0000-4000-8000-000000000006",
   handover: "10000000-0000-4000-8000-000000000007",
   order: "10000000-0000-4000-8000-000000000008",
+  predecessor: "10000000-0000-4000-8000-000000000010",
   vehicleReturn: "10000000-0000-4000-8000-000000000009"
 } as const;
 
@@ -311,7 +312,7 @@ function fakeDocumentTransaction() {
       }
       if (sql.includes("subscription_closure_current_document")) {
         timeline.push("current-document-projection");
-        return [];
+        return [{ documentRevisionId: UUIDS.predecessor }];
       }
       const table = extractTable(sql);
       timeline.push(`authority-lock:${table}`);

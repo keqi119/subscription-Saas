@@ -227,13 +227,18 @@ export function assertSubscriptionClosureTransition(
 }
 
 export function assertSubscriptionClosureEscalation(
-  before: SubscriptionClosureProfile,
+  before: SubscriptionClosureProfile & {
+    readonly physicalControlledAt: Date | string | null;
+    readonly status: SubscriptionClosureStatus;
+  },
   after: SubscriptionClosureProfile
 ): void {
   if (
     before.closureType !== "NORMAL_COMPLETION" ||
     before.physicalControlMode !== "VOLUNTARY_RETURN" ||
     before.finalDisposition !== "COMPLETE" ||
+    before.status !== "PREPARING_RETURN" ||
+    before.physicalControlledAt !== null ||
     after.closureType !== "NORMAL_COMPLETION" ||
     after.physicalControlMode !== "RECOVERY" ||
     after.finalDisposition !== "TERMINATE"

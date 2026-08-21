@@ -266,7 +266,6 @@ export class SubscriptionClosureRepository {
     if (replay) return replay;
 
     await this.lockAuthorityRows(tx, createCaseAuthorityLocks(command));
-    await assertDatabaseEventTime(tx, null, command.effectiveAt);
     const order = await tx.subscriptionOrder.findUnique({
       select: { contractId: true, customerId: true, vehicleId: true },
       where: { id: command.orderId }
@@ -314,6 +313,7 @@ export class SubscriptionClosureRepository {
         },
         include: CASE_INCLUDE
       });
+      const occurredAt = await databaseEventOccurrence(tx, created.id);
       const event = await createEvent(tx, {
         actorId: command.actorId,
         afterStatus: status,
@@ -321,7 +321,7 @@ export class SubscriptionClosureRepository {
         closureCaseId: created.id,
         detailSnapshot: command.authoritySnapshot,
         eventType: "CASE_CREATED",
-        occurredAt: command.effectiveAt,
+        occurredAt,
         sequence: 1,
         source: command.source
       });
@@ -477,11 +477,18 @@ export class SubscriptionClosureRepository {
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
     await assertDatabaseEventTime(tx, current.id, command.occurredAt);
     try {
-      assertSubscriptionClosureEscalation(profileOf(current), {
-        closureType: current.closureType,
-        finalDisposition: "TERMINATE",
-        physicalControlMode: "RECOVERY"
-      });
+      assertSubscriptionClosureEscalation(
+        {
+          ...profileOf(current),
+          physicalControlledAt: current.physicalControlledAt,
+          status: current.status
+        },
+        {
+          closureType: current.closureType,
+          finalDisposition: "TERMINATE",
+          physicalControlMode: "RECOVERY"
+        }
+      );
     } catch {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
     }
@@ -550,29 +557,22 @@ export class SubscriptionClosureRepository {
     ]);
     const currentCase = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(currentCase, command.expectedVersion);
-    await assertDatabaseEventTime(tx, currentCase.id, command.generatedAt);
-    const authorityLocks: SubscriptionClosureAuthorityLock[] = [
-      { id: command.actorId, mode: "SHARE", table: "user" },
-      { id: command.contractESignTaskId, mode: "SHARE", table: "contract_esign_task" },
-      { id: command.sourceFileId, mode: "SHARE", table: "file_object" }
-    ];
+    const lowerDocumentLocks: SubscriptionClosureAuthorityLock[] = [];
     if (command.vehicleReturnId) {
-      authorityLocks.push({ id: command.vehicleReturnId, mode: "SHARE", table: "vehicle_return" });
+      lowerDocumentLocks.push({
+        id: command.vehicleReturnId,
+        mode: "SHARE",
+        table: "vehicle_return"
+      });
     }
     if (command.handoverWorkOrderId) {
-      authorityLocks.push({
+      lowerDocumentLocks.push({
         id: command.handoverWorkOrderId,
         mode: "SHARE",
         table: "vehicle_handover_work_order"
       });
     }
-    if (command.signedFileId) {
-      authorityLocks.push({ id: command.signedFileId, mode: "SHARE", table: "file_object" });
-    }
-    for (const actorId of [command.signedBy, command.archivedBy]) {
-      if (actorId) authorityLocks.push({ id: actorId, mode: "SHARE", table: "user" });
-    }
-    await this.lockAuthorityRows(tx, authorityLocks);
+    await this.lockAuthorityRows(tx, lowerDocumentLocks);
     const currentProjection = await lockCurrentDocumentProjection(
       tx,
       command.closureCaseId,
@@ -590,6 +590,22 @@ export class SubscriptionClosureRepository {
         }
       ]);
     }
+    const higherDocumentLocks: SubscriptionClosureAuthorityLock[] = [
+      { id: command.actorId, mode: "SHARE", table: "user" },
+      { id: command.contractESignTaskId, mode: "SHARE", table: "contract_esign_task" },
+      { id: command.sourceFileId, mode: "SHARE", table: "file_object" }
+    ];
+    if (command.signedFileId) {
+      higherDocumentLocks.push({
+        id: command.signedFileId,
+        mode: "SHARE",
+        table: "file_object"
+      });
+    }
+    for (const actorId of [command.signedBy, command.archivedBy]) {
+      if (actorId) higherDocumentLocks.push({ id: actorId, mode: "SHARE", table: "user" });
+    }
+    await this.lockAuthorityRows(tx, higherDocumentLocks);
     await assertDocumentAuthorityCoherence(tx, currentCase, command);
 
     const predecessor = currentProjection
@@ -648,6 +664,7 @@ export class SubscriptionClosureRepository {
         data: { updatedBy: command.actorId, version: { increment: 1 } },
         where: { id: currentCase.id }
       });
+      const occurredAt = await databaseEventOccurrence(tx, currentCase.id);
       const event = await createEvent(tx, {
         actorId: command.actorId,
         afterStatus: currentCase.status,
@@ -659,7 +676,7 @@ export class SubscriptionClosureRepository {
           revisionNumber: created.revisionNumber
         },
         eventType: "DOCUMENT_REVISION_CREATED",
-        occurredAt: command.generatedAt,
+        occurredAt,
         sequence: currentCase.version + 2,
         source: command.source
       });
@@ -1093,6 +1110,10 @@ function assertDocumentShape(command: AppendSubscriptionClosureDocumentCommand):
   if (
     signing === "PARTIAL" ||
     archiving === "PARTIAL" ||
+    (command.signedAt !== null && command.signedAt.getTime() < command.generatedAt.getTime()) ||
+    (command.archivedAt !== null &&
+      command.signedAt !== null &&
+      command.archivedAt.getTime() < command.signedAt.getTime()) ||
     (command.stage === "GENERATED" && (signing === "PRESENT" || archiving === "PRESENT")) ||
     (command.stage === "SIGNED" && (signing !== "PRESENT" || archiving === "PRESENT")) ||
     (command.stage === "ARCHIVED" && (signing !== "PRESENT" || archiving !== "PRESENT"))
@@ -1664,6 +1685,34 @@ async function assertDatabaseEventTime(
   closureCaseId: string | null,
   occurredAt: Date
 ): Promise<void> {
+  const boundary = await databaseEventBoundary(tx, closureCaseId);
+  if (
+    occurredAt.getTime() > boundary.clockTimestamp.getTime() ||
+    (boundary.latestOccurredAt !== null &&
+      occurredAt.getTime() < boundary.latestOccurredAt.getTime())
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+}
+
+async function databaseEventOccurrence(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string
+): Promise<Date> {
+  const boundary = await databaseEventBoundary(tx, closureCaseId);
+  if (
+    boundary.latestOccurredAt !== null &&
+    boundary.clockTimestamp.getTime() < boundary.latestOccurredAt.getTime()
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+  return boundary.clockTimestamp;
+}
+
+async function databaseEventBoundary(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string | null
+): Promise<{ clockTimestamp: Date; latestOccurredAt: Date | null }> {
   const [boundary] = await tx.$queryRaw<
     Array<{ clockTimestamp: Date; latestOccurredAt: Date | null }>
   >(Prisma.sql`
@@ -1674,14 +1723,10 @@ async function assertDatabaseEventTime(
              WHERE "closure_case_id" = ${closureCaseId}::uuid
            ) END AS "latestOccurredAt"
   `);
-  if (
-    !boundary ||
-    occurredAt.getTime() > boundary.clockTimestamp.getTime() ||
-    (boundary.latestOccurredAt !== null &&
-      occurredAt.getTime() < boundary.latestOccurredAt.getTime())
-  ) {
+  if (!boundary) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
   }
+  return boundary;
 }
 
 function assertExpectedCase(

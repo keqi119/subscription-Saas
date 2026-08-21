@@ -6,6 +6,7 @@ import { AssetAccountingModule } from "../asset-accounting/asset-accounting.modu
 import { AuditModule } from "../audit/audit.module";
 import { HandoverWorkOrderModule } from "../handover-work-order/handover-work-order.module";
 import { PrismaModule } from "../prisma/prisma.module";
+import { VehicleMileageModule } from "../vehicle-mileage/vehicle-mileage.module";
 import { SubscriptionClosureRepository } from "./subscription-closure.repository";
 import { SubscriptionClosureService } from "./subscription-closure.service";
 
@@ -17,7 +18,8 @@ import { SubscriptionClosureService } from "./subscription-closure.service";
     AssetOperationsModule,
     AuditModule,
     HandoverWorkOrderModule,
-    PrismaModule
+    PrismaModule,
+    VehicleMileageModule
   ],
   providers: [SubscriptionClosureRepository, SubscriptionClosureService]
 })

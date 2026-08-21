@@ -34,6 +34,8 @@ import { SubscriptionExpiryService } from "../src/subscription-change/subscripti
 import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
 import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
+import { VehicleMileageRepository } from "../src/vehicle-mileage/vehicle-mileage.repository";
+import { VehicleMileageService } from "../src/vehicle-mileage/vehicle-mileage.service";
 
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL ??
@@ -283,7 +285,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       batteryCheckedConfirmed: true,
       chargingEquipmentReturnedConfirmed: true,
       customerItemsClearedConfirmed: true,
-      damageFound: false,
+      damageFound: true,
       exteriorCheckedConfirmed: true,
       interiorCheckedConfirmed: true,
       keysReturnedConfirmed: true,
@@ -444,12 +446,22 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         audit,
         prisma,
         facts,
-        accounting
+        accounting,
+        new VehicleMileageService(prisma, new VehicleMileageRepository())
       );
       const receipt = {
         actorId: fixture.actorId,
         checklist,
-        damages: [],
+        damages: [
+          {
+            damageLevel: "MEDIUM",
+            damageType: "EXTERIOR",
+            description: "Rear door scratch",
+            estimatedRepairAmount: 3600n,
+            photoUrls: ["https://evidence.invalid/rear-door-1.jpg", "rear-door-2.jpg"],
+            responsibleParty: "CUSTOMER"
+          }
+        ],
         orderId: fixture.orderId,
         physicalControlMode: "VOLUNTARY_RETURN" as const,
         remark: "received",
@@ -484,7 +496,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         failpointAudit,
         prisma,
         new AssetFactsService(prisma, new AssetFactsRepository(), failpointAudit),
-        failpointAccounting
+        failpointAccounting,
+        new VehicleMileageService(prisma, new VehicleMileageRepository())
       );
       const baselineAuditCount = await prisma.auditLog.count({
         where: { operatorId: fixture.actorId }
@@ -492,6 +505,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       for (failingAuditEntity of [
         "vehicle_subscription_period",
         "vehicle_return",
+        "vehicle_return_damage",
+        "vehicle_mileage_reading",
         "subscription_order",
         "lease",
         "vehicle",
@@ -511,6 +526,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           workOrder,
           restrictions,
           mileage,
+          damages,
           currentCase,
           auditCount
         ] = await Promise.all([
@@ -526,6 +542,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           }),
           prisma.vehicleOperationalRestriction.count({ where: { vehicleId: fixture.vehicleId } }),
           prisma.vehicleMileageReading.count({ where: { orderId: fixture.orderId } }),
+          prisma.vehicleReturnDamage.count({ where: { orderId: fixture.orderId } }),
           prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
           prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
         ]);
@@ -534,6 +551,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           caseStatus: currentCase.status,
           leaseStatus: lease.status,
           mileage,
+          damages,
           orderStatus: order.orderStatus,
           periodEndedAt: period.endedAt,
           restrictions,
@@ -545,6 +563,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           caseStatus: "PREPARING_RETURN",
           leaseStatus: "RETURN_DUE",
           mileage: 0,
+          damages: 0,
           orderStatus: "PENDING_RETURN",
           periodEndedAt: null,
           restrictions: 0,
@@ -554,6 +573,36 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         });
       }
       failingAuditEntity = null;
+
+      for (const invalidStatus of [
+        OrderStatus.ACTIVE,
+        OrderStatus.COMPLETED,
+        OrderStatus.TERMINATED,
+        OrderStatus.CANCELLED
+      ]) {
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await tx.subscriptionOrder.update({
+            data: { orderStatus: invalidStatus },
+            where: { id: fixture.orderId }
+          });
+        });
+        const invalidStatusTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        });
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
+          invalidStatusTruth
+        );
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await tx.subscriptionOrder.update({
+            data: { orderStatus: OrderStatus.PENDING_RETURN },
+            where: { id: fixture.orderId }
+          });
+        });
+      }
 
       const holderBarrier = createBarrier();
       const holder = prisma.$transaction(async (tx) => {
@@ -592,7 +641,11 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         orderStatus: "RETURNED_PENDING_SETTLEMENT"
       });
       expect(baseline[2]).toMatchObject({ status: "COMPLETED" });
-      expect(baseline[3]).toMatchObject({ status: "RETURNED" });
+      expect(baseline[3]).toMatchObject({
+        currentMileageKm: 1200,
+        salePriceReinitRequiredAt: expect.any(Date),
+        status: "MAINTENANCE"
+      });
       expect(baseline[4]).toEqual([
         expect.objectContaining({
           restrictionType: "RETURN_INSPECTION_PENDING",
@@ -600,22 +653,105 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           status: "ACTIVE"
         })
       ]);
+      await expect(
+        prisma.vehicleReturnDamage.findMany({
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          where: { orderId: fixture.orderId }
+        })
+      ).resolves.toEqual([
+        expect.objectContaining({
+          damageLevel: "MEDIUM",
+          damageType: "EXTERIOR",
+          description: "Rear door scratch",
+          estimatedRepairAmount: 3600n,
+          photoUrls: ["https://evidence.invalid/rear-door-1.jpg", "rear-door-2.jpg"],
+          responsibleParty: "CUSTOMER",
+          status: "RECORDED"
+        })
+      ]);
+      await expect(
+        prisma.auditLog.findMany({
+          select: { entityType: true },
+          where: {
+            entityType: { in: ["vehicle_return_damage", "vehicle_mileage_reading"] },
+            operatorId: fixture.actorId
+          }
+        })
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          { entityType: "vehicle_return_damage" },
+          { entityType: "vehicle_mileage_reading" }
+        ])
+      );
 
+      const exactReplayTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
       await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).resolves.toEqual({
         vehicleReturnId: closureCase.vehicleReturnId
       });
-      await expect(
-        Promise.all([
-          prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
-          prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } }),
-          prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } }),
-          prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
-          prisma.vehicleOperationalRestriction.findMany({
-            where: { vehicleId: fixture.vehicleId }
-          }),
-          prisma.subscriptionClosureEvent.findMany({ where: { closureCaseId: closureCase.id } })
-        ])
-      ).resolves.toEqual(baseline);
+      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(exactReplayTruth);
+      for (const driftedReceipt of [
+        { ...receipt, remark: "different remark" },
+        { ...receipt, returnMileageKm: receipt.returnMileageKm + 1 },
+        { ...receipt, returnedAt: new Date(receipt.returnedAt.getTime() + 1) },
+        { ...receipt, returnType: "EARLY_TERMINATION" as const },
+        { ...receipt, checklist: { ...receipt.checklist, damageFound: false } },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, description: "different description" }]
+        },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, estimatedRepairAmount: 3601n }]
+        },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, photoUrls: ["different-photo.jpg"] }]
+        },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, responsibleParty: "COMPANY" }]
+        },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, damageLevel: "SEVERE" }]
+        },
+        {
+          ...receipt,
+          damages: [{ ...receipt.damages[0]!, damageType: "INTERIOR" }]
+        }
+      ]) {
+        await expect(
+          closure.confirmManagedPhysicalReceipt(driftedReceipt, {})
+        ).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+          status: 409
+        });
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
+          exactReplayTruth
+        );
+      }
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleReturn.update({
+          data: { remark: "persisted fact drift" },
+          where: { id: closureCase.vehicleReturnId! }
+        });
+      });
+      const persistedDriftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
+        persistedDriftTruth
+      );
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleReturn.update({
+          data: { remark: receipt.remark },
+          where: { id: closureCase.vehicleReturnId! }
+        });
+      });
 
       const submittedAt = occurredAt;
       await operations.transitionWorkOrder(
@@ -692,6 +828,49 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         occurredAt: inspectionAt,
         reconditioningRequired: true
       };
+      await expect(
+        closure.recordManagedReturnInspection(
+          {
+            ...inspectionCommand,
+            costs: [],
+            evidence: [],
+            reconditioningRequired: false
+          },
+          {}
+        )
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+        status: 409
+      });
+      for (const actionType of [
+        "RESPONSIBILITY_CONFIRMED",
+        "RECOVERY_EXPOSURE",
+        "RECOVERY_RECEIVED",
+        "WAIVER",
+        "WRITE_OFF"
+      ] as const) {
+        await expect(
+          closure.recordManagedReturnInspection(
+            {
+              ...inspectionCommand,
+              costs: [{ ...inspectionCommand.costs[0]!, actionType }]
+            },
+            {}
+          )
+        ).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        });
+      }
+      await expect(
+        Promise.all([
+          prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
+          prisma.assetWorkOrderEvidence.count({
+            where: { workOrderId: closureCase.returnAssetWorkOrderId! }
+          }),
+          prisma.vehicleCostLedgerEntry.count({ where: { orderId: fixture.orderId } })
+        ])
+      ).resolves.toEqual([expect.objectContaining({ status: "RETURN_INSPECTION" }), 0, 0]);
       for (failingAuditEntity of [
         "asset_work_order_evidence",
         "vehicle_cost_ledger_entry",
@@ -810,6 +989,45 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       ).resolves.toMatchObject({ case: { status: "PENDING_SETTLEMENT" } });
 
       const releaseAt = occurredAt;
+      const intendedRestriction = await prisma.vehicleOperationalRestriction.findFirstOrThrow({
+        where: {
+          startSourceId: closureCase.id,
+          startSourceKey: "return-inspection-restriction",
+          startSourceType: "SUBSCRIPTION_CLOSURE"
+        }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleOperationalRestriction.update({
+          data: { startSourceKey: "unrelated-return-inspection-restriction" },
+          where: { id: intendedRestriction.id }
+        });
+      });
+      const missingRestrictionTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      await expect(
+        closure.releaseManagedReturnInventory(
+          {
+            actorId: fixture.actorId,
+            closureCaseId: closureCase.id,
+            occurredAt: releaseAt,
+            releaseReason: "inspection accepted"
+          },
+          {}
+        )
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+        status: 409
+      });
+      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
+        missingRestrictionTruth
+      );
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleOperationalRestriction.update({
+          data: { startSourceKey: "return-inspection-restriction" },
+          where: { id: intendedRestriction.id }
+        });
+      });
       await expect(
         closure.releaseManagedReturnInventory(
           {
@@ -854,7 +1072,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
             prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } })
           ])
         ).resolves.toEqual([
-          expect.objectContaining({ status: "RETURNED" }),
+          expect.objectContaining({ status: "MAINTENANCE" }),
           expect.objectContaining({ status: "ACTIVE" }),
           expect.objectContaining({ status: "PENDING_SETTLEMENT" })
         ]);
@@ -876,6 +1094,246 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
   }, 20_000);
+
+  it("focuses physical receipt replay over every touched fact and audit", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma);
+    try {
+      await expect(
+        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
+      ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
+      const truth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      await expect(
+        scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {})
+      ).resolves.toEqual({ vehicleReturnId: scenario.closureCase.vehicleReturnId });
+      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(truth);
+      await expect(
+        scenario.closure.confirmManagedPhysicalReceipt(
+          {
+            ...scenario.receipt,
+            damages: [
+              {
+                ...scenario.receipt.damages[0]!,
+                description: "focused conflicting damage"
+              }
+            ]
+          },
+          {}
+        )
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(truth);
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  });
+
+  it("focuses inspection evidence and actual-cost acceptance", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma);
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      await closeFocusedInspectionWorkOrder(scenario);
+      const before = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      await expect(
+        scenario.closure.recordManagedReturnInspection(
+          focusedInspectionCommand(scenario, false),
+          {}
+        )
+      ).resolves.toMatchObject({ case: { status: "PENDING_SETTLEMENT" } });
+      const after = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      expect(after).not.toEqual(before);
+      expect(after[10]).toEqual([
+        expect.objectContaining({
+          action: "ATTACH",
+          evidenceType: "INSPECTION_REPORT",
+          workOrderId: scenario.closureCase.returnAssetWorkOrderId
+        })
+      ]);
+      await expect(
+        prisma.vehicleCostLedgerEntry.findMany({ where: { orderId: scenario.fixture.orderId } })
+      ).resolves.toEqual([
+        expect.objectContaining({ actionType: "ACTUAL_COST", amountCents: 2500n })
+      ]);
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  });
+
+  it("focuses governed reconditioning and its cost-confirmed acceptance gate", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma);
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      await closeFocusedInspectionWorkOrder(scenario);
+      await expect(
+        scenario.closure.recordManagedReturnInspection(focusedInspectionCommand(scenario, true), {})
+      ).resolves.toMatchObject({ case: { status: "RECONDITIONING" } });
+      const reconditioningCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+        where: { id: scenario.closureCase.id }
+      });
+      const workOrderId = reconditioningCase.reconditioningAssetWorkOrderId!;
+      for (const [expectedVersion, targetStatus] of [
+        [0, "IN_PROGRESS"],
+        [1, "PENDING_ACCEPTANCE"],
+        [2, "PENDING_COST_CONFIRMATION"]
+      ] as const) {
+        await scenario.operations.transitionWorkOrder(
+          {
+            closeReason: null,
+            detailSnapshot: { targetStatus },
+            expectedVersion,
+            occurredAt: scenario.occurredAt,
+            solution: null,
+            source: {
+              id: scenario.closureCase.id,
+              key: `focused-reconditioning-${expectedVersion}`,
+              type: "TASK4_TEST"
+            },
+            targetStatus,
+            workOrderId
+          },
+          { actorId: scenario.fixture.actorId, permissions: [] }
+        );
+      }
+      const costSource = {
+        id: scenario.closureCase.id,
+        key: "focused-reconditioning-cost",
+        type: "TASK4_TEST"
+      };
+      await scenario.accounting.appendCost(
+        {
+          actionType: "ACTUAL_COST",
+          accountingPeriod: "2026-08",
+          amountCents: 7500n,
+          assetOwnerId: null,
+          assetOwnerSnapshot: null,
+          confirmedAt: scenario.occurredAt,
+          contractId: scenario.fixture.contractId,
+          costCategory: "CLEANING",
+          customerId: scenario.fixture.customerId,
+          evidenceId: null,
+          evidenceSnapshot: null,
+          occurredOn: new Date("2026-08-21T00:00:00.000Z"),
+          orderId: scenario.fixture.orderId,
+          reason: "focused reconditioning cost",
+          responsiblePartyId: scenario.fixture.customerId,
+          responsiblePartyType: "CUSTOMER",
+          responsibilitySnapshot: { basis: "focused reconditioning" },
+          source: costSource,
+          vehicleId: scenario.fixture.vehicleId,
+          workOrderId
+        },
+        {
+          actorId: scenario.fixture.actorId,
+          idempotencyKey: costSource.key,
+          permissions: [ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM]
+        }
+      );
+      await scenario.operations.transitionWorkOrder(
+        {
+          closeReason: "focused reconditioning accepted",
+          detailSnapshot: { accepted: true },
+          expectedVersion: 3,
+          occurredAt: scenario.occurredAt,
+          solution: "accepted",
+          source: {
+            id: scenario.closureCase.id,
+            key: "focused-reconditioning-close",
+            type: "TASK4_TEST"
+          },
+          targetStatus: "CLOSED",
+          workOrderId
+        },
+        { actorId: scenario.fixture.actorId, permissions: [] }
+      );
+      await expect(
+        scenario.closure.recordManagedReturnInspection(
+          {
+            accepted: true,
+            actorId: scenario.fixture.actorId,
+            closureCaseId: scenario.closureCase.id,
+            costs: [],
+            evidence: [],
+            occurredAt: scenario.occurredAt,
+            reconditioningRequired: false
+          },
+          {}
+        )
+      ).resolves.toMatchObject({ case: { status: "PENDING_SETTLEMENT" } });
+      await expect(
+        prisma.assetWorkOrder.findUniqueOrThrow({ where: { id: workOrderId } })
+      ).resolves.toMatchObject({ costConfirmationRequired: true, status: "CLOSED" });
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  });
+
+  it("focuses inventory release on the exact closure restriction", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma);
+    try {
+      await scenario.closure.confirmManagedPhysicalReceipt(scenario.receipt, {});
+      await closeFocusedInspectionWorkOrder(scenario);
+      await scenario.closure.recordManagedReturnInspection(
+        focusedInspectionCommand(scenario, false),
+        {}
+      );
+      await prisma.vehicle.update({
+        data: { currentSalePriceAmount: 10000000n, salePriceStatus: "EFFECTIVE" },
+        where: { id: scenario.fixture.vehicleId }
+      });
+      const restriction = await prisma.vehicleOperationalRestriction.findFirstOrThrow({
+        where: {
+          startSourceId: scenario.closureCase.id,
+          startSourceKey: "return-inspection-restriction",
+          startSourceType: "SUBSCRIPTION_CLOSURE"
+        }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleOperationalRestriction.update({
+          data: { startSourceKey: "focused-unrelated-restriction" },
+          where: { id: restriction.id }
+        });
+      });
+      const driftTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      const releaseCommand = {
+        actorId: scenario.fixture.actorId,
+        closureCaseId: scenario.closureCase.id,
+        occurredAt: scenario.occurredAt,
+        releaseReason: "focused inspection accepted"
+      };
+      await expect(
+        scenario.closure.releaseManagedReturnInventory(releaseCommand, {})
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+        status: 409
+      });
+      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(
+        driftTruth
+      );
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.vehicleOperationalRestriction.update({
+          data: { startSourceKey: "return-inspection-restriction" },
+          where: { id: restriction.id }
+        });
+      });
+      await expect(
+        scenario.closure.releaseManagedReturnInventory(releaseCommand, {})
+      ).resolves.toEqual({
+        closureCaseId: scenario.closureCase.id,
+        vehicleId: scenario.fixture.vehicleId
+      });
+      await expect(
+        prisma.vehicleOperationalRestriction.findUniqueOrThrow({ where: { id: restriction.id } })
+      ).resolves.toMatchObject({ status: "RELEASED" });
+      await expect(
+        prisma.vehicle.findUniqueOrThrow({ where: { id: scenario.fixture.vehicleId } })
+      ).resolves.toMatchObject({ status: "AVAILABLE" });
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  });
 
   it("requires live snapshot-bound recovery approval and execution evidence", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
@@ -944,11 +1402,20 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const sourceFileId = randomUUID();
       const signedFileId = randomUUID();
       const eSignTaskId = randomUUID();
+      const correctedESignTaskId = randomUUID();
       const documentSnapshot = {
+        caseNo: closureCase.caseNo,
         closureCaseId: closureCase.id,
+        contractId: fixture.contractId,
+        customerId: fixture.customerId,
+        documentType: "RECOVERY_AUTHORITY",
+        finalDisposition: "TERMINATE",
         orderId: fixture.orderId,
+        physicalControlMode: "RECOVERY",
         recoveryAssetWorkOrderId: recovery.workOrder.id,
-        vehicleId: fixture.vehicleId
+        recoveryWorkOrderType: "RECOVERY",
+        vehicleId: fixture.vehicleId,
+        vehicleReturnId: closureCase.vehicleReturnId
       };
       const documentHash = createHash("sha256")
         .update(canonicalSubscriptionClosureJson(documentSnapshot))
@@ -1008,7 +1475,11 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
             id: eSignTaskId,
             orderId: fixture.orderId,
             provider: "OTHER",
-            requestSnapshot: { documentSnapshotHash: driftedDocumentHash },
+            requestSnapshot: {
+              documentSnapshotHash: driftedDocumentHash,
+              sourceFileHash: driftedDocumentHash,
+              sourceFileId
+            },
             responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId },
             signedDocumentObjectKey: `subscription-closure/${closureCase.id}/recovery-signed.pdf`,
             signingStage: "STAGE2_DELIVERY_HANDOVER",
@@ -1090,7 +1561,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         audit,
         prisma,
         new AssetFactsService(prisma, new AssetFactsRepository(), audit),
-        accounting
+        accounting,
+        new VehicleMileageService(prisma, new VehicleMileageRepository())
       );
       const receipt = {
         actorId: fixture.actorId,
@@ -1107,12 +1579,39 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" }
       });
       await prisma.$transaction(async (tx) => {
+        await tx.contractESignTask.create({
+          data: {
+            completedAt: occurredAt,
+            contractId: fixture.contractId,
+            createdBy: fixture.actorId,
+            customerId: fixture.customerId,
+            documentObjectKey: `subscription-closure/${closureCase.id}/recovery-source.pdf`,
+            documentType: "DELIVERY_HANDOVER",
+            id: correctedESignTaskId,
+            orderId: fixture.orderId,
+            provider: "OTHER",
+            requestSnapshot: {
+              documentSnapshotHash: documentHash,
+              sourceFileHash: documentHash,
+              sourceFileId
+            },
+            responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId },
+            signedDocumentObjectKey: `subscription-closure/${closureCase.id}/recovery-signed.pdf`,
+            signingStage: "STAGE2_DELIVERY_HANDOVER",
+            sourceId: closureCase.id,
+            sourceKey: "task-4-recovery-authority:2",
+            sourceType: "TASK4_TEST",
+            taskNo: `ESG-TASK4-REC-${correctedESignTaskId}`,
+            taskStatus: "COMPLETED",
+            updatedBy: fixture.actorId
+          }
+        });
         await tx.subscriptionClosureDocumentRevision.create({
           data: {
             archivedAt: occurredAt,
             archivedBy: fixture.actorId,
             closureCaseId: closureCase.id,
-            contractESignTaskId: eSignTaskId,
+            contractESignTaskId: correctedESignTaskId,
             documentSnapshot,
             documentSnapshotHash: documentHash,
             documentType: "RECOVERY_AUTHORITY",
@@ -1245,6 +1744,201 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           workOrderId: recovery.workOrder.id
         }
       });
+      const expectRecoveryAuthorityDrift = async (
+        mutate: () => Promise<unknown>,
+        restore: () => Promise<unknown>
+      ) => {
+        await mutate();
+        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        });
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(driftTruth);
+        await restore();
+      };
+      const restoreSemanticAuthority = () =>
+        prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await tx.subscriptionClosureDocumentRevision.update({
+            data: {
+              documentSnapshot,
+              documentSnapshotHash: documentHash,
+              sourceFileHash: documentHash
+            },
+            where: { id: correctedRevisionId }
+          });
+          await tx.contractESignTask.update({
+            data: {
+              requestSnapshot: {
+                documentSnapshotHash: documentHash,
+                sourceFileHash: documentHash,
+                sourceFileId
+              }
+            },
+            where: { id: correctedESignTaskId }
+          });
+          await tx.businessExceptionApproval.update({
+            data: {
+              subjectSnapshot: correctedApprovalSnapshot,
+              subjectSnapshotHash: correctedApprovalHash
+            },
+            where: { id: correctedApprovalId }
+          });
+        });
+      for (const [field, value] of [
+        ["orderId", randomUUID()],
+        ["vehicleId", randomUUID()],
+        ["recoveryAssetWorkOrderId", randomUUID()]
+      ] as const) {
+        const semanticDriftSnapshot = { ...documentSnapshot, [field]: value };
+        const semanticDriftHash = createHash("sha256")
+          .update(canonicalSubscriptionClosureJson(semanticDriftSnapshot))
+          .digest("hex");
+        const semanticDriftApprovalSnapshot = {
+          ...correctedApprovalSnapshot,
+          recoveryAuthoritySnapshotHash: semanticDriftHash
+        };
+        await expectRecoveryAuthorityDrift(
+          () =>
+            prisma.$transaction(async (tx) => {
+              await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+              await tx.subscriptionClosureDocumentRevision.update({
+                data: {
+                  documentSnapshot: semanticDriftSnapshot,
+                  documentSnapshotHash: semanticDriftHash,
+                  sourceFileHash: semanticDriftHash
+                },
+                where: { id: correctedRevisionId }
+              });
+              await tx.contractESignTask.update({
+                data: {
+                  requestSnapshot: {
+                    documentSnapshotHash: semanticDriftHash,
+                    sourceFileHash: semanticDriftHash,
+                    sourceFileId
+                  }
+                },
+                where: { id: correctedESignTaskId }
+              });
+              await tx.businessExceptionApproval.update({
+                data: {
+                  subjectSnapshot: semanticDriftApprovalSnapshot,
+                  subjectSnapshotHash: createHash("sha256")
+                    .update(canonicalSubscriptionClosureJson(semanticDriftApprovalSnapshot))
+                    .digest("hex")
+                },
+                where: { id: correctedApprovalId }
+              });
+            }),
+          restoreSemanticAuthority
+        );
+      }
+      const sourceObjectKey = `subscription-closure/${closureCase.id}/recovery-source.pdf`;
+      const signedObjectKey = `subscription-closure/${closureCase.id}/recovery-signed.pdf`;
+      const withReplica = (run: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+        prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          return run(tx);
+        });
+      for (const [mutate, restore] of [
+        [
+          () =>
+            withReplica((tx) =>
+              tx.fileObject.update({
+                data: { objectKey: `${sourceObjectKey}.drift` },
+                where: { id: sourceFileId }
+              })
+            ),
+          () =>
+            withReplica((tx) =>
+              tx.fileObject.update({
+                data: { objectKey: sourceObjectKey },
+                where: { id: sourceFileId }
+              })
+            )
+        ],
+        [
+          () =>
+            withReplica((tx) =>
+              tx.fileObject.update({
+                data: { objectKey: `${signedObjectKey}.drift` },
+                where: { id: signedFileId }
+              })
+            ),
+          () =>
+            withReplica((tx) =>
+              tx.fileObject.update({
+                data: { objectKey: signedObjectKey },
+                where: { id: signedFileId }
+              })
+            )
+        ],
+        [
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: { sourceKey: "drifted-esign-source" },
+                where: { id: correctedESignTaskId }
+              })
+            ),
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: { sourceKey: "task-4-recovery-authority:2" },
+                where: { id: correctedESignTaskId }
+              })
+            )
+        ],
+        [
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: {
+                  requestSnapshot: {
+                    documentSnapshotHash: documentHash,
+                    sourceFileHash: documentHash,
+                    sourceFileId: signedFileId
+                  }
+                },
+                where: { id: correctedESignTaskId }
+              })
+            ),
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: {
+                  requestSnapshot: {
+                    documentSnapshotHash: documentHash,
+                    sourceFileHash: documentHash,
+                    sourceFileId
+                  }
+                },
+                where: { id: correctedESignTaskId }
+              })
+            )
+        ],
+        [
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: {
+                  responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId: sourceFileId }
+                },
+                where: { id: correctedESignTaskId }
+              })
+            ),
+          () =>
+            withReplica((tx) =>
+              tx.contractESignTask.update({
+                data: { responseSnapshot: { signedFileHash: "d".repeat(64), signedFileId } },
+                where: { id: correctedESignTaskId }
+              })
+            )
+        ]
+      ] as const) {
+        await expectRecoveryAuthorityDrift(mutate, restore);
+      }
       const competingModes = await Promise.allSettled([
         closure.confirmManagedPhysicalReceipt(receipt, {}),
         closure.confirmManagedPhysicalReceipt(
@@ -1258,12 +1952,39 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         status: "fulfilled",
         value: { vehicleReturnId: closureCase.vehicleReturnId }
       });
+      expect(competingModes[1]).toMatchObject({
+        reason: {
+          response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
+          status: 409
+        },
+        status: "rejected"
+      });
       await expect(
         prisma.vehicleSubscriptionPeriod.findFirstOrThrow({ where: { orderId: fixture.orderId } })
       ).resolves.toMatchObject({ endReason: "RECOVERY_CONFIRMED" });
       await expect(
         prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } })
       ).resolves.toMatchObject({ status: "RETURN_INSPECTION" });
+      const recoveryTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      expect(recoveryTruth[4]).toMatchObject({
+        remark: "vehicle secured",
+        returnMileageKm: 1300,
+        returnStatus: "CONFIRMED",
+        returnType: "EARLY_TERMINATION",
+        returnedAt: occurredAt
+      });
+      expect(recoveryTruth[7]).toEqual([
+        expect.objectContaining({ mileageKm: 1300, sourceType: "RETURN_CONFIRMATION" })
+      ]);
+      expect(recoveryTruth[11]).toEqual([
+        expect.objectContaining({
+          restrictionType: "RETURN_INSPECTION_PENDING",
+          startSourceId: closureCase.id,
+          startSourceKey: "return-inspection-restriction",
+          startSourceType: "SUBSCRIPTION_CLOSURE",
+          status: "ACTIVE"
+        })
+      ]);
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
       await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
@@ -2329,6 +3050,330 @@ async function createManagedExpiryFixture(prisma: PrismaService) {
     { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
   );
   return { ...fixture, actorId, contractId };
+}
+
+async function setupFocusedPhysicalReceipt(prisma: PrismaService) {
+  const fixture = await createManagedExpiryFixture(prisma);
+  const checklist = {
+    batteryCheckedConfirmed: true,
+    chargingEquipmentReturnedConfirmed: true,
+    customerItemsClearedConfirmed: true,
+    damageFound: true,
+    exteriorCheckedConfirmed: true,
+    interiorCheckedConfirmed: true,
+    keysReturnedConfirmed: true,
+    mileageConfirmed: true,
+    vehicleDocumentsReturnedConfirmed: true,
+    violationCheckedConfirmed: true
+  };
+  const expiry = createGovernedExpiryService(prisma);
+  await expiry.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+  await runManagedPrepare(prisma, createGovernedClosureService(prisma), fixture);
+  const occurredAt = (
+    await prisma.subscriptionClosureEvent.findFirstOrThrow({
+      orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+      where: { closureCase: { orderId: fixture.orderId } }
+    })
+  ).occurredAt;
+  await prisma.vehicleSubscriptionPeriod.create({
+    data: {
+      contractId: fixture.contractId,
+      contractSegmentId: fixture.segmentId,
+      createdBy: fixture.actorId,
+      customerId: fixture.customerId,
+      orderId: fixture.orderId,
+      startConfirmedAt: new Date("2026-03-03T02:00:00.000Z"),
+      startConfirmedBy: fixture.actorId,
+      startReason: "DELIVERY_CONFIRMED",
+      startSnapshot: { fixture: "task-4-focused" },
+      startSourceId: fixture.orderId,
+      startSourceKey: "task-4-focused-open-subscription",
+      startSourceType: "TASK4_TEST",
+      startedAt: new Date("2026-03-03T02:00:00.000Z"),
+      vehicleId: fixture.vehicleId
+    }
+  });
+  const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+    where: { orderId: fixture.orderId }
+  });
+  const revisionOne = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
+    where: { closureCaseId: closureCase.id, documentType: "RETURN_MANIFEST" }
+  });
+  const checklistHash = createHash("sha256")
+    .update(canonicalSubscriptionClosureJson(checklist))
+    .digest("hex");
+  const documentSnapshot = {
+    ...(revisionOne.documentSnapshot as Prisma.JsonObject),
+    returnChecklistSnapshotHash: checklistHash
+  };
+  const documentHash = createHash("sha256")
+    .update(canonicalSubscriptionClosureJson(documentSnapshot))
+    .digest("hex");
+  const signedFileId = randomUUID();
+  const signedFileHash = "b".repeat(64);
+  const revisionId = randomUUID();
+  const revisionTaskId = randomUUID();
+  const revisionSource = {
+    id: closureCase.id,
+    key: "focused-return-manifest:2",
+    type: "SUBSCRIPTION_CLOSURE"
+  };
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleReturn.update({
+      data: {
+        ...checklist,
+        checklistSnapshot: checklist,
+        returnStatus: "READY",
+        updatedBy: fixture.actorId
+      },
+      where: { orderId: fixture.orderId }
+    });
+    const sourceFile = await tx.fileObject.findUniqueOrThrow({
+      where: { id: revisionOne.sourceFileId }
+    });
+    const signedObjectKey = `subscription-closure/${closureCase.id}/focused-return-manifest-signed.pdf`;
+    await tx.fileObject.create({
+      data: {
+        bucket: sourceFile.bucket,
+        id: signedFileId,
+        mimeType: "application/pdf",
+        objectKey: signedObjectKey,
+        originalName: `${closureCase.caseNo}-focused-return-manifest-signed.pdf`,
+        sizeBytes: 128n,
+        uploadedBy: fixture.actorId
+      }
+    });
+    await tx.contractESignTask.create({
+      data: {
+        completedAt: occurredAt,
+        contractId: fixture.contractId,
+        createdBy: fixture.actorId,
+        customerId: fixture.customerId,
+        documentObjectKey: sourceFile.objectKey,
+        documentType: "DELIVERY_HANDOVER",
+        id: revisionTaskId,
+        orderId: fixture.orderId,
+        provider: "OTHER",
+        requestSnapshot: { documentSnapshotHash: documentHash },
+        responseSnapshot: { signedFileHash, signedFileId },
+        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        signedDocumentObjectKey: signedObjectKey,
+        sourceId: revisionSource.id,
+        sourceKey: revisionSource.key,
+        sourceType: revisionSource.type,
+        taskNo: `ESG-TASK4-FOCUSED-${revisionTaskId}`,
+        taskStatus: "COMPLETED",
+        updatedBy: fixture.actorId
+      }
+    });
+    await tx.subscriptionClosureDocumentRevision.create({
+      data: {
+        archivedAt: occurredAt,
+        archivedBy: fixture.actorId,
+        closureCaseId: closureCase.id,
+        contractESignTaskId: revisionTaskId,
+        documentSnapshot,
+        documentSnapshotHash: documentHash,
+        documentType: "RETURN_MANIFEST",
+        generatedAt: occurredAt,
+        generatedBy: fixture.actorId,
+        handoverWorkOrderId: closureCase.returnHandoverWorkOrderId,
+        id: revisionId,
+        revisionNumber: 2,
+        signedAt: occurredAt,
+        signedBy: fixture.actorId,
+        signedFileHash,
+        signedFileId,
+        sourceFileHash: documentHash,
+        sourceFileId: revisionOne.sourceFileId,
+        sourceId: revisionSource.id,
+        sourceKey: revisionSource.key,
+        sourceType: revisionSource.type,
+        stage: "ARCHIVED",
+        supersedesRevisionId: revisionOne.id,
+        vehicleReturnId: closureCase.vehicleReturnId
+      }
+    });
+    await tx.subscriptionClosureCurrentDocument.update({
+      data: { documentRevisionId: revisionId, updatedBy: fixture.actorId },
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId: closureCase.id,
+          documentType: "RETURN_MANIFEST"
+        }
+      }
+    });
+  });
+  const audit = new AuditService(prisma);
+  const accounting = new AssetAccountingService(prisma, new AssetAccountingRepository(), audit);
+  const operations = new AssetOperationsService(
+    prisma,
+    new AssetOperationsRepository(),
+    audit,
+    accounting
+  );
+  const closure = new SubscriptionClosureService(
+    new SubscriptionClosureRepository(),
+    new HandoverWorkOrderService(prisma, {} as never),
+    operations,
+    audit,
+    prisma,
+    new AssetFactsService(prisma, new AssetFactsRepository(), audit),
+    accounting,
+    new VehicleMileageService(prisma, new VehicleMileageRepository())
+  );
+  const receipt = {
+    actorId: fixture.actorId,
+    checklist,
+    damages: [
+      {
+        damageLevel: "MEDIUM",
+        damageType: "EXTERIOR",
+        description: "Focused rear door scratch",
+        estimatedRepairAmount: 3600n,
+        photoUrls: ["focused-rear-door-1.jpg", "focused-rear-door-2.jpg"],
+        responsibleParty: "CUSTOMER"
+      }
+    ],
+    orderId: fixture.orderId,
+    physicalControlMode: "VOLUNTARY_RETURN" as const,
+    remark: "focused receipt",
+    returnMileageKm: 1200,
+    returnType: "NORMAL_RETURN" as const,
+    returnedAt: occurredAt
+  };
+  return {
+    accounting,
+    closure,
+    closureCase,
+    fixture,
+    occurredAt,
+    operations,
+    receipt,
+    signedFileHash,
+    signedFileId
+  };
+}
+
+async function closeFocusedInspectionWorkOrder(
+  scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>
+) {
+  for (const [expectedVersion, targetStatus] of [
+    [1, "PENDING_ACCEPTANCE"],
+    [2, "CLOSED"]
+  ] as const) {
+    await scenario.operations.transitionWorkOrder(
+      {
+        closeReason: targetStatus === "CLOSED" ? "focused inspection accepted" : null,
+        detailSnapshot: { targetStatus },
+        expectedVersion,
+        occurredAt: scenario.occurredAt,
+        solution: targetStatus === "CLOSED" ? "accepted" : null,
+        source: {
+          id: scenario.closureCase.id,
+          key: `focused-inspection-${expectedVersion}`,
+          type: "TASK4_TEST"
+        },
+        targetStatus,
+        workOrderId: scenario.closureCase.returnAssetWorkOrderId!
+      },
+      { actorId: scenario.fixture.actorId, permissions: [] }
+    );
+  }
+}
+
+function focusedInspectionCommand(
+  scenario: Awaited<ReturnType<typeof setupFocusedPhysicalReceipt>>,
+  reconditioningRequired: boolean
+) {
+  return {
+    accepted: true,
+    actorId: scenario.fixture.actorId,
+    closureCaseId: scenario.closureCase.id,
+    costs: [
+      {
+        actionType: "ACTUAL_COST" as const,
+        accountingPeriod: "2026-08",
+        amountCents: 2500n,
+        assetOwnerId: null,
+        assetOwnerSnapshot: null,
+        confirmedAt: scenario.occurredAt,
+        costCategory: "CLEANING" as const,
+        evidenceId: null,
+        evidenceSnapshot: null,
+        occurredOn: new Date("2026-08-21T00:00:00.000Z"),
+        reason: "focused return inspection",
+        responsiblePartyId: scenario.fixture.customerId,
+        responsiblePartyType: "CUSTOMER" as const,
+        responsibilitySnapshot: { basis: "focused inspection" }
+      }
+    ],
+    evidence: [
+      {
+        action: "ATTACH" as const,
+        capturedAt: scenario.occurredAt,
+        captureMetadata: { station: "focused-return-inspection" },
+        contentSha256: scenario.signedFileHash,
+        eventId: null,
+        evidenceType: "INSPECTION_REPORT" as const,
+        fileId: scenario.signedFileId,
+        occurredAt: scenario.occurredAt,
+        supersedesEvidenceId: null
+      }
+    ],
+    occurredAt: scenario.occurredAt,
+    reconditioningRequired
+  };
+}
+
+async function snapshotPhysicalReturnTruth(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  return Promise.all([
+    prisma.subscriptionClosureCase.findUnique({ where: { orderId: fixture.orderId } }),
+    prisma.subscriptionOrder.findUnique({ where: { id: fixture.orderId } }),
+    prisma.lease.findUnique({ where: { orderId: fixture.orderId } }),
+    prisma.vehicle.findUnique({ where: { id: fixture.vehicleId } }),
+    prisma.vehicleReturn.findUnique({ where: { orderId: fixture.orderId } }),
+    prisma.vehicleReturnDamage.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.vehicleSubscriptionPeriod.findMany({
+      orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.vehicleMileageReading.findMany({
+      orderBy: [{ recordedAt: "asc" }, { id: "asc" }],
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.assetWorkOrder.findMany({
+      orderBy: { id: "asc" },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.assetWorkOrderEvent.findMany({
+      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+      where: { workOrder: { orderId: fixture.orderId } }
+    }),
+    prisma.assetWorkOrderEvidence.findMany({
+      orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
+      where: { workOrder: { orderId: fixture.orderId } }
+    }),
+    prisma.vehicleOperationalRestriction.findMany({
+      orderBy: [{ startedAt: "asc" }, { id: "asc" }],
+      where: { vehicleId: fixture.vehicleId }
+    }),
+    prisma.subscriptionClosureEvent.findMany({
+      include: { commandReceipt: true },
+      orderBy: [{ sequence: "asc" }, { id: "asc" }],
+      where: { closureCase: { orderId: fixture.orderId } }
+    }),
+    prisma.auditLog.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: { operatorId: fixture.actorId }
+    })
+  ]);
 }
 
 async function expectManagedExpiryFactCounts(

@@ -10,7 +10,7 @@ import {
   OrderStatus,
   Prisma,
   UserStatus,
-  VehicleMileageReadingStatus,
+  VehicleCostActionType,
   VehicleMileageSourceType,
   VehicleOperationalRestrictionScope,
   VehicleOperationalRestrictionSeverity,
@@ -41,6 +41,10 @@ import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  VehicleMileageService,
+  type VehicleMileageTransactionCapability
+} from "../vehicle-mileage/vehicle-mileage.service";
+import {
   HandoverWorkOrderService,
   type PreparedGovernedReturnInboundUpdateCapability,
   type PreparedReturnInboundCapability
@@ -48,6 +52,7 @@ import {
 import { canonicalSubscriptionClosureJson } from "./subscription-closure.domain";
 import {
   SubscriptionClosureRepository,
+  SUBSCRIPTION_CLOSURE_ERROR_CODE,
   subscriptionClosureCaseAuthorityRequirement,
   subscriptionClosureCaseNo,
   subscriptionClosureDocumentAuthorityRequirement,
@@ -210,7 +215,8 @@ export class SubscriptionClosureService {
     private readonly auditService: AuditService,
     @Optional() private readonly prisma?: PrismaService,
     @Optional() private readonly assetFacts?: AssetFactsService,
-    @Optional() private readonly assetAccounting?: AssetAccountingService
+    @Optional() private readonly assetAccounting?: AssetAccountingService,
+    @Optional() private readonly vehicleMileage?: VehicleMileageService
   ) {}
 
   async prepareNormalExpiryInTransaction(
@@ -834,7 +840,7 @@ export class SubscriptionClosureService {
     input: ConfirmManagedPhysicalReceiptInput,
     context: Readonly<{ ipAddress?: string; userAgent?: string }>
   ): Promise<Readonly<{ vehicleReturnId: string }> | null> {
-    if (!this.prisma || !this.assetFacts) {
+    if (!this.prisma || !this.assetFacts || !this.vehicleMileage) {
       throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
     }
     const command = normalizePhysicalReceiptInput(input);
@@ -879,13 +885,27 @@ export class SubscriptionClosureService {
       `physical-work-order:${command.physicalControlMode}`
     );
     const restrictionSource = physicalSource(closureCase.id, "return-inspection-restriction");
+    const mileageSource = physicalSource(
+      closureCase.id,
+      `physical-mileage:${command.physicalControlMode}`
+    );
     let receiptSourceCapability: PreparedClosureSourceCapability | undefined;
     let periodCapability:
       | Awaited<ReturnType<AssetFactsService["prepareCallerOwnedTransaction"]>>
       | undefined;
     let workOrderCapability: AssetOperationsTransactionCapability | undefined;
     let restrictionCapability: AssetOperationsTransactionCapability | undefined;
+    let mileageCapability: VehicleMileageTransactionCapability | undefined;
     const preparations = [
+      {
+        prepare: async () => {
+          mileageCapability = await this.vehicleMileage!.prepareCallerOwnedTransaction(
+            tx,
+            mileageSource
+          );
+        },
+        source: mileageSource
+      },
       {
         prepare: async () => {
           receiptSourceCapability = await this.repository.prepareSourceInTransaction(
@@ -932,7 +952,8 @@ export class SubscriptionClosureService {
       !receiptSourceCapability ||
       !periodCapability ||
       !workOrderCapability ||
-      !restrictionCapability
+      !restrictionCapability ||
+      !mileageCapability
     ) {
       throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
     }
@@ -1000,12 +1021,33 @@ export class SubscriptionClosureService {
       vehicleId: observed.order!.vehicleId!,
       workOrderId: workOrder.id
     };
+    const mileageCommand = {
+      confirmedBy: command.actorId,
+      evidenceSnapshot: {
+        closureCaseId: closureCase.id,
+        physicalControlMode: command.physicalControlMode
+      },
+      mileageKm: command.returnMileageKm,
+      orderId: command.orderId,
+      receiptVehicleStatus:
+        observed.vehicleReturn!.maintenanceRequired || command.damages.length > 0
+          ? VehicleStatus.MAINTENANCE
+          : VehicleStatus.RETURNED,
+      recordedAt: command.returnedAt,
+      source: mileageSource,
+      sourceRecordId: observed.vehicleReturn!.id,
+      sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+      vehicleId: observed.order!.vehicleId!
+    };
+    const receiptPayload = physicalReceiptPayload(command);
     const eventCommand = {
       actorId: command.actorId,
       afterStatus: "RETURN_INSPECTION" as const,
       closureCaseId: closureCase.id,
       detailSnapshot: {
         physicalControlMode: command.physicalControlMode,
+        receiptPayload: receiptPayload as never,
+        receiptPayloadHash: hashPhysicalReceiptPayload(receiptPayload),
         vehicleReturnId: observed.vehicleReturn!.id
       },
       eventType: "PHYSICAL_CONTROL_CONFIRMED" as const,
@@ -1049,6 +1091,11 @@ export class SubscriptionClosureService {
           command.actorId,
           workOrderAuthority
         ),
+        this.vehicleMileage!.appendAuthorityRequirement(
+          authoritySession,
+          mileageCommand,
+          "physical-mileage"
+        ),
         this.repository.bindAuthorityRequirement(
           authoritySession,
           subscriptionClosureEventAuthorityRequirement(eventCommand)
@@ -1058,6 +1105,9 @@ export class SubscriptionClosureService {
     const locked = await loadPhysicalReceiptAuthority(tx, command.orderId);
     if (physicalReceiptAuthorityIdentity(observed) !== physicalReceiptAuthorityIdentity(locked)) {
       throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+    if (locked.closureCase!.status === "RETURN_INSPECTION") {
+      assertExactPhysicalReceiptReplay(locked, command, receiptSource);
     }
     assertPhysicalReceiptObservedAuthority(locked, command);
     if (command.physicalControlMode === "RECOVERY") {
@@ -1094,9 +1144,28 @@ export class SubscriptionClosureService {
         workOrderAuthority,
         requiredAttestation(attestations, "return-inspection-restriction")
       );
+    const preparedMileage = await this.vehicleMileage!.attestPreparedAppendInTransaction(
+      tx,
+      authoritySession,
+      mileageCommand,
+      mileageCapability,
+      requiredAttestation(attestations, "physical-mileage"),
+      "physical-mileage"
+    );
 
     await this.assetFacts!.closePreparedSubscriptionPeriodInTransaction(tx, preparedPeriod);
-    await applyPhysicalReceiptFacts(tx, locked, command, context, this.auditService);
+    const mileageReading = await this.vehicleMileage!.appendPreparedReadingInTransaction(
+      tx,
+      preparedMileage
+    );
+    await applyPhysicalReceiptFacts(
+      tx,
+      locked,
+      command,
+      context,
+      this.auditService,
+      mileageReading
+    );
     await this.assetOperations.transitionPreparedWorkOrderInTransaction(tx, preparedTransition);
     await this.assetOperations.createPreparedRestrictionInTransaction(tx, preparedRestriction);
     await this.repository.appendPreparedEventInTransaction(
@@ -1151,6 +1220,15 @@ export class SubscriptionClosureService {
       where: { id: inspectionWorkOrderId }
     });
     if (!inspectionWorkOrder || inspectionWorkOrder.status !== AssetWorkOrderStatus.CLOSED) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+    if (
+      closureCase.status === "RETURN_INSPECTION" &&
+      !command.evidence.some(({ action }) => action !== "REMOVE")
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+    if (command.costs.some(({ actionType }) => actionType !== VehicleCostActionType.ACTUAL_COST)) {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
     const authority = workOrderAuthorityOf(inspectionWorkOrder);
@@ -1405,14 +1483,27 @@ export class SubscriptionClosureService {
     if (!closureCase || closureCase.status !== "PENDING_SETTLEMENT") {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
-    const restriction = await tx.vehicleOperationalRestriction.findFirst({
+    const restrictions = await tx.vehicleOperationalRestriction.findMany({
       where: {
+        startSourceId: closureCase.id,
+        startSourceKey: "return-inspection-restriction",
+        startSourceType: "SUBSCRIPTION_CLOSURE",
         restrictionType: VehicleOperationalRestrictionType.RETURN_INSPECTION_PENDING,
-        status: "ACTIVE",
-        vehicleId: closureCase.vehicleId
+        status: "ACTIVE"
       }
     });
-    if (!restriction?.workOrderId) throw serviceConflict("AUTHORITY_MISMATCH");
+    const restriction = restrictions.length === 1 ? restrictions[0] : null;
+    const expectedInspectionWorkOrderId =
+      closureCase.physicalControlMode === "RECOVERY"
+        ? closureCase.recoveryAssetWorkOrderId
+        : closureCase.returnAssetWorkOrderId;
+    if (
+      !restriction?.workOrderId ||
+      restriction.vehicleId !== closureCase.vehicleId ||
+      restriction.workOrderId !== expectedInspectionWorkOrderId
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
     const workOrder = await tx.assetWorkOrder.findUnique({
       where: { id: restriction.workOrderId }
     });
@@ -1692,7 +1783,19 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
         })
   ]);
   const revision = currentDocument?.documentRevision ?? null;
-  const [sourceFile, signedFile, esignTask, recoveryApprovals, recoveryEvidence] = revision
+  const receiptSource = closureCase
+    ? physicalSource(closureCase.id, `physical-receipt:${closureCase.physicalControlMode}`)
+    : null;
+  const [
+    sourceFile,
+    signedFile,
+    esignTask,
+    recoveryApprovals,
+    recoveryEvidence,
+    receiptEvent,
+    returnDamages,
+    receiptMileage
+  ] = revision
     ? await Promise.all([
         tx.fileObject.findUnique({ where: { id: revision.sourceFileId } }),
         revision.signedFileId
@@ -1711,9 +1814,35 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
           : Promise.resolve([]),
         closureCase?.physicalControlMode === "RECOVERY" && workOrderId
           ? tx.assetWorkOrderEvidence.findMany({ where: { workOrderId } })
-          : Promise.resolve([])
+          : Promise.resolve([]),
+        receiptSource
+          ? tx.subscriptionClosureEvent.findFirst({
+              include: { commandReceipt: true },
+              where: {
+                sourceId: receiptSource.id,
+                sourceKey: receiptSource.key,
+                sourceType: receiptSource.type
+              }
+            })
+          : null,
+        vehicleReturn
+          ? tx.vehicleReturnDamage.findMany({
+              orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+              where: { returnId: vehicleReturn.id }
+            })
+          : Promise.resolve([]),
+        vehicleReturn
+          ? tx.vehicleMileageReading.findUnique({
+              where: {
+                sourceType_sourceRecordId: {
+                  sourceRecordId: vehicleReturn.id,
+                  sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION
+                }
+              }
+            })
+          : null
       ])
-    : [null, null, null, [], []];
+    : [null, null, null, [], [], null, [], null];
   return {
     closureCase,
     currentDocument,
@@ -1724,6 +1853,9 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
     period,
     recoveryApprovals,
     recoveryEvidence,
+    receiptEvent,
+    receiptMileage,
+    returnDamages,
     signedFile,
     sourceFile,
     vehicle,
@@ -1778,6 +1910,8 @@ function assertPhysicalReceiptObservedAuthority(
     command.physicalControlMode === "RECOVERY" ? "RECOVERY_IN_PROGRESS" : "PREPARING_RETURN";
   if (
     (!replay && closureCase.status !== initialStatus) ||
+    (!replay && order.orderStatus !== OrderStatus.PENDING_RETURN) ||
+    (replay && order.orderStatus !== OrderStatus.RETURNED_PENDING_SETTLEMENT) ||
     (!replay && vehicle.status !== VehicleStatus.LEASED) ||
     (replay &&
       vehicle.status !== VehicleStatus.RETURNED &&
@@ -1787,7 +1921,7 @@ function assertPhysicalReceiptObservedAuthority(
     (!replay && lease.status !== LeaseStatus.ACTIVE && lease.status !== LeaseStatus.RETURN_DUE) ||
     (replay && lease.status !== LeaseStatus.COMPLETED) ||
     (!replay && period.endedAt !== null) ||
-    (replay && period.endedAt?.getTime() !== command.returnedAt.getTime()) ||
+    (replay && period.endedAt === null) ||
     (!replay && workOrder.status !== AssetWorkOrderStatus.PENDING) ||
     (replay && workOrder.status !== AssetWorkOrderStatus.IN_PROGRESS)
   ) {
@@ -1806,8 +1940,9 @@ function assertPhysicalReceiptObservedAuthority(
       !vehicleReturn.mileageConfirmed ||
       !vehicleReturn.violationCheckedConfirmed ||
       !checklist ||
-      canonicalSubscriptionClosureJson(checklist as never) !==
-        canonicalSubscriptionClosureJson(command.checklist as never))
+      (!replay &&
+        canonicalSubscriptionClosureJson(checklist as never) !==
+          canonicalSubscriptionClosureJson(command.checklist as never)))
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
@@ -1889,24 +2024,82 @@ function assertArchivedRecoveryAuthority(
   const revision = authority.currentDocument?.documentRevision;
   const closureCase = authority.closureCase!;
   const workOrder = authority.workOrder!;
+  const sourceFile = authority.sourceFile;
+  const signedFile = authority.signedFile;
+  const esignTask = authority.esignTask;
   if (
     !revision ||
     revision.documentType !== "RECOVERY_AUTHORITY" ||
     revision.stage !== "ARCHIVED" ||
     !revision.archivedAt ||
     !revision.archivedBy ||
-    !authority.sourceFile ||
+    !revision.signedAt ||
+    !revision.signedBy ||
+    !revision.signedFileId ||
+    !revision.signedFileHash ||
+    revision.generatedAt.getTime() > revision.signedAt.getTime() ||
+    revision.signedAt.getTime() > revision.archivedAt.getTime() ||
+    !sourceFile ||
+    !signedFile ||
+    !esignTask ||
     authority.recoveryApprovals.length !== 1
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
+  const expectedDocumentSnapshot = {
+    caseNo: closureCase.caseNo,
+    closureCaseId: closureCase.id,
+    contractId: closureCase.contractId,
+    customerId: closureCase.customerId,
+    documentType: "RECOVERY_AUTHORITY",
+    finalDisposition: closureCase.finalDisposition,
+    orderId: closureCase.orderId,
+    physicalControlMode: "RECOVERY",
+    recoveryAssetWorkOrderId: workOrder.id,
+    recoveryWorkOrderType: workOrder.workOrderType,
+    vehicleId: closureCase.vehicleId,
+    vehicleReturnId: closureCase.vehicleReturnId
+  };
   const documentHash = createHash("sha256")
-    .update(canonicalSubscriptionClosureJson(revision.documentSnapshot as never))
+    .update(canonicalSubscriptionClosureJson(expectedDocumentSnapshot))
     .digest("hex");
+  const requestSnapshot = esignTask.requestSnapshot;
+  const responseSnapshot = esignTask.responseSnapshot;
   if (
+    canonicalSubscriptionClosureJson(revision.documentSnapshot as never) !==
+      canonicalSubscriptionClosureJson(expectedDocumentSnapshot) ||
     revision.documentSnapshotHash !== documentHash ||
     revision.sourceFileHash !== documentHash ||
-    revision.closureCaseId !== closureCase.id
+    revision.closureCaseId !== closureCase.id ||
+    sourceFile.id !== revision.sourceFileId ||
+    sourceFile.uploadedBy !== revision.generatedBy ||
+    signedFile.id !== revision.signedFileId ||
+    signedFile.uploadedBy !== revision.signedBy ||
+    esignTask.id !== revision.contractESignTaskId ||
+    esignTask.deletedAt !== null ||
+    esignTask.taskStatus !== ESignTaskStatus.COMPLETED ||
+    esignTask.completedAt?.getTime() !== revision.signedAt.getTime() ||
+    esignTask.contractId !== closureCase.contractId ||
+    esignTask.orderId !== command.orderId ||
+    esignTask.customerId !== closureCase.customerId ||
+    esignTask.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
+    esignTask.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    esignTask.sourceType !== revision.sourceType ||
+    esignTask.sourceId !== revision.sourceId ||
+    esignTask.sourceKey !== revision.sourceKey ||
+    esignTask.documentObjectKey !== sourceFile.objectKey ||
+    esignTask.signedDocumentObjectKey !== signedFile.objectKey ||
+    !requestSnapshot ||
+    Array.isArray(requestSnapshot) ||
+    typeof requestSnapshot !== "object" ||
+    requestSnapshot.documentSnapshotHash !== documentHash ||
+    requestSnapshot.sourceFileId !== revision.sourceFileId ||
+    requestSnapshot.sourceFileHash !== revision.sourceFileHash ||
+    !responseSnapshot ||
+    Array.isArray(responseSnapshot) ||
+    typeof responseSnapshot !== "object" ||
+    responseSnapshot.signedFileId !== revision.signedFileId ||
+    responseSnapshot.signedFileHash !== revision.signedFileHash
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
@@ -2045,6 +2238,9 @@ function physicalReceiptAuthorityIdentity(authority: PhysicalReceiptAuthority) {
     period: authority.period,
     recoveryApprovals: authority.recoveryApprovals,
     recoveryEvidence: authority.recoveryEvidence,
+    receiptEvent: authority.receiptEvent,
+    receiptMileage: authority.receiptMileage,
+    returnDamages: authority.returnDamages,
     signedFile: authority.signedFile,
     sourceFile: authority.sourceFile,
     vehicle: authority.vehicle,
@@ -2053,12 +2249,129 @@ function physicalReceiptAuthorityIdentity(authority: PhysicalReceiptAuthority) {
   } as never);
 }
 
+function physicalReceiptPayload(command: ConfirmManagedPhysicalReceiptInput) {
+  const checklistSnapshot = structuredClone(command.checklist);
+  return {
+    checklistSnapshot,
+    checklistSnapshotHash: createHash("sha256")
+      .update(canonicalSubscriptionClosureJson(checklistSnapshot))
+      .digest("hex"),
+    damages: command.damages.map((damage) => ({
+      damageLevel: damage.damageLevel,
+      damageType: damage.damageType,
+      description: damage.description,
+      estimatedRepairAmount:
+        damage.estimatedRepairAmount === undefined
+          ? null
+          : BigInt(damage.estimatedRepairAmount).toString(),
+      photoUrls: [...(damage.photoUrls ?? [])],
+      responsibleParty: damage.responsibleParty ?? "UNKNOWN"
+    })),
+    physicalControlMode: command.physicalControlMode,
+    remark: command.remark,
+    returnMileageKm: command.returnMileageKm,
+    returnedAt: command.returnedAt.toISOString(),
+    returnType: command.returnType
+  };
+}
+
+function hashPhysicalReceiptPayload(payload: ReturnType<typeof physicalReceiptPayload>) {
+  return createHash("sha256").update(canonicalSubscriptionClosureJson(payload)).digest("hex");
+}
+
+function assertExactPhysicalReceiptReplay(
+  authority: PhysicalReceiptAuthority,
+  command: ConfirmManagedPhysicalReceiptInput,
+  source: SubscriptionClosureSource
+) {
+  const expectedPayload = physicalReceiptPayload(command);
+  const expectedPayloadHash = hashPhysicalReceiptPayload(expectedPayload);
+  const event = authority.receiptEvent;
+  const receipt = event?.commandReceipt;
+  const detail = event?.detailSnapshot;
+  const persistedDamagePayloads = authority.returnDamages
+    .map((damage) => ({
+      damageLevel: damage.damageLevel,
+      damageType: damage.damageType,
+      description: damage.description,
+      estimatedRepairAmount: damage.estimatedRepairAmount?.toString() ?? null,
+      photoUrls: Array.isArray(damage.photoUrls) ? damage.photoUrls : [],
+      responsibleParty: damage.responsibleParty
+    }))
+    .sort((left, right) =>
+      bytewiseCompare(
+        canonicalSubscriptionClosureJson(left),
+        canonicalSubscriptionClosureJson(right)
+      )
+    );
+  const expectedDamagePayloads = [...expectedPayload.damages].sort((left, right) =>
+    bytewiseCompare(canonicalSubscriptionClosureJson(left), canonicalSubscriptionClosureJson(right))
+  );
+  const mileage = authority.receiptMileage;
+  const vehicleReturn = authority.vehicleReturn!;
+  if (
+    !event ||
+    !receipt ||
+    event.sourceType !== source.type ||
+    event.sourceId !== source.id ||
+    event.sourceKey !== source.key ||
+    receipt.sourceType !== source.type ||
+    receipt.sourceId !== source.id ||
+    receipt.sourceKey !== source.key ||
+    !detail ||
+    Array.isArray(detail) ||
+    typeof detail !== "object" ||
+    !sameCanonicalReceiptValue(detail.receiptPayload, expectedPayload) ||
+    detail.receiptPayloadHash !== expectedPayloadHash ||
+    receipt.payloadHash !==
+      createHash("sha256")
+        .update(canonicalSubscriptionClosureJson(receipt.payloadSnapshot as never))
+        .digest("hex") ||
+    vehicleReturn.returnedAt?.getTime() !== command.returnedAt.getTime() ||
+    vehicleReturn.returnMileageKm !== command.returnMileageKm ||
+    vehicleReturn.returnType !== command.returnType ||
+    vehicleReturn.remark !== command.remark ||
+    vehicleReturn.damageFound !== expectedPayload.damages.length > 0 ||
+    !sameCanonicalReceiptValue(
+      vehicleReturn.checklistSnapshot,
+      expectedPayload.checklistSnapshot
+    ) ||
+    !sameCanonicalReceiptValue(
+      { damages: persistedDamagePayloads },
+      { damages: expectedDamagePayloads }
+    ) ||
+    !mileage ||
+    mileage.vehicleId !== authority.vehicle!.id ||
+    mileage.orderId !== authority.order!.id ||
+    mileage.sourceRecordId !== vehicleReturn.id ||
+    mileage.sourceType !== VehicleMileageSourceType.RETURN_CONFIRMATION ||
+    mileage.recordedAt.getTime() !== command.returnedAt.getTime() ||
+    mileage.mileageKm !== command.returnMileageKm ||
+    authority.vehicle!.currentMileageKm !== command.returnMileageKm ||
+    !authority.vehicle!.salePriceReinitRequiredAt
+  ) {
+    throw closureSourceConflict();
+  }
+}
+
+function sameCanonicalReceiptValue(left: unknown, right: unknown) {
+  try {
+    return (
+      canonicalSubscriptionClosureJson(left as never) ===
+      canonicalSubscriptionClosureJson(right as never)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function applyPhysicalReceiptFacts(
   tx: Prisma.TransactionClient,
   authority: PhysicalReceiptAuthority,
   command: ConfirmManagedPhysicalReceiptInput,
   context: Readonly<{ ipAddress?: string; userAgent?: string }>,
-  auditService: AuditService
+  auditService: AuditService,
+  mileageReading: Awaited<ReturnType<VehicleMileageService["appendPreparedReadingInTransaction"]>>
 ) {
   const vehicleReturn = authority.vehicleReturn!;
   if (authority.closureCase!.status === "RETURN_INSPECTION") {
@@ -2073,25 +2386,6 @@ async function applyPhysicalReceiptFacts(
     }
     return;
   }
-  const latestMileage = await tx.vehicleMileageReading.findFirst({
-    orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }],
-    where: { status: VehicleMileageReadingStatus.ACTIVE, vehicleId: authority.vehicle!.id }
-  });
-  if (
-    (latestMileage && command.returnMileageKm < latestMileage.mileageKm) ||
-    (latestMileage && command.returnedAt.getTime() < latestMileage.recordedAt.getTime())
-  ) {
-    throw serviceConflict("AUTHORITY_MISMATCH");
-  }
-  const existingMileage = await tx.vehicleMileageReading.findUnique({
-    where: {
-      sourceType_sourceRecordId: {
-        sourceRecordId: vehicleReturn.id,
-        sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION
-      }
-    }
-  });
-  if (existingMileage) throw serviceConflict("AUTHORITY_MISMATCH");
   const returned = await tx.vehicleReturn.update({
     data: {
       damageFound: command.damages.length > 0,
@@ -2105,7 +2399,7 @@ async function applyPhysicalReceiptFacts(
     where: { id: vehicleReturn.id }
   });
   for (const damage of command.damages) {
-    await tx.vehicleReturnDamage.create({
+    const createdDamage = await tx.vehicleReturnDamage.create({
       data: {
         createdBy: command.actorId,
         damageLevel: damage.damageLevel as never,
@@ -2124,50 +2418,51 @@ async function applyPhysicalReceiptFacts(
         vehicleId: authority.vehicle!.id
       }
     });
-  }
-  await tx.vehicleMileageReading.create({
-    data: {
-      confirmedAt: command.returnedAt,
-      confirmedBy: command.actorId,
-      createdBy: command.actorId,
-      deltaKm: command.returnMileageKm - (latestMileage?.mileageKm ?? 0),
-      evidenceSnapshot: {
-        closureCaseId: authority.closureCase!.id,
-        physicalControlMode: command.physicalControlMode
+    await auditService.write(
+      {
+        action: AuditAction.CREATE,
+        after: physicalAuditSnapshot(createdDamage),
+        entityId: createdDamage.id,
+        entityType: "vehicle_return_damage",
+        ipAddress: context.ipAddress,
+        module: "subscription_closure",
+        operatorId: command.actorId,
+        userAgent: context.userAgent
       },
-      mileageKm: command.returnMileageKm,
-      orderId: authority.order!.id,
-      previousReadingId: latestMileage?.id ?? null,
-      recordedAt: command.returnedAt,
-      sourceRecordId: vehicleReturn.id,
-      sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
-      status: VehicleMileageReadingStatus.ACTIVE,
-      updatedBy: command.actorId,
-      vehicleId: authority.vehicle!.id
-    }
-  });
-  const order = await tx.subscriptionOrder.update({
+      tx
+    );
+  }
+  await auditService.write(
+    {
+      action: AuditAction.CREATE,
+      after: physicalAuditSnapshot(mileageReading),
+      entityId: mileageReading.id,
+      entityType: "vehicle_mileage_reading",
+      ipAddress: context.ipAddress,
+      module: "subscription_closure",
+      operatorId: command.actorId,
+      userAgent: context.userAgent
+    },
+    tx
+  );
+  const orderUpdate = await tx.subscriptionOrder.updateMany({
     data: {
       actualReturnAt: command.returnedAt,
       orderStatus: OrderStatus.RETURNED_PENDING_SETTLEMENT,
       updatedBy: command.actorId
     },
+    where: { id: authority.order!.id, orderStatus: OrderStatus.PENDING_RETURN }
+  });
+  if (orderUpdate.count !== 1) throw serviceConflict("AUTHORITY_MISMATCH");
+  const order = await tx.subscriptionOrder.findUniqueOrThrow({
     where: { id: authority.order!.id }
   });
   const lease = await tx.lease.update({
     data: { status: LeaseStatus.COMPLETED, updatedBy: command.actorId },
     where: { id: authority.lease!.id }
   });
-  const vehicle = await tx.vehicle.update({
-    data: {
-      status:
-        returned.maintenanceRequired || command.damages.length > 0
-          ? VehicleStatus.MAINTENANCE
-          : VehicleStatus.RETURNED,
-      updatedBy: command.actorId
-    },
-    where: { id: authority.vehicle!.id }
-  });
+  const vehicle = await tx.vehicle.findUnique({ where: { id: authority.vehicle!.id } });
+  if (!vehicle) throw serviceConflict("AUTHORITY_MISMATCH");
   for (const [entityType, before, after] of [
     ["vehicle_return", vehicleReturn, returned],
     ["subscription_order", authority.order, order],
@@ -2747,5 +3042,12 @@ function serviceConflict(code: keyof typeof SUBSCRIPTION_CLOSURE_SERVICE_ERROR_C
   return new ConflictException({
     code: SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE[code],
     message: "The governed normal-expiry authority is unavailable or changed."
+  });
+}
+
+function closureSourceConflict() {
+  return new ConflictException({
+    code: SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT,
+    message: "The stable subscription-closure source is bound to a different receipt payload."
   });
 }

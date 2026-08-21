@@ -135,6 +135,203 @@ describe("AssetOperationsService", () => {
     expect(harness.writes()).toBe(0);
   });
 
+  it("keeps one locked authority snapshot through a deferred authority load", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const command = harness.command as MutableCreateCommand;
+    const authorityA = authorityIdentity(command);
+    const payloadA = {
+      costConfirmationRequired: command.costConfirmationRequired,
+      description: command.description,
+      metadata: structuredClone(command.metadata),
+      occurredAt: new Date(command.occurredAt),
+      priority: command.priority,
+      source: { ...command.source },
+      workOrderType: command.workOrderType
+    };
+    const authorityB = {
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID(),
+      vehicleId: randomUUID()
+    };
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const authorityLockPending = deferred<void>();
+    const releaseAuthorityLock = deferred<void>();
+    const authorityLoadPending = deferred<void>();
+    const releaseAuthorityLoad = deferred<void>();
+    const tx = harness.tx as unknown as AuthorityRaceTransaction;
+    const originalQuery = tx.$queryRaw.bind(tx);
+    tx.$queryRaw = async (query) => {
+      const result = originalQuery(query);
+      const sql = query.strings.join("?");
+      if (sql.includes('FROM "customer"') && sql.includes("FOR SHARE NOWAIT")) {
+        authorityLockPending.resolve();
+        await releaseAuthorityLock.promise;
+      }
+      return result;
+    };
+    const reads: Record<keyof typeof authorityB, string[]> = {
+      assetOwnerId: [],
+      contractId: [],
+      customerId: [],
+      orderId: [],
+      relatedWorkOrderId: [],
+      vehicleId: []
+    };
+    const originalVehicle = tx.vehicle.findUnique.bind(tx.vehicle);
+    const originalOrder = tx.subscriptionOrder.findUnique.bind(tx.subscriptionOrder);
+    const originalContract = tx.contract.findUnique.bind(tx.contract);
+    const originalCustomer = tx.customer.findUnique.bind(tx.customer);
+    const originalAssetOwner = tx.assetOwner.findUnique.bind(tx.assetOwner);
+    const originalWorkOrder = tx.assetWorkOrder.findUnique.bind(tx.assetWorkOrder);
+    tx.vehicle.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.vehicleId.push(id);
+      const result =
+        id === authorityB.vehicleId
+          ? {
+              deletedAt: null,
+              id,
+              plateNo: "沪B00002",
+              status: VehicleStatus.RETURNED,
+              vehicleNo: "V-B",
+              vin: "VIN-B"
+            }
+          : await originalVehicle(args);
+      authorityLoadPending.resolve();
+      await releaseAuthorityLoad.promise;
+      return result;
+    };
+    tx.subscriptionOrder.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.orderId.push(id);
+      return id === authorityB.orderId
+        ? {
+            contractId: authorityB.contractId,
+            customerId: authorityB.customerId,
+            deletedAt: null,
+            id,
+            orderNo: "SO-B",
+            orderStatus: "ACTIVE",
+            vehicleId: authorityB.vehicleId
+          }
+        : originalOrder(args);
+    };
+    tx.contract.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.contractId.push(id);
+      return id === authorityB.contractId
+        ? {
+            contractNo: "CT-B",
+            customerId: authorityB.customerId,
+            deletedAt: null,
+            id,
+            orderId: authorityB.orderId,
+            status: "ACTIVE"
+          }
+        : originalContract(args);
+    };
+    tx.customer.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.customerId.push(id);
+      return id === authorityB.customerId
+        ? {
+            customerNo: "CU-B",
+            deletedAt: null,
+            id,
+            name: "Customer B",
+            status: "ACTIVE"
+          }
+        : originalCustomer(args);
+    };
+    tx.assetOwner.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.assetOwnerId.push(id);
+      return id === authorityB.assetOwnerId
+        ? {
+            id,
+            name: "Owner B",
+            ownerNo: "AO-B",
+            ownerType: "PLATFORM",
+            status: "ACTIVE"
+          }
+        : originalAssetOwner(args);
+    };
+    tx.assetWorkOrder.findUnique = async (args) => {
+      if (args.where.id === authorityB.relatedWorkOrderId) {
+        reads.relatedWorkOrderId.push(authorityB.relatedWorkOrderId);
+        return {
+          id: authorityB.relatedWorkOrderId,
+          vehicleId: authorityB.vehicleId,
+          workOrderNo: "AWO-B"
+        };
+      }
+      return originalWorkOrder(args);
+    };
+    const outcomePromise = harness.service.createWorkOrderInTransaction(
+      harness.tx,
+      command,
+      harness.context,
+      capability
+    );
+    await authorityLockPending.promise;
+    Object.assign(command, authorityB, {
+      costConfirmationRequired: true,
+      description: "mutated B description",
+      metadata: { request: "mutated-b" },
+      occurredAt: new Date(NOW.getTime() - 1_000),
+      priority: AssetWorkOrderPriority.HIGH,
+      source: {
+        id: randomUUID(),
+        key: "mutated:authority-load-source",
+        type: "MUTATED_SOURCE"
+      },
+      workOrderType: AssetWorkOrderType.MAINTENANCE
+    });
+    releaseAuthorityLock.resolve();
+    await authorityLoadPending.promise;
+    Object.assign(command, authorityA, { source: payloadA.source });
+    releaseAuthorityLoad.resolve();
+    const outcome = await outcomePromise;
+
+    expect(reads).toEqual({
+      assetOwnerId: [authorityA.assetOwnerId],
+      contractId: [authorityA.contractId],
+      customerId: [authorityA.customerId],
+      orderId: [authorityA.orderId],
+      relatedWorkOrderId: [],
+      vehicleId: [authorityA.vehicleId]
+    });
+    expect(outcome.workOrder).toMatchObject({
+      assetOwnerId: authorityA.assetOwnerId,
+      contractId: authorityA.contractId,
+      costConfirmationRequired: payloadA.costConfirmationRequired,
+      customerId: authorityA.customerId,
+      description: payloadA.description,
+      metadata: payloadA.metadata,
+      orderId: authorityA.orderId,
+      priority: payloadA.priority,
+      relatedWorkOrderId: null,
+      vehicleId: authorityA.vehicleId,
+      workOrderType: payloadA.workOrderType
+    });
+    expect(outcome.workOrder.authoritySnapshot).toMatchObject({
+      assetOwner: { id: authorityA.assetOwnerId },
+      contract: { id: authorityA.contractId },
+      customer: { id: authorityA.customerId },
+      order: { id: authorityA.orderId },
+      relatedWorkOrder: null,
+      vehicle: { id: authorityA.vehicleId }
+    });
+    expect(outcome.event.occurredAt).toEqual(payloadA.occurredAt);
+    expect(harness.writes()).toBe(1);
+  });
+
   it("consumes a service capability before reading a throwing source", async () => {
     const harness = createHarness();
     const capability = await harness.service.prepareCallerOwnedTransaction(
@@ -1519,6 +1716,41 @@ function createRealRepositoryCreateHarness() {
     sourceLocks,
     tx,
     writes: () => writeCount
+  };
+}
+
+type MutableCreateCommand = ReturnType<typeof fullCreateCommand> & {
+  assetOwnerId: string | null;
+  contractId: string | null;
+  customerId: string | null;
+  orderId: string | null;
+  relatedWorkOrderId: string | null;
+  vehicleId: string;
+};
+
+type AuthorityFindUnique = (args: {
+  select?: Record<string, boolean>;
+  where: { id?: string };
+}) => Promise<Record<string, unknown> | null>;
+
+type AuthorityRaceTransaction = {
+  $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+  assetOwner: { findUnique: AuthorityFindUnique };
+  assetWorkOrder: { findUnique: AuthorityFindUnique };
+  contract: { findUnique: AuthorityFindUnique };
+  customer: { findUnique: AuthorityFindUnique };
+  subscriptionOrder: { findUnique: AuthorityFindUnique };
+  vehicle: { findUnique: AuthorityFindUnique };
+};
+
+function authorityIdentity(command: MutableCreateCommand) {
+  return {
+    assetOwnerId: command.assetOwnerId,
+    contractId: command.contractId,
+    customerId: command.customerId,
+    orderId: command.orderId,
+    relatedWorkOrderId: command.relatedWorkOrderId,
+    vehicleId: command.vehicleId
   };
 }
 

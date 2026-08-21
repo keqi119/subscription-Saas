@@ -190,12 +190,13 @@ export class AssetOperationsService {
     capability: AssetOperationsTransactionCapability
   ): Promise<WorkOrderCommandOutcome> {
     const capabilityState = this.takeCallerOwnedCapability(capability);
+    const commandSnapshot = snapshotCallerOwnedCreateCommand(command);
     const repositoryCapability = this.assertCallerOwnedCapability(
       capabilityState,
       tx,
-      command.source
+      commandSnapshot.source
     );
-    return this.createWorkOrderCommand(tx, command, context, repositoryCapability);
+    return this.createWorkOrderCommand(tx, commandSnapshot, context, repositoryCapability);
   }
 
   async createWorkOrder(
@@ -1125,6 +1126,28 @@ function snapshotAssetOperationSource(
   source: StableAssetOperationSource
 ): StableAssetOperationSource {
   return Object.freeze({ id: source.id, key: source.key, type: source.type });
+}
+
+function snapshotCallerOwnedCreateCommand(
+  command: CreateWorkOrderServiceCommand
+): CreateWorkOrderServiceCommand {
+  return deepFreeze(
+    structuredClone({
+      assetOwnerId: command.assetOwnerId,
+      contractId: command.contractId,
+      costConfirmationRequired: command.costConfirmationRequired,
+      customerId: command.customerId,
+      description: command.description,
+      metadata: command.metadata,
+      occurredAt: command.occurredAt,
+      orderId: command.orderId,
+      priority: command.priority,
+      relatedWorkOrderId: command.relatedWorkOrderId,
+      source: snapshotAssetOperationSource(command.source),
+      vehicleId: command.vehicleId,
+      workOrderType: command.workOrderType
+    })
+  );
 }
 
 function isLockUnavailableError(value: unknown) {

@@ -119,24 +119,27 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
 
     await expectCode(
       readCommitted(prisma, (tx) =>
-        repository.createWorkOrder(tx, command, wrongTransactionCapability)
+        repository.lockCallerOwnedCreateAuthority(tx, command, wrongTransactionCapability)
       ),
       ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
     );
     await readCommitted(prisma, async (tx) => {
+      const foreignCapability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      await expectCode(
+        foreignRepository.lockCallerOwnedCreateAuthority(tx, command, foreignCapability),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+      await expectCode(
+        repository.lockCallerOwnedCreateAuthority(tx, command, Object.freeze({}) as never),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+
       const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
-      await expectCode(
-        foreignRepository.createWorkOrder(tx, command, capability),
-        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
-      );
-      await expectCode(
-        repository.createWorkOrder(tx, command, Object.freeze({}) as never),
-        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
-      );
-      const created = await repository.createWorkOrder(tx, command, capability);
+      const authority = await repository.lockCallerOwnedCreateAuthority(tx, command, capability);
+      const created = await repository.createWorkOrder(tx, command, authority);
       expect(created.workOrder.vehicleId).toBe(vehicleId);
       await expectCode(
-        repository.createWorkOrder(tx, command, capability),
+        repository.createWorkOrder(tx, command, authority),
         ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
       );
     });
@@ -144,7 +147,7 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     await readCommitted(prisma, async (tx) => {
       const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
       await expectCode(
-        repository.createWorkOrder(
+        repository.lockCallerOwnedCreateAuthority(
           tx,
           { ...command, source: { ...command.source, key: `${command.source.key}:drift` } },
           capability
@@ -154,9 +157,63 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     });
     const replay = await readCommitted(prisma, async (tx) => {
       const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
-      return repository.createWorkOrder(tx, command, capability);
+      const authority = await repository.lockCallerOwnedCreateAuthority(tx, command, capability);
+      return repository.createWorkOrder(tx, command, authority);
     });
     expect(replay.wrote).toBe(false);
+    await expect(countWorkOrdersBySource(prisma, command.source)).resolves.toBe(1);
+  });
+
+  it("binds caller-owned create authority attestations to one repository, transaction, identity, and use", async () => {
+    const repository = new AssetOperationsRepository();
+    const foreignRepository = new AssetOperationsRepository();
+    const command = createCommand(vehicleId, "caller-authority-guards");
+    const wrongTransactionAuthority = await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      return repository.lockCallerOwnedCreateAuthority(tx, command, capability);
+    });
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.createWorkOrder(tx, command, wrongTransactionAuthority)
+      ),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await readCommitted(prisma, async (tx) => {
+      const foreignCapability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      const foreignAuthority = await repository.lockCallerOwnedCreateAuthority(
+        tx,
+        command,
+        foreignCapability
+      );
+      await expectCode(
+        foreignRepository.createWorkOrder(tx, command, foreignAuthority),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+      await expectCode(
+        repository.createWorkOrder(tx, command, Object.freeze({}) as never),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+
+      const retargetCapability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      const retargetAuthority = await repository.lockCallerOwnedCreateAuthority(
+        tx,
+        command,
+        retargetCapability
+      );
+      await expectCode(
+        repository.createWorkOrder(tx, { ...command, vehicleId: randomUUID() }, retargetAuthority),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+
+      const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      const authority = await repository.lockCallerOwnedCreateAuthority(tx, command, capability);
+      await repository.createWorkOrder(tx, command, authority);
+      await expectCode(
+        repository.createWorkOrder(tx, command, authority),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    });
     await expect(countWorkOrdersBySource(prisma, command.source)).resolves.toBe(1);
   });
 

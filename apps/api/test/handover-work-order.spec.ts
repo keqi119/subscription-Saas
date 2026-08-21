@@ -266,6 +266,44 @@ describe("HandoverWorkOrderService", () => {
     });
   });
 
+  it("consumes a P0 capability before reading a throwing command source", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const source = {
+      id: randomUUID(),
+      key: "closure:return-inbound:normalization",
+      type: "SUBSCRIPTION_CLOSURE"
+    };
+    const command = { actorId: harness.admin.id, orderId: harness.orderId, source };
+    const capability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      command
+    );
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing specialist source getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      harness.service.createReturnInboundInTransaction(
+        harness.prisma as never,
+        malformed,
+        capability
+      )
+    ).rejects.toThrow("throwing specialist source getter");
+    await expect(
+      harness.service.createReturnInboundInTransaction(
+        harness.prisma as never,
+        command,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+    expect(harness.state.workOrders).toHaveLength(0);
+    expect(harness.state.events).toHaveLength(0);
+  });
+
   it("rejects forged, foreign-instance, wrong-transaction, and payload-drift P0 capabilities", async () => {
     const harness = createHandoverWorkOrderHarness();
     const foreign = createHandoverWorkOrderHarness();
@@ -3572,8 +3610,24 @@ function matchesEvidenceItemWhere(item: Record<string, unknown>, where: Record<s
 
 function matchesWorkOrderWhere(workOrder: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, expected]) => {
+    if (key === "AND") {
+      return (expected as Array<Record<string, unknown>>).every((branch) =>
+        matchesWorkOrderWhere(workOrder, branch)
+      );
+    }
     if (key === "OR") {
       return (expected as Array<Record<string, unknown>>).some((branch) => matchesWorkOrderWhere(workOrder, branch));
+    }
+    if (key === "metadata" && expected && typeof expected === "object") {
+      const predicate = expected as { equals?: unknown; path?: string[] };
+      let value: unknown = workOrder.metadata;
+      for (const segment of predicate.path ?? []) {
+        value =
+          value && typeof value === "object"
+            ? (value as Record<string, unknown>)[segment]
+            : undefined;
+      }
+      return value === predicate.equals;
     }
     if (key === "id") {
       return workOrder.id === expected;

@@ -44,6 +44,27 @@ describe("AssetAccountingRepository", () => {
     );
   });
 
+  it("consumes a repository capability before throwing command normalization", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-normalization");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing accounting source getter");
+      }
+    }) as AppendCostEntryCommand;
+
+    await expect(repository.appendCostEntry(database.tx, malformed, capability)).rejects.toThrow(
+      "throwing accounting source getter"
+    );
+    await expectCode(
+      repository.appendCostEntry(database.tx, command, capability),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.entries.size).toBe(0);
+  });
+
   it("rejects forged, foreign-repository, wrong-transaction, and wrong-source append capabilities", async () => {
     const database = fakeTransaction();
     const other = fakeTransaction();

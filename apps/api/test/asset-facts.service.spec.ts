@@ -818,6 +818,33 @@ describe("AssetFactsRepository transaction contract", () => {
     );
   });
 
+  it("consumes a repository capability before throwing snapshot normalization", async () => {
+    const row = subscriptionRow();
+    const harness = createHarness({ subscriptionPeriods: [row] });
+    const repository = new AssetFactsRepository();
+    const command = subscriptionCloseInput();
+    const capability = await repository.prepareCallerOwnedCommand(
+      harness.tx,
+      "subscription",
+      "end",
+      command.source
+    );
+    const malformed = Object.defineProperty({ ...command }, "snapshot", {
+      get() {
+        throw new TypeError("throwing fact snapshot getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      repository.closeSubscriptionPeriod(harness.tx, malformed, capability)
+    ).rejects.toThrow("throwing fact snapshot getter");
+    await expectConflictCode(
+      repository.closeSubscriptionPeriod(harness.tx, command, capability),
+      ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(row.endedAt).toBeNull();
+  });
+
   it("rejects forged, foreign-repository, wrong-transaction, and wrong-source fact capabilities", async () => {
     const harness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
     const repository = new AssetFactsRepository();
@@ -981,6 +1008,43 @@ describe("AssetFactsService audited commands", () => {
       ),
       ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID
     );
+  });
+
+  it("consumes a service capability before reading a throwing source", async () => {
+    const row = subscriptionRow();
+    const harness = createServiceHarness({ subscriptionPeriods: [row] });
+    const dto = serviceSubscriptionCloseDto("subscription-period-1");
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      "subscription",
+      "end",
+      dto.source
+    );
+    const malformed = Object.defineProperty({ ...dto }, "source", {
+      get() {
+        throw new TypeError("throwing fact service source getter");
+      }
+    }) as typeof dto;
+
+    await expect(
+      harness.service.closeSubscriptionPeriodInTransaction(
+        harness.tx,
+        malformed,
+        serviceContext(),
+        capability
+      )
+    ).rejects.toThrow("throwing fact service source getter");
+    await expectConflictCode(
+      harness.service.closeSubscriptionPeriodInTransaction(
+        harness.tx,
+        dto,
+        serviceContext(),
+        capability
+      ),
+      ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(row.endedAt).toBeNull();
+    expect(harness.auditLogs).toHaveLength(0);
   });
 
   it("opens every command in an explicit Prisma READ COMMITTED transaction", async () => {

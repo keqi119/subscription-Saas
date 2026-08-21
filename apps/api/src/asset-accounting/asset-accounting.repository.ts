@@ -533,10 +533,13 @@ export class AssetAccountingRepository {
     command: AppendCostEntryCommand,
     capability?: AssetAccountingCallerOwnedCommandCapability
   ): Promise<AssetAccountingCostCommandOutcome> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
     const normalized = normalizeAppendCommand(command);
     const payload = appendPayload(normalized);
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(tx, normalized.source, capability);
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(capabilityState, tx, normalized.source);
     } else {
       await this.lockSourceOwnership(tx, normalized.source);
     }
@@ -547,7 +550,7 @@ export class AssetAccountingRepository {
     await lockAuthorityRows(
       tx,
       appendAuthorityLocks(normalized, authoritativeOrderId),
-      capability ? CALLER_OWNED_AUTHORITY_RANK : undefined
+      capabilityState ? CALLER_OWNED_AUTHORITY_RANK : undefined
     );
     await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
 
@@ -597,15 +600,21 @@ export class AssetAccountingRepository {
     }
   }
 
-  private consumeCallerOwnedCommandCapability(
-    tx: Prisma.TransactionClient,
-    source: AssetAccountingSource,
+  private takeCallerOwnedCommandCapability(
     capability: AssetAccountingCallerOwnedCommandCapability
-  ) {
+  ): AssetAccountingCallerOwnedCommandCapabilityState {
     const state = this.callerOwnedCommandCapabilities.get(capability);
     this.callerOwnedCommandCapabilities.delete(capability);
+    if (!state) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    return state;
+  }
+
+  private assertCallerOwnedCommandCapability(
+    state: AssetAccountingCallerOwnedCommandCapabilityState,
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ) {
     if (
-      !state ||
       state.transaction !== tx ||
       state.source.id !== source.id ||
       state.source.key !== source.key ||

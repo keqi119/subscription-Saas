@@ -82,8 +82,13 @@ describe("AssetOperationsRepository", () => {
     const repository = new AssetOperationsRepository();
     const command = createCommand();
     const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authority = await repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
 
-    await repository.createWorkOrder(database.tx, command, capability);
+    await repository.createWorkOrder(database.tx, command, authority);
 
     expect(
       database.rawQueries.filter(
@@ -92,9 +97,35 @@ describe("AssetOperationsRepository", () => {
       )
     ).toHaveLength(1);
     await expectCode(
-      repository.createWorkOrder(database.tx, command, capability),
+      repository.createWorkOrder(database.tx, command, authority),
       ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
     );
+  });
+
+  it("consumes a repository capability before throwing command normalization", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authority = await repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
+    const malformed = Object.defineProperty({ ...command }, "metadata", {
+      get() {
+        throw new TypeError("throwing operation metadata getter");
+      }
+    }) as typeof command;
+
+    await expect(repository.createWorkOrder(database.tx, malformed, authority)).rejects.toThrow(
+      "throwing operation metadata getter"
+    );
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, authority),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
   });
 
   it("rejects forged, foreign-repository, wrong-transaction, and wrong-source capabilities", async () => {
@@ -116,12 +147,50 @@ describe("AssetOperationsRepository", () => {
       ]
     ] as const) {
       await expectCode(
-        target.createWorkOrder(tx, input, candidate as never),
+        target.lockCallerOwnedCreateAuthority(tx, input, candidate as never),
         ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
       );
     }
     expect(database.workOrders).toHaveLength(0);
     expect(otherDatabase.workOrders).toHaveLength(0);
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, retargeted, and reused create authorities", async () => {
+    const database = new FakeDatabase();
+    const otherDatabase = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const foreignRepository = new AssetOperationsRepository();
+    const command = createCommand();
+    const prepare = async () => {
+      const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+      return repository.lockCallerOwnedCreateAuthority(database.tx, command, capability);
+    };
+
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, Object.freeze({}) as never),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const foreign = await prepare();
+    await expectCode(
+      foreignRepository.createWorkOrder(database.tx, command, foreign),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const wrongTransaction = await prepare();
+    await expectCode(
+      repository.createWorkOrder(otherDatabase.tx, command, wrongTransaction),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const retargeted = await prepare();
+    await expectCode(
+      repository.createWorkOrder(database.tx, { ...command, vehicleId: randomUUID() }, retargeted),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const oneUse = await prepare();
+    await repository.createWorkOrder(database.tx, command, oneUse);
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, oneUse),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
   });
 
   it("does not let a caller mutate or retarget a locked work-order capability", async () => {

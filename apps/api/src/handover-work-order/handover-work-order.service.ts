@@ -460,8 +460,27 @@ export class HandoverWorkOrderService {
     input: CreateReturnInboundWorkOrderCommand,
     capability: ReturnInboundTransactionCapability
   ): Promise<WorkOrderRecord> {
+    const capabilityState = this.takeReturnInboundCapability(capability);
     const command = normalizeReturnInboundCommand(input);
-    this.consumeReturnInboundCapability(tx, command, capability);
+    this.assertReturnInboundCapability(capabilityState, tx, command);
+    const commandHash = returnInboundCommandHash(command);
+    const sourceOwners = await findReturnInboundSourceOwners(tx, command.source);
+    if (sourceOwners.length > 1) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+        "The return-inbound source has more than one persisted owner."
+      );
+    }
+    const sourceOwner = sourceOwners[0];
+    if (sourceOwner) {
+      if (returnInboundMetadataHash(sourceOwner.metadata) !== commandHash) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+          "The return-inbound source is bound to a different payload."
+        );
+      }
+      return sourceOwner;
+    }
     await lockReturnInboundAuthority(tx, "subscription_order", command.orderId, "UPDATE");
     await lockReturnInboundSpecialistProbe(tx, command.orderId);
     await lockReturnInboundAuthority(tx, "user", command.actorId, "SHARE");
@@ -482,19 +501,6 @@ export class HandoverWorkOrderService {
       );
     }
 
-    const commandHash = returnInboundCommandHash(command);
-    const replay = candidates.find((candidate) =>
-      returnInboundMetadataSourceMatches(candidate.metadata, command.source)
-    );
-    if (replay) {
-      if (returnInboundMetadataHash(replay.metadata) !== commandHash) {
-        throw handoverP0Conflict(
-          HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
-          "The return-inbound source is bound to a different payload."
-        );
-      }
-      return replay;
-    }
     if (candidates.some(({ status }) => !isTerminalWorkOrderStatus(status))) {
       throw handoverP0Conflict(
         HANDOVER_P0_CAPABILITY_ERROR_CODE.ACTIVE_RETURN_INBOUND_EXISTS,
@@ -531,15 +537,26 @@ export class HandoverWorkOrderService {
     return workOrder;
   }
 
-  private consumeReturnInboundCapability(
-    tx: Prisma.TransactionClient,
-    command: CreateReturnInboundWorkOrderCommand,
+  private takeReturnInboundCapability(
     capability: ReturnInboundTransactionCapability
-  ) {
+  ): ReturnInboundTransactionCapabilityState {
     const state = this.returnInboundCapabilities.get(capability);
     this.returnInboundCapabilities.delete(capability);
+    if (!state) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The caller-owned return-inbound capability is invalid."
+      );
+    }
+    return state;
+  }
+
+  private assertReturnInboundCapability(
+    state: ReturnInboundTransactionCapabilityState,
+    tx: Prisma.TransactionClient,
+    command: CreateReturnInboundWorkOrderCommand
+  ) {
     if (
-      !state ||
       state.transaction !== tx ||
       state.commandHash !== returnInboundCommandHash(command) ||
       !sameReturnInboundSource(state.source, command.source)
@@ -5494,17 +5511,21 @@ async function lockReturnInboundSpecialistProbe(
   }
 }
 
-function returnInboundMetadataSourceMatches(
-  metadata: unknown,
+function findReturnInboundSourceOwners(
+  tx: Prisma.TransactionClient,
   source: ReturnInboundCommandSource
 ) {
-  const envelope = asRecord(asRecord(metadata)?.p0ReturnInbound);
-  const storedSource = asRecord(envelope?.source);
-  return (
-    storedSource?.id === source.id &&
-    storedSource.key === source.key &&
-    storedSource.type === source.type
-  );
+  return tx.vehicleHandoverWorkOrder.findMany({
+    orderBy: { id: "asc" },
+    take: 2,
+    where: {
+      AND: [
+        { metadata: { equals: source.type, path: ["p0ReturnInbound", "source", "type"] } },
+        { metadata: { equals: source.id, path: ["p0ReturnInbound", "source", "id"] } },
+        { metadata: { equals: source.key, path: ["p0ReturnInbound", "source", "key"] } }
+      ]
+    }
+  });
 }
 
 function returnInboundMetadataHash(metadata: unknown) {

@@ -99,6 +99,49 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     ).resolves.toBe(1);
   });
 
+  it("owns a specialist source globally across order and actor payload drift", async () => {
+    const firstData = await fixture();
+    const secondData = await fixture();
+    await removeSeededHandover(prisma, firstData);
+    await removeSeededHandover(prisma, secondData);
+    const service = returnInboundService(prisma);
+    const command = returnInboundCommand(firstData, "global-source-ownership");
+    const created = await readCommitted(prisma, async (tx) => {
+      const capability = await service.prepareReturnInboundInTransaction(tx, command);
+      return service.createReturnInboundInTransaction(tx, command, capability);
+    });
+    firstData.handoverWorkOrderId = created.id;
+
+    for (const drifted of [
+      { ...command, orderId: secondData.orderId },
+      { ...command, actorId: secondData.actorId }
+    ]) {
+      await expectCode(
+        readCommitted(prisma, async (tx) => {
+          const capability = await service.prepareReturnInboundInTransaction(tx, drifted);
+          return service.createReturnInboundInTransaction(tx, drifted, capability);
+        }),
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT
+      );
+    }
+
+    const replay = await readCommitted(prisma, async (tx) => {
+      const capability = await service.prepareReturnInboundInTransaction(tx, command);
+      return service.createReturnInboundInTransaction(tx, command, capability);
+    });
+    expect(replay.id).toBe(created.id);
+    await expect(
+      prisma.vehicleHandoverWorkOrder.count({
+        where: { orderId: { in: [firstData.orderId, secondData.orderId] } }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.vehicleHandoverEvent.count({
+        where: { orderId: { in: [firstData.orderId, secondData.orderId] } }
+      })
+    ).resolves.toBe(1);
+  });
+
   it("fails closed on an empty required authority probe", async () => {
     const data = await fixture();
     const service = returnInboundService(prisma);

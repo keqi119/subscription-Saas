@@ -6,6 +6,7 @@ import {
   AssetWorkOrderStatus,
   AssetWorkOrderType,
   AuditAction,
+  Prisma,
   VehicleOperationalRestrictionScope,
   VehicleOperationalRestrictionSeverity,
   VehicleOperationalRestrictionStatus,
@@ -61,6 +62,64 @@ describe("AssetOperationsService", () => {
     ).rejects.toMatchObject({
       response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
     });
+  });
+
+  it("uses the real repository for one source lock and exactly one ranked authority pass", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      harness.command.source
+    );
+
+    await harness.service.createWorkOrderInTransaction(
+      harness.tx,
+      harness.command,
+      harness.context,
+      capability
+    );
+
+    expect(harness.sourceLocks).toHaveLength(1);
+    expect(harness.authorityTables).toEqual([
+      "subscription_order",
+      "vehicle",
+      "contract",
+      "asset_owner",
+      "customer"
+    ]);
+  });
+
+  it("consumes a service capability before reading a throwing source", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing operation service source getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        malformed,
+        harness.context,
+        capability
+      )
+    ).rejects.toThrow("throwing operation service source getter");
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.auditInputs).toHaveLength(0);
   });
 
   it("rejects forged, foreign-instance, and wrong-transaction create capabilities", async () => {
@@ -1245,6 +1304,19 @@ function createHarness(
       workOrder
     })),
     listWorkOrdersByVehicle: vi.fn(async () => [workOrder]),
+    lockCallerOwnedCreateAuthority: vi.fn(async (_tx, command) => {
+      for (const table of [
+        command.orderId ? "subscription_order" : null,
+        "vehicle",
+        command.contractId ? "contract" : null,
+        command.relatedWorkOrderId ? "asset_work_order" : null,
+        command.assetOwnerId ? "asset_owner" : null,
+        command.customerId ? "customer" : null
+      ]) {
+        if (table) sequence.push(`authority:${table}`);
+      }
+      return Object.freeze({});
+    }),
     loadAvailabilitySnapshot: vi.fn(async () => ({
       activeRestrictions: [
         {
@@ -1325,5 +1397,75 @@ function createHarness(
     source,
     tx,
     workOrder
+  };
+}
+
+function createRealRepositoryCreateHarness() {
+  const base = createHarness();
+  const authorityTables: string[] = [];
+  const sourceLocks: string[] = [];
+  const tx = base.tx as unknown as Prisma.TransactionClient & {
+    $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+  };
+  const mutableTx = tx as unknown as Record<string, unknown>;
+  mutableTx.$queryRaw = vi.fn(async (query: Prisma.Sql) => {
+    const sql = query.strings.join("?");
+    if (sql.includes("current_setting('transaction_isolation')")) {
+      return [{ isolationLevel: "read committed", transactionId: "one-pass-tx" }];
+    }
+    if (sql.includes("txid_current()")) {
+      return [{ transactionId: "one-pass-tx" }];
+    }
+    if (sql.includes("transaction_timestamp()")) return [{ transactionNow: NOW }];
+    if (sql.includes("pg_advisory_xact_lock")) {
+      if (String(query.values[0]).includes("source-ownership")) {
+        sourceLocks.push(String(query.values[0]));
+      }
+      return [{ locked: true }];
+    }
+    const table = sql.match(/FROM "([a-z_]+)"/)?.[1];
+    if (table) authorityTables.push(table);
+    return [{ id: query.values.find((value) => typeof value === "string") ?? randomUUID() }];
+  });
+  mutableTx.assetWorkOrder = {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...base.workOrder,
+      ...data,
+      id: base.ids.workOrderId
+    })),
+    findFirst: vi.fn(async () => null),
+    findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+      "workOrderNo" in where ? null : base.workOrder
+    )
+  };
+  mutableTx.assetWorkOrderEvent = {
+    aggregate: vi.fn(async () => ({ _max: { sequence: null } })),
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: base.ids.eventId,
+      recordedAt: NOW
+    })),
+    findFirst: vi.fn(async () => null)
+  };
+  mutableTx.vehicleOperationalRestriction = {
+    findFirst: vi.fn(async () => null)
+  };
+  const auditService = {
+    write: vi.fn(async () => undefined)
+  } as unknown as AuditService;
+  const repository = new AssetOperationsRepository(() => "AWO-ONEPASS");
+  const command = fullCreateCommand(base);
+  return {
+    authorityTables,
+    command,
+    context: base.context,
+    service: new AssetOperationsService(
+      {} as PrismaService,
+      repository,
+      auditService,
+      base.assetAccountingService
+    ),
+    sourceLocks,
+    tx
   };
 }

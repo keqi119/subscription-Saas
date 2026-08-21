@@ -25,6 +25,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import {
   ASSET_OPERATION_ERROR_CODE,
   AssetOperationsRepository,
+  type AssetOperationsCallerOwnedCreateAuthority,
   type AssetOperationsCallerOwnedCommandCapability
 } from "./asset-operations.repository";
 import type {
@@ -184,7 +185,12 @@ export class AssetOperationsService {
     context: AssetOperationCommandContext,
     capability: AssetOperationsTransactionCapability
   ): Promise<WorkOrderCommandOutcome> {
-    const repositoryCapability = this.consumeCallerOwnedCapability(tx, command.source, capability);
+    const capabilityState = this.takeCallerOwnedCapability(capability);
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      capabilityState,
+      tx,
+      command.source
+    );
     return this.createWorkOrderCommand(tx, command, context, repositoryCapability);
   }
 
@@ -202,8 +208,20 @@ export class AssetOperationsService {
     repositoryCapability?: AssetOperationsCallerOwnedCommandCapability
   ): Promise<WorkOrderCommandOutcome> {
     if (!repositoryCapability) await this.repository.lockSourceOwnership(tx, command.source);
+    let callerOwnedAuthority: AssetOperationsCallerOwnedCreateAuthority | undefined;
     if (repositoryCapability) {
-      await lockCallerOwnedCreateAuthorityRows(tx, command);
+      try {
+        callerOwnedAuthority = await this.repository.lockCallerOwnedCreateAuthority(
+          tx,
+          command,
+          repositoryCapability
+        );
+      } catch (error) {
+        if (hasConflictCode(error, ASSET_OPERATION_ERROR_CODE.AUTHORITY_NOT_FOUND)) {
+          throw authorityMismatch();
+        }
+        throw error;
+      }
     } else {
       await lockAuthorityRows(tx, createAuthorityRows(command));
     }
@@ -215,7 +233,7 @@ export class AssetOperationsService {
         actorId: context.actorId,
         authoritySnapshot: projectAuthority(authority)
       },
-      repositoryCapability
+      callerOwnedAuthority
     );
     if (outcome.wrote) {
       await this.writeAudit(tx, AuditAction.CREATE, "asset_work_order", outcome.workOrder, context);
@@ -230,15 +248,26 @@ export class AssetOperationsService {
     return outcome;
   }
 
-  private consumeCallerOwnedCapability(
-    tx: Prisma.TransactionClient,
-    source: StableAssetOperationSource,
+  private takeCallerOwnedCapability(
     capability: AssetOperationsTransactionCapability
-  ): AssetOperationsCallerOwnedCommandCapability {
+  ): AssetOperationsTransactionCapabilityState {
     const state = this.callerOwnedCapabilities.get(capability);
     this.callerOwnedCapabilities.delete(capability);
+    if (!state) {
+      throw new ConflictException({
+        code: ASSET_OPERATION_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-operation transaction capability is invalid."
+      });
+    }
+    return state;
+  }
+
+  private assertCallerOwnedCapability(
+    state: AssetOperationsTransactionCapabilityState,
+    tx: Prisma.TransactionClient,
+    source: StableAssetOperationSource
+  ): AssetOperationsCallerOwnedCommandCapability {
     if (
-      !state ||
       state.transaction !== tx ||
       state.source.id !== source.id ||
       state.source.key !== source.key ||
@@ -700,73 +729,6 @@ function createAuthorityRows(command: CreateWorkOrderServiceCommand) {
   ];
 }
 
-const CALLER_OWNED_AUTHORITY_RANK = {
-  subscription_order: 20,
-  vehicle: 30,
-  contract: 50,
-  asset_work_order: 120,
-  asset_owner: 140,
-  customer: 180
-} as const;
-
-type CallerOwnedAuthorityTable = keyof typeof CALLER_OWNED_AUTHORITY_RANK;
-
-async function lockCallerOwnedCreateAuthorityRows(
-  tx: Prisma.TransactionClient,
-  command: CreateWorkOrderServiceCommand
-) {
-  const rows: Array<{
-    id: string;
-    mode: "SHARE" | "UPDATE";
-    table: CallerOwnedAuthorityTable;
-  }> = [
-    ...(command.orderId
-      ? [{ id: command.orderId, mode: "UPDATE" as const, table: "subscription_order" as const }]
-      : []),
-    { id: command.vehicleId, mode: "SHARE", table: "vehicle" },
-    ...(command.contractId
-      ? [{ id: command.contractId, mode: "SHARE" as const, table: "contract" as const }]
-      : []),
-    ...(command.relatedWorkOrderId
-      ? [
-          {
-            id: command.relatedWorkOrderId,
-            mode: "SHARE" as const,
-            table: "asset_work_order" as const
-          }
-        ]
-      : []),
-    ...(command.assetOwnerId
-      ? [{ id: command.assetOwnerId, mode: "SHARE" as const, table: "asset_owner" as const }]
-      : []),
-    ...(command.customerId
-      ? [{ id: command.customerId, mode: "SHARE" as const, table: "customer" as const }]
-      : [])
-  ];
-  rows.sort((left, right) => {
-    const rank = CALLER_OWNED_AUTHORITY_RANK[left.table] - CALLER_OWNED_AUTHORITY_RANK[right.table];
-    return rank || compare(left.id, right.id);
-  });
-  try {
-    for (const row of rows) {
-      const query =
-        row.mode === "UPDATE"
-          ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR UPDATE NOWAIT`
-          : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`;
-      const [locked] = await tx.$queryRaw<Array<{ id: string }>>(query);
-      if (!locked) throw authorityMismatch();
-    }
-  } catch (error) {
-    if (isLockUnavailableError(error)) {
-      throw new ConflictException({
-        code: ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY,
-        message: "Asset operation authority is being updated. Review the current state and retry."
-      });
-    }
-    throw error;
-  }
-}
-
 async function lockAuthorityRows(
   tx: Prisma.TransactionClient,
   rows: ReadonlyArray<{ id: string; table: AuthorityTable } | null>
@@ -1147,6 +1109,12 @@ function authorityMismatch() {
     code: ASSET_OPERATION_SERVICE_CODE.AUTHORITY_MISMATCH,
     message: "Asset-operation references do not identify one consistent live aggregate."
   });
+}
+
+function hasConflictCode(error: unknown, code: string) {
+  if (!(error instanceof ConflictException)) return false;
+  const response = error.getResponse();
+  return isRecord(response) && response.code === code;
 }
 
 function isLockUnavailableError(value: unknown) {

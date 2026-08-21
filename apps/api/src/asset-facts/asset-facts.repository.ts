@@ -155,7 +155,10 @@ export class AssetFactsRepository {
     input: OpenSubscriptionPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<VehicleSubscriptionPeriod> {
-    return (await this.openSubscriptionPeriodWithOutcome(tx, input, capability)).fact;
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return (await this.openSubscriptionPeriodPrepared(tx, input, capabilityState)).fact;
   }
 
   async openSubscriptionPeriodWithOutcome(
@@ -163,14 +166,25 @@ export class AssetFactsRepository {
     input: OpenSubscriptionPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return this.openSubscriptionPeriodPrepared(tx, input, capabilityState);
+  }
+
+  private async openSubscriptionPeriodPrepared(
+    tx: Prisma.TransactionClient,
+    input: OpenSubscriptionPeriodInput,
+    capabilityState?: AssetFactsCallerOwnedCommandCapabilityState
+  ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(
+        capabilityState,
         tx,
         "subscription",
         "start",
-        normalizedInput.source,
-        capability
+        normalizedInput.source
       );
     } else {
       await this.lockCommandSource(tx, "subscription", "start", normalizedInput.source);
@@ -210,7 +224,10 @@ export class AssetFactsRepository {
     input: CloseSubscriptionPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<VehicleSubscriptionPeriod> {
-    return (await this.closeSubscriptionPeriodWithOutcome(tx, input, capability)).fact;
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return (await this.closeSubscriptionPeriodPrepared(tx, input, capabilityState)).fact;
   }
 
   async closeSubscriptionPeriodWithOutcome(
@@ -218,14 +235,25 @@ export class AssetFactsRepository {
     input: CloseSubscriptionPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return this.closeSubscriptionPeriodPrepared(tx, input, capabilityState);
+  }
+
+  private async closeSubscriptionPeriodPrepared(
+    tx: Prisma.TransactionClient,
+    input: CloseSubscriptionPeriodInput,
+    capabilityState?: AssetFactsCallerOwnedCommandCapabilityState
+  ): Promise<AssetFactWriteOutcome<VehicleSubscriptionPeriod>> {
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(
+        capabilityState,
         tx,
         "subscription",
         "end",
-        normalizedInput.source,
-        capability
+        normalizedInput.source
       );
     } else {
       await this.lockCommandSource(tx, "subscription", "end", normalizedInput.source);
@@ -274,7 +302,10 @@ export class AssetFactsRepository {
     input: OpenOwnershipPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<VehicleOwnershipPeriod> {
-    return (await this.openOwnershipPeriodWithOutcome(tx, input, capability)).fact;
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return (await this.openOwnershipPeriodPrepared(tx, input, capabilityState)).fact;
   }
 
   async openOwnershipPeriodWithOutcome(
@@ -282,14 +313,25 @@ export class AssetFactsRepository {
     input: OpenOwnershipPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return this.openOwnershipPeriodPrepared(tx, input, capabilityState);
+  }
+
+  private async openOwnershipPeriodPrepared(
+    tx: Prisma.TransactionClient,
+    input: OpenOwnershipPeriodInput,
+    capabilityState?: AssetFactsCallerOwnedCommandCapabilityState
+  ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(
+        capabilityState,
         tx,
         "ownership",
         "start",
-        normalizedInput.source,
-        capability
+        normalizedInput.source
       );
     } else {
       await this.lockCommandSource(tx, "ownership", "start", normalizedInput.source);
@@ -326,7 +368,10 @@ export class AssetFactsRepository {
     input: CloseOwnershipPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<VehicleOwnershipPeriod> {
-    return (await this.closeOwnershipPeriodWithOutcome(tx, input, capability)).fact;
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return (await this.closeOwnershipPeriodPrepared(tx, input, capabilityState)).fact;
   }
 
   async closeOwnershipPeriodWithOutcome(
@@ -334,14 +379,25 @@ export class AssetFactsRepository {
     input: CloseOwnershipPeriodInput,
     capability?: AssetFactsCallerOwnedCommandCapability
   ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
+    return this.closeOwnershipPeriodPrepared(tx, input, capabilityState);
+  }
+
+  private async closeOwnershipPeriodPrepared(
+    tx: Prisma.TransactionClient,
+    input: CloseOwnershipPeriodInput,
+    capabilityState?: AssetFactsCallerOwnedCommandCapabilityState
+  ): Promise<AssetFactWriteOutcome<VehicleOwnershipPeriod>> {
     const normalizedInput = { ...input, snapshot: normalizeSnapshot(input.snapshot) };
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(
+        capabilityState,
         tx,
         "ownership",
         "end",
-        normalizedInput.source,
-        capability
+        normalizedInput.source
       );
     } else {
       await this.lockCommandSource(tx, "ownership", "end", normalizedInput.source);
@@ -385,17 +441,23 @@ export class AssetFactsRepository {
     return { fact: closed, wrote: true };
   }
 
-  private consumeCallerOwnedCommandCapability(
+  private takeCallerOwnedCommandCapability(
+    capability: AssetFactsCallerOwnedCommandCapability
+  ): AssetFactsCallerOwnedCommandCapabilityState {
+    const state = this.callerOwnedCommandCapabilities.get(capability);
+    this.callerOwnedCommandCapabilities.delete(capability);
+    if (!state) throw conflict(ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID);
+    return state;
+  }
+
+  private assertCallerOwnedCommandCapability(
+    state: AssetFactsCallerOwnedCommandCapabilityState,
     tx: Prisma.TransactionClient,
     periodKind: AssetFactPeriodKind,
     phase: AssetFactCommandPhase,
-    source: StableFactSource,
-    capability: AssetFactsCallerOwnedCommandCapability
+    source: StableFactSource
   ) {
-    const state = this.callerOwnedCommandCapabilities.get(capability);
-    this.callerOwnedCommandCapabilities.delete(capability);
     if (
-      !state ||
       state.transaction !== tx ||
       state.periodKind !== periodKind ||
       state.phase !== phase ||

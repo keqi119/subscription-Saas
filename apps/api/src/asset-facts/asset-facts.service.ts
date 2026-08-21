@@ -219,12 +219,13 @@ export class AssetFactsService {
     context: AssetFactCommandContext,
     capability: AssetFactsTransactionCapability
   ) {
-    const repositoryCapability = this.consumeCallerOwnedCapability(
+    const capabilityState = this.takeCallerOwnedCapability(capability);
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      capabilityState,
       tx,
       "subscription",
       "end",
-      dto.source,
-      capability
+      dto.source
     );
     return this.closeSubscriptionPeriodCommand(tx, dto, context, repositoryCapability);
   }
@@ -349,17 +350,28 @@ export class AssetFactsService {
     return outcome.fact;
   }
 
-  private consumeCallerOwnedCapability(
+  private takeCallerOwnedCapability(
+    capability: AssetFactsTransactionCapability
+  ): AssetFactsTransactionCapabilityState {
+    const state = this.callerOwnedCapabilities.get(capability);
+    this.callerOwnedCapabilities.delete(capability);
+    if (!state) {
+      throw new ConflictException({
+        code: ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-fact transaction capability is invalid."
+      });
+    }
+    return state;
+  }
+
+  private assertCallerOwnedCapability(
+    state: AssetFactsTransactionCapabilityState,
     tx: Prisma.TransactionClient,
     periodKind: AssetFactPeriodKind,
     phase: AssetFactCommandPhase,
-    source: Readonly<{ id: string; key: string; type: string }>,
-    capability: AssetFactsTransactionCapability
+    source: Readonly<{ id: string; key: string; type: string }>
   ): AssetFactsCallerOwnedCommandCapability {
-    const state = this.callerOwnedCapabilities.get(capability);
-    this.callerOwnedCapabilities.delete(capability);
     if (
-      !state ||
       state.transaction !== tx ||
       state.periodKind !== periodKind ||
       state.phase !== phase ||

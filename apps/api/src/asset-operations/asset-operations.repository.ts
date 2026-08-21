@@ -34,6 +34,7 @@ import type { VehicleAvailabilitySnapshot } from "./vehicle-availability";
 
 export const ASSET_OPERATION_ERROR_CODE = {
   AUTHORITY_BUSY: "ASSET_OPERATION_AUTHORITY_BUSY",
+  AUTHORITY_NOT_FOUND: "ASSET_OPERATION_AUTHORITY_NOT_FOUND",
   CALLER_CAPABILITY_INVALID: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID",
   EVIDENCE_CHAIN_CONFLICT: "ASSET_WORK_ORDER_EVIDENCE_CHAIN_CONFLICT",
   EVIDENCE_INVALID: "ASSET_WORK_ORDER_EVIDENCE_INVALID",
@@ -61,6 +62,8 @@ type AssetOperationErrorCode =
 const ERROR_MESSAGES: Readonly<Record<AssetOperationErrorCode, string>> = {
   [ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY]:
     "Asset operation authority is being updated. Review the current state and retry.",
+  [ASSET_OPERATION_ERROR_CODE.AUTHORITY_NOT_FOUND]:
+    "A required asset-operation authority row was not found.",
   [ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID]:
     "The caller-owned asset-operation command capability is invalid.",
   [ASSET_OPERATION_ERROR_CODE.EVIDENCE_CHAIN_CONFLICT]:
@@ -168,6 +171,7 @@ type AuthorityLockRow = Readonly<{
 }>;
 declare const lockedWorkOrderCommandHandleBrand: unique symbol;
 declare const callerOwnedCommandCapabilityBrand: unique symbol;
+declare const callerOwnedCreateAuthorityBrand: unique symbol;
 export type AssetOperationsCallerOwnedCommandCapability = Readonly<{
   [callerOwnedCommandCapabilityBrand]: true;
 }>;
@@ -175,6 +179,23 @@ type CallerOwnedCommandCapabilityState = Readonly<{
   source: StableAssetOperationSource;
   transaction: Prisma.TransactionClient;
 }>;
+export type AssetOperationsCallerOwnedCreateAuthority = Readonly<{
+  [callerOwnedCreateAuthorityBrand]: true;
+}>;
+type CallerOwnedCreateAuthorityState = Readonly<{
+  identity: string;
+  transaction: Prisma.TransactionClient;
+}>;
+export type CallerOwnedCreateAuthorityCommand = Pick<
+  CreateWorkOrderCommand,
+  | "assetOwnerId"
+  | "contractId"
+  | "customerId"
+  | "orderId"
+  | "relatedWorkOrderId"
+  | "source"
+  | "vehicleId"
+>;
 type LockedWorkOrderCommandHandle = Readonly<{
   [lockedWorkOrderCommandHandleBrand]: true;
 }>;
@@ -190,6 +211,10 @@ export class AssetOperationsRepository {
   private readonly callerOwnedCommandCapabilities = new WeakMap<
     AssetOperationsCallerOwnedCommandCapability,
     CallerOwnedCommandCapabilityState
+  >();
+  private readonly callerOwnedCreateAuthorities = new WeakMap<
+    AssetOperationsCallerOwnedCreateAuthority,
+    CallerOwnedCreateAuthorityState
   >();
   private readonly lockedWorkOrderHandles = new WeakMap<
     LockedWorkOrderCommandHandle,
@@ -219,6 +244,22 @@ export class AssetOperationsRepository {
     return capability;
   }
 
+  async lockCallerOwnedCreateAuthority(
+    tx: Prisma.TransactionClient,
+    command: CallerOwnedCreateAuthorityCommand,
+    capability: AssetOperationsCallerOwnedCommandCapability
+  ): Promise<AssetOperationsCallerOwnedCreateAuthority> {
+    const capabilityState = this.takeCallerOwnedCommandCapability(capability);
+    this.assertCallerOwnedCommandCapability(capabilityState, tx, command.source);
+    await lockAuthorityRows(tx, createAuthorityRows(command), CALLER_OWNED_AUTHORITY_RANK, true);
+    const authority = Object.freeze({}) as AssetOperationsCallerOwnedCreateAuthority;
+    this.callerOwnedCreateAuthorities.set(
+      authority,
+      Object.freeze({ identity: createAuthorityIdentity(command), transaction: tx })
+    );
+    return authority;
+  }
+
   /** Locks current mutable header exclusively with its stable authority set and returns a reusable handle. */
   async lockWorkOrderForCommand(
     tx: Prisma.TransactionClient,
@@ -246,19 +287,16 @@ export class AssetOperationsRepository {
   async createWorkOrder(
     tx: Prisma.TransactionClient,
     command: CreateWorkOrderCommand,
-    capability?: AssetOperationsCallerOwnedCommandCapability
+    authority?: AssetOperationsCallerOwnedCreateAuthority
   ): Promise<WorkOrderCommandOutcome> {
+    const authorityState = authority ? this.takeCallerOwnedCreateAuthority(authority) : undefined;
     const normalized = normalizeCreateCommand(command);
-    if (capability) {
-      this.consumeCallerOwnedCommandCapability(tx, normalized.source, capability);
+    if (authorityState) {
+      this.assertCallerOwnedCreateAuthority(authorityState, tx, normalized);
     } else {
       await prepareCommand(tx, normalized.source);
+      await lockAuthorityRows(tx, createAuthorityRows(normalized));
     }
-    await lockAuthorityRows(
-      tx,
-      createAuthorityRows(normalized),
-      capability ? CALLER_OWNED_AUTHORITY_RANK : undefined
-    );
     const existing = await findWorkOrderByCreateSource(tx, normalized.source);
     if (existing) return replayCreate(tx, existing, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
@@ -285,20 +323,45 @@ export class AssetOperationsRepository {
     return { event, workOrder, wrote: true };
   }
 
-  private consumeCallerOwnedCommandCapability(
-    tx: Prisma.TransactionClient,
-    source: StableAssetOperationSource,
+  private takeCallerOwnedCommandCapability(
     capability: AssetOperationsCallerOwnedCommandCapability
-  ) {
+  ): CallerOwnedCommandCapabilityState {
     const state = this.callerOwnedCommandCapabilities.get(capability);
     this.callerOwnedCommandCapabilities.delete(capability);
+    if (!state) throw conflict(ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    return state;
+  }
+
+  private assertCallerOwnedCommandCapability(
+    state: CallerOwnedCommandCapabilityState,
+    tx: Prisma.TransactionClient,
+    source: StableAssetOperationSource
+  ) {
     if (
-      !state ||
       state.transaction !== tx ||
       state.source.id !== source.id ||
       state.source.key !== source.key ||
       state.source.type !== source.type
     ) {
+      throw conflict(ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+  }
+
+  private takeCallerOwnedCreateAuthority(
+    authority: AssetOperationsCallerOwnedCreateAuthority
+  ): CallerOwnedCreateAuthorityState {
+    const state = this.callerOwnedCreateAuthorities.get(authority);
+    this.callerOwnedCreateAuthorities.delete(authority);
+    if (!state) throw conflict(ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    return state;
+  }
+
+  private assertCallerOwnedCreateAuthority(
+    state: CallerOwnedCreateAuthorityState,
+    tx: Prisma.TransactionClient,
+    command: CallerOwnedCreateAuthorityCommand
+  ) {
+    if (state.transaction !== tx || state.identity !== createAuthorityIdentity(command)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID);
     }
   }
@@ -942,7 +1005,8 @@ async function acquireAdvisoryLock(tx: Prisma.TransactionClient, parts: readonly
 async function lockAuthorityRows(
   tx: Prisma.TransactionClient,
   rows: ReadonlyArray<AuthorityLockRow | null>,
-  rank?: Readonly<Partial<Record<AuthorityTable, number>>>
+  rank?: Readonly<Partial<Record<AuthorityTable, number>>>,
+  requireEveryRow = false
 ) {
   const byIdentity = new Map<string, Required<AuthorityLockRow>>();
   for (const row of rows) {
@@ -963,14 +1027,18 @@ async function lockAuthorityRows(
   });
   try {
     for (const row of ordered) {
+      let locked: Array<{ id: string }>;
       if (row.mode === "update") {
-        await tx.$queryRaw(
+        locked = await tx.$queryRaw<Array<{ id: string }>>(
           Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR UPDATE NOWAIT`
         );
       } else {
-        await tx.$queryRaw(
+        locked = await tx.$queryRaw<Array<{ id: string }>>(
           Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`
         );
+      }
+      if (requireEveryRow && !locked[0]) {
+        throw conflict(ASSET_OPERATION_ERROR_CODE.AUTHORITY_NOT_FOUND);
       }
     }
   } catch (error) {
@@ -988,7 +1056,7 @@ const CALLER_OWNED_AUTHORITY_RANK: Readonly<Partial<Record<AuthorityTable, numbe
   customer: 180
 };
 
-function createAuthorityRows(command: CreateWorkOrderCommand) {
+function createAuthorityRows(command: CallerOwnedCreateAuthorityCommand) {
   const rows: Array<{ id: string; table: AuthorityTable }> = [];
   if (command.assetOwnerId) rows.push({ id: command.assetOwnerId, table: "asset_owner" });
   if (command.contractId) rows.push({ id: command.contractId, table: "contract" });
@@ -999,6 +1067,18 @@ function createAuthorityRows(command: CreateWorkOrderCommand) {
   }
   rows.push({ id: command.vehicleId, table: "vehicle" });
   return rows;
+}
+
+function createAuthorityIdentity(command: CallerOwnedCreateAuthorityCommand) {
+  return JSON.stringify({
+    assetOwnerId: command.assetOwnerId,
+    contractId: command.contractId,
+    customerId: command.customerId,
+    orderId: command.orderId,
+    relatedWorkOrderId: command.relatedWorkOrderId,
+    source: command.source,
+    vehicleId: command.vehicleId
+  });
 }
 
 function lockedHeaderOrLoad(

@@ -232,8 +232,9 @@ export class AssetAccountingService {
     context: AssetAccountingCommandContext,
     capability: AssetAccountingTransactionCapability
   ): Promise<PublicVehicleCostLedgerEntry> {
+    const capabilityState = this.takeCallerOwnedCapability(capability);
     const source = canonicalAssetAccountingSource(command.source);
-    const repositoryCapability = this.consumeCallerOwnedCapability(tx, source, capability);
+    const repositoryCapability = this.assertCallerOwnedCapability(capabilityState, tx, source);
     return this.appendCostCommand(tx, { ...command, source }, context, repositoryCapability);
   }
 
@@ -283,15 +284,26 @@ export class AssetAccountingService {
     return fact;
   }
 
-  private consumeCallerOwnedCapability(
-    tx: Prisma.TransactionClient,
-    source: AssetAccountingSource,
+  private takeCallerOwnedCapability(
     capability: AssetAccountingTransactionCapability
-  ): AssetAccountingCallerOwnedCommandCapability {
+  ): AssetAccountingTransactionCapabilityState {
     const state = this.callerOwnedCapabilities.get(capability);
     this.callerOwnedCapabilities.delete(capability);
+    if (!state) {
+      throw new ConflictException({
+        code: ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-accounting transaction capability is invalid."
+      });
+    }
+    return state;
+  }
+
+  private assertCallerOwnedCapability(
+    state: AssetAccountingTransactionCapabilityState,
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ): AssetAccountingCallerOwnedCommandCapability {
     if (
-      !state ||
       state.transaction !== tx ||
       state.source.id !== source.id ||
       state.source.key !== source.key ||

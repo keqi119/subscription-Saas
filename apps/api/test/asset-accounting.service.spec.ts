@@ -70,6 +70,35 @@ describe("AssetAccountingService", () => {
     );
   });
 
+  it("consumes a service capability before throwing source normalization", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("caller-owned-normalization");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing accounting service source getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      harness.service.appendCostInTransaction(harness.tx, malformed, requestContext, capability)
+    ).rejects.toThrow("throwing accounting service source getter");
+    await expectServiceCode(
+      harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(harness.audits).toHaveLength(0);
+  });
+
   it("rejects forged, foreign-instance, wrong-transaction, and wrong-source accounting capabilities", async () => {
     const harness = serviceHarness();
     const foreign = serviceHarness();

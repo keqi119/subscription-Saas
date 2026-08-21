@@ -1,6 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 const databaseTestFiles = [
+  "test/subscription-closure.schema.spec.ts",
   "test/asset-accounting.repository.integration.spec.ts",
   "test/asset-facts.repository.integration.spec.ts",
   "test/asset-operations.repository.integration.spec.ts",

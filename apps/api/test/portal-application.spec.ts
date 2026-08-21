@@ -514,6 +514,13 @@ describe("PortalApplicationService", () => {
     [OrderStatus.PENDING_DELIVERY, "DELIVERY", "CURRENT", "WAIT_DELIVERY", "PENDING_DELIVERY"],
     [OrderStatus.ACTIVE, "ACTIVE", "CURRENT", "NONE", "ACTIVE"],
     [OrderStatus.SUSPENDED, "ACTIVE", "CURRENT", "NONE", "SUSPENDED"],
+    [
+      OrderStatus.RETURNED_PENDING_SETTLEMENT,
+      "ACTIVE",
+      "CURRENT",
+      "NONE",
+      "RETURNED_PENDING_SETTLEMENT"
+    ],
     [OrderStatus.TERMINATED, "ACTIVE", "DONE", "NONE", "TERMINATED"],
     [OrderStatus.COMPLETED, "ACTIVE", "DONE", "NONE", "COMPLETED"],
     [OrderStatus.CANCELLED, "ORDER", "FAILED", "NONE", "CANCELLED"],

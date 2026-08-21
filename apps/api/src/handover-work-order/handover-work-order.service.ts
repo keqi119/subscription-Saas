@@ -106,6 +106,12 @@ import {
   type FieldHandoverWorkflowProjection
 } from "./field-handover-workflow-projection";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
+import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthorityRequirement
+} from "../subscription-closure/subscription-closure.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
 const FIELD_ENDED_WORK_ORDER_STATUSES = [
@@ -410,6 +416,52 @@ export type GovernedReturnInboundUpdateCommand = Readonly<{
   workOrderId: string;
 }>;
 
+export function returnInboundCreateAuthorityRequirement(
+  input: CreateReturnInboundWorkOrderCommand,
+  workOrderId: string
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeReturnInboundCommand(input);
+  return {
+    command: {
+      actorId: command.actorId,
+      orderId: command.orderId,
+      source: command.source,
+      workOrderId
+    },
+    key: "handover-create",
+    locks: [
+      { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]
+  };
+}
+
+export function governedReturnInboundAuthorityRequirement(
+  input: GovernedReturnInboundUpdateCommand
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeGovernedReturnInboundUpdateCommand(input);
+  return {
+    command: {
+      actorId: command.actorId,
+      deliveryLocation: command.deliveryLocation,
+      orderId: command.orderId,
+      scheduledAt: command.scheduledAt,
+      source: command.source,
+      workOrderId: command.workOrderId
+    },
+    key: "managed-return",
+    locks: [
+      { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+      {
+        id: command.workOrderId,
+        mode: "UPDATE",
+        table: "vehicle_handover_work_order"
+      },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]
+  };
+}
+
 declare const returnInboundTransactionCapabilityBrand: unique symbol;
 export type ReturnInboundTransactionCapability = Readonly<{
   [returnInboundTransactionCapabilityBrand]: true;
@@ -430,6 +482,7 @@ type PreparedReturnInboundCapabilityState = Readonly<{
   command: CreateReturnInboundWorkOrderCommand;
   sourceOwner: WorkOrderRecord | null;
   transaction: Prisma.TransactionClient;
+  workOrderId: string;
 }>;
 
 declare const governedReturnInboundUpdateCapabilityBrand: unique symbol;
@@ -455,6 +508,7 @@ type PreparedGovernedReturnInboundUpdateCapabilityState = Readonly<{
 
 @Injectable()
 export class HandoverWorkOrderService {
+  private readonly closureAuthorityConsumer = Object.freeze({});
   private readonly logger = new Logger(HandoverWorkOrderService.name);
   private readonly returnInboundCapabilities = new WeakMap<
     ReturnInboundTransactionCapability,
@@ -593,8 +647,13 @@ export class HandoverWorkOrderService {
   async attestReturnInboundAuthorityInTransaction(
     tx: Prisma.TransactionClient,
     input: CreateReturnInboundWorkOrderCommand,
-    capability: ReturnInboundTransactionCapability
+    capability: ReturnInboundTransactionCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    workOrderId: string
   ): Promise<PreparedReturnInboundCapability> {
+    consumeHandoverAuthorityAttestation(tx, authorityAttestation, () =>
+      this.createReturnInboundAuthorityRequirement(input, workOrderId)
+    );
     const capabilityState = this.takeReturnInboundCapability(capability);
     const command = normalizeReturnInboundCommand(input);
     this.assertReturnInboundCapability(capabilityState, tx, command);
@@ -640,9 +699,26 @@ export class HandoverWorkOrderService {
     const prepared = Object.freeze({}) as PreparedReturnInboundCapability;
     this.preparedReturnInboundCapabilities.set(
       prepared,
-      Object.freeze({ command, sourceOwner, transaction: tx })
+      Object.freeze({ command, sourceOwner, transaction: tx, workOrderId })
     );
     return prepared;
+  }
+
+  createReturnInboundAuthorityRequirement(
+    input: CreateReturnInboundWorkOrderCommand,
+    workOrderId: string
+  ) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      returnInboundCreateAuthorityRequirement(input, workOrderId),
+      this.closureAuthorityConsumer
+    );
+  }
+
+  createGovernedReturnInboundAuthorityRequirement(input: GovernedReturnInboundUpdateCommand) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      governedReturnInboundAuthorityRequirement(input),
+      this.closureAuthorityConsumer
+    );
   }
 
   async createPreparedReturnInboundInTransaction(
@@ -663,6 +739,7 @@ export class HandoverWorkOrderService {
       data: {
         handoverId: null,
         handoverType: "RETURN_INBOUND",
+        id: state.workOrderId,
         metadata: toJsonValue({
           p0ReturnInbound: { commandHash, source: state.command.source }
         }),
@@ -745,8 +822,12 @@ export class HandoverWorkOrderService {
   async attestGovernedReturnInboundAuthorityInTransaction(
     tx: Prisma.TransactionClient,
     input: GovernedReturnInboundUpdateCommand,
-    capability: GovernedReturnInboundUpdateCapability
+    capability: GovernedReturnInboundUpdateCapability,
+    authorityAttestation: ClosureAuthorityAttestation
   ): Promise<PreparedGovernedReturnInboundUpdateCapability> {
+    consumeHandoverAuthorityAttestation(tx, authorityAttestation, () =>
+      this.createGovernedReturnInboundAuthorityRequirement(input)
+    );
     const state = this.governedReturnInboundUpdateCapabilities.get(capability);
     this.governedReturnInboundUpdateCapabilities.delete(capability);
     const command = normalizeGovernedReturnInboundUpdateCommand(input);
@@ -5935,6 +6016,32 @@ function isReturnInboundLockUnavailable(error: unknown) {
 
 function handoverP0Conflict(code: string, message: string) {
   return new ConflictException({ code, message });
+}
+
+function consumeHandoverAuthorityAttestation(
+  tx: Prisma.TransactionClient,
+  attestation: ClosureAuthorityAttestation,
+  requirementFactory: () => SubscriptionClosureAuthorityRequirement
+) {
+  try {
+    consumeSubscriptionClosureAuthorityAttestation(tx, attestation, requirementFactory);
+  } catch (error) {
+    if (error instanceof ConflictException) {
+      const response = error.getResponse();
+      if (
+        response &&
+        typeof response === "object" &&
+        "code" in response &&
+        response.code === "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+      ) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+          "The coordinator authority attestation is invalid."
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 function isPrismaSerializationConflict(error: unknown) {

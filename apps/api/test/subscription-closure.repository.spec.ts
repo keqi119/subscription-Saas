@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   SUBSCRIPTION_CLOSURE_ERROR_CODE,
   SubscriptionClosureRepository,
+  subscriptionClosureDocumentAuthorityRequirement,
   type SubscriptionClosureAuthorityLock
 } from "../src/subscription-closure/subscription-closure.repository";
 
@@ -54,7 +55,30 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
           table: "subscription_order"
         }
       ],
-      ["case-create", "manifest-create"]
+      [
+        {
+          command: { orderId: UUIDS.order, source: SOURCE },
+          key: "case-create",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        },
+        {
+          command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
+          key: "manifest-create",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        }
+      ]
     );
 
     expect(database.authorityLocks).toHaveLength(1);
@@ -62,32 +86,137 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
         attestations.get("case-create")!,
-        "case-create"
+        {
+          command: { orderId: UUIDS.order, source: SOURCE },
+          key: "case-create",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        }
       )
     ).resolves.toBeUndefined();
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
         attestations.get("case-create")!,
+        {
+          command: { orderId: UUIDS.order, source: SOURCE },
+          key: "case-create",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        }
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("manifest-create")!,
+        {
+          command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
+          key: "retargeted",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        }
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("manifest-create")!,
+        {
+          command: { closureCaseId: UUIDS.closureCase, source: SOURCE },
+          key: "manifest-create",
+          locks: [
+            {
+              id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+              mode: "UPDATE",
+              table: "subscription_order"
+            }
+          ]
+        }
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+  });
+
+  it("consumes forged, foreign, wrong-transaction, command, id, and mode retargets fail closed", async () => {
+    const database = fakeTransaction();
+    const repository = new SubscriptionClosureRepository();
+    const lock = {
+      id: UUIDS.order,
+      mode: "UPDATE" as const,
+      table: "subscription_order" as const
+    };
+    const requirement = {
+      command: { operation: "case", orderId: UUIDS.order, source: SOURCE },
+      key: "case-create",
+      locks: [lock]
+    };
+    const prepare = async () =>
+      (await repository.prepareAuthorityInTransaction(database.tx, [lock], [requirement])).get(
         "case-create"
-      ),
-      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
-    );
+      )!;
+
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
         database.tx,
-        attestations.get("manifest-create")!,
-        "retargeted"
+        Object.freeze({}) as never,
+        requirement
       ),
-      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
     await expectCode(
       repository.consumeAuthorityAttestationInTransaction(
-        database.tx,
-        attestations.get("manifest-create")!,
-        "manifest-create"
+        fakeTransaction().tx,
+        await prepare(),
+        requirement
       ),
-      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+    );
+    await expectCode(
+      new SubscriptionClosureRepository().consumeAuthorityAttestationInTransaction(
+        database.tx,
+        await prepare(),
+        requirement
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+        ...requirement,
+        command: { ...requirement.command, operation: "document" }
+      }),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+        ...requirement,
+        locks: [{ ...lock, id: UUIDS.contract }]
+      }),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(database.tx, await prepare(), {
+        ...requirement,
+        locks: [{ ...lock, mode: "SHARE" }]
+      }),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
     );
   });
 
@@ -200,6 +329,31 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
       "authority-lock:contract_esign_task",
       "authority-lock:user"
     ]);
+  });
+
+  it("rejects a retargeted prepared-document attestation before document writes or replay", async () => {
+    const database = fakeDocumentTransaction();
+    const repository = new SubscriptionClosureRepository();
+    const command = generatedDocumentCommand();
+    const sourceCapability = await repository.prepareSourceInTransaction(database.tx, SOURCE);
+    const wrongCommand = { ...command, expectedVersion: 1 };
+    const wrongRequirement = subscriptionClosureDocumentAuthorityRequirement(wrongCommand);
+    const proof = (
+      await repository.prepareAuthorityInTransaction(database.tx, wrongRequirement.locks, [
+        wrongRequirement
+      ])
+    ).get("manifest-create")!;
+
+    await expectCode(
+      repository.appendPreparedDocumentRevisionInTransaction(
+        database.tx,
+        command,
+        sourceCapability,
+        proof
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID
+    );
+    expect(database.receiptFindUnique).not.toHaveBeenCalled();
   });
 
   it.each([

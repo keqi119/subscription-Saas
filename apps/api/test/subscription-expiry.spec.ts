@@ -288,7 +288,8 @@ function createExpiryHarness(
     prepareNormalExpiryInTransaction: vi.fn(async () => {
       options.timeline?.push("closure:prepare");
       return normalExpiryCapability;
-    })
+    }),
+    preparedNormalExpiryVehicleReturnId: vi.fn(() => "return-1")
   };
   const state = {
     account: { accountStatus: EntitlementAccountStatus.ACTIVE, id: "account-1" },

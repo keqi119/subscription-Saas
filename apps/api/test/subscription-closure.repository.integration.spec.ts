@@ -20,6 +20,7 @@ import {
   type CreateSubscriptionClosureCaseCommand,
   type SubscriptionClosureMutationAuditHook
 } from "../src/subscription-closure/subscription-closure.repository";
+import { hashSubscriptionClosureSnapshot } from "../src/subscription-closure/subscription-closure.domain";
 
 const DATABASE_URL = requiredTestDatabaseUrl();
 const NOW = new Date("2026-08-21T03:00:00.000Z");
@@ -270,14 +271,18 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
             },
             closureAudit(auditService, data.actorId, failpoint, "case-audit")
           );
-          const firstDocument = documentCommand(data, createdCase.outcome.id, {
-            documentType: "RETURN_MANIFEST",
-            expectedVersion: 0,
-            key: `atomic:${failpoint}:document`
-          });
+          const firstDocument = {
+            ...documentCommand(data, createdCase.outcome.id, {
+              documentType: "RETURN_MANIFEST",
+              expectedVersion: 0,
+              key: `atomic:${failpoint}:document`
+            }),
+            source: documentSource
+          };
+          await bindReturnManifestESign(tx, firstDocument);
           await closureRepository.appendDocumentRevision(
             tx,
-            { ...firstDocument, source: documentSource },
+            firstDocument,
             closureAudit(auditService, data.actorId, failpoint, "document-audit")
           );
           if (failpoint === "after-first-document") throw new Error(failpoint);
@@ -1106,15 +1111,14 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT
     );
+    const manifestCommand = documentCommand(data, created.outcome.id, {
+      documentType: "RETURN_MANIFEST",
+      expectedVersion: 1,
+      key: "manifest-r1"
+    });
+    await readCommitted(prisma, (tx) => bindReturnManifestESign(tx, manifestCommand));
     const manifestR1 = await readCommitted(prisma, (tx) =>
-      repository.appendDocumentRevision(
-        tx,
-        documentCommand(data, created.outcome.id, {
-          documentType: "RETURN_MANIFEST",
-          expectedVersion: 1,
-          key: "manifest-r1"
-        })
-      )
+      repository.appendDocumentRevision(tx, manifestCommand)
     );
     const agreementR2 = await readCommitted(prisma, (tx) =>
       repository.appendDocumentRevision(tx, {
@@ -1281,6 +1285,29 @@ function documentCommand(
     stage: "GENERATED",
     vehicleReturnId: isManifest ? fixture.vehicleReturnId : null
   };
+}
+
+function bindReturnManifestESign(
+  tx: Prisma.TransactionClient,
+  command: AppendSubscriptionClosureDocumentCommand
+) {
+  return tx.contractESignTask.update({
+    data: {
+      documentType: "DELIVERY_HANDOVER",
+      requestSnapshot: {
+        closureCaseId: command.closureCaseId,
+        documentSnapshotHash: hashSubscriptionClosureSnapshot(command.documentSnapshot),
+        documentType: "RETURN_MANIFEST",
+        returnManifestSource: command.source,
+        revisionNumber: 1
+      },
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourceId: command.source.id,
+      sourceKey: command.source.key,
+      sourceType: command.source.type
+    },
+    where: { id: command.contractESignTaskId }
+  });
 }
 
 function settlementCommand(

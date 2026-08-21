@@ -23,6 +23,7 @@ import { AssetOperationsService } from "../src/asset-operations/asset-operations
 import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
@@ -34,19 +35,35 @@ describe("AssetOperationsService", () => {
       harness.tx as never,
       harness.source
     );
-    const sequenceAfterSource = [...harness.sequence];
+    const requirement = harness.service.createAuthorityRequirement(
+      command,
+      harness.context.actorId,
+      harness.ids.workOrderId
+    );
+    const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+      harness.tx as never,
+      requirement.locks,
+      [requirement]
+    );
+    const sequenceAfterProof = [...harness.sequence];
     const prepared = await harness.service.attestCallerOwnedCreateAuthorityInTransaction(
       harness.tx as never,
       command,
       harness.context,
-      sourceCapability
+      sourceCapability,
+      proofs.get("asset-create")!,
+      harness.ids.workOrderId
     );
 
     await expect(
       harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
     ).resolves.toMatchObject({ workOrder: { id: harness.ids.workOrderId } });
-    expect(harness.sequence.filter((entry) => entry.startsWith("authority:"))).toHaveLength(0);
-    expect(sequenceAfterSource).toEqual(["source-lock"]);
+    expect(harness.sequence.filter((entry) => entry.startsWith("authority:"))).toEqual(
+      sequenceAfterProof.filter((entry) => entry.startsWith("authority:"))
+    );
+    expect(sequenceAfterProof.filter((entry) => entry.startsWith("authority:"))).not.toHaveLength(
+      0
+    );
     await expect(
       harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
     ).rejects.toMatchObject({
@@ -60,6 +77,74 @@ describe("AssetOperationsService", () => {
     ).rejects.toMatchObject({
       response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
     });
+  });
+
+  it("rejects forged and retargeted coordinator attestations before any asset mutation", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const wrongRequirement = harness.service.createAuthorityRequirement(
+      command,
+      harness.context.actorId,
+      randomUUID()
+    );
+    const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+      harness.tx as never,
+      wrongRequirement.locks,
+      [wrongRequirement]
+    );
+    const wrongProof = proofs.get("asset-create")!;
+
+    for (const proof of [wrongProof, wrongProof, Object.freeze({})] as const) {
+      await expect(
+        harness.service.attestCallerOwnedCreateAuthorityInTransaction(
+          harness.tx as never,
+          command,
+          harness.context,
+          sourceCapability,
+          proof as never,
+          harness.ids.workOrderId
+        )
+      ).rejects.toMatchObject({
+        response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+      });
+    }
+    const foreign = createHarness();
+    const foreignCommand = { ...fullCreateCommand(foreign), assetOwnerId: null };
+    const foreignSource = await foreign.service.prepareCallerOwnedTransaction(
+      foreign.tx as never,
+      foreign.source
+    );
+    const foreignBoundRequirement = harness.service.createAuthorityRequirement(
+      foreignCommand,
+      foreign.context.actorId,
+      foreign.ids.workOrderId
+    );
+    const foreignInstanceProof = (
+      await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+        foreign.tx as never,
+        foreignBoundRequirement.locks,
+        [foreignBoundRequirement]
+      )
+    ).get("asset-create")!;
+    await expect(
+      foreign.service.attestCallerOwnedCreateAuthorityInTransaction(
+        foreign.tx as never,
+        foreignCommand,
+        foreign.context,
+        foreignSource,
+        foreignInstanceProof,
+        foreign.ids.workOrderId
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.sequence).not.toContain("repository-write");
+    expect(harness.auditInputs).toHaveLength(0);
+    expect(foreign.sequence).not.toContain("repository-write");
   });
 
   it("executes a prepared caller-owned create capability once in the exact transaction", async () => {
@@ -1432,6 +1517,10 @@ function createHarness(
   const tx = {
     $queryRaw: vi.fn(async (query: { strings: readonly string[]; values?: readonly unknown[] }) => {
       const sql = query.strings.join("?");
+      if (sql.includes("transaction_isolation")) {
+        return [{ isolationLevel: "read committed", transactionId: "asset-service-tx" }];
+      }
+      if (sql.includes("txid_current")) return [{ transactionId: "asset-service-tx" }];
       const match = sql.match(/FROM "([a-z_]+)"/);
       if (match) {
         sequence.push(`authority:${match[1]}`);
@@ -1440,7 +1529,7 @@ function createHarness(
           sql
         });
       }
-      return [{ id: randomUUID() }];
+      return [{ id: String(query.values?.at(-1) ?? randomUUID()) }];
     }),
     assetOwner: {
       findUnique: vi.fn(async () => ({

@@ -7424,6 +7424,9 @@ model ContractESignTask {
   signedDocumentObjectKey String?                    @map("signed_document_object_key") @db.VarChar(512)
   evidenceObjectKey       String?                    @map("evidence_object_key") @db.VarChar(512)
   requestSnapshot         Json?                      @map("request_snapshot")
+  sourceType              String?                    @map("source_type") @db.VarChar(64)
+  sourceId                String?                    @map("source_id") @db.Uuid
+  sourceKey               String?                    @map("source_key") @db.VarChar(255)
   responseSnapshot        Json?                      @map("response_snapshot")
   callbackSnapshot        Json?                      @map("callback_snapshot")
   errorSnapshot           Json?                      @map("error_snapshot")

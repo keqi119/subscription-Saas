@@ -19,6 +19,13 @@ const integrityMigrationPath = resolve(
 const integrityMigration = existsSync(integrityMigrationPath)
   ? readFileSync(integrityMigrationPath, "utf8")
   : "";
+const esignSourceMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260821140000_stage1_p0_contract_esign_sources/migration.sql"
+);
+const esignSourceMigration = existsSync(esignSourceMigrationPath)
+  ? readFileSync(esignSourceMigrationPath, "utf8")
+  : "";
 
 function prismaBlock(kind: "enum" | "model", name: string) {
   return schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -127,6 +134,20 @@ const enumContracts = [
 ] as const;
 
 describe("Stage 1 P0 subscription closure persistence contract", () => {
+  it("gives source-owned e-sign tasks an exact global idempotency tuple without weakening legacy activity uniqueness", () => {
+    const task = prismaBlock("model", "ContractESignTask");
+    for (const field of ["sourceType", "sourceId", "sourceKey"]) {
+      expect(task, `ContractESignTask.${field}`).toContain(field);
+    }
+    expect(esignSourceMigration).toContain("contract_esign_task_source_tuple_chk");
+    expect(esignSourceMigration).toContain("contract_esign_task_source_tuple_key");
+    expect(esignSourceMigration).toContain(
+      'DROP INDEX "contract_esign_task_one_active_per_contract_key"'
+    );
+    expect(esignSourceMigration).toContain('"source_type" IS NULL');
+    expect(esignSourceMigration).toContain('"source_id" IS NULL');
+    expect(esignSourceMigration).toContain('"source_key" IS NULL');
+  });
   it("declares the exact closure, document, settlement, event, and command enums", () => {
     for (const contract of enumContracts) {
       expect(enumValues(contract.prismaName), contract.prismaName).toEqual(contract.values);
@@ -398,6 +419,100 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
 
   afterAll(async () => {
     await client.end();
+  });
+
+  it("enforces legacy active-task and exact source-owned e-sign authorities independently", async () => {
+    const contractId = randomUUID();
+    const sourceId = randomUUID();
+    const insertTask = `INSERT INTO "contract_esign_task" (
+      "id", "task_no", "contract_id", "order_id", "customer_id", "provider",
+      "task_status", "source_type", "source_id", "source_key", "created_at", "updated_at"
+    ) VALUES (
+      $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid, 'MOCK', $6::"esign_task_status",
+      $7, $8::uuid, $9, clock_timestamp(), clock_timestamp()
+    )`;
+
+    await client.query("BEGIN");
+    try {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(insertTask, [
+        randomUUID(),
+        `P0-LEGACY-${randomUUID()}`,
+        contractId,
+        randomUUID(),
+        randomUUID(),
+        "COMPLETED",
+        null,
+        null,
+        null
+      ]);
+      await expectPgError(
+        client,
+        insertTask,
+        [
+          randomUUID(),
+          `P0-LEGACY-${randomUUID()}`,
+          contractId,
+          randomUUID(),
+          randomUUID(),
+          "CREATED",
+          null,
+          null,
+          null
+        ],
+        "23505",
+        "contract_esign_task_one_active_per_contract_key"
+      );
+
+      const sourceKey = `p0:return-manifest:${randomUUID()}`;
+      await client.query(insertTask, [
+        randomUUID(),
+        `P0-SOURCE-${randomUUID()}`,
+        contractId,
+        randomUUID(),
+        randomUUID(),
+        "CREATED",
+        "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
+        sourceId,
+        sourceKey
+      ]);
+      await expectPgError(
+        client,
+        insertTask,
+        [
+          randomUUID(),
+          `P0-SOURCE-${randomUUID()}`,
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          "CREATED",
+          "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
+          sourceId,
+          sourceKey
+        ],
+        "23505",
+        "contract_esign_task_source_tuple_key"
+      );
+      await expectPgError(
+        client,
+        insertTask,
+        [
+          randomUUID(),
+          `P0-PARTIAL-${randomUUID()}`,
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          "CREATED",
+          "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
+          null,
+          null
+        ],
+        "23514",
+        "contract_esign_task_source_tuple_chk"
+      );
+    } finally {
+      await client.query("ROLLBACK");
+    }
   });
 
   it("rejects invalid shapes, wrong current pointers, nonlinear successors, and mutations in rollback-only fixtures", async () => {

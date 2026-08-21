@@ -23,6 +23,12 @@ import { AssetAccountingService } from "../asset-accounting/asset-accounting.ser
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthorityRequirement
+} from "../subscription-closure/subscription-closure.repository";
+import {
   ASSET_OPERATION_ERROR_CODE,
   AssetOperationsRepository,
   type AssetOperationsCallerOwnedCreateAuthority,
@@ -100,6 +106,7 @@ type AssetOperationsPreparedCreateCapabilityState = Readonly<{
   context: AssetOperationCommandContext;
   repositoryAuthority: AssetOperationsCallerOwnedCreateAuthority;
   transaction: Prisma.TransactionClient;
+  workOrderId: string;
 }>;
 type LockedWorkOrderCommandHandle = Awaited<
   ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>
@@ -161,6 +168,7 @@ type AuthorityTable =
 
 @Injectable()
 export class AssetOperationsService {
+  private readonly closureAuthorityConsumer = Object.freeze({});
   private readonly callerOwnedCapabilities = new WeakMap<
     AssetOperationsTransactionCapability,
     AssetOperationsTransactionCapabilityState
@@ -218,8 +226,20 @@ export class AssetOperationsService {
     tx: Prisma.TransactionClient,
     command: CreateWorkOrderServiceCommand,
     context: AssetOperationCommandContext,
-    capability: AssetOperationsTransactionCapability
+    capability: AssetOperationsTransactionCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    workOrderId: string
   ): Promise<AssetOperationsPreparedCreateCapability> {
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(tx, authorityAttestation, () =>
+        this.createAuthorityRequirement(command, context.actorId, workOrderId)
+      );
+    } catch (error) {
+      if (hasConflictCode(error, "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID")) {
+        throw callerCapabilityInvalid();
+      }
+      throw error;
+    }
     const capabilityState = this.takeCallerOwnedCapability(capability);
     const commandSnapshot = snapshotCallerOwnedCreateCommand(command);
     const contextSnapshot = snapshotCommandContext(context);
@@ -250,10 +270,22 @@ export class AssetOperationsService {
         command: commandSnapshot,
         context: contextSnapshot,
         repositoryAuthority,
-        transaction: tx
+        transaction: tx,
+        workOrderId
       })
     );
     return prepared;
+  }
+
+  createAuthorityRequirement(
+    command: CreateWorkOrderServiceCommand,
+    actorId: string | null,
+    workOrderId: string
+  ) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      assetOperationsCreateAuthorityRequirement(command, actorId, workOrderId),
+      this.closureAuthorityConsumer
+    );
   }
 
   async createPreparedWorkOrderInTransaction(
@@ -275,7 +307,8 @@ export class AssetOperationsService {
         actorId: state.context.actorId,
         authoritySnapshot: state.authoritySnapshot
       },
-      state.repositoryAuthority
+      state.repositoryAuthority,
+      state.workOrderId
     );
     if (outcome.wrote) {
       await this.writeAudit(
@@ -789,6 +822,53 @@ export class AssetOperationsService {
   }
 }
 
+export function assetOperationsCreateAuthorityRequirement(
+  command: CreateWorkOrderServiceCommand,
+  actorId: string | null,
+  workOrderId: string
+): SubscriptionClosureAuthorityRequirement {
+  const locks: SubscriptionClosureAuthorityRequirement["locks"] = [
+    ...(command.orderId
+      ? [{ id: command.orderId, mode: "UPDATE" as const, table: "subscription_order" as const }]
+      : []),
+    { id: command.vehicleId, mode: "SHARE", table: "vehicle" },
+    ...(command.contractId
+      ? [{ id: command.contractId, mode: "SHARE" as const, table: "contract" as const }]
+      : []),
+    ...(command.relatedWorkOrderId
+      ? [
+          {
+            id: command.relatedWorkOrderId,
+            mode: "SHARE" as const,
+            table: "asset_work_order" as const
+          }
+        ]
+      : []),
+    ...(command.assetOwnerId
+      ? [{ id: command.assetOwnerId, mode: "SHARE" as const, table: "asset_owner" as const }]
+      : []),
+    ...(command.customerId
+      ? [{ id: command.customerId, mode: "SHARE" as const, table: "customer" as const }]
+      : []),
+    ...(actorId ? [{ id: actorId, mode: "SHARE" as const, table: "user" as const }] : [])
+  ];
+  return {
+    command: {
+      actorId,
+      assetOwnerId: command.assetOwnerId,
+      contractId: command.contractId,
+      customerId: command.customerId,
+      orderId: command.orderId,
+      relatedWorkOrderId: command.relatedWorkOrderId,
+      source: command.source,
+      vehicleId: command.vehicleId,
+      workOrderId
+    },
+    key: "asset-create",
+    locks
+  };
+}
+
 type CreateAuthority = {
   assetOwner: Prisma.AssetOwnerGetPayload<{ select: typeof ASSET_OWNER_SELECT }> | null;
   contract: Prisma.ContractGetPayload<{ select: typeof CONTRACT_SELECT }> | null;
@@ -1210,6 +1290,13 @@ function authorityMismatch() {
   return new ConflictException({
     code: ASSET_OPERATION_SERVICE_CODE.AUTHORITY_MISMATCH,
     message: "Asset-operation references do not identify one consistent live aggregate."
+  });
+}
+
+function callerCapabilityInvalid() {
+  return new ConflictException({
+    code: ASSET_OPERATION_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+    message: "The caller-owned asset-operation transaction capability is invalid."
   });
 }
 

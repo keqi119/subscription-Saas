@@ -311,7 +311,8 @@ export class AssetOperationsRepository {
   async createWorkOrder(
     tx: Prisma.TransactionClient,
     command: CreateWorkOrderCommand,
-    authority?: AssetOperationsCallerOwnedCreateAuthority
+    authority?: AssetOperationsCallerOwnedCreateAuthority,
+    workOrderId?: string
   ): Promise<WorkOrderCommandOutcome> {
     const authorityState = authority ? this.takeCallerOwnedCreateAuthority(authority) : undefined;
     const normalized = normalizeCreateCommand(command);
@@ -325,7 +326,7 @@ export class AssetOperationsRepository {
     if (existing) return replayCreate(tx, existing, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
     await assertEventTime(tx, normalized.occurredAt);
-    const workOrder = await this.createHeaderWithUniqueBusinessNo(tx, normalized);
+    const workOrder = await this.createHeaderWithUniqueBusinessNo(tx, normalized, workOrderId);
     const event = await createEventRow(tx, {
       actorId: normalized.actorId,
       afterStatus: AssetWorkOrderStatus.PENDING,
@@ -920,7 +921,8 @@ export class AssetOperationsRepository {
 
   private async createHeaderWithUniqueBusinessNo(
     tx: Prisma.TransactionClient,
-    command: CreateWorkOrderCommand
+    command: CreateWorkOrderCommand,
+    workOrderId?: string
   ) {
     for (let attempt = 1; attempt <= BUSINESS_NO_RETRY_LIMIT; attempt += 1) {
       const workOrderNo = this.businessNoFactory();
@@ -929,6 +931,7 @@ export class AssetOperationsRepository {
       try {
         return await tx.assetWorkOrder.create({
           data: {
+            ...(workOrderId ? { id: workOrderId } : {}),
             assetOwnerId: command.assetOwnerId,
             authoritySnapshot: command.authoritySnapshot,
             contractId: command.contractId,

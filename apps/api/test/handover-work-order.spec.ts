@@ -26,6 +26,10 @@ import {
   HANDOVER_P0_CAPABILITY_ERROR_CODE,
   HandoverWorkOrderService
 } from "../src/handover-work-order/handover-work-order.service";
+import {
+  SubscriptionClosureRepository,
+  type SubscriptionClosureAuthorityRequirement
+} from "../src/subscription-closure/subscription-closure.repository";
 
 describe("Field handover workflow projection", () => {
   const base = {
@@ -269,28 +273,42 @@ describe("HandoverWorkOrderService", () => {
   it("attests and mutates RETURN_INBOUND after coordinator locks without taking another lock", async () => {
     const harness = createHandoverWorkOrderHarness();
     const command = {
-      actorId: harness.admin.id,
-      orderId: harness.orderId,
+      actorId: randomUUID(),
+      orderId: randomUUID(),
       source: {
         id: randomUUID(),
         key: "normal-expiry:return-inbound:coordinated",
         type: "SUBSCRIPTION_EXPIRY"
       }
     };
+    harness.state.order.id = command.orderId;
+    harness.state.users.push({
+      deletedAt: null,
+      id: command.actorId,
+      name: "coordinator actor",
+      status: UserStatus.ACTIVE
+    });
     const sourceCapability = await harness.service.prepareReturnInboundInTransaction(
       harness.prisma as never,
       command
+    );
+    const workOrderId = "10000000-0000-4000-8000-000000000001";
+    const proof = await prepareCoordinatorProof(
+      harness.prisma as never,
+      harness.service.createReturnInboundAuthorityRequirement(command, workOrderId)
     );
     const lockQueryCount = harness.lockQueries.length;
     const prepared = await harness.service.attestReturnInboundAuthorityInTransaction(
       harness.prisma as never,
       command,
-      sourceCapability
+      sourceCapability,
+      proof,
+      workOrderId
     );
 
     await expect(
       harness.service.createPreparedReturnInboundInTransaction(harness.prisma as never, prepared)
-    ).resolves.toMatchObject({ orderId: harness.orderId, handoverType: "RETURN_INBOUND" });
+    ).resolves.toMatchObject({ orderId: command.orderId, handoverType: "RETURN_INBOUND" });
     expect(harness.lockQueries).toHaveLength(lockQueryCount);
     await expect(
       harness.service.createPreparedReturnInboundInTransaction(harness.prisma as never, prepared)
@@ -370,31 +388,45 @@ describe("HandoverWorkOrderService", () => {
   it("prepares the governed source before coordinator authority and updates without relocking", async () => {
     const harness = createHandoverWorkOrderHarness();
     const createCommand = {
-      actorId: harness.admin.id,
-      orderId: harness.orderId,
+      actorId: randomUUID(),
+      orderId: randomUUID(),
       source: {
         id: randomUUID(),
         key: "normal-expiry:return-inbound:managed",
         type: "SUBSCRIPTION_EXPIRY"
       }
     };
+    harness.state.order.id = createCommand.orderId;
+    harness.state.users.push({
+      deletedAt: null,
+      id: createCommand.actorId,
+      name: "managed coordinator actor",
+      status: UserStatus.ACTIVE
+    });
     const createSource = await harness.service.prepareReturnInboundInTransaction(
       harness.prisma as never,
       createCommand
     );
+    const createWorkOrderId = "10000000-0000-4000-8000-000000000002";
+    const createProof = await prepareCoordinatorProof(
+      harness.prisma as never,
+      harness.service.createReturnInboundAuthorityRequirement(createCommand, createWorkOrderId)
+    );
     const createPrepared = await harness.service.attestReturnInboundAuthorityInTransaction(
       harness.prisma as never,
       createCommand,
-      createSource
+      createSource,
+      createProof,
+      createWorkOrderId
     );
     const created = await harness.service.createPreparedReturnInboundInTransaction(
       harness.prisma as never,
       createPrepared
     );
     const updateCommand = {
-      actorId: harness.admin.id,
+      actorId: createCommand.actorId,
       deliveryLocation: "managed center",
-      orderId: harness.orderId,
+      orderId: createCommand.orderId,
       scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
       source: {
         id: randomUUID(),
@@ -408,12 +440,17 @@ describe("HandoverWorkOrderService", () => {
         harness.prisma as never,
         updateCommand
       );
+    const updateProof = await prepareCoordinatorProof(
+      harness.prisma as never,
+      harness.service.createGovernedReturnInboundAuthorityRequirement(updateCommand)
+    );
     const lockQueryCount = harness.lockQueries.length;
     const updatePrepared =
       await harness.service.attestGovernedReturnInboundAuthorityInTransaction(
         harness.prisma as never,
         updateCommand,
-        updateSource
+        updateSource,
+        updateProof
       );
 
     await expect(
@@ -423,6 +460,89 @@ describe("HandoverWorkOrderService", () => {
       )
     ).resolves.toMatchObject({ id: created.id, deliveryLocation: "managed center" });
     expect(harness.lockQueries).toHaveLength(lockQueryCount);
+  });
+
+  it("rejects forged and retargeted coordinator attestations before specialist mutation", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const actorId = randomUUID();
+    const orderId = randomUUID();
+    harness.state.order.id = orderId;
+    harness.state.users.push({
+      deletedAt: null,
+      id: actorId,
+      name: "proof-negative actor",
+      status: UserStatus.ACTIVE
+    });
+    const command = {
+      actorId,
+      orderId,
+      source: {
+        id: randomUUID(),
+        key: "normal-expiry:return-inbound:proof-negative",
+        type: "SUBSCRIPTION_EXPIRY"
+      }
+    };
+    const sourceCapability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      command
+    );
+    const wrongProof = await prepareCoordinatorProof(
+      harness.prisma as never,
+      harness.service.createReturnInboundAuthorityRequirement(command, randomUUID())
+    );
+
+    for (const proof of [wrongProof, wrongProof, Object.freeze({})] as const) {
+      await expect(
+        harness.service.attestReturnInboundAuthorityInTransaction(
+          harness.prisma as never,
+          command,
+          sourceCapability,
+          proof as never,
+          randomUUID()
+        )
+      ).rejects.toMatchObject({
+        response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+      });
+    }
+    const foreign = createHandoverWorkOrderHarness();
+    const foreignCommand = {
+      actorId: randomUUID(),
+      orderId: randomUUID(),
+      source: { id: randomUUID(), key: "foreign-instance", type: "SUBSCRIPTION_EXPIRY" }
+    };
+    foreign.state.order.id = foreignCommand.orderId;
+    foreign.state.users.push({
+      deletedAt: null,
+      id: foreignCommand.actorId,
+      name: "foreign proof actor",
+      status: UserStatus.ACTIVE
+    });
+    const foreignSource = await foreign.service.prepareReturnInboundInTransaction(
+      foreign.prisma as never,
+      foreignCommand
+    );
+    const foreignWorkOrderId = randomUUID();
+    const foreignInstanceProof = await prepareCoordinatorProof(
+      foreign.prisma as never,
+      harness.service.createReturnInboundAuthorityRequirement(
+        foreignCommand,
+        foreignWorkOrderId
+      )
+    );
+    await expect(
+      foreign.service.attestReturnInboundAuthorityInTransaction(
+        foreign.prisma as never,
+        foreignCommand,
+        foreignSource,
+        foreignInstanceProof,
+        foreignWorkOrderId
+      )
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+    expect(harness.state.workOrders).toHaveLength(0);
+    expect(harness.state.events).toHaveLength(0);
+    expect(foreign.state.workOrders).toHaveLength(0);
   });
 
   it("consumes a P0 capability before reading a throwing command source", async () => {
@@ -3114,6 +3234,18 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
   };
 }
 
+async function prepareCoordinatorProof(
+  tx: Parameters<SubscriptionClosureRepository["prepareAuthorityInTransaction"]>[0],
+  requirement: SubscriptionClosureAuthorityRequirement
+) {
+  const proofs = await new SubscriptionClosureRepository().prepareAuthorityInTransaction(
+    tx,
+    requirement.locks,
+    [requirement]
+  );
+  return proofs.get(requirement.key)!;
+}
+
 function createHandoverWorkOrderHarness() {
   const now = new Date("2026-07-21T08:00:00.000Z");
   const orderId = "order-1";
@@ -3382,7 +3514,7 @@ function createHandoverWorkOrderHarness() {
         const workOrder = {
           ...baseWorkOrder({ now, orderId } as ReturnType<typeof createHandoverWorkOrderHarness>),
           ...data,
-          id: `work-order-${state.workOrders.length + 1}`
+          id: data.id ?? `work-order-${state.workOrders.length + 1}`
         };
         state.workOrders.push(workOrder);
         return workOrder;

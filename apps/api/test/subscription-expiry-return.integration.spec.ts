@@ -272,6 +272,33 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     const service = createGovernedExpiryService(prisma);
     const decisionAt = new Date("2026-08-20T16:00:00.000Z");
     try {
+      const unrelatedTaskIds = [randomUUID(), randomUUID()];
+      await prisma.contractESignTask.createMany({
+        data: [
+          {
+            contractId: fixture.contractId,
+            customerId: fixture.customerId,
+            documentType: ESignDocumentType.SUBSCRIPTION_CONTRACT,
+            id: unrelatedTaskIds[0]!,
+            orderId: fixture.orderId,
+            provider: ESignProviderType.MOCK,
+            signingStage: ESignSigningStage.STAGE1_SUBSCRIPTION_CONTRACT,
+            taskNo: `ESG-TASK3-${unrelatedTaskIds[0]}`,
+            taskStatus: ESignTaskStatus.CANCELLED
+          },
+          {
+            contractId: fixture.contractId,
+            customerId: fixture.customerId,
+            documentType: ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT,
+            id: unrelatedTaskIds[1]!,
+            orderId: fixture.orderId,
+            provider: ESignProviderType.MOCK,
+            signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
+            taskNo: `ESG-TASK3-${unrelatedTaskIds[1]}`,
+            taskStatus: ESignTaskStatus.COMPLETED
+          }
+        ]
+      });
       await expect(service.expireSegment(fixture.segmentId, decisionAt)).resolves.toMatchObject({
         outcome: "EXPIRED"
       });
@@ -309,6 +336,22 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         stage: "GENERATED",
         vehicleReturnId: closureCase.vehicleReturnId
       });
+      const manifestTask = await prisma.contractESignTask.findUniqueOrThrow({
+        where: { id: currentManifest.documentRevision.contractESignTaskId }
+      });
+      expect(unrelatedTaskIds).not.toContain(manifestTask.id);
+      expect(manifestTask).toMatchObject({
+        contractId: fixture.contractId,
+        documentType: ESignDocumentType.DELIVERY_HANDOVER,
+        orderId: fixture.orderId,
+        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+        sourceId: fixture.segmentId,
+        sourceKey: "return-manifest:1",
+        sourceType: "SUBSCRIPTION_EXPIRY"
+      });
+      await expect(
+        prisma.contractESignTask.count({ where: { orderId: fixture.orderId } })
+      ).resolves.toBe(3);
       expect(currentManifest.documentRevision.generatedAt.getTime()).not.toBe(decisionAt.getTime());
       expect(currentManifest.documentRevision.generatedAt.getTime()).toBeLessThanOrEqual(
         databaseClock[0]!.now.getTime()
@@ -708,14 +751,11 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
       const afterTruth = await snapshotManagedExpiryTruth(prisma, fixture);
       expect(afterTruth).not.toEqual(beforeTruth);
-      expect(afterTruth).toMatchObject({
-        assetWorkOrders: [{ workOrderType: "RETURN_INBOUND" }],
-        closureCases: [{ closureType: "NORMAL_COMPLETION" }],
-        order: { orderStatus: "PENDING_RETURN" },
-        segment: { status: "COMPLETED" },
-        specialistWorkOrders: [{ handoverType: "RETURN_INBOUND" }],
-        vehicleReturns: [{ returnType: "NORMAL_RETURN" }]
-      });
+      expectExactCommittedManagedExpiryTruth(afterTruth, fixture);
+
+      const mutation = structuredClone(afterTruth);
+      mutation.audits.push({ ...mutation.audits[0]!, id: randomUUID() });
+      expect(() => expectExactCommittedManagedExpiryTruth(mutation, fixture)).toThrow();
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
@@ -855,7 +895,8 @@ function passthroughClosureOrchestrator() {
       returnHandoverWorkOrderId: randomUUID(),
       returnManifestRevisionId: randomUUID()
     })),
-    prepareNormalExpiryInTransaction: vi.fn(async () => capability)
+    prepareNormalExpiryInTransaction: vi.fn(async () => capability),
+    preparedNormalExpiryVehicleReturnId: vi.fn(() => randomUUID())
   } as never;
 }
 
@@ -1144,8 +1185,7 @@ async function snapshotManagedExpiryTruth(
     currentDocuments,
     documentRevisions,
     files,
-    esignTasks,
-    audits
+    esignTasks
   ] = await Promise.all([
     prisma.subscriptionContractSegment.findUnique({
       select: { completedAt: true, id: true, status: true },
@@ -1209,6 +1249,8 @@ async function snapshotManagedExpiryTruth(
         deliveryLocation: true,
         handoverType: true,
         id: true,
+        metadata: true,
+        orderId: true,
         scheduledAt: true,
         status: true
       },
@@ -1221,7 +1263,18 @@ async function snapshotManagedExpiryTruth(
     }),
     prisma.assetWorkOrder.findMany({
       orderBy: { id: "asc" },
-      select: { id: true, status: true, workOrderType: true },
+      select: {
+        contractId: true,
+        createSourceId: true,
+        createSourceKey: true,
+        createSourceType: true,
+        customerId: true,
+        id: true,
+        orderId: true,
+        status: true,
+        vehicleId: true,
+        workOrderType: true
+      },
       where: { orderId: fixture.orderId }
     }),
     prisma.assetWorkOrderEvent.findMany({
@@ -1233,10 +1286,18 @@ async function snapshotManagedExpiryTruth(
       orderBy: { id: "asc" },
       select: {
         closureType: true,
+        caseNo: true,
+        contractId: true,
+        createSourceId: true,
+        createSourceKey: true,
+        createSourceType: true,
+        customerId: true,
         id: true,
+        orderId: true,
         returnAssetWorkOrderId: true,
         returnHandoverWorkOrderId: true,
         status: true,
+        vehicleId: true,
         vehicleReturnId: true,
         version: true
       },
@@ -1244,12 +1305,30 @@ async function snapshotManagedExpiryTruth(
     }),
     prisma.subscriptionClosureEvent.findMany({
       orderBy: { id: "asc" },
-      select: { actorId: true, eventType: true, id: true, sequence: true },
+      select: {
+        actorId: true,
+        closureCaseId: true,
+        eventType: true,
+        id: true,
+        sequence: true,
+        sourceId: true,
+        sourceKey: true,
+        sourceType: true
+      },
       where: { closureCase: { orderId: fixture.orderId } }
     }),
     prisma.subscriptionClosureCommandReceipt.findMany({
       orderBy: { id: "asc" },
-      select: { actorId: true, commandType: true, id: true, sourceKey: true },
+      select: {
+        actorId: true,
+        closureCaseId: true,
+        commandType: true,
+        eventId: true,
+        id: true,
+        sourceId: true,
+        sourceKey: true,
+        sourceType: true
+      },
       where: { closureCase: { orderId: fixture.orderId } }
     }),
     prisma.subscriptionClosureCurrentDocument.findMany({
@@ -1261,11 +1340,23 @@ async function snapshotManagedExpiryTruth(
       orderBy: { id: "asc" },
       select: {
         archivedAt: true,
+        closureCaseId: true,
+        contractESignTaskId: true,
+        documentSnapshot: true,
+        documentSnapshotHash: true,
+        documentType: true,
+        generatedAt: true,
+        generatedBy: true,
+        handoverWorkOrderId: true,
         id: true,
         revisionNumber: true,
         signedAt: true,
         sourceFileId: true,
-        stage: true
+        sourceId: true,
+        sourceKey: true,
+        sourceType: true,
+        stage: true,
+        vehicleReturnId: true
       },
       where: { closureCase: { orderId: fixture.orderId } }
     }),
@@ -1276,15 +1367,48 @@ async function snapshotManagedExpiryTruth(
     }),
     prisma.contractESignTask.findMany({
       orderBy: { id: "asc" },
-      select: { documentType: true, id: true, taskStatus: true },
+      select: {
+        contractId: true,
+        customerId: true,
+        documentType: true,
+        id: true,
+        orderId: true,
+        requestSnapshot: true,
+        signingStage: true,
+        sourceId: true,
+        sourceKey: true,
+        sourceType: true,
+        taskStatus: true
+      },
       where: { orderId: fixture.orderId }
-    }),
-    prisma.auditLog.findMany({
-      orderBy: { id: "asc" },
-      select: { action: true, entityId: true, entityType: true, id: true, module: true },
-      where: { operatorId: fixture.actorId }
     })
   ]);
+  const relatedEntityIds = [
+    fixture.orderId,
+    fixture.segmentId,
+    ...(lease ? [lease.id] : []),
+    ...(billingSchedule ? [billingSchedule.id] : []),
+    ...vehicleReturns.map(({ id }) => id),
+    ...considerations.map(({ id }) => id),
+    ...changes.map(({ id }) => id),
+    ...entitlementAccounts.map(({ id }) => id),
+    ...automationJobs.map(({ id }) => id),
+    ...specialistWorkOrders.map(({ id }) => id),
+    ...specialistEvents.map(({ id }) => id),
+    ...assetWorkOrders.map(({ id }) => id),
+    ...assetEvents.map(({ id }) => id),
+    ...closureCases.map(({ id }) => id),
+    ...closureEvents.map(({ id }) => id),
+    ...closureReceipts.map(({ id }) => id),
+    ...documentRevisions.map(({ id }) => id),
+    ...files.map(({ id }) => id),
+    ...esignTasks.map(({ id }) => id)
+  ];
+  const audits = await prisma.auditLog.findMany({
+    orderBy: { id: "asc" },
+    select: { action: true, entityId: true, entityType: true, id: true, module: true },
+    where: { entityId: { in: relatedEntityIds } }
+  });
   return {
     assetEvents,
     assetWorkOrders,
@@ -1308,6 +1432,313 @@ async function snapshotManagedExpiryTruth(
     specialistWorkOrders,
     vehicleReturns
   };
+}
+
+type ManagedExpiryTruth = Awaited<ReturnType<typeof snapshotManagedExpiryTruth>>;
+
+function expectExactCommittedManagedExpiryTruth(
+  truth: ManagedExpiryTruth,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  const decisionAt = new Date("2026-08-20T16:00:00.000Z");
+  expect(truth.segment).toEqual({
+    completedAt: decisionAt,
+    id: fixture.segmentId,
+    status: "COMPLETED"
+  });
+  expect(truth.order).toEqual({ id: fixture.orderId, orderStatus: "PENDING_RETURN" });
+  expect(truth.lease).toEqual({ id: expectUuid(), status: "RETURN_DUE" });
+  expect(truth.considerations).toEqual([]);
+  expect(truth.changes).toEqual([]);
+  expect(truth.entitlementAccounts).toEqual([]);
+  expect(truth.billingSchedule).toEqual({
+    completedAt: null,
+    id: fixture.scheduleId,
+    pauseReason: null,
+    status: "ACTIVE",
+    version: 1
+  });
+  expect(Object.fromEntries(truth.automationJobs.map((job) => [job.id, job]))).toEqual({
+    [fixture.earnedJobId]: {
+      cancelledAt: null,
+      completedAt: null,
+      id: fixture.earnedJobId,
+      jobStatus: "PENDING",
+      leaseExpiresAt: null,
+      leaseToken: null
+    },
+    [fixture.futureJobId]: {
+      cancelledAt: decisionAt,
+      completedAt: decisionAt,
+      id: fixture.futureJobId,
+      jobStatus: "CANCELLED",
+      leaseExpiresAt: null,
+      leaseToken: null
+    }
+  });
+
+  expect(truth.vehicleReturns).toHaveLength(1);
+  const vehicleReturn = truth.vehicleReturns[0]!;
+  expect(vehicleReturn).toEqual({
+    deletedAt: null,
+    id: expectUuid(),
+    orderId: fixture.orderId,
+    returnLocation: null,
+    returnStatus: "PENDING",
+    returnType: "NORMAL_RETURN",
+    scheduledAt: decisionAt
+  });
+  expect(truth.specialistWorkOrders).toHaveLength(1);
+  const specialist = truth.specialistWorkOrders[0]!;
+  const specialistMetadata = specialist.metadata as {
+    p0ReturnInbound?: { commandHash?: unknown; source?: unknown };
+  };
+  expect(specialistMetadata.p0ReturnInbound?.commandHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(specialist).toEqual({
+    deliveryLocation: null,
+    handoverType: "RETURN_INBOUND",
+    id: expectUuid(),
+    metadata: {
+      p0ReturnInbound: {
+        commandHash: specialistMetadata.p0ReturnInbound!.commandHash,
+        source: {
+          id: fixture.segmentId,
+          key: "return-inbound-handover",
+          type: "SUBSCRIPTION_EXPIRY"
+        }
+      }
+    },
+    orderId: fixture.orderId,
+    scheduledAt: null,
+    status: "DRAFT"
+  });
+  expect(truth.specialistEvents).toEqual([
+    {
+      actorId: fixture.actorId,
+      eventType: "WORK_ORDER_CREATED",
+      id: expectUuid(),
+      workOrderId: specialist.id
+    }
+  ]);
+  expect(truth.assetWorkOrders).toEqual([
+    {
+      contractId: fixture.contractId,
+      createSourceId: fixture.segmentId,
+      createSourceKey: "return-inbound-asset-work-order",
+      createSourceType: "SUBSCRIPTION_EXPIRY",
+      customerId: fixture.customerId,
+      id: expectUuid(),
+      orderId: fixture.orderId,
+      status: "PENDING",
+      vehicleId: fixture.vehicleId,
+      workOrderType: "RETURN_INBOUND"
+    }
+  ]);
+  const asset = truth.assetWorkOrders[0]!;
+  expect(truth.assetEvents).toEqual([
+    {
+      actorId: fixture.actorId,
+      eventType: "CREATED",
+      id: expectUuid(),
+      workOrderId: asset.id
+    }
+  ]);
+
+  expect(truth.closureCases).toHaveLength(1);
+  const closureCase = truth.closureCases[0]!;
+  expect(closureCase).toEqual({
+    caseNo: expect.stringMatching(/^SC-[a-f0-9]{52,64}$/),
+    closureType: "NORMAL_COMPLETION",
+    contractId: fixture.contractId,
+    createSourceId: fixture.segmentId,
+    createSourceKey: "normal-closure-case",
+    createSourceType: "SUBSCRIPTION_EXPIRY",
+    customerId: fixture.customerId,
+    id: expectUuid(),
+    orderId: fixture.orderId,
+    returnAssetWorkOrderId: asset.id,
+    returnHandoverWorkOrderId: specialist.id,
+    status: "PREPARING_RETURN",
+    vehicleId: fixture.vehicleId,
+    vehicleReturnId: vehicleReturn.id,
+    version: 1
+  });
+  const closureEvents = [...truth.closureEvents].sort(
+    (left, right) => left.sequence - right.sequence
+  );
+  expect(closureEvents).toEqual([
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      eventType: "CASE_CREATED",
+      id: expectUuid(),
+      sequence: 1,
+      sourceId: fixture.segmentId,
+      sourceKey: "normal-closure-case",
+      sourceType: "SUBSCRIPTION_EXPIRY"
+    },
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      eventType: "DOCUMENT_REVISION_CREATED",
+      id: expectUuid(),
+      sequence: 2,
+      sourceId: fixture.segmentId,
+      sourceKey: "return-manifest:1",
+      sourceType: "SUBSCRIPTION_EXPIRY"
+    }
+  ]);
+  expect(truth.documentRevisions).toHaveLength(1);
+  const document = truth.documentRevisions[0]!;
+  expect(document.documentSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(document).toEqual({
+    archivedAt: null,
+    closureCaseId: closureCase.id,
+    contractESignTaskId: expectUuid(),
+    documentSnapshot: {
+      assetWorkOrderId: asset.id,
+      caseNo: closureCase.caseNo,
+      closureCaseId: closureCase.id,
+      contractId: fixture.contractId,
+      customerId: fixture.customerId,
+      documentType: "RETURN_MANIFEST",
+      handoverWorkOrderId: specialist.id,
+      orderId: fixture.orderId,
+      segmentId: fixture.segmentId,
+      vehicleId: fixture.vehicleId,
+      vehicleReturnId: vehicleReturn.id
+    },
+    documentSnapshotHash: document.documentSnapshotHash,
+    documentType: "RETURN_MANIFEST",
+    generatedAt: expect.any(Date),
+    generatedBy: fixture.actorId,
+    handoverWorkOrderId: specialist.id,
+    id: expectUuid(),
+    revisionNumber: 1,
+    signedAt: null,
+    sourceFileId: expectUuid(),
+    sourceId: fixture.segmentId,
+    sourceKey: "return-manifest:1",
+    sourceType: "SUBSCRIPTION_EXPIRY",
+    stage: "GENERATED",
+    vehicleReturnId: vehicleReturn.id
+  });
+  expect(truth.currentDocuments).toEqual([
+    {
+      closureCaseId: closureCase.id,
+      documentRevisionId: document.id,
+      documentType: "RETURN_MANIFEST"
+    }
+  ]);
+  expect(truth.files).toEqual([
+    {
+      id: document.sourceFileId,
+      objectKey: `subscription-closure/${closureCase.id}/return-manifest-r1.json`,
+      uploadedBy: fixture.actorId
+    }
+  ]);
+  expect(truth.esignTasks).toEqual([
+    {
+      contractId: fixture.contractId,
+      customerId: fixture.customerId,
+      documentType: "DELIVERY_HANDOVER",
+      id: document.contractESignTaskId,
+      orderId: fixture.orderId,
+      requestSnapshot: {
+        closureCaseId: closureCase.id,
+        documentSnapshotHash: document.documentSnapshotHash,
+        documentType: "RETURN_MANIFEST",
+        returnManifestSource: {
+          id: fixture.segmentId,
+          key: "return-manifest:1",
+          type: "SUBSCRIPTION_EXPIRY"
+        },
+        revisionNumber: 1
+      },
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourceId: fixture.segmentId,
+      sourceKey: "return-manifest:1",
+      sourceType: "SUBSCRIPTION_EXPIRY",
+      taskStatus: "CREATED"
+    }
+  ]);
+  const receipts = [...truth.closureReceipts].sort((left, right) =>
+    compareTestText(left.commandType, right.commandType)
+  );
+  expect(receipts).toEqual([
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      commandType: "CREATE_CASE",
+      eventId: closureEvents[0]!.id,
+      id: expectUuid(),
+      sourceId: fixture.segmentId,
+      sourceKey: "normal-closure-case",
+      sourceType: "SUBSCRIPTION_EXPIRY"
+    },
+    {
+      actorId: fixture.actorId,
+      closureCaseId: closureCase.id,
+      commandType: "CREATE_DOCUMENT_REVISION",
+      eventId: closureEvents[1]!.id,
+      id: expectUuid(),
+      sourceId: fixture.segmentId,
+      sourceKey: "return-manifest:1",
+      sourceType: "SUBSCRIPTION_EXPIRY"
+    }
+  ]);
+
+  const auditFacts = truth.audits
+    .map(({ action, entityId, entityType, module }) => ({ action, entityId, entityType, module }))
+    .sort(
+      (left, right) =>
+        compareTestText(left.entityType, right.entityType) ||
+        compareTestText(left.entityId ?? "", right.entityId ?? "")
+    );
+  expect(new Set(truth.audits.map(({ id }) => id)).size).toBe(5);
+  for (const { id } of truth.audits) expect(id).toMatch(UUID_PATTERN);
+  expect(auditFacts).toEqual(
+    [
+      {
+        action: "CREATE",
+        entityId: asset.id,
+        entityType: "asset_work_order",
+        module: "asset_operations"
+      },
+      {
+        action: "CREATE",
+        entityId: truth.assetEvents[0]!.id,
+        entityType: "asset_work_order_event",
+        module: "asset_operations"
+      },
+      ...closureEvents.map(({ id }) => ({
+        action: "CREATE" as const,
+        entityId: id,
+        entityType: "subscription_closure_event",
+        module: "subscription_closure"
+      })),
+      {
+        action: "UPDATE",
+        entityId: fixture.segmentId,
+        entityType: "subscription_contract_segment",
+        module: "subscription_change"
+      }
+    ].sort(
+      (left, right) =>
+        compareTestText(left.entityType, right.entityType) ||
+        compareTestText(left.entityId, right.entityId)
+    )
+  );
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function expectUuid() {
+  return expect.stringMatching(UUID_PATTERN);
+}
+
+function compareTestText(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 async function createRaceFixture(prisma: PrismaService) {
@@ -1442,7 +1873,7 @@ async function createExpiryFixture(prisma: PrismaService) {
       `);
     }
   });
-  return { customerId, earnedJobId, futureJobId, orderId, segmentId, vehicleId };
+  return { customerId, earnedJobId, futureJobId, orderId, scheduleId, segmentId, vehicleId };
 }
 
 function createBarrier() {

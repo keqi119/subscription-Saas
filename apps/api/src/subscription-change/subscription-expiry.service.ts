@@ -86,6 +86,10 @@ export class SubscriptionExpiryService {
         initialSegment.orderId,
         initialSegment.id
       );
+      const preparedVehicleReturnId = this.closureService.preparedNormalExpiryVehicleReturnId(
+        tx,
+        closureCapability
+      );
       const segment = await tx.subscriptionContractSegment.findUnique({
         where: { id: segmentId }
       });
@@ -224,6 +228,7 @@ export class SubscriptionExpiryService {
         : await tx.vehicleReturn.create({
             data: {
               customerId: order.customerId,
+              id: preparedVehicleReturnId,
               orderId: order.id,
               returnNo: createBusinessNo("RET"),
               returnStatus: VehicleReturnStatus.PENDING,

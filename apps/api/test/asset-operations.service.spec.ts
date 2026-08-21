@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
+import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
 import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
 import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
 import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
@@ -188,6 +189,76 @@ describe("AssetOperationsService", () => {
     await harness.service.createWorkOrder(fullCreateCommand(harness), harness.context);
 
     expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("checks cost-required pending-cost closure after the current-header lock and before writes", async () => {
+    const harness = createHarness();
+    Object.assign(harness.workOrder, {
+      costConfirmationRequired: true,
+      status: AssetWorkOrderStatus.PENDING_COST_CONFIRMATION,
+      version: 3
+    });
+
+    await harness.service.transitionWorkOrder(
+      {
+        closeReason: "cost settled",
+        detailSnapshot: { reason: "close" },
+        expectedVersion: 3,
+        occurredAt: NOW,
+        solution: "completed",
+        source: nextSource(harness, "cost-gated-close"),
+        targetStatus: AssetWorkOrderStatus.CLOSED,
+        workOrderId: harness.ids.workOrderId
+      },
+      harness.context
+    );
+
+    expect(harness.assetAccountingService.assertWorkOrderCostConfirmed).toHaveBeenCalledOnce();
+    expect(harness.assetAccountingService.assertWorkOrderCostConfirmed).toHaveBeenCalledWith(
+      harness.tx,
+      harness.ids.workOrderId
+    );
+    expect(harness.sequence.indexOf("source-lock")).toBeLessThan(
+      harness.sequence.indexOf("authority:asset_work_order")
+    );
+    expect(harness.sequence.indexOf("authority:asset_work_order")).toBeLessThan(
+      harness.sequence.indexOf("cost-confirmation-gate")
+    );
+    expect(harness.sequence.indexOf("cost-confirmation-gate")).toBeLessThan(
+      harness.sequence.indexOf("repository-transition")
+    );
+  });
+
+  it.each([
+    ["no-cost direct close", AssetWorkOrderStatus.PENDING_ACCEPTANCE, false, true],
+    ["non-close transition", AssetWorkOrderStatus.PENDING_COST_CONFIRMATION, true, true],
+    ["exact close replay", AssetWorkOrderStatus.CLOSED, true, false]
+  ] as const)("does not run the cost gate for %s", async (_label, status, costRequired, wrote) => {
+    const harness = createHarness({ wrote });
+    Object.assign(harness.workOrder, {
+      costConfirmationRequired: costRequired,
+      status,
+      version: status === AssetWorkOrderStatus.PENDING_ACCEPTANCE ? 2 : 3
+    });
+
+    await harness.service.transitionWorkOrder(
+      {
+        closeReason: "complete",
+        detailSnapshot: { reason: "ungated" },
+        expectedVersion: harness.workOrder.version,
+        occurredAt: NOW,
+        solution: "complete",
+        source: nextSource(harness, `ungated-${status}`),
+        targetStatus:
+          status === AssetWorkOrderStatus.PENDING_COST_CONFIRMATION
+            ? AssetWorkOrderStatus.CANCELLED
+            : AssetWorkOrderStatus.CLOSED,
+        workOrderId: harness.ids.workOrderId
+      },
+      harness.context
+    );
+
+    expect(harness.assetAccountingService.assertWorkOrderCostConfirmed).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1151,13 +1222,22 @@ function createHarness(
       workOrder,
       wrote: options.wrote ?? true
     })),
-    transitionWorkOrder: vi.fn(async () => ({ event, workOrder, wrote: options.wrote ?? true }))
+    transitionWorkOrder: vi.fn(async () => {
+      sequence.push("repository-transition");
+      return { event, workOrder, wrote: options.wrote ?? true };
+    })
   } as unknown as AssetOperationsRepository;
   const auditService = {
     write: vi.fn(async (input: unknown) => {
       auditInputs.push(input);
     })
   } as unknown as AuditService;
+  const assetAccountingService = {
+    assertWorkOrderCostConfirmed: vi.fn(async () => {
+      sequence.push("cost-confirmation-gate");
+      return true;
+    })
+  } as unknown as AssetAccountingService;
   const context = {
     actorId: ids.actorId,
     ipAddress: "127.0.0.1",
@@ -1165,6 +1245,7 @@ function createHarness(
     userAgent: "vitest"
   };
   return {
+    assetAccountingService,
     auditInputs,
     context,
     ids,
@@ -1172,7 +1253,7 @@ function createHarness(
     repository,
     restriction: activeRestriction,
     sequence,
-    service: new AssetOperationsService(prisma, repository, auditService),
+    service: new AssetOperationsService(prisma, repository, auditService, assetAccountingService),
     source,
     tx,
     workOrder

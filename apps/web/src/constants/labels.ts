@@ -1266,6 +1266,7 @@ export const MODULE_LABELS: Record<string, string> = {
   audit_log: "操作日志",
   auto_debit: "自动扣款",
   billing: "应收账单",
+  business_exception: "业务例外审批",
   collection: "催收管理",
   contract: "合同管理",
   contract_template: "合同模板",
@@ -1288,10 +1289,14 @@ export const MODULE_LABELS: Record<string, string> = {
   risk: "风控中心",
   system: "系统管理",
   vehicle: "车辆资产",
+  vehicle_cost_ledger: "车辆成本台账",
   vehicle_valuation_review: "车辆估值复核"
 };
 
 export const PERMISSION_LABELS: Record<string, string> = {
+  "business_exception:approve": "审批业务例外",
+  "business_exception:request": "发起业务例外审批",
+  "business_exception:view": "查看业务例外审批",
   "application:manage": "编辑进件",
   "application:material_delete": "删除进件资料",
   "application:material_upload": "上传进件资料",
@@ -1421,10 +1426,16 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "vehicle:review_sale_price": "复核车辆销售价",
   "vehicle:update": "编辑车辆资产",
   "vehicle:update_status": "更新车辆状态",
-  "vehicle:view": "查看车辆资产"
+  "vehicle:view": "查看车辆资产",
+  "vehicle_cost_ledger:confirm": "确认车辆成本台账",
+  "vehicle_cost_ledger:reverse": "冲正车辆成本台账",
+  "vehicle_cost_ledger:view": "查看车辆成本台账"
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
+  "business_exception:approve": "允许审批业务例外",
+  "business_exception:request": "允许发起业务例外审批",
+  "business_exception:view": "允许查看业务例外审批",
   "application:manage": "允许创建和编辑进件",
   "application:material_delete": "允许删除进件资料文件",
   "application:material_upload": "允许上传进件资料",
@@ -1522,6 +1533,9 @@ export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
   "vehicle:update": "允许编辑车辆资产",
   "vehicle:update_status": "允许更新车辆状态",
   "vehicle:view": "允许查看车辆资产和销售价历史",
+  "vehicle_cost_ledger:confirm": "允许确认车辆成本台账",
+  "vehicle_cost_ledger:reverse": "允许冲正车辆成本台账",
+  "vehicle_cost_ledger:view": "允许查看车辆成本台账",
   "residual_curve:generate": "允许试算和正式生成残值曲线",
   "residual_curve:manage": "允许启用和归档残值曲线",
   "residual_curve:view": "允许查看残值曲线列表和详情",

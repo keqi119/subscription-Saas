@@ -222,6 +222,12 @@ permissionRows.push(
     "asset_operations",
     "restriction_approve_release"
   ],
+  ["vehicle_cost_ledger:view", "查看车辆成本台账", "vehicle_cost_ledger", "view"],
+  ["vehicle_cost_ledger:confirm", "确认车辆成本台账", "vehicle_cost_ledger", "confirm"],
+  ["vehicle_cost_ledger:reverse", "冲正车辆成本台账", "vehicle_cost_ledger", "reverse"],
+  ["business_exception:view", "查看业务例外审批", "business_exception", "view"],
+  ["business_exception:request", "发起业务例外审批", "business_exception", "request"],
+  ["business_exception:approve", "审批业务例外", "business_exception", "approve"],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
   ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
@@ -946,6 +952,28 @@ const assetOperationsApprovalPermissions = [
   "asset_operations:view",
   "vehicle_restriction:approve_release"
 ];
+const vehicleCostLedgerViewPermissions = ["vehicle_cost_ledger:view"];
+const vehicleCostLedgerConfirmPermissions = [
+  "vehicle_cost_ledger:view",
+  "vehicle_cost_ledger:confirm"
+];
+const vehicleCostLedgerReversePermissions = [
+  "vehicle_cost_ledger:view",
+  "vehicle_cost_ledger:confirm",
+  "vehicle_cost_ledger:reverse"
+];
+const vehicleCostLedgerGeneralManagerPermissions = [
+  "vehicle_cost_ledger:view",
+  "vehicle_cost_ledger:reverse"
+];
+const businessExceptionRequestPermissions = [
+  "business_exception:view",
+  "business_exception:request"
+];
+const businessExceptionApprovePermissions = [
+  "business_exception:view",
+  "business_exception:approve"
+];
 const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
 const vehicleInsuranceManagementPermissions = [
   "vehicle_insurance:view",
@@ -1200,6 +1228,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...assetFactOperationsPermissions,
       ...assetOperationsOperationsPermissions,
+      ...vehicleCostLedgerConfirmPermissions,
+      ...businessExceptionRequestPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
       ...vehicleModelManagementPermissions,
@@ -1286,6 +1316,8 @@ async function main() {
       ...productPackageViewPermissions,
       ...vehicleViewPermissions,
       ...assetOperationsViewPermissions,
+      ...vehicleCostLedgerViewPermissions,
+      ...businessExceptionRequestPermissions,
       "quote:view",
       "order:view",
       "order:review",
@@ -1323,6 +1355,10 @@ async function main() {
         ...(roleCode === "AS"
           ? assetOperationsManagementPermissions
           : assetOperationsViewPermissions),
+        ...(roleCode === "FI"
+          ? vehicleCostLedgerReversePermissions
+          : vehicleCostLedgerConfirmPermissions),
+        ...businessExceptionRequestPermissions,
         ...(roleCode === "FI" ? vehicleModelManagementPermissions : []),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
@@ -1408,6 +1444,8 @@ async function main() {
       ...vehicleManagementPermissions,
       ...assetFactViewPermissions,
       ...assetOperationsApprovalPermissions,
+      ...vehicleCostLedgerGeneralManagerPermissions,
+      ...businessExceptionApprovePermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleModelViewPermissions,

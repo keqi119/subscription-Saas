@@ -3,6 +3,7 @@ import { ConfigModule } from "@nestjs/config";
 
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
+import { AssetAccountingModule } from "./asset-accounting/asset-accounting.module";
 import { AssetFactsModule } from "./asset-facts/asset-facts.module";
 import { AssetOperationsModule } from "./asset-operations/asset-operations.module";
 import { AuditModule } from "./audit/audit.module";
@@ -46,6 +47,7 @@ import { VehicleModule } from "./vehicle/vehicle.module";
       isGlobal: true
     }),
     PrismaModule,
+    AssetAccountingModule,
     AssetFactsModule,
     AssetOperationsModule,
     AuditModule,

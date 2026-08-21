@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import {
   AssetWorkOrderEvidenceAction,
+  AssetWorkOrderStatus,
   AuditAction,
   Prisma,
   VehicleOperationalRestrictionStatus,
@@ -18,6 +19,7 @@ import {
 } from "@prisma/client";
 import { isDeepStrictEqual } from "node:util";
 
+import { AssetAccountingService } from "../asset-accounting/asset-accounting.service";
 import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -139,7 +141,8 @@ export class AssetOperationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repository: AssetOperationsRepository,
-    private readonly auditService: AuditService
+    private readonly auditService: AuditService,
+    private readonly assetAccountingService?: AssetAccountingService
   ) {}
 
   async createWorkOrder(
@@ -209,6 +212,18 @@ export class AssetOperationsService {
     context: AssetOperationCommandContext
   ): Promise<WorkOrderCommandOutcome> {
     return this.runWorkOrderCommand(command, [], async (tx, before, lockHandle) => {
+      if (
+        before.status === AssetWorkOrderStatus.PENDING_COST_CONFIRMATION &&
+        before.costConfirmationRequired &&
+        command.targetStatus === AssetWorkOrderStatus.CLOSED
+      ) {
+        if (!this.assetAccountingService) {
+          throw new Error(
+            "AssetAccountingService is required for cost-confirmed work-order closure."
+          );
+        }
+        await this.assetAccountingService.assertWorkOrderCostConfirmed(tx, command.workOrderId);
+      }
       const outcome = await this.repository.transitionWorkOrder(
         tx,
         {

@@ -18,11 +18,17 @@ export function assertStage1cAccessBaselineApplyConfirmation(mode, env) {
 export function parseStage1cAccessBaselineArgs(args) {
   let mode = null;
   let output = null;
+  let permissionsOnly = false;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--dry-run" || argument === "--apply") {
       if (mode !== null) throw new Error("STAGE1C_ACCESS_BASELINE_MODE_DUPLICATE");
       mode = argument.slice(2);
+      continue;
+    }
+    if (argument === "--permissions-only") {
+      if (permissionsOnly) throw new Error("STAGE1C_ACCESS_BASELINE_SCOPE_DUPLICATE");
+      permissionsOnly = true;
       continue;
     }
     if (argument === "--output") {
@@ -45,7 +51,7 @@ export function parseStage1cAccessBaselineArgs(args) {
     throw new Error("STAGE1C_ACCESS_BASELINE_ARGUMENT_INVALID");
   }
   if (mode === null) throw new Error("STAGE1C_ACCESS_BASELINE_MODE_REQUIRED");
-  return { mode, output };
+  return { mode, output, permissionsOnly };
 }
 
 function invalidOutput() {
@@ -60,10 +66,10 @@ export async function runStage1cAccessBaselineCli({
   writeOutput = writeStage1cAccessBaselineOutput,
   writeStdout = writeStage1cAccessBaselineStdout
 }) {
-  const { mode, output } = parseStage1cAccessBaselineArgs(args);
+  const { mode, output, permissionsOnly } = parseStage1cAccessBaselineArgs(args);
   assertStage1cAccessBaselineApplyConfirmation(mode, env);
   const prisma = await createPrisma();
-  const result = await execute({ mode, prisma });
+  const result = await execute({ mode, permissionsOnly, prisma });
   const json = `${JSON.stringify(result.report, null, 2)}\n`;
   await writeStdout(json);
   if (output !== null) await writeOutput(output, json);

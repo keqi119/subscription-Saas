@@ -6,6 +6,8 @@
 它依赖 [Stage 1C-A 车辆订阅期间与权属期间发布运行手册](./stage1c-period-facts-rollout.zh-CN.md)
 中的期间、权属、访问基线和证据控制。本手册提供的是**只读核对，不是 apply**；Stage 1C-B 没有
 reconciliation writer，也没有历史转换脚本。
+成本确认、冲正、snapshot-bound 例外审批和 CLOSED cost-required 工单核对见
+[Stage 1C-C 资产成本与业务例外发布运行手册](./stage1c-asset-accounting-rollout.zh-CN.md)。
 
 严格非目标：
 

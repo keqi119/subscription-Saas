@@ -15,6 +15,7 @@ import {
 import { hasAnyRequiredPermission, hasRequiredPermissions } from "../src/auth/permissions";
 import { AssetFactsController } from "../src/asset-facts/asset-facts.controller";
 import { AssetOperationsController } from "../src/asset-operations/asset-operations.controller";
+import { AssetAccountingController } from "../src/asset-accounting/asset-accounting.controller";
 import { CustomerController } from "../src/customer/customer.controller";
 import { FinanceController } from "../src/finance/finance.controller";
 import { FinancingController } from "../src/financing/financing.controller";
@@ -185,6 +186,72 @@ describe("asset operations permissions", () => {
       PermissionCode.VEHICLE_RESTRICTION_RELEASE,
       PermissionCode.VEHICLE_RESTRICTION_APPROVE_RELEASE
     ]);
+  });
+});
+
+describe("asset accounting permissions", () => {
+  it("publishes the exact six permission codes", () => {
+    expect([
+      PermissionCode.VEHICLE_COST_LEDGER_VIEW,
+      PermissionCode.VEHICLE_COST_LEDGER_CONFIRM,
+      PermissionCode.VEHICLE_COST_LEDGER_REVERSE,
+      PermissionCode.BUSINESS_EXCEPTION_VIEW,
+      PermissionCode.BUSINESS_EXCEPTION_REQUEST,
+      PermissionCode.BUSINESS_EXCEPTION_APPROVE
+    ]).toEqual([
+      "vehicle_cost_ledger:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "business_exception:view",
+      "business_exception:request",
+      "business_exception:approve"
+    ]);
+  });
+
+  it("gates cost reads, cost confirmation/reversal, and approval reads exactly", () => {
+    for (const handler of [
+      AssetAccountingController.prototype.getCostEntry,
+      AssetAccountingController.prototype.listVehicleCostEntries,
+      AssetAccountingController.prototype.listOrderCostEntries,
+      AssetAccountingController.prototype.listWorkOrderCostEntries
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.VEHICLE_COST_LEDGER_VIEW
+      ]);
+    }
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        AssetAccountingController.prototype.appendCostEntry
+      )
+    ).toEqual([PermissionCode.VEHICLE_COST_LEDGER_CONFIRM]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        AssetAccountingController.prototype.reverseCostEntry
+      )
+    ).toEqual([PermissionCode.VEHICLE_COST_LEDGER_REVERSE]);
+    for (const handler of [
+      AssetAccountingController.prototype.getExceptionApproval,
+      AssetAccountingController.prototype.listExceptionApprovals
+    ]) {
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual([
+        PermissionCode.BUSINESS_EXCEPTION_VIEW
+      ]);
+    }
+    for (const forbiddenMutation of [
+      "requestExceptionApproval",
+      "decideExceptionApproval",
+      "approveExceptionApproval",
+      "rejectExceptionApproval",
+      "expireExceptionApproval"
+    ]) {
+      expect(
+        (AssetAccountingController.prototype as unknown as Record<string, unknown>)[
+          forbiddenMutation
+        ]
+      ).toBeUndefined();
+    }
   });
 });
 
@@ -1380,6 +1447,10 @@ describe("seed permission calibration", () => {
     path.resolve(__dirname, "../../../packages/shared/src/auth.ts"),
     "utf8"
   );
+  const webLabelsSource = fs.readFileSync(
+    path.resolve(__dirname, "../../web/src/constants/labels.ts"),
+    "utf8"
+  );
   const fleetOpsApiTypesSource = fs.readFileSync(
     path.resolve(__dirname, "../src/fleet-ops/fleet-ops.api.types.ts"),
     "utf8"
@@ -1471,6 +1542,72 @@ describe("seed permission calibration", () => {
         "vehicle_restriction:release"
       ],
       RC: ["asset_operations:view"],
+      SA: []
+    });
+  });
+
+  it("assigns the exact vehicle-cost and business-exception matrix without a menu", () => {
+    const permissionCodes = [
+      "vehicle_cost_ledger:view",
+      "vehicle_cost_ledger:confirm",
+      "vehicle_cost_ledger:reverse",
+      "business_exception:view",
+      "business_exception:request",
+      "business_exception:approve"
+    ];
+    for (const permissionCode of permissionCodes) {
+      expect(seedSource).toContain(`"${permissionCode}"`);
+    }
+    expect(seedSource).toContain("const vehicleCostLedgerViewPermissions");
+    expect(seedSource).toContain("const vehicleCostLedgerConfirmPermissions");
+    expect(seedSource).toContain("const vehicleCostLedgerReversePermissions");
+    expect(seedSource).toContain("const businessExceptionRequestPermissions");
+    expect(seedSource).toContain("const businessExceptionApprovePermissions");
+    expect(seedSource).not.toContain("vehicleCostLedgerMenuCodes");
+    expect(seedSource).not.toContain("businessExceptionMenuCodes");
+    expect(webLabelsSource).toContain('vehicle_cost_ledger: "车辆成本台账"');
+    expect(webLabelsSource).toContain('business_exception: "业务例外审批"');
+    for (const [permissionCode, label, description] of [
+      ["vehicle_cost_ledger:view", "查看车辆成本台账", "允许查看车辆成本台账"],
+      ["vehicle_cost_ledger:confirm", "确认车辆成本台账", "允许确认车辆成本台账"],
+      ["vehicle_cost_ledger:reverse", "冲正车辆成本台账", "允许冲正车辆成本台账"],
+      ["business_exception:view", "查看业务例外审批", "允许查看业务例外审批"],
+      ["business_exception:request", "发起业务例外审批", "允许发起业务例外审批"],
+      ["business_exception:approve", "审批业务例外", "允许审批业务例外"]
+    ]) {
+      expect(webLabelsSource).toContain(`"${permissionCode}": "${label}"`);
+      expect(webLabelsSource).toContain(`"${permissionCode}": "${description}"`);
+    }
+
+    expect(effectiveAssetAccountingPermissions(permissionCodes)).toEqual({
+      ADMIN: permissionCodes,
+      AS: [
+        "vehicle_cost_ledger:view",
+        "vehicle_cost_ledger:confirm",
+        "business_exception:view",
+        "business_exception:request"
+      ],
+      CS: [],
+      FI: [
+        "vehicle_cost_ledger:view",
+        "vehicle_cost_ledger:confirm",
+        "vehicle_cost_ledger:reverse",
+        "business_exception:view",
+        "business_exception:request"
+      ],
+      GM: [
+        "vehicle_cost_ledger:view",
+        "vehicle_cost_ledger:reverse",
+        "business_exception:view",
+        "business_exception:approve"
+      ],
+      OP: [
+        "vehicle_cost_ledger:view",
+        "vehicle_cost_ledger:confirm",
+        "business_exception:view",
+        "business_exception:request"
+      ],
+      RC: ["vehicle_cost_ledger:view", "business_exception:view", "business_exception:request"],
       SA: []
     });
   });
@@ -2368,6 +2505,32 @@ describe("seed permission calibration", () => {
       AS: permissionConstantSource("assetOperationsManagementPermissions"),
       CS: optionalRolePermissionArray("CS"),
       FI: permissionConstantSource("assetOperationsViewPermissions"),
+      GM: optionalRolePermissionArray("GM"),
+      OP: optionalRolePermissionArray("OP"),
+      RC: optionalRolePermissionArray("RC"),
+      SA: optionalRolePermissionArray("SA")
+    };
+
+    return Object.fromEntries(
+      Object.entries(sourceByRole).map(([roleCode, source]) => [
+        roleCode,
+        permissionCodes.filter((permissionCode) => roleHasPermission(source, permissionCode))
+      ])
+    );
+  }
+
+  function effectiveAssetAccountingPermissions(permissionCodes: string[]) {
+    const sourceByRole: Record<string, string> = {
+      ADMIN: permissionCodes.map((code) => `"${code}"`).join(","),
+      AS: [
+        permissionConstantSource("vehicleCostLedgerConfirmPermissions"),
+        permissionConstantSource("businessExceptionRequestPermissions")
+      ].join("\n"),
+      CS: optionalRolePermissionArray("CS"),
+      FI: [
+        permissionConstantSource("vehicleCostLedgerReversePermissions"),
+        permissionConstantSource("businessExceptionRequestPermissions")
+      ].join("\n"),
       GM: optionalRolePermissionArray("GM"),
       OP: optionalRolePermissionArray("OP"),
       RC: optionalRolePermissionArray("RC"),

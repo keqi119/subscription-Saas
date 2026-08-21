@@ -25,7 +25,9 @@ const IDS = {
   vehicle: "20000000-0000-4000-8000-000000000014",
   writeOff: "20000000-0000-4000-8000-000000000015",
   ledgerPlatformWaiver: "20000000-0000-4000-8000-000000000017",
-  ledgerCustomerWaiverReversal: "20000000-0000-4000-8000-000000000018"
+  ledgerCustomerWaiverReversal: "20000000-0000-4000-8000-000000000018",
+  ledgerCustomerWriteOffReversal: "20000000-0000-4000-8000-000000000019",
+  other: "20000000-0000-4000-8000-000000000020"
 } as const;
 
 describe("SubscriptionClosureSettlementResolver", () => {
@@ -146,6 +148,57 @@ describe("SubscriptionClosureSettlementResolver", () => {
       writeOffTotalCents: 50n
     });
   });
+
+  it.each([
+    ["wrong responsible party", "WAIVER", { responsiblePartyId: IDS.other }, 200n],
+    ["null responsible party", "WRITE_OFF", { responsiblePartyId: null }, 50n],
+    ["wrong current customer", "WAIVER", { customerId: IDS.other }, 200n],
+    ["null current customer", "WRITE_OFF", { customerId: null }, 50n],
+    ["wrong order", "WAIVER", { orderId: IDS.other }, 200n],
+    ["wrong contract", "WRITE_OFF", { contractId: IDS.other }, 50n],
+    ["wrong vehicle", "WAIVER", { vehicleId: IDS.other }, 200n]
+  ] as const)(
+    "does not offset receivables for a CUSTOMER-typed %s %s fact",
+    async (_case, actionType, overrides, expectedAmountDueCents) => {
+      const resolved = await new SubscriptionClosureSettlementResolver().resolveInTransaction(
+        settlementTransaction({ customerResolutionMutation: { actionType, overrides } }),
+        IDS.closureCase
+      );
+
+      expect(resolved).toMatchObject({
+        amountDueCents: expectedAmountDueCents,
+        waiverTotalCents: actionType === "WAIVER" ? 0n : 200n,
+        writeOffTotalCents: actionType === "WRITE_OFF" ? 0n : 50n
+      });
+    }
+  );
+
+  it("cancels exact CUSTOMER waiver and write-off reversals without removing immutable history", async () => {
+    const resolved = await new SubscriptionClosureSettlementResolver().resolveInTransaction(
+      settlementTransaction({ reverseCustomerResolutions: true }),
+      IDS.closureCase
+    );
+
+    expect(resolved).toMatchObject({
+      amountDueCents: 250n,
+      waiverTotalCents: 0n,
+      writeOffTotalCents: 0n
+    });
+    expect(resolved.ledgerInputSnapshot.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: IDS.ledgerWaiver }),
+        expect.objectContaining({
+          id: IDS.ledgerCustomerWaiverReversal,
+          reversalOfEntryId: IDS.ledgerWaiver
+        }),
+        expect.objectContaining({ id: IDS.ledgerWriteOff }),
+        expect.objectContaining({
+          id: IDS.ledgerCustomerWriteOffReversal,
+          reversalOfEntryId: IDS.ledgerWriteOff
+        })
+      ])
+    );
+  });
 });
 
 function settlementTransaction(
@@ -154,7 +207,12 @@ function settlementTransaction(
     deductBalanceAfter?: bigint;
     deductBillId?: string | null;
     depositBalanceAfter?: bigint;
+    customerResolutionMutation?: Readonly<{
+      actionType: "WAIVER" | "WRITE_OFF";
+      overrides: Readonly<Record<string, unknown>>;
+    }>;
     mixedResponsibility?: boolean;
+    reverseCustomerResolutions?: boolean;
     waiverAmount?: bigint;
   } = {}
 ) {
@@ -266,29 +324,55 @@ function settlementTransaction(
       })
     },
     vehicleCostLedgerEntry: {
-      findMany: async () =>
-        options.mixedResponsibility
-          ? [
-              ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
-              ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
-              ledger(IDS.ledgerWaiver, "WAIVER", 200n),
-              ledger(IDS.ledgerCustomerWaiverReversal, "WAIVER", -200n, {
-                entryKind: "REVERSAL",
-                reversalOfEntryId: IDS.ledgerWaiver
-              }),
-              ledger(IDS.ledgerPlatformWaiver, "WAIVER", 200n, {
-                customerId: null,
-                responsiblePartyId: null,
-                responsiblePartyType: "PLATFORM"
-              }),
-              ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
-            ]
-          : [
-              ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
-              ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
-              ledger(IDS.ledgerWaiver, "WAIVER", options.waiverAmount ?? 200n),
-              ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
-            ]
+      findMany: async () => {
+        const waiverOverrides =
+          options.customerResolutionMutation?.actionType === "WAIVER"
+            ? options.customerResolutionMutation.overrides
+            : {};
+        const writeOffOverrides =
+          options.customerResolutionMutation?.actionType === "WRITE_OFF"
+            ? options.customerResolutionMutation.overrides
+            : {};
+        if (options.mixedResponsibility) {
+          return [
+            ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
+            ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
+            ledger(IDS.ledgerWaiver, "WAIVER", 200n),
+            ledger(IDS.ledgerCustomerWaiverReversal, "WAIVER", -200n, {
+              entryKind: "REVERSAL",
+              reversalOfEntryId: IDS.ledgerWaiver
+            }),
+            ledger(IDS.ledgerPlatformWaiver, "WAIVER", 200n, {
+              customerId: null,
+              responsiblePartyId: null,
+              responsiblePartyType: "PLATFORM"
+            }),
+            ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
+          ];
+        }
+        return [
+          ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
+          ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
+          ledger(IDS.ledgerWaiver, "WAIVER", options.waiverAmount ?? 200n, waiverOverrides),
+          ...(options.reverseCustomerResolutions
+            ? [
+                ledger(IDS.ledgerCustomerWaiverReversal, "WAIVER", -200n, {
+                  entryKind: "REVERSAL",
+                  reversalOfEntryId: IDS.ledgerWaiver
+                })
+              ]
+            : []),
+          ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n, writeOffOverrides),
+          ...(options.reverseCustomerResolutions
+            ? [
+                ledger(IDS.ledgerCustomerWriteOffReversal, "WRITE_OFF", -50n, {
+                  entryKind: "REVERSAL",
+                  reversalOfEntryId: IDS.ledgerWriteOff
+                })
+              ]
+            : [])
+        ];
+      }
     },
     vehicleMileageReading: {
       findMany: async () => [

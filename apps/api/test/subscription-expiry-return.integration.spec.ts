@@ -624,6 +624,22 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       holderBarrier.release();
       await expect(holder).resolves.toEqual([{ usable: 1 }]);
 
+      const [baselineAssetWorkOrderEvents, baselineClosureEvents, baselineAudits] =
+        await Promise.all([
+          prisma.assetWorkOrderEvent.findMany({
+            select: { id: true },
+            where: { workOrder: { orderId: fixture.orderId } }
+          }),
+          prisma.subscriptionClosureEvent.findMany({
+            select: { id: true },
+            where: { closureCaseId: closureCase.id }
+          }),
+          prisma.auditLog.findMany({
+            select: { id: true },
+            where: { operatorId: fixture.actorId }
+          })
+        ]);
+
       const concurrentReceipts = await Promise.allSettled([
         closure.confirmManagedPhysicalReceipt(receipt, {}),
         closure.confirmManagedPhysicalReceipt(receipt, {})
@@ -637,48 +653,546 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         },
         status: "rejected"
       });
-      const winnerTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      const damageIds = (
+        await prisma.vehicleReturnDamage.findMany({
+          orderBy: { id: "asc" },
+          select: { id: true },
+          where: { returnId: closureCase.vehicleReturnId! }
+        })
+      ).map(({ id }) => id);
+      const winnerTruthScope = {
+        damageIds,
+        excludedAssetWorkOrderEventIds: baselineAssetWorkOrderEvents.map(({ id }) => id),
+        excludedAuditIds: baselineAudits.map(({ id }) => id),
+        excludedClosureEventIds: baselineClosureEvents.map(({ id }) => id)
+      };
+      const winnerTruth = await snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope);
       expect(winnerTruth).toHaveLength(15);
-      expect(winnerTruth[0]).toMatchObject({ status: "RETURN_INSPECTION" });
-      expect(winnerTruth[1]).toMatchObject({
+      expect({
+        id: winnerTruth[0]?.id,
+        orderId: winnerTruth[0]?.orderId,
+        physicalControlMode: winnerTruth[0]?.physicalControlMode,
+        physicalControlledAt: winnerTruth[0]?.physicalControlledAt,
+        returnAssetWorkOrderId: winnerTruth[0]?.returnAssetWorkOrderId,
+        status: winnerTruth[0]?.status,
+        vehicleReturnId: winnerTruth[0]?.vehicleReturnId,
+        vehicleId: winnerTruth[0]?.vehicleId,
+        version: winnerTruth[0]?.version
+      }).toEqual({
+        id: closureCase.id,
+        orderId: fixture.orderId,
+        physicalControlMode: "VOLUNTARY_RETURN",
+        physicalControlledAt: occurredAt,
+        returnAssetWorkOrderId: closureCase.returnAssetWorkOrderId,
+        status: "RETURN_INSPECTION",
+        vehicleReturnId: closureCase.vehicleReturnId,
+        vehicleId: fixture.vehicleId,
+        version: 2
+      });
+      expect({
+        actualReturnAt: winnerTruth[1]?.actualReturnAt,
+        id: winnerTruth[1]?.id,
+        orderStatus: winnerTruth[1]?.orderStatus,
+        updatedBy: winnerTruth[1]?.updatedBy,
+        vehicleId: winnerTruth[1]?.vehicleId
+      }).toEqual({
         actualReturnAt: occurredAt,
-        orderStatus: "RETURNED_PENDING_SETTLEMENT"
+        id: fixture.orderId,
+        orderStatus: "RETURNED_PENDING_SETTLEMENT",
+        updatedBy: fixture.actorId,
+        vehicleId: fixture.vehicleId
       });
-      expect(winnerTruth[2]).toMatchObject({ status: "COMPLETED" });
-      expect(winnerTruth[3]).toMatchObject({ currentMileageKm: 1200, status: "MAINTENANCE" });
-      expect(winnerTruth[4]).toMatchObject({
-        returnMileageKm: 1200,
+      expect({
+        deletedAt: winnerTruth[2]?.deletedAt,
+        id: winnerTruth[2]?.id,
+        orderId: winnerTruth[2]?.orderId,
+        status: winnerTruth[2]?.status,
+        updatedBy: winnerTruth[2]?.updatedBy
+      }).toEqual({
+        deletedAt: null,
+        id: winnerTruth[2]?.id,
+        orderId: fixture.orderId,
+        status: "COMPLETED",
+        updatedBy: fixture.actorId
+      });
+      expect({
+        currentMileageKm: winnerTruth[3]?.currentMileageKm,
+        id: winnerTruth[3]?.id,
+        salePriceReinitRequiredAt: winnerTruth[3]?.salePriceReinitRequiredAt,
+        salePriceStatus: winnerTruth[3]?.salePriceStatus,
+        status: winnerTruth[3]?.status,
+        updatedBy: winnerTruth[3]?.updatedBy
+      }).toEqual({
+        currentMileageKm: receipt.returnMileageKm,
+        id: fixture.vehicleId,
+        salePriceReinitRequiredAt: expect.any(Date),
+        salePriceStatus: "PENDING_INITIALIZE",
+        status: "MAINTENANCE",
+        updatedBy: fixture.actorId
+      });
+      expect({
+        checklistSnapshot: winnerTruth[4]?.checklistSnapshot,
+        damageFound: winnerTruth[4]?.damageFound,
+        deletedAt: winnerTruth[4]?.deletedAt,
+        id: winnerTruth[4]?.id,
+        orderId: winnerTruth[4]?.orderId,
+        remark: winnerTruth[4]?.remark,
+        returnMileageKm: winnerTruth[4]?.returnMileageKm,
+        returnStatus: winnerTruth[4]?.returnStatus,
+        returnType: winnerTruth[4]?.returnType,
+        returnedAt: winnerTruth[4]?.returnedAt,
+        updatedBy: winnerTruth[4]?.updatedBy,
+        vehicleId: winnerTruth[4]?.vehicleId
+      }).toEqual({
+        checklistSnapshot: checklist,
+        damageFound: true,
+        deletedAt: null,
+        id: closureCase.vehicleReturnId,
+        orderId: fixture.orderId,
+        remark: receipt.remark,
+        returnMileageKm: receipt.returnMileageKm,
         returnStatus: "CONFIRMED",
-        returnedAt: occurredAt
+        returnType: receipt.returnType,
+        returnedAt: occurredAt,
+        updatedBy: fixture.actorId,
+        vehicleId: fixture.vehicleId
       });
-      expect(winnerTruth[5]).toHaveLength(receipt.damages.length);
-      expect(winnerTruth[6]).toEqual([
-        expect.objectContaining({ endReason: "RETURN_CONFIRMED", endedAt: occurredAt })
+      expect(
+        winnerTruth[5].map(
+          ({
+            createdBy,
+            damageLevel,
+            damageType,
+            deletedAt,
+            description,
+            estimatedRepairAmount,
+            id,
+            orderId,
+            photoUrls,
+            responsibleParty,
+            returnId,
+            status,
+            updatedBy,
+            vehicleId
+          }) => ({
+            createdBy,
+            damageLevel,
+            damageType,
+            deletedAt,
+            description,
+            estimatedRepairAmount,
+            id,
+            orderId,
+            photoUrls,
+            responsibleParty,
+            returnId,
+            status,
+            updatedBy,
+            vehicleId
+          })
+        )
+      ).toEqual([
+        {
+          createdBy: fixture.actorId,
+          damageLevel: "MEDIUM",
+          damageType: "EXTERIOR",
+          deletedAt: null,
+          description: "Rear door scratch",
+          estimatedRepairAmount: 3600n,
+          id: damageIds[0],
+          orderId: fixture.orderId,
+          photoUrls: ["https://evidence.invalid/rear-door-1.jpg", "rear-door-2.jpg"],
+          responsibleParty: "CUSTOMER",
+          returnId: closureCase.vehicleReturnId,
+          status: "RECORDED",
+          updatedBy: fixture.actorId,
+          vehicleId: fixture.vehicleId
+        }
       ]);
-      expect(winnerTruth[7]).toEqual([
-        expect.objectContaining({ mileageKm: 1200, status: "ACTIVE" })
+      expect(
+        winnerTruth[6].map(
+          ({
+            endConfirmedAt,
+            endConfirmedBy,
+            endReason,
+            endSourceId,
+            endSourceKey,
+            endSourceType,
+            endedAt,
+            id,
+            orderId,
+            vehicleId
+          }) => ({
+            endConfirmedAt,
+            endConfirmedBy,
+            endReason,
+            endSourceId,
+            endSourceKey,
+            endSourceType,
+            endedAt,
+            id,
+            orderId,
+            vehicleId
+          })
+        )
+      ).toEqual([
+        {
+          endConfirmedAt: occurredAt,
+          endConfirmedBy: fixture.actorId,
+          endReason: "RETURN_CONFIRMED",
+          endSourceId: closureCase.id,
+          endSourceKey: "physical-period-close:VOLUNTARY_RETURN",
+          endSourceType: "SUBSCRIPTION_CLOSURE",
+          endedAt: occurredAt,
+          id: winnerTruth[6][0]?.id,
+          orderId: fixture.orderId,
+          vehicleId: fixture.vehicleId
+        }
       ]);
-      expect(winnerTruth[8]).toEqual([
-        expect.objectContaining({ status: "IN_PROGRESS", workOrderType: "RETURN_INBOUND" })
+      expect(
+        winnerTruth[7].map(
+          ({
+            confirmedAt,
+            confirmedBy,
+            createdBy,
+            evidenceSnapshot,
+            id,
+            mileageKm,
+            orderId,
+            recordedAt,
+            sourceRecordId,
+            sourceType,
+            status,
+            updatedBy,
+            vehicleId
+          }) => ({
+            confirmedAt,
+            confirmedBy,
+            createdBy,
+            evidenceSnapshot,
+            id,
+            mileageKm,
+            orderId,
+            recordedAt,
+            sourceRecordId,
+            sourceType,
+            status,
+            updatedBy,
+            vehicleId
+          })
+        )
+      ).toEqual([
+        {
+          confirmedAt: expect.any(Date),
+          confirmedBy: fixture.actorId,
+          createdBy: fixture.actorId,
+          evidenceSnapshot: {
+            closureCaseId: closureCase.id,
+            physicalControlMode: "VOLUNTARY_RETURN"
+          },
+          id: winnerTruth[7][0]?.id,
+          mileageKm: receipt.returnMileageKm,
+          orderId: fixture.orderId,
+          recordedAt: occurredAt,
+          sourceRecordId: closureCase.vehicleReturnId,
+          sourceType: "RETURN_CONFIRMATION",
+          status: "ACTIVE",
+          updatedBy: fixture.actorId,
+          vehicleId: fixture.vehicleId
+        }
+      ]);
+      expect(
+        winnerTruth[8].map(
+          ({ id, orderId, startedAt, status, updatedBy, vehicleId, version, workOrderType }) => ({
+            id,
+            orderId,
+            startedAt,
+            status,
+            updatedBy,
+            vehicleId,
+            version,
+            workOrderType
+          })
+        )
+      ).toEqual([
+        {
+          id: closureCase.returnAssetWorkOrderId,
+          orderId: fixture.orderId,
+          startedAt: occurredAt,
+          status: "IN_PROGRESS",
+          updatedBy: fixture.actorId,
+          vehicleId: fixture.vehicleId,
+          version: 1,
+          workOrderType: "RETURN_INBOUND"
+        }
+      ]);
+      expect(
+        winnerTruth[9].map(
+          ({
+            afterStatus,
+            beforeStatus,
+            detailSnapshot,
+            eventType,
+            sequence,
+            sourceId,
+            sourceKey,
+            sourceType,
+            workOrderId
+          }) => ({
+            afterStatus,
+            beforeStatus,
+            eventType,
+            sequence,
+            sourceId,
+            sourceKey,
+            sourceType,
+            version:
+              typeof detailSnapshot === "object" && !Array.isArray(detailSnapshot)
+                ? (detailSnapshot as Record<string, { version?: number }>).__assetOperationCommandV1
+                    ?.version
+                : undefined,
+            workOrderId
+          })
+        )
+      ).toEqual([
+        {
+          afterStatus: "IN_PROGRESS",
+          beforeStatus: "PENDING",
+          eventType: "STARTED",
+          sequence: 2,
+          sourceId: closureCase.id,
+          sourceKey: "physical-work-order:VOLUNTARY_RETURN",
+          sourceType: "SUBSCRIPTION_CLOSURE",
+          version: 1,
+          workOrderId: closureCase.returnAssetWorkOrderId
+        },
+        {
+          afterStatus: null,
+          beforeStatus: null,
+          eventType: "RESTRICTION_CREATED",
+          sequence: 3,
+          sourceId: closureCase.id,
+          sourceKey: "return-inspection-restriction",
+          sourceType: "SUBSCRIPTION_CLOSURE",
+          version: 1,
+          workOrderId: closureCase.returnAssetWorkOrderId
+        }
       ]);
       expect(winnerTruth[10]).toEqual([]);
-      expect(winnerTruth[11]).toEqual([
-        expect.objectContaining({
-          restrictionType: "RETURN_INSPECTION_PENDING",
-          status: "ACTIVE"
-        })
-      ]);
-      expect(winnerTruth[12]).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            commandReceipt: expect.objectContaining({
-              sourceKey: "physical-receipt:VOLUNTARY_RETURN"
-            }),
-            eventType: "PHYSICAL_CONTROL_CONFIRMED"
+      expect(
+        winnerTruth[11].map(
+          ({
+            id,
+            restrictionType,
+            severity,
+            startSourceId,
+            startSourceKey,
+            startSourceType,
+            startedAt,
+            status,
+            vehicleId,
+            workOrderId
+          }) => ({
+            id,
+            restrictionType,
+            severity,
+            startSourceId,
+            startSourceKey,
+            startSourceType,
+            startedAt,
+            status,
+            vehicleId,
+            workOrderId
           })
-        ])
+        )
+      ).toEqual([
+        {
+          id: winnerTruth[11][0]?.id,
+          restrictionType: "RETURN_INSPECTION_PENDING",
+          severity: "BLOCKING",
+          startSourceId: closureCase.id,
+          startSourceKey: "return-inspection-restriction",
+          startSourceType: "SUBSCRIPTION_CLOSURE",
+          startedAt: occurredAt,
+          status: "ACTIVE",
+          vehicleId: fixture.vehicleId,
+          workOrderId: closureCase.returnAssetWorkOrderId
+        }
+      ]);
+      const expectedReceiptPayload = {
+        checklistSnapshot: checklist,
+        checklistSnapshotHash: createHash("sha256")
+          .update(canonicalSubscriptionClosureJson(checklist))
+          .digest("hex"),
+        damages: [
+          {
+            damageLevel: "MEDIUM",
+            damageType: "EXTERIOR",
+            description: "Rear door scratch",
+            estimatedRepairAmount: "3600",
+            photoUrls: ["https://evidence.invalid/rear-door-1.jpg", "rear-door-2.jpg"],
+            responsibleParty: "CUSTOMER"
+          }
+        ],
+        physicalControlMode: "VOLUNTARY_RETURN",
+        remark: "received",
+        returnMileageKm: 1200,
+        returnedAt: occurredAt.toISOString(),
+        returnType: "NORMAL_RETURN"
+      };
+      const expectedReceiptDetail = {
+        physicalControlMode: "VOLUNTARY_RETURN",
+        receiptPayload: expectedReceiptPayload,
+        receiptPayloadHash: createHash("sha256")
+          .update(canonicalSubscriptionClosureJson(expectedReceiptPayload))
+          .digest("hex"),
+        vehicleReturnId: closureCase.vehicleReturnId
+      };
+      const expectedReceiptCommandPayload = {
+        actorId: fixture.actorId,
+        afterStatus: "RETURN_INSPECTION",
+        closureCaseId: closureCase.id,
+        detailSnapshot: expectedReceiptDetail,
+        eventType: "PHYSICAL_CONTROL_CONFIRMED",
+        expectedStatus: "PREPARING_RETURN",
+        expectedVersion: 1,
+        occurredAt: occurredAt.toISOString(),
+        reconditioningAssetWorkOrderId: null,
+        source: {
+          id: closureCase.id,
+          key: "physical-receipt:VOLUNTARY_RETURN",
+          type: "SUBSCRIPTION_CLOSURE"
+        }
+      };
+      expect(
+        winnerTruth[12].map(
+          ({
+            afterStatus,
+            actorId,
+            beforeStatus,
+            closureCaseId,
+            commandReceipt,
+            detailSnapshot,
+            eventType,
+            id,
+            occurredAt: eventOccurredAt,
+            sequence,
+            sourceId,
+            sourceKey,
+            sourceType
+          }) => ({
+            afterStatus,
+            actorId,
+            beforeStatus,
+            closureCaseId,
+            commandReceipt: commandReceipt
+              ? {
+                  actorId: commandReceipt.actorId,
+                  closureCaseId: commandReceipt.closureCaseId,
+                  commandType: commandReceipt.commandType,
+                  eventId: commandReceipt.eventId,
+                  outcomeCaseStatus:
+                    typeof commandReceipt.outcomeSnapshot === "object" &&
+                    !Array.isArray(commandReceipt.outcomeSnapshot)
+                      ? (
+                          commandReceipt.outcomeSnapshot as {
+                            case?: { status?: string };
+                          }
+                        ).case?.status
+                      : undefined,
+                  payloadHash: commandReceipt.payloadHash,
+                  payloadSnapshot: commandReceipt.payloadSnapshot,
+                  sourceId: commandReceipt.sourceId,
+                  sourceKey: commandReceipt.sourceKey,
+                  sourceType: commandReceipt.sourceType
+                }
+              : null,
+            detailSnapshot,
+            eventType,
+            id,
+            occurredAt: eventOccurredAt,
+            sequence,
+            sourceId,
+            sourceKey,
+            sourceType
+          })
+        )
+      ).toEqual([
+        {
+          afterStatus: "RETURN_INSPECTION",
+          actorId: fixture.actorId,
+          beforeStatus: "PREPARING_RETURN",
+          closureCaseId: closureCase.id,
+          commandReceipt: {
+            actorId: fixture.actorId,
+            closureCaseId: closureCase.id,
+            commandType: "TRANSITION_CASE",
+            eventId: winnerTruth[12][0]?.id,
+            outcomeCaseStatus: "RETURN_INSPECTION",
+            payloadHash: createHash("sha256")
+              .update(canonicalSubscriptionClosureJson(expectedReceiptCommandPayload))
+              .digest("hex"),
+            payloadSnapshot: expectedReceiptCommandPayload,
+            sourceId: closureCase.id,
+            sourceKey: "physical-receipt:VOLUNTARY_RETURN",
+            sourceType: "SUBSCRIPTION_CLOSURE"
+          },
+          detailSnapshot: expectedReceiptDetail,
+          eventType: "PHYSICAL_CONTROL_CONFIRMED",
+          id: winnerTruth[12][0]?.id,
+          occurredAt,
+          sequence: 3,
+          sourceId: closureCase.id,
+          sourceKey: "physical-receipt:VOLUNTARY_RETURN",
+          sourceType: "SUBSCRIPTION_CLOSURE"
+        }
+      ]);
+      const winnerCommandReceipts = winnerTruth[12].flatMap(({ commandReceipt }) =>
+        commandReceipt ? [commandReceipt] : []
       );
-      expect(winnerTruth[13].length).toBeGreaterThan(0);
+      expect(winnerCommandReceipts).toHaveLength(1);
+      const expectedReceiptAudits = [
+        ["asset_facts", "vehicle_subscription_period", winnerTruth[6][0]?.id, "UPDATE"],
+        ["subscription_closure", "vehicle_return_damage", winnerTruth[5][0]?.id, "CREATE"],
+        ["subscription_closure", "vehicle_mileage_reading", winnerTruth[7][0]?.id, "CREATE"],
+        ["subscription_closure", "vehicle_return", closureCase.vehicleReturnId, "UPDATE"],
+        ["subscription_closure", "subscription_order", fixture.orderId, "UPDATE"],
+        ["subscription_closure", "lease", winnerTruth[2]?.id, "UPDATE"],
+        ["subscription_closure", "vehicle", fixture.vehicleId, "UPDATE"],
+        ["asset_operations", "asset_work_order", closureCase.returnAssetWorkOrderId, "UPDATE"],
+        ["asset_operations", "asset_work_order_event", winnerTruth[9][0]?.id, "CREATE"],
+        ["asset_operations", "vehicle_operational_restriction", winnerTruth[11][0]?.id, "CREATE"],
+        ["asset_operations", "asset_work_order_event", winnerTruth[9][1]?.id, "CREATE"],
+        ["subscription_closure", "subscription_closure_event", winnerTruth[12][0]?.id, "CREATE"]
+      ].map(([module, entityType, entityId, action]) => ({ action, entityId, entityType, module }));
+      const sortAuditSemantics = (
+        left: Readonly<{
+          action: unknown;
+          entityId: unknown;
+          entityType: unknown;
+          module: unknown;
+        }>,
+        right: Readonly<{
+          action: unknown;
+          entityId: unknown;
+          entityType: unknown;
+          module: unknown;
+        }>
+      ) => {
+        const leftKey = canonicalSubscriptionClosureJson(left as never);
+        const rightKey = canonicalSubscriptionClosureJson(right as never);
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      };
+      expect(
+        winnerTruth[13]
+          .map(({ action, entityId, entityType, module }) => ({
+            action,
+            entityId,
+            entityType,
+            module
+          }))
+          .sort(sortAuditSemantics)
+      ).toEqual(expectedReceiptAudits.sort(sortAuditSemantics));
       expect(winnerTruth[14]).toEqual([]);
       const baseline = await Promise.all([
         prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
@@ -741,7 +1255,9 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).resolves.toEqual({
         vehicleReturnId: closureCase.vehicleReturnId
       });
-      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(exactReplayTruth);
+      await expect(snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)).resolves.toEqual(
+        exactReplayTruth
+      );
       for (const driftedReceipt of [
         { ...receipt, remark: "different remark" },
         { ...receipt, returnMileageKm: receipt.returnMileageKm + 1 },
@@ -779,9 +1295,9 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
           status: 409
         });
-        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
-          exactReplayTruth
-        );
+        await expect(
+          snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)
+        ).resolves.toEqual(exactReplayTruth);
       }
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
@@ -790,12 +1306,16 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           where: { id: closureCase.vehicleReturnId! }
         });
       });
-      const persistedDriftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      const persistedDriftTruth = await snapshotPhysicalReturnTruth(
+        prisma,
+        fixture,
+        winnerTruthScope
+      );
       await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
         response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
         status: 409
       });
-      await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(
+      await expect(snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)).resolves.toEqual(
         persistedDriftTruth
       );
       await prisma.$transaction(async (tx) => {
@@ -825,12 +1345,14 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await mutate(tx);
         });
-        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope);
         await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
           response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
           status: 409
         });
-        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(driftTruth);
+        await expect(
+          snapshotPhysicalReturnTruth(prisma, fixture, winnerTruthScope)
+        ).resolves.toEqual(driftTruth);
         await prisma.$transaction(async (tx) => {
           await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
           await restore(tx);
@@ -1548,10 +2070,14 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         vehicleId: scenario.fixture.vehicleId
       });
       await expect(
-        prisma.vehicleOperationalRestriction.findUniqueOrThrow({ where: { id: restriction.id } })
+        prisma.vehicleOperationalRestriction.findUniqueOrThrow({
+          where: { id: restriction.id }
+        })
       ).resolves.toMatchObject({ status: "RELEASED" });
       await expect(
-        prisma.vehicle.findUniqueOrThrow({ where: { id: scenario.fixture.vehicleId } })
+        prisma.vehicle.findUniqueOrThrow({
+          where: { id: scenario.fixture.vehicleId }
+        })
       ).resolves.toMatchObject({ status: "AVAILABLE" });
     } finally {
       await cleanupManagedExpiryFixture(prisma, scenario.fixture);
@@ -1574,6 +2100,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           where: { closureCaseId: closureCase.id }
         })
       ).occurredAt;
+      await awaitDatabaseClockPast(prisma, occurredAt);
       await prisma.vehicleSubscriptionPeriod.create({
         data: {
           contractId: fixture.contractId,
@@ -3140,6 +3667,16 @@ async function databaseNow(tx: Prisma.TransactionClient) {
   return row.now;
 }
 
+async function awaitDatabaseClockPast(prisma: PrismaService, occurredAt: Date) {
+  const requiredDatabaseTime = occurredAt.getTime() + 2_000;
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    const current = await prisma.$transaction((tx) => databaseNow(tx));
+    if (current.getTime() >= requiredDatabaseTime) return;
+    if (Date.now() >= deadline) throw new Error("Database clock did not pass fixture event time");
+  }
+}
+
 type Task3Failpoint =
   | "after-case-audit"
   | "after-common"
@@ -3465,6 +4002,7 @@ async function setupFocusedPhysicalReceipt(prisma: PrismaService) {
     returnType: "NORMAL_RETURN" as const,
     returnedAt: occurredAt
   };
+  await awaitDatabaseClockPast(prisma, occurredAt);
   return {
     accounting,
     closure,
@@ -3551,7 +4089,13 @@ function focusedInspectionCommand(
 
 async function snapshotPhysicalReturnTruth(
   prisma: PrismaService,
-  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
+  scope: Readonly<{
+    damageIds?: readonly string[];
+    excludedAssetWorkOrderEventIds?: readonly string[];
+    excludedAuditIds?: readonly string[];
+    excludedClosureEventIds?: readonly string[];
+  }> = {}
 ) {
   return Promise.all([
     prisma.subscriptionClosureCase.findUnique({ where: { orderId: fixture.orderId } }),
@@ -3561,7 +4105,11 @@ async function snapshotPhysicalReturnTruth(
     prisma.vehicleReturn.findUnique({ where: { orderId: fixture.orderId } }),
     prisma.vehicleReturnDamage.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      where: { orderId: fixture.orderId }
+      where: scope.damageIds
+        ? {
+            OR: [{ id: { in: [...scope.damageIds] } }, { orderId: fixture.orderId }]
+          }
+        : { orderId: fixture.orderId }
     }),
     prisma.vehicleSubscriptionPeriod.findMany({
       orderBy: [{ startedAt: "asc" }, { id: "asc" }],
@@ -3576,8 +4124,13 @@ async function snapshotPhysicalReturnTruth(
       where: { orderId: fixture.orderId }
     }),
     prisma.assetWorkOrderEvent.findMany({
-      orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-      where: { workOrder: { orderId: fixture.orderId } }
+      orderBy: [{ sequence: "asc" }, { id: "asc" }],
+      where: {
+        id: scope.excludedAssetWorkOrderEventIds
+          ? { notIn: [...scope.excludedAssetWorkOrderEventIds] }
+          : undefined,
+        workOrder: { orderId: fixture.orderId }
+      }
     }),
     prisma.assetWorkOrderEvidence.findMany({
       orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
@@ -3590,11 +4143,19 @@ async function snapshotPhysicalReturnTruth(
     prisma.subscriptionClosureEvent.findMany({
       include: { commandReceipt: true },
       orderBy: [{ sequence: "asc" }, { id: "asc" }],
-      where: { closureCase: { orderId: fixture.orderId } }
+      where: {
+        closureCase: { orderId: fixture.orderId },
+        id: scope.excludedClosureEventIds
+          ? { notIn: [...scope.excludedClosureEventIds] }
+          : undefined
+      }
     }),
     prisma.auditLog.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      where: { operatorId: fixture.actorId }
+      where: {
+        id: scope.excludedAuditIds ? { notIn: [...scope.excludedAuditIds] } : undefined,
+        operatorId: fixture.actorId
+      }
     }),
     prisma.vehicleCostLedgerEntry.findMany({
       orderBy: [{ occurredOn: "asc" }, { id: "asc" }],

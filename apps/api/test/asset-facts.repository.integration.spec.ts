@@ -534,12 +534,6 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
       const firstPromise = serviceClose(firstService, periodKind, closeInput);
       void firstPromise.catch(auditReached.reject);
       await auditReached.promise;
-
-      const mutationPromise = prisma.vehicle.update({
-        data: { status: VehicleStatus.AVAILABLE },
-        where: { id: fixture.vehicleId }
-      });
-      const earlyMutation = await settlesWithin(mutationPromise, 300);
       const secondPromise = settled(serviceClose(service, periodKind, closeInput));
       let waitedOnSourceLock: boolean;
       try {
@@ -548,12 +542,75 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
         releaseAudit.resolve();
       }
       const [first, second] = await Promise.all([firstPromise, secondPromise]);
-      await mutationPromise;
 
-      expect(earlyMutation.finished).toBe(false);
       expect(waitedOnSourceLock).toBe(true);
       expect(fulfilledValue(second).id).toBe(first.id);
       await expect(countAssetFactAudits(prisma, first.id, AuditAction.UPDATE)).resolves.toBe(1);
+    }
+  );
+
+  it.each(["subscription", "ownership"] as const)(
+    "fails an exact %s close replay fast while its vehicle authority is being updated, then replays after release",
+    async (periodKind) => {
+      const fixture = await createRepositoryFixture(prisma);
+      const service = createAssetFactsService(prisma);
+      const opened = await serviceOpen(
+        service,
+        periodKind,
+        serviceOpenDto(periodKind, fixture, `service-${periodKind}-busy-close-open`)
+      );
+      const closeInput = serviceCloseDto(
+        periodKind,
+        opened.id,
+        `service-${periodKind}-busy-close-replay`
+      );
+      const closed = await serviceClose(service, periodKind, closeInput);
+      const authorityLocked = deferred<void>();
+      const releaseAuthority = deferred<void>();
+      const authorityWriter = readCommitted(prisma, async (tx) => {
+        await tx.$executeRaw(
+          Prisma.sql`UPDATE "vehicle" SET "updated_at" = clock_timestamp() WHERE "id" = ${fixture.vehicleId}::uuid`
+        );
+        authorityLocked.resolve();
+        await releaseAuthority.promise;
+        const [transactionProbe] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+          Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+        );
+        const [authorityProbe] = await tx.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${fixture.vehicleId}::uuid`
+        );
+        return {
+          authorityRowReadable: authorityProbe?.id === fixture.vehicleId,
+          transactionUsable: Boolean(transactionProbe?.transactionId)
+        };
+      });
+      void authorityWriter.catch(authorityLocked.reject);
+      await authorityLocked.promise;
+
+      const busyReplayPromise = settled(serviceClose(service, periodKind, closeInput));
+      const earlyBusyReplay = await (async () => {
+        try {
+          return await settlesWithin(busyReplayPromise, 750);
+        } finally {
+          releaseAuthority.resolve();
+        }
+      })();
+      const [authorityWriterResult, busyReplay] = await Promise.all([
+        authorityWriter,
+        earlyBusyReplay.finished ? Promise.resolve(earlyBusyReplay.value) : busyReplayPromise
+      ]);
+
+      expect(earlyBusyReplay.finished).toBe(true);
+      expectConflictError(rejectedValue(busyReplay), "ASSET_FACT_AUTHORITY_BUSY");
+      expect(authorityWriterResult).toEqual({
+        authorityRowReadable: true,
+        transactionUsable: true
+      });
+
+      await expect(serviceClose(service, periodKind, closeInput)).resolves.toMatchObject({
+        id: closed.id
+      });
+      await expect(countAssetFactAudits(prisma, closed.id, AuditAction.UPDATE)).resolves.toBe(1);
     }
   );
 

@@ -266,6 +266,7 @@ export class SubscriptionClosureRepository {
     if (replay) return replay;
 
     await this.lockAuthorityRows(tx, createCaseAuthorityLocks(command));
+    await assertDatabaseEventTime(tx, null, command.effectiveAt);
     const order = await tx.subscriptionOrder.findUnique({
       select: { contractId: true, customerId: true, vehicleId: true },
       where: { id: command.orderId }
@@ -290,7 +291,7 @@ export class SubscriptionClosureRepository {
         data: {
           authoritySnapshot,
           authoritySnapshotHash: hashSubscriptionClosureSnapshot(command.authoritySnapshot),
-          caseNo: `SC-${command.source.id}`,
+          caseNo: subscriptionClosureCaseNo(command.source),
           closureType: command.closureType,
           contractId: command.contractId,
           createSourceId: command.source.id,
@@ -405,7 +406,9 @@ export class SubscriptionClosureRepository {
     ]);
     const current = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
+    await assertDatabaseEventTime(tx, current.id, command.occurredAt);
     validateEventTransition(current, command);
+    assertTerminalSettlementAuthority(current, command.afterStatus);
 
     try {
       const changed = await tx.subscriptionClosureCase.update({
@@ -472,6 +475,7 @@ export class SubscriptionClosureRepository {
     ]);
     const current = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
+    await assertDatabaseEventTime(tx, current.id, command.occurredAt);
     try {
       assertSubscriptionClosureEscalation(profileOf(current), {
         closureType: current.closureType,
@@ -546,26 +550,12 @@ export class SubscriptionClosureRepository {
     ]);
     const currentCase = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(currentCase, command.expectedVersion);
-    const currentProjection = await lockCurrentDocumentProjection(
-      tx,
-      command.closureCaseId,
-      command.documentType
-    );
-    if ((currentProjection?.documentRevisionId ?? null) !== command.expectedCurrentRevisionId) {
-      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT);
-    }
+    await assertDatabaseEventTime(tx, currentCase.id, command.generatedAt);
     const authorityLocks: SubscriptionClosureAuthorityLock[] = [
       { id: command.actorId, mode: "SHARE", table: "user" },
       { id: command.contractESignTaskId, mode: "SHARE", table: "contract_esign_task" },
       { id: command.sourceFileId, mode: "SHARE", table: "file_object" }
     ];
-    if (currentProjection) {
-      authorityLocks.push({
-        id: currentProjection.documentRevisionId,
-        mode: "SHARE",
-        table: "subscription_closure_document_revision"
-      });
-    }
     if (command.vehicleReturnId) {
       authorityLocks.push({ id: command.vehicleReturnId, mode: "SHARE", table: "vehicle_return" });
     }
@@ -583,6 +573,23 @@ export class SubscriptionClosureRepository {
       if (actorId) authorityLocks.push({ id: actorId, mode: "SHARE", table: "user" });
     }
     await this.lockAuthorityRows(tx, authorityLocks);
+    const currentProjection = await lockCurrentDocumentProjection(
+      tx,
+      command.closureCaseId,
+      command.documentType
+    );
+    if ((currentProjection?.documentRevisionId ?? null) !== command.expectedCurrentRevisionId) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT);
+    }
+    if (currentProjection) {
+      await this.lockAuthorityRows(tx, [
+        {
+          id: currentProjection.documentRevisionId,
+          mode: "SHARE",
+          table: "subscription_closure_document_revision"
+        }
+      ]);
+    }
     await assertDocumentAuthorityCoherence(tx, currentCase, command);
 
     const predecessor = currentProjection
@@ -1046,6 +1053,10 @@ function prepareCommand(command: object): PreparedCommand {
   };
 }
 
+function subscriptionClosureCaseNo(source: SubscriptionClosureSource): string {
+  return `SC-${hashSubscriptionClosureSnapshot(source).slice(0, 61)}`;
+}
+
 function initialStatus(command: SubscriptionClosureProfile): SubscriptionClosureStatus {
   if (
     command.closureType === "NORMAL_COMPLETION" &&
@@ -1072,16 +1083,19 @@ function initialStatus(command: SubscriptionClosureProfile): SubscriptionClosure
 }
 
 function assertDocumentShape(command: AppendSubscriptionClosureDocumentCommand): void {
-  const signed =
-    command.signedFileId !== null &&
-    command.signedFileHash !== null &&
-    command.signedBy !== null &&
-    command.signedAt !== null;
-  const archived = command.archivedBy !== null && command.archivedAt !== null;
+  const signing = nullableGroup([
+    command.signedFileId,
+    command.signedFileHash,
+    command.signedBy,
+    command.signedAt
+  ]);
+  const archiving = nullableGroup([command.archivedBy, command.archivedAt]);
   if (
-    (command.stage === "GENERATED" && (signed || archived)) ||
-    (command.stage === "SIGNED" && (!signed || archived)) ||
-    (command.stage === "ARCHIVED" && (!signed || !archived))
+    signing === "PARTIAL" ||
+    archiving === "PARTIAL" ||
+    (command.stage === "GENERATED" && (signing === "PRESENT" || archiving === "PRESENT")) ||
+    (command.stage === "SIGNED" && (signing !== "PRESENT" || archiving === "PRESENT")) ||
+    (command.stage === "ARCHIVED" && (signing !== "PRESENT" || archiving !== "PRESENT"))
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
   }
@@ -1096,19 +1110,31 @@ function assertDocumentShape(command: AppendSubscriptionClosureDocumentCommand):
 }
 
 function assertSettlementShape(command: AppendSubscriptionClosureSettlementCommand): void {
-  const finalized = command.finalizedBy !== null && command.finalizedAt !== null;
-  const settled = command.settledBy !== null && command.settledAt !== null;
+  const finalization = nullableGroup([command.finalizedBy, command.finalizedAt]);
+  const settlement = nullableGroup([command.settledBy, command.settledAt]);
   if (
-    (command.stage === "PROPOSED" && (finalized || settled)) ||
+    finalization === "PARTIAL" ||
+    settlement === "PARTIAL" ||
+    (command.stage === "PROPOSED" && (finalization === "PRESENT" || settlement === "PRESENT")) ||
     (command.stage === "FINALIZED" &&
-      (command.settlementType !== "FINAL" || !finalized || settled)) ||
+      (command.settlementType !== "FINAL" ||
+        finalization !== "PRESENT" ||
+        settlement === "PRESENT")) ||
     (command.stage === "SETTLED" &&
-      (command.settlementType !== "FINAL" || !finalized || !settled)) ||
+      (command.settlementType !== "FINAL" ||
+        finalization !== "PRESENT" ||
+        settlement !== "PRESENT")) ||
     (command.waiverTotalCents === 0n) !== (command.waiverApprovalId === null) ||
     (command.writeOffTotalCents === 0n) !== (command.writeOffApprovalId === null)
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
   }
+}
+
+function nullableGroup(values: readonly unknown[]): "ABSENT" | "PARTIAL" | "PRESENT" {
+  const present = values.filter((value) => value !== null).length;
+  if (present === 0) return "ABSENT";
+  return present === values.length ? "PRESENT" : "PARTIAL";
 }
 
 const CLOSURE_STATUSES = [
@@ -1492,6 +1518,9 @@ async function assertCreateLinkCoherence(
   tx: Prisma.TransactionClient,
   command: CreateSubscriptionClosureCaseCommand
 ): Promise<void> {
+  if (command.recoveryAssetWorkOrderId !== null && command.physicalControlMode !== "RECOVERY") {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
   const contract = await tx.contract.findUnique({
     select: { customerId: true, orderId: true },
     where: { id: command.contractId }
@@ -1530,14 +1559,20 @@ async function assertCreateLinkCoherence(
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
   }
-  for (const id of [
-    command.returnAssetWorkOrderId,
-    command.recoveryAssetWorkOrderId,
-    command.reconditioningAssetWorkOrderId
-  ]) {
+  for (const [id, expectedType] of [
+    [command.returnAssetWorkOrderId, "RETURN_INBOUND"],
+    [command.recoveryAssetWorkOrderId, "RECOVERY"],
+    [command.reconditioningAssetWorkOrderId, "RECONDITIONING"]
+  ] as const) {
     if (!id) continue;
     const workOrder = await tx.assetWorkOrder.findUnique({
-      select: { contractId: true, customerId: true, orderId: true, vehicleId: true },
+      select: {
+        contractId: true,
+        customerId: true,
+        orderId: true,
+        vehicleId: true,
+        workOrderType: true
+      },
       where: { id }
     });
     if (
@@ -1545,7 +1580,8 @@ async function assertCreateLinkCoherence(
       workOrder.orderId !== command.orderId ||
       workOrder.vehicleId !== command.vehicleId ||
       workOrder.contractId !== command.contractId ||
-      workOrder.customerId !== command.customerId
+      workOrder.customerId !== command.customerId ||
+      workOrder.workOrderType !== expectedType
     ) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
@@ -1623,6 +1659,31 @@ async function requiredCase(tx: Prisma.TransactionClient, id: string): Promise<C
   return record;
 }
 
+async function assertDatabaseEventTime(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string | null,
+  occurredAt: Date
+): Promise<void> {
+  const [boundary] = await tx.$queryRaw<
+    Array<{ clockTimestamp: Date; latestOccurredAt: Date | null }>
+  >(Prisma.sql`
+    SELECT clock_timestamp() AS "clockTimestamp",
+           CASE WHEN ${closureCaseId}::uuid IS NULL THEN NULL ELSE (
+             SELECT MAX("occurred_at")
+             FROM "subscription_closure_event"
+             WHERE "closure_case_id" = ${closureCaseId}::uuid
+           ) END AS "latestOccurredAt"
+  `);
+  if (
+    !boundary ||
+    occurredAt.getTime() > boundary.clockTimestamp.getTime() ||
+    (boundary.latestOccurredAt !== null &&
+      occurredAt.getTime() < boundary.latestOccurredAt.getTime())
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+}
+
 function assertExpectedCase(
   current: CaseRecord,
   expectedVersion: number,
@@ -1663,6 +1724,19 @@ function validateEventTransition(
 
 function terminalStatus(status: SubscriptionClosureStatus): boolean {
   return ["COMPLETED", "TERMINATED", "REJECTED", "CANCELLED"].includes(status);
+}
+
+function assertTerminalSettlementAuthority(
+  current: CaseRecord,
+  target: SubscriptionClosureStatus
+): void {
+  if (target !== "COMPLETED" && target !== "TERMINATED") return;
+  if (
+    current.currentSettlementRevision?.settlementType !== "FINAL" ||
+    current.currentSettlementRevision.stage !== "SETTLED"
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT);
+  }
 }
 
 function physicalControlledStatus(status: SubscriptionClosureStatus): boolean {
@@ -1728,19 +1802,22 @@ function canonicalUuid(value: unknown, field: string): string {
 
 function normalizeWriteError(error: unknown): unknown {
   if (error instanceof ConflictException) return error;
-  const code =
-    databaseCode(error) ??
-    (isRecord(error) && typeof error.code === "string" ? error.code : undefined);
+  const code = databaseCode(error) ?? prismaErrorCode(error);
+  const constraint = exactConstraint(error);
   const description = JSON.stringify(
     error,
     error instanceof Error ? Object.getOwnPropertyNames(error) : undefined
   );
   if (code === "55P03") return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
   if (code === "P2002" || code === "23505") {
-    if (description.includes("subscription_closure_case_order_id_key")) {
+    if (constraint === "subscription_closure_case_order_id_key") {
       return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS);
     }
-    if (description.includes("source") || description.includes("receipt")) {
+    if (
+      constraint?.includes("source") ||
+      constraint?.includes("receipt") ||
+      description.includes("source")
+    ) {
       return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT);
     }
     return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.WRITE_CONFLICT);
@@ -1749,7 +1826,25 @@ function normalizeWriteError(error: unknown): unknown {
     return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
   }
   if (code === "P2014" || code === "23514") {
-    return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    if (
+      constraint === "subscription_closure_case_authority_chk" ||
+      constraint?.includes("document_authority")
+    ) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+    if (constraint?.includes("current_document")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT);
+    }
+    if (constraint?.includes("settlement_current") || constraint?.includes("terminal_settlement")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT);
+    }
+    if (constraint?.includes("version")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.VERSION_CONFLICT);
+    }
+    if (constraint?.includes("shape") || constraint?.includes("nonnegative")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+    }
+    return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.WRITE_CONFLICT);
   }
   return error;
 }
@@ -1759,10 +1854,29 @@ function databaseCode(error: unknown): string | undefined {
   if (typeof error.code === "string" && /^[0-9]{2}[0-9A-Z]{3}$/.test(error.code)) {
     return error.code;
   }
-  if (error.code !== "P2010" || !isRecord(error.meta)) return undefined;
+  const cause = driverAdapterCause(error);
+  return cause && typeof cause.originalCode === "string" ? cause.originalCode : undefined;
+}
+
+function prismaErrorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+function driverAdapterCause(error: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (isRecord(error.cause) && typeof error.cause.originalCode === "string") return error.cause;
+  if (!isRecord(error.meta)) return undefined;
   const adapter = error.meta.driverAdapterError;
-  if (!isRecord(adapter) || !isRecord(adapter.cause)) return undefined;
-  return typeof adapter.cause.originalCode === "string" ? adapter.cause.originalCode : undefined;
+  return isRecord(adapter) && isRecord(adapter.cause) ? adapter.cause : undefined;
+}
+
+function exactConstraint(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined;
+  if (typeof error.constraint === "string") return error.constraint;
+  if (isRecord(error.meta) && typeof error.meta.constraint === "string") {
+    return error.meta.constraint;
+  }
+  const cause = driverAdapterCause(error);
+  return cause && typeof cause.constraint === "string" ? cause.constraint : undefined;
 }
 
 function conflict(code: SubscriptionClosureErrorCode, message = ERROR_MESSAGES[code]) {

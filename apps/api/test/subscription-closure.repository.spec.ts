@@ -109,7 +109,217 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     );
     expect(database.authorityLocks).toHaveLength(1);
   });
+
+  it("locks every external document authority before the mutable current-family projection", async () => {
+    const database = fakeDocumentTransaction();
+    const repository = new SubscriptionClosureRepository();
+
+    await expect(
+      repository.appendDocumentRevision(database.tx, {
+        actorId: UUIDS.actor,
+        archivedAt: null,
+        archivedBy: null,
+        closureCaseId: UUIDS.closureCase,
+        contractESignTaskId: UUIDS.esign,
+        documentSnapshot: { kind: "return manifest" },
+        documentType: "RETURN_MANIFEST",
+        expectedCurrentRevisionId: null,
+        expectedVersion: 0,
+        generatedAt: new Date("2026-08-21T03:00:00.000Z"),
+        handoverWorkOrderId: UUIDS.handover,
+        signedAt: null,
+        signedBy: null,
+        signedFileHash: null,
+        signedFileId: null,
+        source: SOURCE,
+        sourceFileHash: "a".repeat(64),
+        sourceFileId: UUIDS.file,
+        stage: "GENERATED",
+        vehicleReturnId: UUIDS.vehicleReturn
+      })
+    ).rejects.toMatchObject({
+      response: { code: SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH }
+    });
+
+    const projection = database.timeline.indexOf("current-document-projection");
+    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:vehicle_return"));
+    expect(projection).toBeGreaterThan(
+      database.timeline.indexOf("authority-lock:vehicle_handover_work_order")
+    );
+    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:file_object"));
+    expect(projection).toBeGreaterThan(
+      database.timeline.indexOf("authority-lock:contract_esign_task")
+    );
+    expect(projection).toBeGreaterThan(database.timeline.indexOf("authority-lock:user"));
+  });
+
+  it.each([
+    ["signedFileId", UUIDS.file],
+    ["signedFileHash", "b".repeat(64)],
+    ["signedBy", UUIDS.actor],
+    ["signedAt", new Date("2026-08-21T03:00:00.000Z")],
+    ["archivedBy", UUIDS.actor],
+    ["archivedAt", new Date("2026-08-21T03:00:00.000Z")]
+  ] as const)(
+    "rejects a partial document lifecycle group containing only %s",
+    async (field, value) => {
+      const command = { ...generatedDocumentCommand(), [field]: value };
+      await expectCode(
+        new SubscriptionClosureRepository().appendDocumentRevision(
+          {} as Prisma.TransactionClient,
+          command
+        ),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+      );
+    }
+  );
+
+  it.each([
+    ["finalizedBy", UUIDS.actor],
+    ["finalizedAt", new Date("2026-08-21T03:00:00.000Z")],
+    ["settledBy", UUIDS.actor],
+    ["settledAt", new Date("2026-08-21T03:00:00.000Z")]
+  ] as const)(
+    "rejects a partial settlement lifecycle group containing only %s",
+    async (field, value) => {
+      const command = { ...proposedSettlementCommand(), [field]: value };
+      await expectCode(
+        new SubscriptionClosureRepository().appendSettlementRevision(
+          {} as Prisma.TransactionClient,
+          command
+        ),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+      );
+    }
+  );
 });
+
+const UUIDS = {
+  actor: "10000000-0000-4000-8000-000000000001",
+  closureCase: "10000000-0000-4000-8000-000000000002",
+  contract: "10000000-0000-4000-8000-000000000003",
+  customer: "10000000-0000-4000-8000-000000000004",
+  esign: "10000000-0000-4000-8000-000000000005",
+  file: "10000000-0000-4000-8000-000000000006",
+  handover: "10000000-0000-4000-8000-000000000007",
+  order: "10000000-0000-4000-8000-000000000008",
+  vehicleReturn: "10000000-0000-4000-8000-000000000009"
+} as const;
+
+function generatedDocumentCommand() {
+  return {
+    actorId: UUIDS.actor,
+    archivedAt: null,
+    archivedBy: null,
+    closureCaseId: UUIDS.closureCase,
+    contractESignTaskId: UUIDS.esign,
+    documentSnapshot: { kind: "agreement" },
+    documentType: "EARLY_TERMINATION_AGREEMENT" as const,
+    expectedCurrentRevisionId: null,
+    expectedVersion: 0,
+    generatedAt: new Date("2026-08-21T03:00:00.000Z"),
+    handoverWorkOrderId: null,
+    signedAt: null,
+    signedBy: null,
+    signedFileHash: null,
+    signedFileId: null,
+    source: SOURCE,
+    sourceFileHash: "a".repeat(64),
+    sourceFileId: UUIDS.file,
+    stage: "GENERATED" as const,
+    vehicleReturnId: null
+  };
+}
+
+function proposedSettlementCommand() {
+  return {
+    actorId: UUIDS.actor,
+    amountDueCents: 0n,
+    amountRefundableCents: 0n,
+    billInputSnapshot: {},
+    closureCaseId: UUIDS.closureCase,
+    costTotalCents: 0n,
+    depositAppliedCents: 0n,
+    depositInputSnapshot: {},
+    depositRefundCents: 0n,
+    expectedCurrentRevisionId: null,
+    expectedVersion: 0,
+    finalizedAt: null,
+    finalizedBy: null,
+    ledgerInputSnapshot: {},
+    paidTotalCents: 0n,
+    receivableTotalCents: 0n,
+    responsibilitySnapshot: {},
+    resultSnapshot: {},
+    settledAt: null,
+    settledBy: null,
+    settlementType: "FINAL" as const,
+    source: SOURCE,
+    stage: "PROPOSED" as const,
+    waiverApprovalId: null,
+    waiverTotalCents: 0n,
+    writeOffApprovalId: null,
+    writeOffTotalCents: 0n
+  };
+}
+
+function fakeDocumentTransaction() {
+  const timeline: string[] = [];
+  const tx = {
+    subscriptionClosureCase: {
+      async findUnique() {
+        return {
+          closureType: "NORMAL_COMPLETION",
+          contractId: UUIDS.contract,
+          currentSettlementRevisionId: null,
+          customerId: UUIDS.customer,
+          finalDisposition: "COMPLETE",
+          id: UUIDS.closureCase,
+          orderId: UUIDS.order,
+          physicalControlMode: "VOLUNTARY_RETURN",
+          returnHandoverWorkOrderId: UUIDS.handover,
+          status: "PREPARING_RETURN",
+          vehicleReturnId: UUIDS.vehicleReturn,
+          version: 0
+        };
+      }
+    },
+    subscriptionClosureCommandReceipt: {
+      async findUnique() {
+        return null;
+      }
+    },
+    contractESignTask: {
+      async findUnique() {
+        return null;
+      }
+    },
+    async $queryRaw(query: Prisma.Sql) {
+      const sql = query.strings.join("?");
+      if (sql.includes("transaction_isolation")) {
+        return [{ isolationLevel: "read committed", transactionId: "tx-1" }];
+      }
+      if (sql.includes("txid_current")) return [{ transactionId: "tx-1" }];
+      if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
+      if (sql.includes("clock_timestamp")) {
+        return [
+          {
+            clockTimestamp: new Date("2026-08-21T03:01:00.000Z"),
+            latestOccurredAt: new Date("2026-08-21T03:00:00.000Z")
+          }
+        ];
+      }
+      if (sql.includes("subscription_closure_current_document")) {
+        timeline.push("current-document-projection");
+        return [];
+      }
+      const table = extractTable(sql);
+      timeline.push(`authority-lock:${table}`);
+      return [{ id: String(query.values.at(-1)) }];
+    }
+  } as unknown as Prisma.TransactionClient;
+  return { timeline, tx };
+}
 
 function fakeTransaction(
   options: {

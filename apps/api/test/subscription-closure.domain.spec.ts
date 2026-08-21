@@ -87,7 +87,7 @@ describe("subscription closure domain contract", () => {
         finalDisposition: "COMPLETE",
         physicalControlMode: "VOLUNTARY_RETURN"
       }).PREPARING_RETURN
-    ).toEqual(["RETURN_INSPECTION", "PAUSED", "CANCELLED", "MANUAL_TAKEOVER"]);
+    ).toEqual(["RETURN_INSPECTION", "CANCELLED", "MANUAL_TAKEOVER"]);
     expect(() =>
       assertSubscriptionClosureTransition(
         {
@@ -170,5 +170,35 @@ describe("subscription closure domain contract", () => {
         }
       )
     ).toThrow(/escalation/i);
+  });
+
+  it("rejects history-free pause entry and every generic pause resume target", () => {
+    const normal = {
+      closureType: "NORMAL_COMPLETION",
+      finalDisposition: "COMPLETE",
+      physicalControlMode: "VOLUNTARY_RETURN"
+    } as const;
+    const recovery = {
+      closureType: "EARLY_TERMINATION",
+      finalDisposition: "TERMINATE",
+      physicalControlMode: "RECOVERY"
+    } as const;
+
+    expect(() => assertSubscriptionClosureTransition(normal, "PREPARING_RETURN", "PAUSED")).toThrow(
+      /transition/i
+    );
+    expect(() =>
+      assertSubscriptionClosureTransition(normal, "PAUSED", "PENDING_SETTLEMENT")
+    ).toThrow(/transition/i);
+    for (const target of [
+      "RECOVERY_APPROVAL_PENDING",
+      "RECOVERY_IN_PROGRESS",
+      "VEHICLE_SECURED",
+      "PENDING_SETTLEMENT"
+    ] as const) {
+      expect(() => assertSubscriptionClosureTransition(recovery, "PAUSED", target)).toThrow(
+        /transition/i
+      );
+    }
   });
 });

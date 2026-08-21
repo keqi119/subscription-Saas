@@ -70,6 +70,36 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     });
   });
 
+  it("derives collision-safe case numbers from the complete canonical source tuple", async () => {
+    const firstData = await fixture();
+    const secondData = await fixture();
+    const thirdData = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const sharedSourceId = randomUUID();
+    const firstCommand = {
+      ...createCaseCommand(firstData, "tuple-a"),
+      source: { id: sharedSourceId, key: "p0:tuple-a", type: "P0_TUPLE_A" }
+    };
+    const secondCommand = {
+      ...createCaseCommand(secondData, "tuple-b"),
+      source: { id: sharedSourceId, key: "p0:tuple-b", type: "P0_TUPLE_A" }
+    };
+    const thirdCommand = {
+      ...createCaseCommand(thirdData, "tuple-c"),
+      source: { id: sharedSourceId, key: "p0:tuple-a", type: "P0_TUPLE_B" }
+    };
+
+    const first = await readCommitted(prisma, (tx) => repository.createCase(tx, firstCommand));
+    const second = await readCommitted(prisma, (tx) => repository.createCase(tx, secondCommand));
+    const third = await readCommitted(prisma, (tx) => repository.createCase(tx, thirdCommand));
+    const replay = await readCommitted(prisma, (tx) => repository.createCase(tx, firstCommand));
+
+    expect(new Set([first.outcome.caseNo, second.outcome.caseNo, third.outcome.caseNo]).size).toBe(
+      3
+    );
+    expect(replay).toEqual({ outcome: first.outcome, wrote: false });
+  });
+
   it("rejects same-source payload drift and cross-command ownership", async () => {
     const data = await fixture();
     const repository = new SubscriptionClosureRepository();
@@ -127,6 +157,33 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       events: 0,
       receipts: 0
     });
+  });
+
+  it("rejects wrong typed work-order roles and recovery links on a voluntary profile", async () => {
+    const wrongRoleData = await fixture();
+    const wrongProfileData = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const recoveryInReturnRole = await createFixtureWorkOrder(prisma, wrongRoleData, "RECOVERY");
+    const recoveryOnVoluntary = await createFixtureWorkOrder(prisma, wrongProfileData, "RECOVERY");
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.createCase(tx, {
+          ...createCaseCommand(wrongRoleData, "wrong-return-work-order-type"),
+          returnAssetWorkOrderId: recoveryInReturnRole
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.createCase(tx, {
+          ...createCaseCommand(wrongProfileData, "recovery-link-voluntary-profile"),
+          recoveryAssetWorkOrderId: recoveryOnVoluntary
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH
+    );
   });
 
   it("persists governed transitions and the sole approved normal-to-recovery escalation", async () => {
@@ -200,6 +257,161 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
       ),
       SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT
     );
+  });
+
+  it("rejects pre-return and recovery-stage jumps from a history-free PAUSED row", async () => {
+    const normalData = await fixture();
+    const recoveryData = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const normal = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, createCaseCommand(normalData, "paused-normal"))
+    );
+    const recovery = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, {
+        ...createCaseCommand(recoveryData, "paused-recovery", "EARLY_TERMINATION"),
+        physicalControlMode: "RECOVERY"
+      })
+    );
+    await readCommitted(prisma, async (tx) => {
+      await tx.subscriptionClosureCase.updateMany({
+        data: { status: "PAUSED", version: { increment: 1 } },
+        where: { id: { in: [normal.outcome.id, recovery.outcome.id] } }
+      });
+    });
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendEvent(tx, {
+          actorId: normalData.actorId,
+          afterStatus: "PENDING_SETTLEMENT",
+          closureCaseId: normal.outcome.id,
+          detailSnapshot: { forbidden: "pre-return-to-settlement" },
+          eventType: "STATUS_TRANSITIONED",
+          expectedStatus: "PAUSED",
+          expectedVersion: 1,
+          occurredAt: NOW,
+          source: source("paused-normal-settlement")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT
+    );
+    for (const target of [
+      "RECOVERY_APPROVAL_PENDING",
+      "RECOVERY_IN_PROGRESS",
+      "VEHICLE_SECURED",
+      "PENDING_SETTLEMENT"
+    ] as const) {
+      await expectCode(
+        readCommitted(prisma, (tx) =>
+          repository.appendEvent(tx, {
+            actorId: recoveryData.actorId,
+            afterStatus: target,
+            closureCaseId: recovery.outcome.id,
+            detailSnapshot: { forbidden: `assessment-pause-to-${target}` },
+            eventType: "STATUS_TRANSITIONED",
+            expectedStatus: "PAUSED",
+            expectedVersion: 1,
+            occurredAt: NOW,
+            source: source(`paused-recovery-${target}`)
+          })
+        ),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT
+      );
+    }
+  });
+
+  it("rejects backdated and future event times against database history and clock", async () => {
+    const backdatedData = await fixture();
+    const futureData = await fixture();
+    const futureCreateData = await fixture();
+    const repository = new SubscriptionClosureRepository();
+    const backdated = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, createCaseCommand(backdatedData, "event-time-backdated"))
+    );
+    const future = await readCommitted(prisma, (tx) =>
+      repository.createCase(tx, createCaseCommand(futureData, "event-time-future"))
+    );
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendEvent(tx, {
+          actorId: backdatedData.actorId,
+          afterStatus: "PREPARING_RETURN",
+          closureCaseId: backdated.outcome.id,
+          detailSnapshot: { invalid: "before latest event" },
+          eventType: "NOTE_ADDED",
+          expectedStatus: "PREPARING_RETURN",
+          expectedVersion: 0,
+          occurredAt: new Date(NOW.getTime() - 1),
+          source: source("event-time-backdated-note")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendEvent(tx, {
+          actorId: futureData.actorId,
+          afterStatus: "PREPARING_RETURN",
+          closureCaseId: future.outcome.id,
+          detailSnapshot: { invalid: "after database clock" },
+          eventType: "NOTE_ADDED",
+          expectedStatus: "PREPARING_RETURN",
+          expectedVersion: 0,
+          occurredAt: new Date("2099-01-01T00:00:00.000Z"),
+          source: source("event-time-future-note")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.createCase(tx, {
+          ...createCaseCommand(futureCreateData, "event-time-future-create"),
+          effectiveAt: new Date("2099-01-01T00:00:00.000Z")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND
+    );
+  });
+
+  it("preflights the current FINAL/SETTLED authority before either terminal transition", async () => {
+    const repository = new SubscriptionClosureRepository();
+    for (const closureType of ["NORMAL_COMPLETION", "EARLY_TERMINATION"] as const) {
+      const data = await fixture();
+      const created = await readCommitted(prisma, (tx) =>
+        repository.createCase(
+          tx,
+          createCaseCommand(data, `terminal-preflight-${closureType}`, closureType)
+        )
+      );
+      await readCommitted(prisma, async (tx) => {
+        await tx.subscriptionClosureCase.update({
+          data: {
+            physicalControlledAt: NOW,
+            status: "PENDING_SETTLEMENT",
+            version: { increment: 1 }
+          },
+          where: { id: created.outcome.id }
+        });
+      });
+      await expectCode(
+        readCommitted(prisma, (tx) =>
+          repository.appendEvent(tx, {
+            actorId: data.actorId,
+            afterStatus: closureType === "NORMAL_COMPLETION" ? "COMPLETED" : "TERMINATED",
+            closureCaseId: created.outcome.id,
+            detailSnapshot: { invalid: "missing settled final authority" },
+            eventType: "STATUS_TRANSITIONED",
+            expectedStatus: "PENDING_SETTLEMENT",
+            expectedVersion: 1,
+            occurredAt: NOW,
+            source: source(`terminal-preflight-event-${closureType}`)
+          })
+        ),
+        SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT
+      );
+    }
   });
 
   it("rolls back case, event, audit callback, and receipt together", async () => {
@@ -322,6 +534,59 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     await expect(prisma.user.count({ where: { id: uncommittedUserId } })).resolves.toBe(0);
   });
 
+  it("fails document return/handover contention fast without a cycle and keeps each holder usable", async () => {
+    const repository = new SubscriptionClosureRepository();
+    for (const authority of ["vehicle_return", "vehicle_handover_work_order"] as const) {
+      const data = await fixture();
+      const created = await readCommitted(prisma, (tx) =>
+        repository.createCase(tx, createCaseCommand(data, `document-contention-${authority}`))
+      );
+      const holderEntered = deferred<void>();
+      const releaseHolder = deferred<void>();
+      let holderUsable = false;
+      const authorityId =
+        authority === "vehicle_return" ? data.vehicleReturnId : data.handoverWorkOrderId;
+      const holder = readCommitted(prisma, async (tx) => {
+        await repository.lockAuthorityRows(tx, [
+          { id: authorityId, mode: "UPDATE", table: authority }
+        ]);
+        holderEntered.resolve();
+        await releaseHolder.promise;
+        holderUsable = (await tx.subscriptionOrder.count({ where: { id: data.orderId } })) === 1;
+      });
+      void holder.catch(holderEntered.reject);
+      await holderEntered.promise;
+
+      const contender = settled(
+        readCommitted(prisma, (tx) =>
+          repository.appendDocumentRevision(
+            tx,
+            documentCommand(data, created.outcome.id, {
+              documentType: "RETURN_MANIFEST",
+              expectedVersion: 0,
+              key: `contended-${authority}`
+            })
+          )
+        )
+      );
+      const early = await settlesWithin(contender, 1_000);
+      try {
+        expect(early.finished).toBe(true);
+        if (!early.finished) throw new Error("Expected document authority NOWAIT result");
+        expectConflict(rejectedValue(early.value), SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
+      } finally {
+        releaseHolder.resolve();
+      }
+      await holder;
+      expect(holderUsable).toBe(true);
+      await expect(
+        prisma.subscriptionClosureDocumentRevision.count({
+          where: { closureCaseId: created.outcome.id }
+        })
+      ).resolves.toBe(0);
+    }
+  });
+
   it("keeps independent current document families and advances only the successor family", async () => {
     const data = await fixture();
     const repository = new SubscriptionClosureRepository();
@@ -335,6 +600,31 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     });
     const agreementR1 = await readCommitted(prisma, (tx) =>
       repository.appendDocumentRevision(tx, agreement)
+    );
+    const agreementReplay = await readCommitted(prisma, (tx) =>
+      repository.appendDocumentRevision(tx, agreement)
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendDocumentRevision(tx, {
+          ...agreement,
+          documentSnapshot: { drift: true }
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendSettlementRevision(tx, {
+          ...settlementCommand(data, created.outcome.id, {
+            expectedVersion: 1,
+            key: "document-cross-command",
+            stage: "PROPOSED"
+          }),
+          source: agreement.source
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT
     );
     const manifestR1 = await readCommitted(prisma, (tx) =>
       repository.appendDocumentRevision(
@@ -361,7 +651,20 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     );
     const loaded = await readCommitted(prisma, (tx) => repository.getCase(tx, created.outcome.id));
 
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendDocumentRevision(tx, {
+          ...agreement,
+          expectedCurrentRevisionId: agreementR1.outcome.id,
+          expectedVersion: 3,
+          source: source("agreement-stale-current")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT
+    );
+
     expect(agreementR1.outcome.revisionNumber).toBe(1);
+    expect(agreementReplay).toEqual({ outcome: agreementR1.outcome, wrote: false });
     expect(manifestR1.outcome.revisionNumber).toBe(1);
     expect(agreementR2.outcome).toMatchObject({
       revisionNumber: 2,
@@ -392,6 +695,16 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     const first = await readCommitted(prisma, (tx) =>
       repository.appendSettlementRevision(tx, proposed)
     );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendSettlementRevision(tx, {
+          ...proposed,
+          expectedVersion: 1,
+          source: source("settlement-stale-current")
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT
+    );
     const secondCommand: AppendSubscriptionClosureSettlementCommand = {
       ...proposed,
       expectedCurrentRevisionId: first.outcome.id,
@@ -406,6 +719,15 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     );
     const replay = await readCommitted(prisma, (tx) =>
       repository.appendSettlementRevision(tx, secondCommand)
+    );
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendSettlementRevision(tx, {
+          ...secondCommand,
+          resultSnapshot: { drift: true }
+        })
+      ),
+      SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT
     );
     const loaded = await readCommitted(prisma, (tx) => repository.getCase(tx, created.outcome.id));
 
@@ -531,6 +853,8 @@ async function createFixture(prisma: PrismaService) {
   const marker = `P0R${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const fixture = {
     actorId: randomUUID(),
+    assetWorkOrderIds: [] as string[],
+    closureCaseIds: [] as string[],
     contractESignTaskId: randomUUID(),
     contractId: randomUUID(),
     customerId: randomUUID(),
@@ -608,6 +932,7 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
       where: { orderId: fixture.orderId }
     });
     const ids = cases.map(({ id }) => id);
+    fixture.closureCaseIds.push(...ids);
     if (ids.length > 0) {
       await tx.subscriptionClosureCommandReceipt.deleteMany({
         where: { closureCaseId: { in: ids } }
@@ -629,6 +954,7 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
       await tx.subscriptionClosureCase.deleteMany({ where: { id: { in: ids } } });
     }
     await tx.contractESignTask.deleteMany({ where: { id: fixture.contractESignTaskId } });
+    await tx.assetWorkOrder.deleteMany({ where: { id: { in: fixture.assetWorkOrderIds } } });
     await tx.fileObject.deleteMany({
       where: { id: { in: [fixture.sourceFileId, fixture.signedFileId] } }
     });
@@ -643,17 +969,75 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
   });
 }
 
+async function createFixtureWorkOrder(
+  prisma: PrismaService,
+  fixture: Fixture,
+  workOrderType: "RETURN_INBOUND" | "RECOVERY" | "RECONDITIONING"
+) {
+  const id = randomUUID();
+  fixture.assetWorkOrderIds.push(id);
+  await prisma.assetWorkOrder.create({
+    data: {
+      authoritySnapshot: { marker: fixture.marker, workOrderType },
+      contractId: fixture.contractId,
+      createSourceId: randomUUID(),
+      createSourceKey: `p0:${fixture.marker}:${workOrderType}`,
+      createSourceType: "P0_REPOSITORY_TEST",
+      createdBy: fixture.actorId,
+      customerId: fixture.customerId,
+      id,
+      orderId: fixture.orderId,
+      vehicleId: fixture.vehicleId,
+      workOrderNo: `AW-${fixture.marker}-${workOrderType}`,
+      workOrderType
+    }
+  });
+  return id;
+}
+
 async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fixture[]) {
   if (fixtures.length === 0) return 0;
   const orderIds = fixtures.map(({ orderId }) => orderId);
   const actorIds = fixtures.map(({ actorId }) => actorId);
+  const assetWorkOrderIds = fixtures.flatMap(({ assetWorkOrderIds }) => assetWorkOrderIds);
+  const closureCaseIds = fixtures.flatMap(({ closureCaseIds }) => closureCaseIds);
+  const contractIds = fixtures.map(({ contractId }) => contractId);
+  const esignIds = fixtures.map(({ contractESignTaskId }) => contractESignTaskId);
+  const fileIds = fixtures.flatMap(({ signedFileId, sourceFileId }) => [
+    signedFileId,
+    sourceFileId
+  ]);
+  const handoverIds = fixtures.map(({ handoverWorkOrderId }) => handoverWorkOrderId);
   const markerIds = fixtures.map(({ marker }) => marker);
-  const [cases, users, customers] = await Promise.all([
+  const returnIds = fixtures.map(({ vehicleReturnId }) => vehicleReturnId);
+  const vehicleIds = fixtures.map(({ vehicleId }) => vehicleId);
+  const counts = await Promise.all([
     prisma.subscriptionClosureCase.count({ where: { orderId: { in: orderIds } } }),
+    prisma.subscriptionClosureEvent.count({ where: { closureCaseId: { in: closureCaseIds } } }),
+    prisma.subscriptionClosureCommandReceipt.count({
+      where: { closureCaseId: { in: closureCaseIds } }
+    }),
+    prisma.subscriptionClosureCurrentDocument.count({
+      where: { closureCaseId: { in: closureCaseIds } }
+    }),
+    prisma.subscriptionClosureDocumentRevision.count({
+      where: { closureCaseId: { in: closureCaseIds } }
+    }),
+    prisma.subscriptionClosureSettlementRevision.count({
+      where: { closureCaseId: { in: closureCaseIds } }
+    }),
+    prisma.assetWorkOrder.count({ where: { id: { in: assetWorkOrderIds } } }),
+    prisma.contractESignTask.count({ where: { id: { in: esignIds } } }),
+    prisma.fileObject.count({ where: { id: { in: fileIds } } }),
+    prisma.vehicleReturn.count({ where: { id: { in: returnIds } } }),
+    prisma.vehicleHandoverWorkOrder.count({ where: { id: { in: handoverIds } } }),
+    prisma.subscriptionOrder.count({ where: { id: { in: orderIds } } }),
+    prisma.contract.count({ where: { id: { in: contractIds } } }),
+    prisma.vehicle.count({ where: { id: { in: vehicleIds } } }),
     prisma.user.count({ where: { id: { in: actorIds } } }),
     prisma.customer.count({ where: { customerNo: { in: markerIds.map((id) => `C-${id}`) } } })
   ]);
-  return cases + users + customers;
+  return counts.reduce((total, count) => total + count, 0);
 }
 
 async function countCaseFacts(prisma: PrismaService, orderId: string) {

@@ -225,6 +225,7 @@ export type SubscriptionClosureAuthorityTable =
   | "asset_work_order"
   | "asset_owner"
   | "asset_work_order_evidence"
+  | "subscription_closure_current_document"
   | "subscription_closure_document_revision"
   | "vehicle_operational_restriction"
   | "subscription_closure_settlement_revision"
@@ -323,6 +324,7 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   business_exception_approval: 100,
   vehicle_handover_work_order: 110,
   asset_work_order: 120,
+  subscription_closure_current_document: 129,
   asset_owner: 140,
   asset_work_order_evidence: 145,
   subscription_closure_document_revision: 130,
@@ -1254,9 +1256,25 @@ export class SubscriptionClosureRepository {
     try {
       const rankedUnion = normalized.map((lock) => {
         const lockedRow =
-          lock.mode === "UPDATE"
-            ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR UPDATE NOWAIT`
-            : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR SHARE NOWAIT`;
+          lock.table === "subscription_closure_current_document"
+            ? lock.mode === "UPDATE"
+              ? Prisma.sql`
+                  SELECT "closure_case_id" AS "id"
+                  FROM "subscription_closure_current_document"
+                  WHERE "closure_case_id" = ${lock.id}::uuid
+                    AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
+                  FOR UPDATE NOWAIT
+                `
+              : Prisma.sql`
+                  SELECT "closure_case_id" AS "id"
+                  FROM "subscription_closure_current_document"
+                  WHERE "closure_case_id" = ${lock.id}::uuid
+                    AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
+                  FOR SHARE NOWAIT
+                `
+            : lock.mode === "UPDATE"
+              ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR UPDATE NOWAIT`
+              : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR SHARE NOWAIT`;
         return Prisma.sql`
           SELECT ${lock.table}::text AS "authorityTable",
                  ranked_authority."id"::text AS "requestedId"

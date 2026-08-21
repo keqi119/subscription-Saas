@@ -368,8 +368,8 @@ describe("SubscriptionClosureService recovery execution approval", () => {
       closureCaseId: IDS.case,
       orderId: IDS.order,
       recoveryAssetWorkOrderId: "20000000-0000-4000-8000-000000000021",
-      recoveryAuthorityRevisionId: "20000000-0000-4000-8000-000000000022",
-      recoveryAuthoritySnapshotHash: "a".repeat(64),
+      recoveryAuthorityRevisionId: harness.chain.ids.archivedRevisionId,
+      recoveryAuthoritySnapshotHash: harness.chain.documentHash,
       recoveryContextSnapshotHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       vehicleId: IDS.vehicle
     });
@@ -633,7 +633,7 @@ describe("SubscriptionClosureService recovery execution evidence and costs", () 
           closureCaseId: IDS.case,
           recoveryApprovalId: "20000000-0000-4000-8000-000000000020",
           recoveryAssetWorkOrderId: harness.workOrder.id,
-          recoveryAuthorityRevisionId: "20000000-0000-4000-8000-000000000022"
+          recoveryAuthorityRevisionId: harness.chain.ids.archivedRevisionId
         }),
         workOrderId: harness.workOrder.id
       }),
@@ -932,7 +932,6 @@ function recoveryApprovalHarness(
   options: { decision?: "APPROVED" | "REJECTED"; futureOnly?: boolean } = {}
 ) {
   const plannedWorkOrderId = "20000000-0000-4000-8000-000000000021";
-  const revisionId = "20000000-0000-4000-8000-000000000022";
   const caseRow = {
     caseNo: "CLS-1",
     closureType: "NORMAL_COMPLETION",
@@ -950,35 +949,6 @@ function recoveryApprovalHarness(
   const assessment = {
     detailSnapshot: { plannedRecoveryAssetWorkOrderId: plannedWorkOrderId }
   };
-  const currentDocument = {
-    documentRevision: {
-      archivedAt: new Date("2026-09-08T02:00:00.000Z"),
-      archivedBy: IDS.actor,
-      contractESignTaskId: "20000000-0000-4000-8000-000000000026",
-      documentSnapshot: {
-        caseNo: "CLS-1",
-        closureCaseId: IDS.case,
-        contractId: caseRow.contractId,
-        customerId: IDS.customer,
-        documentType: "RECOVERY_AUTHORITY",
-        finalDisposition: "TERMINATE",
-        orderId: IDS.order,
-        physicalControlMode: "RECOVERY",
-        recoveryAssetWorkOrderId: plannedWorkOrderId,
-        recoveryWorkOrderType: "RECOVERY",
-        vehicleId: IDS.vehicle,
-        vehicleReturnId: IDS.vehicleReturn
-      },
-      documentSnapshotHash: "a".repeat(64),
-      documentType: "RECOVERY_AUTHORITY",
-      generatedBy: IDS.actor,
-      id: revisionId,
-      signedFileId: "20000000-0000-4000-8000-000000000027",
-      signedBy: IDS.actor,
-      sourceFileId: "20000000-0000-4000-8000-000000000028",
-      stage: "ARCHIVED"
-    }
-  };
   const approvalRow = {
     id: "20000000-0000-4000-8000-000000000020",
     requestedBy: IDS.actor,
@@ -992,9 +962,9 @@ function recoveryApprovalHarness(
     businessExceptionApproval: { findUnique: vi.fn(async () => approvalRow) },
     subscriptionClosureCase: { findUnique: vi.fn(async () => caseRow) },
     subscriptionClosureCommandReceipt: { findUnique: vi.fn(async () => null) },
-    subscriptionClosureCurrentDocument: { findUnique: vi.fn(async () => currentDocument) },
     subscriptionClosureEvent: { findFirst: vi.fn(async () => assessment) }
   };
+  const chain = attachUnitRecoveryAuthorityChain(tx, caseRow, assessment, plannedWorkOrderId);
   let resolvedAuthority: unknown;
   const accountingCapability = Object.freeze({ accountingCapability: true });
   const preparedCapability = Object.freeze({ preparedCapability: true });
@@ -1081,6 +1051,7 @@ function recoveryApprovalHarness(
     get resolvedAuthority() {
       return resolvedAuthority;
     },
+    chain,
     repository,
     service,
     tx
@@ -1109,19 +1080,8 @@ function recoveryExecutionHarness(options: { extension?: boolean; validApproval?
     version: 5
   };
   const plannedWorkOrderId = "20000000-0000-4000-8000-000000000021";
-  const revision = {
-    archivedAt: new Date("2026-09-08T02:00:00.000Z"),
-    documentSnapshot: {
-      closureCaseId: IDS.case,
-      orderId: IDS.order,
-      recoveryAssetWorkOrderId: plannedWorkOrderId,
-      recoveryWorkOrderType: "RECOVERY",
-      vehicleId: IDS.vehicle
-    },
-    documentSnapshotHash: "a".repeat(64),
-    documentType: "RECOVERY_AUTHORITY",
-    id: "20000000-0000-4000-8000-000000000022",
-    stage: "ARCHIVED"
+  const assessment = {
+    detailSnapshot: { plannedRecoveryAssetWorkOrderId: plannedWorkOrderId }
   };
   const tx = {
     ...recoveryApprovalContextTx(plannedWorkOrderId),
@@ -1138,20 +1098,14 @@ function recoveryExecutionHarness(options: { extension?: boolean; validApproval?
           : null;
       })
     },
-    subscriptionClosureCurrentDocument: {
-      findUnique: vi.fn(async () => ({ documentRevision: revision }))
-    },
-    subscriptionClosureEvent: {
-      findFirst: vi.fn(async () => ({
-        detailSnapshot: { plannedRecoveryAssetWorkOrderId: plannedWorkOrderId }
-      }))
-    },
+    subscriptionClosureEvent: { findFirst: vi.fn(async () => assessment) },
     subscriptionContractSegment: {
       findFirst: vi.fn(async () =>
         options.extension ? { id: "20000000-0000-4000-8000-000000000025", status: "ACTIVE" } : null
       )
     }
   };
+  const chain = attachUnitRecoveryAuthorityChain(tx, caseRow, assessment, plannedWorkOrderId);
   const proof = (key: string) => Object.freeze({ key });
   const repository = {
     appendPreparedEventInTransaction: vi.fn(async (_tx, _session, eventCommand) => {
@@ -1169,6 +1123,8 @@ function recoveryExecutionHarness(options: { extension?: boolean; validApproval?
     }),
     bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
     createAuthoritySessionInTransaction: vi.fn(() => session),
+    lockAuthorityRows: vi.fn(async () => undefined),
+    lockSourceOwnership: vi.fn(async () => undefined),
     prepareAuthorityInTransaction: vi.fn(async () => {
       timeline.push("coordinator:ranked-pass");
       return new Map([
@@ -1247,7 +1203,7 @@ function recoveryExecutionHarness(options: { extension?: boolean; validApproval?
     undefined,
     accounting as never
   );
-  return { accounting, operations, repository, service, session, timeline, tx };
+  return { accounting, chain, operations, repository, service, session, timeline, tx };
 }
 
 function recoveryEvidenceHarness() {
@@ -1278,16 +1234,41 @@ function recoveryEvidenceHarness() {
     vehicleId: IDS.vehicle,
     workOrderType: "RECOVERY"
   };
+  const assessment = {
+    detailSnapshot: { plannedRecoveryAssetWorkOrderId: workOrder.id }
+  };
+  const approvalRef: {
+    current?: {
+      decidedAt: Date;
+      decidedBy: string;
+      id: string;
+      requestedBy: string;
+      subjectSnapshot: Readonly<Record<string, unknown>>;
+      subjectSnapshotHash: string;
+    };
+  } = {};
+  const tx = {
+    ...recoveryApprovalContextTx(workOrder.id),
+    assetWorkOrder: { findUnique: vi.fn(async () => workOrder) },
+    businessExceptionApproval: {
+      findFirst: vi.fn(async () => approvalRef.current),
+      findUnique: vi.fn(async () => approvalRef.current)
+    },
+    subscriptionClosureCase: { findUnique: vi.fn(async () => caseRow) },
+    subscriptionClosureCommandReceipt: { findUnique: vi.fn(async () => null) },
+    subscriptionClosureEvent: { findFirst: vi.fn(async () => assessment) }
+  };
+  const chain = attachUnitRecoveryAuthorityChain(tx, caseRow, assessment, workOrder.id);
   const recoveryAuthority = {
     closureCaseId: IDS.case,
     orderId: IDS.order,
     recoveryAssetWorkOrderId: workOrder.id,
-    recoveryAuthorityRevisionId: "20000000-0000-4000-8000-000000000022",
-    recoveryAuthoritySnapshotHash: "a".repeat(64),
+    recoveryAuthorityRevisionId: chain.ids.archivedRevisionId,
+    recoveryAuthoritySnapshotHash: chain.documentHash,
     recoveryContextSnapshotHash: recoveryApprovalContextHash(workOrder.id),
     vehicleId: IDS.vehicle
   };
-  const approval = {
+  approvalRef.current = {
     decidedAt: new Date("2026-09-08T05:00:00.000Z"),
     decidedBy: IDS.actor,
     id: "20000000-0000-4000-8000-000000000020",
@@ -1296,38 +1277,6 @@ function recoveryEvidenceHarness() {
     subjectSnapshotHash: createHash("sha256")
       .update(JSON.stringify(recoveryAuthority))
       .digest("hex")
-  };
-  const revision = {
-    archivedAt: new Date("2026-09-08T04:00:00.000Z"),
-    documentSnapshot: {
-      closureCaseId: IDS.case,
-      orderId: IDS.order,
-      recoveryAssetWorkOrderId: workOrder.id,
-      recoveryWorkOrderType: "RECOVERY",
-      vehicleId: IDS.vehicle
-    },
-    documentSnapshotHash: "a".repeat(64),
-    documentType: "RECOVERY_AUTHORITY",
-    id: recoveryAuthority.recoveryAuthorityRevisionId,
-    stage: "ARCHIVED"
-  };
-  const tx = {
-    ...recoveryApprovalContextTx(workOrder.id),
-    assetWorkOrder: { findUnique: vi.fn(async () => workOrder) },
-    businessExceptionApproval: {
-      findFirst: vi.fn(async () => approval),
-      findUnique: vi.fn(async () => approval)
-    },
-    subscriptionClosureCase: { findUnique: vi.fn(async () => caseRow) },
-    subscriptionClosureCommandReceipt: { findUnique: vi.fn(async () => null) },
-    subscriptionClosureCurrentDocument: {
-      findUnique: vi.fn(async () => ({ documentRevision: revision }))
-    },
-    subscriptionClosureEvent: {
-      findFirst: vi.fn(async () => ({
-        detailSnapshot: { plannedRecoveryAssetWorkOrderId: workOrder.id }
-      }))
-    }
   };
   const proof = (key: string) => Object.freeze({ key });
   const repository = {
@@ -1374,7 +1323,7 @@ function recoveryEvidenceHarness() {
     undefined,
     accounting as never
   );
-  return { accounting, caseRow, operations, repository, service, session, tx, workOrder };
+  return { accounting, caseRow, chain, operations, repository, service, session, tx, workOrder };
 }
 
 function recoveryApprovalContextTx(
@@ -1446,4 +1395,310 @@ function recoveryApprovalContextHash(plannedWorkOrderId: string) {
       })
     )
     .digest("hex");
+}
+
+function attachUnitRecoveryAuthorityChain(
+  tx: Record<string, unknown> & {
+    subscriptionClosureCommandReceipt: Record<string, unknown>;
+    subscriptionClosureEvent: Record<string, unknown>;
+  },
+  caseRow: Readonly<{
+    caseNo: string;
+    contractId: string;
+    customerId: string;
+    id: string;
+    orderId: string;
+    vehicleId: string;
+    vehicleReturnId: string;
+  }>,
+  assessment: Readonly<Record<string, unknown>>,
+  plannedWorkOrderId: string
+) {
+  const idempotencyKey = "unit-authority";
+  const stableId = (label: string) => {
+    const value = `${caseRow.id}\u0000${idempotencyKey}\u0000${label}`;
+    const hex = createHash("sha256").update(`recovery-authority\u0000${value}`).digest("hex");
+    const variant = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  };
+  const ids = {
+    archivedRevisionId: stableId("revision-archived"),
+    esignEnvelopeId: stableId("esign-envelope"),
+    esignProviderTaskId: stableId("esign-provider-task"),
+    esignTaskId: stableId("esign-task"),
+    generatedRevisionId: stableId("revision-generated"),
+    signedFileId: stableId("file-signed"),
+    signedRevisionId: stableId("revision-signed"),
+    sourceFileId: stableId("file-source")
+  };
+  const sources = ["generated", "signed", "archived"].map((stage) => ({
+    id: caseRow.id,
+    key: `recovery-authority:${idempotencyKey}:${stage}`,
+    type: "SUBSCRIPTION_CLOSURE"
+  }));
+  const lifecycleAt = new Date("2026-09-08T02:00:00.000Z");
+  const documentSnapshot = {
+    caseNo: caseRow.caseNo,
+    closureCaseId: caseRow.id,
+    contractId: caseRow.contractId,
+    customerId: caseRow.customerId,
+    documentType: "RECOVERY_AUTHORITY",
+    finalDisposition: "TERMINATE",
+    orderId: caseRow.orderId,
+    physicalControlMode: "RECOVERY",
+    recoveryAssetWorkOrderId: plannedWorkOrderId,
+    recoveryWorkOrderType: "RECOVERY",
+    vehicleId: caseRow.vehicleId,
+    vehicleReturnId: caseRow.vehicleReturnId
+  };
+  const documentCanonical = canonicalSubscriptionClosureJson(documentSnapshot);
+  const documentHash = createHash("sha256").update(documentCanonical).digest("hex");
+  const signedEnvelope = {
+    completedAt: lifecycleAt,
+    documentSnapshotHash: documentHash,
+    documentType: "RECOVERY_AUTHORITY",
+    lifecycleSources: sources,
+    signedBy: IDS.actor,
+    signedFileId: ids.signedFileId,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId
+  };
+  const signedCanonical = canonicalSubscriptionClosureJson(signedEnvelope);
+  const signedFileHash = createHash("sha256").update(signedCanonical).digest("hex");
+  const commonCommand = {
+    actorId: IDS.actor,
+    closureCaseId: caseRow.id,
+    contractESignTaskId: ids.esignTaskId,
+    documentSnapshot,
+    documentType: "RECOVERY_AUTHORITY",
+    generatedAt: lifecycleAt,
+    handoverWorkOrderId: null,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId,
+    vehicleReturnId: null
+  };
+  const commands = [
+    {
+      ...commonCommand,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: ids.generatedRevisionId,
+      expectedCurrentRevisionId: null,
+      expectedVersion: 0,
+      signedAt: null,
+      signedBy: null,
+      signedFileHash: null,
+      signedFileId: null,
+      source: sources[0],
+      stage: "GENERATED"
+    },
+    {
+      ...commonCommand,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: ids.signedRevisionId,
+      expectedCurrentRevisionId: ids.generatedRevisionId,
+      expectedVersion: 1,
+      signedAt: lifecycleAt,
+      signedBy: IDS.actor,
+      signedFileHash,
+      signedFileId: ids.signedFileId,
+      source: sources[1],
+      stage: "SIGNED"
+    },
+    {
+      ...commonCommand,
+      archivedAt: lifecycleAt,
+      archivedBy: IDS.actor,
+      documentRevisionId: ids.archivedRevisionId,
+      expectedCurrentRevisionId: ids.signedRevisionId,
+      expectedVersion: 2,
+      signedAt: lifecycleAt,
+      signedBy: IDS.actor,
+      signedFileHash,
+      signedFileId: ids.signedFileId,
+      source: sources[2],
+      stage: "ARCHIVED"
+    }
+  ] as const;
+  const revisions = commands.map((command, index) => ({
+    archivedAt: command.archivedAt,
+    archivedBy: command.archivedBy,
+    closureCaseId: caseRow.id,
+    contractESignTaskId: ids.esignTaskId,
+    createdAt: lifecycleAt,
+    documentSnapshot,
+    documentSnapshotHash: documentHash,
+    documentType: "RECOVERY_AUTHORITY",
+    generatedAt: lifecycleAt,
+    generatedBy: IDS.actor,
+    handoverWorkOrderId: null,
+    id: command.documentRevisionId,
+    revisionNumber: index + 1,
+    signedAt: command.signedAt,
+    signedBy: command.signedBy,
+    signedFileHash: command.signedFileHash,
+    signedFileId: command.signedFileId,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId,
+    sourceId: caseRow.id,
+    sourceKey: sources[index]!.key,
+    sourceType: "SUBSCRIPTION_CLOSURE",
+    stage: command.stage,
+    supersedesRevisionId: index === 0 ? null : commands[index - 1]!.documentRevisionId,
+    vehicleReturnId: null
+  }));
+  const outcome = (revision: (typeof revisions)[number]) => ({
+    archivedAt: revision.archivedAt?.toISOString() ?? null,
+    archivedBy: revision.archivedBy,
+    closureCaseId: revision.closureCaseId,
+    contractESignTaskId: revision.contractESignTaskId,
+    createdAt: revision.createdAt.toISOString(),
+    documentSnapshot: revision.documentSnapshot,
+    documentSnapshotHash: revision.documentSnapshotHash,
+    documentType: revision.documentType,
+    generatedAt: revision.generatedAt.toISOString(),
+    generatedBy: revision.generatedBy,
+    handoverWorkOrderId: revision.handoverWorkOrderId,
+    id: revision.id,
+    revisionNumber: revision.revisionNumber,
+    signedAt: revision.signedAt?.toISOString() ?? null,
+    signedBy: revision.signedBy,
+    signedFileHash: revision.signedFileHash,
+    signedFileId: revision.signedFileId,
+    source: {
+      id: revision.sourceId,
+      key: revision.sourceKey,
+      type: revision.sourceType
+    },
+    sourceFileHash: revision.sourceFileHash,
+    sourceFileId: revision.sourceFileId,
+    stage: revision.stage,
+    supersedesRevisionId: revision.supersedesRevisionId,
+    vehicleReturnId: revision.vehicleReturnId
+  });
+  const events = revisions.map((revision, index) => ({
+    actorId: IDS.actor,
+    afterStatus: "RECOVERY_ASSESSMENT_PENDING",
+    beforeStatus: "RECOVERY_ASSESSMENT_PENDING",
+    closureCaseId: caseRow.id,
+    detailSnapshot: {
+      documentRevisionId: revision.id,
+      documentType: "RECOVERY_AUTHORITY",
+      revisionNumber: index + 1
+    },
+    eventType: "DOCUMENT_REVISION_CREATED",
+    id: stableId(`event-${index}`),
+    occurredAt: new Date(lifecycleAt.getTime() + index + 1),
+    recordedAt: lifecycleAt,
+    sequence: index + 2,
+    sourceId: caseRow.id,
+    sourceKey: sources[index]!.key,
+    sourceType: "SUBSCRIPTION_CLOSURE"
+  }));
+  const receipts = revisions.map((revision, index) => ({
+    actorId: IDS.actor,
+    closureCaseId: caseRow.id,
+    commandType: "CREATE_DOCUMENT_REVISION",
+    eventId: events[index]!.id,
+    outcomeSnapshot: outcome(revision),
+    payloadHash: createHash("sha256")
+      .update(canonicalSubscriptionClosureJson(commands[index]))
+      .digest("hex"),
+    payloadSnapshot: commands[index],
+    sourceId: caseRow.id,
+    sourceKey: sources[index]!.key,
+    sourceType: "SUBSCRIPTION_CLOSURE"
+  }));
+  const audits = events.map((event, index) => ({
+    action: "CREATE",
+    afterSnapshot: {
+      action: "CREATE_DOCUMENT_REVISION",
+      closureCaseId: caseRow.id,
+      eventId: event.id,
+      outcome: outcome(revisions[index]!),
+      source: sources[index]
+    },
+    beforeSnapshot: null,
+    createdAt: lifecycleAt,
+    entityId: event.id,
+    entityType: "subscription_closure_event",
+    id: stableId(`audit-${index}`),
+    ipAddress: null,
+    module: "subscription_closure",
+    operatorId: IDS.actor,
+    userAgent: null
+  }));
+  const currentDocument = {
+    closureCaseId: caseRow.id,
+    documentRevision: revisions[2],
+    documentRevisionId: ids.archivedRevisionId,
+    documentType: "RECOVERY_AUTHORITY",
+    updatedBy: IDS.actor
+  };
+  tx.subscriptionClosureDocumentRevision = { findMany: vi.fn(async () => revisions) };
+  tx.subscriptionClosureCurrentDocument = { findUnique: vi.fn(async () => currentDocument) };
+  tx.fileObject = {
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+      const source = where.id === ids.sourceFileId;
+      if (!source && where.id !== ids.signedFileId) return null;
+      return {
+        bucket: "subscription-closure",
+        id: where.id,
+        mimeType: "application/json",
+        objectKey: source
+          ? `subscription-closure/${caseRow.id}/${ids.generatedRevisionId}-recovery-authority.json`
+          : `subscription-closure/${caseRow.id}/${ids.signedRevisionId}-recovery-authority.signed.json`,
+        originalName: source
+          ? `${caseRow.caseNo}-${ids.generatedRevisionId}-recovery-authority.json`
+          : `${caseRow.caseNo}-${ids.signedRevisionId}-recovery-authority.signed.json`,
+        sizeBytes: BigInt(Buffer.byteLength(source ? documentCanonical : signedCanonical)),
+        uploadedBy: IDS.actor
+      };
+    })
+  };
+  tx.contractESignTask = {
+    findUnique: vi.fn(async () => ({
+      completedAt: lifecycleAt,
+      contractId: caseRow.contractId,
+      customerId: caseRow.customerId,
+      deletedAt: null,
+      documentObjectKey: `subscription-closure/${caseRow.id}/${ids.generatedRevisionId}-recovery-authority.json`,
+      documentType: "DELIVERY_HANDOVER",
+      id: ids.esignTaskId,
+      orderId: caseRow.orderId,
+      provider: "OTHER",
+      providerEnvelopeId: ids.esignEnvelopeId,
+      providerTaskId: ids.esignProviderTaskId,
+      requestSnapshot: {
+        archivedRevisionId: ids.archivedRevisionId,
+        documentSnapshotHash: documentHash,
+        documentType: "RECOVERY_AUTHORITY",
+        generatedRevisionId: ids.generatedRevisionId,
+        lifecycleSources: sources,
+        signedRevisionId: ids.signedRevisionId,
+        sourceFileHash: documentHash,
+        sourceFileId: ids.sourceFileId
+      },
+      responseSnapshot: {
+        completedAt: lifecycleAt,
+        completedBy: IDS.actor,
+        providerEnvelopeId: ids.esignEnvelopeId,
+        providerTaskId: ids.esignProviderTaskId,
+        signedFileHash,
+        signedFileId: ids.signedFileId
+      },
+      signedDocumentObjectKey: `subscription-closure/${caseRow.id}/${ids.signedRevisionId}-recovery-authority.signed.json`,
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourceId: caseRow.id,
+      sourceKey: sources[2]!.key,
+      sourceType: "SUBSCRIPTION_CLOSURE",
+      taskStatus: "COMPLETED"
+    }))
+  };
+  tx.subscriptionClosureCommandReceipt.findMany = vi.fn(async () => receipts);
+  tx.subscriptionClosureEvent.findMany = vi.fn(async () => events);
+  tx.subscriptionClosureEvent.findFirst = vi.fn(async () => assessment);
+  tx.auditLog = { findMany: vi.fn(async () => audits) };
+  return { currentDocument, documentHash, ids };
 }

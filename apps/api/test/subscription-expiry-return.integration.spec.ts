@@ -2090,7 +2090,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   });
 
-  it("requires live snapshot-bound recovery approval and execution evidence", async () => {
+  it("rejects raw legacy recovery authority despite snapshot-bound approval and evidence", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
     const requesterId = randomUUID();
     const expiry = createGovernedExpiryService(prisma);
@@ -2894,11 +2894,14 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           {}
         )
       ]);
-      expect(competingModes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
-      expect(competingModes.filter(({ status }) => status === "rejected")).toHaveLength(1);
+      expect(competingModes.filter(({ status }) => status === "fulfilled")).toHaveLength(0);
+      expect(competingModes.filter(({ status }) => status === "rejected")).toHaveLength(2);
       expect(competingModes[0]).toMatchObject({
-        status: "fulfilled",
-        value: { vehicleReturnId: closureCase.vehicleReturnId }
+        reason: {
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        },
+        status: "rejected"
       });
       expect(competingModes[1]).toMatchObject({
         reason: {
@@ -2907,45 +2910,6 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         },
         status: "rejected"
       });
-      await expect(
-        prisma.vehicleSubscriptionPeriod.findFirstOrThrow({ where: { orderId: fixture.orderId } })
-      ).resolves.toMatchObject({ endReason: "RECOVERY_CONFIRMED" });
-      await expect(
-        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } })
-      ).resolves.toMatchObject({ status: "RETURN_INSPECTION" });
-      const recoveryTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
-      expect(recoveryTruth[4]).toMatchObject({
-        remark: "vehicle secured",
-        returnMileageKm: 1300,
-        returnStatus: "CONFIRMED",
-        returnType: "EARLY_TERMINATION",
-        returnedAt: occurredAt
-      });
-      expect(recoveryTruth[7]).toEqual([
-        expect.objectContaining({ mileageKm: 1300, sourceType: "RETURN_CONFIRMATION" })
-      ]);
-      expect(recoveryTruth[11]).toHaveLength(2);
-      expect(recoveryTruth[11]).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            releaseSourceId: closureCase.id,
-            releaseSourceKey: "recovery-restriction-secured-release",
-            releaseSourceType: "SUBSCRIPTION_CLOSURE",
-            restrictionType: "RECOVERY_IN_PROGRESS",
-            startSourceId: closureCase.id,
-            startSourceKey: "recovery-restriction",
-            startSourceType: "SUBSCRIPTION_CLOSURE",
-            status: "RELEASED"
-          }),
-          expect.objectContaining({
-            restrictionType: "RETURN_INSPECTION_PENDING",
-            startSourceId: closureCase.id,
-            startSourceKey: "return-inspection-restriction",
-            startSourceType: "SUBSCRIPTION_CLOSURE",
-            status: "ACTIVE"
-          })
-        ])
-      );
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
       await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
@@ -3169,6 +3133,290 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ...authority,
         wrote: false
       });
+      const archivedAuthorityRow =
+        await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
+          where: { id: authority.archivedRevisionId }
+        });
+      const authorityLockTargets = [
+        { id: authority.generatedRevisionId, kind: "REVISION" as const },
+        { id: archivedAuthorityRow.sourceFileId, kind: "FILE" as const },
+        { id: authority.signedFileId, kind: "FILE" as const },
+        { id: archivedAuthorityRow.contractESignTaskId, kind: "ESIGN" as const },
+        { id: assessedCase.id, kind: "CURRENT_POINTER" as const }
+      ];
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.archiveRecoveryAuthority(authorityCommand),
+        fixture,
+        assessedCase.id
+      );
+      const generatedAuthorityReceipt =
+        await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
+          where: {
+            closureCaseId: assessedCase.id,
+            sourceKey: "recovery-authority:task-6-recovery-authority:generated"
+          }
+        });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.subscriptionClosureCommandReceipt.update({
+          data: { payloadHash: "f".repeat(64) },
+          where: { id: generatedAuthorityReceipt.id }
+        });
+      });
+      await expect(closure.archiveRecoveryAuthority(authorityCommand)).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+        status: 409
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.subscriptionClosureCommandReceipt.update({
+          data: { payloadHash: generatedAuthorityReceipt.payloadHash },
+          where: { id: generatedAuthorityReceipt.id }
+        });
+      });
+      const generatedAuthorityEvent = await prisma.subscriptionClosureEvent.findFirstOrThrow({
+        where: {
+          closureCaseId: assessedCase.id,
+          sourceKey: "recovery-authority:task-6-recovery-authority:generated"
+        }
+      });
+      const generatedAuthorityAudit = await prisma.auditLog.findFirstOrThrow({
+        where: {
+          entityId: generatedAuthorityEvent.id,
+          entityType: "subscription_closure_event",
+          module: "subscription_closure"
+        }
+      });
+      const assertArchiveMutation = (
+        mutate: () => Promise<unknown>,
+        restore: () => Promise<unknown>
+      ) =>
+        assertTask6ArchiveReplayMutationRejected(
+          prisma,
+          () => closure.archiveRecoveryAuthority(authorityCommand),
+          mutate,
+          restore,
+          fixture,
+          assessedCase.id
+        );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.update({
+              data: { payloadSnapshot: { drifted: true } },
+              where: { id: generatedAuthorityReceipt.id }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.update({
+              data: {
+                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue
+              },
+              where: { id: generatedAuthorityReceipt.id }
+            })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.update({
+              data: { outcomeSnapshot: { drifted: true } },
+              where: { id: generatedAuthorityReceipt.id }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.update({
+              data: {
+                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue
+              },
+              where: { id: generatedAuthorityReceipt.id }
+            })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.delete({
+              where: { id: generatedAuthorityReceipt.id }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.create({
+              data: {
+                actorId: generatedAuthorityReceipt.actorId,
+                closureCaseId: generatedAuthorityReceipt.closureCaseId,
+                commandType: generatedAuthorityReceipt.commandType,
+                createdAt: generatedAuthorityReceipt.createdAt,
+                eventId: generatedAuthorityReceipt.eventId,
+                id: generatedAuthorityReceipt.id,
+                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue,
+                payloadHash: generatedAuthorityReceipt.payloadHash,
+                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue,
+                sourceId: generatedAuthorityReceipt.sourceId,
+                sourceKey: generatedAuthorityReceipt.sourceKey,
+                sourceType: generatedAuthorityReceipt.sourceType
+              }
+            })
+          )
+      );
+      const extraReceiptId = randomUUID();
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.create({
+              data: {
+                actorId: generatedAuthorityReceipt.actorId,
+                closureCaseId: generatedAuthorityReceipt.closureCaseId,
+                commandType: generatedAuthorityReceipt.commandType,
+                eventId: randomUUID(),
+                id: extraReceiptId,
+                outcomeSnapshot: generatedAuthorityReceipt.outcomeSnapshot as Prisma.InputJsonValue,
+                payloadHash: generatedAuthorityReceipt.payloadHash,
+                payloadSnapshot: generatedAuthorityReceipt.payloadSnapshot as Prisma.InputJsonValue,
+                sourceId: generatedAuthorityReceipt.sourceId,
+                sourceKey: `${generatedAuthorityReceipt.sourceKey}:extra`,
+                sourceType: generatedAuthorityReceipt.sourceType
+              }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureCommandReceipt.delete({ where: { id: extraReceiptId } })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.update({
+              data: { afterStatus: "RECOVERY_APPROVAL_PENDING" },
+              where: { id: generatedAuthorityEvent.id }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.update({
+              data: { afterStatus: generatedAuthorityEvent.afterStatus },
+              where: { id: generatedAuthorityEvent.id }
+            })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.delete({ where: { id: generatedAuthorityEvent.id } })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.create({
+              data: {
+                actorId: generatedAuthorityEvent.actorId,
+                afterStatus: generatedAuthorityEvent.afterStatus,
+                beforeStatus: generatedAuthorityEvent.beforeStatus,
+                closureCaseId: generatedAuthorityEvent.closureCaseId,
+                detailSnapshot: generatedAuthorityEvent.detailSnapshot as Prisma.InputJsonValue,
+                eventType: generatedAuthorityEvent.eventType,
+                id: generatedAuthorityEvent.id,
+                occurredAt: generatedAuthorityEvent.occurredAt,
+                recordedAt: generatedAuthorityEvent.recordedAt,
+                sequence: generatedAuthorityEvent.sequence,
+                sourceId: generatedAuthorityEvent.sourceId,
+                sourceKey: generatedAuthorityEvent.sourceKey,
+                sourceType: generatedAuthorityEvent.sourceType
+              }
+            })
+          )
+      );
+      const extraEventId = randomUUID();
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.create({
+              data: {
+                actorId: generatedAuthorityEvent.actorId,
+                afterStatus: generatedAuthorityEvent.afterStatus,
+                beforeStatus: generatedAuthorityEvent.beforeStatus,
+                closureCaseId: generatedAuthorityEvent.closureCaseId,
+                detailSnapshot: generatedAuthorityEvent.detailSnapshot as Prisma.InputJsonValue,
+                eventType: generatedAuthorityEvent.eventType,
+                id: extraEventId,
+                occurredAt: generatedAuthorityEvent.occurredAt,
+                recordedAt: generatedAuthorityEvent.recordedAt,
+                sequence: generatedAuthorityEvent.sequence + 100,
+                sourceId: generatedAuthorityEvent.sourceId,
+                sourceKey: `${generatedAuthorityEvent.sourceKey}:extra`,
+                sourceType: generatedAuthorityEvent.sourceType
+              }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.subscriptionClosureEvent.delete({ where: { id: extraEventId } })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.auditLog.update({
+              data: { afterSnapshot: { drifted: true } },
+              where: { id: generatedAuthorityAudit.id }
+            })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.auditLog.update({
+              data: { afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull },
+              where: { id: generatedAuthorityAudit.id }
+            })
+          )
+      );
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.auditLog.delete({ where: { id: generatedAuthorityAudit.id } })
+          ),
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.auditLog.create({
+              data: {
+                action: generatedAuthorityAudit.action,
+                afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull,
+                beforeSnapshot: generatedAuthorityAudit.beforeSnapshot ?? Prisma.DbNull,
+                createdAt: generatedAuthorityAudit.createdAt,
+                entityId: generatedAuthorityAudit.entityId,
+                entityType: generatedAuthorityAudit.entityType,
+                id: generatedAuthorityAudit.id,
+                ipAddress: generatedAuthorityAudit.ipAddress,
+                module: generatedAuthorityAudit.module,
+                operatorId: generatedAuthorityAudit.operatorId,
+                userAgent: generatedAuthorityAudit.userAgent
+              }
+            })
+          )
+      );
+      const extraAuditId = randomUUID();
+      await assertArchiveMutation(
+        () =>
+          withTask6Replica(prisma, (tx) =>
+            tx.auditLog.create({
+              data: {
+                action: generatedAuthorityAudit.action,
+                afterSnapshot: generatedAuthorityAudit.afterSnapshot ?? Prisma.DbNull,
+                beforeSnapshot: generatedAuthorityAudit.beforeSnapshot ?? Prisma.DbNull,
+                entityId: generatedAuthorityAudit.entityId,
+                entityType: generatedAuthorityAudit.entityType,
+                id: extraAuditId,
+                module: generatedAuthorityAudit.module,
+                operatorId: generatedAuthorityAudit.operatorId
+              }
+            })
+          ),
+        () => withTask6Replica(prisma, (tx) => tx.auditLog.delete({ where: { id: extraAuditId } }))
+      );
       await expect(
         closure.archiveRecoveryAuthority({ ...authorityCommand, actorId: requesterId })
       ).rejects.toMatchObject({
@@ -3272,6 +3520,20 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       });
       await awaitDatabaseClockPast(prisma, archivedAuthorityEvent.occurredAt);
       const requestedAt = new Date(archivedAuthorityEvent.occurredAt.getTime() + 1);
+      const requestCommand = {
+        actorId: requesterId,
+        closureCaseId: assessedCase.id,
+        idempotencyKey: "task-6-request-approval",
+        reason: "D+7 debt and uncontrolled vehicle require governed recovery",
+        requestedAt
+      };
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.requestRecoveryExecutionApproval(requestCommand),
+        fixture,
+        assessedCase.id
+      );
       const generatedAuthorityRevision =
         await prisma.subscriptionClosureDocumentRevision.findUniqueOrThrow({
           where: { id: authority.generatedRevisionId }
@@ -3335,22 +3597,23 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           where: { id: archiveESignTask.id }
         });
       });
-      const requested = await closure.requestRecoveryExecutionApproval({
-        actorId: requesterId,
-        closureCaseId: assessedCase.id,
-        idempotencyKey: "task-6-request-approval",
-        reason: "D+7 debt and uncontrolled vehicle require governed recovery",
-        requestedAt
-      });
+      const requested = await closure.requestRecoveryExecutionApproval(requestCommand);
       const pendingApproval = await prisma.businessExceptionApproval.findUniqueOrThrow({
         where: { id: requested.approvalId }
       });
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.requestRecoveryExecutionApproval(requestCommand),
+        fixture,
+        assessedCase.id
+      );
       expect(pendingApproval.subjectSnapshot).toMatchObject({
         recoveryAssetWorkOrderId: plannedRecoveryAssetWorkOrderId,
         recoveryContextSnapshotHash: expect.stringMatching(/^[0-9a-f]{64}$/)
       });
       const decidedAt = new Date(requestedAt.getTime() + 1);
-      const decided = await closure.decideRecoveryExecutionApproval({
+      const decisionCommand = {
         actorId: fixture.actorId,
         approvalId: pendingApproval.id,
         closureCaseId: assessedCase.id,
@@ -3359,8 +3622,23 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         decidedAt,
         expectedApprovalVersion: pendingApproval.version,
         idempotencyKey: "task-6-decide-approval"
-      });
+      } as const;
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.decideRecoveryExecutionApproval(decisionCommand),
+        fixture,
+        assessedCase.id
+      );
+      const decided = await closure.decideRecoveryExecutionApproval(decisionCommand);
       expect(decided.status).toBe("RECOVERY_APPROVED");
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.decideRecoveryExecutionApproval(decisionCommand),
+        fixture,
+        assessedCase.id
+      );
       await expect(
         closure.decideRecoveryExecutionApproval({
           actorId: fixture.actorId,
@@ -3384,6 +3662,13 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         idempotencyKey: "task-6-execute-recovery",
         occurredAt: new Date(requestedAt.getTime() + 2)
       };
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.executeApprovedRecovery(executionInput),
+        fixture,
+        assessedCase.id
+      );
       const holderBarrier = createBarrier();
       const holder = prisma.$transaction(async (tx) => {
         await tx.$queryRaw(
@@ -3463,6 +3748,13 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ])
       ).resolves.toEqual(rollbackBefore);
       const executed = await closure.executeApprovedRecovery(executionInput);
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.executeApprovedRecovery(executionInput),
+        fixture,
+        assessedCase.id
+      );
       await expect(closure.executeApprovedRecovery(executionInput)).resolves.toEqual({
         ...executed,
         wrote: false
@@ -3582,11 +3874,25 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         idempotencyKey: "task-6-execution-record",
         occurredAt: evidenceAt
       };
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.recordRecoveryExecution(executionRecord),
+        fixture,
+        assessedCase.id
+      );
       await expect(closure.recordRecoveryExecution(executionRecord)).resolves.toEqual({
         costCount: 1,
         evidenceCount: 1,
         wrote: true
       });
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.recordRecoveryExecution(executionRecord),
+        fixture,
+        assessedCase.id
+      );
       await expect(closure.recordRecoveryExecution(executionRecord)).resolves.toEqual({
         costCount: 1,
         evidenceCount: 1,
@@ -3605,9 +3911,23 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         returnType: "EARLY_TERMINATION" as const,
         returnedAt
       };
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.confirmManagedPhysicalReceipt(physicalReceipt, {}),
+        fixture,
+        assessedCase.id
+      );
       await expect(
         closure.confirmManagedPhysicalReceipt(physicalReceipt, {})
       ).resolves.toMatchObject({ vehicleReturnId: assessedCase.vehicleReturnId });
+      await assertTask6AuthorityMutationBoundaries(
+        prisma,
+        authorityLockTargets,
+        () => closure.confirmManagedPhysicalReceipt(physicalReceipt, {}),
+        fixture,
+        assessedCase.id
+      );
       await expect(
         closure.confirmManagedPhysicalReceipt(physicalReceipt, {})
       ).resolves.toMatchObject({ vehicleReturnId: assessedCase.vehicleReturnId });
@@ -3643,7 +3963,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await cleanupManagedExpiryFixture(prisma, fixture);
       await prisma.$executeRaw(Prisma.sql`DELETE FROM "user" WHERE "id" = ${requesterId}::uuid`);
     }
-  }, 30_000);
+  }, 120_000);
 
   it.each(["PAYMENT", "DISPUTE", "APPROVED_EXTENSION", "VOLUNTARY_RETURN"] as const)(
     "expires and pauses physical recovery on post-execution %s drift without physical leakage",
@@ -4235,6 +4555,208 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await cleanupManagedExpiryFixture(prisma, scenario.fixture);
     }
   }, 30_000);
+
+  it.each(["PAYMENT", "WRITEOFF", "DISPUTE", "APPROVED_EXTENSION"] as const)(
+    "serializes a %s writer behind the assessment holder without changing the committed recovery decision",
+    async (writerKind) => {
+      const scenario = await setupTask6PendingAssessment(prisma);
+      const barrier = createBarrier();
+      const financeUser = {
+        id: scenario.fixture.actorId,
+        menus: [],
+        name: "Task 6 administrator",
+        permissions: [],
+        roles: ["ADMIN"],
+        username: `task6-admin-${scenario.fixture.actorId}`
+      };
+      const financeContext = { ipAddress: "127.0.0.1", userAgent: "task-6-race" };
+      let paymentOrderId: string | null = null;
+      let paymentId: string | null = null;
+      let collectionCaseId: string | null = null;
+      let extension: Awaited<ReturnType<typeof seedTask6ExtensionArchivePrerequisites>> | null =
+        null;
+      let assessment: Promise<unknown> | null = null;
+      let writer: Promise<unknown> | null = null;
+      try {
+        if (writerKind === "PAYMENT") {
+          paymentOrderId = randomUUID();
+          await prisma.paymentOrder.create({
+            data: {
+              amount: 900n,
+              customerId: scenario.fixture.customerId,
+              id: paymentOrderId,
+              items: { create: { amount: 900n, billId: scenario.billId } },
+              orderId: scenario.fixture.orderId,
+              paidAmount: 0n,
+              paymentChannel: "MOCK",
+              paymentOrderNo: `PYO-TASK6-${paymentOrderId}`,
+              paymentStatus: "PENDING",
+              provider: "MOCK",
+              providerTradeNo: `task6-holder-${paymentOrderId}`
+            }
+          });
+        } else if (writerKind === "WRITEOFF") {
+          const payment = await new FinanceService(new AuditService(prisma), prisma).createPayment(
+            {
+              customerId: scenario.fixture.customerId,
+              orderId: scenario.fixture.orderId,
+              payerAccount: "task-6-holder",
+              payerName: "Task 6 payer",
+              paymentAmount: 900,
+              paymentMethod: PaymentMethod.BANK_TRANSFER,
+              paymentProofUrls: [],
+              receivedAt: "2026-08-22T00:00:00.000Z",
+              remark: "Task 6 assessment-holder payment"
+            },
+            financeUser,
+            financeContext
+          );
+          paymentId = payment.id;
+        } else if (writerKind === "DISPUTE") {
+          const finance = new FinanceService(new AuditService(prisma), prisma);
+          await finance.refreshOverdueBills(
+            { asOfDate: "2026-08-22" },
+            financeUser,
+            financeContext
+          );
+          collectionCaseId = (
+            await prisma.collectionCase.findFirstOrThrow({
+              where: { caseStatus: "ACTIVE", orderId: scenario.fixture.orderId }
+            })
+          ).id;
+        } else {
+          extension = await seedTask6ExtensionArchivePrerequisites(prisma, scenario.fixture);
+        }
+
+        const hooked = hookTransaction(
+          prisma,
+          "subscriptionClosureCase",
+          "update",
+          barrier,
+          "before"
+        );
+        assessment = createTask6ClosureService(hooked).closure.assessRecoveryJob(
+          scenario.assessmentInput
+        );
+        await barrier.entered;
+
+        if (writerKind === "PAYMENT") {
+          const now = await prisma.$transaction((tx) => databaseNow(tx));
+          writer = new FinanceService(new AuditService(prisma), prisma).settlePaymentOrder({
+            operatorId: scenario.fixture.actorId,
+            paidAmount: 900n,
+            paidAt: new Date(now.getTime() - 1),
+            paymentOrderId: paymentOrderId!,
+            providerTransactionId: `task6-holder-provider-${paymentOrderId}`
+          });
+        } else if (writerKind === "WRITEOFF") {
+          writer = new FinanceService(new AuditService(prisma), prisma).writeOffPayment(
+            paymentId!,
+            {
+              items: [{ billId: scenario.billId, writeOffAmount: 900 }],
+              remark: "Task 6 assessment-holder write-off"
+            },
+            financeUser,
+            financeContext
+          );
+        } else if (writerKind === "DISPUTE") {
+          writer = new FinanceService(new AuditService(prisma), prisma).createCollectionAction(
+            collectionCaseId!,
+            {
+              actionResult: CollectionActionResult.DISPUTED,
+              actionType: CollectionActionType.CUSTOMER_DISPUTE,
+              contactMethod: ContactMethod.SYSTEM,
+              content: "Task 6 assessment-holder dispute"
+            },
+            financeUser,
+            financeContext
+          );
+        } else {
+          writer = new Stage3ExtensionArchiveService(
+            prisma,
+            new AuditService(prisma)
+          ).finalizeArchivedContract({
+            completedAt: extension!.completedAt,
+            contractId: scenario.fixture.contractId,
+            source: "CALLBACK",
+            taskId: extension!.taskId
+          });
+        }
+
+        await waitForPostgresLockWait(prisma);
+        barrier.release();
+        await expect(assessment).resolves.toEqual({ action: "ASSESSED", wrote: true });
+        await expect(writer).resolves.toBeDefined();
+        await expect(scenario.closure.assessRecoveryJob(scenario.assessmentInput)).resolves.toEqual(
+          {
+            action: "ASSESSED",
+            wrote: false
+          }
+        );
+        await expect(
+          prisma.subscriptionClosureCase.findUniqueOrThrow({
+            where: { id: scenario.closureCase.id }
+          })
+        ).resolves.toMatchObject({
+          finalDisposition: "TERMINATE",
+          physicalControlMode: "RECOVERY",
+          recoveryAssetWorkOrderId: null,
+          status: "RECOVERY_ASSESSMENT_PENDING"
+        });
+        await expect(
+          prisma.subscriptionAutomationJob.findUniqueOrThrow({
+            where: { id: scenario.assessmentInput.jobId }
+          })
+        ).resolves.toMatchObject({
+          jobStatus: writerKind === "PAYMENT" || writerKind === "WRITEOFF" ? "CANCELLED" : "PENDING"
+        });
+        await expect(
+          prisma.businessExceptionApproval.count({
+            where: { subjectId: scenario.closureCase.id, subjectType: "RECOVERY_CASE" }
+          })
+        ).resolves.toBe(0);
+        await expect(
+          prisma.assetWorkOrder.count({
+            where: { orderId: scenario.fixture.orderId, workOrderType: "RECOVERY" }
+          })
+        ).resolves.toBe(0);
+
+        if (writerKind === "PAYMENT" || writerKind === "WRITEOFF") {
+          await expect(
+            prisma.receivableBill.findUniqueOrThrow({ where: { id: scenario.billId } })
+          ).resolves.toMatchObject({ billStatus: "PAID", remainingAmount: 0n });
+        } else if (writerKind === "DISPUTE") {
+          await expect(
+            prisma.collectionAction.findFirstOrThrow({
+              where: {
+                actionResult: "DISPUTED",
+                actionType: "CUSTOMER_DISPUTE",
+                caseId: collectionCaseId!
+              }
+            })
+          ).resolves.toMatchObject({ content: "Task 6 assessment-holder dispute" });
+        } else {
+          await expect(
+            prisma.subscriptionContractSegment.findFirstOrThrow({
+              where: {
+                orderId: scenario.fixture.orderId,
+                segmentType: "EXTENSION",
+                status: "SCHEDULED"
+              }
+            })
+          ).resolves.toBeDefined();
+        }
+        await expect(prisma.$queryRaw(Prisma.sql`SELECT 1 AS "usable"`)).resolves.toEqual([
+          { usable: 1 }
+        ]);
+      } finally {
+        barrier.release();
+        await Promise.allSettled([assessment, writer].filter((value) => value !== null));
+        await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+      }
+    },
+    30_000
+  );
 
   it("persists PAUSED stage memory and resumes only the assessed recovery stage", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
@@ -7253,6 +7775,123 @@ function createBarrier() {
     release = resolve;
   });
   return { enter, entered, release, released };
+}
+
+type Task6AuthorityMutationTarget = Readonly<{
+  id: string;
+  kind: "CURRENT_POINTER" | "ESIGN" | "FILE" | "REVISION";
+}>;
+
+async function assertTask6AuthorityMutationBoundaries(
+  prisma: PrismaService,
+  targets: readonly Task6AuthorityMutationTarget[],
+  operation: () => Promise<unknown>,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
+  closureCaseId: string
+) {
+  for (const target of targets) {
+    const barrier = createBarrier();
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+      if (target.kind === "REVISION") {
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "subscription_closure_document_revision"
+          SET "source_key" = "source_key"
+          WHERE "id" = ${target.id}::uuid
+        `);
+      } else if (target.kind === "FILE") {
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "file_object"
+          SET "object_key" = "object_key"
+          WHERE "id" = ${target.id}::uuid
+        `);
+      } else if (target.kind === "ESIGN") {
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "contract_esign_task"
+          SET "request_snapshot" = "request_snapshot"
+          WHERE "id" = ${target.id}::uuid
+        `);
+      } else {
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE "subscription_closure_current_document"
+          SET "document_revision_id" = "document_revision_id"
+          WHERE "closure_case_id" = ${target.id}::uuid
+            AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
+        `);
+      }
+      barrier.enter();
+      await barrier.released;
+      await expect(tx.$queryRaw(Prisma.sql`SELECT 1 AS "usable"`)).resolves.toEqual([
+        { usable: 1 }
+      ]);
+      throw new Error(`TASK6_EXPECTED_HOLDER_ROLLBACK:${target.kind}`);
+    });
+    await barrier.entered;
+    const before = await snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId);
+    try {
+      await expect(operation()).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY" },
+        status: 409
+      });
+      await expect(
+        snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId)
+      ).resolves.toEqual(before);
+    } finally {
+      barrier.release();
+    }
+    await expect(holder).rejects.toThrow(`TASK6_EXPECTED_HOLDER_ROLLBACK:${target.kind}`);
+  }
+}
+
+async function snapshotTask6RecoveryBoundaryTruth(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
+  closureCaseId: string
+) {
+  return Promise.all([
+    snapshotPhysicalReturnTruth(prisma, fixture),
+    prisma.businessExceptionApproval.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: { subjectId: closureCaseId, subjectType: "RECOVERY_CASE" }
+    }),
+    prisma.subscriptionClosureDocumentRevision.findMany({
+      orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
+      where: { closureCaseId, documentType: "RECOVERY_AUTHORITY" }
+    })
+  ]);
+}
+
+async function withTask6Replica<T>(
+  prisma: PrismaService,
+  operation: (tx: Prisma.TransactionClient) => Promise<T>
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    return operation(tx);
+  });
+}
+
+async function assertTask6ArchiveReplayMutationRejected(
+  prisma: PrismaService,
+  replay: () => Promise<unknown>,
+  mutate: () => Promise<unknown>,
+  restore: () => Promise<unknown>,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>,
+  closureCaseId: string
+) {
+  await mutate();
+  const driftTruth = await snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId);
+  try {
+    await expect(replay()).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+      status: 409
+    });
+    await expect(
+      snapshotTask6RecoveryBoundaryTruth(prisma, fixture, closureCaseId)
+    ).resolves.toEqual(driftTruth);
+  } finally {
+    await restore();
+  }
 }
 
 function hookTransaction(

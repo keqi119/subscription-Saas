@@ -59,6 +59,7 @@ import {
 } from "../handover-work-order/handover-work-order.service";
 import {
   canonicalSubscriptionClosureJson,
+  hashSubscriptionClosureSnapshot,
   recoveryAssessmentAvailableAt
 } from "./subscription-closure.domain";
 import {
@@ -1293,8 +1294,22 @@ export class SubscriptionClosureService {
           );
         }
 
-        const replay = await validateRecoveryAuthorityChainInTransaction(tx, command, ids, sources);
-        if (replay) return Object.freeze({ ...replay, wrote: false });
+        const replayCandidateCount = await tx.subscriptionClosureDocumentRevision.count({
+          where: {
+            id: { in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId] }
+          }
+        });
+        if (replayCandidateCount > 0) {
+          await this.repository.lockAuthorityRows(tx, recoveryAuthorityReplayLocks(command, ids));
+          const replay = await validateRecoveryAuthorityChainInTransaction(
+            tx,
+            command,
+            ids,
+            sources
+          );
+          if (!replay) throw serviceConflict("AUTHORITY_MISMATCH");
+          return Object.freeze({ ...replay, wrote: false });
+        }
 
         const databaseClock = await readDatabaseClock(tx);
         const observed = await resolveRecoveryAuthorityDraft(
@@ -1659,7 +1674,21 @@ export class SubscriptionClosureService {
           kind: "REQUEST"
         });
         if (replay) {
-          return Object.freeze({ approvalId: replay.approvalId, wrote: false });
+          await this.lockAndValidateRecoveryAuthorityReplay(
+            tx,
+            command.closureCaseId,
+            command.actorId
+          );
+          const lockedReplay = await replayRecoveryApprovalOrchestration(tx, {
+            accountingSource: requestSource,
+            commandFingerprint,
+            eventSource,
+            kind: "REQUEST"
+          });
+          if (!lockedReplay || lockedReplay.approvalId !== replay.approvalId) {
+            throw serviceConflict("AUTHORITY_MISMATCH");
+          }
+          return Object.freeze({ approvalId: lockedReplay.approvalId, wrote: false });
         }
         const databaseClock = await readDatabaseClock(tx);
         const resolved = await resolveRecoveryApprovalAuthority(
@@ -1811,9 +1840,27 @@ export class SubscriptionClosureService {
           kind: "DECISION"
         });
         if (replay) {
+          await this.lockAndValidateRecoveryAuthorityReplay(
+            tx,
+            command.closureCaseId,
+            command.actorId
+          );
+          const lockedReplay = await replayRecoveryApprovalOrchestration(tx, {
+            accountingSource: decisionSource,
+            commandFingerprint,
+            eventSource,
+            kind: "DECISION"
+          });
+          if (
+            !lockedReplay ||
+            lockedReplay.approvalId !== replay.approvalId ||
+            lockedReplay.status !== replay.status
+          ) {
+            throw serviceConflict("AUTHORITY_MISMATCH");
+          }
           return Object.freeze({
-            approvalId: replay.approvalId,
-            status: replay.status,
+            approvalId: lockedReplay.approvalId,
+            status: lockedReplay.status,
             wrote: false
           });
         }
@@ -1970,6 +2017,29 @@ export class SubscriptionClosureService {
       if (receiptDetail.executionCommandFingerprint !== executionCommandFingerprint) {
         throw closureSourceConflict();
       }
+      for (const source of [executionSource, staleApprovalSource].sort((left, right) =>
+        bytewiseCompare(sourceSortKey(left), sourceSortKey(right))
+      )) {
+        await this.repository.lockSourceOwnership(tx, source);
+      }
+      const lockedReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+        where: {
+          sourceType_sourceId_sourceKey: {
+            sourceId: executionSource.id,
+            sourceKey: executionSource.key,
+            sourceType: executionSource.type
+          }
+        }
+      });
+      const lockedPayload = jsonObject(lockedReceipt?.payloadSnapshot);
+      const lockedDetail = jsonObject(lockedPayload.detailSnapshot);
+      if (
+        !lockedReceipt ||
+        lockedDetail.executionCommandFingerprint !== executionCommandFingerprint
+      ) {
+        throw serviceConflict("AUTHORITY_MISMATCH");
+      }
+      await this.lockAndValidateRecoveryAuthorityReplay(tx, command.closureCaseId, command.actorId);
       const existing = await tx.subscriptionClosureCase.findUnique({
         where: { id: command.closureCaseId }
       });
@@ -1994,6 +2064,29 @@ export class SubscriptionClosureService {
       if (receiptDetail.executionCommandFingerprint !== executionCommandFingerprint) {
         throw closureSourceConflict();
       }
+      for (const source of [executionSource, staleApprovalSource].sort((left, right) =>
+        bytewiseCompare(sourceSortKey(left), sourceSortKey(right))
+      )) {
+        await this.repository.lockSourceOwnership(tx, source);
+      }
+      const lockedReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+        where: {
+          sourceType_sourceId_sourceKey: {
+            sourceId: staleApprovalSource.id,
+            sourceKey: staleApprovalSource.key,
+            sourceType: staleApprovalSource.type
+          }
+        }
+      });
+      const lockedPayload = jsonObject(lockedReceipt?.payloadSnapshot);
+      const lockedDetail = jsonObject(lockedPayload.detailSnapshot);
+      if (
+        !lockedReceipt ||
+        lockedDetail.executionCommandFingerprint !== executionCommandFingerprint
+      ) {
+        throw serviceConflict("AUTHORITY_MISMATCH");
+      }
+      await this.lockAndValidateRecoveryAuthorityReplay(tx, command.closureCaseId, command.actorId);
       return Object.freeze({ action: "APPROVAL_EXPIRED" as const, wrote: false });
     }
     const resolved = await resolveRecoveryApprovalAuthority(tx, command.closureCaseId);
@@ -2190,7 +2283,11 @@ export class SubscriptionClosureService {
     const attestations = await this.repository.prepareAuthorityInTransaction(
       tx,
       session,
-      [...resolved.contextLocks, ...requirements.flatMap(({ locks }) => locks)],
+      [
+        ...resolved.contextLocks,
+        ...resolved.documentLocks,
+        ...requirements.flatMap(({ locks }) => locks)
+      ],
       requirements
     );
     const lockedResolved = await resolveRecoveryApprovalAuthority(tx, command.closureCaseId);
@@ -2267,6 +2364,26 @@ export class SubscriptionClosureService {
       recoveryAssetWorkOrderId: plannedWorkOrderId,
       wrote: event.wrote
     });
+  }
+
+  private async lockAndValidateRecoveryAuthorityReplay(
+    tx: Prisma.TransactionClient,
+    closureCaseId: string,
+    actorId: string
+  ) {
+    const observed = await resolveRecoveryApprovalAuthority(tx, closureCaseId);
+    await this.repository.lockAuthorityRows(tx, [
+      ...observed.contextLocks,
+      ...observed.documentLocks,
+      { id: actorId, mode: "SHARE", table: "user" }
+    ]);
+    const locked = await resolveRecoveryApprovalAuthority(tx, closureCaseId);
+    if (
+      canonicalSubscriptionClosureJson(locked.authority) !==
+      canonicalSubscriptionClosureJson(observed.authority)
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
   }
 
   async recordRecoveryExecution(input: RecordRecoveryExecutionInput) {
@@ -2469,6 +2586,7 @@ export class SubscriptionClosureService {
       session,
       [
         ...resolved.contextLocks,
+        ...resolved.documentLocks,
         ...requirements.flatMap(({ locks }) => locks),
         { id: approval.id, mode: "UPDATE" as const, table: "business_exception_approval" as const },
         {
@@ -2784,6 +2902,58 @@ export class SubscriptionClosureService {
       throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
     }
     if (closureCase.status === "RETURN_INSPECTION") {
+      if (command.physicalControlMode === "RECOVERY") {
+        if (!this.assetAccounting) {
+          throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+        }
+        assertPhysicalReceiptObservedAuthority(observed, command);
+        const recoveryClock = await readDatabaseClock(tx);
+        const observedRecovery = await resolveRecoveryApprovalAuthority(
+          tx,
+          closureCase.id,
+          recoveryClock
+        );
+        const approval = observed.recoveryApprovals[0];
+        if (!approval) throw serviceConflict("AUTHORITY_MISMATCH");
+        const replaySources = [
+          receiptSource,
+          physicalSource(closureCase.id, "physical-mileage:RECOVERY"),
+          physicalSource(closureCase.id, "physical-period-close:RECOVERY"),
+          physicalSource(
+            closureCase.id,
+            `physical-recovery-approval:${approval.id}:${approval.version}`
+          ),
+          recoveryDriftSource,
+          physicalSource(closureCase.id, "recovery-restriction-secured-release"),
+          physicalSource(closureCase.id, "return-inspection-restriction"),
+          physicalSource(closureCase.id, "physical-work-order:RECOVERY")
+        ].sort((left, right) => bytewiseCompare(sourceSortKey(left), sourceSortKey(right)));
+        for (const replaySource of replaySources) {
+          await this.repository.lockSourceOwnership(tx, replaySource);
+        }
+        await this.repository.lockAuthorityRows(tx, [
+          ...physicalReceiptLocks(observed, command.actorId),
+          ...observedRecovery.contextLocks,
+          ...observedRecovery.documentLocks
+        ]);
+        const locked = await loadPhysicalReceiptAuthority(tx, command.orderId);
+        const lockedRecovery = await resolveRecoveryApprovalAuthority(
+          tx,
+          closureCase.id,
+          recoveryClock
+        );
+        if (
+          physicalReceiptAuthorityIdentity(observed) !== physicalReceiptAuthorityIdentity(locked) ||
+          canonicalSubscriptionClosureJson(lockedRecovery.authority) !==
+            canonicalSubscriptionClosureJson(observedRecovery.authority)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        assertPhysicalReceiptObservedAuthority(locked, command);
+        assertArchivedRecoveryAuthority(locked, command);
+        assertExactPhysicalReceiptReplay(locked, command, receiptSource);
+        return Object.freeze({ vehicleReturnId: locked.vehicleReturn!.id });
+      }
       assertPhysicalReceiptObservedAuthority(observed, command);
       assertExactPhysicalReceiptReplay(observed, command, receiptSource);
       return Object.freeze({ vehicleReturnId: observed.vehicleReturn!.id });
@@ -4400,6 +4570,33 @@ function recoveryAuthoritySources(
   ]) as RecoveryAuthoritySources;
 }
 
+function recoveryAuthorityReplayLocks(
+  command: ArchiveRecoveryAuthorityInput,
+  ids: RecoveryAuthorityIds
+): readonly SubscriptionClosureAuthorityLock[] {
+  return Object.freeze([
+    {
+      id: command.closureCaseId,
+      mode: "UPDATE",
+      table: "subscription_closure_case"
+    },
+    {
+      id: command.closureCaseId,
+      mode: "SHARE",
+      table: "subscription_closure_current_document"
+    },
+    ...[ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId].map((id) => ({
+      id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_document_revision" as const
+    })),
+    { id: ids.sourceFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.signedFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.esignTaskId, mode: "SHARE", table: "contract_esign_task" },
+    { id: command.actorId, mode: "SHARE", table: "user" }
+  ] satisfies SubscriptionClosureAuthorityLock[]);
+}
+
 function recoveryAuthorityDocumentCommands(
   input: Readonly<{
     actorId: string;
@@ -4541,7 +4738,8 @@ async function validateRecoveryAuthorityChainInTransaction(
   const revisions = await tx.subscriptionClosureDocumentRevision.findMany({
     orderBy: { revisionNumber: "asc" },
     where: {
-      id: { in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId] }
+      closureCaseId: command.closureCaseId,
+      documentType: "RECOVERY_AUTHORITY"
     }
   });
   if (revisions.length === 0) return null;
@@ -4569,7 +4767,7 @@ async function validateRecoveryAuthorityChainInTransaction(
   });
   const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
   const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
-  const [current, sourceFile, signedFile, esignTask, receipts, events, audits] = await Promise.all([
+  const [current, sourceFile, signedFile, esignTask, receipts, events] = await Promise.all([
     tx.subscriptionClosureCurrentDocument.findUnique({
       where: {
         closureCaseId_documentType: {
@@ -4583,27 +4781,28 @@ async function validateRecoveryAuthorityChainInTransaction(
     tx.contractESignTask.findUnique({ where: { id: ids.esignTaskId } }),
     tx.subscriptionClosureCommandReceipt.findMany({
       where: {
-        sourceId: command.closureCaseId,
-        sourceKey: { in: sources.map(({ key }) => key) },
-        sourceType: sources[0].type
+        closureCaseId: command.closureCaseId,
+        commandType: "CREATE_DOCUMENT_REVISION",
+        payloadSnapshot: { equals: "RECOVERY_AUTHORITY", path: ["documentType"] }
       }
     }),
     tx.subscriptionClosureEvent.findMany({
+      orderBy: [{ sequence: "asc" }, { id: "asc" }],
       where: {
-        sourceId: command.closureCaseId,
-        sourceKey: { in: sources.map(({ key }) => key) },
-        sourceType: sources[0].type
-      }
-    }),
-    tx.auditLog.findMany({
-      where: {
-        action: AuditAction.CREATE,
-        entityType: "subscription_closure_event",
-        module: "subscription_closure",
-        operatorId: command.actorId
+        closureCaseId: command.closureCaseId,
+        detailSnapshot: { equals: "RECOVERY_AUTHORITY", path: ["documentType"] },
+        eventType: "DOCUMENT_REVISION_CREATED"
       }
     })
   ]);
+  const audits = await tx.auditLog.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
   const expectedSourceObjectKey = `subscription-closure/${command.closureCaseId}/${ids.generatedRevisionId}-recovery-authority.json`;
   const expectedSignedObjectKey = `subscription-closure/${command.closureCaseId}/${ids.signedRevisionId}-recovery-authority.signed.json`;
   const expectedSourceName = `${draft.closureCase.caseNo}-${ids.generatedRevisionId}-recovery-authority.json`;
@@ -4636,23 +4835,54 @@ async function validateRecoveryAuthorityChainInTransaction(
     revision.generatedAt.getTime() === generated.generatedAt.getTime() &&
     revision.vehicleReturnId === null &&
     revision.handoverWorkOrderId === null;
-  const auditEventIds = new Set(
-    audits.map(({ entityId }) => entityId).filter((id): id is string => Boolean(id))
-  );
   const eventBySource = new Map(events.map((event) => [event.sourceKey, event]));
   const receiptBySource = new Map(receipts.map((receipt) => [receipt.sourceKey, receipt]));
+  const auditByEvent = new Map(audits.map((audit) => [audit.entityId, audit]));
   const revisionTriples = [
     [generated, sources[0], ids.generatedRevisionId, "GENERATED", null],
     [signed, sources[1], ids.signedRevisionId, "SIGNED", ids.generatedRevisionId],
     [archived, sources[2], ids.archivedRevisionId, "ARCHIVED", ids.signedRevisionId]
   ] as const;
+  const firstEvent = eventBySource.get(sources[0].key);
+  const expectedVersion = firstEvent ? firstEvent.sequence - 2 : -1;
+  const expectedCommands = recoveryAuthorityDocumentCommands({
+    actorId: command.actorId,
+    closureCaseId: command.closureCaseId,
+    databaseClock: generated.generatedAt,
+    documentSnapshot,
+    expectedVersion,
+    ids,
+    signedFileHash,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const commandsByStage = {
+    ARCHIVED: expectedCommands.archived,
+    GENERATED: expectedCommands.generated,
+    SIGNED: expectedCommands.signed
+  } as const;
   const lifecycleRecordsValid = revisionTriples.every(
     ([revision, lifecycleSource, revisionId, stage, supersedesRevisionId], index) => {
       const event = eventBySource.get(lifecycleSource.key);
       const receipt = receiptBySource.get(lifecycleSource.key);
-      const payload = jsonObject(receipt?.payloadSnapshot);
-      const outcome = jsonObject(receipt?.outcomeSnapshot);
-      const detail = jsonObject(event?.detailSnapshot);
+      const audit = event ? auditByEvent.get(event.id) : null;
+      const expectedCommand = commandsByStage[stage];
+      const expectedOutcome = recoveryAuthorityDocumentOutcome(revision);
+      const expectedDetail = {
+        documentRevisionId: revisionId,
+        documentType: "RECOVERY_AUTHORITY",
+        revisionNumber: index + 1
+      };
+      const expectedAuditAfter = event
+        ? {
+            action: "CREATE_DOCUMENT_REVISION",
+            closureCaseId: command.closureCaseId,
+            eventId: event.id,
+            outcome: expectedOutcome,
+            source: lifecycleSource
+          }
+        : null;
+      const priorEvent = index === 0 ? null : eventBySource.get(sources[index - 1]!.key);
       return (
         commonRevisionMatches(revision) &&
         sourceMatches(revision, index as 0 | 1 | 2) &&
@@ -4661,25 +4891,56 @@ async function validateRecoveryAuthorityChainInTransaction(
         revision.stage === stage &&
         revision.supersedesRevisionId === supersedesRevisionId &&
         receipt?.actorId === command.actorId &&
+        receipt.closureCaseId === command.closureCaseId &&
         receipt.commandType === "CREATE_DOCUMENT_REVISION" &&
-        payload.actorId === command.actorId &&
-        payload.closureCaseId === command.closureCaseId &&
-        payload.documentRevisionId === revisionId &&
-        payload.stage === stage &&
-        outcome.id === revisionId &&
-        outcome.stage === stage &&
+        receipt.eventId === event?.id &&
+        receipt.sourceType === lifecycleSource.type &&
+        receipt.sourceId === lifecycleSource.id &&
+        receipt.sourceKey === lifecycleSource.key &&
+        receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+        canonicalSubscriptionClosureJson(receipt.payloadSnapshot as never) ===
+          canonicalSubscriptionClosureJson(expectedCommand) &&
+        canonicalSubscriptionClosureJson(receipt.outcomeSnapshot as never) ===
+          canonicalSubscriptionClosureJson(expectedOutcome) &&
         event?.actorId === command.actorId &&
+        event.closureCaseId === command.closureCaseId &&
         event.eventType === "DOCUMENT_REVISION_CREATED" &&
-        detail.documentRevisionId === revisionId &&
-        detail.documentType === "RECOVERY_AUTHORITY" &&
-        detail.revisionNumber === index + 1 &&
-        auditEventIds.has(event.id)
+        event.beforeStatus === "RECOVERY_ASSESSMENT_PENDING" &&
+        event.afterStatus === "RECOVERY_ASSESSMENT_PENDING" &&
+        event.sequence === expectedVersion + index + 2 &&
+        event.sourceType === lifecycleSource.type &&
+        event.sourceId === lifecycleSource.id &&
+        event.sourceKey === lifecycleSource.key &&
+        event.recordedAt.getTime() >= revision.createdAt.getTime() &&
+        event.occurredAt.getTime() >= revision.generatedAt.getTime() &&
+        (!priorEvent || event.occurredAt.getTime() >= priorEvent.occurredAt.getTime()) &&
+        (!priorEvent || event.recordedAt.getTime() >= priorEvent.recordedAt.getTime()) &&
+        canonicalSubscriptionClosureJson(event.detailSnapshot as never) ===
+          canonicalSubscriptionClosureJson(expectedDetail) &&
+        audit?.action === AuditAction.CREATE &&
+        audit.entityType === "subscription_closure_event" &&
+        audit.entityId === event.id &&
+        audit.module === "subscription_closure" &&
+        audit.operatorId === command.actorId &&
+        audit.beforeSnapshot === null &&
+        audit.ipAddress === null &&
+        audit.userAgent === null &&
+        audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+        canonicalSubscriptionClosureJson(audit.afterSnapshot as never) ===
+          canonicalSubscriptionClosureJson(expectedAuditAfter)
       );
     }
   );
   if (
     !lifecycleRecordsValid ||
+    expectedVersion < 0 ||
+    receipts.length !== 3 ||
+    events.length !== 3 ||
+    audits.length !== 3 ||
+    current?.closureCaseId !== command.closureCaseId ||
+    current?.documentType !== "RECOVERY_AUTHORITY" ||
     current?.documentRevisionId !== ids.archivedRevisionId ||
+    current?.updatedBy !== command.actorId ||
     generated.stage !== "GENERATED" ||
     generated.signedAt !== null ||
     generated.signedBy !== null ||
@@ -4745,6 +5006,40 @@ async function validateRecoveryAuthorityChainInTransaction(
     signedFileHash,
     signedFileId: ids.signedFileId,
     signedRevisionId: ids.signedRevisionId
+  });
+}
+
+function recoveryAuthorityDocumentOutcome(
+  revision: Prisma.SubscriptionClosureDocumentRevisionGetPayload<Record<string, never>>
+) {
+  return Object.freeze({
+    archivedAt: revision.archivedAt?.toISOString() ?? null,
+    archivedBy: revision.archivedBy,
+    closureCaseId: revision.closureCaseId,
+    contractESignTaskId: revision.contractESignTaskId,
+    createdAt: revision.createdAt.toISOString(),
+    documentSnapshot: revision.documentSnapshot,
+    documentSnapshotHash: revision.documentSnapshotHash,
+    documentType: revision.documentType,
+    generatedAt: revision.generatedAt.toISOString(),
+    generatedBy: revision.generatedBy,
+    handoverWorkOrderId: revision.handoverWorkOrderId,
+    id: revision.id,
+    revisionNumber: revision.revisionNumber,
+    signedAt: revision.signedAt?.toISOString() ?? null,
+    signedBy: revision.signedBy,
+    signedFileHash: revision.signedFileHash,
+    signedFileId: revision.signedFileId,
+    source: {
+      id: revision.sourceId,
+      key: revision.sourceKey,
+      type: revision.sourceType
+    },
+    sourceFileHash: revision.sourceFileHash,
+    sourceFileId: revision.sourceFileId,
+    stage: revision.stage,
+    supersedesRevisionId: revision.supersedesRevisionId,
+    vehicleReturnId: revision.vehicleReturnId
   });
 }
 
@@ -6830,14 +7125,16 @@ async function resolveRecoveryApprovalAuthority(
     contextActionable: recoveryContext.actionable,
     contextLocks: recoveryContext.locks,
     documentLocks: Object.freeze([
-      ...(productionChain
-        ? [
-            productionChain.ids.generatedRevisionId,
-            productionChain.ids.signedRevisionId,
-            productionChain.ids.archivedRevisionId
-          ]
-        : [revision.id]
-      ).map((id) => ({
+      {
+        id: closureCase.id,
+        mode: "SHARE" as const,
+        table: "subscription_closure_current_document" as const
+      },
+      ...[
+        productionChain.ids.generatedRevisionId,
+        productionChain.ids.signedRevisionId,
+        productionChain.ids.archivedRevisionId
+      ].map((id) => ({
         id,
         mode: "SHARE" as const,
         table: "subscription_closure_document_revision" as const
@@ -6880,12 +7177,9 @@ async function validateCurrentRecoveryAuthorityChainInTransaction(
     typeof revision.sourceId !== "string" ||
     typeof revision.sourceKey !== "string"
   ) {
-    return null;
+    throw serviceConflict("AUTHORITY_MISMATCH");
   }
   const productionSource = physicalSource(closureCaseId, revision.sourceKey);
-  const looksProduction =
-    revision.sourceType === productionSource.type || revision.sourceKey.startsWith(prefix);
-  if (!looksProduction) return null;
   if (
     revision.sourceType !== productionSource.type ||
     revision.sourceId !== closureCaseId ||

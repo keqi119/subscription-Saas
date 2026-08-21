@@ -421,6 +421,17 @@ type ReturnInboundTransactionCapabilityState = Readonly<{
   transaction: Prisma.TransactionClient;
 }>;
 
+declare const preparedReturnInboundCapabilityBrand: unique symbol;
+export type PreparedReturnInboundCapability = Readonly<{
+  [preparedReturnInboundCapabilityBrand]: true;
+}>;
+
+type PreparedReturnInboundCapabilityState = Readonly<{
+  command: CreateReturnInboundWorkOrderCommand;
+  sourceOwner: WorkOrderRecord | null;
+  transaction: Prisma.TransactionClient;
+}>;
+
 declare const governedReturnInboundUpdateCapabilityBrand: unique symbol;
 export type GovernedReturnInboundUpdateCapability = Readonly<{
   [governedReturnInboundUpdateCapabilityBrand]: true;
@@ -431,6 +442,17 @@ type GovernedReturnInboundUpdateCapabilityState = Readonly<{
   transaction: Prisma.TransactionClient;
 }>;
 
+declare const preparedGovernedReturnInboundUpdateCapabilityBrand: unique symbol;
+export type PreparedGovernedReturnInboundUpdateCapability = Readonly<{
+  [preparedGovernedReturnInboundUpdateCapabilityBrand]: true;
+}>;
+
+type PreparedGovernedReturnInboundUpdateCapabilityState = Readonly<{
+  command: GovernedReturnInboundUpdateCommand;
+  transaction: Prisma.TransactionClient;
+  workOrder: WorkOrderRecord;
+}>;
+
 @Injectable()
 export class HandoverWorkOrderService {
   private readonly logger = new Logger(HandoverWorkOrderService.name);
@@ -438,9 +460,17 @@ export class HandoverWorkOrderService {
     ReturnInboundTransactionCapability,
     ReturnInboundTransactionCapabilityState
   >();
+  private readonly preparedReturnInboundCapabilities = new WeakMap<
+    PreparedReturnInboundCapability,
+    PreparedReturnInboundCapabilityState
+  >();
   private readonly governedReturnInboundUpdateCapabilities = new WeakMap<
     GovernedReturnInboundUpdateCapability,
     GovernedReturnInboundUpdateCapabilityState
+  >();
+  private readonly preparedGovernedReturnInboundUpdateCapabilities = new WeakMap<
+    PreparedGovernedReturnInboundUpdateCapability,
+    PreparedGovernedReturnInboundUpdateCapabilityState
   >();
 
   constructor(
@@ -560,6 +590,101 @@ export class HandoverWorkOrderService {
     return workOrder;
   }
 
+  async attestReturnInboundAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateReturnInboundWorkOrderCommand,
+    capability: ReturnInboundTransactionCapability
+  ): Promise<PreparedReturnInboundCapability> {
+    const capabilityState = this.takeReturnInboundCapability(capability);
+    const command = normalizeReturnInboundCommand(input);
+    this.assertReturnInboundCapability(capabilityState, tx, command);
+    const commandHash = returnInboundCommandHash(command);
+    const sourceOwners = await findReturnInboundSourceOwners(tx, command.source);
+    if (sourceOwners.length > 1) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+        "The return-inbound source has more than one persisted owner."
+      );
+    }
+    const sourceOwner = sourceOwners[0] ?? null;
+    if (sourceOwner) {
+      if (returnInboundMetadataHash(sourceOwner.metadata) !== commandHash) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+          "The return-inbound source is bound to a different payload."
+        );
+      }
+    } else {
+      const [order, actor, candidates] = await Promise.all([
+        tx.subscriptionOrder.findUnique({ where: { id: command.orderId } }),
+        tx.user.findFirst({
+          where: { deletedAt: null, id: command.actorId, status: UserStatus.ACTIVE }
+        }),
+        tx.vehicleHandoverWorkOrder.findMany({
+          where: { handoverType: "RETURN_INBOUND", orderId: command.orderId }
+        })
+      ]);
+      if (!order || order.deletedAt || !actor) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+          "The return-inbound work-order authority is unavailable."
+        );
+      }
+      if (candidates.some(({ status }) => !isTerminalWorkOrderStatus(status))) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.ACTIVE_RETURN_INBOUND_EXISTS,
+          "The order already has an active return-inbound work order."
+        );
+      }
+    }
+    const prepared = Object.freeze({}) as PreparedReturnInboundCapability;
+    this.preparedReturnInboundCapabilities.set(
+      prepared,
+      Object.freeze({ command, sourceOwner, transaction: tx })
+    );
+    return prepared;
+  }
+
+  async createPreparedReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: PreparedReturnInboundCapability
+  ): Promise<WorkOrderRecord> {
+    const state = this.preparedReturnInboundCapabilities.get(capability);
+    this.preparedReturnInboundCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The prepared return-inbound capability is invalid."
+      );
+    }
+    if (state.sourceOwner) return state.sourceOwner;
+    const commandHash = returnInboundCommandHash(state.command);
+    const workOrder = await tx.vehicleHandoverWorkOrder.create({
+      data: {
+        handoverId: null,
+        handoverType: "RETURN_INBOUND",
+        metadata: toJsonValue({
+          p0ReturnInbound: { commandHash, source: state.command.source }
+        }),
+        operatorType: "INTERNAL",
+        orderId: state.command.orderId,
+        status: "DRAFT",
+        vehicleDeliveryId: null
+      }
+    });
+    await this.recordEvent(
+      workOrder,
+      VehicleHandoverEventType.WORK_ORDER_CREATED,
+      {
+        actorId: state.command.actorId,
+        actorType: VehicleHandoverEventActorType.SYSTEM,
+        detail: { commandHash, source: state.command.source }
+      },
+      tx
+    );
+    return workOrder;
+  }
+
   async prepareGovernedReturnInboundUpdateInTransaction(
     tx: Prisma.TransactionClient,
     input: GovernedReturnInboundUpdateCommand
@@ -595,6 +720,101 @@ export class HandoverWorkOrderService {
       })
     );
     return capability;
+  }
+
+  async prepareGovernedReturnInboundSourceInTransaction(
+    tx: Prisma.TransactionClient,
+    input: GovernedReturnInboundUpdateCommand
+  ): Promise<GovernedReturnInboundUpdateCapability> {
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    await assertReturnInboundTransaction(tx);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${returnInboundSourceLockKey(command.source)}, 0))`
+    );
+    const capability = Object.freeze({}) as GovernedReturnInboundUpdateCapability;
+    this.governedReturnInboundUpdateCapabilities.set(
+      capability,
+      Object.freeze({
+        commandHash: governedReturnInboundUpdateCommandHash(command),
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async attestGovernedReturnInboundAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    input: GovernedReturnInboundUpdateCommand,
+    capability: GovernedReturnInboundUpdateCapability
+  ): Promise<PreparedGovernedReturnInboundUpdateCapability> {
+    const state = this.governedReturnInboundUpdateCapabilities.get(capability);
+    this.governedReturnInboundUpdateCapabilities.delete(capability);
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.commandHash !== governedReturnInboundUpdateCommandHash(command)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The governed return-inbound update capability is invalid."
+      );
+    }
+    const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
+      where: { id: command.workOrderId }
+    });
+    if (
+      !workOrder ||
+      workOrder.orderId !== command.orderId ||
+      workOrder.handoverType !== "RETURN_INBOUND" ||
+      isTerminalWorkOrderStatus(workOrder.status)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The governed return-inbound work order is unavailable."
+      );
+    }
+    const prepared = Object.freeze({}) as PreparedGovernedReturnInboundUpdateCapability;
+    this.preparedGovernedReturnInboundUpdateCapabilities.set(
+      prepared,
+      Object.freeze({ command, transaction: tx, workOrder })
+    );
+    return prepared;
+  }
+
+  async updatePreparedGovernedReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: PreparedGovernedReturnInboundUpdateCapability
+  ): Promise<WorkOrderRecord> {
+    const state = this.preparedGovernedReturnInboundUpdateCapabilities.get(capability);
+    this.preparedGovernedReturnInboundUpdateCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The prepared governed return-inbound update capability is invalid."
+      );
+    }
+    const updated = await tx.vehicleHandoverWorkOrder.update({
+      data: {
+        deliveryLocation: state.command.deliveryLocation,
+        scheduledAt: state.command.scheduledAt
+      },
+      where: { id: state.workOrder.id }
+    });
+    await this.recordEvent(
+      updated,
+      VehicleHandoverEventType.FIELD_FACTS_UPDATED,
+      {
+        actorId: state.command.actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: {
+          changedFieldKeys: ["deliveryLocation", "scheduledAt"],
+          governedBy: state.command.source
+        }
+      },
+      tx
+    );
+    return updated;
   }
 
   async updateGovernedReturnInboundInTransaction(

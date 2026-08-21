@@ -90,6 +90,17 @@ type AssetOperationsTransactionCapabilityState = Readonly<{
   source: StableAssetOperationSource;
   transaction: Prisma.TransactionClient;
 }>;
+declare const assetOperationsPreparedCreateCapabilityBrand: unique symbol;
+export type AssetOperationsPreparedCreateCapability = Readonly<{
+  [assetOperationsPreparedCreateCapabilityBrand]: true;
+}>;
+type AssetOperationsPreparedCreateCapabilityState = Readonly<{
+  authoritySnapshot: ReturnType<typeof projectAuthority>;
+  command: CreateWorkOrderServiceCommand;
+  context: AssetOperationCommandContext;
+  repositoryAuthority: AssetOperationsCallerOwnedCreateAuthority;
+  transaction: Prisma.TransactionClient;
+}>;
 type LockedWorkOrderCommandHandle = Awaited<
   ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>
 >;
@@ -154,6 +165,10 @@ export class AssetOperationsService {
     AssetOperationsTransactionCapability,
     AssetOperationsTransactionCapabilityState
   >();
+  private readonly preparedCreateCapabilities = new WeakMap<
+    AssetOperationsPreparedCreateCapability,
+    AssetOperationsPreparedCreateCapabilityState
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -197,6 +212,88 @@ export class AssetOperationsService {
       commandSnapshot.source
     );
     return this.createWorkOrderCommand(tx, commandSnapshot, context, repositoryCapability);
+  }
+
+  async attestCallerOwnedCreateAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    command: CreateWorkOrderServiceCommand,
+    context: AssetOperationCommandContext,
+    capability: AssetOperationsTransactionCapability
+  ): Promise<AssetOperationsPreparedCreateCapability> {
+    const capabilityState = this.takeCallerOwnedCapability(capability);
+    const commandSnapshot = snapshotCallerOwnedCreateCommand(command);
+    const contextSnapshot = snapshotCommandContext(context);
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      capabilityState,
+      tx,
+      commandSnapshot.source
+    );
+    let repositoryAuthority: AssetOperationsCallerOwnedCreateAuthority;
+    try {
+      repositoryAuthority = await this.repository.attestCallerOwnedCreateAuthority(
+        tx,
+        commandSnapshot,
+        repositoryCapability
+      );
+    } catch (error) {
+      if (hasConflictCode(error, ASSET_OPERATION_ERROR_CODE.AUTHORITY_NOT_FOUND)) {
+        throw authorityMismatch();
+      }
+      throw error;
+    }
+    const authority = await loadCreateAuthority(tx, commandSnapshot);
+    const prepared = Object.freeze({}) as AssetOperationsPreparedCreateCapability;
+    this.preparedCreateCapabilities.set(
+      prepared,
+      Object.freeze({
+        authoritySnapshot: projectAuthority(authority),
+        command: commandSnapshot,
+        context: contextSnapshot,
+        repositoryAuthority,
+        transaction: tx
+      })
+    );
+    return prepared;
+  }
+
+  async createPreparedWorkOrderInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetOperationsPreparedCreateCapability
+  ): Promise<WorkOrderCommandOutcome> {
+    const state = this.preparedCreateCapabilities.get(capability);
+    this.preparedCreateCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw new ConflictException({
+        code: ASSET_OPERATION_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-operation transaction capability is invalid."
+      });
+    }
+    const outcome = await this.repository.createWorkOrder(
+      tx,
+      {
+        ...state.command,
+        actorId: state.context.actorId,
+        authoritySnapshot: state.authoritySnapshot
+      },
+      state.repositoryAuthority
+    );
+    if (outcome.wrote) {
+      await this.writeAudit(
+        tx,
+        AuditAction.CREATE,
+        "asset_work_order",
+        outcome.workOrder,
+        state.context
+      );
+      await this.writeAudit(
+        tx,
+        AuditAction.CREATE,
+        "asset_work_order_event",
+        outcome.event,
+        state.context
+      );
+    }
+    return outcome;
   }
 
   async createWorkOrder(
@@ -1126,6 +1223,17 @@ function snapshotAssetOperationSource(
   source: StableAssetOperationSource
 ): StableAssetOperationSource {
   return Object.freeze({ id: source.id, key: source.key, type: source.type });
+}
+
+function snapshotCommandContext(
+  context: AssetOperationCommandContext
+): AssetOperationCommandContext {
+  return Object.freeze({
+    actorId: context.actorId,
+    ...(context.ipAddress === undefined ? {} : { ipAddress: context.ipAddress }),
+    permissions: Object.freeze([...context.permissions]),
+    ...(context.userAgent === undefined ? {} : { userAgent: context.userAgent })
+  });
 }
 
 function snapshotCallerOwnedCreateCommand(

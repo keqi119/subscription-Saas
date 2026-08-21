@@ -27,6 +27,41 @@ import { PrismaService } from "../src/prisma/prisma.service";
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
 describe("AssetOperationsService", () => {
+  it("attests after coordinator locks and mutates through one-use prepared handles without relocking", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const sequenceAfterSource = [...harness.sequence];
+    const prepared = await harness.service.attestCallerOwnedCreateAuthorityInTransaction(
+      harness.tx as never,
+      command,
+      harness.context,
+      sourceCapability
+    );
+
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
+    ).resolves.toMatchObject({ workOrder: { id: harness.ids.workOrderId } });
+    expect(harness.sequence.filter((entry) => entry.startsWith("authority:"))).toHaveLength(0);
+    expect(sequenceAfterSource).toEqual(["source-lock"]);
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(
+        harness.tx as never,
+        Object.freeze({}) as never
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+  });
+
   it("executes a prepared caller-owned create capability once in the exact transaction", async () => {
     const harness = createHarness();
     const capability = await harness.service.prepareCallerOwnedTransaction(
@@ -1548,6 +1583,7 @@ function createHarness(
       workOrder
     })),
     listWorkOrdersByVehicle: vi.fn(async () => [workOrder]),
+    attestCallerOwnedCreateAuthority: vi.fn(async () => Object.freeze({})),
     lockCallerOwnedCreateAuthority: vi.fn(async (_tx, command) => {
       for (const table of [
         command.orderId ? "subscription_order" : null,

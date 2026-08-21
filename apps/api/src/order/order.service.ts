@@ -2544,12 +2544,6 @@ export class OrderService {
               scheduledAt
             })
           : null;
-        if (beforeOrder.orderStatus === OrderStatus.PENDING_RETURN && !managedCapability) {
-          throw new ConflictException({
-            code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND",
-            message: "The managed normal-return authority is unavailable."
-          });
-        }
         const beforeReturn = await tx.vehicleReturn.findUnique({
           include: returnInclude,
           where: { orderId: id }
@@ -2595,18 +2589,20 @@ export class OrderService {
           );
         }
 
+        await this.writeReturnAudit(
+          beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
+          vehicleReturn.id,
+          beforeReturn ? toReturnView(beforeReturn) : undefined,
+          toReturnView(vehicleReturn),
+          user,
+          context,
+          tx
+        );
+
         return { beforeReturn, vehicleReturn };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted })
     );
 
-    await this.writeReturnAudit(
-      result.beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
-      result.vehicleReturn.id,
-      result.beforeReturn ? toReturnView(result.beforeReturn) : undefined,
-      toReturnView(result.vehicleReturn),
-      user,
-      context
-    );
     return toReturnView(result.vehicleReturn);
   }
 
@@ -3959,19 +3955,23 @@ export class OrderService {
     before: unknown,
     after: unknown,
     user: RequestUser,
-    context: RequestContext
+    context: RequestContext,
+    tx?: Prisma.TransactionClient
   ) {
-    await this.auditService.write({
-      action,
-      after,
-      before,
-      entityId,
-      entityType: "vehicle_return",
-      ipAddress: context.ipAddress,
-      module: "vehicle_return",
-      operatorId: user.id,
-      userAgent: context.userAgent
-    });
+    await this.auditService.write(
+      {
+        action,
+        after,
+        before,
+        entityId,
+        entityType: "vehicle_return",
+        ipAddress: context.ipAddress,
+        module: "vehicle_return",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      },
+      tx
+    );
   }
 
   private async writeEntitlementAudit(

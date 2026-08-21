@@ -79,12 +79,13 @@ export class SubscriptionExpiryService {
       }
       const committedNextSegment = await findEffectiveNextSegment(tx, initialSegment);
       if (committedNextSegment) return { outcome: "EXTENDED" as const };
-      const closureCapability = await this.closureService.prepareNormalExpiryInTransaction(tx, {
+      const closureCapability = await prepareNormalExpiry(
+        this.closureService,
+        tx,
         decisionAt,
-        orderId: initialSegment.orderId,
-        segmentId: initialSegment.id
-      });
-      await lockExpiryRows(tx, segmentId);
+        initialSegment.orderId,
+        initialSegment.id
+      );
       const segment = await tx.subscriptionContractSegment.findUnique({
         where: { id: segmentId }
       });
@@ -412,31 +413,6 @@ function runReadCommittedTransaction<T>(
   });
 }
 
-async function lockExpiryRows(tx: Prisma.TransactionClient, segmentId: string) {
-  try {
-    await tx.$queryRaw(Prisma.sql`
-      SELECT "id" FROM "subscription_change_order"
-      WHERE "source_segment_id" = ${segmentId}::uuid
-      ORDER BY "id"
-      FOR UPDATE NOWAIT
-    `);
-    await tx.$queryRaw(Prisma.sql`
-      SELECT "id" FROM "renewal_consideration"
-      WHERE "segment_id" = ${segmentId}::uuid
-      ORDER BY "id"
-      FOR UPDATE NOWAIT
-    `);
-  } catch (error) {
-    if (databaseCode(error) === "55P03") {
-      throw new SubscriptionChangeError(
-        "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY",
-        "The subscription expiry authority is currently being changed."
-      );
-    }
-    throw error;
-  }
-}
-
 async function findEffectiveNextSegment(
   tx: Prisma.TransactionClient,
   segment: { endDate: Date; orderId: string; sequenceNo: number }
@@ -472,6 +448,43 @@ function databaseCode(error: unknown) {
     }
   }
   return "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+async function prepareNormalExpiry(
+  service: SubscriptionClosureService,
+  tx: Prisma.TransactionClient,
+  decisionAt: Date,
+  orderId: string,
+  segmentId: string
+) {
+  try {
+    return await service.prepareNormalExpiryInTransaction(tx, {
+      decisionAt,
+      orderId,
+      segmentId
+    });
+  } catch (error) {
+    const code = applicationCode(error);
+    if (
+      databaseCode(error) === "55P03" ||
+      code === "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY" ||
+      code === "HANDOVER_RETURN_INBOUND_AUTHORITY_BUSY" ||
+      code === "HANDOVER_P0_AUTHORITY_BUSY" ||
+      code === "ASSET_OPERATION_AUTHORITY_BUSY"
+    ) {
+      throw new SubscriptionChangeError(
+        "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY",
+        "The subscription expiry authority is currently being changed."
+      );
+    }
+    throw error;
+  }
+}
+
+function applicationCode(error: unknown) {
+  if (!error || typeof error !== "object" || !("response" in error)) return undefined;
+  const response = error.response;
+  return response && typeof response === "object" && "code" in response ? response.code : undefined;
 }
 
 async function readDatabaseClock(tx: Prisma.TransactionClient) {

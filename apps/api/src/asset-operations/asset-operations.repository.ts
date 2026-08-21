@@ -268,6 +268,22 @@ export class AssetOperationsRepository {
     return authority;
   }
 
+  async attestCallerOwnedCreateAuthority(
+    tx: Prisma.TransactionClient,
+    command: CallerOwnedCreateAuthorityCommand,
+    capability: AssetOperationsCallerOwnedCommandCapability
+  ): Promise<AssetOperationsCallerOwnedCreateAuthority> {
+    const capabilityState = this.takeCallerOwnedCommandCapability(capability);
+    const commandSnapshot = snapshotCallerOwnedCreateAuthorityCommand(command);
+    this.assertCallerOwnedCommandCapability(capabilityState, tx, commandSnapshot.source);
+    const authority = Object.freeze({}) as AssetOperationsCallerOwnedCreateAuthority;
+    this.callerOwnedCreateAuthorities.set(
+      authority,
+      Object.freeze({ identity: createAuthorityIdentity(commandSnapshot), transaction: tx })
+    );
+    return authority;
+  }
+
   /** Locks current mutable header exclusively with its stable authority set and returns a reusable handle. */
   async lockWorkOrderForCommand(
     tx: Prisma.TransactionClient,

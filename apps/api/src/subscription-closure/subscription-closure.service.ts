@@ -10,14 +10,23 @@ import {
 } from "@prisma/client";
 import { createHash } from "node:crypto";
 
-import { AssetOperationsService } from "../asset-operations/asset-operations.service";
+import {
+  AssetOperationsService,
+  type AssetOperationsTransactionCapability
+} from "../asset-operations/asset-operations.service";
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
-import { HandoverWorkOrderService } from "../handover-work-order/handover-work-order.service";
-import type { GovernedReturnInboundUpdateCapability } from "../handover-work-order/handover-work-order.service";
+import {
+  HandoverWorkOrderService,
+  type PreparedGovernedReturnInboundUpdateCapability,
+  type PreparedReturnInboundCapability
+} from "../handover-work-order/handover-work-order.service";
 import { canonicalSubscriptionClosureJson } from "./subscription-closure.domain";
 import {
   SubscriptionClosureRepository,
+  type ClosureAuthorityAttestation,
+  type PreparedClosureSourceCapability,
+  type SubscriptionClosureAuthorityLock,
   type SubscriptionClosureMutationAuditHook
 } from "./subscription-closure.repository";
 import type { SubscriptionClosureSource } from "./subscription-closure.types";
@@ -80,12 +89,15 @@ type NormalExpiryAuthority = Readonly<{
 }>;
 
 type NormalExpiryCapabilityState = Readonly<{
-  assetCapability: unknown;
+  assetCapability: AssetOperationsTransactionCapability;
   assetSource: SubscriptionClosureSource;
+  authorityAttestations: ReadonlyMap<string, ClosureAuthorityAttestation>;
   authority: NormalExpiryAuthority;
   caseSource: SubscriptionClosureSource;
+  caseSourceCapability: PreparedClosureSourceCapability;
   documentSource: SubscriptionClosureSource;
-  handoverCapability: unknown;
+  documentSourceCapability: PreparedClosureSourceCapability;
+  handoverCapability: PreparedReturnInboundCapability;
   handoverSource: SubscriptionClosureSource;
   input: PrepareNormalExpiryInput;
   occurredAt: Date;
@@ -94,7 +106,7 @@ type NormalExpiryCapabilityState = Readonly<{
 
 type ManagedReturnCapabilityState = Readonly<{
   command: PrepareManagedReturnInput;
-  handoverCapability: GovernedReturnInboundUpdateCapability;
+  handoverCapability: PreparedGovernedReturnInboundUpdateCapability;
   handoverWorkOrderId: string;
   transaction: Prisma.TransactionClient;
   vehicleReturnId: string;
@@ -123,32 +135,124 @@ export class SubscriptionClosureService {
     input: PrepareNormalExpiryInput
   ): Promise<NormalExpiryTransactionCapability> {
     const command = normalizePrepareInput(input);
-    const authority = await this.loadNormalExpiryAuthority(tx, command);
     const handoverSource = source(command.segmentId, "return-inbound-handover");
     const assetSource = source(command.segmentId, "return-inbound-asset-work-order");
     const caseSource = source(command.segmentId, "normal-closure-case");
     const documentSource = source(command.segmentId, "return-manifest:1");
-    const handoverCapability = await this.handoverWorkOrders.prepareReturnInboundInTransaction(tx, {
-      actorId: authority.actorId,
-      orderId: authority.orderId,
-      source: handoverSource
-    });
-    const assetCapability = await this.assetOperations.prepareCallerOwnedTransaction(
-      tx,
-      assetSource
-    );
-    await this.repository.lockSourceOwnership(tx, caseSource);
-    await this.repository.lockSourceOwnership(tx, documentSource);
-
     const currentCase = await tx.subscriptionClosureCase.findUnique({
-      select: { effectiveAt: true, id: true },
-      where: { orderId: authority.orderId }
+      select: {
+        createSourceId: true,
+        createSourceKey: true,
+        createSourceType: true,
+        createdBy: true,
+        effectiveAt: true,
+        id: true,
+        returnAssetWorkOrderId: true,
+        returnHandoverWorkOrderId: true,
+        vehicleReturnId: true
+      },
+      where: { orderId: command.orderId }
     });
+    if (
+      currentCase &&
+      (currentCase.createSourceType !== caseSource.type ||
+        currentCase.createSourceId !== caseSource.id ||
+        currentCase.createSourceKey !== caseSource.key)
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+    const authority = await this.loadNormalExpiryAuthority(tx, command, currentCase?.createdBy);
+    let handoverSourceCapability: unknown;
+    let assetCapability: AssetOperationsTransactionCapability | undefined;
+    let caseSourceCapability: PreparedClosureSourceCapability | undefined;
+    let documentSourceCapability: PreparedClosureSourceCapability | undefined;
+    const sourcePreparations = [
+      {
+        prepare: async () => {
+          caseSourceCapability = await this.repository.prepareSourceInTransaction(tx, caseSource);
+        },
+        source: caseSource
+      },
+      {
+        prepare: async () => {
+          assetCapability = await this.assetOperations.prepareCallerOwnedTransaction(
+            tx,
+            assetSource
+          );
+        },
+        source: assetSource
+      },
+      {
+        prepare: async () => {
+          handoverSourceCapability =
+            await this.handoverWorkOrders.prepareReturnInboundInTransaction(tx, {
+              actorId: authority.actorId,
+              orderId: authority.orderId,
+              source: handoverSource
+            });
+        },
+        source: handoverSource
+      },
+      {
+        prepare: async () => {
+          documentSourceCapability = await this.repository.prepareSourceInTransaction(
+            tx,
+            documentSource
+          );
+        },
+        source: documentSource
+      }
+    ].sort((left, right) => sourceSortKey(left.source).localeCompare(sourceSortKey(right.source)));
+    for (const preparation of sourcePreparations) await preparation.prepare();
+    if (
+      !handoverSourceCapability ||
+      !assetCapability ||
+      !caseSourceCapability ||
+      !documentSourceCapability
+    ) {
+      throw serviceConflict("CAPABILITY_INVALID");
+    }
+
     const currentReturn = await tx.vehicleReturn.findUnique({
       select: { id: true },
       where: { orderId: authority.orderId }
     });
-    await this.repository.lockAuthorityRows(tx, [
+    const [changes, considerations, currentManifest, existingEsignTask] = await Promise.all([
+      tx.subscriptionChangeOrder.findMany({
+        select: { id: true },
+        where: { sourceSegmentId: command.segmentId }
+      }),
+      tx.renewalConsideration.findMany({
+        select: { id: true },
+        where: { segmentId: command.segmentId }
+      }),
+      currentCase
+        ? tx.subscriptionClosureCurrentDocument.findUnique({
+            include: { documentRevision: true },
+            where: {
+              closureCaseId_documentType: {
+                closureCaseId: currentCase.id,
+                documentType: "RETURN_MANIFEST"
+              }
+            }
+          })
+        : null,
+      tx.contractESignTask.findFirst({
+        select: { id: true },
+        where: { contractId: authority.contractId, deletedAt: null }
+      })
+    ]);
+    const locks: SubscriptionClosureAuthorityLock[] = [
+      ...changes.map(({ id }) => ({
+        id,
+        mode: "UPDATE" as const,
+        table: "subscription_change_order" as const
+      })),
+      ...considerations.map(({ id }) => ({
+        id,
+        mode: "UPDATE" as const,
+        table: "renewal_consideration" as const
+      })),
       ...(currentCase
         ? [
             {
@@ -166,16 +270,87 @@ export class SubscriptionClosureService {
       ...(currentReturn
         ? [{ id: currentReturn.id, mode: "UPDATE" as const, table: "vehicle_return" as const }]
         : []),
+      ...(currentCase?.returnHandoverWorkOrderId
+        ? [
+            {
+              id: currentCase.returnHandoverWorkOrderId,
+              mode: "UPDATE" as const,
+              table: "vehicle_handover_work_order" as const
+            }
+          ]
+        : []),
+      ...(currentCase?.returnAssetWorkOrderId
+        ? [
+            {
+              id: currentCase.returnAssetWorkOrderId,
+              mode: "UPDATE" as const,
+              table: "asset_work_order" as const
+            }
+          ]
+        : []),
+      ...(currentManifest
+        ? [
+            {
+              id: currentManifest.documentRevision.id,
+              mode: "UPDATE" as const,
+              table: "subscription_closure_document_revision" as const
+            },
+            {
+              id: currentManifest.documentRevision.sourceFileId,
+              mode: "SHARE" as const,
+              table: "file_object" as const
+            },
+            {
+              id: currentManifest.documentRevision.contractESignTaskId,
+              mode: "SHARE" as const,
+              table: "contract_esign_task" as const
+            }
+          ]
+        : []),
+      ...(existingEsignTask
+        ? [
+            {
+              id: existingEsignTask.id,
+              mode: "SHARE" as const,
+              table: "contract_esign_task" as const
+            }
+          ]
+        : []),
       { id: authority.customerId, mode: "SHARE", table: "customer" },
       { id: authority.actorId, mode: "SHARE", table: "user" }
+    ];
+    const authorityAttestations = await this.repository.prepareAuthorityInTransaction(tx, locks, [
+      "asset-create",
+      "case-create",
+      "handover-create",
+      "manifest-create"
     ]);
-    const lockedAuthority = await this.loadNormalExpiryAuthority(tx, command);
+    const lockedAuthority = await this.loadNormalExpiryAuthority(
+      tx,
+      command,
+      currentCase?.createdBy
+    );
     if (!sameAuthority(authority, lockedAuthority)) throw serviceConflict("AUTHORITY_MISMATCH");
     const lockedCase = await tx.subscriptionClosureCase.findUnique({
       select: { effectiveAt: true, id: true },
       where: { orderId: authority.orderId }
     });
     if (lockedCase?.id !== currentCase?.id) throw serviceConflict("AUTHORITY_MISMATCH");
+    await this.repository.consumeAuthorityAttestationInTransaction(
+      tx,
+      requiredAttestation(authorityAttestations, "handover-create"),
+      "handover-create"
+    );
+    const handoverCapability =
+      await this.handoverWorkOrders.attestReturnInboundAuthorityInTransaction(
+        tx,
+        {
+          actorId: lockedAuthority.actorId,
+          orderId: lockedAuthority.orderId,
+          source: handoverSource
+        },
+        handoverSourceCapability as never
+      );
 
     const capability = Object.freeze({}) as NormalExpiryTransactionCapability;
     this.normalExpiryCapabilities.set(
@@ -183,9 +358,12 @@ export class SubscriptionClosureService {
       Object.freeze({
         assetCapability,
         assetSource,
+        authorityAttestations,
         authority: lockedAuthority,
         caseSource,
+        caseSourceCapability,
         documentSource,
+        documentSourceCapability,
         handoverCapability,
         handoverSource,
         input: command,
@@ -224,44 +402,50 @@ export class SubscriptionClosureService {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
 
-    const specialist = await this.handoverWorkOrders.createReturnInboundInTransaction(
+    const assetCommand = {
+      assetOwnerId: null,
+      contractId: state.authority.contractId,
+      costConfirmationRequired: false,
+      customerId: state.authority.customerId,
+      description: `Normal-expiry return inbound for ${state.authority.orderNo}`,
+      metadata: {
+        closureIntent: "NORMAL_COMPLETION",
+        segmentId: state.authority.segmentId,
+        vehicleReturnId: vehicleReturn.id
+      },
+      occurredAt: state.occurredAt,
+      orderId: state.authority.orderId,
+      priority: "NORMAL" as const,
+      relatedWorkOrderId: null,
+      source: state.assetSource,
+      vehicleId: state.authority.vehicleId,
+      workOrderType: "RETURN_INBOUND" as const
+    };
+    const assetContext = {
+      actorId: state.authority.actorId,
+      permissions: [],
+      userAgent: "subscription-expiry"
+    } as const;
+    await this.repository.consumeAuthorityAttestationInTransaction(
       tx,
-      {
-        actorId: state.authority.actorId,
-        orderId: state.authority.orderId,
-        source: state.handoverSource
-      },
-      state.handoverCapability as never
+      requiredAttestation(state.authorityAttestations, "asset-create"),
+      "asset-create"
     );
-    const common = await this.assetOperations.createWorkOrderInTransaction(
+    const preparedAsset = await this.assetOperations.attestCallerOwnedCreateAuthorityInTransaction(
       tx,
-      {
-        assetOwnerId: null,
-        contractId: state.authority.contractId,
-        costConfirmationRequired: false,
-        customerId: state.authority.customerId,
-        description: `Normal-expiry return inbound for ${state.authority.orderNo}`,
-        metadata: {
-          closureIntent: "NORMAL_COMPLETION",
-          segmentId: state.authority.segmentId,
-          vehicleReturnId: vehicleReturn.id
-        },
-        occurredAt: state.occurredAt,
-        orderId: state.authority.orderId,
-        priority: "NORMAL",
-        relatedWorkOrderId: null,
-        source: state.assetSource,
-        vehicleId: state.authority.vehicleId,
-        workOrderType: "RETURN_INBOUND"
-      },
-      {
-        actorId: state.authority.actorId,
-        permissions: [],
-        userAgent: "subscription-expiry"
-      },
-      state.assetCapability as never
+      assetCommand,
+      assetContext,
+      state.assetCapability
     );
-    const createdCase = await this.repository.createCase(
+    const specialist = await this.handoverWorkOrders.createPreparedReturnInboundInTransaction(
+      tx,
+      state.handoverCapability
+    );
+    const common = await this.assetOperations.createPreparedWorkOrderInTransaction(
+      tx,
+      preparedAsset
+    );
+    const createdCase = await this.repository.createPreparedCaseInTransaction(
       tx,
       {
         actorId: state.authority.actorId,
@@ -289,6 +473,8 @@ export class SubscriptionClosureService {
         vehicleId: state.authority.vehicleId,
         vehicleReturnId: vehicleReturn.id
       },
+      state.caseSourceCapability,
+      requiredAttestation(state.authorityAttestations, "case-create"),
       this.closureAudit(state.authority.actorId)
     );
     const currentManifest = await tx.subscriptionClosureCurrentDocument.findUnique({
@@ -300,8 +486,20 @@ export class SubscriptionClosureService {
         }
       }
     });
+    const revisionOne = currentManifest
+      ? await tx.subscriptionClosureDocumentRevision.findFirst({
+          where: {
+            closureCaseId: createdCase.outcome.id,
+            documentType: "RETURN_MANIFEST",
+            revisionNumber: 1,
+            sourceId: state.documentSource.id,
+            sourceKey: state.documentSource.key,
+            sourceType: state.documentSource.type
+          }
+        })
+      : null;
     const manifest = currentManifest
-      ? await this.replayFirstManifest(tx, state, currentManifest.documentRevision)
+      ? await this.replayFirstManifest(tx, state, revisionOne)
       : await this.createFirstManifest(
           tx,
           state,
@@ -324,11 +522,6 @@ export class SubscriptionClosureService {
     input: PrepareManagedReturnInput
   ): Promise<ManagedReturnTransactionCapability | null> {
     const command = normalizeManagedReturnInput(input);
-    await this.repository.lockSourceOwnership(tx, {
-      id: command.orderId,
-      key: "legacy-prepare-return",
-      type: "SUBSCRIPTION_CLOSURE"
-    });
     const observedCase = await tx.subscriptionClosureCase.findUnique({
       select: {
         closureType: true,
@@ -339,37 +532,60 @@ export class SubscriptionClosureService {
       },
       where: { orderId: command.orderId }
     });
-    await this.repository.lockAuthorityRows(tx, [
-      ...(observedCase
-        ? [
-            {
-              id: observedCase.id,
-              mode: "UPDATE" as const,
-              table: "subscription_closure_case" as const
-            }
-          ]
-        : []),
-      { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
-      ...(observedCase?.vehicleReturnId
-        ? [
-            {
-              id: observedCase.vehicleReturnId,
-              mode: "UPDATE" as const,
-              table: "vehicle_return" as const
-            }
-          ]
-        : []),
-      ...(observedCase?.returnHandoverWorkOrderId
-        ? [
-            {
-              id: observedCase.returnHandoverWorkOrderId,
-              mode: "UPDATE" as const,
-              table: "vehicle_handover_work_order" as const
-            }
-          ]
-        : []),
-      { id: command.actorId, mode: "SHARE", table: "user" }
-    ]);
+    if (!observedCase) {
+      const returnInbound = await tx.vehicleHandoverWorkOrder.findMany({
+        select: { metadata: true },
+        where: { handoverType: "RETURN_INBOUND", orderId: command.orderId }
+      });
+      if (returnInbound.some(({ metadata }) => isP0ManagedReturnMetadata(metadata))) {
+        throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
+      }
+      return null;
+    }
+    if (
+      observedCase.closureType !== "NORMAL_COMPLETION" ||
+      observedCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
+      !observedCase.vehicleReturnId ||
+      !observedCase.returnHandoverWorkOrderId
+    ) {
+      throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
+    }
+    const handoverCommand = {
+      actorId: command.actorId,
+      deliveryLocation: command.returnLocation,
+      orderId: command.orderId,
+      scheduledAt: command.scheduledAt,
+      source: {
+        id: observedCase.id,
+        key: "legacy-prepare-return",
+        type: "SUBSCRIPTION_CLOSURE"
+      },
+      workOrderId: observedCase.returnHandoverWorkOrderId
+    };
+    const handoverSourceCapability =
+      await this.handoverWorkOrders.prepareGovernedReturnInboundSourceInTransaction(
+        tx,
+        handoverCommand
+      );
+    const authority = await this.repository.prepareAuthorityInTransaction(
+      tx,
+      [
+        {
+          id: observedCase.id,
+          mode: "UPDATE" as const,
+          table: "subscription_closure_case" as const
+        },
+        { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+        { id: observedCase.vehicleReturnId, mode: "UPDATE", table: "vehicle_return" },
+        {
+          id: observedCase.returnHandoverWorkOrderId,
+          mode: "UPDATE",
+          table: "vehicle_handover_work_order"
+        },
+        { id: command.actorId, mode: "SHARE", table: "user" }
+      ],
+      ["managed-return"]
+    );
     const closureCase = await tx.subscriptionClosureCase.findUnique({
       select: {
         closureType: true,
@@ -380,8 +596,8 @@ export class SubscriptionClosureService {
       },
       where: { orderId: command.orderId }
     });
-    if (!closureCase) return null;
     if (
+      !closureCase ||
       closureCase.id !== observedCase?.id ||
       closureCase.closureType !== "NORMAL_COMPLETION" ||
       closureCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
@@ -410,22 +626,17 @@ export class SubscriptionClosureService {
     ) {
       throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
     }
-    const handoverCommand = {
-      actorId: command.actorId,
-      deliveryLocation: command.returnLocation,
-      orderId: command.orderId,
-      scheduledAt: command.scheduledAt,
-      source: {
-        id: closureCase.id,
-        key: "legacy-prepare-return",
-        type: "SUBSCRIPTION_CLOSURE"
-      },
-      workOrderId: handoverWorkOrder.id
-    };
+    const authorityAttestation = requiredAttestation(authority, "managed-return");
+    await this.repository.consumeAuthorityAttestationInTransaction(
+      tx,
+      authorityAttestation,
+      "managed-return"
+    );
     const handoverCapability =
-      await this.handoverWorkOrders.prepareGovernedReturnInboundUpdateInTransaction(
+      await this.handoverWorkOrders.attestGovernedReturnInboundAuthorityInTransaction(
         tx,
-        handoverCommand
+        handoverCommand,
+        handoverSourceCapability
       );
     const capability = Object.freeze({}) as ManagedReturnTransactionCapability;
     this.managedReturnCapabilities.set(
@@ -458,32 +669,11 @@ export class SubscriptionClosureService {
     ) {
       throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
     }
-    await this.handoverWorkOrders.updateGovernedReturnInboundInTransaction(
+    await this.handoverWorkOrders.updatePreparedGovernedReturnInboundInTransaction(
       tx,
-      {
-        actorId: state.command.actorId,
-        deliveryLocation: state.command.returnLocation,
-        orderId: state.command.orderId,
-        scheduledAt: state.command.scheduledAt,
-        source: {
-          id: await this.caseIdForManagedReturn(tx, state.command.orderId),
-          key: "legacy-prepare-return",
-          type: "SUBSCRIPTION_CLOSURE"
-        },
-        workOrderId: state.handoverWorkOrderId
-      },
       state.handoverCapability
     );
     return Object.freeze({ handoverWorkOrderId: state.handoverWorkOrderId });
-  }
-
-  private async caseIdForManagedReturn(tx: Prisma.TransactionClient, orderId: string) {
-    const closureCase = await tx.subscriptionClosureCase.findUnique({
-      select: { id: true },
-      where: { orderId }
-    });
-    if (!closureCase) throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
-    return closureCase.id;
   }
 
   private async createFirstManifest(
@@ -522,30 +712,35 @@ export class SubscriptionClosureService {
         uploadedBy: state.authority.actorId
       }
     });
-    const esignTask = await tx.contractESignTask.create({
-      data: {
-        contractId: state.authority.contractId,
-        createdBy: state.authority.actorId,
-        customerId: state.authority.customerId,
-        documentName: `${caseNo}-return-manifest-r1.json`,
-        documentObjectKey: objectKey,
-        documentType: ESignDocumentType.DELIVERY_HANDOVER,
-        orderId: state.authority.orderId,
-        provider: ESignProviderType.OTHER,
-        requestSnapshot: {
-          closureCaseId,
-          documentSnapshotHash: sourceFileHash,
-          documentType: "RETURN_MANIFEST",
-          revisionNumber: 1
-        },
-        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-        taskNo: createBusinessNo("ESG"),
-        taskStatus: ESignTaskStatus.CREATED,
-        updatedBy: state.authority.actorId
-      }
+    const existingEsignTask = await tx.contractESignTask.findFirst({
+      where: { contractId: state.authority.contractId, deletedAt: null }
     });
+    const esignTask =
+      existingEsignTask ??
+      (await tx.contractESignTask.create({
+        data: {
+          contractId: state.authority.contractId,
+          createdBy: state.authority.actorId,
+          customerId: state.authority.customerId,
+          documentName: `${caseNo}-return-manifest-r1.json`,
+          documentObjectKey: objectKey,
+          documentType: ESignDocumentType.DELIVERY_HANDOVER,
+          orderId: state.authority.orderId,
+          provider: ESignProviderType.OTHER,
+          requestSnapshot: {
+            closureCaseId,
+            documentSnapshotHash: sourceFileHash,
+            documentType: "RETURN_MANIFEST",
+            revisionNumber: 1
+          },
+          signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+          taskNo: createBusinessNo("ESG"),
+          taskStatus: ESignTaskStatus.CREATED,
+          updatedBy: state.authority.actorId
+        }
+      }));
     return (
-      await this.repository.appendDocumentRevision(
+      await this.repository.appendPreparedDocumentRevisionInTransaction(
         tx,
         {
           actorId: state.authority.actorId,
@@ -569,6 +764,8 @@ export class SubscriptionClosureService {
           stage: "GENERATED",
           vehicleReturnId
         },
+        state.documentSourceCapability,
+        requiredAttestation(state.authorityAttestations, "manifest-create"),
         this.closureAudit(state.authority.actorId)
       )
     ).outcome;
@@ -585,6 +782,7 @@ export class SubscriptionClosureService {
       documentSnapshot: Prisma.JsonValue;
       documentType: "RETURN_MANIFEST" | "EARLY_TERMINATION_AGREEMENT" | "RECOVERY_AUTHORITY";
       generatedAt: Date;
+      generatedBy: string;
       handoverWorkOrderId: string | null;
       id: string;
       signedAt: Date | null;
@@ -595,9 +793,10 @@ export class SubscriptionClosureService {
       sourceFileId: string;
       stage: "GENERATED" | "SIGNED" | "ARCHIVED";
       vehicleReturnId: string | null;
-    }
+    } | null
   ) {
     if (
+      !revision ||
       revision.documentType !== "RETURN_MANIFEST" ||
       !revision.vehicleReturnId ||
       !revision.handoverWorkOrderId
@@ -605,10 +804,10 @@ export class SubscriptionClosureService {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
     return (
-      await this.repository.appendDocumentRevision(
+      await this.repository.appendPreparedDocumentRevisionInTransaction(
         tx,
         {
-          actorId: state.authority.actorId,
+          actorId: revision.generatedBy,
           archivedAt: revision.archivedAt,
           archivedBy: revision.archivedBy,
           closureCaseId: revision.closureCaseId,
@@ -629,7 +828,9 @@ export class SubscriptionClosureService {
           stage: revision.stage,
           vehicleReturnId: revision.vehicleReturnId
         },
-        this.closureAudit(state.authority.actorId)
+        state.documentSourceCapability,
+        requiredAttestation(state.authorityAttestations, "manifest-create"),
+        this.closureAudit(revision.generatedBy)
       )
     ).outcome;
   }
@@ -652,7 +853,8 @@ export class SubscriptionClosureService {
 
   private async loadNormalExpiryAuthority(
     tx: Prisma.TransactionClient,
-    input: PrepareNormalExpiryInput
+    input: PrepareNormalExpiryInput,
+    persistedActorId?: string
   ): Promise<NormalExpiryAuthority> {
     const segment = await tx.subscriptionContractSegment.findUnique({
       select: { createdBy: true, endDate: true, id: true, orderId: true },
@@ -678,24 +880,29 @@ export class SubscriptionClosureService {
       throw serviceConflict("AUTHORITY_NOT_FOUND");
     }
     if (segment.orderId !== order.id) throw serviceConflict("AUTHORITY_MISMATCH");
-    const actorCandidates = [
-      ...new Set(
-        [segment.createdBy, order.updatedBy, order.createdBy].filter((value): value is string =>
-          Boolean(value)
+    let actorId = persistedActorId;
+    if (!actorId) {
+      const actorCandidates = [
+        ...new Set(
+          [segment.createdBy, order.updatedBy, order.createdBy].filter((value): value is string =>
+            Boolean(value)
+          )
         )
-      )
-    ];
-    let actor: { id: string } | null = null;
-    for (const actorId of actorCandidates) {
-      actor = await tx.user.findFirst({
-        select: { id: true },
-        where: { deletedAt: null, id: actorId, status: UserStatus.ACTIVE }
-      });
-      if (actor) break;
+      ];
+      for (const candidateId of actorCandidates) {
+        const actor = await tx.user.findFirst({
+          select: { id: true },
+          where: { deletedAt: null, id: candidateId, status: UserStatus.ACTIVE }
+        });
+        if (actor) {
+          actorId = actor.id;
+          break;
+        }
+      }
     }
-    if (!actor) throw serviceConflict("AUTHORITY_NOT_FOUND");
+    if (!actorId) throw serviceConflict("AUTHORITY_NOT_FOUND");
     return Object.freeze({
-      actorId: actor.id,
+      actorId,
       contractId: order.contractId,
       customerId: order.customerId,
       leaseId: lease.id,
@@ -717,6 +924,32 @@ export class SubscriptionClosureService {
 
 function source(segmentId: string, key: string): SubscriptionClosureSource {
   return Object.freeze({ id: segmentId, key, type: "SUBSCRIPTION_EXPIRY" });
+}
+
+function sourceSortKey(value: SubscriptionClosureSource) {
+  return `${value.type.trim()}\u0000${value.id.trim().toLowerCase()}\u0000${value.key.trim()}`;
+}
+
+function requiredAttestation(
+  attestations: ReadonlyMap<string, ClosureAuthorityAttestation>,
+  key: string
+) {
+  const attestation = attestations.get(key);
+  if (!attestation) throw serviceConflict("CAPABILITY_INVALID");
+  return attestation;
+}
+
+function isP0ManagedReturnMetadata(value: Prisma.JsonValue | null) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return false;
+  const marker = value.p0ReturnInbound;
+  if (!marker || Array.isArray(marker) || typeof marker !== "object") return false;
+  const markerSource = marker.source;
+  return (
+    markerSource !== null &&
+    !Array.isArray(markerSource) &&
+    typeof markerSource === "object" &&
+    markerSource.type === "SUBSCRIPTION_EXPIRY"
+  );
 }
 
 function normalizePrepareInput(input: PrepareNormalExpiryInput): PrepareNormalExpiryInput {

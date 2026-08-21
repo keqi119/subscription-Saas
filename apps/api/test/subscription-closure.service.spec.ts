@@ -20,10 +20,68 @@ const IDS = {
 } as const;
 
 describe("SubscriptionClosureService normal expiry", () => {
+  it("replays an existing case with its immutable actor after that actor becomes inactive", async () => {
+    const tx = createTransaction() as never as {
+      subscriptionClosureCase: { findUnique: ReturnType<typeof vi.fn> };
+      user: { findFirst: ReturnType<typeof vi.fn> };
+    } & Prisma.TransactionClient;
+    tx.subscriptionClosureCase.findUnique.mockResolvedValue({
+      createSourceId: IDS.segment,
+      createSourceKey: "normal-closure-case",
+      createSourceType: "SUBSCRIPTION_EXPIRY",
+      createdBy: IDS.actor,
+      effectiveAt: new Date("2026-09-02T16:00:00.000Z"),
+      id: IDS.closureCase,
+      returnAssetWorkOrderId: IDS.assetWorkOrder,
+      returnHandoverWorkOrderId: IDS.handoverWorkOrder,
+      vehicleReturnId: IDS.return
+    });
+    tx.user.findFirst.mockResolvedValue(null);
+    const handover = {
+      attestReturnInboundAuthorityInTransaction: vi.fn(async () => Object.freeze({})),
+      prepareReturnInboundInTransaction: vi.fn(async () => Object.freeze({ kind: "source" }))
+    };
+    const assetOperations = {
+      prepareCallerOwnedTransaction: vi.fn(async () => Object.freeze({ kind: "source" }))
+    };
+    const repository = {
+      consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      prepareAuthorityInTransaction: vi.fn(
+        async () => new Map([["handover-create", Object.freeze({})]])
+      ),
+      prepareSourceInTransaction: vi.fn(async () => Object.freeze({}))
+    };
+    const service = new SubscriptionClosureService(
+      repository as never,
+      handover as never,
+      assetOperations as never,
+      {} as never
+    );
+
+    await expect(
+      service.prepareNormalExpiryInTransaction(tx, {
+        decisionAt: new Date("2026-09-03T16:00:00.000Z"),
+        orderId: IDS.order,
+        segmentId: IDS.segment
+      })
+    ).resolves.toBeDefined();
+    expect(handover.prepareReturnInboundInTransaction).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ actorId: IDS.actor })
+    );
+    expect(tx.user.findFirst).not.toHaveBeenCalled();
+  });
+
   it("owns every source before ranked authority and creates the linked return facts once", async () => {
     const timeline: string[] = [];
+    const authority = new Map(
+      ["asset-create", "case-create", "handover-create", "manifest-create"].map((key) => [
+        key,
+        Object.freeze({ key })
+      ])
+    );
     const repository = {
-      appendDocumentRevision: vi.fn(async () => ({
+      appendPreparedDocumentRevisionInTransaction: vi.fn(async () => ({
         outcome: {
           closureCaseId: IDS.closureCase,
           id: IDS.manifest,
@@ -31,7 +89,7 @@ describe("SubscriptionClosureService normal expiry", () => {
         },
         wrote: true
       })),
-      createCase: vi.fn(async () => ({
+      createPreparedCaseInTransaction: vi.fn(async () => ({
         outcome: {
           caseNo: "CLS-1",
           currentDocuments: {},
@@ -40,15 +98,24 @@ describe("SubscriptionClosureService normal expiry", () => {
         },
         wrote: true
       })),
-      lockAuthorityRows: vi.fn(async () => {
-        timeline.push("authority");
+      consumeAuthorityAttestationInTransaction: vi.fn(async (_tx, _capability, key) => {
+        timeline.push(`attest:${key}`);
       }),
-      lockSourceOwnership: vi.fn(async (_tx, source) => {
+      prepareAuthorityInTransaction: vi.fn(async () => {
+        timeline.push("authority");
+        return authority;
+      }),
+      prepareSourceInTransaction: vi.fn(async (_tx, source) => {
         timeline.push(`source:${source.key}`);
+        return Object.freeze({ key: source.key });
       })
     };
     const handover = {
-      createReturnInboundInTransaction: vi.fn(async () => {
+      attestReturnInboundAuthorityInTransaction: vi.fn(async () => {
+        timeline.push("domain-attest:specialist");
+        return Object.freeze({ kind: "prepared-handover" });
+      }),
+      createPreparedReturnInboundInTransaction: vi.fn(async () => {
         timeline.push("create:specialist");
         return { id: IDS.handoverWorkOrder };
       }),
@@ -58,7 +125,11 @@ describe("SubscriptionClosureService normal expiry", () => {
       })
     };
     const assetOperations = {
-      createWorkOrderInTransaction: vi.fn(async () => {
+      attestCallerOwnedCreateAuthorityInTransaction: vi.fn(async () => {
+        timeline.push("domain-attest:common");
+        return Object.freeze({ kind: "prepared-asset" });
+      }),
+      createPreparedWorkOrderInTransaction: vi.fn(async () => {
         timeline.push("create:common");
         return { workOrder: { id: IDS.assetWorkOrder } };
       }),
@@ -95,12 +166,19 @@ describe("SubscriptionClosureService normal expiry", () => {
       capability
     );
 
-    expect(timeline.slice(0, 5)).toEqual([
-      "source:return-inbound-handover",
-      "source:return-inbound-asset-work-order",
+    expect(
+      timeline.filter(
+        (entry) =>
+          entry.startsWith("source:") || entry === "authority" || entry.startsWith("domain-attest:")
+      )
+    ).toEqual([
       "source:normal-closure-case",
+      "source:return-inbound-asset-work-order",
+      "source:return-inbound-handover",
       "source:return-manifest:1",
-      "authority"
+      "authority",
+      "domain-attest:specialist",
+      "domain-attest:common"
     ]);
     expect(result).toEqual({
       closureCaseId: IDS.closureCase,
@@ -108,16 +186,18 @@ describe("SubscriptionClosureService normal expiry", () => {
       returnHandoverWorkOrderId: IDS.handoverWorkOrder,
       returnManifestRevisionId: IDS.manifest
     });
-    expect(repository.createCase).toHaveBeenCalledWith(
+    expect(repository.createPreparedCaseInTransaction).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
         returnAssetWorkOrderId: IDS.assetWorkOrder,
         returnHandoverWorkOrderId: IDS.handoverWorkOrder,
         vehicleReturnId: IDS.return
       }),
+      expect.anything(),
+      authority.get("case-create"),
       expect.any(Function)
     );
-    expect(repository.appendDocumentRevision).toHaveBeenCalledWith(
+    expect(repository.appendPreparedDocumentRevisionInTransaction).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
         documentType: "RETURN_MANIFEST",
@@ -127,19 +207,157 @@ describe("SubscriptionClosureService normal expiry", () => {
         handoverWorkOrderId: IDS.handoverWorkOrder,
         vehicleReturnId: IDS.return
       }),
+      expect.anything(),
+      authority.get("manifest-create"),
+      expect.any(Function)
+    );
+    expect(repository.prepareAuthorityInTransaction).toHaveBeenCalledTimes(1);
+    expect(repository.prepareAuthorityInTransaction).toHaveBeenCalledWith(
+      tx,
+      expect.arrayContaining([
+        { id: IDS.order, mode: "UPDATE", table: "subscription_order" },
+        { id: IDS.vehicle, mode: "SHARE", table: "vehicle" },
+        { id: IDS.contract, mode: "SHARE", table: "contract" },
+        { id: IDS.segment, mode: "UPDATE", table: "subscription_contract_segment" },
+        { id: IDS.customer, mode: "SHARE", table: "customer" },
+        { id: IDS.actor, mode: "SHARE", table: "user" }
+      ]),
+      ["asset-create", "case-create", "handover-create", "manifest-create"]
+    );
+    expect(timeline.filter((entry) => entry === "authority")).toHaveLength(1);
+  });
+
+  it("replays immutable manifest revision one after the current family advances", async () => {
+    const tx = createTransaction() as never as {
+      subscriptionClosureCase: { findUnique: ReturnType<typeof vi.fn> };
+      subscriptionClosureCurrentDocument: { findUnique: ReturnType<typeof vi.fn> };
+      subscriptionClosureDocumentRevision: { findFirst: ReturnType<typeof vi.fn> };
+    } & Prisma.TransactionClient;
+    tx.subscriptionClosureCase.findUnique.mockResolvedValue({
+      createSourceId: IDS.segment,
+      createSourceKey: "normal-closure-case",
+      createSourceType: "SUBSCRIPTION_EXPIRY",
+      createdBy: IDS.actor,
+      effectiveAt: new Date("2026-09-02T16:00:00.000Z"),
+      id: IDS.closureCase,
+      returnAssetWorkOrderId: IDS.assetWorkOrder,
+      returnHandoverWorkOrderId: IDS.handoverWorkOrder,
+      vehicleReturnId: IDS.return
+    });
+    const revisionOne = {
+      archivedAt: null,
+      archivedBy: null,
+      closureCaseId: IDS.closureCase,
+      contractESignTaskId: IDS.esignTask,
+      documentSnapshot: { revision: 1 },
+      documentType: "RETURN_MANIFEST",
+      generatedAt: new Date("2026-09-02T16:00:01.000Z"),
+      generatedBy: IDS.actor,
+      handoverWorkOrderId: IDS.handoverWorkOrder,
+      id: IDS.manifest,
+      signedAt: null,
+      signedBy: null,
+      signedFileHash: null,
+      signedFileId: null,
+      sourceFileHash: "a".repeat(64),
+      sourceFileId: IDS.file,
+      stage: "GENERATED",
+      vehicleReturnId: IDS.return
+    };
+    tx.subscriptionClosureDocumentRevision.findFirst.mockResolvedValue(revisionOne);
+    tx.subscriptionClosureCurrentDocument.findUnique.mockResolvedValue({
+      documentRevision: {
+        ...revisionOne,
+        archivedAt: new Date("2026-09-04T00:00:00.000Z"),
+        archivedBy: IDS.actor,
+        id: "10000000-0000-4000-8000-000000000099",
+        signedAt: new Date("2026-09-03T00:00:00.000Z"),
+        signedBy: IDS.actor,
+        signedFileHash: "b".repeat(64),
+        signedFileId: "10000000-0000-4000-8000-000000000098",
+        stage: "ARCHIVED"
+      }
+    });
+    const appendDocumentRevision = vi.fn(async () => ({ outcome: revisionOne, wrote: false }));
+    const authority = new Map(
+      ["asset-create", "case-create", "handover-create", "manifest-create"].map((key) => [
+        key,
+        Object.freeze({ key })
+      ])
+    );
+    const repository = {
+      appendPreparedDocumentRevisionInTransaction: appendDocumentRevision,
+      consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      createPreparedCaseInTransaction: vi.fn(async () => ({
+        outcome: { caseNo: "CLS-1", id: IDS.closureCase, version: 2 },
+        wrote: false
+      })),
+      prepareAuthorityInTransaction: vi.fn(async () => authority),
+      prepareSourceInTransaction: vi.fn(async () => Object.freeze({}))
+    };
+    const service = new SubscriptionClosureService(
+      repository as never,
+      {
+        attestReturnInboundAuthorityInTransaction: vi.fn(async () => Object.freeze({})),
+        createPreparedReturnInboundInTransaction: vi.fn(async () => ({
+          id: IDS.handoverWorkOrder
+        })),
+        prepareReturnInboundInTransaction: vi.fn(async () => Object.freeze({}))
+      } as never,
+      {
+        attestCallerOwnedCreateAuthorityInTransaction: vi.fn(async () => Object.freeze({})),
+        createPreparedWorkOrderInTransaction: vi.fn(async () => ({
+          workOrder: { id: IDS.assetWorkOrder }
+        })),
+        prepareCallerOwnedTransaction: vi.fn(async () => Object.freeze({}))
+      } as never,
+      {} as never
+    );
+    const prepared = await service.prepareNormalExpiryInTransaction(tx, {
+      decisionAt: new Date("2026-09-05T00:00:00.000Z"),
+      orderId: IDS.order,
+      segmentId: IDS.segment
+    });
+
+    await service.completeNormalExpiryInTransaction(
+      tx,
+      {
+        decisionAt: new Date("2026-09-05T00:00:00.000Z"),
+        orderId: IDS.order,
+        segmentId: IDS.segment,
+        vehicleReturnId: IDS.return
+      },
+      prepared
+    );
+
+    expect(appendDocumentRevision).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        actorId: IDS.actor,
+        archivedAt: null,
+        sourceFileId: IDS.file,
+        stage: "GENERATED"
+      }),
+      expect.anything(),
+      authority.get("manifest-create"),
       expect.any(Function)
     );
   });
 
   it("binds legacy prepare-return to the managed case's exact return and specialist records", async () => {
+    const authorityAttestation = Object.freeze({ kind: "managed-authority" });
     const repository = {
-      lockAuthorityRows: vi.fn(async () => undefined),
-      lockSourceOwnership: vi.fn(async () => undefined)
+      consumeAuthorityAttestationInTransaction: vi.fn(async () => undefined),
+      prepareAuthorityInTransaction: vi.fn(
+        async () => new Map([["managed-return", authorityAttestation]])
+      )
     };
     const governedCapability = Object.freeze({ kind: "governed-specialist" });
+    const governedSource = Object.freeze({ kind: "governed-source" });
     const handover = {
-      prepareGovernedReturnInboundUpdateInTransaction: vi.fn(async () => governedCapability),
-      updateGovernedReturnInboundInTransaction: vi.fn(async () => ({
+      attestGovernedReturnInboundAuthorityInTransaction: vi.fn(async () => governedCapability),
+      prepareGovernedReturnInboundSourceInTransaction: vi.fn(async () => governedSource),
+      updatePreparedGovernedReturnInboundInTransaction: vi.fn(async () => ({
         id: IDS.handoverWorkOrder
       }))
     };
@@ -189,16 +407,22 @@ describe("SubscriptionClosureService normal expiry", () => {
     );
 
     expect(result).toEqual({ handoverWorkOrderId: IDS.handoverWorkOrder });
-    expect(repository.lockSourceOwnership).toHaveBeenCalledBefore(repository.lockAuthorityRows);
-    expect(handover.prepareGovernedReturnInboundUpdateInTransaction).toHaveBeenCalledWith(
+    expect(handover.prepareGovernedReturnInboundSourceInTransaction).toHaveBeenCalledBefore(
+      repository.prepareAuthorityInTransaction
+    );
+    expect(handover.prepareGovernedReturnInboundSourceInTransaction).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
         workOrderId: IDS.handoverWorkOrder
       })
     );
-    expect(handover.updateGovernedReturnInboundInTransaction).toHaveBeenCalledWith(
+    expect(handover.attestGovernedReturnInboundAuthorityInTransaction).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({ workOrderId: IDS.handoverWorkOrder }),
+      governedSource
+    );
+    expect(handover.updatePreparedGovernedReturnInboundInTransaction).toHaveBeenCalledWith(
+      tx,
       governedCapability
     );
   });
@@ -214,7 +438,8 @@ function createTransaction() {
       return [{ id: "locked" }];
     }),
     contractESignTask: {
-      create: vi.fn(async () => ({ id: IDS.esignTask }))
+      create: vi.fn(async () => ({ id: IDS.esignTask })),
+      findFirst: vi.fn(async () => null)
     },
     fileObject: {
       create: vi.fn(async () => ({ id: IDS.file }))
@@ -237,6 +462,12 @@ function createTransaction() {
     subscriptionClosureCurrentDocument: {
       findUnique: vi.fn(async () => null)
     },
+    subscriptionClosureDocumentRevision: {
+      findFirst: vi.fn(async () => null)
+    },
+    subscriptionChangeOrder: {
+      findMany: vi.fn(async () => [])
+    },
     subscriptionOrder: {
       findUnique: vi.fn(async () => ({
         contractId: IDS.contract,
@@ -247,6 +478,9 @@ function createTransaction() {
         updatedBy: IDS.actor,
         vehicleId: IDS.vehicle
       }))
+    },
+    renewalConsideration: {
+      findMany: vi.fn(async () => [])
     },
     user: {
       findFirst: vi.fn(async () => ({ id: IDS.actor }))

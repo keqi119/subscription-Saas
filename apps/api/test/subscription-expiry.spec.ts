@@ -38,7 +38,7 @@ describe("SubscriptionExpiryService", () => {
       }),
       harness.normalExpiryCapability
     );
-    expect(timeline.indexOf("closure:prepare")).toBeLessThan(timeline.indexOf("expiry:lock"));
+    expect(timeline).not.toContain("expiry:lock");
     expect(timeline.indexOf("closure:prepare")).toBeLessThan(
       timeline.indexOf("vehicle-return:create")
     );
@@ -48,13 +48,12 @@ describe("SubscriptionExpiryService", () => {
   });
 
   it("maps the exact Prisma adapter NOWAIT error to a stable expiry authority conflict", async () => {
-    const harness = createExpiryHarness({
-      lockError: {
-        code: "P2010",
-        meta: {
-          driverAdapterError: {
-            cause: { originalCode: "55P03" }
-          }
+    const harness = createExpiryHarness();
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce({
+      code: "P2010",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "55P03" }
         }
       }
     });
@@ -65,6 +64,38 @@ describe("SubscriptionExpiryService", () => {
       response: { code: "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY" },
       status: 409
     });
+  });
+
+  it.each([
+    "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY",
+    "HANDOVER_RETURN_INBOUND_AUTHORITY_BUSY",
+    "ASSET_OPERATION_AUTHORITY_BUSY"
+  ])("maps known governed %s conflicts at the expiry boundary", async (code) => {
+    const harness = createExpiryHarness();
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce({
+      response: { code },
+      status: 409
+    });
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY" },
+      status: 409
+    });
+  });
+
+  it("preserves non-busy closure failures at the expiry boundary", async () => {
+    const harness = createExpiryHarness();
+    const failure = {
+      response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+      status: 409
+    };
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce(failure);
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).rejects.toBe(failure);
   });
   it("moves an unsigned expiring subscription to return due without touching existing money or mandate facts", async () => {
     const harness = createExpiryHarness();

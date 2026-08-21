@@ -154,6 +154,7 @@ export const SUBSCRIPTION_CLOSURE_ERROR_CODE = {
   AUTHORITY_BUSY: "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY",
   AUTHORITY_MISMATCH: "SUBSCRIPTION_CLOSURE_AUTHORITY_MISMATCH",
   AUTHORITY_NOT_FOUND: "SUBSCRIPTION_CLOSURE_AUTHORITY_NOT_FOUND",
+  CAPABILITY_INVALID: "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID",
   CASE_ALREADY_EXISTS: "SUBSCRIPTION_CLOSURE_CASE_ALREADY_EXISTS",
   CASE_NOT_FOUND: "SUBSCRIPTION_CLOSURE_CASE_NOT_FOUND",
   CURRENT_DOCUMENT_CONFLICT: "SUBSCRIPTION_CLOSURE_CURRENT_DOCUMENT_CONFLICT",
@@ -176,6 +177,8 @@ const ERROR_MESSAGES: Readonly<Record<SubscriptionClosureErrorCode, string>> = {
     "The supplied subscription-closure authorities do not describe the same aggregate.",
   [SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND]:
     "A supplied subscription-closure authority was not found.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID]:
+    "The prepared subscription-closure capability is invalid.",
   [SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS]:
     "The order already has a subscription-closure case.",
   [SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_NOT_FOUND]: "The subscription-closure case was not found.",
@@ -197,6 +200,8 @@ const ERROR_MESSAGES: Readonly<Record<SubscriptionClosureErrorCode, string>> = {
 };
 
 export type SubscriptionClosureAuthorityTable =
+  | "subscription_change_order"
+  | "renewal_consideration"
   | "subscription_closure_case"
   | "subscription_order"
   | "vehicle"
@@ -224,7 +229,31 @@ export type SubscriptionClosureAuthorityLock = Readonly<{
   mode: "SHARE" | "UPDATE";
 }>;
 
+declare const preparedClosureSourceCapabilityBrand: unique symbol;
+export type PreparedClosureSourceCapability = Readonly<{
+  [preparedClosureSourceCapabilityBrand]: true;
+}>;
+
+declare const closureAuthorityAttestationBrand: unique symbol;
+export type ClosureAuthorityAttestation = Readonly<{
+  [closureAuthorityAttestationBrand]: true;
+}>;
+
+type PreparedClosureSourceState = Readonly<{
+  source: SubscriptionClosureSource;
+  transaction: Prisma.TransactionClient;
+}>;
+
+type ClosureAuthorityAttestationState = Readonly<{
+  key: string;
+  transaction: Prisma.TransactionClient;
+}>;
+
+const PREPARED_EXECUTION = Symbol("subscription-closure-prepared-execution");
+
 const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, number>> = {
+  subscription_change_order: 1,
+  renewal_consideration: 2,
   subscription_closure_case: 10,
   subscription_order: 20,
   vehicle: 30,
@@ -249,14 +278,78 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
 
 @Injectable()
 export class SubscriptionClosureRepository {
+  private readonly preparedSources = new WeakMap<
+    PreparedClosureSourceCapability,
+    PreparedClosureSourceState
+  >();
+  private readonly authorityAttestations = new WeakMap<
+    ClosureAuthorityAttestation,
+    ClosureAuthorityAttestationState
+  >();
+
+  async prepareSourceInTransaction(
+    tx: Prisma.TransactionClient,
+    source: SubscriptionClosureSource
+  ): Promise<PreparedClosureSourceCapability> {
+    const normalized = canonicalSubscriptionClosureSource(source);
+    await this.lockSourceOwnership(tx, normalized);
+    const capability = Object.freeze({}) as PreparedClosureSourceCapability;
+    this.preparedSources.set(capability, Object.freeze({ source: normalized, transaction: tx }));
+    return capability;
+  }
+
+  async prepareAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    locks: readonly SubscriptionClosureAuthorityLock[],
+    keys: readonly string[]
+  ): Promise<ReadonlyMap<string, ClosureAuthorityAttestation>> {
+    const normalizedKeys = keys.map(normalizeAttestationKey);
+    if (new Set(normalizedKeys).size !== normalizedKeys.length) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+    }
+    await this.lockAuthorityRows(tx, locks);
+    const result = new Map<string, ClosureAuthorityAttestation>();
+    for (const key of normalizedKeys) {
+      const capability = Object.freeze({}) as ClosureAuthorityAttestation;
+      this.authorityAttestations.set(capability, Object.freeze({ key, transaction: tx }));
+      result.set(key, capability);
+    }
+    return result;
+  }
+
+  async consumeAuthorityAttestationInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: ClosureAuthorityAttestation,
+    key: string
+  ): Promise<void> {
+    const state = this.authorityAttestations.get(capability);
+    this.authorityAttestations.delete(capability);
+    if (!state || state.transaction !== tx || state.key !== normalizeAttestationKey(key)) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+    }
+  }
+
+  async createPreparedCaseInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateSubscriptionClosureCaseCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    audit?: SubscriptionClosureMutationAuditHook
+  ) {
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    await this.consumeAuthorityAttestationInTransaction(tx, authorityAttestation, "case-create");
+    return this.createCase(tx, input, audit, PREPARED_EXECUTION);
+  }
+
   async createCase(
     tx: Prisma.TransactionClient,
     input: CreateSubscriptionClosureCaseCommand,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureCaseSnapshot>> {
     const command = normalizeCreateCaseCommand(input);
     const prepared = prepareCommand(command);
-    await this.lockSourceOwnership(tx, command.source);
+    if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     const replay = await replayReceipt<SubscriptionClosureCaseSnapshot>(
       tx,
       command.source,
@@ -265,7 +358,9 @@ export class SubscriptionClosureRepository {
     );
     if (replay) return replay;
 
-    await this.lockAuthorityRows(tx, createCaseAuthorityLocks(command));
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, createCaseAuthorityLocks(command));
+    }
     const order = await tx.subscriptionOrder.findUnique({
       select: { contractId: true, customerId: true, vehicleId: true },
       where: { id: command.orderId }
@@ -536,14 +631,31 @@ export class SubscriptionClosureRepository {
     }
   }
 
+  async appendPreparedDocumentRevisionInTransaction(
+    tx: Prisma.TransactionClient,
+    input: AppendSubscriptionClosureDocumentCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    audit?: SubscriptionClosureMutationAuditHook
+  ) {
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    await this.consumeAuthorityAttestationInTransaction(
+      tx,
+      authorityAttestation,
+      "manifest-create"
+    );
+    return this.appendDocumentRevision(tx, input, audit, PREPARED_EXECUTION);
+  }
+
   async appendDocumentRevision(
     tx: Prisma.TransactionClient,
     input: AppendSubscriptionClosureDocumentCommand,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureDocumentSnapshot>> {
     const command = normalizeDocumentCommand(input);
     const prepared = prepareCommand(command);
-    await this.lockSourceOwnership(tx, command.source);
+    if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     await assertDocumentLifecycleAtDatabaseClock(tx, command);
     const replay = await replayReceipt<SubscriptionClosureDocumentSnapshot>(
       tx,
@@ -553,9 +665,11 @@ export class SubscriptionClosureRepository {
     );
     if (replay) return replay;
 
-    await this.lockAuthorityRows(tx, [
-      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
-    ]);
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, [
+        { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
+      ]);
+    }
     const currentCase = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(currentCase, command.expectedVersion);
     const lowerDocumentLocks: SubscriptionClosureAuthorityLock[] = [];
@@ -573,16 +687,22 @@ export class SubscriptionClosureRepository {
         table: "vehicle_handover_work_order"
       });
     }
-    await this.lockAuthorityRows(tx, lowerDocumentLocks);
-    const currentProjection = await lockCurrentDocumentProjection(
-      tx,
-      command.closureCaseId,
-      command.documentType
-    );
+    if (execution !== PREPARED_EXECUTION) await this.lockAuthorityRows(tx, lowerDocumentLocks);
+    const currentProjection =
+      execution === PREPARED_EXECUTION
+        ? await tx.subscriptionClosureCurrentDocument.findUnique({
+            where: {
+              closureCaseId_documentType: {
+                closureCaseId: command.closureCaseId,
+                documentType: command.documentType
+              }
+            }
+          })
+        : await lockCurrentDocumentProjection(tx, command.closureCaseId, command.documentType);
     if ((currentProjection?.documentRevisionId ?? null) !== command.expectedCurrentRevisionId) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT);
     }
-    if (currentProjection) {
+    if (currentProjection && execution !== PREPARED_EXECUTION) {
       await this.lockAuthorityRows(tx, [
         {
           id: currentProjection.documentRevisionId,
@@ -606,7 +726,9 @@ export class SubscriptionClosureRepository {
     for (const actorId of [command.signedBy, command.archivedBy]) {
       if (actorId) higherDocumentLocks.push({ id: actorId, mode: "SHARE", table: "user" });
     }
-    await this.lockAuthorityRows(tx, higherDocumentLocks);
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, higherDocumentLocks);
+    }
     await assertDocumentAuthorityCoherence(tx, currentCase, command);
 
     const predecessor = currentProjection
@@ -864,6 +986,25 @@ export class SubscriptionClosureRepository {
     );
   }
 
+  private consumePreparedSource(
+    tx: Prisma.TransactionClient,
+    capability: PreparedClosureSourceCapability,
+    source: SubscriptionClosureSource
+  ) {
+    const state = this.preparedSources.get(capability);
+    this.preparedSources.delete(capability);
+    const normalized = canonicalSubscriptionClosureSource(source);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.source.id !== normalized.id ||
+      state.source.key !== normalized.key ||
+      state.source.type !== normalized.type
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+    }
+  }
+
   async lockAuthorityRows(
     tx: Prisma.TransactionClient,
     locks: readonly SubscriptionClosureAuthorityLock[]
@@ -910,6 +1051,14 @@ type PreparedCommand = Readonly<{
   payloadHash: string;
   payloadSnapshot: SubscriptionClosureJsonObject;
 }>;
+
+function normalizeAttestationKey(value: string) {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 128) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CAPABILITY_INVALID);
+  }
+  return normalized;
+}
 
 function normalizeCreateCaseCommand(
   input: CreateSubscriptionClosureCaseCommand

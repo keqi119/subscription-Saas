@@ -135,6 +135,7 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
 
   it("returns a stable NOWAIT loser while the archive holder remains usable", async () => {
     const fixture = await createRaceFixture(prisma);
+    const expiryService = createGovernedExpiryService(prisma);
     const barrier = createBarrier();
     const archiveService = new Stage3ExtensionArchiveService(
       hookTransaction(prisma, "subscriptionContractSegment", "create", barrier),
@@ -142,14 +143,14 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
     );
     try {
       const archivePromise = archiveService.finalizeArchivedContract({
-        completedAt: new Date("2026-09-02T15:59:00.000Z"),
+        completedAt: new Date("2026-08-20T15:59:00.000Z"),
         contractId: fixture.contractId,
         source: "CALLBACK",
         taskId: fixture.taskId
       });
       await barrier.entered;
-      const expiryPromise = service
-        .expireSegment(fixture.segmentId, new Date("2026-09-02T16:00:00.000Z"))
+      const expiryPromise = expiryService
+        .expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"))
         .then(
           (value) => ({ status: "fulfilled" as const, value }),
           (reason) => ({ reason, status: "rejected" as const })
@@ -171,7 +172,7 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
         value: { outcome: "SCHEDULED" }
       });
       await expect(
-        service.expireSegment(fixture.segmentId, new Date("2026-09-02T16:00:00.000Z"))
+        expiryService.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"))
       ).resolves.toEqual({ outcome: "EXTENDED" });
       await expect(
         prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } })
@@ -191,37 +192,25 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
       ).resolves.toBe(2);
     } finally {
       barrier.release();
-      await cleanupExpiryFixture(
-        prisma,
-        fixture.orderId,
-        fixture.segmentId,
-        fixture.customerId,
-        fixture.vehicleId
-      );
+      await cleanupRaceFixture(prisma, fixture);
     }
-  });
+  }, 15_000);
 
   it("records late evidence only when expiry commits before the archive callback", async () => {
     const fixture = await createRaceFixture(prisma);
     const barrier = createBarrier();
-    const expiryService = new SubscriptionExpiryService(
-      hookTransaction(prisma, "vehicleReturn", "create", barrier),
-      {
-        notifyRenewalExpiryInApp: vi.fn(async () => ({ created: true })),
-        notifyRenewalReturnOverdueInApp: vi.fn(async () => ({ created: true }))
-      } as never,
-      new AuditService(prisma),
-      passthroughClosureOrchestrator()
+    const expiryService = createGovernedExpiryService(
+      hookTransaction(prisma, "vehicleReturn", "create", barrier)
     );
     const archiveService = new Stage3ExtensionArchiveService(prisma, new AuditService(prisma));
     try {
       const expiryPromise = expiryService.expireSegment(
         fixture.segmentId,
-        new Date("2026-09-02T16:00:00.000Z")
+        new Date("2026-08-20T16:00:00.000Z")
       );
       await barrier.entered;
       const archivePromise = archiveService.finalizeArchivedContract({
-        completedAt: new Date("2026-09-02T15:59:00.000Z"),
+        completedAt: new Date("2026-08-20T15:59:00.000Z"),
         contractId: fixture.contractId,
         source: "CALLBACK",
         taskId: fixture.taskId
@@ -233,6 +222,7 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
         expiryPromise,
         archivePromise
       ]);
+      if (expiryResult.status === "rejected") throw expiryResult.reason;
       expect(expiryResult).toMatchObject({
         status: "fulfilled",
         value: { outcome: "EXPIRED" }
@@ -260,13 +250,7 @@ describe("SubscriptionExpiryService PostgreSQL concurrency", () => {
       ).resolves.toBe(1);
     } finally {
       barrier.release();
-      await cleanupExpiryFixture(
-        prisma,
-        fixture.orderId,
-        fixture.segmentId,
-        fixture.customerId,
-        fixture.vehicleId
-      );
+      await cleanupRaceFixture(prisma, fixture);
     }
   });
 });
@@ -355,6 +339,124 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   });
 
+  it("replays the immutable actor and revision one after actor and manifest successors change", async () => {
+    const fixture = await createManagedExpiryFixture(prisma);
+    const service = createGovernedExpiryService(prisma);
+    const candidateId = randomUUID();
+    try {
+      await service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+        where: { orderId: fixture.orderId }
+      });
+      const revisionOne = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
+        where: {
+          closureCaseId: closureCase.id,
+          documentType: "RETURN_MANIFEST",
+          revisionNumber: 1
+        }
+      });
+      const revisionTwoId = randomUUID();
+      const revisionThreeId = randomUUID();
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
+          VALUES (${candidateId}::uuid, ${`replay-${candidateId}`}, 'Replacement actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
+        `);
+        await tx.user.update({ data: { status: "DISABLED" }, where: { id: fixture.actorId } });
+        await tx.subscriptionOrder.update({
+          data: { createdBy: candidateId, updatedBy: candidateId },
+          where: { id: fixture.orderId }
+        });
+        await tx.subscriptionContractSegment.update({
+          data: { createdBy: candidateId },
+          where: { id: fixture.segmentId }
+        });
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "subscription_closure_document_revision" (
+            "id", "closure_case_id", "revision_number", "document_type", "stage",
+            "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
+            "handover_work_order_id", "contract_esign_task_id", "source_file_id",
+            "source_file_hash", "signed_file_id", "signed_file_hash", "source_type",
+            "source_id", "source_key", "generated_by", "generated_at", "signed_by",
+            "signed_at", "created_at"
+          ) SELECT
+            ${revisionTwoId}::uuid, "closure_case_id", 2, "document_type", 'SIGNED',
+            "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
+            "handover_work_order_id", "contract_esign_task_id", "source_file_id",
+            "source_file_hash", "source_file_id", "source_file_hash", 'TASK3_TEST',
+            ${fixture.orderId}::uuid, 'return-manifest:2', ${candidateId}::uuid, "generated_at",
+            ${candidateId}::uuid, "generated_at", clock_timestamp()
+          FROM "subscription_closure_document_revision" WHERE "id" = ${revisionOne.id}::uuid
+        `);
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "subscription_closure_document_revision" (
+            "id", "closure_case_id", "revision_number", "document_type", "stage",
+            "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
+            "handover_work_order_id", "contract_esign_task_id", "source_file_id",
+            "source_file_hash", "signed_file_id", "signed_file_hash", "source_type",
+            "source_id", "source_key", "generated_by", "generated_at", "signed_by",
+            "signed_at", "archived_by", "archived_at", "created_at"
+          ) SELECT
+            ${revisionThreeId}::uuid, "closure_case_id", 3, "document_type", 'ARCHIVED',
+            "document_snapshot", "document_snapshot_hash", "vehicle_return_id",
+            "handover_work_order_id", "contract_esign_task_id", "source_file_id",
+            "source_file_hash", "source_file_id", "source_file_hash", 'TASK3_TEST',
+            ${fixture.orderId}::uuid, 'return-manifest:3', ${candidateId}::uuid, "generated_at",
+            ${candidateId}::uuid, "generated_at", ${candidateId}::uuid, "generated_at", clock_timestamp()
+          FROM "subscription_closure_document_revision" WHERE "id" = ${revisionOne.id}::uuid
+        `);
+        await tx.subscriptionClosureCurrentDocument.update({
+          data: { documentRevisionId: revisionThreeId, updatedBy: candidateId },
+          where: {
+            closureCaseId_documentType: {
+              closureCaseId: closureCase.id,
+              documentType: "RETURN_MANIFEST"
+            }
+          }
+        });
+      });
+
+      await expect(
+        service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:01.000Z"))
+      ).resolves.toMatchObject({ outcome: "DUPLICATE" });
+
+      await expect(
+        prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } })
+      ).resolves.toMatchObject({ createdBy: fixture.actorId });
+      await expect(
+        prisma.subscriptionClosureCurrentDocument.findUniqueOrThrow({
+          where: {
+            closureCaseId_documentType: {
+              closureCaseId: closureCase.id,
+              documentType: "RETURN_MANIFEST"
+            }
+          }
+        })
+      ).resolves.toMatchObject({ documentRevisionId: revisionThreeId });
+      await expect(
+        prisma.subscriptionClosureDocumentRevision.count({
+          where: { closureCaseId: closureCase.id }
+        })
+      ).resolves.toBe(3);
+      await expect(
+        prisma.subscriptionClosureCommandReceipt.count({ where: { closureCaseId: closureCase.id } })
+      ).resolves.toBe(2);
+      await expect(
+        prisma.subscriptionClosureEvent.findMany({
+          select: { actorId: true },
+          where: { closureCaseId: closureCase.id }
+        })
+      ).resolves.toEqual([
+        expect.objectContaining({ actorId: fixture.actorId }),
+        expect.objectContaining({ actorId: fixture.actorId })
+      ]);
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, fixture);
+      await prisma.user.deleteMany({ where: { id: candidateId } });
+    }
+  });
+
   it("fails closed on empty expiry actor authority before creating any managed fact", async () => {
     const fixture = await createManagedExpiryFixture(prisma);
     const service = createGovernedExpiryService(prisma);
@@ -395,6 +497,164 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     }
   });
 
+  it("preserves unmanaged legacy preparation and rejects an orphaned P0 specialist marker", async () => {
+    const legacy = await createExpiryFixture(prisma);
+    const managed = await createManagedExpiryFixture(prisma);
+    const closure = createGovernedClosureService(prisma);
+    try {
+      const legacyReturnId = randomUUID();
+      await prisma.$transaction(async (tx) => {
+        await tx.subscriptionOrder.update({
+          data: { orderStatus: "PENDING_RETURN" },
+          where: { id: legacy.orderId }
+        });
+        await tx.vehicleReturn.create({
+          data: {
+            customerId: legacy.customerId,
+            id: legacyReturnId,
+            orderId: legacy.orderId,
+            returnNo: `RETLEG${legacyReturnId.replaceAll("-", "").slice(0, 18)}`,
+            returnStatus: "PENDING",
+            returnType: "NORMAL_RETURN",
+            vehicleId: legacy.vehicleId
+          }
+        });
+        const capability = await closure.prepareManagedReturnInTransaction(tx, {
+          actorId: managed.actorId,
+          orderId: legacy.orderId,
+          returnLocation: "legacy center",
+          scheduledAt: new Date("2026-08-22T02:00:00.000Z")
+        });
+        expect(capability).toBeNull();
+        await tx.vehicleReturn.update({
+          data: { returnLocation: "legacy center", returnStatus: "READY" },
+          where: { orderId: legacy.orderId }
+        });
+      });
+      await expect(
+        prisma.vehicleReturn.findUniqueOrThrow({ where: { orderId: legacy.orderId } })
+      ).resolves.toMatchObject({ id: legacyReturnId, returnLocation: "legacy center" });
+
+      await prisma.$transaction(
+        async (tx) => {
+          const handover = new HandoverWorkOrderService(prisma, {} as never);
+          const command = {
+            actorId: managed.actorId,
+            orderId: managed.orderId,
+            source: {
+              id: managed.segmentId,
+              key: "return-inbound-handover",
+              type: "SUBSCRIPTION_EXPIRY"
+            }
+          };
+          const sourceCapability = await handover.prepareReturnInboundInTransaction(tx, command);
+          await handover.createReturnInboundInTransaction(tx, command, sourceCapability);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+      );
+      await expect(
+        prisma.$transaction(
+          (tx) =>
+            closure.prepareManagedReturnInTransaction(tx, {
+              actorId: managed.actorId,
+              orderId: managed.orderId,
+              returnLocation: null,
+              scheduledAt: null
+            }),
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+        )
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
+        status: 409
+      });
+    } finally {
+      await cleanupExpiryFixture(
+        prisma,
+        legacy.orderId,
+        legacy.segmentId,
+        legacy.customerId,
+        legacy.vehicleId
+      );
+      await cleanupManagedExpiryFixture(prisma, managed);
+    }
+  });
+
+  it("rolls back the managed return, specialist event, and transaction audit together", async () => {
+    const fixture = await createManagedExpiryFixture(prisma);
+    const expiry = createGovernedExpiryService(prisma);
+    const closure = createGovernedClosureService(prisma);
+    try {
+      await expiry.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const closureCase = await prisma.subscriptionClosureCase.findUniqueOrThrow({
+        where: { orderId: fixture.orderId }
+      });
+      const before = await Promise.all([
+        prisma.vehicleReturn.findUniqueOrThrow({ where: { id: closureCase.vehicleReturnId! } }),
+        prisma.vehicleHandoverWorkOrder.findUniqueOrThrow({
+          where: { id: closureCase.returnHandoverWorkOrderId! }
+        }),
+        prisma.vehicleHandoverEvent.count({
+          where: { workOrderId: closureCase.returnHandoverWorkOrderId! }
+        }),
+        prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
+      ]);
+      await expect(
+        prisma.$transaction(
+          async (tx) => {
+            const input = {
+              actorId: fixture.actorId,
+              orderId: fixture.orderId,
+              returnLocation: "rollback center",
+              scheduledAt: new Date("2026-08-22T02:00:00.000Z")
+            };
+            const capability = await closure.prepareManagedReturnInTransaction(tx, input);
+            if (!capability) throw new Error("Expected managed normal-return authority");
+            const vehicleReturn = await tx.vehicleReturn.update({
+              data: {
+                returnLocation: input.returnLocation,
+                returnStatus: "READY",
+                scheduledAt: input.scheduledAt,
+                updatedBy: fixture.actorId
+              },
+              where: { id: closureCase.vehicleReturnId! }
+            });
+            await closure.completeManagedReturnInTransaction(
+              tx,
+              { ...input, vehicleReturnId: vehicleReturn.id },
+              capability
+            );
+            await new AuditService(prisma).write(
+              {
+                action: "UPDATE",
+                after: { returnLocation: input.returnLocation },
+                entityId: vehicleReturn.id,
+                entityType: "vehicle_return",
+                module: "vehicle_return",
+                operatorId: fixture.actorId
+              },
+              tx
+            );
+            throw new Error("TASK3_MANAGED_AUDIT_FAIL");
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+        )
+      ).rejects.toThrow("TASK3_MANAGED_AUDIT_FAIL");
+      const after = await Promise.all([
+        prisma.vehicleReturn.findUniqueOrThrow({ where: { id: closureCase.vehicleReturnId! } }),
+        prisma.vehicleHandoverWorkOrder.findUniqueOrThrow({
+          where: { id: closureCase.returnHandoverWorkOrderId! }
+        }),
+        prisma.vehicleHandoverEvent.count({
+          where: { workOrderId: closureCase.returnHandoverWorkOrderId! }
+        }),
+        prisma.auditLog.count({ where: { operatorId: fixture.actorId } })
+      ]);
+      expect(after).toEqual(before);
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, fixture);
+    }
+  });
+
   it.each([
     "after-specialist",
     "after-common",
@@ -405,9 +665,12 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     const fixture = await createManagedExpiryFixture(prisma);
     const service = createGovernedExpiryService(prisma, failpoint);
     try {
+      const beforeTruth = await snapshotManagedExpiryTruth(prisma, fixture);
       await expect(
         service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"))
       ).rejects.toThrow(`TASK3_FAILPOINT:${failpoint}`);
+
+      await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(beforeTruth);
 
       await expectManagedExpiryFactCounts(prisma, fixture, {
         assetWorkOrders: 0,
@@ -432,6 +695,27 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       await expect(
         prisma.lease.findUniqueOrThrow({ where: { orderId: fixture.orderId } })
       ).resolves.toMatchObject({ status: LeaseStatus.ACTIVE });
+    } finally {
+      await cleanupManagedExpiryFixture(prisma, fixture);
+    }
+  });
+
+  it("proves the rollback snapshot detects a committed mutation", async () => {
+    const fixture = await createManagedExpiryFixture(prisma);
+    const service = createGovernedExpiryService(prisma);
+    try {
+      const beforeTruth = await snapshotManagedExpiryTruth(prisma, fixture);
+      await service.expireSegment(fixture.segmentId, new Date("2026-08-20T16:00:00.000Z"));
+      const afterTruth = await snapshotManagedExpiryTruth(prisma, fixture);
+      expect(afterTruth).not.toEqual(beforeTruth);
+      expect(afterTruth).toMatchObject({
+        assetWorkOrders: [{ workOrderType: "RETURN_INBOUND" }],
+        closureCases: [{ closureType: "NORMAL_COMPLETION" }],
+        order: { orderStatus: "PENDING_RETURN" },
+        segment: { status: "COMPLETED" },
+        specialistWorkOrders: [{ handoverType: "RETURN_INBOUND" }],
+        vehicleReturns: [{ returnType: "NORMAL_RETURN" }]
+      });
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
@@ -660,7 +944,7 @@ function createGovernedExpiryService(prisma: PrismaService, failpoint?: Task3Fai
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function") return value;
-      if (property === "createReturnInboundInTransaction") {
+      if (property === "createPreparedReturnInboundInTransaction") {
         return async (...args: unknown[]) => {
           const result = await value.apply(target, args);
           if (failpoint === "after-specialist") {
@@ -681,7 +965,7 @@ function createGovernedExpiryService(prisma: PrismaService, failpoint?: Task3Fai
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function") return value;
-      if (property === "createWorkOrderInTransaction") {
+      if (property === "createPreparedWorkOrderInTransaction") {
         return async (...args: unknown[]) => {
           const result = await value.apply(target, args);
           if (failpoint === "after-common") {
@@ -698,7 +982,7 @@ function createGovernedExpiryService(prisma: PrismaService, failpoint?: Task3Fai
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (typeof value !== "function") return value;
-      if (property === "appendDocumentRevision") {
+      if (property === "appendPreparedDocumentRevisionInTransaction") {
         return async (...args: unknown[]) => {
           const result = await value.apply(target, args);
           if (failpoint === "after-document") {
@@ -836,8 +1120,199 @@ async function expectManagedExpiryFactCounts(
   }).toEqual(expected);
 }
 
+async function snapshotManagedExpiryTruth(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createManagedExpiryFixture>>
+) {
+  const [
+    segment,
+    order,
+    lease,
+    vehicleReturns,
+    considerations,
+    changes,
+    billingSchedule,
+    entitlementAccounts,
+    automationJobs,
+    specialistWorkOrders,
+    specialistEvents,
+    assetWorkOrders,
+    assetEvents,
+    closureCases,
+    closureEvents,
+    closureReceipts,
+    currentDocuments,
+    documentRevisions,
+    files,
+    esignTasks,
+    audits
+  ] = await Promise.all([
+    prisma.subscriptionContractSegment.findUnique({
+      select: { completedAt: true, id: true, status: true },
+      where: { id: fixture.segmentId }
+    }),
+    prisma.subscriptionOrder.findUnique({
+      select: { id: true, orderStatus: true },
+      where: { id: fixture.orderId }
+    }),
+    prisma.lease.findUnique({
+      select: { id: true, status: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.vehicleReturn.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        deletedAt: true,
+        id: true,
+        orderId: true,
+        returnLocation: true,
+        returnStatus: true,
+        returnType: true,
+        scheduledAt: true
+      },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.renewalConsideration.findMany({
+      orderBy: { id: "asc" },
+      select: { id: true, status: true, version: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.subscriptionChangeOrder.findMany({
+      orderBy: { id: "asc" },
+      select: { failureCode: true, failureMessage: true, id: true, status: true, version: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.billingSchedule.findUnique({
+      select: { completedAt: true, id: true, pauseReason: true, status: true, version: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.orderEntitlementAccount.findMany({
+      orderBy: { id: "asc" },
+      select: { accountStatus: true, id: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.subscriptionAutomationJob.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        cancelledAt: true,
+        completedAt: true,
+        id: true,
+        jobStatus: true,
+        leaseExpiresAt: true,
+        leaseToken: true
+      },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.vehicleHandoverWorkOrder.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        deliveryLocation: true,
+        handoverType: true,
+        id: true,
+        scheduledAt: true,
+        status: true
+      },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.vehicleHandoverEvent.findMany({
+      orderBy: { id: "asc" },
+      select: { actorId: true, eventType: true, id: true, workOrderId: true },
+      where: { workOrder: { orderId: fixture.orderId } }
+    }),
+    prisma.assetWorkOrder.findMany({
+      orderBy: { id: "asc" },
+      select: { id: true, status: true, workOrderType: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.assetWorkOrderEvent.findMany({
+      orderBy: { id: "asc" },
+      select: { actorId: true, eventType: true, id: true, workOrderId: true },
+      where: { workOrder: { orderId: fixture.orderId } }
+    }),
+    prisma.subscriptionClosureCase.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        closureType: true,
+        id: true,
+        returnAssetWorkOrderId: true,
+        returnHandoverWorkOrderId: true,
+        status: true,
+        vehicleReturnId: true,
+        version: true
+      },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.subscriptionClosureEvent.findMany({
+      orderBy: { id: "asc" },
+      select: { actorId: true, eventType: true, id: true, sequence: true },
+      where: { closureCase: { orderId: fixture.orderId } }
+    }),
+    prisma.subscriptionClosureCommandReceipt.findMany({
+      orderBy: { id: "asc" },
+      select: { actorId: true, commandType: true, id: true, sourceKey: true },
+      where: { closureCase: { orderId: fixture.orderId } }
+    }),
+    prisma.subscriptionClosureCurrentDocument.findMany({
+      orderBy: { documentType: "asc" },
+      select: { closureCaseId: true, documentRevisionId: true, documentType: true },
+      where: { closureCase: { orderId: fixture.orderId } }
+    }),
+    prisma.subscriptionClosureDocumentRevision.findMany({
+      orderBy: { id: "asc" },
+      select: {
+        archivedAt: true,
+        id: true,
+        revisionNumber: true,
+        signedAt: true,
+        sourceFileId: true,
+        stage: true
+      },
+      where: { closureCase: { orderId: fixture.orderId } }
+    }),
+    prisma.fileObject.findMany({
+      orderBy: { id: "asc" },
+      select: { id: true, objectKey: true, uploadedBy: true },
+      where: { uploadedBy: fixture.actorId }
+    }),
+    prisma.contractESignTask.findMany({
+      orderBy: { id: "asc" },
+      select: { documentType: true, id: true, taskStatus: true },
+      where: { orderId: fixture.orderId }
+    }),
+    prisma.auditLog.findMany({
+      orderBy: { id: "asc" },
+      select: { action: true, entityId: true, entityType: true, id: true, module: true },
+      where: { operatorId: fixture.actorId }
+    })
+  ]);
+  return {
+    assetEvents,
+    assetWorkOrders,
+    audits,
+    automationJobs,
+    billingSchedule,
+    changes,
+    closureCases,
+    closureEvents,
+    closureReceipts,
+    considerations,
+    currentDocuments,
+    documentRevisions,
+    entitlementAccounts,
+    esignTasks,
+    files,
+    lease,
+    order,
+    segment,
+    specialistEvents,
+    specialistWorkOrders,
+    vehicleReturns
+  };
+}
+
 async function createRaceFixture(prisma: PrismaService) {
   const fixture = await createExpiryFixture(prisma);
+  const actorId = randomUUID();
   const changeId = randomUUID();
   const considerationId = randomUUID();
   const contractId = randomUUID();
@@ -846,29 +1321,43 @@ async function createRaceFixture(prisma: PrismaService) {
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
     await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "user" ("id", "username", "name", "password_hash", "status", "created_at", "updated_at")
+      VALUES (${actorId}::uuid, ${`race-${actorId}`}, 'Race actor', 'not-used', 'ACTIVE', clock_timestamp(), clock_timestamp())
+    `);
+    await tx.$executeRaw(Prisma.sql`
       INSERT INTO "contract" (
         "id", "contract_no", "order_id", "customer_id", "business_type", "contract_version_id",
-        "contract_title", "contract_snapshot", "status", "created_at", "updated_at"
-      ) VALUES (${contractId}::uuid, ${`CONRACE${contractId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, 'SUBSCRIPTION', ${randomUUID()}::uuid, 'Extension agreement', '{}'::jsonb, 'SIGNED', clock_timestamp(), clock_timestamp())
+        "contract_title", "contract_snapshot", "status", "created_by", "updated_by", "created_at", "updated_at"
+      ) VALUES (${contractId}::uuid, ${`CONRACE${contractId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, 'SUBSCRIPTION', ${randomUUID()}::uuid, 'Extension agreement', '{}'::jsonb, 'SIGNED', ${actorId}::uuid, ${actorId}::uuid, clock_timestamp(), clock_timestamp())
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_order"
+      SET "contract_id" = ${contractId}::uuid, "created_by" = ${actorId}::uuid, "updated_by" = ${actorId}::uuid,
+          "end_date" = '2026-08-20'::date
+      WHERE "id" = ${fixture.orderId}::uuid
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "subscription_contract_segment" SET "created_by" = ${actorId}::uuid, "end_date" = '2026-08-20'::date
+      WHERE "id" = ${fixture.segmentId}::uuid
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "renewal_consideration" (
         "id", "consideration_no", "order_id", "segment_id", "status", "consideration_start_at", "completion_deadline_at", "created_at", "updated_at"
-      ) VALUES (${considerationId}::uuid, ${`RCNRACE${considerationId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.segmentId}::uuid, 'EXTENSION_IN_PROGRESS', '2026-08-03T00:00:00Z'::timestamptz, '2026-09-02T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      ) VALUES (${considerationId}::uuid, ${`RCNRACE${considerationId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.segmentId}::uuid, 'EXTENSION_IN_PROGRESS', '2026-08-03T00:00:00Z'::timestamptz, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_order" (
         "id", "change_no", "order_id", "status", "source_segment_id", "renewal_consideration_id",
         "extension_months", "pricing_mode", "contract_id", "target_start_date", "target_end_date",
         "completion_deadline_at", "created_at", "updated_at"
-      ) VALUES (${changeId}::uuid, ${`CHGRACE${changeId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, 'SIGNING_OR_PAYMENT', ${fixture.segmentId}::uuid, ${considerationId}::uuid, 6, 'CURRENT_VERSION', ${contractId}::uuid, '2026-09-03'::date, '2027-03-02'::date, '2026-09-02T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      ) VALUES (${changeId}::uuid, ${`CHGRACE${changeId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, 'SIGNING_OR_PAYMENT', ${fixture.segmentId}::uuid, ${considerationId}::uuid, 6, 'CURRENT_VERSION', ${contractId}::uuid, '2026-08-21'::date, '2027-02-20'::date, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_quote" (
         "id", "quote_no", "change_order_id", "revision", "status", "pricing_mode", "monthly_fee_amount",
         "deposit_amount", "mileage_limit_km", "over_mileage_fee_amount", "plan_snapshot", "price_rule_snapshot",
         "quote_snapshot", "valid_until", "formalized_at", "confirmed_at", "created_at"
-      ) VALUES (${quoteId}::uuid, ${`QUORACE${quoteId.replaceAll("-", "").slice(0, 18)}`}, ${changeId}::uuid, 1, 'CUSTOMER_CONFIRMED', 'CURRENT_VERSION', 100, 0, 1500, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '2026-09-02T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp(), clock_timestamp())
+      ) VALUES (${quoteId}::uuid, ${`QUORACE${quoteId.replaceAll("-", "").slice(0, 18)}`}, ${changeId}::uuid, 1, 'CUSTOMER_CONFIRMED', 'CURRENT_VERSION', 100, 0, 1500, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_change_order" SET "current_quote_id" = ${quoteId}::uuid, "confirmed_quote_id" = ${quoteId}::uuid WHERE "id" = ${changeId}::uuid
@@ -880,10 +1369,17 @@ async function createRaceFixture(prisma: PrismaService) {
       INSERT INTO "contract_esign_task" (
         "id", "task_no", "contract_id", "order_id", "customer_id", "provider", "signing_stage",
         "document_type", "task_status", "signed_document_object_key", "completed_at", "created_at", "updated_at"
-      ) VALUES (${taskId}::uuid, ${`ESGRACE${taskId.replaceAll("-", "").slice(0, 18)}`}, ${contractId}::uuid, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, ${ESignProviderType.MOCK}::esign_provider_type, ${ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION}::esign_signing_stage, ${ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT}::esign_document_type, ${ESignTaskStatus.COMPLETED}::esign_task_status, 'signed/race.pdf', '2026-09-02T15:59:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      ) VALUES (${taskId}::uuid, ${`ESGRACE${taskId.replaceAll("-", "").slice(0, 18)}`}, ${contractId}::uuid, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, ${ESignProviderType.MOCK}::esign_provider_type, ${ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION}::esign_signing_stage, ${ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT}::esign_document_type, ${ESignTaskStatus.COMPLETED}::esign_task_status, 'signed/race.pdf', '2026-08-20T15:59:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
     `);
   });
-  return { ...fixture, changeId, considerationId, contractId, quoteId, taskId };
+  return { ...fixture, actorId, changeId, considerationId, contractId, quoteId, taskId };
+}
+
+async function cleanupRaceFixture(
+  prisma: PrismaService,
+  fixture: Awaited<ReturnType<typeof createRaceFixture>>
+) {
+  await cleanupManagedExpiryFixture(prisma, fixture);
 }
 
 async function createExpiryFixture(prisma: PrismaService) {

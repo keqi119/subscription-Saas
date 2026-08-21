@@ -42,6 +42,55 @@ describe("SubscriptionClosureRepository transaction and lock protocol", () => {
     );
   });
 
+  it("issues exact one-use authority attestations from one ranked pass", async () => {
+    const database = fakeTransaction();
+    const repository = new SubscriptionClosureRepository();
+    const attestations = await repository.prepareAuthorityInTransaction(
+      database.tx,
+      [
+        {
+          id: "A06E8EE8-3D7D-4AA1-B463-59A64F66F890",
+          mode: "UPDATE",
+          table: "subscription_order"
+        }
+      ],
+      ["case-create", "manifest-create"]
+    );
+
+    expect(database.authorityLocks).toHaveLength(1);
+    await expect(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("case-create")!,
+        "case-create"
+      )
+    ).resolves.toBeUndefined();
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("case-create")!,
+        "case-create"
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("manifest-create")!,
+        "retargeted"
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+    await expectCode(
+      repository.consumeAuthorityAttestationInTransaction(
+        database.tx,
+        attestations.get("manifest-create")!,
+        "manifest-create"
+      ),
+      "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+    );
+  });
+
   it("orders mixed NOWAIT locks by documented rank and canonical UUID", async () => {
     const database = fakeTransaction();
     const locks: readonly SubscriptionClosureAuthorityLock[] = [

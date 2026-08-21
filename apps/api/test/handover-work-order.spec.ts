@@ -266,6 +266,47 @@ describe("HandoverWorkOrderService", () => {
     });
   });
 
+  it("attests and mutates RETURN_INBOUND after coordinator locks without taking another lock", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const command = {
+      actorId: harness.admin.id,
+      orderId: harness.orderId,
+      source: {
+        id: randomUUID(),
+        key: "normal-expiry:return-inbound:coordinated",
+        type: "SUBSCRIPTION_EXPIRY"
+      }
+    };
+    const sourceCapability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      command
+    );
+    const lockQueryCount = harness.lockQueries.length;
+    const prepared = await harness.service.attestReturnInboundAuthorityInTransaction(
+      harness.prisma as never,
+      command,
+      sourceCapability
+    );
+
+    await expect(
+      harness.service.createPreparedReturnInboundInTransaction(harness.prisma as never, prepared)
+    ).resolves.toMatchObject({ orderId: harness.orderId, handoverType: "RETURN_INBOUND" });
+    expect(harness.lockQueries).toHaveLength(lockQueryCount);
+    await expect(
+      harness.service.createPreparedReturnInboundInTransaction(harness.prisma as never, prepared)
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+    await expect(
+      harness.service.createPreparedReturnInboundInTransaction(
+        harness.prisma as never,
+        Object.freeze({}) as never
+      )
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+  });
+
   it("updates the exact RETURN_INBOUND schedule only through a governed caller-owned capability", async () => {
     const harness = createHandoverWorkOrderHarness();
     const createCommand = {
@@ -324,6 +365,64 @@ describe("HandoverWorkOrderService", () => {
     ).rejects.toMatchObject({
       response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
     });
+  });
+
+  it("prepares the governed source before coordinator authority and updates without relocking", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const createCommand = {
+      actorId: harness.admin.id,
+      orderId: harness.orderId,
+      source: {
+        id: randomUUID(),
+        key: "normal-expiry:return-inbound:managed",
+        type: "SUBSCRIPTION_EXPIRY"
+      }
+    };
+    const createSource = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      createCommand
+    );
+    const createPrepared = await harness.service.attestReturnInboundAuthorityInTransaction(
+      harness.prisma as never,
+      createCommand,
+      createSource
+    );
+    const created = await harness.service.createPreparedReturnInboundInTransaction(
+      harness.prisma as never,
+      createPrepared
+    );
+    const updateCommand = {
+      actorId: harness.admin.id,
+      deliveryLocation: "managed center",
+      orderId: harness.orderId,
+      scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
+      source: {
+        id: randomUUID(),
+        key: "legacy-prepare-return",
+        type: "SUBSCRIPTION_CLOSURE"
+      },
+      workOrderId: created.id
+    };
+    const updateSource =
+      await harness.service.prepareGovernedReturnInboundSourceInTransaction(
+        harness.prisma as never,
+        updateCommand
+      );
+    const lockQueryCount = harness.lockQueries.length;
+    const updatePrepared =
+      await harness.service.attestGovernedReturnInboundAuthorityInTransaction(
+        harness.prisma as never,
+        updateCommand,
+        updateSource
+      );
+
+    await expect(
+      harness.service.updatePreparedGovernedReturnInboundInTransaction(
+        harness.prisma as never,
+        updatePrepared
+      )
+    ).resolves.toMatchObject({ id: created.id, deliveryLocation: "managed center" });
+    expect(harness.lockQueries).toHaveLength(lockQueryCount);
   });
 
   it("consumes a P0 capability before reading a throwing command source", async () => {

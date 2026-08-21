@@ -53,7 +53,8 @@ describe("vehicle return inspection workflow", () => {
     expect(vehicleReturn.returnLocation).toBe("静安旺旺大厦");
     expect(harness.tx.vehicleReturn.create).toHaveBeenCalledTimes(1);
     expect(harness.auditService.write).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "CREATE", entityType: "vehicle_return" })
+      expect.objectContaining({ action: "CREATE", entityType: "vehicle_return" }),
+      harness.tx
     );
   });
 
@@ -65,12 +66,7 @@ describe("vehicle return inspection workflow", () => {
       returnStatus: VehicleReturnStatus.PENDING
     };
 
-    await harness.service.prepareReturn(
-      harness.orderId,
-      validPrepareReturnDto(),
-      harness.user,
-      harness.context
-    );
+    await harness.service.prepareReturn(harness.orderId, validPrepareReturnDto(), harness.user, harness.context);
     expect(harness.closureService.prepareManagedReturnInTransaction).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
@@ -102,7 +98,7 @@ describe("vehicle return inspection workflow", () => {
     );
   });
 
-  it("fails closed when a PENDING_RETURN order has no managed closure authority", async () => {
+  it("preserves legacy unmanaged PENDING_RETURN scheduling when no P0 marker exists", async () => {
     const harness = createReturnHarness();
     harness.state.orderStatus = OrderStatus.PENDING_RETURN;
     harness.state.returnRecord = {
@@ -114,23 +110,77 @@ describe("vehicle return inspection workflow", () => {
     await expect(
       harness.service.prepareReturn(
         harness.orderId,
+        validPrepareReturnDto({ returnLocation: "legacy return center" }),
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({ returnLocation: "legacy return center" });
+
+    expect(harness.tx.vehicleReturn.update).toHaveBeenCalledTimes(1);
+    expect(harness.closureService.completeManagedReturnInTransaction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an authoritative P0 marker has missing managed links", async () => {
+    const harness = createReturnHarness();
+    harness.state.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.state.returnRecord = {
+      ...buildReadyReturn(harness),
+      returnStatus: VehicleReturnStatus.PENDING
+    };
+    harness.closureService.prepareManagedReturnInTransaction.mockRejectedValueOnce({
+      response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
+      status: 409
+    });
+
+    await expect(
+      harness.service.prepareReturn(
+        harness.orderId,
         validPrepareReturnDto(),
         harness.user,
         harness.context
       )
     ).rejects.toMatchObject({
-      response: expect.objectContaining({
-        code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND"
-      })
+      response: { code: "SUBSCRIPTION_CLOSURE_MANAGED_RETURN_AUTHORITY_NOT_FOUND" },
+      status: 409
     });
 
     expect(harness.tx.vehicleReturn.update).not.toHaveBeenCalled();
   });
 
+  it("rolls back the managed return and specialist update when its audit fails", async () => {
+    const harness = createReturnHarness();
+    harness.state.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.state.returnRecord = {
+      ...buildReadyReturn(harness),
+      returnLocation: "original center",
+      returnStatus: VehicleReturnStatus.PENDING
+    };
+    harness.auditService.write.mockRejectedValueOnce(new Error("AUDIT_FAILPOINT"));
+
+    await expect(
+      harness.service.prepareReturn(
+        harness.orderId,
+        validPrepareReturnDto({ returnLocation: "new center" }),
+        harness.user,
+        harness.context
+      )
+    ).rejects.toThrow("AUDIT_FAILPOINT");
+
+    expect(harness.state.returnRecord).toMatchObject({
+      returnLocation: "original center",
+      returnStatus: VehicleReturnStatus.PENDING
+    });
+  });
+
   it("prepare-return updates the existing READY return record instead of creating another one", async () => {
     const harness = createReturnHarness();
 
-    await harness.service.prepareReturn(harness.orderId, validPrepareReturnDto(), harness.user, harness.context);
+    await harness.service.prepareReturn(
+      harness.orderId,
+      validPrepareReturnDto(),
+      harness.user,
+      harness.context
+    );
     await harness.service.prepareReturn(
       harness.orderId,
       validPrepareReturnDto({ returnLocation: "徐汇退车中心", remark: "改约" }),
@@ -553,7 +603,15 @@ function createReturnHarness() {
   };
 
   const prisma = {
-    $transaction: vi.fn(async (callback) => callback(tx)),
+    $transaction: vi.fn(async (callback) => {
+      const snapshot = structuredClone(state);
+      try {
+        return await callback(tx);
+      } catch (error) {
+        Object.assign(state, snapshot);
+        throw error;
+      }
+    }),
     subscriptionOrder: {
       findUnique: vi.fn(async () => buildOrder())
     },

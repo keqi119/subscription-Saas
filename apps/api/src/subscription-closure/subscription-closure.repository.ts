@@ -988,6 +988,7 @@ export class SubscriptionClosureRepository {
     execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureSettlementSnapshot>> {
     const command = normalizeSettlementCommand(input);
+    const repositoryClock = await assertSettlementLifecycleAtDatabaseClock(tx, command);
     const prepared = prepareCommand(command);
     if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     const replay = await replayReceipt<SubscriptionClosureSettlementSnapshot>(
@@ -1038,6 +1039,7 @@ export class SubscriptionClosureRepository {
     if (currentCase.currentSettlementRevisionId && !predecessor) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
+    assertSettlementPredecessorChronology(command, predecessor);
     try {
       const inputSnapshot = {
         bill: command.billInputSnapshot,
@@ -1061,7 +1063,7 @@ export class SubscriptionClosureRepository {
           inputSnapshotHash: hashSubscriptionClosureSnapshot(inputSnapshot),
           ledgerInputSnapshot: jsonInput(command.ledgerInputSnapshot),
           paidTotalCents: command.paidTotalCents,
-          ...(command.recordedAt ? { createdAt: command.recordedAt } : {}),
+          createdAt: command.recordedAt ?? repositoryClock,
           receivableTotalCents: command.receivableTotalCents,
           responsibilitySnapshot: jsonInput(command.responsibilitySnapshot),
           resultHash: hashSubscriptionClosureSnapshot(command.resultSnapshot),
@@ -1612,7 +1614,70 @@ function assertSettlementShape(command: AppendSubscriptionClosureSettlementComma
         finalization !== "PRESENT" ||
         settlement !== "PRESENT")) ||
     (command.waiverTotalCents === 0n) !== (command.waiverApprovalId === null) ||
-    (command.writeOffTotalCents === 0n) !== (command.writeOffApprovalId === null)
+    (command.writeOffTotalCents === 0n) !== (command.writeOffApprovalId === null) ||
+    (command.managedOccurredAt === undefined) !== (command.recordedAt === undefined) ||
+    (command.managedOccurredAt !== undefined &&
+      command.recordedAt !== undefined &&
+      command.managedOccurredAt.getTime() > command.recordedAt.getTime()) ||
+    (command.recordedAt !== undefined &&
+      [command.finalizedAt, command.settledAt].some(
+        (value) => value !== null && value.getTime() > command.recordedAt!.getTime()
+      )) ||
+    (command.finalizedAt !== null &&
+      command.settledAt !== null &&
+      command.settledAt.getTime() < command.finalizedAt.getTime())
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+}
+
+async function assertSettlementLifecycleAtDatabaseClock(
+  tx: Prisma.TransactionClient,
+  command: AppendSubscriptionClosureSettlementCommand
+) {
+  const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
+    SELECT clock_timestamp() AS "now"
+  `);
+  const now = rows[0]?.now;
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+  for (const lifecycleAt of [
+    command.managedOccurredAt,
+    command.recordedAt,
+    command.finalizedAt,
+    command.settledAt
+  ]) {
+    if (lifecycleAt && lifecycleAt.getTime() > now.getTime()) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+    }
+  }
+  return now;
+}
+
+function assertSettlementPredecessorChronology(
+  command: AppendSubscriptionClosureSettlementCommand,
+  predecessor: Readonly<{
+    createdAt: Date;
+    finalizedAt: Date | null;
+    finalizedBy: string | null;
+    id: string;
+    stage: SubscriptionClosureSettlementStage;
+  }> | null
+) {
+  if (command.stage === "PROPOSED") return;
+  if (
+    !predecessor ||
+    (command.stage === "FINALIZED" &&
+      (predecessor.stage !== "PROPOSED" ||
+        command.finalizedAt!.getTime() < predecessor.createdAt.getTime())) ||
+    (command.stage === "SETTLED" &&
+      (predecessor.stage !== "FINALIZED" ||
+        predecessor.finalizedAt === null ||
+        predecessor.finalizedBy === null ||
+        command.finalizedAt!.getTime() !== predecessor.finalizedAt.getTime() ||
+        command.finalizedBy !== predecessor.finalizedBy ||
+        command.settledAt!.getTime() < predecessor.finalizedAt.getTime()))
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
   }
@@ -2508,7 +2573,11 @@ function normalizeWriteError(error: unknown): unknown {
     if (constraint?.includes("version")) {
       return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.VERSION_CONFLICT);
     }
-    if (constraint?.includes("shape") || constraint?.includes("nonnegative")) {
+    if (
+      constraint?.includes("shape") ||
+      constraint?.includes("nonnegative") ||
+      constraint?.includes("chronology")
+    ) {
       return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
     }
     return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.WRITE_CONFLICT);

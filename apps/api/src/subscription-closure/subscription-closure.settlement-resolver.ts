@@ -91,10 +91,13 @@ export class SubscriptionClosureSettlementResolver {
         amountCents: true,
         confirmedAt: true,
         confirmedBy: true,
+        contractId: true,
         costCategory: true,
         createdAt: true,
+        customerId: true,
         entryKind: true,
         id: true,
+        orderId: true,
         responsibilitySnapshot: true,
         responsiblePartyId: true,
         responsiblePartyType: true,
@@ -156,7 +159,8 @@ export class SubscriptionClosureSettlementResolver {
         paidAmount: true,
         remainingAmount: true,
         snapshot: true,
-        updatedAt: true
+        updatedAt: true,
+        orderId: true
       },
       where: {
         billStatus: { not: "CANCELLED" },
@@ -204,6 +208,7 @@ export class SubscriptionClosureSettlementResolver {
         customerId: true,
         id: true,
         occurredAt: true,
+        orderId: true,
         paymentId: true,
         snapshot: true,
         transactionStatus: true,
@@ -216,12 +221,26 @@ export class SubscriptionClosureSettlementResolver {
       }
     });
 
-    assertFinancialCoherence(closureCase.customerId, bills, payments, paymentAllocations, deposits);
+    const reconciliation = assertFinancialCoherence(
+      closureCase.orderId,
+      closureCase.customerId,
+      bills,
+      payments,
+      paymentAllocations,
+      deposits
+    );
     const costTotalCents = ledgerTotal(ledger, "ACTUAL_COST");
-    const waiverTotalCents = ledgerTotal(ledger, "WAIVER");
-    const writeOffTotalCents = ledgerTotal(ledger, "WRITE_OFF");
+    const customerResolution = (entry: (typeof ledger)[number]) =>
+      entry.responsiblePartyType === "CUSTOMER" &&
+      entry.responsiblePartyId === closureCase.customerId &&
+      entry.customerId === closureCase.customerId &&
+      entry.orderId === closureCase.orderId &&
+      entry.contractId === closureCase.contractId &&
+      entry.vehicleId === closureCase.vehicleId;
+    const waiverTotalCents = ledgerTotal(ledger, "WAIVER", customerResolution);
+    const writeOffTotalCents = ledgerTotal(ledger, "WRITE_OFF", customerResolution);
     const receivableTotalCents = sum(bills.map(({ amount }) => amount));
-    const paidTotalCents = sum(paymentAllocations.map(({ writeOffAmount }) => writeOffAmount));
+    const paidTotalCents = reconciliation.paidTotalCents;
     const remainingTotalCents = sum(bills.map(({ remainingAmount }) => remainingAmount));
     const depositAppliedCents = sum(
       deposits
@@ -245,12 +264,10 @@ export class SubscriptionClosureSettlementResolver {
     ]) {
       if (value < 0n) throw settlementConflict("FACT_INCONSISTENT");
     }
-    if (waiverTotalCents + writeOffTotalCents + depositAppliedCents > remainingTotalCents) {
+    if (waiverTotalCents + writeOffTotalCents > remainingTotalCents) {
       throw settlementConflict("FACT_INCONSISTENT");
     }
-    const amountDueCents = nonnegative(
-      remainingTotalCents - waiverTotalCents - writeOffTotalCents - depositAppliedCents
-    );
+    const amountDueCents = nonnegative(remainingTotalCents - waiverTotalCents - writeOffTotalCents);
     const effectiveDeposit = order.finalDepositAmount ?? order.depositAmount;
     const depositFinal =
       order.depositStatus === "WAIVED" ||
@@ -356,13 +373,17 @@ function settlementJson(value: object) {
 }
 
 function assertFinancialCoherence(
+  orderId: string,
   customerId: string,
   bills: readonly Readonly<{
     id: string;
     amount: bigint;
+    billStatus: string;
+    billType: string;
     paidAmount: bigint;
     remainingAmount: bigint;
     customerId: string;
+    orderId: string;
   }>[],
   payments: readonly Readonly<{ id: string; customerId: string; paymentAmount: bigint }>[],
   allocations: readonly Readonly<{
@@ -371,7 +392,15 @@ function assertFinancialCoherence(
     paymentId: string;
     writeOffAmount: bigint;
   }>[],
-  deposits: readonly Readonly<{ customerId: string }>[]
+  deposits: readonly Readonly<{
+    amount: bigint;
+    balanceAfter: bigint;
+    billId: string | null;
+    customerId: string;
+    orderId: string;
+    paymentId: string | null;
+    transactionType: string;
+  }>[]
 ) {
   const billById = new Map(bills.map((bill) => [bill.id, bill]));
   const paymentById = new Map(payments.map((payment) => [payment.id, payment]));
@@ -385,7 +414,10 @@ function assertFinancialCoherence(
         bill.paidAmount + bill.remainingAmount !== bill.amount
     ) ||
     payments.some((payment) => payment.customerId !== customerId || payment.paymentAmount <= 0n) ||
-    deposits.some((deposit) => deposit.customerId !== customerId)
+    deposits.some(
+      (deposit) =>
+        deposit.customerId !== customerId || deposit.orderId !== orderId || deposit.amount <= 0n
+    )
   ) {
     throw settlementConflict("FACT_INCONSISTENT");
   }
@@ -409,20 +441,60 @@ function assertFinancialCoherence(
       (allocatedByPayment.get(allocation.paymentId) ?? 0n) + allocation.writeOffAmount
     );
   }
+  const deductedByBill = new Map<string, bigint>();
+  let depositBalance = 0n;
+  for (const deposit of deposits) {
+    const signedAmount =
+      deposit.transactionType === "COLLECT"
+        ? deposit.amount
+        : deposit.transactionType === "DEDUCT" ||
+            deposit.transactionType === "REFUND" ||
+            deposit.transactionType === "RELEASE"
+          ? -deposit.amount
+          : deposit.transactionType === "FREEZE"
+            ? 0n
+            : null;
+    if (signedAmount === null) throw settlementConflict("FACT_INCONSISTENT");
+    depositBalance += signedAmount;
+    if (depositBalance < 0n || deposit.balanceAfter !== depositBalance) {
+      throw settlementConflict("FACT_INCONSISTENT");
+    }
+    if (deposit.transactionType !== "DEDUCT") continue;
+    const bill = deposit.billId ? billById.get(deposit.billId) : undefined;
+    if (
+      !bill ||
+      bill.orderId !== orderId ||
+      bill.customerId !== customerId ||
+      bill.billType !== "DAMAGE_FEE" ||
+      bill.billStatus === "CANCELLED" ||
+      deposit.paymentId !== null
+    ) {
+      throw settlementConflict("FACT_INCONSISTENT");
+    }
+    deductedByBill.set(bill.id, (deductedByBill.get(bill.id) ?? 0n) + deposit.amount);
+  }
   if (
-    bills.some((bill) => (allocatedByBill.get(bill.id) ?? 0n) !== bill.paidAmount) ||
+    bills.some(
+      (bill) =>
+        (allocatedByBill.get(bill.id) ?? 0n) + (deductedByBill.get(bill.id) ?? 0n) !==
+        bill.paidAmount
+    ) ||
     payments.some((payment) => (allocatedByPayment.get(payment.id) ?? 0n) > payment.paymentAmount)
   ) {
     throw settlementConflict("FACT_INCONSISTENT");
   }
+  return Object.freeze({ paidTotalCents: sum(bills.map(({ paidAmount }) => paidAmount)) });
 }
 
-function ledgerTotal(
-  entries: readonly Readonly<{ actionType: string; amountCents: bigint }>[],
-  actionType: string
+function ledgerTotal<T extends Readonly<{ actionType: string; amountCents: bigint }>>(
+  entries: readonly T[],
+  actionType: string,
+  predicate: (entry: T) => boolean = () => true
 ) {
   return sum(
-    entries.filter((entry) => entry.actionType === actionType).map((entry) => entry.amountCents)
+    entries
+      .filter((entry) => entry.actionType === actionType && predicate(entry))
+      .map((entry) => entry.amountCents)
   );
 }
 

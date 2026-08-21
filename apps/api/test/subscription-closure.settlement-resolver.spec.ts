@@ -14,6 +14,7 @@ const IDS = {
   customer: "20000000-0000-4000-8000-000000000004",
   damage: "20000000-0000-4000-8000-000000000005",
   deposit: "20000000-0000-4000-8000-000000000006",
+  depositCollect: "20000000-0000-4000-8000-000000000016",
   ledgerCost: "20000000-0000-4000-8000-000000000007",
   ledgerResponsibility: "20000000-0000-4000-8000-000000000008",
   ledgerWaiver: "20000000-0000-4000-8000-000000000009",
@@ -22,7 +23,9 @@ const IDS = {
   order: "20000000-0000-4000-8000-000000000012",
   payment: "20000000-0000-4000-8000-000000000013",
   vehicle: "20000000-0000-4000-8000-000000000014",
-  writeOff: "20000000-0000-4000-8000-000000000015"
+  writeOff: "20000000-0000-4000-8000-000000000015",
+  ledgerPlatformWaiver: "20000000-0000-4000-8000-000000000017",
+  ledgerCustomerWaiverReversal: "20000000-0000-4000-8000-000000000018"
 } as const;
 
 describe("SubscriptionClosureSettlementResolver", () => {
@@ -40,7 +43,7 @@ describe("SubscriptionClosureSettlementResolver", () => {
       depositFinal: true,
       depositRefundCents: 0n,
       obligationsResolved: true,
-      paidTotalCents: 600n,
+      paidTotalCents: 750n,
       receivableTotalCents: 1_000n,
       waiverTotalCents: 200n,
       writeOffTotalCents: 50n
@@ -52,7 +55,7 @@ describe("SubscriptionClosureSettlementResolver", () => {
       ])
     );
     expect(resolved.billInputSnapshot).toMatchObject({
-      bills: [expect.objectContaining({ id: IDS.bill, remainingAmountCents: "400" })],
+      bills: [expect.objectContaining({ id: IDS.bill, remainingAmountCents: "250" })],
       paymentAllocations: [expect.objectContaining({ id: IDS.writeOff })],
       payments: [expect.objectContaining({ id: IDS.payment })]
     });
@@ -106,26 +109,85 @@ describe("SubscriptionClosureSettlementResolver", () => {
       });
     }
   });
+
+  it.each([
+    ["missing DEDUCT bill linkage", { deductBillId: null }],
+    ["drifted deposit running balance", { deductBalanceAfter: 1n }],
+    ["bill paid amount not backed by payment plus DEDUCT", { billPaidAmount: 749n }]
+  ] as const)("rejects production deposit reconciliation with %s", async (_case, options) => {
+    await expectSettlementFactConflict(settlementTransaction(options));
+  });
+
+  it("does not subtract a production DEDUCT from an already reduced bill remaining amount", async () => {
+    const resolved = await new SubscriptionClosureSettlementResolver().resolveInTransaction(
+      settlementTransaction(),
+      IDS.closureCase
+    );
+
+    expect(resolved).toMatchObject({
+      amountDueCents: 0n,
+      depositAppliedCents: 150n,
+      paidTotalCents: 750n,
+      waiverTotalCents: 200n,
+      writeOffTotalCents: 50n
+    });
+  });
+
+  it("only customer-authoritative waiver and write-off entries offset this order's receivables", async () => {
+    const resolved = await new SubscriptionClosureSettlementResolver().resolveInTransaction(
+      settlementTransaction({ mixedResponsibility: true }),
+      IDS.closureCase
+    );
+
+    expect(resolved).toMatchObject({
+      amountDueCents: 200n,
+      obligationsResolved: false,
+      waiverTotalCents: 0n,
+      writeOffTotalCents: 50n
+    });
+  });
 });
 
 function settlementTransaction(
-  options: { depositBalanceAfter?: bigint; waiverAmount?: bigint } = {}
+  options: {
+    billPaidAmount?: bigint;
+    deductBalanceAfter?: bigint;
+    deductBillId?: string | null;
+    depositBalanceAfter?: bigint;
+    mixedResponsibility?: boolean;
+    waiverAmount?: bigint;
+  } = {}
 ) {
   const occurredAt = new Date("2026-08-21T10:00:00.000Z");
+  const collectedDeposit = 150n + (options.depositBalanceAfter ?? 0n);
   return {
     depositLedger: {
       findMany: async () => [
         {
+          amount: collectedDeposit,
+          balanceAfter: collectedDeposit,
+          billId: null,
+          createdAt: new Date(occurredAt.getTime() - 1_000),
+          customerId: IDS.customer,
+          deletedAt: null,
+          id: IDS.depositCollect,
+          occurredAt: new Date(occurredAt.getTime() - 1_000),
+          orderId: IDS.order,
+          paymentId: IDS.payment,
+          transactionStatus: "CONFIRMED",
+          transactionType: "COLLECT"
+        },
+        {
           amount: 150n,
-          balanceAfter: options.depositBalanceAfter ?? 0n,
-          billId: IDS.bill,
+          balanceAfter: options.deductBalanceAfter ?? options.depositBalanceAfter ?? 0n,
+          billId: options.deductBillId === undefined ? IDS.bill : options.deductBillId,
           createdAt: occurredAt,
           customerId: IDS.customer,
           deletedAt: null,
           id: IDS.deposit,
           occurredAt,
           orderId: IDS.order,
-          paymentId: IDS.payment,
+          paymentId: null,
           transactionStatus: "CONFIRMED",
           transactionType: "DEDUCT"
         }
@@ -166,7 +228,7 @@ function settlementTransaction(
           amount: 1_000n,
           billNo: "BILL-1",
           billStatus: "PARTIALLY_PAID",
-          billType: "OTHER",
+          billType: "DAMAGE_FEE",
           cancelledAt: null,
           createdAt: occurredAt,
           customerId: IDS.customer,
@@ -174,8 +236,8 @@ function settlementTransaction(
           dueDate: occurredAt,
           id: IDS.bill,
           orderId: IDS.order,
-          paidAmount: 600n,
-          remainingAmount: 400n
+          paidAmount: options.billPaidAmount ?? 750n,
+          remainingAmount: 1_000n - (options.billPaidAmount ?? 750n)
         }
       ]
     },
@@ -196,20 +258,37 @@ function settlementTransaction(
         contractId: IDS.contract,
         customerId: IDS.customer,
         deletedAt: null,
-        depositAmount: 150n,
+        depositAmount: collectedDeposit,
         depositStatus: "CONFIRMED",
-        finalDepositAmount: 150n,
+        finalDepositAmount: collectedDeposit,
         id: IDS.order,
         vehicleId: IDS.vehicle
       })
     },
     vehicleCostLedgerEntry: {
-      findMany: async () => [
-        ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
-        ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
-        ledger(IDS.ledgerWaiver, "WAIVER", options.waiverAmount ?? 200n),
-        ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
-      ]
+      findMany: async () =>
+        options.mixedResponsibility
+          ? [
+              ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
+              ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
+              ledger(IDS.ledgerWaiver, "WAIVER", 200n),
+              ledger(IDS.ledgerCustomerWaiverReversal, "WAIVER", -200n, {
+                entryKind: "REVERSAL",
+                reversalOfEntryId: IDS.ledgerWaiver
+              }),
+              ledger(IDS.ledgerPlatformWaiver, "WAIVER", 200n, {
+                customerId: null,
+                responsiblePartyId: null,
+                responsiblePartyType: "PLATFORM"
+              }),
+              ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
+            ]
+          : [
+              ledger(IDS.ledgerCost, "ACTUAL_COST", 500n),
+              ledger(IDS.ledgerResponsibility, "RESPONSIBILITY_CONFIRMED", 500n),
+              ledger(IDS.ledgerWaiver, "WAIVER", options.waiverAmount ?? 200n),
+              ledger(IDS.ledgerWriteOff, "WRITE_OFF", 50n)
+            ]
     },
     vehicleMileageReading: {
       findMany: async () => [
@@ -250,13 +329,20 @@ function settlementTransaction(
     }
   } as unknown as Prisma.TransactionClient;
 
-  function ledger(id: string, actionType: string, amountCents: bigint) {
+  function ledger(
+    id: string,
+    actionType: string,
+    amountCents: bigint,
+    overrides: Record<string, unknown> = {}
+  ) {
     return {
       actionType,
       amountCents,
       confirmedAt: occurredAt,
+      contractId: IDS.contract,
       costCategory: "DAMAGE",
       createdAt: occurredAt,
+      customerId: IDS.customer,
       entryKind: "ORIGINAL",
       id,
       orderId: IDS.order,
@@ -264,7 +350,20 @@ function settlementTransaction(
       responsiblePartyId: IDS.customer,
       responsiblePartyType: "CUSTOMER",
       reversalOfEntryId: null,
-      vehicleId: IDS.vehicle
+      vehicleId: IDS.vehicle,
+      ...overrides
     };
+  }
+}
+
+async function expectSettlementFactConflict(tx: Prisma.TransactionClient) {
+  try {
+    await new SubscriptionClosureSettlementResolver().resolveInTransaction(tx, IDS.closureCase);
+    throw new Error("Expected authoritative settlement facts to be rejected");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({
+      code: SUBSCRIPTION_CLOSURE_SETTLEMENT_ERROR_CODE.FACT_INCONSISTENT
+    });
   }
 }

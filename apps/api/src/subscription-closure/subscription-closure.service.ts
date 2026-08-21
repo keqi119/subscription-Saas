@@ -88,6 +88,7 @@ export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   SETTLEMENT_APPROVAL_REQUIRED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_APPROVAL_REQUIRED",
   SETTLEMENT_APPROVAL_STALE: "SUBSCRIPTION_CLOSURE_SETTLEMENT_APPROVAL_STALE",
   SETTLEMENT_CLIENT_FACTS_FORBIDDEN: "SUBSCRIPTION_CLOSURE_SETTLEMENT_CLIENT_FACTS_FORBIDDEN",
+  SETTLEMENT_CHRONOLOGY_INVALID: "SUBSCRIPTION_CLOSURE_SETTLEMENT_CHRONOLOGY_INVALID",
   SETTLEMENT_FACT_DRIFT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_FACT_DRIFT",
   SETTLEMENT_NOT_RESOLVED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_NOT_RESOLVED",
   SETTLEMENT_STATUS_CONFLICT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_STATUS_CONFLICT"
@@ -1560,6 +1561,8 @@ export class SubscriptionClosureService {
       throw serviceConflict("SETTLEMENT_NOT_RESOLVED");
     }
     assertSettlementApprovalShape(command, observedResolution);
+    const lifecycleClock = await readSettlementLifecycleClock(tx, command.closureCaseId);
+    assertSettlementChronology(targetStage, command.occurredAt, observedCase, lifecycleClock);
 
     const terminalSource =
       targetStage === "SETTLED"
@@ -1569,7 +1572,8 @@ export class SubscriptionClosureService {
       tx,
       command,
       observedResolution,
-      settlementSource
+      settlementSource,
+      lifecycleClock.clockTimestamp
     );
     let settlementSourceCapability: PreparedClosureSourceCapability | undefined;
     let terminalSourceCapability: PreparedClosureSourceCapability | undefined;
@@ -1625,15 +1629,13 @@ export class SubscriptionClosureService {
     }
 
     const authorityKey = `settlement-${targetStage.toLowerCase()}`;
-    const terminalOccurredAt =
-      targetStage === "SETTLED" ? await readSettlementEventClock(tx, command.closureCaseId) : null;
     const settlementCommand = settlementRevisionCommand(
       command,
       observedCase!,
       observedResolution,
       settlementSource,
       targetStage,
-      terminalOccurredAt
+      lifecycleClock.clockTimestamp
     );
     const terminalStatus = settlementTerminalStatus(observedCase!);
     const terminalCommand =
@@ -1650,7 +1652,7 @@ export class SubscriptionClosureService {
             eventType: "STATUS_TRANSITIONED" as const,
             expectedStatus: "PENDING_SETTLEMENT" as const,
             expectedVersion: observedCase!.version + 1,
-            occurredAt: terminalOccurredAt!,
+            occurredAt: lifecycleClock.clockTimestamp,
             source: terminalSource
           }
         : null;
@@ -1811,7 +1813,8 @@ export class SubscriptionClosureService {
     tx: Prisma.TransactionClient,
     command: ManagedSettlementInput,
     resolution: ResolvedSubscriptionClosureSettlement,
-    settlementSource: SubscriptionClosureSource
+    settlementSource: SubscriptionClosureSource,
+    lifecycleClock: Date
   ) {
     const specifications = [
       {
@@ -1854,7 +1857,7 @@ export class SubscriptionClosureService {
             approvalId: approval.id,
             exceptionType: specification.exceptionType,
             expectedVersion: approval.version,
-            expiredAt: command.occurredAt,
+            expiredAt: lifecycleClock,
             expiryReason: "Authoritative settlement facts changed.",
             source,
             subject: {
@@ -3435,6 +3438,7 @@ function settlementRevisionCommand(
   command: ManagedSettlementInput,
   closureCase: Readonly<{
     currentSettlementRevision: Readonly<{
+      createdAt?: Date | string;
       finalizedAt?: Date | string | null;
       finalizedBy?: string | null;
     }> | null;
@@ -3444,7 +3448,7 @@ function settlementRevisionCommand(
   resolution: ResolvedSubscriptionClosureSettlement,
   source: SubscriptionClosureSource,
   targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
-  recordedAt: Date | null
+  recordedAt: Date
 ): AppendSubscriptionClosureSettlementCommand {
   const predecessor = closureCase.currentSettlementRevision;
   const finalizedAt =
@@ -3478,7 +3482,7 @@ function settlementRevisionCommand(
     ledgerInputSnapshot: resolution.ledgerInputSnapshot,
     managedOccurredAt: command.occurredAt,
     paidTotalCents: resolution.paidTotalCents,
-    ...(recordedAt ? { recordedAt } : {}),
+    recordedAt,
     receivableTotalCents: resolution.receivableTotalCents,
     responsibilitySnapshot: resolution.responsibilitySnapshot,
     resultSnapshot: resolution.resultSnapshot,
@@ -3501,6 +3505,7 @@ function assertSettlementCase(
   closureType: string;
   contractId: string;
   currentSettlementRevision: Readonly<{
+    createdAt?: Date | string;
     finalizedAt?: Date | string | null;
     finalizedBy?: string | null;
     inputSnapshotHash?: string;
@@ -3539,6 +3544,7 @@ function assertSettlementPredecessor(
   targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
   closureCase: Readonly<{
     currentSettlementRevision: Readonly<{
+      createdAt?: Date | string;
       finalizedAt?: Date | string | null;
       finalizedBy?: string | null;
       inputSnapshotHash?: string;
@@ -3558,6 +3564,38 @@ function assertSettlementPredecessor(
     (targetStage === "SETTLED" && (!predecessor.finalizedBy || !predecessor.finalizedAt))
   ) {
     throw serviceConflict("SETTLEMENT_FACT_DRIFT");
+  }
+}
+
+function assertSettlementChronology(
+  targetStage: "PROPOSED" | "FINALIZED" | "SETTLED",
+  occurredAt: Date,
+  closureCase: Readonly<{
+    currentSettlementRevision: Readonly<{
+      createdAt?: Date | string;
+      finalizedAt?: Date | string | null;
+    }> | null;
+  }>,
+  boundary: Readonly<{ clockTimestamp: Date; latestOccurredAt: Date | null }>
+) {
+  const occurredTime = occurredAt.getTime();
+  const latestEventTime = boundary.latestOccurredAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const predecessor = closureCase.currentSettlementRevision;
+  const predecessorCreatedTime = predecessor?.createdAt
+    ? new Date(predecessor.createdAt).getTime()
+    : Number.NaN;
+  const predecessorFinalizedTime = predecessor?.finalizedAt
+    ? new Date(predecessor.finalizedAt).getTime()
+    : Number.NaN;
+  if (
+    occurredTime > boundary.clockTimestamp.getTime() ||
+    latestEventTime > boundary.clockTimestamp.getTime() ||
+    (targetStage === "FINALIZED" &&
+      (!Number.isFinite(predecessorCreatedTime) || occurredTime < predecessorCreatedTime)) ||
+    (targetStage === "SETTLED" &&
+      (!Number.isFinite(predecessorFinalizedTime) || occurredTime < predecessorFinalizedTime))
+  ) {
+    throw serviceConflict("SETTLEMENT_CHRONOLOGY_INVALID");
   }
 }
 
@@ -3758,25 +3796,31 @@ async function readDatabaseClock(tx: Prisma.TransactionClient) {
   return now;
 }
 
-async function readSettlementEventClock(tx: Prisma.TransactionClient, closureCaseId: string) {
-  const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
-    SELECT GREATEST(
-      clock_timestamp(),
-      COALESCE(
-        (
-          SELECT MAX("occurred_at")
-          FROM "subscription_closure_event"
-          WHERE "closure_case_id" = ${closureCaseId}::uuid
-        ),
-        '-infinity'::timestamptz
-      )
-    ) AS "now"
+async function readSettlementLifecycleClock(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string
+): Promise<{ clockTimestamp: Date; latestOccurredAt: Date | null }> {
+  const rows = await tx.$queryRaw<
+    Array<{ clockTimestamp: Date; latestOccurredAt: Date | null }>
+  >(Prisma.sql`
+    SELECT clock_timestamp() AS "clockTimestamp",
+           (
+             SELECT MAX("occurred_at")
+             FROM "subscription_closure_event"
+             WHERE "closure_case_id" = ${closureCaseId}::uuid
+           ) AS "latestOccurredAt"
   `);
-  const now = rows[0]?.now;
-  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+  const boundary = rows[0];
+  if (
+    !(boundary?.clockTimestamp instanceof Date) ||
+    Number.isNaN(boundary.clockTimestamp.getTime()) ||
+    (boundary.latestOccurredAt !== null &&
+      (!(boundary.latestOccurredAt instanceof Date) ||
+        Number.isNaN(boundary.latestOccurredAt.getTime())))
+  ) {
     throw serviceConflict("CLOCK_UNAVAILABLE");
   }
-  return now;
+  return boundary;
 }
 
 function serviceConflict(code: keyof typeof SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE) {

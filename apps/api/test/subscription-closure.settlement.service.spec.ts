@@ -123,6 +123,103 @@ describe("SubscriptionClosureService settlement", () => {
     );
   });
 
+  it.each([
+    [
+      "future database-clock fact",
+      "FINALIZED",
+      currentSettlement("PROPOSED", { createdAt: new Date("2026-08-21T11:00:00.000Z") }),
+      new Date("2026-08-21T12:00:00.001Z")
+    ],
+    [
+      "pre-proposal finalization",
+      "FINALIZED",
+      currentSettlement("PROPOSED", { createdAt: new Date("2026-08-21T12:00:00.001Z") }),
+      new Date("2026-08-21T12:00:00.000Z")
+    ],
+    [
+      "pre-final settlement",
+      "SETTLED",
+      currentSettlement("FINALIZED", {
+        finalizedAt: new Date("2026-08-21T12:00:00.001Z")
+      }),
+      new Date("2026-08-21T12:00:00.000Z")
+    ]
+  ] as const)("rejects %s", async (_label, stage, predecessor, occurredAt) => {
+    const harness = settlementHarness();
+    harness.findClosureCase.mockResolvedValue(
+      closureCase({
+        currentSettlementRevision: predecessor,
+        currentSettlementRevisionId: IDS.settlement,
+        version: 5
+      })
+    );
+
+    await expectCode(
+      stage === "FINALIZED"
+        ? harness.service.finalizeManagedSettlement({
+            ...settlementInput(`chronology-${_label}`),
+            occurredAt
+          })
+        : harness.service.settleManagedSettlement({
+            ...settlementInput(`chronology-${_label}`),
+            occurredAt
+          }),
+      ConflictException,
+      "SUBSCRIPTION_CLOSURE_SETTLEMENT_CHRONOLOGY_INVALID"
+    );
+
+    expect(harness.repository.prepareSourceInTransaction).not.toHaveBeenCalled();
+  });
+
+  it("uses one database clock for revision recording, terminal event, and approval expiry", async () => {
+    const harness = settlementHarness();
+    harness.findClosureCase.mockResolvedValue(
+      closureCase({
+        currentSettlementRevision: currentSettlement("FINALIZED"),
+        currentSettlementRevisionId: IDS.settlement,
+        version: 5
+      })
+    );
+
+    await harness.service.settleManagedSettlement(settlementInput("settle-one-db-clock"));
+
+    const settlement = harness.repository.appendPreparedSettlementRevisionInTransaction.mock
+      .calls[0]![2] as { recordedAt: Date };
+    const terminalCall = harness.repository.appendPreparedEventInTransaction.mock
+      .calls[0] as unknown as [unknown, unknown, { occurredAt: Date }] | undefined;
+    expect(terminalCall).toBeDefined();
+    const terminal = terminalCall![2];
+    const approvalCommands =
+      harness.assetAccounting.approvedExceptionAuthorityRequirement.mock.calls.map(
+        (call) => call[1] as { expiredAt: Date }
+      );
+    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(settlement.recordedAt).toEqual(new Date("2026-08-21T12:00:00.000Z"));
+    expect(terminal.occurredAt).toEqual(settlement.recordedAt);
+    expect(approvalCommands.map(({ expiredAt }) => expiredAt)).toEqual([
+      settlement.recordedAt,
+      settlement.recordedAt
+    ]);
+  });
+
+  it("fails closed when the latest closure event is later than the sampled database clock", async () => {
+    const harness = settlementHarness();
+    harness.tx.$queryRaw = vi.fn(async () => [
+      {
+        clockTimestamp: new Date("2026-08-21T12:00:00.000Z"),
+        latestOccurredAt: new Date("2026-08-21T12:00:00.001Z")
+      }
+    ]) as never;
+
+    await expectCode(
+      harness.service.proposeManagedSettlement(settlementInput("proposal-future-event-clock")),
+      ConflictException,
+      "SUBSCRIPTION_CLOSURE_SETTLEMENT_CHRONOLOGY_INVALID"
+    );
+
+    expect(harness.repository.prepareSourceInTransaction).not.toHaveBeenCalled();
+  });
+
   it("refuses SETTLED while any receivable or deposit obligation lacks durable resolution", async () => {
     const harness = settlementHarness();
     harness.findClosureCase.mockResolvedValue(
@@ -325,7 +422,12 @@ function settlementHarness() {
     orderStatus: "RETURNED_PENDING_SETTLEMENT"
   }));
   const tx = {
-    $queryRaw: vi.fn(async () => [{ now: new Date("2026-08-21T12:00:00.000Z") }]),
+    $queryRaw: vi.fn(async () => [
+      {
+        clockTimestamp: new Date("2026-08-21T12:00:00.000Z"),
+        latestOccurredAt: new Date("2026-08-21T10:00:00.000Z")
+      }
+    ]),
     businessExceptionApproval: {
       findUnique: vi.fn(async ({ where }) => ({ id: where.id, version: 1 }))
     },
@@ -465,14 +567,16 @@ function closureCase(patch: Record<string, unknown> = {}) {
   };
 }
 
-function currentSettlement(stage: "PROPOSED" | "FINALIZED") {
+function currentSettlement(stage: "PROPOSED" | "FINALIZED", patch: Record<string, unknown> = {}) {
   return {
+    createdAt: new Date("2026-08-21T10:00:00.000Z"),
     finalizedAt: stage === "FINALIZED" ? new Date("2026-08-21T11:00:00.000Z") : null,
     finalizedBy: stage === "FINALIZED" ? IDS.actor : null,
     id: IDS.settlement,
     inputSnapshotHash: "a".repeat(64),
     resultHash: "c".repeat(64),
-    stage
+    stage,
+    ...patch
   };
 }
 

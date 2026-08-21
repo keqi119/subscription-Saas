@@ -248,9 +248,7 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     ]) {
       expect(closureCase, `SubscriptionClosureCase.${field}`).toContain(field);
     }
-    expect(closureCase).toContain(
-      "@@unique([createSourceType, createSourceId, createSourceKey]"
-    );
+    expect(closureCase).toContain("@@unique([createSourceType, createSourceId, createSourceKey]");
 
     for (const [block, table] of [
       [event, "subscription_closure_event"],
@@ -527,7 +525,12 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
       );
       await client.query("SET LOCAL session_replication_role = origin");
       for (const [taskId, sourceType, nextSourceId, nextSourceKey] of [
-        [legacyTaskId, "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST", randomUUID(), `retarget:${randomUUID()}`],
+        [
+          legacyTaskId,
+          "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST",
+          randomUUID(),
+          `retarget:${randomUUID()}`
+        ],
         [sourceTaskId, null, null, null],
         [sourceTaskId, "SUBSCRIPTION_EXPIRY_RETURN_MANIFEST", randomUUID(), sourceKey]
       ] as const) {
@@ -716,15 +719,7 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
           $1::uuid, $2::uuid, $3::uuid, 'P0_SCHEMA_TEST', $4::uuid, $5,
           'CREATE_CASE', $6, '{}'::jsonb, '{}'::jsonb, $7::uuid, clock_timestamp()
         )`,
-        [
-          receiptId,
-          caseId,
-          eventId,
-          randomUUID(),
-          `p0-schema:receipt:${receiptId}`,
-          hash,
-          actorId
-        ]
+        [receiptId, caseId, eventId, randomUUID(), `p0-schema:receipt:${receiptId}`, hash, actorId]
       );
 
       await expectPgError(
@@ -783,12 +778,7 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
           [id],
           "55000"
         );
-        await expectPgError(
-          client,
-          `DELETE FROM "${table}" WHERE "id" = $1::uuid`,
-          [id],
-          "55000"
-        );
+        await expectPgError(client, `DELETE FROM "${table}" WHERE "id" = $1::uuid`, [id], "55000");
       }
     } finally {
       await client.query("ROLLBACK");
@@ -983,15 +973,37 @@ describe("Stage 1 P0 subscription closure PostgreSQL constraint proofs", () => {
         "subscription_closure_settlement_current_deferred_chk"
       );
 
+      const finalizedSettlementId = randomUUID();
+      await insertSettlementRevision(client, {
+        actorId: fixture.actorId,
+        caseId: fixture.caseId,
+        revisionId: finalizedSettlementId,
+        revisionNumber: 2,
+        sourceKey: `p0-schema:settlement:finalized:${finalizedSettlementId}`,
+        stage: "FINALIZED",
+        supersedesRevisionId: proposedSettlementId
+      });
+      await client.query(
+        `UPDATE "subscription_closure_case"
+         SET "current_settlement_revision_id" = $1::uuid,
+             "version" = "version" + 1,
+             "updated_by" = $2::uuid,
+             "updated_at" = clock_timestamp()
+         WHERE "id" = $3::uuid`,
+        [finalizedSettlementId, fixture.actorId, fixture.caseId]
+      );
+      await client.query("SET CONSTRAINTS ALL IMMEDIATE");
+      await client.query("SET CONSTRAINTS ALL DEFERRED");
+
       const settledSettlementId = randomUUID();
       await insertSettlementRevision(client, {
         actorId: fixture.actorId,
         caseId: fixture.caseId,
         revisionId: settledSettlementId,
-        revisionNumber: 2,
+        revisionNumber: 3,
         sourceKey: `p0-schema:settlement:settled:${settledSettlementId}`,
         stage: "SETTLED",
-        supersedesRevisionId: proposedSettlementId
+        supersedesRevisionId: finalizedSettlementId
       });
       await client.query(
         `UPDATE "subscription_closure_case"
@@ -1265,7 +1277,13 @@ async function insertAuthorityFixtureParents(client: Client, fixture: AuthorityF
        $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
        'P0 authority contract', '{}'::jsonb, 'ARCHIVED', clock_timestamp(), clock_timestamp()
      )`,
-    [fixture.contractId, `P0-K-${fixture.contractId}`, fixture.orderId, fixture.customerId, randomUUID()]
+    [
+      fixture.contractId,
+      `P0-K-${fixture.contractId}`,
+      fixture.orderId,
+      fixture.customerId,
+      randomUUID()
+    ]
   );
   await client.query(
     `INSERT INTO "subscription_order" (
@@ -1483,6 +1501,21 @@ async function insertSettlementRevision(
   const hash = "e".repeat(64);
   const isFinalized = input.stage !== "PROPOSED";
   const isSettled = input.stage === "SETTLED";
+  const clockRow = (
+    await client.query<{ databaseClock: Date }>(`SELECT clock_timestamp() AS "databaseClock"`)
+  ).rows[0];
+  if (!clockRow) throw new Error("PostgreSQL clock query returned no row");
+  const { databaseClock } = clockRow;
+  let finalizedAt = isFinalized ? databaseClock : null;
+  if (isSettled) {
+    const predecessor = await client.query<{ finalizedAt: Date | null }>(
+      `SELECT "finalized_at" AS "finalizedAt"
+       FROM "subscription_closure_settlement_revision"
+       WHERE "id" = $1::uuid`,
+      [input.supersedesRevisionId]
+    );
+    finalizedAt = predecessor.rows[0]?.finalizedAt ?? null;
+  }
   await client.query(
     `INSERT INTO "subscription_closure_settlement_revision" (
        "id", "closure_case_id", "revision_number", "settlement_type", "stage",
@@ -1507,9 +1540,9 @@ async function insertSettlementRevision(
       hash,
       input.supersedesRevisionId ?? null,
       isFinalized ? input.actorId : null,
-      isFinalized ? new Date() : null,
+      finalizedAt,
       isSettled ? input.actorId : null,
-      isSettled ? new Date() : null,
+      isSettled ? databaseClock : null,
       randomUUID(),
       input.sourceKey,
       input.actorId

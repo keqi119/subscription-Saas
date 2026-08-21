@@ -2159,6 +2159,10 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     receipts,
     sourceLockKeys,
     subjectLockKeys,
+    subscriptionClosureCasesByOrderId: new Map<
+      string,
+      { id: string; status: "COMPLETED" | "IN_PROGRESS" | "TERMINATED" }
+    >(),
     tx: undefined as unknown as Prisma.TransactionClient
   };
   let probeCount = 0;
@@ -2305,6 +2309,10 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     assetWorkOrderEvidence: delegate(authorities.assetWorkOrderEvidence),
     contract: delegate(authorities.contract),
     customer: delegate(authorities.customer),
+    subscriptionClosureCase: {
+      findUnique: async ({ where }: { where: { orderId: string } }) =>
+        database.subscriptionClosureCasesByOrderId.get(where.orderId) ?? null
+    },
     subscriptionOrder: delegate(authorities.subscriptionOrder),
     user: delegate(authorities.user),
     vehicle: delegate(authorities.vehicle),

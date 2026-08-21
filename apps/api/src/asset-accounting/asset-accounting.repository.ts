@@ -46,6 +46,7 @@ export const ASSET_ACCOUNTING_ERROR_CODE = {
   INVALID_APPROVAL_COMMAND: "ASSET_ACCOUNTING_INVALID_APPROVAL_COMMAND",
   REVERSAL_ALREADY_EXISTS: "ASSET_ACCOUNTING_REVERSAL_ALREADY_EXISTS",
   REVERSAL_INVALID: "ASSET_ACCOUNTING_REVERSAL_INVALID",
+  SETTLEMENT_CLOSED: "ASSET_ACCOUNTING_SETTLEMENT_CLOSED",
   SOURCE_CONFLICT: "ASSET_ACCOUNTING_SOURCE_CONFLICT",
   SELF_APPROVAL_FORBIDDEN: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN",
   TRANSACTION_REQUIRED: "ASSET_ACCOUNTING_TRANSACTION_REQUIRED",
@@ -86,6 +87,8 @@ const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS]:
     "The vehicle cost ledger entry already has a reversal.",
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID]: "The requested vehicle cost reversal is invalid.",
+  [ASSET_ACCOUNTING_ERROR_CODE.SETTLEMENT_CLOSED]:
+    "Settlement-participating ledger facts cannot change after the closure is terminal.",
   [ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT]:
     "The stable asset-accounting source is already bound to a different command or payload.",
   [ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN]:
@@ -248,6 +251,7 @@ type AuthorityTable =
   | "asset_work_order_evidence"
   | "contract"
   | "customer"
+  | "subscription_closure_case"
   | "subscription_order"
   | "user"
   | "vehicle";
@@ -625,14 +629,17 @@ export class AssetAccountingRepository {
     if (replay) return replay;
 
     const authoritativeOrderId = await contractAuthoritativeOrderId(tx, normalized.contractId);
+    const settlementOrderId = normalized.orderId ?? authoritativeOrderId;
+    const closureCaseId = await settlementClosureCaseId(tx, settlementOrderId);
     if (!authorityAlreadyLocked) {
       await lockAuthorityRows(
         tx,
-        appendAuthorityLocks(normalized, authoritativeOrderId),
-        capabilityState ? CALLER_OWNED_AUTHORITY_RANK : undefined
+        appendAuthorityLocks(normalized, authoritativeOrderId, closureCaseId),
+        capabilityState || closureCaseId ? CALLER_OWNED_AUTHORITY_RANK : undefined
       );
     }
     await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
+    await assertSettlementLedgerOpen(tx, settlementOrderId);
 
     try {
       const entry = await tx.vehicleCostLedgerEntry.create({
@@ -714,7 +721,29 @@ export class AssetAccountingRepository {
     const replay = await replayReceipt(tx, normalized.source, "COST_REVERSE", payload);
     if (replay) return replay;
 
-    await lockOriginalEntry(tx, normalized.originalEntryId);
+    const observedOriginal = await tx.vehicleCostLedgerEntry.findUnique({
+      where: { id: normalized.originalEntryId }
+    });
+    if (!observedOriginal) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.COST_ENTRY_NOT_FOUND);
+    if (observedOriginal.entryKind !== "ORIGINAL") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
+    }
+
+    const closureCaseId = await settlementClosureCaseId(tx, observedOriginal.orderId);
+    if (closureCaseId) {
+      await lockAuthorityRows(
+        tx,
+        reverseAuthorityLocks(observedOriginal, normalized.actorId, closureCaseId),
+        CALLER_OWNED_AUTHORITY_RANK
+      );
+      await lockOriginalEntry(tx, normalized.originalEntryId);
+    } else {
+      await lockOriginalEntry(tx, normalized.originalEntryId);
+      await lockAuthorityRows(
+        tx,
+        reverseAuthorityLocks(observedOriginal, normalized.actorId, null)
+      );
+    }
     const original = await tx.vehicleCostLedgerEntry.findUnique({
       where: { id: normalized.originalEntryId }
     });
@@ -722,9 +751,8 @@ export class AssetAccountingRepository {
     if (original.entryKind !== "ORIGINAL") {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
-
-    await lockAuthorityRows(tx, reverseAuthorityLocks(original, normalized.actorId));
     await validateReverseActor(tx, normalized.actorId);
+    await assertSettlementLedgerOpen(tx, original.orderId);
     await assertClosedWorkOrderRetainsActualCost(tx, original);
 
     try {
@@ -1386,9 +1414,11 @@ async function createApprovalReceipt(
 
 function appendAuthorityLocks(
   command: NormalizedAppendCommand,
-  authoritativeOrderId: string | null
+  authoritativeOrderId: string | null,
+  closureCaseId: string | null
 ): AuthorityLock[] {
   return compactLocks([
+    lock(closureCaseId, "subscription_closure_case", "UPDATE"),
     lock(command.assetOwnerId, "asset_owner"),
     lock(command.workOrderId, "asset_work_order"),
     lock(command.evidenceId, "asset_work_order_evidence"),
@@ -1403,8 +1433,13 @@ function appendAuthorityLocks(
   ]);
 }
 
-function reverseAuthorityLocks(original: VehicleCostLedgerEntry, actorId: string): AuthorityLock[] {
+function reverseAuthorityLocks(
+  original: VehicleCostLedgerEntry,
+  actorId: string,
+  closureCaseId: string | null
+): AuthorityLock[] {
   return compactLocks([
+    lock(closureCaseId, "subscription_closure_case", "UPDATE"),
     lock(original.workOrderId, "asset_work_order", "UPDATE"),
     lock(actorId, "user")
   ]);
@@ -1426,6 +1461,7 @@ function lock(
 }
 
 const CALLER_OWNED_AUTHORITY_RANK: Readonly<Partial<Record<AuthorityTable, number>>> = {
+  subscription_closure_case: 10,
   subscription_order: 20,
   vehicle: 30,
   contract: 50,
@@ -1600,6 +1636,32 @@ async function contractAuthoritativeOrderId(
     where: { id: contractId }
   });
   return contract?.orderId ?? null;
+}
+
+async function settlementClosureCaseId(
+  tx: Prisma.TransactionClient,
+  orderId: string | null | undefined
+) {
+  if (!orderId) return null;
+  const closureCase = await tx.subscriptionClosureCase.findUnique({
+    select: { id: true },
+    where: { orderId }
+  });
+  return closureCase?.id ?? null;
+}
+
+async function assertSettlementLedgerOpen(
+  tx: Prisma.TransactionClient,
+  orderId: string | null | undefined
+) {
+  if (!orderId) return;
+  const closureCase = await tx.subscriptionClosureCase.findUnique({
+    select: { status: true },
+    where: { orderId }
+  });
+  if (closureCase && (closureCase.status === "COMPLETED" || closureCase.status === "TERMINATED")) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SETTLEMENT_CLOSED);
+  }
 }
 
 async function validateReverseActor(tx: Prisma.TransactionClient, actorId: string) {

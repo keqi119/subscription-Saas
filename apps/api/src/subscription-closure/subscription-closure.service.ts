@@ -11,6 +11,7 @@ import {
   Prisma,
   UserStatus,
   VehicleCostActionType,
+  VehicleMileageReadingStatus,
   VehicleMileageSourceType,
   VehicleOperationalRestrictionScope,
   VehicleOperationalRestrictionSeverity,
@@ -2291,12 +2292,19 @@ function assertExactPhysicalReceiptReplay(
   const detail = event?.detailSnapshot;
   const persistedDamagePayloads = authority.returnDamages
     .map((damage) => ({
+      createdBy: damage.createdBy,
       damageLevel: damage.damageLevel,
       damageType: damage.damageType,
+      deletedAt: damage.deletedAt,
       description: damage.description,
       estimatedRepairAmount: damage.estimatedRepairAmount?.toString() ?? null,
+      orderId: damage.orderId,
       photoUrls: Array.isArray(damage.photoUrls) ? damage.photoUrls : [],
-      responsibleParty: damage.responsibleParty
+      responsibleParty: damage.responsibleParty,
+      returnId: damage.returnId,
+      status: damage.status,
+      updatedBy: damage.updatedBy,
+      vehicleId: damage.vehicleId
     }))
     .sort((left, right) =>
       bytewiseCompare(
@@ -2304,9 +2312,23 @@ function assertExactPhysicalReceiptReplay(
         canonicalSubscriptionClosureJson(right)
       )
     );
-  const expectedDamagePayloads = [...expectedPayload.damages].sort((left, right) =>
-    bytewiseCompare(canonicalSubscriptionClosureJson(left), canonicalSubscriptionClosureJson(right))
-  );
+  const expectedDamagePayloads = expectedPayload.damages
+    .map((damage) => ({
+      createdBy: command.actorId,
+      ...damage,
+      deletedAt: null,
+      orderId: authority.order!.id,
+      returnId: authority.vehicleReturn!.id,
+      status: "RECORDED",
+      updatedBy: command.actorId,
+      vehicleId: authority.vehicle!.id
+    }))
+    .sort((left, right) =>
+      bytewiseCompare(
+        canonicalSubscriptionClosureJson(left),
+        canonicalSubscriptionClosureJson(right)
+      )
+    );
   const mileage = authority.receiptMileage;
   const vehicleReturn = authority.vehicleReturn!;
   if (
@@ -2345,6 +2367,17 @@ function assertExactPhysicalReceiptReplay(
     mileage.orderId !== authority.order!.id ||
     mileage.sourceRecordId !== vehicleReturn.id ||
     mileage.sourceType !== VehicleMileageSourceType.RETURN_CONFIRMATION ||
+    mileage.status !== VehicleMileageReadingStatus.ACTIVE ||
+    mileage.confirmedBy !== command.actorId ||
+    mileage.createdBy !== command.actorId ||
+    mileage.updatedBy !== command.actorId ||
+    mileage.voidedAt !== null ||
+    mileage.voidedBy !== null ||
+    mileage.voidReason !== null ||
+    !sameCanonicalReceiptValue(mileage.evidenceSnapshot, {
+      closureCaseId: authority.closureCase!.id,
+      physicalControlMode: command.physicalControlMode
+    }) ||
     mileage.recordedAt.getTime() !== command.returnedAt.getTime() ||
     mileage.mileageKm !== command.returnMileageKm ||
     authority.vehicle!.currentMileageKm !== command.returnMileageKm ||

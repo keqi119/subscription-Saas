@@ -205,6 +205,9 @@ export class VehicleMileageService {
       }
     });
     if (existing) {
+      if (existing.status !== VehicleMileageReadingStatus.ACTIVE) {
+        throw new ConflictException("同一来源单据的车辆里程记录已失效");
+      }
       if (sameBusinessReading(existing, input)) {
         return existing;
       }

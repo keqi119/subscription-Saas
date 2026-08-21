@@ -514,9 +514,12 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         "vehicle_operational_restriction",
         "subscription_closure_event"
       ]) {
+        const failpointTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        expect(failpointTruth).toHaveLength(15);
         await expect(failpointClosure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toThrow(
           `task-4-audit-failpoint:${failingAuditEntity}`
         );
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(failpointTruth);
         const [
           period,
           vehicleReturn,
@@ -627,6 +630,56 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       ]);
       expect(concurrentReceipts.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
       expect(concurrentReceipts.filter(({ status }) => status === "rejected")).toHaveLength(1);
+      expect(concurrentReceipts.find(({ status }) => status === "rejected")).toMatchObject({
+        reason: {
+          response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
+          status: 409
+        },
+        status: "rejected"
+      });
+      const winnerTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      expect(winnerTruth).toHaveLength(15);
+      expect(winnerTruth[0]).toMatchObject({ status: "RETURN_INSPECTION" });
+      expect(winnerTruth[1]).toMatchObject({
+        actualReturnAt: occurredAt,
+        orderStatus: "RETURNED_PENDING_SETTLEMENT"
+      });
+      expect(winnerTruth[2]).toMatchObject({ status: "COMPLETED" });
+      expect(winnerTruth[3]).toMatchObject({ currentMileageKm: 1200, status: "MAINTENANCE" });
+      expect(winnerTruth[4]).toMatchObject({
+        returnMileageKm: 1200,
+        returnStatus: "CONFIRMED",
+        returnedAt: occurredAt
+      });
+      expect(winnerTruth[5]).toHaveLength(receipt.damages.length);
+      expect(winnerTruth[6]).toEqual([
+        expect.objectContaining({ endReason: "RETURN_CONFIRMED", endedAt: occurredAt })
+      ]);
+      expect(winnerTruth[7]).toEqual([
+        expect.objectContaining({ mileageKm: 1200, status: "ACTIVE" })
+      ]);
+      expect(winnerTruth[8]).toEqual([
+        expect.objectContaining({ status: "IN_PROGRESS", workOrderType: "RETURN_INBOUND" })
+      ]);
+      expect(winnerTruth[10]).toEqual([]);
+      expect(winnerTruth[11]).toEqual([
+        expect.objectContaining({
+          restrictionType: "RETURN_INSPECTION_PENDING",
+          status: "ACTIVE"
+        })
+      ]);
+      expect(winnerTruth[12]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            commandReceipt: expect.objectContaining({
+              sourceKey: "physical-receipt:VOLUNTARY_RETURN"
+            }),
+            eventType: "PHYSICAL_CONTROL_CONFIRMED"
+          })
+        ])
+      );
+      expect(winnerTruth[13].length).toBeGreaterThan(0);
+      expect(winnerTruth[14]).toEqual([]);
       const baseline = await Promise.all([
         prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
         prisma.subscriptionOrder.findUniqueOrThrow({ where: { id: fixture.orderId } }),
@@ -684,7 +737,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         ])
       );
 
-      const exactReplayTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+      const exactReplayTruth = winnerTruth;
       await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).resolves.toEqual({
         vehicleReturnId: closureCase.vehicleReturnId
       });
@@ -752,6 +805,152 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           where: { id: closureCase.vehicleReturnId! }
         });
       });
+
+      const damage = await prisma.vehicleReturnDamage.findFirstOrThrow({
+        where: { returnId: closureCase.vehicleReturnId! }
+      });
+      const mileageReading = await prisma.vehicleMileageReading.findUniqueOrThrow({
+        where: {
+          sourceType_sourceRecordId: {
+            sourceRecordId: closureCase.vehicleReturnId!,
+            sourceType: "RETURN_CONFIRMATION"
+          }
+        }
+      });
+      const assertPersistedReplayDrift = async (
+        mutate: (tx: Prisma.TransactionClient) => Promise<unknown>,
+        restore: (tx: Prisma.TransactionClient) => Promise<unknown>
+      ) => {
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await mutate(tx);
+        });
+        const driftTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).rejects.toMatchObject({
+          response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+          status: 409
+        });
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(driftTruth);
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+          await restore(tx);
+        });
+        await expect(closure.confirmManagedPhysicalReceipt(receipt, {})).resolves.toEqual({
+          vehicleReturnId: closureCase.vehicleReturnId
+        });
+      };
+      for (const [mutate, restore] of [
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { status: "CONFIRMED" },
+              where: { id: damage.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { status: "RECORDED" },
+              where: { id: damage.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { deletedAt: new Date(receipt.returnedAt.getTime() + 1) },
+              where: { id: damage.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({ data: { deletedAt: null }, where: { id: damage.id } })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { returnId: randomUUID() },
+              where: { id: damage.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { returnId: closureCase.vehicleReturnId! },
+              where: { id: damage.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { orderId: randomUUID() },
+              where: { id: damage.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { orderId: fixture.orderId },
+              where: { id: damage.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { vehicleId: randomUUID() },
+              where: { id: damage.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleReturnDamage.update({
+              data: { vehicleId: fixture.vehicleId },
+              where: { id: damage.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: {
+                status: "VOIDED",
+                voidReason: "task-4 replay drift",
+                voidedAt: new Date(receipt.returnedAt.getTime() + 1),
+                voidedBy: fixture.actorId
+              },
+              where: { id: mileageReading.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: {
+                status: "ACTIVE",
+                voidReason: null,
+                voidedAt: null,
+                voidedBy: null
+              },
+              where: { id: mileageReading.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: { confirmedBy: randomUUID() },
+              where: { id: mileageReading.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: { confirmedBy: fixture.actorId },
+              where: { id: mileageReading.id }
+            })
+        ],
+        [
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: { evidenceSnapshot: { closureCaseId: randomUUID() } },
+              where: { id: mileageReading.id }
+            }),
+          (tx: Prisma.TransactionClient) =>
+            tx.vehicleMileageReading.update({
+              data: {
+                evidenceSnapshot: {
+                  closureCaseId: closureCase.id,
+                  physicalControlMode: "VOLUNTARY_RETURN"
+                }
+              },
+              where: { id: mileageReading.id }
+            })
+        ]
+      ] as const) {
+        await assertPersistedReplayDrift(mutate, restore);
+      }
 
       const submittedAt = occurredAt;
       await operations.transitionWorkOrder(
@@ -877,9 +1076,12 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         "asset_work_order",
         "subscription_closure_event"
       ]) {
+        const failpointTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        expect(failpointTruth).toHaveLength(15);
         await expect(
           failpointClosure.recordManagedReturnInspection(inspectionCommand, {})
         ).rejects.toThrow(`task-4-audit-failpoint:${failingAuditEntity}`);
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(failpointTruth);
         await expect(
           Promise.all([
             prisma.subscriptionClosureCase.findUniqueOrThrow({ where: { id: closureCase.id } }),
@@ -1060,9 +1262,12 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         "vehicle",
         "subscription_closure_event"
       ]) {
+        const failpointTruth = await snapshotPhysicalReturnTruth(prisma, fixture);
+        expect(failpointTruth).toHaveLength(15);
         await expect(
           failpointClosure.releaseManagedReturnInventory(inventoryCommand, {})
         ).rejects.toThrow(`task-4-audit-failpoint:${failingAuditEntity}`);
+        await expect(snapshotPhysicalReturnTruth(prisma, fixture)).resolves.toEqual(failpointTruth);
         await expect(
           Promise.all([
             prisma.vehicle.findUniqueOrThrow({ where: { id: fixture.vehicleId } }),
@@ -1195,6 +1400,37 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           { actorId: scenario.fixture.actorId, permissions: [] }
         );
       }
+      const reconditioningCloseCommand = {
+        closeReason: "focused reconditioning accepted",
+        detailSnapshot: { accepted: true },
+        expectedVersion: 3,
+        occurredAt: scenario.occurredAt,
+        solution: "accepted",
+        source: {
+          id: scenario.closureCase.id,
+          key: "focused-reconditioning-close",
+          type: "TASK4_TEST"
+        },
+        targetStatus: "CLOSED" as const,
+        workOrderId
+      };
+      let preCostAttempts = 0;
+      const attemptPreCostClose = () => {
+        preCostAttempts += 1;
+        return scenario.operations.transitionWorkOrder(reconditioningCloseCommand, {
+          actorId: scenario.fixture.actorId,
+          permissions: []
+        });
+      };
+      const preCostTruth = await snapshotPhysicalReturnTruth(prisma, scenario.fixture);
+      await expect(attemptPreCostClose()).rejects.toMatchObject({
+        response: { code: "ASSET_ACCOUNTING_WORK_ORDER_COST_NOT_CONFIRMED" },
+        status: 409
+      });
+      expect(preCostAttempts).toBe(1);
+      await expect(snapshotPhysicalReturnTruth(prisma, scenario.fixture)).resolves.toEqual(
+        preCostTruth
+      );
       const costSource = {
         id: scenario.closureCase.id,
         key: "focused-reconditioning-cost",
@@ -1229,23 +1465,10 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           permissions: [ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM]
         }
       );
-      await scenario.operations.transitionWorkOrder(
-        {
-          closeReason: "focused reconditioning accepted",
-          detailSnapshot: { accepted: true },
-          expectedVersion: 3,
-          occurredAt: scenario.occurredAt,
-          solution: "accepted",
-          source: {
-            id: scenario.closureCase.id,
-            key: "focused-reconditioning-close",
-            type: "TASK4_TEST"
-          },
-          targetStatus: "CLOSED",
-          workOrderId
-        },
-        { actorId: scenario.fixture.actorId, permissions: [] }
-      );
+      await scenario.operations.transitionWorkOrder(reconditioningCloseCommand, {
+        actorId: scenario.fixture.actorId,
+        permissions: []
+      });
       await expect(
         scenario.closure.recordManagedReturnInspection(
           {
@@ -3372,6 +3595,10 @@ async function snapshotPhysicalReturnTruth(
     prisma.auditLog.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       where: { operatorId: fixture.actorId }
+    }),
+    prisma.vehicleCostLedgerEntry.findMany({
+      orderBy: [{ occurredOn: "asc" }, { id: "asc" }],
+      where: { orderId: fixture.orderId }
     })
   ]);
 }

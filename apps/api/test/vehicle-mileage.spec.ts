@@ -181,6 +181,69 @@ describe("VehicleMileageService", () => {
     ).rejects.toMatchObject({ response: { code: "VEHICLE_MILEAGE_CAPABILITY_INVALID" } });
   });
 
+  it("rejects an identical prepared source replay when its persisted reading is inactive", async () => {
+    const sourceRecordId = "00000000-0000-4000-8000-000000000502";
+    const harness = createHarness({
+      existing: readingRow({
+        evidenceSnapshot: { closureCaseId: "00000000-0000-4000-8000-000000000402" },
+        mileageKm: 145,
+        orderId,
+        recordedAt,
+        sourceRecordId,
+        sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+        status: VehicleMileageReadingStatus.VOIDED,
+        vehicleId
+      })
+    });
+    const coordinator = new SubscriptionClosureRepository();
+    const source = {
+      id: "00000000-0000-4000-8000-000000000402",
+      key: "physical-mileage:RECOVERY",
+      type: "SUBSCRIPTION_CLOSURE"
+    };
+    const command = {
+      confirmedBy: actorId,
+      evidenceSnapshot: { closureCaseId: source.id },
+      mileageKm: 145,
+      orderId,
+      recordedAt,
+      source,
+      sourceRecordId,
+      sourceType: VehicleMileageSourceType.RETURN_CONFIRMATION,
+      vehicleId
+    };
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.transaction,
+      source
+    );
+    const session = coordinator.createAuthoritySessionInTransaction(harness.transaction);
+    const requirement = harness.service.appendAuthorityRequirement(
+      session,
+      command,
+      "physical-mileage"
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.transaction,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedAppendInTransaction(
+      harness.transaction,
+      session,
+      command,
+      sourceCapability,
+      proofs.get("physical-mileage")!,
+      "physical-mileage"
+    );
+
+    await expect(
+      harness.service.appendPreparedReadingInTransaction(harness.transaction, prepared)
+    ).rejects.toThrow("同一来源单据的车辆里程记录已失效");
+    expect(harness.tx.vehicleMileageReading.create).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
+  });
+
   it("returns an identical source record idempotently without writing again", async () => {
     const existing = readingRow({
       mileageKm: 145,
@@ -203,6 +266,32 @@ describe("VehicleMileageService", () => {
       })
     ).resolves.toBe(existing);
 
+    expect(harness.tx.vehicleMileageReading.create).not.toHaveBeenCalled();
+    expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an identical public source replay when its persisted reading is inactive", async () => {
+    const existing = readingRow({
+      mileageKm: 145,
+      orderId,
+      recordedAt,
+      sourceRecordId: "delivery-inactive",
+      sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+      status: VehicleMileageReadingStatus.VOIDED
+    });
+    const harness = createHarness({ existing });
+
+    await expect(
+      harness.service.appendConfirmedReading(harness.transaction, {
+        confirmedBy: actorId,
+        mileageKm: 145,
+        orderId,
+        recordedAt,
+        sourceRecordId: "delivery-inactive",
+        sourceType: VehicleMileageSourceType.DELIVERY_BASELINE,
+        vehicleId
+      })
+    ).rejects.toThrow("同一来源单据的车辆里程记录已失效");
     expect(harness.tx.vehicleMileageReading.create).not.toHaveBeenCalled();
     expect(harness.tx.vehicle.update).not.toHaveBeenCalled();
   });

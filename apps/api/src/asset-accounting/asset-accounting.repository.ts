@@ -30,6 +30,7 @@ import type {
 } from "./asset-accounting.types";
 
 export const ASSET_ACCOUNTING_ERROR_CODE = {
+  CALLER_CAPABILITY_INVALID: "ASSET_ACCOUNTING_CALLER_CAPABILITY_INVALID",
   APPROVAL_ALREADY_LIVE: "ASSET_ACCOUNTING_APPROVAL_ALREADY_LIVE",
   APPROVAL_NOT_FOUND: "ASSET_ACCOUNTING_APPROVAL_NOT_FOUND",
   APPROVAL_SNAPSHOT_MISMATCH: "ASSET_ACCOUNTING_APPROVAL_SNAPSHOT_MISMATCH",
@@ -56,6 +57,8 @@ type AssetAccountingErrorCode =
   (typeof ASSET_ACCOUNTING_ERROR_CODE)[keyof typeof ASSET_ACCOUNTING_ERROR_CODE];
 
 const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
+  [ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID]:
+    "The caller-owned asset-accounting command capability is invalid.",
   [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE]:
     "A live exception approval already exists for this subject field and snapshot.",
   [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND]: "The exception approval was not found.",
@@ -131,6 +134,15 @@ export interface AssetAccountingCostCommandOutcome {
   readonly outcome: VehicleCostLedgerEntrySnapshot;
   readonly wrote: boolean;
 }
+
+declare const assetAccountingCallerOwnedCapabilityBrand: unique symbol;
+export type AssetAccountingCallerOwnedCommandCapability = Readonly<{
+  [assetAccountingCallerOwnedCapabilityBrand]: true;
+}>;
+type AssetAccountingCallerOwnedCommandCapabilityState = Readonly<{
+  source: AssetAccountingSource;
+  transaction: Prisma.TransactionClient;
+}>;
 
 export interface BusinessExceptionSubjectIdentity {
   readonly subjectType: BusinessExceptionSubjectType;
@@ -300,6 +312,11 @@ export function businessExceptionSubjectLockIdentity(
  */
 @Injectable()
 export class AssetAccountingRepository {
+  private readonly callerOwnedCommandCapabilities = new WeakMap<
+    AssetAccountingCallerOwnedCommandCapability,
+    AssetAccountingCallerOwnedCommandCapabilityState
+  >();
+
   async lockExceptionApproval(
     tx: Prisma.TransactionClient,
     approvalId: string
@@ -318,6 +335,20 @@ export class AssetAccountingRepository {
     await tx.$queryRaw(
       Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${exactTuple}, 0))`
     );
+  }
+
+  async prepareCallerOwnedCommand(
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ): Promise<AssetAccountingCallerOwnedCommandCapability> {
+    const normalized = canonicalAssetAccountingSource(source);
+    await this.lockSourceOwnership(tx, normalized);
+    const capability = Object.freeze({}) as AssetAccountingCallerOwnedCommandCapability;
+    this.callerOwnedCommandCapabilities.set(
+      capability,
+      Object.freeze({ source: normalized, transaction: tx })
+    );
+    return capability;
   }
 
   async lockBusinessExceptionSourceAndSubject(
@@ -499,16 +530,25 @@ export class AssetAccountingRepository {
 
   async appendCostEntry(
     tx: Prisma.TransactionClient,
-    command: AppendCostEntryCommand
+    command: AppendCostEntryCommand,
+    capability?: AssetAccountingCallerOwnedCommandCapability
   ): Promise<AssetAccountingCostCommandOutcome> {
     const normalized = normalizeAppendCommand(command);
     const payload = appendPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (capability) {
+      this.consumeCallerOwnedCommandCapability(tx, normalized.source, capability);
+    } else {
+      await this.lockSourceOwnership(tx, normalized.source);
+    }
     const replay = await replayReceipt(tx, normalized.source, "COST_APPEND", payload);
     if (replay) return replay;
 
     const authoritativeOrderId = await contractAuthoritativeOrderId(tx, normalized.contractId);
-    await lockAuthorityRows(tx, appendAuthorityLocks(normalized, authoritativeOrderId));
+    await lockAuthorityRows(
+      tx,
+      appendAuthorityLocks(normalized, authoritativeOrderId),
+      capability ? CALLER_OWNED_AUTHORITY_RANK : undefined
+    );
     await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
 
     try {
@@ -554,6 +594,24 @@ export class AssetAccountingRepository {
       return { outcome, wrote: true };
     } catch (error) {
       throw normalizeDatabaseError(error);
+    }
+  }
+
+  private consumeCallerOwnedCommandCapability(
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource,
+    capability: AssetAccountingCallerOwnedCommandCapability
+  ) {
+    const state = this.callerOwnedCommandCapabilities.get(capability);
+    this.callerOwnedCommandCapabilities.delete(capability);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.source.id !== source.id ||
+      state.source.key !== source.key ||
+      state.source.type !== source.type
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
     }
   }
 
@@ -1263,7 +1321,21 @@ function lock(
   return id ? { id, mode, table } : null;
 }
 
-function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock[] {
+const CALLER_OWNED_AUTHORITY_RANK: Readonly<Partial<Record<AuthorityTable, number>>> = {
+  subscription_order: 20,
+  vehicle: 30,
+  contract: 50,
+  asset_work_order: 120,
+  asset_owner: 140,
+  asset_work_order_evidence: 145,
+  customer: 180,
+  user: 210
+};
+
+function compactLocks(
+  locks: ReadonlyArray<AuthorityLock | null>,
+  rank?: Readonly<Partial<Record<AuthorityTable, number>>>
+): AuthorityLock[] {
   const unique = new Map<string, AuthorityLock>();
   for (const item of locks) {
     if (!item) continue;
@@ -1271,14 +1343,24 @@ function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock
     const existing = unique.get(key);
     if (!existing || item.mode === "UPDATE") unique.set(key, item);
   }
-  return [...unique.values()].sort((left, right) =>
-    left.table === right.table ? compare(left.id, right.id) : compare(left.table, right.table)
-  );
+  return [...unique.values()].sort((left, right) => {
+    if (rank) {
+      const rankDifference = (rank[left.table] ?? 1_000) - (rank[right.table] ?? 1_000);
+      if (rankDifference) return rankDifference;
+    }
+    return left.table === right.table
+      ? compare(left.id, right.id)
+      : compare(left.table, right.table);
+  });
 }
 
-async function lockAuthorityRows(tx: Prisma.TransactionClient, locks: readonly AuthorityLock[]) {
+async function lockAuthorityRows(
+  tx: Prisma.TransactionClient,
+  locks: readonly AuthorityLock[],
+  rank?: Readonly<Partial<Record<AuthorityTable, number>>>
+) {
   try {
-    for (const item of locks) {
+    for (const item of compactLocks(locks, rank)) {
       const query =
         item.mode === "UPDATE"
           ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR UPDATE NOWAIT`

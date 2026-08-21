@@ -46,6 +46,63 @@ const CONFIRMED_AT = new Date("2026-08-20T10:00:00.000Z");
 const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
 
 describe("AssetAccountingService", () => {
+  it("appends through one caller-owned capability without opening a nested transaction", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("caller-owned-append");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+
+    await harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability);
+
+    expect(harness.transactions).toEqual([]);
+    expect(harness.audits).toHaveLength(1);
+    await expectServiceCode(
+      harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("rejects forged, foreign-instance, wrong-transaction, and wrong-source accounting capabilities", async () => {
+    const harness = serviceHarness();
+    const foreign = serviceHarness();
+    const command = appendServiceCommand("caller-owned-guards");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+
+    for (const [service, tx, candidate, input] of [
+      [harness.service, harness.tx, Object.freeze({}), command],
+      [foreign.service, harness.tx, capability, command],
+      [harness.service, foreign.tx, capability, command],
+      [
+        harness.service,
+        harness.tx,
+        await harness.service.prepareCallerOwnedTransaction(harness.tx, command.source),
+        { ...command, source: source("different-accounting-source") }
+      ]
+    ] as const) {
+      await expectServiceCode(
+        service.appendCostInTransaction(tx, input, requestContext, candidate as never),
+        ConflictException,
+        ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(harness.audits).toHaveLength(0);
+  });
   it("requires an authenticated actor, the exact plan permission, and one matching source header", async () => {
     const harness = serviceHarness();
     const command = appendServiceCommand("guarded-append");
@@ -643,6 +700,11 @@ class FakeRepository {
     void sourceValue;
     void subjectValue;
     this.operations.push("source-subject-lock");
+  }
+
+  async prepareCallerOwnedCommand() {
+    this.operations.push("source-lock");
+    return Object.freeze({});
   }
 
   async appendCostEntry(

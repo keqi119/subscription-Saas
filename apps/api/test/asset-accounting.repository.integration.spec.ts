@@ -68,6 +68,58 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     );
   });
 
+  it("binds caller-owned accounting capabilities to one repository, transaction, source, and use", async () => {
+    const repository = new AssetAccountingRepository();
+    const foreignRepository = new AssetAccountingRepository();
+    const command = appendCommand(fixture, "caller-capability-guards");
+    const wrongTransactionCapability = await readCommitted(prisma, (tx) =>
+      repository.prepareCallerOwnedCommand(tx, command.source)
+    );
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        repository.appendCostEntry(tx, command, wrongTransactionCapability)
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      await expectCode(
+        foreignRepository.appendCostEntry(tx, command, capability),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+      await expectCode(
+        repository.appendCostEntry(tx, command, Object.freeze({}) as never),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+      const created = await repository.appendCostEntry(tx, command, capability);
+      expect(created.wrote).toBe(true);
+      await expectCode(
+        repository.appendCostEntry(tx, command, capability),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    });
+
+    await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      await expectCode(
+        repository.appendCostEntry(
+          tx,
+          { ...command, source: { ...command.source, key: `${command.source.key}:drift` } },
+          capability
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    });
+    const replay = await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(tx, command.source);
+      return repository.appendCostEntry(tx, command, capability);
+    });
+    expect(replay.wrote).toBe(false);
+    await expect(countEntries(prisma, command.source)).resolves.toBe(1);
+    await expect(countReceipts(prisma, command.source)).resolves.toBe(1);
+  });
+
   it("serializes concurrent exact append replay on the exact source advisory lock", async () => {
     const repository = new AssetAccountingRepository();
     const command = appendCommand(fixture, "append-race");

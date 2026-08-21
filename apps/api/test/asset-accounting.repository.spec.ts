@@ -19,6 +19,58 @@ const NOW = new Date("2026-08-20T10:00:00.000Z");
 const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
 
 describe("AssetAccountingRepository", () => {
+  it("consumes one same-repository append capability without reacquiring the source", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-repository");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+
+    await repository.appendCostEntry(database.tx, command, capability);
+
+    expect(database.operationTimeline.filter((item) => item === "source-lock")).toHaveLength(1);
+    expect(database.authorityLockModes.map(({ table }) => table)).toEqual([
+      "subscription_order",
+      "vehicle",
+      "contract",
+      "asset_work_order",
+      "asset_owner",
+      "asset_work_order_evidence",
+      "customer",
+      "user"
+    ]);
+    await expectCode(
+      repository.appendCostEntry(database.tx, command, capability),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, and wrong-source append capabilities", async () => {
+    const database = fakeTransaction();
+    const other = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-repository-guards");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+
+    for (const [target, tx, candidate, input] of [
+      [repository, database.tx, Object.freeze({}), command],
+      [new AssetAccountingRepository(), database.tx, capability, command],
+      [repository, other.tx, capability, command],
+      [
+        repository,
+        database.tx,
+        await repository.prepareCallerOwnedCommand(database.tx, command.source),
+        { ...command, source: { ...command.source, key: "different-source" } }
+      ]
+    ] as const) {
+      await expectCode(
+        target.appendCostEntry(tx, input, candidate as never),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(database.entries.size).toBe(0);
+    expect(other.entries.size).toBe(0);
+  });
+
   it("rejects root-like and non-READ-COMMITTED clients", async () => {
     const repository = new AssetAccountingRepository();
     const rootLike = fakeTransaction({ secondTransactionId: "tx-2" });

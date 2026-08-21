@@ -1,16 +1,24 @@
 import { ConflictException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma } from "@prisma/client";
+import { AuditAction, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
+import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
+import { AssetOperationsService } from "../src/asset-operations/asset-operations.service";
+import { AuditService } from "../src/audit/audit.service";
+import {
+  HANDOVER_P0_CAPABILITY_ERROR_CODE,
+  HandoverWorkOrderService
+} from "../src/handover-work-order/handover-work-order.service";
 import {
   SUBSCRIPTION_CLOSURE_ERROR_CODE,
   SubscriptionClosureRepository,
   type AppendSubscriptionClosureDocumentCommand,
   type AppendSubscriptionClosureSettlementCommand,
-  type CreateSubscriptionClosureCaseCommand
+  type CreateSubscriptionClosureCaseCommand,
+  type SubscriptionClosureMutationAuditHook
 } from "../src/subscription-closure/subscription-closure.repository";
 
 const DATABASE_URL = requiredTestDatabaseUrl();
@@ -40,6 +48,211 @@ describe("SubscriptionClosureRepository PostgreSQL behavior", () => {
     fixtures.push(created);
     return created;
   }
+
+  it("binds RETURN_INBOUND capabilities to one service, transaction, payload, and use, then exactly replays", async () => {
+    const data = await fixture();
+    await removeSeededHandover(prisma, data);
+    const service = returnInboundService(prisma);
+    const foreignService = returnInboundService(prisma);
+    const command = returnInboundCommand(data, "capability-guards");
+    const wrongTransactionCapability = await readCommitted(prisma, (tx) =>
+      service.prepareReturnInboundInTransaction(tx, command)
+    );
+
+    await expectCode(
+      readCommitted(prisma, (tx) =>
+        service.createReturnInboundInTransaction(tx, command, wrongTransactionCapability)
+      ),
+      HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID
+    );
+    const created = await readCommitted(prisma, async (tx) => {
+      const capability = await service.prepareReturnInboundInTransaction(tx, command);
+      await expectCode(
+        foreignService.createReturnInboundInTransaction(tx, command, capability),
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID
+      );
+      await expectCode(
+        service.createReturnInboundInTransaction(tx, command, Object.freeze({}) as never),
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID
+      );
+      const result = await service.createReturnInboundInTransaction(tx, command, capability);
+      await expectCode(
+        service.createReturnInboundInTransaction(tx, command, capability),
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID
+      );
+      return result;
+    });
+    data.handoverWorkOrderId = created.id;
+    const replay = await readCommitted(prisma, async (tx) => {
+      const capability = await service.prepareReturnInboundInTransaction(tx, command);
+      return service.createReturnInboundInTransaction(tx, command, capability);
+    });
+
+    expect(replay.id).toBe(created.id);
+    await expect(
+      prisma.vehicleHandoverWorkOrder.count({
+        where: { handoverType: "RETURN_INBOUND", orderId: data.orderId }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.vehicleHandoverEvent.count({ where: { workOrderId: created.id } })
+    ).resolves.toBe(1);
+  });
+
+  it("fails closed on an empty required authority probe", async () => {
+    const data = await fixture();
+    const service = returnInboundService(prisma);
+    const command = {
+      ...returnInboundCommand(data, "empty-authority"),
+      orderId: randomUUID()
+    };
+
+    await expectCode(
+      readCommitted(prisma, async (tx) => {
+        const capability = await service.prepareReturnInboundInTransaction(tx, command);
+        return service.createReturnInboundInTransaction(tx, command, capability);
+      }),
+      HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND
+    );
+  });
+
+  it("fast-fails RETURN_INBOUND authority contention while the holder remains usable", async () => {
+    const data = await fixture();
+    await removeSeededHandover(prisma, data);
+    const service = returnInboundService(prisma);
+    const holderCreated = deferred<void>();
+    const probeHolder = deferred<void>();
+    const holderUsable = deferred<void>();
+    const releaseHolder = deferred<void>();
+    const holderCommand = returnInboundCommand(data, "contention-holder");
+    const holder = readCommitted(prisma, async (tx) => {
+      const capability = await service.prepareReturnInboundInTransaction(tx, holderCommand);
+      const result = await service.createReturnInboundInTransaction(tx, holderCommand, capability);
+      holderCreated.resolve();
+      await probeHolder.promise;
+      await tx.$queryRaw(Prisma.sql`SELECT 1 AS "usable"`);
+      holderUsable.resolve();
+      await releaseHolder.promise;
+      return result;
+    });
+    void holder.catch(holderCreated.reject);
+    await holderCreated.promise;
+
+    const contenderCommand = returnInboundCommand(data, "contention-contender");
+    await expectCode(
+      readCommitted(prisma, async (tx) => {
+        const capability = await service.prepareReturnInboundInTransaction(tx, contenderCommand);
+        return service.createReturnInboundInTransaction(tx, contenderCommand, capability);
+      }),
+      HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_BUSY
+    );
+    probeHolder.resolve();
+    await holderUsable.promise;
+    releaseHolder.resolve();
+    const created = await holder;
+    data.handoverWorkOrderId = created.id;
+  });
+
+  it.each([
+    "after-specialist",
+    "after-common-work-order",
+    "case-audit",
+    "document-audit",
+    "after-first-document"
+  ] as const)(
+    "atomically rolls back the expiry-style cross-domain write set at %s",
+    async (failpoint) => {
+      const data = await fixture();
+      await removeSeededHandover(prisma, data);
+      const handoverService = returnInboundService(prisma);
+      const auditService = new AuditService(prisma);
+      const operationsService = new AssetOperationsService(
+        prisma,
+        new AssetOperationsRepository(),
+        auditService
+      );
+      const closureRepository = new SubscriptionClosureRepository();
+      const handoverCommand = returnInboundCommand(data, `atomic:${failpoint}:handover`);
+      const workOrderCommand = commonReturnWorkOrderCommand(
+        data,
+        `atomic:${failpoint}:asset-work-order`
+      );
+      const caseSource = source(`atomic:${failpoint}:case`);
+      const documentSource = source(`atomic:${failpoint}:document`);
+
+      await expect(
+        readCommitted(prisma, async (tx) => {
+          const handoverCapability = await handoverService.prepareReturnInboundInTransaction(
+            tx,
+            handoverCommand
+          );
+          const workOrderCapability = await operationsService.prepareCallerOwnedTransaction(
+            tx,
+            workOrderCommand.source
+          );
+          await closureRepository.lockSourceOwnership(tx, caseSource);
+          await closureRepository.lockSourceOwnership(tx, documentSource);
+          await closureRepository.lockAuthorityRows(tx, [
+            { id: data.orderId, mode: "UPDATE", table: "subscription_order" },
+            { id: data.vehicleId, mode: "SHARE", table: "vehicle" },
+            { id: data.contractId, mode: "SHARE", table: "contract" },
+            { id: data.vehicleReturnId, mode: "SHARE", table: "vehicle_return" },
+            { id: data.customerId, mode: "SHARE", table: "customer" },
+            { id: data.actorId, mode: "SHARE", table: "user" }
+          ]);
+
+          const specialist = await handoverService.createReturnInboundInTransaction(
+            tx,
+            handoverCommand,
+            handoverCapability
+          );
+          if (failpoint === "after-specialist") throw new Error(failpoint);
+          const common = await operationsService.createWorkOrderInTransaction(
+            tx,
+            workOrderCommand,
+            assetOperationContext(data.actorId),
+            workOrderCapability
+          );
+          if (failpoint === "after-common-work-order") throw new Error(failpoint);
+
+          data.handoverWorkOrderId = specialist.id;
+          data.assetWorkOrderIds.push(common.workOrder.id);
+          const createdCase = await closureRepository.createCase(
+            tx,
+            {
+              ...createCaseCommand(data, `atomic:${failpoint}:case`),
+              returnAssetWorkOrderId: common.workOrder.id,
+              returnHandoverWorkOrderId: specialist.id,
+              source: caseSource
+            },
+            closureAudit(auditService, data.actorId, failpoint, "case-audit")
+          );
+          const firstDocument = documentCommand(data, createdCase.outcome.id, {
+            documentType: "RETURN_MANIFEST",
+            expectedVersion: 0,
+            key: `atomic:${failpoint}:document`
+          });
+          await closureRepository.appendDocumentRevision(
+            tx,
+            { ...firstDocument, source: documentSource },
+            closureAudit(auditService, data.actorId, failpoint, "document-audit")
+          );
+          if (failpoint === "after-first-document") throw new Error(failpoint);
+        })
+      ).rejects.toThrow(failpoint);
+      await expect(atomicResidue(prisma, data)).resolves.toEqual({
+        assetEvents: 0,
+        assetWorkOrders: 0,
+        audits: 0,
+        closureCases: 0,
+        closureDocuments: 0,
+        closureEvents: 0,
+        closureReceipts: 0,
+        handoverEvents: 0,
+        handoverWorkOrders: 0
+      });
+    }
+  );
 
   it("creates, loads, lists, and exactly replays a canonical case outcome", async () => {
     const data = await fixture();
@@ -1071,6 +1284,107 @@ function source(key: string) {
   return { id: randomUUID(), key: `p0:${key}`, type: "P0_REPOSITORY_TEST" } as const;
 }
 
+function returnInboundService(prisma: PrismaService) {
+  return new HandoverWorkOrderService(prisma, Object.freeze({}) as never);
+}
+
+function returnInboundCommand(fixture: Fixture, key: string) {
+  return {
+    actorId: fixture.actorId,
+    orderId: fixture.orderId,
+    source: source(key)
+  };
+}
+
+function commonReturnWorkOrderCommand(fixture: Fixture, key: string) {
+  return {
+    assetOwnerId: null,
+    contractId: fixture.contractId,
+    costConfirmationRequired: false,
+    customerId: fixture.customerId,
+    description: `P0 atomic return work order ${fixture.marker}`,
+    metadata: { fixture: fixture.marker, purpose: "expiry-rollback-proof" },
+    occurredAt: NOW,
+    orderId: fixture.orderId,
+    priority: "NORMAL" as const,
+    relatedWorkOrderId: null,
+    source: source(key),
+    vehicleId: fixture.vehicleId,
+    workOrderType: "RETURN_INBOUND" as const
+  };
+}
+
+function assetOperationContext(actorId: string) {
+  return {
+    actorId,
+    ipAddress: "127.0.0.1",
+    permissions: [] as const,
+    userAgent: "subscription-closure-capability-integration"
+  };
+}
+
+function closureAudit(
+  auditService: AuditService,
+  actorId: string,
+  activeFailpoint: string,
+  auditFailpoint: "case-audit" | "document-audit"
+): SubscriptionClosureMutationAuditHook {
+  return async (tx, mutation) => {
+    await auditService.write(
+      {
+        action: AuditAction.CREATE,
+        after: mutation,
+        entityId: mutation.eventId,
+        entityType: "subscription_closure_event",
+        module: "subscription_closure",
+        operatorId: actorId
+      },
+      tx
+    );
+    if (activeFailpoint === auditFailpoint) throw new Error(auditFailpoint);
+  };
+}
+
+async function removeSeededHandover(prisma: PrismaService, fixture: Fixture) {
+  await prisma.vehicleHandoverWorkOrder.delete({ where: { id: fixture.handoverWorkOrderId } });
+}
+
+async function atomicResidue(prisma: PrismaService, fixture: Fixture) {
+  const closureCases = await prisma.subscriptionClosureCase.findMany({
+    select: { id: true },
+    where: { orderId: fixture.orderId }
+  });
+  const caseIds = closureCases.map(({ id }) => id);
+  const assetWorkOrders = await prisma.assetWorkOrder.findMany({
+    select: { id: true },
+    where: { orderId: fixture.orderId }
+  });
+  const assetWorkOrderIds = assetWorkOrders.map(({ id }) => id);
+  return {
+    assetEvents: await prisma.assetWorkOrderEvent.count({
+      where: { workOrderId: { in: assetWorkOrderIds } }
+    }),
+    assetWorkOrders: assetWorkOrders.length,
+    audits: await prisma.auditLog.count({ where: { operatorId: fixture.actorId } }),
+    closureCases: closureCases.length,
+    closureDocuments: await prisma.subscriptionClosureDocumentRevision.count({
+      where: { closureCaseId: { in: caseIds } }
+    }),
+    closureEvents: await prisma.subscriptionClosureEvent.count({
+      where: { closureCaseId: { in: caseIds } }
+    }),
+    closureReceipts: await prisma.subscriptionClosureCommandReceipt.count({
+      where: { closureCaseId: { in: caseIds } }
+    }),
+    handoverEvents: await prisma.vehicleHandoverEvent.count({
+      where: { orderId: fixture.orderId }
+    }),
+    handoverWorkOrders: await prisma.vehicleHandoverWorkOrder.count({
+      where: { orderId: fixture.orderId }
+    })
+  };
+}
+
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
 
 async function createFixture(prisma: PrismaService) {
@@ -1082,7 +1396,7 @@ async function createFixture(prisma: PrismaService) {
     contractESignTaskId: randomUUID(),
     contractId: randomUUID(),
     customerId: randomUUID(),
-    handoverWorkOrderId: randomUUID(),
+    handoverWorkOrderId: String(randomUUID()),
     marker,
     orderId: randomUUID(),
     signedFileId: randomUUID(),
@@ -1177,13 +1491,18 @@ async function deleteFixture(prisma: PrismaService, fixture: Fixture) {
       });
       await tx.subscriptionClosureCase.deleteMany({ where: { id: { in: ids } } });
     }
+    await tx.auditLog.deleteMany({ where: { operatorId: fixture.actorId } });
+    await tx.vehicleHandoverEvent.deleteMany({ where: { orderId: fixture.orderId } });
+    await tx.assetWorkOrderEvent.deleteMany({
+      where: { workOrderId: { in: fixture.assetWorkOrderIds } }
+    });
     await tx.contractESignTask.deleteMany({ where: { id: fixture.contractESignTaskId } });
     await tx.assetWorkOrder.deleteMany({ where: { id: { in: fixture.assetWorkOrderIds } } });
     await tx.fileObject.deleteMany({
       where: { id: { in: [fixture.sourceFileId, fixture.signedFileId] } }
     });
     await tx.vehicleReturn.deleteMany({ where: { id: fixture.vehicleReturnId } });
-    await tx.vehicleHandoverWorkOrder.deleteMany({ where: { id: fixture.handoverWorkOrderId } });
+    await tx.vehicleHandoverWorkOrder.deleteMany({ where: { orderId: fixture.orderId } });
     await tx.subscriptionOrder.deleteMany({ where: { id: fixture.orderId } });
     await tx.contract.deleteMany({ where: { id: fixture.contractId } });
     await tx.vehicle.deleteMany({ where: { id: fixture.vehicleId } });
@@ -1231,7 +1550,6 @@ async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fi
     signedFileId,
     sourceFileId
   ]);
-  const handoverIds = fixtures.map(({ handoverWorkOrderId }) => handoverWorkOrderId);
   const markerIds = fixtures.map(({ marker }) => marker);
   const returnIds = fixtures.map(({ vehicleReturnId }) => vehicleReturnId);
   const vehicleIds = fixtures.map(({ vehicleId }) => vehicleId);
@@ -1251,10 +1569,13 @@ async function expectFixtureResidue(prisma: PrismaService, fixtures: readonly Fi
       where: { closureCaseId: { in: closureCaseIds } }
     }),
     prisma.assetWorkOrder.count({ where: { id: { in: assetWorkOrderIds } } }),
+    prisma.assetWorkOrderEvent.count({ where: { workOrderId: { in: assetWorkOrderIds } } }),
+    prisma.auditLog.count({ where: { operatorId: { in: actorIds } } }),
     prisma.contractESignTask.count({ where: { id: { in: esignIds } } }),
     prisma.fileObject.count({ where: { id: { in: fileIds } } }),
     prisma.vehicleReturn.count({ where: { id: { in: returnIds } } }),
-    prisma.vehicleHandoverWorkOrder.count({ where: { id: { in: handoverIds } } }),
+    prisma.vehicleHandoverEvent.count({ where: { orderId: { in: orderIds } } }),
+    prisma.vehicleHandoverWorkOrder.count({ where: { orderId: { in: orderIds } } }),
     prisma.subscriptionOrder.count({ where: { id: { in: orderIds } } }),
     prisma.contract.count({ where: { id: { in: contractIds } } }),
     prisma.vehicle.count({ where: { id: { in: vehicleIds } } }),

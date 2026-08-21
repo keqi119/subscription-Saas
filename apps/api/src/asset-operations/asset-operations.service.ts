@@ -24,7 +24,8 @@ import { AuditService } from "../audit/audit.service";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   ASSET_OPERATION_ERROR_CODE,
-  AssetOperationsRepository
+  AssetOperationsRepository,
+  type AssetOperationsCallerOwnedCommandCapability
 } from "./asset-operations.repository";
 import type {
   AppendEvidenceCommand,
@@ -48,6 +49,7 @@ import {
 export const ASSET_OPERATION_SERVICE_CODE = {
   ASSET_OWNER_NOT_FOUND: "ASSET_OPERATION_ASSET_OWNER_NOT_FOUND",
   AUTHORITY_MISMATCH: "ASSET_OPERATION_AUTHORITY_MISMATCH",
+  CALLER_CAPABILITY_INVALID: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID",
   CONTRACT_NOT_FOUND: "ASSET_OPERATION_CONTRACT_NOT_FOUND",
   CUSTOMER_NOT_FOUND: "ASSET_OPERATION_CUSTOMER_NOT_FOUND",
   FILE_NOT_FOUND: ASSET_OPERATION_ERROR_CODE.FILE_NOT_FOUND,
@@ -78,6 +80,15 @@ export type AppendNoteServiceCommand = Omit<AppendNoteCommand, "actorId">;
 export type AppendEvidenceServiceCommand = Omit<AppendEvidenceCommand, "actorId">;
 export type CreateRestrictionServiceCommand = Omit<CreateRestrictionCommand, "actorId">;
 export type ReleaseRestrictionServiceCommand = Omit<ReleaseRestrictionCommand, "actorId">;
+declare const assetOperationsTransactionCapabilityBrand: unique symbol;
+export type AssetOperationsTransactionCapability = Readonly<{
+  [assetOperationsTransactionCapabilityBrand]: true;
+}>;
+type AssetOperationsTransactionCapabilityState = Readonly<{
+  repositoryCapability: AssetOperationsCallerOwnedCommandCapability;
+  source: StableAssetOperationSource;
+  transaction: Prisma.TransactionClient;
+}>;
 type LockedWorkOrderCommandHandle = Awaited<
   ReturnType<AssetOperationsRepository["lockWorkOrderForCommand"]>
 >;
@@ -138,6 +149,11 @@ type AuthorityTable =
 
 @Injectable()
 export class AssetOperationsService {
+  private readonly callerOwnedCapabilities = new WeakMap<
+    AssetOperationsTransactionCapability,
+    AssetOperationsTransactionCapabilityState
+  >();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly repository: AssetOperationsRepository,
@@ -145,37 +161,95 @@ export class AssetOperationsService {
     private readonly assetAccountingService?: AssetAccountingService
   ) {}
 
+  async prepareCallerOwnedTransaction(
+    tx: Prisma.TransactionClient,
+    source: StableAssetOperationSource
+  ): Promise<AssetOperationsTransactionCapability> {
+    const repositoryCapability = await this.repository.prepareCallerOwnedCommand(tx, source);
+    const capability = Object.freeze({}) as AssetOperationsTransactionCapability;
+    this.callerOwnedCapabilities.set(
+      capability,
+      Object.freeze({
+        repositoryCapability,
+        source: Object.freeze({ ...source }),
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async createWorkOrderInTransaction(
+    tx: Prisma.TransactionClient,
+    command: CreateWorkOrderServiceCommand,
+    context: AssetOperationCommandContext,
+    capability: AssetOperationsTransactionCapability
+  ): Promise<WorkOrderCommandOutcome> {
+    const repositoryCapability = this.consumeCallerOwnedCapability(tx, command.source, capability);
+    return this.createWorkOrderCommand(tx, command, context, repositoryCapability);
+  }
+
   async createWorkOrder(
     command: CreateWorkOrderServiceCommand,
     context: AssetOperationCommandContext
   ): Promise<WorkOrderCommandOutcome> {
-    return this.runCommand(async (tx) => {
-      await this.repository.lockSourceOwnership(tx, command.source);
+    return this.runCommand((tx) => this.createWorkOrderCommand(tx, command, context));
+  }
+
+  private async createWorkOrderCommand(
+    tx: Prisma.TransactionClient,
+    command: CreateWorkOrderServiceCommand,
+    context: AssetOperationCommandContext,
+    repositoryCapability?: AssetOperationsCallerOwnedCommandCapability
+  ): Promise<WorkOrderCommandOutcome> {
+    if (!repositoryCapability) await this.repository.lockSourceOwnership(tx, command.source);
+    if (repositoryCapability) {
+      await lockCallerOwnedCreateAuthorityRows(tx, command);
+    } else {
       await lockAuthorityRows(tx, createAuthorityRows(command));
-      const authority = await loadCreateAuthority(tx, command);
-      const outcome = await this.repository.createWorkOrder(tx, {
+    }
+    const authority = await loadCreateAuthority(tx, command);
+    const outcome = await this.repository.createWorkOrder(
+      tx,
+      {
         ...command,
         actorId: context.actorId,
         authoritySnapshot: projectAuthority(authority)
+      },
+      repositoryCapability
+    );
+    if (outcome.wrote) {
+      await this.writeAudit(tx, AuditAction.CREATE, "asset_work_order", outcome.workOrder, context);
+      await this.writeAudit(
+        tx,
+        AuditAction.CREATE,
+        "asset_work_order_event",
+        outcome.event,
+        context
+      );
+    }
+    return outcome;
+  }
+
+  private consumeCallerOwnedCapability(
+    tx: Prisma.TransactionClient,
+    source: StableAssetOperationSource,
+    capability: AssetOperationsTransactionCapability
+  ): AssetOperationsCallerOwnedCommandCapability {
+    const state = this.callerOwnedCapabilities.get(capability);
+    this.callerOwnedCapabilities.delete(capability);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.source.id !== source.id ||
+      state.source.key !== source.key ||
+      state.source.type !== source.type
+    ) {
+      throw new ConflictException({
+        code: ASSET_OPERATION_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-operation transaction capability is invalid."
       });
-      if (outcome.wrote) {
-        await this.writeAudit(
-          tx,
-          AuditAction.CREATE,
-          "asset_work_order",
-          outcome.workOrder,
-          context
-        );
-        await this.writeAudit(
-          tx,
-          AuditAction.CREATE,
-          "asset_work_order_event",
-          outcome.event,
-          context
-        );
-      }
-      return outcome;
-    });
+    }
+    return state.repositoryCapability;
   }
 
   async assignWorkOrder(
@@ -624,6 +698,73 @@ function createAuthorityRows(command: CreateWorkOrderServiceCommand) {
       : null,
     { id: command.vehicleId, table: "vehicle" as const }
   ];
+}
+
+const CALLER_OWNED_AUTHORITY_RANK = {
+  subscription_order: 20,
+  vehicle: 30,
+  contract: 50,
+  asset_work_order: 120,
+  asset_owner: 140,
+  customer: 180
+} as const;
+
+type CallerOwnedAuthorityTable = keyof typeof CALLER_OWNED_AUTHORITY_RANK;
+
+async function lockCallerOwnedCreateAuthorityRows(
+  tx: Prisma.TransactionClient,
+  command: CreateWorkOrderServiceCommand
+) {
+  const rows: Array<{
+    id: string;
+    mode: "SHARE" | "UPDATE";
+    table: CallerOwnedAuthorityTable;
+  }> = [
+    ...(command.orderId
+      ? [{ id: command.orderId, mode: "UPDATE" as const, table: "subscription_order" as const }]
+      : []),
+    { id: command.vehicleId, mode: "SHARE", table: "vehicle" },
+    ...(command.contractId
+      ? [{ id: command.contractId, mode: "SHARE" as const, table: "contract" as const }]
+      : []),
+    ...(command.relatedWorkOrderId
+      ? [
+          {
+            id: command.relatedWorkOrderId,
+            mode: "SHARE" as const,
+            table: "asset_work_order" as const
+          }
+        ]
+      : []),
+    ...(command.assetOwnerId
+      ? [{ id: command.assetOwnerId, mode: "SHARE" as const, table: "asset_owner" as const }]
+      : []),
+    ...(command.customerId
+      ? [{ id: command.customerId, mode: "SHARE" as const, table: "customer" as const }]
+      : [])
+  ];
+  rows.sort((left, right) => {
+    const rank = CALLER_OWNED_AUTHORITY_RANK[left.table] - CALLER_OWNED_AUTHORITY_RANK[right.table];
+    return rank || compare(left.id, right.id);
+  });
+  try {
+    for (const row of rows) {
+      const query =
+        row.mode === "UPDATE"
+          ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR UPDATE NOWAIT`
+          : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${row.table}"`)} WHERE "id" = ${row.id}::uuid FOR SHARE NOWAIT`;
+      const [locked] = await tx.$queryRaw<Array<{ id: string }>>(query);
+      if (!locked) throw authorityMismatch();
+    }
+  } catch (error) {
+    if (isLockUnavailableError(error)) {
+      throw new ConflictException({
+        code: ASSET_OPERATION_ERROR_CODE.AUTHORITY_BUSY,
+        message: "Asset operation authority is being updated. Review the current state and retry."
+      });
+    }
+    throw error;
+  }
 }
 
 async function lockAuthorityRows(

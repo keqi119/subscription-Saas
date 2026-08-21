@@ -77,6 +77,53 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("consumes one same-repository source capability without reacquiring its source lock", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+
+    await repository.createWorkOrder(database.tx, command, capability);
+
+    expect(
+      database.rawQueries.filter(
+        ({ sql, values }) =>
+          sql.includes("pg_advisory_xact_lock") && String(values[0]).includes("source-ownership")
+      )
+    ).toHaveLength(1);
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, capability),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, and wrong-source capabilities", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const otherDatabase = new FakeDatabase();
+
+    for (const [target, tx, candidate, input] of [
+      [repository, database.tx, Object.freeze({}), command],
+      [new AssetOperationsRepository(), database.tx, capability, command],
+      [repository, otherDatabase.tx, capability, command],
+      [
+        repository,
+        database.tx,
+        await repository.prepareCallerOwnedCommand(database.tx, command.source),
+        { ...command, source: source("wrong-source") }
+      ]
+    ] as const) {
+      await expectCode(
+        target.createWorkOrder(tx, input, candidate as never),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(database.workOrders).toHaveLength(0);
+    expect(otherDatabase.workOrders).toHaveLength(0);
+  });
+
   it("does not let a caller mutate or retarget a locked work-order capability", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();

@@ -17,6 +17,7 @@ import {
 import {
   AssetAccountingRepository,
   canonicalAssetAccountingSource,
+  type AssetAccountingCallerOwnedCommandCapability,
   type AppendCostEntryCommand,
   type BusinessExceptionApprovalFilters,
   type BusinessExceptionSubjectIdentity,
@@ -48,6 +49,7 @@ export const ASSET_ACCOUNTING_SERVICE_CODE = {
   AUTHENTICATION_REQUIRED: "ASSET_ACCOUNTING_AUTHENTICATION_REQUIRED",
   APPROVAL_NOT_STALE: "ASSET_ACCOUNTING_APPROVAL_NOT_STALE",
   APPROVAL_NOT_FOUND: "ASSET_ACCOUNTING_APPROVAL_NOT_FOUND",
+  CALLER_CAPABILITY_INVALID: "ASSET_ACCOUNTING_CALLER_CAPABILITY_INVALID",
   COST_ENTRY_NOT_FOUND: "ASSET_ACCOUNTING_COST_ENTRY_NOT_FOUND",
   IDEMPOTENCY_KEY_INVALID: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_INVALID",
   IDEMPOTENCY_KEY_MISMATCH: "ASSET_ACCOUNTING_IDEMPOTENCY_KEY_MISMATCH",
@@ -69,6 +71,15 @@ export interface AssetAccountingCommandContext {
 
 export type AppendCostServiceCommand = Omit<AppendCostEntryCommand, "actorId">;
 export type ReverseCostServiceCommand = Omit<ReverseCostEntryCommand, "actorId">;
+declare const assetAccountingTransactionCapabilityBrand: unique symbol;
+export type AssetAccountingTransactionCapability = Readonly<{
+  [assetAccountingTransactionCapabilityBrand]: true;
+}>;
+type AssetAccountingTransactionCapabilityState = Readonly<{
+  repositoryCapability: AssetAccountingCallerOwnedCommandCapability;
+  source: AssetAccountingSource;
+  transaction: Prisma.TransactionClient;
+}>;
 export type RequestApprovalServiceCommand = Omit<
   RequestExceptionApprovalCommand,
   "authoritySnapshot" | "requestedBy"
@@ -187,39 +198,111 @@ type ApprovalWriteCommand = {
 
 @Injectable()
 export class AssetAccountingService {
+  private readonly callerOwnedCapabilities = new WeakMap<
+    AssetAccountingTransactionCapability,
+    AssetAccountingTransactionCapabilityState
+  >();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly repository: AssetAccountingRepository,
     private readonly auditService: AuditService
   ) {}
 
+  async prepareCallerOwnedTransaction(
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ): Promise<AssetAccountingTransactionCapability> {
+    const normalizedSource = canonicalAssetAccountingSource(source);
+    const repositoryCapability = await this.repository.prepareCallerOwnedCommand(
+      tx,
+      normalizedSource
+    );
+    const capability = Object.freeze({}) as AssetAccountingTransactionCapability;
+    this.callerOwnedCapabilities.set(
+      capability,
+      Object.freeze({ repositoryCapability, source: normalizedSource, transaction: tx })
+    );
+    return capability;
+  }
+
+  async appendCostInTransaction(
+    tx: Prisma.TransactionClient,
+    command: AppendCostServiceCommand,
+    context: AssetAccountingCommandContext,
+    capability: AssetAccountingTransactionCapability
+  ): Promise<PublicVehicleCostLedgerEntry> {
+    const source = canonicalAssetAccountingSource(command.source);
+    const repositoryCapability = this.consumeCallerOwnedCapability(tx, source, capability);
+    return this.appendCostCommand(tx, { ...command, source }, context, repositoryCapability);
+  }
+
   async appendCost(
     command: AppendCostServiceCommand,
     context: AssetAccountingCommandContext
   ): Promise<PublicVehicleCostLedgerEntry> {
-    const { actorId, source } = assertWriteContext(
+    const writeContext = assertWriteContext(
       command.source,
       context,
       ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM
     );
-    return this.runReadCommitted(async (tx) => {
-      const result = await this.repository.appendCostEntry(tx, { ...command, actorId, source });
-      const fact = projectCostEntry(result.outcome);
-      if (result.wrote) {
-        await this.writeAudit(tx, {
-          action: AuditAction.CREATE,
-          context,
-          entityId: fact.id,
-          entityType: "vehicle_cost_ledger_entry",
-          fact,
-          permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
-          reason: command.reason,
-          snapshotHash: hashBusinessExceptionSnapshot(fact),
-          source
-        });
-      }
-      return fact;
-    });
+    return this.runReadCommitted((tx) =>
+      this.appendCostCommand(tx, command, context, undefined, writeContext)
+    );
+  }
+
+  private async appendCostCommand(
+    tx: Prisma.TransactionClient,
+    command: AppendCostServiceCommand,
+    context: AssetAccountingCommandContext,
+    repositoryCapability?: AssetAccountingCallerOwnedCommandCapability,
+    preparedWriteContext?: Readonly<{ actorId: string; source: AssetAccountingSource }>
+  ): Promise<PublicVehicleCostLedgerEntry> {
+    const { actorId, source } =
+      preparedWriteContext ??
+      assertWriteContext(command.source, context, ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM);
+    const result = await this.repository.appendCostEntry(
+      tx,
+      { ...command, actorId, source },
+      repositoryCapability
+    );
+    const fact = projectCostEntry(result.outcome);
+    if (result.wrote) {
+      await this.writeAudit(tx, {
+        action: AuditAction.CREATE,
+        context,
+        entityId: fact.id,
+        entityType: "vehicle_cost_ledger_entry",
+        fact,
+        permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+        reason: command.reason,
+        snapshotHash: hashBusinessExceptionSnapshot(fact),
+        source
+      });
+    }
+    return fact;
+  }
+
+  private consumeCallerOwnedCapability(
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource,
+    capability: AssetAccountingTransactionCapability
+  ): AssetAccountingCallerOwnedCommandCapability {
+    const state = this.callerOwnedCapabilities.get(capability);
+    this.callerOwnedCapabilities.delete(capability);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.source.id !== source.id ||
+      state.source.key !== source.key ||
+      state.source.type !== source.type
+    ) {
+      throw new ConflictException({
+        code: ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID,
+        message: "The caller-owned asset-accounting transaction capability is invalid."
+      });
+    }
+    return state.repositoryCapability;
   }
 
   async reverseCost(

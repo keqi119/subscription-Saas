@@ -26,6 +26,70 @@ import { PrismaService } from "../src/prisma/prisma.service";
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
 describe("AssetOperationsService", () => {
+  it("executes a prepared caller-owned create capability once in the exact transaction", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+
+    const result = await harness.service.createWorkOrderInTransaction(
+      harness.tx as never,
+      command,
+      harness.context,
+      capability
+    );
+
+    expect(result.workOrder.id).toBe(harness.ids.workOrderId);
+    expect(harness.sequence[0]).toBe("source-lock");
+    expect(harness.sequence.at(-1)).toBe("repository-write");
+    expect(harness.sequence.slice(1, -1)).toEqual([
+      "authority:subscription_order",
+      "authority:vehicle",
+      "authority:contract",
+      "authority:customer"
+    ]);
+    expect(harness.auditInputs).toHaveLength(2);
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+  });
+
+  it("rejects forged, foreign-instance, and wrong-transaction create capabilities", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const foreignHarness = createHarness();
+
+    for (const [service, tx, candidate] of [
+      [harness.service, harness.tx, Object.freeze({})],
+      [foreignHarness.service, harness.tx, capability],
+      [harness.service, foreignHarness.tx, capability]
+    ] as const) {
+      await expect(
+        service.createWorkOrderInTransaction(
+          tx as never,
+          fullCreateCommand(harness),
+          harness.context,
+          candidate as never
+        )
+      ).rejects.toMatchObject({
+        response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+      });
+    }
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
   it("locks the source, validates one live cross-linked authority aggregate, then writes", async () => {
     const harness = createHarness();
 
@@ -1205,6 +1269,10 @@ function createHarness(
     })),
     lockSourceOwnership: vi.fn(async () => {
       sequence.push("source-lock");
+    }),
+    prepareCallerOwnedCommand: vi.fn(async () => {
+      sequence.push("source-lock");
+      return Object.freeze({});
     }),
     lockWorkOrderForCommand: vi.fn(
       async (client: typeof tx, workOrderId: string, authorityRows: readonly unknown[]) => {

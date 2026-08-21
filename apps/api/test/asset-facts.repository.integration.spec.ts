@@ -358,6 +358,78 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
     );
   });
 
+  it("binds caller-owned fact capabilities to one repository, transaction, source, and use", async () => {
+    const fixture = await createRepositoryFixture(prisma);
+    const input = openRepositoryInput(
+      "subscription",
+      fixture,
+      "caller-capability-guards"
+    ) as OpenSubscriptionPeriodInput;
+    const repository = new AssetFactsRepository();
+    const foreignRepository = new AssetFactsRepository();
+
+    const wrongTransactionCapability = await readCommitted(prisma, (tx) =>
+      repository.prepareCallerOwnedCommand(tx, "subscription", "start", input.source)
+    );
+    await expectConflictCode(
+      readCommitted(prisma, (tx) =>
+        repository.openSubscriptionPeriod(tx, input, wrongTransactionCapability)
+      ),
+      ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(
+        tx,
+        "subscription",
+        "start",
+        input.source
+      );
+      await expectConflictCode(
+        foreignRepository.openSubscriptionPeriod(tx, input, capability),
+        ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+      );
+      await expectConflictCode(
+        repository.openSubscriptionPeriod(tx, input, Object.freeze({}) as never),
+        ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+      );
+      const created = await repository.openSubscriptionPeriod(tx, input, capability);
+      expect(created.orderId).toBe(fixture.orderId);
+      await expectConflictCode(
+        repository.openSubscriptionPeriod(tx, input, capability),
+        ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+      );
+    });
+
+    const wrongSourceInput = {
+      ...input,
+      source: { ...input.source, key: `${input.source.key}:drift` }
+    };
+    await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(
+        tx,
+        "subscription",
+        "start",
+        input.source
+      );
+      await expectConflictCode(
+        repository.openSubscriptionPeriod(tx, wrongSourceInput, capability),
+        ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+      );
+    });
+    const replay = await readCommitted(prisma, async (tx) => {
+      const capability = await repository.prepareCallerOwnedCommand(
+        tx,
+        "subscription",
+        "start",
+        input.source
+      );
+      return repository.openSubscriptionPeriodWithOutcome(tx, input, capability);
+    });
+    expect(replay.wrote).toBe(false);
+    await expect(countPeriodsByStartSource(prisma, "subscription", input.source)).resolves.toBe(1);
+  });
+
   it.each(["subscription", "ownership"] as const)(
     "serializes concurrent exact %s start replay on the source lock and returns one fact",
     async (periodKind) => {

@@ -11,6 +11,7 @@ import {
   VehicleHandoverEventType,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,7 +22,10 @@ import {
   type PreparedDeliveryEvidenceArtifacts
 } from "../src/delivery-handover/delivery-handover-evidence-artifact.service";
 import { projectFieldHandoverWorkflow } from "../src/handover-work-order/field-handover-workflow-projection";
-import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import {
+  HANDOVER_P0_CAPABILITY_ERROR_CODE,
+  HandoverWorkOrderService
+} from "../src/handover-work-order/handover-work-order.service";
 
 describe("Field handover workflow projection", () => {
   const base = {
@@ -205,6 +209,98 @@ describe("HandoverWorkOrderService", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("creates and exactly replays RETURN_INBOUND only through a caller-owned P0 capability", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const source = {
+      id: randomUUID(),
+      key: "closure:return-inbound:v1",
+      type: "SUBSCRIPTION_CLOSURE"
+    };
+    const command = { actorId: harness.admin.id, orderId: harness.orderId, source };
+    const firstCapability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      command
+    );
+
+    const created = await harness.service.createReturnInboundInTransaction(
+      harness.prisma as never,
+      command,
+      firstCapability
+    );
+    const replayCapability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      command
+    );
+    const replay = await harness.service.createReturnInboundInTransaction(
+      harness.prisma as never,
+      command,
+      replayCapability
+    );
+
+    expect(replay).toEqual(created);
+    expect(created).toMatchObject({
+      handoverId: null,
+      handoverType: "RETURN_INBOUND",
+      orderId: harness.orderId,
+      status: "DRAFT",
+      vehicleDeliveryId: null
+    });
+    expect(harness.state.workOrders).toHaveLength(1);
+    expect(harness.state.events).toHaveLength(1);
+    expect(
+      harness.lockQueries
+        .filter(({ sql }) => sql.includes(" FOR "))
+        .slice(0, 3)
+        .map(({ sql }) => sql.match(/FROM "([a-z_]+)"/)?.[1])
+    ).toEqual(["subscription_order", "vehicle_handover_work_order", "user"]);
+    await expect(
+      harness.service.createReturnInboundInTransaction(
+        harness.prisma as never,
+        command,
+        firstCapability
+      )
+    ).rejects.toMatchObject({
+      response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+    });
+  });
+
+  it("rejects forged, foreign-instance, wrong-transaction, and payload-drift P0 capabilities", async () => {
+    const harness = createHandoverWorkOrderHarness();
+    const foreign = createHandoverWorkOrderHarness();
+    const source = {
+      id: randomUUID(),
+      key: "closure:return-inbound:guarded",
+      type: "SUBSCRIPTION_CLOSURE"
+    };
+    const capability = await harness.service.prepareReturnInboundInTransaction(
+      harness.prisma as never,
+      { actorId: harness.admin.id, orderId: harness.orderId, source }
+    );
+
+    for (const [service, tx, candidate, command] of [
+      [harness.service, harness.prisma, Object.freeze({}), { actorId: harness.admin.id, orderId: harness.orderId, source }],
+      [foreign.service, harness.prisma, capability, { actorId: harness.admin.id, orderId: harness.orderId, source }],
+      [harness.service, foreign.prisma, capability, { actorId: harness.admin.id, orderId: harness.orderId, source }],
+      [
+        harness.service,
+        harness.prisma,
+        await harness.service.prepareReturnInboundInTransaction(harness.prisma as never, {
+          actorId: harness.admin.id,
+          orderId: harness.orderId,
+          source
+        }),
+        { actorId: harness.admin.id, orderId: "different-order", source }
+      ]
+    ] as const) {
+      await expect(
+        service.createReturnInboundInTransaction(tx as never, command, candidate as never)
+      ).rejects.toMatchObject({
+        response: { code: HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID }
+      });
+    }
+    expect(harness.state.workOrders).toHaveLength(0);
   });
 
   it("creates one active delivery-outbound work order, links Stage 2 handover, and initializes evidence checklist", async () => {
@@ -2944,6 +3040,7 @@ function createHandoverWorkOrderHarness() {
     workOrders: [] as Array<Record<string, unknown>>,
     workflowJobs: [] as Array<Record<string, unknown>>
   };
+  const lockQueries: Array<{ sql: string; values: readonly unknown[] }> = [];
   const evidenceService = createEvidenceService();
   const handoverService = {
     getOrCreateDraftHandover: vi.fn(async () => state.handover),
@@ -3171,7 +3268,24 @@ function createHandoverWorkOrderHarness() {
           )
       )
     },
-    $queryRaw: vi.fn(async () => [{ id: "vehicle-1" }]),
+    $queryRaw: vi.fn(async (query: { sql?: string; strings?: readonly string[]; values?: readonly unknown[] }) => {
+      const sql = query.sql ?? query.strings?.join("?") ?? "";
+      const values = query.values ?? [];
+      lockQueries.push({ sql, values });
+      if (sql.includes("current_setting('transaction_isolation')")) {
+        return [{ isolationLevel: "read committed", transactionId: "handover-capability-tx" }];
+      }
+      if (sql.includes("txid_current()")) {
+        return [{ transactionId: "handover-capability-tx" }];
+      }
+      if (sql.includes("pg_advisory_xact_lock")) return [{ locked: true }];
+      if (sql.includes('FROM "vehicle_handover_work_order"')) {
+        return state.workOrders
+          .filter((row) => row.orderId === values[0] && row.handoverType === "RETURN_INBOUND")
+          .map((row) => ({ id: row.id }));
+      }
+      return [{ id: "vehicle-1" }];
+    }),
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => {
       const snapshots = {
         events: structuredClone(state.events),
@@ -3327,6 +3441,7 @@ function createHandoverWorkOrderHarness() {
     handoverService,
     internalUser,
     journeySignal,
+    lockQueries,
     now,
     orderId,
     prisma,

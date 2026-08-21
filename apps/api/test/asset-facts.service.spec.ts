@@ -800,6 +800,59 @@ describe("AssetFactsRepository database conflict normalization", () => {
 });
 
 describe("AssetFactsRepository transaction contract", () => {
+  it("consumes one prepared subscription-close capability and rejects reuse", async () => {
+    const harness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
+    const repository = new AssetFactsRepository();
+    const command = subscriptionCloseInput();
+    const capability = await repository.prepareCallerOwnedCommand(
+      harness.tx,
+      "subscription",
+      "end",
+      command.source
+    );
+
+    await repository.closeSubscriptionPeriod(harness.tx, command, capability);
+    await expectConflictCode(
+      repository.closeSubscriptionPeriod(harness.tx, command, capability),
+      ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, and wrong-source fact capabilities", async () => {
+    const harness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
+    const repository = new AssetFactsRepository();
+    const command = subscriptionCloseInput();
+    const capability = await repository.prepareCallerOwnedCommand(
+      harness.tx,
+      "subscription",
+      "end",
+      command.source
+    );
+    const otherHarness = createHarness({ subscriptionPeriods: [subscriptionRow()] });
+
+    for (const [target, tx, candidate, input] of [
+      [repository, harness.tx, Object.freeze({}), command],
+      [new AssetFactsRepository(), harness.tx, capability, command],
+      [repository, otherHarness.tx, capability, command],
+      [
+        repository,
+        harness.tx,
+        await repository.prepareCallerOwnedCommand(
+          harness.tx,
+          "subscription",
+          "end",
+          command.source
+        ),
+        { ...command, source: { ...command.source, key: "different-source" } }
+      ]
+    ] as const) {
+      await expectConflictCode(
+        target.closeSubscriptionPeriod(tx, input, candidate as never),
+        ASSET_FACT_CONFLICT_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+  });
+
   it("rejects a root Prisma client passed in place of an interactive transaction", async () => {
     const harness = createHarness({
       subscriptionPeriods: [subscriptionRow()],
@@ -883,6 +936,53 @@ describe("Asset fact command DTO validation", () => {
 });
 
 describe("AssetFactsService audited commands", () => {
+  it("uses one caller-owned close capability without opening a nested transaction", async () => {
+    const harness = createServiceHarness({ subscriptionPeriods: [subscriptionRow()] });
+    const dto = serviceSubscriptionCloseDto("subscription-period-1");
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      "subscription",
+      "end",
+      dto.source
+    );
+
+    await harness.service.closeSubscriptionPeriodInTransaction(
+      harness.tx,
+      dto,
+      serviceContext(),
+      capability
+    );
+
+    expect(harness.transactionOptions).toEqual([]);
+    expect(harness.auditLogs).toHaveLength(1);
+    expect(
+      harness.rawQueries
+        .filter(({ sql }) => sql.includes(" FOR "))
+        .map(({ sql }) => sql.match(/FROM "([a-z_]+)"/)?.[1])
+    ).toEqual([
+      "subscription_order",
+      "vehicle",
+      "contract",
+      "subscription_contract_segment",
+      "vehicle_subscription_period",
+      "customer"
+    ]);
+    expect(
+      harness.rawQueries
+        .filter(({ sql }) => sql.includes(" FOR "))
+        .every(({ sql }) => sql.includes("NOWAIT"))
+    ).toBe(true);
+    await expectConflictCode(
+      harness.service.closeSubscriptionPeriodInTransaction(
+        harness.tx,
+        dto,
+        serviceContext(),
+        capability
+      ),
+      ASSET_FACT_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
   it("opens every command in an explicit Prisma READ COMMITTED transaction", async () => {
     const harness = createServiceHarness();
 
@@ -1752,9 +1852,11 @@ function createHarness(options: HarnessOptions = {}) {
   let ownershipStartSourceLocked = false;
   let subscriptionStartSourceLocked = false;
   let transactionProbeCount = 0;
+  const rawQueries: Array<{ sql: string; values: readonly unknown[] }> = [];
 
   const tx = {
     $queryRaw: async (query: Prisma.Sql) => {
+      rawQueries.push({ sql: query.sql, values: query.values });
       if (query.sql.includes("txid_current()")) {
         const transactionIds = options.transactionIds ?? [
           "interactive-transaction",
@@ -1881,7 +1983,7 @@ function createHarness(options: HarnessOptions = {}) {
     }
   } as unknown as Prisma.TransactionClient;
 
-  return { ownershipPeriods, subscriptionPeriods, tx };
+  return { ownershipPeriods, rawQueries, subscriptionPeriods, tx };
 }
 
 function matchesSubscription(
@@ -2289,8 +2391,10 @@ function createServiceHarness(options: ServiceHarnessOptions = {}) {
     auditLogs,
     ownershipPeriods: repositoryHarness.ownershipPeriods,
     records,
+    rawQueries: repositoryHarness.rawQueries,
     service,
     subscriptionPeriods: repositoryHarness.subscriptionPeriods,
+    tx: repositoryHarness.tx,
     transactionOptions
   };
 }

@@ -83,6 +83,71 @@ describe("AssetAccountingRepository", () => {
     ]);
   });
 
+  it.each([
+    ["asset_owner", "assetOwnerId"],
+    ["asset_work_order", "workOrderId"],
+    ["asset_work_order_evidence", "evidenceId"],
+    ["contract", "contractId"],
+    ["customer", "customerId"],
+    ["subscription_order", "orderId"],
+    ["user", "actorId"],
+    ["vehicle", "vehicleId"]
+  ] as const)(
+    "fails an append at an empty %s SHARE authority probe even when later lookup is live",
+    async (table, idKey) => {
+      const database = fakeTransaction();
+      const authorityId = database.ids[idKey];
+      database.emptyAuthorityLockKeys.add(`SHARE:${table}:${authorityId}`);
+
+      await expectCode(
+        new AssetAccountingRepository().appendCostEntry(
+          database.tx,
+          appendCommand(database.ids, `empty-append-lock-${table}`)
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+      );
+
+      expect(authorityRecord(database, table, authorityId)).toBeTruthy();
+      expect(database.authorityLockModes).toEqual(
+        [...database.authorityLockModes].sort((left, right) => {
+          const leftKey = `${left.table}:${left.id}`;
+          const rightKey = `${right.table}:${right.id}`;
+          return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+        })
+      );
+      expect(database.entries.size).toBe(0);
+      expect(database.receipts.size).toBe(0);
+      expect(database.approvals.size).toBe(0);
+    }
+  );
+
+  it("fails a reversal at an empty UPDATE authority probe and performs no reversal writes", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const original = await repository.appendCostEntry(
+      database.tx,
+      appendCommand(database.ids, "empty-update-lock-original")
+    );
+    database.authorityLockModes.length = 0;
+    database.emptyAuthorityLockKeys.add(`UPDATE:asset_work_order:${database.ids.workOrderId}`);
+
+    await expectCode(
+      repository.reverseCostEntry(
+        database.tx,
+        reverseCommand(database.ids, original.outcome.id, "empty-update-lock-reversal")
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+    );
+
+    expect(database.authorities.assetWorkOrder.get(database.ids.workOrderId)).toBeTruthy();
+    expect(database.authorityLockModes).toEqual([
+      { id: database.ids.workOrderId, mode: "UPDATE", table: "asset_work_order" }
+    ]);
+    expect(database.entries.size).toBe(1);
+    expect(database.receipts.size).toBe(1);
+    expect(database.approvals.size).toBe(0);
+  });
+
   it("rejects reversal of the last active actual cost on a closed cost-required work order", async () => {
     const database = fakeTransaction();
     const repository = new AssetAccountingRepository();
@@ -1170,6 +1235,79 @@ describe("AssetAccountingRepository", () => {
   );
 
   describe("snapshot-bound business exception approvals", () => {
+    it("fails request, decision, and expiry at an empty actor SHARE probe before target writes", async () => {
+      const repository = new AssetAccountingRepository();
+
+      const requestDatabase = fakeTransaction();
+      requestDatabase.emptyAuthorityLockKeys.add(`SHARE:user:${requestDatabase.ids.actorId}`);
+      await expectCode(
+        repository.requestExceptionApproval(
+          requestDatabase.tx,
+          requestApprovalCommand(requestDatabase.ids, "empty-request-actor-lock")
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+      );
+      expect(requestDatabase.authorities.user.get(requestDatabase.ids.actorId)).toBeTruthy();
+      expect(requestDatabase.approvals.size).toBe(0);
+      expect(requestDatabase.receipts.size).toBe(0);
+      expect(requestDatabase.entries.size).toBe(0);
+
+      const decisionDatabase = fakeTransaction();
+      const decisionRequest = await repository.requestExceptionApproval(
+        decisionDatabase.tx,
+        requestApprovalCommand(decisionDatabase.ids, "empty-decision-actor-request")
+      );
+      decisionDatabase.emptyAuthorityLockKeys.add(`SHARE:user:${decisionDatabase.ids.deciderId}`);
+      await expectCode(
+        repository.decideExceptionApproval(
+          decisionDatabase.tx,
+          decideApprovalCommand(
+            decisionDatabase.ids,
+            decisionRequest.outcome.id,
+            "empty-decision-actor-lock"
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+      );
+      expect(decisionDatabase.authorities.user.get(decisionDatabase.ids.deciderId)).toBeTruthy();
+      expect(decisionDatabase.approvals.get(decisionRequest.outcome.id)).toMatchObject({
+        decision: null,
+        status: "PENDING",
+        version: 0
+      });
+      expect(decisionDatabase.approvals.size).toBe(1);
+      expect(decisionDatabase.receipts.size).toBe(1);
+      expect(decisionDatabase.entries.size).toBe(0);
+
+      const expiryDatabase = fakeTransaction();
+      const expiryRequest = await repository.requestExceptionApproval(
+        expiryDatabase.tx,
+        requestApprovalCommand(expiryDatabase.ids, "empty-expiry-actor-request")
+      );
+      expiryDatabase.emptyAuthorityLockKeys.add(`SHARE:user:${expiryDatabase.ids.deciderId}`);
+      await expectCode(
+        repository.expireExceptionApproval(
+          expiryDatabase.tx,
+          expireApprovalCommand(
+            expiryDatabase.ids,
+            expiryRequest.outcome.id,
+            0,
+            "empty-expiry-actor-lock"
+          )
+        ),
+        ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND
+      );
+      expect(expiryDatabase.authorities.user.get(expiryDatabase.ids.deciderId)).toBeTruthy();
+      expect(expiryDatabase.approvals.get(expiryRequest.outcome.id)).toMatchObject({
+        expiredAt: null,
+        status: "PENDING",
+        version: 0
+      });
+      expect(expiryDatabase.approvals.size).toBe(1);
+      expect(expiryDatabase.receipts.size).toBe(1);
+      expect(expiryDatabase.entries.size).toBe(0);
+    });
+
     it("gets and filters approval projections with the exact stable newest-first order", async () => {
       const database = fakeTransaction();
       const repository = new AssetAccountingRepository();
@@ -1819,11 +1957,13 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     table: string;
   }> = [];
   const lockedOriginalIds: string[] = [];
+  const emptyAuthorityLockKeys = new Set<string>();
   const database = {
     authorities,
     authorityLockModes,
     approvals,
     entries,
+    emptyAuthorityLockKeys,
     ids,
     lockedAuthorities,
     lockedOriginalIds,
@@ -1898,6 +2038,8 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
             table
           });
           operationTimeline.push(`authority-lock:${table}:${id}`);
+          const mode = text.includes("FOR UPDATE NOWAIT") ? "UPDATE" : "SHARE";
+          if (emptyAuthorityLockKeys.has(`${mode}:${table}:${id}`)) return [];
         }
       }
       return [{ id: values[0] }];
@@ -2043,6 +2185,21 @@ function delegate(store: Map<string, AuthorityRecord>) {
   return {
     findUnique: async ({ where }: { where: { id: string } }) => store.get(where.id) ?? null
   };
+}
+
+function authorityRecord(database: FakeDatabase, table: string, id: string) {
+  const store =
+    {
+      asset_owner: database.authorities.assetOwner,
+      asset_work_order: database.authorities.assetWorkOrder,
+      asset_work_order_evidence: database.authorities.assetWorkOrderEvidence,
+      contract: database.authorities.contract,
+      customer: database.authorities.customer,
+      subscription_order: database.authorities.subscriptionOrder,
+      user: database.authorities.user,
+      vehicle: database.authorities.vehicle
+    }[table] ?? null;
+  return store?.get(id);
 }
 
 function updateAuthority(

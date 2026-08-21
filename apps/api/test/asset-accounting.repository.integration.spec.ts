@@ -359,6 +359,116 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     await expect(countReceipts(prisma, command.source)).resolves.toBe(0);
   });
 
+  it("rejects a READ COMMITTED cost authority phantom at the empty lock probe", async () => {
+    const repository = new AssetAccountingRepository();
+
+    const phantomVehicleId = randomUUID();
+    const costCommand: AppendCostEntryCommand = {
+      ...appendCommand(fixture, "empty-probe-phantom-vehicle"),
+      assetOwnerId: null,
+      assetOwnerSnapshot: null,
+      contractId: null,
+      customerId: null,
+      evidenceId: null,
+      evidenceSnapshot: null,
+      orderId: null,
+      responsiblePartyId: null,
+      vehicleId: phantomVehicleId,
+      workOrderId: null
+    };
+    const costProbeReturned = deferred<void>();
+    const releaseCostProbe = deferred<void>();
+    const costResult = readCommitted(prisma, (tx) =>
+      repository.appendCostEntry(
+        pauseAfterEmptyAuthorityProbe(
+          tx,
+          { id: phantomVehicleId, mode: "SHARE", table: "vehicle" },
+          costProbeReturned,
+          releaseCostProbe
+        ),
+        costCommand
+      )
+    );
+    void costResult.catch(costProbeReturned.reject);
+    try {
+      await costProbeReturned.promise;
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.$executeRaw(Prisma.sql`
+          INSERT INTO "vehicle" (
+            "id", "vehicle_no", "brand", "model_definition_id", "purchase_price_amount", "updated_at"
+          ) VALUES (
+            ${phantomVehicleId}::uuid, ${`${FIXTURE_PREFIX}-PHANTOM-VEHICLE`}, 'TEST',
+            ${randomUUID()}::uuid, 1000000, CURRENT_TIMESTAMP
+          )
+        `);
+      });
+      releaseCostProbe.resolve();
+      await expectCode(costResult, ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND);
+      await expect(countEntries(prisma, costCommand.source)).resolves.toBe(0);
+      await expect(countReceipts(prisma, costCommand.source)).resolves.toBe(0);
+      await expect(countAuditsForSource(prisma, costCommand.source)).resolves.toBe(0);
+    } finally {
+      releaseCostProbe.resolve();
+      await settled(costResult);
+      await deletePhantomAuthorityResidue(prisma, costCommand.source, {
+        vehicleId: phantomVehicleId
+      });
+    }
+    await expect(countEntries(prisma, costCommand.source)).resolves.toBe(0);
+    await expect(countReceipts(prisma, costCommand.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, costCommand.source)).resolves.toBe(0);
+    await expect(prisma.vehicle.count({ where: { id: phantomVehicleId } })).resolves.toBe(0);
+  });
+
+  it("rejects a READ COMMITTED approval actor phantom at the empty lock probe", async () => {
+    const repository = new AssetAccountingRepository();
+    const phantomActorId = randomUUID();
+    const approvalCommand: RequestExceptionApprovalCommand = {
+      ...requestApprovalCommand(fixture, "empty-probe-phantom-actor"),
+      requestedBy: phantomActorId
+    };
+    const actorProbeReturned = deferred<void>();
+    const releaseActorProbe = deferred<void>();
+    const approvalResult = readCommitted(prisma, (tx) =>
+      repository.requestExceptionApproval(
+        pauseAfterEmptyAuthorityProbe(
+          tx,
+          { id: phantomActorId, mode: "SHARE", table: "user" },
+          actorProbeReturned,
+          releaseActorProbe
+        ),
+        approvalCommand
+      )
+    );
+    void approvalResult.catch(actorProbeReturned.reject);
+    try {
+      await actorProbeReturned.promise;
+      await prisma.$executeRaw(Prisma.sql`
+        INSERT INTO "user" ("id", "username", "name", "password_hash", "updated_at")
+        VALUES (
+          ${phantomActorId}::uuid, ${`${FIXTURE_PREFIX.toLowerCase()}_phantom_actor`},
+          'Stage 1C-C Phantom Actor', 'not-used-by-test', CURRENT_TIMESTAMP
+        )
+      `);
+      releaseActorProbe.resolve();
+      await expectCode(approvalResult, ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND);
+      await expect(countApprovals(prisma, approvalCommand.source)).resolves.toBe(0);
+      await expect(countReceipts(prisma, approvalCommand.source)).resolves.toBe(0);
+      await expect(countAuditsForSource(prisma, approvalCommand.source)).resolves.toBe(0);
+    } finally {
+      releaseActorProbe.resolve();
+      await settled(approvalResult);
+      await deletePhantomAuthorityResidue(prisma, approvalCommand.source, {
+        userId: phantomActorId
+      });
+    }
+    await expect(countApprovals(prisma, approvalCommand.source)).resolves.toBe(0);
+    await expect(countReceipts(prisma, approvalCommand.source)).resolves.toBe(0);
+    await expect(countAuditsForSource(prisma, approvalCommand.source)).resolves.toBe(0);
+    await expect(prisma.user.count({ where: { id: phantomActorId } })).resolves.toBe(0);
+  });
+
   it("rejects missing/deleted/mismatched authority facts without inference", async () => {
     const repository = new AssetAccountingRepository();
     const missing: AppendCostEntryCommand = {
@@ -691,6 +801,98 @@ describe("AssetAccountingRepository PostgreSQL command behavior", () => {
     await expect(
       prisma.assetAccountingCommandReceipt.count({
         where: { sourceKey: { startsWith: `${FIXTURE_PREFIX}:raw-shape:` } }
+      })
+    ).resolves.toBe(0);
+  });
+
+  it("enforces terminal approval comments in rollback-only raw PostgreSQL transitions", async () => {
+    const repository = new AssetAccountingRepository();
+    const rollback = new Error("rollback raw approval status-shape proofs");
+    const sourcePrefix = `${FIXTURE_PREFIX}:raw-approval-status:`;
+    let ordinal = 0;
+
+    await expect(
+      readCommitted(prisma, async (tx) => {
+        const pendingApproval = async (suffix: string) => {
+          ordinal += 1;
+          const command: RequestExceptionApprovalCommand = {
+            ...requestApprovalCommand(fixture, `raw-approval-status:${ordinal}:${suffix}`),
+            subject: {
+              ...approvalSubject(fixture),
+              subjectField: `rawApprovalStatus${ordinal}${suffix}`
+            }
+          };
+          return repository.requestExceptionApproval(tx, command);
+        };
+
+        for (const status of ["APPROVED", "REJECTED"] as const) {
+          for (const comment of [null, "", "  "] as const) {
+            const requested = await pendingApproval(`${status}-${String(comment)}`);
+            await expectRawApprovalStatusRejected(tx, requested.outcome.id, {
+              comment,
+              decision: status,
+              decidedBy: fixture.deciderId,
+              status
+            });
+          }
+
+          const requested = await pendingApproval(`${status}-nonblank`);
+          await expectRawApprovalStatusAccepted(tx, requested.outcome.id, {
+            comment: ` reviewed ${status.toLowerCase()} evidence `,
+            decision: status,
+            decidedBy: fixture.deciderId,
+            status
+          });
+        }
+
+        const pendingExpiry = await pendingApproval("pending-expired");
+        await expectRawApprovalStatusAccepted(tx, pendingExpiry.outcome.id, {
+          comment: null,
+          decision: null,
+          decidedBy: null,
+          expiryReason: "pending authority snapshot expired",
+          expiredBy: fixture.deciderId,
+          status: "EXPIRED"
+        });
+
+        const approvedExpiry = await pendingApproval("approved-expired");
+        await withRollbackSavepoint(tx, "approved_expired", async () => {
+          await rawApprovalTransition(tx, approvedExpiry.outcome.id, {
+            comment: "mandatory decided comment",
+            decision: "APPROVED",
+            decidedBy: fixture.deciderId,
+            status: "APPROVED"
+          });
+          await rawApprovalTransition(tx, approvedExpiry.outcome.id, {
+            expiryReason: "approved authority snapshot expired",
+            expiredBy: fixture.deciderId,
+            status: "EXPIRED"
+          });
+          await expect(
+            tx.businessExceptionApproval.findUniqueOrThrow({
+              select: { decision: true, decisionComment: true, status: true, version: true },
+              where: { id: approvedExpiry.outcome.id }
+            })
+          ).resolves.toEqual({
+            decision: "APPROVED",
+            decisionComment: "mandatory decided comment",
+            status: "EXPIRED",
+            version: 2
+          });
+        });
+
+        throw rollback;
+      })
+    ).rejects.toBe(rollback);
+
+    await expect(
+      prisma.businessExceptionApproval.count({
+        where: { requestSourceKey: { startsWith: sourcePrefix } }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.assetAccountingCommandReceipt.count({
+        where: { sourceKey: { startsWith: sourcePrefix } }
       })
     ).resolves.toBe(0);
   });
@@ -2457,6 +2659,100 @@ async function rawReceipt(
   `);
 }
 
+type RawApprovalTransition = {
+  comment?: string | null;
+  decision?: "APPROVED" | "REJECTED" | null;
+  decidedBy?: string | null;
+  expiryReason?: string | null;
+  expiredBy?: string | null;
+  status: "APPROVED" | "REJECTED" | "EXPIRED";
+};
+
+async function rawApprovalTransition(
+  tx: Prisma.TransactionClient,
+  approvalId: string,
+  transition: RawApprovalTransition
+) {
+  const changes = [
+    Prisma.sql`"status" = ${transition.status}::business_exception_approval_status`,
+    Prisma.sql`"version" = "version" + 1`
+  ];
+  if ("decision" in transition) {
+    changes.push(
+      Prisma.sql`"decision" = ${transition.decision}::business_exception_decision`,
+      Prisma.sql`"decision_comment" = ${transition.comment ?? null}`,
+      Prisma.sql`"decided_by" = ${transition.decidedBy ?? null}::uuid`,
+      Prisma.sql`"decided_at" = ${transition.decidedBy ? CONFIRMED_AT : null}::timestamptz`
+    );
+  }
+  if (transition.status === "EXPIRED") {
+    if (!transition.expiredBy) throw new Error("raw expiry transition requires expiredBy");
+    changes.push(
+      Prisma.sql`"expiry_reason" = ${transition.expiryReason ?? "authority snapshot expired"}`,
+      Prisma.sql`"expired_by" = ${transition.expiredBy}::uuid`,
+      Prisma.sql`"expired_at" = ${CONFIRMED_AT}::timestamptz`
+    );
+  }
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "business_exception_approval"
+    SET ${Prisma.join(changes, ", ")}
+    WHERE "id" = ${approvalId}::uuid
+  `);
+}
+
+async function expectRawApprovalStatusRejected(
+  tx: Prisma.TransactionClient,
+  approvalId: string,
+  transition: RawApprovalTransition
+) {
+  let rejection: unknown;
+  await withRollbackSavepoint(tx, `rejected_${approvalId.replaceAll("-", "")}`, async () => {
+    try {
+      await rawApprovalTransition(tx, approvalId, transition);
+    } catch (error) {
+      rejection = error;
+    }
+  });
+  expect(databaseConstraint(rejection)).toBe("business_exception_approval_status_shape_chk");
+}
+
+async function expectRawApprovalStatusAccepted(
+  tx: Prisma.TransactionClient,
+  approvalId: string,
+  transition: RawApprovalTransition
+) {
+  await withRollbackSavepoint(tx, `accepted_${approvalId.replaceAll("-", "")}`, async () => {
+    await rawApprovalTransition(tx, approvalId, transition);
+    const row = await tx.businessExceptionApproval.findUniqueOrThrow({ where: { id: approvalId } });
+    expect(row.status).toBe(transition.status);
+    if (transition.status === "EXPIRED" && transition.decision === null) {
+      expect(row).toMatchObject({
+        decision: null,
+        decisionComment: null,
+        decidedAt: null,
+        decidedBy: null,
+        status: "EXPIRED",
+        version: 1
+      });
+    }
+  });
+}
+
+async function withRollbackSavepoint<T>(
+  tx: Prisma.TransactionClient,
+  name: string,
+  callback: () => Promise<T>
+) {
+  const safeName = `raw_approval_${name.replace(/[^a-z0-9_]/gi, "_")}`;
+  await tx.$executeRawUnsafe(`SAVEPOINT ${safeName}`);
+  try {
+    return await callback();
+  } finally {
+    await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${safeName}`);
+    await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${safeName}`);
+  }
+}
+
 function readCommitted<T>(
   prisma: PrismaService,
   callback: (tx: Prisma.TransactionClient) => Promise<T>
@@ -2493,6 +2789,79 @@ function observeApprovalCreateError(
       if (property === "businessExceptionApproval") return approvalDelegate;
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
+function pauseAfterEmptyAuthorityProbe(
+  tx: Prisma.TransactionClient,
+  probe: { id: string; mode: "SHARE" | "UPDATE"; table: string },
+  ready: ReturnType<typeof deferred<void>>,
+  release: ReturnType<typeof deferred<void>>
+) {
+  let observed = false;
+  return new Proxy(tx, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (property === "$queryRaw" && typeof value === "function") {
+        return async (query: unknown) => {
+          const rows = await value.call(target, query);
+          const text = sqlText(query);
+          const values = sqlValues(query);
+          if (
+            !observed &&
+            Array.isArray(rows) &&
+            rows.length === 0 &&
+            text.includes(`FROM "${probe.table}"`) &&
+            text.includes(`FOR ${probe.mode} NOWAIT`) &&
+            String(values[0]).toLowerCase() === probe.id.toLowerCase()
+          ) {
+            observed = true;
+            ready.resolve();
+            await release.promise;
+          }
+          return rows;
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
+async function deletePhantomAuthorityResidue(
+  prisma: PrismaService,
+  source: AppendCostEntryCommand["source"],
+  authority: { userId?: string; vehicleId?: string }
+) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+    await tx.auditLog.deleteMany({
+      where: {
+        module: "asset_accounting",
+        OR: [
+          { afterSnapshot: { path: ["source", "key"], equals: source.key } },
+          ...(authority.userId ? [{ operatorId: authority.userId }] : [])
+        ]
+      }
+    });
+    await tx.assetAccountingCommandReceipt.deleteMany({
+      where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
+    });
+    await tx.businessExceptionApproval.deleteMany({
+      where: {
+        requestSourceId: source.id,
+        requestSourceKey: source.key,
+        requestSourceType: source.type
+      }
+    });
+    await tx.vehicleCostLedgerEntry.deleteMany({
+      where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
+    });
+    if (authority.vehicleId) {
+      await tx.vehicle.deleteMany({ where: { id: authority.vehicleId } });
+    }
+    if (authority.userId) {
+      await tx.user.deleteMany({ where: { id: authority.userId } });
     }
   });
 }
@@ -2585,6 +2954,16 @@ function countReceipts(prisma: PrismaService, source: AppendCostEntryCommand["so
   });
 }
 
+function countApprovals(prisma: PrismaService, source: AppendCostEntryCommand["source"]) {
+  return prisma.businessExceptionApproval.count({
+    where: {
+      requestSourceId: source.id,
+      requestSourceKey: source.key,
+      requestSourceType: source.type
+    }
+  });
+}
+
 async function countAuditsForSource(
   prisma: PrismaService,
   source: AppendCostEntryCommand["source"]
@@ -2608,6 +2987,16 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+function sqlText(query: unknown) {
+  if (!query || typeof query !== "object" || !("strings" in query)) return "";
+  return (query.strings as readonly string[]).join("?");
+}
+
+function sqlValues(query: unknown): readonly unknown[] {
+  if (!query || typeof query !== "object" || !("values" in query)) return [];
+  return query.values as readonly unknown[];
 }
 
 async function settled<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
@@ -2657,6 +3046,7 @@ function databaseErrorCode(error: unknown) {
 function databaseConstraint(error: unknown) {
   const strings = collectStrings(error);
   const knownNames = [
+    "business_exception_approval_status_shape_chk",
     "asset_accounting_command_receipt_payload_hash_chk",
     "asset_accounting_command_receipt_source_key_not_blank_chk",
     "asset_accounting_command_receipt_target_shape_chk",

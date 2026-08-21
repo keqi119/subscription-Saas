@@ -58,11 +58,11 @@ if ($schemaDiffExit -ne 0) {
 ```
 
 `migrate status`、`validate`、checksum 和 datasource→schema diff 是四个独立门禁，不能互相替代；
-只有全部门禁退出码为 `0` 才能继续。已知专用 Local 数据库虽然有 96 个 migration 且 status/validate 为
+只有全部门禁退出码为 `0` 才能继续。已知专用 Local 数据库虽然有 97 个 migration 且 status/validate 为
 `0`，但继承的 checksum mismatch `58`、非空 drift 和 rolled-back `1` 保持不变，因此明确
 rollout-ineligible。不得修复、接受、忽略或重新基线化这些历史异常。
 
-以下查询核对目录摘要和 Stage 1C-C 三个最终 migration；任一计数异常停止：
+以下查询核对目录摘要和 Stage 1C-C 四个最终 migration；任一计数异常停止：
 
 <!-- stage1c-accounting-sql:01-migration-catalog -->
 
@@ -72,7 +72,8 @@ WITH expected_migration(migration_name) AS (
   VALUES
     ('20260821000000_stage1c_cost_ledger_exception_approval'),
     ('20260821000100_stage1c_cost_ledger_exception_approval_hardening'),
-    ('20260821000200_stage1c_reversal_period_integrity')
+    ('20260821000200_stage1c_reversal_period_integrity'),
+    ('20260821000300_stage1c_approval_decision_comment_integrity')
 )
 SELECT
   COUNT(*) FILTER (
@@ -406,7 +407,9 @@ authority snapshot 只由 owning workflow 注册的 server-side authority resolv
 读取；canonical JSON 后计算小写 SHA-256，request 保存 immutable snapshot/hash。requester 不能审批自己的请求；
 ADMIN 也不能绕过。决定使用 `expectedVersion` CAS；合法状态仅为
 `PENDING → APPROVED | REJECTED | EXPIRED` 和 `APPROVED → EXPIRED`，每次版本精确加一，APPROVED 决策
-元组过期时仍不可改写。当前 authority 与保存 hash 不同后，旧的 live approval 必须 EXPIRED；不能继续
+元组过期时仍不可改写。APPROVED、REJECTED 以及带 APPROVED 决定元组的 EXPIRED 都必须保存非空、
+非空白 `decision_comment`；由 PENDING 直接过期则保持 decision/comment/decider 元组全为 NULL。当前 authority 与保存 hash 不同后，
+旧的 live approval 必须 EXPIRED；不能继续
 消费旧批准。
 
 当前代码库没有 registered owning writer/resolver，且 subject 是多态的，数据库无法从 subject type/id/field
@@ -591,7 +594,7 @@ $definition$)
     ('business_exception_approval', 'business_exception_approval_version_nonnegative_chk',
       $definition$CHECK ((version >= 0))$definition$),
     ('business_exception_approval', 'business_exception_approval_status_shape_chk',
-      $definition$CHECK ((((status = 'PENDING'::business_exception_approval_status) AND (decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'APPROVED'::business_exception_approval_status) AND (decision = 'APPROVED'::business_exception_decision) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'REJECTED'::business_exception_approval_status) AND (decision = 'REJECTED'::business_exception_decision) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'EXPIRED'::business_exception_approval_status) AND (expiry_reason IS NOT NULL) AND (expired_by IS NOT NULL) AND (expired_at IS NOT NULL) AND (((decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL)) OR ((decision = 'APPROVED'::business_exception_decision) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL))))))$definition$),
+      $definition$CHECK ((((status = 'PENDING'::business_exception_approval_status) AND (decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'APPROVED'::business_exception_approval_status) AND (decision = 'APPROVED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'REJECTED'::business_exception_approval_status) AND (decision = 'REJECTED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'EXPIRED'::business_exception_approval_status) AND (expiry_reason IS NOT NULL) AND (expired_by IS NOT NULL) AND (expired_at IS NOT NULL) AND (((decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL)) OR ((decision = 'APPROVED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL))))))$definition$),
     ('asset_accounting_command_receipt', 'asset_accounting_command_receipt_payload_hash_chk',
       $definition$CHECK (((payload_hash)::text ~ '^[0-9a-f]{64}$'::text))$definition$),
     ('asset_accounting_command_receipt', 'asset_accounting_command_receipt_source_key_not_blank_chk',
@@ -1401,6 +1404,11 @@ WITH registered_resolver(subject_type, subject_id, subject_field, authoritative_
      )
      OR (
        approval.status = 'EXPIRED'
+       AND approval.decision = 'APPROVED'
+       AND btrim(COALESCE(approval.decision_comment, '')) = ''
+     )
+     OR (
+       approval.status = 'EXPIRED'
        AND btrim(COALESCE(approval.expiry_reason, '')) = ''
      )
      OR approval.requested_by = approval.decided_by
@@ -1861,32 +1869,33 @@ checksum 或历史事实。纠正后重跑四个命令门禁和八个 SQL block�
 ## 17. 2026-08-21 专用 Local 数据库只读记录
 
 目标是 loopback `127.0.0.1:55432` 的专用 Local PostgreSQL；凭据从容器环境只注入子进程，未输出
-secret。未运行 seed、apply、deploy、修复 SQL、网络或 Production 操作。
+secret。仅在 RED 证据后部署本分支新增的第四个前向纠正 migration；未运行 seed、通用 apply、历史 migration apply、
+修复 SQL、网络或 Production 操作。
 
 最终从本文件 marker 原样提取 8/8 个 SQL block；每段独立使用 `ON_ERROR_STOP=1`，退出码均为 `0`，
 每段都观察到 `BEGIN` 与 `COMMIT`：
 
 | SQL block                  | 脱敏结果 | 结论                                                                                                                                             |
 | -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `01-migration-catalog`     | 1 行     | applied `96`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `3`、fingerprint `5f71cc9e30cc4671361349250e3fc73e`；rolled-back 阻断。 |
+| `01-migration-catalog`     | 1 行     | applied `97`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `4`、fingerprint `9c1f7b14ffdfa3e61dfbf6a7d6868d70`；rolled-back 阻断。 |
 | `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。             |
 | `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK（含 owning/referenced schema）、15 个 index 均匹配。                               |
 | `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                       |
 | `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity（含 NULL ledger work-order fixture）、重复冲正或 16 维相等异常。                  |
 | `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                               |
 | `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                               |
-| `08-closed-cost-integrity` | 2 行     | 两个 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`；阻断且未修复。                                                    |
+| `08-closed-cost-integrity` | 0 行     | 无 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`。                                                                    |
 
 四个命令门禁的最终脱敏结果：
 
 | 门禁                                  | 退出码 | 脱敏结论                                                                        |
 | ------------------------------------- | ------ | ------------------------------------------------------------------------------- |
-| `pnpm prisma:migrate:status`          | `0`    | 96 migrations；database current。                                               |
+| `pnpm prisma:migrate:status`          | `0`    | 97 migrations；database current。                                               |
 | `pnpm prisma:validate`                | `0`    | schema valid。                                                                  |
-| `pnpm prisma:migrate:checksum:verify` | `2`    | local/applied `96/96`、duplicate/missing `0/0/0`、mismatch `58`、`safe=false`。 |
+| `pnpm prisma:migrate:checksum:verify` | `2`    | local/applied `97/97`、duplicate/missing `0/0/0`、mismatch `58`、`safe=false`。 |
 | datasource→schema diff                | `2`    | diff 非空；未打印、接受或修复 drift 内容。                                      |
 
 因此该 Local 数据库同时被 rolled-back `1`、checksum mismatch `58`、非空 drift、六个缺失 definition、
-54 个缺失 grant、两个 exact-count contract anomaly 和两个 CLOSED-cost 不变量异常阻断，明确
+54 个缺失 grant 和两个 exact-count contract anomaly 阻断，明确
 rollout-ineligible。零行不能证明真实业务样本已覆盖；非零也不授权 backfill/apply/UPDATE。原始结果未提交
 Git，控制台仅保留以上脱敏计数。

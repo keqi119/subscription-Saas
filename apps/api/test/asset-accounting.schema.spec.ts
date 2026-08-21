@@ -24,8 +24,15 @@ const reversalPeriodMigrationPath = resolve(
 const reversalPeriodMigration = existsSync(reversalPeriodMigrationPath)
   ? readFileSync(reversalPeriodMigrationPath, "utf8")
   : "";
+const approvalCommentMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260821000300_stage1c_approval_decision_comment_integrity/migration.sql"
+);
+const approvalCommentMigration = existsSync(approvalCommentMigrationPath)
+  ? readFileSync(approvalCommentMigrationPath, "utf8")
+  : "";
 const migrationPrefix = `${migration}\n${hardeningMigration}`;
-const finalMigration = `${migrationPrefix}\n${reversalPeriodMigration}`;
+const finalMigration = `${migrationPrefix}\n${reversalPeriodMigration}\n${approvalCommentMigration}`;
 
 function prismaBlockFrom(source: string, kind: "enum" | "model", name: string) {
   return source.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -78,6 +85,28 @@ function latestMigrationTrigger(source: string, name: string) {
 
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+const approvalStatusShapeDefinition = `
+ALTER TABLE "public"."business_exception_approval"
+  ADD CONSTRAINT "business_exception_approval_status_shape_chk" CHECK (
+    ("status" = 'PENDING' AND "decision" IS NULL AND "decision_comment" IS NULL AND "decided_by" IS NULL AND "decided_at" IS NULL AND "expiry_reason" IS NULL AND "expired_by" IS NULL AND "expired_at" IS NULL)
+    OR ("status" = 'APPROVED' AND "decision" = 'APPROVED' AND "decision_comment" IS NOT NULL AND btrim("decision_comment") <> '' AND "decided_by" IS NOT NULL AND "decided_at" IS NOT NULL AND "expiry_reason" IS NULL AND "expired_by" IS NULL AND "expired_at" IS NULL)
+    OR ("status" = 'REJECTED' AND "decision" = 'REJECTED' AND "decision_comment" IS NOT NULL AND btrim("decision_comment") <> '' AND "decided_by" IS NOT NULL AND "decided_at" IS NOT NULL AND "expiry_reason" IS NULL AND "expired_by" IS NULL AND "expired_at" IS NULL)
+    OR ("status" = 'EXPIRED' AND "expiry_reason" IS NOT NULL AND "expired_by" IS NOT NULL AND "expired_at" IS NOT NULL AND (
+      ("decision" IS NULL AND "decision_comment" IS NULL AND "decided_by" IS NULL AND "decided_at" IS NULL)
+      OR ("decision" = 'APPROVED' AND "decision_comment" IS NOT NULL AND btrim("decision_comment") <> '' AND "decided_by" IS NOT NULL AND "decided_at" IS NOT NULL)
+    ))
+  );`;
+
+function latestApprovalStatusShape(source: string) {
+  return (
+    Array.from(
+      source.matchAll(
+        /ALTER TABLE "public"\."business_exception_approval"\s+ADD CONSTRAINT "business_exception_approval_status_shape_chk" CHECK \([\s\S]*?\n\s*\);/g
+      )
+    ).at(-1)?.[0] ?? ""
+  );
 }
 
 function prismaFieldLine(source: string, model: string, field: string) {
@@ -443,6 +472,10 @@ function expectFinalPersistenceContract(source: string, prismaSchema: string) {
   expect(source).toContain(
     '("status" = \'EXPIRED\' AND "expiry_reason" IS NOT NULL AND "expired_by" IS NOT NULL AND "expired_at" IS NOT NULL AND ('
   );
+  expect(
+    normalizeWhitespace(latestApprovalStatusShape(source)),
+    "approval terminal decision comment"
+  ).toBe(normalizeWhitespace(approvalStatusShapeDefinition));
 
   for (const trigger of finalTriggerContracts) {
     expect(normalizeWhitespace(latestMigrationTrigger(source, trigger[0])), trigger[0]).toBe(
@@ -545,6 +578,25 @@ const enumContracts = [
 ] as const;
 
 describe("Stage 1C-C asset accounting persistence contract", () => {
+  it("replaces only the approval status shape through one fail-closed forward correction", () => {
+    expect(approvalCommentMigration).not.toBe("");
+    expect(approvalCommentMigration).toMatch(/^BEGIN;/);
+    expect(approvalCommentMigration.trimEnd()).toMatch(/COMMIT;$/);
+    expect(approvalCommentMigration).toContain("IF EXISTS (");
+    expect(approvalCommentMigration).toContain("RAISE EXCEPTION");
+    expect(approvalCommentMigration).toContain(
+      'DROP CONSTRAINT "business_exception_approval_status_shape_chk"'
+    );
+    expect(normalizeWhitespace(latestApprovalStatusShape(approvalCommentMigration))).toBe(
+      normalizeWhitespace(approvalStatusShapeDefinition)
+    );
+    expect(
+      approvalCommentMigration.match(/ALTER TABLE "public"\."business_exception_approval"/g)
+    ).toHaveLength(2);
+    expect(approvalCommentMigration).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/);
+    expectFinalPersistenceContract(finalMigration, schema);
+  });
+
   it("adds reversal date and period equality through one forward correction", () => {
     expect(reversalPeriodMigration).not.toBe("");
     expect(
@@ -792,7 +844,7 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
       expect(() => expectFinalPersistenceContract(finalMigration, mutatedSchema)).toThrow(label);
     };
     const replaceHardening = (before: string, after: string) =>
-      `${migration}\n${hardeningMigration.replace(before, after)}\n${reversalPeriodMigration}`;
+      `${migration}\n${hardeningMigration.replace(before, after)}\n${reversalPeriodMigration}\n${approvalCommentMigration}`;
 
     for (const relation of restrictivePrismaRelations) {
       const field = prismaFieldLine(schema, relation.model, relation.field);
@@ -826,7 +878,7 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
     );
     expectMigrationMutationToFail(
       "reversal amount comparator",
-      `${migrationPrefix}\n${reversalComparatorMutation}`
+      `${migrationPrefix}\n${reversalComparatorMutation}\n${approvalCommentMigration}`
     );
 
     for (const [index, field] of reversalDimensionFields.entries()) {
@@ -835,7 +887,7 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
         `${migrationPrefix}\n${mutateReversalOriginalDimensionFields(
           reversalPeriodMigration,
           (fields) => fields.filter((_, fieldIndex) => fieldIndex !== index)
-        )}`
+        )}\n${approvalCommentMigration}`
       );
 
       const nextIndex = (index + 1) % reversalDimensionFields.length;
@@ -853,7 +905,7 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
             [swapped[index], swapped[nextIndex]] = [nextField, currentField];
             return swapped;
           }
-        )}`
+        )}\n${approvalCommentMigration}`
       );
       expect(field).toBe(reversalDimensionFields[index]);
     }
@@ -864,8 +916,25 @@ describe("Stage 1C-C asset accounting persistence contract", () => {
     );
     expectMigrationMutationToFail("approval version increment", versionMutation);
 
-    const pendingCommentMutation = replaceHardening(' AND "decision_comment" IS NULL', "");
+    const pendingCommentMutation = finalMigration.replaceAll(' AND "decision_comment" IS NULL', "");
     expectMigrationMutationToFail("pending decision comment", pendingCommentMutation);
+
+    const terminalCommentNullMutation = finalMigration.replaceAll(
+      '"decision_comment" IS NOT NULL AND ',
+      ""
+    );
+    expectMigrationMutationToFail(
+      "approval terminal decision comment",
+      terminalCommentNullMutation
+    );
+    const terminalCommentBlankMutation = finalMigration.replaceAll(
+      " AND btrim(\"decision_comment\") <> ''",
+      ""
+    );
+    expectMigrationMutationToFail(
+      "approval terminal decision comment",
+      terminalCommentBlankMutation
+    );
 
     const insertGuardMutation = replaceHardening(
       "IF TG_OP = 'INSERT' THEN",

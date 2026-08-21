@@ -1283,7 +1283,8 @@ async function lockAuthorityRows(tx: Prisma.TransactionClient, locks: readonly A
         item.mode === "UPDATE"
           ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR UPDATE NOWAIT`
           : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR SHARE NOWAIT`;
-      await tx.$queryRaw(query);
+      const [locked] = await tx.$queryRaw<Array<{ id: string }>>(query);
+      if (!locked) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.AUTHORITY_NOT_FOUND);
     }
   } catch (error) {
     if (databaseCode(error) === "55P03") {

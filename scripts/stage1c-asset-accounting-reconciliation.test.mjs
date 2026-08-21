@@ -31,11 +31,14 @@ const sqlBlockOrder = [
 ];
 
 const catalogDefinitionDigests = {
-  expected_constraint_raw: "80cc92be6a2bdaa7da22b8258bee443435b6aba87224e9a1e86e395060442adb",
+  expected_constraint_raw: "53aaca2da145890a3332900116c6e9f7c53e98da677b15972ea076b60630bacd",
   expected_function_raw: "80ae1c8e2a4386ef3f2c80cacbcfc4c63c0cc1af8f8e4bdd099be5ea663fa8a5",
   expected_index_raw: "6c60ebf5e65ff483d4fb0934924ff882ed9f53e877618caad36e12e0d995c875",
   expected_trigger_raw: "4e7c1e0270d318a67d339e8af5ae3b2ffc8b645912138d7985ceaaa9df968482"
 };
+
+const approvalStatusShapeCatalogDefinition =
+  "$definition$CHECK ((((status = 'PENDING'::business_exception_approval_status) AND (decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'APPROVED'::business_exception_approval_status) AND (decision = 'APPROVED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'REJECTED'::business_exception_approval_status) AND (decision = 'REJECTED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL) AND (expiry_reason IS NULL) AND (expired_by IS NULL) AND (expired_at IS NULL)) OR ((status = 'EXPIRED'::business_exception_approval_status) AND (expiry_reason IS NOT NULL) AND (expired_by IS NOT NULL) AND (expired_at IS NOT NULL) AND (((decision IS NULL) AND (decision_comment IS NULL) AND (decided_by IS NULL) AND (decided_at IS NULL)) OR ((decision = 'APPROVED'::business_exception_decision) AND (decision_comment IS NOT NULL) AND (btrim(decision_comment) <> ''::text) AND (decided_by IS NOT NULL) AND (decided_at IS NOT NULL))))))$definition$";
 
 const authorityDerivedContract = `
 SELECT
@@ -666,6 +669,7 @@ function validateRunbookSql(runbook) {
     "20260821000000_stage1c_cost_ledger_exception_approval",
     "20260821000100_stage1c_cost_ledger_exception_approval_hardening",
     "20260821000200_stage1c_reversal_period_integrity",
+    "20260821000300_stage1c_approval_decision_comment_integrity",
     "rolled_back_migration_count",
     "failed_or_incomplete_migration_count",
     "expected_stage1c_c_applied_count",
@@ -731,6 +735,9 @@ function validateRunbookSql(runbook) {
     "asset_accounting_command_receipt_source_key",
     ...reversalDimensions.map((name) => `NEW.\"${name}\"`),
     ...reversalDimensions.map((name) => `original.\"${name}\"`)
+  ]);
+  requireSqlInvariant(blocks, "03-database-catalog", "APPROVAL_STATUS_SHAPE", [
+    approvalStatusShapeCatalogDefinition
   ]);
   validateCatalogDefinitionDigests(blocks);
   validateForeignKeySql(blocks);
@@ -808,8 +815,8 @@ function validateRunbookSql(runbook) {
     "resolver.authoritative_snapshot_hash IS DISTINCT FROM approval.subject_snapshot_hash"
   ]);
   requireSqlInvariant(blocks, "06-approval-integrity", "APPROVAL_DECISION_COMMENT", [
-    "approval.status IN ('APPROVED', 'REJECTED')",
-    "btrim(COALESCE(approval.decision_comment, '')) = ''"
+    "approval.status IN ('APPROVED', 'REJECTED') AND btrim(COALESCE(approval.decision_comment, '')) = ''",
+    "approval.status = 'EXPIRED' AND approval.decision = 'APPROVED' AND btrim(COALESCE(approval.decision_comment, '')) = ''"
   ]);
   requireSqlInvariant(blocks, "06-approval-integrity", "APPROVAL_ACTOR_ORPHAN", [
     'LEFT JOIN "user" AS requester ON requester.id = approval.requested_by',
@@ -1218,6 +1225,25 @@ test("kills finding-specific mutations with the intended invariant labels", asyn
       "APPROVAL_DECISION_COMMENT",
       "06-approval-integrity",
       (sql) => sql.replace("btrim(COALESCE(approval.decision_comment, '')) = ''", "false")
+    ],
+    [
+      "APPROVAL_DECISION_COMMENT",
+      "06-approval-integrity",
+      (sql) =>
+        sql.replace(
+          "approval.status = 'EXPIRED'\n       AND approval.decision = 'APPROVED'\n       AND btrim(COALESCE(approval.decision_comment, '')) = ''",
+          "approval.status = 'EXPIRED'\n       AND approval.decision = 'APPROVED'\n       AND false"
+        )
+    ],
+    [
+      "APPROVAL_STATUS_SHAPE",
+      "03-database-catalog",
+      (sql) => sql.replace("(decision_comment IS NOT NULL) AND", "")
+    ],
+    [
+      "APPROVAL_STATUS_SHAPE",
+      "03-database-catalog",
+      (sql) => sql.replace("(btrim(decision_comment) <> ''::text) AND", "")
     ]
   ];
 

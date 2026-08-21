@@ -1,0 +1,1778 @@
+import { ConflictException, Injectable } from "@nestjs/common";
+import {
+  Prisma,
+  type SubscriptionClosureCommandType,
+  type SubscriptionClosureDocumentStage,
+  type SubscriptionClosureDocumentType,
+  type SubscriptionClosureEventType,
+  type SubscriptionClosureSettlementStage,
+  type SubscriptionClosureSettlementType,
+  type SubscriptionClosureStatus
+} from "@prisma/client";
+
+import {
+  assertSubscriptionClosureEscalation,
+  assertSubscriptionClosureTransition,
+  canonicalSubscriptionClosureJson,
+  canonicalSubscriptionClosureSource,
+  freezeSubscriptionClosureOutcome,
+  hashSubscriptionClosureSnapshot
+} from "./subscription-closure.domain";
+import type {
+  SubscriptionClosureCaseSnapshot,
+  SubscriptionClosureDocumentSnapshot,
+  SubscriptionClosureEventSnapshot,
+  SubscriptionClosureJsonObject,
+  SubscriptionClosureProfile,
+  SubscriptionClosureSettlementSnapshot,
+  SubscriptionClosureSnapshotObject,
+  SubscriptionClosureSource,
+  SubscriptionClosureWriteOutcome
+} from "./subscription-closure.types";
+
+export interface CreateSubscriptionClosureCaseCommand extends SubscriptionClosureProfile {
+  readonly actorId: string;
+  readonly authoritySnapshot: SubscriptionClosureSnapshotObject;
+  readonly contractId: string;
+  readonly customerId: string;
+  readonly effectiveAt: Date;
+  readonly orderId: string;
+  readonly reconditioningAssetWorkOrderId?: string | null;
+  readonly recoveryAssetWorkOrderId?: string | null;
+  readonly returnAssetWorkOrderId?: string | null;
+  readonly returnHandoverWorkOrderId?: string | null;
+  readonly source: SubscriptionClosureSource;
+  readonly vehicleId: string;
+  readonly vehicleReturnId?: string | null;
+}
+
+export interface SubscriptionClosureCaseFilters {
+  readonly contractId?: string;
+  readonly customerId?: string;
+  readonly orderId?: string;
+  readonly status?: SubscriptionClosureStatus;
+  readonly vehicleId?: string;
+}
+
+export interface AppendSubscriptionClosureEventCommand {
+  readonly actorId: string;
+  readonly afterStatus: SubscriptionClosureStatus;
+  readonly closureCaseId: string;
+  readonly detailSnapshot: SubscriptionClosureSnapshotObject;
+  readonly eventType: SubscriptionClosureEventType;
+  readonly expectedStatus: SubscriptionClosureStatus;
+  readonly expectedVersion: number;
+  readonly occurredAt: Date;
+  readonly source: SubscriptionClosureSource;
+}
+
+export interface EscalateSubscriptionClosureRecoveryCommand {
+  readonly actorId: string;
+  readonly closureCaseId: string;
+  readonly detailSnapshot: SubscriptionClosureSnapshotObject;
+  readonly expectedStatus: SubscriptionClosureStatus;
+  readonly expectedVersion: number;
+  readonly occurredAt: Date;
+  readonly source: SubscriptionClosureSource;
+}
+
+export interface AppendSubscriptionClosureDocumentCommand {
+  readonly actorId: string;
+  readonly archivedAt: Date | null;
+  readonly archivedBy: string | null;
+  readonly closureCaseId: string;
+  readonly contractESignTaskId: string;
+  readonly documentSnapshot: SubscriptionClosureSnapshotObject;
+  readonly documentType: SubscriptionClosureDocumentType;
+  readonly expectedCurrentRevisionId: string | null;
+  readonly expectedVersion: number;
+  readonly generatedAt: Date;
+  readonly handoverWorkOrderId: string | null;
+  readonly signedAt: Date | null;
+  readonly signedBy: string | null;
+  readonly signedFileHash: string | null;
+  readonly signedFileId: string | null;
+  readonly source: SubscriptionClosureSource;
+  readonly sourceFileHash: string;
+  readonly sourceFileId: string;
+  readonly stage: SubscriptionClosureDocumentStage;
+  readonly vehicleReturnId: string | null;
+}
+
+export interface AppendSubscriptionClosureSettlementCommand {
+  readonly actorId: string;
+  readonly amountDueCents: bigint;
+  readonly amountRefundableCents: bigint;
+  readonly billInputSnapshot: SubscriptionClosureSnapshotObject;
+  readonly closureCaseId: string;
+  readonly costTotalCents: bigint;
+  readonly depositAppliedCents: bigint;
+  readonly depositInputSnapshot: SubscriptionClosureSnapshotObject;
+  readonly depositRefundCents: bigint;
+  readonly expectedCurrentRevisionId: string | null;
+  readonly expectedVersion: number;
+  readonly finalizedAt: Date | null;
+  readonly finalizedBy: string | null;
+  readonly ledgerInputSnapshot: SubscriptionClosureSnapshotObject;
+  readonly paidTotalCents: bigint;
+  readonly receivableTotalCents: bigint;
+  readonly responsibilitySnapshot: SubscriptionClosureSnapshotObject;
+  readonly resultSnapshot: SubscriptionClosureSnapshotObject;
+  readonly settledAt: Date | null;
+  readonly settledBy: string | null;
+  readonly settlementType: SubscriptionClosureSettlementType;
+  readonly source: SubscriptionClosureSource;
+  readonly stage: SubscriptionClosureSettlementStage;
+  readonly waiverApprovalId: string | null;
+  readonly waiverTotalCents: bigint;
+  readonly writeOffApprovalId: string | null;
+  readonly writeOffTotalCents: bigint;
+}
+
+export type SubscriptionClosureMutationAuditHook = (
+  tx: Prisma.TransactionClient,
+  mutation: Readonly<{
+    action: SubscriptionClosureCommandType;
+    closureCaseId: string;
+    eventId: string;
+    outcome: SubscriptionClosureJsonObject;
+    source: SubscriptionClosureSource;
+  }>
+) => Promise<void>;
+
+const CASE_INCLUDE = {
+  currentDocuments: {
+    include: { documentRevision: true },
+    orderBy: { documentType: "asc" }
+  },
+  currentSettlementRevision: true
+} satisfies Prisma.SubscriptionClosureCaseInclude;
+
+type CaseRecord = Prisma.SubscriptionClosureCaseGetPayload<{ include: typeof CASE_INCLUDE }>;
+
+export const SUBSCRIPTION_CLOSURE_ERROR_CODE = {
+  AUTHORITY_BUSY: "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY",
+  AUTHORITY_MISMATCH: "SUBSCRIPTION_CLOSURE_AUTHORITY_MISMATCH",
+  AUTHORITY_NOT_FOUND: "SUBSCRIPTION_CLOSURE_AUTHORITY_NOT_FOUND",
+  CASE_ALREADY_EXISTS: "SUBSCRIPTION_CLOSURE_CASE_ALREADY_EXISTS",
+  CASE_NOT_FOUND: "SUBSCRIPTION_CLOSURE_CASE_NOT_FOUND",
+  CURRENT_DOCUMENT_CONFLICT: "SUBSCRIPTION_CLOSURE_CURRENT_DOCUMENT_CONFLICT",
+  CURRENT_SETTLEMENT_CONFLICT: "SUBSCRIPTION_CLOSURE_CURRENT_SETTLEMENT_CONFLICT",
+  INVALID_COMMAND: "SUBSCRIPTION_CLOSURE_INVALID_COMMAND",
+  SOURCE_CONFLICT: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT",
+  STATUS_CONFLICT: "SUBSCRIPTION_CLOSURE_STATUS_CONFLICT",
+  TRANSACTION_REQUIRED: "SUBSCRIPTION_CLOSURE_TRANSACTION_REQUIRED",
+  VERSION_CONFLICT: "SUBSCRIPTION_CLOSURE_VERSION_CONFLICT",
+  WRITE_CONFLICT: "SUBSCRIPTION_CLOSURE_WRITE_CONFLICT"
+} as const;
+
+type SubscriptionClosureErrorCode =
+  (typeof SUBSCRIPTION_CLOSURE_ERROR_CODE)[keyof typeof SUBSCRIPTION_CLOSURE_ERROR_CODE];
+
+const ERROR_MESSAGES: Readonly<Record<SubscriptionClosureErrorCode, string>> = {
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY]:
+    "A subscription-closure authority row is being updated. Review the current state and retry.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH]:
+    "The supplied subscription-closure authorities do not describe the same aggregate.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND]:
+    "A supplied subscription-closure authority was not found.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS]:
+    "The order already has a subscription-closure case.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_NOT_FOUND]: "The subscription-closure case was not found.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT]:
+    "The current subscription-closure document family has changed.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT]:
+    "The current subscription-closure settlement has changed.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND]: "The subscription-closure command is invalid.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT]:
+    "The stable subscription-closure source is already bound to another command or payload.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT]:
+    "The subscription-closure status does not allow this command.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.TRANSACTION_REQUIRED]:
+    "Subscription-closure commands require a caller-provided PostgreSQL READ COMMITTED interactive transaction.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.VERSION_CONFLICT]:
+    "The subscription-closure version has changed.",
+  [SUBSCRIPTION_CLOSURE_ERROR_CODE.WRITE_CONFLICT]:
+    "The subscription-closure command conflicts with the current database state."
+};
+
+export type SubscriptionClosureAuthorityTable =
+  | "subscription_closure_case"
+  | "subscription_order"
+  | "vehicle"
+  | "lease"
+  | "contract"
+  | "subscription_contract_segment"
+  | "vehicle_return"
+  | "vehicle_subscription_period"
+  | "collection_case"
+  | "business_exception_approval"
+  | "vehicle_handover_work_order"
+  | "asset_work_order"
+  | "subscription_closure_document_revision"
+  | "vehicle_operational_restriction"
+  | "subscription_closure_settlement_revision"
+  | "receivable_bill"
+  | "customer"
+  | "file_object"
+  | "contract_esign_task"
+  | "user";
+
+export type SubscriptionClosureAuthorityLock = Readonly<{
+  table: SubscriptionClosureAuthorityTable;
+  id: string;
+  mode: "SHARE" | "UPDATE";
+}>;
+
+const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, number>> = {
+  subscription_closure_case: 10,
+  subscription_order: 20,
+  vehicle: 30,
+  lease: 40,
+  contract: 50,
+  subscription_contract_segment: 60,
+  vehicle_return: 70,
+  vehicle_subscription_period: 80,
+  collection_case: 90,
+  business_exception_approval: 100,
+  vehicle_handover_work_order: 110,
+  asset_work_order: 120,
+  subscription_closure_document_revision: 130,
+  vehicle_operational_restriction: 150,
+  subscription_closure_settlement_revision: 160,
+  receivable_bill: 170,
+  customer: 180,
+  file_object: 190,
+  contract_esign_task: 200,
+  user: 210
+};
+
+@Injectable()
+export class SubscriptionClosureRepository {
+  async createCase(
+    tx: Prisma.TransactionClient,
+    input: CreateSubscriptionClosureCaseCommand,
+    audit?: SubscriptionClosureMutationAuditHook
+  ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureCaseSnapshot>> {
+    const command = normalizeCreateCaseCommand(input);
+    const prepared = prepareCommand(command);
+    await this.lockSourceOwnership(tx, command.source);
+    const replay = await replayReceipt<SubscriptionClosureCaseSnapshot>(
+      tx,
+      command.source,
+      "CREATE_CASE",
+      prepared
+    );
+    if (replay) return replay;
+
+    await this.lockAuthorityRows(tx, createCaseAuthorityLocks(command));
+    const order = await tx.subscriptionOrder.findUnique({
+      select: { contractId: true, customerId: true, vehicleId: true },
+      where: { id: command.orderId }
+    });
+    if (!order) throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
+    if (
+      order.contractId !== command.contractId ||
+      order.customerId !== command.customerId ||
+      order.vehicleId !== command.vehicleId
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+    await assertCreateLinkCoherence(tx, command);
+    if (await tx.subscriptionClosureCase.findUnique({ where: { orderId: command.orderId } })) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS);
+    }
+
+    try {
+      const status = initialStatus(command);
+      const authoritySnapshot = jsonInput(command.authoritySnapshot);
+      const created = await tx.subscriptionClosureCase.create({
+        data: {
+          authoritySnapshot,
+          authoritySnapshotHash: hashSubscriptionClosureSnapshot(command.authoritySnapshot),
+          caseNo: `SC-${command.source.id}`,
+          closureType: command.closureType,
+          contractId: command.contractId,
+          createSourceId: command.source.id,
+          createSourceKey: command.source.key,
+          createSourceType: command.source.type,
+          createdBy: command.actorId,
+          customerId: command.customerId,
+          effectiveAt: command.effectiveAt,
+          finalDisposition: command.finalDisposition,
+          orderId: command.orderId,
+          physicalControlMode: command.physicalControlMode,
+          reconditioningAssetWorkOrderId: command.reconditioningAssetWorkOrderId,
+          recoveryAssetWorkOrderId: command.recoveryAssetWorkOrderId,
+          returnAssetWorkOrderId: command.returnAssetWorkOrderId,
+          returnHandoverWorkOrderId: command.returnHandoverWorkOrderId,
+          status,
+          updatedBy: command.actorId,
+          vehicleId: command.vehicleId,
+          vehicleReturnId: command.vehicleReturnId
+        },
+        include: CASE_INCLUDE
+      });
+      const event = await createEvent(tx, {
+        actorId: command.actorId,
+        afterStatus: status,
+        beforeStatus: null,
+        closureCaseId: created.id,
+        detailSnapshot: command.authoritySnapshot,
+        eventType: "CASE_CREATED",
+        occurredAt: command.effectiveAt,
+        sequence: 1,
+        source: command.source
+      });
+      const outcome = projectCase(created);
+      await runAudit(audit, tx, "CREATE_CASE", created.id, event.id, outcome, command.source);
+      await createReceipt(tx, {
+        actorId: command.actorId,
+        closureCaseId: created.id,
+        commandType: "CREATE_CASE",
+        eventId: event.id,
+        outcome,
+        prepared,
+        source: command.source
+      });
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeWriteError(error);
+    }
+  }
+
+  async getCase(
+    tx: Prisma.TransactionClient,
+    id: string
+  ): Promise<SubscriptionClosureCaseSnapshot | null> {
+    await assertTransactionContract(tx);
+    const record = await tx.subscriptionClosureCase.findUnique({
+      include: CASE_INCLUDE,
+      where: { id: canonicalUuid(id, "closureCaseId") }
+    });
+    return record ? projectCase(record) : null;
+  }
+
+  async getCaseByOrder(
+    tx: Prisma.TransactionClient,
+    orderId: string
+  ): Promise<SubscriptionClosureCaseSnapshot | null> {
+    await assertTransactionContract(tx);
+    const record = await tx.subscriptionClosureCase.findUnique({
+      include: CASE_INCLUDE,
+      where: { orderId: canonicalUuid(orderId, "orderId") }
+    });
+    return record ? projectCase(record) : null;
+  }
+
+  async listCases(
+    tx: Prisma.TransactionClient,
+    filters: SubscriptionClosureCaseFilters = {}
+  ): Promise<SubscriptionClosureCaseSnapshot[]> {
+    await assertTransactionContract(tx);
+    const records = await tx.subscriptionClosureCase.findMany({
+      include: CASE_INCLUDE,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: {
+        contractId: optionalUuid(filters.contractId, "filters.contractId"),
+        customerId: optionalUuid(filters.customerId, "filters.customerId"),
+        orderId: optionalUuid(filters.orderId, "filters.orderId"),
+        status: filters.status,
+        vehicleId: optionalUuid(filters.vehicleId, "filters.vehicleId")
+      }
+    });
+    return records.map(projectCase);
+  }
+
+  async appendEvent(
+    tx: Prisma.TransactionClient,
+    input: AppendSubscriptionClosureEventCommand,
+    audit?: SubscriptionClosureMutationAuditHook
+  ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureJsonObject>> {
+    const command = normalizeEventCommand(input);
+    const prepared = prepareCommand(command);
+    await this.lockSourceOwnership(tx, command.source);
+    const replay = await replayReceipt<SubscriptionClosureJsonObject>(
+      tx,
+      command.source,
+      "TRANSITION_CASE",
+      prepared
+    );
+    if (replay) return replay;
+    await this.lockAuthorityRows(tx, [
+      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]);
+    const current = await requiredCase(tx, command.closureCaseId);
+    assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
+    validateEventTransition(current, command);
+
+    try {
+      const changed = await tx.subscriptionClosureCase.update({
+        data: {
+          closedAt: terminalStatus(command.afterStatus) ? command.occurredAt : current.closedAt,
+          physicalControlledAt:
+            physicalControlledStatus(command.afterStatus) && current.physicalControlledAt === null
+              ? command.occurredAt
+              : current.physicalControlledAt,
+          settledAt:
+            command.afterStatus === "COMPLETED" || command.afterStatus === "TERMINATED"
+              ? command.occurredAt
+              : current.settledAt,
+          status: command.afterStatus,
+          updatedBy: command.actorId,
+          version: { increment: 1 }
+        },
+        include: CASE_INCLUDE,
+        where: { id: current.id }
+      });
+      const event = await createEvent(tx, {
+        ...command,
+        beforeStatus: current.status,
+        sequence: current.version + 2
+      });
+      const outcome = freezeSubscriptionClosureOutcome({
+        case: projectCase(changed),
+        event: projectEvent(event)
+      });
+      await runAudit(audit, tx, "TRANSITION_CASE", current.id, event.id, outcome, command.source);
+      await createReceipt(tx, {
+        actorId: command.actorId,
+        closureCaseId: current.id,
+        commandType: "TRANSITION_CASE",
+        eventId: event.id,
+        outcome,
+        prepared,
+        source: command.source
+      });
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeWriteError(error);
+    }
+  }
+
+  async escalateRecovery(
+    tx: Prisma.TransactionClient,
+    input: EscalateSubscriptionClosureRecoveryCommand,
+    audit?: SubscriptionClosureMutationAuditHook
+  ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureJsonObject>> {
+    const command = normalizeEscalationCommand(input);
+    const prepared = prepareCommand(command);
+    await this.lockSourceOwnership(tx, command.source);
+    const replay = await replayReceipt<SubscriptionClosureJsonObject>(
+      tx,
+      command.source,
+      "ESCALATE_RECOVERY",
+      prepared
+    );
+    if (replay) return replay;
+    await this.lockAuthorityRows(tx, [
+      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]);
+    const current = await requiredCase(tx, command.closureCaseId);
+    assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
+    try {
+      assertSubscriptionClosureEscalation(profileOf(current), {
+        closureType: current.closureType,
+        finalDisposition: "TERMINATE",
+        physicalControlMode: "RECOVERY"
+      });
+    } catch {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
+
+    try {
+      const changed = await tx.subscriptionClosureCase.update({
+        data: {
+          finalDisposition: "TERMINATE",
+          physicalControlMode: "RECOVERY",
+          status: "RECOVERY_ASSESSMENT_PENDING",
+          updatedBy: command.actorId,
+          version: { increment: 1 }
+        },
+        include: CASE_INCLUDE,
+        where: { id: current.id }
+      });
+      const event = await createEvent(tx, {
+        actorId: command.actorId,
+        afterStatus: "RECOVERY_ASSESSMENT_PENDING",
+        beforeStatus: current.status,
+        closureCaseId: current.id,
+        detailSnapshot: command.detailSnapshot,
+        eventType: "RECOVERY_ESCALATED",
+        occurredAt: command.occurredAt,
+        sequence: current.version + 2,
+        source: command.source
+      });
+      const outcome = freezeSubscriptionClosureOutcome({
+        case: projectCase(changed),
+        event: projectEvent(event)
+      });
+      await runAudit(audit, tx, "ESCALATE_RECOVERY", current.id, event.id, outcome, command.source);
+      await createReceipt(tx, {
+        actorId: command.actorId,
+        closureCaseId: current.id,
+        commandType: "ESCALATE_RECOVERY",
+        eventId: event.id,
+        outcome,
+        prepared,
+        source: command.source
+      });
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeWriteError(error);
+    }
+  }
+
+  async appendDocumentRevision(
+    tx: Prisma.TransactionClient,
+    input: AppendSubscriptionClosureDocumentCommand,
+    audit?: SubscriptionClosureMutationAuditHook
+  ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureDocumentSnapshot>> {
+    const command = normalizeDocumentCommand(input);
+    const prepared = prepareCommand(command);
+    await this.lockSourceOwnership(tx, command.source);
+    const replay = await replayReceipt<SubscriptionClosureDocumentSnapshot>(
+      tx,
+      command.source,
+      "CREATE_DOCUMENT_REVISION",
+      prepared
+    );
+    if (replay) return replay;
+
+    await this.lockAuthorityRows(tx, [
+      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
+    ]);
+    const currentCase = await requiredCase(tx, command.closureCaseId);
+    assertExpectedCase(currentCase, command.expectedVersion);
+    const currentProjection = await lockCurrentDocumentProjection(
+      tx,
+      command.closureCaseId,
+      command.documentType
+    );
+    if ((currentProjection?.documentRevisionId ?? null) !== command.expectedCurrentRevisionId) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_DOCUMENT_CONFLICT);
+    }
+    const authorityLocks: SubscriptionClosureAuthorityLock[] = [
+      { id: command.actorId, mode: "SHARE", table: "user" },
+      { id: command.contractESignTaskId, mode: "SHARE", table: "contract_esign_task" },
+      { id: command.sourceFileId, mode: "SHARE", table: "file_object" }
+    ];
+    if (currentProjection) {
+      authorityLocks.push({
+        id: currentProjection.documentRevisionId,
+        mode: "SHARE",
+        table: "subscription_closure_document_revision"
+      });
+    }
+    if (command.vehicleReturnId) {
+      authorityLocks.push({ id: command.vehicleReturnId, mode: "SHARE", table: "vehicle_return" });
+    }
+    if (command.handoverWorkOrderId) {
+      authorityLocks.push({
+        id: command.handoverWorkOrderId,
+        mode: "SHARE",
+        table: "vehicle_handover_work_order"
+      });
+    }
+    if (command.signedFileId) {
+      authorityLocks.push({ id: command.signedFileId, mode: "SHARE", table: "file_object" });
+    }
+    for (const actorId of [command.signedBy, command.archivedBy]) {
+      if (actorId) authorityLocks.push({ id: actorId, mode: "SHARE", table: "user" });
+    }
+    await this.lockAuthorityRows(tx, authorityLocks);
+    await assertDocumentAuthorityCoherence(tx, currentCase, command);
+
+    const predecessor = currentProjection
+      ? await tx.subscriptionClosureDocumentRevision.findUnique({
+          where: { id: currentProjection.documentRevisionId }
+        })
+      : null;
+    if (currentProjection && (!predecessor || predecessor.documentType !== command.documentType)) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+
+    try {
+      const created = await tx.subscriptionClosureDocumentRevision.create({
+        data: {
+          archivedAt: command.archivedAt,
+          archivedBy: command.archivedBy,
+          closureCaseId: currentCase.id,
+          contractESignTaskId: command.contractESignTaskId,
+          documentSnapshot: jsonInput(command.documentSnapshot),
+          documentSnapshotHash: hashSubscriptionClosureSnapshot(command.documentSnapshot),
+          documentType: command.documentType,
+          generatedAt: command.generatedAt,
+          generatedBy: command.actorId,
+          handoverWorkOrderId: command.handoverWorkOrderId,
+          revisionNumber: (predecessor?.revisionNumber ?? 0) + 1,
+          signedAt: command.signedAt,
+          signedBy: command.signedBy,
+          signedFileHash: command.signedFileHash,
+          signedFileId: command.signedFileId,
+          sourceFileHash: command.sourceFileHash,
+          sourceFileId: command.sourceFileId,
+          sourceId: command.source.id,
+          sourceKey: command.source.key,
+          sourceType: command.source.type,
+          stage: command.stage,
+          supersedesRevisionId: predecessor?.id ?? null,
+          vehicleReturnId: command.vehicleReturnId
+        }
+      });
+      await tx.subscriptionClosureCurrentDocument.upsert({
+        create: {
+          closureCaseId: currentCase.id,
+          documentRevisionId: created.id,
+          documentType: command.documentType,
+          updatedBy: command.actorId
+        },
+        update: { documentRevisionId: created.id, updatedBy: command.actorId },
+        where: {
+          closureCaseId_documentType: {
+            closureCaseId: currentCase.id,
+            documentType: command.documentType
+          }
+        }
+      });
+      await tx.subscriptionClosureCase.update({
+        data: { updatedBy: command.actorId, version: { increment: 1 } },
+        where: { id: currentCase.id }
+      });
+      const event = await createEvent(tx, {
+        actorId: command.actorId,
+        afterStatus: currentCase.status,
+        beforeStatus: currentCase.status,
+        closureCaseId: currentCase.id,
+        detailSnapshot: {
+          documentRevisionId: created.id,
+          documentType: command.documentType,
+          revisionNumber: created.revisionNumber
+        },
+        eventType: "DOCUMENT_REVISION_CREATED",
+        occurredAt: command.generatedAt,
+        sequence: currentCase.version + 2,
+        source: command.source
+      });
+      const outcome = projectDocument(created);
+      await runAudit(
+        audit,
+        tx,
+        "CREATE_DOCUMENT_REVISION",
+        currentCase.id,
+        event.id,
+        outcome,
+        command.source
+      );
+      await createReceipt(tx, {
+        actorId: command.actorId,
+        closureCaseId: currentCase.id,
+        commandType: "CREATE_DOCUMENT_REVISION",
+        eventId: event.id,
+        outcome,
+        prepared,
+        source: command.source
+      });
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeWriteError(error);
+    }
+  }
+
+  async appendSettlementRevision(
+    tx: Prisma.TransactionClient,
+    input: AppendSubscriptionClosureSettlementCommand,
+    audit?: SubscriptionClosureMutationAuditHook
+  ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureSettlementSnapshot>> {
+    const command = normalizeSettlementCommand(input);
+    const prepared = prepareCommand(command);
+    await this.lockSourceOwnership(tx, command.source);
+    const replay = await replayReceipt<SubscriptionClosureSettlementSnapshot>(
+      tx,
+      command.source,
+      "CREATE_SETTLEMENT_REVISION",
+      prepared
+    );
+    if (replay) return replay;
+    await this.lockAuthorityRows(tx, [
+      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" }
+    ]);
+    const currentCase = await requiredCase(tx, command.closureCaseId);
+    assertExpectedCase(currentCase, command.expectedVersion);
+    if (currentCase.currentSettlementRevisionId !== command.expectedCurrentRevisionId) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CURRENT_SETTLEMENT_CONFLICT);
+    }
+    const authorityLocks: SubscriptionClosureAuthorityLock[] = [
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ];
+    if (currentCase.currentSettlementRevisionId) {
+      authorityLocks.push({
+        id: currentCase.currentSettlementRevisionId,
+        mode: "SHARE",
+        table: "subscription_closure_settlement_revision"
+      });
+    }
+    for (const approvalId of [command.waiverApprovalId, command.writeOffApprovalId]) {
+      if (approvalId) {
+        authorityLocks.push({
+          id: approvalId,
+          mode: "SHARE",
+          table: "business_exception_approval"
+        });
+      }
+    }
+    for (const actorId of [command.finalizedBy, command.settledBy]) {
+      if (actorId) authorityLocks.push({ id: actorId, mode: "SHARE", table: "user" });
+    }
+    await this.lockAuthorityRows(tx, authorityLocks);
+    const predecessor = currentCase.currentSettlementRevisionId
+      ? await tx.subscriptionClosureSettlementRevision.findUnique({
+          where: { id: currentCase.currentSettlementRevisionId }
+        })
+      : null;
+    if (currentCase.currentSettlementRevisionId && !predecessor) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+
+    try {
+      const inputSnapshot = {
+        bill: command.billInputSnapshot,
+        deposit: command.depositInputSnapshot,
+        ledger: command.ledgerInputSnapshot,
+        responsibility: command.responsibilitySnapshot
+      };
+      const created = await tx.subscriptionClosureSettlementRevision.create({
+        data: {
+          amountDueCents: command.amountDueCents,
+          amountRefundableCents: command.amountRefundableCents,
+          billInputSnapshot: jsonInput(command.billInputSnapshot),
+          closureCaseId: currentCase.id,
+          costTotalCents: command.costTotalCents,
+          createdBy: command.actorId,
+          depositAppliedCents: command.depositAppliedCents,
+          depositInputSnapshot: jsonInput(command.depositInputSnapshot),
+          depositRefundCents: command.depositRefundCents,
+          finalizedAt: command.finalizedAt,
+          finalizedBy: command.finalizedBy,
+          inputSnapshotHash: hashSubscriptionClosureSnapshot(inputSnapshot),
+          ledgerInputSnapshot: jsonInput(command.ledgerInputSnapshot),
+          paidTotalCents: command.paidTotalCents,
+          receivableTotalCents: command.receivableTotalCents,
+          responsibilitySnapshot: jsonInput(command.responsibilitySnapshot),
+          resultHash: hashSubscriptionClosureSnapshot(command.resultSnapshot),
+          resultSnapshot: jsonInput(command.resultSnapshot),
+          revisionNumber: (predecessor?.revisionNumber ?? 0) + 1,
+          settledAt: command.settledAt,
+          settledBy: command.settledBy,
+          settlementType: command.settlementType,
+          sourceId: command.source.id,
+          sourceKey: command.source.key,
+          sourceType: command.source.type,
+          stage: command.stage,
+          supersedesRevisionId: predecessor?.id ?? null,
+          waiverApprovalId: command.waiverApprovalId,
+          waiverTotalCents: command.waiverTotalCents,
+          writeOffApprovalId: command.writeOffApprovalId,
+          writeOffTotalCents: command.writeOffTotalCents
+        }
+      });
+      await tx.subscriptionClosureCase.update({
+        data: {
+          currentSettlementRevisionId: created.id,
+          updatedBy: command.actorId,
+          version: { increment: 1 }
+        },
+        where: { id: currentCase.id }
+      });
+      const event = await createEvent(tx, {
+        actorId: command.actorId,
+        afterStatus: currentCase.status,
+        beforeStatus: currentCase.status,
+        closureCaseId: currentCase.id,
+        detailSnapshot: {
+          revisionNumber: created.revisionNumber,
+          settlementRevisionId: created.id,
+          settlementType: created.settlementType,
+          stage: created.stage
+        },
+        eventType: "SETTLEMENT_REVISION_CREATED",
+        occurredAt: created.createdAt,
+        sequence: currentCase.version + 2,
+        source: command.source
+      });
+      const outcome = projectSettlement(created);
+      await runAudit(
+        audit,
+        tx,
+        "CREATE_SETTLEMENT_REVISION",
+        currentCase.id,
+        event.id,
+        outcome,
+        command.source
+      );
+      await createReceipt(tx, {
+        actorId: command.actorId,
+        closureCaseId: currentCase.id,
+        commandType: "CREATE_SETTLEMENT_REVISION",
+        eventId: event.id,
+        outcome,
+        prepared,
+        source: command.source
+      });
+      return { outcome, wrote: true };
+    } catch (error) {
+      throw normalizeWriteError(error);
+    }
+  }
+
+  async lockSourceOwnership(
+    tx: Prisma.TransactionClient,
+    source: SubscriptionClosureSource
+  ): Promise<void> {
+    const normalized = canonicalSubscriptionClosureSource(source);
+    await assertTransactionContract(tx);
+    const exactTuple = JSON.stringify([normalized.type, normalized.id, normalized.key]);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${exactTuple}, 0))`
+    );
+  }
+
+  async lockAuthorityRows(
+    tx: Prisma.TransactionClient,
+    locks: readonly SubscriptionClosureAuthorityLock[]
+  ): Promise<void> {
+    await assertTransactionContract(tx);
+    const normalized = normalizeAuthorityLocks(locks);
+    try {
+      for (const lock of normalized) {
+        const query =
+          lock.mode === "UPDATE"
+            ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR UPDATE NOWAIT`
+            : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${lock.table}"`)} WHERE "id" = ${lock.id}::uuid FOR SHARE NOWAIT`;
+        const [row] = await tx.$queryRaw<Array<{ id: string }>>(query);
+        if (!row) throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
+      }
+    } catch (error) {
+      if (databaseCode(error) === "55P03") {
+        throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
+      }
+      throw error;
+    }
+  }
+}
+
+type PreparedCommand = Readonly<{
+  payloadHash: string;
+  payloadSnapshot: SubscriptionClosureJsonObject;
+}>;
+
+function normalizeCreateCaseCommand(
+  input: CreateSubscriptionClosureCaseCommand
+): CreateSubscriptionClosureCaseCommand {
+  const command = {
+    actorId: canonicalUuid(input.actorId, "actorId"),
+    authoritySnapshot: canonicalSnapshot(input.authoritySnapshot, "authoritySnapshot"),
+    closureType: enumValue(
+      input.closureType,
+      ["NORMAL_COMPLETION", "EARLY_TERMINATION"] as const,
+      "closureType"
+    ),
+    contractId: canonicalUuid(input.contractId, "contractId"),
+    customerId: canonicalUuid(input.customerId, "customerId"),
+    effectiveAt: validDate(input.effectiveAt, "effectiveAt"),
+    finalDisposition: enumValue(
+      input.finalDisposition,
+      ["COMPLETE", "TERMINATE"] as const,
+      "finalDisposition"
+    ),
+    orderId: canonicalUuid(input.orderId, "orderId"),
+    physicalControlMode: enumValue(
+      input.physicalControlMode,
+      ["VOLUNTARY_RETURN", "RECOVERY"] as const,
+      "physicalControlMode"
+    ),
+    reconditioningAssetWorkOrderId: nullableUuid(
+      input.reconditioningAssetWorkOrderId,
+      "reconditioningAssetWorkOrderId"
+    ),
+    recoveryAssetWorkOrderId: nullableUuid(
+      input.recoveryAssetWorkOrderId,
+      "recoveryAssetWorkOrderId"
+    ),
+    returnAssetWorkOrderId: nullableUuid(input.returnAssetWorkOrderId, "returnAssetWorkOrderId"),
+    returnHandoverWorkOrderId: nullableUuid(
+      input.returnHandoverWorkOrderId,
+      "returnHandoverWorkOrderId"
+    ),
+    source: canonicalSubscriptionClosureSource(input.source),
+    vehicleId: canonicalUuid(input.vehicleId, "vehicleId"),
+    vehicleReturnId: nullableUuid(input.vehicleReturnId, "vehicleReturnId")
+  } satisfies CreateSubscriptionClosureCaseCommand;
+  initialStatus(command);
+  return command;
+}
+
+function normalizeEventCommand(
+  input: AppendSubscriptionClosureEventCommand
+): AppendSubscriptionClosureEventCommand {
+  return {
+    actorId: canonicalUuid(input.actorId, "actorId"),
+    afterStatus: closureStatus(input.afterStatus),
+    closureCaseId: canonicalUuid(input.closureCaseId, "closureCaseId"),
+    detailSnapshot: canonicalSnapshot(input.detailSnapshot, "detailSnapshot"),
+    eventType: enumValue(
+      input.eventType,
+      [
+        "STATUS_TRANSITIONED",
+        "PHYSICAL_CONTROL_CONFIRMED",
+        "INSPECTION_RECORDED",
+        "INVENTORY_RELEASED",
+        "NOTE_ADDED"
+      ] as const,
+      "eventType"
+    ),
+    expectedStatus: closureStatus(input.expectedStatus),
+    expectedVersion: version(input.expectedVersion),
+    occurredAt: validDate(input.occurredAt, "occurredAt"),
+    source: canonicalSubscriptionClosureSource(input.source)
+  };
+}
+
+function normalizeEscalationCommand(
+  input: EscalateSubscriptionClosureRecoveryCommand
+): EscalateSubscriptionClosureRecoveryCommand {
+  return {
+    actorId: canonicalUuid(input.actorId, "actorId"),
+    closureCaseId: canonicalUuid(input.closureCaseId, "closureCaseId"),
+    detailSnapshot: canonicalSnapshot(input.detailSnapshot, "detailSnapshot"),
+    expectedStatus: closureStatus(input.expectedStatus),
+    expectedVersion: version(input.expectedVersion),
+    occurredAt: validDate(input.occurredAt, "occurredAt"),
+    source: canonicalSubscriptionClosureSource(input.source)
+  };
+}
+
+function normalizeDocumentCommand(
+  input: AppendSubscriptionClosureDocumentCommand
+): AppendSubscriptionClosureDocumentCommand {
+  const command: AppendSubscriptionClosureDocumentCommand = {
+    actorId: canonicalUuid(input.actorId, "actorId"),
+    archivedAt: nullableDate(input.archivedAt, "archivedAt"),
+    archivedBy: nullableUuid(input.archivedBy, "archivedBy"),
+    closureCaseId: canonicalUuid(input.closureCaseId, "closureCaseId"),
+    contractESignTaskId: canonicalUuid(input.contractESignTaskId, "contractESignTaskId"),
+    documentSnapshot: canonicalSnapshot(input.documentSnapshot, "documentSnapshot"),
+    documentType: enumValue(
+      input.documentType,
+      ["RETURN_MANIFEST", "EARLY_TERMINATION_AGREEMENT", "RECOVERY_AUTHORITY"] as const,
+      "documentType"
+    ),
+    expectedCurrentRevisionId: nullableUuid(
+      input.expectedCurrentRevisionId,
+      "expectedCurrentRevisionId"
+    ),
+    expectedVersion: version(input.expectedVersion),
+    generatedAt: validDate(input.generatedAt, "generatedAt"),
+    handoverWorkOrderId: nullableUuid(input.handoverWorkOrderId, "handoverWorkOrderId"),
+    signedAt: nullableDate(input.signedAt, "signedAt"),
+    signedBy: nullableUuid(input.signedBy, "signedBy"),
+    signedFileHash: nullableHash(input.signedFileHash, "signedFileHash"),
+    signedFileId: nullableUuid(input.signedFileId, "signedFileId"),
+    source: canonicalSubscriptionClosureSource(input.source),
+    sourceFileHash: hash(input.sourceFileHash, "sourceFileHash"),
+    sourceFileId: canonicalUuid(input.sourceFileId, "sourceFileId"),
+    stage: enumValue(input.stage, ["GENERATED", "SIGNED", "ARCHIVED"] as const, "stage"),
+    vehicleReturnId: nullableUuid(input.vehicleReturnId, "vehicleReturnId")
+  };
+  assertDocumentShape(command);
+  return command;
+}
+
+function normalizeSettlementCommand(
+  input: AppendSubscriptionClosureSettlementCommand
+): AppendSubscriptionClosureSettlementCommand {
+  const command: AppendSubscriptionClosureSettlementCommand = {
+    actorId: canonicalUuid(input.actorId, "actorId"),
+    amountDueCents: nonnegativeBigInt(input.amountDueCents, "amountDueCents"),
+    amountRefundableCents: nonnegativeBigInt(input.amountRefundableCents, "amountRefundableCents"),
+    billInputSnapshot: canonicalSnapshot(input.billInputSnapshot, "billInputSnapshot"),
+    closureCaseId: canonicalUuid(input.closureCaseId, "closureCaseId"),
+    costTotalCents: nonnegativeBigInt(input.costTotalCents, "costTotalCents"),
+    depositAppliedCents: nonnegativeBigInt(input.depositAppliedCents, "depositAppliedCents"),
+    depositInputSnapshot: canonicalSnapshot(input.depositInputSnapshot, "depositInputSnapshot"),
+    depositRefundCents: nonnegativeBigInt(input.depositRefundCents, "depositRefundCents"),
+    expectedCurrentRevisionId: nullableUuid(
+      input.expectedCurrentRevisionId,
+      "expectedCurrentRevisionId"
+    ),
+    expectedVersion: version(input.expectedVersion),
+    finalizedAt: nullableDate(input.finalizedAt, "finalizedAt"),
+    finalizedBy: nullableUuid(input.finalizedBy, "finalizedBy"),
+    ledgerInputSnapshot: canonicalSnapshot(input.ledgerInputSnapshot, "ledgerInputSnapshot"),
+    paidTotalCents: nonnegativeBigInt(input.paidTotalCents, "paidTotalCents"),
+    receivableTotalCents: nonnegativeBigInt(input.receivableTotalCents, "receivableTotalCents"),
+    responsibilitySnapshot: canonicalSnapshot(
+      input.responsibilitySnapshot,
+      "responsibilitySnapshot"
+    ),
+    resultSnapshot: canonicalSnapshot(input.resultSnapshot, "resultSnapshot"),
+    settledAt: nullableDate(input.settledAt, "settledAt"),
+    settledBy: nullableUuid(input.settledBy, "settledBy"),
+    settlementType: enumValue(
+      input.settlementType,
+      ["ESTIMATE", "FINAL"] as const,
+      "settlementType"
+    ),
+    source: canonicalSubscriptionClosureSource(input.source),
+    stage: enumValue(input.stage, ["PROPOSED", "FINALIZED", "SETTLED"] as const, "stage"),
+    waiverApprovalId: nullableUuid(input.waiverApprovalId, "waiverApprovalId"),
+    waiverTotalCents: nonnegativeBigInt(input.waiverTotalCents, "waiverTotalCents"),
+    writeOffApprovalId: nullableUuid(input.writeOffApprovalId, "writeOffApprovalId"),
+    writeOffTotalCents: nonnegativeBigInt(input.writeOffTotalCents, "writeOffTotalCents")
+  };
+  assertSettlementShape(command);
+  return command;
+}
+
+function prepareCommand(command: object): PreparedCommand {
+  const payloadSnapshot = JSON.parse(
+    canonicalSubscriptionClosureJson(command)
+  ) as SubscriptionClosureJsonObject;
+  return {
+    payloadHash: hashSubscriptionClosureSnapshot(command),
+    payloadSnapshot
+  };
+}
+
+function initialStatus(command: SubscriptionClosureProfile): SubscriptionClosureStatus {
+  if (
+    command.closureType === "NORMAL_COMPLETION" &&
+    command.physicalControlMode === "VOLUNTARY_RETURN" &&
+    command.finalDisposition === "COMPLETE"
+  ) {
+    return "PREPARING_RETURN";
+  }
+  if (
+    command.closureType === "EARLY_TERMINATION" &&
+    command.physicalControlMode === "VOLUNTARY_RETURN" &&
+    command.finalDisposition === "TERMINATE"
+  ) {
+    return "PREPARING_RETURN";
+  }
+  if (
+    command.closureType === "EARLY_TERMINATION" &&
+    command.physicalControlMode === "RECOVERY" &&
+    command.finalDisposition === "TERMINATE"
+  ) {
+    return "RECOVERY_ASSESSMENT_PENDING";
+  }
+  throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+}
+
+function assertDocumentShape(command: AppendSubscriptionClosureDocumentCommand): void {
+  const signed =
+    command.signedFileId !== null &&
+    command.signedFileHash !== null &&
+    command.signedBy !== null &&
+    command.signedAt !== null;
+  const archived = command.archivedBy !== null && command.archivedAt !== null;
+  if (
+    (command.stage === "GENERATED" && (signed || archived)) ||
+    (command.stage === "SIGNED" && (!signed || archived)) ||
+    (command.stage === "ARCHIVED" && (!signed || !archived))
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+  const returnLinks = command.vehicleReturnId !== null && command.handoverWorkOrderId !== null;
+  if (
+    (command.documentType === "RETURN_MANIFEST" && !returnLinks) ||
+    (command.documentType !== "RETURN_MANIFEST" &&
+      (command.vehicleReturnId !== null || command.handoverWorkOrderId !== null))
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+}
+
+function assertSettlementShape(command: AppendSubscriptionClosureSettlementCommand): void {
+  const finalized = command.finalizedBy !== null && command.finalizedAt !== null;
+  const settled = command.settledBy !== null && command.settledAt !== null;
+  if (
+    (command.stage === "PROPOSED" && (finalized || settled)) ||
+    (command.stage === "FINALIZED" &&
+      (command.settlementType !== "FINAL" || !finalized || settled)) ||
+    (command.stage === "SETTLED" &&
+      (command.settlementType !== "FINAL" || !finalized || !settled)) ||
+    (command.waiverTotalCents === 0n) !== (command.waiverApprovalId === null) ||
+    (command.writeOffTotalCents === 0n) !== (command.writeOffApprovalId === null)
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+  }
+}
+
+const CLOSURE_STATUSES = [
+  "PREPARING_RETURN",
+  "RECOVERY_ASSESSMENT_PENDING",
+  "RECOVERY_APPROVAL_PENDING",
+  "RECOVERY_APPROVED",
+  "RECOVERY_IN_PROGRESS",
+  "VEHICLE_SECURED",
+  "RETURN_INSPECTION",
+  "RECONDITIONING",
+  "PENDING_SETTLEMENT",
+  "COMPLETED",
+  "TERMINATED",
+  "REJECTED",
+  "PAUSED",
+  "CANCELLED",
+  "MANUAL_TAKEOVER"
+] as const;
+
+function closureStatus(value: unknown): SubscriptionClosureStatus {
+  return enumValue(value, CLOSURE_STATUSES, "status");
+}
+
+function enumValue<const T extends readonly string[]>(
+  value: unknown,
+  allowed: T,
+  field: string
+): T[number] {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} is invalid.`);
+  }
+  return value as T[number];
+}
+
+function canonicalSnapshot(value: unknown, field: string): SubscriptionClosureJsonObject {
+  try {
+    return JSON.parse(canonicalSubscriptionClosureJson(value)) as SubscriptionClosureJsonObject;
+  } catch {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} is invalid.`);
+  }
+}
+
+function validDate(value: unknown, field: string): Date {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} is invalid.`);
+  }
+  return new Date(value.getTime());
+}
+
+function nullableDate(value: unknown, field: string): Date | null {
+  return value === null || value === undefined ? null : validDate(value, field);
+}
+
+function nullableUuid(value: unknown, field: string): string | null {
+  return value === null || value === undefined ? null : canonicalUuid(value, field);
+}
+
+function optionalUuid(value: unknown, field: string): string | undefined {
+  return value === undefined ? undefined : canonicalUuid(value, field);
+}
+
+function version(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, "expectedVersion is invalid.");
+  }
+  return value;
+}
+
+const HASH_PATTERN = /^[0-9a-f]{64}$/i;
+
+function hash(value: unknown, field: string): string {
+  if (typeof value !== "string" || !HASH_PATTERN.test(value.trim())) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} is invalid.`);
+  }
+  return value.trim().toLowerCase();
+}
+
+function nullableHash(value: unknown, field: string): string | null {
+  return value === null || value === undefined ? null : hash(value, field);
+}
+
+function nonnegativeBigInt(value: unknown, field: string): bigint {
+  if (typeof value !== "bigint" || value < 0n) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} is invalid.`);
+  }
+  return value;
+}
+
+function jsonInput(value: unknown): Prisma.InputJsonObject {
+  return JSON.parse(canonicalSubscriptionClosureJson(value)) as Prisma.InputJsonObject;
+}
+
+function projectCase(record: CaseRecord): SubscriptionClosureCaseSnapshot {
+  const currentDocuments: Record<string, SubscriptionClosureDocumentSnapshot> = {};
+  for (const current of record.currentDocuments) {
+    currentDocuments[current.documentType] = projectDocument(current.documentRevision);
+  }
+  return freezeSubscriptionClosureOutcome({
+    authoritySnapshot: record.authoritySnapshot,
+    authoritySnapshotHash: record.authoritySnapshotHash,
+    caseNo: record.caseNo,
+    closedAt: iso(record.closedAt),
+    closureType: record.closureType,
+    contractId: record.contractId,
+    createSource: {
+      id: record.createSourceId,
+      key: record.createSourceKey,
+      type: record.createSourceType
+    },
+    createdAt: iso(record.createdAt),
+    createdBy: record.createdBy,
+    currentDocuments,
+    currentSettlement: record.currentSettlementRevision
+      ? projectSettlement(record.currentSettlementRevision)
+      : null,
+    currentSettlementRevisionId: record.currentSettlementRevisionId,
+    customerId: record.customerId,
+    effectiveAt: iso(record.effectiveAt),
+    finalDisposition: record.finalDisposition,
+    id: record.id,
+    orderId: record.orderId,
+    physicalControlledAt: iso(record.physicalControlledAt),
+    physicalControlMode: record.physicalControlMode,
+    reconditioningAssetWorkOrderId: record.reconditioningAssetWorkOrderId,
+    recoveryAssetWorkOrderId: record.recoveryAssetWorkOrderId,
+    returnAssetWorkOrderId: record.returnAssetWorkOrderId,
+    returnHandoverWorkOrderId: record.returnHandoverWorkOrderId,
+    settledAt: iso(record.settledAt),
+    status: record.status,
+    updatedAt: iso(record.updatedAt),
+    updatedBy: record.updatedBy,
+    vehicleId: record.vehicleId,
+    vehicleReturnId: record.vehicleReturnId,
+    version: record.version
+  }) as unknown as SubscriptionClosureCaseSnapshot;
+}
+
+function projectDocument(
+  record: Prisma.SubscriptionClosureDocumentRevisionGetPayload<Record<string, never>>
+): SubscriptionClosureDocumentSnapshot {
+  return freezeSubscriptionClosureOutcome({
+    archivedAt: iso(record.archivedAt),
+    archivedBy: record.archivedBy,
+    closureCaseId: record.closureCaseId,
+    contractESignTaskId: record.contractESignTaskId,
+    createdAt: iso(record.createdAt),
+    documentSnapshot: record.documentSnapshot,
+    documentSnapshotHash: record.documentSnapshotHash,
+    documentType: record.documentType,
+    generatedAt: iso(record.generatedAt),
+    generatedBy: record.generatedBy,
+    handoverWorkOrderId: record.handoverWorkOrderId,
+    id: record.id,
+    revisionNumber: record.revisionNumber,
+    signedAt: iso(record.signedAt),
+    signedBy: record.signedBy,
+    signedFileHash: record.signedFileHash,
+    signedFileId: record.signedFileId,
+    source: { id: record.sourceId, key: record.sourceKey, type: record.sourceType },
+    sourceFileHash: record.sourceFileHash,
+    sourceFileId: record.sourceFileId,
+    stage: record.stage,
+    supersedesRevisionId: record.supersedesRevisionId,
+    vehicleReturnId: record.vehicleReturnId
+  }) as unknown as SubscriptionClosureDocumentSnapshot;
+}
+
+function projectSettlement(
+  record: Prisma.SubscriptionClosureSettlementRevisionGetPayload<Record<string, never>>
+): SubscriptionClosureSettlementSnapshot {
+  return freezeSubscriptionClosureOutcome({
+    amountDueCents: record.amountDueCents,
+    amountRefundableCents: record.amountRefundableCents,
+    billInputSnapshot: record.billInputSnapshot,
+    closureCaseId: record.closureCaseId,
+    costTotalCents: record.costTotalCents,
+    createdAt: iso(record.createdAt),
+    createdBy: record.createdBy,
+    depositAppliedCents: record.depositAppliedCents,
+    depositInputSnapshot: record.depositInputSnapshot,
+    depositRefundCents: record.depositRefundCents,
+    finalizedAt: iso(record.finalizedAt),
+    finalizedBy: record.finalizedBy,
+    id: record.id,
+    inputSnapshotHash: record.inputSnapshotHash,
+    ledgerInputSnapshot: record.ledgerInputSnapshot,
+    paidTotalCents: record.paidTotalCents,
+    receivableTotalCents: record.receivableTotalCents,
+    responsibilitySnapshot: record.responsibilitySnapshot,
+    resultHash: record.resultHash,
+    resultSnapshot: record.resultSnapshot,
+    revisionNumber: record.revisionNumber,
+    settledAt: iso(record.settledAt),
+    settledBy: record.settledBy,
+    settlementType: record.settlementType,
+    source: { id: record.sourceId, key: record.sourceKey, type: record.sourceType },
+    stage: record.stage,
+    supersedesRevisionId: record.supersedesRevisionId,
+    waiverApprovalId: record.waiverApprovalId,
+    waiverTotalCents: record.waiverTotalCents,
+    writeOffApprovalId: record.writeOffApprovalId,
+    writeOffTotalCents: record.writeOffTotalCents
+  }) as unknown as SubscriptionClosureSettlementSnapshot;
+}
+
+function projectEvent(
+  record: Prisma.SubscriptionClosureEventGetPayload<Record<string, never>>
+): SubscriptionClosureEventSnapshot {
+  return freezeSubscriptionClosureOutcome({
+    actorId: record.actorId,
+    afterStatus: record.afterStatus,
+    beforeStatus: record.beforeStatus,
+    closureCaseId: record.closureCaseId,
+    detailSnapshot: record.detailSnapshot,
+    eventType: record.eventType,
+    id: record.id,
+    occurredAt: iso(record.occurredAt),
+    recordedAt: iso(record.recordedAt),
+    sequence: record.sequence,
+    source: { id: record.sourceId, key: record.sourceKey, type: record.sourceType }
+  }) as unknown as SubscriptionClosureEventSnapshot;
+}
+
+function iso(value: Date): string;
+function iso(value: Date | null): string | null;
+function iso(value: Date | null): string | null {
+  return value?.toISOString() ?? null;
+}
+
+async function replayReceipt<T extends object>(
+  tx: Prisma.TransactionClient,
+  source: SubscriptionClosureSource,
+  commandType: SubscriptionClosureCommandType,
+  prepared: PreparedCommand
+): Promise<SubscriptionClosureWriteOutcome<T> | null> {
+  const receipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+    where: {
+      sourceType_sourceId_sourceKey: {
+        sourceId: source.id,
+        sourceKey: source.key,
+        sourceType: source.type
+      }
+    }
+  });
+  if (!receipt) return null;
+  let storedPayload: string;
+  try {
+    storedPayload = canonicalSubscriptionClosureJson(receipt.payloadSnapshot);
+  } catch {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  if (
+    receipt.commandType !== commandType ||
+    receipt.payloadHash !== prepared.payloadHash ||
+    storedPayload !== canonicalSubscriptionClosureJson(prepared.payloadSnapshot)
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT);
+  }
+  try {
+    return {
+      outcome: freezeSubscriptionClosureOutcome(receipt.outcomeSnapshot) as unknown as T,
+      wrote: false
+    };
+  } catch {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT);
+  }
+}
+
+async function createReceipt(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    actorId: string;
+    closureCaseId: string;
+    commandType: SubscriptionClosureCommandType;
+    eventId: string;
+    outcome: object;
+    prepared: PreparedCommand;
+    source: SubscriptionClosureSource;
+  }>
+): Promise<void> {
+  await tx.subscriptionClosureCommandReceipt.create({
+    data: {
+      actorId: input.actorId,
+      closureCaseId: input.closureCaseId,
+      commandType: input.commandType,
+      eventId: input.eventId,
+      outcomeSnapshot: JSON.parse(
+        canonicalSubscriptionClosureJson(input.outcome)
+      ) as Prisma.InputJsonObject,
+      payloadHash: input.prepared.payloadHash,
+      payloadSnapshot: jsonInput(input.prepared.payloadSnapshot),
+      sourceId: input.source.id,
+      sourceKey: input.source.key,
+      sourceType: input.source.type
+    }
+  });
+}
+
+async function createEvent(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    actorId: string;
+    afterStatus: SubscriptionClosureStatus;
+    beforeStatus: SubscriptionClosureStatus | null;
+    closureCaseId: string;
+    detailSnapshot: SubscriptionClosureSnapshotObject;
+    eventType: SubscriptionClosureEventType;
+    occurredAt: Date;
+    sequence: number;
+    source: SubscriptionClosureSource;
+  }>
+) {
+  return tx.subscriptionClosureEvent.create({
+    data: {
+      actorId: input.actorId,
+      afterStatus: input.afterStatus,
+      beforeStatus: input.beforeStatus,
+      closureCaseId: input.closureCaseId,
+      detailSnapshot: jsonInput(canonicalSnapshot(input.detailSnapshot, "detailSnapshot")),
+      eventType: input.eventType,
+      occurredAt: input.occurredAt,
+      sequence: input.sequence,
+      sourceId: input.source.id,
+      sourceKey: input.source.key,
+      sourceType: input.source.type
+    }
+  });
+}
+
+async function runAudit(
+  audit: SubscriptionClosureMutationAuditHook | undefined,
+  tx: Prisma.TransactionClient,
+  action: SubscriptionClosureCommandType,
+  closureCaseId: string,
+  eventId: string,
+  outcome: object,
+  source: SubscriptionClosureSource
+): Promise<void> {
+  if (!audit) return;
+  await audit(tx, {
+    action,
+    closureCaseId,
+    eventId,
+    outcome: freezeSubscriptionClosureOutcome(outcome),
+    source
+  });
+}
+
+function createCaseAuthorityLocks(
+  command: CreateSubscriptionClosureCaseCommand
+): SubscriptionClosureAuthorityLock[] {
+  const locks: SubscriptionClosureAuthorityLock[] = [
+    { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+    { id: command.vehicleId, mode: "SHARE", table: "vehicle" },
+    { id: command.contractId, mode: "SHARE", table: "contract" },
+    { id: command.customerId, mode: "SHARE", table: "customer" },
+    { id: command.actorId, mode: "SHARE", table: "user" }
+  ];
+  if (command.vehicleReturnId) {
+    locks.push({ id: command.vehicleReturnId, mode: "SHARE", table: "vehicle_return" });
+  }
+  if (command.returnHandoverWorkOrderId) {
+    locks.push({
+      id: command.returnHandoverWorkOrderId,
+      mode: "SHARE",
+      table: "vehicle_handover_work_order"
+    });
+  }
+  for (const id of [
+    command.returnAssetWorkOrderId,
+    command.recoveryAssetWorkOrderId,
+    command.reconditioningAssetWorkOrderId
+  ]) {
+    if (id) locks.push({ id, mode: "SHARE", table: "asset_work_order" });
+  }
+  return locks;
+}
+
+async function assertCreateLinkCoherence(
+  tx: Prisma.TransactionClient,
+  command: CreateSubscriptionClosureCaseCommand
+): Promise<void> {
+  const contract = await tx.contract.findUnique({
+    select: { customerId: true, orderId: true },
+    where: { id: command.contractId }
+  });
+  if (
+    !contract ||
+    contract.orderId !== command.orderId ||
+    contract.customerId !== command.customerId
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (command.vehicleReturnId) {
+    const vehicleReturn = await tx.vehicleReturn.findUnique({
+      select: { customerId: true, orderId: true, vehicleId: true },
+      where: { id: command.vehicleReturnId }
+    });
+    if (
+      !vehicleReturn ||
+      vehicleReturn.orderId !== command.orderId ||
+      vehicleReturn.vehicleId !== command.vehicleId ||
+      vehicleReturn.customerId !== command.customerId
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+  }
+  if (command.returnHandoverWorkOrderId) {
+    const handover = await tx.vehicleHandoverWorkOrder.findUnique({
+      select: { handoverType: true, orderId: true },
+      where: { id: command.returnHandoverWorkOrderId }
+    });
+    if (
+      !handover ||
+      handover.orderId !== command.orderId ||
+      handover.handoverType !== "RETURN_INBOUND"
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+  }
+  for (const id of [
+    command.returnAssetWorkOrderId,
+    command.recoveryAssetWorkOrderId,
+    command.reconditioningAssetWorkOrderId
+  ]) {
+    if (!id) continue;
+    const workOrder = await tx.assetWorkOrder.findUnique({
+      select: { contractId: true, customerId: true, orderId: true, vehicleId: true },
+      where: { id }
+    });
+    if (
+      !workOrder ||
+      workOrder.orderId !== command.orderId ||
+      workOrder.vehicleId !== command.vehicleId ||
+      workOrder.contractId !== command.contractId ||
+      workOrder.customerId !== command.customerId
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+  }
+}
+
+async function assertDocumentAuthorityCoherence(
+  tx: Prisma.TransactionClient,
+  closureCase: CaseRecord,
+  command: AppendSubscriptionClosureDocumentCommand
+): Promise<void> {
+  const esign = await tx.contractESignTask.findUnique({
+    select: { contractId: true, customerId: true, orderId: true },
+    where: { id: command.contractESignTaskId }
+  });
+  if (
+    !esign ||
+    esign.contractId !== closureCase.contractId ||
+    esign.orderId !== closureCase.orderId ||
+    esign.customerId !== closureCase.customerId
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (command.vehicleReturnId !== null && command.vehicleReturnId !== closureCase.vehicleReturnId) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (
+    command.handoverWorkOrderId !== null &&
+    command.handoverWorkOrderId !== closureCase.returnHandoverWorkOrderId
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (
+    command.documentType === "EARLY_TERMINATION_AGREEMENT" &&
+    closureCase.closureType !== "EARLY_TERMINATION"
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  if (
+    command.documentType === "RECOVERY_AUTHORITY" &&
+    closureCase.physicalControlMode !== "RECOVERY"
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+}
+
+async function lockCurrentDocumentProjection(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  documentType: SubscriptionClosureDocumentType
+): Promise<{ documentRevisionId: string } | null> {
+  try {
+    const [row] = await tx.$queryRaw<Array<{ documentRevisionId: string }>>(Prisma.sql`
+      SELECT "document_revision_id" AS "documentRevisionId"
+      FROM "subscription_closure_current_document"
+      WHERE "closure_case_id" = ${closureCaseId}::uuid
+        AND "document_type" = ${documentType}::"subscription_closure_document_type"
+      FOR UPDATE NOWAIT
+    `);
+    return row ?? null;
+  } catch (error) {
+    if (databaseCode(error) === "55P03") {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
+    }
+    throw error;
+  }
+}
+
+async function requiredCase(tx: Prisma.TransactionClient, id: string): Promise<CaseRecord> {
+  const record = await tx.subscriptionClosureCase.findUnique({
+    include: CASE_INCLUDE,
+    where: { id }
+  });
+  if (!record) throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_NOT_FOUND);
+  return record;
+}
+
+function assertExpectedCase(
+  current: CaseRecord,
+  expectedVersion: number,
+  expectedStatus?: SubscriptionClosureStatus
+): void {
+  if (current.version !== expectedVersion) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.VERSION_CONFLICT);
+  }
+  if (expectedStatus !== undefined && current.status !== expectedStatus) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+  }
+}
+
+function profileOf(record: CaseRecord): SubscriptionClosureProfile {
+  return {
+    closureType: record.closureType,
+    finalDisposition: record.finalDisposition,
+    physicalControlMode: record.physicalControlMode
+  };
+}
+
+function validateEventTransition(
+  current: CaseRecord,
+  command: AppendSubscriptionClosureEventCommand
+): void {
+  if (command.eventType === "STATUS_TRANSITIONED") {
+    try {
+      assertSubscriptionClosureTransition(profileOf(current), current.status, command.afterStatus);
+    } catch {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+    }
+    return;
+  }
+  if (command.afterStatus !== current.status) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.STATUS_CONFLICT);
+  }
+}
+
+function terminalStatus(status: SubscriptionClosureStatus): boolean {
+  return ["COMPLETED", "TERMINATED", "REJECTED", "CANCELLED"].includes(status);
+}
+
+function physicalControlledStatus(status: SubscriptionClosureStatus): boolean {
+  return [
+    "VEHICLE_SECURED",
+    "RETURN_INSPECTION",
+    "RECONDITIONING",
+    "PENDING_SETTLEMENT",
+    "COMPLETED",
+    "TERMINATED"
+  ].includes(status);
+}
+
+async function assertTransactionContract(tx: Prisma.TransactionClient): Promise<void> {
+  const [first] = await tx.$queryRaw<Array<{ isolationLevel: string; transactionId: string }>>(
+    Prisma.sql`
+      SELECT current_setting('transaction_isolation') AS "isolationLevel",
+             txid_current()::text AS "transactionId"
+    `
+  );
+  const [second] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+    Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+  );
+  if (
+    first?.isolationLevel !== "read committed" ||
+    !first.transactionId ||
+    first.transactionId !== second?.transactionId
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.TRANSACTION_REQUIRED);
+  }
+}
+
+function normalizeAuthorityLocks(
+  locks: readonly SubscriptionClosureAuthorityLock[]
+): SubscriptionClosureAuthorityLock[] {
+  const unique = new Map<string, SubscriptionClosureAuthorityLock>();
+  for (const lock of locks) {
+    if (!(lock.table in AUTHORITY_TABLE_RANK)) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+    }
+    const id = canonicalUuid(lock.id, "authority.id");
+    if (lock.mode !== "SHARE" && lock.mode !== "UPDATE") {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND);
+    }
+    const key = `${lock.table}:${id}`;
+    const existing = unique.get(key);
+    if (!existing || lock.mode === "UPDATE") unique.set(key, { ...lock, id });
+  }
+  return [...unique.values()].sort((left, right) => {
+    const rank = AUTHORITY_TABLE_RANK[left.table] - AUTHORITY_TABLE_RANK[right.table];
+    return rank === 0 ? compare(left.id, right.id) : rank;
+  });
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function canonicalUuid(value: unknown, field: string): string {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value.trim())) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.INVALID_COMMAND, `${field} must be a UUID.`);
+  }
+  return value.trim().toLowerCase();
+}
+
+function normalizeWriteError(error: unknown): unknown {
+  if (error instanceof ConflictException) return error;
+  const code =
+    databaseCode(error) ??
+    (isRecord(error) && typeof error.code === "string" ? error.code : undefined);
+  const description = JSON.stringify(
+    error,
+    error instanceof Error ? Object.getOwnPropertyNames(error) : undefined
+  );
+  if (code === "55P03") return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_BUSY);
+  if (code === "P2002" || code === "23505") {
+    if (description.includes("subscription_closure_case_order_id_key")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS);
+    }
+    if (description.includes("source") || description.includes("receipt")) {
+      return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.SOURCE_CONFLICT);
+    }
+    return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.WRITE_CONFLICT);
+  }
+  if (code === "P2003" || code === "23503") {
+    return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_NOT_FOUND);
+  }
+  if (code === "P2014" || code === "23514") {
+    return conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+  return error;
+}
+
+function databaseCode(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined;
+  if (typeof error.code === "string" && /^[0-9]{2}[0-9A-Z]{3}$/.test(error.code)) {
+    return error.code;
+  }
+  if (error.code !== "P2010" || !isRecord(error.meta)) return undefined;
+  const adapter = error.meta.driverAdapterError;
+  if (!isRecord(adapter) || !isRecord(adapter.cause)) return undefined;
+  return typeof adapter.cause.originalCode === "string" ? adapter.cause.originalCode : undefined;
+}
+
+function conflict(code: SubscriptionClosureErrorCode, message = ERROR_MESSAGES[code]) {
+  return new ConflictException({ code, message });
+}
+
+function compare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}

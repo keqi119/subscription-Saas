@@ -150,11 +150,25 @@ declare const assetAccountingPreparedApprovalRepositoryCapabilityBrand: unique s
 export type AssetAccountingPreparedApprovalRepositoryCapability = Readonly<{
   [assetAccountingPreparedApprovalRepositoryCapabilityBrand]: true;
 }>;
-type AssetAccountingPreparedApprovalRepositoryCapabilityState = Readonly<{
-  authorityLockFingerprint: string;
-  command: RequireCurrentApprovedExceptionCommand;
-  transaction: Prisma.TransactionClient;
-}>;
+type AssetAccountingPreparedApprovalRepositoryCapabilityState =
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: RequireCurrentApprovedExceptionCommand;
+      kind: "require";
+      transaction: Prisma.TransactionClient;
+    }>
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: RequestExceptionApprovalCommand;
+      kind: "request";
+      transaction: Prisma.TransactionClient;
+    }>
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: DecideExceptionApprovalCommand;
+      kind: "decision";
+      transaction: Prisma.TransactionClient;
+    }>;
 
 export interface BusinessExceptionSubjectIdentity {
   readonly subjectType: BusinessExceptionSubjectType;
@@ -324,6 +338,14 @@ export function canonicalRequireCurrentApprovedExceptionCommand(
   return normalizeRequireCurrentCommand(command);
 }
 
+export function canonicalRequestExceptionApprovalCommand(command: RequestExceptionApprovalCommand) {
+  return normalizeRequestApprovalCommand(command);
+}
+
+export function canonicalDecideExceptionApprovalCommand(command: DecideExceptionApprovalCommand) {
+  return normalizeDecisionCommand(command);
+}
+
 /**
  * Immutable vehicle-cost persistence. Mutations require a caller-owned
  * PostgreSQL READ COMMITTED interactive transaction; this repository never
@@ -389,23 +411,46 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: RequestExceptionApprovalCommand
   ): Promise<AssetAccountingApprovalCommandOutcome> {
+    return this.executeRequestExceptionApproval(tx, command, false, false);
+  }
+
+  private async executeRequestExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
     const normalized = normalizeRequestApprovalCommand(command);
     const payload = requestApprovalPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) await this.lockSourceOwnership(tx, normalized.source);
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_REQUEST", payload);
     if (replay) return replay;
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    if (!authorityAlreadyLocked) await takeBusinessExceptionSubjectLock(tx, normalized.subject);
     const subjectSnapshotHash = hashBusinessExceptionSnapshot(normalized.authoritySnapshot);
-    const liveApprovalId = await lockLiveApprovalForSnapshot(
-      tx,
-      normalized.subject,
-      subjectSnapshotHash
-    );
+    const liveApprovalId = authorityAlreadyLocked
+      ? ((
+          await tx.businessExceptionApproval.findFirst({
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            select: { id: true },
+            where: {
+              status: { in: ["PENDING", "APPROVED"] },
+              subjectField: normalized.subject.subjectField,
+              subjectId: normalized.subject.subjectId,
+              subjectSnapshotHash,
+              subjectType: normalized.subject.subjectType
+            }
+          })
+        )?.id ?? null)
+      : await lockLiveApprovalForSnapshot(tx, normalized.subject, subjectSnapshotHash);
     if (liveApprovalId) {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE);
     }
-    await lockAndValidateApprovalActor(tx, normalized.requestedBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.requestedBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.requestedBy);
+    }
 
     const id = randomUUID();
     try {
@@ -457,14 +502,25 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: DecideExceptionApprovalCommand
   ): Promise<AssetAccountingApprovalCommandOutcome> {
+    return this.executeDecideExceptionApproval(tx, command, false, false);
+  }
+
+  private async executeDecideExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
     const normalized = normalizeDecisionCommand(command);
     const payload = decisionPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) await this.lockSourceOwnership(tx, normalized.source);
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_DECIDE", payload);
     if (replay) return replay;
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
-    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    if (!authorityAlreadyLocked) await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const approval = authorityAlreadyLocked
+      ? await loadApproval(tx, normalized.approvalId)
+      : await lockAndLoadApproval(tx, normalized.approvalId);
     validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
     validateApprovalVersion(approval, normalized.expectedVersion);
     if (approval.status !== "PENDING") {
@@ -474,7 +530,11 @@ export class AssetAccountingRepository {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN);
     }
     validateApprovalSnapshot(approval, normalized.authoritySnapshot);
-    await lockAndValidateApprovalActor(tx, normalized.decidedBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.decidedBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.decidedBy);
+    }
 
     try {
       const decided = await tx.businessExceptionApproval.update({
@@ -549,6 +609,7 @@ export class AssetAccountingRepository {
       Object.freeze({
         authorityLockFingerprint: fingerprint,
         command: structuredClone(normalized),
+        kind: "require",
         transaction: tx
       })
     );
@@ -564,12 +625,95 @@ export class AssetAccountingRepository {
     this.preparedApprovalCapabilities.delete(capability);
     if (
       !state ||
+      state.kind !== "require" ||
       state.transaction !== tx ||
       state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
     ) {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
     }
     return this.executeRequireCurrentApprovedException(tx, state.command, true, true);
+  }
+
+  async prepareApprovalRequestInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeRequestApprovalCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        kind: "request",
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async requestPreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.kind !== "request" ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeRequestExceptionApproval(tx, state.command, true, true);
+  }
+
+  async prepareApprovalDecisionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeDecisionCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        kind: "decision",
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async decidePreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.kind !== "decision" ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeDecideExceptionApproval(tx, state.command, true, true);
   }
 
   private async executeRequireCurrentApprovedException(

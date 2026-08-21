@@ -85,6 +85,7 @@ export interface AppendSubscriptionClosureDocumentCommand {
   readonly archivedBy: string | null;
   readonly closureCaseId: string;
   readonly contractESignTaskId: string;
+  readonly documentRevisionId?: string;
   readonly documentSnapshot: SubscriptionClosureSnapshotObject;
   readonly documentType: SubscriptionClosureDocumentType;
   readonly expectedCurrentRevisionId: string | null;
@@ -218,6 +219,7 @@ export type SubscriptionClosureAuthorityTable =
   | "vehicle_subscription_period"
   | "vehicle_mileage_reading"
   | "collection_case"
+  | "collection_action"
   | "business_exception_approval"
   | "vehicle_handover_work_order"
   | "asset_work_order"
@@ -317,6 +319,7 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   vehicle_subscription_period: 80,
   vehicle_mileage_reading: 85,
   collection_case: 90,
+  collection_action: 95,
   business_exception_approval: 100,
   vehicle_handover_work_order: 110,
   asset_work_order: 120,
@@ -404,9 +407,14 @@ export class SubscriptionClosureRepository {
     }
     const plannedDocumentAuthorities = new Set(
       normalizedRequirements
-        .filter(({ key }) => key === "manifest-create")
+        .filter(({ key }) => key === "manifest-create" || key.startsWith("recovery-authority-"))
         .flatMap(({ locks: requiredLocks }) => requiredLocks)
-        .filter(({ table }) => table === "file_object" || table === "contract_esign_task")
+        .filter(
+          ({ table }) =>
+            table === "file_object" ||
+            table === "contract_esign_task" ||
+            table === "subscription_closure_document_revision"
+        )
         .map(({ id, table }) => `${table}\u0000${id}`)
     );
     const plannedWorkOrderAuthorities = new Set(
@@ -719,14 +727,25 @@ export class SubscriptionClosureRepository {
     return this.appendEvent(tx, input, audit, PREPARED_EXECUTION);
   }
 
+  async appendSourcePreparedEventInTransaction(
+    tx: Prisma.TransactionClient,
+    input: AppendSubscriptionClosureEventCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    audit?: SubscriptionClosureMutationAuditHook
+  ) {
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    return this.appendEvent(tx, input, audit, PREPARED_EXECUTION);
+  }
+
   async escalateRecovery(
     tx: Prisma.TransactionClient,
     input: EscalateSubscriptionClosureRecoveryCommand,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    execution?: typeof PREPARED_EXECUTION
   ): Promise<SubscriptionClosureWriteOutcome<SubscriptionClosureJsonObject>> {
     const command = normalizeEscalationCommand(input);
     const prepared = prepareCommand(command);
-    await this.lockSourceOwnership(tx, command.source);
+    if (execution !== PREPARED_EXECUTION) await this.lockSourceOwnership(tx, command.source);
     const replay = await replayReceipt<SubscriptionClosureJsonObject>(
       tx,
       command.source,
@@ -734,10 +753,12 @@ export class SubscriptionClosureRepository {
       prepared
     );
     if (replay) return replay;
-    await this.lockAuthorityRows(tx, [
-      { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
-      { id: command.actorId, mode: "SHARE", table: "user" }
-    ]);
+    if (execution !== PREPARED_EXECUTION) {
+      await this.lockAuthorityRows(tx, [
+        { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
+        { id: command.actorId, mode: "SHARE", table: "user" }
+      ]);
+    }
     const current = await requiredCase(tx, command.closureCaseId);
     assertExpectedCase(current, command.expectedVersion, command.expectedStatus);
     await assertDatabaseEventTime(tx, current.id, command.occurredAt);
@@ -801,19 +822,31 @@ export class SubscriptionClosureRepository {
     }
   }
 
+  async escalatePreparedRecoveryInTransaction(
+    tx: Prisma.TransactionClient,
+    input: EscalateSubscriptionClosureRecoveryCommand,
+    sourceCapability: PreparedClosureSourceCapability,
+    audit?: SubscriptionClosureMutationAuditHook
+  ) {
+    this.consumePreparedSource(tx, sourceCapability, input.source);
+    return this.escalateRecovery(tx, input, audit, PREPARED_EXECUTION);
+  }
+
   async appendPreparedDocumentRevisionInTransaction(
     tx: Prisma.TransactionClient,
     authoritySession: SubscriptionClosureAuthoritySession,
     input: AppendSubscriptionClosureDocumentCommand,
     sourceCapability: PreparedClosureSourceCapability,
     authorityAttestation: ClosureAuthorityAttestation,
-    audit?: SubscriptionClosureMutationAuditHook
+    audit?: SubscriptionClosureMutationAuditHook,
+    authorityKey = "manifest-create",
+    extraAuthorityLocks: readonly SubscriptionClosureAuthorityLock[] = []
   ) {
     await this.consumeAuthorityAttestationInTransaction(
       tx,
       authoritySession,
       authorityAttestation,
-      subscriptionClosureDocumentAuthorityRequirement(input)
+      subscriptionClosureDocumentAuthorityRequirement(input, authorityKey, extraAuthorityLocks)
     );
     this.consumePreparedSource(tx, sourceCapability, input.source);
     return this.appendDocumentRevision(tx, input, audit, PREPARED_EXECUTION);
@@ -925,6 +958,7 @@ export class SubscriptionClosureRepository {
           generatedAt: command.generatedAt,
           generatedBy: command.actorId,
           handoverWorkOrderId: command.handoverWorkOrderId,
+          id: command.documentRevisionId,
           revisionNumber: (predecessor?.revisionNumber ?? 0) + 1,
           signedAt: command.signedAt,
           signedBy: command.signedBy,
@@ -1472,6 +1506,9 @@ function normalizeDocumentCommand(
     archivedBy: nullableUuid(input.archivedBy, "archivedBy"),
     closureCaseId: canonicalUuid(input.closureCaseId, "closureCaseId"),
     contractESignTaskId: canonicalUuid(input.contractESignTaskId, "contractESignTaskId"),
+    ...(input.documentRevisionId
+      ? { documentRevisionId: canonicalUuid(input.documentRevisionId, "documentRevisionId") }
+      : {}),
     documentSnapshot: canonicalSnapshot(input.documentSnapshot, "documentSnapshot"),
     documentType: enumValue(
       input.documentType,
@@ -2108,15 +2145,21 @@ export function subscriptionClosureCaseAuthorityRequirement(
 }
 
 export function subscriptionClosureDocumentAuthorityRequirement(
-  input: AppendSubscriptionClosureDocumentCommand
+  input: AppendSubscriptionClosureDocumentCommand,
+  key = "manifest-create",
+  extraLocks: readonly SubscriptionClosureAuthorityLock[] = []
 ): SubscriptionClosureAuthorityRequirement {
   const command = normalizeDocumentCommand(input);
   return {
     command: { ...command },
-    key: "manifest-create",
+    key,
     locks: [
+      ...extraLocks,
       { id: command.sourceFileId, mode: "SHARE", table: "file_object" },
       { id: command.contractESignTaskId, mode: "SHARE", table: "contract_esign_task" },
+      ...(command.signedFileId
+        ? [{ id: command.signedFileId, mode: "SHARE" as const, table: "file_object" as const }]
+        : []),
       { id: command.actorId, mode: "SHARE", table: "user" }
     ]
   };

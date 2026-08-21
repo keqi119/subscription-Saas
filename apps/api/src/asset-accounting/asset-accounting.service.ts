@@ -24,6 +24,8 @@ import {
 import {
   AssetAccountingRepository,
   canonicalAssetAccountingSource,
+  canonicalDecideExceptionApprovalCommand,
+  canonicalRequestExceptionApprovalCommand,
   canonicalRequireCurrentApprovedExceptionCommand,
   type AssetAccountingCallerOwnedCommandCapability,
   type AssetAccountingPreparedApprovalRepositoryCapability,
@@ -108,6 +110,29 @@ type AssetAccountingPreparedApprovalCapabilityState = Readonly<{
   command: RequireCurrentApprovedExceptionCommand;
   context: AssetAccountingCommandContext;
   repositoryCapability: AssetAccountingPreparedApprovalRepositoryCapability;
+  transaction: Prisma.TransactionClient;
+}>;
+declare const assetAccountingPreparedApprovalRequestCapabilityBrand: unique symbol;
+export type AssetAccountingPreparedApprovalRequestCapability = Readonly<{
+  [assetAccountingPreparedApprovalRequestCapabilityBrand]: true;
+}>;
+type AssetAccountingPreparedApprovalRequestCapabilityState = Readonly<{
+  authorityLockFingerprint: string;
+  command: RequestExceptionApprovalCommand;
+  context: AssetAccountingCommandContext;
+  repositoryCapability: AssetAccountingPreparedApprovalRepositoryCapability;
+  transaction: Prisma.TransactionClient;
+}>;
+declare const assetAccountingPreparedApprovalDecisionCapabilityBrand: unique symbol;
+export type AssetAccountingPreparedApprovalDecisionCapability = Readonly<{
+  [assetAccountingPreparedApprovalDecisionCapabilityBrand]: true;
+}>;
+type AssetAccountingPreparedApprovalDecisionCapabilityState = Readonly<{
+  authorityLockFingerprint: string;
+  command: DecideExceptionApprovalCommand;
+  context: AssetAccountingCommandContext;
+  repositoryCapability: AssetAccountingPreparedApprovalRepositoryCapability;
+  requesterId: string;
   transaction: Prisma.TransactionClient;
 }>;
 export type AssetAccountingAppendAuthority = Readonly<{
@@ -244,6 +269,14 @@ export class AssetAccountingService {
     AssetAccountingPreparedApprovalCapability,
     AssetAccountingPreparedApprovalCapabilityState
   >();
+  private readonly preparedApprovalRequestCapabilities = new WeakMap<
+    AssetAccountingPreparedApprovalRequestCapability,
+    AssetAccountingPreparedApprovalRequestCapabilityState
+  >();
+  private readonly preparedApprovalDecisionCapabilities = new WeakMap<
+    AssetAccountingPreparedApprovalDecisionCapability,
+    AssetAccountingPreparedApprovalDecisionCapabilityState
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -316,6 +349,282 @@ export class AssetAccountingService {
       this.closureAuthorityConsumer,
       authoritySession
     );
+  }
+
+  requestApprovalAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: RequestApprovalServiceCommand,
+    context: AssetAccountingCommandContext,
+    authoritySnapshot: BusinessExceptionSnapshot,
+    key = "approval-request"
+  ) {
+    const { actorId, source } = assertWriteContext(
+      command.source,
+      context,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST
+    );
+    const normalized = canonicalRequestExceptionApprovalCommand({
+      ...command,
+      authoritySnapshot,
+      requestedBy: actorId,
+      source
+    });
+    return bindSubscriptionClosureAuthorityConsumer(
+      {
+        command: normalized as never,
+        key,
+        locks: [
+          approvalSubjectAuthority(normalized.subject),
+          { id: normalized.requestedBy, mode: "SHARE" as const, table: "user" as const }
+        ]
+      },
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  decideApprovalAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: DecideApprovalServiceCommand,
+    context: AssetAccountingCommandContext,
+    authoritySnapshot: BusinessExceptionSnapshot,
+    requesterId: string,
+    key = "approval-decision"
+  ) {
+    const { actorId, source } = assertWriteContext(
+      command.source,
+      context,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE
+    );
+    const normalized = canonicalDecideExceptionApprovalCommand({
+      ...command,
+      authoritySnapshot,
+      decidedBy: actorId,
+      source
+    });
+    return bindSubscriptionClosureAuthorityConsumer(
+      {
+        command: { ...normalized, requesterId } as never,
+        key,
+        locks: [
+          approvalSubjectAuthority(normalized.subject),
+          {
+            id: normalized.approvalId,
+            mode: "UPDATE" as const,
+            table: "business_exception_approval" as const
+          },
+          { id: requesterId, mode: "SHARE" as const, table: "user" as const },
+          { id: normalized.decidedBy, mode: "SHARE" as const, table: "user" as const }
+        ]
+      },
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  async attestPreparedApprovalRequestInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: RequestApprovalServiceCommand,
+    context: AssetAccountingCommandContext,
+    authoritySnapshot: BusinessExceptionSnapshot,
+    sourceCapability: AssetAccountingTransactionCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    key = "approval-request"
+  ): Promise<AssetAccountingPreparedApprovalRequestCapability> {
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        authoritySession,
+        authorityAttestation,
+        () =>
+          this.requestApprovalAuthorityRequirement(
+            authoritySession,
+            command,
+            context,
+            authoritySnapshot,
+            key
+          ),
+        null
+      );
+    } catch {
+      throw callerCapabilityInvalid();
+    }
+    const state = this.takeCallerOwnedCapability(sourceCapability);
+    const { actorId, source } = assertWriteContext(
+      command.source,
+      context,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST
+    );
+    const repositoryCapability = this.assertCallerOwnedCapability(state, tx, source);
+    const normalized = canonicalRequestExceptionApprovalCommand({
+      ...command,
+      authoritySnapshot,
+      requestedBy: actorId,
+      source
+    });
+    const authorityLockFingerprint = approvalAuthorityLockFingerprint(
+      this.requestApprovalAuthorityRequirement(
+        authoritySession,
+        command,
+        context,
+        authoritySnapshot,
+        key
+      ).locks
+    );
+    const preparedRepositoryCapability = await this.repository.prepareApprovalRequestInTransaction(
+      tx,
+      normalized,
+      repositoryCapability,
+      authorityLockFingerprint
+    );
+    const prepared = Object.freeze({}) as AssetAccountingPreparedApprovalRequestCapability;
+    this.preparedApprovalRequestCapabilities.set(
+      prepared,
+      Object.freeze({
+        authorityLockFingerprint,
+        command: structuredClone(normalized),
+        context: freezeCommandContext(context),
+        repositoryCapability: preparedRepositoryCapability,
+        transaction: tx
+      })
+    );
+    return prepared;
+  }
+
+  async requestPreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRequestCapability
+  ): Promise<PublicBusinessExceptionApproval> {
+    const state = this.preparedApprovalRequestCapabilities.get(capability);
+    this.preparedApprovalRequestCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) throw callerCapabilityInvalid();
+    const result = await this.repository.requestPreparedApprovalInTransaction(
+      tx,
+      state.repositoryCapability,
+      state.authorityLockFingerprint
+    );
+    const fact = projectApproval(result.outcome);
+    if (result.wrote) {
+      await this.writeAudit(tx, {
+        action: AuditAction.CREATE,
+        context: state.context,
+        entityId: fact.id,
+        entityType: "business_exception_approval",
+        fact,
+        permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+        reason: state.command.requestReason,
+        snapshotHash: hashBusinessExceptionSnapshot(state.command.authoritySnapshot),
+        source: state.command.source
+      });
+    }
+    return fact;
+  }
+
+  async attestPreparedApprovalDecisionInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    command: DecideApprovalServiceCommand,
+    context: AssetAccountingCommandContext,
+    authoritySnapshot: BusinessExceptionSnapshot,
+    requesterId: string,
+    sourceCapability: AssetAccountingTransactionCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    key = "approval-decision"
+  ): Promise<AssetAccountingPreparedApprovalDecisionCapability> {
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        authoritySession,
+        authorityAttestation,
+        () =>
+          this.decideApprovalAuthorityRequirement(
+            authoritySession,
+            command,
+            context,
+            authoritySnapshot,
+            requesterId,
+            key
+          ),
+        null
+      );
+    } catch {
+      throw callerCapabilityInvalid();
+    }
+    const state = this.takeCallerOwnedCapability(sourceCapability);
+    const { actorId, source } = assertWriteContext(
+      command.source,
+      context,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE
+    );
+    const repositoryCapability = this.assertCallerOwnedCapability(state, tx, source);
+    const normalized = canonicalDecideExceptionApprovalCommand({
+      ...command,
+      authoritySnapshot,
+      decidedBy: actorId,
+      source
+    });
+    const authorityLockFingerprint = approvalAuthorityLockFingerprint(
+      this.decideApprovalAuthorityRequirement(
+        authoritySession,
+        command,
+        context,
+        authoritySnapshot,
+        requesterId,
+        key
+      ).locks
+    );
+    const preparedRepositoryCapability = await this.repository.prepareApprovalDecisionInTransaction(
+      tx,
+      normalized,
+      repositoryCapability,
+      authorityLockFingerprint
+    );
+    const prepared = Object.freeze({}) as AssetAccountingPreparedApprovalDecisionCapability;
+    this.preparedApprovalDecisionCapabilities.set(
+      prepared,
+      Object.freeze({
+        authorityLockFingerprint,
+        command: structuredClone(normalized),
+        context: freezeCommandContext(context),
+        repositoryCapability: preparedRepositoryCapability,
+        requesterId,
+        transaction: tx
+      })
+    );
+    return prepared;
+  }
+
+  async decidePreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalDecisionCapability
+  ): Promise<PublicBusinessExceptionApproval> {
+    const state = this.preparedApprovalDecisionCapabilities.get(capability);
+    this.preparedApprovalDecisionCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) throw callerCapabilityInvalid();
+    const before = await loadApprovalAuditRow(tx, state.command.approvalId);
+    if (!before || before.requestedBy !== state.requesterId) throw callerCapabilityInvalid();
+    const result = await this.repository.decidePreparedApprovalInTransaction(
+      tx,
+      state.repositoryCapability,
+      state.authorityLockFingerprint
+    );
+    const fact = projectApproval(result.outcome);
+    if (result.wrote) {
+      await this.writeAudit(tx, {
+        action: state.command.decision === "APPROVED" ? AuditAction.APPROVE : AuditAction.REJECT,
+        before: projectApproval(before),
+        context: state.context,
+        entityId: fact.id,
+        entityType: "business_exception_approval",
+        fact,
+        permission: ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+        reason: state.command.decisionComment,
+        snapshotHash: hashBusinessExceptionSnapshot(state.command.authoritySnapshot),
+        source: state.command.source
+      });
+    }
+    return fact;
   }
 
   async attestPreparedApprovedExceptionInTransaction(
@@ -1083,6 +1392,15 @@ function approvalAuthorityLockFingerprint(locks: readonly SubscriptionClosureAut
           Buffer.from(`${right.table}\u0000${right.id}\u0000${right.mode}`, "utf8")
         )
       )
+  });
+}
+
+function freezeCommandContext(
+  context: AssetAccountingCommandContext
+): AssetAccountingCommandContext {
+  return Object.freeze({
+    ...context,
+    permissions: Object.freeze([...context.permissions])
   });
 }
 

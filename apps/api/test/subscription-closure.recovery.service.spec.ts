@@ -103,7 +103,12 @@ describe("SubscriptionClosureService recovery assessment", () => {
       wrote: true
     });
 
-    expect(harness.repository.escalateRecovery).toHaveBeenCalledWith(
+    expect(harness.timeline.slice(0, 3)).toEqual([
+      "source:assessment",
+      "coordinator:ranked-pass",
+      "execute:prepared-escalation"
+    ]);
+    expect(harness.repository.escalatePreparedRecoveryInTransaction).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
         actorId: IDS.actor,
@@ -140,9 +145,11 @@ describe("SubscriptionClosureService recovery assessment", () => {
           type: "CLOSURE_RECOVERY_ASSESSMENT_D7"
         }
       }),
+      expect.anything(),
       expect.any(Function)
     );
-    const call = harness.repository.escalateRecovery.mock.calls[0] as unknown as readonly [
+    const call = harness.repository.escalatePreparedRecoveryInTransaction.mock
+      .calls[0] as unknown as readonly [
       unknown,
       { detailSnapshot: Readonly<Record<string, unknown>> }
     ];
@@ -179,7 +186,7 @@ describe("SubscriptionClosureService recovery assessment", () => {
         action: "NO_OP",
         reason
       });
-      expect(harness.repository.escalateRecovery).not.toHaveBeenCalled();
+      expect(harness.repository.escalatePreparedRecoveryInTransaction).not.toHaveBeenCalled();
     }
   );
 
@@ -190,7 +197,7 @@ describe("SubscriptionClosureService recovery assessment", () => {
       action: "NO_OP",
       reason: "LIVE_DISPUTE"
     });
-    expect(harness.repository.appendEvent).toHaveBeenCalledWith(
+    expect(harness.repository.appendSourcePreparedEventInTransaction).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
         afterStatus: "PREPARING_RETURN",
@@ -200,6 +207,7 @@ describe("SubscriptionClosureService recovery assessment", () => {
         }),
         eventType: "NOTE_ADDED"
       }),
+      expect.anything(),
       expect.any(Function)
     );
 
@@ -209,7 +217,7 @@ describe("SubscriptionClosureService recovery assessment", () => {
       action: "NO_OP",
       reason: "LIVE_DISPUTE"
     });
-    expect(harness.repository.appendEvent).toHaveBeenCalledTimes(1);
+    expect(harness.repository.appendSourcePreparedEventInTransaction).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -316,6 +324,29 @@ describe("SubscriptionClosureService durable recovery business actions", () => {
 });
 
 describe("SubscriptionClosureService recovery execution approval", () => {
+  it("uses one database clock and never treats a future pending bill as recovery debt", async () => {
+    const harness = recoveryApprovalHarness({ futureOnly: true });
+
+    await expect(
+      harness.service.requestRecoveryExecutionApproval({
+        actorId: IDS.actor,
+        closureCaseId: IDS.case,
+        idempotencyKey: "future-debt-is-not-authority",
+        reason: "must remain overdue",
+        requestedAt: new Date("2026-09-08T03:00:00.000Z")
+      })
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" }
+    });
+    expect(harness.tx.receivableBill.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ dueDate: { lt: expect.any(Date) } })
+      })
+    );
+    expect(harness.tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(harness.accounting.requestApprovalInTransaction).not.toHaveBeenCalled();
+  });
+
   it("requests the Stage1C-C recovery approval from the server-resolved archived authority", async () => {
     const harness = recoveryApprovalHarness();
 
@@ -328,19 +359,11 @@ describe("SubscriptionClosureService recovery execution approval", () => {
         requestedAt: new Date("2026-09-08T03:00:00.000Z")
       })
     ).resolves.toMatchObject({ approvalId: "20000000-0000-4000-8000-000000000020" });
-    expect(harness.accounting.requestApprovalInTransaction).toHaveBeenCalledWith(
+    expect(harness.accounting.requestPreparedApprovalInTransaction).toHaveBeenCalledWith(
       harness.tx,
-      expect.objectContaining({
-        exceptionType: "RECOVERY_EXECUTION_APPROVAL",
-        subject: {
-          subjectField: "recoveryExecution",
-          subjectId: IDS.case,
-          subjectType: "RECOVERY_CASE"
-        }
-      }),
-      expect.objectContaining({ actorId: IDS.actor }),
-      expect.any(Function)
+      expect.anything()
     );
+    expect(harness.accounting.requestApprovalInTransaction).not.toHaveBeenCalled();
     expect(harness.resolvedAuthority).toEqual({
       closureCaseId: IDS.case,
       orderId: IDS.order,
@@ -350,12 +373,13 @@ describe("SubscriptionClosureService recovery execution approval", () => {
       recoveryContextSnapshotHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       vehicleId: IDS.vehicle
     });
-    expect(harness.repository.appendEvent).toHaveBeenCalledWith(
+    expect(harness.repository.appendSourcePreparedEventInTransaction).toHaveBeenCalledWith(
       harness.tx,
       expect.objectContaining({
         afterStatus: "RECOVERY_APPROVAL_PENDING",
         expectedStatus: "RECOVERY_ASSESSMENT_PENDING"
       }),
+      expect.anything(),
       expect.any(Function)
     );
   });
@@ -372,9 +396,10 @@ describe("SubscriptionClosureService recovery execution approval", () => {
       expectedApprovalVersion: 0,
       idempotencyKey: "decide-1"
     });
-    expect(approved.repository.appendEvent).toHaveBeenCalledWith(
+    expect(approved.repository.appendSourcePreparedEventInTransaction).toHaveBeenCalledWith(
       approved.tx,
       expect.objectContaining({ afterStatus: "RECOVERY_APPROVED" }),
+      expect.anything(),
       expect.any(Function)
     );
 
@@ -389,9 +414,10 @@ describe("SubscriptionClosureService recovery execution approval", () => {
       expectedApprovalVersion: 0,
       idempotencyKey: "decide-2"
     });
-    expect(rejected.repository.appendEvent).toHaveBeenCalledWith(
+    expect(rejected.repository.appendSourcePreparedEventInTransaction).toHaveBeenCalledWith(
       rejected.tx,
       expect.objectContaining({ afterStatus: "REJECTED" }),
+      expect.anything(),
       expect.any(Function)
     );
   });
@@ -727,6 +753,7 @@ function recoveryHarness(
     returned?: boolean;
   } = {}
 ) {
+  const timeline: string[] = [];
   let receipt: Readonly<{ payloadSnapshot: unknown }> | null = null;
   const bills = options.bills ?? [
     {
@@ -827,11 +854,21 @@ function recoveryHarness(
     }
   };
   const repository = {
-    appendEvent: vi.fn(async (_tx, command) => {
+    appendSourcePreparedEventInTransaction: vi.fn(async (_tx, command) => {
       receipt = { payloadSnapshot: command };
       return { outcome: { case: { id: IDS.case } }, wrote: true };
     }),
-    escalateRecovery: vi.fn(async () => ({ outcome: { case: { id: IDS.case } }, wrote: true }))
+    escalatePreparedRecoveryInTransaction: vi.fn(async () => {
+      timeline.push("execute:prepared-escalation");
+      return { outcome: { case: { id: IDS.case } }, wrote: true };
+    }),
+    lockAuthorityRows: vi.fn(async () => {
+      timeline.push("coordinator:ranked-pass");
+    }),
+    prepareSourceInTransaction: vi.fn(async () => {
+      timeline.push("source:assessment");
+      return Object.freeze({ source: true });
+    })
   };
   const prisma = {
     $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) => operation(tx))
@@ -843,7 +880,7 @@ function recoveryHarness(
     { write: vi.fn(async () => undefined) } as never,
     prisma as never
   );
-  return { prisma, repository, service, tx };
+  return { prisma, repository, service, timeline, tx };
 }
 
 function recoveryActionHarness(options: { status?: string } = {}) {
@@ -891,7 +928,9 @@ function recoveryActionHarness(options: { status?: string } = {}) {
   return { caseRow, prisma, repository, service, tx };
 }
 
-function recoveryApprovalHarness(options: { decision?: "APPROVED" | "REJECTED" } = {}) {
+function recoveryApprovalHarness(
+  options: { decision?: "APPROVED" | "REJECTED"; futureOnly?: boolean } = {}
+) {
   const plannedWorkOrderId = "20000000-0000-4000-8000-000000000021";
   const revisionId = "20000000-0000-4000-8000-000000000022";
   const caseRow = {
@@ -914,6 +953,8 @@ function recoveryApprovalHarness(options: { decision?: "APPROVED" | "REJECTED" }
   const currentDocument = {
     documentRevision: {
       archivedAt: new Date("2026-09-08T02:00:00.000Z"),
+      archivedBy: IDS.actor,
+      contractESignTaskId: "20000000-0000-4000-8000-000000000026",
       documentSnapshot: {
         caseNo: "CLS-1",
         closureCaseId: IDS.case,
@@ -930,18 +971,54 @@ function recoveryApprovalHarness(options: { decision?: "APPROVED" | "REJECTED" }
       },
       documentSnapshotHash: "a".repeat(64),
       documentType: "RECOVERY_AUTHORITY",
+      generatedBy: IDS.actor,
       id: revisionId,
+      signedFileId: "20000000-0000-4000-8000-000000000027",
+      signedBy: IDS.actor,
+      sourceFileId: "20000000-0000-4000-8000-000000000028",
       stage: "ARCHIVED"
     }
   };
+  const approvalRow = {
+    id: "20000000-0000-4000-8000-000000000020",
+    requestedBy: IDS.actor,
+    status: "PENDING",
+    version: 0
+  };
   const tx = {
-    ...recoveryApprovalContextTx(plannedWorkOrderId),
+    ...recoveryApprovalContextTx(plannedWorkOrderId, { futureOnly: options.futureOnly }),
+    $queryRaw: vi.fn(async () => [{ now: new Date("2026-09-08T00:00:00.000Z") }]),
+    assetAccountingCommandReceipt: { findUnique: vi.fn(async () => null) },
+    businessExceptionApproval: { findUnique: vi.fn(async () => approvalRow) },
     subscriptionClosureCase: { findUnique: vi.fn(async () => caseRow) },
+    subscriptionClosureCommandReceipt: { findUnique: vi.fn(async () => null) },
     subscriptionClosureCurrentDocument: { findUnique: vi.fn(async () => currentDocument) },
     subscriptionClosureEvent: { findFirst: vi.fn(async () => assessment) }
   };
   let resolvedAuthority: unknown;
+  const accountingCapability = Object.freeze({ accountingCapability: true });
+  const preparedCapability = Object.freeze({ preparedCapability: true });
+  const requirement = {
+    key: options.decision ? "recovery-approval-decision" : "recovery-approval-request",
+    locks: [
+      { id: IDS.case, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: IDS.actor, mode: "SHARE", table: "user" }
+    ]
+  };
   const accounting = {
+    attestPreparedApprovalDecisionInTransaction: vi.fn(
+      async (_tx, _session, _command, _context, authority) => {
+        resolvedAuthority = authority;
+        return preparedCapability;
+      }
+    ),
+    attestPreparedApprovalRequestInTransaction: vi.fn(
+      async (_tx, _session, _command, _context, authority) => {
+        resolvedAuthority = authority;
+        return preparedCapability;
+      }
+    ),
+    decideApprovalAuthorityRequirement: vi.fn(() => requirement),
     decideApprovalInTransaction: vi.fn(async (_tx, _command, _context, resolver) => {
       resolvedAuthority = await resolver();
       return {
@@ -951,6 +1028,14 @@ function recoveryApprovalHarness(options: { decision?: "APPROVED" | "REJECTED" }
         version: 1
       };
     }),
+    decidePreparedApprovalInTransaction: vi.fn(async () => ({
+      decision: options.decision,
+      id: approvalRow.id,
+      status: options.decision,
+      version: 1
+    })),
+    prepareCallerOwnedTransaction: vi.fn(async () => accountingCapability),
+    requestApprovalAuthorityRequirement: vi.fn(() => requirement),
     requestApprovalInTransaction: vi.fn(async (_tx, _command, _context, resolver) => {
       resolvedAuthority = await resolver();
       return {
@@ -958,10 +1043,26 @@ function recoveryApprovalHarness(options: { decision?: "APPROVED" | "REJECTED" }
         status: "PENDING",
         version: 0
       };
-    })
+    }),
+    requestPreparedApprovalInTransaction: vi.fn(async () => ({
+      id: approvalRow.id,
+      status: "PENDING",
+      subjectSnapshotHash: "b".repeat(64),
+      version: 0
+    }))
   };
+  const session = Object.freeze({ session: true });
   const repository = {
-    appendEvent: vi.fn(async () => ({ outcome: { case: caseRow }, wrote: true }))
+    appendEvent: vi.fn(async () => ({ outcome: { case: caseRow }, wrote: true })),
+    appendSourcePreparedEventInTransaction: vi.fn(async () => ({
+      outcome: { case: caseRow },
+      wrote: true
+    })),
+    createAuthoritySessionInTransaction: vi.fn(() => session),
+    prepareAuthorityInTransaction: vi.fn(
+      async () => new Map([[requirement.key, Object.freeze({ proof: true })]])
+    ),
+    prepareSourceInTransaction: vi.fn(async () => Object.freeze({ source: true }))
   };
   const prisma = {
     $transaction: vi.fn(async (operation: (client: typeof tx) => unknown) => operation(tx))
@@ -1276,19 +1377,30 @@ function recoveryEvidenceHarness() {
   return { accounting, caseRow, operations, repository, service, session, tx, workOrder };
 }
 
-function recoveryApprovalContextTx(plannedWorkOrderId: string) {
+function recoveryApprovalContextTx(
+  plannedWorkOrderId: string,
+  options: { futureOnly?: boolean } = {}
+) {
   void plannedWorkOrderId;
   return {
+    $queryRaw: vi.fn(async () => [{ now: new Date("2026-09-08T00:00:00.000Z") }]),
     collectionCase: { findMany: vi.fn(async () => []) },
     receivableBill: {
-      findMany: vi.fn(async () => [
-        {
-          billStatus: "OVERDUE",
-          dueDate: new Date("2026-09-01T00:00:00.000Z"),
-          id: IDS.bill,
-          remainingAmount: 900n
-        }
-      ])
+      findMany: vi.fn(async ({ where }) => {
+        const dueDate = new Date(
+          options.futureOnly ? "2026-10-01T00:00:00.000Z" : "2026-09-01T00:00:00.000Z"
+        );
+        const upperBound = where?.dueDate?.lt;
+        if (upperBound instanceof Date && dueDate.getTime() >= upperBound.getTime()) return [];
+        return [
+          {
+            billStatus: options.futureOnly ? "PENDING" : "OVERDUE",
+            dueDate,
+            id: IDS.bill,
+            remainingAmount: 900n
+          }
+        ];
+      })
     },
     subscriptionContractSegment: { findFirst: vi.fn(async () => null) },
     vehicle: {

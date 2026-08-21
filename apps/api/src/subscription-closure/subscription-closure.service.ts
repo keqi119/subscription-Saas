@@ -41,6 +41,7 @@ import {
   ASSET_ACCOUNTING_PERMISSION,
   AssetAccountingService,
   type AssetAccountingPreparedApprovalCapability,
+  type AssetAccountingTransactionCapability,
   type AppendCostServiceCommand
 } from "../asset-accounting/asset-accounting.service";
 import { AssetFactsService } from "../asset-facts/asset-facts.service";
@@ -191,6 +192,21 @@ export type RecordRecoveryExecutionInput = Readonly<{
   evidence: readonly Omit<AppendEvidenceServiceCommand, "source" | "workOrderId">[];
   idempotencyKey: string;
   occurredAt: Date;
+}>;
+
+export type ArchiveRecoveryAuthorityInput = Readonly<{
+  actorId: string;
+  closureCaseId: string;
+  idempotencyKey: string;
+}>;
+
+export type ArchivedRecoveryAuthority = Readonly<{
+  archivedRevisionId: string;
+  generatedRevisionId: string;
+  signedFileHash: string;
+  signedFileId: string;
+  signedRevisionId: string;
+  wrote: boolean;
 }>;
 
 export type PrepareManagedReturnInput = Readonly<{
@@ -904,6 +920,7 @@ export class SubscriptionClosureService {
       key: command.jobKey,
       type: "CLOSURE_RECOVERY_ASSESSMENT_D7"
     } as const;
+    const sourceCapability = await this.repository.prepareSourceInTransaction(tx, source);
     const priorReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
       where: {
         sourceType_sourceId_sourceKey: {
@@ -927,6 +944,112 @@ export class SubscriptionClosureService {
       if (priorReceipt.commandType !== "ESCALATE_RECOVERY") throw closureSourceConflict();
       return Object.freeze({ action: "ASSESSED" as const, wrote: false });
     }
+    const observedClosureCase = await tx.subscriptionClosureCase.findUnique({
+      where: { id: command.closureCaseId }
+    });
+    if (
+      !observedClosureCase ||
+      observedClosureCase.orderId !== command.orderId ||
+      observedClosureCase.createdBy !== command.actorId
+    ) {
+      throw serviceConflict("RECOVERY_JOB_AUTHORITY_INVALID");
+    }
+    const [
+      observedVehicleReturn,
+      observedOverdueBills,
+      observedCollectionCases,
+      observedExtension,
+      observedLegalRestrictions
+    ] = await Promise.all([
+      observedClosureCase.vehicleReturnId
+        ? tx.vehicleReturn.findUnique({ where: { id: observedClosureCase.vehicleReturnId } })
+        : Promise.resolve(null),
+      tx.receivableBill.findMany({
+        orderBy: [{ dueDate: "asc" }, { id: "asc" }],
+        where: {
+          billStatus: {
+            in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
+          },
+          deletedAt: null,
+          dueDate: { lt: now },
+          orderId: observedClosureCase.orderId,
+          remainingAmount: { gt: 0n }
+        }
+      }),
+      tx.collectionCase.findMany({
+        include: {
+          actions: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+          bills: { include: { bill: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        where: { deletedAt: null, orderId: observedClosureCase.orderId }
+      }),
+      tx.subscriptionContractSegment.findFirst({
+        orderBy: [{ sequenceNo: "asc" }, { id: "asc" }],
+        where: {
+          orderId: observedClosureCase.orderId,
+          status: { in: ["SCHEDULED", "ACTIVE"] }
+        }
+      }),
+      tx.vehicleOperationalRestriction.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        where: {
+          restrictionType: "LEGAL_HOLD",
+          status: "ACTIVE",
+          vehicleId: observedClosureCase.vehicleId
+        }
+      })
+    ]);
+    await this.repository.lockAuthorityRows(tx, [
+      {
+        id: observedClosureCase.id,
+        mode: "UPDATE",
+        table: "subscription_closure_case"
+      },
+      { id: observedClosureCase.orderId, mode: "UPDATE", table: "subscription_order" },
+      { id: observedClosureCase.vehicleId, mode: "UPDATE", table: "vehicle" },
+      ...(observedVehicleReturn
+        ? [
+            {
+              id: observedVehicleReturn.id,
+              mode: "UPDATE" as const,
+              table: "vehicle_return" as const
+            }
+          ]
+        : []),
+      ...observedCollectionCases.map(({ id }) => ({
+        id,
+        mode: "UPDATE" as const,
+        table: "collection_case" as const
+      })),
+      ...observedCollectionCases.flatMap(({ actions }) =>
+        actions.map(({ id }) => ({
+          id,
+          mode: "UPDATE" as const,
+          table: "collection_action" as const
+        }))
+      ),
+      ...(observedExtension
+        ? [
+            {
+              id: observedExtension.id,
+              mode: "UPDATE" as const,
+              table: "subscription_contract_segment" as const
+            }
+          ]
+        : []),
+      ...observedLegalRestrictions.map(({ id }) => ({
+        id,
+        mode: "UPDATE" as const,
+        table: "vehicle_operational_restriction" as const
+      })),
+      ...observedOverdueBills.map(({ id }) => ({
+        id,
+        mode: "UPDATE" as const,
+        table: "receivable_bill" as const
+      })),
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]);
     const closureCase = await tx.subscriptionClosureCase.findUnique({
       where: { id: command.closureCaseId }
     });
@@ -991,6 +1114,7 @@ export class SubscriptionClosureService {
         closureCase,
         now,
         source,
+        sourceCapability,
         "VOLUNTARY_RETURNED"
       );
     }
@@ -1001,6 +1125,7 @@ export class SubscriptionClosureService {
         closureCase,
         now,
         source,
+        sourceCapability,
         "OVERDUE_DEBT_SETTLED"
       );
     }
@@ -1018,6 +1143,7 @@ export class SubscriptionClosureService {
         closureCase,
         now,
         source,
+        sourceCapability,
         "LIVE_DISPUTE"
       );
     }
@@ -1028,6 +1154,7 @@ export class SubscriptionClosureService {
         closureCase,
         now,
         source,
+        sourceCapability,
         "APPROVED_EXTENSION"
       );
     }
@@ -1095,7 +1222,7 @@ export class SubscriptionClosureService {
           }
         : null
     };
-    const outcome = await this.repository.escalateRecovery(
+    const outcome = await this.repository.escalatePreparedRecoveryInTransaction(
       tx,
       {
         actorId: command.actorId,
@@ -1106,6 +1233,7 @@ export class SubscriptionClosureService {
         occurredAt: now,
         source
       },
+      sourceCapability,
       this.closureAudit(command.actorId)
     );
     return Object.freeze({ action: "ASSESSED" as const, wrote: outcome.wrote });
@@ -1117,9 +1245,10 @@ export class SubscriptionClosureService {
     closureCase: Readonly<{ id: string; status: SubscriptionClosureStatus; version: number }>,
     occurredAt: Date,
     source: SubscriptionClosureSource,
+    sourceCapability: PreparedClosureSourceCapability,
     reason: RecoveryAssessmentNoOpReason
   ) {
-    await this.repository.appendEvent(
+    await this.repository.appendSourcePreparedEventInTransaction(
       tx,
       {
         actorId: command.actorId,
@@ -1139,9 +1268,240 @@ export class SubscriptionClosureService {
         occurredAt,
         source
       },
+      sourceCapability,
       this.closureAudit(command.actorId)
     );
     return Object.freeze({ action: "NO_OP" as const, reason });
+  }
+
+  async archiveRecoveryAuthority(
+    input: ArchiveRecoveryAuthorityInput
+  ): Promise<ArchivedRecoveryAuthority> {
+    if (!this.prisma) throw serviceConflict("RECOVERY_JOB_AUTHORITY_INVALID");
+    const command = normalizeArchiveRecoveryAuthority(input);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const ids = recoveryAuthorityIds(command.closureCaseId, command.idempotencyKey);
+        const sources = recoveryAuthoritySources(command.closureCaseId, command.idempotencyKey);
+        const sourceCapabilities = new Map<string, PreparedClosureSourceCapability>();
+        for (const lifecycleSource of [...sources].sort((left, right) =>
+          bytewiseCompare(sourceSortKey(left), sourceSortKey(right))
+        )) {
+          sourceCapabilities.set(
+            lifecycleSource.key,
+            await this.repository.prepareSourceInTransaction(tx, lifecycleSource)
+          );
+        }
+
+        const replay = await validateRecoveryAuthorityChainInTransaction(tx, command, ids, sources);
+        if (replay) return Object.freeze({ ...replay, wrote: false });
+
+        const databaseClock = await readDatabaseClock(tx);
+        const observed = await resolveRecoveryAuthorityDraft(
+          tx,
+          command.closureCaseId,
+          databaseClock
+        );
+        assertRecoveryAuthorityDraftActionable(observed);
+        const documentSnapshot = recoveryAuthorityDocumentSnapshot(observed);
+        const canonicalDocument = canonicalSubscriptionClosureJson(documentSnapshot);
+        const sourceFileHash = createHash("sha256").update(canonicalDocument).digest("hex");
+        const sourceObjectKey = `subscription-closure/${command.closureCaseId}/${ids.generatedRevisionId}-recovery-authority.json`;
+        const signedObjectKey = `subscription-closure/${command.closureCaseId}/${ids.signedRevisionId}-recovery-authority.signed.json`;
+        const sourceDocumentName = `${observed.closureCase.caseNo}-${ids.generatedRevisionId}-recovery-authority.json`;
+        const signedDocumentName = `${observed.closureCase.caseNo}-${ids.signedRevisionId}-recovery-authority.signed.json`;
+        const signedEnvelope = recoveryAuthoritySignedEnvelope({
+          actorId: command.actorId,
+          completedAt: databaseClock,
+          documentSnapshotHash: sourceFileHash,
+          signedFileId: ids.signedFileId,
+          sourceFileHash,
+          sourceFileId: ids.sourceFileId,
+          sources
+        });
+        const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
+        const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
+        const commands = recoveryAuthorityDocumentCommands({
+          actorId: command.actorId,
+          closureCaseId: command.closureCaseId,
+          databaseClock,
+          documentSnapshot,
+          expectedVersion: observed.closureCase.version,
+          ids,
+          signedFileHash,
+          sourceFileHash,
+          sources
+        });
+        const commonLocks: readonly SubscriptionClosureAuthorityLock[] = [
+          {
+            id: observed.closureCase.id,
+            mode: "UPDATE",
+            table: "subscription_closure_case"
+          },
+          ...observed.contextLocks,
+          { id: observed.closureCase.contractId, mode: "SHARE", table: "contract" },
+          { id: observed.closureCase.customerId, mode: "SHARE", table: "customer" },
+          { id: command.actorId, mode: "SHARE", table: "user" }
+        ];
+        const generatedLocks = commonLocks;
+        const signedLocks: readonly SubscriptionClosureAuthorityLock[] = [
+          ...commonLocks,
+          {
+            id: ids.generatedRevisionId,
+            mode: "SHARE",
+            table: "subscription_closure_document_revision"
+          }
+        ];
+        const archivedLocks: readonly SubscriptionClosureAuthorityLock[] = [
+          ...commonLocks,
+          {
+            id: ids.signedRevisionId,
+            mode: "SHARE",
+            table: "subscription_closure_document_revision"
+          }
+        ];
+        const requirementPlans = [
+          {
+            command: commands.generated,
+            extraLocks: generatedLocks,
+            key: "recovery-authority-generated"
+          },
+          {
+            command: commands.signed,
+            extraLocks: signedLocks,
+            key: "recovery-authority-signed"
+          },
+          {
+            command: commands.archived,
+            extraLocks: archivedLocks,
+            key: "recovery-authority-archived"
+          }
+        ] as const;
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const requirements = requirementPlans.map(({ command: documentCommand, extraLocks, key }) =>
+          this.repository.bindAuthorityRequirement(
+            session,
+            subscriptionClosureDocumentAuthorityRequirement(documentCommand, key, extraLocks)
+          )
+        );
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          requirements.flatMap(({ locks }) => locks),
+          requirements
+        );
+        const locked = await resolveRecoveryAuthorityDraft(
+          tx,
+          command.closureCaseId,
+          databaseClock
+        );
+        assertRecoveryAuthorityDraftActionable(locked);
+        if (recoveryAuthorityDraftIdentity(locked) !== recoveryAuthorityDraftIdentity(observed)) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const collisions = await Promise.all([
+          tx.fileObject.count({ where: { id: { in: [ids.sourceFileId, ids.signedFileId] } } }),
+          tx.contractESignTask.count({ where: { id: ids.esignTaskId } }),
+          tx.subscriptionClosureDocumentRevision.count({
+            where: {
+              id: {
+                in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId]
+              }
+            }
+          }),
+          tx.subscriptionClosureCurrentDocument.count({
+            where: {
+              closureCaseId: command.closureCaseId,
+              documentType: "RECOVERY_AUTHORITY"
+            }
+          })
+        ]);
+        if (collisions.some((count) => count !== 0)) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+
+        await tx.fileObject.createMany({
+          data: [
+            {
+              bucket: "subscription-closure",
+              id: ids.sourceFileId,
+              mimeType: "application/json",
+              objectKey: sourceObjectKey,
+              originalName: sourceDocumentName,
+              sizeBytes: BigInt(Buffer.byteLength(canonicalDocument)),
+              uploadedBy: command.actorId
+            },
+            {
+              bucket: "subscription-closure",
+              id: ids.signedFileId,
+              mimeType: "application/json",
+              objectKey: signedObjectKey,
+              originalName: signedDocumentName,
+              sizeBytes: BigInt(Buffer.byteLength(canonicalSignedEnvelope)),
+              uploadedBy: command.actorId
+            }
+          ]
+        });
+        await tx.contractESignTask.create({
+          data: {
+            completedAt: databaseClock,
+            contractId: locked.closureCase.contractId,
+            createdBy: command.actorId,
+            customerId: locked.closureCase.customerId,
+            documentName: sourceDocumentName,
+            documentObjectKey: sourceObjectKey,
+            documentType: ESignDocumentType.DELIVERY_HANDOVER,
+            id: ids.esignTaskId,
+            orderId: locked.closureCase.orderId,
+            provider: ESignProviderType.OTHER,
+            providerEnvelopeId: ids.esignEnvelopeId,
+            providerTaskId: ids.esignProviderTaskId,
+            requestSnapshot: recoveryAuthorityEsignRequest({
+              documentSnapshotHash: sourceFileHash,
+              ids,
+              sourceFileHash,
+              sources
+            }),
+            responseSnapshot: recoveryAuthorityEsignResponse({
+              actorId: command.actorId,
+              completedAt: databaseClock,
+              ids,
+              signedFileHash
+            }),
+            signedDocumentObjectKey: signedObjectKey,
+            signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+            sourceId: sources[2].id,
+            sourceKey: sources[2].key,
+            sourceType: sources[2].type,
+            taskNo: `ESG-REC-${ids.esignTaskId}`,
+            taskStatus: ESignTaskStatus.COMPLETED,
+            updatedBy: command.actorId
+          }
+        });
+
+        for (const plan of requirementPlans) {
+          await this.repository.appendPreparedDocumentRevisionInTransaction(
+            tx,
+            session,
+            plan.command,
+            requiredPreparedSource(sourceCapabilities, plan.command.source.key),
+            requiredAttestation(attestations, plan.key),
+            this.closureAudit(command.actorId),
+            plan.key,
+            plan.extraLocks
+          );
+        }
+        const created = await validateRecoveryAuthorityChainInTransaction(
+          tx,
+          command,
+          ids,
+          sources
+        );
+        if (!created) throw serviceConflict("AUTHORITY_MISMATCH");
+        return Object.freeze({ ...created, wrote: true });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
   }
 
   async actOnRecovery(input: RecoveryBusinessActionInput) {
@@ -1258,42 +1618,125 @@ export class SubscriptionClosureService {
     const command = normalizeRequestRecoveryApproval(input);
     return this.prisma.$transaction(
       async (tx) => {
-        const resolved = await resolveRecoveryApprovalAuthority(tx, command.closureCaseId);
-        if (
-          !resolved.contextActionable ||
-          (resolved.closureCase.status !== "RECOVERY_ASSESSMENT_PENDING" &&
-            resolved.closureCase.status !== "RECOVERY_APPROVAL_PENDING")
-        ) {
-          throw serviceConflict("AUTHORITY_MISMATCH");
-        }
         const requestSource = physicalSource(
           command.closureCaseId,
           `recovery-approval-request:${command.idempotencyKey}`
         );
-        const approval = await this.assetAccounting!.requestApprovalInTransaction(
-          tx,
-          {
-            exceptionType: "RECOVERY_EXECUTION_APPROVAL",
-            requestEvidenceSnapshot: {
-              recoveryAuthorityRevisionId: resolved.authority.recoveryAuthorityRevisionId,
-              recoveryContextSnapshotHash: resolved.authority.recoveryContextSnapshotHash
-            },
-            requestReason: command.reason,
-            requestedAt: command.requestedAt,
-            source: requestSource,
-            subject: recoveryApprovalSubject(command.closureCaseId)
-          },
-          {
-            actorId: command.actorId,
-            idempotencyKey: requestSource.key,
-            permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST]
-          },
-          async () => resolved.authority
+        const eventSource = physicalSource(
+          command.closureCaseId,
+          `recovery-approval-state:${command.idempotencyKey}`
         );
-        if (resolved.closureCase.status === "RECOVERY_APPROVAL_PENDING") {
-          return Object.freeze({ approvalId: approval.id, wrote: false });
+        let accountingSourceCapability: Awaited<
+          ReturnType<AssetAccountingService["prepareCallerOwnedTransaction"]>
+        > | null = null;
+        let eventSourceCapability: PreparedClosureSourceCapability | null = null;
+        const sourcePreparations = [
+          {
+            prepare: async () => {
+              accountingSourceCapability =
+                await this.assetAccounting!.prepareCallerOwnedTransaction(tx, requestSource);
+            },
+            source: requestSource
+          },
+          {
+            prepare: async () => {
+              eventSourceCapability = await this.repository.prepareSourceInTransaction(
+                tx,
+                eventSource
+              );
+            },
+            source: eventSource
+          }
+        ].sort((left, right) =>
+          bytewiseCompare(sourceSortKey(left.source), sourceSortKey(right.source))
+        );
+        for (const preparation of sourcePreparations) await preparation.prepare();
+        const commandFingerprint = recoveryApprovalCommandFingerprint(command);
+        const replay = await replayRecoveryApprovalOrchestration(tx, {
+          accountingSource: requestSource,
+          commandFingerprint,
+          eventSource,
+          kind: "REQUEST"
+        });
+        if (replay) {
+          return Object.freeze({ approvalId: replay.approvalId, wrote: false });
         }
-        const event = await this.repository.appendEvent(
+        const databaseClock = await readDatabaseClock(tx);
+        const resolved = await resolveRecoveryApprovalAuthority(
+          tx,
+          command.closureCaseId,
+          databaseClock
+        );
+        if (
+          !resolved.contextActionable ||
+          resolved.closureCase.status !== "RECOVERY_ASSESSMENT_PENDING"
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const approvalCommand = {
+          exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+          requestEvidenceSnapshot: {
+            recoveryAuthorityRevisionId: resolved.authority.recoveryAuthorityRevisionId,
+            recoveryContextSnapshotHash: resolved.authority.recoveryContextSnapshotHash
+          },
+          requestReason: command.reason,
+          requestedAt: command.requestedAt,
+          source: requestSource,
+          subject: recoveryApprovalSubject(command.closureCaseId)
+        };
+        const accountingContext = {
+          actorId: command.actorId,
+          idempotencyKey: requestSource.key,
+          permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST]
+        };
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const requirement = this.assetAccounting!.requestApprovalAuthorityRequirement(
+          session,
+          approvalCommand,
+          accountingContext,
+          resolved.authority,
+          "recovery-approval-request"
+        );
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          [
+            ...resolved.contextLocks,
+            ...resolved.documentLocks,
+            ...requirement.locks,
+            { id: command.actorId, mode: "SHARE", table: "user" }
+          ],
+          [requirement]
+        );
+        const locked = await resolveRecoveryApprovalAuthority(
+          tx,
+          command.closureCaseId,
+          databaseClock
+        );
+        if (
+          !locked.contextActionable ||
+          locked.closureCase.status !== "RECOVERY_ASSESSMENT_PENDING" ||
+          canonicalSubscriptionClosureJson(locked.authority) !==
+            canonicalSubscriptionClosureJson(resolved.authority)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const preparedApproval =
+          await this.assetAccounting!.attestPreparedApprovalRequestInTransaction(
+            tx,
+            session,
+            approvalCommand,
+            accountingContext,
+            locked.authority,
+            requiredValue<AssetAccountingTransactionCapability>(accountingSourceCapability),
+            requiredAttestation(attestations, "recovery-approval-request"),
+            "recovery-approval-request"
+          );
+        const approval = await this.assetAccounting!.requestPreparedApprovalInTransaction(
+          tx,
+          preparedApproval
+        );
+        const event = await this.repository.appendSourcePreparedEventInTransaction(
           tx,
           {
             actorId: command.actorId,
@@ -1302,17 +1745,16 @@ export class SubscriptionClosureService {
             detailSnapshot: {
               approvalId: approval.id,
               approvalSnapshotHash: approval.subjectSnapshotHash,
+              recoveryApprovalCommandFingerprint: commandFingerprint,
               recoveryAction: "REQUEST_APPROVAL"
             },
             eventType: "STATUS_TRANSITIONED",
             expectedStatus: "RECOVERY_ASSESSMENT_PENDING",
             expectedVersion: resolved.closureCase.version,
             occurredAt: command.requestedAt,
-            source: physicalSource(
-              command.closureCaseId,
-              `recovery-approval-state:${command.idempotencyKey}`
-            )
+            source: eventSource
           },
+          requiredValue<PreparedClosureSourceCapability>(eventSourceCapability),
           this.closureAudit(command.actorId)
         );
         return Object.freeze({ approvalId: approval.id, wrote: event.wrote });
@@ -1328,38 +1770,138 @@ export class SubscriptionClosureService {
     const command = normalizeDecideRecoveryApproval(input);
     return this.prisma.$transaction(
       async (tx) => {
-        const resolved = await resolveRecoveryApprovalAuthority(tx, command.closureCaseId);
+        const decisionSource = physicalSource(
+          command.closureCaseId,
+          `recovery-approval-decision:${command.idempotencyKey}`
+        );
+        const eventSource = physicalSource(
+          command.closureCaseId,
+          `recovery-approval-decision-state:${command.idempotencyKey}`
+        );
+        let accountingSourceCapability: Awaited<
+          ReturnType<AssetAccountingService["prepareCallerOwnedTransaction"]>
+        > | null = null;
+        let eventSourceCapability: PreparedClosureSourceCapability | null = null;
+        const sourcePreparations = [
+          {
+            prepare: async () => {
+              accountingSourceCapability =
+                await this.assetAccounting!.prepareCallerOwnedTransaction(tx, decisionSource);
+            },
+            source: decisionSource
+          },
+          {
+            prepare: async () => {
+              eventSourceCapability = await this.repository.prepareSourceInTransaction(
+                tx,
+                eventSource
+              );
+            },
+            source: eventSource
+          }
+        ].sort((left, right) =>
+          bytewiseCompare(sourceSortKey(left.source), sourceSortKey(right.source))
+        );
+        for (const preparation of sourcePreparations) await preparation.prepare();
+        const commandFingerprint = recoveryApprovalCommandFingerprint(command);
+        const replay = await replayRecoveryApprovalOrchestration(tx, {
+          accountingSource: decisionSource,
+          commandFingerprint,
+          eventSource,
+          kind: "DECISION"
+        });
+        if (replay) {
+          return Object.freeze({
+            approvalId: replay.approvalId,
+            status: replay.status,
+            wrote: false
+          });
+        }
+        const databaseClock = await readDatabaseClock(tx);
+        const resolved = await resolveRecoveryApprovalAuthority(
+          tx,
+          command.closureCaseId,
+          databaseClock
+        );
+        const observedApproval = await tx.businessExceptionApproval.findUnique({
+          where: { id: command.approvalId }
+        });
         if (
+          !observedApproval ||
           resolved.closureCase.status !== "RECOVERY_APPROVAL_PENDING" ||
           (command.decision === "APPROVED" && !resolved.contextActionable)
         ) {
           throw serviceConflict("AUTHORITY_MISMATCH");
         }
-        const decisionSource = physicalSource(
-          command.closureCaseId,
-          `recovery-approval-decision:${command.idempotencyKey}`
+        const decisionCommand = {
+          approvalId: command.approvalId,
+          decidedAt: command.decidedAt,
+          decision: command.decision,
+          decisionComment: command.decisionComment,
+          exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+          expectedVersion: command.expectedApprovalVersion,
+          source: decisionSource,
+          subject: recoveryApprovalSubject(command.closureCaseId)
+        };
+        const accountingContext = {
+          actorId: command.actorId,
+          idempotencyKey: decisionSource.key,
+          permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE]
+        };
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const requirement = this.assetAccounting!.decideApprovalAuthorityRequirement(
+          session,
+          decisionCommand,
+          accountingContext,
+          resolved.authority,
+          observedApproval.requestedBy,
+          "recovery-approval-decision"
         );
-        const approval = await this.assetAccounting!.decideApprovalInTransaction(
+        const attestations = await this.repository.prepareAuthorityInTransaction(
           tx,
-          {
-            approvalId: command.approvalId,
-            decidedAt: command.decidedAt,
-            decision: command.decision,
-            decisionComment: command.decisionComment,
-            exceptionType: "RECOVERY_EXECUTION_APPROVAL",
-            expectedVersion: command.expectedApprovalVersion,
-            source: decisionSource,
-            subject: recoveryApprovalSubject(command.closureCaseId)
-          },
-          {
-            actorId: command.actorId,
-            idempotencyKey: decisionSource.key,
-            permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE]
-          },
-          async () => resolved.authority
+          session,
+          [
+            ...resolved.contextLocks,
+            ...resolved.documentLocks,
+            ...requirement.locks,
+            { id: command.actorId, mode: "SHARE", table: "user" }
+          ],
+          [requirement]
+        );
+        const [locked, lockedApproval] = await Promise.all([
+          resolveRecoveryApprovalAuthority(tx, command.closureCaseId, databaseClock),
+          tx.businessExceptionApproval.findUnique({ where: { id: command.approvalId } })
+        ]);
+        if (
+          !lockedApproval ||
+          lockedApproval.requestedBy !== observedApproval.requestedBy ||
+          lockedApproval.status !== "PENDING" ||
+          lockedApproval.version !== command.expectedApprovalVersion ||
+          locked.closureCase.status !== "RECOVERY_APPROVAL_PENDING" ||
+          (command.decision === "APPROVED" && !locked.contextActionable) ||
+          canonicalSubscriptionClosureJson(locked.authority) !==
+            canonicalSubscriptionClosureJson(resolved.authority)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const preparedDecision =
+          await this.assetAccounting!.attestPreparedApprovalDecisionInTransaction(
+            tx,
+            session,
+            decisionCommand,
+            accountingContext,
+            locked.authority,
+            lockedApproval.requestedBy,
+            requiredValue<AssetAccountingTransactionCapability>(accountingSourceCapability),
+            requiredAttestation(attestations, "recovery-approval-decision"),
+            "recovery-approval-decision"
+          );
+        const approval = await this.assetAccounting!.decidePreparedApprovalInTransaction(
+          tx,
+          preparedDecision
         );
         const afterStatus = command.decision === "APPROVED" ? "RECOVERY_APPROVED" : "REJECTED";
-        const event = await this.repository.appendEvent(
+        const event = await this.repository.appendSourcePreparedEventInTransaction(
           tx,
           {
             actorId: command.actorId,
@@ -1369,17 +1911,16 @@ export class SubscriptionClosureService {
               approvalId: approval.id,
               approvalVersion: approval.version,
               decision: command.decision,
+              recoveryApprovalCommandFingerprint: commandFingerprint,
               recoveryAction: "DECIDE_APPROVAL"
             },
             eventType: "STATUS_TRANSITIONED",
             expectedStatus: "RECOVERY_APPROVAL_PENDING",
             expectedVersion: resolved.closureCase.version,
             occurredAt: command.decidedAt,
-            source: physicalSource(
-              command.closureCaseId,
-              `recovery-approval-decision-state:${command.idempotencyKey}`
-            )
+            source: eventSource
           },
+          requiredValue<PreparedClosureSourceCapability>(eventSourceCapability),
           this.closureAudit(command.actorId)
         );
         return Object.freeze({ approvalId: approval.id, status: afterStatus, wrote: event.wrote });
@@ -2207,6 +2748,30 @@ export class SubscriptionClosureService {
       return null;
     }
     const closureCase = observed.closureCase;
+    const physicalCommandFingerprint = createHash("sha256")
+      .update(canonicalSubscriptionClosureJson(command as never))
+      .digest("hex");
+    const receiptSource = physicalSource(
+      closureCase.id,
+      `physical-receipt:${command.physicalControlMode}`
+    );
+    const recoveryDriftSource = physicalSource(closureCase.id, "physical-receipt-drift:RECOVERY");
+    if (command.physicalControlMode === "RECOVERY" && closureCase.status === "PAUSED") {
+      const driftReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+        where: {
+          sourceType_sourceId_sourceKey: {
+            sourceId: recoveryDriftSource.id,
+            sourceKey: recoveryDriftSource.key,
+            sourceType: recoveryDriftSource.type
+          }
+        }
+      });
+      const driftDetail = jsonObject(jsonObject(driftReceipt?.payloadSnapshot).detailSnapshot);
+      if (driftDetail.physicalCommandFingerprint !== physicalCommandFingerprint) {
+        throw closureSourceConflict();
+      }
+      return null;
+    }
     if (
       closureCase.physicalControlMode !== command.physicalControlMode ||
       (command.physicalControlMode === "VOLUNTARY_RETURN" &&
@@ -2218,10 +2783,19 @@ export class SubscriptionClosureService {
     ) {
       throw serviceConflict("MANAGED_RETURN_AUTHORITY_NOT_FOUND");
     }
-    const receiptSource = physicalSource(
-      closureCase.id,
-      `physical-receipt:${command.physicalControlMode}`
-    );
+    if (closureCase.status === "RETURN_INSPECTION") {
+      assertPhysicalReceiptObservedAuthority(observed, command);
+      assertExactPhysicalReceiptReplay(observed, command, receiptSource);
+      return Object.freeze({ vehicleReturnId: observed.vehicleReturn!.id });
+    }
+    if (command.physicalControlMode === "RECOVERY" && !this.assetAccounting) {
+      throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
+    }
+    const recoveryClock =
+      command.physicalControlMode === "RECOVERY" ? await readDatabaseClock(tx) : null;
+    const observedRecovery = recoveryClock
+      ? await resolveRecoveryApprovalAuthority(tx, closureCase.id, recoveryClock)
+      : null;
     const periodSource = physicalSource(
       closureCase.id,
       `physical-period-close:${command.physicalControlMode}`
@@ -2246,6 +2820,8 @@ export class SubscriptionClosureService {
     let workOrderCapability: AssetOperationsTransactionCapability | undefined;
     let restrictionCapability: AssetOperationsTransactionCapability | undefined;
     let recoveryReleaseCapability: AssetOperationsTransactionCapability | undefined;
+    let recoveryApprovalCapability: AssetAccountingTransactionCapability | undefined;
+    let recoveryDriftSourceCapability: PreparedClosureSourceCapability | undefined;
     let mileageCapability: VehicleMileageTransactionCapability | undefined;
     const preparations = [
       {
@@ -2295,8 +2871,35 @@ export class SubscriptionClosureService {
         },
         source: restrictionSource
       },
-      ...(observed.recoveryRestriction
+      ...(command.physicalControlMode === "RECOVERY"
         ? [
+            {
+              prepare: async () => {
+                const approval = observed.recoveryApprovals[0];
+                if (!approval) throw serviceConflict("AUTHORITY_MISMATCH");
+                recoveryApprovalCapability =
+                  await this.assetAccounting!.prepareCallerOwnedTransaction(
+                    tx,
+                    physicalSource(
+                      closureCase.id,
+                      `physical-recovery-approval:${approval.id}:${approval.version}`
+                    )
+                  );
+              },
+              source: physicalSource(
+                closureCase.id,
+                `physical-recovery-approval:${observed.recoveryApprovals[0]?.id ?? closureCase.id}:${observed.recoveryApprovals[0]?.version ?? 0}`
+              )
+            },
+            {
+              prepare: async () => {
+                recoveryDriftSourceCapability = await this.repository.prepareSourceInTransaction(
+                  tx,
+                  recoveryDriftSource
+                );
+              },
+              source: recoveryDriftSource
+            },
             {
               prepare: async () => {
                 recoveryReleaseCapability =
@@ -2319,12 +2922,14 @@ export class SubscriptionClosureService {
       !workOrderCapability ||
       !restrictionCapability ||
       !mileageCapability ||
-      (observed.recoveryRestriction && !recoveryReleaseCapability)
+      (command.physicalControlMode === "RECOVERY" && !recoveryReleaseCapability) ||
+      (command.physicalControlMode === "RECOVERY" && !recoveryApprovalCapability) ||
+      (command.physicalControlMode === "RECOVERY" && !recoveryDriftSourceCapability)
     ) {
       throw serviceConflict("MANAGED_RETURN_CAPABILITY_INVALID");
     }
 
-    assertPhysicalReceiptObservedAuthority(observed, command);
+    assertPhysicalReceiptAuthorityShape(observed, command);
     const workOrder = observed.workOrder!;
     const period = observed.period!;
     const workOrderAuthority = {
@@ -2336,19 +2941,20 @@ export class SubscriptionClosureService {
       vehicleId: workOrder.vehicleId,
       workOrderId: workOrder.id
     };
-    const recoveryReleaseCommand = observed.recoveryRestriction
-      ? {
-          occurredAt: command.returnedAt,
-          releaseReason: "RECOVERY_PHYSICAL_CONTROL_CONFIRMED",
-          releaseSnapshot: {
-            closureCaseId: closureCase.id,
-            vehicleReturnId: observed.vehicleReturn!.id
-          },
-          restrictionId: observed.recoveryRestriction.id,
-          source: recoveryReleaseSource,
-          targetStatus: VehicleOperationalRestrictionStatus.RELEASED
-        }
-      : null;
+    const recoveryReleaseCommand =
+      command.physicalControlMode === "RECOVERY"
+        ? {
+            occurredAt: command.returnedAt,
+            releaseReason: "RECOVERY_PHYSICAL_CONTROL_CONFIRMED",
+            releaseSnapshot: {
+              closureCaseId: closureCase.id,
+              vehicleReturnId: observed.vehicleReturn!.id
+            },
+            restrictionId: observed.recoveryRestriction!.id,
+            source: recoveryReleaseSource,
+            targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+          }
+        : null;
     const periodCommand = {
       confirmedAt: command.returnedAt.toISOString(),
       endedAt: command.returnedAt.toISOString(),
@@ -2434,11 +3040,56 @@ export class SubscriptionClosureService {
         command.physicalControlMode === "RECOVERY"
           ? ("RECOVERY_IN_PROGRESS" as const)
           : ("PREPARING_RETURN" as const),
-      expectedVersion:
-        closureCase.status === "RETURN_INSPECTION" ? closureCase.version - 1 : closureCase.version,
+      expectedVersion: closureCase.version,
       occurredAt: command.returnedAt,
       source: receiptSource
     };
+    const recoveryApproval =
+      command.physicalControlMode === "RECOVERY" ? observed.recoveryApprovals[0] : null;
+    const recoveryApprovalSource = recoveryApproval
+      ? physicalSource(
+          closureCase.id,
+          `physical-recovery-approval:${recoveryApproval.id}:${recoveryApproval.version}`
+        )
+      : null;
+    const recoveryApprovalCommand =
+      recoveryApproval && observedRecovery && recoveryApprovalSource
+        ? {
+            approvalId: recoveryApproval.id,
+            exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+            expectedVersion: recoveryApproval.version,
+            expiredAt: command.returnedAt,
+            expiryReason: "Recovery authority facts changed before physical receipt.",
+            source: recoveryApprovalSource,
+            subject: recoveryApprovalSubject(closureCase.id)
+          }
+        : null;
+    const recoveryApprovalContext = recoveryApprovalSource
+      ? {
+          actorId: command.actorId,
+          idempotencyKey: recoveryApprovalSource.key,
+          permissions: [ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST]
+        }
+      : null;
+    const recoveryDriftEventCommand = observedRecovery
+      ? {
+          actorId: command.actorId,
+          afterStatus: "PAUSED" as const,
+          closureCaseId: closureCase.id,
+          detailSnapshot: {
+            approvalId: recoveryApproval?.id ?? null,
+            pausedFromStatus: "RECOVERY_IN_PROGRESS",
+            physicalCommandFingerprint,
+            reason: "RECOVERY_AUTHORITY_DRIFT",
+            recoveryAction: "PAUSE"
+          },
+          eventType: "STATUS_TRANSITIONED" as const,
+          expectedStatus: "RECOVERY_IN_PROGRESS" as const,
+          expectedVersion: closureCase.version,
+          occurredAt: command.returnedAt,
+          source: recoveryDriftSource
+        }
+      : null;
     const periodAuthority = {
       contractId: period.contractId,
       contractSegmentId: period.contractSegmentId,
@@ -2448,56 +3099,129 @@ export class SubscriptionClosureService {
       vehicleId: period.vehicleId
     };
     const authoritySession = this.repository.createAuthoritySessionInTransaction(tx);
+    const requirements = [
+      this.assetFacts!.subscriptionCloseAuthorityRequirement(
+        authoritySession,
+        periodCommand,
+        periodAuthority
+      ),
+      this.assetOperations.workOrderTransitionAuthorityRequirement(
+        authoritySession,
+        transitionCommand,
+        command.actorId,
+        workOrderAuthority
+      ),
+      ...(recoveryReleaseCommand
+        ? [
+            this.assetOperations.restrictionReleaseAuthorityRequirement(
+              authoritySession,
+              recoveryReleaseCommand,
+              command.actorId,
+              workOrderAuthority,
+              recoveryReleaseCommand.restrictionId
+            )
+          ]
+        : []),
+      this.assetOperations.restrictionCreateAuthorityRequirement(
+        authoritySession,
+        restrictionCommand,
+        command.actorId,
+        workOrderAuthority
+      ),
+      this.vehicleMileage!.appendAuthorityRequirement(
+        authoritySession,
+        mileageCommand,
+        "physical-mileage"
+      ),
+      this.repository.bindAuthorityRequirement(
+        authoritySession,
+        subscriptionClosureEventAuthorityRequirement(eventCommand)
+      ),
+      ...(recoveryApprovalCommand && recoveryApprovalContext && observedRecovery
+        ? [
+            this.assetAccounting!.approvedExceptionAuthorityRequirement(
+              authoritySession,
+              recoveryApprovalCommand,
+              recoveryApprovalContext,
+              observedRecovery.authority,
+              "physical-recovery-approval"
+            )
+          ]
+        : []),
+      ...(recoveryDriftEventCommand
+        ? [
+            this.repository.bindAuthorityRequirement(
+              authoritySession,
+              subscriptionClosureEventAuthorityRequirement(
+                recoveryDriftEventCommand,
+                "physical-recovery-drift"
+              )
+            )
+          ]
+        : [])
+    ];
     const attestations = await this.repository.prepareAuthorityInTransaction(
       tx,
       authoritySession,
-      physicalReceiptLocks(observed, command.actorId),
       [
-        this.assetFacts!.subscriptionCloseAuthorityRequirement(
-          authoritySession,
-          periodCommand,
-          periodAuthority
-        ),
-        this.assetOperations.workOrderTransitionAuthorityRequirement(
-          authoritySession,
-          transitionCommand,
-          command.actorId,
-          workOrderAuthority
-        ),
-        ...(recoveryReleaseCommand
-          ? [
-              this.assetOperations.restrictionReleaseAuthorityRequirement(
-                authoritySession,
-                recoveryReleaseCommand,
-                command.actorId,
-                workOrderAuthority,
-                recoveryReleaseCommand.restrictionId
-              )
-            ]
+        ...physicalReceiptLocks(observed, command.actorId),
+        ...(observedRecovery
+          ? [...observedRecovery.contextLocks, ...observedRecovery.documentLocks]
           : []),
-        this.assetOperations.restrictionCreateAuthorityRequirement(
-          authoritySession,
-          restrictionCommand,
-          command.actorId,
-          workOrderAuthority
-        ),
-        this.vehicleMileage!.appendAuthorityRequirement(
-          authoritySession,
-          mileageCommand,
-          "physical-mileage"
-        ),
-        this.repository.bindAuthorityRequirement(
-          authoritySession,
-          subscriptionClosureEventAuthorityRequirement(eventCommand)
-        )
-      ]
+        ...requirements.flatMap(({ locks }) => locks)
+      ],
+      requirements
     );
     const locked = await loadPhysicalReceiptAuthority(tx, command.orderId);
     if (physicalReceiptAuthorityIdentity(observed) !== physicalReceiptAuthorityIdentity(locked)) {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
-    if (locked.closureCase!.status === "RETURN_INSPECTION") {
-      assertExactPhysicalReceiptReplay(locked, command, receiptSource);
+    if (
+      observedRecovery &&
+      recoveryClock &&
+      recoveryApprovalCommand &&
+      recoveryApprovalContext &&
+      recoveryDriftEventCommand
+    ) {
+      const lockedRecovery = await resolveRecoveryApprovalAuthority(
+        tx,
+        closureCase.id,
+        recoveryClock
+      );
+      if (
+        canonicalSubscriptionClosureJson(lockedRecovery.authority) !==
+        canonicalSubscriptionClosureJson(observedRecovery.authority)
+      ) {
+        throw serviceConflict("AUTHORITY_MISMATCH");
+      }
+      const preparedApproval =
+        await this.assetAccounting!.attestPreparedApprovedExceptionInTransaction(
+          tx,
+          authoritySession,
+          recoveryApprovalCommand,
+          recoveryApprovalContext,
+          lockedRecovery.authority,
+          requiredValue<AssetAccountingTransactionCapability>(recoveryApprovalCapability),
+          requiredAttestation(attestations, "physical-recovery-approval"),
+          "physical-recovery-approval"
+        );
+      const currentApproval =
+        await this.assetAccounting!.requirePreparedApprovedExceptionInTransaction(
+          tx,
+          preparedApproval
+        );
+      if (!currentApproval || !lockedRecovery.contextActionable) {
+        await this.repository.appendPreparedEventInTransaction(
+          tx,
+          authoritySession,
+          recoveryDriftEventCommand,
+          requiredValue<PreparedClosureSourceCapability>(recoveryDriftSourceCapability),
+          requiredAttestation(attestations, "physical-recovery-drift"),
+          this.closureAudit(command.actorId),
+          "physical-recovery-drift"
+        );
+        return null;
+      }
     }
     assertPhysicalReceiptObservedAuthority(locked, command);
     if (command.physicalControlMode === "RECOVERY") {
@@ -3537,6 +4261,499 @@ export class SubscriptionClosureService {
   }
 }
 
+type RecoveryAuthorityIds = Readonly<{
+  archivedRevisionId: string;
+  esignEnvelopeId: string;
+  esignProviderTaskId: string;
+  esignTaskId: string;
+  generatedRevisionId: string;
+  signedFileId: string;
+  signedRevisionId: string;
+  sourceFileId: string;
+}>;
+
+type RecoveryAuthoritySources = readonly [
+  SubscriptionClosureSource,
+  SubscriptionClosureSource,
+  SubscriptionClosureSource
+];
+
+async function resolveRecoveryAuthorityDraft(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  clockBoundary: Date
+) {
+  const [closureCase, assessment, currentDocument] = await Promise.all([
+    tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } }),
+    tx.subscriptionClosureEvent.findFirst({
+      orderBy: [{ sequence: "desc" }, { id: "desc" }],
+      where: { closureCaseId, eventType: "RECOVERY_ESCALATED" }
+    }),
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId,
+          documentType: "RECOVERY_AUTHORITY"
+        }
+      }
+    })
+  ]);
+  const assessmentDetail = jsonObject(assessment?.detailSnapshot);
+  const plannedWorkOrderId = assessmentDetail.plannedRecoveryAssetWorkOrderId;
+  if (
+    !closureCase ||
+    !assessment ||
+    typeof plannedWorkOrderId !== "string" ||
+    canonicalUuid(plannedWorkOrderId) !== plannedWorkOrderId
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const context = await resolveRecoveryContextSnapshot(
+    tx,
+    closureCase,
+    assessmentDetail,
+    clockBoundary
+  );
+  return Object.freeze({
+    assessmentDetail,
+    assessmentId: assessment.id,
+    closureCase,
+    contextActionable: context.actionable,
+    contextLocks: context.locks,
+    contextSnapshotHash: context.snapshotHash,
+    currentDocumentId: currentDocument?.documentRevisionId ?? null,
+    plannedWorkOrderId
+  });
+}
+
+function assertRecoveryAuthorityDraftActionable(
+  draft: Awaited<ReturnType<typeof resolveRecoveryAuthorityDraft>>
+) {
+  if (
+    draft.closureCase.physicalControlMode !== "RECOVERY" ||
+    draft.closureCase.finalDisposition !== "TERMINATE" ||
+    draft.closureCase.status !== "RECOVERY_ASSESSMENT_PENDING" ||
+    draft.closureCase.recoveryAssetWorkOrderId !== null ||
+    draft.currentDocumentId !== null ||
+    !draft.contextActionable
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+}
+
+function recoveryAuthorityDraftIdentity(
+  draft: Awaited<ReturnType<typeof resolveRecoveryAuthorityDraft>>
+) {
+  return canonicalSubscriptionClosureJson({
+    assessmentDetail: draft.assessmentDetail,
+    assessmentId: draft.assessmentId,
+    closureCase: draft.closureCase,
+    contextActionable: draft.contextActionable,
+    contextSnapshotHash: draft.contextSnapshotHash,
+    currentDocumentId: draft.currentDocumentId,
+    plannedWorkOrderId: draft.plannedWorkOrderId
+  } as never);
+}
+
+function recoveryAuthorityDocumentSnapshot(
+  draft: Awaited<ReturnType<typeof resolveRecoveryAuthorityDraft>>
+) {
+  return Object.freeze({
+    caseNo: draft.closureCase.caseNo,
+    closureCaseId: draft.closureCase.id,
+    contractId: draft.closureCase.contractId,
+    customerId: draft.closureCase.customerId,
+    documentType: "RECOVERY_AUTHORITY",
+    finalDisposition: "TERMINATE",
+    orderId: draft.closureCase.orderId,
+    physicalControlMode: "RECOVERY",
+    recoveryAssetWorkOrderId: draft.plannedWorkOrderId,
+    recoveryWorkOrderType: "RECOVERY",
+    vehicleId: draft.closureCase.vehicleId,
+    vehicleReturnId: draft.closureCase.vehicleReturnId
+  } as const);
+}
+
+function recoveryAuthorityIds(closureCaseId: string, idempotencyKey: string): RecoveryAuthorityIds {
+  const id = (label: string) =>
+    stableRecoveryAuthorityId(`${closureCaseId}\u0000${idempotencyKey}\u0000${label}`);
+  return Object.freeze({
+    archivedRevisionId: id("revision-archived"),
+    esignEnvelopeId: id("esign-envelope"),
+    esignProviderTaskId: id("esign-provider-task"),
+    esignTaskId: id("esign-task"),
+    generatedRevisionId: id("revision-generated"),
+    signedFileId: id("file-signed"),
+    signedRevisionId: id("revision-signed"),
+    sourceFileId: id("file-source")
+  });
+}
+
+function recoveryAuthoritySources(
+  closureCaseId: string,
+  idempotencyKey: string
+): RecoveryAuthoritySources {
+  return Object.freeze([
+    physicalSource(closureCaseId, `recovery-authority:${idempotencyKey}:generated`),
+    physicalSource(closureCaseId, `recovery-authority:${idempotencyKey}:signed`),
+    physicalSource(closureCaseId, `recovery-authority:${idempotencyKey}:archived`)
+  ]) as RecoveryAuthoritySources;
+}
+
+function recoveryAuthorityDocumentCommands(
+  input: Readonly<{
+    actorId: string;
+    closureCaseId: string;
+    databaseClock: Date;
+    documentSnapshot: ReturnType<typeof recoveryAuthorityDocumentSnapshot>;
+    expectedVersion: number;
+    ids: RecoveryAuthorityIds;
+    signedFileHash: string;
+    sourceFileHash: string;
+    sources: RecoveryAuthoritySources;
+  }>
+) {
+  const common = {
+    actorId: input.actorId,
+    closureCaseId: input.closureCaseId,
+    contractESignTaskId: input.ids.esignTaskId,
+    documentSnapshot: input.documentSnapshot,
+    documentType: "RECOVERY_AUTHORITY" as const,
+    generatedAt: input.databaseClock,
+    handoverWorkOrderId: null,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.ids.sourceFileId,
+    vehicleReturnId: null
+  };
+  return Object.freeze({
+    archived: Object.freeze({
+      ...common,
+      archivedAt: input.databaseClock,
+      archivedBy: input.actorId,
+      documentRevisionId: input.ids.archivedRevisionId,
+      expectedCurrentRevisionId: input.ids.signedRevisionId,
+      expectedVersion: input.expectedVersion + 2,
+      signedAt: input.databaseClock,
+      signedBy: input.actorId,
+      signedFileHash: input.signedFileHash,
+      signedFileId: input.ids.signedFileId,
+      source: input.sources[2],
+      stage: "ARCHIVED" as const
+    }),
+    generated: Object.freeze({
+      ...common,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: input.ids.generatedRevisionId,
+      expectedCurrentRevisionId: null,
+      expectedVersion: input.expectedVersion,
+      signedAt: null,
+      signedBy: null,
+      signedFileHash: null,
+      signedFileId: null,
+      source: input.sources[0],
+      stage: "GENERATED" as const
+    }),
+    signed: Object.freeze({
+      ...common,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: input.ids.signedRevisionId,
+      expectedCurrentRevisionId: input.ids.generatedRevisionId,
+      expectedVersion: input.expectedVersion + 1,
+      signedAt: input.databaseClock,
+      signedBy: input.actorId,
+      signedFileHash: input.signedFileHash,
+      signedFileId: input.ids.signedFileId,
+      source: input.sources[1],
+      stage: "SIGNED" as const
+    })
+  });
+}
+
+function recoveryAuthorityEsignRequest(
+  input: Readonly<{
+    documentSnapshotHash: string;
+    ids: RecoveryAuthorityIds;
+    sourceFileHash: string;
+    sources: RecoveryAuthoritySources;
+  }>
+) {
+  return Object.freeze({
+    archivedRevisionId: input.ids.archivedRevisionId,
+    documentSnapshotHash: input.documentSnapshotHash,
+    documentType: "RECOVERY_AUTHORITY",
+    generatedRevisionId: input.ids.generatedRevisionId,
+    lifecycleSources: input.sources,
+    signedRevisionId: input.ids.signedRevisionId,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.ids.sourceFileId
+  });
+}
+
+function recoveryAuthorityEsignResponse(
+  input: Readonly<{
+    actorId: string;
+    completedAt: Date;
+    ids: RecoveryAuthorityIds;
+    signedFileHash: string;
+  }>
+) {
+  return Object.freeze({
+    completedAt: input.completedAt,
+    completedBy: input.actorId,
+    providerEnvelopeId: input.ids.esignEnvelopeId,
+    providerTaskId: input.ids.esignProviderTaskId,
+    signedFileHash: input.signedFileHash,
+    signedFileId: input.ids.signedFileId
+  });
+}
+
+function recoveryAuthoritySignedEnvelope(
+  input: Readonly<{
+    actorId: string;
+    completedAt: Date;
+    documentSnapshotHash: string;
+    signedFileId: string;
+    sourceFileHash: string;
+    sourceFileId: string;
+    sources: RecoveryAuthoritySources;
+  }>
+) {
+  return Object.freeze({
+    completedAt: input.completedAt,
+    documentSnapshotHash: input.documentSnapshotHash,
+    documentType: "RECOVERY_AUTHORITY",
+    lifecycleSources: input.sources,
+    signedBy: input.actorId,
+    signedFileId: input.signedFileId,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.sourceFileId
+  });
+}
+
+async function validateRecoveryAuthorityChainInTransaction(
+  tx: Prisma.TransactionClient,
+  command: ArchiveRecoveryAuthorityInput,
+  ids: RecoveryAuthorityIds,
+  sources: RecoveryAuthoritySources
+): Promise<Omit<ArchivedRecoveryAuthority, "wrote"> | null> {
+  const revisions = await tx.subscriptionClosureDocumentRevision.findMany({
+    orderBy: { revisionNumber: "asc" },
+    where: {
+      id: { in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId] }
+    }
+  });
+  if (revisions.length === 0) return null;
+  if (revisions.length !== 3) throw serviceConflict("AUTHORITY_MISMATCH");
+  const generated = revisions.find(({ id }) => id === ids.generatedRevisionId);
+  const signed = revisions.find(({ id }) => id === ids.signedRevisionId);
+  const archived = revisions.find(({ id }) => id === ids.archivedRevisionId);
+  if (!generated || !signed || !archived) throw serviceConflict("AUTHORITY_MISMATCH");
+  const draft = await resolveRecoveryAuthorityDraft(
+    tx,
+    command.closureCaseId,
+    generated.generatedAt
+  );
+  const documentSnapshot = recoveryAuthorityDocumentSnapshot(draft);
+  const canonicalDocument = canonicalSubscriptionClosureJson(documentSnapshot);
+  const documentHash = createHash("sha256").update(canonicalDocument).digest("hex");
+  const signedEnvelope = recoveryAuthoritySignedEnvelope({
+    actorId: command.actorId,
+    completedAt: signed.signedAt!,
+    documentSnapshotHash: documentHash,
+    signedFileId: ids.signedFileId,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId,
+    sources
+  });
+  const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
+  const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
+  const [current, sourceFile, signedFile, esignTask, receipts, events, audits] = await Promise.all([
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId: command.closureCaseId,
+          documentType: "RECOVERY_AUTHORITY"
+        }
+      }
+    }),
+    tx.fileObject.findUnique({ where: { id: ids.sourceFileId } }),
+    tx.fileObject.findUnique({ where: { id: ids.signedFileId } }),
+    tx.contractESignTask.findUnique({ where: { id: ids.esignTaskId } }),
+    tx.subscriptionClosureCommandReceipt.findMany({
+      where: {
+        sourceId: command.closureCaseId,
+        sourceKey: { in: sources.map(({ key }) => key) },
+        sourceType: sources[0].type
+      }
+    }),
+    tx.subscriptionClosureEvent.findMany({
+      where: {
+        sourceId: command.closureCaseId,
+        sourceKey: { in: sources.map(({ key }) => key) },
+        sourceType: sources[0].type
+      }
+    }),
+    tx.auditLog.findMany({
+      where: {
+        action: AuditAction.CREATE,
+        entityType: "subscription_closure_event",
+        module: "subscription_closure",
+        operatorId: command.actorId
+      }
+    })
+  ]);
+  const expectedSourceObjectKey = `subscription-closure/${command.closureCaseId}/${ids.generatedRevisionId}-recovery-authority.json`;
+  const expectedSignedObjectKey = `subscription-closure/${command.closureCaseId}/${ids.signedRevisionId}-recovery-authority.signed.json`;
+  const expectedSourceName = `${draft.closureCase.caseNo}-${ids.generatedRevisionId}-recovery-authority.json`;
+  const expectedSignedName = `${draft.closureCase.caseNo}-${ids.signedRevisionId}-recovery-authority.signed.json`;
+  const expectedRequest = recoveryAuthorityEsignRequest({
+    documentSnapshotHash: documentHash,
+    ids,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const expectedResponse = recoveryAuthorityEsignResponse({
+    actorId: command.actorId,
+    completedAt: signed.signedAt!,
+    ids,
+    signedFileHash
+  });
+  const sourceMatches = (revision: (typeof revisions)[number], sourceIndex: 0 | 1 | 2) =>
+    revision.sourceType === sources[sourceIndex].type &&
+    revision.sourceId === sources[sourceIndex].id &&
+    revision.sourceKey === sources[sourceIndex].key;
+  const commonRevisionMatches = (revision: (typeof revisions)[number]) =>
+    revision.closureCaseId === command.closureCaseId &&
+    revision.documentType === "RECOVERY_AUTHORITY" &&
+    revision.documentSnapshotHash === documentHash &&
+    canonicalSubscriptionClosureJson(revision.documentSnapshot as never) === canonicalDocument &&
+    revision.contractESignTaskId === ids.esignTaskId &&
+    revision.sourceFileId === ids.sourceFileId &&
+    revision.sourceFileHash === documentHash &&
+    revision.generatedBy === command.actorId &&
+    revision.generatedAt.getTime() === generated.generatedAt.getTime() &&
+    revision.vehicleReturnId === null &&
+    revision.handoverWorkOrderId === null;
+  const auditEventIds = new Set(
+    audits.map(({ entityId }) => entityId).filter((id): id is string => Boolean(id))
+  );
+  const eventBySource = new Map(events.map((event) => [event.sourceKey, event]));
+  const receiptBySource = new Map(receipts.map((receipt) => [receipt.sourceKey, receipt]));
+  const revisionTriples = [
+    [generated, sources[0], ids.generatedRevisionId, "GENERATED", null],
+    [signed, sources[1], ids.signedRevisionId, "SIGNED", ids.generatedRevisionId],
+    [archived, sources[2], ids.archivedRevisionId, "ARCHIVED", ids.signedRevisionId]
+  ] as const;
+  const lifecycleRecordsValid = revisionTriples.every(
+    ([revision, lifecycleSource, revisionId, stage, supersedesRevisionId], index) => {
+      const event = eventBySource.get(lifecycleSource.key);
+      const receipt = receiptBySource.get(lifecycleSource.key);
+      const payload = jsonObject(receipt?.payloadSnapshot);
+      const outcome = jsonObject(receipt?.outcomeSnapshot);
+      const detail = jsonObject(event?.detailSnapshot);
+      return (
+        commonRevisionMatches(revision) &&
+        sourceMatches(revision, index as 0 | 1 | 2) &&
+        revision.id === revisionId &&
+        revision.revisionNumber === index + 1 &&
+        revision.stage === stage &&
+        revision.supersedesRevisionId === supersedesRevisionId &&
+        receipt?.actorId === command.actorId &&
+        receipt.commandType === "CREATE_DOCUMENT_REVISION" &&
+        payload.actorId === command.actorId &&
+        payload.closureCaseId === command.closureCaseId &&
+        payload.documentRevisionId === revisionId &&
+        payload.stage === stage &&
+        outcome.id === revisionId &&
+        outcome.stage === stage &&
+        event?.actorId === command.actorId &&
+        event.eventType === "DOCUMENT_REVISION_CREATED" &&
+        detail.documentRevisionId === revisionId &&
+        detail.documentType === "RECOVERY_AUTHORITY" &&
+        detail.revisionNumber === index + 1 &&
+        auditEventIds.has(event.id)
+      );
+    }
+  );
+  if (
+    !lifecycleRecordsValid ||
+    current?.documentRevisionId !== ids.archivedRevisionId ||
+    generated.stage !== "GENERATED" ||
+    generated.signedAt !== null ||
+    generated.signedBy !== null ||
+    generated.signedFileId !== null ||
+    generated.signedFileHash !== null ||
+    generated.archivedAt !== null ||
+    generated.archivedBy !== null ||
+    signed.stage !== "SIGNED" ||
+    signed.signedAt === null ||
+    signed.signedBy !== command.actorId ||
+    signed.signedFileId !== ids.signedFileId ||
+    signed.signedFileHash !== signedFileHash ||
+    signed.archivedAt !== null ||
+    signed.archivedBy !== null ||
+    archived.stage !== "ARCHIVED" ||
+    archived.signedAt?.getTime() !== signed.signedAt.getTime() ||
+    archived.signedBy !== command.actorId ||
+    archived.signedFileId !== ids.signedFileId ||
+    archived.signedFileHash !== signedFileHash ||
+    archived.archivedAt?.getTime() !== signed.signedAt.getTime() ||
+    archived.archivedBy !== command.actorId ||
+    !sourceFile ||
+    sourceFile.bucket !== "subscription-closure" ||
+    sourceFile.objectKey !== expectedSourceObjectKey ||
+    sourceFile.originalName !== expectedSourceName ||
+    sourceFile.mimeType !== "application/json" ||
+    sourceFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalDocument)) ||
+    sourceFile.uploadedBy !== command.actorId ||
+    !signedFile ||
+    signedFile.bucket !== "subscription-closure" ||
+    signedFile.objectKey !== expectedSignedObjectKey ||
+    signedFile.originalName !== expectedSignedName ||
+    signedFile.mimeType !== "application/json" ||
+    signedFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalSignedEnvelope)) ||
+    signedFile.uploadedBy !== command.actorId ||
+    !esignTask ||
+    esignTask.deletedAt !== null ||
+    esignTask.taskStatus !== ESignTaskStatus.COMPLETED ||
+    esignTask.completedAt?.getTime() !== signed.signedAt.getTime() ||
+    esignTask.contractId !== draft.closureCase.contractId ||
+    esignTask.orderId !== draft.closureCase.orderId ||
+    esignTask.customerId !== draft.closureCase.customerId ||
+    esignTask.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
+    esignTask.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    esignTask.provider !== ESignProviderType.OTHER ||
+    esignTask.providerEnvelopeId !== ids.esignEnvelopeId ||
+    esignTask.providerTaskId !== ids.esignProviderTaskId ||
+    esignTask.sourceType !== sources[2].type ||
+    esignTask.sourceId !== sources[2].id ||
+    esignTask.sourceKey !== sources[2].key ||
+    esignTask.documentObjectKey !== expectedSourceObjectKey ||
+    esignTask.signedDocumentObjectKey !== expectedSignedObjectKey ||
+    canonicalSubscriptionClosureJson(esignTask.requestSnapshot as never) !==
+      canonicalSubscriptionClosureJson(expectedRequest) ||
+    canonicalSubscriptionClosureJson(esignTask.responseSnapshot as never) !==
+      canonicalSubscriptionClosureJson(expectedResponse)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return Object.freeze({
+    archivedRevisionId: ids.archivedRevisionId,
+    generatedRevisionId: ids.generatedRevisionId,
+    signedFileHash,
+    signedFileId: ids.signedFileId,
+    signedRevisionId: ids.signedRevisionId
+  });
+}
+
+function stableRecoveryAuthorityId(value: string): string {
+  const hex = createHash("sha256").update(`recovery-authority\u0000${value}`).digest("hex");
+  const variant = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderId: string) {
   const [closureCase, order, vehicleReturn, lease, period] = await Promise.all([
     tx.subscriptionClosureCase.findUnique({ where: { orderId } }),
@@ -3556,7 +4773,7 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
   const recoveryRestrictionSource = closureCase
     ? physicalSource(closureCase.id, "recovery-restriction")
     : null;
-  const [vehicle, workOrder, currentDocument, managedHandovers, recoveryRestriction] =
+  const [vehicle, workOrder, currentDocument, managedHandovers, recoveryRestrictions] =
     await Promise.all([
       order?.vehicleId ? tx.vehicle.findUnique({ where: { id: order.vehicleId } }) : null,
       workOrderId ? tx.assetWorkOrder.findUnique({ where: { id: workOrderId } }) : null,
@@ -3581,14 +4798,24 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
             where: { handoverType: "RETURN_INBOUND", orderId }
           }),
       closureCase?.physicalControlMode === "RECOVERY" && recoveryRestrictionSource
-        ? tx.vehicleOperationalRestriction.findFirst({
+        ? tx.vehicleOperationalRestriction.findMany({
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             where: {
-              startSourceId: recoveryRestrictionSource.id,
-              startSourceKey: recoveryRestrictionSource.key,
-              startSourceType: recoveryRestrictionSource.type
+              OR: [
+                {
+                  startSourceId: recoveryRestrictionSource.id,
+                  startSourceKey: recoveryRestrictionSource.key,
+                  startSourceType: recoveryRestrictionSource.type
+                },
+                {
+                  restrictionType: VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS,
+                  vehicleId: closureCase.vehicleId,
+                  workOrderId
+                }
+              ]
             }
           })
-        : null
+        : []
     ]);
   const revision = currentDocument?.documentRevision ?? null;
   const receiptSource = closureCase
@@ -3661,7 +4888,8 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
     period,
     recoveryApprovals,
     recoveryEvidence,
-    recoveryRestriction,
+    recoveryRestriction: recoveryRestrictions.length === 1 ? recoveryRestrictions[0]! : null,
+    recoveryRestrictions,
     receiptEvent,
     receiptMileage,
     returnDamages,
@@ -3675,7 +4903,7 @@ async function loadPhysicalReceiptAuthority(tx: Prisma.TransactionClient, orderI
 
 type PhysicalReceiptAuthority = Awaited<ReturnType<typeof loadPhysicalReceiptAuthority>>;
 
-function assertPhysicalReceiptObservedAuthority(
+function assertPhysicalReceiptAuthorityShape(
   authority: PhysicalReceiptAuthority,
   command: ConfirmManagedPhysicalReceiptInput
 ) {
@@ -3685,6 +4913,7 @@ function assertPhysicalReceiptObservedAuthority(
     order,
     period,
     recoveryRestriction,
+    recoveryRestrictions,
     vehicle,
     vehicleReturn,
     workOrder
@@ -3719,7 +4948,80 @@ function assertPhysicalReceiptObservedAuthority(
     workOrder.vehicleId !== order.vehicleId ||
     period.orderId !== order.id ||
     period.vehicleId !== order.vehicleId ||
-    period.customerId !== order.customerId
+    period.customerId !== order.customerId ||
+    (command.physicalControlMode === "RECOVERY" && recoveryRestrictions.length !== 1) ||
+    (command.physicalControlMode !== "RECOVERY" && recoveryRestrictions.length !== 0)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  if (recoveryRestriction) {
+    const replay = closureCase.status === "RETURN_INSPECTION";
+    const expectedSource = physicalSource(closureCase.id, "recovery-restriction");
+    if (
+      command.physicalControlMode !== "RECOVERY" ||
+      recoveryRestriction.restrictionType !==
+        VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS ||
+      recoveryRestriction.vehicleId !== vehicle.id ||
+      recoveryRestriction.workOrderId !== workOrder.id ||
+      recoveryRestriction.startSourceId !== expectedSource.id ||
+      recoveryRestriction.startSourceKey !== expectedSource.key ||
+      recoveryRestriction.startSourceType !== expectedSource.type ||
+      (!replay && recoveryRestriction.status !== VehicleOperationalRestrictionStatus.ACTIVE) ||
+      (replay && recoveryRestriction.status !== VehicleOperationalRestrictionStatus.RELEASED)
+    ) {
+      throw serviceConflict("AUTHORITY_MISMATCH");
+    }
+  }
+}
+
+function assertPhysicalReceiptObservedAuthority(
+  authority: PhysicalReceiptAuthority,
+  command: ConfirmManagedPhysicalReceiptInput
+) {
+  const {
+    closureCase,
+    lease,
+    order,
+    period,
+    recoveryRestriction,
+    recoveryRestrictions,
+    vehicle,
+    vehicleReturn,
+    workOrder
+  } = authority;
+  if (
+    !closureCase ||
+    !order ||
+    order.deletedAt ||
+    !order.vehicleId ||
+    !order.contractId ||
+    !vehicle ||
+    vehicle.deletedAt ||
+    !vehicleReturn ||
+    vehicleReturn.deletedAt ||
+    !lease ||
+    lease.deletedAt ||
+    !period ||
+    !workOrder ||
+    closureCase.orderId !== order.id ||
+    closureCase.vehicleId !== order.vehicleId ||
+    closureCase.contractId !== order.contractId ||
+    closureCase.customerId !== order.customerId ||
+    vehicleReturn.id !== closureCase.vehicleReturnId ||
+    vehicleReturn.orderId !== order.id ||
+    vehicleReturn.vehicleId !== order.vehicleId ||
+    vehicleReturn.customerId !== order.customerId ||
+    workOrder.id !==
+      (command.physicalControlMode === "RECOVERY"
+        ? closureCase.recoveryAssetWorkOrderId
+        : closureCase.returnAssetWorkOrderId) ||
+    workOrder.orderId !== order.id ||
+    workOrder.vehicleId !== order.vehicleId ||
+    period.orderId !== order.id ||
+    period.vehicleId !== order.vehicleId ||
+    period.customerId !== order.customerId ||
+    (command.physicalControlMode === "RECOVERY" && recoveryRestrictions.length !== 1) ||
+    (command.physicalControlMode !== "RECOVERY" && recoveryRestrictions.length !== 0)
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
@@ -4031,15 +5333,11 @@ function physicalReceiptLocks(
     { id: authority.vehicleReturn!.id, mode: "UPDATE", table: "vehicle_return" },
     { id: authority.period!.id, mode: "UPDATE", table: "vehicle_subscription_period" },
     { id: authority.workOrder!.id, mode: "UPDATE", table: "asset_work_order" },
-    ...(authority.recoveryRestriction
-      ? [
-          {
-            id: authority.recoveryRestriction.id,
-            mode: "UPDATE" as const,
-            table: "vehicle_operational_restriction" as const
-          }
-        ]
-      : []),
+    ...authority.recoveryRestrictions.map(({ id }) => ({
+      id,
+      mode: "UPDATE" as const,
+      table: "vehicle_operational_restriction" as const
+    })),
     ...(authority.workOrder!.relatedWorkOrderId
       ? [
           {
@@ -4090,6 +5388,7 @@ function physicalReceiptAuthorityIdentity(authority: PhysicalReceiptAuthority) {
     recoveryApprovals: authority.recoveryApprovals,
     recoveryEvidence: authority.recoveryEvidence,
     recoveryRestriction: authority.recoveryRestriction,
+    recoveryRestrictions: authority.recoveryRestrictions,
     receiptEvent: authority.receiptEvent,
     receiptMileage: authority.receiptMileage,
     returnDamages: authority.returnDamages,
@@ -4841,6 +6140,20 @@ function requiredAttestation(
   return attestation;
 }
 
+function requiredPreparedSource(
+  capabilities: ReadonlyMap<string, PreparedClosureSourceCapability>,
+  key: string
+) {
+  const capability = capabilities.get(key);
+  if (!capability) throw serviceConflict("CAPABILITY_INVALID");
+  return capability;
+}
+
+function requiredValue<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) throw serviceConflict("CAPABILITY_INVALID");
+  return value;
+}
+
 const MANAGED_SETTLEMENT_INPUT_KEYS = new Set([
   "actorId",
   "closureCaseId",
@@ -5235,6 +6548,20 @@ function normalizeRecoveryJobInput(input: AssessRecoveryJobInput): AssessRecover
   });
 }
 
+function normalizeArchiveRecoveryAuthority(
+  input: ArchiveRecoveryAuthorityInput
+): ArchiveRecoveryAuthorityInput {
+  const idempotencyKey = normalizeRecoveryTextInput(
+    input.idempotencyKey,
+    input.idempotencyKey
+  ).idempotencyKey;
+  return Object.freeze({
+    actorId: canonicalUuid(input.actorId),
+    closureCaseId: canonicalUuid(input.closureCaseId),
+    idempotencyKey
+  });
+}
+
 function normalizeRecoveryBusinessAction(
   input: RecoveryBusinessActionInput
 ): RecoveryBusinessActionInput {
@@ -5357,10 +6684,86 @@ function recoveryApprovalSubject(closureCaseId: string) {
   };
 }
 
+function recoveryApprovalCommandFingerprint(
+  command: RequestRecoveryExecutionApprovalInput | DecideRecoveryExecutionApprovalInput
+) {
+  return createHash("sha256")
+    .update(canonicalSubscriptionClosureJson(command as never))
+    .digest("hex");
+}
+
+async function replayRecoveryApprovalOrchestration(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{
+    accountingSource: SubscriptionClosureSource;
+    commandFingerprint: string;
+    eventSource: SubscriptionClosureSource;
+    kind: "REQUEST" | "DECISION";
+  }>
+) {
+  const [accountingReceipt, eventReceipt] = await Promise.all([
+    tx.assetAccountingCommandReceipt.findUnique({
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceId: input.accountingSource.id,
+          sourceKey: input.accountingSource.key,
+          sourceType: input.accountingSource.type
+        }
+      }
+    }),
+    tx.subscriptionClosureCommandReceipt.findUnique({
+      where: {
+        sourceType_sourceId_sourceKey: {
+          sourceId: input.eventSource.id,
+          sourceKey: input.eventSource.key,
+          sourceType: input.eventSource.type
+        }
+      }
+    })
+  ]);
+  if (!accountingReceipt && !eventReceipt) return null;
+  const payload = jsonObject(eventReceipt?.payloadSnapshot);
+  const detail = jsonObject(payload.detailSnapshot);
+  const storedEventSource = jsonObject(payload.source);
+  const approvalId = detail.approvalId;
+  const expectedAccountingCommand =
+    input.kind === "REQUEST" ? "EXCEPTION_REQUEST" : "EXCEPTION_DECIDE";
+  const expectedAction = input.kind === "REQUEST" ? "REQUEST_APPROVAL" : "DECIDE_APPROVAL";
+  const expectedStatus =
+    input.kind === "REQUEST"
+      ? "RECOVERY_APPROVAL_PENDING"
+      : payload.afterStatus === "RECOVERY_APPROVED"
+        ? "RECOVERY_APPROVED"
+        : payload.afterStatus === "REJECTED"
+          ? "REJECTED"
+          : null;
+  if (
+    !accountingReceipt ||
+    !eventReceipt ||
+    accountingReceipt.commandType !== expectedAccountingCommand ||
+    accountingReceipt.approvalId !== approvalId ||
+    accountingReceipt.actorId !== payload.actorId ||
+    eventReceipt.commandType !== "TRANSITION_CASE" ||
+    eventReceipt.actorId !== payload.actorId ||
+    storedEventSource.type !== input.eventSource.type ||
+    storedEventSource.id !== input.eventSource.id ||
+    storedEventSource.key !== input.eventSource.key ||
+    detail.recoveryAction !== expectedAction ||
+    detail.recoveryApprovalCommandFingerprint !== input.commandFingerprint ||
+    typeof approvalId !== "string" ||
+    !expectedStatus
+  ) {
+    throw closureSourceConflict();
+  }
+  return Object.freeze({ approvalId, status: expectedStatus });
+}
+
 async function resolveRecoveryApprovalAuthority(
   tx: Prisma.TransactionClient,
-  closureCaseId: string
+  closureCaseId: string,
+  clockBoundary?: Date
 ) {
+  const now = clockBoundary ?? (await readDatabaseClock(tx));
   const [closureCase, assessment, currentDocument] = await Promise.all([
     tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } }),
     tx.subscriptionClosureEvent.findFirst({
@@ -5399,7 +6802,20 @@ async function resolveRecoveryApprovalAuthority(
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
-  const recoveryContext = await resolveRecoveryContextSnapshot(tx, closureCase, assessmentDetail);
+  const productionChain = await validateCurrentRecoveryAuthorityChainInTransaction(
+    tx,
+    closureCase.id,
+    revision
+  );
+  const recoveryContext = await resolveRecoveryContextSnapshot(
+    tx,
+    closureCase,
+    assessmentDetail,
+    now
+  );
+  const documentActorIds = [
+    ...new Set([revision.generatedBy, revision.signedBy, revision.archivedBy])
+  ].filter((id): id is string => Boolean(id));
   return Object.freeze({
     authority: Object.freeze({
       closureCaseId: closureCase.id,
@@ -5412,8 +6828,88 @@ async function resolveRecoveryApprovalAuthority(
     }),
     closureCase,
     contextActionable: recoveryContext.actionable,
-    contextLocks: recoveryContext.locks
+    contextLocks: recoveryContext.locks,
+    documentLocks: Object.freeze([
+      ...(productionChain
+        ? [
+            productionChain.ids.generatedRevisionId,
+            productionChain.ids.signedRevisionId,
+            productionChain.ids.archivedRevisionId
+          ]
+        : [revision.id]
+      ).map((id) => ({
+        id,
+        mode: "SHARE" as const,
+        table: "subscription_closure_document_revision" as const
+      })),
+      { id: revision.sourceFileId, mode: "SHARE" as const, table: "file_object" as const },
+      ...(revision.signedFileId
+        ? [
+            {
+              id: revision.signedFileId,
+              mode: "SHARE" as const,
+              table: "file_object" as const
+            }
+          ]
+        : []),
+      {
+        id: revision.contractESignTaskId,
+        mode: "SHARE" as const,
+        table: "contract_esign_task" as const
+      },
+      ...documentActorIds.map((id) => ({ id, mode: "SHARE" as const, table: "user" as const }))
+    ] satisfies SubscriptionClosureAuthorityLock[])
   });
+}
+
+async function validateCurrentRecoveryAuthorityChainInTransaction(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  revision: Readonly<{
+    archivedBy: string | null;
+    id: string;
+    sourceId: string;
+    sourceKey: string;
+    sourceType: string;
+  }>
+) {
+  const prefix = "recovery-authority:";
+  const suffix = ":archived";
+  if (
+    typeof revision.sourceType !== "string" ||
+    typeof revision.sourceId !== "string" ||
+    typeof revision.sourceKey !== "string"
+  ) {
+    return null;
+  }
+  const productionSource = physicalSource(closureCaseId, revision.sourceKey);
+  const looksProduction =
+    revision.sourceType === productionSource.type || revision.sourceKey.startsWith(prefix);
+  if (!looksProduction) return null;
+  if (
+    revision.sourceType !== productionSource.type ||
+    revision.sourceId !== closureCaseId ||
+    !revision.sourceKey.startsWith(prefix) ||
+    !revision.sourceKey.endsWith(suffix) ||
+    !revision.archivedBy
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const idempotencyKey = revision.sourceKey.slice(prefix.length, -suffix.length);
+  if (!idempotencyKey) throw serviceConflict("AUTHORITY_MISMATCH");
+  const command = normalizeArchiveRecoveryAuthority({
+    actorId: revision.archivedBy,
+    closureCaseId,
+    idempotencyKey
+  });
+  const ids = recoveryAuthorityIds(closureCaseId, command.idempotencyKey);
+  if (revision.id !== ids.archivedRevisionId) throw serviceConflict("AUTHORITY_MISMATCH");
+  const sources = recoveryAuthoritySources(closureCaseId, command.idempotencyKey);
+  const validated = await validateRecoveryAuthorityChainInTransaction(tx, command, ids, sources);
+  if (!validated || validated.archivedRevisionId !== revision.id) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return Object.freeze({ ids });
 }
 
 async function resolveRecoveryContextSnapshot(
@@ -5424,7 +6920,8 @@ async function resolveRecoveryContextSnapshot(
     vehicleId: string;
     vehicleReturnId: string | null;
   }>,
-  assessmentDetail: Readonly<Record<string, unknown>>
+  assessmentDetail: Readonly<Record<string, unknown>>,
+  clockBoundary: Date
 ) {
   const [bills, collectionCases, extension, legalRestrictions, vehicle, vehicleReturn] =
     await Promise.all([
@@ -5441,6 +6938,7 @@ async function resolveRecoveryContextSnapshot(
             in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
           },
           deletedAt: null,
+          dueDate: { lt: clockBoundary },
           orderId: closureCase.orderId,
           remainingAmount: { gt: 0n }
         }
@@ -5538,6 +7036,18 @@ async function resolveRecoveryContextSnapshot(
         mode: "UPDATE" as const,
         table: "collection_case" as const
       })),
+      ...collectionCases.flatMap(({ actions }) =>
+        actions.map(({ id }) => ({
+          id,
+          mode: "UPDATE" as const,
+          table: "collection_action" as const
+        }))
+      ),
+      {
+        id: closureCase.vehicleId,
+        mode: "UPDATE" as const,
+        table: "vehicle" as const
+      },
       ...(extension
         ? [
             {

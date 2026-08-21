@@ -1875,16 +1875,40 @@ secret。仅在 RED 证据后部署本分支新增的第四个前向纠正 migra
 最终从本文件 marker 原样提取 8/8 个 SQL block；每段独立使用 `ON_ERROR_STOP=1`，退出码均为 `0`，
 每段都观察到 `BEGIN` 与 `COMMIT`：
 
-| SQL block                  | 脱敏结果 | 结论                                                                                                                                             |
-| -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `01-migration-catalog`     | 1 行     | applied `97`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `4`、fingerprint `9c1f7b14ffdfa3e61dfbf6a7d6868d70`；rolled-back 阻断。 |
-| `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。             |
-| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK（含 owning/referenced schema）、15 个 index 均匹配。                               |
-| `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                       |
-| `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity（含 NULL ledger work-order fixture）、重复冲正或 16 维相等异常。                  |
-| `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                               |
-| `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                               |
-| `08-closed-cost-integrity` | 0 行     | 无 CLOSED cost-required 工单缺少 active unreversed `ORIGINAL / ACTUAL_COST`。                                                                    |
+| SQL block                  | 脱敏结果 | 结论                                                                                                                                                           |
+| -------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `01-migration-catalog`     | 1 行     | applied `97`、rolled-back `1`、failed/incomplete `0`、Stage 1C-C applied `4`、fingerprint `9c1f7b14ffdfa3e61dfbf6a7d6868d70`；rolled-back 阻断。               |
+| `02-permission-matrix`     | 62 行    | 六个 definition 和 54 个 grant 缺失，另有 definition/grant exact-count 两个 contract anomaly；无 unexpected definition/grant，阻断。                           |
+| `03-database-catalog`      | 0 行     | 四个 trigger、三个完整函数、11 个 CHECK、Task 1 全部 15 个 FK（含 owning/referenced schema）、15 个 index 均匹配。                                             |
+| `04-receipt-integrity`     | 0 行     | 无 source/target/event-kind、target-derived outcome、actor 或 lifecycle/cardinality 异常。                                                                     |
+| `05-ledger-integrity`      | 0 行     | 无 base shape、authority existence/immutable evidence identity（含 NULL ledger work-order fixture）、重复冲正或 16 维相等异常。                                |
+| `06-approval-integrity`    | 0 行     | 无 approval actor/tuple/version/live/resolver 异常；当前没有 live approval，空 registry 未被绕过。                                                             |
+| `07-audit-integrity`       | 0 行     | 无 missing/duplicate/extra/orphan/malformed-source 或 entity/action/source/target-derived fact/version/hash 异常。                                             |
+| `08-closed-cost-integrity` | 0 行     | 当前查询为 0 行；Task 8 曾观测 2 行，但未保留 identity fingerprint，后续 guarded fixture cleanup 与该 2 行没有 identity linkage；`2 -> 0` 处置未决并继续阻断。 |
+
+Task 8 的最终只读证据在 `67729df75265398301098c1dc8961bfc34be9419` 记录 block 08 为 2 行；当时没有
+保留这两行的工单 ID、source marker 或脱敏 identity fingerprint。Task 9 在
+`57f7080df6daef9d33b7276d019bb17075d6b2aa` 记录了受 guard 的 S1CB fixture cleanup，但现有证据没有把
+任一受 guard prefix 与先前两行建立 identity linkage，不能据此推断其处置。当前 0 行是有效的当前观测，
+但在另行保留 identity-linked 证据前不能清除历史阻断；未授权或证明任何工单/ledger 修复，也未证明
+identity-linked disposition。
+
+<!-- CLOSED_COST_EVIDENCE_DISPOSITION:BEGIN -->
+
+```text
+prior_observed_count: 2
+prior_observation_reference: TASK8_BLOCK08@67729df75265398301098c1dc8961bfc34be9419
+current_observed_count: 0
+prior_identity_fingerprint: NOT_CAPTURED
+guarded_fixture_cleanup_reference: TASK9_GUARDED_S1CB_FIXTURE_CLEANUP@57f7080df6daef9d33b7276d019bb17075d6b2aa
+guarded_fixture_cleanup_linkage: NOT_IDENTITY_LINKED
+disposition: UNRESOLVED_STOP
+postcondition: STOP
+rollout_action: STOP
+ruling: CURRENT_ZERO_CANNOT_CLEAR_HISTORICAL_BLOCKER_WITHOUT_SEPARATELY_RETAINED_IDENTITY_LINKED_EVIDENCE
+```
+
+<!-- CLOSED_COST_EVIDENCE_DISPOSITION:END -->
 
 四个命令门禁的最终脱敏结果：
 
@@ -1896,6 +1920,7 @@ secret。仅在 RED 证据后部署本分支新增的第四个前向纠正 migra
 | datasource→schema diff                | `2`    | diff 非空；未打印、接受或修复 drift 内容。                                      |
 
 因此该 Local 数据库同时被 rolled-back `1`、checksum mismatch `58`、非空 drift、六个缺失 definition、
-54 个缺失 grant 和两个 exact-count contract anomaly 阻断，明确
+54 个缺失 grant、两个 exact-count contract anomaly 和
+`CLOSED_COST_EVIDENCE_DISPOSITION=UNRESOLVED_STOP` 阻断，明确
 rollout-ineligible。零行不能证明真实业务样本已覆盖；非零也不授权 backfill/apply/UPDATE。原始结果未提交
 Git，控制台仅保留以上脱敏计数。

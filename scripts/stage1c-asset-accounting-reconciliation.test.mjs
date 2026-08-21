@@ -30,6 +30,23 @@ const sqlBlockOrder = [
   "08-closed-cost-integrity"
 ];
 
+const closedCostEvidenceDispositionLabel = "CLOSED_COST_EVIDENCE_DISPOSITION";
+const closedCostEvidenceDispositionFields = {
+  prior_observed_count: "2",
+  prior_observation_reference: "TASK8_BLOCK08@67729df75265398301098c1dc8961bfc34be9419",
+  current_observed_count: "0",
+  prior_identity_fingerprint: "NOT_CAPTURED",
+  guarded_fixture_cleanup_reference:
+    "TASK9_GUARDED_S1CB_FIXTURE_CLEANUP@57f7080df6daef9d33b7276d019bb17075d6b2aa",
+  guarded_fixture_cleanup_linkage: "NOT_IDENTITY_LINKED",
+  disposition: "UNRESOLVED_STOP",
+  postcondition: "STOP",
+  rollout_action: "STOP",
+  ruling:
+    "CURRENT_ZERO_CANNOT_CLEAR_HISTORICAL_BLOCKER_WITHOUT_SEPARATELY_RETAINED_IDENTITY_LINKED_EVIDENCE"
+};
+const closedCostEvidenceStopListItem = "CLOSED_COST_EVIDENCE_DISPOSITION=UNRESOLVED_STOP";
+
 const catalogDefinitionDigests = {
   expected_constraint_raw: "53aaca2da145890a3332900116c6e9f7c53e98da677b15972ea076b60630bacd",
   expected_function_raw: "80ae1c8e2a4386ef3f2c80cacbcfc4c63c0cc1af8f8e4bdd099be5ea663fa8a5",
@@ -868,6 +885,41 @@ function validateRunbookSql(runbook) {
   return blocks;
 }
 
+function validateClosedCostEvidenceDisposition(runbook) {
+  const section = runbook.match(
+    /## 17\. 2026-08-21 专用 Local 数据库只读记录\r?\n([\s\S]*?)(?=\r?\n## |$)/
+  )?.[1];
+  assert.ok(section, `${closedCostEvidenceDispositionLabel}: section 17 is missing`);
+
+  const structured = section.match(
+    /<!-- CLOSED_COST_EVIDENCE_DISPOSITION:BEGIN -->\r?\n(?:\r?\n)?```text\r?\n([\s\S]*?)\r?\n```\r?\n(?:\r?\n)?<!-- CLOSED_COST_EVIDENCE_DISPOSITION:END -->/
+  )?.[1];
+  assert.ok(
+    structured,
+    `${closedCostEvidenceDispositionLabel}: structured disposition section is absent`
+  );
+
+  const entries = structured.split(/\r?\n/).map((line) => {
+    const match = line.match(/^([a-z_]+): ([A-Za-z0-9_@.-]+)$/);
+    assert.ok(match, `${closedCostEvidenceDispositionLabel}: malformed field: ${line}`);
+    return [match[1], match[2]];
+  });
+  assert.equal(
+    new Set(entries.map(([key]) => key)).size,
+    entries.length,
+    `${closedCostEvidenceDispositionLabel}: duplicate field`
+  );
+  assert.deepEqual(
+    Object.fromEntries(entries),
+    closedCostEvidenceDispositionFields,
+    `${closedCostEvidenceDispositionLabel}: structured fields differ from the unresolved evidence ruling`
+  );
+  assert.ok(
+    section.includes(closedCostEvidenceStopListItem),
+    `${closedCostEvidenceDispositionLabel}: section 17 stop list omits the unresolved evidence item`
+  );
+}
+
 test("pins purpose, non-goals, gates, and forward-only remediation", async () => {
   const runbook = await readOrEmpty(rolloutPath);
   assertIncludesEvery(runbook, [
@@ -996,6 +1048,95 @@ test("pins permissions-only zero ownership coupling and legacy default distincti
 
 test("validates eight actual marked SQL blocks", async () => {
   validateRunbookSql(await readOrEmpty(rolloutPath));
+});
+
+test("pins the unresolved CLOSED-cost evidence disposition from the actual runbook", async () => {
+  const runbook = await readOrEmpty(rolloutPath);
+  validateClosedCostEvidenceDisposition(runbook);
+
+  const mutations = [
+    [
+      "removes the structured disposition",
+      (contents) =>
+        contents.replace(
+          /<!-- CLOSED_COST_EVIDENCE_DISPOSITION:BEGIN -->[\s\S]*?<!-- CLOSED_COST_EVIDENCE_DISPOSITION:END -->/,
+          ""
+        )
+    ],
+    [
+      "substitutes current zero for the prior count",
+      (contents) => contents.replace("prior_observed_count: 2", "prior_observed_count: 0")
+    ],
+    ["removes the prior count", (contents) => contents.replace("prior_observed_count: 2\n", "")],
+    [
+      "removes the Task 8 observation reference",
+      (contents) =>
+        contents.replace(
+          "prior_observation_reference: TASK8_BLOCK08@67729df75265398301098c1dc8961bfc34be9419\n",
+          ""
+        )
+    ],
+    [
+      "changes the current observation",
+      (contents) => contents.replace("current_observed_count: 0", "current_observed_count: 2")
+    ],
+    [
+      "claims an unproved S1CB prefix as the prior identity",
+      (contents) =>
+        contents.replace(
+          "prior_identity_fingerprint: NOT_CAPTURED",
+          "prior_identity_fingerprint: S1CBaa5907544ea0"
+        )
+    ],
+    [
+      "removes the guarded fixture cleanup reference",
+      (contents) =>
+        contents.replace(
+          "guarded_fixture_cleanup_reference: TASK9_GUARDED_S1CB_FIXTURE_CLEANUP@57f7080df6daef9d33b7276d019bb17075d6b2aa\n",
+          ""
+        )
+    ],
+    [
+      "removes the explicit non-linkage",
+      (contents) => contents.replace("guarded_fixture_cleanup_linkage: NOT_IDENTITY_LINKED\n", "")
+    ],
+    [
+      "clears the unresolved disposition",
+      (contents) => contents.replace("disposition: UNRESOLVED_STOP", "disposition: CLEARED")
+    ],
+    ["removes the stop postcondition", (contents) => contents.replace("postcondition: STOP\n", "")],
+    [
+      "removes the stop rollout action",
+      (contents) => contents.replace("rollout_action: STOP\n", "")
+    ],
+    [
+      "removes the identity-linked evidence ruling",
+      (contents) =>
+        contents.replace(
+          "ruling: CURRENT_ZERO_CANNOT_CLEAR_HISTORICAL_BLOCKER_WITHOUT_SEPARATELY_RETAINED_IDENTITY_LINKED_EVIDENCE\n",
+          ""
+        )
+    ],
+    [
+      "drops the unresolved item from the section 17 stop list",
+      (contents) => contents.replace(closedCostEvidenceStopListItem, "")
+    ]
+  ];
+
+  for (const [name, mutate] of mutations) {
+    const mutated = mutate(runbook);
+    assert.notEqual(
+      mutated,
+      runbook,
+      `${closedCostEvidenceDispositionLabel}: inactive mutation: ${name}`
+    );
+    assert.throws(
+      () => validateClosedCostEvidenceDisposition(mutated),
+      (error) =>
+        error instanceof Error && error.message.includes(closedCostEvidenceDispositionLabel),
+      `${closedCostEvidenceDispositionLabel}: mutation must fail: ${name}`
+    );
+  }
 });
 
 test("kills structural mutations in actual reconciliation SQL", async () => {

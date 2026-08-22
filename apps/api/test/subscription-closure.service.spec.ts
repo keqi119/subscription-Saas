@@ -1,7 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { subscriptionEffectiveBoundaryOwner } from "../src/subscription-change/subscription-effective-boundary";
 import { SubscriptionClosureService } from "../src/subscription-closure/subscription-closure.service";
 import { canonicalSubscriptionClosureJson } from "../src/subscription-closure/subscription-closure.domain";
 import { subscriptionClosureCaseNo } from "../src/subscription-closure/subscription-closure.repository";
@@ -23,6 +24,27 @@ const IDS = {
 } as const;
 
 describe("SubscriptionClosureService normal expiry", () => {
+  beforeEach(() => {
+    vi.spyOn(subscriptionEffectiveBoundaryOwner, "prepareInTransaction").mockResolvedValue({
+      capability: Object.freeze({}),
+      requirement: Object.freeze({
+        command: Object.freeze({ orderId: IDS.order }),
+        key: "effective-boundary-stop",
+        locks: Object.freeze([])
+      })
+    } as never);
+    vi.spyOn(subscriptionEffectiveBoundaryOwner, "applyPreparedInTransaction").mockResolvedValue(
+      Object.freeze({}) as never
+    );
+    vi.spyOn(subscriptionEffectiveBoundaryOwner, "validatePreparedInTransaction").mockResolvedValue(
+      Object.freeze({}) as never
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("replays an existing case with its immutable actor after that actor becomes inactive", async () => {
     const tx = createTransaction() as never as {
       subscriptionClosureCase: { findUnique: ReturnType<typeof vi.fn> };
@@ -83,10 +105,13 @@ describe("SubscriptionClosureService normal expiry", () => {
   it("owns every source before ranked authority and creates the linked return facts once", async () => {
     const timeline: string[] = [];
     const authority = new Map(
-      ["asset-create", "case-create", "handover-create", "manifest-create"].map((key) => [
-        key,
-        Object.freeze({ key })
-      ])
+      [
+        "asset-create",
+        "case-create",
+        "effective-boundary-stop",
+        "handover-create",
+        "manifest-create"
+      ].map((key) => [key, Object.freeze({ key })])
     );
     const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {
@@ -100,15 +125,17 @@ describe("SubscriptionClosureService normal expiry", () => {
       })),
       bindAuthorityRequirement: vi.fn((_session, requirement) => requirement),
       createAuthoritySessionInTransaction: vi.fn(() => authoritySession),
-      createPreparedCaseInTransaction: vi.fn(async (_tx, _session, _command, _source, _proof, caseId) => ({
-        outcome: {
-          caseNo: "CLS-1",
-          currentDocuments: {},
-          id: caseId,
-          version: 0
-        },
-        wrote: true
-      })),
+      createPreparedCaseInTransaction: vi.fn(
+        async (_tx, _session, _command, _source, _proof, caseId) => ({
+          outcome: {
+            caseNo: "CLS-1",
+            currentDocuments: {},
+            id: caseId,
+            version: 0
+          },
+          wrote: true
+        })
+      ),
       consumeAuthorityAttestationInTransaction: vi.fn(async (_tx, _capability, key) => {
         timeline.push(`attest:${key}`);
       }),
@@ -370,10 +397,13 @@ describe("SubscriptionClosureService normal expiry", () => {
     });
     const appendDocumentRevision = vi.fn(async () => ({ outcome: revisionOne, wrote: false }));
     const authority = new Map(
-      ["asset-create", "case-create", "handover-create", "manifest-create"].map((key) => [
-        key,
-        Object.freeze({ key })
-      ])
+      [
+        "asset-create",
+        "case-create",
+        "effective-boundary-stop",
+        "handover-create",
+        "manifest-create"
+      ].map((key) => [key, Object.freeze({ key })])
     );
     const authoritySession = Object.freeze({ kind: "authority-session" });
     const repository = {

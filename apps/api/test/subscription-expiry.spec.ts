@@ -6,8 +6,6 @@ import {
   OrderStatus,
   Prisma,
   RenewalConsiderationStatus,
-  SubscriptionAutomationJobStatus,
-  SubscriptionAutomationJobType,
   SubscriptionChangeStatus,
   VehicleReturnStatus,
   VehicleStatus
@@ -104,7 +102,7 @@ describe("SubscriptionExpiryService", () => {
       harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
     ).rejects.toBe(failure);
   });
-  it("moves an unsigned expiring subscription to return due without touching existing money or mandate facts", async () => {
+  it("moves an unsigned expiring subscription to return due and delegates boundary stops to the governed closure", async () => {
     const harness = createExpiryHarness();
 
     await expect(
@@ -118,8 +116,8 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.state.order.orderStatus).toBe(OrderStatus.PENDING_RETURN);
     expect(harness.state.lease.status).toBe(LeaseStatus.RETURN_DUE);
     expect(harness.state.vehicle.status).toBe(VehicleStatus.LEASED);
-    expect(harness.state.schedule.status).toBe(BillingScheduleStatus.COMPLETED);
-    expect(harness.state.account.accountStatus).toBe(EntitlementAccountStatus.CLOSED);
+    expect(harness.state.schedule.status).toBe(BillingScheduleStatus.ACTIVE);
+    expect(harness.state.account.accountStatus).toBe(EntitlementAccountStatus.ACTIVE);
     expect(harness.state.vehicleReturn).toMatchObject({
       orderId: "order-1",
       returnStatus: VehicleReturnStatus.PENDING,
@@ -128,28 +126,8 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.state.mandate).toEqual({ id: "mandate-1", status: "ACTIVE" });
     expect(harness.state.bill).toEqual({ id: "bill-1", remainingAmount: 100n });
     expect(harness.state.collectionCase).toEqual({ id: "collection-1", status: "ACTIVE" });
-    expect(harness.cancelledJobsWhere[0]).toMatchObject({
-      billId: null,
-      jobStatus: {
-        in: expect.arrayContaining([
-          SubscriptionAutomationJobStatus.PENDING,
-          SubscriptionAutomationJobStatus.PROCESSING
-        ])
-      },
-      jobType: {
-        in: expect.arrayContaining([
-          SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
-          SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW
-        ])
-      },
-      orderId: "order-1"
-    });
-    expect(harness.cancelledJobsWhere[1]).toMatchObject({
-      billId: null,
-      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-      orderId: "order-1",
-      payload: { path: ["periodStart"], gt: "2026-09-02" }
-    });
+    expect(harness.cancelledJobsWhere).toEqual([]);
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(1);
     expect(harness.notifications.notifyRenewalExpiryInApp).toHaveBeenCalledTimes(1);
   });
 
@@ -199,7 +177,7 @@ describe("SubscriptionExpiryService", () => {
     });
   });
 
-  it("keeps an earned final rent cycle active while cancelling only post-expiry cycles", async () => {
+  it("does not duplicate the closure owner's earned-versus-future boundary writes", async () => {
     const harness = createExpiryHarness({
       nextPeriodStart: new Date("2026-08-02T00:00:00.000Z")
     });
@@ -207,10 +185,8 @@ describe("SubscriptionExpiryService", () => {
     await harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"));
 
     expect(harness.state.schedule.status).toBe(BillingScheduleStatus.ACTIVE);
-    expect(harness.cancelledJobsWhere[1]).toMatchObject({
-      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-      payload: { path: ["periodStart"], gt: "2026-09-02" }
-    });
+    expect(harness.cancelledJobsWhere).toEqual([]);
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("lets a previously committed scheduled extension win the deadline race", async () => {

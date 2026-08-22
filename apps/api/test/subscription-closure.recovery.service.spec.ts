@@ -1664,7 +1664,7 @@ function attachUnitRecoveryAuthorityChain(
       customerId: caseRow.customerId,
       deletedAt: null,
       documentObjectKey: `subscription-closure/${caseRow.id}/${ids.generatedRevisionId}-recovery-authority.json`,
-      documentType: "DELIVERY_HANDOVER",
+      documentType: "RECOVERY_AUTHORITY",
       id: ids.esignTaskId,
       orderId: caseRow.orderId,
       provider: "OTHER",
@@ -1689,7 +1689,7 @@ function attachUnitRecoveryAuthorityChain(
         signedFileId: ids.signedFileId
       },
       signedDocumentObjectKey: `subscription-closure/${caseRow.id}/${ids.signedRevisionId}-recovery-authority.signed.json`,
-      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      signingStage: "STAGE5_RECOVERY_AUTHORITY",
       sourceId: caseRow.id,
       sourceKey: sources[2]!.key,
       sourceType: "SUBSCRIPTION_CLOSURE",

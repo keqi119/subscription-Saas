@@ -3,6 +3,7 @@ import {
   AssetWorkOrderStatus,
   AuditAction,
   BillStatus,
+  ContractSegmentStatus,
   ContractStatus,
   ESignDocumentType,
   ESignProviderType,
@@ -49,6 +50,10 @@ import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  subscriptionEffectiveBoundaryOwner,
+  type EffectiveBoundaryTransactionCapability
+} from "../subscription-change/subscription-effective-boundary";
+import {
   VehicleMileageService,
   type VehicleMileageTransactionCapability
 } from "../vehicle-mileage/vehicle-mileage.service";
@@ -79,6 +84,7 @@ import {
   type SubscriptionClosureMutationAuditHook
 } from "./subscription-closure.repository";
 import type {
+  SubscriptionClosureSnapshotObject,
   SubscriptionClosureSettlementSnapshot,
   SubscriptionClosureSource
 } from "./subscription-closure.types";
@@ -86,6 +92,13 @@ import {
   SubscriptionClosureSettlementResolver,
   type ResolvedSubscriptionClosureSettlement
 } from "./subscription-closure.settlement-resolver";
+import type {
+  ArchiveEarlyTerminationAgreementInput,
+  ArchivedEarlyTerminationAgreement,
+  CancelEarlyTerminationInput,
+  ExecuteEarlyTerminationInput,
+  InitiateEarlyTerminationInput
+} from "./subscription-closure.early-termination.dto";
 
 export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   AUTHORITY_MISMATCH: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH",
@@ -102,7 +115,9 @@ export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
   SETTLEMENT_NOT_RESOLVED: "SUBSCRIPTION_CLOSURE_SETTLEMENT_NOT_RESOLVED",
   SETTLEMENT_STATUS_CONFLICT: "SUBSCRIPTION_CLOSURE_SETTLEMENT_STATUS_CONFLICT",
   RECOVERY_CLIENT_AUTHORITY_FORBIDDEN: "SUBSCRIPTION_CLOSURE_RECOVERY_CLIENT_AUTHORITY_FORBIDDEN",
-  RECOVERY_JOB_AUTHORITY_INVALID: "SUBSCRIPTION_CLOSURE_RECOVERY_JOB_AUTHORITY_INVALID"
+  RECOVERY_JOB_AUTHORITY_INVALID: "SUBSCRIPTION_CLOSURE_RECOVERY_JOB_AUTHORITY_INVALID",
+  EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN:
+    "SUBSCRIPTION_CLOSURE_EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN"
 } as const;
 
 export type PrepareNormalExpiryInput = Readonly<{
@@ -307,6 +322,7 @@ type NormalExpiryCapabilityState = Readonly<{
   closureCaseId: string;
   documentSource: SubscriptionClosureSource;
   documentSourceCapability: PreparedClosureSourceCapability;
+  effectiveBoundaryCapability: EffectiveBoundaryTransactionCapability;
   handoverCapability: PreparedReturnInboundCapability;
   handoverWorkOrderId: string;
   handoverSource: SubscriptionClosureSource;
@@ -607,31 +623,42 @@ export class SubscriptionClosureService {
       { id: authority.actorId, mode: "SHARE", table: "user" }
     ];
     const authoritySession = this.repository.createAuthoritySessionInTransaction(tx);
+    const effectiveBoundary = await subscriptionEffectiveBoundaryOwner.prepareInTransaction(
+      tx,
+      authoritySession,
+      {
+        boundaryAt: authority.segmentEndDate,
+        occurredAt,
+        orderId: authority.orderId
+      }
+    );
+    const requirements = [
+      this.assetOperations.createAuthorityRequirement(
+        authoritySession,
+        assetCommand,
+        authority.actorId,
+        assetWorkOrderId
+      ),
+      this.repository.bindAuthorityRequirement(
+        authoritySession,
+        subscriptionClosureCaseAuthorityRequirement(caseCommand, closureCaseId)
+      ),
+      this.handoverWorkOrders.createReturnInboundAuthorityRequirement(
+        authoritySession,
+        handoverCommand,
+        handoverWorkOrderId
+      ),
+      this.repository.bindAuthorityRequirement(
+        authoritySession,
+        subscriptionClosureDocumentAuthorityRequirement(manifestCommand)
+      ),
+      effectiveBoundary.requirement
+    ];
     const authorityAttestations = await this.repository.prepareAuthorityInTransaction(
       tx,
       authoritySession,
-      locks,
-      [
-        this.assetOperations.createAuthorityRequirement(
-          authoritySession,
-          assetCommand,
-          authority.actorId,
-          assetWorkOrderId
-        ),
-        this.repository.bindAuthorityRequirement(
-          authoritySession,
-          subscriptionClosureCaseAuthorityRequirement(caseCommand, closureCaseId)
-        ),
-        this.handoverWorkOrders.createReturnInboundAuthorityRequirement(
-          authoritySession,
-          handoverCommand,
-          handoverWorkOrderId
-        ),
-        this.repository.bindAuthorityRequirement(
-          authoritySession,
-          subscriptionClosureDocumentAuthorityRequirement(manifestCommand)
-        )
-      ]
+      [...locks, ...effectiveBoundary.requirement.locks],
+      requirements
     );
     const lockedAuthority = await this.loadNormalExpiryAuthority(
       tx,
@@ -698,6 +725,7 @@ export class SubscriptionClosureService {
         caseSourceCapability,
         documentSource,
         documentSourceCapability,
+        effectiveBoundaryCapability: effectiveBoundary.capability,
         handoverCapability,
         handoverWorkOrderId,
         handoverSource,
@@ -785,6 +813,21 @@ export class SubscriptionClosureService {
         this.closureAudit(state.manifestCommand.actorId)
       )
     ).outcome;
+    if (createdCase.wrote) {
+      await subscriptionEffectiveBoundaryOwner.applyPreparedInTransaction(
+        tx,
+        state.authoritySession,
+        state.effectiveBoundaryCapability,
+        requiredAttestation(state.authorityAttestations, "effective-boundary-stop")
+      );
+    } else {
+      await subscriptionEffectiveBoundaryOwner.validatePreparedInTransaction(
+        tx,
+        state.authoritySession,
+        state.effectiveBoundaryCapability,
+        requiredAttestation(state.authorityAttestations, "effective-boundary-stop")
+      );
+    }
     return Object.freeze({
       closureCaseId: createdCase.outcome.id,
       returnAssetWorkOrderId: common.workOrder.id,
@@ -1465,7 +1508,7 @@ export class SubscriptionClosureService {
             customerId: locked.closureCase.customerId,
             documentName: sourceDocumentName,
             documentObjectKey: sourceObjectKey,
-            documentType: ESignDocumentType.DELIVERY_HANDOVER,
+            documentType: ESignDocumentType.RECOVERY_AUTHORITY,
             id: ids.esignTaskId,
             orderId: locked.closureCase.orderId,
             provider: ESignProviderType.OTHER,
@@ -1484,7 +1527,7 @@ export class SubscriptionClosureService {
               signedFileHash
             }),
             signedDocumentObjectKey: signedObjectKey,
-            signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+            signingStage: ESignSigningStage.STAGE5_RECOVERY_AUTHORITY,
             sourceId: sources[2].id,
             sourceKey: sources[2].key,
             sourceType: sources[2].type,
@@ -2704,7 +2747,7 @@ export class SubscriptionClosureService {
       return null;
     }
     if (
-      observedCase.closureType !== "NORMAL_COMPLETION" ||
+      !["NORMAL_COMPLETION", "EARLY_TERMINATION"].includes(observedCase.closureType) ||
       observedCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
       !observedCase.vehicleReturnId ||
       !observedCase.returnHandoverWorkOrderId
@@ -2767,7 +2810,7 @@ export class SubscriptionClosureService {
     if (
       !closureCase ||
       closureCase.id !== observedCase?.id ||
-      closureCase.closureType !== "NORMAL_COMPLETION" ||
+      !["NORMAL_COMPLETION", "EARLY_TERMINATION"].includes(closureCase.closureType) ||
       closureCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
       !closureCase.vehicleReturnId ||
       !closureCase.returnHandoverWorkOrderId
@@ -4344,6 +4387,1074 @@ export class SubscriptionClosureService {
     return Object.freeze({ closureCaseId: closureCase.id, vehicleId: vehicle.id });
   }
 
+  async initiateEarlyTermination(input: InitiateEarlyTerminationInput) {
+    const command = normalizeEarlyTerminationInitiation(input);
+    if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
+    return this.prisma.$transaction(
+      async (tx) => {
+        const initiationSource = earlyTerminationSource(
+          command.orderId,
+          `initiate:${command.idempotencyKey}`
+        );
+        const sourceCapability = await this.repository.prepareSourceInTransaction(
+          tx,
+          initiationSource
+        );
+        const existing = await tx.subscriptionClosureCase.findUnique({
+          where: { orderId: command.orderId }
+        });
+        if (existing) {
+          if (
+            existing.createSourceType !== initiationSource.type ||
+            existing.createSourceId !== initiationSource.id ||
+            existing.createSourceKey !== initiationSource.key ||
+            existing.closureType !== "EARLY_TERMINATION" ||
+            existing.physicalControlMode !== "VOLUNTARY_RETURN" ||
+            existing.finalDisposition !== "TERMINATE" ||
+            !sameCanonicalReceiptValue(
+              jsonObject(existing.authoritySnapshot).agreement,
+              earlyTerminationAgreementIntent(command)
+            )
+          ) {
+            throw closureSourceConflict();
+          }
+          const replay = await this.repository.createCase(
+            tx,
+            earlyTerminationReplayCaseCommand(existing, initiationSource),
+            this.closureAudit(existing.createdBy)
+          );
+          return Object.freeze({
+            authoritySnapshotHash: replay.outcome.authoritySnapshotHash,
+            closureCaseId: replay.outcome.id,
+            wrote: replay.wrote
+          });
+        }
+
+        const databaseClock = await readDatabaseClock(tx);
+        const observed = await resolveEarlyTerminationInitiationAuthority(
+          tx,
+          command,
+          databaseClock
+        );
+        const caseId = stableEarlyTerminationId(
+          `${command.orderId}\u0000${command.idempotencyKey}\u0000case`
+        );
+        const caseCommand = earlyTerminationCaseCommand(command, observed, initiationSource);
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const caseRequirement = this.repository.bindAuthorityRequirement(
+          session,
+          subscriptionClosureCaseAuthorityRequirement(caseCommand, caseId)
+        );
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          [
+            ...caseRequirement.locks,
+            { id: observed.lease.id, mode: "UPDATE", table: "lease" },
+            {
+              id: observed.segment.id,
+              mode: "UPDATE",
+              table: "subscription_contract_segment"
+            }
+          ],
+          [caseRequirement]
+        );
+        const locked = await resolveEarlyTerminationInitiationAuthority(tx, command, databaseClock);
+        if (
+          earlyTerminationAuthorityIdentity(locked) !== earlyTerminationAuthorityIdentity(observed)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const created = await this.repository.createPreparedCaseInTransaction(
+          tx,
+          session,
+          caseCommand,
+          sourceCapability,
+          requiredAttestation(attestations, "case-create"),
+          caseId,
+          this.closureAudit(command.actorId)
+        );
+        return Object.freeze({
+          authoritySnapshotHash: created.outcome.authoritySnapshotHash,
+          closureCaseId: created.outcome.id,
+          wrote: created.wrote
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+  }
+
+  async archiveEarlyTerminationAgreement(
+    input: ArchiveEarlyTerminationAgreementInput
+  ): Promise<ArchivedEarlyTerminationAgreement> {
+    if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
+    const command = normalizeArchiveEarlyTerminationAgreement(input);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const ids = earlyTerminationAgreementIds(command.closureCaseId, command.idempotencyKey);
+        const sources = earlyTerminationAgreementSources(
+          command.closureCaseId,
+          command.idempotencyKey
+        );
+        const sourceCapabilities = new Map<string, PreparedClosureSourceCapability>();
+        for (const lifecycleSource of [...sources].sort((left, right) =>
+          bytewiseCompare(sourceSortKey(left), sourceSortKey(right))
+        )) {
+          sourceCapabilities.set(
+            lifecycleSource.key,
+            await this.repository.prepareSourceInTransaction(tx, lifecycleSource)
+          );
+        }
+        const replayCandidateCount = await tx.subscriptionClosureDocumentRevision.count({
+          where: {
+            id: { in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId] }
+          }
+        });
+        if (replayCandidateCount > 0) {
+          await this.repository.lockAuthorityRows(
+            tx,
+            earlyTerminationAgreementReplayLocks(command, ids)
+          );
+          const replay = await validateEarlyTerminationAgreementChainInTransaction(
+            tx,
+            command,
+            ids,
+            sources
+          );
+          if (!replay) throw serviceConflict("AUTHORITY_MISMATCH");
+          return Object.freeze({ ...replay, wrote: false });
+        }
+
+        const databaseClock = await readDatabaseClock(tx);
+        const observed = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
+        assertEarlyTerminationAgreementDraftActionable(observed);
+        const documentSnapshot = earlyTerminationAgreementDocumentSnapshot(observed);
+        const canonicalDocument = canonicalSubscriptionClosureJson(documentSnapshot);
+        const sourceFileHash = createHash("sha256").update(canonicalDocument).digest("hex");
+        const signedEnvelope = earlyTerminationAgreementSignedEnvelope({
+          actorId: command.actorId,
+          completedAt: databaseClock,
+          documentSnapshotHash: sourceFileHash,
+          signedFileId: ids.signedFileId,
+          sourceFileHash,
+          sourceFileId: ids.sourceFileId,
+          sources
+        });
+        const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
+        const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
+        const commands = earlyTerminationAgreementDocumentCommands({
+          actorId: command.actorId,
+          closureCaseId: command.closureCaseId,
+          databaseClock,
+          documentSnapshot,
+          expectedVersion: observed.closureCase.version,
+          ids,
+          signedFileHash,
+          sourceFileHash,
+          sources
+        });
+        const commonLocks: readonly SubscriptionClosureAuthorityLock[] = [
+          { id: observed.closureCase.id, mode: "UPDATE", table: "subscription_closure_case" },
+          { id: observed.order.id, mode: "UPDATE", table: "subscription_order" },
+          { id: observed.vehicle.id, mode: "SHARE", table: "vehicle" },
+          { id: observed.lease.id, mode: "UPDATE", table: "lease" },
+          {
+            id: observed.segment.id,
+            mode: "UPDATE",
+            table: "subscription_contract_segment"
+          },
+          { id: observed.contract.id, mode: "SHARE", table: "contract" },
+          { id: observed.closureCase.customerId, mode: "SHARE", table: "customer" },
+          { id: command.actorId, mode: "SHARE", table: "user" }
+        ];
+        const requirementPlans = [
+          {
+            command: commands.generated,
+            extraLocks: commonLocks,
+            key: "early-termination-agreement-generated"
+          },
+          {
+            command: commands.signed,
+            extraLocks: [
+              ...commonLocks,
+              {
+                id: ids.generatedRevisionId,
+                mode: "SHARE" as const,
+                table: "subscription_closure_document_revision" as const
+              }
+            ],
+            key: "early-termination-agreement-signed"
+          },
+          {
+            command: commands.archived,
+            extraLocks: [
+              ...commonLocks,
+              {
+                id: ids.signedRevisionId,
+                mode: "SHARE" as const,
+                table: "subscription_closure_document_revision" as const
+              }
+            ],
+            key: "early-termination-agreement-archived"
+          }
+        ] as const;
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const requirements = requirementPlans.map(({ command: documentCommand, extraLocks, key }) =>
+          this.repository.bindAuthorityRequirement(
+            session,
+            subscriptionClosureDocumentAuthorityRequirement(documentCommand, key, extraLocks)
+          )
+        );
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          requirements.flatMap(({ locks }) => locks),
+          requirements
+        );
+        const locked = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
+        assertEarlyTerminationAgreementDraftActionable(locked);
+        if (
+          earlyTerminationAgreementDraftIdentity(locked) !==
+          earlyTerminationAgreementDraftIdentity(observed)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const collisions = await Promise.all([
+          tx.fileObject.count({ where: { id: { in: [ids.sourceFileId, ids.signedFileId] } } }),
+          tx.contractESignTask.count({ where: { id: ids.esignTaskId } }),
+          tx.subscriptionClosureDocumentRevision.count({
+            where: {
+              id: {
+                in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId]
+              }
+            }
+          }),
+          tx.subscriptionClosureCurrentDocument.count({
+            where: {
+              closureCaseId: command.closureCaseId,
+              documentType: "EARLY_TERMINATION_AGREEMENT"
+            }
+          })
+        ]);
+        if (collisions.some((count) => count !== 0)) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const sourceObjectKey = earlyTerminationAgreementSourceObjectKey(
+          command.closureCaseId,
+          ids.generatedRevisionId
+        );
+        const signedObjectKey = earlyTerminationAgreementSignedObjectKey(
+          command.closureCaseId,
+          ids.signedRevisionId
+        );
+        const sourceDocumentName = `${observed.closureCase.caseNo}-${ids.generatedRevisionId}-early-termination-agreement.json`;
+        const signedDocumentName = `${observed.closureCase.caseNo}-${ids.signedRevisionId}-early-termination-agreement.signed.json`;
+        await tx.fileObject.createMany({
+          data: [
+            {
+              bucket: "subscription-closure",
+              id: ids.sourceFileId,
+              mimeType: "application/json",
+              objectKey: sourceObjectKey,
+              originalName: sourceDocumentName,
+              sizeBytes: BigInt(Buffer.byteLength(canonicalDocument)),
+              uploadedBy: command.actorId
+            },
+            {
+              bucket: "subscription-closure",
+              id: ids.signedFileId,
+              mimeType: "application/json",
+              objectKey: signedObjectKey,
+              originalName: signedDocumentName,
+              sizeBytes: BigInt(Buffer.byteLength(canonicalSignedEnvelope)),
+              uploadedBy: command.actorId
+            }
+          ]
+        });
+        await tx.contractESignTask.create({
+          data: {
+            completedAt: databaseClock,
+            contractId: locked.closureCase.contractId,
+            createdBy: command.actorId,
+            customerId: locked.closureCase.customerId,
+            documentName: sourceDocumentName,
+            documentObjectKey: sourceObjectKey,
+            documentType: ESignDocumentType.EARLY_TERMINATION_AGREEMENT,
+            id: ids.esignTaskId,
+            orderId: locked.closureCase.orderId,
+            provider: ESignProviderType.OTHER,
+            providerEnvelopeId: ids.esignEnvelopeId,
+            providerTaskId: ids.esignProviderTaskId,
+            requestSnapshot: earlyTerminationAgreementEsignRequest({
+              documentSnapshotHash: sourceFileHash,
+              ids,
+              sourceFileHash,
+              sources
+            }),
+            responseSnapshot: earlyTerminationAgreementEsignResponse({
+              actorId: command.actorId,
+              completedAt: databaseClock,
+              ids,
+              signedFileHash
+            }),
+            signedDocumentObjectKey: signedObjectKey,
+            signingStage: ESignSigningStage.STAGE4_EARLY_TERMINATION,
+            sourceId: sources[2].id,
+            sourceKey: sources[2].key,
+            sourceType: sources[2].type,
+            taskNo: `ESG-ET-${ids.esignTaskId}`,
+            taskStatus: ESignTaskStatus.COMPLETED,
+            updatedBy: command.actorId
+          }
+        });
+        for (const plan of requirementPlans) {
+          await this.repository.appendPreparedDocumentRevisionInTransaction(
+            tx,
+            session,
+            plan.command,
+            requiredPreparedSource(sourceCapabilities, plan.command.source.key),
+            requiredAttestation(attestations, plan.key),
+            this.closureAudit(command.actorId),
+            plan.key,
+            plan.extraLocks
+          );
+        }
+        const created = await validateEarlyTerminationAgreementChainInTransaction(
+          tx,
+          command,
+          ids,
+          sources
+        );
+        if (!created) throw serviceConflict("AUTHORITY_MISMATCH");
+        return Object.freeze({ ...created, wrote: true });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+  }
+
+  async cancelEarlyTermination(input: CancelEarlyTerminationInput) {
+    if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
+    const command = normalizeCancelEarlyTermination(input);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const cancellationSource = earlyTerminationSource(
+          command.closureCaseId,
+          `cancel:${command.idempotencyKey}`
+        );
+        const sourceCapability = await this.repository.prepareSourceInTransaction(
+          tx,
+          cancellationSource
+        );
+        const observedCase = await tx.subscriptionClosureCase.findUnique({
+          where: { id: command.closureCaseId }
+        });
+        if (!observedCase) throw serviceConflict("AUTHORITY_NOT_FOUND");
+        const priorReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+          where: {
+            sourceType_sourceId_sourceKey: {
+              sourceId: cancellationSource.id,
+              sourceKey: cancellationSource.key,
+              sourceType: cancellationSource.type
+            }
+          }
+        });
+        const commandFingerprint = hashSubscriptionClosureSnapshot(command);
+        if (priorReceipt) {
+          await this.repository.lockAuthorityRows(tx, [
+            { id: observedCase.id, mode: "UPDATE", table: "subscription_closure_case" },
+            { id: command.actorId, mode: "SHARE", table: "user" }
+          ]);
+          const event = await tx.subscriptionClosureEvent.findUnique({
+            where: { id: priorReceipt.eventId }
+          });
+          const detail = jsonObject(event?.detailSnapshot);
+          if (
+            observedCase.status !== "CANCELLED" ||
+            priorReceipt.actorId !== command.actorId ||
+            event?.sourceType !== cancellationSource.type ||
+            event.sourceId !== cancellationSource.id ||
+            event.sourceKey !== cancellationSource.key ||
+            detail.commandFingerprint !== commandFingerprint ||
+            detail.reason !== command.reason
+          ) {
+            throw closureSourceConflict();
+          }
+          return Object.freeze({ closureCaseId: observedCase.id, wrote: false });
+        }
+        if (
+          observedCase.closureType !== "EARLY_TERMINATION" ||
+          observedCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
+          observedCase.finalDisposition !== "TERMINATE" ||
+          observedCase.status !== "PREPARING_RETURN" ||
+          observedCase.vehicleReturnId !== null ||
+          observedCase.returnAssetWorkOrderId !== null ||
+          observedCase.returnHandoverWorkOrderId !== null
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const draft = await resolveEarlyTerminationAgreementDraft(tx, observedCase.id);
+        const agreementCommand = await currentEarlyTerminationAgreementCommand(tx, draft);
+        const agreementIds = earlyTerminationAgreementIds(
+          observedCase.id,
+          agreementCommand.idempotencyKey
+        );
+        if (
+          !(await validateEarlyTerminationAgreementChainInTransaction(
+            tx,
+            agreementCommand,
+            agreementIds,
+            earlyTerminationAgreementSources(observedCase.id, agreementCommand.idempotencyKey)
+          ))
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const occurredAt = await readDatabaseClock(tx);
+        const eventCommand = {
+          actorId: command.actorId,
+          afterStatus: "CANCELLED" as const,
+          closureCaseId: observedCase.id,
+          detailSnapshot: {
+            commandFingerprint,
+            reason: command.reason,
+            terminationAction: "CANCEL"
+          },
+          eventType: "STATUS_TRANSITIONED" as const,
+          expectedStatus: "PREPARING_RETURN" as const,
+          expectedVersion: observedCase.version,
+          occurredAt,
+          source: cancellationSource
+        };
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const requirement = this.repository.bindAuthorityRequirement(
+          session,
+          subscriptionClosureEventAuthorityRequirement(eventCommand, "early-cancel")
+        );
+        const agreementLocks = await earlyTerminationAgreementAuthorityLocks(
+          tx,
+          observedCase.id,
+          agreementIds
+        );
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          [
+            ...requirement.locks,
+            ...agreementLocks,
+            { id: agreementIds.esignTaskId, mode: "UPDATE", table: "contract_esign_task" }
+          ],
+          [requirement]
+        );
+        const locked = await resolveEarlyTerminationAgreementDraft(tx, observedCase.id);
+        if (
+          earlyTerminationAgreementDraftIdentity(locked) !==
+            earlyTerminationAgreementDraftIdentity(draft) ||
+          !(await validateEarlyTerminationAgreementChainInTransaction(
+            tx,
+            agreementCommand,
+            agreementIds,
+            earlyTerminationAgreementSources(observedCase.id, agreementCommand.idempotencyKey)
+          ))
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const task = await tx.contractESignTask.findUnique({
+          where: { id: agreementIds.esignTaskId }
+        });
+        const cancelled = await tx.contractESignTask.updateMany({
+          data: {
+            cancelledAt: occurredAt,
+            taskStatus: ESignTaskStatus.CANCELLED,
+            updatedBy: command.actorId
+          },
+          where: { id: agreementIds.esignTaskId, taskStatus: ESignTaskStatus.COMPLETED }
+        });
+        if (!task || cancelled.count !== 1) throw serviceConflict("AUTHORITY_MISMATCH");
+        await this.auditService.write(
+          {
+            action: AuditAction.UPDATE,
+            after: {
+              cancelledAt: occurredAt,
+              taskStatus: ESignTaskStatus.CANCELLED
+            },
+            before: { cancelledAt: task.cancelledAt, taskStatus: task.taskStatus },
+            entityId: task.id,
+            entityType: "contract_esign_task",
+            module: "subscription_closure",
+            operatorId: command.actorId
+          },
+          tx
+        );
+        const result = await this.repository.appendPreparedEventInTransaction(
+          tx,
+          session,
+          eventCommand,
+          sourceCapability,
+          requiredAttestation(attestations, "early-cancel"),
+          this.closureAudit(command.actorId),
+          "early-cancel"
+        );
+        return Object.freeze({ closureCaseId: observedCase.id, wrote: result.wrote });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+  }
+
+  async executeEarlyTermination(input: ExecuteEarlyTerminationInput) {
+    if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
+    const command = normalizeExecuteEarlyTermination(input);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const executionSource = earlyTerminationSource(
+          command.closureCaseId,
+          `execute:${command.idempotencyKey}`
+        );
+        const handoverSource = earlyTerminationSource(
+          command.closureCaseId,
+          `execute:${command.idempotencyKey}:return-inbound-handover`
+        );
+        const assetSource = earlyTerminationSource(
+          command.closureCaseId,
+          `execute:${command.idempotencyKey}:return-inbound-asset-work-order`
+        );
+        const manifestSource = earlyTerminationSource(
+          command.closureCaseId,
+          `execute:${command.idempotencyKey}:return-manifest`
+        );
+        let executionSourceCapability: PreparedClosureSourceCapability | undefined;
+        let manifestSourceCapability: PreparedClosureSourceCapability | undefined;
+        let assetSourceCapability: AssetOperationsTransactionCapability | undefined;
+        let handoverSourceCapability: unknown;
+        const initialCase = await tx.subscriptionClosureCase.findUnique({
+          where: { id: command.closureCaseId }
+        });
+        if (!initialCase) throw serviceConflict("AUTHORITY_NOT_FOUND");
+        const sourcePreparations = [
+          {
+            prepare: async () => {
+              executionSourceCapability = await this.repository.prepareSourceInTransaction(
+                tx,
+                executionSource
+              );
+            },
+            source: executionSource
+          },
+          {
+            prepare: async () => {
+              manifestSourceCapability = await this.repository.prepareSourceInTransaction(
+                tx,
+                manifestSource
+              );
+            },
+            source: manifestSource
+          },
+          {
+            prepare: async () => {
+              assetSourceCapability = await this.assetOperations.prepareCallerOwnedTransaction(
+                tx,
+                assetSource
+              );
+            },
+            source: assetSource
+          },
+          {
+            prepare: async () => {
+              handoverSourceCapability =
+                await this.handoverWorkOrders.prepareReturnInboundInTransaction(tx, {
+                  actorId: command.actorId,
+                  orderId: initialCase.orderId,
+                  source: handoverSource
+                });
+            },
+            source: handoverSource
+          }
+        ].sort((left, right) =>
+          bytewiseCompare(sourceSortKey(left.source), sourceSortKey(right.source))
+        );
+        for (const preparation of sourcePreparations) await preparation.prepare();
+        if (
+          !executionSourceCapability ||
+          !manifestSourceCapability ||
+          !assetSourceCapability ||
+          !handoverSourceCapability
+        ) {
+          throw serviceConflict("CAPABILITY_INVALID");
+        }
+
+        const priorReceipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+          where: {
+            sourceType_sourceId_sourceKey: {
+              sourceId: executionSource.id,
+              sourceKey: executionSource.key,
+              sourceType: executionSource.type
+            }
+          }
+        });
+        if (priorReceipt) {
+          const priorEvent = await tx.subscriptionClosureEvent.findUnique({
+            where: { id: priorReceipt.eventId }
+          });
+          const priorDetail = jsonObject(priorEvent?.detailSnapshot);
+          if (priorDetail.terminationAction === "AGREEMENT_STALE") {
+            const staleAuthority = await resolveStaleEarlyTerminationAgreementAuthority(
+              tx,
+              initialCase
+            );
+            await this.repository.lockAuthorityRows(tx, [
+              { id: initialCase.id, mode: "UPDATE", table: "subscription_closure_case" },
+              ...staleAuthority.locks,
+              { id: command.actorId, mode: "SHARE", table: "user" }
+            ]);
+            const lockedCase = await tx.subscriptionClosureCase.findUnique({
+              where: { id: initialCase.id }
+            });
+            const lockedStale = await resolveStaleEarlyTerminationAgreementAuthority(
+              tx,
+              lockedCase ?? initialCase
+            );
+            if (
+              !lockedCase ||
+              lockedCase.status !== "MANUAL_TAKEOVER" ||
+              priorReceipt.actorId !== command.actorId ||
+              priorEvent?.sourceType !== executionSource.type ||
+              priorEvent.sourceId !== executionSource.id ||
+              priorEvent.sourceKey !== executionSource.key ||
+              priorDetail.commandFingerprint !== hashSubscriptionClosureSnapshot(command) ||
+              lockedStale.esignTask.taskStatus !== ESignTaskStatus.CANCELLED ||
+              lockedStale.esignTask.updatedBy !== command.actorId
+            ) {
+              throw closureSourceConflict();
+            }
+            return Object.freeze({
+              closureCaseId: initialCase.id,
+              outcome: "AGREEMENT_STALE" as const,
+              wrote: false
+            });
+          }
+          await this.repository.lockAuthorityRows(
+            tx,
+            await earlyTerminationExecutionReplayLocks(tx, command, initialCase)
+          );
+          const replay = await assertExactEarlyTerminationExecutionReplay(
+            tx,
+            command,
+            executionSource,
+            priorReceipt
+          );
+          return Object.freeze({ ...replay, wrote: false });
+        }
+
+        const databaseClock = await readDatabaseClock(tx);
+        if (databaseClock.getTime() < initialCase.effectiveAt.getTime()) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        if (await earlyTerminationAgreementHasCurrentFactDrift(tx, initialCase)) {
+          const stale = await resolveStaleEarlyTerminationAgreementAuthority(tx, initialCase);
+          const eventCommand = {
+            actorId: command.actorId,
+            afterStatus: "MANUAL_TAKEOVER" as const,
+            closureCaseId: initialCase.id,
+            detailSnapshot: {
+              agreementRevisionId: stale.archived.id,
+              commandFingerprint: hashSubscriptionClosureSnapshot(command),
+              terminationAction: "AGREEMENT_STALE"
+            },
+            eventType: "STATUS_TRANSITIONED" as const,
+            expectedStatus: "PREPARING_RETURN" as const,
+            expectedVersion: initialCase.version,
+            occurredAt: databaseClock,
+            source: executionSource
+          };
+          const session = this.repository.createAuthoritySessionInTransaction(tx);
+          const requirement = this.repository.bindAuthorityRequirement(
+            session,
+            subscriptionClosureEventAuthorityRequirement(eventCommand, "early-stale")
+          );
+          const attestations = await this.repository.prepareAuthorityInTransaction(
+            tx,
+            session,
+            [
+              ...requirement.locks,
+              { id: initialCase.orderId, mode: "UPDATE", table: "subscription_order" },
+              { id: initialCase.vehicleId, mode: "SHARE", table: "vehicle" },
+              { id: stale.leaseId, mode: "UPDATE", table: "lease" },
+              { id: initialCase.contractId, mode: "SHARE", table: "contract" },
+              {
+                id: stale.segmentId,
+                mode: "UPDATE",
+                table: "subscription_contract_segment"
+              },
+              ...stale.locks,
+              { id: initialCase.customerId, mode: "SHARE", table: "customer" },
+              { id: command.actorId, mode: "SHARE", table: "user" }
+            ],
+            [requirement]
+          );
+          const lockedCase = await tx.subscriptionClosureCase.findUnique({
+            where: { id: initialCase.id }
+          });
+          if (
+            !lockedCase ||
+            lockedCase.version !== initialCase.version ||
+            lockedCase.status !== "PREPARING_RETURN" ||
+            !(await earlyTerminationAgreementHasCurrentFactDrift(tx, lockedCase))
+          ) {
+            throw serviceConflict("AUTHORITY_MISMATCH");
+          }
+          const lockedStale = await resolveStaleEarlyTerminationAgreementAuthority(tx, lockedCase);
+          if (lockedStale.identity !== stale.identity) {
+            throw serviceConflict("AUTHORITY_MISMATCH");
+          }
+          const cancelled = await tx.contractESignTask.updateMany({
+            data: {
+              cancelledAt: databaseClock,
+              taskStatus: ESignTaskStatus.CANCELLED,
+              updatedBy: command.actorId
+            },
+            where: { id: stale.esignTask.id, taskStatus: ESignTaskStatus.COMPLETED }
+          });
+          if (cancelled.count !== 1) throw serviceConflict("AUTHORITY_MISMATCH");
+          await this.auditService.write(
+            {
+              action: AuditAction.UPDATE,
+              after: {
+                cancelledAt: databaseClock,
+                reason: "EARLY_TERMINATION_CURRENT_FACT_DRIFT",
+                taskStatus: ESignTaskStatus.CANCELLED
+              },
+              before: { taskStatus: stale.esignTask.taskStatus },
+              entityId: stale.esignTask.id,
+              entityType: "contract_esign_task",
+              module: "subscription_closure",
+              operatorId: command.actorId
+            },
+            tx
+          );
+          const result = await this.repository.appendPreparedEventInTransaction(
+            tx,
+            session,
+            eventCommand,
+            executionSourceCapability,
+            requiredAttestation(attestations, "early-stale"),
+            this.closureAudit(command.actorId),
+            "early-stale"
+          );
+          return Object.freeze({
+            closureCaseId: initialCase.id,
+            outcome: "AGREEMENT_STALE" as const,
+            wrote: result.wrote
+          });
+        }
+        const observed = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
+        assertEarlyTerminationExecutionCase(observed.closureCase);
+        const agreementCommand = await currentEarlyTerminationAgreementCommand(tx, observed);
+        const agreementIds = earlyTerminationAgreementIds(
+          command.closureCaseId,
+          agreementCommand.idempotencyKey
+        );
+        const agreementSources = earlyTerminationAgreementSources(
+          command.closureCaseId,
+          agreementCommand.idempotencyKey
+        );
+        const agreement = await validateEarlyTerminationAgreementChainInTransaction(
+          tx,
+          agreementCommand,
+          agreementIds,
+          agreementSources
+        );
+        if (!agreement) throw serviceConflict("AUTHORITY_MISMATCH");
+        const vehicleReturnId = stableEarlyTerminationId(
+          `${command.closureCaseId}\u0000${command.idempotencyKey}\u0000vehicle-return`
+        );
+        const handoverWorkOrderId = stableEarlyTerminationId(
+          `${command.closureCaseId}\u0000${command.idempotencyKey}\u0000handover`
+        );
+        const assetWorkOrderId = stableEarlyTerminationId(
+          `${command.closureCaseId}\u0000${command.idempotencyKey}\u0000asset`
+        );
+        const authority = earlyTerminationReturnAuthority(observed, command.actorId);
+        const handoverCommand = {
+          actorId: command.actorId,
+          orderId: observed.order.id,
+          source: handoverSource
+        };
+        const assetCommand = earlyTerminationAssetCommand(
+          authority,
+          assetSource,
+          observed.closureCase.effectiveAt,
+          vehicleReturnId
+        );
+        const assetContext = {
+          actorId: command.actorId,
+          permissions: [],
+          userAgent: "subscription-early-termination"
+        } as const;
+        const manifestSnapshot = returnManifestDocumentSnapshot({
+          assetWorkOrderId,
+          authority,
+          caseNo: observed.closureCase.caseNo,
+          closureCaseId: observed.closureCase.id,
+          handoverWorkOrderId,
+          vehicleReturnId
+        });
+        const manifestRevisionId = stableEarlyTerminationId(
+          `${command.closureCaseId}\u0000${command.idempotencyKey}\u0000return-manifest`
+        );
+        const manifestPlan = await planManifestAuthoritiesInTransaction(tx, {
+          assetWorkOrderId,
+          authority,
+          caseNo: observed.closureCase.caseNo,
+          closureCaseId: observed.closureCase.id,
+          documentSnapshot: manifestSnapshot,
+          documentSource: manifestSource,
+          documentRevisionId: manifestRevisionId,
+          expectedVersion: observed.closureCase.version + 2,
+          handoverWorkOrderId,
+          vehicleReturnId
+        });
+        const executionFingerprint = hashSubscriptionClosureSnapshot(command);
+        const eventCommand = {
+          actorId: command.actorId,
+          afterStatus: "PREPARING_RETURN" as const,
+          closureCaseId: observed.closureCase.id,
+          detailSnapshot: {
+            agreementArchivedRevisionId: agreement.archivedRevisionId,
+            assetWorkOrderId,
+            effectiveAt: observed.closureCase.effectiveAt,
+            executionFingerprint,
+            handoverWorkOrderId,
+            returnManifestRevisionId: manifestRevisionId,
+            vehicleReturnId
+          },
+          eventType: "NOTE_ADDED" as const,
+          expectedStatus: "PREPARING_RETURN" as const,
+          expectedVersion: observed.closureCase.version + 1,
+          occurredAt: databaseClock,
+          source: executionSource
+        };
+        const changes = await tx.subscriptionChangeOrder.findMany({
+          select: { id: true },
+          where: { orderId: observed.order.id }
+        });
+        const considerations = await tx.renewalConsideration.findMany({
+          select: { id: true },
+          where: { orderId: observed.order.id }
+        });
+        const agreementLocks = await earlyTerminationAgreementAuthorityLocks(
+          tx,
+          observed.closureCase.id,
+          agreementIds
+        );
+        const session = this.repository.createAuthoritySessionInTransaction(tx);
+        const effectiveBoundary = await subscriptionEffectiveBoundaryOwner.prepareInTransaction(
+          tx,
+          session,
+          {
+            boundaryAt: observed.closureCase.effectiveAt,
+            occurredAt: databaseClock,
+            orderId: observed.order.id
+          }
+        );
+        const requirements = [
+          this.assetOperations.createAuthorityRequirement(
+            session,
+            assetCommand,
+            command.actorId,
+            assetWorkOrderId
+          ),
+          this.handoverWorkOrders.createReturnInboundAuthorityRequirement(
+            session,
+            handoverCommand,
+            handoverWorkOrderId
+          ),
+          this.repository.bindAuthorityRequirement(
+            session,
+            subscriptionClosureDocumentAuthorityRequirement(manifestPlan.command)
+          ),
+          this.repository.bindAuthorityRequirement(
+            session,
+            subscriptionClosureEventAuthorityRequirement(eventCommand, "early-execution")
+          ),
+          effectiveBoundary.requirement
+        ];
+        const attestations = await this.repository.prepareAuthorityInTransaction(
+          tx,
+          session,
+          [
+            ...requirements.flatMap(({ locks }) => locks),
+            ...changes.map(({ id }) => ({
+              id,
+              mode: "UPDATE" as const,
+              table: "subscription_change_order" as const
+            })),
+            ...considerations.map(({ id }) => ({
+              id,
+              mode: "UPDATE" as const,
+              table: "renewal_consideration" as const
+            })),
+            { id: observed.order.id, mode: "UPDATE", table: "subscription_order" },
+            { id: observed.vehicle.id, mode: "SHARE", table: "vehicle" },
+            { id: observed.lease.id, mode: "UPDATE", table: "lease" },
+            { id: observed.contract.id, mode: "SHARE", table: "contract" },
+            {
+              id: observed.segment.id,
+              mode: "UPDATE",
+              table: "subscription_contract_segment"
+            },
+            ...agreementLocks,
+            { id: observed.closureCase.customerId, mode: "SHARE", table: "customer" },
+            { id: command.actorId, mode: "SHARE", table: "user" }
+          ],
+          requirements
+        );
+        const locked = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
+        assertEarlyTerminationExecutionCase(locked.closureCase);
+        if (
+          earlyTerminationAgreementDraftIdentity(locked) !==
+          earlyTerminationAgreementDraftIdentity(observed)
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        if (
+          !(await validateEarlyTerminationAgreementChainInTransaction(
+            tx,
+            agreementCommand,
+            agreementIds,
+            agreementSources
+          ))
+        ) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        const manifestAuthorities = manifestPlan.creation
+          ? await createManifestAuthoritiesInTransaction(
+              tx,
+              manifestPlan.command,
+              manifestPlan.creation,
+              authority
+            )
+          : null;
+        await assertReturnManifestEsignAuthority(
+          tx,
+          manifestPlan.command,
+          authority,
+          manifestSource,
+          manifestSnapshot,
+          manifestAuthorities
+        );
+        const handoverCapability =
+          await this.handoverWorkOrders.attestReturnInboundAuthorityInTransaction(
+            tx,
+            session,
+            handoverCommand,
+            handoverSourceCapability as never,
+            requiredAttestation(attestations, "handover-create"),
+            handoverWorkOrderId
+          );
+        const preparedAsset =
+          await this.assetOperations.attestCallerOwnedCreateAuthorityInTransaction(
+            tx,
+            session,
+            assetCommand,
+            assetContext,
+            assetSourceCapability,
+            requiredAttestation(attestations, "asset-create"),
+            assetWorkOrderId
+          );
+        await tx.vehicleReturn.create({
+          data: {
+            customerId: locked.closureCase.customerId,
+            id: vehicleReturnId,
+            orderId: locked.closureCase.orderId,
+            returnNo: createBusinessNo("RET"),
+            returnStatus: VehicleReturnStatus.PENDING,
+            returnType: "EARLY_TERMINATION",
+            scheduledAt: locked.closureCase.effectiveAt,
+            vehicleId: locked.closureCase.vehicleId
+          }
+        });
+        const specialist = await this.handoverWorkOrders.createPreparedReturnInboundInTransaction(
+          tx,
+          handoverCapability
+        );
+        const common = await this.assetOperations.createPreparedWorkOrderInTransaction(
+          tx,
+          preparedAsset
+        );
+        if (specialist.id !== handoverWorkOrderId || common.workOrder.id !== assetWorkOrderId) {
+          throw serviceConflict("AUTHORITY_MISMATCH");
+        }
+        await applyEarlyTerminationCoreBoundary(tx, locked, command.actorId);
+        await subscriptionEffectiveBoundaryOwner.applyPreparedInTransaction(
+          tx,
+          session,
+          effectiveBoundary.capability,
+          requiredAttestation(attestations, "effective-boundary-stop")
+        );
+        await this.auditService.write(
+          {
+            action: AuditAction.UPDATE,
+            after: {
+              effectiveAt: locked.closureCase.effectiveAt,
+              leaseStatus: LeaseStatus.RETURN_DUE,
+              orderStatus: OrderStatus.PENDING_RETURN,
+              segmentStatus: ContractSegmentStatus.COMPLETED,
+              vehicleReturnId
+            },
+            entityId: locked.closureCase.id,
+            entityType: "subscription_closure_case",
+            module: "subscription_closure",
+            operatorId: command.actorId
+          },
+          tx
+        );
+        const linked = await tx.subscriptionClosureCase.updateMany({
+          data: {
+            returnAssetWorkOrderId: assetWorkOrderId,
+            returnHandoverWorkOrderId: handoverWorkOrderId,
+            updatedBy: command.actorId,
+            vehicleReturnId,
+            version: { increment: 1 }
+          },
+          where: {
+            id: locked.closureCase.id,
+            returnAssetWorkOrderId: null,
+            returnHandoverWorkOrderId: null,
+            vehicleReturnId: null,
+            version: locked.closureCase.version
+          }
+        });
+        if (linked.count !== 1) throw serviceConflict("AUTHORITY_MISMATCH");
+        await this.repository.appendPreparedEventInTransaction(
+          tx,
+          session,
+          eventCommand,
+          executionSourceCapability,
+          requiredAttestation(attestations, "early-execution"),
+          this.closureAudit(command.actorId),
+          "early-execution"
+        );
+        const manifest = (
+          await this.repository.appendPreparedDocumentRevisionInTransaction(
+            tx,
+            session,
+            manifestPlan.command,
+            manifestSourceCapability,
+            requiredAttestation(attestations, "manifest-create"),
+            this.closureAudit(command.actorId)
+          )
+        ).outcome;
+        return Object.freeze({
+          closureCaseId: locked.closureCase.id,
+          returnAssetWorkOrderId: common.workOrder.id,
+          returnHandoverWorkOrderId: specialist.id,
+          returnManifestRevisionId: manifest.id,
+          vehicleReturnId,
+          wrote: true
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
+  }
+
   private closureAudit(actorId: string): SubscriptionClosureMutationAuditHook {
     return async (tx, mutation) => {
       await this.auditService.write(
@@ -4983,8 +6094,8 @@ async function validateRecoveryAuthorityChainInTransaction(
     esignTask.contractId !== draft.closureCase.contractId ||
     esignTask.orderId !== draft.closureCase.orderId ||
     esignTask.customerId !== draft.closureCase.customerId ||
-    esignTask.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
-    esignTask.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    esignTask.documentType !== ESignDocumentType.RECOVERY_AUTHORITY ||
+    esignTask.signingStage !== ESignSigningStage.STAGE5_RECOVERY_AUTHORITY ||
     esignTask.provider !== ESignProviderType.OTHER ||
     esignTask.providerEnvelopeId !== ids.esignEnvelopeId ||
     esignTask.providerTaskId !== ids.esignProviderTaskId ||
@@ -5231,7 +6342,16 @@ function assertPhysicalReceiptAuthorityShape(
     closureCase.vehicleId !== order.vehicleId ||
     closureCase.contractId !== order.contractId ||
     closureCase.customerId !== order.customerId ||
+    (closureCase.status !== "RETURN_INSPECTION" &&
+      command.returnType !==
+        (closureCase.closureType === "EARLY_TERMINATION" ||
+        command.physicalControlMode === "RECOVERY"
+          ? "EARLY_TERMINATION"
+          : "NORMAL_RETURN")) ||
     vehicleReturn.id !== closureCase.vehicleReturnId ||
+    (closureCase.status !== "RETURN_INSPECTION" &&
+      command.physicalControlMode !== "RECOVERY" &&
+      vehicleReturn.returnType !== command.returnType) ||
     vehicleReturn.orderId !== order.id ||
     vehicleReturn.vehicleId !== order.vehicleId ||
     vehicleReturn.customerId !== order.customerId ||
@@ -5302,7 +6422,16 @@ function assertPhysicalReceiptObservedAuthority(
     closureCase.vehicleId !== order.vehicleId ||
     closureCase.contractId !== order.contractId ||
     closureCase.customerId !== order.customerId ||
+    (closureCase.status !== "RETURN_INSPECTION" &&
+      command.returnType !==
+        (closureCase.closureType === "EARLY_TERMINATION" ||
+        command.physicalControlMode === "RECOVERY"
+          ? "EARLY_TERMINATION"
+          : "NORMAL_RETURN")) ||
     vehicleReturn.id !== closureCase.vehicleReturnId ||
+    (closureCase.status !== "RETURN_INSPECTION" &&
+      command.physicalControlMode !== "RECOVERY" &&
+      vehicleReturn.returnType !== command.returnType) ||
     vehicleReturn.orderId !== order.id ||
     vehicleReturn.vehicleId !== order.vehicleId ||
     vehicleReturn.customerId !== order.customerId ||
@@ -5514,8 +6643,8 @@ function assertArchivedRecoveryAuthority(
     esignTask.contractId !== closureCase.contractId ||
     esignTask.orderId !== command.orderId ||
     esignTask.customerId !== closureCase.customerId ||
-    esignTask.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
-    esignTask.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    esignTask.documentType !== ESignDocumentType.RECOVERY_AUTHORITY ||
+    esignTask.signingStage !== ESignSigningStage.STAGE5_RECOVERY_AUTHORITY ||
     esignTask.sourceType !== revision.sourceType ||
     esignTask.sourceId !== revision.sourceId ||
     esignTask.sourceKey !== revision.sourceKey ||
@@ -6140,6 +7269,8 @@ type ManifestAuthorityPlanInput = Readonly<{
   closureCaseId: string;
   documentSource: SubscriptionClosureSource;
   documentSnapshot: ReturnType<typeof returnManifestDocumentSnapshot>;
+  documentRevisionId?: string;
+  expectedVersion?: number;
   handoverWorkOrderId: string;
   vehicleReturnId: string;
 }>;
@@ -6166,8 +7297,9 @@ async function planManifestAuthoritiesInTransaction(
       contractESignTaskId,
       documentSnapshot,
       documentType: "RETURN_MANIFEST" as const,
+      documentRevisionId: input.documentRevisionId,
       expectedCurrentRevisionId: null,
-      expectedVersion: 0,
+      expectedVersion: input.expectedVersion ?? 0,
       generatedAt,
       handoverWorkOrderId: input.handoverWorkOrderId,
       signedAt: null,
@@ -6857,6 +7989,80 @@ function normalizeArchiveRecoveryAuthority(
   });
 }
 
+function normalizeArchiveEarlyTerminationAgreement(
+  input: ArchiveEarlyTerminationAgreementInput
+): ArchiveEarlyTerminationAgreementInput {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some(
+      (key) => key !== "actorId" && key !== "closureCaseId" && key !== "idempotencyKey"
+    ) ||
+    typeof input.idempotencyKey !== "string" ||
+    !input.idempotencyKey.trim() ||
+    input.idempotencyKey.trim().length > 120
+  ) {
+    throw serviceConflict("EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN");
+  }
+  return Object.freeze({
+    actorId: canonicalUuid(input.actorId),
+    closureCaseId: canonicalUuid(input.closureCaseId),
+    idempotencyKey: input.idempotencyKey.trim()
+  });
+}
+
+function normalizeExecuteEarlyTermination(
+  input: ExecuteEarlyTerminationInput
+): ExecuteEarlyTerminationInput {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some(
+      (key) => key !== "actorId" && key !== "closureCaseId" && key !== "idempotencyKey"
+    ) ||
+    typeof input.idempotencyKey !== "string" ||
+    !input.idempotencyKey.trim() ||
+    input.idempotencyKey.trim().length > 120
+  ) {
+    throw serviceConflict("EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN");
+  }
+  return Object.freeze({
+    actorId: canonicalUuid(input.actorId),
+    closureCaseId: canonicalUuid(input.closureCaseId),
+    idempotencyKey: input.idempotencyKey.trim()
+  });
+}
+
+function normalizeCancelEarlyTermination(
+  input: CancelEarlyTerminationInput
+): CancelEarlyTerminationInput {
+  const reason = typeof input?.reason === "string" ? input.reason.trim() : "";
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some(
+      (key) =>
+        key !== "actorId" && key !== "closureCaseId" && key !== "idempotencyKey" && key !== "reason"
+    ) ||
+    typeof input.idempotencyKey !== "string" ||
+    !input.idempotencyKey.trim() ||
+    input.idempotencyKey.trim().length > 120 ||
+    !reason ||
+    reason.length > 2_000
+  ) {
+    throw serviceConflict("EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN");
+  }
+  return Object.freeze({
+    actorId: canonicalUuid(input.actorId),
+    closureCaseId: canonicalUuid(input.closureCaseId),
+    idempotencyKey: input.idempotencyKey.trim(),
+    reason
+  });
+}
+
 function normalizeRecoveryBusinessAction(
   input: RecoveryBusinessActionInput
 ): RecoveryBusinessActionInput {
@@ -7395,6 +8601,1764 @@ function sameAuthority(left: NormalExpiryAuthority, right: NormalExpiryAuthority
   return canonicalSubscriptionClosureJson(left) === canonicalSubscriptionClosureJson(right);
 }
 
+type NormalizedEarlyTerminationInitiation = Readonly<{
+  actorId: string;
+  effectiveAt: Date;
+  evidence: readonly Readonly<{ reference: string; type: string }>[];
+  idempotencyKey: string;
+  orderId: string;
+  reason: string;
+}>;
+
+async function resolveEarlyTerminationInitiationAuthority(
+  tx: Prisma.TransactionClient,
+  command: NormalizedEarlyTerminationInitiation,
+  databaseClock: Date
+) {
+  const [actor, order, lease, segments, vehicleReturn] = await Promise.all([
+    tx.user.findFirst({
+      select: { id: true, status: true },
+      where: { deletedAt: null, id: command.actorId, status: UserStatus.ACTIVE }
+    }),
+    tx.subscriptionOrder.findUnique({
+      select: {
+        contractId: true,
+        customerId: true,
+        deletedAt: true,
+        id: true,
+        orderNo: true,
+        orderStatus: true,
+        vehicleId: true
+      },
+      where: { id: command.orderId }
+    }),
+    tx.lease.findUnique({
+      select: { id: true, orderId: true, status: true },
+      where: { orderId: command.orderId }
+    }),
+    tx.subscriptionContractSegment.findMany({
+      orderBy: [{ sequenceNo: "asc" }, { id: "asc" }],
+      select: {
+        endDate: true,
+        id: true,
+        orderId: true,
+        sequenceNo: true,
+        startDate: true,
+        status: true
+      },
+      where: { orderId: command.orderId, status: "ACTIVE" }
+    }),
+    tx.vehicleReturn.findUnique({ select: { id: true }, where: { orderId: command.orderId } })
+  ]);
+  const segment = segments[0];
+  const [contract, vehicle] = await Promise.all([
+    order?.contractId
+      ? tx.contract.findUnique({
+          select: { customerId: true, id: true, orderId: true, status: true },
+          where: { id: order.contractId }
+        })
+      : null,
+    order?.vehicleId
+      ? tx.vehicle.findUnique({
+          select: { deletedAt: true, id: true, status: true },
+          where: { id: order.vehicleId }
+        })
+      : null
+  ]);
+  if (
+    !actor ||
+    !order ||
+    order.deletedAt ||
+    order.orderStatus !== OrderStatus.ACTIVE ||
+    !order.contractId ||
+    !order.vehicleId ||
+    !contract ||
+    contract.orderId !== order.id ||
+    contract.customerId !== order.customerId ||
+    (contract.status !== ContractStatus.SIGNED && contract.status !== ContractStatus.ARCHIVED) ||
+    !lease ||
+    lease.orderId !== order.id ||
+    lease.status !== LeaseStatus.ACTIVE ||
+    segments.length !== 1 ||
+    !segment ||
+    segment.orderId !== order.id ||
+    !vehicle ||
+    vehicle.deletedAt ||
+    vehicle.id !== order.vehicleId ||
+    vehicle.status !== VehicleStatus.LEASED ||
+    vehicleReturn
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const segmentBoundaryExclusive = new Date(segment.endDate.getTime() + 86_400_000);
+  if (
+    command.effectiveAt.getTime() < databaseClock.getTime() ||
+    command.effectiveAt.getTime() >= segmentBoundaryExclusive.getTime()
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return Object.freeze({ actor, contract, lease, order, segment, vehicle });
+}
+
+type EarlyTerminationInitiationAuthority = Awaited<
+  ReturnType<typeof resolveEarlyTerminationInitiationAuthority>
+>;
+
+function earlyTerminationAgreementIntent(command: NormalizedEarlyTerminationInitiation) {
+  return Object.freeze({
+    effectiveAt: command.effectiveAt,
+    evidence: command.evidence,
+    reason: command.reason,
+    requestedBy: command.actorId
+  });
+}
+
+function earlyTerminationAuthoritySnapshot(
+  command: NormalizedEarlyTerminationInitiation,
+  authority: EarlyTerminationInitiationAuthority
+) {
+  return Object.freeze({
+    agreement: earlyTerminationAgreementIntent(command),
+    contract: {
+      customerId: authority.contract.customerId,
+      id: authority.contract.id,
+      orderId: authority.contract.orderId,
+      status: authority.contract.status
+    },
+    lease: {
+      id: authority.lease.id,
+      orderId: authority.lease.orderId,
+      status: authority.lease.status
+    },
+    order: {
+      contractId: authority.order.contractId,
+      customerId: authority.order.customerId,
+      id: authority.order.id,
+      orderNo: authority.order.orderNo,
+      status: authority.order.orderStatus,
+      vehicleId: authority.order.vehicleId
+    },
+    segment: {
+      endDate: authority.segment.endDate,
+      id: authority.segment.id,
+      orderId: authority.segment.orderId,
+      sequenceNo: authority.segment.sequenceNo,
+      startDate: authority.segment.startDate,
+      status: authority.segment.status
+    },
+    vehicle: { id: authority.vehicle.id, status: authority.vehicle.status }
+  });
+}
+
+function earlyTerminationAuthorityIdentity(authority: EarlyTerminationInitiationAuthority) {
+  return canonicalSubscriptionClosureJson({
+    actor: authority.actor,
+    contract: authority.contract,
+    lease: authority.lease,
+    order: authority.order,
+    segment: authority.segment,
+    vehicle: authority.vehicle
+  });
+}
+
+function earlyTerminationCaseCommand(
+  command: NormalizedEarlyTerminationInitiation,
+  authority: EarlyTerminationInitiationAuthority,
+  initiationSource: SubscriptionClosureSource
+) {
+  return Object.freeze({
+    actorId: command.actorId,
+    authoritySnapshot: earlyTerminationAuthoritySnapshot(command, authority),
+    closureType: "EARLY_TERMINATION" as const,
+    contractId: authority.contract.id,
+    customerId: authority.order.customerId,
+    effectiveAt: command.effectiveAt,
+    finalDisposition: "TERMINATE" as const,
+    orderId: authority.order.id,
+    physicalControlMode: "VOLUNTARY_RETURN" as const,
+    source: initiationSource,
+    vehicleId: authority.vehicle.id
+  });
+}
+
+function earlyTerminationReplayCaseCommand(
+  existing: Readonly<{
+    authoritySnapshot: Prisma.JsonValue;
+    contractId: string;
+    createdBy: string;
+    customerId: string;
+    effectiveAt: Date;
+    orderId: string;
+    reconditioningAssetWorkOrderId: string | null;
+    recoveryAssetWorkOrderId: string | null;
+    returnAssetWorkOrderId: string | null;
+    returnHandoverWorkOrderId: string | null;
+    vehicleId: string;
+    vehicleReturnId: string | null;
+  }>,
+  initiationSource: SubscriptionClosureSource
+) {
+  return Object.freeze({
+    actorId: existing.createdBy,
+    authoritySnapshot: existing.authoritySnapshot as never,
+    closureType: "EARLY_TERMINATION" as const,
+    contractId: existing.contractId,
+    customerId: existing.customerId,
+    effectiveAt: existing.effectiveAt,
+    finalDisposition: "TERMINATE" as const,
+    orderId: existing.orderId,
+    physicalControlMode: "VOLUNTARY_RETURN" as const,
+    reconditioningAssetWorkOrderId: null,
+    recoveryAssetWorkOrderId: null,
+    returnAssetWorkOrderId: null,
+    returnHandoverWorkOrderId: null,
+    source: initiationSource,
+    vehicleId: existing.vehicleId,
+    vehicleReturnId: null
+  });
+}
+
+function earlyTerminationSource(orderId: string, key: string): SubscriptionClosureSource {
+  return Object.freeze({ id: orderId, key, type: "SUBSCRIPTION_EARLY_TERMINATION" });
+}
+
+function stableEarlyTerminationId(value: string): string {
+  const hex = createHash("sha256").update(`early-termination\u0000${value}`).digest("hex");
+  const variant = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+type EarlyTerminationAgreementIds = Readonly<{
+  archivedRevisionId: string;
+  esignEnvelopeId: string;
+  esignProviderTaskId: string;
+  esignTaskId: string;
+  generatedRevisionId: string;
+  signedFileId: string;
+  signedRevisionId: string;
+  sourceFileId: string;
+}>;
+
+type EarlyTerminationAgreementSources = readonly [
+  SubscriptionClosureSource,
+  SubscriptionClosureSource,
+  SubscriptionClosureSource
+];
+
+function earlyTerminationAgreementIds(
+  closureCaseId: string,
+  idempotencyKey: string
+): EarlyTerminationAgreementIds {
+  const id = (label: string) =>
+    stableEarlyTerminationId(
+      `${closureCaseId}\u0000${idempotencyKey}\u0000agreement\u0000${label}`
+    );
+  return Object.freeze({
+    archivedRevisionId: id("revision-archived"),
+    esignEnvelopeId: id("esign-envelope"),
+    esignProviderTaskId: id("esign-provider-task"),
+    esignTaskId: id("esign-task"),
+    generatedRevisionId: id("revision-generated"),
+    signedFileId: id("file-signed"),
+    signedRevisionId: id("revision-signed"),
+    sourceFileId: id("file-source")
+  });
+}
+
+function earlyTerminationAgreementSources(
+  closureCaseId: string,
+  idempotencyKey: string
+): EarlyTerminationAgreementSources {
+  return Object.freeze([
+    earlyTerminationSource(
+      closureCaseId,
+      `early-termination-agreement:${idempotencyKey}:generated`
+    ),
+    earlyTerminationSource(closureCaseId, `early-termination-agreement:${idempotencyKey}:signed`),
+    earlyTerminationSource(closureCaseId, `early-termination-agreement:${idempotencyKey}:archived`)
+  ]) as EarlyTerminationAgreementSources;
+}
+
+async function resolveEarlyTerminationAgreementDraft(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string
+) {
+  const closureCase = await tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } });
+  if (!closureCase) throw serviceConflict("AUTHORITY_NOT_FOUND");
+  const [order, contract, lease, segments, vehicle, currentDocument] = await Promise.all([
+    tx.subscriptionOrder.findUnique({
+      select: {
+        contractId: true,
+        customerId: true,
+        deletedAt: true,
+        id: true,
+        orderNo: true,
+        orderStatus: true,
+        vehicleId: true
+      },
+      where: { id: closureCase.orderId }
+    }),
+    tx.contract.findUnique({
+      select: { customerId: true, id: true, orderId: true, status: true },
+      where: { id: closureCase.contractId }
+    }),
+    tx.lease.findUnique({
+      select: { id: true, orderId: true, status: true },
+      where: { orderId: closureCase.orderId }
+    }),
+    tx.subscriptionContractSegment.findMany({
+      orderBy: [{ sequenceNo: "asc" }, { id: "asc" }],
+      select: {
+        endDate: true,
+        id: true,
+        orderId: true,
+        sequenceNo: true,
+        startDate: true,
+        status: true
+      },
+      where: { orderId: closureCase.orderId }
+    }),
+    tx.vehicle.findUnique({
+      select: { deletedAt: true, id: true, status: true },
+      where: { id: closureCase.vehicleId }
+    }),
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId,
+          documentType: "EARLY_TERMINATION_AGREEMENT"
+        }
+      }
+    })
+  ]);
+  const authority = jsonObject(closureCase.authoritySnapshot);
+  const initiatedSegment = jsonObject(authority.segment);
+  const segment = segments.find(({ id }) => id === initiatedSegment.id);
+  const executed = Boolean(
+    closureCase.vehicleReturnId &&
+    closureCase.returnAssetWorkOrderId &&
+    closureCase.returnHandoverWorkOrderId
+  );
+  const activeShape =
+    !executed &&
+    order?.orderStatus === OrderStatus.ACTIVE &&
+    lease?.status === LeaseStatus.ACTIVE &&
+    segment?.status === ContractSegmentStatus.ACTIVE;
+  const executedShape =
+    executed &&
+    order?.orderStatus === OrderStatus.PENDING_RETURN &&
+    lease?.status === LeaseStatus.RETURN_DUE &&
+    segment?.status === ContractSegmentStatus.COMPLETED;
+  if (
+    !order ||
+    order.deletedAt ||
+    (!activeShape && !executedShape) ||
+    order.id !== closureCase.orderId ||
+    order.contractId !== closureCase.contractId ||
+    order.customerId !== closureCase.customerId ||
+    order.vehicleId !== closureCase.vehicleId ||
+    !contract ||
+    contract.orderId !== order.id ||
+    contract.customerId !== order.customerId ||
+    (contract.status !== ContractStatus.SIGNED && contract.status !== ContractStatus.ARCHIVED) ||
+    !lease ||
+    lease.orderId !== order.id ||
+    !segment ||
+    !vehicle ||
+    vehicle.deletedAt ||
+    vehicle.status !== VehicleStatus.LEASED
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const initiatedFacts: SubscriptionClosureSnapshotObject = {
+    contract: authority.contract as Prisma.JsonValue,
+    lease: authority.lease as Prisma.JsonValue,
+    order: authority.order as Prisma.JsonValue,
+    segment: authority.segment as Prisma.JsonValue,
+    vehicle: authority.vehicle as Prisma.JsonValue
+  };
+  const currentFacts = executed
+    ? Object.freeze(initiatedFacts)
+    : earlyTerminationCurrentFacts({ contract, lease, order, segment, vehicle });
+  if (!sameCanonicalReceiptValue(currentFacts, initiatedFacts)) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return Object.freeze({
+    closureCase,
+    contract,
+    currentDocumentId: currentDocument?.documentRevisionId ?? null,
+    currentFacts,
+    lease,
+    order,
+    segment,
+    vehicle
+  });
+}
+
+type EarlyTerminationAgreementDraft = Awaited<
+  ReturnType<typeof resolveEarlyTerminationAgreementDraft>
+>;
+
+function earlyTerminationCurrentFacts(
+  authority: Readonly<{
+    contract: Readonly<{ customerId: string; id: string; orderId: string; status: string }>;
+    lease: Readonly<{ id: string; orderId: string; status: string }>;
+    order: Readonly<{
+      contractId: string | null;
+      customerId: string;
+      id: string;
+      orderNo: string;
+      orderStatus: string;
+      vehicleId: string | null;
+    }>;
+    segment: Readonly<{
+      endDate: Date;
+      id: string;
+      orderId: string;
+      sequenceNo: number;
+      startDate: Date;
+      status: string;
+    }>;
+    vehicle: Readonly<{ id: string; status: string }>;
+  }>
+) {
+  return Object.freeze({
+    contract: { ...authority.contract },
+    lease: { ...authority.lease },
+    order: {
+      contractId: authority.order.contractId,
+      customerId: authority.order.customerId,
+      id: authority.order.id,
+      orderNo: authority.order.orderNo,
+      status: authority.order.orderStatus,
+      vehicleId: authority.order.vehicleId
+    },
+    segment: { ...authority.segment },
+    vehicle: { id: authority.vehicle.id, status: authority.vehicle.status }
+  });
+}
+
+function assertEarlyTerminationAgreementDraftActionable(draft: EarlyTerminationAgreementDraft) {
+  if (
+    draft.closureCase.closureType !== "EARLY_TERMINATION" ||
+    draft.closureCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
+    draft.closureCase.finalDisposition !== "TERMINATE" ||
+    draft.closureCase.status !== "PREPARING_RETURN" ||
+    draft.closureCase.vehicleReturnId !== null ||
+    draft.closureCase.returnAssetWorkOrderId !== null ||
+    draft.closureCase.returnHandoverWorkOrderId !== null ||
+    draft.currentDocumentId !== null
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+}
+
+function earlyTerminationAgreementDraftIdentity(draft: EarlyTerminationAgreementDraft) {
+  return canonicalSubscriptionClosureJson({
+    closureCase: draft.closureCase,
+    contract: draft.contract,
+    currentDocumentId: draft.currentDocumentId,
+    currentFacts: draft.currentFacts,
+    lease: draft.lease,
+    order: draft.order,
+    segment: draft.segment,
+    vehicle: draft.vehicle
+  });
+}
+
+function earlyTerminationAgreementDocumentSnapshot(draft: EarlyTerminationAgreementDraft) {
+  const agreement = jsonObject(draft.closureCase.authoritySnapshot).agreement as Prisma.JsonValue;
+  return Object.freeze({
+    agreement,
+    authoritySnapshotHash: draft.closureCase.authoritySnapshotHash,
+    caseNo: draft.closureCase.caseNo,
+    closureCaseId: draft.closureCase.id,
+    contractId: draft.closureCase.contractId,
+    currentFacts: draft.currentFacts,
+    currentFactsSnapshotHash: hashSubscriptionClosureSnapshot(draft.currentFacts),
+    customerId: draft.closureCase.customerId,
+    documentType: "EARLY_TERMINATION_AGREEMENT",
+    effectiveAt: draft.closureCase.effectiveAt,
+    finalDisposition: "TERMINATE",
+    orderId: draft.closureCase.orderId,
+    physicalControlMode: "VOLUNTARY_RETURN",
+    vehicleId: draft.closureCase.vehicleId
+  } as const);
+}
+
+function earlyTerminationAgreementDocumentCommands(
+  input: Readonly<{
+    actorId: string;
+    closureCaseId: string;
+    databaseClock: Date;
+    documentSnapshot: ReturnType<typeof earlyTerminationAgreementDocumentSnapshot>;
+    expectedVersion: number;
+    ids: EarlyTerminationAgreementIds;
+    signedFileHash: string;
+    sourceFileHash: string;
+    sources: EarlyTerminationAgreementSources;
+  }>
+) {
+  const common = {
+    actorId: input.actorId,
+    closureCaseId: input.closureCaseId,
+    contractESignTaskId: input.ids.esignTaskId,
+    documentSnapshot: input.documentSnapshot,
+    documentType: "EARLY_TERMINATION_AGREEMENT" as const,
+    generatedAt: input.databaseClock,
+    handoverWorkOrderId: null,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.ids.sourceFileId,
+    vehicleReturnId: null
+  };
+  return Object.freeze({
+    archived: Object.freeze({
+      ...common,
+      archivedAt: input.databaseClock,
+      archivedBy: input.actorId,
+      documentRevisionId: input.ids.archivedRevisionId,
+      expectedCurrentRevisionId: input.ids.signedRevisionId,
+      expectedVersion: input.expectedVersion + 2,
+      signedAt: input.databaseClock,
+      signedBy: input.actorId,
+      signedFileHash: input.signedFileHash,
+      signedFileId: input.ids.signedFileId,
+      source: input.sources[2],
+      stage: "ARCHIVED" as const
+    }),
+    generated: Object.freeze({
+      ...common,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: input.ids.generatedRevisionId,
+      expectedCurrentRevisionId: null,
+      expectedVersion: input.expectedVersion,
+      signedAt: null,
+      signedBy: null,
+      signedFileHash: null,
+      signedFileId: null,
+      source: input.sources[0],
+      stage: "GENERATED" as const
+    }),
+    signed: Object.freeze({
+      ...common,
+      archivedAt: null,
+      archivedBy: null,
+      documentRevisionId: input.ids.signedRevisionId,
+      expectedCurrentRevisionId: input.ids.generatedRevisionId,
+      expectedVersion: input.expectedVersion + 1,
+      signedAt: input.databaseClock,
+      signedBy: input.actorId,
+      signedFileHash: input.signedFileHash,
+      signedFileId: input.ids.signedFileId,
+      source: input.sources[1],
+      stage: "SIGNED" as const
+    })
+  });
+}
+
+function earlyTerminationAgreementSignedEnvelope(
+  input: Readonly<{
+    actorId: string;
+    completedAt: Date;
+    documentSnapshotHash: string;
+    signedFileId: string;
+    sourceFileHash: string;
+    sourceFileId: string;
+    sources: EarlyTerminationAgreementSources;
+  }>
+) {
+  return Object.freeze({
+    completedAt: input.completedAt,
+    documentSnapshotHash: input.documentSnapshotHash,
+    documentType: "EARLY_TERMINATION_AGREEMENT",
+    lifecycleSources: input.sources,
+    signedBy: input.actorId,
+    signedFileId: input.signedFileId,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.sourceFileId
+  });
+}
+
+function earlyTerminationAgreementEsignRequest(
+  input: Readonly<{
+    documentSnapshotHash: string;
+    ids: EarlyTerminationAgreementIds;
+    sourceFileHash: string;
+    sources: EarlyTerminationAgreementSources;
+  }>
+) {
+  return Object.freeze({
+    archivedRevisionId: input.ids.archivedRevisionId,
+    documentSnapshotHash: input.documentSnapshotHash,
+    documentType: "EARLY_TERMINATION_AGREEMENT",
+    generatedRevisionId: input.ids.generatedRevisionId,
+    lifecycleSources: input.sources,
+    signedRevisionId: input.ids.signedRevisionId,
+    sourceFileHash: input.sourceFileHash,
+    sourceFileId: input.ids.sourceFileId
+  });
+}
+
+function earlyTerminationAgreementEsignResponse(
+  input: Readonly<{
+    actorId: string;
+    completedAt: Date;
+    ids: EarlyTerminationAgreementIds;
+    signedFileHash: string;
+  }>
+) {
+  return Object.freeze({
+    completedAt: input.completedAt,
+    completedBy: input.actorId,
+    providerEnvelopeId: input.ids.esignEnvelopeId,
+    providerTaskId: input.ids.esignProviderTaskId,
+    signedFileHash: input.signedFileHash,
+    signedFileId: input.ids.signedFileId
+  });
+}
+
+function earlyTerminationAgreementReplayLocks(
+  command: ArchiveEarlyTerminationAgreementInput,
+  ids: EarlyTerminationAgreementIds
+): readonly SubscriptionClosureAuthorityLock[] {
+  return Object.freeze([
+    { id: command.closureCaseId, mode: "UPDATE", table: "subscription_closure_case" },
+    {
+      id: command.closureCaseId,
+      mode: "SHARE",
+      table: "subscription_closure_current_document"
+    },
+    ...[ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId].map((id) => ({
+      id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_document_revision" as const
+    })),
+    { id: ids.sourceFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.signedFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.esignTaskId, mode: "SHARE", table: "contract_esign_task" },
+    { id: command.actorId, mode: "SHARE", table: "user" }
+  ]);
+}
+
+function earlyTerminationAgreementSourceObjectKey(closureCaseId: string, revisionId: string) {
+  return `subscription-closure/${closureCaseId}/${revisionId}-early-termination-agreement.json`;
+}
+
+function earlyTerminationAgreementSignedObjectKey(closureCaseId: string, revisionId: string) {
+  return `subscription-closure/${closureCaseId}/${revisionId}-early-termination-agreement.signed.json`;
+}
+
+function assertEarlyTerminationExecutionCase(
+  closureCase: EarlyTerminationAgreementDraft["closureCase"]
+) {
+  if (
+    closureCase.closureType !== "EARLY_TERMINATION" ||
+    closureCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
+    closureCase.finalDisposition !== "TERMINATE" ||
+    closureCase.status !== "PREPARING_RETURN" ||
+    closureCase.vehicleReturnId !== null ||
+    closureCase.returnAssetWorkOrderId !== null ||
+    closureCase.returnHandoverWorkOrderId !== null
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+}
+
+async function currentEarlyTerminationAgreementCommand(
+  tx: Prisma.TransactionClient,
+  draft: EarlyTerminationAgreementDraft
+): Promise<ArchiveEarlyTerminationAgreementInput> {
+  const current = await tx.subscriptionClosureDocumentRevision.findUnique({
+    where: { id: draft.currentDocumentId ?? "00000000-0000-4000-8000-000000000000" }
+  });
+  const prefix = "early-termination-agreement:";
+  const suffix = ":archived";
+  if (
+    !current ||
+    current.documentType !== "EARLY_TERMINATION_AGREEMENT" ||
+    current.stage !== "ARCHIVED" ||
+    !current.sourceKey.startsWith(prefix) ||
+    !current.sourceKey.endsWith(suffix)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const idempotencyKey = current.sourceKey.slice(prefix.length, -suffix.length);
+  if (!idempotencyKey) throw serviceConflict("AUTHORITY_MISMATCH");
+  return Object.freeze({
+    actorId: current.generatedBy,
+    closureCaseId: draft.closureCase.id,
+    idempotencyKey
+  });
+}
+
+function earlyTerminationReturnAuthority(
+  draft: EarlyTerminationAgreementDraft,
+  actorId: string
+): NormalExpiryAuthority {
+  return Object.freeze({
+    actorId,
+    contractId: draft.contract.id,
+    customerId: draft.closureCase.customerId,
+    leaseId: draft.lease.id,
+    orderId: draft.order.id,
+    orderNo: draft.order.orderNo,
+    segmentEndDate: new Date(draft.segment.endDate),
+    segmentId: draft.segment.id,
+    vehicleId: draft.vehicle.id
+  });
+}
+
+function earlyTerminationAssetCommand(
+  authority: NormalExpiryAuthority,
+  assetSource: SubscriptionClosureSource,
+  occurredAt: Date,
+  vehicleReturnId: string
+) {
+  return {
+    assetOwnerId: null,
+    contractId: authority.contractId,
+    costConfirmationRequired: false,
+    customerId: authority.customerId,
+    description: `Early-termination return inbound for ${authority.orderNo}`,
+    metadata: {
+      closureIntent: "EARLY_TERMINATION",
+      segmentId: authority.segmentId,
+      vehicleReturnId
+    },
+    occurredAt,
+    orderId: authority.orderId,
+    priority: "NORMAL" as const,
+    relatedWorkOrderId: null,
+    source: assetSource,
+    vehicleId: authority.vehicleId,
+    workOrderType: "RETURN_INBOUND" as const
+  };
+}
+
+async function earlyTerminationAgreementAuthorityLocks(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  ids: EarlyTerminationAgreementIds
+): Promise<readonly SubscriptionClosureAuthorityLock[]> {
+  const revisions = await tx.subscriptionClosureDocumentRevision.findMany({
+    select: { archivedBy: true, generatedBy: true, signedBy: true },
+    where: {
+      id: { in: [ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId] }
+    }
+  });
+  const actors = new Set(
+    revisions
+      .flatMap(({ archivedBy, generatedBy, signedBy }) => [archivedBy, generatedBy, signedBy])
+      .filter((value): value is string => Boolean(value))
+  );
+  return Object.freeze([
+    {
+      id: closureCaseId,
+      mode: "SHARE",
+      table: "subscription_closure_current_document"
+    },
+    ...[ids.generatedRevisionId, ids.signedRevisionId, ids.archivedRevisionId].map((id) => ({
+      id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_document_revision" as const
+    })),
+    { id: ids.sourceFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.signedFileId, mode: "SHARE", table: "file_object" },
+    { id: ids.esignTaskId, mode: "SHARE", table: "contract_esign_task" },
+    ...[...actors].map((id) => ({ id, mode: "SHARE" as const, table: "user" as const }))
+  ]);
+}
+
+async function earlyTerminationAgreementHasCurrentFactDrift(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    authoritySnapshot: Prisma.JsonValue;
+    contractId: string;
+    customerId: string;
+    orderId: string;
+    vehicleId: string;
+  }>
+) {
+  const authority = jsonObject(closureCase.authoritySnapshot);
+  const initiatedSegment = jsonObject(authority.segment);
+  const segmentId = typeof initiatedSegment.id === "string" ? initiatedSegment.id : "";
+  const [order, contract, lease, segment, vehicle] = await Promise.all([
+    tx.subscriptionOrder.findUnique({
+      select: {
+        contractId: true,
+        customerId: true,
+        id: true,
+        orderNo: true,
+        orderStatus: true,
+        vehicleId: true
+      },
+      where: { id: closureCase.orderId }
+    }),
+    tx.contract.findUnique({
+      select: { customerId: true, id: true, orderId: true, status: true },
+      where: { id: closureCase.contractId }
+    }),
+    tx.lease.findUnique({
+      select: { id: true, orderId: true, status: true },
+      where: { orderId: closureCase.orderId }
+    }),
+    segmentId
+      ? tx.subscriptionContractSegment.findUnique({
+          select: {
+            endDate: true,
+            id: true,
+            orderId: true,
+            sequenceNo: true,
+            startDate: true,
+            status: true
+          },
+          where: { id: segmentId }
+        })
+      : null,
+    tx.vehicle.findUnique({
+      select: { id: true, status: true },
+      where: { id: closureCase.vehicleId }
+    })
+  ]);
+  if (!order || !contract || !lease || !segment || !vehicle) return true;
+  const currentFacts = earlyTerminationCurrentFacts({ contract, lease, order, segment, vehicle });
+  return !sameCanonicalReceiptValue(currentFacts, {
+    contract: authority.contract,
+    lease: authority.lease,
+    order: authority.order,
+    segment: authority.segment,
+    vehicle: authority.vehicle
+  });
+}
+
+async function resolveStaleEarlyTerminationAgreementAuthority(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    authoritySnapshot: Prisma.JsonValue;
+    authoritySnapshotHash: string;
+    caseNo: string;
+    contractId: string;
+    customerId: string;
+    id: string;
+    orderId: string;
+    vehicleId: string;
+  }>
+) {
+  const current = await tx.subscriptionClosureCurrentDocument.findUnique({
+    include: { documentRevision: true },
+    where: {
+      closureCaseId_documentType: {
+        closureCaseId: closureCase.id,
+        documentType: "EARLY_TERMINATION_AGREEMENT"
+      }
+    }
+  });
+  const archived = current?.documentRevision;
+  const prefix = "early-termination-agreement:";
+  const suffix = ":archived";
+  if (
+    !archived ||
+    archived.stage !== "ARCHIVED" ||
+    !archived.sourceKey.startsWith(prefix) ||
+    !archived.sourceKey.endsWith(suffix)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const idempotencyKey = archived.sourceKey.slice(prefix.length, -suffix.length);
+  const ids = earlyTerminationAgreementIds(closureCase.id, idempotencyKey);
+  const sources = earlyTerminationAgreementSources(closureCase.id, idempotencyKey);
+  const [revisions, sourceFile, signedFile, esignTask, lease, receipts, events] = await Promise.all(
+    [
+      tx.subscriptionClosureDocumentRevision.findMany({
+        orderBy: { revisionNumber: "asc" },
+        where: {
+          closureCaseId: closureCase.id,
+          documentType: "EARLY_TERMINATION_AGREEMENT"
+        }
+      }),
+      tx.fileObject.findUnique({ where: { id: ids.sourceFileId } }),
+      tx.fileObject.findUnique({ where: { id: ids.signedFileId } }),
+      tx.contractESignTask.findUnique({ where: { id: ids.esignTaskId } }),
+      tx.lease.findUnique({ select: { id: true }, where: { orderId: closureCase.orderId } }),
+      tx.subscriptionClosureCommandReceipt.findMany({
+        where: {
+          closureCaseId: closureCase.id,
+          commandType: "CREATE_DOCUMENT_REVISION",
+          payloadSnapshot: { equals: "EARLY_TERMINATION_AGREEMENT", path: ["documentType"] }
+        }
+      }),
+      tx.subscriptionClosureEvent.findMany({
+        orderBy: [{ sequence: "asc" }, { id: "asc" }],
+        where: {
+          closureCaseId: closureCase.id,
+          detailSnapshot: { equals: "EARLY_TERMINATION_AGREEMENT", path: ["documentType"] },
+          eventType: "DOCUMENT_REVISION_CREATED"
+        }
+      })
+    ]
+  );
+  const generated = revisions.find(({ id }) => id === ids.generatedRevisionId);
+  const signed = revisions.find(({ id }) => id === ids.signedRevisionId);
+  const authority = jsonObject(closureCase.authoritySnapshot);
+  const segmentId = jsonObject(authority.segment).id;
+  if (
+    revisions.length !== 3 ||
+    !generated ||
+    !signed ||
+    archived.id !== ids.archivedRevisionId ||
+    !signed.signedAt ||
+    !sourceFile ||
+    !signedFile ||
+    !esignTask ||
+    !lease ||
+    typeof segmentId !== "string"
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const canonicalDocument = canonicalSubscriptionClosureJson(generated.documentSnapshot as never);
+  const documentHash = createHash("sha256").update(canonicalDocument).digest("hex");
+  const signedEnvelope = earlyTerminationAgreementSignedEnvelope({
+    actorId: generated.generatedBy,
+    completedAt: signed.signedAt,
+    documentSnapshotHash: documentHash,
+    signedFileId: ids.signedFileId,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId,
+    sources
+  });
+  const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
+  const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
+  const documentAuthority = jsonObject(generated.documentSnapshot);
+  const sourceObjectKey = earlyTerminationAgreementSourceObjectKey(
+    closureCase.id,
+    ids.generatedRevisionId
+  );
+  const signedObjectKey = earlyTerminationAgreementSignedObjectKey(
+    closureCase.id,
+    ids.signedRevisionId
+  );
+  const sourceDocumentName = `${closureCase.caseNo}-${ids.generatedRevisionId}-early-termination-agreement.json`;
+  const signedDocumentName = `${closureCase.caseNo}-${ids.signedRevisionId}-early-termination-agreement.signed.json`;
+  const expectedRequest = earlyTerminationAgreementEsignRequest({
+    documentSnapshotHash: documentHash,
+    ids,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const expectedResponse = earlyTerminationAgreementEsignResponse({
+    actorId: generated.generatedBy,
+    completedAt: signed.signedAt,
+    ids,
+    signedFileHash
+  });
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  const eventBySource = new Map(events.map((event) => [event.sourceKey, event]));
+  const receiptBySource = new Map(receipts.map((receipt) => [receipt.sourceKey, receipt]));
+  const auditByEvent = new Map(audits.map((audit) => [audit.entityId, audit]));
+  const firstEvent = eventBySource.get(sources[0].key);
+  const expectedVersion = firstEvent ? firstEvent.sequence - 2 : -1;
+  const expectedCommands = earlyTerminationAgreementDocumentCommands({
+    actorId: generated.generatedBy,
+    closureCaseId: closureCase.id,
+    databaseClock: generated.generatedAt,
+    documentSnapshot: generated.documentSnapshot as unknown as ReturnType<
+      typeof earlyTerminationAgreementDocumentSnapshot
+    >,
+    expectedVersion,
+    ids,
+    signedFileHash,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const commands = [
+    expectedCommands.generated,
+    expectedCommands.signed,
+    expectedCommands.archived
+  ] as const;
+  const lifecycleTriples = [
+    [generated, sources[0], ids.generatedRevisionId, "GENERATED", null],
+    [signed, sources[1], ids.signedRevisionId, "SIGNED", ids.generatedRevisionId],
+    [archived, sources[2], ids.archivedRevisionId, "ARCHIVED", ids.signedRevisionId]
+  ] as const;
+  const lifecycleValid = lifecycleTriples.every(
+    ([revision, lifecycleSource, revisionId, stage, supersedesRevisionId], index) => {
+      const receipt = receiptBySource.get(lifecycleSource.key);
+      const event = eventBySource.get(lifecycleSource.key);
+      const audit = event ? auditByEvent.get(event.id) : null;
+      const priorEvent = index === 0 ? null : eventBySource.get(sources[index - 1]!.key);
+      const expectedOutcome = recoveryAuthorityDocumentOutcome(revision);
+      const expectedDetail = {
+        documentRevisionId: revisionId,
+        documentType: "EARLY_TERMINATION_AGREEMENT",
+        revisionNumber: index + 1
+      };
+      const expectedAuditAfter = event
+        ? {
+            action: "CREATE_DOCUMENT_REVISION",
+            closureCaseId: closureCase.id,
+            eventId: event.id,
+            outcome: expectedOutcome,
+            source: lifecycleSource
+          }
+        : null;
+      return (
+        revision.id === revisionId &&
+        revision.stage === stage &&
+        revision.supersedesRevisionId === supersedesRevisionId &&
+        receipt?.actorId === generated.generatedBy &&
+        receipt.closureCaseId === closureCase.id &&
+        receipt.commandType === "CREATE_DOCUMENT_REVISION" &&
+        receipt.eventId === event?.id &&
+        receipt.sourceType === lifecycleSource.type &&
+        receipt.sourceId === lifecycleSource.id &&
+        receipt.sourceKey === lifecycleSource.key &&
+        receipt.payloadHash === hashSubscriptionClosureSnapshot(commands[index]) &&
+        sameCanonicalReceiptValue(receipt.payloadSnapshot, commands[index]) &&
+        sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+        event?.actorId === generated.generatedBy &&
+        event.closureCaseId === closureCase.id &&
+        event.eventType === "DOCUMENT_REVISION_CREATED" &&
+        event.beforeStatus === "PREPARING_RETURN" &&
+        event.afterStatus === "PREPARING_RETURN" &&
+        event.sequence === expectedVersion + index + 2 &&
+        event.sourceType === lifecycleSource.type &&
+        event.sourceId === lifecycleSource.id &&
+        event.sourceKey === lifecycleSource.key &&
+        event.recordedAt.getTime() >= revision.createdAt.getTime() &&
+        event.occurredAt.getTime() >= revision.generatedAt.getTime() &&
+        (!priorEvent || event.occurredAt.getTime() >= priorEvent.occurredAt.getTime()) &&
+        (!priorEvent || event.recordedAt.getTime() >= priorEvent.recordedAt.getTime()) &&
+        sameCanonicalReceiptValue(event.detailSnapshot, expectedDetail) &&
+        audit?.action === AuditAction.CREATE &&
+        audit.entityType === "subscription_closure_event" &&
+        audit.entityId === event.id &&
+        audit.module === "subscription_closure" &&
+        audit.operatorId === generated.generatedBy &&
+        audit.beforeSnapshot === null &&
+        audit.ipAddress === null &&
+        audit.userAgent === null &&
+        audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+        sameCanonicalReceiptValue(audit.afterSnapshot, expectedAuditAfter)
+      );
+    }
+  );
+  if (
+    !lifecycleValid ||
+    expectedVersion < 0 ||
+    receipts.length !== 3 ||
+    events.length !== 3 ||
+    audits.length !== 3 ||
+    documentAuthority.authoritySnapshotHash !== closureCase.authoritySnapshotHash ||
+    current?.documentRevisionId !== ids.archivedRevisionId ||
+    current.updatedBy !== generated.generatedBy ||
+    generated.revisionNumber !== 1 ||
+    generated.documentType !== "EARLY_TERMINATION_AGREEMENT" ||
+    generated.stage !== "GENERATED" ||
+    generated.supersedesRevisionId !== null ||
+    generated.sourceType !== sources[0].type ||
+    generated.sourceId !== sources[0].id ||
+    generated.sourceKey !== sources[0].key ||
+    generated.signedAt !== null ||
+    generated.signedBy !== null ||
+    generated.signedFileId !== null ||
+    generated.signedFileHash !== null ||
+    generated.archivedAt !== null ||
+    generated.archivedBy !== null ||
+    signed.revisionNumber !== 2 ||
+    signed.documentType !== "EARLY_TERMINATION_AGREEMENT" ||
+    signed.stage !== "SIGNED" ||
+    signed.supersedesRevisionId !== generated.id ||
+    signed.generatedAt.getTime() !== generated.generatedAt.getTime() ||
+    signed.generatedBy !== generated.generatedBy ||
+    signed.signedBy !== generated.generatedBy ||
+    signed.sourceType !== sources[1].type ||
+    signed.sourceId !== sources[1].id ||
+    signed.sourceKey !== sources[1].key ||
+    signed.archivedAt !== null ||
+    signed.archivedBy !== null ||
+    archived.revisionNumber !== 3 ||
+    archived.documentType !== "EARLY_TERMINATION_AGREEMENT" ||
+    archived.stage !== "ARCHIVED" ||
+    archived.supersedesRevisionId !== signed.id ||
+    archived.generatedAt.getTime() !== generated.generatedAt.getTime() ||
+    archived.generatedBy !== generated.generatedBy ||
+    archived.signedAt?.getTime() !== signed.signedAt.getTime() ||
+    archived.signedBy !== generated.generatedBy ||
+    archived.archivedAt?.getTime() !== signed.signedAt.getTime() ||
+    archived.archivedBy !== generated.generatedBy ||
+    archived.sourceType !== sources[2].type ||
+    archived.sourceId !== sources[2].id ||
+    archived.sourceKey !== sources[2].key ||
+    revisions.some(
+      (revision) =>
+        revision.documentSnapshotHash !== documentHash ||
+        revision.sourceFileHash !== documentHash ||
+        revision.sourceFileId !== ids.sourceFileId ||
+        revision.contractESignTaskId !== ids.esignTaskId ||
+        canonicalSubscriptionClosureJson(revision.documentSnapshot as never) !== canonicalDocument
+    ) ||
+    signed.signedFileId !== ids.signedFileId ||
+    signed.signedFileHash !== signedFileHash ||
+    archived.signedFileId !== ids.signedFileId ||
+    archived.signedFileHash !== signedFileHash ||
+    sourceFile.bucket !== "subscription-closure" ||
+    sourceFile.objectKey !== sourceObjectKey ||
+    sourceFile.originalName !== sourceDocumentName ||
+    sourceFile.mimeType !== "application/json" ||
+    sourceFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalDocument)) ||
+    sourceFile.uploadedBy !== generated.generatedBy ||
+    signedFile.bucket !== "subscription-closure" ||
+    signedFile.objectKey !== signedObjectKey ||
+    signedFile.originalName !== signedDocumentName ||
+    signedFile.mimeType !== "application/json" ||
+    signedFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalSignedEnvelope)) ||
+    signedFile.uploadedBy !== generated.generatedBy ||
+    esignTask.deletedAt !== null ||
+    esignTask.contractId !== closureCase.contractId ||
+    esignTask.customerId !== closureCase.customerId ||
+    esignTask.orderId !== closureCase.orderId ||
+    esignTask.createdBy !== generated.generatedBy ||
+    esignTask.completedAt?.getTime() !== signed.signedAt.getTime() ||
+    esignTask.documentType !== ESignDocumentType.EARLY_TERMINATION_AGREEMENT ||
+    esignTask.signingStage !== ESignSigningStage.STAGE4_EARLY_TERMINATION ||
+    esignTask.provider !== ESignProviderType.OTHER ||
+    esignTask.providerTaskId !== ids.esignProviderTaskId ||
+    esignTask.providerEnvelopeId !== ids.esignEnvelopeId ||
+    esignTask.documentObjectKey !== sourceObjectKey ||
+    esignTask.signedDocumentObjectKey !== signedObjectKey ||
+    esignTask.sourceType !== sources[2].type ||
+    esignTask.sourceId !== sources[2].id ||
+    esignTask.sourceKey !== sources[2].key ||
+    !sameCanonicalReceiptValue(esignTask.requestSnapshot, expectedRequest) ||
+    !sameCanonicalReceiptValue(esignTask.responseSnapshot, expectedResponse) ||
+    (esignTask.taskStatus === ESignTaskStatus.COMPLETED &&
+      esignTask.updatedBy !== generated.generatedBy) ||
+    (esignTask.taskStatus === ESignTaskStatus.COMPLETED && esignTask.cancelledAt !== null) ||
+    (esignTask.taskStatus === ESignTaskStatus.CANCELLED && esignTask.cancelledAt === null) ||
+    (esignTask.taskStatus !== ESignTaskStatus.COMPLETED &&
+      esignTask.taskStatus !== ESignTaskStatus.CANCELLED)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const actorIds = new Set(
+    revisions
+      .flatMap(({ archivedBy, generatedBy, signedBy }) => [archivedBy, generatedBy, signedBy])
+      .filter((value): value is string => Boolean(value))
+  );
+  if (esignTask.updatedBy) actorIds.add(esignTask.updatedBy);
+  const locks = Object.freeze([
+    {
+      id: closureCase.id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_current_document" as const
+    },
+    ...revisions.map(({ id }) => ({
+      id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_document_revision" as const
+    })),
+    { id: ids.sourceFileId, mode: "SHARE" as const, table: "file_object" as const },
+    { id: ids.signedFileId, mode: "SHARE" as const, table: "file_object" as const },
+    { id: ids.esignTaskId, mode: "UPDATE" as const, table: "contract_esign_task" as const },
+    ...[...actorIds].map((id) => ({ id, mode: "SHARE" as const, table: "user" as const }))
+  ]);
+  return Object.freeze({
+    archived,
+    esignTask,
+    identity: canonicalSubscriptionClosureJson({
+      archived,
+      currentRevisionId: current.documentRevisionId,
+      esignTask,
+      revisions,
+      signedFile,
+      sourceFile
+    }),
+    leaseId: lease.id,
+    locks,
+    segmentId
+  });
+}
+
+async function applyEarlyTerminationCoreBoundary(
+  tx: Prisma.TransactionClient,
+  authority: EarlyTerminationAgreementDraft,
+  actorId: string
+) {
+  const segment = await tx.subscriptionContractSegment.updateMany({
+    data: {
+      completedAt: authority.closureCase.effectiveAt,
+      status: ContractSegmentStatus.COMPLETED
+    },
+    where: { id: authority.segment.id, status: ContractSegmentStatus.ACTIVE }
+  });
+  const order = await tx.subscriptionOrder.updateMany({
+    data: { orderStatus: OrderStatus.PENDING_RETURN, updatedBy: actorId },
+    where: { id: authority.order.id, orderStatus: OrderStatus.ACTIVE }
+  });
+  const lease = await tx.lease.updateMany({
+    data: { status: LeaseStatus.RETURN_DUE, updatedBy: actorId },
+    where: { id: authority.lease.id, status: LeaseStatus.ACTIVE }
+  });
+  if (segment.count !== 1 || order.count !== 1 || lease.count !== 1) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  await tx.renewalConsideration.updateMany({
+    data: { status: "CANCELLED", version: { increment: 1 } },
+    where: {
+      orderId: authority.order.id,
+      status: { notIn: ["EXTENDED", "EXPIRED", "CANCELLED"] }
+    }
+  });
+  await tx.subscriptionChangeOrder.updateMany({
+    data: {
+      failureCode: "EARLY_TERMINATION_EFFECTIVE",
+      failureMessage: "The order reached its governed early-termination effective boundary.",
+      status: "FAILED",
+      version: { increment: 1 }
+    },
+    where: {
+      orderId: authority.order.id,
+      status: {
+        in: [
+          "DRAFT",
+          "QUOTED",
+          "CUSTOMER_CONFIRMED",
+          "SIGNING_OR_PAYMENT",
+          "SCHEDULED",
+          "EXECUTING",
+          "MANUAL_TAKEOVER"
+        ]
+      }
+    }
+  });
+}
+
+async function earlyTerminationExecutionReplayLocks(
+  tx: Prisma.TransactionClient,
+  command: ExecuteEarlyTerminationInput,
+  closureCase: Readonly<{
+    contractId: string;
+    customerId: string;
+    id: string;
+    orderId: string;
+    returnAssetWorkOrderId: string | null;
+    returnHandoverWorkOrderId: string | null;
+    vehicleId: string;
+    vehicleReturnId: string | null;
+  }>
+): Promise<readonly SubscriptionClosureAuthorityLock[]> {
+  if (
+    !closureCase.vehicleReturnId ||
+    !closureCase.returnAssetWorkOrderId ||
+    !closureCase.returnHandoverWorkOrderId
+  ) {
+    throw closureSourceConflict();
+  }
+  const [lease, segment, agreementCurrent, manifestCurrent] = await Promise.all([
+    tx.lease.findUnique({ select: { id: true }, where: { orderId: closureCase.orderId } }),
+    tx.subscriptionContractSegment.findFirst({
+      orderBy: [{ sequenceNo: "desc" }, { id: "desc" }],
+      select: { id: true },
+      where: { orderId: closureCase.orderId }
+    }),
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      include: { documentRevision: true },
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId: closureCase.id,
+          documentType: "EARLY_TERMINATION_AGREEMENT"
+        }
+      }
+    }),
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      include: { documentRevision: true },
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId: closureCase.id,
+          documentType: "RETURN_MANIFEST"
+        }
+      }
+    })
+  ]);
+  if (!lease || !segment || !agreementCurrent || !manifestCurrent) {
+    throw closureSourceConflict();
+  }
+  const agreementCommand = await currentEarlyTerminationAgreementCommand(
+    tx,
+    (await resolveEarlyTerminationReplayAgreementDraft(tx, closureCase.id)) as never
+  );
+  const agreementIds = earlyTerminationAgreementIds(
+    closureCase.id,
+    agreementCommand.idempotencyKey
+  );
+  return Object.freeze([
+    { id: closureCase.id, mode: "UPDATE", table: "subscription_closure_case" },
+    { id: closureCase.orderId, mode: "UPDATE", table: "subscription_order" },
+    { id: closureCase.vehicleId, mode: "SHARE", table: "vehicle" },
+    { id: lease.id, mode: "UPDATE", table: "lease" },
+    { id: closureCase.contractId, mode: "SHARE", table: "contract" },
+    { id: segment.id, mode: "UPDATE", table: "subscription_contract_segment" },
+    { id: closureCase.vehicleReturnId, mode: "UPDATE", table: "vehicle_return" },
+    {
+      id: closureCase.returnHandoverWorkOrderId,
+      mode: "UPDATE",
+      table: "vehicle_handover_work_order"
+    },
+    { id: closureCase.returnAssetWorkOrderId, mode: "UPDATE", table: "asset_work_order" },
+    {
+      id: closureCase.id,
+      mode: "SHARE",
+      table: "subscription_closure_current_document"
+    },
+    ...[
+      agreementIds.generatedRevisionId,
+      agreementIds.signedRevisionId,
+      agreementIds.archivedRevisionId
+    ].map((id) => ({
+      id,
+      mode: "SHARE" as const,
+      table: "subscription_closure_document_revision" as const
+    })),
+    {
+      id: manifestCurrent.documentRevision.id,
+      mode: "SHARE",
+      table: "subscription_closure_document_revision"
+    },
+    { id: agreementIds.sourceFileId, mode: "SHARE", table: "file_object" },
+    { id: agreementIds.signedFileId, mode: "SHARE", table: "file_object" },
+    {
+      id: manifestCurrent.documentRevision.sourceFileId,
+      mode: "SHARE",
+      table: "file_object"
+    },
+    { id: agreementIds.esignTaskId, mode: "SHARE", table: "contract_esign_task" },
+    {
+      id: manifestCurrent.documentRevision.contractESignTaskId,
+      mode: "SHARE",
+      table: "contract_esign_task"
+    },
+    { id: closureCase.customerId, mode: "SHARE", table: "customer" },
+    { id: agreementCommand.actorId, mode: "SHARE", table: "user" },
+    { id: command.actorId, mode: "SHARE", table: "user" }
+  ]);
+}
+
+async function resolveEarlyTerminationReplayAgreementDraft(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string
+) {
+  const closureCase = await tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } });
+  if (!closureCase) throw serviceConflict("AUTHORITY_NOT_FOUND");
+  const authority = jsonObject(closureCase.authoritySnapshot);
+  const currentDocument = await tx.subscriptionClosureCurrentDocument.findUnique({
+    where: {
+      closureCaseId_documentType: {
+        closureCaseId,
+        documentType: "EARLY_TERMINATION_AGREEMENT"
+      }
+    }
+  });
+  return { closureCase, currentDocumentId: currentDocument?.documentRevisionId ?? null, authority };
+}
+
+async function assertExactEarlyTerminationExecutionReplay(
+  tx: Prisma.TransactionClient,
+  command: ExecuteEarlyTerminationInput,
+  source: SubscriptionClosureSource,
+  receipt: Readonly<{
+    actorId: string;
+    closureCaseId: string;
+    eventId: string;
+    payloadSnapshot: Prisma.JsonValue;
+    sourceId: string;
+    sourceKey: string;
+    sourceType: string;
+  }>
+) {
+  const closureCase = await tx.subscriptionClosureCase.findUnique({
+    where: { id: command.closureCaseId }
+  });
+  if (
+    !closureCase ||
+    !closureCase.vehicleReturnId ||
+    !closureCase.returnAssetWorkOrderId ||
+    !closureCase.returnHandoverWorkOrderId ||
+    closureCase.closureType !== "EARLY_TERMINATION" ||
+    closureCase.status !== "PREPARING_RETURN" ||
+    receipt.actorId !== command.actorId ||
+    receipt.closureCaseId !== closureCase.id ||
+    receipt.sourceType !== source.type ||
+    receipt.sourceId !== source.id ||
+    receipt.sourceKey !== source.key
+  ) {
+    throw closureSourceConflict();
+  }
+  const [event, order, lease, segment, vehicleReturn, asset, handover, manifestCurrent] =
+    await Promise.all([
+      tx.subscriptionClosureEvent.findUnique({ where: { id: receipt.eventId } }),
+      tx.subscriptionOrder.findUnique({ where: { id: closureCase.orderId } }),
+      tx.lease.findUnique({ where: { orderId: closureCase.orderId } }),
+      tx.subscriptionContractSegment.findFirst({
+        orderBy: [{ sequenceNo: "desc" }, { id: "desc" }],
+        where: { orderId: closureCase.orderId }
+      }),
+      tx.vehicleReturn.findUnique({ where: { id: closureCase.vehicleReturnId } }),
+      tx.assetWorkOrder.findUnique({ where: { id: closureCase.returnAssetWorkOrderId } }),
+      tx.vehicleHandoverWorkOrder.findUnique({
+        where: { id: closureCase.returnHandoverWorkOrderId }
+      }),
+      tx.subscriptionClosureCurrentDocument.findUnique({
+        include: { documentRevision: true },
+        where: {
+          closureCaseId_documentType: {
+            closureCaseId: closureCase.id,
+            documentType: "RETURN_MANIFEST"
+          }
+        }
+      })
+    ]);
+  const detail = jsonObject(event?.detailSnapshot);
+  if (
+    !event ||
+    event.sourceType !== source.type ||
+    event.sourceId !== source.id ||
+    event.sourceKey !== source.key ||
+    event.eventType !== "NOTE_ADDED" ||
+    event.afterStatus !== "PREPARING_RETURN" ||
+    detail.executionFingerprint !== hashSubscriptionClosureSnapshot(command) ||
+    detail.vehicleReturnId !== closureCase.vehicleReturnId ||
+    detail.assetWorkOrderId !== closureCase.returnAssetWorkOrderId ||
+    detail.handoverWorkOrderId !== closureCase.returnHandoverWorkOrderId ||
+    !order ||
+    order.orderStatus !== OrderStatus.PENDING_RETURN ||
+    !lease ||
+    lease.status !== LeaseStatus.RETURN_DUE ||
+    !segment ||
+    segment.status !== ContractSegmentStatus.COMPLETED ||
+    segment.completedAt?.getTime() !== closureCase.effectiveAt.getTime() ||
+    !vehicleReturn ||
+    vehicleReturn.orderId !== closureCase.orderId ||
+    vehicleReturn.returnType !== "EARLY_TERMINATION" ||
+    (vehicleReturn.returnStatus !== VehicleReturnStatus.PENDING &&
+      vehicleReturn.returnStatus !== VehicleReturnStatus.READY) ||
+    !asset ||
+    asset.workOrderType !== "RETURN_INBOUND" ||
+    asset.orderId !== closureCase.orderId ||
+    !handover ||
+    handover.handoverType !== "RETURN_INBOUND" ||
+    handover.orderId !== closureCase.orderId ||
+    !manifestCurrent ||
+    manifestCurrent.documentRevision.documentType !== "RETURN_MANIFEST" ||
+    manifestCurrent.documentRevision.stage !== "GENERATED" ||
+    manifestCurrent.documentRevision.vehicleReturnId !== closureCase.vehicleReturnId ||
+    manifestCurrent.documentRevision.handoverWorkOrderId !==
+      closureCase.returnHandoverWorkOrderId ||
+    detail.returnManifestRevisionId !== manifestCurrent.documentRevision.id
+  ) {
+    throw closureSourceConflict();
+  }
+  const agreementDraft = await resolveEarlyTerminationReplayAgreementDraft(tx, closureCase.id);
+  const agreementCommand = await currentEarlyTerminationAgreementCommand(
+    tx,
+    agreementDraft as never
+  );
+  const agreementIds = earlyTerminationAgreementIds(
+    closureCase.id,
+    agreementCommand.idempotencyKey
+  );
+  if (
+    !(await validateEarlyTerminationAgreementChainInTransaction(
+      tx,
+      agreementCommand,
+      agreementIds,
+      earlyTerminationAgreementSources(closureCase.id, agreementCommand.idempotencyKey)
+    ))
+  ) {
+    throw closureSourceConflict();
+  }
+  return Object.freeze({
+    closureCaseId: closureCase.id,
+    returnAssetWorkOrderId: closureCase.returnAssetWorkOrderId,
+    returnHandoverWorkOrderId: closureCase.returnHandoverWorkOrderId,
+    returnManifestRevisionId: manifestCurrent.documentRevision.id,
+    vehicleReturnId: closureCase.vehicleReturnId
+  });
+}
+
+async function validateEarlyTerminationAgreementChainInTransaction(
+  tx: Prisma.TransactionClient,
+  command: ArchiveEarlyTerminationAgreementInput,
+  ids: EarlyTerminationAgreementIds,
+  sources: EarlyTerminationAgreementSources
+): Promise<Omit<ArchivedEarlyTerminationAgreement, "wrote"> | null> {
+  const revisions = await tx.subscriptionClosureDocumentRevision.findMany({
+    orderBy: { revisionNumber: "asc" },
+    where: {
+      closureCaseId: command.closureCaseId,
+      documentType: "EARLY_TERMINATION_AGREEMENT"
+    }
+  });
+  if (revisions.length === 0) return null;
+  if (revisions.length !== 3) throw serviceConflict("AUTHORITY_MISMATCH");
+  const generated = revisions.find(({ id }) => id === ids.generatedRevisionId);
+  const signed = revisions.find(({ id }) => id === ids.signedRevisionId);
+  const archived = revisions.find(({ id }) => id === ids.archivedRevisionId);
+  if (!generated || !signed || !archived || !signed.signedAt) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  const draft = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
+  const documentSnapshot = earlyTerminationAgreementDocumentSnapshot(draft);
+  const canonicalDocument = canonicalSubscriptionClosureJson(documentSnapshot);
+  const documentHash = createHash("sha256").update(canonicalDocument).digest("hex");
+  const signedEnvelope = earlyTerminationAgreementSignedEnvelope({
+    actorId: command.actorId,
+    completedAt: signed.signedAt,
+    documentSnapshotHash: documentHash,
+    signedFileId: ids.signedFileId,
+    sourceFileHash: documentHash,
+    sourceFileId: ids.sourceFileId,
+    sources
+  });
+  const canonicalSignedEnvelope = canonicalSubscriptionClosureJson(signedEnvelope);
+  const signedFileHash = createHash("sha256").update(canonicalSignedEnvelope).digest("hex");
+  const [current, sourceFile, signedFile, esignTask, receipts, events] = await Promise.all([
+    tx.subscriptionClosureCurrentDocument.findUnique({
+      where: {
+        closureCaseId_documentType: {
+          closureCaseId: command.closureCaseId,
+          documentType: "EARLY_TERMINATION_AGREEMENT"
+        }
+      }
+    }),
+    tx.fileObject.findUnique({ where: { id: ids.sourceFileId } }),
+    tx.fileObject.findUnique({ where: { id: ids.signedFileId } }),
+    tx.contractESignTask.findUnique({ where: { id: ids.esignTaskId } }),
+    tx.subscriptionClosureCommandReceipt.findMany({
+      where: {
+        closureCaseId: command.closureCaseId,
+        commandType: "CREATE_DOCUMENT_REVISION",
+        payloadSnapshot: { equals: "EARLY_TERMINATION_AGREEMENT", path: ["documentType"] }
+      }
+    }),
+    tx.subscriptionClosureEvent.findMany({
+      orderBy: [{ sequence: "asc" }, { id: "asc" }],
+      where: {
+        closureCaseId: command.closureCaseId,
+        detailSnapshot: { equals: "EARLY_TERMINATION_AGREEMENT", path: ["documentType"] },
+        eventType: "DOCUMENT_REVISION_CREATED"
+      }
+    })
+  ]);
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  const sourceObjectKey = earlyTerminationAgreementSourceObjectKey(
+    command.closureCaseId,
+    ids.generatedRevisionId
+  );
+  const signedObjectKey = earlyTerminationAgreementSignedObjectKey(
+    command.closureCaseId,
+    ids.signedRevisionId
+  );
+  const sourceDocumentName = `${draft.closureCase.caseNo}-${ids.generatedRevisionId}-early-termination-agreement.json`;
+  const signedDocumentName = `${draft.closureCase.caseNo}-${ids.signedRevisionId}-early-termination-agreement.signed.json`;
+  const expectedRequest = earlyTerminationAgreementEsignRequest({
+    documentSnapshotHash: documentHash,
+    ids,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const expectedResponse = earlyTerminationAgreementEsignResponse({
+    actorId: command.actorId,
+    completedAt: signed.signedAt,
+    ids,
+    signedFileHash
+  });
+  const firstEvent = events.find(({ sourceKey }) => sourceKey === sources[0].key);
+  const expectedVersion = firstEvent ? firstEvent.sequence - 2 : -1;
+  const expectedCommands = earlyTerminationAgreementDocumentCommands({
+    actorId: command.actorId,
+    closureCaseId: command.closureCaseId,
+    databaseClock: generated.generatedAt,
+    documentSnapshot,
+    expectedVersion,
+    ids,
+    signedFileHash,
+    sourceFileHash: documentHash,
+    sources
+  });
+  const commands = [
+    expectedCommands.generated,
+    expectedCommands.signed,
+    expectedCommands.archived
+  ] as const;
+  const triples = [
+    [generated, sources[0], ids.generatedRevisionId, "GENERATED", null],
+    [signed, sources[1], ids.signedRevisionId, "SIGNED", ids.generatedRevisionId],
+    [archived, sources[2], ids.archivedRevisionId, "ARCHIVED", ids.signedRevisionId]
+  ] as const;
+  const lifecycleValid = triples.every(
+    ([revision, lifecycleSource, revisionId, stage, supersedesRevisionId], index) => {
+      const receipt = receipts.find(({ sourceKey }) => sourceKey === lifecycleSource.key);
+      const event = events.find(({ sourceKey }) => sourceKey === lifecycleSource.key);
+      const audit = event ? audits.find(({ entityId }) => entityId === event.id) : null;
+      const priorEvent =
+        index === 0 ? null : events.find(({ sourceKey }) => sourceKey === sources[index - 1]!.key);
+      const expectedOutcome = recoveryAuthorityDocumentOutcome(revision);
+      const expectedDetail = {
+        documentRevisionId: revisionId,
+        documentType: "EARLY_TERMINATION_AGREEMENT",
+        revisionNumber: index + 1
+      };
+      const expectedAuditAfter = event
+        ? {
+            action: "CREATE_DOCUMENT_REVISION",
+            closureCaseId: command.closureCaseId,
+            eventId: event.id,
+            outcome: expectedOutcome,
+            source: lifecycleSource
+          }
+        : null;
+      return (
+        revision.closureCaseId === command.closureCaseId &&
+        revision.id === revisionId &&
+        revision.revisionNumber === index + 1 &&
+        revision.documentType === "EARLY_TERMINATION_AGREEMENT" &&
+        revision.stage === stage &&
+        revision.supersedesRevisionId === supersedesRevisionId &&
+        revision.contractESignTaskId === ids.esignTaskId &&
+        revision.sourceFileId === ids.sourceFileId &&
+        revision.sourceFileHash === documentHash &&
+        revision.documentSnapshotHash === documentHash &&
+        canonicalSubscriptionClosureJson(revision.documentSnapshot as never) ===
+          canonicalDocument &&
+        revision.generatedBy === command.actorId &&
+        revision.generatedAt.getTime() === generated.generatedAt.getTime() &&
+        revision.vehicleReturnId === null &&
+        revision.handoverWorkOrderId === null &&
+        revision.sourceType === lifecycleSource.type &&
+        revision.sourceId === lifecycleSource.id &&
+        revision.sourceKey === lifecycleSource.key &&
+        (index === 0
+          ? revision.signedAt === null &&
+            revision.signedBy === null &&
+            revision.signedFileId === null &&
+            revision.signedFileHash === null &&
+            revision.archivedAt === null &&
+            revision.archivedBy === null
+          : revision.signedAt?.getTime() === signed.signedAt!.getTime() &&
+            revision.signedBy === command.actorId &&
+            revision.signedFileId === ids.signedFileId &&
+            revision.signedFileHash === signedFileHash &&
+            (index === 1
+              ? revision.archivedAt === null && revision.archivedBy === null
+              : revision.archivedAt?.getTime() === signed.signedAt!.getTime() &&
+                revision.archivedBy === command.actorId)) &&
+        receipt?.actorId === command.actorId &&
+        receipt.closureCaseId === command.closureCaseId &&
+        receipt.commandType === "CREATE_DOCUMENT_REVISION" &&
+        receipt.eventId === event?.id &&
+        receipt.sourceType === lifecycleSource.type &&
+        receipt.sourceId === lifecycleSource.id &&
+        receipt.sourceKey === lifecycleSource.key &&
+        receipt.payloadHash === hashSubscriptionClosureSnapshot(commands[index]) &&
+        sameCanonicalReceiptValue(receipt.payloadSnapshot, commands[index]) &&
+        sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+        event?.actorId === command.actorId &&
+        event.closureCaseId === command.closureCaseId &&
+        event.eventType === "DOCUMENT_REVISION_CREATED" &&
+        event.beforeStatus === draft.closureCase.status &&
+        event.afterStatus === draft.closureCase.status &&
+        event.sequence === expectedVersion + index + 2 &&
+        event.sourceType === lifecycleSource.type &&
+        event.sourceId === lifecycleSource.id &&
+        event.sourceKey === lifecycleSource.key &&
+        event.recordedAt.getTime() >= revision.createdAt.getTime() &&
+        event.occurredAt.getTime() >= revision.generatedAt.getTime() &&
+        (!priorEvent || event.occurredAt.getTime() >= priorEvent.occurredAt.getTime()) &&
+        (!priorEvent || event.recordedAt.getTime() >= priorEvent.recordedAt.getTime()) &&
+        sameCanonicalReceiptValue(event.detailSnapshot, expectedDetail) &&
+        audit?.operatorId === command.actorId &&
+        audit.action === AuditAction.CREATE &&
+        audit.entityType === "subscription_closure_event" &&
+        audit.entityId === event.id &&
+        audit.module === "subscription_closure" &&
+        audit.beforeSnapshot === null &&
+        audit.ipAddress === null &&
+        audit.userAgent === null &&
+        audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+        sameCanonicalReceiptValue(audit.afterSnapshot, expectedAuditAfter)
+      );
+    }
+  );
+  if (
+    !lifecycleValid ||
+    expectedVersion < 0 ||
+    events.length !== 3 ||
+    receipts.length !== 3 ||
+    audits.length !== 3 ||
+    current?.closureCaseId !== command.closureCaseId ||
+    current.documentType !== "EARLY_TERMINATION_AGREEMENT" ||
+    current?.documentRevisionId !== ids.archivedRevisionId ||
+    current.updatedBy !== command.actorId ||
+    !sourceFile ||
+    sourceFile.bucket !== "subscription-closure" ||
+    sourceFile.objectKey !== sourceObjectKey ||
+    sourceFile.originalName !== sourceDocumentName ||
+    sourceFile.mimeType !== "application/json" ||
+    sourceFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalDocument)) ||
+    sourceFile.uploadedBy !== command.actorId ||
+    !signedFile ||
+    signedFile.bucket !== "subscription-closure" ||
+    signedFile.objectKey !== signedObjectKey ||
+    signedFile.originalName !== signedDocumentName ||
+    signedFile.mimeType !== "application/json" ||
+    signedFile.sizeBytes !== BigInt(Buffer.byteLength(canonicalSignedEnvelope)) ||
+    signedFile.uploadedBy !== command.actorId ||
+    !esignTask ||
+    esignTask.deletedAt !== null ||
+    esignTask.taskStatus !== ESignTaskStatus.COMPLETED ||
+    esignTask.contractId !== draft.closureCase.contractId ||
+    esignTask.orderId !== draft.closureCase.orderId ||
+    esignTask.customerId !== draft.closureCase.customerId ||
+    esignTask.createdBy !== command.actorId ||
+    esignTask.updatedBy !== command.actorId ||
+    esignTask.completedAt?.getTime() !== signed.signedAt.getTime() ||
+    esignTask.documentType !== ESignDocumentType.EARLY_TERMINATION_AGREEMENT ||
+    esignTask.signingStage !== ESignSigningStage.STAGE4_EARLY_TERMINATION ||
+    esignTask.provider !== ESignProviderType.OTHER ||
+    esignTask.providerTaskId !== ids.esignProviderTaskId ||
+    esignTask.providerEnvelopeId !== ids.esignEnvelopeId ||
+    esignTask.documentObjectKey !== sourceObjectKey ||
+    esignTask.signedDocumentObjectKey !== signedObjectKey ||
+    esignTask.sourceType !== sources[2].type ||
+    esignTask.sourceId !== sources[2].id ||
+    esignTask.sourceKey !== sources[2].key ||
+    !sameCanonicalReceiptValue(esignTask.requestSnapshot, expectedRequest) ||
+    !sameCanonicalReceiptValue(esignTask.responseSnapshot, expectedResponse)
+  ) {
+    throw serviceConflict("AUTHORITY_MISMATCH");
+  }
+  return Object.freeze({
+    archivedRevisionId: ids.archivedRevisionId,
+    generatedRevisionId: ids.generatedRevisionId,
+    signedFileHash,
+    signedFileId: ids.signedFileId,
+    signedRevisionId: ids.signedRevisionId
+  });
+}
+
 async function readDatabaseClock(tx: Prisma.TransactionClient) {
   const rows = await tx.$queryRaw<Array<{ now: Date }>>(Prisma.sql`
     SELECT clock_timestamp() AS "now"
@@ -7437,6 +10401,67 @@ function serviceConflict(code: keyof typeof SUBSCRIPTION_CLOSURE_SERVICE_ERROR_C
   return new ConflictException({
     code: SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE[code],
     message: "The governed normal-expiry authority is unavailable or changed."
+  });
+}
+
+function assertEarlyTerminationInitiationSurface(input: InitiateEarlyTerminationInput): void {
+  const allowed = new Set([
+    "actorId",
+    "effectiveAt",
+    "evidence",
+    "idempotencyKey",
+    "orderId",
+    "reason"
+  ]);
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    Object.keys(input).some((key) => !allowed.has(key))
+  ) {
+    throw serviceConflict("EARLY_TERMINATION_CLIENT_AUTHORITY_FORBIDDEN");
+  }
+}
+
+function normalizeEarlyTerminationInitiation(
+  input: InitiateEarlyTerminationInput
+): NormalizedEarlyTerminationInitiation {
+  assertEarlyTerminationInitiationSurface(input);
+  const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+  const idempotencyKey =
+    typeof input.idempotencyKey === "string" ? input.idempotencyKey.trim() : "";
+  if (
+    !reason ||
+    reason.length > 2_000 ||
+    !idempotencyKey ||
+    idempotencyKey.length > 120 ||
+    !Array.isArray(input.evidence) ||
+    input.evidence.length > 20
+  ) {
+    throw serviceConflict("CAPABILITY_INVALID");
+  }
+  const evidence = input.evidence.map((item) => {
+    const keys = item && typeof item === "object" && !Array.isArray(item) ? Object.keys(item) : [];
+    const type = typeof item?.type === "string" ? item.type.trim() : "";
+    const reference = typeof item?.reference === "string" ? item.reference.trim() : "";
+    if (
+      keys.some((key) => key !== "type" && key !== "reference") ||
+      !type ||
+      type.length > 64 ||
+      !reference ||
+      reference.length > 512
+    ) {
+      throw serviceConflict("CAPABILITY_INVALID");
+    }
+    return Object.freeze({ reference, type });
+  });
+  return deepFreezeReceipt({
+    actorId: canonicalUuid(input.actorId),
+    effectiveAt: validDate(input.effectiveAt),
+    evidence,
+    idempotencyKey,
+    orderId: canonicalUuid(input.orderId),
+    reason
   });
 }
 

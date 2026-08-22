@@ -214,6 +214,9 @@ export type SubscriptionClosureAuthorityTable =
   | "lease"
   | "contract"
   | "subscription_contract_segment"
+  | "billing_schedule"
+  | "order_entitlement_account"
+  | "subscription_automation_job"
   | "vehicle_return"
   | "vehicle_return_damage"
   | "vehicle_subscription_period"
@@ -315,6 +318,9 @@ const AUTHORITY_TABLE_RANK: Readonly<Record<SubscriptionClosureAuthorityTable, n
   lease: 40,
   contract: 50,
   subscription_contract_segment: 60,
+  billing_schedule: 64,
+  order_entitlement_account: 66,
+  subscription_automation_job: 68,
   vehicle_return: 70,
   vehicle_return_damage: 75,
   vehicle_subscription_period: 80,
@@ -409,7 +415,12 @@ export class SubscriptionClosureRepository {
     }
     const plannedDocumentAuthorities = new Set(
       normalizedRequirements
-        .filter(({ key }) => key === "manifest-create" || key.startsWith("recovery-authority-"))
+        .filter(
+          ({ key }) =>
+            key === "manifest-create" ||
+            key.startsWith("recovery-authority-") ||
+            key.startsWith("early-termination-agreement-")
+        )
         .flatMap(({ locks: requiredLocks }) => requiredLocks)
         .filter(
           ({ table }) =>
@@ -1262,14 +1273,12 @@ export class SubscriptionClosureRepository {
                   SELECT "closure_case_id" AS "id"
                   FROM "subscription_closure_current_document"
                   WHERE "closure_case_id" = ${lock.id}::uuid
-                    AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
                   FOR UPDATE NOWAIT
                 `
               : Prisma.sql`
                   SELECT "closure_case_id" AS "id"
                   FROM "subscription_closure_current_document"
                   WHERE "closure_case_id" = ${lock.id}::uuid
-                    AND "document_type" = 'RECOVERY_AUTHORITY'::"subscription_closure_document_type"
                   FOR SHARE NOWAIT
                 `
             : lock.mode === "UPDATE"

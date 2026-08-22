@@ -1,15 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import {
   AuditAction,
-  BillingScheduleStatus,
   ContractSegmentStatus,
-  EntitlementAccountStatus,
   LeaseStatus,
   OrderStatus,
   Prisma,
   RenewalConsiderationStatus,
-  SubscriptionAutomationJobStatus,
-  SubscriptionAutomationJobType,
   SubscriptionChangeStatus,
   VehicleReturnStatus,
   VehicleReturnType
@@ -24,17 +20,6 @@ import {
   type NormalExpiryTransactionCapability
 } from "../subscription-closure/subscription-closure.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
-
-const CANCELLABLE_FUTURE_JOB_TYPES = [
-  SubscriptionAutomationJobType.RENEWAL_REMINDER_D30,
-  SubscriptionAutomationJobType.RENEWAL_REMINDER_D14,
-  SubscriptionAutomationJobType.RENEWAL_REMINDER_D3,
-  SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
-  SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
-  SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
-  SubscriptionAutomationJobType.EXTENSION_INSURANCE_VALIDATION,
-  SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE
-] as const;
 
 const EXPIRABLE_CHANGE_STATUSES: SubscriptionChangeStatus[] = [
   SubscriptionChangeStatus.DRAFT,
@@ -247,82 +232,6 @@ export class SubscriptionExpiryService {
         vehicleReturn.id,
         closureCapability
       );
-
-      const schedule = await tx.billingSchedule.findUnique({
-        where: { orderId: order.id }
-      });
-      if (
-        schedule &&
-        (schedule.status === BillingScheduleStatus.ACTIVE ||
-          schedule.status === BillingScheduleStatus.PAUSED)
-      ) {
-        const hasEarnedCycle = schedule.nextPeriodStart.getTime() <= segment.endDate.getTime();
-        await tx.billingSchedule.updateMany({
-          data: hasEarnedCycle
-            ? {
-                completedAt: null,
-                pauseReason: null,
-                status: BillingScheduleStatus.ACTIVE,
-                version: { increment: 1 }
-              }
-            : {
-                completedAt: decisionAt,
-                pauseReason: null,
-                status: BillingScheduleStatus.COMPLETED,
-                version: { increment: 1 }
-              },
-          where: { id: schedule.id, status: schedule.status, version: schedule.version }
-        });
-      }
-      await tx.orderEntitlementAccount.updateMany({
-        data: { accountStatus: EntitlementAccountStatus.CLOSED },
-        where: {
-          accountStatus: EntitlementAccountStatus.ACTIVE,
-          deletedAt: null,
-          orderId: order.id
-        }
-      });
-      await tx.subscriptionAutomationJob.updateMany({
-        data: {
-          cancelledAt: decisionAt,
-          completedAt: decisionAt,
-          jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
-          leaseExpiresAt: null,
-          leaseToken: null
-        },
-        where: {
-          billId: null,
-          jobStatus: {
-            in: [
-              SubscriptionAutomationJobStatus.PENDING,
-              SubscriptionAutomationJobStatus.PROCESSING
-            ]
-          },
-          jobType: { in: [...CANCELLABLE_FUTURE_JOB_TYPES] },
-          orderId: order.id
-        }
-      });
-      await tx.subscriptionAutomationJob.updateMany({
-        data: {
-          cancelledAt: decisionAt,
-          completedAt: decisionAt,
-          jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
-          leaseExpiresAt: null,
-          leaseToken: null
-        },
-        where: {
-          billId: null,
-          jobStatus: {
-            in: [
-              SubscriptionAutomationJobStatus.PENDING,
-              SubscriptionAutomationJobStatus.PROCESSING
-            ]
-          },
-          jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-          orderId: order.id,
-          payload: { path: ["periodStart"], gt: dateKey(segment.endDate) }
-        }
-      });
       await this.auditService.write(
         {
           action: AuditAction.UPDATE,

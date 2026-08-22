@@ -2946,9 +2946,7 @@ export class SubscriptionClosureService {
         ...(await physicalReceiptSuccessorLocks(tx, closureCase))
       ]);
       const locked = await loadPhysicalReceiptAuthority(tx, command.orderId);
-      if (
-        physicalReceiptAuthorityIdentity(observed) !== physicalReceiptAuthorityIdentity(locked)
-      ) {
+      if (physicalReceiptAuthorityIdentity(observed) !== physicalReceiptAuthorityIdentity(locked)) {
         throw serviceConflict("AUTHORITY_MISMATCH");
       }
       await assertExactPhysicalReceiptReplay(tx, locked, command, receiptSource);
@@ -7065,15 +7063,29 @@ async function assertExactPhysicalReceiptReplay(
           revision.resultHash === predecessor!.resultHash))
     );
   });
+  const exactSettlementChainValid = await validateExactSettlementSuccessorChain(
+    tx,
+    authority.closureCase!.id,
+    settlements
+  );
   const settlementSuccessorValid =
     authority.closureCase!.status === terminalStatus
       ? settlements.length === 3 &&
         authority.closureCase!.currentSettlementRevisionId === settlements[2]!.id &&
         Boolean(authority.closureCase!.settledAt)
       : settlements.length <= 2 &&
-        authority.closureCase!.currentSettlementRevisionId ===
-          (settlements.at(-1)?.id ?? null) &&
+        authority.closureCase!.currentSettlementRevisionId === (settlements.at(-1)?.id ?? null) &&
         authority.closureCase!.settledAt === null;
+  const inspectionSuccessorsValid = await validateExactInspectionSuccessorChain(
+    tx,
+    authority.closureCase!.id,
+    inspectionEvents
+  );
+  const terminalSuccessorValid = await validateExactTerminalSuccessor(
+    tx,
+    authority.closureCase!,
+    terminalStatus
+  );
   const preterminalContractStatus =
     authority.closureCase!.closureType === "EARLY_TERMINATION"
       ? ContractStatus.ARCHIVED
@@ -7145,8 +7157,11 @@ async function assertExactPhysicalReceiptReplay(
       source
     }) ||
     !successorStatusValid ||
+    !inspectionSuccessorsValid ||
     !settlementChainValid ||
+    !exactSettlementChainValid ||
     !settlementSuccessorValid ||
+    !terminalSuccessorValid ||
     !currentAggregateValid ||
     vehicleReturn.returnedAt?.getTime() !== command.returnedAt.getTime() ||
     vehicleReturn.returnMileageKm !== command.returnMileageKm ||
@@ -7185,6 +7200,696 @@ async function assertExactPhysicalReceiptReplay(
   ) {
     throw closureSourceConflict();
   }
+}
+
+function settlementRevisionOutcome(
+  revision: Prisma.SubscriptionClosureSettlementRevisionGetPayload<Record<string, never>>
+) {
+  return Object.freeze({
+    amountDueCents: revision.amountDueCents,
+    amountRefundableCents: revision.amountRefundableCents,
+    billInputSnapshot: revision.billInputSnapshot,
+    closureCaseId: revision.closureCaseId,
+    costTotalCents: revision.costTotalCents,
+    createdAt: revision.createdAt.toISOString(),
+    createdBy: revision.createdBy,
+    depositAppliedCents: revision.depositAppliedCents,
+    depositInputSnapshot: revision.depositInputSnapshot,
+    depositRefundCents: revision.depositRefundCents,
+    finalizedAt: revision.finalizedAt?.toISOString() ?? null,
+    finalizedBy: revision.finalizedBy,
+    id: revision.id,
+    inputSnapshotHash: revision.inputSnapshotHash,
+    ledgerInputSnapshot: revision.ledgerInputSnapshot,
+    paidTotalCents: revision.paidTotalCents,
+    receivableTotalCents: revision.receivableTotalCents,
+    responsibilitySnapshot: revision.responsibilitySnapshot,
+    resultHash: revision.resultHash,
+    resultSnapshot: revision.resultSnapshot,
+    revisionNumber: revision.revisionNumber,
+    settledAt: revision.settledAt?.toISOString() ?? null,
+    settledBy: revision.settledBy,
+    settlementType: revision.settlementType,
+    source: { id: revision.sourceId, key: revision.sourceKey, type: revision.sourceType },
+    stage: revision.stage,
+    supersedesRevisionId: revision.supersedesRevisionId,
+    waiverApprovalId: revision.waiverApprovalId,
+    waiverTotalCents: revision.waiverTotalCents,
+    writeOffApprovalId: revision.writeOffApprovalId,
+    writeOffTotalCents: revision.writeOffTotalCents
+  });
+}
+
+async function validateExactSettlementSuccessorChain(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  revisions: readonly Prisma.SubscriptionClosureSettlementRevisionGetPayload<
+    Record<string, never>
+  >[]
+) {
+  if (revisions.length === 0) return true;
+  const events = await tx.subscriptionClosureEvent.findMany({
+    orderBy: [{ sequence: "asc" }, { id: "asc" }],
+    where: { closureCaseId, eventType: "SETTLEMENT_REVISION_CREATED" }
+  });
+  const receipts = await tx.subscriptionClosureCommandReceipt.findMany({
+    where: { closureCaseId, commandType: "CREATE_SETTLEMENT_REVISION" }
+  });
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  if (
+    events.length !== revisions.length ||
+    receipts.length !== revisions.length ||
+    audits.length !== revisions.length
+  ) {
+    return false;
+  }
+  return revisions.every((revision, index) => {
+    const predecessor = index === 0 ? null : revisions[index - 1]!;
+    const event = events.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const receipt = receipts.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const audit = audits.find(({ entityId }) => entityId === event?.id);
+    if (!event || !receipt || !audit) return false;
+    const payload = jsonObject(receipt.payloadSnapshot);
+    const source = { id: revision.sourceId, key: revision.sourceKey, type: revision.sourceType };
+    const expectedCommand = {
+      actorId: revision.createdBy,
+      amountDueCents: revision.amountDueCents,
+      amountRefundableCents: revision.amountRefundableCents,
+      billInputSnapshot: revision.billInputSnapshot,
+      closureCaseId,
+      costTotalCents: revision.costTotalCents,
+      depositAppliedCents: revision.depositAppliedCents,
+      depositInputSnapshot: revision.depositInputSnapshot,
+      depositRefundCents: revision.depositRefundCents,
+      expectedCurrentRevisionId: predecessor?.id ?? null,
+      expectedVersion: event.sequence - 2,
+      finalizedAt: revision.finalizedAt,
+      finalizedBy: revision.finalizedBy,
+      ledgerInputSnapshot: revision.ledgerInputSnapshot,
+      ...(typeof payload.managedOccurredAt === "string"
+        ? { managedOccurredAt: new Date(payload.managedOccurredAt) }
+        : {}),
+      paidTotalCents: revision.paidTotalCents,
+      receivableTotalCents: revision.receivableTotalCents,
+      ...(typeof payload.recordedAt === "string" ? { recordedAt: revision.createdAt } : {}),
+      responsibilitySnapshot: revision.responsibilitySnapshot,
+      resultSnapshot: revision.resultSnapshot,
+      settledAt: revision.settledAt,
+      settledBy: revision.settledBy,
+      settlementType: revision.settlementType,
+      source,
+      stage: revision.stage,
+      waiverApprovalId: revision.waiverApprovalId,
+      waiverTotalCents: revision.waiverTotalCents,
+      writeOffApprovalId: revision.writeOffApprovalId,
+      writeOffTotalCents: revision.writeOffTotalCents
+    };
+    const expectedOutcome = settlementRevisionOutcome(revision);
+    return (
+      revision.revisionNumber === index + 1 &&
+      revision.supersedesRevisionId === (predecessor?.id ?? null) &&
+      event.actorId === revision.createdBy &&
+      event.beforeStatus === event.afterStatus &&
+      event.sourceType === revision.sourceType &&
+      event.sourceId === revision.sourceId &&
+      event.sourceKey === revision.sourceKey &&
+      event.occurredAt.getTime() === revision.createdAt.getTime() &&
+      sameCanonicalReceiptValue(event.detailSnapshot, {
+        revisionNumber: revision.revisionNumber,
+        settlementRevisionId: revision.id,
+        settlementType: revision.settlementType,
+        stage: revision.stage
+      }) &&
+      receipt.actorId === revision.createdBy &&
+      receipt.eventId === event.id &&
+      receipt.sourceType === revision.sourceType &&
+      receipt.sourceId === revision.sourceId &&
+      receipt.sourceKey === revision.sourceKey &&
+      receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+      audit.action === AuditAction.CREATE &&
+      audit.operatorId === revision.createdBy &&
+      audit.beforeSnapshot === null &&
+      audit.ipAddress === null &&
+      audit.userAgent === null &&
+      audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+      sameCanonicalReceiptValue(audit.afterSnapshot, {
+        action: "CREATE_SETTLEMENT_REVISION",
+        closureCaseId,
+        eventId: event.id,
+        outcome: expectedOutcome,
+        source
+      })
+    );
+  });
+}
+
+async function validateExactTerminalSuccessor(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    contractId: string;
+    id: string;
+    orderId: string;
+    status: string;
+  }>,
+  terminalStatus: string
+) {
+  if (closureCase.status !== terminalStatus) return true;
+  const events = await tx.subscriptionClosureEvent.findMany({
+    include: { commandReceipt: true },
+    where: {
+      afterStatus: terminalStatus as never,
+      beforeStatus: "PENDING_SETTLEMENT",
+      closureCaseId: closureCase.id,
+      eventType: "STATUS_TRANSITIONED"
+    }
+  });
+  if (events.length !== 1) return false;
+  const event = events[0]!;
+  const receipt = event.commandReceipt;
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: event.id,
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  const aggregateAudits = await tx.auditLog.findMany({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    where: {
+      entityId: { in: [closureCase.orderId, closureCase.contractId] },
+      entityType: { in: ["subscription_order", "contract"] },
+      module: "subscription_closure",
+      operatorId: event.actorId
+    }
+  });
+  const order = await tx.subscriptionOrder.findUnique({ where: { id: closureCase.orderId } });
+  const contract = await tx.contract.findUnique({ where: { id: closureCase.contractId } });
+  const audit = audits[0];
+  if (!receipt || audits.length !== 1 || !audit) return false;
+  const source = { id: event.sourceId, key: event.sourceKey, type: event.sourceType };
+  const expectedCommand = {
+    actorId: event.actorId,
+    afterStatus: event.afterStatus,
+    closureCaseId: closureCase.id,
+    detailSnapshot: event.detailSnapshot,
+    eventType: "STATUS_TRANSITIONED" as const,
+    expectedStatus: "PENDING_SETTLEMENT" as const,
+    expectedVersion: event.sequence - 2,
+    occurredAt: event.occurredAt,
+    reconditioningAssetWorkOrderId: null,
+    recoveryAssetWorkOrderId: null,
+    source
+  };
+  const outcome = jsonObject(receipt.outcomeSnapshot);
+  const outcomeCase = jsonObject(outcome.case);
+  const outcomeEvent = jsonObject(outcome.event);
+  const terminalOrderAudits = aggregateAudits.filter((candidate) => {
+    const before = jsonObject(candidate.beforeSnapshot);
+    const after = jsonObject(candidate.afterSnapshot);
+    return (
+      candidate.entityId === closureCase.orderId &&
+      candidate.entityType === "subscription_order" &&
+      before.orderStatus === OrderStatus.RETURNED_PENDING_SETTLEMENT &&
+      after.orderStatus === terminalStatus
+    );
+  });
+  const terminalContractAudits = aggregateAudits.filter((candidate) => {
+    const before = jsonObject(candidate.beforeSnapshot);
+    const after = jsonObject(candidate.afterSnapshot);
+    return (
+      candidate.entityId === closureCase.contractId &&
+      candidate.entityType === "contract" &&
+      before.status === ContractStatus.ARCHIVED &&
+      after.status === terminalStatus
+    );
+  });
+  const terminalOrderAudit = terminalOrderAudits[0];
+  const terminalContractAudit = terminalContractAudits[0];
+  const valid = Boolean(
+    receipt.actorId === event.actorId &&
+    receipt.closureCaseId === closureCase.id &&
+    receipt.commandType === "TRANSITION_CASE" &&
+    receipt.eventId === event.id &&
+    receipt.sourceType === event.sourceType &&
+    receipt.sourceId === event.sourceId &&
+    receipt.sourceKey === event.sourceKey &&
+    receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+    sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+    outcomeCase.id === closureCase.id &&
+    outcomeCase.status === terminalStatus &&
+    outcomeCase.version === event.sequence - 1 &&
+    sameCanonicalReceiptValue(outcomeEvent, {
+      actorId: event.actorId,
+      afterStatus: event.afterStatus,
+      beforeStatus: event.beforeStatus,
+      closureCaseId: event.closureCaseId,
+      detailSnapshot: event.detailSnapshot,
+      eventType: event.eventType,
+      id: event.id,
+      occurredAt: event.occurredAt.toISOString(),
+      recordedAt: event.recordedAt.toISOString(),
+      sequence: event.sequence,
+      source
+    }) &&
+    audit.action === AuditAction.CREATE &&
+    audit.operatorId === event.actorId &&
+    audit.beforeSnapshot === null &&
+    audit.ipAddress === null &&
+    audit.userAgent === null &&
+    audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+    sameCanonicalReceiptValue(audit.afterSnapshot, {
+      action: "TRANSITION_CASE",
+      closureCaseId: closureCase.id,
+      eventId: event.id,
+      outcome: receipt.outcomeSnapshot,
+      source
+    }) &&
+    order?.orderStatus === terminalStatus &&
+    contract?.status === terminalStatus &&
+    terminalOrderAudits.length === 1 &&
+    terminalContractAudits.length === 1 &&
+    terminalOrderAudit?.action === AuditAction.UPDATE &&
+    terminalOrderAudit.beforeSnapshot !== null &&
+    terminalOrderAudit.ipAddress === null &&
+    terminalOrderAudit.userAgent === null &&
+    terminalOrderAudit.createdAt.getTime() <= event.recordedAt.getTime() &&
+    terminalOrderAudit.createdAt.getTime() <= audit.createdAt.getTime() &&
+    sameCanonicalReceiptValue(terminalOrderAudit.afterSnapshot, physicalAuditSnapshot(order)) &&
+    terminalContractAudit?.action === AuditAction.UPDATE &&
+    terminalContractAudit.beforeSnapshot !== null &&
+    terminalContractAudit.ipAddress === null &&
+    terminalContractAudit.userAgent === null &&
+    terminalContractAudit.createdAt.getTime() <= event.recordedAt.getTime() &&
+    terminalContractAudit.createdAt.getTime() <= audit.createdAt.getTime() &&
+    sameCanonicalReceiptValue(terminalContractAudit.afterSnapshot, physicalAuditSnapshot(contract))
+  );
+  return valid;
+}
+
+async function validateExactInspectionSuccessorChain(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  events: readonly Prisma.SubscriptionClosureEventGetPayload<{
+    include: { commandReceipt: true };
+  }>[]
+) {
+  if (events.length === 0) return true;
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  const closureCase = await tx.subscriptionClosureCase.findUnique({ where: { id: closureCaseId } });
+  const evidence = await tx.assetWorkOrderEvidence.findMany({
+    orderBy: [{ sourceKey: "asc" }, { id: "asc" }],
+    where: {
+      sourceId: closureCaseId,
+      sourceKey: { startsWith: "inspection-evidence:" },
+      sourceType: "SUBSCRIPTION_CLOSURE"
+    }
+  });
+  const costs = await tx.vehicleCostLedgerEntry.findMany({
+    orderBy: [{ sourceKey: "asc" }, { id: "asc" }],
+    where: {
+      sourceId: closureCaseId,
+      sourceKey: { startsWith: "inspection-cost:" },
+      sourceType: "SUBSCRIPTION_CLOSURE"
+    }
+  });
+  const costReceipts = await tx.assetAccountingCommandReceipt.findMany({
+    where: {
+      sourceId: closureCaseId,
+      sourceKey: { startsWith: "inspection-cost:" },
+      sourceType: "SUBSCRIPTION_CLOSURE"
+    }
+  });
+  if (audits.length !== events.length) return false;
+  const expectedEvidenceCount = events.reduce(
+    (total, event) => total + Number(jsonObject(event.detailSnapshot).evidenceCount ?? 0),
+    0
+  );
+  const expectedCostCount = events.reduce(
+    (total, event) => total + Number(jsonObject(event.detailSnapshot).costCount ?? 0),
+    0
+  );
+  if (
+    !closureCase ||
+    evidence.length !== expectedEvidenceCount ||
+    costs.length !== expectedCostCount ||
+    costReceipts.length !== expectedCostCount
+  ) {
+    return false;
+  }
+  const evidenceEvents = await tx.assetWorkOrderEvent.findMany({
+    where: {
+      sourceId: closureCaseId,
+      sourceKey: { startsWith: "inspection-evidence:" },
+      sourceType: "SUBSCRIPTION_CLOSURE"
+    }
+  });
+  const successorAudits = await tx.auditLog.findMany({
+    where: {
+      entityId: {
+        in: [
+          ...evidence.map(({ id }) => id),
+          ...evidenceEvents.map(({ id }) => id),
+          ...costs.map(({ id }) => id)
+        ]
+      },
+      entityType: {
+        in: ["asset_work_order_evidence", "asset_work_order_event", "vehicle_cost_ledger_entry"]
+      }
+    }
+  });
+  if (
+    evidenceEvents.length !== expectedEvidenceCount ||
+    successorAudits.length !== expectedEvidenceCount * 2 + expectedCostCount
+  ) {
+    return false;
+  }
+  const successorEventsValid = events.every((event) => {
+    const receipt = event.commandReceipt;
+    const audit = audits.find(({ entityId }) => entityId === event.id);
+    if (!receipt || !audit) return false;
+    const detail = jsonObject(event.detailSnapshot);
+    const source = { id: event.sourceId, key: event.sourceKey, type: event.sourceType };
+    const expectedCommand = {
+      actorId: event.actorId,
+      afterStatus: event.afterStatus,
+      closureCaseId,
+      detailSnapshot: event.detailSnapshot,
+      eventType: "INSPECTION_RECORDED" as const,
+      expectedStatus: event.beforeStatus,
+      expectedVersion: event.sequence - 2,
+      occurredAt: event.occurredAt,
+      reconditioningAssetWorkOrderId:
+        typeof detail.reconditioningAssetWorkOrderId === "string"
+          ? detail.reconditioningAssetWorkOrderId
+          : null,
+      recoveryAssetWorkOrderId: null,
+      source
+    };
+    const outcome = jsonObject(receipt.outcomeSnapshot);
+    const outcomeCase = jsonObject(outcome.case);
+    const outcomeEvent = jsonObject(outcome.event);
+    return (
+      event.closureCaseId === closureCaseId &&
+      event.eventType === "INSPECTION_RECORDED" &&
+      event.afterStatus ===
+        (expectedCommand.reconditioningAssetWorkOrderId
+          ? "RECONDITIONING"
+          : "PENDING_SETTLEMENT") &&
+      detail.accepted === true &&
+      Number.isInteger(detail.costCount) &&
+      Number.isInteger(detail.evidenceCount) &&
+      receipt.actorId === event.actorId &&
+      receipt.closureCaseId === closureCaseId &&
+      receipt.commandType === "TRANSITION_CASE" &&
+      receipt.eventId === event.id &&
+      receipt.sourceType === event.sourceType &&
+      receipt.sourceId === event.sourceId &&
+      receipt.sourceKey === event.sourceKey &&
+      receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+      outcomeCase.id === closureCaseId &&
+      outcomeCase.status === event.afterStatus &&
+      outcomeCase.version === event.sequence - 1 &&
+      outcomeCase.reconditioningAssetWorkOrderId ===
+        expectedCommand.reconditioningAssetWorkOrderId &&
+      sameCanonicalReceiptValue(outcomeEvent, {
+        actorId: event.actorId,
+        afterStatus: event.afterStatus,
+        beforeStatus: event.beforeStatus,
+        closureCaseId: event.closureCaseId,
+        detailSnapshot: event.detailSnapshot,
+        eventType: event.eventType,
+        id: event.id,
+        occurredAt: event.occurredAt.toISOString(),
+        recordedAt: event.recordedAt.toISOString(),
+        sequence: event.sequence,
+        source
+      }) &&
+      audit.action === AuditAction.CREATE &&
+      audit.operatorId === event.actorId &&
+      audit.beforeSnapshot === null &&
+      audit.ipAddress === null &&
+      audit.userAgent === null &&
+      audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+      sameCanonicalReceiptValue(audit.afterSnapshot, {
+        action: "TRANSITION_CASE",
+        closureCaseId,
+        eventId: event.id,
+        outcome: receipt.outcomeSnapshot,
+        source
+      })
+    );
+  });
+  const firstActorId = events[0]!.actorId;
+  const evidenceValid = evidence.every((item, index) => {
+    const event = evidenceEvents.find(
+      ({ sourceId, sourceKey, sourceType }) =>
+        sourceType === item.sourceType && sourceId === item.sourceId && sourceKey === item.sourceKey
+    );
+    const evidenceAudit = successorAudits.find(
+      ({ entityId, entityType }) =>
+        entityId === item.id && entityType === "asset_work_order_evidence"
+    );
+    const eventAudit = successorAudits.find(
+      ({ entityId, entityType }) =>
+        entityId === event?.id && entityType === "asset_work_order_event"
+    );
+    const eventDetail = jsonObject(event?.detailSnapshot);
+    const eventEnvelope = jsonObject(eventDetail.__assetOperationCommandV1);
+    const envelopeResult = jsonObject(eventEnvelope.result);
+    const envelopeWorkOrder = jsonObject(envelopeResult.workOrder);
+    const source = { id: item.sourceId, key: item.sourceKey, type: item.sourceType };
+    return (
+      item.sourceType === "SUBSCRIPTION_CLOSURE" &&
+      item.sourceId === closureCaseId &&
+      item.sourceKey === `inspection-evidence:${index}` &&
+      item.actorId === firstActorId &&
+      item.workOrderId ===
+        (closureCase.physicalControlMode === "RECOVERY"
+          ? closureCase.recoveryAssetWorkOrderId
+          : closureCase.returnAssetWorkOrderId) &&
+      event?.eventType === "EVIDENCE_ATTACHED" &&
+      event.actorId === item.actorId &&
+      event.workOrderId === item.workOrderId &&
+      event.beforeStatus === null &&
+      event.afterStatus === null &&
+      eventDetail.action === item.action &&
+      eventDetail.evidenceId === item.id &&
+      eventDetail.evidenceType === item.evidenceType &&
+      eventDetail.supersedesEvidenceId === item.supersedesEvidenceId &&
+      eventEnvelope.kind === "evidence" &&
+      eventEnvelope.version === 1 &&
+      envelopeWorkOrder.id === item.workOrderId &&
+      sameCanonicalReceiptValue(eventEnvelope.command, {
+        action: item.action,
+        actorId: item.actorId,
+        capturedAt: item.capturedAt,
+        captureMetadata: item.captureMetadata,
+        contentSha256: item.contentSha256,
+        evidenceType: item.evidenceType,
+        eventId: item.eventId,
+        fileId: item.fileId,
+        occurredAt: event.occurredAt,
+        source,
+        supersedesEvidenceId: item.supersedesEvidenceId,
+        workOrderId: item.workOrderId
+      }) &&
+      evidenceAudit?.action === AuditAction.CREATE &&
+      evidenceAudit.operatorId === item.actorId &&
+      evidenceAudit.module === "asset_operations" &&
+      evidenceAudit.beforeSnapshot === null &&
+      evidenceAudit.ipAddress === null &&
+      evidenceAudit.userAgent === null &&
+      sameCanonicalReceiptValue(evidenceAudit.afterSnapshot, physicalAuditSnapshot(item)) &&
+      eventAudit?.action === AuditAction.CREATE &&
+      eventAudit.operatorId === item.actorId &&
+      eventAudit.module === "asset_operations" &&
+      eventAudit.beforeSnapshot === null &&
+      eventAudit.ipAddress === null &&
+      eventAudit.userAgent === null &&
+      sameCanonicalReceiptValue(eventAudit.afterSnapshot, physicalAuditSnapshot(event))
+    );
+  });
+  const costsValid = costs.every((item, index) => {
+    const receipt = costReceipts.find(({ costEntryId }) => costEntryId === item.id);
+    const audit = successorAudits.find(
+      ({ entityId, entityType }) =>
+        entityId === item.id && entityType === "vehicle_cost_ledger_entry"
+    );
+    const receiptPayload = jsonObject(receipt?.payloadSnapshot);
+    const receiptOutcome = jsonObject(receipt?.outcomeSnapshot);
+    const auditAfter = jsonObject(audit?.afterSnapshot);
+    return Boolean(
+      receipt &&
+      item.sourceType === "SUBSCRIPTION_CLOSURE" &&
+      item.sourceId === closureCaseId &&
+      item.sourceKey === `inspection-cost:${index}` &&
+      item.confirmedBy === firstActorId &&
+      item.actionType === VehicleCostActionType.ACTUAL_COST &&
+      item.orderId === closureCase.orderId &&
+      item.contractId === closureCase.contractId &&
+      item.customerId === closureCase.customerId &&
+      item.vehicleId === closureCase.vehicleId &&
+      item.workOrderId ===
+        (closureCase.physicalControlMode === "RECOVERY"
+          ? closureCase.recoveryAssetWorkOrderId
+          : closureCase.returnAssetWorkOrderId) &&
+      receipt.actorId === firstActorId &&
+      receipt.sourceType === item.sourceType &&
+      receipt.sourceId === item.sourceId &&
+      receipt.sourceKey === item.sourceKey &&
+      receipt.payloadHash === hashSubscriptionClosureSnapshot(receipt.payloadSnapshot) &&
+      sameCanonicalReceiptValue(receiptOutcome, {
+        actionType: item.actionType,
+        accountingPeriod: item.accountingPeriod,
+        amountCents: item.amountCents,
+        assetOwnerId: item.assetOwnerId,
+        assetOwnerSnapshot: item.assetOwnerSnapshot,
+        confirmedAt: item.confirmedAt,
+        confirmedBy: item.confirmedBy,
+        contractId: item.contractId,
+        costCategory: item.costCategory,
+        customerId: item.customerId,
+        entryKind: item.entryKind,
+        evidenceId: item.evidenceId,
+        evidenceSnapshot: item.evidenceSnapshot,
+        id: item.id,
+        occurredOn: item.occurredOn,
+        orderId: item.orderId,
+        responsiblePartyId: item.responsiblePartyId,
+        responsiblePartyType: item.responsiblePartyType,
+        responsibilitySnapshot: item.responsibilitySnapshot,
+        reversalOfEntryId: item.reversalOfEntryId,
+        sourceId: item.sourceId,
+        sourceKey: item.sourceKey,
+        sourceType: item.sourceType,
+        vehicleId: item.vehicleId,
+        workOrderId: item.workOrderId
+      }) &&
+      audit?.action === AuditAction.CREATE &&
+      audit.operatorId === item.confirmedBy &&
+      audit.module === "asset_accounting" &&
+      audit.beforeSnapshot === null &&
+      audit.ipAddress === null &&
+      audit.userAgent === null &&
+      sameCanonicalReceiptValue(auditAfter.fact, receipt.outcomeSnapshot) &&
+      auditAfter.permission === ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM &&
+      auditAfter.reason === receiptPayload.reason &&
+      sameCanonicalReceiptValue(auditAfter.source, {
+        id: item.sourceId,
+        key: item.sourceKey,
+        type: item.sourceType
+      })
+    );
+  });
+  const reconditioningEvent = events.find(({ afterStatus }) => afterStatus === "RECONDITIONING");
+  const reconditioningWorkOrderValid = reconditioningEvent
+    ? await validateExactReconditioningWorkOrderSuccessor(tx, closureCase, reconditioningEvent)
+    : closureCase.reconditioningAssetWorkOrderId === null;
+  return successorEventsValid && evidenceValid && costsValid && reconditioningWorkOrderValid;
+}
+
+async function validateExactReconditioningWorkOrderSuccessor(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    contractId: string;
+    customerId: string;
+    id: string;
+    orderId: string;
+    physicalControlMode: string;
+    reconditioningAssetWorkOrderId: string | null;
+    recoveryAssetWorkOrderId: string | null;
+    returnAssetWorkOrderId: string | null;
+    vehicleId: string;
+  }>,
+  transition: Readonly<{ actorId: string; occurredAt: Date }>
+) {
+  if (!closureCase.reconditioningAssetWorkOrderId) return false;
+  const workOrder = await tx.assetWorkOrder.findFirst({
+    where: {
+      contractId: closureCase.contractId,
+      createSourceId: closureCase.id,
+      createSourceKey: "reconditioning-work-order",
+      createSourceType: "SUBSCRIPTION_CLOSURE",
+      customerId: closureCase.customerId,
+      id: closureCase.reconditioningAssetWorkOrderId,
+      orderId: closureCase.orderId,
+      relatedWorkOrderId:
+        closureCase.physicalControlMode === "RECOVERY"
+          ? closureCase.recoveryAssetWorkOrderId
+          : closureCase.returnAssetWorkOrderId,
+      vehicleId: closureCase.vehicleId,
+      workOrderType: "RECONDITIONING"
+    }
+  });
+  if (!workOrder || workOrder.createdBy !== transition.actorId) return false;
+  const events = await tx.assetWorkOrderEvent.findMany({
+    where: {
+      sourceId: closureCase.id,
+      sourceKey: "reconditioning-work-order",
+      sourceType: "SUBSCRIPTION_CLOSURE",
+      workOrderId: workOrder.id
+    }
+  });
+  if (events.length !== 1) return false;
+  const event = events[0]!;
+  const audits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: [workOrder.id, event.id] },
+      entityType: { in: ["asset_work_order", "asset_work_order_event"] },
+      module: "asset_operations"
+    }
+  });
+  const workOrderAudit = audits.find(({ entityId }) => entityId === workOrder.id);
+  const eventAudit = audits.find(({ entityId }) => entityId === event.id);
+  const eventDetail = jsonObject(event.detailSnapshot);
+  const envelope = jsonObject(eventDetail.__assetOperationCommandV1);
+  const envelopeCommand = jsonObject(envelope.command);
+  const workOrderAfter = jsonObject(workOrderAudit?.afterSnapshot);
+  return Boolean(
+    audits.length === 2 &&
+    event.eventType === "CREATED" &&
+    event.actorId === transition.actorId &&
+    event.beforeStatus === null &&
+    event.afterStatus === "PENDING" &&
+    event.occurredAt.getTime() === transition.occurredAt.getTime() &&
+    envelope.kind === "create" &&
+    envelope.version === 1 &&
+    envelopeCommand.contractId === closureCase.contractId &&
+    envelopeCommand.customerId === closureCase.customerId &&
+    envelopeCommand.orderId === closureCase.orderId &&
+    envelopeCommand.relatedWorkOrderId === workOrder.relatedWorkOrderId &&
+    envelopeCommand.vehicleId === closureCase.vehicleId &&
+    envelopeCommand.workOrderType === "RECONDITIONING" &&
+    workOrderAudit?.action === AuditAction.CREATE &&
+    workOrderAudit.operatorId === transition.actorId &&
+    workOrderAudit.beforeSnapshot === null &&
+    workOrderAudit.ipAddress === null &&
+    workOrderAudit.userAgent === null &&
+    workOrderAfter.id === workOrder.id &&
+    workOrderAfter.createSourceKey === "reconditioning-work-order" &&
+    workOrderAfter.status === "PENDING" &&
+    eventAudit?.action === AuditAction.CREATE &&
+    eventAudit.operatorId === transition.actorId &&
+    eventAudit.beforeSnapshot === null &&
+    eventAudit.ipAddress === null &&
+    eventAudit.userAgent === null &&
+    sameCanonicalReceiptValue(eventAudit.afterSnapshot, physicalAuditSnapshot(event))
+  );
 }
 
 function sameCanonicalReceiptValue(left: unknown, right: unknown) {
@@ -10192,11 +10897,7 @@ async function assertExactEarlyTerminationStaleReplay(
     }
     return;
   }
-  if (
-    closureCase.status !== "CANCELLED" ||
-    !closureCase.retiredAt ||
-    !closureCase.retiredBy
-  ) {
+  if (closureCase.status !== "CANCELLED" || !closureCase.retiredAt || !closureCase.retiredBy) {
     throw closureSourceConflict();
   }
   const cancellationEvent = await tx.subscriptionClosureEvent.findFirst({
@@ -10470,8 +11171,7 @@ function assertEarlyTerminationCancellationCase(
     closureCase.closureType !== "EARLY_TERMINATION" ||
     closureCase.physicalControlMode !== "VOLUNTARY_RETURN" ||
     closureCase.finalDisposition !== "TERMINATE" ||
-    (closureCase.status !== "PREPARING_RETURN" &&
-      closureCase.status !== "MANUAL_TAKEOVER") ||
+    (closureCase.status !== "PREPARING_RETURN" && closureCase.status !== "MANUAL_TAKEOVER") ||
     closureCase.retiredAt !== null ||
     closureCase.retiredBy !== null ||
     closureCase.vehicleReturnId !== null ||
@@ -10537,14 +11237,8 @@ async function resolveEarlyTerminationCancellationAgreement(
     }
     return null;
   }
-  const agreementCommand = await currentEarlyTerminationAgreementCommand(
-    tx,
-    replayDraft as never
-  );
-  const ids = earlyTerminationAgreementIds(
-    closureCase.id,
-    agreementCommand.idempotencyKey
-  );
+  const agreementCommand = await currentEarlyTerminationAgreementCommand(tx, replayDraft as never);
+  const ids = earlyTerminationAgreementIds(closureCase.id, agreementCommand.idempotencyKey);
   const agreement = await validateEarlyTerminationAgreementChainInTransaction(
     tx,
     agreementCommand,
@@ -10555,10 +11249,8 @@ async function resolveEarlyTerminationCancellationAgreement(
   if (
     !agreement ||
     !task ||
-    (closureCase.status === "PREPARING_RETURN" &&
-      task.taskStatus !== ESignTaskStatus.COMPLETED) ||
-    (closureCase.status === "MANUAL_TAKEOVER" &&
-      task.taskStatus !== ESignTaskStatus.CANCELLED)
+    (closureCase.status === "PREPARING_RETURN" && task.taskStatus !== ESignTaskStatus.COMPLETED) ||
+    (closureCase.status === "MANUAL_TAKEOVER" && task.taskStatus !== ESignTaskStatus.CANCELLED)
   ) {
     throw serviceConflict("AUTHORITY_MISMATCH");
   }
@@ -10657,8 +11349,7 @@ async function assertExactEarlyTerminationCancellationReplay(
     event.actorId !== command.actorId ||
     event.closureCaseId !== closureCase.id ||
     event.eventType !== "STATUS_TRANSITIONED" ||
-    (event.beforeStatus !== "PREPARING_RETURN" &&
-      event.beforeStatus !== "MANUAL_TAKEOVER") ||
+    (event.beforeStatus !== "PREPARING_RETURN" && event.beforeStatus !== "MANUAL_TAKEOVER") ||
     event.afterStatus !== "CANCELLED" ||
     event.sourceType !== source.type ||
     event.sourceId !== source.id ||
@@ -10757,11 +11448,7 @@ async function validateEarlyTerminationAgreementTaskSuccessor(
   if (task.taskStatus === ESignTaskStatus.COMPLETED) {
     return task.cancelledAt === null && task.updatedBy === agreementActorId;
   }
-  if (
-    task.taskStatus !== ESignTaskStatus.CANCELLED ||
-    !task.cancelledAt ||
-    !task.updatedBy
-  ) {
+  if (task.taskStatus !== ESignTaskStatus.CANCELLED || !task.cancelledAt || !task.updatedBy) {
     return false;
   }
   const successorEvents = await tx.subscriptionClosureEvent.findMany({
@@ -10778,29 +11465,32 @@ async function validateEarlyTerminationAgreementTaskSuccessor(
   const successor = successorEvents[0]!;
   const detail = jsonObject(successor.detailSnapshot);
   const manual =
-    successor.afterStatus === "MANUAL_TAKEOVER" &&
-    detail.terminationAction === "AGREEMENT_STALE";
-  const cancelled =
-    successor.afterStatus === "CANCELLED" && detail.terminationAction === "CANCEL";
+    successor.afterStatus === "MANUAL_TAKEOVER" && detail.terminationAction === "AGREEMENT_STALE";
+  const cancelled = successor.afterStatus === "CANCELLED" && detail.terminationAction === "CANCEL";
   if (!manual && !cancelled) return false;
-  const [receipt, audits] = await Promise.all([
-    tx.subscriptionClosureCommandReceipt.findUnique({
-      where: {
-        sourceType_sourceId_sourceKey: {
-          sourceId: successor.sourceId,
-          sourceKey: successor.sourceKey,
-          sourceType: successor.sourceType
-        }
+  const receipt = await tx.subscriptionClosureCommandReceipt.findUnique({
+    where: {
+      sourceType_sourceId_sourceKey: {
+        sourceId: successor.sourceId,
+        sourceKey: successor.sourceKey,
+        sourceType: successor.sourceType
       }
-    }),
-    tx.auditLog.findMany({
-      where: {
-        entityId: task.id,
-        entityType: "contract_esign_task",
-        module: "subscription_closure"
-      }
-    })
-  ]);
+    }
+  });
+  const taskAudits = await tx.auditLog.findMany({
+    where: {
+      entityId: task.id,
+      entityType: "contract_esign_task",
+      module: "subscription_closure"
+    }
+  });
+  const eventAudits = await tx.auditLog.findMany({
+    where: {
+      entityId: successor.id,
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
   const expectedCommand = {
     actorId: successor.actorId,
     afterStatus: successor.afterStatus,
@@ -10819,37 +11509,82 @@ async function validateEarlyTerminationAgreementTaskSuccessor(
       type: successor.sourceType
     }
   };
-  const audit = audits.find(
-    (candidate) =>
-      candidate.operatorId === task.updatedBy &&
-      candidate.action === AuditAction.UPDATE &&
-      sameCanonicalReceiptValue(candidate.afterSnapshot, {
-        cancelledAt: task.cancelledAt,
-        ...(manual ? { reason: "EARLY_TERMINATION_CURRENT_FACT_DRIFT" } : {}),
-        taskStatus: ESignTaskStatus.CANCELLED
-      }) &&
-      sameCanonicalReceiptValue(
-        candidate.beforeSnapshot,
-        manual
-          ? { taskStatus: ESignTaskStatus.COMPLETED }
-          : { cancelledAt: null, taskStatus: ESignTaskStatus.COMPLETED }
-      )
-  );
-  return Boolean(
+  const taskAudit = taskAudits[0];
+  const eventAudit = eventAudits[0];
+  const outcome = jsonObject(receipt?.outcomeSnapshot);
+  const outcomeCase = jsonObject(outcome.case);
+  const outcomeEvent = jsonObject(outcome.event);
+  const expectedEventOutcome = {
+    actorId: successor.actorId,
+    afterStatus: successor.afterStatus,
+    beforeStatus: successor.beforeStatus,
+    closureCaseId: successor.closureCaseId,
+    detailSnapshot: successor.detailSnapshot,
+    eventType: successor.eventType,
+    id: successor.id,
+    occurredAt: successor.occurredAt.toISOString(),
+    recordedAt: successor.recordedAt.toISOString(),
+    sequence: successor.sequence,
+    source: {
+      id: successor.sourceId,
+      key: successor.sourceKey,
+      type: successor.sourceType
+    }
+  };
+  const expectedTaskAfter = {
+    cancelledAt: task.cancelledAt,
+    ...(manual ? { reason: "EARLY_TERMINATION_CURRENT_FACT_DRIFT" } : {}),
+    taskStatus: ESignTaskStatus.CANCELLED
+  };
+  const expectedTaskBefore = manual
+    ? { taskStatus: ESignTaskStatus.COMPLETED }
+    : { cancelledAt: null, taskStatus: ESignTaskStatus.COMPLETED };
+  const successorSource = {
+    id: successor.sourceId,
+    key: successor.sourceKey,
+    type: successor.sourceType
+  };
+  const valid = Boolean(
     receipt &&
-      receipt.actorId === successor.actorId &&
-      receipt.closureCaseId === closureCaseId &&
-      receipt.commandType === "TRANSITION_CASE" &&
-      receipt.eventId === successor.id &&
-      receipt.sourceType === successor.sourceType &&
-      receipt.sourceId === successor.sourceId &&
-      receipt.sourceKey === successor.sourceKey &&
-      receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
-      sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
-      audit &&
-      audit.ipAddress === null &&
-      audit.userAgent === null
+    receipt.actorId === successor.actorId &&
+    receipt.closureCaseId === closureCaseId &&
+    receipt.commandType === "TRANSITION_CASE" &&
+    receipt.eventId === successor.id &&
+    receipt.sourceType === successor.sourceType &&
+    receipt.sourceId === successor.sourceId &&
+    receipt.sourceKey === successor.sourceKey &&
+    receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+    sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+    outcomeCase.id === closureCaseId &&
+    outcomeCase.status === successor.afterStatus &&
+    outcomeCase.version === successor.sequence - 1 &&
+    sameCanonicalReceiptValue(outcomeEvent, expectedEventOutcome) &&
+    taskAudits.length === 1 &&
+    taskAudit &&
+    taskAudit.operatorId === task.updatedBy &&
+    taskAudit.action === AuditAction.UPDATE &&
+    taskAudit.ipAddress === null &&
+    taskAudit.userAgent === null &&
+    taskAudit.createdAt.getTime() <= successor.recordedAt.getTime() &&
+    sameCanonicalReceiptValue(taskAudit.afterSnapshot, expectedTaskAfter) &&
+    sameCanonicalReceiptValue(taskAudit.beforeSnapshot, expectedTaskBefore) &&
+    eventAudits.length === 1 &&
+    eventAudit &&
+    eventAudit.operatorId === successor.actorId &&
+    eventAudit.action === AuditAction.CREATE &&
+    eventAudit.beforeSnapshot === null &&
+    eventAudit.ipAddress === null &&
+    eventAudit.userAgent === null &&
+    eventAudit.createdAt.getTime() >= successor.recordedAt.getTime() &&
+    sameCanonicalReceiptValue(eventAudit.afterSnapshot, {
+      action: "TRANSITION_CASE",
+      closureCaseId,
+      eventId: successor.id,
+      outcome: receipt.outcomeSnapshot,
+      source: successorSource
+    })
   );
+  return valid;
 }
 
 async function assertExactEarlyTerminationExecutionReplay(
@@ -10917,40 +11652,40 @@ async function assertExactEarlyTerminationExecutionReplay(
     typeof detail.returnManifestRevisionId === "string" ? detail.returnManifestRevisionId : "";
   const [originalManifest, manifestRevisions, manifestCurrent, eventAudits, contractAudits] =
     await Promise.all([
-    tx.subscriptionClosureDocumentRevision.findUnique({
-      where: { id: originalManifestRevisionId || "00000000-0000-4000-8000-000000000000" }
-    }),
-    tx.subscriptionClosureDocumentRevision.findMany({
-      orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
-      where: { closureCaseId: closureCase.id, documentType: "RETURN_MANIFEST" }
-    }),
-    tx.subscriptionClosureCurrentDocument.findUnique({
-      where: {
-        closureCaseId_documentType: {
-          closureCaseId: closureCase.id,
-          documentType: "RETURN_MANIFEST"
-        }
-      }
-    }),
-    event
-      ? tx.auditLog.findMany({
-          where: {
-            entityId: event.id,
-            entityType: "subscription_closure_event",
-            module: "subscription_closure"
+      tx.subscriptionClosureDocumentRevision.findUnique({
+        where: { id: originalManifestRevisionId || "00000000-0000-4000-8000-000000000000" }
+      }),
+      tx.subscriptionClosureDocumentRevision.findMany({
+        orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
+        where: { closureCaseId: closureCase.id, documentType: "RETURN_MANIFEST" }
+      }),
+      tx.subscriptionClosureCurrentDocument.findUnique({
+        where: {
+          closureCaseId_documentType: {
+            closureCaseId: closureCase.id,
+            documentType: "RETURN_MANIFEST"
           }
-        })
-      : [],
-    tx.auditLog.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      where: {
-        entityId: closureCase.contractId,
-        entityType: "contract",
-        module: "subscription_closure",
-        operatorId: command.actorId
-      }
-    })
-  ]);
+        }
+      }),
+      event
+        ? tx.auditLog.findMany({
+            where: {
+              entityId: event.id,
+              entityType: "subscription_closure_event",
+              module: "subscription_closure"
+            }
+          })
+        : [],
+      tx.auditLog.findMany({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        where: {
+          entityId: closureCase.contractId,
+          entityType: "contract",
+          module: "subscription_closure",
+          operatorId: command.actorId
+        }
+      })
+    ]);
   const contractArchiveAudit = contractAudits.find((candidate) => {
     const before = jsonObject(candidate.beforeSnapshot);
     const after = jsonObject(candidate.afterSnapshot);
@@ -10970,9 +11705,7 @@ async function assertExactEarlyTerminationExecutionReplay(
     (closureCase.status === "PREPARING_RETURN" &&
       order?.orderStatus === OrderStatus.PENDING_RETURN &&
       lease?.status === LeaseStatus.RETURN_DUE) ||
-    (["RETURN_INSPECTION", "RECONDITIONING", "PENDING_SETTLEMENT"].includes(
-      closureCase.status
-    ) &&
+    (["RETURN_INSPECTION", "RECONDITIONING", "PENDING_SETTLEMENT"].includes(closureCase.status) &&
       order?.orderStatus === OrderStatus.RETURNED_PENDING_SETTLEMENT &&
       lease?.status === LeaseStatus.COMPLETED) ||
     (closureCase.status === "TERMINATED" &&
@@ -10989,6 +11722,12 @@ async function assertExactEarlyTerminationExecutionReplay(
       revision.supersedesRevisionId === (predecessor?.id ?? null)
     );
   });
+  const manifestSuccessorsValid = await validateExactReturnManifestSuccessorChain(
+    tx,
+    closureCase.id,
+    manifestRevisions,
+    manifestCurrent
+  );
   if (
     !event ||
     event.sourceType !== source.type ||
@@ -11036,6 +11775,7 @@ async function assertExactEarlyTerminationExecutionReplay(
     originalManifest.handoverWorkOrderId !== closureCase.returnHandoverWorkOrderId ||
     manifestRevisions[0]?.id !== originalManifest.id ||
     !manifestChainValid ||
+    !manifestSuccessorsValid ||
     manifestCurrent?.documentRevisionId !== manifestRevisions.at(-1)?.id
   ) {
     throw closureSourceConflict();
@@ -11125,6 +11865,192 @@ async function assertExactEarlyTerminationExecutionReplay(
     returnHandoverWorkOrderId: closureCase.returnHandoverWorkOrderId,
     returnManifestRevisionId: originalManifest.id,
     vehicleReturnId: closureCase.vehicleReturnId
+  });
+}
+
+async function validateExactReturnManifestSuccessorChain(
+  tx: Prisma.TransactionClient,
+  closureCaseId: string,
+  revisions: readonly Prisma.SubscriptionClosureDocumentRevisionGetPayload<Record<string, never>>[],
+  current: Readonly<{
+    closureCaseId: string;
+    documentRevisionId: string;
+    documentType: string;
+    updatedBy: string;
+  }> | null
+) {
+  if (
+    revisions.length < 1 ||
+    revisions.length > 3 ||
+    revisions[0]?.stage !== "GENERATED" ||
+    (revisions.length >= 2 && revisions[1]?.stage !== "SIGNED") ||
+    (revisions.length === 3 && revisions[2]?.stage !== "ARCHIVED")
+  ) {
+    return false;
+  }
+  const revisionIds = revisions.map(({ id }) => id);
+  const taskIds = revisions.map(({ contractESignTaskId }) => contractESignTaskId);
+  const fileIds = Array.from(
+    new Set(
+      revisions.flatMap(({ signedFileId, sourceFileId }) =>
+        signedFileId ? [sourceFileId, signedFileId] : [sourceFileId]
+      )
+    )
+  );
+  const events = await tx.subscriptionClosureEvent.findMany({
+    orderBy: [{ sequence: "asc" }, { id: "asc" }],
+    where: {
+      closureCaseId,
+      detailSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] },
+      eventType: "DOCUMENT_REVISION_CREATED"
+    }
+  });
+  const receipts = await tx.subscriptionClosureCommandReceipt.findMany({
+    where: {
+      closureCaseId,
+      commandType: "CREATE_DOCUMENT_REVISION",
+      payloadSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] }
+    }
+  });
+  const tasks = await tx.contractESignTask.findMany({ where: { id: { in: taskIds } } });
+  const files = await tx.fileObject.findMany({ where: { id: { in: fileIds } } });
+  const eventAudits = await tx.auditLog.findMany({
+    where: {
+      entityId: { in: events.map(({ id }) => id) },
+      entityType: "subscription_closure_event",
+      module: "subscription_closure"
+    }
+  });
+  if (
+    events.length !== revisions.length ||
+    receipts.length !== revisions.length ||
+    eventAudits.length !== revisions.length ||
+    tasks.length !== revisions.length ||
+    current?.closureCaseId !== closureCaseId ||
+    current.documentType !== "RETURN_MANIFEST" ||
+    current.documentRevisionId !== revisions.at(-1)?.id ||
+    current.updatedBy !== revisions.at(-1)?.generatedBy
+  ) {
+    return false;
+  }
+  return revisions.every((revision, index) => {
+    const predecessor = index === 0 ? null : revisions[index - 1]!;
+    const event = events.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const receipt = receipts.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const audit = eventAudits.find(({ entityId }) => entityId === event?.id);
+    const task = tasks.find(({ id }) => id === revision.contractESignTaskId);
+    const sourceFile = files.find(({ id }) => id === revision.sourceFileId);
+    const signedFile = revision.signedFileId
+      ? files.find(({ id }) => id === revision.signedFileId)
+      : null;
+    if (!event || !receipt || !audit || !task || !sourceFile) return false;
+    const source = {
+      id: revision.sourceId,
+      key: revision.sourceKey,
+      type: revision.sourceType
+    };
+    const expectedCommand = {
+      actorId: revision.generatedBy,
+      archivedAt: revision.archivedAt,
+      archivedBy: revision.archivedBy,
+      closureCaseId,
+      contractESignTaskId: revision.contractESignTaskId,
+      documentRevisionId: revision.id,
+      documentSnapshot: revision.documentSnapshot,
+      documentType: "RETURN_MANIFEST" as const,
+      expectedCurrentRevisionId: predecessor?.id ?? null,
+      expectedVersion: event.sequence - 2,
+      generatedAt: revision.generatedAt,
+      handoverWorkOrderId: revision.handoverWorkOrderId,
+      signedAt: revision.signedAt,
+      signedBy: revision.signedBy,
+      signedFileHash: revision.signedFileHash,
+      signedFileId: revision.signedFileId,
+      source,
+      sourceFileHash: revision.sourceFileHash,
+      sourceFileId: revision.sourceFileId,
+      stage: revision.stage,
+      vehicleReturnId: revision.vehicleReturnId
+    };
+    const expectedOutcome = recoveryAuthorityDocumentOutcome(revision);
+    const expectedRequest = returnManifestEsignSnapshot(
+      source,
+      closureCaseId,
+      revision.documentSnapshotHash
+    );
+    const expectedResponse = revision.signedFileId
+      ? { signedFileHash: revision.signedFileHash, signedFileId: revision.signedFileId }
+      : null;
+    return (
+      revisionIds.includes(revision.id) &&
+      revision.revisionNumber === index + 1 &&
+      revision.supersedesRevisionId === (predecessor?.id ?? null) &&
+      revision.documentSnapshotHash ===
+        hashSubscriptionClosureSnapshot(revision.documentSnapshot) &&
+      event.actorId === revision.generatedBy &&
+      event.closureCaseId === closureCaseId &&
+      event.beforeStatus === "PREPARING_RETURN" &&
+      event.afterStatus === "PREPARING_RETURN" &&
+      event.sequence === expectedCommand.expectedVersion + 2 &&
+      event.sourceType === revision.sourceType &&
+      event.sourceId === revision.sourceId &&
+      event.sourceKey === revision.sourceKey &&
+      event.occurredAt.getTime() >= revision.generatedAt.getTime() &&
+      event.recordedAt.getTime() >= revision.createdAt.getTime() &&
+      sameCanonicalReceiptValue(event.detailSnapshot, {
+        documentRevisionId: revision.id,
+        documentType: "RETURN_MANIFEST",
+        revisionNumber: index + 1
+      }) &&
+      receipt.actorId === revision.generatedBy &&
+      receipt.eventId === event.id &&
+      receipt.sourceType === revision.sourceType &&
+      receipt.sourceId === revision.sourceId &&
+      receipt.sourceKey === revision.sourceKey &&
+      receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+      audit.action === AuditAction.CREATE &&
+      audit.operatorId === revision.generatedBy &&
+      audit.beforeSnapshot === null &&
+      audit.ipAddress === null &&
+      audit.userAgent === null &&
+      audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+      sameCanonicalReceiptValue(audit.afterSnapshot, {
+        action: "CREATE_DOCUMENT_REVISION",
+        closureCaseId,
+        eventId: event.id,
+        outcome: expectedOutcome,
+        source
+      }) &&
+      task.deletedAt === null &&
+      task.contractId !== null &&
+      task.orderId !== null &&
+      task.customerId !== null &&
+      task.createdBy === revision.generatedBy &&
+      task.updatedBy === revision.generatedBy &&
+      task.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+      task.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
+      task.provider === ESignProviderType.OTHER &&
+      task.sourceType === revision.sourceType &&
+      task.sourceId === revision.sourceId &&
+      task.sourceKey === revision.sourceKey &&
+      task.documentObjectKey === sourceFile.objectKey &&
+      sameCanonicalReceiptValue(task.requestSnapshot, expectedRequest) &&
+      (revision.stage === "GENERATED"
+        ? task.taskStatus === ESignTaskStatus.CREATED &&
+          task.completedAt === null &&
+          task.responseSnapshot === null &&
+          task.signedDocumentObjectKey === null &&
+          signedFile === null
+        : task.taskStatus === ESignTaskStatus.COMPLETED &&
+          task.completedAt?.getTime() === revision.signedAt?.getTime() &&
+          task.signedDocumentObjectKey === signedFile?.objectKey &&
+          sameCanonicalReceiptValue(task.responseSnapshot, expectedResponse) &&
+          signedFile?.uploadedBy === revision.signedBy) &&
+      sourceFile.uploadedBy === revision.generatedBy &&
+      sourceFile.bucket === "subscription-closure"
+    );
   });
 }
 

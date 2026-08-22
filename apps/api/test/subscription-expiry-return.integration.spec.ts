@@ -61,6 +61,13 @@ const TEST_DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgresql://subscription:subscription@127.0.0.1:55432/subscription_saas_codex?schema=public";
 
+function observeSettlement<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (reason: unknown) => ({ reason, status: "rejected" })
+  );
+}
+
 describe("SubscriptionClosureService Task 7 early-termination initiation", () => {
   let prisma: PrismaService;
 
@@ -593,6 +600,7 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
             hookTransaction(prisma, "billingSchedule", "updateMany", barrier, "after")
           );
           const billingRun = hookedBilling.generateScheduledMonthlyRent(claimedJob);
+          const billingResultPromise = observeSettlement(billingRun);
           const firstBillingSignal = await Promise.race([
             barrier.entered.then(() => ({ kind: "BARRIER" as const })),
             billingRun.then(
@@ -601,15 +609,16 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
             )
           ]);
           if (firstBillingSignal.kind === "SETTLED") throw firstBillingSignal.reason;
-          const termination =
+          const terminationResultPromise = observeSettlement(
             createTask6ClosureService(concurrentPrisma).closure.executeEarlyTermination(
               executionInput
-            );
+            )
+          );
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
           barrier.release();
-          const [billingResult, terminationResult] = await Promise.allSettled([
-            billingRun,
-            termination
+          const [billingResult, terminationResult] = await Promise.all([
+            billingResultPromise,
+            terminationResultPromise
           ]);
           expect(billingResult).toMatchObject({
             status: "fulfilled",
@@ -627,15 +636,18 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
           const hookedClosure = createTask6ClosureService(
             hookTransaction(prisma, "billingSchedule", "updateMany", barrier, "after")
           ).closure;
-          const termination = hookedClosure.executeEarlyTermination(executionInput);
+          const terminationResultPromise = observeSettlement(
+            hookedClosure.executeEarlyTermination(executionInput)
+          );
           await barrier.entered;
-          const billingRun =
-            createBilling(concurrentPrisma).generateScheduledMonthlyRent(claimedJob);
+          const billingResultPromise = observeSettlement(
+            createBilling(concurrentPrisma).generateScheduledMonthlyRent(claimedJob)
+          );
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
           barrier.release();
-          const [terminationResult, billingResult] = await Promise.allSettled([
-            termination,
-            billingRun
+          const [terminationResult, billingResult] = await Promise.all([
+            terminationResultPromise,
+            billingResultPromise
           ]);
           expect(terminationResult).toMatchObject({
             status: "fulfilled",
@@ -1594,17 +1606,24 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
         let expiryResult: PromiseSettledResult<unknown>;
 
         if (winner === "LATER_EARLY_FIRST") {
-          const early = createTask6ClosureService(
-            hookTransaction(prisma, "subscriptionClosureCase", "create", barrier, "after")
-          ).closure.initiateEarlyTermination(laterInput);
+          const earlyResultPromise = observeSettlement(
+            createTask6ClosureService(
+              hookTransaction(prisma, "subscriptionClosureCase", "create", barrier, "after")
+            ).closure.initiateEarlyTermination(laterInput)
+          );
           await barrier.entered;
-          const expiry = createGovernedExpiryService(concurrentPrisma).expireSegment(
-            fixture.segmentId,
-            new Date("2026-09-02T16:00:00.000Z")
+          const expiryResultPromise = observeSettlement(
+            createGovernedExpiryService(concurrentPrisma).expireSegment(
+              fixture.segmentId,
+              new Date("2026-09-02T16:00:00.000Z")
+            )
           );
           await new Promise<void>((resolve) => setTimeout(resolve, 100));
           barrier.release();
-          [earlyResult, expiryResult] = await Promise.allSettled([early, expiry]);
+          [earlyResult, expiryResult] = await Promise.all([
+            earlyResultPromise,
+            expiryResultPromise
+          ]);
         } else {
           const targetRepository = new SubscriptionClosureRepository();
           const repository = new Proxy(targetRepository, {
@@ -1621,10 +1640,12 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
               return value.bind(target);
             }
           });
-          const early = createTask6ClosureService(
-            concurrentPrisma,
-            repository
-          ).closure.initiateEarlyTermination(laterInput);
+          const earlyResultPromise = observeSettlement(
+            createTask6ClosureService(
+              concurrentPrisma,
+              repository
+            ).closure.initiateEarlyTermination(laterInput)
+          );
           await barrier.entered;
           await prisma.$transaction([
             prisma.subscriptionOrder.update({
@@ -1636,13 +1657,15 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
               where: { id: fixture.segmentId }
             })
           ]);
-          const expiry = createGovernedExpiryService(prisma).expireSegment(
-            fixture.segmentId,
-            new Date("2026-08-20T16:00:00.000Z")
+          const expiryResultPromise = observeSettlement(
+            createGovernedExpiryService(prisma).expireSegment(
+              fixture.segmentId,
+              new Date("2026-08-20T16:00:00.000Z")
+            )
           );
-          [expiryResult] = await Promise.allSettled([expiry]);
+          [expiryResult] = await Promise.all([expiryResultPromise]);
           barrier.release();
-          [earlyResult] = await Promise.allSettled([early]);
+          [earlyResult] = await Promise.all([earlyResultPromise]);
         }
 
         expect(winner === "LATER_EARLY_FIRST" ? earlyResult : expiryResult).toMatchObject(

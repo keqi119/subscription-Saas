@@ -1280,6 +1280,9 @@ export const MODULE_LABELS: Record<string, string> = {
   order: "订单中心",
   order_change: "订单变更",
   subscription_change: "合同变更",
+  subscription_closure: "订阅闭环",
+  subscription_recovery: "车辆追回",
+  subscription_early_termination: "提前终止",
   product: "产品中心",
   quote: "报价中心",
   residual_curve: "残值曲线",
@@ -1294,6 +1297,16 @@ export const MODULE_LABELS: Record<string, string> = {
 };
 
 export const PERMISSION_LABELS: Record<string, string> = {
+  "subscription_closure:view": "查看订阅闭环",
+  "subscription_closure:prepare": "准备订阅闭环",
+  "subscription_closure:receive": "确认车辆物理接收",
+  "subscription_closure:inspect": "执行退车检查",
+  "subscription_closure:settle": "执行最终结算与库存释放",
+  "subscription_recovery:assess": "评估车辆追回",
+  "subscription_recovery:approve": "审批车辆追回",
+  "subscription_recovery:execute": "执行车辆追回",
+  "subscription_early_termination:create": "发起提前终止",
+  "subscription_early_termination:execute": "执行提前终止",
   "business_exception:approve": "审批业务例外",
   "business_exception:request": "发起业务例外审批",
   "business_exception:view": "查看业务例外审批",
@@ -1433,6 +1446,16 @@ export const PERMISSION_LABELS: Record<string, string> = {
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<string, string> = {
+  "subscription_closure:view": "允许查看订阅闭环案件及审计投影",
+  "subscription_closure:prepare": "允许准备退车闭环但不能确认物理接收",
+  "subscription_closure:receive": "允许确认车辆已经物理接收",
+  "subscription_closure:inspect": "允许记录退车检查、证据与实际成本",
+  "subscription_closure:settle": "允许提出、确认、结清最终结算并释放库存",
+  "subscription_recovery:assess": "允许评估追回上下文并发起追回审批",
+  "subscription_recovery:approve": "允许独立审批车辆追回",
+  "subscription_recovery:execute": "允许执行已审批追回并记录证据成本",
+  "subscription_early_termination:create": "允许发起或取消执行前提前终止",
+  "subscription_early_termination:execute": "允许执行已归档协议的提前终止",
   "business_exception:approve": "允许审批业务例外",
   "business_exception:request": "允许发起业务例外审批",
   "business_exception:view": "允许查看业务例外审批",

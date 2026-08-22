@@ -12095,21 +12095,21 @@ async function createRaceFixture(prisma: PrismaService) {
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "renewal_consideration" (
         "id", "consideration_no", "order_id", "segment_id", "status", "consideration_start_at", "completion_deadline_at", "created_at", "updated_at"
-      ) VALUES (${considerationId}::uuid, ${`RCNRACE${considerationId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.segmentId}::uuid, 'EXTENSION_IN_PROGRESS', '2026-08-03T00:00:00Z'::timestamptz, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      ) VALUES (${considerationId}::uuid, ${`RCNRACE${considerationId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, ${fixture.segmentId}::uuid, 'EXTENSION_IN_PROGRESS', '2026-08-03T00:00:00Z'::timestamptz, clock_timestamp() + interval '1 day', clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_order" (
         "id", "change_no", "order_id", "status", "source_segment_id", "renewal_consideration_id",
         "extension_months", "pricing_mode", "contract_id", "target_start_date", "target_end_date",
         "completion_deadline_at", "created_at", "updated_at"
-      ) VALUES (${changeId}::uuid, ${`CHGRACE${changeId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, 'SIGNING_OR_PAYMENT', ${fixture.segmentId}::uuid, ${considerationId}::uuid, 6, 'CURRENT_VERSION', ${contractId}::uuid, '2026-08-21'::date, '2027-02-20'::date, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      ) VALUES (${changeId}::uuid, ${`CHGRACE${changeId.replaceAll("-", "").slice(0, 18)}`}, ${fixture.orderId}::uuid, 'SIGNING_OR_PAYMENT', ${fixture.segmentId}::uuid, ${considerationId}::uuid, 6, 'CURRENT_VERSION', ${contractId}::uuid, '2026-08-21'::date, '2027-02-20'::date, clock_timestamp() + interval '1 day', clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "subscription_change_quote" (
         "id", "quote_no", "change_order_id", "revision", "status", "pricing_mode", "monthly_fee_amount",
         "deposit_amount", "mileage_limit_km", "over_mileage_fee_amount", "plan_snapshot", "price_rule_snapshot",
         "quote_snapshot", "valid_until", "formalized_at", "confirmed_at", "created_at"
-      ) VALUES (${quoteId}::uuid, ${`QUORACE${quoteId.replaceAll("-", "").slice(0, 18)}`}, ${changeId}::uuid, 1, 'CUSTOMER_CONFIRMED', 'CURRENT_VERSION', 100, 0, 1500, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '2026-08-22T16:00:00Z'::timestamptz, clock_timestamp(), clock_timestamp(), clock_timestamp())
+      ) VALUES (${quoteId}::uuid, ${`QUORACE${quoteId.replaceAll("-", "").slice(0, 18)}`}, ${changeId}::uuid, 1, 'CUSTOMER_CONFIRMED', 'CURRENT_VERSION', 100, 0, 1500, 100, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, clock_timestamp() + interval '1 day', clock_timestamp(), clock_timestamp(), clock_timestamp())
     `);
     await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_change_order" SET "current_quote_id" = ${quoteId}::uuid, "confirmed_quote_id" = ${quoteId}::uuid WHERE "id" = ${changeId}::uuid

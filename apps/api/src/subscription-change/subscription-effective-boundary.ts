@@ -309,7 +309,8 @@ async function resolveEffectiveBoundaryCommand(
       : "NONE";
   const boundaryServiceEndDate = new Date(`${boundaryDate}T00:00:00.000Z`);
   const targetServiceEndDate = schedule
-    ? schedule.serviceEndDate && schedule.serviceEndDate.getTime() < boundaryServiceEndDate.getTime()
+    ? schedule.serviceEndDate &&
+      schedule.serviceEndDate.getTime() < boundaryServiceEndDate.getTime()
       ? schedule.serviceEndDate
       : boundaryServiceEndDate
     : null;

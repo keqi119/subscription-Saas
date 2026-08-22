@@ -202,10 +202,7 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
       "CANCELLED"
     ]);
     expect(enumValues("SubscriptionAutomationJobType")).toEqual(
-      expect.arrayContaining([
-        "CLOSURE_RECOVERY_ASSESSMENT_D7",
-        "CLOSURE_RETURN_MANIFEST_ESIGN"
-      ])
+      expect.arrayContaining(["CLOSURE_RECOVERY_ASSESSMENT_D7", "CLOSURE_RETURN_MANIFEST_ESIGN"])
     );
     expect(migration).toContain(
       `ALTER TYPE "order_status" ADD VALUE 'RETURNED_PENDING_SETTLEMENT' AFTER 'PENDING_RETURN'`
@@ -238,9 +235,7 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     expect(order).toContain("closureCases");
     expect(user).toContain("retiredSubscriptionClosureCases");
     expect(schedule).toMatch(/serviceEndDate\s+DateTime\?/);
-    expect(activeClosureMigration).toContain(
-      'DROP INDEX "subscription_closure_case_order_id_key"'
-    );
+    expect(activeClosureMigration).toContain('DROP INDEX "subscription_closure_case_order_id_key"');
     expect(activeClosureMigration).toContain(
       'CREATE UNIQUE INDEX "subscription_closure_case_order_id_key"'
     );

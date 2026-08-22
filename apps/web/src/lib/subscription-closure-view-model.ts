@@ -144,10 +144,7 @@ export function buildCustomerSubscriptionClosureView(
 
 function recoveryActions(status: string, permissions: ReadonlySet<string>) {
   const result: SubscriptionClosureActionView[] = [];
-  if (
-    permissions.has("subscription_recovery:assess") &&
-    status === "RECOVERY_ASSESSMENT_PENDING"
-  ) {
+  if (permissions.has("subscription_recovery:assess") && status === "RECOVERY_ASSESSMENT_PENDING") {
     result.push({ key: "ASSESS_RECOVERY", label: "记录追回评估" });
   }
   if (

@@ -143,6 +143,7 @@ export type SubscriptionClosureMutationAuditHook = (
     closureCaseId: string;
     eventId: string;
     outcome: SubscriptionClosureJsonObject;
+    persistenceAt?: Date;
     source: SubscriptionClosureSource;
   }>
 ) => Promise<void>;
@@ -672,6 +673,10 @@ export class SubscriptionClosureRepository {
     await validateEventTransition(tx, current, command);
     await assertRecoveryWorkOrderLink(tx, current, command);
     assertTerminalSettlementAuthority(current, command.afterStatus);
+    const persistenceAt =
+      command.afterStatus === "COMPLETED" || command.afterStatus === "TERMINATED"
+        ? current.currentSettlementRevision!.createdAt
+        : undefined;
 
     try {
       const changed = await tx.subscriptionClosureCase.update({
@@ -707,19 +712,30 @@ export class SubscriptionClosureRepository {
       const event = await createEvent(tx, {
         ...command,
         beforeStatus: current.status,
+        persistenceAt,
         sequence: current.version + 2
       });
       const outcome = freezeSubscriptionClosureOutcome({
         case: projectCase(changed),
         event: projectEvent(event)
       });
-      await runAudit(audit, tx, "TRANSITION_CASE", current.id, event.id, outcome, command.source);
+      await runAudit(
+        audit,
+        tx,
+        "TRANSITION_CASE",
+        current.id,
+        event.id,
+        outcome,
+        command.source,
+        persistenceAt
+      );
       await createReceipt(tx, {
         actorId: command.actorId,
         closureCaseId: current.id,
         commandType: "TRANSITION_CASE",
         eventId: event.id,
         outcome,
+        persistenceAt,
         prepared,
         source: command.source
       });
@@ -955,8 +971,6 @@ export class SubscriptionClosureRepository {
     if (execution !== PREPARED_EXECUTION) {
       await this.lockAuthorityRows(tx, higherDocumentLocks);
     }
-    await assertDocumentAuthorityCoherence(tx, currentCase, command);
-
     const predecessor = currentProjection
       ? await tx.subscriptionClosureDocumentRevision.findUnique({
           where: { id: currentProjection.documentRevisionId }
@@ -965,6 +979,7 @@ export class SubscriptionClosureRepository {
     if (currentProjection && (!predecessor || predecessor.documentType !== command.documentType)) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
+    await assertDocumentAuthorityCoherence(tx, currentCase, command, predecessor);
 
     try {
       const created = await tx.subscriptionClosureDocumentRevision.create({
@@ -1178,6 +1193,7 @@ export class SubscriptionClosureRepository {
         },
         eventType: "SETTLEMENT_REVISION_CREATED",
         occurredAt: created.createdAt,
+        persistenceAt: created.createdAt,
         sequence: currentCase.version + 2,
         source: command.source
       });
@@ -1189,7 +1205,8 @@ export class SubscriptionClosureRepository {
         currentCase.id,
         event.id,
         outcome,
-        command.source
+        command.source,
+        created.createdAt
       );
       await createReceipt(tx, {
         actorId: command.actorId,
@@ -1197,6 +1214,7 @@ export class SubscriptionClosureRepository {
         commandType: "CREATE_SETTLEMENT_REVISION",
         eventId: event.id,
         outcome,
+        persistenceAt: created.createdAt,
         prepared,
         source: command.source
       });
@@ -2060,6 +2078,7 @@ async function createReceipt(
     commandType: SubscriptionClosureCommandType;
     eventId: string;
     outcome: object;
+    persistenceAt?: Date;
     prepared: PreparedCommand;
     source: SubscriptionClosureSource;
   }>
@@ -2075,6 +2094,7 @@ async function createReceipt(
       ) as Prisma.InputJsonObject,
       payloadHash: input.prepared.payloadHash,
       payloadSnapshot: jsonInput(input.prepared.payloadSnapshot),
+      ...(input.persistenceAt ? { createdAt: input.persistenceAt } : {}),
       sourceId: input.source.id,
       sourceKey: input.source.key,
       sourceType: input.source.type
@@ -2092,6 +2112,7 @@ async function createEvent(
     detailSnapshot: SubscriptionClosureSnapshotObject;
     eventType: SubscriptionClosureEventType;
     occurredAt: Date;
+    persistenceAt?: Date;
     sequence: number;
     source: SubscriptionClosureSource;
   }>
@@ -2105,6 +2126,7 @@ async function createEvent(
       detailSnapshot: jsonInput(canonicalSnapshot(input.detailSnapshot, "detailSnapshot")),
       eventType: input.eventType,
       occurredAt: input.occurredAt,
+      ...(input.persistenceAt ? { recordedAt: input.persistenceAt } : {}),
       sequence: input.sequence,
       sourceId: input.source.id,
       sourceKey: input.source.key,
@@ -2120,7 +2142,8 @@ async function runAudit(
   closureCaseId: string,
   eventId: string,
   outcome: object,
-  source: SubscriptionClosureSource
+  source: SubscriptionClosureSource,
+  persistenceAt?: Date
 ): Promise<void> {
   if (!audit) return;
   await audit(tx, {
@@ -2128,6 +2151,7 @@ async function runAudit(
     closureCaseId,
     eventId,
     outcome: freezeSubscriptionClosureOutcome(outcome),
+    ...(persistenceAt ? { persistenceAt } : {}),
     source
   });
 }
@@ -2334,10 +2358,19 @@ async function assertCreateLinkCoherence(
 async function assertDocumentAuthorityCoherence(
   tx: Prisma.TransactionClient,
   closureCase: CaseRecord,
-  command: AppendSubscriptionClosureDocumentCommand
+  command: AppendSubscriptionClosureDocumentCommand,
+  predecessor: Readonly<{
+    documentSnapshotHash: string;
+    revisionNumber: number;
+    signedFileHash: string | null;
+    signedFileId: string | null;
+    sourceFileHash: string;
+    sourceFileId: string;
+  }> | null
 ): Promise<void> {
   const esign = await tx.contractESignTask.findUnique({
     select: {
+      completedAt: true,
       contractId: true,
       customerId: true,
       deletedAt: true,
@@ -2346,10 +2379,13 @@ async function assertDocumentAuthorityCoherence(
       documentType: true,
       orderId: true,
       requestSnapshot: true,
+      responseSnapshot: true,
+      signedDocumentObjectKey: true,
       signingStage: true,
       sourceId: true,
       sourceKey: true,
-      sourceType: true
+      sourceType: true,
+      taskStatus: true
     },
     where: { id: command.contractESignTaskId }
   });
@@ -2377,25 +2413,104 @@ async function assertDocumentAuthorityCoherence(
           documentSnapshotHash: hashSubscriptionClosureSnapshot(command.documentSnapshot),
           documentType: "RETURN_MANIFEST",
           returnManifestSource: command.source,
-          revisionNumber: 1
+          revisionNumber: (predecessor?.revisionNumber ?? 0) + 1,
+          sourceFileHash: command.sourceFileHash,
+          sourceFileId: command.sourceFileId
         }))
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
   }
   if (command.documentType === "RETURN_MANIFEST") {
-    const file = await tx.fileObject.findUnique({
+    const sourceFile = await tx.fileObject.findUnique({
       select: {
+        bucket: true,
+        createdAt: true,
         id: true,
+        mimeType: true,
         objectKey: true,
-        originalName: true
+        originalName: true,
+        sizeBytes: true,
+        uploadedBy: true
       },
       where: { id: command.sourceFileId }
     });
+    const signedFile = command.signedFileId
+      ? await tx.fileObject.findUnique({
+          select: {
+            bucket: true,
+            createdAt: true,
+            id: true,
+            mimeType: true,
+            objectKey: true,
+            originalName: true,
+            sizeBytes: true,
+            uploadedBy: true
+          },
+          where: { id: command.signedFileId }
+        })
+      : null;
+    const introducesSource = predecessor?.sourceFileId !== command.sourceFileId;
+    const sourceRevisionNumber = introducesSource
+      ? (predecessor?.revisionNumber ?? 0) + 1
+      : predecessor!.revisionNumber;
+    const documentSnapshot = command.documentSnapshot as Record<string, unknown>;
+    const caseNo = typeof documentSnapshot.caseNo === "string" ? documentSnapshot.caseNo : "";
+    const expectedSourceObjectKey = `subscription-closure/${command.closureCaseId}/return-manifest-r${sourceRevisionNumber}.json`;
+    const expectedSourceName = `${caseNo}-return-manifest-r${sourceRevisionNumber}.json`;
     if (
-      !file ||
-      file.id !== command.sourceFileId ||
-      esign.documentObjectKey !== file.objectKey ||
-      esign.documentName !== file.originalName
+      !sourceFile ||
+      !caseNo ||
+      command.sourceFileHash !== hashSubscriptionClosureSnapshot(command.documentSnapshot) ||
+      (!introducesSource &&
+        (predecessor?.documentSnapshotHash !==
+          hashSubscriptionClosureSnapshot(command.documentSnapshot) ||
+          predecessor.sourceFileHash !== command.sourceFileHash)) ||
+      sourceFile.id !== command.sourceFileId ||
+      sourceFile.bucket !== "subscription-closure" ||
+      sourceFile.mimeType !== "application/json" ||
+      sourceFile.objectKey !== expectedSourceObjectKey ||
+      sourceFile.originalName !== expectedSourceName ||
+      sourceFile.sizeBytes !==
+        BigInt(Buffer.byteLength(canonicalSubscriptionClosureJson(command.documentSnapshot))) ||
+      sourceFile.uploadedBy !== command.actorId ||
+      esign.documentObjectKey !== sourceFile.objectKey ||
+      esign.documentName !== sourceFile.originalName
+    ) {
+      throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+    }
+    if (command.signedFileId === null) {
+      if (
+        signedFile !== null ||
+        esign.taskStatus !== "CREATED" ||
+        esign.completedAt !== null ||
+        esign.responseSnapshot !== null ||
+        esign.signedDocumentObjectKey !== null
+      ) {
+        throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+      }
+    } else if (
+      !signedFile ||
+      signedFile.id !== command.signedFileId ||
+      signedFile.bucket !== "subscription-closure" ||
+      signedFile.mimeType !== "application/pdf" ||
+      signedFile.uploadedBy !== command.signedBy ||
+      esign.taskStatus !== "COMPLETED" ||
+      esign.completedAt?.getTime() !== command.signedAt?.getTime() ||
+      esign.signedDocumentObjectKey !== signedFile.objectKey ||
+      canonicalSubscriptionClosureJson(esign.responseSnapshot) !==
+        canonicalSubscriptionClosureJson({
+          signedFile: {
+            bucket: signedFile.bucket,
+            createdAt: signedFile.createdAt.toISOString(),
+            mimeType: signedFile.mimeType,
+            objectKey: signedFile.objectKey,
+            originalName: signedFile.originalName,
+            sizeBytes: signedFile.sizeBytes.toString(),
+            uploadedBy: signedFile.uploadedBy
+          },
+          signedFileHash: command.signedFileHash,
+          signedFileId: command.signedFileId
+        })
     ) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }

@@ -11,6 +11,7 @@ import { AuditService } from "../src/audit/audit.service";
 import { AssetAccountingRepository } from "../src/asset-accounting/asset-accounting.repository";
 import { hashBusinessExceptionSnapshot } from "../src/asset-accounting/asset-accounting.domain";
 import { AssetAccountingService } from "../src/asset-accounting/asset-accounting.service";
+import { createBusinessNo } from "../src/common/business-number";
 import { FinanceService } from "../src/finance/finance.service";
 import {
   HANDOVER_P0_CAPABILITY_ERROR_CODE,
@@ -24,7 +25,10 @@ import {
   type CreateSubscriptionClosureCaseCommand,
   type SubscriptionClosureMutationAuditHook
 } from "../src/subscription-closure/subscription-closure.repository";
-import { hashSubscriptionClosureSnapshot } from "../src/subscription-closure/subscription-closure.domain";
+import {
+  canonicalSubscriptionClosureJson,
+  hashSubscriptionClosureSnapshot
+} from "../src/subscription-closure/subscription-closure.domain";
 import { SubscriptionClosureSettlementResolver } from "../src/subscription-closure/subscription-closure.settlement-resolver";
 import {
   SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE,
@@ -2321,35 +2325,62 @@ async function bindReturnManifestESign(
   tx: Prisma.TransactionClient,
   command: AppendSubscriptionClosureDocumentCommand
 ) {
-  const [baseTask, file] = await Promise.all([
+  const [baseTask, closureCase] = await Promise.all([
     tx.contractESignTask.findUniqueOrThrow({ where: { id: command.contractESignTaskId } }),
-    tx.fileObject.findUniqueOrThrow({ where: { id: command.sourceFileId } })
+    tx.subscriptionClosureCase.findUniqueOrThrow({
+      select: { caseNo: true },
+      where: { id: command.closureCaseId }
+    })
   ]);
+  const documentSnapshot = { ...command.documentSnapshot, caseNo: closureCase.caseNo };
+  const canonicalManifest = canonicalSubscriptionClosureJson(documentSnapshot);
+  const sourceFileHash = hashSubscriptionClosureSnapshot(documentSnapshot);
+  const sourceObjectKey = `subscription-closure/${command.closureCaseId}/return-manifest-r1.json`;
+  const sourceName = `${closureCase.caseNo}-return-manifest-r1.json`;
+  Object.assign(command, { documentSnapshot, sourceFileHash });
+  const file = await tx.fileObject.update({
+    data: {
+      bucket: "subscription-closure",
+      createdAt: command.generatedAt,
+      mimeType: "application/json",
+      objectKey: sourceObjectKey,
+      originalName: sourceName,
+      sizeBytes: BigInt(Buffer.byteLength(canonicalManifest)),
+      uploadedBy: command.actorId
+    },
+    where: { id: command.sourceFileId }
+  });
   const taskId = randomUUID();
   (command as { contractESignTaskId: string }).contractESignTaskId = taskId;
   return tx.contractESignTask.create({
     data: {
       contractId: baseTask.contractId,
+      createdAt: command.generatedAt,
+      createdBy: command.actorId,
       customerId: baseTask.customerId,
       documentName: file.originalName,
       documentObjectKey: file.objectKey,
       documentType: "DELIVERY_HANDOVER",
       id: taskId,
       orderId: baseTask.orderId,
-      provider: baseTask.provider,
+      provider: "OTHER",
       requestSnapshot: {
         closureCaseId: command.closureCaseId,
         documentSnapshotHash: hashSubscriptionClosureSnapshot(command.documentSnapshot),
         documentType: "RETURN_MANIFEST",
         returnManifestSource: command.source,
-        revisionNumber: 1
+        revisionNumber: 1,
+        sourceFileHash: command.sourceFileHash,
+        sourceFileId: command.sourceFileId
       },
       signingStage: "STAGE2_DELIVERY_HANDOVER",
       sourceId: command.source.id,
       sourceKey: command.source.key,
       sourceType: command.source.type,
-      taskNo: `P0-MANIFEST-${taskId}`,
-      taskStatus: "CREATED"
+      taskNo: createBusinessNo("ESG", command.generatedAt),
+      taskStatus: "CREATED",
+      updatedAt: command.generatedAt,
+      updatedBy: command.actorId
     }
   });
 }

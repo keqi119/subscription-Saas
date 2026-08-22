@@ -4091,6 +4091,13 @@ export class SubscriptionClosureService {
     );
     if (terminalCommand) {
       if (!terminalSourceCapability) throw serviceConflict("CAPABILITY_INVALID");
+      const terminalPersistenceAt = new Date(appended.outcome.createdAt);
+      if (
+        Number.isNaN(terminalPersistenceAt.getTime()) ||
+        terminalPersistenceAt.getTime() !== terminalCommand.occurredAt.getTime()
+      ) {
+        throw serviceConflict("SETTLEMENT_FACT_DRIFT");
+      }
       const beforeOrder = await tx.subscriptionOrder.findUnique({
         where: { id: observedResolution.orderId }
       });
@@ -4118,6 +4125,7 @@ export class SubscriptionClosureService {
           action: AuditAction.UPDATE,
           after: physicalAuditSnapshot(afterOrder),
           before: physicalAuditSnapshot(beforeOrder),
+          createdAt: terminalPersistenceAt,
           entityId: observedResolution.orderId,
           entityType: "subscription_order",
           module: "subscription_closure",
@@ -4130,6 +4138,7 @@ export class SubscriptionClosureService {
           action: AuditAction.UPDATE,
           after: physicalAuditSnapshot(afterContract),
           before: physicalAuditSnapshot(beforeContract),
+          createdAt: terminalPersistenceAt,
           entityId: observedResolution.contractId,
           entityType: "contract",
           module: "subscription_closure",
@@ -5486,6 +5495,7 @@ export class SubscriptionClosureService {
         {
           action: AuditAction.CREATE,
           after: mutation,
+          ...(mutation.persistenceAt ? { createdAt: mutation.persistenceAt } : {}),
           entityId: mutation.eventId,
           entityType: "subscription_closure_event",
           module: "subscription_closure",
@@ -7358,13 +7368,6 @@ async function validateExactSettlementSuccessorChain(
     const predecessor = index === 0 ? null : revisions[index - 1]!;
     const event = events.find(({ sourceKey }) => sourceKey === revision.sourceKey);
     const receipt = receipts.find(({ sourceKey }) => sourceKey === revision.sourceKey);
-    const predecessorReceipt = predecessor
-      ? receipts.find(({ sourceKey }) => sourceKey === predecessor.sourceKey)
-      : null;
-    const successorRevision = revisions[index + 1];
-    const successorReceipt = successorRevision
-      ? receipts.find(({ sourceKey }) => sourceKey === successorRevision.sourceKey)
-      : null;
     const audit = audits.find(({ entityId }) => entityId === event?.id);
     if (!event || !receipt || !audit) return false;
     const payload = jsonObject(receipt.payloadSnapshot);
@@ -7415,7 +7418,6 @@ async function validateExactSettlementSuccessorChain(
       managedOccurredAt !== null &&
       !Number.isNaN(managedOccurredAt.getTime()) &&
       managedOccurredAt.getTime() <= revision.createdAt.getTime() &&
-      (predecessor === null || managedOccurredAt.getTime() >= predecessor.createdAt.getTime()) &&
       (revision.stage === "PROPOSED"
         ? revision.finalizedAt === null &&
           revision.finalizedBy === null &&
@@ -7438,6 +7440,7 @@ async function validateExactSettlementSuccessorChain(
       event.sourceId === revision.sourceId &&
       event.sourceKey === revision.sourceKey &&
       event.occurredAt.getTime() === revision.createdAt.getTime() &&
+      event.recordedAt.getTime() === revision.createdAt.getTime() &&
       sameCanonicalReceiptValue(event.detailSnapshot, {
         revisionNumber: revision.revisionNumber,
         settlementRevisionId: revision.id,
@@ -7454,23 +7457,20 @@ async function validateExactSettlementSuccessorChain(
       receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
       sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
       sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
-      receipt.createdAt.getTime() >= event.recordedAt.getTime() &&
-      receipt.createdAt.getTime() >= audit.createdAt.getTime() &&
-      (predecessorReceipt == null ||
-        receipt.createdAt.getTime() >= predecessorReceipt.createdAt.getTime()) &&
-      (successorReceipt == null ||
-        receipt.createdAt.getTime() <= successorReceipt.createdAt.getTime()) &&
+      receipt.createdAt.getTime() === event.recordedAt.getTime() &&
+      receipt.createdAt.getTime() === audit.createdAt.getTime() &&
       audit.action === AuditAction.CREATE &&
       audit.operatorId === revision.createdBy &&
       audit.beforeSnapshot === null &&
       audit.ipAddress === null &&
       audit.userAgent === null &&
-      audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+      audit.createdAt.getTime() === event.recordedAt.getTime() &&
       sameCanonicalReceiptValue(audit.afterSnapshot, {
         action: "CREATE_SETTLEMENT_REVISION",
         closureCaseId,
         eventId: event.id,
         outcome: expectedOutcome,
+        persistenceAt: revision.createdAt.toISOString(),
         source
       })
     );
@@ -7512,6 +7512,7 @@ async function validateExactTerminalSuccessor(
     tx.auditLog.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       where: {
+        createdAt: event.recordedAt,
         entityId: { in: [closureCase.orderId, closureCase.contractId] },
         entityType: { in: ["subscription_order", "contract"] },
         module: "subscription_closure",
@@ -7600,6 +7601,8 @@ async function validateExactTerminalSuccessor(
     event.sourceId === source.id &&
     event.sourceKey === source.key &&
     event.occurredAt.getTime() === settledRevision.createdAt.getTime() &&
+    event.recordedAt.getTime() === settledRevision.createdAt.getTime() &&
+    settlementReceipt.createdAt.getTime() === settledRevision.createdAt.getTime() &&
     sameCanonicalReceiptValue(event.detailSnapshot, {
       inputSnapshotHash: settledRevision.inputSnapshotHash,
       resultHash: settledRevision.resultHash,
@@ -7612,8 +7615,8 @@ async function validateExactTerminalSuccessor(
     receipt.sourceType === event.sourceType &&
     receipt.sourceId === event.sourceId &&
     receipt.sourceKey === event.sourceKey &&
-    receipt.createdAt.getTime() >= settlementReceipt.createdAt.getTime() &&
-    receipt.createdAt.getTime() >= event.recordedAt.getTime() &&
+    receipt.createdAt.getTime() === settlementReceipt.createdAt.getTime() &&
+    receipt.createdAt.getTime() === event.recordedAt.getTime() &&
     receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
     sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
     outcomeCase.id === closureCase.id &&
@@ -7637,31 +7640,55 @@ async function validateExactTerminalSuccessor(
     audit.beforeSnapshot === null &&
     audit.ipAddress === null &&
     audit.userAgent === null &&
-    audit.createdAt.getTime() >= event.recordedAt.getTime() &&
+    audit.createdAt.getTime() === event.recordedAt.getTime() &&
     sameCanonicalReceiptValue(audit.afterSnapshot, {
       action: "TRANSITION_CASE",
       closureCaseId: closureCase.id,
       eventId: event.id,
       outcome: receipt.outcomeSnapshot,
+      persistenceAt: event.recordedAt.toISOString(),
       source
     }) &&
     order?.orderStatus === terminalStatus &&
     contract?.status === terminalStatus &&
+    aggregateAudits.length === 2 &&
     terminalOrderAudits.length === 1 &&
     terminalContractAudits.length === 1 &&
     terminalOrderAudit?.action === AuditAction.UPDATE &&
-    terminalOrderAudit.beforeSnapshot !== null &&
+    terminalOrderAudit.entityId === closureCase.orderId &&
+    terminalOrderAudit.entityType === "subscription_order" &&
+    terminalOrderAudit.module === "subscription_closure" &&
+    terminalOrderAudit.operatorId === event.actorId &&
     terminalOrderAudit.ipAddress === null &&
     terminalOrderAudit.userAgent === null &&
-    terminalOrderAudit.createdAt.getTime() <= event.recordedAt.getTime() &&
-    terminalOrderAudit.createdAt.getTime() <= audit.createdAt.getTime() &&
+    terminalOrderAudit.createdAt.getTime() === event.recordedAt.getTime() &&
+    terminalOrderAudit.createdAt.getTime() === audit.createdAt.getTime() &&
+    terminalAggregateAuditTransitionMatches(
+      terminalOrderAudit.beforeSnapshot,
+      terminalOrderAudit.afterSnapshot,
+      "orderStatus",
+      OrderStatus.RETURNED_PENDING_SETTLEMENT,
+      terminalStatus,
+      event.actorId
+    ) &&
     sameCanonicalReceiptValue(terminalOrderAudit.afterSnapshot, physicalAuditSnapshot(order)) &&
     terminalContractAudit?.action === AuditAction.UPDATE &&
-    terminalContractAudit.beforeSnapshot !== null &&
+    terminalContractAudit.entityId === closureCase.contractId &&
+    terminalContractAudit.entityType === "contract" &&
+    terminalContractAudit.module === "subscription_closure" &&
+    terminalContractAudit.operatorId === event.actorId &&
     terminalContractAudit.ipAddress === null &&
     terminalContractAudit.userAgent === null &&
-    terminalContractAudit.createdAt.getTime() <= event.recordedAt.getTime() &&
-    terminalContractAudit.createdAt.getTime() <= audit.createdAt.getTime() &&
+    terminalContractAudit.createdAt.getTime() === event.recordedAt.getTime() &&
+    terminalContractAudit.createdAt.getTime() === audit.createdAt.getTime() &&
+    terminalAggregateAuditTransitionMatches(
+      terminalContractAudit.beforeSnapshot,
+      terminalContractAudit.afterSnapshot,
+      "status",
+      ContractStatus.ARCHIVED,
+      terminalStatus,
+      event.actorId
+    ) &&
     sameCanonicalReceiptValue(terminalContractAudit.afterSnapshot, physicalAuditSnapshot(contract))
   );
   return valid;
@@ -7905,7 +7932,7 @@ async function validateExactInspectionSuccessorChain(
     );
     const receiptPayload = jsonObject(receipt?.payloadSnapshot);
     const receiptOutcome = jsonObject(receipt?.outcomeSnapshot);
-    const auditAfter = jsonObject(audit?.afterSnapshot);
+    const source = { id: item.sourceId, key: item.sourceKey, type: item.sourceType };
     const expectedPayload = {
       actionType: item.actionType,
       accountingPeriod: item.accountingPeriod,
@@ -7986,19 +8013,26 @@ async function validateExactInspectionSuccessorChain(
         workOrderId: item.workOrderId
       }) &&
       audit?.action === AuditAction.CREATE &&
+      audit.entityId === item.id &&
+      audit.entityType === "vehicle_cost_ledger_entry" &&
       audit.operatorId === item.confirmedBy &&
       audit.module === "asset_accounting" &&
       audit.beforeSnapshot === null &&
       audit.ipAddress === null &&
       audit.userAgent === null &&
       audit.createdAt.getTime() >= receipt.createdAt.getTime() &&
-      sameCanonicalReceiptValue(auditAfter.fact, receipt.outcomeSnapshot) &&
-      auditAfter.permission === ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM &&
-      auditAfter.reason === receiptPayload.reason &&
-      sameCanonicalReceiptValue(auditAfter.source, {
-        id: item.sourceId,
-        key: item.sourceKey,
-        type: item.sourceType
+      sameCanonicalReceiptValue(audit.afterSnapshot, {
+        fact: receipt.outcomeSnapshot,
+        permission: ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+        reason: receiptPayload.reason,
+        requestContext: {
+          idempotencyKey: item.sourceKey,
+          ipAddress: null,
+          requestId: null,
+          userAgent: null
+        },
+        snapshotHash: hashBusinessExceptionSnapshot(receipt.outcomeSnapshot),
+        source
       })
     );
   });
@@ -8143,6 +8177,10 @@ async function validateExactReconditioningWorkOrderSuccessor(
       );
     });
     const successorWorkOrderAudit = successorWorkOrderAudits[0];
+    const predecessorDetail = jsonObject(predecessor.detailSnapshot);
+    const predecessorEnvelope = jsonObject(predecessorDetail.__assetOperationCommandV1);
+    const predecessorResult = jsonObject(predecessorEnvelope.result);
+    const predecessorWorkOrder = jsonObject(predecessorResult.workOrder);
     const publicDetail = { ...detail };
     delete publicDetail.__assetOperationCommandV1;
     return Boolean(
@@ -8161,8 +8199,13 @@ async function validateExactReconditioningWorkOrderSuccessor(
       sameCanonicalReceiptValue(successorCommand.detailSnapshot, publicDetail.detailSnapshot) &&
       successorWorkOrderAudits.length === 1 &&
       successorWorkOrderAudit?.operatorId === successor.actorId &&
+      successorWorkOrderAudit.action === AuditAction.UPDATE &&
+      successorWorkOrderAudit.entityId === workOrder.id &&
+      successorWorkOrderAudit.entityType === "asset_work_order" &&
+      successorWorkOrderAudit.module === "asset_operations" &&
       successorWorkOrderAudit.ipAddress === null &&
       successorWorkOrderAudit.userAgent === null &&
+      sameCanonicalReceiptValue(successorWorkOrderAudit.beforeSnapshot, predecessorWorkOrder) &&
       sameCanonicalReceiptValue(successorWorkOrderAudit.afterSnapshot, successorWorkOrder) &&
       successorEventAudit?.action === AuditAction.CREATE &&
       successorEventAudit.operatorId === successor.actorId &&
@@ -8197,6 +8240,9 @@ async function validateExactReconditioningWorkOrderSuccessor(
     immutableHeaderValid &&
     workOrderAudit?.action === AuditAction.CREATE &&
     workOrderAudit.operatorId === transition.actorId &&
+    workOrderAudit.entityId === workOrder.id &&
+    workOrderAudit.entityType === "asset_work_order" &&
+    workOrderAudit.module === "asset_operations" &&
     workOrderAudit.beforeSnapshot === null &&
     workOrderAudit.ipAddress === null &&
     workOrderAudit.userAgent === null &&
@@ -8210,6 +8256,32 @@ async function validateExactReconditioningWorkOrderSuccessor(
     finalWorkOrderAudit &&
     sameCanonicalReceiptValue(finalWorkOrderAudit.afterSnapshot, physicalAuditSnapshot(workOrder))
   );
+}
+
+function terminalAggregateAuditTransitionMatches(
+  beforeValue: unknown,
+  afterValue: unknown,
+  statusField: "orderStatus" | "status",
+  beforeStatus: string,
+  afterStatus: string,
+  actorId: string
+) {
+  const before = jsonObject(beforeValue);
+  const after = jsonObject(afterValue);
+  if (
+    before[statusField] !== beforeStatus ||
+    after[statusField] !== afterStatus ||
+    after.updatedBy !== actorId
+  ) {
+    return false;
+  }
+  const stableBefore = { ...before };
+  const stableAfter = { ...after };
+  for (const key of [statusField, "updatedAt", "updatedBy"]) {
+    delete stableBefore[key];
+    delete stableAfter[key];
+  }
+  return sameCanonicalReceiptValue(stableBefore, stableAfter);
 }
 
 function sameCanonicalReceiptValue(left: unknown, right: unknown) {
@@ -8584,6 +8656,7 @@ async function createManifestAuthoritiesInTransaction(
   const file = await tx.fileObject.create({
     data: {
       bucket: "subscription-closure",
+      createdAt: command.generatedAt,
       id: command.sourceFileId,
       mimeType: "application/json",
       objectKey: creation.objectKey,
@@ -8595,6 +8668,7 @@ async function createManifestAuthoritiesInTransaction(
   const task = await tx.contractESignTask.create({
     data: {
       contractId: authority.contractId,
+      createdAt: command.generatedAt,
       createdBy: authority.actorId,
       customerId: authority.customerId,
       documentName: creation.documentName,
@@ -8606,7 +8680,10 @@ async function createManifestAuthoritiesInTransaction(
       requestSnapshot: returnManifestEsignSnapshot(
         command.source,
         command.closureCaseId,
-        command.sourceFileHash
+        command.sourceFileHash,
+        command.sourceFileHash,
+        command.sourceFileId,
+        1
       ),
       signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
       sourceId: command.source.id,
@@ -8614,6 +8691,7 @@ async function createManifestAuthoritiesInTransaction(
       sourceType: command.source.type,
       taskNo: createBusinessNo("ESG"),
       taskStatus: ESignTaskStatus.CREATED,
+      updatedAt: command.generatedAt,
       updatedBy: authority.actorId
     }
   });
@@ -8706,7 +8784,10 @@ async function assertReturnManifestEsignAuthority(
   const expectedSnapshot = returnManifestEsignSnapshot(
     documentSource,
     command.closureCaseId,
-    snapshotHash
+    snapshotHash,
+    command.sourceFileHash,
+    command.sourceFileId,
+    1
   );
   if (
     task.contractId !== authority.contractId ||
@@ -8789,14 +8870,19 @@ function findReturnManifestEsignAuthorities(
 function returnManifestEsignSnapshot(
   documentSource: SubscriptionClosureSource,
   closureCaseId: string,
-  documentSnapshotHash: string
+  documentSnapshotHash: string,
+  sourceFileHash: string,
+  sourceFileId: string,
+  revisionNumber: number
 ) {
   return {
     closureCaseId,
     documentSnapshotHash,
     documentType: "RETURN_MANIFEST",
     returnManifestSource: documentSource,
-    revisionNumber: 1
+    revisionNumber,
+    sourceFileHash,
+    sourceFileId
   } as const;
 }
 
@@ -12321,23 +12407,58 @@ async function validateExactReturnManifestSuccessorChain(
     const expectedRequest = returnManifestEsignSnapshot(
       source,
       closureCaseId,
-      revision.documentSnapshotHash
+      revision.documentSnapshotHash,
+      revision.sourceFileHash,
+      revision.sourceFileId,
+      revision.revisionNumber
     );
-    const expectedResponse = revision.signedFileId
-      ? { signedFileHash: revision.signedFileHash, signedFileId: revision.signedFileId }
-      : null;
     const documentSnapshot = jsonObject(revision.documentSnapshot);
-    const expectedSourceObjectKey = `subscription-closure/${closureCaseId}/return-manifest-r1.json`;
-    const expectedSourceName = `${closureCase.caseNo}-return-manifest-r1.json`;
-    const expectedSourceSize = BigInt(
-      Buffer.byteLength(canonicalSubscriptionClosureJson(revisions[0]!.documentSnapshot))
+    const sourceIntroductionIndex = revisions.findIndex(
+      ({ sourceFileId }) => sourceFileId === revision.sourceFileId
     );
+    const sourceIntroduction = revisions[sourceIntroductionIndex];
+    const signedIntroductionIndex = revision.signedFileId
+      ? revisions.findIndex(({ signedFileId }) => signedFileId === revision.signedFileId)
+      : -1;
+    const signedIntroduction =
+      signedIntroductionIndex >= 0 ? revisions[signedIntroductionIndex] : null;
+    if (!sourceIntroduction || (revision.signedFileId && !signedIntroduction)) return false;
+    const expectedSourceObjectKey = `subscription-closure/${closureCaseId}/return-manifest-r${sourceIntroduction.revisionNumber}.json`;
+    const expectedSourceName = `${closureCase.caseNo}-return-manifest-r${sourceIntroduction.revisionNumber}.json`;
+    const expectedSourceSize = BigInt(
+      Buffer.byteLength(canonicalSubscriptionClosureJson(revision.documentSnapshot))
+    );
+    const expectedResponse = signedFile
+      ? {
+          signedFile: {
+            bucket: signedFile.bucket,
+            createdAt: signedFile.createdAt.toISOString(),
+            mimeType: signedFile.mimeType,
+            objectKey: signedFile.objectKey,
+            originalName: signedFile.originalName,
+            sizeBytes: signedFile.sizeBytes.toString(),
+            uploadedBy: signedFile.uploadedBy
+          },
+          signedFileHash: revision.signedFileHash,
+          signedFileId: revision.signedFileId
+        }
+      : null;
+    const sameSourceAsPredecessor = predecessor?.sourceFileId === revision.sourceFileId;
+    const sameSnapshotAsPredecessor =
+      predecessor?.documentSnapshotHash === revision.documentSnapshotHash &&
+      predecessor?.sourceFileHash === revision.sourceFileHash;
     return (
       revisionIds.includes(revision.id) &&
       revision.revisionNumber === index + 1 &&
       revision.supersedesRevisionId === (predecessor?.id ?? null) &&
       revision.documentSnapshotHash ===
         hashSubscriptionClosureSnapshot(revision.documentSnapshot) &&
+      revision.sourceFileHash === revision.documentSnapshotHash &&
+      (predecessor === null || sameSourceAsPredecessor === sameSnapshotAsPredecessor) &&
+      (revision.stage !== "ARCHIVED" ||
+        (sameSourceAsPredecessor &&
+          revision.signedFileId === predecessor?.signedFileId &&
+          revision.signedFileHash === predecessor?.signedFileHash)) &&
       documentSnapshot.assetWorkOrderId === closureCase.returnAssetWorkOrderId &&
       documentSnapshot.caseNo === closureCase.caseNo &&
       documentSnapshot.closureCaseId === closureCaseId &&
@@ -12370,7 +12491,11 @@ async function validateExactReturnManifestSuccessorChain(
       receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
       sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
       sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+      receipt.createdAt.getTime() >= event.recordedAt.getTime() &&
       audit.action === AuditAction.CREATE &&
+      audit.entityId === event.id &&
+      audit.entityType === "subscription_closure_event" &&
+      audit.module === "subscription_closure" &&
       audit.operatorId === revision.generatedBy &&
       audit.beforeSnapshot === null &&
       audit.ipAddress === null &&
@@ -12396,7 +12521,7 @@ async function validateExactReturnManifestSuccessorChain(
       task.sourceId === revision.sourceId &&
       task.sourceKey === revision.sourceKey &&
       task.id === revision.contractESignTaskId &&
-      task.taskNo.startsWith("ESG") &&
+      /^ESG\d{14}[A-HJ-NP-Z2-9]{4}$/.test(task.taskNo) &&
       task.documentName === expectedSourceName &&
       task.documentObjectKey === sourceFile.objectKey &&
       task.providerTaskId === null &&
@@ -12410,6 +12535,7 @@ async function validateExactReturnManifestSuccessorChain(
       task.cancelledAt === null &&
       task.failedAt === null &&
       task.createdAt.getTime() === task.updatedAt.getTime() &&
+      task.createdAt.getTime() === revision.generatedAt.getTime() &&
       sameCanonicalReceiptValue(task.requestSnapshot, expectedRequest) &&
       (revision.stage === "GENERATED"
         ? task.taskStatus === ESignTaskStatus.CREATED &&
@@ -12421,19 +12547,24 @@ async function validateExactReturnManifestSuccessorChain(
           task.completedAt?.getTime() === revision.signedAt?.getTime() &&
           task.signedDocumentObjectKey === signedFile?.objectKey &&
           sameCanonicalReceiptValue(task.responseSnapshot, expectedResponse) &&
-          signedFile?.uploadedBy === revision.signedBy) &&
-      sourceFile.uploadedBy === revision.generatedBy &&
+          signedFile?.uploadedBy === signedIntroduction?.signedBy) &&
+      sourceFile.uploadedBy === sourceIntroduction.generatedBy &&
       sourceFile.bucket === "subscription-closure" &&
       sourceFile.objectKey === expectedSourceObjectKey &&
       sourceFile.originalName === expectedSourceName &&
       sourceFile.mimeType === "application/json" &&
       sourceFile.sizeBytes === expectedSourceSize &&
+      sourceFile.createdAt.getTime() === sourceIntroduction.generatedAt.getTime() &&
       (signedFile == null ||
         (signedFile.bucket === "subscription-closure" &&
           signedFile.mimeType === "application/pdf" &&
           signedFile.sizeBytes > 0n &&
-          signedFile.objectKey.trim().length > 0 &&
-          signedFile.originalName.trim().length > 0))
+          signedFile.objectKey ===
+            `subscription-closure/${closureCaseId}/return-manifest-r${signedIntroduction!.revisionNumber}-signed.pdf` &&
+          signedFile.originalName ===
+            `${closureCase.caseNo}-return-manifest-r${signedIntroduction!.revisionNumber}-signed.pdf` &&
+          signedFile.createdAt.getTime() === signedIntroduction!.signedAt?.getTime() &&
+          signedFile.uploadedBy === signedIntroduction!.signedBy))
     );
   });
 }

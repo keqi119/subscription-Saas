@@ -54,7 +54,11 @@ describe("SubscriptionClosureService settlement", () => {
       "approval:write-off-check",
       "append:settlement-proposed"
     ]);
-    expect(outcome).toMatchObject({ id: IDS.settlement, stage: "PROPOSED" });
+    expect(outcome).toMatchObject({
+      createdAt: new Date("2026-08-21T12:00:00.000Z"),
+      id: IDS.settlement,
+      stage: "PROPOSED"
+    });
     expect(harness.repository.appendPreparedSettlementRevisionInTransaction).toHaveBeenCalledWith(
       harness.tx,
       harness.session,
@@ -453,9 +457,11 @@ function settlementHarness() {
     appendPreparedEventInTransaction: vi.fn(async () => ({ outcome: {}, wrote: true })),
     appendPreparedSettlementRevisionInTransaction: vi.fn(async (...args) => {
       const key = args.at(-1);
+      const command = args[2] as { recordedAt: Date };
       timeline.push(`append:${key}`);
       return {
         outcome: {
+          createdAt: command.recordedAt,
           id: IDS.settlement,
           stage:
             key === "settlement-finalized"

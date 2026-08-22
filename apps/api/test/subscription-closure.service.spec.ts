@@ -363,7 +363,9 @@ describe("SubscriptionClosureService normal expiry", () => {
             key: "return-manifest:1",
             type: "SUBSCRIPTION_EXPIRY"
           },
-          revisionNumber: 1
+          revisionNumber: 1,
+          sourceFileHash: revisionOne.sourceFileHash,
+          sourceFileId: revisionOne.sourceFileId
         },
         signingStage: "STAGE2_DELIVERY_HANDOVER",
         sourceId: IDS.segment,

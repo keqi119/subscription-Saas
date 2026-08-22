@@ -778,7 +778,17 @@ function fakeDocumentTransaction(options: { currentDocumentRevisionId?: string |
     subscriptionClosureCommandReceipt: {
       findUnique: receiptFindUnique
     },
+    subscriptionClosureDocumentRevision: {
+      async findUnique() {
+        return null;
+      }
+    },
     contractESignTask: {
+      async findUnique() {
+        return null;
+      }
+    },
+    fileObject: {
       async findUnique() {
         return null;
       }

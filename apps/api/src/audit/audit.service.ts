@@ -7,6 +7,7 @@ interface WriteAuditLogInput {
   action: AuditAction;
   after?: unknown;
   before?: unknown;
+  createdAt?: Date;
   entityId?: string;
   entityType: string;
   ipAddress?: string;
@@ -27,6 +28,7 @@ export class AuditService {
         action: input.action,
         afterSnapshot: toJsonSnapshot(input.after),
         beforeSnapshot: toJsonSnapshot(input.before),
+        ...(input.createdAt ? { createdAt: input.createdAt } : {}),
         entityId: input.entityId,
         entityType: input.entityType,
         ipAddress: input.ipAddress,

@@ -105,12 +105,14 @@ export class SubscriptionEffectiveBoundaryOwner {
             ? {
                 completedAt: null,
                 pauseReason: null,
+                serviceEndDate: state.command.schedule.serviceEndDate as Date,
                 status: BillingScheduleStatus.ACTIVE,
                 version: { increment: 1 }
               }
             : {
                 completedAt: state.command.occurredAt,
                 pauseReason: null,
+                serviceEndDate: state.command.schedule.serviceEndDate as Date,
                 status: BillingScheduleStatus.COMPLETED,
                 version: { increment: 1 }
               },
@@ -241,6 +243,7 @@ async function resolveEffectiveBoundaryCommand(
         nextPeriodStart: true,
         orderId: true,
         pauseReason: true,
+        serviceEndDate: true,
         status: true,
         version: true
       },
@@ -304,6 +307,12 @@ async function resolveEffectiveBoundaryCommand(
         ? "PRESERVE_EARNED"
         : "COMPLETE_FUTURE"
       : "NONE";
+  const boundaryServiceEndDate = new Date(`${boundaryDate}T00:00:00.000Z`);
+  const targetServiceEndDate = schedule
+    ? schedule.serviceEndDate && schedule.serviceEndDate.getTime() < boundaryServiceEndDate.getTime()
+      ? schedule.serviceEndDate
+      : boundaryServiceEndDate
+    : null;
   return Object.freeze({
     automationJobs: Object.freeze(jobSnapshots),
     boundaryAt: input.boundaryAt,
@@ -312,7 +321,9 @@ async function resolveEffectiveBoundaryCommand(
     entitlementAccounts: Object.freeze(entitlementSnapshots),
     occurredAt: input.occurredAt,
     orderId: input.orderId,
-    schedule: schedule ? Object.freeze({ ...schedule }) : null,
+    schedule: schedule
+      ? Object.freeze({ ...schedule, serviceEndDate: targetServiceEndDate })
+      : null,
     scheduleAction
   });
 }

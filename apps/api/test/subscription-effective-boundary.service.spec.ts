@@ -71,6 +71,9 @@ describe("SubscriptionEffectiveBoundaryOwner", () => {
       orderId,
       scheduleAction: "PRESERVE_EARNED"
     });
+    expect(prepared.requirement.command.schedule).toMatchObject({
+      serviceEndDate: new Date("2026-09-01T00:00:00.000Z")
+    });
     expect(prepared.requirement.locks).toEqual(
       expect.arrayContaining([
         { id: orderId, mode: "UPDATE", table: "subscription_order" },

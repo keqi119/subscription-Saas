@@ -66,6 +66,7 @@ export interface AppendSubscriptionClosureEventCommand {
   readonly occurredAt: Date;
   readonly reconditioningAssetWorkOrderId?: string | null;
   readonly recoveryAssetWorkOrderId?: string | null;
+  readonly retireCase?: boolean;
   readonly source: SubscriptionClosureSource;
 }
 
@@ -532,7 +533,11 @@ export class SubscriptionClosureRepository {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
     await assertCreateLinkCoherence(tx, command);
-    if (await tx.subscriptionClosureCase.findUnique({ where: { orderId: command.orderId } })) {
+    if (
+      await tx.subscriptionClosureCase.findFirst({
+        where: { orderId: command.orderId, retiredAt: null }
+      })
+    ) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.CASE_ALREADY_EXISTS);
     }
 
@@ -613,9 +618,9 @@ export class SubscriptionClosureRepository {
     orderId: string
   ): Promise<SubscriptionClosureCaseSnapshot | null> {
     await assertTransactionContract(tx);
-    const record = await tx.subscriptionClosureCase.findUnique({
+    const record = await tx.subscriptionClosureCase.findFirst({
       include: CASE_INCLUDE,
-      where: { orderId: canonicalUuid(orderId, "orderId") }
+      where: { orderId: canonicalUuid(orderId, "orderId"), retiredAt: null }
     });
     return record ? projectCase(record) : null;
   }
@@ -688,6 +693,9 @@ export class SubscriptionClosureRepository {
             : {}),
           ...(command.recoveryAssetWorkOrderId
             ? { recoveryAssetWorkOrderId: command.recoveryAssetWorkOrderId }
+            : {}),
+          ...(command.retireCase
+            ? { retiredAt: command.occurredAt, retiredBy: command.actorId }
             : {}),
           status: command.afterStatus,
           updatedBy: command.actorId,
@@ -1506,6 +1514,7 @@ function normalizeEventCommand(
       input.recoveryAssetWorkOrderId,
       "recoveryAssetWorkOrderId"
     ),
+    ...(input.retireCase === true ? { retireCase: true } : {}),
     source: canonicalSubscriptionClosureSource(input.source)
   };
 }

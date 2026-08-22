@@ -33,6 +33,13 @@ const esignSourceImmutabilityMigrationPath = resolve(
 const esignSourceImmutabilityMigration = existsSync(esignSourceImmutabilityMigrationPath)
   ? readFileSync(esignSourceImmutabilityMigrationPath, "utf8")
   : "";
+const activeClosureMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260822020000_stage1_p0_active_closure_and_service_boundary/migration.sql"
+);
+const activeClosureMigration = existsSync(activeClosureMigrationPath)
+  ? readFileSync(activeClosureMigrationPath, "utf8")
+  : "";
 
 function prismaBlock(kind: "enum" | "model", name: string) {
   return schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -208,8 +215,11 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     );
   });
 
-  it("maps the five closure facts with one-case, source, revision, and pointer authorities", () => {
+  it("maps closure history with one active case per order and a durable billing service boundary", () => {
     const closureCase = prismaBlock("model", "SubscriptionClosureCase");
+    const order = prismaBlock("model", "SubscriptionOrder");
+    const user = prismaBlock("model", "User");
+    const schedule = prismaBlock("model", "BillingSchedule");
     const event = prismaBlock("model", "SubscriptionClosureEvent");
     const document = prismaBlock("model", "SubscriptionClosureDocumentRevision");
     const settlement = prismaBlock("model", "SubscriptionClosureSettlementRevision");
@@ -217,7 +227,25 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
 
     expect(closureCase).toContain('@@map("subscription_closure_case")');
     expect(closureCase).toContain("orderId");
-    expect(closureCase).toContain("@unique");
+    expect(closureCase).not.toMatch(/orderId String @unique/);
+    expect(closureCase).toContain("retiredAt DateTime?");
+    expect(closureCase).toContain("retiredBy String?");
+    expect(closureCase).toContain("retirer User?");
+    expect(closureCase).toContain("@@index([orderId]");
+    expect(order).toContain("closureCases");
+    expect(user).toContain("retiredSubscriptionClosureCases");
+    expect(schedule).toMatch(/serviceEndDate\s+DateTime\?/);
+    expect(activeClosureMigration).toContain(
+      'DROP INDEX "subscription_closure_case_order_id_key"'
+    );
+    expect(activeClosureMigration).toContain(
+      'CREATE UNIQUE INDEX "subscription_closure_case_order_id_key"'
+    );
+    expect(activeClosureMigration).toContain('WHERE "retired_at" IS NULL');
+    expect(activeClosureMigration).toContain("subscription_closure_case_retired_shape_chk");
+    expect(activeClosureMigration).toContain("subscription_closure_case_retired_by_fkey");
+    expect(activeClosureMigration).toContain('ADD COLUMN "service_end_date" DATE');
+    expect(activeClosureMigration).not.toMatch(/\bUPDATE\s+"subscription_closure_case"/i);
     for (const field of [
       "caseNo",
       "orderId",

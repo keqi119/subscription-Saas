@@ -1787,9 +1787,9 @@ async function settlementClosureCaseId(
   orderId: string | null | undefined
 ) {
   if (!orderId) return null;
-  const closureCase = await tx.subscriptionClosureCase.findUnique({
+  const closureCase = await tx.subscriptionClosureCase.findFirst({
     select: { id: true },
-    where: { orderId }
+    where: { orderId, retiredAt: null }
   });
   return closureCase?.id ?? null;
 }
@@ -1799,9 +1799,9 @@ async function assertSettlementLedgerOpen(
   orderId: string | null | undefined
 ) {
   if (!orderId) return;
-  const closureCase = await tx.subscriptionClosureCase.findUnique({
+  const closureCase = await tx.subscriptionClosureCase.findFirst({
     select: { status: true },
-    where: { orderId }
+    where: { orderId, retiredAt: null }
   });
   if (closureCase && (closureCase.status === "COMPLETED" || closureCase.status === "TERMINATED")) {
     throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SETTLEMENT_CLOSED);

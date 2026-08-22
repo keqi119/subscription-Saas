@@ -190,6 +190,7 @@ const NORMAL_VOLUNTARY: TransitionMatrix = Object.freeze({
 
 const EARLY_VOLUNTARY: TransitionMatrix = Object.freeze({
   ...NORMAL_VOLUNTARY,
+  MANUAL_TAKEOVER: transitions("CANCELLED"),
   PENDING_SETTLEMENT: transitions("TERMINATED", "MANUAL_TAKEOVER")
 });
 

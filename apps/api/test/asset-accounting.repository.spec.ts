@@ -2310,8 +2310,10 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     contract: delegate(authorities.contract),
     customer: delegate(authorities.customer),
     subscriptionClosureCase: {
-      findUnique: async ({ where }: { where: { orderId: string } }) =>
-        database.subscriptionClosureCasesByOrderId.get(where.orderId) ?? null
+      findFirst: async ({ where }: { where: { orderId: string; retiredAt: null } }) => {
+        expect(where.retiredAt).toBeNull();
+        return database.subscriptionClosureCasesByOrderId.get(where.orderId) ?? null;
+      }
     },
     subscriptionOrder: delegate(authorities.subscriptionOrder),
     user: delegate(authorities.user),

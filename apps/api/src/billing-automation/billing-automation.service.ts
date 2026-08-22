@@ -285,6 +285,20 @@ export class BillingAutomationService {
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
+        const [lockedOrder] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "subscription_order"
+          WHERE "id" = ${job.orderId}::uuid
+          FOR UPDATE
+        `);
+        if (!lockedOrder) throw configurationError();
+        const [lockedSchedule] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "billing_schedule"
+          WHERE "id" = ${job.billingScheduleId}::uuid
+          FOR UPDATE
+        `);
+        if (!lockedSchedule) throw configurationError();
         const schedule = await tx.billingSchedule.findUnique({
           include: { order: { include: { lease: true } } },
           where: { id: job.billingScheduleId! }
@@ -321,8 +335,12 @@ export class BillingAutomationService {
           throw configurationError();
         }
         const generatedAt = this.clock();
-        const effectiveServiceEndDate =
+        const contractServiceEndDate =
           await this.contractSegmentService.resolveEffectiveServiceEndDate(schedule.orderId, tx);
+        const effectiveServiceEndDate = earliestServiceEndDate(
+          contractServiceEndDate,
+          schedule.serviceEndDate
+        );
         if (
           effectiveServiceEndDate instanceof Date &&
           cycle.periodStart.getTime() > effectiveServiceEndDate.getTime()
@@ -864,4 +882,10 @@ function classifyExecutionError(error: unknown) {
 
 function isoDate(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+function earliestServiceEndDate(left: Date | null, right: Date | null) {
+  if (!left) return right;
+  if (!right) return left;
+  return left.getTime() <= right.getTime() ? left : right;
 }

@@ -2674,6 +2674,7 @@ model User {
   assetAccountingCommandReceipts              AssetAccountingCommandReceipt[] @relation("AssetAccountingCommandReceiptActor")
   createdSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseCreatedBy")
   updatedSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseUpdatedBy")
+  retiredSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseRetiredBy")
   subscriptionClosureEvents                   SubscriptionClosureEvent[] @relation("SubscriptionClosureEventActor")
   generatedSubscriptionClosureDocuments       SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentGeneratedBy")
   signedSubscriptionClosureDocuments          SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentSignedBy")
@@ -4028,7 +4029,7 @@ model BusinessExceptionApproval {
 model SubscriptionClosureCase {
   id String @id @default(uuid()) @db.Uuid
   caseNo String @unique(map: "subscription_closure_case_case_no_key") @map("case_no") @db.VarChar(64)
-  orderId String @unique(map: "subscription_closure_case_order_id_key") @map("order_id") @db.Uuid
+  orderId String @map("order_id") @db.Uuid
   order SubscriptionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
   vehicleId String @map("vehicle_id") @db.Uuid
   vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
@@ -4060,6 +4061,9 @@ model SubscriptionClosureCase {
   currentDocumentRevision SubscriptionClosureDocumentRevision? @relation("SubscriptionClosureCurrentDocumentRevision", fields: [currentDocumentRevisionId], references: [id], onDelete: Restrict)
   currentSettlementRevisionId String? @unique(map: "subscription_closure_case_current_settlement_revision_id_key") @map("current_settlement_revision_id") @db.Uuid
   currentSettlementRevision SubscriptionClosureSettlementRevision? @relation("SubscriptionClosureCurrentSettlementRevision", fields: [currentSettlementRevisionId], references: [id], onDelete: Restrict)
+  retiredAt DateTime? @map("retired_at") @db.Timestamptz(6)
+  retiredBy String? @map("retired_by") @db.Uuid
+  retirer User? @relation("SubscriptionClosureCaseRetiredBy", fields: [retiredBy], references: [id], onDelete: Restrict)
   version Int @default(0)
   createSourceType String @map("create_source_type") @db.VarChar(64)
   createSourceId String @map("create_source_id") @db.Uuid
@@ -4077,6 +4081,8 @@ model SubscriptionClosureCase {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@unique([createSourceType, createSourceId, createSourceKey], map: "subscription_closure_case_create_source_key")
+  @@index([orderId], map: "subscription_closure_case_order_id_idx")
+  @@index([retiredBy], map: "subscription_closure_case_retired_by_idx")
   @@index([vehicleId], map: "subscription_closure_case_vehicle_id_idx")
   @@index([customerId], map: "subscription_closure_case_customer_id_idx")
   @@index([contractId], map: "subscription_closure_case_contract_id_idx")
@@ -5876,7 +5882,7 @@ model SubscriptionOrder {
   subscriptionPeriods        VehicleSubscriptionPeriod[]
   assetWorkOrders            AssetWorkOrder[]
   costLedgerEntries          VehicleCostLedgerEntry[]
-  closureCase                SubscriptionClosureCase?
+  closureCases               SubscriptionClosureCase[]
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -6241,6 +6247,7 @@ model BillingSchedule {
   pauseReason         String?                     @map("pause_reason") @db.VarChar(255)
   completedAt         DateTime?                   @map("completed_at") @db.Timestamptz(6)
   cancelledAt         DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  serviceEndDate      DateTime?                   @map("service_end_date") @db.Date
   version             Int                         @default(0)
   automationJobs      SubscriptionAutomationJob[]
   createdAt           DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)

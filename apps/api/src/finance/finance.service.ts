@@ -984,7 +984,7 @@ export class FinanceService {
     if (!order || order.deletedAt) {
       throw new NotFoundException(ORDER_NOT_FOUND_MESSAGE);
     }
-    ensureOrderCanGenerateMonthlyRentBill(order);
+    ensureOrderCanGenerateAutomatedMonthlyRentBill(order);
 
     const monthlyRentAmount = input.monthlyRentAmount ?? resolveMonthlyRentAmount(order);
     if (monthlyRentAmount === null) {
@@ -2628,14 +2628,7 @@ async function createMonthlyRentBillForPeriodIfAbsent(
   });
 
   if (existingBill) {
-    const reconciledBill =
-      existingBill.sourceKey === null
-        ? await tx.receivableBill.update({
-            data: { sourceKey },
-            where: { id: existingBill.id }
-          })
-        : existingBill;
-    return { bill: reconciledBill, created: false, period };
+    return { bill: existingBill, created: false, period };
   }
 
   const bill = await tx.receivableBill.create({
@@ -2976,6 +2969,19 @@ function ensureOrderCanRefundDeposit(order: FinanceOrder) {
 
 function ensureOrderCanGenerateMonthlyRentBill(order: FinanceOrder) {
   if (order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
+  }
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
+  }
+}
+
+function ensureOrderCanGenerateAutomatedMonthlyRentBill(order: FinanceOrder) {
+  if (
+    order.orderStatus !== OrderStatus.ACTIVE &&
+    order.orderStatus !== OrderStatus.PENDING_RETURN &&
+    order.orderStatus !== OrderStatus.COMPLETED
+  ) {
     throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
   }
   if (!order.actualDeliveryAt) {

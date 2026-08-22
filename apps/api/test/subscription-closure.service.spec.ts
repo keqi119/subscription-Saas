@@ -47,10 +47,10 @@ describe("SubscriptionClosureService normal expiry", () => {
 
   it("replays an existing case with its immutable actor after that actor becomes inactive", async () => {
     const tx = createTransaction() as never as {
-      subscriptionClosureCase: { findUnique: ReturnType<typeof vi.fn> };
+      subscriptionClosureCase: { findFirst: ReturnType<typeof vi.fn> };
       user: { findFirst: ReturnType<typeof vi.fn> };
     } & Prisma.TransactionClient;
-    tx.subscriptionClosureCase.findUnique.mockResolvedValue({
+    tx.subscriptionClosureCase.findFirst.mockResolvedValue({
       createSourceId: IDS.segment,
       createSourceKey: "normal-closure-case",
       createSourceType: "SUBSCRIPTION_EXPIRY",
@@ -284,13 +284,13 @@ describe("SubscriptionClosureService normal expiry", () => {
 
   it("replays immutable manifest revision one after the current family advances", async () => {
     const tx = createTransaction() as never as {
-      subscriptionClosureCase: { findUnique: ReturnType<typeof vi.fn> };
+      subscriptionClosureCase: { findFirst: ReturnType<typeof vi.fn> };
       subscriptionClosureCurrentDocument: { findUnique: ReturnType<typeof vi.fn> };
       subscriptionClosureDocumentRevision: { findFirst: ReturnType<typeof vi.fn> };
       contractESignTask: { findMany: ReturnType<typeof vi.fn> };
       fileObject: { findUnique: ReturnType<typeof vi.fn> };
     } & Prisma.TransactionClient;
-    tx.subscriptionClosureCase.findUnique.mockResolvedValue({
+    tx.subscriptionClosureCase.findFirst.mockResolvedValue({
       createSourceId: IDS.segment,
       createSourceKey: "normal-closure-case",
       createSourceType: "SUBSCRIPTION_EXPIRY",
@@ -498,7 +498,7 @@ describe("SubscriptionClosureService normal expiry", () => {
     };
     const tx = {
       subscriptionClosureCase: {
-        findUnique: vi.fn(async () => ({
+        findFirst: vi.fn(async () => ({
           closureType: "NORMAL_COMPLETION",
           id: IDS.closureCase,
           physicalControlMode: "VOLUNTARY_RETURN",
@@ -591,6 +591,7 @@ function createTransaction() {
       findUnique: vi.fn(async () => ({ id: "10000000-0000-4000-8000-000000000014" }))
     },
     subscriptionClosureCase: {
+      findFirst: vi.fn(async () => null),
       findUnique: vi.fn(async () => null)
     },
     subscriptionContractSegment: {

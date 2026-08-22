@@ -4,7 +4,7 @@
 
 **Goal:** Deliver three production-equivalent, auditable P0 journeys: normal expiry through physical return and contract completion; administrator-approved vehicle recovery through physical control and termination settlement; and early termination through vehicle return and final settlement.
 
-**Architecture:** Add a `subscription-closure` orchestration domain. It owns one closure case per order, append-only closure events, immutable document and settlement revisions, and stable command receipts. A case's immutable initiation intent is normal completion or early termination; its physical-control mode can be escalated from voluntary return to recovery through an audited event without creating a second case. Existing specialist facts remain authoritative: `VehicleReturn` records现场 return details, Stage 1C-A owns occupancy periods, Stage 1C-B owns asset work orders/evidence/restrictions and vehicle availability, and Stage 1C-C owns cost/recovery ledger entries and snapshot-bound approvals. Every cross-domain mutation runs in one caller-owned `READ COMMITTED` transaction with a stable source lock and a documented `NOWAIT` authority-lock order. The legacy return endpoint becomes a compatibility façade and cannot bypass a managed closure case.
+**Architecture:** Add a `subscription-closure` orchestration domain. It owns exactly one active closure aggregate per order while retaining retired cancelled early-termination attempts as immutable history, plus append-only closure events, immutable document and settlement revisions, and stable command receipts. A case's immutable initiation intent is normal completion or early termination; its physical-control mode can be escalated from voluntary return to recovery through an audited event without creating a second active case. Existing specialist facts remain authoritative: `VehicleReturn` records现场 return details, Stage 1C-A owns occupancy periods, Stage 1C-B owns asset work orders/evidence/restrictions and vehicle availability, and Stage 1C-C owns cost/recovery ledger entries and snapshot-bound approvals. Every cross-domain mutation runs in one caller-owned `READ COMMITTED` transaction with a stable source lock and a documented `NOWAIT` authority-lock order. The legacy return endpoint becomes a compatibility façade and cannot bypass a managed closure case.
 
 **Tech stack:** NestJS 11, Prisma 7, PostgreSQL 16, TypeScript 6, Vitest 4, Next.js, Node.js test runner, pnpm workspace.
 
@@ -26,10 +26,21 @@ It does **not** implement automatic debit, full collection strategy, vehicle swa
 
 The approved baseline originally places the complete early-termination change center in P1 (§17.6). In this thread the user explicitly confirmed the fixed continuation through a P0 human-acceptance boundary after the P0 scope was stated as exactly three journeys: normal return, administrator-approved recovery, and early termination return/settlement. This plan therefore brings forward only the **execution closure** of early termination. It does not implement vehicle swap, generic `SubscriptionChangeOrder` expansion, quote/change-center UI, or the rest of P1, and it must report that limitation in the final handoff.
 
+### Binding Task 7 data-contract amendment
+
+The user explicitly replaced the original “one closure case per order forever” rule with **exactly one active closure aggregate per order; retired cancelled early-termination attempts remain immutable history**. This amendment is binding for Task 7 and later tasks:
+
+- `SubscriptionOrder.closureCases[]` retains all attempts. Operational reads require `retiredAt = NULL`; source replay resolves its historical attempt before any active-only lookup; list/history reads retain retired rows.
+- `SubscriptionClosureCase.retiredAt` and `retiredBy` are all-null or all-nonnull. `retiredBy` has a restrictive `User` foreign key. The database retains a normal `order_id` index and enforces exactly one active row with a partial unique index on `order_id WHERE retired_at IS NULL`.
+- A retired row must be `EARLY_TERMINATION / CANCELLED` and have no `VehicleReturn`, specialist/common/recovery/reconditioning work-order, physical-control, or current-settlement links. Its documents, events, receipts, and audits remain immutable and attached.
+- Existing rows remain active with both retirement columns `NULL`. Migration 104 performs no inferred retirement, data repair, or backfill.
+- Governed source-first cancellation/supersession may retire only a pre-execution early attempt in `PREPARING_RETURN` or `MANUAL_TAKEOVER`, after exact graph validation, optional stale e-sign cancellation, immutable event/receipt/audit writes, and one database clock.
+- A retired early attempt must not prevent later normal expiry or a later valid early request. Competing paths serialize on the order authority plus the partial unique index and produce exactly one active winner without deleting history.
+
 ## Binding invariants
 
 - Use forward-only migrations. Never edit historical migrations, run `prisma migrate reset`, or use `prisma db push`.
-- `SubscriptionClosureCase` is the single orchestration aggregate per order. `VehicleReturn`, work orders, periods, restrictions, ledger entries, receivable bills, approvals, contracts, and e-sign tasks remain facts owned by their existing domains.
+- `SubscriptionClosureCase` is the active orchestration aggregate per order; only retired cancelled early attempts may coexist as immutable history. `VehicleReturn`, work orders, periods, restrictions, ledger entries, receivable bills, approvals, contracts, and e-sign tasks remain facts owned by their existing domains.
 - Case initiation intent is immutable. A `NORMAL_COMPLETION` case can escalate its physical-control mode from `VOLUNTARY_RETURN` to `RECOVERY`, and its final disposition from `COMPLETE` to `TERMINATE`, only through the governed recovery-approval transition. The original intent and escalation event remain visible forever.
 - Physical control and financial closure are separate. Physical receipt moves the order to `RETURNED_PENDING_SETTLEMENT`, closes occupancy, completes the lease, and creates an inspection restriction; it does not mark the order or contract final.
 - A vehicle is never made `AVAILABLE` merely because an order or contract is final. Inventory release requires physical control, a closed occupancy period, no blocking `INVENTORY_RELEASE` restriction, and the existing availability evaluator.
@@ -54,7 +65,7 @@ The approved baseline originally places the complete early-termination change ce
 - `SubscriptionClosurePhysicalControlMode`: `VOLUNTARY_RETURN`, `RECOVERY`.
 - `SubscriptionClosureFinalDisposition`: `COMPLETE`, `TERMINATE`.
 - `SubscriptionClosureStatus`: `PREPARING_RETURN`, `RECOVERY_ASSESSMENT_PENDING`, `RECOVERY_APPROVAL_PENDING`, `RECOVERY_APPROVED`, `RECOVERY_IN_PROGRESS`, `VEHICLE_SECURED`, `RETURN_INSPECTION`, `RECONDITIONING`, `PENDING_SETTLEMENT`, `COMPLETED`, `TERMINATED`, `REJECTED`, `PAUSED`, `CANCELLED`, `MANUAL_TAKEOVER`.
-- One case per order, with stable case number, order/vehicle/customer/contract/return/specialist-handover/asset-work-order links, authority snapshot, effective/physical-control/settled/closed timestamps, version, and current document/settlement revision pointers.
+- Exactly one active case per order, with stable case number, order/vehicle/customer/contract/return/specialist-handover/asset-work-order links, authority snapshot, effective/physical-control/settled/closed timestamps, version, and current document/settlement revision pointers. Retired cancelled early attempts retain their immutable history under the amendment above.
 - Normal completion is created from the expiry fact, not as a `SubscriptionChangeOrder`.
 - Early termination records an immutable customer/agreement snapshot and effective time in the case authority snapshot. This P0 execution slice does not claim the later P1 change-center expansion is complete.
 - D+7 recovery does not create a second case. It appends an escalation event, changes physical-control mode to `RECOVERY`, changes final disposition to `TERMINATE`, and binds the approval snapshot to both the immutable origin and current escalation projection.
@@ -120,7 +131,7 @@ Rows are sorted by table rank then canonical UUID. Existing lower-layer services
 - Modify `apps/api/vitest.config.ts` only if the real-PostgreSQL suite needs serial registration.
 
 - [ ] Add closure, document, and settlement enums; case/event/document-revision/settlement-revision/receipt models and reverse relations; `OrderStatus.RETURNED_PENDING_SETTLEMENT`; `ContractStatus.COMPLETED`; and `SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7`.
-- [ ] Add exact foreign keys, one-case-per-order uniqueness, monotonic settlement revision uniqueness, source tuple uniqueness, state-shape checks, current-revision integrity, and append-only triggers.
+- [ ] Add exact foreign keys, exactly-one-active-case-per-order partial uniqueness with immutable retired early-attempt history, monotonic settlement revision uniqueness, source tuple uniqueness, state-shape checks, current-revision integrity, and append-only triggers.
 - [ ] Add strong document relations to closure case, `VehicleReturn`, `VehicleHandoverWorkOrder`, `ContractESignTask`, source/signed `FileObject`, and superseded revision, with exact document-type shape checks.
 - [ ] Ensure existing enum values preserve order and all historical migration blobs remain unchanged.
 - [ ] RED/GREEN exact schema mutation tests and rollback-only PostgreSQL constraint proofs.
@@ -144,7 +155,7 @@ Rows are sorted by table rank then canonical UUID. Existing lower-layer services
 - [ ] Implement canonical source parsing, source-first lock, stable mixed authority locks, command receipt replay/drift, and JSON-safe immutable outcomes.
 - [ ] Implement create/load/list case; append event; attach current settlement revision; and exact projections.
 - [ ] Pin the full allowed transition matrix for both immutable initiation intents and both physical-control modes.
-- [ ] Pin `NORMAL_COMPLETION/VOLUNTARY_RETURN/COMPLETE → NORMAL_COMPLETION/RECOVERY/TERMINATE` as the only recovery escalation; initiation intent never changes and a second case cannot be created.
+- [ ] Pin `NORMAL_COMPLETION/VOLUNTARY_RETURN/COMPLETE → NORMAL_COMPLETION/RECOVERY/TERMINATE` as the only recovery escalation; initiation intent never changes and a second active case cannot be created.
 - [ ] Add unforgeable, one-use, same-repository/same-transaction capabilities so the orchestrator can invoke Stage 1C facts/operations/accounting without nested transactions or lock-order inversion.
 - [ ] Add an equivalent unforgeable P0 capability for specialist `VehicleHandoverWorkOrder(RETURN_INBOUND)`: it reuses handover validation/status/audit rules, runs inside the caller transaction, and locks the specialist row at the documented rank. Arbitrary callers still receive the existing disabled-flow error.
 - [ ] Prove exact replay, cross-command source conflicts, payload drift, wrong-authority rejection, rollback, and one-winner concurrency.
@@ -231,6 +242,7 @@ Rows are sorted by table rank then canonical UUID. Existing lower-layer services
 - Add termination-agreement document/PDF/e-sign archive commands and tests using the closure document revision model.
 
 - [ ] Create an early-termination case from an active order with immutable agreement snapshot, effective time, reason, and evidence; generate/sign/archive successor document revisions and invalidate stale tasks when facts change.
+- [ ] Permit governed pre-execution cancellation/supersession to retire only the exact cancelled early attempt, retain its immutable history, and allow one later normal-expiry or early-termination active aggregate.
 - [ ] Stop future billing and benefits from the effective boundary without mutating earned receivables.
 - [ ] Create/replay `VehicleReturn(EARLY_TERMINATION)` and `RETURN_INBOUND` or approved `RECOVERY` work order.
 - [ ] Reuse physical-control, inspection, settlement, and final termination commands.

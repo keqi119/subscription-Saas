@@ -298,6 +298,7 @@ enum OrderStatus {
   ACTIVE
   SUSPENDED
   PENDING_RETURN
+  RETURNED_PENDING_SETTLEMENT
   TERMINATED
   COMPLETED
   CANCELLED
@@ -457,6 +458,8 @@ enum SubscriptionAutomationJobType {
   EXTENSION_ENTITLEMENT_RENEW
   EXTENSION_INSURANCE_VALIDATION
   EXTENSION_EFFECTIVE_NOTICE
+  CLOSURE_RECOVERY_ASSESSMENT_D7
+  CLOSURE_RETURN_MANIFEST_ESIGN
 
   @@map("subscription_automation_job_type")
 }
@@ -1240,6 +1243,7 @@ enum ContractStatus {
   SIGNING
   SIGNED
   ARCHIVED
+  COMPLETED
   TERMINATED
   CANCELLED
 
@@ -1579,6 +1583,9 @@ enum ESignSigningStage {
   STAGE1_SUBSCRIPTION_CONTRACT
   STAGE2_DELIVERY_HANDOVER
   STAGE3_SUBSCRIPTION_EXTENSION
+  STAGE4_EARLY_TERMINATION
+  STAGE5_RECOVERY_AUTHORITY
+  STAGE6_RETURN_MANIFEST
 
   @@map("esign_signing_stage")
 }
@@ -1589,6 +1596,9 @@ enum ESignDocumentType {
   ATTACHMENT1_SUBSCRIPTION_PLAN
   DELIVERY_HANDOVER
   SUBSCRIPTION_EXTENSION_AGREEMENT
+  EARLY_TERMINATION_AGREEMENT
+  RECOVERY_AUTHORITY
+  RETURN_MANIFEST
 
   @@map("esign_document_type")
 }
@@ -1600,6 +1610,8 @@ enum ESignSlotId {
   STAGE1_ATTACHMENT1_PLATFORM
   STAGE2_HANDOVER_CUSTOMER
   STAGE2_HANDOVER_PLATFORM
+  RETURN_MANIFEST_CUSTOMER
+  RETURN_MANIFEST_PLATFORM
 
   @@map("esign_slot_id")
 }
@@ -1910,6 +1922,106 @@ enum AssetAccountingCommandType {
   EXCEPTION_EXPIRE
 
   @@map("asset_accounting_command_type")
+}
+
+enum SubscriptionClosureType {
+  NORMAL_COMPLETION
+  EARLY_TERMINATION
+
+  @@map("subscription_closure_type")
+}
+
+enum SubscriptionClosurePhysicalControlMode {
+  VOLUNTARY_RETURN
+  RECOVERY
+
+  @@map("subscription_closure_physical_control_mode")
+}
+
+enum SubscriptionClosureFinalDisposition {
+  COMPLETE
+  TERMINATE
+
+  @@map("subscription_closure_final_disposition")
+}
+
+enum SubscriptionClosureStatus {
+  PREPARING_RETURN
+  RECOVERY_ASSESSMENT_PENDING
+  RECOVERY_APPROVAL_PENDING
+  RECOVERY_APPROVED
+  RECOVERY_IN_PROGRESS
+  VEHICLE_SECURED
+  RETURN_INSPECTION
+  RECONDITIONING
+  PENDING_SETTLEMENT
+  COMPLETED
+  TERMINATED
+  REJECTED
+  PAUSED
+  CANCELLED
+  MANUAL_TAKEOVER
+
+  @@map("subscription_closure_status")
+}
+
+enum SubscriptionClosureEventType {
+  CASE_CREATED
+  STATUS_TRANSITIONED
+  RECOVERY_ESCALATED
+  DOCUMENT_REVISION_CREATED
+  SETTLEMENT_REVISION_CREATED
+  PHYSICAL_CONTROL_CONFIRMED
+  INSPECTION_RECORDED
+  INVENTORY_RELEASED
+  NOTE_ADDED
+
+  @@map("subscription_closure_event_type")
+}
+
+enum SubscriptionClosureDocumentType {
+  RETURN_MANIFEST
+  EARLY_TERMINATION_AGREEMENT
+  RECOVERY_AUTHORITY
+
+  @@map("subscription_closure_document_type")
+}
+
+enum SubscriptionClosureDocumentStage {
+  GENERATED
+  SIGNED
+  ARCHIVED
+
+  @@map("subscription_closure_document_stage")
+}
+
+enum SubscriptionClosureSettlementType {
+  ESTIMATE
+  FINAL
+
+  @@map("subscription_closure_settlement_type")
+}
+
+enum SubscriptionClosureSettlementStage {
+  PROPOSED
+  FINALIZED
+  SETTLED
+
+  @@map("subscription_closure_settlement_stage")
+}
+
+enum SubscriptionClosureCommandType {
+  CREATE_CASE
+  PREPARE_RETURN
+  CREATE_DOCUMENT_REVISION
+  TRANSITION_CASE
+  ESCALATE_RECOVERY
+  CONFIRM_PHYSICAL_CONTROL
+  RECORD_INSPECTION
+  CREATE_SETTLEMENT_REVISION
+  COMPLETE_CLOSURE
+
+  @@map("subscription_closure_command_type")
 }
 
 enum VehicleStatus {
@@ -2565,6 +2677,18 @@ model User {
   decidedBusinessExceptionApprovals           BusinessExceptionApproval[]     @relation("BusinessExceptionApprovalDecidedBy")
   expiredBusinessExceptionApprovals           BusinessExceptionApproval[]     @relation("BusinessExceptionApprovalExpiredBy")
   assetAccountingCommandReceipts              AssetAccountingCommandReceipt[] @relation("AssetAccountingCommandReceiptActor")
+  createdSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseCreatedBy")
+  updatedSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseUpdatedBy")
+  retiredSubscriptionClosureCases             SubscriptionClosureCase[] @relation("SubscriptionClosureCaseRetiredBy")
+  subscriptionClosureEvents                   SubscriptionClosureEvent[] @relation("SubscriptionClosureEventActor")
+  generatedSubscriptionClosureDocuments       SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentGeneratedBy")
+  signedSubscriptionClosureDocuments          SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentSignedBy")
+  archivedSubscriptionClosureDocuments        SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentArchivedBy")
+  updatedSubscriptionClosureCurrentDocuments  SubscriptionClosureCurrentDocument[] @relation("SubscriptionClosureCurrentDocumentUpdatedBy")
+  createdSubscriptionClosureSettlements       SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementCreatedBy")
+  finalizedSubscriptionClosureSettlements     SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementFinalizedBy")
+  settledSubscriptionClosureSettlements       SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementSettledBy")
+  subscriptionClosureCommandReceipts          SubscriptionClosureCommandReceipt[] @relation("SubscriptionClosureCommandReceiptActor")
 
   @@index([status])
   @@map("user")
@@ -2746,6 +2870,7 @@ model Customer {
   subscriptionPeriods     VehicleSubscriptionPeriod[]
   assetWorkOrders         AssetWorkOrder[]
   costLedgerEntries       VehicleCostLedgerEntry[]
+  closureCases            SubscriptionClosureCase[]
   createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy               String?                        @map("created_by") @db.Uuid
@@ -3606,6 +3731,7 @@ model Vehicle {
   assetWorkOrders               AssetWorkOrder[]
   operationalRestrictions       VehicleOperationalRestriction[]
   costLedgerEntries             VehicleCostLedgerEntry[]
+  closureCases                  SubscriptionClosureCase[]
   createdAt                     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                         @map("created_by") @db.Uuid
@@ -3688,6 +3814,9 @@ model AssetWorkOrder {
   evidence                 AssetWorkOrderEvidence[]
   restrictions             VehicleOperationalRestriction[]
   costLedgerEntries        VehicleCostLedgerEntry[]
+  returnClosureCases       SubscriptionClosureCase[] @relation("SubscriptionClosureReturnAssetWorkOrder")
+  recoveryClosureCases     SubscriptionClosureCase[] @relation("SubscriptionClosureRecoveryAssetWorkOrder")
+  reconditioningClosureCases SubscriptionClosureCase[] @relation("SubscriptionClosureReconditioningAssetWorkOrder")
   createdAt                DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                         @map("created_by") @db.Uuid
@@ -3892,12 +4021,242 @@ model BusinessExceptionApproval {
   expirer                 User?                           @relation("BusinessExceptionApprovalExpiredBy", fields: [expiredBy], references: [id], onDelete: Restrict)
   expiredAt               DateTime?                       @map("expired_at") @db.Timestamptz(6)
   receipts                AssetAccountingCommandReceipt[]
+  waiverSettlementRevisions   SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementWaiverApproval")
+  writeOffSettlementRevisions SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementWriteOffApproval")
   createdAt               DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([approvalNo], map: "business_exception_approval_approval_no_key")
   @@index([subjectType, subjectId, subjectField], map: "business_exception_approval_subject_idx")
   @@index([status], map: "business_exception_approval_status_idx")
   @@map("business_exception_approval")
+}
+
+model SubscriptionClosureCase {
+  id String @id @default(uuid()) @db.Uuid
+  caseNo String @unique(map: "subscription_closure_case_case_no_key") @map("case_no") @db.VarChar(64)
+  orderId String @map("order_id") @db.Uuid
+  order SubscriptionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  vehicleId String @map("vehicle_id") @db.Uuid
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  customerId String @map("customer_id") @db.Uuid
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  contractId String @map("contract_id") @db.Uuid
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  vehicleReturnId String? @unique(map: "subscription_closure_case_vehicle_return_id_key") @map("vehicle_return_id") @db.Uuid
+  vehicleReturn VehicleReturn? @relation(fields: [vehicleReturnId], references: [id], onDelete: Restrict)
+  returnHandoverWorkOrderId String? @unique(map: "subscription_closure_case_return_handover_work_order_id_key") @map("return_handover_work_order_id") @db.Uuid
+  returnHandoverWorkOrder VehicleHandoverWorkOrder? @relation(fields: [returnHandoverWorkOrderId], references: [id], onDelete: Restrict)
+  returnAssetWorkOrderId String? @map("return_asset_work_order_id") @db.Uuid
+  returnAssetWorkOrder AssetWorkOrder? @relation("SubscriptionClosureReturnAssetWorkOrder", fields: [returnAssetWorkOrderId], references: [id], onDelete: Restrict)
+  recoveryAssetWorkOrderId String? @map("recovery_asset_work_order_id") @db.Uuid
+  recoveryAssetWorkOrder AssetWorkOrder? @relation("SubscriptionClosureRecoveryAssetWorkOrder", fields: [recoveryAssetWorkOrderId], references: [id], onDelete: Restrict)
+  reconditioningAssetWorkOrderId String? @map("reconditioning_asset_work_order_id") @db.Uuid
+  reconditioningAssetWorkOrder AssetWorkOrder? @relation("SubscriptionClosureReconditioningAssetWorkOrder", fields: [reconditioningAssetWorkOrderId], references: [id], onDelete: Restrict, map: "subscription_closure_case_reconditioning_asset_work_order_id_fk")
+  closureType SubscriptionClosureType @map("closure_type")
+  physicalControlMode SubscriptionClosurePhysicalControlMode @map("physical_control_mode")
+  finalDisposition SubscriptionClosureFinalDisposition @map("final_disposition")
+  status SubscriptionClosureStatus
+  authoritySnapshot Json @map("authority_snapshot")
+  authoritySnapshotHash String @map("authority_snapshot_hash") @db.VarChar(64)
+  effectiveAt DateTime @map("effective_at") @db.Timestamptz(6)
+  physicalControlledAt DateTime? @map("physical_controlled_at") @db.Timestamptz(6)
+  settledAt DateTime? @map("settled_at") @db.Timestamptz(6)
+  closedAt DateTime? @map("closed_at") @db.Timestamptz(6)
+  currentDocumentRevisionId String? @unique(map: "subscription_closure_case_current_document_revision_id_key") @map("current_document_revision_id") @db.Uuid
+  currentDocumentRevision SubscriptionClosureDocumentRevision? @relation("SubscriptionClosureCurrentDocumentRevision", fields: [currentDocumentRevisionId], references: [id], onDelete: Restrict)
+  currentSettlementRevisionId String? @unique(map: "subscription_closure_case_current_settlement_revision_id_key") @map("current_settlement_revision_id") @db.Uuid
+  currentSettlementRevision SubscriptionClosureSettlementRevision? @relation("SubscriptionClosureCurrentSettlementRevision", fields: [currentSettlementRevisionId], references: [id], onDelete: Restrict)
+  retiredAt DateTime? @map("retired_at") @db.Timestamptz(6)
+  retiredBy String? @map("retired_by") @db.Uuid
+  retirer User? @relation("SubscriptionClosureCaseRetiredBy", fields: [retiredBy], references: [id], onDelete: Restrict)
+  version Int @default(0)
+  createSourceType String @map("create_source_type") @db.VarChar(64)
+  createSourceId String @map("create_source_id") @db.Uuid
+  createSourceKey String @map("create_source_key") @db.VarChar(255)
+  events SubscriptionClosureEvent[]
+  documentRevisions SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentRevisions")
+  currentDocuments SubscriptionClosureCurrentDocument[]
+  settlementRevisions SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementRevisions")
+  commandReceipts SubscriptionClosureCommandReceipt[]
+  createdBy String @map("created_by") @db.Uuid
+  creator User @relation("SubscriptionClosureCaseCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy String @map("updated_by") @db.Uuid
+  updater User @relation("SubscriptionClosureCaseUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([createSourceType, createSourceId, createSourceKey], map: "subscription_closure_case_create_source_key")
+  @@index([orderId], map: "subscription_closure_case_order_id_idx")
+  @@index([retiredBy], map: "subscription_closure_case_retired_by_idx")
+  @@index([vehicleId], map: "subscription_closure_case_vehicle_id_idx")
+  @@index([customerId], map: "subscription_closure_case_customer_id_idx")
+  @@index([contractId], map: "subscription_closure_case_contract_id_idx")
+  @@index([status], map: "subscription_closure_case_status_idx")
+  @@map("subscription_closure_case")
+}
+
+model SubscriptionClosureEvent {
+  id String @id @default(uuid()) @db.Uuid
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation(fields: [closureCaseId], references: [id], onDelete: Restrict)
+  sequence Int
+  eventType SubscriptionClosureEventType @map("event_type")
+  beforeStatus SubscriptionClosureStatus? @map("before_status")
+  afterStatus SubscriptionClosureStatus @map("after_status")
+  actorId String @map("actor_id") @db.Uuid
+  actor User @relation("SubscriptionClosureEventActor", fields: [actorId], references: [id], onDelete: Restrict)
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(6)
+  recordedAt DateTime @default(now()) @map("recorded_at") @db.Timestamptz(6)
+  sourceType String @map("source_type") @db.VarChar(64)
+  sourceId String @map("source_id") @db.Uuid
+  sourceKey String @map("source_key") @db.VarChar(255)
+  detailSnapshot Json @map("detail_snapshot")
+  commandReceipt SubscriptionClosureCommandReceipt?
+
+  @@unique([closureCaseId, sequence], map: "subscription_closure_event_case_sequence_key")
+  @@unique([sourceType, sourceId, sourceKey], map: "subscription_closure_event_source_key")
+  @@index([closureCaseId, occurredAt], map: "subscription_closure_event_case_occurred_at_idx")
+  @@map("subscription_closure_event")
+}
+
+model SubscriptionClosureDocumentRevision {
+  id String @id @default(uuid()) @db.Uuid
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation("SubscriptionClosureDocumentRevisions", fields: [closureCaseId], references: [id], onDelete: Restrict)
+  currentForCase SubscriptionClosureCase? @relation("SubscriptionClosureCurrentDocumentRevision")
+  currentProjection SubscriptionClosureCurrentDocument?
+  revisionNumber Int @map("revision_number")
+  documentType SubscriptionClosureDocumentType @map("document_type")
+  stage SubscriptionClosureDocumentStage
+  documentSnapshot Json @map("document_snapshot")
+  documentSnapshotHash String @map("document_snapshot_hash") @db.VarChar(64)
+  vehicleReturnId String? @map("vehicle_return_id") @db.Uuid
+  vehicleReturn VehicleReturn? @relation(fields: [vehicleReturnId], references: [id], onDelete: Restrict)
+  handoverWorkOrderId String? @map("handover_work_order_id") @db.Uuid
+  handoverWorkOrder VehicleHandoverWorkOrder? @relation(fields: [handoverWorkOrderId], references: [id], onDelete: Restrict, map: "subscription_closure_document_revision_handover_work_order_id_f")
+  contractESignTaskId String @map("contract_esign_task_id") @db.Uuid
+  contractESignTask ContractESignTask @relation(fields: [contractESignTaskId], references: [id], onDelete: Restrict, map: "subscription_closure_document_revision_contract_esign_task_id_f")
+  sourceFileId String @map("source_file_id") @db.Uuid
+  sourceFile FileObject @relation("SubscriptionClosureDocumentSourceFile", fields: [sourceFileId], references: [id], onDelete: Restrict)
+  sourceFileHash String @map("source_file_hash") @db.VarChar(64)
+  signedFileId String? @map("signed_file_id") @db.Uuid
+  signedFile FileObject? @relation("SubscriptionClosureDocumentSignedFile", fields: [signedFileId], references: [id], onDelete: Restrict)
+  signedFileHash String? @map("signed_file_hash") @db.VarChar(64)
+  supersedesRevisionId String? @map("supersedes_revision_id") @db.Uuid
+  supersedesRevision SubscriptionClosureDocumentRevision? @relation("SubscriptionClosureDocumentRevisionSupersession", fields: [supersedesRevisionId], references: [id], onDelete: Restrict, map: "subscription_closure_document_revision_supersedes_revision_id_f")
+  supersededBy SubscriptionClosureDocumentRevision? @relation("SubscriptionClosureDocumentRevisionSupersession")
+  sourceType String @map("source_type") @db.VarChar(64)
+  sourceId String @map("source_id") @db.Uuid
+  sourceKey String @map("source_key") @db.VarChar(255)
+  generatedBy String @map("generated_by") @db.Uuid
+  generator User @relation("SubscriptionClosureDocumentGeneratedBy", fields: [generatedBy], references: [id], onDelete: Restrict)
+  generatedAt DateTime @map("generated_at") @db.Timestamptz(6)
+  signedBy String? @map("signed_by") @db.Uuid
+  signer User? @relation("SubscriptionClosureDocumentSignedBy", fields: [signedBy], references: [id], onDelete: Restrict)
+  signedAt DateTime? @map("signed_at") @db.Timestamptz(6)
+  archivedBy String? @map("archived_by") @db.Uuid
+  archiver User? @relation("SubscriptionClosureDocumentArchivedBy", fields: [archivedBy], references: [id], onDelete: Restrict)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([closureCaseId, documentType, revisionNumber], map: "subscription_closure_document_family_revision_key")
+  @@unique([supersedesRevisionId], map: "subscription_closure_document_supersedes_key")
+  @@unique([sourceType, sourceId, sourceKey], map: "subscription_closure_document_revision_source_key")
+  @@index([vehicleReturnId], map: "subscription_closure_document_revision_vehicle_return_id_idx")
+  @@index([handoverWorkOrderId], map: "subscription_closure_document_handover_idx")
+  @@index([contractESignTaskId], map: "subscription_closure_document_esign_task_idx")
+  @@index([sourceFileId], map: "subscription_closure_document_revision_source_file_id_idx")
+  @@index([signedFileId], map: "subscription_closure_document_revision_signed_file_id_idx")
+  @@map("subscription_closure_document_revision")
+}
+
+model SubscriptionClosureCurrentDocument {
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation(fields: [closureCaseId], references: [id], onDelete: Restrict)
+  documentType SubscriptionClosureDocumentType @map("document_type")
+  documentRevisionId String @unique(map: "subscription_closure_current_document_revision_id_key") @map("document_revision_id") @db.Uuid
+  documentRevision SubscriptionClosureDocumentRevision @relation(fields: [documentRevisionId], references: [id], onDelete: Restrict)
+  updatedBy String @map("updated_by") @db.Uuid
+  updater User @relation("SubscriptionClosureCurrentDocumentUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([closureCaseId, documentType], map: "subscription_closure_current_document_pkey")
+  @@index([updatedBy], map: "subscription_closure_current_document_updated_by_idx")
+  @@map("subscription_closure_current_document")
+}
+
+model SubscriptionClosureSettlementRevision {
+  id String @id @default(uuid()) @db.Uuid
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation("SubscriptionClosureSettlementRevisions", fields: [closureCaseId], references: [id], onDelete: Restrict)
+  currentForCase SubscriptionClosureCase? @relation("SubscriptionClosureCurrentSettlementRevision")
+  revisionNumber Int @map("revision_number")
+  settlementType SubscriptionClosureSettlementType @map("settlement_type")
+  stage SubscriptionClosureSettlementStage
+  ledgerInputSnapshot Json @map("ledger_input_snapshot")
+  billInputSnapshot Json @map("bill_input_snapshot")
+  depositInputSnapshot Json @map("deposit_input_snapshot")
+  responsibilitySnapshot Json @map("responsibility_snapshot")
+  waiverApprovalId String? @map("waiver_approval_id") @db.Uuid
+  waiverApproval BusinessExceptionApproval? @relation("SubscriptionClosureSettlementWaiverApproval", fields: [waiverApprovalId], references: [id], onDelete: Restrict, map: "subscription_closure_settlement_revision_waiver_approval_id_fke")
+  writeOffApprovalId String? @map("write_off_approval_id") @db.Uuid
+  writeOffApproval BusinessExceptionApproval? @relation("SubscriptionClosureSettlementWriteOffApproval", fields: [writeOffApprovalId], references: [id], onDelete: Restrict, map: "subscription_closure_settlement_revision_write_off_approval_id_")
+  inputSnapshotHash String @map("input_snapshot_hash") @db.VarChar(64)
+  costTotalCents BigInt @map("cost_total_cents")
+  receivableTotalCents BigInt @map("receivable_total_cents")
+  paidTotalCents BigInt @map("paid_total_cents")
+  writeOffTotalCents BigInt @map("write_off_total_cents")
+  waiverTotalCents BigInt @map("waiver_total_cents")
+  depositAppliedCents BigInt @map("deposit_applied_cents")
+  depositRefundCents BigInt @map("deposit_refund_cents")
+  amountDueCents BigInt @map("amount_due_cents")
+  amountRefundableCents BigInt @map("amount_refundable_cents")
+  resultSnapshot Json @map("result_snapshot")
+  resultHash String @map("result_hash") @db.VarChar(64)
+  supersedesRevisionId String? @map("supersedes_revision_id") @db.Uuid
+  supersedesRevision SubscriptionClosureSettlementRevision? @relation("SubscriptionClosureSettlementRevisionSupersession", fields: [supersedesRevisionId], references: [id], onDelete: Restrict, map: "subscription_closure_settlement_revision_supersedes_revision_id")
+  supersededBy SubscriptionClosureSettlementRevision? @relation("SubscriptionClosureSettlementRevisionSupersession")
+  sourceType String @map("source_type") @db.VarChar(64)
+  sourceId String @map("source_id") @db.Uuid
+  sourceKey String @map("source_key") @db.VarChar(255)
+  createdBy String @map("created_by") @db.Uuid
+  creator User @relation("SubscriptionClosureSettlementCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  finalizedBy String? @map("finalized_by") @db.Uuid
+  finalizer User? @relation("SubscriptionClosureSettlementFinalizedBy", fields: [finalizedBy], references: [id], onDelete: Restrict)
+  finalizedAt DateTime? @map("finalized_at") @db.Timestamptz(6)
+  settledBy String? @map("settled_by") @db.Uuid
+  settler User? @relation("SubscriptionClosureSettlementSettledBy", fields: [settledBy], references: [id], onDelete: Restrict)
+  settledAt DateTime? @map("settled_at") @db.Timestamptz(6)
+
+  @@unique([closureCaseId, revisionNumber], map: "subscription_closure_settlement_revision_case_revision_key")
+  @@unique([supersedesRevisionId], map: "subscription_closure_settlement_supersedes_key")
+  @@unique([sourceType, sourceId, sourceKey], map: "subscription_closure_settlement_revision_source_key")
+  @@index([waiverApprovalId], map: "subscription_closure_settlement_revision_waiver_approval_id_idx")
+  @@index([writeOffApprovalId], map: "subscription_closure_settlement_write_off_approval_idx")
+  @@map("subscription_closure_settlement_revision")
+}
+
+model SubscriptionClosureCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  closureCaseId String @map("closure_case_id") @db.Uuid
+  closureCase SubscriptionClosureCase @relation(fields: [closureCaseId], references: [id], onDelete: Restrict)
+  eventId String @unique(map: "subscription_closure_command_receipt_event_id_key") @map("event_id") @db.Uuid
+  event SubscriptionClosureEvent @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  sourceType String @map("source_type") @db.VarChar(64)
+  sourceId String @map("source_id") @db.Uuid
+  sourceKey String @map("source_key") @db.VarChar(255)
+  commandType SubscriptionClosureCommandType @map("command_type")
+  payloadHash String @map("payload_hash") @db.VarChar(64)
+  payloadSnapshot Json @map("payload_snapshot")
+  outcomeSnapshot Json @map("outcome_snapshot")
+  actorId String @map("actor_id") @db.Uuid
+  actor User @relation("SubscriptionClosureCommandReceiptActor", fields: [actorId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([sourceType, sourceId, sourceKey], map: "subscription_closure_command_receipt_source_key")
+  @@index([closureCaseId], map: "subscription_closure_command_receipt_case_id_idx")
+  @@map("subscription_closure_command_receipt")
 }
 
 model AssetAccountingCommandReceipt {
@@ -5528,6 +5887,7 @@ model SubscriptionOrder {
   subscriptionPeriods        VehicleSubscriptionPeriod[]
   assetWorkOrders            AssetWorkOrder[]
   costLedgerEntries          VehicleCostLedgerEntry[]
+  closureCases               SubscriptionClosureCase[]
   createdAt                  DateTime                       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                  String?                        @map("created_by") @db.Uuid
@@ -5892,6 +6252,7 @@ model BillingSchedule {
   pauseReason         String?                     @map("pause_reason") @db.VarChar(255)
   completedAt         DateTime?                   @map("completed_at") @db.Timestamptz(6)
   cancelledAt         DateTime?                   @map("cancelled_at") @db.Timestamptz(6)
+  serviceEndDate      DateTime?                   @map("service_end_date") @db.Date
   version             Int                         @default(0)
   automationJobs      SubscriptionAutomationJob[]
   createdAt           DateTime                    @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -6641,6 +7002,8 @@ model VehicleHandoverWorkOrder {
   events                       VehicleHandoverEvent[]
   workflowJobs                 VehicleHandoverWorkflowJob[]
   videoUploadSessions          FieldEvidenceVideoUploadSession[]
+  closureCase                  SubscriptionClosureCase?
+  closureDocumentRevisions    SubscriptionClosureDocumentRevision[]
   createdAt                    DateTime                          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                          @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -6941,6 +7304,8 @@ model VehicleReturn {
   checklistSnapshot                  Json?                 @map("checklist_snapshot")
   remark                             String?               @db.Text
   damages                            VehicleReturnDamage[]
+  closureCase                        SubscriptionClosureCase?
+  closureDocumentRevisions           SubscriptionClosureDocumentRevision[]
   createdAt                          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                          DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                          String?               @map("created_by") @db.Uuid
@@ -7040,6 +7405,7 @@ model Contract {
   subscriptionPeriods      VehicleSubscriptionPeriod[]
   assetWorkOrders          AssetWorkOrder[]
   costLedgerEntries        VehicleCostLedgerEntry[]
+  closureCases             SubscriptionClosureCase[]
   createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                       @map("created_by") @db.Uuid
@@ -7074,6 +7440,9 @@ model ContractESignTask {
   signedDocumentObjectKey String?                    @map("signed_document_object_key") @db.VarChar(512)
   evidenceObjectKey       String?                    @map("evidence_object_key") @db.VarChar(512)
   requestSnapshot         Json?                      @map("request_snapshot")
+  sourceType              String?                    @map("source_type") @db.VarChar(64)
+  sourceId                String?                    @map("source_id") @db.Uuid
+  sourceKey               String?                    @map("source_key") @db.VarChar(255)
   responseSnapshot        Json?                      @map("response_snapshot")
   callbackSnapshot        Json?                      @map("callback_snapshot")
   errorSnapshot           Json?                      @map("error_snapshot")
@@ -7089,6 +7458,7 @@ model ContractESignTask {
   signers                 ContractESignSigner[]
   callbacks               ContractESignCallbackLog[]
   deliveryHandover        VehicleDeliveryHandover?   @relation("DeliveryHandoverESignTask")
+  closureDocumentRevisions SubscriptionClosureDocumentRevision[]
 
   @@index([contractId])
   @@index([orderId])
@@ -7148,6 +7518,7 @@ model ContractESignCallbackLog {
   providerTaskId        String?            @map("provider_task_id") @db.VarChar(128)
   providerTransactionId String?            @map("provider_transaction_id") @db.VarChar(32)
   payloadHash           String?            @map("payload_hash") @db.Char(64)
+  operationKey          String?            @map("operation_key") @db.VarChar(255)
   payload               Json?
   verified              Boolean            @default(false)
   handled               Boolean            @default(false)
@@ -7161,6 +7532,9 @@ model ContractESignCallbackLog {
   @@index([providerTaskId])
   @@index([eventType])
   @@index([receivedAt])
+  // Migration-owned partial unique index:
+  // contract_esign_callback_log_provider_operation_key_key enforces one semantic callback
+  // operation per provider while operation_key IS NOT NULL.
   @@map("contract_esign_callback_log")
 }
 
@@ -7427,6 +7801,8 @@ model FileObject {
   deliveryEvidenceFiles  VehicleDeliveryEvidenceFile[]
   mileageReviewEvidence  OrderMileageReviewEvidence[]
   assetWorkOrderEvidence AssetWorkOrderEvidence[]
+  sourceClosureDocumentRevisions SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentSourceFile")
+  signedClosureDocumentRevisions SubscriptionClosureDocumentRevision[] @relation("SubscriptionClosureDocumentSignedFile")
   createdAt              DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([bucket])

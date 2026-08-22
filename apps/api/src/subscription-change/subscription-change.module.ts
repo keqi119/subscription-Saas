@@ -8,6 +8,7 @@ import { ESignModule } from "../esign/esign.module";
 import { NotificationModule } from "../notification/notification.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
+import { SubscriptionClosureModule } from "../subscription-closure/subscription-closure.module";
 import { VehicleInsuranceModule } from "../vehicle-insurance/vehicle-insurance.module";
 import { ContractSegmentModule } from "./contract-segment.module";
 import { RenewalConsiderationController } from "./renewal-consideration.controller";
@@ -46,6 +47,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     NotificationModule,
     PrismaModule,
     SmsModule,
+    SubscriptionClosureModule,
     VehicleInsuranceModule
   ],
   providers: [

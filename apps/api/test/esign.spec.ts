@@ -2801,6 +2801,28 @@ describe("ESignService", () => {
     );
   });
 
+  it("keeps return-manifest tasks out of generic portal and callback completion", async () => {
+    const { service, state } = createESignFixture();
+    const task = await service.createTaskForContract("contract-1", adminUser(), requestContext());
+    Object.assign(state.tasks[0]!, {
+      documentType: "RETURN_MANIFEST",
+      signingStage: "STAGE6_RETURN_MANIFEST"
+    });
+
+    await expect(
+      service.mockSignTask(task.id, currentCustomer("customer-1"), requestContext())
+    ).rejects.toThrow("RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED");
+    await expect(
+      service.handleCallback("mock", {
+        eventType: "SIGN_COMPLETED",
+        providerTaskId: task.providerTaskId
+      })
+    ).rejects.toThrow("RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED");
+    expect(state.tasks[0]!.taskStatus).not.toBe(ESignTaskStatus.COMPLETED);
+    expect(state.contracts[0]!.status).not.toBe(ContractStatus.SIGNED);
+    expect(state.contracts[0]!.order.orderStatus).not.toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
   it("rejects mock-sign when mock provider is not enabled", async () => {
     const { service } = createESignFixture({
       ESIGN_MOCK_ENABLED: "false",

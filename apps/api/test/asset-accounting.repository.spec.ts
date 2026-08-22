@@ -19,6 +19,189 @@ const NOW = new Date("2026-08-20T10:00:00.000Z");
 const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
 
 describe("AssetAccountingRepository", () => {
+  it("consumes one same-repository append capability without reacquiring the source", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-repository");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+
+    await repository.appendCostEntry(database.tx, command, capability);
+
+    expect(database.operationTimeline.filter((item) => item === "source-lock")).toHaveLength(1);
+    expect(database.authorityLockModes.map(({ table }) => table)).toEqual([
+      "subscription_order",
+      "vehicle",
+      "contract",
+      "asset_work_order",
+      "asset_owner",
+      "asset_work_order_evidence",
+      "customer",
+      "user"
+    ]);
+    await expectCode(
+      repository.appendCostEntry(database.tx, command, capability),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("consumes a repository capability before throwing command normalization", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-normalization");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing accounting source getter");
+      }
+    }) as AppendCostEntryCommand;
+
+    await expect(repository.appendCostEntry(database.tx, malformed, capability)).rejects.toThrow(
+      "throwing accounting source getter"
+    );
+    await expectCode(
+      repository.appendCostEntry(database.tx, command, capability),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.entries.size).toBe(0);
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, and wrong-source append capabilities", async () => {
+    const database = fakeTransaction();
+    const other = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const command = appendCommand(database.ids, "caller-owned-repository-guards");
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+
+    for (const [target, tx, candidate, input] of [
+      [repository, database.tx, Object.freeze({}), command],
+      [new AssetAccountingRepository(), database.tx, capability, command],
+      [repository, other.tx, capability, command],
+      [
+        repository,
+        database.tx,
+        await repository.prepareCallerOwnedCommand(database.tx, command.source),
+        { ...command, source: { ...command.source, key: "different-source" } }
+      ]
+    ] as const) {
+      await expectCode(
+        target.appendCostEntry(tx, input, candidate as never),
+        ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(database.entries.size).toBe(0);
+    expect(other.entries.size).toBe(0);
+  });
+
+  it("consumes one prepared approval capability without reacquiring source, subject, approval, or actor locks", async () => {
+    const database = fakeTransaction();
+    const repository = new AssetAccountingRepository();
+    const request = await repository.requestExceptionApproval(
+      database.tx,
+      requestApprovalCommand(database.ids, "prepared-require-request")
+    );
+    const approved = await repository.decideExceptionApproval(
+      database.tx,
+      decideApprovalCommand(database.ids, request.outcome.id, "prepared-require-approve")
+    );
+    const command = requireCurrentCommand(
+      database.ids,
+      approved.outcome.id,
+      approved.outcome.version,
+      "prepared-require-current",
+      { factRevision: 1, state: "PENDING" }
+    );
+    const sourceCapability = await repository.prepareCallerOwnedCommand(
+      database.tx,
+      command.source
+    );
+    const lockFingerprint = "prepared-approval-locks-v1";
+    const capability = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      sourceCapability,
+      lockFingerprint
+    );
+    const operationCount = database.operationTimeline.length;
+
+    const foreignRepository = new AssetAccountingRepository();
+    await expectCode(
+      foreignRepository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        capability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const result = await repository.requirePreparedApprovedExceptionInTransaction(
+      database.tx,
+      capability,
+      lockFingerprint
+    );
+
+    expect(result).toEqual({ approval: approved.outcome, valid: true });
+    expect(database.operationTimeline.slice(operationCount)).toEqual(["receipt-lookup"]);
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        capability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const wrongTransactionCapability = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      await repository.prepareCallerOwnedCommand(database.tx, command.source),
+      lockFingerprint
+    );
+    const other = fakeTransaction();
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        other.tx,
+        wrongTransactionCapability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        wrongTransactionCapability,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    const secondSourceCapability = await repository.prepareCallerOwnedCommand(
+      database.tx,
+      command.source
+    );
+    const fingerprintBound = await repository.prepareApprovedExceptionInTransaction(
+      database.tx,
+      command,
+      secondSourceCapability,
+      lockFingerprint
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        fingerprintBound,
+        "different-approval-locks"
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    await expectCode(
+      repository.requirePreparedApprovedExceptionInTransaction(
+        database.tx,
+        fingerprintBound,
+        lockFingerprint
+      ),
+      ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
   it("rejects root-like and non-READ-COMMITTED clients", async () => {
     const repository = new AssetAccountingRepository();
     const rootLike = fakeTransaction({ secondTransactionId: "tx-2" });
@@ -1976,6 +2159,10 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     receipts,
     sourceLockKeys,
     subjectLockKeys,
+    subscriptionClosureCasesByOrderId: new Map<
+      string,
+      { id: string; status: "COMPLETED" | "IN_PROGRESS" | "TERMINATED" }
+    >(),
     tx: undefined as unknown as Prisma.TransactionClient
   };
   let probeCount = 0;
@@ -2122,6 +2309,12 @@ function fakeTransaction(options: { isolationLevel?: string; secondTransactionId
     assetWorkOrderEvidence: delegate(authorities.assetWorkOrderEvidence),
     contract: delegate(authorities.contract),
     customer: delegate(authorities.customer),
+    subscriptionClosureCase: {
+      findFirst: async ({ where }: { where: { orderId: string; retiredAt: null } }) => {
+        expect(where.retiredAt).toBeNull();
+        return database.subscriptionClosureCasesByOrderId.get(where.orderId) ?? null;
+      }
+    },
     subscriptionOrder: delegate(authorities.subscriptionOrder),
     user: delegate(authorities.user),
     vehicle: delegate(authorities.vehicle),

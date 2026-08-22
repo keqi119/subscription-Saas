@@ -321,6 +321,40 @@ describe("BillingAutomationService", () => {
     });
   });
 
+  it("generates the retained early-termination cycle once and completes at its service boundary", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    Object.assign(harness.schedules[0]!, {
+      serviceEndDate: new Date("2026-07-10T00:00:00.000Z")
+    });
+    harness.order.orderStatus = OrderStatus.PENDING_RETURN;
+    harness.order.lease!.status = LeaseStatus.RETURN_DUE;
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).resolves.toMatchObject({ created: true });
+
+    expect(harness.finance.generateMonthlyRentBillForCycle).toHaveBeenCalledTimes(1);
+    expect(harness.schedules[0]).toMatchObject({
+      lastGeneratedBillId: harness.bills[0]?.id,
+      serviceEndDate: new Date("2026-07-10T00:00:00.000Z"),
+      status: BillingScheduleStatus.COMPLETED
+    });
+    await expect(
+      harness.service.enqueueDueSchedules(new Date("2026-08-07T00:00:00.000Z"))
+    ).resolves.toMatchObject({ dueCount: 0, enqueuedCount: 0 });
+  });
+
   it("still generates an earned catch-up cycle after return confirmation completed the order", async () => {
     const harness = createHarness();
     const schedule = await harness.service.ensureActiveSchedule(
@@ -561,6 +595,7 @@ function createHarness() {
   const jobs = new Map<string, Record<string, unknown>>();
   const audits: Array<Record<string, unknown>> = [];
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: "locked" }]),
     auditLog: {
       async create({ data }: { data: Record<string, unknown> }) {
         audits.push(data);

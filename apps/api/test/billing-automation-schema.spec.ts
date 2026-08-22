@@ -127,7 +127,9 @@ describe("billing automation persistence contract", () => {
       "EXTENSION_BILLING_RESUME",
       "EXTENSION_ENTITLEMENT_RENEW",
       "EXTENSION_INSURANCE_VALIDATION",
-      "EXTENSION_EFFECTIVE_NOTICE"
+      "EXTENSION_EFFECTIVE_NOTICE",
+      "CLOSURE_RECOVERY_ASSESSMENT_D7",
+      "CLOSURE_RETURN_MANIFEST_ESIGN"
     ]);
   });
 });

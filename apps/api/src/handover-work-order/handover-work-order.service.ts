@@ -106,6 +106,13 @@ import {
   type FieldHandoverWorkflowProjection
 } from "./field-handover-workflow-projection";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
+import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthorityRequirement,
+  type SubscriptionClosureAuthoritySession
+} from "../subscription-closure/subscription-closure.repository";
 
 const TERMINAL_WORK_ORDER_STATUSES = ["VOIDED", "FAILED", "CANCELLED"] as const;
 const FIELD_ENDED_WORK_ORDER_STATUSES = [
@@ -380,9 +387,146 @@ export interface RequestCustomerObjectionResubmissionInput {
   targetFieldKeys?: HandoverFieldFactKey[];
 }
 
+export const HANDOVER_P0_CAPABILITY_ERROR_CODE = {
+  ACTIVE_RETURN_INBOUND_EXISTS: "HANDOVER_P0_ACTIVE_RETURN_INBOUND_EXISTS",
+  AUTHORITY_BUSY: "HANDOVER_P0_AUTHORITY_BUSY",
+  AUTHORITY_NOT_FOUND: "HANDOVER_P0_AUTHORITY_NOT_FOUND",
+  CAPABILITY_INVALID: "HANDOVER_P0_CAPABILITY_INVALID",
+  SOURCE_CONFLICT: "HANDOVER_P0_SOURCE_CONFLICT",
+  TRANSACTION_REQUIRED: "HANDOVER_P0_TRANSACTION_REQUIRED"
+} as const;
+
+export type ReturnInboundCommandSource = Readonly<{
+  id: string;
+  key: string;
+  type: string;
+}>;
+
+export type CreateReturnInboundWorkOrderCommand = Readonly<{
+  actorId: string;
+  orderId: string;
+  source: ReturnInboundCommandSource;
+}>;
+
+export type GovernedReturnInboundUpdateCommand = Readonly<{
+  actorId: string;
+  deliveryLocation: string | null;
+  orderId: string;
+  scheduledAt: Date | null;
+  source: ReturnInboundCommandSource;
+  workOrderId: string;
+}>;
+
+export function returnInboundCreateAuthorityRequirement(
+  input: CreateReturnInboundWorkOrderCommand,
+  workOrderId: string
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeReturnInboundCommand(input);
+  return {
+    command: {
+      actorId: command.actorId,
+      orderId: command.orderId,
+      source: command.source,
+      workOrderId
+    },
+    key: "handover-create",
+    locks: [
+      { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]
+  };
+}
+
+export function governedReturnInboundAuthorityRequirement(
+  input: GovernedReturnInboundUpdateCommand
+): SubscriptionClosureAuthorityRequirement {
+  const command = normalizeGovernedReturnInboundUpdateCommand(input);
+  return {
+    command: {
+      actorId: command.actorId,
+      deliveryLocation: command.deliveryLocation,
+      orderId: command.orderId,
+      scheduledAt: command.scheduledAt,
+      source: command.source,
+      workOrderId: command.workOrderId
+    },
+    key: "managed-return",
+    locks: [
+      { id: command.orderId, mode: "UPDATE", table: "subscription_order" },
+      {
+        id: command.workOrderId,
+        mode: "UPDATE",
+        table: "vehicle_handover_work_order"
+      },
+      { id: command.actorId, mode: "SHARE", table: "user" }
+    ]
+  };
+}
+
+declare const returnInboundTransactionCapabilityBrand: unique symbol;
+export type ReturnInboundTransactionCapability = Readonly<{
+  [returnInboundTransactionCapabilityBrand]: true;
+}>;
+
+type ReturnInboundTransactionCapabilityState = Readonly<{
+  commandHash: string;
+  source: ReturnInboundCommandSource;
+  transaction: Prisma.TransactionClient;
+}>;
+
+declare const preparedReturnInboundCapabilityBrand: unique symbol;
+export type PreparedReturnInboundCapability = Readonly<{
+  [preparedReturnInboundCapabilityBrand]: true;
+}>;
+
+type PreparedReturnInboundCapabilityState = Readonly<{
+  command: CreateReturnInboundWorkOrderCommand;
+  sourceOwner: WorkOrderRecord | null;
+  transaction: Prisma.TransactionClient;
+  workOrderId: string;
+}>;
+
+declare const governedReturnInboundUpdateCapabilityBrand: unique symbol;
+export type GovernedReturnInboundUpdateCapability = Readonly<{
+  [governedReturnInboundUpdateCapabilityBrand]: true;
+}>;
+
+type GovernedReturnInboundUpdateCapabilityState = Readonly<{
+  commandHash: string;
+  transaction: Prisma.TransactionClient;
+}>;
+
+declare const preparedGovernedReturnInboundUpdateCapabilityBrand: unique symbol;
+export type PreparedGovernedReturnInboundUpdateCapability = Readonly<{
+  [preparedGovernedReturnInboundUpdateCapabilityBrand]: true;
+}>;
+
+type PreparedGovernedReturnInboundUpdateCapabilityState = Readonly<{
+  command: GovernedReturnInboundUpdateCommand;
+  transaction: Prisma.TransactionClient;
+  workOrder: WorkOrderRecord;
+}>;
+
 @Injectable()
 export class HandoverWorkOrderService {
+  private readonly closureAuthorityConsumer = Object.freeze({});
   private readonly logger = new Logger(HandoverWorkOrderService.name);
+  private readonly returnInboundCapabilities = new WeakMap<
+    ReturnInboundTransactionCapability,
+    ReturnInboundTransactionCapabilityState
+  >();
+  private readonly preparedReturnInboundCapabilities = new WeakMap<
+    PreparedReturnInboundCapability,
+    PreparedReturnInboundCapabilityState
+  >();
+  private readonly governedReturnInboundUpdateCapabilities = new WeakMap<
+    GovernedReturnInboundUpdateCapability,
+    GovernedReturnInboundUpdateCapabilityState
+  >();
+  private readonly preparedGovernedReturnInboundUpdateCapabilities = new WeakMap<
+    PreparedGovernedReturnInboundUpdateCapability,
+    PreparedGovernedReturnInboundUpdateCapabilityState
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -397,6 +541,452 @@ export class HandoverWorkOrderService {
     @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
     @Optional() private readonly assetOperationsService?: AssetOperationsService
   ) {}
+
+  async prepareReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateReturnInboundWorkOrderCommand
+  ): Promise<ReturnInboundTransactionCapability> {
+    const command = normalizeReturnInboundCommand(input);
+    await assertReturnInboundTransaction(tx);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${returnInboundSourceLockKey(command.source)}, 0))`
+    );
+    const capability = Object.freeze({}) as ReturnInboundTransactionCapability;
+    this.returnInboundCapabilities.set(
+      capability,
+      Object.freeze({
+        commandHash: returnInboundCommandHash(command),
+        source: command.source,
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async createReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateReturnInboundWorkOrderCommand,
+    capability: ReturnInboundTransactionCapability
+  ): Promise<WorkOrderRecord> {
+    const capabilityState = this.takeReturnInboundCapability(capability);
+    const command = normalizeReturnInboundCommand(input);
+    this.assertReturnInboundCapability(capabilityState, tx, command);
+    const commandHash = returnInboundCommandHash(command);
+    const sourceOwners = await findReturnInboundSourceOwners(tx, command.source);
+    if (sourceOwners.length > 1) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+        "The return-inbound source has more than one persisted owner."
+      );
+    }
+    const sourceOwner = sourceOwners[0];
+    if (sourceOwner) {
+      if (returnInboundMetadataHash(sourceOwner.metadata) !== commandHash) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+          "The return-inbound source is bound to a different payload."
+        );
+      }
+      return sourceOwner;
+    }
+    await lockReturnInboundAuthority(tx, "subscription_order", command.orderId, "UPDATE");
+    await lockReturnInboundSpecialistProbe(tx, command.orderId);
+    await lockReturnInboundAuthority(tx, "user", command.actorId, "SHARE");
+
+    const [order, actor, candidates] = await Promise.all([
+      tx.subscriptionOrder.findUnique({ where: { id: command.orderId } }),
+      tx.user.findFirst({
+        where: { deletedAt: null, id: command.actorId, status: UserStatus.ACTIVE }
+      }),
+      tx.vehicleHandoverWorkOrder.findMany({
+        where: { handoverType: "RETURN_INBOUND", orderId: command.orderId }
+      })
+    ]);
+    if (!order || order.deletedAt || !actor) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The return-inbound work-order authority is unavailable."
+      );
+    }
+
+    if (candidates.some(({ status }) => !isTerminalWorkOrderStatus(status))) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.ACTIVE_RETURN_INBOUND_EXISTS,
+        "The order already has an active return-inbound work order."
+      );
+    }
+
+    const workOrder = await tx.vehicleHandoverWorkOrder.create({
+      data: {
+        handoverId: null,
+        handoverType: "RETURN_INBOUND",
+        metadata: toJsonValue({
+          p0ReturnInbound: {
+            commandHash,
+            source: command.source
+          }
+        }),
+        operatorType: "INTERNAL",
+        orderId: command.orderId,
+        status: "DRAFT",
+        vehicleDeliveryId: null
+      }
+    });
+    await this.recordEvent(
+      workOrder,
+      VehicleHandoverEventType.WORK_ORDER_CREATED,
+      {
+        actorId: command.actorId,
+        actorType: VehicleHandoverEventActorType.SYSTEM,
+        detail: { commandHash, source: command.source }
+      },
+      tx
+    );
+    return workOrder;
+  }
+
+  async attestReturnInboundAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: CreateReturnInboundWorkOrderCommand,
+    capability: ReturnInboundTransactionCapability,
+    authorityAttestation: ClosureAuthorityAttestation,
+    workOrderId: string
+  ): Promise<PreparedReturnInboundCapability> {
+    consumeHandoverAuthorityAttestation(tx, authoritySession, authorityAttestation, () =>
+      this.createReturnInboundAuthorityRequirement(authoritySession, input, workOrderId)
+    );
+    const capabilityState = this.takeReturnInboundCapability(capability);
+    const command = normalizeReturnInboundCommand(input);
+    this.assertReturnInboundCapability(capabilityState, tx, command);
+    const commandHash = returnInboundCommandHash(command);
+    const sourceOwners = await findReturnInboundSourceOwners(tx, command.source);
+    if (sourceOwners.length > 1) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+        "The return-inbound source has more than one persisted owner."
+      );
+    }
+    const sourceOwner = sourceOwners[0] ?? null;
+    if (sourceOwner) {
+      if (returnInboundMetadataHash(sourceOwner.metadata) !== commandHash) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.SOURCE_CONFLICT,
+          "The return-inbound source is bound to a different payload."
+        );
+      }
+    } else {
+      const [order, actor, candidates] = await Promise.all([
+        tx.subscriptionOrder.findUnique({ where: { id: command.orderId } }),
+        tx.user.findFirst({
+          where: { deletedAt: null, id: command.actorId, status: UserStatus.ACTIVE }
+        }),
+        tx.vehicleHandoverWorkOrder.findMany({
+          where: { handoverType: "RETURN_INBOUND", orderId: command.orderId }
+        })
+      ]);
+      if (!order || order.deletedAt || !actor) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+          "The return-inbound work-order authority is unavailable."
+        );
+      }
+      if (candidates.some(({ status }) => !isTerminalWorkOrderStatus(status))) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.ACTIVE_RETURN_INBOUND_EXISTS,
+          "The order already has an active return-inbound work order."
+        );
+      }
+    }
+    const prepared = Object.freeze({}) as PreparedReturnInboundCapability;
+    this.preparedReturnInboundCapabilities.set(
+      prepared,
+      Object.freeze({ command, sourceOwner, transaction: tx, workOrderId })
+    );
+    return prepared;
+  }
+
+  createReturnInboundAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: CreateReturnInboundWorkOrderCommand,
+    workOrderId: string
+  ) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      returnInboundCreateAuthorityRequirement(input, workOrderId),
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  createGovernedReturnInboundAuthorityRequirement(
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: GovernedReturnInboundUpdateCommand
+  ) {
+    return bindSubscriptionClosureAuthorityConsumer(
+      governedReturnInboundAuthorityRequirement(input),
+      this.closureAuthorityConsumer,
+      authoritySession
+    );
+  }
+
+  async createPreparedReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: PreparedReturnInboundCapability
+  ): Promise<WorkOrderRecord> {
+    const state = this.preparedReturnInboundCapabilities.get(capability);
+    this.preparedReturnInboundCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The prepared return-inbound capability is invalid."
+      );
+    }
+    if (state.sourceOwner) return state.sourceOwner;
+    const commandHash = returnInboundCommandHash(state.command);
+    const workOrder = await tx.vehicleHandoverWorkOrder.create({
+      data: {
+        handoverId: null,
+        handoverType: "RETURN_INBOUND",
+        id: state.workOrderId,
+        metadata: toJsonValue({
+          p0ReturnInbound: { commandHash, source: state.command.source }
+        }),
+        operatorType: "INTERNAL",
+        orderId: state.command.orderId,
+        status: "DRAFT",
+        vehicleDeliveryId: null
+      }
+    });
+    await this.recordEvent(
+      workOrder,
+      VehicleHandoverEventType.WORK_ORDER_CREATED,
+      {
+        actorId: state.command.actorId,
+        actorType: VehicleHandoverEventActorType.SYSTEM,
+        detail: { commandHash, source: state.command.source }
+      },
+      tx
+    );
+    return workOrder;
+  }
+
+  async prepareGovernedReturnInboundUpdateInTransaction(
+    tx: Prisma.TransactionClient,
+    input: GovernedReturnInboundUpdateCommand
+  ): Promise<GovernedReturnInboundUpdateCapability> {
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    await assertReturnInboundTransaction(tx);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${returnInboundSourceLockKey(command.source)}, 0))`
+    );
+    await lockReturnInboundAuthority(tx, "subscription_order", command.orderId, "UPDATE");
+    await lockReturnInboundWorkOrder(tx, command.workOrderId);
+    await lockReturnInboundAuthority(tx, "user", command.actorId, "SHARE");
+    const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
+      where: { id: command.workOrderId }
+    });
+    if (
+      !workOrder ||
+      workOrder.orderId !== command.orderId ||
+      workOrder.handoverType !== "RETURN_INBOUND" ||
+      isTerminalWorkOrderStatus(workOrder.status)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The governed return-inbound work order is unavailable."
+      );
+    }
+    const capability = Object.freeze({}) as GovernedReturnInboundUpdateCapability;
+    this.governedReturnInboundUpdateCapabilities.set(
+      capability,
+      Object.freeze({
+        commandHash: governedReturnInboundUpdateCommandHash(command),
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async prepareGovernedReturnInboundSourceInTransaction(
+    tx: Prisma.TransactionClient,
+    input: GovernedReturnInboundUpdateCommand
+  ): Promise<GovernedReturnInboundUpdateCapability> {
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    await assertReturnInboundTransaction(tx);
+    await tx.$queryRaw(
+      Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${returnInboundSourceLockKey(command.source)}, 0))`
+    );
+    const capability = Object.freeze({}) as GovernedReturnInboundUpdateCapability;
+    this.governedReturnInboundUpdateCapabilities.set(
+      capability,
+      Object.freeze({
+        commandHash: governedReturnInboundUpdateCommandHash(command),
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async attestGovernedReturnInboundAuthorityInTransaction(
+    tx: Prisma.TransactionClient,
+    authoritySession: SubscriptionClosureAuthoritySession,
+    input: GovernedReturnInboundUpdateCommand,
+    capability: GovernedReturnInboundUpdateCapability,
+    authorityAttestation: ClosureAuthorityAttestation
+  ): Promise<PreparedGovernedReturnInboundUpdateCapability> {
+    consumeHandoverAuthorityAttestation(tx, authoritySession, authorityAttestation, () =>
+      this.createGovernedReturnInboundAuthorityRequirement(authoritySession, input)
+    );
+    const state = this.governedReturnInboundUpdateCapabilities.get(capability);
+    this.governedReturnInboundUpdateCapabilities.delete(capability);
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.commandHash !== governedReturnInboundUpdateCommandHash(command)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The governed return-inbound update capability is invalid."
+      );
+    }
+    const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
+      where: { id: command.workOrderId }
+    });
+    if (
+      !workOrder ||
+      workOrder.orderId !== command.orderId ||
+      workOrder.handoverType !== "RETURN_INBOUND" ||
+      isTerminalWorkOrderStatus(workOrder.status)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The governed return-inbound work order is unavailable."
+      );
+    }
+    const prepared = Object.freeze({}) as PreparedGovernedReturnInboundUpdateCapability;
+    this.preparedGovernedReturnInboundUpdateCapabilities.set(
+      prepared,
+      Object.freeze({ command, transaction: tx, workOrder })
+    );
+    return prepared;
+  }
+
+  async updatePreparedGovernedReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: PreparedGovernedReturnInboundUpdateCapability
+  ): Promise<WorkOrderRecord> {
+    const state = this.preparedGovernedReturnInboundUpdateCapabilities.get(capability);
+    this.preparedGovernedReturnInboundUpdateCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The prepared governed return-inbound update capability is invalid."
+      );
+    }
+    const updated = await tx.vehicleHandoverWorkOrder.update({
+      data: {
+        deliveryLocation: state.command.deliveryLocation,
+        scheduledAt: state.command.scheduledAt
+      },
+      where: { id: state.workOrder.id }
+    });
+    await this.recordEvent(
+      updated,
+      VehicleHandoverEventType.FIELD_FACTS_UPDATED,
+      {
+        actorId: state.command.actorId,
+        actorType: VehicleHandoverEventActorType.ADMIN,
+        detail: {
+          changedFieldKeys: ["deliveryLocation", "scheduledAt"],
+          governedBy: state.command.source
+        }
+      },
+      tx
+    );
+    return updated;
+  }
+
+  async updateGovernedReturnInboundInTransaction(
+    tx: Prisma.TransactionClient,
+    input: GovernedReturnInboundUpdateCommand,
+    capability: GovernedReturnInboundUpdateCapability
+  ): Promise<WorkOrderRecord> {
+    const state = this.governedReturnInboundUpdateCapabilities.get(capability);
+    this.governedReturnInboundUpdateCapabilities.delete(capability);
+    const command = normalizeGovernedReturnInboundUpdateCommand(input);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      state.commandHash !== governedReturnInboundUpdateCommandHash(command)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The governed return-inbound update capability is invalid."
+      );
+    }
+    const workOrder = await tx.vehicleHandoverWorkOrder.findUnique({
+      where: { id: command.workOrderId }
+    });
+    if (
+      !workOrder ||
+      workOrder.orderId !== command.orderId ||
+      workOrder.handoverType !== "RETURN_INBOUND" ||
+      isTerminalWorkOrderStatus(workOrder.status)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The governed return-inbound work order is unavailable."
+      );
+    }
+    const updated = await tx.vehicleHandoverWorkOrder.update({
+      data: {
+        deliveryLocation: command.deliveryLocation,
+        scheduledAt: command.scheduledAt
+      },
+      where: { id: workOrder.id }
+    });
+    await this.recordEvent(updated, VehicleHandoverEventType.FIELD_FACTS_UPDATED, {
+      actorId: command.actorId,
+      actorType: VehicleHandoverEventActorType.ADMIN,
+      detail: {
+        changedFieldKeys: ["deliveryLocation", "scheduledAt"],
+        governedBy: command.source
+      }
+    }, tx);
+    return updated;
+  }
+
+  private takeReturnInboundCapability(
+    capability: ReturnInboundTransactionCapability
+  ): ReturnInboundTransactionCapabilityState {
+    const state = this.returnInboundCapabilities.get(capability);
+    this.returnInboundCapabilities.delete(capability);
+    if (!state) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The caller-owned return-inbound capability is invalid."
+      );
+    }
+    return state;
+  }
+
+  private assertReturnInboundCapability(
+    state: ReturnInboundTransactionCapabilityState,
+    tx: Prisma.TransactionClient,
+    command: CreateReturnInboundWorkOrderCommand
+  ) {
+    if (
+      state.transaction !== tx ||
+      state.commandHash !== returnInboundCommandHash(command) ||
+      !sameReturnInboundSource(state.source, command.source)
+    ) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+        "The caller-owned return-inbound capability is invalid."
+      );
+    }
+  }
 
   async createDraft(orderId: string, handoverType: HandoverType = "DELIVERY_OUTBOUND", actorId?: string) {
     if (handoverType !== "DELIVERY_OUTBOUND") {
@@ -5209,6 +5799,264 @@ function assertFieldFactsComplete(workOrder: WorkOrderRecord) {
 function assertStatusIn(workOrder: WorkOrderRecord, allowed: string[], message: string) {
   if (!allowed.includes(workOrder.status)) {
     throw new BadRequestException(message);
+  }
+}
+
+function normalizeReturnInboundCommand(
+  input: CreateReturnInboundWorkOrderCommand
+): CreateReturnInboundWorkOrderCommand {
+  const source = {
+    id: normalizeP0CapabilityText(input.source?.id, 64),
+    key: normalizeP0CapabilityText(input.source?.key, 255),
+    type: normalizeP0CapabilityText(input.source?.type, 64)
+  };
+  return Object.freeze({
+    actorId: normalizeP0CapabilityText(input.actorId, 128),
+    orderId: normalizeP0CapabilityText(input.orderId, 128),
+    source: Object.freeze(source)
+  });
+}
+
+function normalizeGovernedReturnInboundUpdateCommand(
+  input: GovernedReturnInboundUpdateCommand
+): GovernedReturnInboundUpdateCommand {
+  const base = normalizeReturnInboundCommand(input);
+  const deliveryLocation =
+    input.deliveryLocation === null
+      ? null
+      : normalizeP0CapabilityText(input.deliveryLocation, 255);
+  const scheduledAt =
+    input.scheduledAt === null ? null : parseDate(input.scheduledAt, "scheduledAt");
+  return Object.freeze({
+    ...base,
+    deliveryLocation,
+    scheduledAt,
+    workOrderId: normalizeP0CapabilityText(input.workOrderId, 128)
+  });
+}
+
+function normalizeP0CapabilityText(value: unknown, maxLength: number) {
+  if (typeof value !== "string" || value.trim() !== value || !value || value.length > maxLength) {
+    throw handoverP0Conflict(
+      HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+      "The return-inbound capability input is invalid."
+    );
+  }
+  return value;
+}
+
+function returnInboundSourceLockKey(source: ReturnInboundCommandSource) {
+  return JSON.stringify([
+    "handover-p0",
+    "return-inbound",
+    source.type,
+    source.id,
+    source.key
+  ]);
+}
+
+function returnInboundCommandHash(command: CreateReturnInboundWorkOrderCommand) {
+  return createHash("sha256")
+    .update(
+      stableSerialize({
+        actorId: command.actorId,
+        orderId: command.orderId,
+        source: command.source
+      })
+    )
+    .digest("hex");
+}
+
+function governedReturnInboundUpdateCommandHash(command: GovernedReturnInboundUpdateCommand) {
+  return createHash("sha256")
+    .update(
+      stableSerialize({
+        actorId: command.actorId,
+        deliveryLocation: command.deliveryLocation,
+        orderId: command.orderId,
+        scheduledAt: command.scheduledAt,
+        source: command.source,
+        workOrderId: command.workOrderId
+      })
+    )
+    .digest("hex");
+}
+
+function sameReturnInboundSource(
+  left: ReturnInboundCommandSource,
+  right: ReturnInboundCommandSource
+) {
+  return left.id === right.id && left.key === right.key && left.type === right.type;
+}
+
+async function assertReturnInboundTransaction(tx: Prisma.TransactionClient) {
+  const [first] = await tx.$queryRaw<Array<{ isolationLevel: string; transactionId: string }>>(
+    Prisma.sql`
+      SELECT current_setting('transaction_isolation') AS "isolationLevel",
+             txid_current()::text AS "transactionId"
+    `
+  );
+  const [second] = await tx.$queryRaw<Array<{ transactionId: string }>>(
+    Prisma.sql`SELECT txid_current()::text AS "transactionId"`
+  );
+  if (
+    first?.isolationLevel !== "read committed" ||
+    !first.transactionId ||
+    first.transactionId !== second?.transactionId
+  ) {
+    throw handoverP0Conflict(
+      HANDOVER_P0_CAPABILITY_ERROR_CODE.TRANSACTION_REQUIRED,
+      "Return-inbound creation requires a caller-owned READ COMMITTED transaction."
+    );
+  }
+}
+
+async function lockReturnInboundAuthority(
+  tx: Prisma.TransactionClient,
+  table: "subscription_order" | "user",
+  id: string,
+  mode: "SHARE" | "UPDATE"
+) {
+  try {
+    const query =
+      mode === "UPDATE"
+        ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${id}::uuid FOR UPDATE NOWAIT`
+        : Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${id}::uuid FOR SHARE NOWAIT`;
+    const [locked] = await tx.$queryRaw<Array<{ id: string }>>(query);
+    if (!locked) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The return-inbound work-order authority is unavailable."
+      );
+    }
+  } catch (error) {
+    if (isReturnInboundLockUnavailable(error)) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_BUSY,
+        "The return-inbound work-order authority is busy."
+      );
+    }
+    throw error;
+  }
+}
+
+async function lockReturnInboundSpecialistProbe(
+  tx: Prisma.TransactionClient,
+  orderId: string
+) {
+  try {
+    await tx.$queryRaw(Prisma.sql`
+      SELECT "id"
+      FROM "vehicle_handover_work_order"
+      WHERE "order_id" = ${orderId}::uuid
+        AND "handover_type" = 'RETURN_INBOUND'
+      ORDER BY "id"
+      FOR UPDATE NOWAIT
+    `);
+  } catch (error) {
+    if (isReturnInboundLockUnavailable(error)) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_BUSY,
+        "The return-inbound work-order authority is busy."
+      );
+    }
+    throw error;
+  }
+}
+
+async function lockReturnInboundWorkOrder(
+  tx: Prisma.TransactionClient,
+  workOrderId: string
+) {
+  try {
+    const [locked] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "vehicle_handover_work_order"
+      WHERE "id" = ${workOrderId}::uuid
+      FOR UPDATE NOWAIT
+    `);
+    if (!locked) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_NOT_FOUND,
+        "The governed return-inbound work order is unavailable."
+      );
+    }
+  } catch (error) {
+    if (isReturnInboundLockUnavailable(error)) {
+      throw handoverP0Conflict(
+        HANDOVER_P0_CAPABILITY_ERROR_CODE.AUTHORITY_BUSY,
+        "The governed return-inbound work order is busy."
+      );
+    }
+    throw error;
+  }
+}
+
+function findReturnInboundSourceOwners(
+  tx: Prisma.TransactionClient,
+  source: ReturnInboundCommandSource
+) {
+  return tx.vehicleHandoverWorkOrder.findMany({
+    orderBy: { id: "asc" },
+    take: 2,
+    where: {
+      AND: [
+        { metadata: { equals: source.type, path: ["p0ReturnInbound", "source", "type"] } },
+        { metadata: { equals: source.id, path: ["p0ReturnInbound", "source", "id"] } },
+        { metadata: { equals: source.key, path: ["p0ReturnInbound", "source", "key"] } }
+      ]
+    }
+  });
+}
+
+function returnInboundMetadataHash(metadata: unknown) {
+  const envelope = asRecord(asRecord(metadata)?.p0ReturnInbound);
+  return typeof envelope?.commandHash === "string" ? envelope.commandHash : null;
+}
+
+function isReturnInboundLockUnavailable(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  if (record.code === "55P03") return true;
+  const meta = asRecord(record.meta);
+  const adapter = asRecord(meta?.driverAdapterError);
+  return asRecord(adapter?.cause)?.originalCode === "55P03";
+}
+
+function handoverP0Conflict(code: string, message: string) {
+  return new ConflictException({ code, message });
+}
+
+function consumeHandoverAuthorityAttestation(
+  tx: Prisma.TransactionClient,
+  authoritySession: SubscriptionClosureAuthoritySession,
+  attestation: ClosureAuthorityAttestation,
+  requirementFactory: () => SubscriptionClosureAuthorityRequirement
+) {
+  try {
+    consumeSubscriptionClosureAuthorityAttestation(
+      tx,
+      authoritySession,
+      attestation,
+      requirementFactory,
+      null
+    );
+  } catch (error) {
+    if (error instanceof ConflictException) {
+      const response = error.getResponse();
+      if (
+        response &&
+        typeof response === "object" &&
+        "code" in response &&
+        response.code === "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID"
+      ) {
+        throw handoverP0Conflict(
+          HANDOVER_P0_CAPABILITY_ERROR_CODE.CAPABILITY_INVALID,
+          "The coordinator authority attestation is invalid."
+        );
+      }
+    }
+    throw error;
   }
 }
 

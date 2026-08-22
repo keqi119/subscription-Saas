@@ -9,6 +9,7 @@ import { AssetFactsService } from "./asset-facts.service";
 
 @Module({
   controllers: [AssetFactsController],
+  exports: [AssetFactsService],
   imports: [AuditModule, AuthModule, PrismaModule],
   providers: [AssetFactsRepository, AssetFactsService]
 })

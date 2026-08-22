@@ -96,6 +96,10 @@ import { activateLeaseRecord } from "../lease/lease-activation.persistence";
 import { LeaseActivationEngine } from "../lease/lease-activation.engine";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
+import {
+  SubscriptionClosureService,
+  type ManagedReturnTransactionCapability
+} from "../subscription-closure/subscription-closure.service";
 import { lockDeliveryConfirmationGateRows } from "./delivery-confirmation-gate-lock";
 import { OrderEntitlementService } from "./order-entitlement.service";
 import {
@@ -389,7 +393,8 @@ export class OrderService {
     @Optional() private readonly billingAutomationService?: BillingAutomationService,
     @Optional() private readonly orderEntitlementService?: OrderEntitlementService,
     @Optional() private readonly leaseActivationEngine?: LeaseActivationEngine,
-    @Optional() private readonly assetOperationsService?: AssetOperationsService
+    @Optional() private readonly assetOperationsService?: AssetOperationsService,
+    @Optional() private readonly subscriptionClosureService?: SubscriptionClosureService
   ) {}
 
   async listOrders(user: RequestUser, query: ListOrdersQueryDto = {}) {
@@ -2531,6 +2536,14 @@ export class OrderService {
     const scheduledAt = dto.scheduledAt ? parseDateTime(dto.scheduledAt, "scheduledAt") : null;
     const result = await withUniqueBusinessNoRetry(() =>
       this.prisma.$transaction(async (tx) => {
+        const managedCapability = this.subscriptionClosureService
+          ? await this.subscriptionClosureService.prepareManagedReturnInTransaction(tx, {
+              actorId: user.id,
+              orderId: id,
+              returnLocation: dto.returnLocation ?? null,
+              scheduledAt
+            })
+          : null;
         const beforeReturn = await tx.vehicleReturn.findUnique({
           include: returnInclude,
           where: { orderId: id }
@@ -2562,18 +2575,34 @@ export class OrderService {
               include: returnInclude
             });
 
+        if (managedCapability) {
+          await this.subscriptionClosureService!.completeManagedReturnInTransaction(
+            tx,
+            {
+              actorId: user.id,
+              orderId: id,
+              returnLocation: dto.returnLocation ?? null,
+              scheduledAt,
+              vehicleReturnId: vehicleReturn.id
+            },
+            managedCapability as ManagedReturnTransactionCapability
+          );
+        }
+
+        await this.writeReturnAudit(
+          beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
+          vehicleReturn.id,
+          beforeReturn ? toReturnView(beforeReturn) : undefined,
+          toReturnView(vehicleReturn),
+          user,
+          context,
+          tx
+        );
+
         return { beforeReturn, vehicleReturn };
-      })
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted })
     );
 
-    await this.writeReturnAudit(
-      result.beforeReturn ? AuditAction.UPDATE : AuditAction.CREATE,
-      result.vehicleReturn.id,
-      result.beforeReturn ? toReturnView(result.beforeReturn) : undefined,
-      toReturnView(result.vehicleReturn),
-      user,
-      context
-    );
     return toReturnView(result.vehicleReturn);
   }
 
@@ -2590,6 +2619,35 @@ export class OrderService {
     assertReturnChecklistConfirmed(dto);
 
     const returnedAt = dto.returnedAt ? parseDateTime(dto.returnedAt, "returnedAt") : new Date();
+    const managedReceipt = this.subscriptionClosureService
+      ? await this.subscriptionClosureService.confirmManagedPhysicalReceipt(
+          {
+            actorId: user.id,
+            checklist: buildReturnChecklistSnapshot(
+              dto,
+              dto.damageFound ?? (dto.damages?.length ?? 0) > 0
+            ),
+            damages: dto.damages ?? [],
+            orderId: id,
+            physicalControlMode: "VOLUNTARY_RETURN",
+            remark: dto.remark ?? null,
+            returnMileageKm: dto.returnMileageKm!,
+            returnType: dto.returnType ?? VehicleReturnType.NORMAL_RETURN,
+            returnedAt
+          },
+          context
+        )
+      : null;
+    if (managedReceipt) {
+      const managedReturn = await this.prisma.vehicleReturn.findUnique({
+        include: returnInclude,
+        where: { id: managedReceipt.vehicleReturnId }
+      });
+      if (!managedReturn || managedReturn.deletedAt) {
+        throw new ConflictException("退车事实已变化，请刷新后重试。");
+      }
+      return toReturnView(managedReturn);
+    }
     const beforeReturn = await this.prisma.vehicleReturn.findUnique({
       include: returnInclude,
       where: { orderId: id }
@@ -3926,19 +3984,23 @@ export class OrderService {
     before: unknown,
     after: unknown,
     user: RequestUser,
-    context: RequestContext
+    context: RequestContext,
+    tx?: Prisma.TransactionClient
   ) {
-    await this.auditService.write({
-      action,
-      after,
-      before,
-      entityId,
-      entityType: "vehicle_return",
-      ipAddress: context.ipAddress,
-      module: "vehicle_return",
-      operatorId: user.id,
-      userAgent: context.userAgent
-    });
+    await this.auditService.write(
+      {
+        action,
+        after,
+        before,
+        entityId,
+        entityType: "vehicle_return",
+        ipAddress: context.ipAddress,
+        module: "vehicle_return",
+        operatorId: user.id,
+        userAgent: context.userAgent
+      },
+      tx
+    );
   }
 
   private async writeEntitlementAudit(

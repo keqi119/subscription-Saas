@@ -64,6 +64,7 @@ import {
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 import { FadadaCustomerReadinessService } from "./fadada-customer-readiness.service";
 import { loadFadadaConfig } from "./fadada/fadada.config";
+import { ReturnManifestESignService } from "./return-manifest-esign.service";
 
 const contractForESignInclude = {
   customer: { select: { id: true, mobile: true, name: true } },
@@ -307,7 +308,8 @@ export class ESignService {
     @Optional() private readonly notificationService?: NotificationService,
     @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService,
     @Optional() private readonly fadadaReadinessService?: FadadaCustomerReadinessService,
-    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly returnManifestESign?: ReturnManifestESignService
   ) {}
 
   async startJourneyFadadaSigning(contractId: string, actorId: string) {
@@ -959,6 +961,11 @@ export class ESignService {
 
     const task = await this.findTaskOrThrow(taskId);
     ensureTaskOwnedByCustomer(task, currentCustomer.customerId);
+    if (isReturnManifestTask(task)) {
+      throw new BadRequestException(
+        "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
+      );
+    }
 
     const completed = await this.completeTask(task.id, {
       actorId: currentCustomer.customerAccountId,
@@ -1033,6 +1040,22 @@ export class ESignService {
         providerTaskId
       });
       return { handled: false, reason: "UNVERIFIED" };
+    }
+
+    const returnManifestCallback = {
+      eventType,
+      payload: sanitizedPayload,
+      provider,
+      providerContractId,
+      providerTaskId,
+      resultCode,
+      verification: verified
+    };
+    if (
+      this.returnManifestESign &&
+      (await this.returnManifestESign.matchesVerifiedCallback(returnManifestCallback))
+    ) {
+      return this.returnManifestESign.handleVerifiedCallback(returnManifestCallback);
     }
 
     const normalizedProviderTransactionId = normalizeProviderTransactionId(providerTaskId);
@@ -2352,6 +2375,11 @@ export class ESignService {
 
       if (!task || task.deletedAt) {
         throw new NotFoundException("电子签任务不存在。");
+      }
+      if (isReturnManifestTask(task)) {
+        throw new BadRequestException(
+          "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
+        );
       }
 
       if (task.taskStatus === ESignTaskStatus.COMPLETED) {
@@ -3718,6 +3746,13 @@ function isStage3ExtensionTask(task: ESignTaskWithDetails) {
   return (
     task.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION &&
     task.documentType === PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT
+  );
+}
+
+function isReturnManifestTask(task: ESignTaskWithDetails) {
+  return (
+    task.signingStage === PrismaESignSigningStage.STAGE6_RETURN_MANIFEST &&
+    task.documentType === PrismaESignDocumentType.RETURN_MANIFEST
   );
 }
 

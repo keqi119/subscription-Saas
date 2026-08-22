@@ -12,6 +12,18 @@ import {
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
+import {
+  bindSubscriptionClosureAuthorityConsumer,
+  consumeSubscriptionClosureAuthorityAttestation,
+  type ClosureAuthorityAttestation,
+  type SubscriptionClosureAuthoritySession
+} from "../subscription-closure/subscription-closure.repository";
+import { canonicalSubscriptionClosureJson } from "../subscription-closure/subscription-closure.domain";
+import {
+  VehicleMileageRepository,
+  type VehicleMileageCommandSource,
+  type VehicleMileageSourceCapability
+} from "./vehicle-mileage.repository";
 import { AppendVehicleMileageReadingInput } from "./vehicle-mileage.types";
 
 const PROJECTION_ONLY_SOURCES = new Set<VehicleMileageSourceType>([
@@ -19,20 +31,165 @@ const PROJECTION_ONLY_SOURCES = new Set<VehicleMileageSourceType>([
   VehicleMileageSourceType.LEGACY_MIGRATION
 ]);
 
+export type PreparedVehicleMileageAppendCommand = AppendVehicleMileageReadingInput &
+  Readonly<{
+    receiptVehicleStatus?: "MAINTENANCE" | "RETURNED";
+    source: VehicleMileageCommandSource;
+  }>;
+
+declare const vehicleMileageTransactionCapabilityBrand: unique symbol;
+export type VehicleMileageTransactionCapability = Readonly<{
+  [vehicleMileageTransactionCapabilityBrand]: true;
+}>;
+type VehicleMileageTransactionCapabilityState = Readonly<{
+  repositoryCapability: VehicleMileageSourceCapability;
+  source: VehicleMileageCommandSource;
+  transaction: Prisma.TransactionClient;
+}>;
+
+declare const preparedVehicleMileageAppendBrand: unique symbol;
+export type PreparedVehicleMileageAppendCapability = Readonly<{
+  [preparedVehicleMileageAppendBrand]: true;
+}>;
+type PreparedVehicleMileageAppendState = Readonly<{
+  command: PreparedVehicleMileageAppendCommand;
+  transaction: Prisma.TransactionClient;
+}>;
+
 @Injectable()
 export class VehicleMileageService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly closureAuthorityConsumer = Object.freeze({});
+  private readonly callerOwnedCapabilities = new WeakMap<
+    VehicleMileageTransactionCapability,
+    VehicleMileageTransactionCapabilityState
+  >();
+  private readonly preparedAppendCapabilities = new WeakMap<
+    PreparedVehicleMileageAppendCapability,
+    PreparedVehicleMileageAppendState
+  >();
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly repository: VehicleMileageRepository = new VehicleMileageRepository()
+  ) {}
+
+  async prepareCallerOwnedTransaction(
+    tx: Prisma.TransactionClient,
+    source: VehicleMileageCommandSource
+  ): Promise<VehicleMileageTransactionCapability> {
+    const normalized = normalizePreparedSource(source);
+    const repositoryCapability = await this.repository.prepareCallerOwnedCommand(tx, normalized);
+    const capability = Object.freeze({}) as VehicleMileageTransactionCapability;
+    this.callerOwnedCapabilities.set(
+      capability,
+      Object.freeze({ repositoryCapability, source: normalized, transaction: tx })
+    );
+    return capability;
+  }
+
+  appendAuthorityRequirement(
+    session: SubscriptionClosureAuthoritySession,
+    command: PreparedVehicleMileageAppendCommand,
+    key = "physical-mileage"
+  ) {
+    const normalized = normalizePreparedCommand(command);
+    return bindSubscriptionClosureAuthorityConsumer(
+      {
+        command: normalized as never,
+        key,
+        locks: [
+          { id: normalized.vehicleId, mode: "UPDATE" as const, table: "vehicle" as const },
+          ...(normalized.orderId
+            ? [
+                {
+                  id: normalized.orderId,
+                  mode: "SHARE" as const,
+                  table: "subscription_order" as const
+                }
+              ]
+            : []),
+          ...(normalized.confirmedBy
+            ? [{ id: normalized.confirmedBy, mode: "SHARE" as const, table: "user" as const }]
+            : [])
+        ]
+      },
+      this.closureAuthorityConsumer,
+      session
+    );
+  }
+
+  async attestPreparedAppendInTransaction(
+    tx: Prisma.TransactionClient,
+    session: SubscriptionClosureAuthoritySession,
+    command: PreparedVehicleMileageAppendCommand,
+    sourceCapability: VehicleMileageTransactionCapability,
+    attestation: ClosureAuthorityAttestation,
+    key = "physical-mileage"
+  ): Promise<PreparedVehicleMileageAppendCapability> {
+    const normalized = normalizePreparedCommand(command);
+    try {
+      consumeSubscriptionClosureAuthorityAttestation(
+        tx,
+        session,
+        attestation,
+        () => this.appendAuthorityRequirement(session, normalized, key),
+        null
+      );
+    } catch {
+      throw capabilityInvalid();
+    }
+    const state = this.callerOwnedCapabilities.get(sourceCapability);
+    this.callerOwnedCapabilities.delete(sourceCapability);
+    if (
+      !state ||
+      state.transaction !== tx ||
+      canonicalSubscriptionClosureJson(state.source as never) !==
+        canonicalSubscriptionClosureJson(normalized.source as never)
+    ) {
+      throw capabilityInvalid();
+    }
+    this.repository.attestCallerOwnedCommand(tx, normalized.source, state.repositoryCapability);
+    const capability = Object.freeze({}) as PreparedVehicleMileageAppendCapability;
+    this.preparedAppendCapabilities.set(
+      capability,
+      Object.freeze({ command: normalized, transaction: tx })
+    );
+    return capability;
+  }
+
+  async appendPreparedReadingInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: PreparedVehicleMileageAppendCapability
+  ): Promise<VehicleMileageReading> {
+    const state = this.preparedAppendCapabilities.get(capability);
+    this.preparedAppendCapabilities.delete(capability);
+    if (!state || state.transaction !== tx) throw capabilityInvalid();
+    const { receiptVehicleStatus, source: _source, ...input } = state.command;
+    void _source;
+    return this.appendConfirmedReadingCommand(tx, input, true, receiptVehicleStatus);
+  }
 
   async appendConfirmedReading(
     tx: Prisma.TransactionClient,
     input: AppendVehicleMileageReadingInput
   ): Promise<VehicleMileageReading> {
+    return this.appendConfirmedReadingCommand(tx, input, false);
+  }
+
+  private async appendConfirmedReadingCommand(
+    tx: Prisma.TransactionClient,
+    input: AppendVehicleMileageReadingInput,
+    authorityAlreadyLocked: boolean,
+    receiptVehicleStatus?: "MAINTENANCE" | "RETURNED"
+  ): Promise<VehicleMileageReading> {
     assertMileage(input.mileageKm);
     assertRecordedAt(input.recordedAt);
 
-    await tx.$queryRaw(
-      Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${input.vehicleId}::uuid FOR UPDATE`
-    );
+    if (!authorityAlreadyLocked) {
+      await tx.$queryRaw(
+        Prisma.sql`SELECT "id" FROM "vehicle" WHERE "id" = ${input.vehicleId}::uuid FOR UPDATE`
+      );
+    }
 
     const vehicle = await tx.vehicle.findUnique({ where: { id: input.vehicleId } });
     if (!vehicle || vehicle.deletedAt) {
@@ -48,6 +205,9 @@ export class VehicleMileageService {
       }
     });
     if (existing) {
+      if (existing.status !== VehicleMileageReadingStatus.ACTIVE) {
+        throw new ConflictException("同一来源单据的车辆里程记录已失效");
+      }
       if (sameBusinessReading(existing, input)) {
         return existing;
       }
@@ -92,11 +252,13 @@ export class VehicleMileageService {
       data: PROJECTION_ONLY_SOURCES.has(input.sourceType)
         ? {
             currentMileageKm: input.mileageKm,
+            ...(receiptVehicleStatus ? { status: receiptVehicleStatus } : {}),
             updatedBy: input.confirmedBy ?? undefined
           }
         : {
             currentMileageKm: input.mileageKm,
             salePriceReinitRequiredAt: now,
+            ...(receiptVehicleStatus ? { status: receiptVehicleStatus } : {}),
             updatedBy: input.confirmedBy ?? undefined
           },
       where: { id: input.vehicleId }
@@ -136,9 +298,7 @@ export class VehicleMileageService {
       }
     });
     if (latest?.id !== reading.id) {
-      throw new ConflictException(
-        "A later active mileage reading prevents this rollback."
-      );
+      throw new ConflictException("A later active mileage reading prevents this rollback.");
     }
     const previous = await tx.vehicleMileageReading.findFirst({
       orderBy: [{ recordedAt: "desc" }, { createdAt: "desc" }],
@@ -149,9 +309,7 @@ export class VehicleMileageService {
       }
     });
     if (!previous) {
-      throw new ConflictException(
-        "The preceding active mileage reading is unavailable."
-      );
+      throw new ConflictException("The preceding active mileage reading is unavailable.");
     }
 
     await tx.vehicleMileageReading.update({
@@ -184,6 +342,43 @@ export class VehicleMileageService {
       where: { vehicleId }
     });
   }
+}
+
+function normalizePreparedCommand(
+  command: PreparedVehicleMileageAppendCommand
+): PreparedVehicleMileageAppendCommand {
+  assertMileage(command.mileageKm);
+  assertRecordedAt(command.recordedAt);
+  return Object.freeze({
+    confirmedBy: command.confirmedBy ?? null,
+    evidenceSnapshot:
+      command.evidenceSnapshot === undefined
+        ? undefined
+        : (structuredClone(command.evidenceSnapshot) as Prisma.InputJsonValue),
+    mileageKm: command.mileageKm,
+    orderId: command.orderId ?? null,
+    recordedAt: new Date(command.recordedAt),
+    receiptVehicleStatus: command.receiptVehicleStatus,
+    source: normalizePreparedSource(command.source),
+    sourceRecordId: command.sourceRecordId,
+    sourceType: command.sourceType,
+    vehicleId: command.vehicleId
+  });
+}
+
+function normalizePreparedSource(source: VehicleMileageCommandSource): VehicleMileageCommandSource {
+  return Object.freeze({
+    id: source.id.trim().toLowerCase(),
+    key: source.key.trim(),
+    type: source.type.trim().toUpperCase()
+  });
+}
+
+function capabilityInvalid() {
+  return new ConflictException({
+    code: "VEHICLE_MILEAGE_CAPABILITY_INVALID",
+    message: "The caller-owned vehicle-mileage capability is invalid."
+  });
 }
 
 function assertMileage(mileageKm: number) {

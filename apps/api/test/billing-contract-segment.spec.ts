@@ -176,6 +176,7 @@ function createHarness(
     status: SubscriptionChangeStatus.SCHEDULED
   };
   const tx = {
+    $queryRaw: vi.fn(async () => [{ id: "locked" }]),
     auditLog: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data)
     },

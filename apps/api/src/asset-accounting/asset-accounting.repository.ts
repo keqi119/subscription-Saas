@@ -30,6 +30,7 @@ import type {
 } from "./asset-accounting.types";
 
 export const ASSET_ACCOUNTING_ERROR_CODE = {
+  CALLER_CAPABILITY_INVALID: "ASSET_ACCOUNTING_CALLER_CAPABILITY_INVALID",
   APPROVAL_ALREADY_LIVE: "ASSET_ACCOUNTING_APPROVAL_ALREADY_LIVE",
   APPROVAL_NOT_FOUND: "ASSET_ACCOUNTING_APPROVAL_NOT_FOUND",
   APPROVAL_SNAPSHOT_MISMATCH: "ASSET_ACCOUNTING_APPROVAL_SNAPSHOT_MISMATCH",
@@ -45,6 +46,7 @@ export const ASSET_ACCOUNTING_ERROR_CODE = {
   INVALID_APPROVAL_COMMAND: "ASSET_ACCOUNTING_INVALID_APPROVAL_COMMAND",
   REVERSAL_ALREADY_EXISTS: "ASSET_ACCOUNTING_REVERSAL_ALREADY_EXISTS",
   REVERSAL_INVALID: "ASSET_ACCOUNTING_REVERSAL_INVALID",
+  SETTLEMENT_CLOSED: "ASSET_ACCOUNTING_SETTLEMENT_CLOSED",
   SOURCE_CONFLICT: "ASSET_ACCOUNTING_SOURCE_CONFLICT",
   SELF_APPROVAL_FORBIDDEN: "ASSET_ACCOUNTING_SELF_APPROVAL_FORBIDDEN",
   TRANSACTION_REQUIRED: "ASSET_ACCOUNTING_TRANSACTION_REQUIRED",
@@ -56,6 +58,8 @@ type AssetAccountingErrorCode =
   (typeof ASSET_ACCOUNTING_ERROR_CODE)[keyof typeof ASSET_ACCOUNTING_ERROR_CODE];
 
 const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
+  [ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID]:
+    "The caller-owned asset-accounting command capability is invalid.",
   [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE]:
     "A live exception approval already exists for this subject field and snapshot.",
   [ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND]: "The exception approval was not found.",
@@ -83,6 +87,8 @@ const ERROR_MESSAGES: Readonly<Record<AssetAccountingErrorCode, string>> = {
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_ALREADY_EXISTS]:
     "The vehicle cost ledger entry already has a reversal.",
   [ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID]: "The requested vehicle cost reversal is invalid.",
+  [ASSET_ACCOUNTING_ERROR_CODE.SETTLEMENT_CLOSED]:
+    "Settlement-participating ledger facts cannot change after the closure is terminal.",
   [ASSET_ACCOUNTING_ERROR_CODE.SOURCE_CONFLICT]:
     "The stable asset-accounting source is already bound to a different command or payload.",
   [ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN]:
@@ -131,6 +137,38 @@ export interface AssetAccountingCostCommandOutcome {
   readonly outcome: VehicleCostLedgerEntrySnapshot;
   readonly wrote: boolean;
 }
+
+declare const assetAccountingCallerOwnedCapabilityBrand: unique symbol;
+export type AssetAccountingCallerOwnedCommandCapability = Readonly<{
+  [assetAccountingCallerOwnedCapabilityBrand]: true;
+}>;
+type AssetAccountingCallerOwnedCommandCapabilityState = Readonly<{
+  source: AssetAccountingSource;
+  transaction: Prisma.TransactionClient;
+}>;
+declare const assetAccountingPreparedApprovalRepositoryCapabilityBrand: unique symbol;
+export type AssetAccountingPreparedApprovalRepositoryCapability = Readonly<{
+  [assetAccountingPreparedApprovalRepositoryCapabilityBrand]: true;
+}>;
+type AssetAccountingPreparedApprovalRepositoryCapabilityState =
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: RequireCurrentApprovedExceptionCommand;
+      kind: "require";
+      transaction: Prisma.TransactionClient;
+    }>
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: RequestExceptionApprovalCommand;
+      kind: "request";
+      transaction: Prisma.TransactionClient;
+    }>
+  | Readonly<{
+      authorityLockFingerprint: string;
+      command: DecideExceptionApprovalCommand;
+      kind: "decision";
+      transaction: Prisma.TransactionClient;
+    }>;
 
 export interface BusinessExceptionSubjectIdentity {
   readonly subjectType: BusinessExceptionSubjectType;
@@ -227,6 +265,7 @@ type AuthorityTable =
   | "asset_work_order_evidence"
   | "contract"
   | "customer"
+  | "subscription_closure_case"
   | "subscription_order"
   | "user"
   | "vehicle";
@@ -293,6 +332,20 @@ export function businessExceptionSubjectLockIdentity(
   ]);
 }
 
+export function canonicalRequireCurrentApprovedExceptionCommand(
+  command: RequireCurrentApprovedExceptionCommand
+) {
+  return normalizeRequireCurrentCommand(command);
+}
+
+export function canonicalRequestExceptionApprovalCommand(command: RequestExceptionApprovalCommand) {
+  return normalizeRequestApprovalCommand(command);
+}
+
+export function canonicalDecideExceptionApprovalCommand(command: DecideExceptionApprovalCommand) {
+  return normalizeDecisionCommand(command);
+}
+
 /**
  * Immutable vehicle-cost persistence. Mutations require a caller-owned
  * PostgreSQL READ COMMITTED interactive transaction; this repository never
@@ -300,6 +353,15 @@ export function businessExceptionSubjectLockIdentity(
  */
 @Injectable()
 export class AssetAccountingRepository {
+  private readonly callerOwnedCommandCapabilities = new WeakMap<
+    AssetAccountingCallerOwnedCommandCapability,
+    AssetAccountingCallerOwnedCommandCapabilityState
+  >();
+  private readonly preparedApprovalCapabilities = new WeakMap<
+    AssetAccountingPreparedApprovalRepositoryCapability,
+    AssetAccountingPreparedApprovalRepositoryCapabilityState
+  >();
+
   async lockExceptionApproval(
     tx: Prisma.TransactionClient,
     approvalId: string
@@ -320,6 +382,20 @@ export class AssetAccountingRepository {
     );
   }
 
+  async prepareCallerOwnedCommand(
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ): Promise<AssetAccountingCallerOwnedCommandCapability> {
+    const normalized = canonicalAssetAccountingSource(source);
+    await this.lockSourceOwnership(tx, normalized);
+    const capability = Object.freeze({}) as AssetAccountingCallerOwnedCommandCapability;
+    this.callerOwnedCommandCapabilities.set(
+      capability,
+      Object.freeze({ source: normalized, transaction: tx })
+    );
+    return capability;
+  }
+
   async lockBusinessExceptionSourceAndSubject(
     tx: Prisma.TransactionClient,
     source: AssetAccountingSource,
@@ -335,23 +411,46 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: RequestExceptionApprovalCommand
   ): Promise<AssetAccountingApprovalCommandOutcome> {
+    return this.executeRequestExceptionApproval(tx, command, false, false);
+  }
+
+  private async executeRequestExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
     const normalized = normalizeRequestApprovalCommand(command);
     const payload = requestApprovalPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) await this.lockSourceOwnership(tx, normalized.source);
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_REQUEST", payload);
     if (replay) return replay;
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    if (!authorityAlreadyLocked) await takeBusinessExceptionSubjectLock(tx, normalized.subject);
     const subjectSnapshotHash = hashBusinessExceptionSnapshot(normalized.authoritySnapshot);
-    const liveApprovalId = await lockLiveApprovalForSnapshot(
-      tx,
-      normalized.subject,
-      subjectSnapshotHash
-    );
+    const liveApprovalId = authorityAlreadyLocked
+      ? ((
+          await tx.businessExceptionApproval.findFirst({
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            select: { id: true },
+            where: {
+              status: { in: ["PENDING", "APPROVED"] },
+              subjectField: normalized.subject.subjectField,
+              subjectId: normalized.subject.subjectId,
+              subjectSnapshotHash,
+              subjectType: normalized.subject.subjectType
+            }
+          })
+        )?.id ?? null)
+      : await lockLiveApprovalForSnapshot(tx, normalized.subject, subjectSnapshotHash);
     if (liveApprovalId) {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_ALREADY_LIVE);
     }
-    await lockAndValidateApprovalActor(tx, normalized.requestedBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.requestedBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.requestedBy);
+    }
 
     const id = randomUUID();
     try {
@@ -403,14 +502,25 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: DecideExceptionApprovalCommand
   ): Promise<AssetAccountingApprovalCommandOutcome> {
+    return this.executeDecideExceptionApproval(tx, command, false, false);
+  }
+
+  private async executeDecideExceptionApproval(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
     const normalized = normalizeDecisionCommand(command);
     const payload = decisionPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) await this.lockSourceOwnership(tx, normalized.source);
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_DECIDE", payload);
     if (replay) return replay;
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
-    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    if (!authorityAlreadyLocked) await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    const approval = authorityAlreadyLocked
+      ? await loadApproval(tx, normalized.approvalId)
+      : await lockAndLoadApproval(tx, normalized.approvalId);
     validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
     validateApprovalVersion(approval, normalized.expectedVersion);
     if (approval.status !== "PENDING") {
@@ -420,7 +530,11 @@ export class AssetAccountingRepository {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SELF_APPROVAL_FORBIDDEN);
     }
     validateApprovalSnapshot(approval, normalized.authoritySnapshot);
-    await lockAndValidateApprovalActor(tx, normalized.decidedBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.decidedBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.decidedBy);
+    }
 
     try {
       const decided = await tx.businessExceptionApproval.update({
@@ -476,14 +590,152 @@ export class AssetAccountingRepository {
     tx: Prisma.TransactionClient,
     command: RequireCurrentApprovedExceptionCommand
   ): Promise<RequireCurrentApprovedExceptionOutcome> {
+    return this.executeRequireCurrentApprovedException(tx, command, false, false);
+  }
+
+  async prepareApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeRequireCurrentCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        kind: "require",
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async requirePreparedApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<RequireCurrentApprovedExceptionOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.kind !== "require" ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeRequireCurrentApprovedException(tx, state.command, true, true);
+  }
+
+  async prepareApprovalRequestInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeRequestApprovalCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        kind: "request",
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async requestPreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.kind !== "request" ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeRequestExceptionApproval(tx, state.command, true, true);
+  }
+
+  async prepareApprovalDecisionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand,
+    sourceCapability: AssetAccountingCallerOwnedCommandCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingPreparedApprovalRepositoryCapability> {
+    const sourceState = this.takeCallerOwnedCommandCapability(sourceCapability);
+    const normalized = normalizeDecisionCommand(command);
+    const fingerprint = preparedApprovalLockFingerprint(authorityLockFingerprint);
+    this.assertCallerOwnedCommandCapability(sourceState, tx, normalized.source);
+    const capability = Object.freeze({}) as AssetAccountingPreparedApprovalRepositoryCapability;
+    this.preparedApprovalCapabilities.set(
+      capability,
+      Object.freeze({
+        authorityLockFingerprint: fingerprint,
+        command: structuredClone(normalized),
+        kind: "decision",
+        transaction: tx
+      })
+    );
+    return capability;
+  }
+
+  async decidePreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: AssetAccountingPreparedApprovalRepositoryCapability,
+    authorityLockFingerprint: string
+  ): Promise<AssetAccountingApprovalCommandOutcome> {
+    const state = this.preparedApprovalCapabilities.get(capability);
+    this.preparedApprovalCapabilities.delete(capability);
+    if (
+      !state ||
+      state.kind !== "decision" ||
+      state.transaction !== tx ||
+      state.authorityLockFingerprint !== preparedApprovalLockFingerprint(authorityLockFingerprint)
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+    return this.executeDecideExceptionApproval(tx, state.command, true, true);
+  }
+
+  private async executeRequireCurrentApprovedException(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand,
+    sourceAlreadyLocked: boolean,
+    authorityAlreadyLocked: boolean
+  ): Promise<RequireCurrentApprovedExceptionOutcome> {
     const normalized = normalizeRequireCurrentCommand(command);
     const payload = requireCurrentPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (!sourceAlreadyLocked) {
+      await this.lockSourceOwnership(tx, normalized.source);
+    }
     const replay = await replayApprovalReceipt(tx, normalized.source, "EXCEPTION_EXPIRE", payload);
     if (replay) return { expiredApproval: replay.outcome, valid: false };
 
-    await takeBusinessExceptionSubjectLock(tx, normalized.subject);
-    const approval = await lockAndLoadApproval(tx, normalized.approvalId);
+    if (!authorityAlreadyLocked) {
+      await takeBusinessExceptionSubjectLock(tx, normalized.subject);
+    }
+    const approval = authorityAlreadyLocked
+      ? await loadApproval(tx, normalized.approvalId)
+      : await lockAndLoadApproval(tx, normalized.approvalId);
     validateApprovalIdentity(approval, normalized.exceptionType, normalized.subject);
     validateApprovalVersion(approval, normalized.expectedVersion);
     if (approval.status !== "APPROVED") {
@@ -492,24 +744,46 @@ export class AssetAccountingRepository {
     if (approvalHasSnapshot(approval, normalized.authoritySnapshot)) {
       return { approval: projectApproval(approval), valid: true };
     }
-    await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+    if (authorityAlreadyLocked) {
+      await validateApprovalActor(tx, normalized.expiredBy);
+    } else {
+      await lockAndValidateApprovalActor(tx, normalized.expiredBy);
+    }
     const expired = await expireLockedApproval(tx, normalized, payload, approval);
     return { expiredApproval: expired.outcome, valid: false };
   }
 
   async appendCostEntry(
     tx: Prisma.TransactionClient,
-    command: AppendCostEntryCommand
+    command: AppendCostEntryCommand,
+    capability?: AssetAccountingCallerOwnedCommandCapability,
+    authorityAlreadyLocked = false
   ): Promise<AssetAccountingCostCommandOutcome> {
+    const capabilityState = capability
+      ? this.takeCallerOwnedCommandCapability(capability)
+      : undefined;
     const normalized = normalizeAppendCommand(command);
     const payload = appendPayload(normalized);
-    await this.lockSourceOwnership(tx, normalized.source);
+    if (capabilityState) {
+      this.assertCallerOwnedCommandCapability(capabilityState, tx, normalized.source);
+    } else {
+      await this.lockSourceOwnership(tx, normalized.source);
+    }
     const replay = await replayReceipt(tx, normalized.source, "COST_APPEND", payload);
     if (replay) return replay;
 
     const authoritativeOrderId = await contractAuthoritativeOrderId(tx, normalized.contractId);
-    await lockAuthorityRows(tx, appendAuthorityLocks(normalized, authoritativeOrderId));
+    const settlementOrderId = normalized.orderId ?? authoritativeOrderId;
+    const closureCaseId = await settlementClosureCaseId(tx, settlementOrderId);
+    if (!authorityAlreadyLocked) {
+      await lockAuthorityRows(
+        tx,
+        appendAuthorityLocks(normalized, authoritativeOrderId, closureCaseId),
+        capabilityState || closureCaseId ? CALLER_OWNED_AUTHORITY_RANK : undefined
+      );
+    }
     await validateAppendAuthorities(tx, normalized, authoritativeOrderId);
+    await assertSettlementLedgerOpen(tx, settlementOrderId);
 
     try {
       const entry = await tx.vehicleCostLedgerEntry.create({
@@ -557,6 +831,30 @@ export class AssetAccountingRepository {
     }
   }
 
+  private takeCallerOwnedCommandCapability(
+    capability: AssetAccountingCallerOwnedCommandCapability
+  ): AssetAccountingCallerOwnedCommandCapabilityState {
+    const state = this.callerOwnedCommandCapabilities.get(capability);
+    this.callerOwnedCommandCapabilities.delete(capability);
+    if (!state) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    return state;
+  }
+
+  private assertCallerOwnedCommandCapability(
+    state: AssetAccountingCallerOwnedCommandCapabilityState,
+    tx: Prisma.TransactionClient,
+    source: AssetAccountingSource
+  ) {
+    if (
+      state.transaction !== tx ||
+      state.source.id !== source.id ||
+      state.source.key !== source.key ||
+      state.source.type !== source.type
+    ) {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+    }
+  }
+
   async reverseCostEntry(
     tx: Prisma.TransactionClient,
     command: ReverseCostEntryCommand
@@ -567,7 +865,29 @@ export class AssetAccountingRepository {
     const replay = await replayReceipt(tx, normalized.source, "COST_REVERSE", payload);
     if (replay) return replay;
 
-    await lockOriginalEntry(tx, normalized.originalEntryId);
+    const observedOriginal = await tx.vehicleCostLedgerEntry.findUnique({
+      where: { id: normalized.originalEntryId }
+    });
+    if (!observedOriginal) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.COST_ENTRY_NOT_FOUND);
+    if (observedOriginal.entryKind !== "ORIGINAL") {
+      throw conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
+    }
+
+    const closureCaseId = await settlementClosureCaseId(tx, observedOriginal.orderId);
+    if (closureCaseId) {
+      await lockAuthorityRows(
+        tx,
+        reverseAuthorityLocks(observedOriginal, normalized.actorId, closureCaseId),
+        CALLER_OWNED_AUTHORITY_RANK
+      );
+      await lockOriginalEntry(tx, normalized.originalEntryId);
+    } else {
+      await lockOriginalEntry(tx, normalized.originalEntryId);
+      await lockAuthorityRows(
+        tx,
+        reverseAuthorityLocks(observedOriginal, normalized.actorId, null)
+      );
+    }
     const original = await tx.vehicleCostLedgerEntry.findUnique({
       where: { id: normalized.originalEntryId }
     });
@@ -575,9 +895,8 @@ export class AssetAccountingRepository {
     if (original.entryKind !== "ORIGINAL") {
       throw conflict(ASSET_ACCOUNTING_ERROR_CODE.REVERSAL_INVALID);
     }
-
-    await lockAuthorityRows(tx, reverseAuthorityLocks(original, normalized.actorId));
     await validateReverseActor(tx, normalized.actorId);
+    await assertSettlementLedgerOpen(tx, original.orderId);
     await assertClosedWorkOrderRetainsActualCost(tx, original);
 
     try {
@@ -795,6 +1114,13 @@ function normalizeApprovalSource(source: AssetAccountingSource) {
   }
 }
 
+function preparedApprovalLockFingerprint(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 255) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.CALLER_CAPABILITY_INVALID);
+  }
+  return value;
+}
+
 function normalizeApprovalSnapshot(snapshot: unknown): Prisma.JsonObject {
   try {
     return normalizeSnapshot(snapshot);
@@ -979,13 +1305,21 @@ async function lockAndLoadApproval(tx: Prisma.TransactionClient, approvalId: str
     }
     throw error;
   }
+  return loadApproval(tx, approvalId);
+}
+
+async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
+  await lockAuthorityRows(tx, [{ id: actorId, mode: "SHARE", table: "user" }]);
+  await validateApprovalActor(tx, actorId);
+}
+
+async function loadApproval(tx: Prisma.TransactionClient, approvalId: string) {
   const approval = await tx.businessExceptionApproval.findUnique({ where: { id: approvalId } });
   if (!approval) throw conflict(ASSET_ACCOUNTING_ERROR_CODE.APPROVAL_NOT_FOUND);
   return approval;
 }
 
-async function lockAndValidateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
-  await lockAuthorityRows(tx, [{ id: actorId, mode: "SHARE", table: "user" }]);
+async function validateApprovalActor(tx: Prisma.TransactionClient, actorId: string) {
   const actor = await tx.user.findUnique({ where: { id: actorId } });
   requireAuthority(actor, isLiveUser(actor));
 }
@@ -1224,9 +1558,11 @@ async function createApprovalReceipt(
 
 function appendAuthorityLocks(
   command: NormalizedAppendCommand,
-  authoritativeOrderId: string | null
+  authoritativeOrderId: string | null,
+  closureCaseId: string | null
 ): AuthorityLock[] {
   return compactLocks([
+    lock(closureCaseId, "subscription_closure_case", "UPDATE"),
     lock(command.assetOwnerId, "asset_owner"),
     lock(command.workOrderId, "asset_work_order"),
     lock(command.evidenceId, "asset_work_order_evidence"),
@@ -1241,8 +1577,13 @@ function appendAuthorityLocks(
   ]);
 }
 
-function reverseAuthorityLocks(original: VehicleCostLedgerEntry, actorId: string): AuthorityLock[] {
+function reverseAuthorityLocks(
+  original: VehicleCostLedgerEntry,
+  actorId: string,
+  closureCaseId: string | null
+): AuthorityLock[] {
   return compactLocks([
+    lock(closureCaseId, "subscription_closure_case", "UPDATE"),
     lock(original.workOrderId, "asset_work_order", "UPDATE"),
     lock(actorId, "user")
   ]);
@@ -1263,7 +1604,22 @@ function lock(
   return id ? { id, mode, table } : null;
 }
 
-function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock[] {
+const CALLER_OWNED_AUTHORITY_RANK: Readonly<Partial<Record<AuthorityTable, number>>> = {
+  subscription_closure_case: 10,
+  subscription_order: 20,
+  vehicle: 30,
+  contract: 50,
+  asset_work_order: 120,
+  asset_owner: 140,
+  asset_work_order_evidence: 145,
+  customer: 180,
+  user: 210
+};
+
+function compactLocks(
+  locks: ReadonlyArray<AuthorityLock | null>,
+  rank?: Readonly<Partial<Record<AuthorityTable, number>>>
+): AuthorityLock[] {
   const unique = new Map<string, AuthorityLock>();
   for (const item of locks) {
     if (!item) continue;
@@ -1271,14 +1627,24 @@ function compactLocks(locks: ReadonlyArray<AuthorityLock | null>): AuthorityLock
     const existing = unique.get(key);
     if (!existing || item.mode === "UPDATE") unique.set(key, item);
   }
-  return [...unique.values()].sort((left, right) =>
-    left.table === right.table ? compare(left.id, right.id) : compare(left.table, right.table)
-  );
+  return [...unique.values()].sort((left, right) => {
+    if (rank) {
+      const rankDifference = (rank[left.table] ?? 1_000) - (rank[right.table] ?? 1_000);
+      if (rankDifference) return rankDifference;
+    }
+    return left.table === right.table
+      ? compare(left.id, right.id)
+      : compare(left.table, right.table);
+  });
 }
 
-async function lockAuthorityRows(tx: Prisma.TransactionClient, locks: readonly AuthorityLock[]) {
+async function lockAuthorityRows(
+  tx: Prisma.TransactionClient,
+  locks: readonly AuthorityLock[],
+  rank?: Readonly<Partial<Record<AuthorityTable, number>>>
+) {
   try {
-    for (const item of locks) {
+    for (const item of compactLocks(locks, rank)) {
       const query =
         item.mode === "UPDATE"
           ? Prisma.sql`SELECT "id" FROM ${Prisma.raw(`"${item.table}"`)} WHERE "id" = ${item.id}::uuid FOR UPDATE NOWAIT`
@@ -1414,6 +1780,32 @@ async function contractAuthoritativeOrderId(
     where: { id: contractId }
   });
   return contract?.orderId ?? null;
+}
+
+async function settlementClosureCaseId(
+  tx: Prisma.TransactionClient,
+  orderId: string | null | undefined
+) {
+  if (!orderId) return null;
+  const closureCase = await tx.subscriptionClosureCase.findFirst({
+    select: { id: true },
+    where: { orderId, retiredAt: null }
+  });
+  return closureCase?.id ?? null;
+}
+
+async function assertSettlementLedgerOpen(
+  tx: Prisma.TransactionClient,
+  orderId: string | null | undefined
+) {
+  if (!orderId) return;
+  const closureCase = await tx.subscriptionClosureCase.findFirst({
+    select: { status: true },
+    where: { orderId, retiredAt: null }
+  });
+  if (closureCase && (closureCase.status === "COMPLETED" || closureCase.status === "TERMINATED")) {
+    throw conflict(ASSET_ACCOUNTING_ERROR_CODE.SETTLEMENT_CLOSED);
+  }
 }
 
 async function validateReverseActor(tx: Prisma.TransactionClient, actorId: string) {

@@ -4,9 +4,8 @@ import {
   EntitlementAccountStatus,
   LeaseStatus,
   OrderStatus,
+  Prisma,
   RenewalConsiderationStatus,
-  SubscriptionAutomationJobStatus,
-  SubscriptionAutomationJobType,
   SubscriptionChangeStatus,
   VehicleReturnStatus,
   VehicleStatus
@@ -16,7 +15,94 @@ import { describe, expect, it, vi } from "vitest";
 import { SubscriptionExpiryService } from "../src/subscription-change/subscription-expiry.service";
 
 describe("SubscriptionExpiryService", () => {
-  it("moves an unsigned expiring subscription to return due without touching existing money or mandate facts", async () => {
+  it("runs the governed normal-closure preparation and completion around the existing expiry facts", async () => {
+    const timeline: string[] = [];
+    const harness = createExpiryHarness({ timeline });
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).resolves.toEqual({ outcome: "EXPIRED", returnId: "return-1" });
+
+    expect(harness.closureOrchestrator.prepareNormalExpiryInTransaction).toHaveBeenCalledTimes(1);
+    expect(harness.prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+    });
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderId: "order-1",
+        segmentId: "segment-active",
+        vehicleReturnId: "return-1"
+      }),
+      harness.normalExpiryCapability
+    );
+    expect(
+      harness.closureOrchestrator.scheduleRecoveryAssessmentInTransaction
+    ).toHaveBeenCalledWith(expect.anything(), {
+      closureCaseId: "closure-1",
+      orderId: "order-1",
+      scheduledAt: new Date("2026-09-02T16:00:00.000Z")
+    });
+    expect(timeline).not.toContain("expiry:lock");
+    expect(timeline.indexOf("closure:prepare")).toBeLessThan(
+      timeline.indexOf("vehicle-return:create")
+    );
+    expect(timeline.indexOf("vehicle-return:create")).toBeLessThan(
+      timeline.indexOf("closure:complete")
+    );
+  });
+
+  it("maps the exact Prisma adapter NOWAIT error to a stable expiry authority conflict", async () => {
+    const harness = createExpiryHarness();
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce({
+      code: "P2010",
+      meta: {
+        driverAdapterError: {
+          cause: { originalCode: "55P03" }
+        }
+      }
+    });
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY" },
+      status: 409
+    });
+  });
+
+  it.each([
+    "SUBSCRIPTION_CLOSURE_AUTHORITY_BUSY",
+    "HANDOVER_RETURN_INBOUND_AUTHORITY_BUSY",
+    "ASSET_OPERATION_AUTHORITY_BUSY"
+  ])("maps known governed %s conflicts at the expiry boundary", async (code) => {
+    const harness = createExpiryHarness();
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce({
+      response: { code },
+      status: 409
+    });
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_EXPIRY_AUTHORITY_BUSY" },
+      status: 409
+    });
+  });
+
+  it("preserves non-busy closure failures at the expiry boundary", async () => {
+    const harness = createExpiryHarness();
+    const failure = {
+      response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+      status: 409
+    };
+    harness.closureOrchestrator.prepareNormalExpiryInTransaction.mockRejectedValueOnce(failure);
+
+    await expect(
+      harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"))
+    ).rejects.toBe(failure);
+  });
+  it("moves an unsigned expiring subscription to return due and delegates boundary stops to the governed closure", async () => {
     const harness = createExpiryHarness();
 
     await expect(
@@ -30,8 +116,8 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.state.order.orderStatus).toBe(OrderStatus.PENDING_RETURN);
     expect(harness.state.lease.status).toBe(LeaseStatus.RETURN_DUE);
     expect(harness.state.vehicle.status).toBe(VehicleStatus.LEASED);
-    expect(harness.state.schedule.status).toBe(BillingScheduleStatus.COMPLETED);
-    expect(harness.state.account.accountStatus).toBe(EntitlementAccountStatus.CLOSED);
+    expect(harness.state.schedule.status).toBe(BillingScheduleStatus.ACTIVE);
+    expect(harness.state.account.accountStatus).toBe(EntitlementAccountStatus.ACTIVE);
     expect(harness.state.vehicleReturn).toMatchObject({
       orderId: "order-1",
       returnStatus: VehicleReturnStatus.PENDING,
@@ -40,28 +126,8 @@ describe("SubscriptionExpiryService", () => {
     expect(harness.state.mandate).toEqual({ id: "mandate-1", status: "ACTIVE" });
     expect(harness.state.bill).toEqual({ id: "bill-1", remainingAmount: 100n });
     expect(harness.state.collectionCase).toEqual({ id: "collection-1", status: "ACTIVE" });
-    expect(harness.cancelledJobsWhere[0]).toMatchObject({
-      billId: null,
-      jobStatus: {
-        in: expect.arrayContaining([
-          SubscriptionAutomationJobStatus.PENDING,
-          SubscriptionAutomationJobStatus.PROCESSING
-        ])
-      },
-      jobType: {
-        in: expect.arrayContaining([
-          SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
-          SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW
-        ])
-      },
-      orderId: "order-1"
-    });
-    expect(harness.cancelledJobsWhere[1]).toMatchObject({
-      billId: null,
-      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-      orderId: "order-1",
-      payload: { path: ["periodStart"], gt: "2026-09-02" }
-    });
+    expect(harness.cancelledJobsWhere).toEqual([]);
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(1);
     expect(harness.notifications.notifyRenewalExpiryInApp).toHaveBeenCalledTimes(1);
   });
 
@@ -111,7 +177,7 @@ describe("SubscriptionExpiryService", () => {
     });
   });
 
-  it("keeps an earned final rent cycle active while cancelling only post-expiry cycles", async () => {
+  it("does not duplicate the closure owner's earned-versus-future boundary writes", async () => {
     const harness = createExpiryHarness({
       nextPeriodStart: new Date("2026-08-02T00:00:00.000Z")
     });
@@ -119,10 +185,8 @@ describe("SubscriptionExpiryService", () => {
     await harness.service.expireSegment("segment-active", new Date("2026-09-02T16:00:00.000Z"));
 
     expect(harness.state.schedule.status).toBe(BillingScheduleStatus.ACTIVE);
-    expect(harness.cancelledJobsWhere[1]).toMatchObject({
-      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-      payload: { path: ["periodStart"], gt: "2026-09-02" }
-    });
+    expect(harness.cancelledJobsWhere).toEqual([]);
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(1);
   });
 
   it("lets a previously committed scheduled extension win the deadline race", async () => {
@@ -154,6 +218,11 @@ describe("SubscriptionExpiryService", () => {
     });
 
     expect(harness.vehicleReturnCreate).toHaveBeenCalledTimes(1);
+    expect(harness.closureOrchestrator.prepareNormalExpiryInTransaction).toHaveBeenCalledTimes(2);
+    expect(harness.closureOrchestrator.completeNormalExpiryInTransaction).toHaveBeenCalledTimes(2);
+    expect(
+      harness.closureOrchestrator.scheduleRecoveryAssessmentInTransaction
+    ).toHaveBeenCalledTimes(2);
     expect(harness.notifications.notifyRenewalExpiryInApp).toHaveBeenCalledTimes(2);
   });
 
@@ -184,11 +253,31 @@ function createExpiryHarness(
     changeStatus?: SubscriptionChangeStatus;
     considerationStatus?: RenewalConsiderationStatus;
     databaseNow?: Date;
+    lockError?: unknown;
     nextSegment?: Record<string, unknown> | null;
     nextPeriodStart?: Date;
+    timeline?: string[];
   } = {}
 ) {
   const cancelledJobsWhere: Array<Record<string, unknown>> = [];
+  const normalExpiryCapability = Object.freeze({ kind: "normal-expiry" });
+  const closureOrchestrator = {
+    completeNormalExpiryInTransaction: vi.fn(async () => {
+      options.timeline?.push("closure:complete");
+      return {
+        closureCaseId: "closure-1",
+        returnAssetWorkOrderId: "asset-work-order-1",
+        returnHandoverWorkOrderId: "handover-work-order-1",
+        returnManifestRevisionId: "return-manifest-1"
+      };
+    }),
+    prepareNormalExpiryInTransaction: vi.fn(async () => {
+      options.timeline?.push("closure:prepare");
+      return normalExpiryCapability;
+    }),
+    preparedNormalExpiryVehicleReturnId: vi.fn(() => "return-1"),
+    scheduleRecoveryAssessmentInTransaction: vi.fn(async () => ({ scheduled: true }))
+  };
   const state = {
     account: { accountStatus: EntitlementAccountStatus.ACTIVE, id: "account-1" },
     bill: { id: "bill-1", remainingAmount: 100n },
@@ -230,16 +319,20 @@ function createExpiryHarness(
     vehicleReturn: null as Record<string, unknown> | null
   };
   const vehicleReturnCreate = vi.fn(async ({ data }) => {
+    options.timeline?.push("vehicle-return:create");
     state.vehicleReturn = { ...data, id: "return-1" };
     return state.vehicleReturn;
   });
   const receivableBillCreate = vi.fn();
   const tx = {
-    $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) =>
-      query.strings?.join(" ").includes("clock_timestamp")
-        ? [{ now: options.databaseNow ?? new Date("2026-09-02T16:00:00.000Z") }]
-        : [{ id: "locked" }]
-    ),
+    $queryRaw: vi.fn(async (query: { strings?: readonly string[] }) => {
+      if (query.strings?.join(" ").includes("clock_timestamp")) {
+        return [{ now: options.databaseNow ?? new Date("2026-09-02T16:00:00.000Z") }];
+      }
+      if (options.lockError) throw options.lockError;
+      options.timeline?.push("expiry:lock");
+      return [{ id: "locked" }];
+    }),
     billingSchedule: {
       findUnique: vi.fn(async () => state.schedule),
       updateMany: vi.fn(async ({ data }) => {
@@ -324,12 +417,15 @@ function createExpiryHarness(
   const service = new SubscriptionExpiryService(
     prisma as never,
     notifications as never,
-    auditService as never
+    auditService as never,
+    closureOrchestrator as never
   );
   return {
     auditService,
     cancelledJobsWhere,
+    closureOrchestrator,
     notifications,
+    normalExpiryCapability,
     prisma,
     receivableBillCreate,
     service,

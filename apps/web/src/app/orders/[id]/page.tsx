@@ -133,6 +133,8 @@ import {
   type OrderWorkspaceTabKey
 } from "../../../lib/admin-order-workspace";
 import type { AuthMeResponse } from "../../../lib/auth";
+import { loadAdminSubscriptionClosureByOrder } from "../../../lib/subscription-closure-api";
+import type { AdminSubscriptionClosureView } from "../../../lib/subscription-closure-view-model";
 import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 import {
   listSubscriptionChangesForOrder,
@@ -4472,6 +4474,112 @@ interface WorkspaceDomainLoadState {
   loading: boolean;
 }
 
+function SubscriptionClosureAdminPanel({
+  closure
+}: {
+  closure: AdminSubscriptionClosureView | null;
+}) {
+  if (!closure) return null;
+
+  return (
+    <Card title="订阅闭环">
+      <Descriptions
+        column={{ xs: 1, md: 2, xl: 3 }}
+        items={[
+          { label: "闭环编号", children: closure.caseNo },
+          { label: "闭环类型", children: closure.closureType },
+          { label: "当前状态", children: closure.status },
+          { label: "物理控制", children: closure.physicalControlMode ?? "-" },
+          { label: "最终处置", children: closure.finalDisposition ?? "-" },
+          {
+            label: "允许操作",
+            children: closure.allowedActions.length
+              ? closure.allowedActions.map((action) => action.label).join("、")
+              : "暂无"
+          }
+        ]}
+      />
+
+      <Typography.Title level={5}>退车 / 追回 / 整备工单</Typography.Title>
+      <List
+        dataSource={closure.workOrders}
+        locale={{ emptyText: "暂无工单" }}
+        renderItem={(item) => (
+          <List.Item>
+            <Space wrap>
+              <Typography.Text code>{item.number ?? item.id}</Typography.Text>
+              <Tag>{item.type}</Tag>
+              <Tag color="blue">{item.status}</Tag>
+            </Space>
+          </List.Item>
+        )}
+      />
+
+      <Typography.Title level={5}>车辆限制</Typography.Title>
+      <List
+        dataSource={closure.restrictions}
+        locale={{ emptyText: "暂无车辆限制" }}
+        renderItem={(item) => (
+          <List.Item>
+            <Space wrap>
+              <Typography.Text code>{item.id}</Typography.Text>
+              <Tag>{item.type}</Tag>
+              <Tag color={item.status === "ACTIVE" ? "red" : "default"}>{item.status}</Tag>
+            </Space>
+          </List.Item>
+        )}
+      />
+
+      <Typography.Title level={5}>结算修订</Typography.Title>
+      <List
+        dataSource={closure.settlementRevisions}
+        locale={{ emptyText: "暂无结算修订" }}
+        renderItem={(item) => (
+          <List.Item>
+            第 {item.revisionNumber} 版 · {item.stage} · 应付 {item.amountDueCents} 分 · 应退
+            {item.amountRefundableCents} 分
+          </List.Item>
+        )}
+      />
+
+      <Typography.Title level={5}>审批</Typography.Title>
+      <List
+        dataSource={closure.approvals}
+        locale={{ emptyText: "暂无审批" }}
+        renderItem={(item) => (
+          <List.Item>
+            <Space wrap>
+              <Typography.Text code>{item.id}</Typography.Text>
+              <Tag>{item.type}</Tag>
+              <Tag color="blue">{item.status}</Tag>
+            </Space>
+          </List.Item>
+        )}
+      />
+
+      <Typography.Title level={5}>时间线</Typography.Title>
+      <Timeline
+        items={closure.timeline.map((item) => ({
+          children: `${item.type}${item.occurredAt ? ` · ${formatTime(item.occurredAt)}` : ""}`
+        }))}
+      />
+
+      <Typography.Title level={5}>审计链接</Typography.Title>
+      <List
+        dataSource={closure.auditLinks}
+        locale={{ emptyText: "暂无审计记录" }}
+        renderItem={(item) => (
+          <List.Item>
+            <Link href={`/system/audit-logs?auditId=${encodeURIComponent(item.id)}`}>
+              {item.entityType} · {item.action}
+            </Link>
+          </List.Item>
+        )}
+      />
+    </Card>
+  );
+}
+
 function createWorkspaceDomainLoadStates(): Record<
   OrderWorkspaceTabKey,
   WorkspaceDomainLoadState
@@ -4621,6 +4729,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   );
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [journey, setJourney] = useState<AdminSubscriptionJourney | null>(null);
+  const [subscriptionClosure, setSubscriptionClosure] =
+    useState<AdminSubscriptionClosureView | null>(null);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
@@ -5563,9 +5673,25 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       } else {
         setJourney(null);
       }
+      if (authResult.value.user.permissions.includes("subscription_closure:view")) {
+        try {
+          setSubscriptionClosure(
+            await loadAdminSubscriptionClosureByOrder(
+              orderId,
+              new Set(authResult.value.user.permissions)
+            )
+          );
+        } catch {
+          setSubscriptionClosure(null);
+          void message.warning("订阅闭环加载失败，订单工作台仍可继续使用");
+        }
+      } else {
+        setSubscriptionClosure(null);
+      }
     } else {
       setAuthError(getErrorMessage(authResult.reason));
       setAuthLoading(false);
+      setSubscriptionClosure(null);
     }
   }, [loadWorkspaceSummary, message, orderId]);
 
@@ -5582,6 +5708,21 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
   }, [me, message, orderId]);
 
+  const refreshSubscriptionClosure = useCallback(async () => {
+    if (!me?.user.permissions.includes("subscription_closure:view")) {
+      setSubscriptionClosure(null);
+      return;
+    }
+    try {
+      setSubscriptionClosure(
+        await loadAdminSubscriptionClosureByOrder(orderId, permissions)
+      );
+    } catch {
+      setSubscriptionClosure(null);
+      void message.warning("订阅闭环刷新失败，请稍后重试");
+    }
+  }, [me, message, orderId, permissions]);
+
   const retryWorkspaceSummary = useCallback(() => {
     void loadWorkspaceSummary();
   }, [loadWorkspaceSummary]);
@@ -5596,8 +5737,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       refreshSummary: loadWorkspaceSummary,
       refreshTab: (tab) => loadActiveWorkspaceTab(tab, true)
     });
-    await refreshJourney();
-  }, [loadActiveWorkspaceTab, loadWorkspaceSummary, refreshJourney]);
+    await Promise.all([refreshJourney(), refreshSubscriptionClosure()]);
+  }, [
+    loadActiveWorkspaceTab,
+    loadWorkspaceSummary,
+    refreshJourney,
+    refreshSubscriptionClosure
+  ]);
 
   useEffect(() => {
     loadedDomainsRef.current.clear();
@@ -5606,6 +5752,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     orderRef.current = null;
     setMe(null);
     setJourney(null);
+    setSubscriptionClosure(null);
     setOrder(null);
     setSummary(null);
     setSubscriptionChanges([]);
@@ -7189,6 +7336,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 permissions={permissions}
               />
             ) : null}
+            <SubscriptionClosureAdminPanel closure={subscriptionClosure} />
             <OverviewLifecycleSummary order={order} />
             <ReviewPanel
               canConfirmFinalPlan={canConfirmFinalPlan}

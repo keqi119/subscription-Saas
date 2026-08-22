@@ -6,6 +6,7 @@ import {
   AssetWorkOrderStatus,
   AssetWorkOrderType,
   AuditAction,
+  Prisma,
   VehicleOperationalRestrictionScope,
   VehicleOperationalRestrictionSeverity,
   VehicleOperationalRestrictionStatus,
@@ -22,10 +23,753 @@ import { AssetOperationsService } from "../src/asset-operations/asset-operations
 import { VehicleAvailabilityPurpose } from "../src/asset-operations/vehicle-availability";
 import { AuditService } from "../src/audit/audit.service";
 import { PrismaService } from "../src/prisma/prisma.service";
+import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 
 const NOW = new Date("2026-08-20T04:00:00.000Z");
 
 describe("AssetOperationsService", () => {
+  it("executes prepared physical transition and restriction without relocking", async () => {
+    const harness = createHarness();
+    const transitionSource = nextSource(harness, "prepared-physical-transition");
+    const restrictionSource = nextSource(harness, "prepared-inspection-restriction");
+    const transition = {
+      closeReason: null,
+      detailSnapshot: { physicalControl: true },
+      expectedVersion: 0,
+      occurredAt: NOW,
+      solution: null,
+      source: transitionSource,
+      targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+      workOrderId: harness.ids.workOrderId
+    };
+    const restriction = {
+      conditionsSnapshot: { releaseCondition: "inspection accepted" },
+      evidenceSnapshot: { vehicleReturnId: randomUUID() },
+      occurredAt: NOW,
+      restrictionType: VehicleOperationalRestrictionType.RETURN_INSPECTION_PENDING,
+      scopes: [VehicleOperationalRestrictionScope.INVENTORY_RELEASE],
+      severity: VehicleOperationalRestrictionSeverity.BLOCKING,
+      source: restrictionSource,
+      startedAt: NOW,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const authority = {
+      assetOwnerId: harness.ids.assetOwnerId,
+      contractId: harness.ids.contractId,
+      customerId: harness.ids.customerId,
+      orderId: harness.ids.orderId,
+      relatedWorkOrderId: null,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const transitionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      transitionSource
+    );
+    const restrictionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      restrictionSource
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const transitionRequirement = harness.service.workOrderTransitionAuthorityRequirement(
+      session,
+      transition,
+      harness.context.actorId,
+      authority
+    );
+    const restrictionRequirement = harness.service.restrictionCreateAuthorityRequirement(
+      session,
+      restriction,
+      harness.context.actorId,
+      authority
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      [...transitionRequirement.locks, ...restrictionRequirement.locks],
+      [transitionRequirement, restrictionRequirement]
+    );
+    const preparedTransition = await harness.service.attestPreparedTransitionInTransaction(
+      harness.tx as never,
+      session,
+      transition,
+      harness.context,
+      transitionSourceCapability,
+      authority,
+      proofs.get("physical-work-order")!
+    );
+    const preparedRestriction = await harness.service.attestPreparedRestrictionCreateInTransaction(
+      harness.tx as never,
+      session,
+      restriction,
+      harness.context,
+      restrictionSourceCapability,
+      authority,
+      proofs.get("return-inspection-restriction")!
+    );
+    const authorityCount = harness.sequence.filter((item) => item.startsWith("authority:")).length;
+
+    await harness.service.transitionPreparedWorkOrderInTransaction(
+      harness.tx as never,
+      preparedTransition
+    );
+    await harness.service.createPreparedRestrictionInTransaction(
+      harness.tx as never,
+      preparedRestriction
+    );
+
+    expect(harness.repository.transitionPreparedWorkOrder).toHaveBeenCalledOnce();
+    expect(harness.repository.createPreparedRestriction).toHaveBeenCalledOnce();
+    expect(harness.sequence.filter((item) => item === "source-lock")).toHaveLength(2);
+    expect(harness.sequence.filter((item) => item.startsWith("authority:"))).toHaveLength(
+      authorityCount
+    );
+    await expect(
+      harness.service.transitionPreparedWorkOrderInTransaction(
+        harness.tx as never,
+        preparedTransition
+      )
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" } });
+  });
+
+  it("executes the prepared recovery transition before its exact restriction release without relocking", async () => {
+    const harness = createHarness({
+      restrictionType: VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS,
+      workOrderType: AssetWorkOrderType.RECOVERY
+    });
+    const transitionSource = nextSource(harness, "prepared-recovery-transition");
+    const releaseSource = nextSource(harness, "prepared-recovery-release");
+    const transition = {
+      closeReason: null,
+      detailSnapshot: { physicalControl: "RECOVERY_CONFIRMED" },
+      expectedVersion: 0,
+      occurredAt: NOW,
+      solution: null,
+      source: transitionSource,
+      targetStatus: AssetWorkOrderStatus.IN_PROGRESS,
+      workOrderId: harness.ids.workOrderId
+    };
+    const release = {
+      occurredAt: NOW,
+      releaseReason: "RECOVERY_PHYSICAL_CONTROL_CONFIRMED",
+      releaseSnapshot: { vehicleReturnId: randomUUID() },
+      restrictionId: harness.ids.restrictionId,
+      source: releaseSource,
+      targetStatus: VehicleOperationalRestrictionStatus.RELEASED
+    };
+    const authority = {
+      assetOwnerId: harness.ids.assetOwnerId,
+      contractId: harness.ids.contractId,
+      customerId: harness.ids.customerId,
+      orderId: harness.ids.orderId,
+      relatedWorkOrderId: null,
+      vehicleId: harness.ids.vehicleId,
+      workOrderId: harness.ids.workOrderId
+    };
+    const transitionSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      transitionSource
+    );
+    const releaseSourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      releaseSource
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const transitionRequirement = harness.service.workOrderTransitionAuthorityRequirement(
+      session,
+      transition,
+      harness.context.actorId,
+      authority
+    );
+    const releaseRequirement = harness.service.restrictionReleaseAuthorityRequirement(
+      session,
+      release,
+      harness.context.actorId,
+      authority,
+      harness.ids.restrictionId
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      [...transitionRequirement.locks, ...releaseRequirement.locks],
+      [transitionRequirement, releaseRequirement]
+    );
+    const preparedTransition = await harness.service.attestPreparedTransitionInTransaction(
+      harness.tx as never,
+      session,
+      transition,
+      { ...harness.context, permissions: ["vehicle_restriction:release"] },
+      transitionSourceCapability,
+      authority,
+      proofs.get("physical-work-order")!
+    );
+    const preparedRelease = await harness.service.attestPreparedRestrictionReleaseInTransaction(
+      harness.tx as never,
+      session,
+      release,
+      { ...harness.context, permissions: ["vehicle_restriction:release"] },
+      releaseSourceCapability,
+      authority,
+      proofs.get("inspection-restriction-release")!
+    );
+    const authorityCount = harness.sequence.filter((item) => item.startsWith("authority:")).length;
+
+    await harness.service.transitionPreparedWorkOrderInTransaction(
+      harness.tx as never,
+      preparedTransition
+    );
+    await harness.service.releasePreparedRestrictionInTransaction(
+      harness.tx as never,
+      preparedRelease
+    );
+
+    expect(harness.sequence.slice(-2)).toEqual([
+      "repository-transition",
+      "repository-restriction-release"
+    ]);
+    expect(harness.sequence.filter((item) => item === "source-lock")).toHaveLength(2);
+    expect(harness.sequence.filter((item) => item.startsWith("authority:"))).toHaveLength(
+      authorityCount
+    );
+    await expect(
+      harness.service.releasePreparedRestrictionInTransaction(harness.tx as never, preparedRelease)
+    ).rejects.toMatchObject({ response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" } });
+  });
+
+  it("rejects a foreign coordinator repository before reading or mutating asset authority", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const targetRepository = new SubscriptionClosureRepository();
+    const foreignRepository = new SubscriptionClosureRepository();
+    const session = targetRepository.createAuthoritySessionInTransaction(harness.tx as never);
+    const requirement = harness.service.createAuthorityRequirement(
+      session,
+      command,
+      harness.context.actorId,
+      harness.ids.workOrderId
+    );
+    const sequenceBeforeForeignIssue = [...harness.sequence];
+
+    await expect(
+      foreignRepository.prepareAuthorityInTransaction(
+        harness.tx as never,
+        session,
+        requirement.locks,
+        [requirement]
+      )
+    ).rejects.toMatchObject({
+      response: { code: "SUBSCRIPTION_CLOSURE_CAPABILITY_INVALID" }
+    });
+    expect(harness.sequence).toEqual(sequenceBeforeForeignIssue);
+    expect(harness.sequence).not.toContain("repository-write");
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("attests after coordinator locks and mutates through one-use prepared handles without relocking", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const requirement = harness.service.createAuthorityRequirement(
+      session,
+      command,
+      harness.context.actorId,
+      harness.ids.workOrderId
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const sequenceAfterProof = [...harness.sequence];
+    const prepared = await harness.service.attestCallerOwnedCreateAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      command,
+      harness.context,
+      sourceCapability,
+      proofs.get("asset-create")!,
+      harness.ids.workOrderId
+    );
+
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
+    ).resolves.toMatchObject({ workOrder: { id: harness.ids.workOrderId } });
+    expect(harness.sequence.filter((entry) => entry.startsWith("authority:"))).toEqual(
+      sequenceAfterProof.filter((entry) => entry.startsWith("authority:"))
+    );
+    expect(sequenceAfterProof.filter((entry) => entry.startsWith("authority:"))).not.toHaveLength(
+      0
+    );
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(harness.tx as never, prepared)
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    await expect(
+      harness.service.createPreparedWorkOrderInTransaction(
+        harness.tx as never,
+        Object.freeze({}) as never
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+  });
+
+  it("rejects forged and retargeted coordinator attestations before any asset mutation", async () => {
+    const harness = createHarness();
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx as never);
+    const wrongRequirement = harness.service.createAuthorityRequirement(
+      session,
+      command,
+      harness.context.actorId,
+      randomUUID()
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx as never,
+      session,
+      wrongRequirement.locks,
+      [wrongRequirement]
+    );
+    const wrongProof = proofs.get("asset-create")!;
+
+    for (const proof of [wrongProof, wrongProof, Object.freeze({})] as const) {
+      await expect(
+        harness.service.attestCallerOwnedCreateAuthorityInTransaction(
+          harness.tx as never,
+          session,
+          command,
+          harness.context,
+          sourceCapability,
+          proof as never,
+          harness.ids.workOrderId
+        )
+      ).rejects.toMatchObject({
+        response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+      });
+    }
+    const foreign = createHarness();
+    const foreignCommand = { ...fullCreateCommand(foreign), assetOwnerId: null };
+    const foreignSource = await foreign.service.prepareCallerOwnedTransaction(
+      foreign.tx as never,
+      foreign.source
+    );
+    const foreignCoordinator = new SubscriptionClosureRepository();
+    const foreignSession = foreignCoordinator.createAuthoritySessionInTransaction(
+      foreign.tx as never
+    );
+    const foreignBoundRequirement = harness.service.createAuthorityRequirement(
+      foreignSession,
+      foreignCommand,
+      foreign.context.actorId,
+      foreign.ids.workOrderId
+    );
+    const foreignInstanceProof = (
+      await foreignCoordinator.prepareAuthorityInTransaction(
+        foreign.tx as never,
+        foreignSession,
+        foreignBoundRequirement.locks,
+        [foreignBoundRequirement]
+      )
+    ).get("asset-create")!;
+    await expect(
+      foreign.service.attestCallerOwnedCreateAuthorityInTransaction(
+        foreign.tx as never,
+        foreignSession,
+        foreignCommand,
+        foreign.context,
+        foreignSource,
+        foreignInstanceProof,
+        foreign.ids.workOrderId
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.sequence).not.toContain("repository-write");
+    expect(harness.auditInputs).toHaveLength(0);
+    expect(foreign.sequence).not.toContain("repository-write");
+  });
+
+  it("executes a prepared caller-owned create capability once in the exact transaction", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+
+    const result = await harness.service.createWorkOrderInTransaction(
+      harness.tx as never,
+      command,
+      harness.context,
+      capability
+    );
+
+    expect(result.workOrder.id).toBe(harness.ids.workOrderId);
+    expect(harness.sequence[0]).toBe("source-lock");
+    expect(harness.sequence.at(-1)).toBe("repository-write");
+    expect(harness.sequence.slice(1, -1)).toEqual([
+      "authority:subscription_order",
+      "authority:vehicle",
+      "authority:contract",
+      "authority:customer"
+    ]);
+    expect(harness.auditInputs).toHaveLength(2);
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+  });
+
+  it("uses the real repository for one source lock and exactly one ranked authority pass", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      harness.command.source
+    );
+
+    await harness.service.createWorkOrderInTransaction(
+      harness.tx,
+      harness.command,
+      harness.context,
+      capability
+    );
+
+    expect(harness.sourceLocks).toHaveLength(1);
+    expect(harness.authorityTables).toEqual([
+      "subscription_order",
+      "vehicle",
+      "contract",
+      "asset_owner",
+      "customer"
+    ]);
+  });
+
+  it("snapshots the outer caller source before a deferred advisory query", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const originalSource = harness.command.source as {
+      id: string;
+      key: string;
+      type: string;
+    };
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const mutableTx = harness.tx as unknown as {
+      $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+    };
+    const originalQuery = mutableTx.$queryRaw.bind(mutableTx);
+    mutableTx.$queryRaw = async (query) => {
+      const result = originalQuery(query);
+      if (query.strings.join("?").includes("pg_advisory_xact_lock")) {
+        advisoryQueryPending.resolve();
+        await releaseAdvisoryQuery.promise;
+      }
+      return result;
+    };
+    const capabilityPromise = harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      originalSource
+    );
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, {
+      id: randomUUID(),
+      key: "mutated:outer-service-source",
+      type: "MUTATED_SOURCE"
+    });
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx,
+        harness.command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.writes()).toBe(0);
+  });
+
+  it("keeps one locked authority snapshot through a deferred authority load", async () => {
+    const harness = createRealRepositoryCreateHarness();
+    const command = harness.command as MutableCreateCommand;
+    const authorityA = authorityIdentity(command);
+    const payloadA = {
+      costConfirmationRequired: command.costConfirmationRequired,
+      description: command.description,
+      metadata: structuredClone(command.metadata),
+      occurredAt: new Date(command.occurredAt),
+      priority: command.priority,
+      source: { ...command.source },
+      workOrderType: command.workOrderType
+    };
+    const authorityB = {
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID(),
+      vehicleId: randomUUID()
+    };
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const authorityLockPending = deferred<void>();
+    const releaseAuthorityLock = deferred<void>();
+    const authorityLoadPending = deferred<void>();
+    const releaseAuthorityLoad = deferred<void>();
+    const tx = harness.tx as unknown as AuthorityRaceTransaction;
+    const originalQuery = tx.$queryRaw.bind(tx);
+    tx.$queryRaw = async (query) => {
+      const result = originalQuery(query);
+      const sql = query.strings.join("?");
+      if (sql.includes('FROM "customer"') && sql.includes("FOR SHARE NOWAIT")) {
+        authorityLockPending.resolve();
+        await releaseAuthorityLock.promise;
+      }
+      return result;
+    };
+    const reads: Record<keyof typeof authorityB, string[]> = {
+      assetOwnerId: [],
+      contractId: [],
+      customerId: [],
+      orderId: [],
+      relatedWorkOrderId: [],
+      vehicleId: []
+    };
+    const originalVehicle = tx.vehicle.findUnique.bind(tx.vehicle);
+    const originalOrder = tx.subscriptionOrder.findUnique.bind(tx.subscriptionOrder);
+    const originalContract = tx.contract.findUnique.bind(tx.contract);
+    const originalCustomer = tx.customer.findUnique.bind(tx.customer);
+    const originalAssetOwner = tx.assetOwner.findUnique.bind(tx.assetOwner);
+    const originalWorkOrder = tx.assetWorkOrder.findUnique.bind(tx.assetWorkOrder);
+    tx.vehicle.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.vehicleId.push(id);
+      const result =
+        id === authorityB.vehicleId
+          ? {
+              deletedAt: null,
+              id,
+              plateNo: "沪B00002",
+              status: VehicleStatus.RETURNED,
+              vehicleNo: "V-B",
+              vin: "VIN-B"
+            }
+          : await originalVehicle(args);
+      authorityLoadPending.resolve();
+      await releaseAuthorityLoad.promise;
+      return result;
+    };
+    tx.subscriptionOrder.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.orderId.push(id);
+      return id === authorityB.orderId
+        ? {
+            contractId: authorityB.contractId,
+            customerId: authorityB.customerId,
+            deletedAt: null,
+            id,
+            orderNo: "SO-B",
+            orderStatus: "ACTIVE",
+            vehicleId: authorityB.vehicleId
+          }
+        : originalOrder(args);
+    };
+    tx.contract.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.contractId.push(id);
+      return id === authorityB.contractId
+        ? {
+            contractNo: "CT-B",
+            customerId: authorityB.customerId,
+            deletedAt: null,
+            id,
+            orderId: authorityB.orderId,
+            status: "ACTIVE"
+          }
+        : originalContract(args);
+    };
+    tx.customer.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.customerId.push(id);
+      return id === authorityB.customerId
+        ? {
+            customerNo: "CU-B",
+            deletedAt: null,
+            id,
+            name: "Customer B",
+            status: "ACTIVE"
+          }
+        : originalCustomer(args);
+    };
+    tx.assetOwner.findUnique = async (args) => {
+      const id = String(args.where.id);
+      reads.assetOwnerId.push(id);
+      return id === authorityB.assetOwnerId
+        ? {
+            id,
+            name: "Owner B",
+            ownerNo: "AO-B",
+            ownerType: "PLATFORM",
+            status: "ACTIVE"
+          }
+        : originalAssetOwner(args);
+    };
+    tx.assetWorkOrder.findUnique = async (args) => {
+      if (args.where.id === authorityB.relatedWorkOrderId) {
+        reads.relatedWorkOrderId.push(authorityB.relatedWorkOrderId);
+        return {
+          id: authorityB.relatedWorkOrderId,
+          vehicleId: authorityB.vehicleId,
+          workOrderNo: "AWO-B"
+        };
+      }
+      return originalWorkOrder(args);
+    };
+    const outcomePromise = harness.service.createWorkOrderInTransaction(
+      harness.tx,
+      command,
+      harness.context,
+      capability
+    );
+    await authorityLockPending.promise;
+    Object.assign(command, authorityB, {
+      costConfirmationRequired: true,
+      description: "mutated B description",
+      metadata: { request: "mutated-b" },
+      occurredAt: new Date(NOW.getTime() - 1_000),
+      priority: AssetWorkOrderPriority.HIGH,
+      source: {
+        id: randomUUID(),
+        key: "mutated:authority-load-source",
+        type: "MUTATED_SOURCE"
+      },
+      workOrderType: AssetWorkOrderType.MAINTENANCE
+    });
+    releaseAuthorityLock.resolve();
+    await authorityLoadPending.promise;
+    Object.assign(command, authorityA, { source: payloadA.source });
+    releaseAuthorityLoad.resolve();
+    const outcome = await outcomePromise;
+
+    expect(reads).toEqual({
+      assetOwnerId: [authorityA.assetOwnerId],
+      contractId: [authorityA.contractId],
+      customerId: [authorityA.customerId],
+      orderId: [authorityA.orderId],
+      relatedWorkOrderId: [],
+      vehicleId: [authorityA.vehicleId]
+    });
+    expect(outcome.workOrder).toMatchObject({
+      assetOwnerId: authorityA.assetOwnerId,
+      contractId: authorityA.contractId,
+      costConfirmationRequired: payloadA.costConfirmationRequired,
+      customerId: authorityA.customerId,
+      description: payloadA.description,
+      metadata: payloadA.metadata,
+      orderId: authorityA.orderId,
+      priority: payloadA.priority,
+      relatedWorkOrderId: null,
+      vehicleId: authorityA.vehicleId,
+      workOrderType: payloadA.workOrderType
+    });
+    expect(outcome.workOrder.authoritySnapshot).toMatchObject({
+      assetOwner: { id: authorityA.assetOwnerId },
+      contract: { id: authorityA.contractId },
+      customer: { id: authorityA.customerId },
+      order: { id: authorityA.orderId },
+      relatedWorkOrder: null,
+      vehicle: { id: authorityA.vehicleId }
+    });
+    expect(outcome.event.occurredAt).toEqual(payloadA.occurredAt);
+    expect(harness.writes()).toBe(1);
+  });
+
+  it("consumes a service capability before reading a throwing source", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const command = { ...fullCreateCommand(harness), assetOwnerId: null };
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing operation service source getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        malformed,
+        harness.context,
+        capability
+      )
+    ).rejects.toThrow("throwing operation service source getter");
+    await expect(
+      harness.service.createWorkOrderInTransaction(
+        harness.tx as never,
+        command,
+        harness.context,
+        capability
+      )
+    ).rejects.toMatchObject({
+      response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+    });
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
+  it("rejects forged, foreign-instance, and wrong-transaction create capabilities", async () => {
+    const harness = createHarness();
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx as never,
+      harness.source
+    );
+    const foreignHarness = createHarness();
+
+    for (const [service, tx, candidate] of [
+      [harness.service, harness.tx, Object.freeze({})],
+      [foreignHarness.service, harness.tx, capability],
+      [harness.service, foreignHarness.tx, capability]
+    ] as const) {
+      await expect(
+        service.createWorkOrderInTransaction(
+          tx as never,
+          fullCreateCommand(harness),
+          harness.context,
+          candidate as never
+        )
+      ).rejects.toMatchObject({
+        response: { code: "ASSET_OPERATION_CALLER_CAPABILITY_INVALID" }
+      });
+    }
+    expect(harness.auditInputs).toHaveLength(0);
+  });
+
   it("locks the source, validates one live cross-linked authority aggregate, then writes", async () => {
     const harness = createHarness();
 
@@ -869,7 +1613,11 @@ function fullCreateCommand(harness: ReturnType<typeof createHarness>) {
 }
 
 function createHarness(
-  options: { restrictionType?: VehicleOperationalRestrictionType; wrote?: boolean } = {}
+  options: {
+    restrictionType?: VehicleOperationalRestrictionType;
+    workOrderType?: AssetWorkOrderType;
+    wrote?: boolean;
+  } = {}
 ) {
   const ids = {
     actorId: randomUUID(),
@@ -927,7 +1675,7 @@ function createHarness(
     vehicleId: ids.vehicleId,
     version: 0,
     workOrderNo: "AWO-1",
-    workOrderType: AssetWorkOrderType.RECONDITIONING
+    workOrderType: options.workOrderType ?? AssetWorkOrderType.RECONDITIONING
   };
   const event = {
     actorId: ids.actorId,
@@ -1030,6 +1778,23 @@ function createHarness(
   const tx = {
     $queryRaw: vi.fn(async (query: { strings: readonly string[]; values?: readonly unknown[] }) => {
       const sql = query.strings.join("?");
+      if (sql.includes("transaction_isolation")) {
+        return [{ isolationLevel: "read committed", transactionId: "asset-service-tx" }];
+      }
+      if (sql.includes("txid_current")) return [{ transactionId: "asset-service-tx" }];
+      if (sql.includes('AS "authorityTable"')) {
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        const modes = [...sql.matchAll(/FOR (UPDATE|SHARE) NOWAIT/g)].map((match) => match[1]!);
+        for (let index = 0; index < (query.values?.length ?? 0); index += 2) {
+          const table = String(query.values![index]);
+          const id = String(query.values![index + 1]);
+          const mode = modes[index / 2]!;
+          sequence.push(`authority:${table}`);
+          lockQueries.push({ id, sql: `FROM "${table}" FOR ${mode} NOWAIT` });
+          rows.push({ authorityTable: table, requestedId: id });
+        }
+        return rows;
+      }
       const match = sql.match(/FROM "([a-z_]+)"/);
       if (match) {
         sequence.push(`authority:${match[1]}`);
@@ -1038,7 +1803,7 @@ function createHarness(
           sql
         });
       }
-      return [{ id: randomUUID() }];
+      return [{ id: String(query.values?.at(-1) ?? randomUUID()) }];
     }),
     assetOwner: {
       findUnique: vi.fn(async () => ({
@@ -1174,6 +1939,12 @@ function createHarness(
       workOrder,
       wrote: options.wrote ?? true
     })),
+    createPreparedRestriction: vi.fn(async () => ({
+      event,
+      restriction: activeRestriction,
+      workOrder,
+      wrote: options.wrote ?? true
+    })),
     getWorkOrderDetail: vi.fn(async () => ({
       evidence,
       events: [{ ...event, sequence: 2 }, event],
@@ -1181,6 +1952,21 @@ function createHarness(
       workOrder
     })),
     listWorkOrdersByVehicle: vi.fn(async () => [workOrder]),
+    attestCallerOwnedCreateAuthority: vi.fn(async () => Object.freeze({})),
+    attestCallerOwnedWorkOrderAuthority: vi.fn(async () => Object.freeze({})),
+    lockCallerOwnedCreateAuthority: vi.fn(async (_tx, command) => {
+      for (const table of [
+        command.orderId ? "subscription_order" : null,
+        "vehicle",
+        command.contractId ? "contract" : null,
+        command.relatedWorkOrderId ? "asset_work_order" : null,
+        command.assetOwnerId ? "asset_owner" : null,
+        command.customerId ? "customer" : null
+      ]) {
+        if (table) sequence.push(`authority:${table}`);
+      }
+      return Object.freeze({});
+    }),
     loadAvailabilitySnapshot: vi.fn(async () => ({
       activeRestrictions: [
         {
@@ -1206,6 +1992,10 @@ function createHarness(
     lockSourceOwnership: vi.fn(async () => {
       sequence.push("source-lock");
     }),
+    prepareCallerOwnedCommand: vi.fn(async () => {
+      sequence.push("source-lock");
+      return Object.freeze({});
+    }),
     lockWorkOrderForCommand: vi.fn(
       async (client: typeof tx, workOrderId: string, authorityRows: readonly unknown[]) => {
         const realRepository = new AssetOperationsRepository();
@@ -1222,7 +2012,23 @@ function createHarness(
       workOrder,
       wrote: options.wrote ?? true
     })),
+    releasePreparedRestriction: vi.fn(async () => {
+      sequence.push("repository-restriction-release");
+      return {
+        event,
+        restriction: {
+          ...activeRestriction,
+          status: VehicleOperationalRestrictionStatus.RELEASED
+        },
+        workOrder,
+        wrote: options.wrote ?? true
+      };
+    }),
     transitionWorkOrder: vi.fn(async () => {
+      sequence.push("repository-transition");
+      return { event, workOrder, wrote: options.wrote ?? true };
+    }),
+    transitionPreparedWorkOrder: vi.fn(async () => {
       sequence.push("repository-transition");
       return { event, workOrder, wrote: options.wrote ?? true };
     })
@@ -1258,4 +2064,124 @@ function createHarness(
     tx,
     workOrder
   };
+}
+
+function createRealRepositoryCreateHarness() {
+  const base = createHarness();
+  const authorityTables: string[] = [];
+  const sourceLocks: string[] = [];
+  const tx = base.tx as unknown as Prisma.TransactionClient & {
+    $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+  };
+  const mutableTx = tx as unknown as Record<string, unknown>;
+  let writeCount = 0;
+  mutableTx.$queryRaw = vi.fn(async (query: Prisma.Sql) => {
+    const sql = query.strings.join("?");
+    if (sql.includes("current_setting('transaction_isolation')")) {
+      return [{ isolationLevel: "read committed", transactionId: "one-pass-tx" }];
+    }
+    if (sql.includes("txid_current()")) {
+      return [{ transactionId: "one-pass-tx" }];
+    }
+    if (sql.includes("transaction_timestamp()")) return [{ transactionNow: NOW }];
+    if (sql.includes("pg_advisory_xact_lock")) {
+      if (String(query.values[0]).includes("source-ownership")) {
+        sourceLocks.push(String(query.values[0]));
+      }
+      return [{ locked: true }];
+    }
+    const table = sql.match(/FROM "([a-z_]+)"/)?.[1];
+    if (table) authorityTables.push(table);
+    return [{ id: query.values.find((value) => typeof value === "string") ?? randomUUID() }];
+  });
+  mutableTx.assetWorkOrder = {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      writeCount += 1;
+      return {
+        ...base.workOrder,
+        ...data,
+        id: base.ids.workOrderId
+      };
+    }),
+    findFirst: vi.fn(async () => null),
+    findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+      "workOrderNo" in where ? null : base.workOrder
+    )
+  };
+  mutableTx.assetWorkOrderEvent = {
+    aggregate: vi.fn(async () => ({ _max: { sequence: null } })),
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      ...data,
+      id: base.ids.eventId,
+      recordedAt: NOW
+    })),
+    findFirst: vi.fn(async () => null)
+  };
+  mutableTx.vehicleOperationalRestriction = {
+    findFirst: vi.fn(async () => null)
+  };
+  const auditService = {
+    write: vi.fn(async () => undefined)
+  } as unknown as AuditService;
+  const repository = new AssetOperationsRepository(() => "AWO-ONEPASS");
+  const command = fullCreateCommand(base);
+  return {
+    authorityTables,
+    command,
+    context: base.context,
+    service: new AssetOperationsService(
+      {} as PrismaService,
+      repository,
+      auditService,
+      base.assetAccountingService
+    ),
+    sourceLocks,
+    tx,
+    writes: () => writeCount
+  };
+}
+
+type MutableCreateCommand = ReturnType<typeof fullCreateCommand> & {
+  assetOwnerId: string | null;
+  contractId: string | null;
+  customerId: string | null;
+  orderId: string | null;
+  relatedWorkOrderId: string | null;
+  vehicleId: string;
+};
+
+type AuthorityFindUnique = (args: {
+  select?: Record<string, boolean>;
+  where: { id?: string };
+}) => Promise<Record<string, unknown> | null>;
+
+type AuthorityRaceTransaction = {
+  $queryRaw: (query: Prisma.Sql) => Promise<unknown[]>;
+  assetOwner: { findUnique: AuthorityFindUnique };
+  assetWorkOrder: { findUnique: AuthorityFindUnique };
+  contract: { findUnique: AuthorityFindUnique };
+  customer: { findUnique: AuthorityFindUnique };
+  subscriptionOrder: { findUnique: AuthorityFindUnique };
+  vehicle: { findUnique: AuthorityFindUnique };
+};
+
+function authorityIdentity(command: MutableCreateCommand) {
+  return {
+    assetOwnerId: command.assetOwnerId,
+    contractId: command.contractId,
+    customerId: command.customerId,
+    orderId: command.orderId,
+    relatedWorkOrderId: command.relatedWorkOrderId,
+    vehicleId: command.vehicleId
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }

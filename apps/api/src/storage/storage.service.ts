@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -47,6 +52,11 @@ export interface GeneratedContractPdfArtifactStorageResult {
   originalName: string;
   sizeBytes: number;
   stored: StoredObject;
+}
+
+export interface ReturnManifestArtifactStorageInput extends Omit<UploadObjectInput, "key"> {
+  closureCaseId: string;
+  objectIdentity: string;
 }
 
 @Injectable()
@@ -330,6 +340,68 @@ export class StorageService {
     });
   }
 
+  async putReturnManifestArtifact(
+    input: ReturnManifestArtifactStorageInput
+  ): Promise<{ bucket: string; objectKey: string; stored: StoredObject }> {
+    const identity = this.resolveReturnManifestArtifactIdentity(input);
+    try {
+      const current = await this.getObject(identity.bucket, identity.objectKey);
+      const currentBytes = await readableBuffer(current.stream);
+      if (!currentBytes.equals(input.buffer)) {
+        throw new ConflictException({
+          code: "RETURN_MANIFEST_STORAGE_CONFLICT",
+          message: "The immutable return-manifest object already contains different bytes."
+        });
+      }
+      return {
+        ...identity,
+        stored: {
+          contentType: input.contentType,
+          driver: this.getDriver(),
+          key: identity.objectKey,
+          originalName: input.originalName,
+          size: currentBytes.length
+        }
+      };
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) throw error;
+    }
+    const key = this.returnManifestArtifactKey(input);
+    const stored = await this.putPrivateObject(key, {
+      buffer: input.buffer,
+      contentType: input.contentType,
+      metadata: input.metadata,
+      originalName: input.originalName ?? "return-manifest.bin"
+    });
+    const confirmed = await this.getObject(stored.bucket, stored.objectKey);
+    const confirmedBytes = await readableBuffer(confirmed.stream);
+    if (!confirmedBytes.equals(input.buffer)) {
+      throw new ConflictException({
+        code: "RETURN_MANIFEST_STORAGE_CONFLICT",
+        message: "The stored return-manifest object does not match its immutable claim."
+      });
+    }
+    return stored;
+  }
+
+  resolveReturnManifestArtifactIdentity(
+    input: Pick<
+      ReturnManifestArtifactStorageInput,
+      "closureCaseId" | "objectIdentity" | "originalName"
+    >
+  ) {
+    const key = this.returnManifestArtifactKey(input);
+    if (this.getDriver() === "oss") {
+      const bucket = this.configService.get<string>("OSS_BUCKET")?.trim();
+      if (!bucket) throw new BadRequestException("OSS 配置缺失：OSS_BUCKET");
+      return {
+        bucket: `${OSS_BUCKET_PREFIX}${bucket}`,
+        objectKey: `${OSS_KEY_PREFIX}${this.withOssPrefix(key)}`
+      };
+    }
+    return { bucket: LOCAL_BUCKET, objectKey: key };
+  }
+
   async putGeneratedContractPdfArtifact(
     input: GeneratedContractPdfArtifactStorageInput
   ): Promise<GeneratedContractPdfArtifactStorageResult> {
@@ -535,6 +607,19 @@ export class StorageService {
     return `materials/${sanitizeKeyPart(applicationId)}/${year}/${month}/${randomUUID()}-${sanitizeFilename(originalName)}`;
   }
 
+  private returnManifestArtifactKey(
+    input: Pick<
+      ReturnManifestArtifactStorageInput,
+      "closureCaseId" | "objectIdentity" | "originalName"
+    >
+  ) {
+    const originalName = input.originalName ?? "return-manifest.bin";
+    return (
+      `subscription-closure/${sanitizeKeyPart(input.closureCaseId)}/return-manifest/` +
+      `${sanitizeKeyPart(input.objectIdentity)}-${sanitizeFilename(originalName)}`
+    );
+  }
+
   private buildCustomerProfileMaterialKey(customerId: string, originalName: string) {
     const now = new Date();
     const year = String(now.getUTCFullYear());
@@ -635,6 +720,14 @@ export class StorageService {
       });
     }
   }
+}
+
+async function readableBuffer(stream: NodeJS.ReadableStream) {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 function stripPrefix(value: string, prefix: string) {

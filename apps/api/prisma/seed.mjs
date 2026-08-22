@@ -228,6 +228,16 @@ permissionRows.push(
   ["business_exception:view", "查看业务例外审批", "business_exception", "view"],
   ["business_exception:request", "发起业务例外审批", "business_exception", "request"],
   ["business_exception:approve", "审批业务例外", "business_exception", "approve"],
+  ["subscription_closure:view", "查看订阅闭环", "subscription_closure", "view"],
+  ["subscription_closure:prepare", "准备订阅闭环", "subscription_closure", "prepare"],
+  ["subscription_closure:receive", "确认车辆物理接收", "subscription_closure", "receive"],
+  ["subscription_closure:inspect", "执行退车检查", "subscription_closure", "inspect"],
+  ["subscription_closure:settle", "执行最终结算与库存释放", "subscription_closure", "settle"],
+  ["subscription_recovery:assess", "评估车辆追回", "subscription_recovery", "assess"],
+  ["subscription_recovery:approve", "审批车辆追回", "subscription_recovery", "approve"],
+  ["subscription_recovery:execute", "执行车辆追回", "subscription_recovery", "execute"],
+  ["subscription_early_termination:create", "发起提前终止", "subscription_early_termination", "create"],
+  ["subscription_early_termination:execute", "执行提前终止", "subscription_early_termination", "execute"],
   ["fleet_ops:read", "车队运营查看", "fleet_ops", "read"],
   ["vehicle_model:view", "查看车型代码", "vehicle_model", "view"],
   ["vehicle_model:manage", "管理车型代码", "vehicle_model", "manage"],
@@ -974,6 +984,40 @@ const businessExceptionApprovePermissions = [
   "business_exception:view",
   "business_exception:approve"
 ];
+const subscriptionClosureSalesPermissions = ["subscription_closure:view"];
+const subscriptionClosureCustomerServicePermissions = [
+  "subscription_closure:view",
+  "subscription_closure:prepare",
+  "subscription_early_termination:create"
+];
+const subscriptionClosureOperationsPermissions = [
+  "subscription_closure:view",
+  "subscription_closure:prepare",
+  "subscription_closure:receive",
+  "subscription_closure:inspect",
+  "subscription_recovery:assess",
+  "subscription_recovery:execute",
+  "subscription_early_termination:create",
+  "subscription_early_termination:execute"
+];
+const subscriptionClosureRiskPermissions = [
+  "subscription_closure:view",
+  "subscription_recovery:assess"
+];
+const subscriptionClosureFinancePermissions = [
+  "subscription_closure:view",
+  "subscription_closure:settle"
+];
+const subscriptionClosureAssetPermissions = [
+  "subscription_closure:view",
+  "subscription_closure:receive",
+  "subscription_closure:inspect",
+  "subscription_recovery:execute"
+];
+const subscriptionClosureApprovalPermissions = [
+  "subscription_closure:view",
+  "subscription_recovery:approve"
+];
 const vehicleInsuranceViewPermissions = ["vehicle_insurance:view"];
 const vehicleInsuranceManagementPermissions = [
   "vehicle_insurance:view",
@@ -1185,6 +1229,7 @@ async function main() {
       "order_change:create",
       ...subscriptionChangeViewPermissions,
       ...subscriptionJourneyViewPermissions,
+      ...subscriptionClosureSalesPermissions,
       ...serviceCaseViewPermissions,
       ...notificationViewPermissions,
       ...entitlementViewPermissions,
@@ -1230,6 +1275,7 @@ async function main() {
       ...assetOperationsOperationsPermissions,
       ...vehicleCostLedgerConfirmPermissions,
       ...businessExceptionRequestPermissions,
+      ...subscriptionClosureOperationsPermissions,
       ...vehicleInsuranceManagementPermissions,
       ...vehicleDocumentManagementPermissions,
       ...vehicleModelManagementPermissions,
@@ -1318,6 +1364,7 @@ async function main() {
       ...assetOperationsViewPermissions,
       ...vehicleCostLedgerViewPermissions,
       ...businessExceptionRequestPermissions,
+      ...subscriptionClosureRiskPermissions,
       "quote:view",
       "order:view",
       "order:review",
@@ -1359,6 +1406,9 @@ async function main() {
           ? vehicleCostLedgerReversePermissions
           : vehicleCostLedgerConfirmPermissions),
         ...businessExceptionRequestPermissions,
+        ...(roleCode === "FI"
+          ? subscriptionClosureFinancePermissions
+          : subscriptionClosureAssetPermissions),
         ...(roleCode === "FI" ? vehicleModelManagementPermissions : []),
         ...(roleCode === "FI" ? vehicleBaasManagementPermissions : vehicleBaasViewPermissions),
         ...(roleCode === "FI" ? vehicleDepreciationManagementPermissions : []),
@@ -1446,6 +1496,7 @@ async function main() {
       ...assetOperationsApprovalPermissions,
       ...vehicleCostLedgerGeneralManagerPermissions,
       ...businessExceptionApprovePermissions,
+      ...subscriptionClosureApprovalPermissions,
       ...vehicleInsuranceViewPermissions,
       ...vehicleDocumentViewPermissions,
       ...vehicleModelViewPermissions,
@@ -1504,6 +1555,19 @@ async function main() {
       ...revenueRightMenuCodes,
       ...collectionMenuCodes
     ]
+  );
+
+  await assignRoleAccess(
+    "CS",
+    [
+      "dashboard:view",
+      "customer:view",
+      "order:view",
+      "vehicle_return:view",
+      "contract:view",
+      ...subscriptionClosureCustomerServicePermissions
+    ],
+    ["dashboard", "customers", "orders", "orders.subscription", "orders.contracts"]
   );
 
   await synchronizeStage1cBaselineForDemoSeed({ prisma });

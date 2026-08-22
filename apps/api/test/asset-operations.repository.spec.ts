@@ -77,6 +77,238 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("consumes one same-repository source capability without reacquiring its source lock", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authority = await repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
+
+    await repository.createWorkOrder(database.tx, command, authority);
+
+    expect(
+      database.rawQueries.filter(
+        ({ sql, values }) =>
+          sql.includes("pg_advisory_xact_lock") && String(values[0]).includes("source-ownership")
+      )
+    ).toHaveLength(1);
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, authority),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("binds create authority to the frozen tuple locked before a deferred query", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = {
+      ...createCommand(),
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID()
+    };
+    const lockedSource = { ...command.source };
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authorityQueryPending = deferred<void>();
+    const releaseAuthorityQuery = deferred<void>();
+    const originalQuery = database.tx.$queryRaw.bind(database.tx);
+    (database.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes('FROM "subscription_order"')) {
+          authorityQueryPending.resolve();
+          await releaseAuthorityQuery.promise;
+        }
+        return result;
+      };
+    const lockedCommand = {
+      assetOwnerId: command.assetOwnerId,
+      contractId: command.contractId,
+      customerId: command.customerId,
+      orderId: command.orderId,
+      relatedWorkOrderId: command.relatedWorkOrderId,
+      source: lockedSource,
+      vehicleId: command.vehicleId
+    };
+    const authorityPromise = repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
+    await authorityQueryPending.promise;
+    Object.assign(command, {
+      assetOwnerId: randomUUID(),
+      contractId: randomUUID(),
+      customerId: randomUUID(),
+      orderId: randomUUID(),
+      relatedWorkOrderId: randomUUID(),
+      source: source("mutated-authority-source"),
+      vehicleId: randomUUID()
+    });
+    releaseAuthorityQuery.resolve();
+    const authority = await authorityPromise;
+
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, authority),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
+    expect(
+      database.rawQueries
+        .filter(({ sql }) => sql.includes(" FOR "))
+        .map(({ sql, values }) => ({
+          id: values[0],
+          mode: sql.includes("FOR UPDATE") ? "UPDATE" : "SHARE",
+          table: sql.match(/FROM "([a-z_]+)"/)?.[1]
+        }))
+    ).toEqual([
+      { id: lockedCommand.orderId, mode: "UPDATE", table: "subscription_order" },
+      { id: lockedCommand.vehicleId, mode: "SHARE", table: "vehicle" },
+      { id: lockedCommand.contractId, mode: "SHARE", table: "contract" },
+      { id: lockedCommand.relatedWorkOrderId, mode: "SHARE", table: "asset_work_order" },
+      { id: lockedCommand.assetOwnerId, mode: "SHARE", table: "asset_owner" },
+      { id: lockedCommand.customerId, mode: "SHARE", table: "customer" }
+    ]);
+  });
+
+  it("snapshots a direct caller source before a deferred advisory query", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const originalSource = source("deferred-repository-source");
+    const lockedSource = { ...originalSource };
+    const advisoryQueryPending = deferred<void>();
+    const releaseAdvisoryQuery = deferred<void>();
+    const originalQuery = database.tx.$queryRaw.bind(database.tx);
+    (database.tx as unknown as { $queryRaw: (query: Prisma.Sql) => Promise<unknown[]> }).$queryRaw =
+      async (query) => {
+        const result = originalQuery(query) as Promise<unknown[]>;
+        if (query.sql.includes("pg_advisory_xact_lock")) {
+          advisoryQueryPending.resolve();
+          await releaseAdvisoryQuery.promise;
+        }
+        return result;
+      };
+    const capabilityPromise = repository.prepareCallerOwnedCommand(database.tx, originalSource);
+    await advisoryQueryPending.promise;
+    Object.assign(originalSource, source("mutated-repository-source"));
+    releaseAdvisoryQuery.resolve();
+    const capability = await capabilityPromise;
+    const command = { ...createCommand(), source: originalSource };
+
+    await expectCode(
+      (async () => {
+        const authority = await repository.lockCallerOwnedCreateAuthority(
+          database.tx,
+          command,
+          capability
+        );
+        return repository.createWorkOrder(database.tx, command, authority);
+      })(),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
+    expect(
+      database.rawQueries.find(({ sql }) => sql.includes("pg_advisory_xact_lock"))?.values[0]
+    ).toContain(lockedSource.id);
+  });
+
+  it("consumes a repository capability before throwing command normalization", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const authority = await repository.lockCallerOwnedCreateAuthority(
+      database.tx,
+      command,
+      capability
+    );
+    const malformed = Object.defineProperty({ ...command }, "metadata", {
+      get() {
+        throw new TypeError("throwing operation metadata getter");
+      }
+    }) as typeof command;
+
+    await expect(repository.createWorkOrder(database.tx, malformed, authority)).rejects.toThrow(
+      "throwing operation metadata getter"
+    );
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, authority),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(database.workOrders).toHaveLength(0);
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, and wrong-source capabilities", async () => {
+    const database = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const command = createCommand();
+    const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+    const otherDatabase = new FakeDatabase();
+
+    for (const [target, tx, candidate, input] of [
+      [repository, database.tx, Object.freeze({}), command],
+      [new AssetOperationsRepository(), database.tx, capability, command],
+      [repository, otherDatabase.tx, capability, command],
+      [
+        repository,
+        database.tx,
+        await repository.prepareCallerOwnedCommand(database.tx, command.source),
+        { ...command, source: source("wrong-source") }
+      ]
+    ] as const) {
+      await expectCode(
+        target.lockCallerOwnedCreateAuthority(tx, input, candidate as never),
+        ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(database.workOrders).toHaveLength(0);
+    expect(otherDatabase.workOrders).toHaveLength(0);
+  });
+
+  it("rejects forged, foreign-repository, wrong-transaction, retargeted, and reused create authorities", async () => {
+    const database = new FakeDatabase();
+    const otherDatabase = new FakeDatabase();
+    const repository = new AssetOperationsRepository();
+    const foreignRepository = new AssetOperationsRepository();
+    const command = createCommand();
+    const prepare = async () => {
+      const capability = await repository.prepareCallerOwnedCommand(database.tx, command.source);
+      return repository.lockCallerOwnedCreateAuthority(database.tx, command, capability);
+    };
+
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, Object.freeze({}) as never),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const foreign = await prepare();
+    await expectCode(
+      foreignRepository.createWorkOrder(database.tx, command, foreign),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const wrongTransaction = await prepare();
+    await expectCode(
+      repository.createWorkOrder(otherDatabase.tx, command, wrongTransaction),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const retargeted = await prepare();
+    await expectCode(
+      repository.createWorkOrder(database.tx, { ...command, vehicleId: randomUUID() }, retargeted),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+    const oneUse = await prepare();
+    await repository.createWorkOrder(database.tx, command, oneUse);
+    await expectCode(
+      repository.createWorkOrder(database.tx, command, oneUse),
+      ASSET_OPERATION_ERROR_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
   it("does not let a caller mutate or retarget a locked work-order capability", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();
@@ -886,6 +1118,72 @@ describe("AssetOperationsRepository", () => {
     );
   });
 
+  it("releases an in-progress recovery restriction only through the prepared closure path and exactly replays it", async () => {
+    const fixture = await preparedRecoveryReleaseFixture();
+
+    const released = await preparedRelease(fixture, fixture.release);
+
+    expect(released).toMatchObject({
+      restriction: {
+        id: fixture.restriction.id,
+        restrictionType: VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS,
+        status: VehicleOperationalRestrictionStatus.RELEASED
+      },
+      workOrder: {
+        id: fixture.workOrder.id,
+        status: AssetWorkOrderStatus.IN_PROGRESS,
+        workOrderType: AssetWorkOrderType.RECOVERY
+      },
+      wrote: true
+    });
+    await expect(preparedRelease(fixture, fixture.release)).resolves.toEqual({
+      ...released,
+      wrote: false
+    });
+    await expectCode(
+      preparedRelease(fixture, {
+        ...releaseRestrictionCommand(fixture.restriction.id, "prepared-recovery-drift"),
+        source: fixture.release.source
+      }),
+      ASSET_OPERATION_ERROR_CODE.SOURCE_CONFLICT
+    );
+  });
+
+  it.each([
+    {
+      label: "wrong restriction type",
+      options: {
+        restrictionType: VehicleOperationalRestrictionType.MAINTENANCE_OR_ACCIDENT
+      }
+    },
+    {
+      label: "wrong work-order type",
+      options: { workOrderType: AssetWorkOrderType.RECONDITIONING }
+    },
+    {
+      label: "wrong work-order status",
+      options: { transitionToInProgress: false }
+    }
+  ])("rejects prepared recovery release for $label", async ({ options }) => {
+    const fixture = await preparedRecoveryReleaseFixture(options);
+
+    await expectCode(
+      preparedRelease(fixture, fixture.release),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+    expect(fixture.restriction.status).toBe(VehicleOperationalRestrictionStatus.ACTIVE);
+  });
+
+  it("keeps the public release path closed for an in-progress recovery work order", async () => {
+    const fixture = await preparedRecoveryReleaseFixture();
+
+    await expectCode(
+      fixture.repository.releaseRestriction(fixture.database.tx, fixture.release),
+      ASSET_OPERATION_ERROR_CODE.RESTRICTION_WORK_ORDER_NOT_ACCEPTED
+    );
+    expect(fixture.restriction.status).toBe(VehicleOperationalRestrictionStatus.ACTIVE);
+  });
+
   it("releases once with an exact replay, conflicts on drift, and preserves create replay", async () => {
     const database = new FakeDatabase();
     const repository = new AssetOperationsRepository();
@@ -1177,6 +1475,68 @@ function releaseRestrictionCommand(
   };
 }
 
+async function preparedRecoveryReleaseFixture(
+  options: {
+    restrictionType?: VehicleOperationalRestrictionType;
+    transitionToInProgress?: boolean;
+    workOrderType?: AssetWorkOrderType;
+  } = {}
+) {
+  const database = new FakeDatabase();
+  const repository = new AssetOperationsRepository();
+  const vehicleId = database.addVehicle();
+  const workOrder = (
+    await repository.createWorkOrder(database.tx, {
+      ...createCommand(),
+      vehicleId,
+      workOrderType: options.workOrderType ?? AssetWorkOrderType.RECOVERY
+    })
+  ).workOrder;
+  const restriction = (
+    await repository.createRestriction(database.tx, {
+      ...createRestrictionCommand(vehicleId, "prepared-recovery", workOrder.id),
+      restrictionType:
+        options.restrictionType ?? VehicleOperationalRestrictionType.RECOVERY_IN_PROGRESS
+    })
+  ).restriction;
+  if (options.transitionToInProgress !== false) {
+    await repository.transitionWorkOrder(
+      database.tx,
+      transitionCommand(workOrder.id, AssetWorkOrderStatus.IN_PROGRESS, 0)
+    );
+  }
+  const currentWorkOrder = database.workOrders.find(({ id }) => id === workOrder.id)!;
+  return {
+    database,
+    release: releaseRestrictionCommand(restriction.id, "prepared-recovery-release"),
+    repository,
+    restriction,
+    workOrder: currentWorkOrder
+  };
+}
+
+async function preparedRelease(
+  fixture: Awaited<ReturnType<typeof preparedRecoveryReleaseFixture>>,
+  command: ReleaseRestrictionCommand
+) {
+  if (typeof fixture.workOrder.id !== "string") throw new TypeError("work order id is required");
+  const sourceCapability = await fixture.repository.prepareCallerOwnedCommand(
+    fixture.database.tx,
+    command.source
+  );
+  const workOrderHandle = await fixture.repository.attestCallerOwnedWorkOrderAuthority(
+    fixture.database.tx,
+    fixture.workOrder.id,
+    command.source,
+    sourceCapability
+  );
+  return fixture.repository.releasePreparedRestriction(
+    fixture.database.tx,
+    command,
+    workOrderHandle
+  );
+}
+
 function source(label: string) {
   const id = randomUUID();
   return { id, key: `stage1c-task2:${label}:${id}`, type: "STAGE1C_TASK2_TEST" };
@@ -1201,6 +1561,16 @@ async function expectCode(promise: Promise<unknown>, code: string) {
     expect(error).toBeInstanceOf(ConflictException);
     expect((error as ConflictException).getResponse()).toMatchObject({ code });
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 async function expectReplayConsumesHandle(

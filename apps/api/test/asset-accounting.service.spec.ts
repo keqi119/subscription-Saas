@@ -30,6 +30,7 @@ import type {
   BusinessExceptionApprovalSnapshot,
   VehicleCostLedgerEntrySnapshot
 } from "../src/asset-accounting/asset-accounting.types";
+import { SubscriptionClosureRepository } from "../src/subscription-closure/subscription-closure.repository";
 
 const IDS = {
   actor: "00000000-0000-4000-8000-000000000101",
@@ -46,6 +47,405 @@ const CONFIRMED_AT = new Date("2026-08-20T10:00:00.000Z");
 const OCCURRED_ON = new Date("2026-08-19T00:00:00.000Z");
 
 describe("AssetAccountingService", () => {
+  it("executes one coordinator-attested append without authority relock and rejects reuse", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("prepared-inspection-cost");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+    const requirement = harness.service.appendCostAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      { authoritativeOrderId: IDS.order }
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedAppendCostInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      sourceCapability,
+      { authoritativeOrderId: IDS.order },
+      proofs.get("inspection-cost")!
+    );
+
+    await harness.service.appendPreparedCostInTransaction(harness.tx, prepared);
+
+    expect(harness.repository.operations).toEqual(["source-lock", "repository-append"]);
+    expect(harness.repository.lastAuthorityAlreadyLocked).toBe(true);
+    await expectServiceCode(
+      harness.service.appendPreparedCostInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("executes one coordinator-attested approval check without authority relock and rejects reuse", async () => {
+    const harness = serviceHarness();
+    const command = requireServiceCommand("prepared-settlement-approval");
+    const requestContext = context(
+      IDS.decider,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      command.source.key
+    );
+    const authoritySnapshot = { revision: 2, state: "CURRENT" } as const;
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+    const requirement = harness.service.approvedExceptionAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      authoritySnapshot
+    );
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedApprovedExceptionInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      sourceCapability,
+      proofs.get("approved-exception")!
+    );
+
+    const foreignService = new AssetAccountingService(
+      {} as never,
+      harness.repository as never,
+      {} as never
+    );
+    await expectServiceCode(
+      foreignService.requirePreparedApprovedExceptionInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+
+    await expect(
+      harness.service.requirePreparedApprovedExceptionInTransaction(harness.tx, prepared)
+    ).resolves.toBe(true);
+
+    expect(harness.repository.operations).toEqual([
+      "source-lock",
+      "repository-prepare-approval",
+      "repository-require"
+    ]);
+    expect(harness.repository.preparedApprovalFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(harness.repository.requiredApprovalFingerprint).toBe(
+      harness.repository.preparedApprovalFingerprint
+    );
+    await expectServiceCode(
+      harness.service.requirePreparedApprovedExceptionInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("prepares a recovery-case approval against the closure-case authority in the ranked coordinator pass", async () => {
+    const harness = serviceHarness();
+    const command = {
+      ...requireServiceCommand("prepared-recovery-approval"),
+      exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+      subject: {
+        subjectField: "recoveryExecution",
+        subjectId: IDS.order,
+        subjectType: "RECOVERY_CASE" as const
+      }
+    };
+    const requestContext = context(
+      IDS.decider,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      command.source.key
+    );
+    const authoritySnapshot = { recoveryFactRevision: 3, state: "APPROVED" } as const;
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+
+    const requirement = harness.service.approvedExceptionAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      authoritySnapshot
+    );
+
+    expect(requirement.locks).toEqual([
+      { id: IDS.order, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: IDS.approval, mode: "UPDATE", table: "business_exception_approval" },
+      { id: IDS.decider, mode: "SHARE", table: "user" }
+    ]);
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedApprovedExceptionInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      sourceCapability,
+      proofs.get("approved-exception")!
+    );
+
+    await expect(
+      harness.service.requirePreparedApprovedExceptionInTransaction(harness.tx, prepared)
+    ).resolves.toBe(true);
+    expect(harness.repository.operations).toEqual([
+      "source-lock",
+      "repository-prepare-approval",
+      "repository-require"
+    ]);
+  });
+
+  it("executes a prepared approval request once without source or authority relock", async () => {
+    const harness = serviceHarness();
+    const command = {
+      ...requestServiceCommand("prepared-recovery-request"),
+      exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+      subject: {
+        subjectField: "recoveryExecution",
+        subjectId: IDS.order,
+        subjectType: "RECOVERY_CASE" as const
+      }
+    };
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_REQUEST,
+      command.source.key
+    );
+    const authoritySnapshot = { recoveryContext: "current", revision: 4 } as const;
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+    const requirement = harness.service.requestApprovalAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      "recovery-approval-request"
+    );
+    expect(requirement.locks).toEqual([
+      { id: IDS.order, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: IDS.actor, mode: "SHARE", table: "user" }
+    ]);
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedApprovalRequestInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      sourceCapability,
+      proofs.get("recovery-approval-request")!,
+      "recovery-approval-request"
+    );
+
+    await expect(
+      harness.service.requestPreparedApprovalInTransaction(harness.tx, prepared)
+    ).resolves.toMatchObject({ id: IDS.approval, status: "PENDING" });
+    expect(harness.repository.operations).toEqual([
+      "source-lock",
+      "repository-prepare-request",
+      "repository-request-prepared"
+    ]);
+    await expectServiceCode(
+      harness.service.requestPreparedApprovalInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("executes a prepared approval decision once with exact requester and decider locks", async () => {
+    const harness = serviceHarness();
+    const command = {
+      ...decideServiceCommand("prepared-recovery-decision"),
+      exceptionType: "RECOVERY_EXECUTION_APPROVAL" as const,
+      subject: {
+        subjectField: "recoveryExecution",
+        subjectId: IDS.order,
+        subjectType: "RECOVERY_CASE" as const
+      }
+    };
+    const requestContext = context(
+      IDS.decider,
+      ASSET_ACCOUNTING_PERMISSION.EXCEPTION_APPROVE,
+      command.source.key
+    );
+    const authoritySnapshot = { recoveryContext: "current", revision: 4 } as const;
+    const sourceCapability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const coordinator = new SubscriptionClosureRepository();
+    const session = coordinator.createAuthoritySessionInTransaction(harness.tx);
+    const requirement = harness.service.decideApprovalAuthorityRequirement(
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      IDS.actor,
+      "recovery-approval-decision"
+    );
+    expect(requirement.locks).toEqual([
+      { id: IDS.order, mode: "UPDATE", table: "subscription_closure_case" },
+      { id: IDS.approval, mode: "UPDATE", table: "business_exception_approval" },
+      { id: IDS.actor, mode: "SHARE", table: "user" },
+      { id: IDS.decider, mode: "SHARE", table: "user" }
+    ]);
+    const proofs = await coordinator.prepareAuthorityInTransaction(
+      harness.tx,
+      session,
+      requirement.locks,
+      [requirement]
+    );
+    const prepared = await harness.service.attestPreparedApprovalDecisionInTransaction(
+      harness.tx,
+      session,
+      command,
+      requestContext,
+      authoritySnapshot,
+      IDS.actor,
+      sourceCapability,
+      proofs.get("recovery-approval-decision")!,
+      "recovery-approval-decision"
+    );
+
+    await expect(
+      harness.service.decidePreparedApprovalInTransaction(harness.tx, prepared)
+    ).resolves.toMatchObject({ id: IDS.approval, status: "APPROVED" });
+    expect(harness.repository.operations).toEqual([
+      "source-lock",
+      "repository-prepare-decision",
+      "repository-decision-prepared"
+    ]);
+    await expectServiceCode(
+      harness.service.decidePreparedApprovalInTransaction(harness.tx, prepared),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("appends through one caller-owned capability without opening a nested transaction", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("caller-owned-append");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+
+    await harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability);
+
+    expect(harness.transactions).toEqual([]);
+    expect(harness.audits).toHaveLength(1);
+    await expectServiceCode(
+      harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+  });
+
+  it("consumes a service capability before throwing source normalization", async () => {
+    const harness = serviceHarness();
+    const command = appendServiceCommand("caller-owned-normalization");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+    const malformed = Object.defineProperty({ ...command }, "source", {
+      get() {
+        throw new TypeError("throwing accounting service source getter");
+      }
+    }) as typeof command;
+
+    await expect(
+      harness.service.appendCostInTransaction(harness.tx, malformed, requestContext, capability)
+    ).rejects.toThrow("throwing accounting service source getter");
+    await expectServiceCode(
+      harness.service.appendCostInTransaction(harness.tx, command, requestContext, capability),
+      ConflictException,
+      ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+    );
+    expect(harness.audits).toHaveLength(0);
+  });
+
+  it("rejects forged, foreign-instance, wrong-transaction, and wrong-source accounting capabilities", async () => {
+    const harness = serviceHarness();
+    const foreign = serviceHarness();
+    const command = appendServiceCommand("caller-owned-guards");
+    const requestContext = context(
+      IDS.actor,
+      ASSET_ACCOUNTING_PERMISSION.COST_CONFIRM,
+      command.source.key
+    );
+    const capability = await harness.service.prepareCallerOwnedTransaction(
+      harness.tx,
+      command.source
+    );
+
+    for (const [service, tx, candidate, input] of [
+      [harness.service, harness.tx, Object.freeze({}), command],
+      [foreign.service, harness.tx, capability, command],
+      [harness.service, foreign.tx, capability, command],
+      [
+        harness.service,
+        harness.tx,
+        await harness.service.prepareCallerOwnedTransaction(harness.tx, command.source),
+        { ...command, source: source("different-accounting-source") }
+      ]
+    ] as const) {
+      await expectServiceCode(
+        service.appendCostInTransaction(tx, input, requestContext, candidate as never),
+        ConflictException,
+        ASSET_ACCOUNTING_SERVICE_CODE.CALLER_CAPABILITY_INVALID
+      );
+    }
+    expect(harness.audits).toHaveLength(0);
+  });
   it("requires an authenticated actor, the exact plan permission, and one matching source header", async () => {
     const harness = serviceHarness();
     const command = appendServiceCommand("guarded-append");
@@ -557,6 +957,30 @@ function serviceHarness() {
     workOrderExists: true
   };
   const tx = {
+    $queryRaw: async (query: { strings: readonly string[]; values?: readonly unknown[] }) => {
+      const sql = query.strings.join("?");
+      if (sql.includes("transaction_isolation")) {
+        return [{ isolationLevel: "read committed", transactionId: "asset-accounting-tx" }];
+      }
+      if (sql.includes("txid_current")) {
+        return [{ transactionId: "asset-accounting-tx" }];
+      }
+      if (sql.includes('AS "authorityTable"')) {
+        const rows: Array<{ authorityTable: string; requestedId: string }> = [];
+        for (let index = 0; index < (query.values?.length ?? 0); index += 2) {
+          rows.push({
+            authorityTable: String(query.values![index]),
+            requestedId: String(query.values![index + 1])
+          });
+        }
+        return rows;
+      }
+      return [
+        {
+          id: query.values?.find((value): value is string => typeof value === "string") ?? IDS.order
+        }
+      ];
+    },
     assetAccountingCommandReceipt: {
       findUnique: async () => (harness.receiptExists ? { id: randomUUID() } : null)
     },
@@ -629,7 +1053,12 @@ class FakeRepository {
   approvals: BusinessExceptionApprovalSnapshot[] = [approvalSnapshot()];
   lastApprovalFilters?: Record<string, unknown>;
   lastAppendActor?: string;
+  lastAuthorityAlreadyLocked?: boolean;
   lastAppendSource?: unknown;
+  preparedApprovalFingerprint?: string;
+  preparedRequestFingerprint?: string;
+  preparedDecisionFingerprint?: string;
+  requiredApprovalFingerprint?: string;
   lastExpire?: ExpireExceptionApprovalCommand;
   lastRequest?: RequestExceptionApprovalCommand;
   workOrderListCalls = 0;
@@ -645,13 +1074,21 @@ class FakeRepository {
     this.operations.push("source-subject-lock");
   }
 
+  async prepareCallerOwnedCommand() {
+    this.operations.push("source-lock");
+    return Object.freeze({});
+  }
+
   async appendCostEntry(
     _tx: Prisma.TransactionClient,
-    command: { actorId: string; source: unknown }
+    command: { actorId: string; source: unknown },
+    _capability?: unknown,
+    authorityAlreadyLocked?: boolean
   ) {
     this.operations.push("repository-append");
     this.lastAppendActor = command.actorId;
     this.lastAppendSource = command.source;
+    this.lastAuthorityAlreadyLocked = authorityAlreadyLocked;
     return this.appendOutcome;
   }
 
@@ -730,6 +1167,84 @@ class FakeRepository {
     void command;
     this.operations.push("repository-require");
     return this.requireOutcome;
+  }
+
+  async prepareApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequireCurrentApprovedExceptionCommand,
+    sourceCapability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void command;
+    void sourceCapability;
+    this.operations.push("repository-prepare-approval");
+    this.preparedApprovalFingerprint = authorityLockFingerprint;
+    return Object.freeze({});
+  }
+
+  async requirePreparedApprovedExceptionInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void capability;
+    this.operations.push("repository-require");
+    this.requiredApprovalFingerprint = authorityLockFingerprint;
+    return this.requireOutcome;
+  }
+
+  async prepareApprovalRequestInTransaction(
+    tx: Prisma.TransactionClient,
+    command: RequestExceptionApprovalCommand,
+    sourceCapability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void command;
+    void sourceCapability;
+    this.operations.push("repository-prepare-request");
+    this.preparedRequestFingerprint = authorityLockFingerprint;
+    return Object.freeze({});
+  }
+
+  async requestPreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void capability;
+    expect(authorityLockFingerprint).toBe(this.preparedRequestFingerprint);
+    this.operations.push("repository-request-prepared");
+    return this.requestOutcome;
+  }
+
+  async prepareApprovalDecisionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: DecideExceptionApprovalCommand,
+    sourceCapability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void command;
+    void sourceCapability;
+    this.operations.push("repository-prepare-decision");
+    this.preparedDecisionFingerprint = authorityLockFingerprint;
+    return Object.freeze({});
+  }
+
+  async decidePreparedApprovalInTransaction(
+    tx: Prisma.TransactionClient,
+    capability: unknown,
+    authorityLockFingerprint: string
+  ) {
+    void tx;
+    void capability;
+    expect(authorityLockFingerprint).toBe(this.preparedDecisionFingerprint);
+    this.operations.push("repository-decision-prepared");
+    return this.decideOutcome;
   }
 }
 

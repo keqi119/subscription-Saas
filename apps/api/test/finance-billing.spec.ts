@@ -399,6 +399,47 @@ describe("billing finance minimum backend loop", () => {
     ).toBe(SubscriptionAutomationJobStatus.COMPLETED);
   });
 
+  it("cancels the pending recovery assessment after every overdue bill settles despite a future bill", async () => {
+    const harness = createFinanceHarness();
+    const firstBill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-01") });
+    const secondBill = addReceivableBill(harness, { dueDate: dateOnly("2026-06-02") });
+    addReceivableBill(harness, { dueDate: dateOnly("2099-06-30") });
+    await harness.service.refreshOverdueBills(
+      { asOfDate: "2026-06-06" },
+      harness.user,
+      harness.context
+    );
+    harness.state.automationJobs.push({
+      billId: firstBill.id,
+      id: "recovery-assessment-job",
+      jobStatus: SubscriptionAutomationJobStatus.PENDING,
+      jobType: SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7,
+      orderId: harness.orderId
+    });
+
+    const firstPayment = await harness.createPayment(300000);
+    await harness.service.writeOffPayment(
+      firstPayment.id,
+      { items: [{ billId: firstBill.id, writeOffAmount: 300000 }] },
+      harness.user,
+      harness.context
+    );
+    expect(harness.state.automationJobs[0]?.jobStatus).toBe(
+      SubscriptionAutomationJobStatus.PENDING
+    );
+
+    const secondPayment = await harness.createPayment(300000);
+    await harness.service.writeOffPayment(
+      secondPayment.id,
+      { items: [{ billId: secondBill.id, writeOffAmount: 300000 }] },
+      harness.user,
+      harness.context
+    );
+    expect(harness.state.automationJobs[0]?.jobStatus).toBe(
+      SubscriptionAutomationJobStatus.CANCELLED
+    );
+  });
+
   it("creates a confirmed deposit COLLECT ledger when the deposit bill is fully written off", async () => {
     const harness = createFinanceHarness();
     await harness.service.generateInitialBills(harness.orderId, harness.user, harness.context);
@@ -1934,12 +1975,11 @@ function createFinanceHarness(orderOverrides: Record<string, unknown> = {}) {
       updateMany: vi.fn(async ({ data, where }) => {
         const matches = state.automationJobs.filter(
           (job) =>
-            (!where.billId?.in ||
-              where.billId.in.includes(job.billId)) &&
-            (!where.jobStatus ||
-              job.jobStatus === where.jobStatus) &&
-            (!where.jobType?.in ||
-              where.jobType.in.includes(job.jobType))
+            (!where.billId?.in || where.billId.in.includes(job.billId)) &&
+            (!where.orderId || job.orderId === where.orderId) &&
+            (!where.jobStatus || matchesScalarFilter(job.jobStatus, where.jobStatus)) &&
+            (!where.jobType?.in || where.jobType.in.includes(job.jobType)) &&
+            (!where.jobType || matchesScalarFilter(job.jobType, where.jobType))
         );
         for (const job of matches) {
           Object.assign(job, data);

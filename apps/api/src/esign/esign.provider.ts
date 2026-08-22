@@ -2,15 +2,24 @@ import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.t
 
 export const ESIGN_PROVIDER_CLIENT = Symbol("ESIGN_PROVIDER_CLIENT");
 
-export type ESignSigningStage = "STAGE1_CONTRACT" | "STAGE2_DELIVERY_HANDOVER";
-export type ESignDocumentType = "CONTRACT_BODY" | "ATTACHMENT1_SUBSCRIPTION_PLAN" | "DELIVERY_HANDOVER";
+export type ESignSigningStage =
+  | "STAGE1_CONTRACT"
+  | "STAGE2_DELIVERY_HANDOVER"
+  | "STAGE6_RETURN_MANIFEST";
+export type ESignDocumentType =
+  | "CONTRACT_BODY"
+  | "ATTACHMENT1_SUBSCRIPTION_PLAN"
+  | "DELIVERY_HANDOVER"
+  | "RETURN_MANIFEST";
 export type ESignSlotId =
   | "STAGE1_BODY_CUSTOMER"
   | "STAGE1_BODY_PLATFORM"
   | "STAGE1_ATTACHMENT1_CUSTOMER"
   | "STAGE1_ATTACHMENT1_PLATFORM"
   | "STAGE2_HANDOVER_CUSTOMER"
-  | "STAGE2_HANDOVER_PLATFORM";
+  | "STAGE2_HANDOVER_PLATFORM"
+  | "RETURN_MANIFEST_CUSTOMER"
+  | "RETURN_MANIFEST_PLATFORM";
 export type ESignSignerRole = "CUSTOMER" | "PLATFORM";
 export type ESignProviderActionType = "CUSTOMER_MANUAL_SIGN" | "PLATFORM_AUTO_SEAL";
 
@@ -139,6 +148,71 @@ export interface VerifyCallbackResult {
   verified: boolean;
 }
 
+export interface ReturnManifestProviderTaskInput {
+  callbackUrl?: string;
+  contractId: string;
+  customer: {
+    customerId: string;
+    name: string;
+    phone: string;
+    signerId: string;
+  };
+  documentName: string;
+  providerSourcePdf: {
+    buffer: Buffer;
+    fileName: string;
+    sha256: string;
+  };
+  taskId: string;
+  taskNo: string;
+  transactionId: string;
+}
+
+export interface ReturnManifestProviderTaskResult {
+  customer: {
+    providerCustomerId: string;
+    providerSignerId: string;
+    providerTransactionId: string;
+    signUrl?: string;
+    signUrlExpiresAt?: Date;
+  };
+  providerEnvelopeId: string;
+  providerTaskId: string;
+  rawResponse?: unknown;
+}
+
+export interface CompleteReturnManifestProviderTaskInput {
+  contractId: string;
+  customer: {
+    providerCustomerId: string;
+    providerTransactionId: string;
+    signerId: string;
+  };
+  documentName: string;
+  platform: { signerId: string; transactionId: string };
+  providerEnvelopeId: string;
+  providerTaskId: string;
+  providerSourcePdf: Buffer;
+  taskId: string;
+  taskNo: string;
+}
+
+export interface CompleteReturnManifestProviderTaskResult {
+  customer: {
+    providerTransactionId: string;
+    resultCode?: string;
+    resultDescription?: string;
+  };
+  platform: {
+    providerSignerId: string;
+    providerTransactionId: string;
+    resultCode?: string;
+    resultDescription?: string;
+  };
+  rawResponse?: unknown;
+  signedPdf: { buffer: Buffer; contentType: "application/pdf"; fileName: string };
+}
+
 export interface AutoSealKeywordPlacement {
   keyx?: string;
   keyy?: string;
@@ -184,10 +258,20 @@ export interface AutoSealTaskResult {
 
 export interface ESignProvider {
   autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
+  completeReturnManifestTask?(
+    input: CompleteReturnManifestProviderTaskInput
+  ): Promise<CompleteReturnManifestProviderTaskResult>;
+  createReturnManifestTask?(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult>;
+  reconcileReturnManifestTask?(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult | null>;
   createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult>;
   getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult>;
-  querySignerStatus(
-    input: QuerySignerStatusInput
-  ): Promise<ESignProviderSignerStatusResult>;
-  verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyCallbackResult>;
+  querySignerStatus(input: QuerySignerStatusInput): Promise<ESignProviderSignerStatusResult>;
+  verifyCallback(
+    payload: unknown,
+    headers?: Record<string, unknown>
+  ): Promise<VerifyCallbackResult>;
 }

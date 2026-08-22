@@ -32,6 +32,8 @@ import {
   PaymentWriteOff,
   Prisma,
   ReceivableBill,
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType,
   VehicleDamageResponsibleParty,
   VehicleReturn,
   VehicleReturnDamage,
@@ -745,6 +747,41 @@ export class FinanceService {
         tx
       );
     }
+
+    const settledBillOrders = await tx.receivableBill.findMany({
+      select: { orderId: true },
+      where: { deletedAt: null, id: { in: billIds } }
+    });
+    const orderIds = [...new Set(settledBillOrders.map(({ orderId }) => orderId))];
+    for (const orderId of orderIds) {
+      const outstandingBill = await tx.receivableBill.findFirst({
+        select: { id: true },
+        where: {
+          billStatus: {
+            in: [BillStatus.PENDING, BillStatus.PARTIALLY_PAID, BillStatus.OVERDUE]
+          },
+          deletedAt: null,
+          dueDate: { lt: settledAt },
+          orderId,
+          remainingAmount: { gt: 0n }
+        }
+      });
+      if (outstandingBill) continue;
+      await tx.subscriptionAutomationJob.updateMany({
+        data: {
+          cancelledAt: settledAt,
+          completedAt: settledAt,
+          jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+          leaseExpiresAt: null,
+          leaseToken: null
+        },
+        where: {
+          jobStatus: SubscriptionAutomationJobStatus.PENDING,
+          jobType: SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7,
+          orderId
+        }
+      });
+    }
   }
 
   async generateInitialBills(orderId: string, user: RequestUser, context: RequestContext) {
@@ -947,7 +984,7 @@ export class FinanceService {
     if (!order || order.deletedAt) {
       throw new NotFoundException(ORDER_NOT_FOUND_MESSAGE);
     }
-    ensureOrderCanGenerateMonthlyRentBill(order);
+    ensureOrderCanGenerateAutomatedMonthlyRentBill(order);
 
     const monthlyRentAmount = input.monthlyRentAmount ?? resolveMonthlyRentAmount(order);
     if (monthlyRentAmount === null) {
@@ -1489,6 +1526,12 @@ export class FinanceService {
           updatedBills
             .filter((bill) => bill.remainingAmount === 0n)
             .map((bill) => bill.id)
+        );
+        await this.reconcileCollectionCasesAfterSettlement(
+          tx,
+          billIds,
+          now,
+          user.id
         );
 
         const paymentAfter = await tx.paymentRecord.findUniqueOrThrow({
@@ -2585,14 +2628,7 @@ async function createMonthlyRentBillForPeriodIfAbsent(
   });
 
   if (existingBill) {
-    const reconciledBill =
-      existingBill.sourceKey === null
-        ? await tx.receivableBill.update({
-            data: { sourceKey },
-            where: { id: existingBill.id }
-          })
-        : existingBill;
-    return { bill: reconciledBill, created: false, period };
+    return { bill: existingBill, created: false, period };
   }
 
   const bill = await tx.receivableBill.create({
@@ -2933,6 +2969,19 @@ function ensureOrderCanRefundDeposit(order: FinanceOrder) {
 
 function ensureOrderCanGenerateMonthlyRentBill(order: FinanceOrder) {
   if (order.orderStatus !== OrderStatus.ACTIVE) {
+    throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
+  }
+  if (!order.actualDeliveryAt) {
+    throw new BadRequestException(MONTHLY_RENT_NOT_STARTED_MESSAGE);
+  }
+}
+
+function ensureOrderCanGenerateAutomatedMonthlyRentBill(order: FinanceOrder) {
+  if (
+    order.orderStatus !== OrderStatus.ACTIVE &&
+    order.orderStatus !== OrderStatus.PENDING_RETURN &&
+    order.orderStatus !== OrderStatus.COMPLETED
+  ) {
     throw new BadRequestException(MONTHLY_RENT_ORDER_STATUS_MESSAGE);
   }
   if (!order.actualDeliveryAt) {

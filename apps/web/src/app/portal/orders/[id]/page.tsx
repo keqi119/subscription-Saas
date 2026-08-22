@@ -17,6 +17,8 @@ import {
 } from "../../../../constants/labels";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import { PortalOrderDetail, PortalPaymentOrder, PortalVehicleDocument } from "../../../../lib/portal-types";
+import { loadPortalSubscriptionClosureByOrder } from "../../../../lib/subscription-closure-api";
+import type { CustomerSubscriptionClosureView } from "../../../../lib/subscription-closure-view-model";
 import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
 
 export default function PortalOrderDetailPage() {
@@ -25,6 +27,8 @@ export default function PortalOrderDetailPage() {
   const { message } = App.useApp();
   const [order, setOrder] = useState<PortalOrderDetail>();
   const [documents, setDocuments] = useState<PortalVehicleDocument[]>([]);
+  const [subscriptionClosure, setSubscriptionClosure] =
+    useState<CustomerSubscriptionClosureView | null>(null);
   const [loading, setLoading] = useState(true);
   const [paying, setPaying] = useState(false);
 
@@ -34,12 +38,14 @@ export default function PortalOrderDetailPage() {
     }
     setLoading(true);
     try {
-      const [nextOrder, nextDocuments] = await Promise.all([
+      const [nextOrder, nextDocuments, nextSubscriptionClosure] = await Promise.all([
         portalApiFetch<PortalOrderDetail>(`/portal/orders/${params.id}`),
-        portalApiFetch<PortalVehicleDocument[]>(`/portal/orders/${params.id}/documents`)
+        portalApiFetch<PortalVehicleDocument[]>(`/portal/orders/${params.id}/documents`),
+        loadPortalSubscriptionClosureByOrder(params.id)
       ]);
       setOrder(nextOrder);
       setDocuments(nextDocuments);
+      setSubscriptionClosure(nextSubscriptionClosure);
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
         router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/orders/${params.id}`)}`);
@@ -108,6 +114,54 @@ export default function PortalOrderDetailPage() {
         </Flex>
 
         <PortalJourneyNextActionCard orderId={params.id} />
+
+        {subscriptionClosure ? (
+          <section style={sectionStyle}>
+            <Typography.Title level={4} style={{ marginTop: 0 }}>
+              退车与结算进度
+            </Typography.Title>
+            <Descriptions
+              column={1}
+              items={[
+                { label: "闭环编号", children: subscriptionClosure.caseNo },
+                { label: "当前状态", children: subscriptionClosure.status },
+                { label: "下一步", children: subscriptionClosure.nextAction },
+                {
+                  label: "退车预约",
+                  children: subscriptionClosure.returnAppointment
+                    ? `${formatTime(subscriptionClosure.returnAppointment.scheduledAt)} · ${subscriptionClosure.returnAppointment.location ?? "地点待确认"}`
+                    : "待安排"
+                },
+                {
+                  label: "结算结果",
+                  children: subscriptionClosure.settlement
+                    ? `${subscriptionClosure.settlement.stage} · 应付 ${subscriptionClosure.settlement.amountDueCents} 分 · 应退 ${subscriptionClosure.settlement.amountRefundableCents} 分`
+                    : "待结算"
+                }
+              ]}
+            />
+            <Typography.Title level={5}>已签文件</Typography.Title>
+            <List
+              dataSource={subscriptionClosure.signedReferences}
+              locale={{ emptyText: "暂无已签文件" }}
+              renderItem={(item) => (
+                <List.Item>
+                  {item.documentType} · {item.stage} · <Typography.Text code>{item.fileId}</Typography.Text>
+                </List.Item>
+              )}
+            />
+            <Typography.Title level={5}>检查凭证</Typography.Title>
+            <List
+              dataSource={subscriptionClosure.evidenceReferences}
+              locale={{ emptyText: "暂无检查凭证" }}
+              renderItem={(item) => (
+                <List.Item>
+                  {item.evidenceType} · <Typography.Text code>{item.fileId}</Typography.Text>
+                </List.Item>
+              )}
+            />
+          </section>
+        ) : null}
 
         <section style={sectionStyle}>
           <Flex align="flex-start" justify="space-between" gap={16} wrap="wrap">

@@ -136,11 +136,13 @@ export function projectSubscriptionClosureCustomer(value: unknown) {
   const settlement = asRecordArray(aggregate.settlementRevisions).at(-1) ?? null;
   const vehicleReturn = asRecord(aggregate.vehicleReturn);
   const evidenceReferences = asRecordArray(aggregate.workOrders).flatMap((workOrder) =>
-    asRecordArray(workOrder.evidence).map((evidence) => ({
-      evidenceType: evidence.evidenceType,
-      fileId: evidence.fileId,
-      id: evidence.id
-    }))
+    asRecordArray(workOrder.evidence)
+      .filter((evidence) => typeof evidence.fileId === "string" && evidence.fileId.length > 0)
+      .map((evidence) => ({
+        evidenceType: evidence.evidenceType,
+        fileId: evidence.fileId,
+        id: evidence.id
+      }))
   );
   const status = typeof closureCase.status === "string" ? closureCase.status : "";
   return sanitizeSubscriptionClosurePublic({

@@ -4,6 +4,7 @@ import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer } from "./portal-auth.types";
 import { CurrentPortalCustomer } from "./portal-current-customer.decorator";
 import { PortalBillingService } from "./portal-billing.service";
+import { SubscriptionClosureProjectionService } from "../subscription-closure/subscription-closure.projection";
 import {
   PortalBillsQueryDto,
   PortalDepositTransactionsQueryDto,
@@ -15,7 +16,10 @@ import {
 @Controller("portal")
 @UseGuards(CustomerAuthGuard)
 export class PortalBillingController {
-  constructor(private readonly portalBillingService: PortalBillingService) {}
+  constructor(
+    private readonly portalBillingService: PortalBillingService,
+    private readonly subscriptionClosureProjection: SubscriptionClosureProjectionService
+  ) {}
 
   @Get("orders")
   listOrders(
@@ -31,6 +35,14 @@ export class PortalBillingController {
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer
   ) {
     return this.portalBillingService.getOrder(id, currentCustomer);
+  }
+
+  @Get("orders/:id/subscription-closure")
+  getSubscriptionClosure(
+    @Param("id") id: string,
+    @CurrentPortalCustomer() currentCustomer: CurrentCustomer
+  ) {
+    return this.subscriptionClosureProjection.getCustomerByOrder(id, currentCustomer.customerId);
   }
 
   @Get("bills")

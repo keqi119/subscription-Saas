@@ -14,6 +14,7 @@ import { ServiceCaseModule } from "../service-case/service-case.module";
 import { SmsModule } from "../sms/sms.module";
 import { StorageModule } from "../storage/storage.module";
 import { SubscriptionChangeModule } from "../subscription-change/subscription-change.module";
+import { SubscriptionClosureModule } from "../subscription-closure/subscription-closure.module";
 import { VehicleInsuranceModule } from "../vehicle-insurance/vehicle-insurance.module";
 import { WeChatModule } from "../wechat/wechat.module";
 import { PortalApplicationController } from "./portal-application.controller";
@@ -83,6 +84,7 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     SmsModule,
     StorageModule,
     SubscriptionChangeModule,
+    SubscriptionClosureModule,
     VehicleInsuranceModule,
     WeChatModule
   ],

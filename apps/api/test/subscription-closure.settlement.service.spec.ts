@@ -248,13 +248,14 @@ describe("SubscriptionClosureService settlement", () => {
   });
 
   it.each([
-    ["NORMAL_COMPLETION", "COMPLETE", "COMPLETED"],
-    ["EARLY_TERMINATION", "TERMINATE", "TERMINATED"],
-    ["NORMAL_COMPLETION", "TERMINATE", "TERMINATED"]
+    ["NORMAL_COMPLETION", "COMPLETE", "SIGNED", "COMPLETED"],
+    ["EARLY_TERMINATION", "TERMINATE", "ARCHIVED", "TERMINATED"],
+    ["NORMAL_COMPLETION", "TERMINATE", "SIGNED", "TERMINATED"]
   ] as const)(
-    "settles %s/%s as %s without changing vehicle availability",
-    async (closureType, finalDisposition, terminalStatus) => {
+    "settles %s/%s from %s as %s without changing vehicle availability",
+    async (closureType, finalDisposition, contractStatus, terminalStatus) => {
       const harness = settlementHarness();
+      harness.findContract.mockResolvedValue({ id: IDS.contract, status: contractStatus });
       harness.findClosureCase.mockResolvedValue(
         closureCase({
           closureType,
@@ -328,6 +329,29 @@ describe("SubscriptionClosureService settlement", () => {
       expect(harness.tx.contract.update).not.toHaveBeenCalled();
     }
   );
+
+  it("requires the early-termination agreement contract to be archived before settlement", async () => {
+    const harness = settlementHarness();
+    harness.findContract.mockResolvedValue({ id: IDS.contract, status: "SIGNED" });
+    harness.findClosureCase.mockResolvedValue(
+      closureCase({
+        closureType: "EARLY_TERMINATION",
+        currentSettlementRevision: currentSettlement("FINALIZED"),
+        currentSettlementRevisionId: IDS.settlement,
+        finalDisposition: "TERMINATE",
+        version: 5
+      })
+    );
+
+    await expectCode(
+      harness.service.settleManagedSettlement(settlementInput("settle-unarchived-early")),
+      ConflictException,
+      SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE.SETTLEMENT_STATUS_CONFLICT
+    );
+
+    expect(harness.tx.subscriptionOrder.update).not.toHaveBeenCalled();
+    expect(harness.tx.contract.update).not.toHaveBeenCalled();
+  });
 
   it("commits stale approval expiry and rejects outside the transaction", async () => {
     const harness = settlementHarness();

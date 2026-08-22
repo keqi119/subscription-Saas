@@ -4127,11 +4127,16 @@ export class SubscriptionClosureService {
       const beforeContract = await tx.contract.findUnique({
         where: { id: observedResolution.contractId }
       });
+      const contractReadyForSettlement =
+        observedCase.closureType === "EARLY_TERMINATION"
+          ? beforeContract?.status === ContractStatus.ARCHIVED
+          : beforeContract?.status === ContractStatus.SIGNED ||
+            beforeContract?.status === ContractStatus.ARCHIVED;
       if (
         !beforeOrder ||
         beforeOrder.orderStatus !== OrderStatus.RETURNED_PENDING_SETTLEMENT ||
         !beforeContract ||
-        beforeContract.status !== ContractStatus.ARCHIVED
+        !contractReadyForSettlement
       ) {
         throw serviceConflict("SETTLEMENT_STATUS_CONFLICT");
       }
@@ -4267,9 +4272,16 @@ export class SubscriptionClosureService {
     const closureCase = await tx.subscriptionClosureCase.findUnique({
       where: { id: command.closureCaseId }
     });
-    if (!closureCase || closureCase.status !== "PENDING_SETTLEMENT") {
+    if (
+      !closureCase ||
+      !["PENDING_SETTLEMENT", "COMPLETED", "TERMINATED"].includes(closureCase.status)
+    ) {
       throw serviceConflict("AUTHORITY_MISMATCH");
     }
+    const inventoryCaseStatus = closureCase.status as
+      | "PENDING_SETTLEMENT"
+      | "COMPLETED"
+      | "TERMINATED";
     const restrictions = await tx.vehicleOperationalRestriction.findMany({
       where: {
         startSourceId: closureCase.id,
@@ -4350,11 +4362,11 @@ export class SubscriptionClosureService {
     };
     const eventCommand = {
       actorId: command.actorId,
-      afterStatus: "PENDING_SETTLEMENT" as const,
+      afterStatus: inventoryCaseStatus,
       closureCaseId: closureCase.id,
       detailSnapshot: { restrictionId: restriction.id, vehicleId: vehicle.id },
       eventType: "INVENTORY_RELEASED" as const,
-      expectedStatus: "PENDING_SETTLEMENT" as const,
+      expectedStatus: inventoryCaseStatus,
       expectedVersion: closureCase.version,
       occurredAt: command.occurredAt,
       source: inventorySource
@@ -7542,6 +7554,7 @@ async function validateExactSettlementSuccessorChain(
 async function validateExactTerminalSuccessor(
   tx: Prisma.TransactionClient,
   closureCase: Readonly<{
+    closureType: string;
     contractId: string;
     currentSettlementRevisionId: string | null;
     id: string;
@@ -7642,13 +7655,18 @@ async function validateExactTerminalSuccessor(
     return (
       candidate.entityId === closureCase.contractId &&
       candidate.entityType === "contract" &&
-      before.status === ContractStatus.ARCHIVED &&
+      (closureCase.closureType === "EARLY_TERMINATION"
+        ? before.status === ContractStatus.ARCHIVED
+        : before.status === ContractStatus.SIGNED || before.status === ContractStatus.ARCHIVED) &&
       after.status === terminalStatus
     );
   });
   const terminalAggregateAudits = [...terminalOrderAudits, ...terminalContractAudits];
   const terminalOrderAudit = terminalOrderAudits[0];
   const terminalContractAudit = terminalContractAudits[0];
+  const terminalContractBeforeStatus = terminalContractAudit
+    ? jsonObject(terminalContractAudit.beforeSnapshot).status
+    : null;
   return Boolean(
     settledRevision?.id === closureCase.currentSettlementRevisionId &&
     settledRevision.closureCaseId === closureCase.id &&
@@ -7742,11 +7760,16 @@ async function validateExactTerminalSuccessor(
     terminalContractAudit.userAgent === null &&
     terminalContractAudit.createdAt.getTime() === event.recordedAt.getTime() &&
     terminalContractAudit.createdAt.getTime() === audit.createdAt.getTime() &&
+    typeof terminalContractBeforeStatus === "string" &&
+    (closureCase.closureType === "EARLY_TERMINATION"
+      ? terminalContractBeforeStatus === ContractStatus.ARCHIVED
+      : terminalContractBeforeStatus === ContractStatus.SIGNED ||
+        terminalContractBeforeStatus === ContractStatus.ARCHIVED) &&
     terminalAggregateAuditTransitionMatches(
       terminalContractAudit.beforeSnapshot,
       terminalContractAudit.afterSnapshot,
       "status",
-      ContractStatus.ARCHIVED,
+      terminalContractBeforeStatus,
       terminalStatus,
       event.actorId
     ) &&

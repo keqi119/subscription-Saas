@@ -80,4 +80,66 @@ describe("subscription closure public projections", () => {
     });
     expect(JSON.stringify(customer)).not.toContain("private-source");
   });
+
+  it.each([
+    ["normal expiry", "NORMAL_COMPLETION", "COMPLETED", "COMPLETE", "流程已结束"],
+    ["D+7 recovery", "NORMAL_COMPLETION", "RETURN_INSPECTION", "TERMINATE", "车辆检查处理中"],
+    ["early termination", "EARLY_TERMINATION", "TERMINATED", "TERMINATE", "流程已结束"]
+  ])(
+    "projects the %s acceptance journey for admin and customer consumers",
+    (_name, closureType, status, finalDisposition, nextAction) => {
+      const aggregate = {
+        approvals:
+          status === "RETURN_INSPECTION"
+            ? [
+                {
+                  approvalComment: "private",
+                  approvalType: "RECOVERY_EXECUTION_APPROVAL",
+                  id: "approval",
+                  status: "APPROVED"
+                }
+              ]
+            : [],
+        audits: [{ action: "UPDATE", entityType: "subscription_closure_case", id: "audit" }],
+        closureCase: {
+          caseNo: `SC-${closureType}`,
+          closureType,
+          finalDisposition,
+          physicalControlMode: status === "RETURN_INSPECTION" ? "RECOVERY" : "VOLUNTARY_RETURN",
+          status
+        },
+        currentDocuments: [
+          { documentType: "RETURN_MANIFEST", signedFileId: "signed-file", stage: "ARCHIVED" }
+        ],
+        events: [{ eventType: "ACCEPTANCE", id: "event" }],
+        settlementRevisions:
+          status === "RETURN_INSPECTION"
+            ? []
+            : [{ amountDueCents: 0n, amountRefundableCents: 500n, stage: "SETTLED" }],
+        vehicleReturn: {
+          returnLocation: "Depot",
+          scheduledAt: new Date("2026-08-25T00:00:00.000Z")
+        },
+        workOrders: [
+          {
+            evidence: [{ evidenceType: "INSPECTION_REPORT", fileId: "evidence", id: "evidence-1" }]
+          }
+        ]
+      };
+
+      expect(projectSubscriptionClosureAdmin(aggregate)).toMatchObject({
+        closureCase: { closureType, finalDisposition, status },
+        events: [{ eventType: "ACCEPTANCE" }]
+      });
+      expect(projectSubscriptionClosureCustomer(aggregate)).toMatchObject({
+        closureType,
+        finalDisposition,
+        nextAction,
+        status
+      });
+      expect(JSON.stringify(projectSubscriptionClosureCustomer(aggregate))).not.toContain(
+        "private"
+      );
+    }
+  );
 });

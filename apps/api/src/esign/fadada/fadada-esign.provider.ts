@@ -137,6 +137,58 @@ export class FadadaESignProvider implements ESignProvider {
     };
   }
 
+  async reconcileReturnManifestTask(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult | null> {
+    if (!this.apiClient) {
+      throw new Error(
+        `${FADADA_PROVIDER_DEPENDENCY_MISSING}: return-manifest provider client is not wired`
+      );
+    }
+    const formalProviderCustomerId = await this.findVerifiedProviderCustomerId(
+      input.customer.customerId
+    );
+    const resolvedSignerCustomer = resolveFadadaSignerCustomerId({
+      config: this.config,
+      contractId: input.contractId,
+      formalProviderCustomerId,
+      localCustomerId: input.customer.customerId,
+      mode: this.config.fullSigningSmokeEnabled ? "FULL_SIGNING_SMOKE" : "NORMAL",
+      orderId: undefined
+    });
+    assertFadadaTransactionId(input.transactionId);
+    const result = await this.apiClient.querySignResult({
+      contractId: input.taskNo,
+      customerId: resolvedSignerCustomer.providerCustomerId,
+      transactionId: input.transactionId
+    });
+    if (isFadadaSigningRecordAbsent(result)) return null;
+    if (
+      result.status === "FAILED" ||
+      result.status === "UNKNOWN" ||
+      (result.providerContractId && result.providerContractId !== input.taskNo) ||
+      (result.providerCustomerId &&
+        result.providerCustomerId !== resolvedSignerCustomer.providerCustomerId) ||
+      (result.providerTransactionId &&
+        result.providerTransactionId !== input.transactionId)
+    ) {
+      throw new Error("FADADA_RETURN_MANIFEST_PROVIDER_RECONCILIATION_CONFLICT");
+    }
+    return {
+      customer: {
+        providerCustomerId: resolvedSignerCustomer.providerCustomerId,
+        providerSignerId: input.transactionId,
+        providerTransactionId: input.transactionId
+      },
+      providerEnvelopeId: input.taskNo,
+      providerTaskId: input.transactionId,
+      rawResponse: {
+        reconciliation: result.raw,
+        sourcePdfHash: input.providerSourcePdf.sha256
+      }
+    };
+  }
+
   async completeReturnManifestTask(
     input: CompleteReturnManifestProviderTaskInput
   ): Promise<CompleteReturnManifestProviderTaskResult> {

@@ -961,6 +961,11 @@ export class ESignService {
 
     const task = await this.findTaskOrThrow(taskId);
     ensureTaskOwnedByCustomer(task, currentCustomer.customerId);
+    if (isReturnManifestTask(task)) {
+      throw new BadRequestException(
+        "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
+      );
+    }
 
     const completed = await this.completeTask(task.id, {
       actorId: currentCustomer.customerAccountId,
@@ -2371,6 +2376,11 @@ export class ESignService {
       if (!task || task.deletedAt) {
         throw new NotFoundException("电子签任务不存在。");
       }
+      if (isReturnManifestTask(task)) {
+        throw new BadRequestException(
+          "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
+        );
+      }
 
       if (task.taskStatus === ESignTaskStatus.COMPLETED) {
         if (options.callbackLogId) {
@@ -3736,6 +3746,13 @@ function isStage3ExtensionTask(task: ESignTaskWithDetails) {
   return (
     task.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION &&
     task.documentType === PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT
+  );
+}
+
+function isReturnManifestTask(task: ESignTaskWithDetails) {
+  return (
+    task.signingStage === PrismaESignSigningStage.STAGE6_RETURN_MANIFEST &&
+    task.documentType === PrismaESignDocumentType.RETURN_MANIFEST
   );
 }
 

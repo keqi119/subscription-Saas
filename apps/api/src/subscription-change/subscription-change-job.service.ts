@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Optional } from "@nestjs/common";
 import {
   ContractSegmentStatus,
   RenewalReminderSlot,
@@ -8,6 +8,7 @@ import {
 
 import { BillingAutomationRepository } from "../billing-automation/billing-automation.repository";
 import { ClaimedBillingAutomationJob } from "../billing-automation/billing-automation.types";
+import { ReturnManifestESignService } from "../esign/return-manifest-esign.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionClosureService } from "../subscription-closure/subscription-closure.service";
 import { shanghaiBusinessDate } from "./renewal-calendar";
@@ -28,7 +29,8 @@ export class SubscriptionChangeJobService {
     SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
     SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
     SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE,
-    SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7
+    SubscriptionAutomationJobType.CLOSURE_RECOVERY_ASSESSMENT_D7,
+    SubscriptionAutomationJobType.CLOSURE_RETURN_MANIFEST_ESIGN
   ] as const;
 
   constructor(
@@ -37,7 +39,8 @@ export class SubscriptionChangeJobService {
     private readonly considerations: RenewalConsiderationService,
     private readonly activation: SubscriptionExtensionActivationService,
     private readonly expiry: SubscriptionExpiryService,
-    private readonly closure: SubscriptionClosureService
+    private readonly closure: SubscriptionClosureService,
+    @Optional() private readonly returnManifest?: ReturnManifestESignService
   ) {}
 
   async enqueueDueEnrollmentJobs(now = new Date()) {
@@ -116,6 +119,15 @@ export class SubscriptionChangeJobService {
               orderId: job.orderId
             })
           : { action: "SKIPPED", reason: "ORDER_ID_MISSING" };
+      case SubscriptionAutomationJobType.CLOSURE_RETURN_MANIFEST_ESIGN:
+        if (!this.returnManifest) {
+          throw new Error("Return-manifest e-sign service is unavailable.");
+        }
+        return this.returnManifest.reconcile({
+          actorId: payloadString(job.payload, "actorId"),
+          closureCaseId: payloadString(job.payload, "closureCaseId"),
+          idempotencyKey: payloadString(job.payload, "generatedRevisionId")
+        });
       default:
         throw new Error("Unsupported subscription change job type.");
     }

@@ -2360,7 +2360,7 @@ async function bindReturnManifestESign(
       customerId: baseTask.customerId,
       documentName: file.originalName,
       documentObjectKey: file.objectKey,
-      documentType: "DELIVERY_HANDOVER",
+      documentType: "RETURN_MANIFEST",
       id: taskId,
       orderId: baseTask.orderId,
       provider: "OTHER",
@@ -2373,7 +2373,7 @@ async function bindReturnManifestESign(
         sourceFileHash: command.sourceFileHash,
         sourceFileId: command.sourceFileId
       },
-      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      signingStage: "STAGE6_RETURN_MANIFEST",
       sourceId: command.source.id,
       sourceKey: command.source.key,
       sourceType: command.source.type,

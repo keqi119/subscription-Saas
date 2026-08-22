@@ -34,10 +34,11 @@ import type { SubscriptionClosureSource } from "../subscription-closure/subscrip
 import {
   ESIGN_PROVIDER_CLIENT,
   type ESignProvider,
+  type ReturnManifestProviderTaskInput,
   type ReturnManifestProviderTaskResult,
   type VerifyCallbackResult
 } from "./esign.provider";
-import { selectedESignProvider } from "./fadada/fadada.config";
+import { loadFadadaConfig, selectedESignProvider } from "./fadada/fadada.config";
 
 export type ReturnManifestESignInput = Readonly<{
   actorId: string;
@@ -83,12 +84,23 @@ export class ReturnManifestESignService {
     @Inject(ESIGN_PROVIDER_CLIENT) private readonly provider: ESignProvider
   ) {}
 
+  async reconcile(input: ReturnManifestESignInput) {
+    const started = await this.start(input);
+    const task = await this.prisma.contractESignTask.findUnique({
+      select: { taskStatus: true },
+      where: { id: started.taskId }
+    });
+    if (task?.taskStatus !== ESignTaskStatus.COMPLETED) return started;
+    return this.finalize(input);
+  }
+
   async start(input: ReturnManifestESignInput): Promise<ReturnManifestESignStart> {
     const command = normalizeInput(input);
     const sources = returnManifestSources(command);
     const observed = await resolveManifestAuthority(this.prisma, command, sources);
     if (observed.task) {
       assertReservedAuthority(observed, command, sources, this.providerType());
+      const artifacts = await this.ensureReservedArtifacts(command, observed);
       if (observed.task.providerTaskId) {
         assertStartedAuthority(observed, command, sources, this.providerType());
         return Object.freeze({
@@ -97,182 +109,218 @@ export class ReturnManifestESignService {
           wrote: false
         });
       }
-      const request = objectValue(observed.task.requestSnapshot);
-      const providerFile = fileSnapshot(request.providerSourceFile);
-      const stored = await this.storage.getObject(providerFile.bucket, providerFile.objectKey);
-      const providerPdf = await streamBuffer(stored.stream);
-      const providerPdfHash = sha256(providerPdf);
-      if (
-        BigInt(providerPdf.length) !== providerFile.sizeBytes ||
-        providerPdfHash !== stringValue(request.providerSourceFileHash)
-      ) {
-        throw sourceConflict();
-      }
-      return this.startProviderTask(command, sources, observed, providerPdf, providerPdfHash);
+      return this.startProviderTask(
+        command,
+        sources,
+        observed,
+        artifacts.providerPdf,
+        artifacts.providerPdfHash
+      );
     }
 
     const documentSnapshot = returnManifestSuccessorSnapshot(observed);
     const sourceBytes = Buffer.from(canonicalSubscriptionClosureJson(documentSnapshot), "utf8");
     const providerPdf = await renderReturnManifestPdf(
       documentSnapshot,
-      observed.vehicleReturn.checklistSnapshot
+      observed.vehicleReturn.checklistSnapshot,
+      observed.generated.generatedAt
     );
     const sourceFileHash = sha256(sourceBytes);
     const providerPdfHash = sha256(providerPdf);
     const sourceName = `${observed.closureCase.caseNo}-return-manifest-r2.json`;
     const providerName = `${observed.closureCase.caseNo}-return-manifest-r2-provider.pdf`;
-    const storedSource = await this.storage.putReturnManifestArtifact({
-      buffer: sourceBytes,
+    const storedSource = this.storage.resolveReturnManifestArtifactIdentity({
       closureCaseId: command.closureCaseId,
-      contentType: "application/json",
-      metadata: { sha256: sourceFileHash, type: "RETURN_MANIFEST_SOURCE" },
       objectIdentity: stableId(command, "source"),
       originalName: sourceName
     });
-    const storedProvider = await this.storage.putReturnManifestArtifact({
-      buffer: providerPdf,
+    const storedProvider = this.storage.resolveReturnManifestArtifactIdentity({
       closureCaseId: command.closureCaseId,
-      contentType: "application/pdf",
-      metadata: { sha256: providerPdfHash, type: "RETURN_MANIFEST_PROVIDER_SOURCE" },
       objectIdentity: stableId(command, "provider-source"),
       originalName: providerName
     });
 
-    let reservation: ResolvedManifestAuthority;
-    try {
-      reservation = await this.prisma.$transaction(
-        async (tx) => {
-          await lockSources(this.repository, tx, sources);
-          const current = await resolveManifestAuthority(tx, command, sources);
-          if (current.task) {
-            assertReservedAuthority(current, command, sources, this.providerType());
-            return current;
-          }
-          const clock = await databaseClock(tx);
-          await this.repository.lockAuthorityRows(tx, startLocks(current, command));
-          const locked = await resolveManifestAuthority(tx, command, sources);
-          if (locked.task) {
-            assertReservedAuthority(locked, command, sources, this.providerType());
-            return locked;
-          }
-          const sourceFileId = stableId(command, "source-file");
-          const providerSourceFileId = stableId(command, "provider-source-file");
-          const taskId = stableId(command, "task");
-          const customerSignerId = stableId(command, "customer-signer");
-          const platformSignerId = stableId(command, "platform-signer");
-          const taskNo = createBusinessNo("ESG");
-          const sourceFile = fileShape({
-            bucket: storedSource.bucket,
+    const reservation = await this.prisma.$transaction(
+      async (tx) => {
+        await lockSources(this.repository, tx, sources);
+        const current = await resolveManifestAuthority(tx, command, sources);
+        if (current.task) {
+          assertReservedAuthority(current, command, sources, this.providerType());
+          return current;
+        }
+        const clock = await databaseClock(tx);
+        await this.repository.lockAuthorityRows(tx, startLocks(current, command));
+        const locked = await resolveManifestAuthority(tx, command, sources);
+        if (locked.task) {
+          assertReservedAuthority(locked, command, sources, this.providerType());
+          return locked;
+        }
+        if (
+          !sameJson(returnManifestSuccessorSnapshot(locked), documentSnapshot) ||
+          !sameJson(
+            locked.vehicleReturn.checklistSnapshot ?? {},
+            observed.vehicleReturn.checklistSnapshot ?? {}
+          )
+        ) {
+          throw sourceConflict();
+        }
+        const sourceFileId = stableId(command, "source-file");
+        const providerSourceFileId = stableId(command, "provider-source-file");
+        const taskId = stableId(command, "task");
+        const customerSignerId = stableId(command, "customer-signer");
+        const platformSignerId = stableId(command, "platform-signer");
+        const taskNo = createBusinessNo("ESG");
+        const sourceFile = fileShape({
+          bucket: storedSource.bucket,
+          createdAt: clock,
+          id: sourceFileId,
+          mimeType: "application/json",
+          objectKey: storedSource.objectKey,
+          originalName: sourceName,
+          sizeBytes: BigInt(sourceBytes.length),
+          uploadedBy: command.actorId
+        });
+        const providerSourceFile = fileShape({
+          bucket: storedProvider.bucket,
+          createdAt: clock,
+          id: providerSourceFileId,
+          mimeType: "application/pdf",
+          objectKey: storedProvider.objectKey,
+          originalName: providerName,
+          sizeBytes: BigInt(providerPdf.length),
+          uploadedBy: command.actorId
+        });
+        await tx.fileObject.createMany({
+          data: [fileCreate(sourceFile), fileCreate(providerSourceFile)]
+        });
+        await tx.contractESignTask.create({
+          data: {
+            contractId: locked.closureCase.contractId,
             createdAt: clock,
-            id: sourceFileId,
-            mimeType: "application/json",
-            objectKey: storedSource.objectKey,
-            originalName: sourceName,
-            sizeBytes: BigInt(sourceBytes.length),
-            uploadedBy: command.actorId
-          });
-          const providerSourceFile = fileShape({
-            bucket: storedProvider.bucket,
-            createdAt: clock,
-            id: providerSourceFileId,
-            mimeType: "application/pdf",
-            objectKey: storedProvider.objectKey,
-            originalName: providerName,
-            sizeBytes: BigInt(providerPdf.length),
-            uploadedBy: command.actorId
-          });
-          await tx.fileObject.createMany({
-            data: [fileCreate(sourceFile), fileCreate(providerSourceFile)]
-          });
-          await tx.contractESignTask.create({
-            data: {
-              contractId: locked.closureCase.contractId,
-              createdAt: clock,
-              createdBy: command.actorId,
-              customerId: locked.closureCase.customerId,
-              documentName: providerName,
-              documentObjectKey: providerSourceFile.objectKey,
-              documentType: ESignDocumentType.DELIVERY_HANDOVER,
-              id: taskId,
-              orderId: locked.closureCase.orderId,
-              provider: this.providerType(),
-              requestSnapshot: asJson(
-                requestSnapshot({
-                  archivedSource: sources.archived,
-                  documentSnapshot,
-                  generatedRevisionId: locked.generated.id,
-                  providerSourceFile,
-                  providerSourceFileHash: providerPdfHash,
-                  signedSource: sources.signed,
-                  sourceFile,
-                  sourceFileHash,
-                  taskSource: sources.task
-                })
-              ),
-              signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-              sourceId: sources.task.id,
-              sourceKey: sources.task.key,
-              sourceType: sources.task.type,
-              taskNo,
-              taskStatus: ESignTaskStatus.CREATED,
-              updatedAt: clock,
-              updatedBy: command.actorId,
-              signers: {
-                create: [
-                  {
-                    createdAt: clock,
-                    customerId: locked.closureCase.customerId,
-                    documentType: ESignDocumentType.DELIVERY_HANDOVER,
-                    id: customerSignerId,
-                    providerActionType: "CUSTOMER_MANUAL_SIGN",
-                    required: true,
-                    signerName: locked.customer.name,
-                    signerPhone: locked.customer.mobile,
-                    signerStatus: ESignSignerStatus.PENDING,
-                    signerType: ESignSignerType.CUSTOMER,
-                    slotId: ESignSlotId.STAGE2_HANDOVER_CUSTOMER,
-                    snapshot: asJson({
-                      documentType: "RETURN_MANIFEST",
-                      source: sources.task
-                    }),
-                    updatedAt: clock
-                  },
-                  {
-                    createdAt: clock,
-                    documentType: ESignDocumentType.DELIVERY_HANDOVER,
-                    id: platformSignerId,
-                    providerActionType: "PLATFORM_AUTO_SEAL",
-                    required: true,
-                    signerName: "Subscription platform",
-                    signerStatus: ESignSignerStatus.PENDING,
-                    signerType: ESignSignerType.PLATFORM,
-                    slotId: ESignSlotId.STAGE2_HANDOVER_PLATFORM,
-                    snapshot: asJson({
-                      documentType: "RETURN_MANIFEST",
-                      source: sources.task
-                    }),
-                    updatedAt: clock
-                  }
-                ]
-              }
+            createdBy: command.actorId,
+            customerId: locked.closureCase.customerId,
+            documentName: providerName,
+            documentObjectKey: providerSourceFile.objectKey,
+            documentType: ESignDocumentType.RETURN_MANIFEST,
+            id: taskId,
+            orderId: locked.closureCase.orderId,
+            provider: this.providerType(),
+            requestSnapshot: asJson(
+              requestSnapshot({
+                archivedSource: sources.archived,
+                checklistSnapshot: observed.vehicleReturn.checklistSnapshot ?? {},
+                documentSnapshot,
+                generatedRevisionId: locked.generated.id,
+                idempotencyKey: command.idempotencyKey,
+                providerSourceFile,
+                providerSourceFileHash: providerPdfHash,
+                renderedAt: observed.generated.generatedAt,
+                signedSource: sources.signed,
+                sourceFile,
+                sourceFileHash,
+                taskSource: sources.task
+              })
+            ),
+            signingStage: ESignSigningStage.STAGE6_RETURN_MANIFEST,
+            sourceId: sources.task.id,
+            sourceKey: sources.task.key,
+            sourceType: sources.task.type,
+            taskNo,
+            taskStatus: ESignTaskStatus.CREATED,
+            updatedAt: clock,
+            updatedBy: command.actorId,
+            signers: {
+              create: [
+                {
+                  createdAt: clock,
+                  customerId: locked.closureCase.customerId,
+                  documentType: ESignDocumentType.RETURN_MANIFEST,
+                  id: customerSignerId,
+                  providerActionType: "CUSTOMER_MANUAL_SIGN",
+                  required: true,
+                  signerName: locked.customer.name,
+                  signerPhone: locked.customer.mobile,
+                  signerStatus: ESignSignerStatus.PENDING,
+                  signerType: ESignSignerType.CUSTOMER,
+                  slotId: ESignSlotId.RETURN_MANIFEST_CUSTOMER,
+                  snapshot: asJson({
+                    documentType: "RETURN_MANIFEST",
+                    source: sources.task
+                  }),
+                  updatedAt: clock
+                },
+                {
+                  createdAt: clock,
+                  documentType: ESignDocumentType.RETURN_MANIFEST,
+                  id: platformSignerId,
+                  providerActionType: "PLATFORM_AUTO_SEAL",
+                  required: true,
+                  signerName: "Subscription platform",
+                  signerStatus: ESignSignerStatus.PENDING,
+                  signerType: ESignSignerType.PLATFORM,
+                  slotId: ESignSlotId.RETURN_MANIFEST_PLATFORM,
+                  snapshot: asJson({
+                    documentType: "RETURN_MANIFEST",
+                    source: sources.task
+                  }),
+                  updatedAt: clock
+                }
+              ]
             }
-          });
-          return resolveManifestAuthority(tx, command, sources);
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
-      );
-    } catch (error) {
-      const winner = await findTask(this.prisma, sources.task);
-      if (!winner) {
-        await Promise.allSettled([
-          this.storage.deleteObject(storedSource.bucket, storedSource.objectKey),
-          this.storage.deleteObject(storedProvider.bucket, storedProvider.objectKey)
-        ]);
-      }
-      throw error;
-    }
+          }
+        });
+        const reservedTask = await tx.contractESignTask.findUniqueOrThrow({
+          include: { signers: true },
+          where: { id: taskId }
+        });
+        for (const audit of [
+          {
+            after: jsonFileShape(sourceFile),
+            entityId: sourceFile.id,
+            entityType: "file_object"
+          },
+          {
+            after: jsonFileShape(providerSourceFile),
+            entityId: providerSourceFile.id,
+            entityType: "file_object"
+          },
+          {
+            after: taskAuditSnapshot(reservedTask),
+            entityId: reservedTask.id,
+            entityType: "contract_esign_task"
+          },
+          ...reservedTask.signers.map((signer) => ({
+            after: signerAuditSnapshot(signer),
+            entityId: signer.id,
+            entityType: "contract_esign_signer"
+          }))
+        ]) {
+          await this.auditService.write(
+            {
+              action: AuditAction.CREATE,
+              after: audit.after,
+              createdAt: clock,
+              entityId: audit.entityId,
+              entityType: audit.entityType,
+              module: "subscription_closure",
+              operatorId: command.actorId
+            },
+            tx
+          );
+        }
+        return resolveManifestAuthority(tx, command, sources);
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
 
-    return this.startProviderTask(command, sources, reservation, providerPdf, providerPdfHash);
+    const artifacts = await this.ensureReservedArtifacts(command, reservation);
+    return this.startProviderTask(
+      command,
+      sources,
+      reservation,
+      artifacts.providerPdf,
+      artifacts.providerPdfHash
+    );
   }
 
   async matchesVerifiedCallback(input: ReturnManifestVerifiedCallback): Promise<boolean> {
@@ -291,11 +339,11 @@ export class ReturnManifestESignService {
             : [])
         ],
         deletedAt: null,
-        documentType: ESignDocumentType.DELIVERY_HANDOVER,
+        documentType: ESignDocumentType.RETURN_MANIFEST,
         provider: input.provider,
         requestSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] },
-        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
-        sourceType: "SUBSCRIPTION_CLOSURE"
+        signingStage: ESignSigningStage.STAGE6_RETURN_MANIFEST,
+        sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
       }
     });
     return Boolean(task);
@@ -317,7 +365,7 @@ export class ReturnManifestESignService {
         ],
         provider: input.provider,
         requestSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] },
-        sourceType: "SUBSCRIPTION_CLOSURE"
+        sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
       }
     });
     const request = objectValue(task.requestSnapshot);
@@ -329,76 +377,33 @@ export class ReturnManifestESignService {
     const payloadHash = sha256(
       Buffer.from(canonicalSubscriptionClosureJson(input.payload as never))
     );
-    const existingCallback = await this.prisma.contractESignCallbackLog.findUnique({
-      where: { provider_payloadHash: { payloadHash, provider: input.provider } }
-    });
-    if (existingCallback?.handled && task.taskStatus === ESignTaskStatus.COMPLETED) {
-      return Object.freeze({ handled: true, idempotent: true, taskId: task.id });
-    }
-    const callback =
-      existingCallback ??
-      (await this.prisma.contractESignCallbackLog.create({
-        data: {
-          eventType: input.eventType,
-          payload: asJson(input.payload),
-          payloadHash,
-          provider: input.provider,
-          providerTaskId: input.providerTaskId,
-          providerTransactionId: input.providerTaskId,
-          taskId: task.id,
-          verified: true
-        }
-      }));
-    if (!this.provider.completeReturnManifestTask) throw providerCapabilityMissing();
-    const customer = requiredSigner(task, ESignSignerType.CUSTOMER);
-    const platform = requiredSigner(task, ESignSignerType.PLATFORM);
-    if (
-      !task.providerEnvelopeId ||
-      !task.providerTaskId ||
-      !customer.providerTransactionId ||
-      !customer.providerSignerId
-    ) {
-      throw sourceConflict();
-    }
-    const providerFile = fileSnapshot(request.providerSourceFile);
-    const providerDownload = await this.storage.getObject(
-      providerFile.bucket,
-      providerFile.objectKey
-    );
-    const providerSourcePdf = await streamBuffer(providerDownload.stream);
-    if (
-      BigInt(providerSourcePdf.length) !== providerFile.sizeBytes ||
-      sha256(providerSourcePdf) !== stringValue(request.providerSourceFileHash)
-    ) {
-      throw sourceConflict();
-    }
-    const completed = await this.provider.completeReturnManifestTask({
-      contractId: task.contractId,
-      customer: {
-        providerCustomerId: customer.providerSignerId,
-        providerTransactionId: customer.providerTransactionId,
-        signerId: customer.id
+    const operationKey = `return-manifest:${task.id}:customer-signed`;
+    const callback = await claimSemanticCallback(this.prisma, {
+      create: {
+        eventType: input.eventType,
+        operationKey,
+        payload: asJson(input.payload),
+        payloadHash,
+        provider: input.provider,
+        providerTaskId: input.providerTaskId,
+        providerTransactionId: input.providerTaskId,
+        taskId: task.id,
+        verified: true
       },
-      documentName: task.documentName!,
-      platform: {
-        signerId: platform.id,
-        transactionId: providerTransactionId(task.taskNo, "P1")
-      },
-      providerEnvelopeId: task.providerEnvelopeId,
-      providerTaskId: task.providerTaskId,
-      providerSourcePdf,
-      taskId: task.id,
-      taskNo: task.taskNo
+      operationKey,
+      provider: input.provider,
+      taskId: task.id
     });
-    const signedHash = sha256(completed.signedPdf.buffer);
-    const storedSigned = await this.storage.putReturnManifestArtifact({
-      buffer: completed.signedPdf.buffer,
-      closureCaseId,
-      contentType: "application/pdf",
-      metadata: { sha256: signedHash, type: "RETURN_MANIFEST_SIGNED" },
-      objectIdentity: stableId(command, "signed"),
-      originalName: `${stringValue(request.caseNo)}-return-manifest-r2-signed.pdf`
-    });
+    if (task.taskStatus === ESignTaskStatus.COMPLETED) {
+      const finalized = await this.finalize(command);
+      return Object.freeze({
+        finalization: finalized,
+        finalized: true,
+        handled: true,
+        idempotent: true,
+        taskId: task.id
+      });
+    }
     await this.prisma.$transaction(
       async (tx) => {
         await lockSources(this.repository, tx, sources);
@@ -410,24 +415,68 @@ export class ReturnManifestESignService {
         });
         if (!lockedTask) throw sourceConflict();
         if (lockedTask.taskStatus === ESignTaskStatus.COMPLETED) {
-          const pending = objectValue(objectValue(lockedTask.responseSnapshot).pendingSignedFile);
-          if (pending.hash !== signedHash || pending.objectKey !== storedSigned.objectKey) {
-            throw sourceConflict();
-          }
-          await tx.contractESignCallbackLog.update({
-            data: { handled: true, handledAt: lockedTask.completedAt },
-            where: { id: callback.id }
-          });
           return;
         }
         if (lockedTask.taskStatus !== ESignTaskStatus.WAITING_CUSTOMER) throw sourceConflict();
+        if (!this.provider.completeReturnManifestTask) throw providerCapabilityMissing();
+        const lockedRequest = objectValue(lockedTask.requestSnapshot);
+        const customer = requiredSigner(lockedTask, ESignSignerType.CUSTOMER);
+        const platform = requiredSigner(lockedTask, ESignSignerType.PLATFORM);
+        if (
+          !lockedTask.providerEnvelopeId ||
+          !lockedTask.providerTaskId ||
+          !customer.providerTransactionId ||
+          !customer.providerSignerId
+        ) {
+          throw sourceConflict();
+        }
+        const providerFile = fileSnapshot(lockedRequest.providerSourceFile);
+        const providerDownload = await this.storage.getObject(
+          providerFile.bucket,
+          providerFile.objectKey
+        );
+        const providerSourcePdf = await streamBuffer(providerDownload.stream);
+        if (
+          BigInt(providerSourcePdf.length) !== providerFile.sizeBytes ||
+          sha256(providerSourcePdf) !== stringValue(lockedRequest.providerSourceFileHash)
+        ) {
+          throw sourceConflict();
+        }
+        const completed = await this.provider.completeReturnManifestTask({
+          contractId: lockedTask.contractId,
+          customer: {
+            providerCustomerId: customer.providerSignerId,
+            providerTransactionId: customer.providerTransactionId,
+            signerId: customer.id
+          },
+          documentName: lockedTask.documentName!,
+          platform: {
+            signerId: platform.id,
+            transactionId: providerTransactionId(lockedTask.taskNo, "P1")
+          },
+          providerEnvelopeId: lockedTask.providerEnvelopeId,
+          providerTaskId: lockedTask.providerTaskId,
+          providerSourcePdf,
+          taskId: lockedTask.id,
+          taskNo: lockedTask.taskNo
+        });
+        const signedHash = sha256(completed.signedPdf.buffer);
+        const originalName = `${stringValue(lockedRequest.caseNo)}-return-manifest-r2-signed.pdf`;
+        const storedSigned = await this.storage.putReturnManifestArtifact({
+          buffer: completed.signedPdf.buffer,
+          closureCaseId,
+          contentType: "application/pdf",
+          metadata: { sha256: signedHash, type: "RETURN_MANIFEST_SIGNED" },
+          objectIdentity: stableId(command, "signed"),
+          originalName
+        });
         const clock = await databaseClock(tx);
         const pendingSignedFile = {
           bucket: storedSigned.bucket,
           hash: signedHash,
           mimeType: "application/pdf",
           objectKey: storedSigned.objectKey,
-          originalName: `${stringValue(request.caseNo)}-return-manifest-r2-signed.pdf`,
+          originalName,
           sizeBytes: completed.signedPdf.buffer.length.toString(),
           uploadedBy: command.actorId
         };
@@ -480,13 +529,19 @@ export class ReturnManifestESignService {
           tx
         );
         await tx.contractESignCallbackLog.update({
-          data: { handled: true, handledAt: clock, taskId: task.id },
+          data: { handled: false, handledAt: null, taskId: task.id },
           where: { id: callback.id }
         });
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
     );
-    return Object.freeze({ handled: true, taskId: task.id });
+    const finalized = await this.finalize(command);
+    return Object.freeze({
+      finalization: finalized,
+      finalized: true,
+      handled: true,
+      taskId: task.id
+    });
   }
 
   async finalize(input: ReturnManifestESignInput): Promise<ReturnManifestESignFinalization> {
@@ -653,6 +708,18 @@ export class ReturnManifestESignService {
           sizeBytes: BigInt(signedPdf.length),
           uploadedBy: command.actorId
         });
+        await this.auditService.write(
+          {
+            action: AuditAction.CREATE,
+            after: jsonFileShape(signedFile),
+            createdAt: clock,
+            entityId: signedFile.id,
+            entityType: "file_object",
+            module: "subscription_closure",
+            operatorId: command.actorId
+          },
+          tx
+        );
         const beforeTask = taskAuditSnapshot(lockedTask);
         const finalizedTask = await tx.contractESignTask.update({
           data: {
@@ -702,6 +769,17 @@ export class ReturnManifestESignService {
           "return-manifest-archived",
           extraLocks
         );
+        if (!lockedTask.completedAt) throw sourceConflict();
+        const handledCallback = await tx.contractESignCallbackLog.updateMany({
+          data: { handled: true, handledAt: lockedTask.completedAt },
+          where: {
+            operationKey: `return-manifest:${lockedTask.id}:customer-signed`,
+            provider: lockedTask.provider,
+            taskId: lockedTask.id,
+            verified: true
+          }
+        });
+        if (handledCallback.count !== 1) throw sourceConflict();
         const finalized = await resolveManifestAuthority(tx, command, sources);
         if (!(await validateCurrentManifestChain(tx, finalized))) throw sourceConflict();
         return Object.freeze({
@@ -717,82 +795,102 @@ export class ReturnManifestESignService {
     );
   }
 
-  private async persistStartedProviderTask(
+  private async ensureReservedArtifacts(
     command: ReturnManifestESignInput,
-    sources: ReturnType<typeof returnManifestSources>,
+    authority: ResolvedManifestAuthority
+  ) {
+    const artifacts = await materializeReservedArtifacts(authority);
+    const storedSource = await this.storage.putReturnManifestArtifact({
+      buffer: artifacts.sourceBytes,
+      closureCaseId: command.closureCaseId,
+      contentType: "application/json",
+      metadata: { sha256: artifacts.sourceFileHash, type: "RETURN_MANIFEST_SOURCE" },
+      objectIdentity: stableId(command, "source"),
+      originalName: artifacts.sourceFile.originalName
+    });
+    const storedProvider = await this.storage.putReturnManifestArtifact({
+      buffer: artifacts.providerPdf,
+      closureCaseId: command.closureCaseId,
+      contentType: "application/pdf",
+      metadata: { sha256: artifacts.providerPdfHash, type: "RETURN_MANIFEST_PROVIDER_SOURCE" },
+      objectIdentity: stableId(command, "provider-source"),
+      originalName: artifacts.providerFile.originalName
+    });
+    if (
+      storedSource.bucket !== artifacts.sourceFile.bucket ||
+      storedSource.objectKey !== artifacts.sourceFile.objectKey ||
+      storedProvider.bucket !== artifacts.providerFile.bucket ||
+      storedProvider.objectKey !== artifacts.providerFile.objectKey
+    ) {
+      throw sourceConflict();
+    }
+    return artifacts;
+  }
+
+  private async persistStartedProviderTask(
+    tx: Prisma.TransactionClient,
+    command: ReturnManifestESignInput,
+    task: NonNullable<ResolvedManifestAuthority["task"]>,
     providerResult: ReturnManifestProviderTaskResult
   ): Promise<ReturnManifestESignStart> {
-    return this.prisma.$transaction(
-      async (tx) => {
-        await lockSources(this.repository, tx, sources);
-        const current = await resolveManifestAuthority(tx, command, sources);
-        await this.repository.lockAuthorityRows(tx, startLocks(current, command));
-        const task = await tx.contractESignTask.findUnique({
-          include: { signers: true },
-          where: { id: stableId(command, "task") }
-        });
-        if (!task) throw sourceConflict();
-        if (task.providerTaskId) {
-          if (
-            task.providerTaskId !== providerResult.providerTaskId ||
-            task.providerEnvelopeId !== providerResult.providerEnvelopeId
-          ) {
-            throw sourceConflict();
-          }
-          return Object.freeze({ signUrl: task.signUrl, taskId: task.id, wrote: false });
-        }
-        if (task.taskStatus !== ESignTaskStatus.CREATED) throw sourceConflict();
-        const customer = requiredSigner(task, ESignSignerType.CUSTOMER);
-        const clock = await databaseClock(tx);
-        const before = taskAuditSnapshot(task);
-        await tx.contractESignSigner.update({
-          data: {
-            providerSignerId: providerResult.customer.providerCustomerId,
-            providerTransactionId: providerResult.customer.providerTransactionId,
-            signUrl: providerResult.customer.signUrl,
-            signUrlExpiresAt: providerResult.customer.signUrlExpiresAt,
-            signerStatus: ESignSignerStatus.SIGNING,
-            updatedAt: clock
-          },
-          where: { id: customer.id }
-        });
-        const updated = await tx.contractESignTask.update({
-          data: {
-            providerEnvelopeId: providerResult.providerEnvelopeId,
-            providerTaskId: providerResult.providerTaskId,
-            responseSnapshot: asJson({
-              providerStart: providerStartSnapshot(providerResult)
-            }),
-            signUrl: providerResult.customer.signUrl,
-            signUrlExpiresAt: providerResult.customer.signUrlExpiresAt,
-            startedAt: clock,
-            taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
-            updatedAt: clock,
-            updatedBy: command.actorId
-          },
-          where: { id: task.id }
-        });
-        await this.auditService.write(
-          {
-            action: AuditAction.UPDATE,
-            after: taskAuditSnapshot(updated),
-            before,
-            createdAt: clock,
-            entityId: task.id,
-            entityType: "contract_esign_task",
-            module: "subscription_closure",
-            operatorId: command.actorId
-          },
-          tx
-        );
-        return Object.freeze({
-          signUrl: updated.signUrl,
-          taskId: updated.id,
-          wrote: true
-        });
+    if (task.providerTaskId) {
+      if (
+        task.providerTaskId !== providerResult.providerTaskId ||
+        task.providerEnvelopeId !== providerResult.providerEnvelopeId
+      ) {
+        throw sourceConflict();
+      }
+      return Object.freeze({ signUrl: task.signUrl, taskId: task.id, wrote: false });
+    }
+    if (task.taskStatus !== ESignTaskStatus.CREATED) throw sourceConflict();
+    const customer = requiredSigner(task, ESignSignerType.CUSTOMER);
+    const clock = await databaseClock(tx);
+    const before = taskAuditSnapshot(task);
+    await tx.contractESignSigner.update({
+      data: {
+        providerSignerId: providerResult.customer.providerCustomerId,
+        providerTransactionId: providerResult.customer.providerTransactionId,
+        signUrl: providerResult.customer.signUrl,
+        signUrlExpiresAt: providerResult.customer.signUrlExpiresAt,
+        signerStatus: ESignSignerStatus.SIGNING,
+        updatedAt: clock
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+      where: { id: customer.id }
+    });
+    const updated = await tx.contractESignTask.update({
+      data: {
+        providerEnvelopeId: providerResult.providerEnvelopeId,
+        providerTaskId: providerResult.providerTaskId,
+        responseSnapshot: asJson({
+          providerStart: providerStartSnapshot(providerResult)
+        }),
+        signUrl: providerResult.customer.signUrl,
+        signUrlExpiresAt: providerResult.customer.signUrlExpiresAt,
+        startedAt: clock,
+        taskStatus: ESignTaskStatus.WAITING_CUSTOMER,
+        updatedAt: clock,
+        updatedBy: command.actorId
+      },
+      where: { id: task.id }
+    });
+    await this.auditService.write(
+      {
+        action: AuditAction.UPDATE,
+        after: taskAuditSnapshot(updated),
+        before,
+        createdAt: clock,
+        entityId: task.id,
+        entityType: "contract_esign_task",
+        module: "subscription_closure",
+        operatorId: command.actorId
+      },
+      tx
     );
+    return Object.freeze({
+      signUrl: updated.signUrl,
+      taskId: updated.id,
+      wrote: true
+    });
   }
 
   private async startProviderTask(
@@ -803,33 +901,52 @@ export class ReturnManifestESignService {
     providerPdfHash: string
   ): Promise<ReturnManifestESignStart> {
     assertReservedAuthority(authority, command, sources, this.providerType());
-    const task = authority.task!;
-    if (task.providerTaskId) {
-      assertStartedAuthority(authority, command, sources, this.providerType());
-      return Object.freeze({ signUrl: task.signUrl, taskId: task.id, wrote: false });
-    }
-    if (!this.provider.createReturnManifestTask) throw providerCapabilityMissing();
-    const customerSigner = requiredSigner(task, ESignSignerType.CUSTOMER);
-    const providerResult = await this.provider.createReturnManifestTask({
-      callbackUrl: this.callbackUrl(),
-      contractId: authority.closureCase.contractId,
-      customer: {
-        customerId: authority.closureCase.customerId,
-        name: authority.customer.name,
-        phone: authority.customer.mobile,
-        signerId: customerSigner.id
+    return this.prisma.$transaction(
+      async (tx) => {
+        await lockSources(this.repository, tx, sources);
+        const current = await resolveManifestAuthority(tx, command, sources);
+        await this.repository.lockAuthorityRows(tx, startLocks(current, command));
+        const locked = await resolveManifestAuthority(tx, command, sources);
+        assertReservedAuthority(locked, command, sources, this.providerType());
+        const task = locked.task!;
+        if (task.providerTaskId) {
+          assertStartedAuthority(locked, command, sources, this.providerType());
+          return Object.freeze({ signUrl: task.signUrl, taskId: task.id, wrote: false });
+        }
+        const request = objectValue(task.requestSnapshot);
+        if (stringValue(request.providerSourceFileHash) !== providerPdfHash) {
+          throw sourceConflict();
+        }
+        const customerSigner = requiredSigner(task, ESignSignerType.CUSTOMER);
+        const providerInput = {
+          callbackUrl: this.callbackUrl(),
+          contractId: locked.closureCase.contractId,
+          customer: {
+            customerId: locked.closureCase.customerId,
+            name: locked.customer.name,
+            phone: locked.customer.mobile,
+            signerId: customerSigner.id
+          },
+          documentName: task.documentName!,
+          providerSourcePdf: {
+            buffer: providerPdf,
+            fileName: task.documentName!,
+            sha256: providerPdfHash
+          },
+          taskId: task.id,
+          taskNo: task.taskNo,
+          transactionId: providerTransactionId(task.taskNo, "C1")
+        } satisfies ReturnManifestProviderTaskInput;
+        const reconciled = await this.provider.reconcileReturnManifestTask?.(providerInput);
+        if (reconciled) {
+          return this.persistStartedProviderTask(tx, command, task, reconciled);
+        }
+        if (!this.provider.createReturnManifestTask) throw providerCapabilityMissing();
+        const providerResult = await this.provider.createReturnManifestTask(providerInput);
+        return this.persistStartedProviderTask(tx, command, task, providerResult);
       },
-      documentName: task.documentName!,
-      providerSourcePdf: {
-        buffer: providerPdf,
-        fileName: task.documentName!,
-        sha256: providerPdfHash
-      },
-      taskId: task.id,
-      taskNo: task.taskNo,
-      transactionId: providerTransactionId(task.taskNo, "C1")
-    });
-    return this.persistStartedProviderTask(command, sources, providerResult);
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
+    );
   }
 
   private providerType() {
@@ -843,11 +960,7 @@ export class ReturnManifestESignService {
   }
 
   private callbackUrl() {
-    const base = (this.config.get<string>("API_BASE_URL") ?? "http://localhost:4000").replace(
-      /\/+$/,
-      ""
-    );
-    return `${base}/esign/callback/${this.providerType().toLowerCase()}`;
+    return resolveReturnManifestCallbackUrl(this.config);
   }
 
   private documentAudit(actorId: string): SubscriptionClosureMutationAuditHook {
@@ -867,6 +980,55 @@ export class ReturnManifestESignService {
   }
 }
 
+export function resolveReturnManifestCallbackUrl(config: ConfigService) {
+  const provider = selectedESignProvider(config);
+  const configuredBase = config.get<string>("API_BASE_URL")?.trim();
+  const base = (configuredBase || "http://localhost:4000").replace(/\/+$/, "");
+  if (provider === "fadada" && loadFadadaConfig(config).env === "production") {
+    let parsed: URL;
+    try {
+      parsed = new URL(base);
+    } catch {
+      throw callbackUrlInvalid();
+    }
+    if (parsed.protocol !== "https:" || isLocalOrPrivateHostname(parsed.hostname)) {
+      throw callbackUrlInvalid();
+    }
+  }
+  return `${base}/esign/callback/${provider}`;
+}
+
+function isLocalOrPrivateHostname(hostname: string) {
+  const normalized = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "");
+  if (
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local")
+  ) {
+    return true;
+  }
+  const octets = normalized.split(".").map((value) => Number.parseInt(value, 10));
+  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value))) return false;
+  return (
+    octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
+function callbackUrlInvalid() {
+  return new ConflictException({
+    code: "RETURN_MANIFEST_ESIGN_CALLBACK_URL_INVALID",
+    message: "Production Fadada return-manifest callbacks require a public HTTPS API base URL."
+  });
+}
+
 function normalizeInput(input: ReturnManifestESignInput): ReturnManifestESignInput {
   for (const [name, value] of Object.entries(input)) {
     if (typeof value !== "string" || !value.trim()) {
@@ -884,14 +1046,17 @@ function normalizeInput(input: ReturnManifestESignInput): ReturnManifestESignInp
 }
 
 function returnManifestSources(command: ReturnManifestESignInput) {
-  const key = `return-manifest-esign:${command.idempotencyKey}`;
-  const make = (suffix: string): SubscriptionClosureSource =>
+  const make = (key: string): SubscriptionClosureSource =>
     Object.freeze({
       id: command.closureCaseId,
-      key: suffix ? `${key}:${suffix}` : key,
-      type: "SUBSCRIPTION_CLOSURE"
+      key,
+      type: "SUBSCRIPTION_CLOSURE_ESIGN"
     });
-  return Object.freeze({ archived: make("archived"), signed: make("signed"), task: make("") });
+  return Object.freeze({
+    archived: make("return-manifest-esign:archived"),
+    signed: make("return-manifest-esign:signed"),
+    task: make("return-manifest-esign")
+  });
 }
 
 async function resolveManifestAuthority(
@@ -973,10 +1138,13 @@ function returnManifestSuccessorSnapshot(authority: ResolvedManifestAuthority) {
 
 function requestSnapshot(input: {
   archivedSource: SubscriptionClosureSource;
+  checklistSnapshot: unknown;
   documentSnapshot: Readonly<Record<string, unknown>>;
   generatedRevisionId: string;
+  idempotencyKey: string;
   providerSourceFile: FileShape;
   providerSourceFileHash: string;
+  renderedAt: Date;
   signedSource: SubscriptionClosureSource;
   sourceFile: FileShape;
   sourceFileHash: string;
@@ -985,15 +1153,17 @@ function requestSnapshot(input: {
   return {
     actorId: input.sourceFile.uploadedBy,
     archivedSource: input.archivedSource,
+    checklistSnapshot: input.checklistSnapshot,
     caseNo: stringValue(input.documentSnapshot.caseNo),
     closureCaseId: input.taskSource.id,
     documentSnapshot: input.documentSnapshot,
     documentSnapshotHash: hashSubscriptionClosureSnapshot(input.documentSnapshot as never),
     documentType: "RETURN_MANIFEST",
     generatedRevisionId: input.generatedRevisionId,
-    idempotencyKey: input.taskSource.key.slice("return-manifest-esign:".length),
+    idempotencyKey: input.idempotencyKey,
     providerSourceFile: jsonFileShape(input.providerSourceFile),
     providerSourceFileHash: input.providerSourceFileHash,
+    renderedAt: input.renderedAt.toISOString(),
     signedSource: input.signedSource,
     sourceFile: jsonFileShape(input.sourceFile),
     sourceFileHash: input.sourceFileHash,
@@ -1020,8 +1190,8 @@ function assertReservedAuthority(
     !sameJson(request.taskSource, sources.task) ||
     !sameJson(request.signedSource, sources.signed) ||
     !sameJson(request.archivedSource, sources.archived) ||
-    task.documentType !== ESignDocumentType.DELIVERY_HANDOVER ||
-    task.signingStage !== ESignSigningStage.STAGE2_DELIVERY_HANDOVER ||
+    task.documentType !== ESignDocumentType.RETURN_MANIFEST ||
+    task.signingStage !== ESignSigningStage.STAGE6_RETURN_MANIFEST ||
     task.sourceType !== sources.task.type ||
     task.sourceId !== sources.task.id ||
     task.sourceKey !== sources.task.key ||
@@ -1200,10 +1370,34 @@ function requiredSigner(
   };
 }
 
-function findTask(tx: PrismaService, source: SubscriptionClosureSource) {
-  return tx.contractESignTask.findFirst({
-    where: { sourceId: source.id, sourceKey: source.key, sourceType: source.type }
-  });
+async function claimSemanticCallback(
+  tx: PrismaService,
+  input: Readonly<{
+    create: Prisma.ContractESignCallbackLogUncheckedCreateInput;
+    operationKey: string;
+    provider: ESignProviderType;
+    taskId: string;
+  }>
+) {
+  const find = () =>
+    tx.contractESignCallbackLog.findFirst({
+      where: { operationKey: input.operationKey, provider: input.provider }
+    });
+  const existing = await find();
+  if (existing) {
+    if (existing.taskId !== input.taskId || !existing.verified) throw sourceConflict();
+    return existing;
+  }
+  try {
+    return await tx.contractESignCallbackLog.create({ data: input.create });
+  } catch (error) {
+    if (!isPrismaUniqueConstraintError(error)) throw error;
+    const winner = await find();
+    if (!winner || winner.taskId !== input.taskId || !winner.verified) {
+      throw sourceConflict();
+    }
+    return winner;
+  }
 }
 
 function providerStartSnapshot(result: ReturnManifestProviderTaskResult) {
@@ -1266,6 +1460,14 @@ function taskAuditSnapshot(task: Readonly<Record<string, unknown>>) {
       "updatedAt",
       "updatedBy"
     ].map((key) => [key, jsonScalar(task[key])])
+  );
+}
+
+function signerAuditSnapshot(signer: Readonly<Record<string, unknown>>) {
+  return Object.fromEntries(
+    Object.entries(signer)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, jsonScalar(value)])
   );
 }
 
@@ -1373,8 +1575,60 @@ async function databaseClock(tx: Prisma.TransactionClient) {
   return row.clock;
 }
 
-async function renderReturnManifestPdf(documentSnapshot: unknown, checklistSnapshot: unknown) {
-  const doc = new PDFDocument({ autoFirstPage: true, margin: 48, size: "A4" });
+async function materializeReservedArtifacts(authority: ResolvedManifestAuthority) {
+  if (!authority.task) throw sourceConflict();
+  const request = objectValue(authority.task.requestSnapshot);
+  const sourceFile = fileSnapshot(request.sourceFile);
+  const providerFile = fileSnapshot(request.providerSourceFile);
+  const renderedAt = new Date(stringValue(request.renderedAt));
+  if (!Number.isFinite(renderedAt.getTime())) throw sourceConflict();
+  const sourceBytes = Buffer.from(
+    canonicalSubscriptionClosureJson(request.documentSnapshot as never),
+    "utf8"
+  );
+  const providerPdf = await renderReturnManifestPdf(
+    request.documentSnapshot,
+    request.checklistSnapshot,
+    renderedAt
+  );
+  const sourceFileHash = sha256(sourceBytes);
+  const providerPdfHash = sha256(providerPdf);
+  if (
+    BigInt(sourceBytes.length) !== sourceFile.sizeBytes ||
+    BigInt(providerPdf.length) !== providerFile.sizeBytes ||
+    sourceFileHash !== stringValue(request.sourceFileHash) ||
+    providerPdfHash !== stringValue(request.providerSourceFileHash)
+  ) {
+    throw sourceConflict();
+  }
+  return Object.freeze({
+    providerFile,
+    providerPdf,
+    providerPdfHash,
+    sourceBytes,
+    sourceFile,
+    sourceFileHash
+  });
+}
+
+async function renderReturnManifestPdf(
+  documentSnapshot: unknown,
+  checklistSnapshot: unknown,
+  renderedAt: Date
+) {
+  const doc = new PDFDocument({
+    autoFirstPage: true,
+    compress: false,
+    info: {
+      CreationDate: renderedAt,
+      Creator: "subscription-closure",
+      ModDate: renderedAt,
+      Producer: "subscription-closure",
+      Title: "Return Manifest"
+    },
+    margin: 48,
+    size: "A4"
+  });
   const chunks: Buffer[] = [];
   doc.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
   const completed = new Promise<Buffer>((resolve, reject) => {
@@ -1443,6 +1697,12 @@ function providerCapabilityMissing() {
     code: "RETURN_MANIFEST_ESIGN_PROVIDER_CAPABILITY_MISSING",
     message: "The configured e-sign provider does not support return manifests."
   });
+}
+
+function isPrismaUniqueConstraintError(error: unknown) {
+  return Boolean(
+    error && typeof error === "object" && (error as { code?: unknown }).code === "P2002"
+  );
 }
 
 function sourceConflict() {

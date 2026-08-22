@@ -4252,9 +4252,34 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         closureCaseId: scenario.closureCase.id,
         idempotencyKey: "task-7-production-return-manifest"
       } as const;
+      const generated = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
+        where: {
+          closureCaseId: scenario.closureCase.id,
+          documentType: "RETURN_MANIFEST",
+          revisionNumber: 1
+        }
+      });
+      await expect(
+        prisma.subscriptionAutomationJob.findUnique({
+          where: {
+            idempotencyKey: `closure-return-manifest-esign:${generated.id}`
+          }
+        })
+      ).resolves.toMatchObject({
+        jobStatus: "PENDING",
+        jobType: "CLOSURE_RETURN_MANIFEST_ESIGN",
+        orderId: scenario.fixture.orderId,
+        payload: {
+          actorId: scenario.fixture.actorId,
+          closureCaseId: scenario.closureCase.id,
+          generatedRevisionId: generated.id,
+          version: 1
+        }
+      });
       const produced = await produceReturnManifestSuccessors(prisma, input);
       expect(produced.started).toMatchObject({ wrote: true });
-      expect(produced.finalized).toMatchObject({ wrote: true });
+      expect(produced.callback).toMatchObject({ finalized: true });
+      expect(produced.finalized).toMatchObject({ wrote: false });
       const revisions = await prisma.subscriptionClosureDocumentRevision.findMany({
         include: { contractESignTask: true, signedFile: true, sourceFile: true },
         orderBy: { revisionNumber: "asc" },
@@ -4307,15 +4332,21 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     } as const;
     const harness = createReturnManifestESignHarness(prisma);
     try {
-      vi.spyOn(harness.provider, "createReturnManifestTask").mockRejectedValueOnce(
-        new Error("TASK7_FAKE_PROVIDER_START_RETRY")
+      const providerStart = vi.spyOn(harness.provider, "createReturnManifestTask");
+      const serviceWithPersist = harness.service as unknown as {
+        persistStartedProviderTask: (...args: never[]) => Promise<never>;
+      };
+      vi.spyOn(serviceWithPersist, "persistStartedProviderTask").mockRejectedValueOnce(
+        new Error("TASK7_FAKE_PROVIDER_RESULT_PERSISTENCE_RETRY")
       );
-      await expect(harness.service.start(input)).rejects.toThrow("TASK7_FAKE_PROVIDER_START_RETRY");
+      await expect(harness.service.start(input)).rejects.toThrow(
+        "TASK7_FAKE_PROVIDER_RESULT_PERSISTENCE_RETRY"
+      );
       const reserved = await prisma.contractESignTask.findFirstOrThrow({
         where: {
           sourceId: scenario.closureCase.id,
-          sourceKey: `return-manifest-esign:${input.idempotencyKey}`,
-          sourceType: "SUBSCRIPTION_CLOSURE"
+          sourceKey: "return-manifest-esign",
+          sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
         }
       });
       expect(reserved).toMatchObject({ providerTaskId: null, taskStatus: "CREATED" });
@@ -4323,11 +4354,13 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         taskId: reserved.id,
         wrote: true
       });
+      expect(providerStart).toHaveBeenCalledTimes(1);
       const started = await prisma.contractESignTask.findUniqueOrThrow({
         where: { id: reserved.id }
       });
-      vi.spyOn(harness.provider, "completeReturnManifestTask").mockRejectedValueOnce(
-        new Error("TASK7_FAKE_PROVIDER_COMPLETION_RETRY")
+      const providerCompletion = vi.spyOn(harness.provider, "completeReturnManifestTask");
+      vi.spyOn(harness.service, "finalize").mockRejectedValueOnce(
+        new Error("TASK7_FAKE_FINALIZATION_RETRY")
       );
       const callbackPayload = {
         eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED",
@@ -4345,7 +4378,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         harness.service
       );
       await expect(dispatch.handleCallback("mock", callbackPayload)).rejects.toThrow(
-        "TASK7_FAKE_PROVIDER_COMPLETION_RETRY"
+        "TASK7_FAKE_FINALIZATION_RETRY"
       );
       await expect(
         prisma.contractESignCallbackLog.findMany({ where: { taskId: reserved.id } })
@@ -4354,13 +4387,145 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         handled: true,
         taskId: reserved.id
       });
+      expect(providerCompletion).toHaveBeenCalledTimes(1);
+      await expect(
+        dispatch.handleCallback("mock", {
+          ...callbackPayload,
+          providerObservedAt: "2026-08-22T00:00:00.000Z"
+        })
+      ).resolves.toMatchObject({ handled: true, idempotent: true, taskId: reserved.id });
       await expect(
         prisma.contractESignCallbackLog.findMany({ where: { taskId: reserved.id } })
       ).resolves.toMatchObject([{ handled: true }]);
-      await expect(harness.service.finalize(input)).resolves.toMatchObject({ wrote: true });
+      await expect(
+        harness.service.start({ ...input, idempotencyKey: `${input.idempotencyKey}:drift` })
+      ).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await expect(harness.service.finalize(input)).resolves.toMatchObject({ wrote: false });
       await expect(harness.service.start(input)).resolves.toMatchObject({ wrote: false });
       await expect(harness.service.finalize(input)).resolves.toMatchObject({ wrote: false });
     } finally {
+      vi.restoreAllMocks();
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  }, 30_000);
+
+  it("serializes concurrent provider start before the external provider side effect", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma, {
+      early: true,
+      skipManifestSuccessors: true
+    });
+    const input = {
+      actorId: scenario.fixture.actorId,
+      closureCaseId: scenario.closureCase.id,
+      idempotencyKey: "task-7-return-manifest-provider-concurrency"
+    } as const;
+    const harness = createReturnManifestESignHarness(prisma);
+    const barrier = createBarrier();
+    const originalCreate = harness.provider.createReturnManifestTask.bind(harness.provider);
+    let providerCalls = 0;
+    vi.spyOn(harness.provider, "createReturnManifestTask").mockImplementation(
+      async (providerInput) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          barrier.enter();
+          await barrier.released;
+        }
+        return originalCreate(providerInput);
+      }
+    );
+    try {
+      const first = harness.service.start(input);
+      await barrier.entered;
+      const second = harness.service.start(input);
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(providerCalls).toBe(1);
+      barrier.release();
+      const results = await Promise.all([first, second]);
+      expect(results.map(({ wrote }) => wrote).sort()).toEqual([false, true]);
+      expect(providerCalls).toBe(1);
+    } finally {
+      barrier.release();
+      vi.restoreAllMocks();
+      await cleanupManagedExpiryFixture(prisma, scenario.fixture);
+    }
+  }, 30_000);
+
+  it("serializes concurrent semantic callbacks before the external completion side effect", async () => {
+    const scenario = await setupFocusedPhysicalReceipt(prisma, {
+      early: true,
+      skipManifestSuccessors: true
+    });
+    const input = {
+      actorId: scenario.fixture.actorId,
+      closureCaseId: scenario.closureCase.id,
+      idempotencyKey: "task-7-return-manifest-callback-concurrency"
+    } as const;
+    const harness = createReturnManifestESignHarness(prisma);
+    const barrier = createBarrier();
+    const inFlight: Promise<unknown>[] = [];
+    try {
+      const started = await harness.service.start(input);
+      const callbackPayload = {
+        eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED",
+        providerTaskId: (
+          await prisma.contractESignTask.findUniqueOrThrow({ where: { id: started.taskId } })
+        ).providerTaskId
+      };
+      const dispatch = new ESignService(
+        harness.audit,
+        harness.config,
+        harness.provider,
+        prisma,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        harness.service
+      );
+      const originalComplete = harness.provider.completeReturnManifestTask.bind(harness.provider);
+      let providerCalls = 0;
+      vi.spyOn(harness.provider, "completeReturnManifestTask").mockImplementation(
+        async (providerInput) => {
+          providerCalls += 1;
+          if (providerCalls === 1) {
+            barrier.enter();
+            await barrier.released;
+          }
+          return originalComplete(providerInput);
+        }
+      );
+
+      const first = dispatch.handleCallback("mock", callbackPayload);
+      inFlight.push(first);
+      await barrier.entered;
+      const second = dispatch.handleCallback("mock", {
+        ...callbackPayload,
+        retryObservedAt: "2026-08-22T00:00:00.000Z"
+      });
+      inFlight.push(second);
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      expect(providerCalls).toBe(1);
+      barrier.release();
+      await expect(first).resolves.toMatchObject({ handled: true, taskId: started.taskId });
+      await expect(second).rejects.toMatchObject({
+        response: { code: "SUBSCRIPTION_CLOSURE_SOURCE_CONFLICT" },
+        status: 409
+      });
+      await expect(dispatch.handleCallback("mock", callbackPayload)).resolves.toMatchObject({
+        handled: true,
+        idempotent: true,
+        taskId: started.taskId
+      });
+      expect(providerCalls).toBe(1);
+      await expect(
+        prisma.contractESignCallbackLog.findMany({ where: { taskId: started.taskId } })
+      ).resolves.toMatchObject([{ handled: true }]);
+    } finally {
+      barrier.release();
+      await Promise.allSettled(inFlight);
       vi.restoreAllMocks();
       await cleanupManagedExpiryFixture(prisma, scenario.fixture);
     }
@@ -4371,8 +4536,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     const task = await prisma.contractESignTask.findFirstOrThrow({
       where: {
         sourceId: prepared.scenario.closureCase.id,
-        sourceKey: `return-manifest-esign:${prepared.input.idempotencyKey}`,
-        sourceType: "SUBSCRIPTION_CLOSURE"
+        sourceKey: "return-manifest-esign",
+        sourceType: "SUBSCRIPTION_CLOSURE_ESIGN"
       }
     });
     const extraAuditId = randomUUID();
@@ -4430,7 +4595,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedReceipt = await prisma.subscriptionClosureCommandReceipt.findFirstOrThrow({
         where: {
           closureCaseId: scenario.closureCase.id,
-          sourceKey: "return-manifest-esign:task-7-focused-return-manifest:signed"
+          sourceKey: "return-manifest-esign:signed"
         }
       });
       const signedEvent = await prisma.subscriptionClosureEvent.findUniqueOrThrow({
@@ -4446,7 +4611,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       const signedRevision = await prisma.subscriptionClosureDocumentRevision.findFirstOrThrow({
         where: {
           closureCaseId: scenario.closureCase.id,
-          sourceKey: "return-manifest-esign:task-7-focused-return-manifest:signed"
+          sourceKey: "return-manifest-esign:signed"
         }
       });
       const signedTask = await prisma.contractESignTask.findUniqueOrThrow({
@@ -4527,6 +4692,71 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         }
       });
       await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureEvent.update({
+          data: { beforeStatus: "MANUAL_TAKEOVER" },
+          where: { id: signedEvent.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureEvent.update({
+          data: { beforeStatus: signedEvent.beforeStatus },
+          where: { id: signedEvent.id }
+        })
+      );
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureEvent.update({
+          data: { recordedAt: new Date(signedReceipt.createdAt.getTime() + 1) },
+          where: { id: signedEvent.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureEvent.update({
+          data: { recordedAt: signedEvent.recordedAt },
+          where: { id: signedEvent.id }
+        })
+      );
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureCommandReceipt.update({
+          data: { sourceType: "TAMPERED_RETURN_MANIFEST" },
+          where: { id: signedReceipt.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureCommandReceipt.update({
+          data: { sourceType: signedReceipt.sourceType },
+          where: { id: signedReceipt.id }
+        })
+      );
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureCommandReceipt.update({
+          data: { createdAt: new Date(signedEvent.recordedAt.getTime() - 1) },
+          where: { id: signedReceipt.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.subscriptionClosureCommandReceipt.update({
+          data: { createdAt: signedReceipt.createdAt },
+          where: { id: signedReceipt.id }
+        })
+      );
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { createdAt: new Date(signedEvent.recordedAt.getTime() - 1) },
+          where: { id: signedAudit.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { createdAt: signedAudit.createdAt },
+          where: { id: signedAudit.id }
+        })
+      );
+      await withTask7Replica(prisma, (tx) =>
         tx.contractESignTask.update({
           data: { requestSnapshot: { tampered: "manifest-successor-task" } },
           where: { id: signedTask.id }
@@ -4569,6 +4799,24 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       });
       await expectExecutionConflict();
       await prisma.contractESignSigner.delete({ where: { id: extraSignerId } });
+      const extraCallbackId = randomUUID();
+      await prisma.contractESignCallbackLog.create({
+        data: {
+          eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED_DUPLICATE",
+          handled: true,
+          handledAt: signedTask.completedAt,
+          id: extraCallbackId,
+          payload: { tampered: "extra-semantic-callback" },
+          payloadHash: createHash("sha256").update(extraCallbackId).digest("hex"),
+          provider: signedTask.provider,
+          providerTaskId: signedTask.providerTaskId,
+          providerTransactionId: signedTask.providerTaskId,
+          taskId: signedTask.id,
+          verified: true
+        }
+      });
+      await expectExecutionConflict();
+      await prisma.contractESignCallbackLog.delete({ where: { id: extraCallbackId } });
       const extraTaskId = randomUUID();
       await prisma.contractESignTask.create({
         data: {
@@ -4579,8 +4827,8 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           provider: "MOCK",
           signingStage: "STAGE2_DELIVERY_HANDOVER",
           sourceId: scenario.closureCase.id,
-          sourceKey: `return-manifest-esign:${randomUUID()}`,
-          sourceType: "SUBSCRIPTION_CLOSURE",
+          sourceKey: `return-manifest-esign:tampered:${randomUUID()}`,
+          sourceType: "SUBSCRIPTION_CLOSURE_ESIGN",
           taskNo: `ESG-${randomUUID()}`,
           taskStatus: "CREATED"
         }
@@ -4639,6 +4887,48 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
           uploadedBy: providerSourceFile.uploadedBy
         }
       });
+      const providerFileAudit = await prisma.auditLog.findFirstOrThrow({
+        where: {
+          action: "CREATE",
+          entityId: providerSourceFile.id,
+          entityType: "file_object",
+          module: "subscription_closure"
+        }
+      });
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { afterSnapshot: { tampered: "provider-file-create-audit" } },
+          where: { id: providerFileAudit.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { afterSnapshot: providerFileAudit.afterSnapshot ?? Prisma.JsonNull },
+          where: { id: providerFileAudit.id }
+        })
+      );
+      const customerSignerAudit = await prisma.auditLog.findFirstOrThrow({
+        where: {
+          action: "CREATE",
+          entityId: customerSigner.id,
+          entityType: "contract_esign_signer",
+          module: "subscription_closure"
+        }
+      });
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { createdAt: new Date(customerSigner.createdAt.getTime() + 1) },
+          where: { id: customerSignerAudit.id }
+        })
+      );
+      await expectExecutionConflict();
+      await withTask7Replica(prisma, (tx) =>
+        tx.auditLog.update({
+          data: { createdAt: customerSignerAudit.createdAt },
+          where: { id: customerSignerAudit.id }
+        })
+      );
       await withTask7Replica(prisma, (tx) =>
         tx.fileObject.update({
           data: { mimeType: "text/plain" },
@@ -9061,9 +9351,9 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
       expect(unrelatedTaskIds).not.toContain(manifestTask.id);
       expect(manifestTask).toMatchObject({
         contractId: fixture.contractId,
-        documentType: ESignDocumentType.DELIVERY_HANDOVER,
+        documentType: ESignDocumentType.RETURN_MANIFEST,
         orderId: fixture.orderId,
-        signingStage: ESignSigningStage.STAGE2_DELIVERY_HANDOVER,
+        signingStage: ESignSigningStage.STAGE6_RETURN_MANIFEST,
         sourceId: fixture.segmentId,
         sourceKey: "return-manifest:1",
         sourceType: "SUBSCRIPTION_EXPIRY"
@@ -9365,7 +9655,11 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
         response: { code: "SUBSCRIPTION_CLOSURE_EXPIRY_AUTHORITY_MISMATCH" },
         status: 409
       });
-      await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(baseline);
+      const driftOnly = structuredClone(baseline);
+      const driftedJob = driftOnly.automationJobs.find(({ id }) => id === fixture.futureJobId);
+      if (!driftedJob) throw new Error("Expected the future-job authority snapshot");
+      driftedJob.payload = { periodStart: "2026-11-03" };
+      await expect(snapshotManagedExpiryTruth(prisma, fixture)).resolves.toEqual(driftOnly);
       await expect(
         prisma.subscriptionAutomationJob.findUniqueOrThrow({
           select: { payload: true },
@@ -10806,10 +11100,8 @@ function createReturnManifestESignHarness(prisma: PrismaService) {
         stream: Readable.from(buffer)
       };
     },
-    async putReturnManifestArtifact(input: {
-      buffer: Buffer;
+    resolveReturnManifestArtifactIdentity(input: {
       closureCaseId: string;
-      contentType?: string;
       objectIdentity: string;
       originalName?: string;
     }) {
@@ -10817,6 +11109,16 @@ function createReturnManifestESignHarness(prisma: PrismaService) {
       const objectKey =
         `subscription-closure/${input.closureCaseId}/return-manifest/` +
         `${input.objectIdentity}-${input.originalName ?? "artifact"}`;
+      return { bucket, objectKey };
+    },
+    async putReturnManifestArtifact(input: {
+      buffer: Buffer;
+      closureCaseId: string;
+      contentType?: string;
+      objectIdentity: string;
+      originalName?: string;
+    }) {
+      const { bucket, objectKey } = this.resolveReturnManifestArtifactIdentity(input);
       objects.set(`${bucket}\0${objectKey}`, Buffer.from(input.buffer));
       return {
         bucket,
@@ -10881,7 +11183,10 @@ async function prepareTask7ManifestSuccessorRace(prisma: PrismaService) {
   const task = await prisma.contractESignTask.findUniqueOrThrow({
     where: { id: started.taskId }
   });
-  await new ESignService(
+  const finalizationFailure = vi
+    .spyOn(harness.service, "finalize")
+    .mockRejectedValueOnce(new Error("TASK7_MANIFEST_SUCCESSOR_RACE_BEFORE_FINALIZATION"));
+  const callback = new ESignService(
     harness.audit,
     harness.config,
     harness.provider,
@@ -10891,10 +11196,14 @@ async function prepareTask7ManifestSuccessorRace(prisma: PrismaService) {
     undefined,
     undefined,
     harness.service
-  ).handleCallback("mock", {
-    eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED",
-    providerTaskId: task.providerTaskId
-  });
+  );
+  await expect(
+    callback.handleCallback("mock", {
+      eventType: "RETURN_MANIFEST_CUSTOMER_SIGNED",
+      providerTaskId: task.providerTaskId
+    })
+  ).rejects.toThrow("TASK7_MANIFEST_SUCCESSOR_RACE_BEFORE_FINALIZATION");
+  finalizationFailure.mockRestore();
   return { harness, input, scenario };
 }
 
@@ -11203,9 +11512,13 @@ async function snapshotManagedExpiryTruth(
         cancelledAt: true,
         completedAt: true,
         id: true,
+        idempotencyKey: true,
         jobStatus: true,
+        jobType: true,
         leaseExpiresAt: true,
-        leaseToken: true
+        leaseToken: true,
+        orderId: true,
+        payload: true
       },
       where: { orderId: fixture.orderId }
     }),
@@ -11424,22 +11737,54 @@ function expectExactCommittedManagedExpiryTruth(
     status: "ACTIVE",
     version: 1
   });
-  expect(Object.fromEntries(truth.automationJobs.map((job) => [job.id, job]))).toEqual({
-    [fixture.earnedJobId]: {
-      cancelledAt: null,
-      completedAt: null,
-      id: fixture.earnedJobId,
-      jobStatus: "PENDING",
-      leaseExpiresAt: null,
-      leaseToken: null
-    },
-    [fixture.futureJobId]: {
-      cancelledAt: decisionAt,
-      completedAt: decisionAt,
-      id: fixture.futureJobId,
-      jobStatus: "CANCELLED",
-      leaseExpiresAt: null,
-      leaseToken: null
+  const jobsById = Object.fromEntries(truth.automationJobs.map((job) => [job.id, job]));
+  expect(truth.automationJobs).toHaveLength(3);
+  expect(jobsById[fixture.earnedJobId]).toEqual({
+    cancelledAt: null,
+    completedAt: null,
+    id: fixture.earnedJobId,
+    idempotencyKey: `expiry-integration:${fixture.earnedJobId}`,
+    jobStatus: "PENDING",
+    jobType: "GENERATE_MONTHLY_RENT_BILL",
+    leaseExpiresAt: null,
+    leaseToken: null,
+    orderId: fixture.orderId,
+    payload: { periodStart: "2026-08-03" }
+  });
+  expect(jobsById[fixture.futureJobId]).toEqual({
+    cancelledAt: decisionAt,
+    completedAt: decisionAt,
+    id: fixture.futureJobId,
+    idempotencyKey: `expiry-integration:${fixture.futureJobId}`,
+    jobStatus: "CANCELLED",
+    jobType: "GENERATE_MONTHLY_RENT_BILL",
+    leaseExpiresAt: null,
+    leaseToken: null,
+    orderId: fixture.orderId,
+    payload: { periodStart: "2026-10-03" }
+  });
+  const generatedManifest = truth.documentRevisions.find(
+    ({ documentType, revisionNumber }) => documentType === "RETURN_MANIFEST" && revisionNumber === 1
+  );
+  expect(generatedManifest).toBeDefined();
+  const returnManifestJob = truth.automationJobs.find(
+    ({ jobType }) => jobType === "CLOSURE_RETURN_MANIFEST_ESIGN"
+  );
+  expect(returnManifestJob).toEqual({
+    cancelledAt: null,
+    completedAt: null,
+    id: expectUuid(),
+    idempotencyKey: `closure-return-manifest-esign:${generatedManifest!.id}`,
+    jobStatus: "PENDING",
+    jobType: "CLOSURE_RETURN_MANIFEST_ESIGN",
+    leaseExpiresAt: null,
+    leaseToken: null,
+    orderId: fixture.orderId,
+    payload: {
+      actorId: fixture.actorId,
+      closureCaseId: generatedManifest!.closureCaseId,
+      generatedRevisionId: generatedManifest!.id,
+      version: 1
     }
   });
 
@@ -11607,7 +11952,7 @@ function expectExactCommittedManagedExpiryTruth(
     {
       contractId: fixture.contractId,
       customerId: fixture.customerId,
-      documentType: "DELIVERY_HANDOVER",
+      documentType: "RETURN_MANIFEST",
       id: document.contractESignTaskId,
       orderId: fixture.orderId,
       requestSnapshot: {
@@ -11623,7 +11968,7 @@ function expectExactCommittedManagedExpiryTruth(
         sourceFileHash: document.documentSnapshotHash,
         sourceFileId: document.sourceFileId
       },
-      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      signingStage: "STAGE6_RETURN_MANIFEST",
       sourceId: fixture.segmentId,
       sourceKey: "return-manifest:1",
       sourceType: "SUBSCRIPTION_EXPIRY",
@@ -12285,6 +12630,12 @@ async function cleanupExpiryFixture(
         SELECT "id" FROM "subscription_contract_segment" WHERE "order_id" = ${orderId}::uuid
         UNION
         SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "contract_esign_callback_log"
+      WHERE "task_id" IN (
+        SELECT "id" FROM "contract_esign_task" WHERE "order_id" = ${orderId}::uuid
       )
     `);
     await tx.$executeRaw(Prisma.sql`

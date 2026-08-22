@@ -45,4 +45,50 @@ describe("SubscriptionChangeJobService recovery assessment dispatch", () => {
       orderId: "10000000-0000-4000-8000-000000000003"
     });
   });
+
+  it("dispatches the durable return-manifest e-sign job with only its persisted authority", async () => {
+    const recovery = { assessRecoveryJob: vi.fn() };
+    const returnManifest = {
+      reconcile: vi.fn(async () => ({
+        signUrl: "https://sign.test/manifest",
+        taskId: "task",
+        wrote: true
+      }))
+    };
+    const service = new SubscriptionChangeJobService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      recovery as never,
+      returnManifest as never
+    );
+    const job = {
+      id: "20000000-0000-4000-8000-000000000001",
+      idempotencyKey: "closure-return-manifest-esign:20000000-0000-4000-8000-000000000002",
+      jobType: SubscriptionAutomationJobType.CLOSURE_RETURN_MANIFEST_ESIGN,
+      orderId: "20000000-0000-4000-8000-000000000003",
+      payload: {
+        actorId: "20000000-0000-4000-8000-000000000004",
+        closureCaseId: "20000000-0000-4000-8000-000000000005",
+        generatedRevisionId: "20000000-0000-4000-8000-000000000002",
+        ignoredClientHash: "f".repeat(64)
+      }
+    } as never;
+
+    expect(service.supportedJobTypes).toContain(
+      SubscriptionAutomationJobType.CLOSURE_RETURN_MANIFEST_ESIGN
+    );
+    await expect(service.handle(job)).resolves.toEqual({
+      signUrl: "https://sign.test/manifest",
+      taskId: "task",
+      wrote: true
+    });
+    expect(returnManifest.reconcile).toHaveBeenCalledWith({
+      actorId: "20000000-0000-4000-8000-000000000004",
+      closureCaseId: "20000000-0000-4000-8000-000000000005",
+      idempotencyKey: "20000000-0000-4000-8000-000000000002"
+    });
+  });
 });

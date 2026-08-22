@@ -459,6 +459,7 @@ enum SubscriptionAutomationJobType {
   EXTENSION_INSURANCE_VALIDATION
   EXTENSION_EFFECTIVE_NOTICE
   CLOSURE_RECOVERY_ASSESSMENT_D7
+  CLOSURE_RETURN_MANIFEST_ESIGN
 
   @@map("subscription_automation_job_type")
 }
@@ -1584,6 +1585,7 @@ enum ESignSigningStage {
   STAGE3_SUBSCRIPTION_EXTENSION
   STAGE4_EARLY_TERMINATION
   STAGE5_RECOVERY_AUTHORITY
+  STAGE6_RETURN_MANIFEST
 
   @@map("esign_signing_stage")
 }
@@ -1596,6 +1598,7 @@ enum ESignDocumentType {
   SUBSCRIPTION_EXTENSION_AGREEMENT
   EARLY_TERMINATION_AGREEMENT
   RECOVERY_AUTHORITY
+  RETURN_MANIFEST
 
   @@map("esign_document_type")
 }
@@ -1607,6 +1610,8 @@ enum ESignSlotId {
   STAGE1_ATTACHMENT1_PLATFORM
   STAGE2_HANDOVER_CUSTOMER
   STAGE2_HANDOVER_PLATFORM
+  RETURN_MANIFEST_CUSTOMER
+  RETURN_MANIFEST_PLATFORM
 
   @@map("esign_slot_id")
 }
@@ -7513,6 +7518,7 @@ model ContractESignCallbackLog {
   providerTaskId        String?            @map("provider_task_id") @db.VarChar(128)
   providerTransactionId String?            @map("provider_transaction_id") @db.VarChar(32)
   payloadHash           String?            @map("payload_hash") @db.Char(64)
+  operationKey          String?            @map("operation_key") @db.VarChar(255)
   payload               Json?
   verified              Boolean            @default(false)
   handled               Boolean            @default(false)
@@ -7526,6 +7532,9 @@ model ContractESignCallbackLog {
   @@index([providerTaskId])
   @@index([eventType])
   @@index([receivedAt])
+  // Migration-owned partial unique index:
+  // contract_esign_callback_log_provider_operation_key_key enforces one semantic callback
+  // operation per provider while operation_key IS NOT NULL.
   @@map("contract_esign_callback_log")
 }
 

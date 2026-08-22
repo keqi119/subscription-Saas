@@ -349,7 +349,7 @@ describe("SubscriptionClosureService normal expiry", () => {
         deletedAt: null,
         documentName: `${caseNo}-return-manifest-r1.json`,
         documentObjectKey: `subscription-closure/${IDS.closureCase}/return-manifest-r1.json`,
-        documentType: "DELIVERY_HANDOVER",
+        documentType: "RETURN_MANIFEST",
         id: IDS.esignTask,
         orderId: IDS.order,
         requestSnapshot: {
@@ -367,7 +367,7 @@ describe("SubscriptionClosureService normal expiry", () => {
           sourceFileHash: revisionOne.sourceFileHash,
           sourceFileId: revisionOne.sourceFileId
         },
-        signingStage: "STAGE2_DELIVERY_HANDOVER",
+        signingStage: "STAGE6_RETURN_MANIFEST",
         sourceId: IDS.segment,
         sourceKey: "return-manifest:1",
         sourceType: "SUBSCRIPTION_EXPIRY"
@@ -610,6 +610,12 @@ function createTransaction() {
     },
     subscriptionClosureDocumentRevision: {
       findFirst: vi.fn(async () => null)
+    },
+    subscriptionAutomationJob: {
+      upsert: vi.fn(async ({ create }) => ({
+        id: "10000000-0000-4000-8000-000000000099",
+        ...create
+      }))
     },
     subscriptionChangeOrder: {
       findMany: vi.fn(async () => [])

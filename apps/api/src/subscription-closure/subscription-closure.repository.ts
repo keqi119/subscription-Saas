@@ -2405,8 +2405,8 @@ async function assertDocumentAuthorityCoherence(
     (esign.deletedAt !== null ||
       !esign.documentName ||
       !esign.documentObjectKey ||
-      esign.documentType !== "DELIVERY_HANDOVER" ||
-      esign.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+      esign.documentType !== "RETURN_MANIFEST" ||
+      esign.signingStage !== "STAGE6_RETURN_MANIFEST" ||
       esign.sourceId !== command.source.id ||
       esign.sourceKey !== command.source.key ||
       esign.sourceType !== command.source.type ||
@@ -2638,8 +2638,8 @@ async function assertReturnManifestSuccessorAuthority(
     esign.contractId !== closureCase.contractId ||
     esign.customerId !== closureCase.customerId ||
     esign.orderId !== closureCase.orderId ||
-    esign.documentType !== "DELIVERY_HANDOVER" ||
-    esign.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+    esign.documentType !== "RETURN_MANIFEST" ||
+    esign.signingStage !== "STAGE6_RETURN_MANIFEST" ||
     !["MOCK", "FADADA"].includes(esign.provider) ||
     esign.taskStatus !== "COMPLETED" ||
     !esign.completedAt ||
@@ -2652,7 +2652,7 @@ async function assertReturnManifestSuccessorAuthority(
     canonicalSubscriptionClosureJson(request.documentSnapshot) !==
       canonicalSubscriptionClosureJson(command.documentSnapshot) ||
     taskSource.id !== closureCase.id ||
-    taskSource.type !== "SUBSCRIPTION_CLOSURE" ||
+    taskSource.type !== "SUBSCRIPTION_CLOSURE_ESIGN" ||
     esign.sourceId !== taskSource.id ||
     esign.sourceKey !== taskSource.key ||
     esign.sourceType !== taskSource.type ||

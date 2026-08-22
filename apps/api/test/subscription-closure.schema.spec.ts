@@ -201,8 +201,11 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
       "TERMINATED",
       "CANCELLED"
     ]);
-    expect(enumValues("SubscriptionAutomationJobType").at(-1)).toBe(
-      "CLOSURE_RECOVERY_ASSESSMENT_D7"
+    expect(enumValues("SubscriptionAutomationJobType")).toEqual(
+      expect.arrayContaining([
+        "CLOSURE_RECOVERY_ASSESSMENT_D7",
+        "CLOSURE_RETURN_MANIFEST_ESIGN"
+      ])
     );
     expect(migration).toContain(
       `ALTER TYPE "order_status" ADD VALUE 'RETURNED_PENDING_SETTLEMENT' AFTER 'PENDING_RETURN'`

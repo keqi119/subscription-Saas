@@ -49,6 +49,11 @@ export interface GeneratedContractPdfArtifactStorageResult {
   stored: StoredObject;
 }
 
+export interface ReturnManifestArtifactStorageInput extends Omit<UploadObjectInput, "key"> {
+  closureCaseId: string;
+  objectIdentity: string;
+}
+
 @Injectable()
 export class StorageService {
   constructor(
@@ -327,6 +332,21 @@ export class StorageService {
       contentType: input.contentType,
       metadata: input.metadata,
       originalName: input.originalName
+    });
+  }
+
+  async putReturnManifestArtifact(
+    input: ReturnManifestArtifactStorageInput
+  ): Promise<{ bucket: string; objectKey: string; stored: StoredObject }> {
+    const originalName = input.originalName ?? "return-manifest.bin";
+    const key =
+      `subscription-closure/${sanitizeKeyPart(input.closureCaseId)}/return-manifest/` +
+      `${sanitizeKeyPart(input.objectIdentity)}-${sanitizeFilename(originalName)}`;
+    return this.putPrivateObject(key, {
+      buffer: input.buffer,
+      contentType: input.contentType,
+      metadata: input.metadata,
+      originalName
     });
   }
 

@@ -64,6 +64,7 @@ import {
 import type { ApprovedSigningPlanRef } from "./enterprise-seal/enterprise-seal.types";
 import { FadadaCustomerReadinessService } from "./fadada-customer-readiness.service";
 import { loadFadadaConfig } from "./fadada/fadada.config";
+import { ReturnManifestESignService } from "./return-manifest-esign.service";
 
 const contractForESignInclude = {
   customer: { select: { id: true, mobile: true, name: true } },
@@ -307,7 +308,8 @@ export class ESignService {
     @Optional() private readonly notificationService?: NotificationService,
     @Optional() private readonly contractPdfArtifactService?: ContractPdfArtifactService,
     @Optional() private readonly fadadaReadinessService?: FadadaCustomerReadinessService,
-    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService
+    @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
+    @Optional() private readonly returnManifestESign?: ReturnManifestESignService
   ) {}
 
   async startJourneyFadadaSigning(contractId: string, actorId: string) {
@@ -1033,6 +1035,22 @@ export class ESignService {
         providerTaskId
       });
       return { handled: false, reason: "UNVERIFIED" };
+    }
+
+    const returnManifestCallback = {
+      eventType,
+      payload: sanitizedPayload,
+      provider,
+      providerContractId,
+      providerTaskId,
+      resultCode,
+      verification: verified
+    };
+    if (
+      this.returnManifestESign &&
+      (await this.returnManifestESign.matchesVerifiedCallback(returnManifestCallback))
+    ) {
+      return this.returnManifestESign.handleVerifiedCallback(returnManifestCallback);
     }
 
     const normalizedProviderTransactionId = normalizeProviderTransactionId(providerTaskId);

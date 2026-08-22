@@ -24,6 +24,8 @@ import { FadadaHttpClient } from "./fadada/fadada-http-client";
 import { FadadaSignedArtifactService } from "./fadada/fadada-signed-artifact.service";
 import { MockESignProvider } from "./mock-esign.provider";
 import { Stage3ExtensionArchiveService } from "./stage3-extension-archive.service";
+import { ReturnManifestESignService } from "./return-manifest-esign.service";
+import { SubscriptionClosureRepository } from "../subscription-closure/subscription-closure.repository";
 
 export function createESignProviderClient(
   configService: ConfigService,
@@ -60,6 +62,7 @@ export function createESignProviderClient(
     CustomerESignOnboardingService,
     FadadaCustomerReadinessService,
     FadadaSignedArtifactService,
+    ReturnManifestESignService,
     Stage3ExtensionArchiveService
   ],
   imports: [
@@ -77,7 +80,9 @@ export function createESignProviderClient(
     ESignService,
     FadadaCustomerReadinessService,
     FadadaSignedArtifactService,
+    ReturnManifestESignService,
     Stage3ExtensionArchiveService,
+    SubscriptionClosureRepository,
     {
       inject: [ConfigService, ContractPdfArtifactService, PrismaService],
       provide: ESIGN_PROVIDER_CLIENT,

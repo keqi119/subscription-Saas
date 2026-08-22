@@ -420,6 +420,7 @@ export class SubscriptionClosureRepository {
         .filter(
           ({ key }) =>
             key === "manifest-create" ||
+            key.startsWith("return-manifest-") ||
             key.startsWith("recovery-authority-") ||
             key.startsWith("early-termination-agreement-")
         )
@@ -2378,6 +2379,7 @@ async function assertDocumentAuthorityCoherence(
       documentObjectKey: true,
       documentType: true,
       orderId: true,
+      provider: true,
       requestSnapshot: true,
       responseSnapshot: true,
       signedDocumentObjectKey: true,
@@ -2399,6 +2401,7 @@ async function assertDocumentAuthorityCoherence(
   }
   if (
     command.documentType === "RETURN_MANIFEST" &&
+    command.stage === "GENERATED" &&
     (esign.deletedAt !== null ||
       !esign.documentName ||
       !esign.documentObjectKey ||
@@ -2420,7 +2423,7 @@ async function assertDocumentAuthorityCoherence(
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
   }
-  if (command.documentType === "RETURN_MANIFEST") {
+  if (command.documentType === "RETURN_MANIFEST" && command.stage === "GENERATED") {
     const sourceFile = await tx.fileObject.findUnique({
       select: {
         bucket: true,
@@ -2514,6 +2517,8 @@ async function assertDocumentAuthorityCoherence(
     ) {
       throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
     }
+  } else if (command.documentType === "RETURN_MANIFEST") {
+    await assertReturnManifestSuccessorAuthority(tx, closureCase, command, predecessor, esign);
   }
   if (command.vehicleReturnId !== null && command.vehicleReturnId !== closureCase.vehicleReturnId) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
@@ -2536,6 +2541,151 @@ async function assertDocumentAuthorityCoherence(
   ) {
     throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
   }
+}
+
+async function assertReturnManifestSuccessorAuthority(
+  tx: Prisma.TransactionClient,
+  closureCase: CaseRecord,
+  command: AppendSubscriptionClosureDocumentCommand,
+  predecessor: Readonly<{
+    documentSnapshotHash: string;
+    revisionNumber: number;
+    signedFileHash: string | null;
+    signedFileId: string | null;
+    sourceFileHash: string;
+    sourceFileId: string;
+  }> | null,
+  esign: Readonly<{
+    completedAt: Date | null;
+    contractId: string;
+    customerId: string | null;
+    deletedAt: Date | null;
+    documentName: string | null;
+    documentObjectKey: string | null;
+    documentType: string;
+    orderId: string | null;
+    provider: string;
+    requestSnapshot: Prisma.JsonValue | null;
+    responseSnapshot: Prisma.JsonValue | null;
+    signedDocumentObjectKey: string | null;
+    signingStage: string;
+    sourceId: string | null;
+    sourceKey: string | null;
+    sourceType: string | null;
+    taskStatus: string;
+  }>
+) {
+  const request = jsonRecord(esign.requestSnapshot);
+  const response = jsonRecord(esign.responseSnapshot);
+  const taskSource = jsonRecord(request.taskSource);
+  const signedSource = jsonRecord(request.signedSource);
+  const archivedSource = jsonRecord(request.archivedSource);
+  const expectedSource = command.stage === "SIGNED" ? signedSource : archivedSource;
+  const sourceShape = jsonRecord(request.sourceFile);
+  const providerShape = jsonRecord(request.providerSourceFile);
+  const responseSignedShape = jsonRecord(response.signedFile);
+  const [sourceFile, providerFile, signedFile] = await Promise.all([
+    tx.fileObject.findUnique({ where: { id: command.sourceFileId } }),
+    typeof providerShape.id === "string"
+      ? tx.fileObject.findUnique({ where: { id: providerShape.id } })
+      : null,
+    command.signedFileId ? tx.fileObject.findUnique({ where: { id: command.signedFileId } }) : null
+  ]);
+  const sourceValid = Boolean(
+    sourceFile &&
+    sourceFile.id === sourceShape.id &&
+    sourceFile.bucket === sourceShape.bucket &&
+    sourceFile.objectKey === sourceShape.objectKey &&
+    sourceFile.originalName === sourceShape.originalName &&
+    sourceFile.mimeType === "application/json" &&
+    sourceFile.mimeType === sourceShape.mimeType &&
+    sourceFile.sizeBytes.toString() === sourceShape.sizeBytes &&
+    sourceFile.uploadedBy === sourceShape.uploadedBy &&
+    sourceFile.createdAt.toISOString() === sourceShape.createdAt &&
+    sourceFile.sizeBytes ===
+      BigInt(Buffer.byteLength(canonicalSubscriptionClosureJson(command.documentSnapshot)))
+  );
+  const providerValid = Boolean(
+    providerFile &&
+    providerFile.bucket === providerShape.bucket &&
+    providerFile.objectKey === providerShape.objectKey &&
+    providerFile.originalName === providerShape.originalName &&
+    providerFile.mimeType === "application/pdf" &&
+    providerFile.mimeType === providerShape.mimeType &&
+    providerFile.sizeBytes.toString() === providerShape.sizeBytes &&
+    providerFile.uploadedBy === providerShape.uploadedBy &&
+    providerFile.createdAt.toISOString() === providerShape.createdAt &&
+    providerFile.sizeBytes > 0n
+  );
+  const signedValid = Boolean(
+    signedFile &&
+    signedFile.id === response.signedFileId &&
+    signedFile.id === responseSignedShape.id &&
+    signedFile.bucket === responseSignedShape.bucket &&
+    signedFile.objectKey === responseSignedShape.objectKey &&
+    signedFile.originalName === responseSignedShape.originalName &&
+    signedFile.mimeType === "application/pdf" &&
+    signedFile.mimeType === responseSignedShape.mimeType &&
+    signedFile.sizeBytes.toString() === responseSignedShape.sizeBytes &&
+    signedFile.uploadedBy === responseSignedShape.uploadedBy &&
+    signedFile.createdAt.toISOString() === responseSignedShape.createdAt &&
+    signedFile.sizeBytes > 0n
+  );
+  if (
+    command.stage === "GENERATED" ||
+    !predecessor ||
+    esign.deletedAt !== null ||
+    esign.contractId !== closureCase.contractId ||
+    esign.customerId !== closureCase.customerId ||
+    esign.orderId !== closureCase.orderId ||
+    esign.documentType !== "DELIVERY_HANDOVER" ||
+    esign.signingStage !== "STAGE2_DELIVERY_HANDOVER" ||
+    !["MOCK", "FADADA"].includes(esign.provider) ||
+    esign.taskStatus !== "COMPLETED" ||
+    !esign.completedAt ||
+    request.documentType !== "RETURN_MANIFEST" ||
+    request.closureCaseId !== closureCase.id ||
+    request.actorId !== command.actorId ||
+    request.documentSnapshotHash !== hashSubscriptionClosureSnapshot(command.documentSnapshot) ||
+    request.sourceFileHash !== command.sourceFileHash ||
+    request.providerSourceFileHash === command.sourceFileHash ||
+    canonicalSubscriptionClosureJson(request.documentSnapshot) !==
+      canonicalSubscriptionClosureJson(command.documentSnapshot) ||
+    taskSource.id !== closureCase.id ||
+    taskSource.type !== "SUBSCRIPTION_CLOSURE" ||
+    esign.sourceId !== taskSource.id ||
+    esign.sourceKey !== taskSource.key ||
+    esign.sourceType !== taskSource.type ||
+    command.source.id !== expectedSource.id ||
+    command.source.key !== expectedSource.key ||
+    command.source.type !== expectedSource.type ||
+    esign.documentObjectKey !== providerFile?.objectKey ||
+    esign.documentName !== providerFile?.originalName ||
+    esign.signedDocumentObjectKey !== signedFile?.objectKey ||
+    command.sourceFileHash !== hashSubscriptionClosureSnapshot(command.documentSnapshot) ||
+    command.signedFileHash !== response.signedFileHash ||
+    command.signedFileId !== response.signedFileId ||
+    !jsonRecord(response.providerStart).providerTaskId ||
+    !jsonRecord(response.providerCompletion).signedPdf ||
+    !sourceValid ||
+    !providerValid ||
+    !signedValid ||
+    (command.stage === "SIGNED" && predecessor.revisionNumber !== 1) ||
+    (command.stage === "ARCHIVED" &&
+      (predecessor.revisionNumber !== 2 ||
+        predecessor.sourceFileId !== command.sourceFileId ||
+        predecessor.sourceFileHash !== command.sourceFileHash ||
+        predecessor.signedFileId !== command.signedFileId ||
+        predecessor.signedFileHash !== command.signedFileHash))
+  ) {
+    throw conflict(SUBSCRIPTION_CLOSURE_ERROR_CODE.AUTHORITY_MISMATCH);
+  }
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 async function lockCurrentDocumentProjection(

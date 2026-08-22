@@ -3463,6 +3463,23 @@ export class SubscriptionClosureService {
     if (command.physicalControlMode === "RECOVERY") {
       assertArchivedRecoveryAuthority(locked, command);
     } else {
+      const manifestRevisions = await tx.subscriptionClosureDocumentRevision.findMany({
+        orderBy: [{ revisionNumber: "asc" }, { id: "asc" }],
+        where: {
+          closureCaseId: locked.closureCase!.id,
+          documentType: "RETURN_MANIFEST"
+        }
+      });
+      if (
+        !(await validateExactReturnManifestSuccessorChain(
+          tx,
+          locked.closureCase!,
+          manifestRevisions,
+          locked.currentDocument
+        ))
+      ) {
+        throw serviceConflict("AUTHORITY_MISMATCH");
+      }
       assertArchivedReturnManifestAuthority(locked, command);
     }
 
@@ -6594,10 +6611,6 @@ function assertArchivedReturnManifestAuthority(
     authority.esignTask.contractId !== authority.order!.contractId ||
     authority.esignTask.orderId !== command.orderId ||
     authority.esignTask.customerId !== authority.order!.customerId ||
-    authority.esignTask.sourceType !== revision.sourceType ||
-    authority.esignTask.sourceId !== revision.sourceId ||
-    authority.esignTask.sourceKey !== revision.sourceKey ||
-    authority.esignTask.documentObjectKey !== authority.sourceFile.objectKey ||
     authority.esignTask.signedDocumentObjectKey !== authority.signedFile.objectKey ||
     !requestSnapshot ||
     Array.isArray(requestSnapshot) ||
@@ -7512,11 +7525,9 @@ async function validateExactTerminalSuccessor(
     tx.auditLog.findMany({
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       where: {
-        createdAt: event.recordedAt,
         entityId: { in: [closureCase.orderId, closureCase.contractId] },
         entityType: { in: ["subscription_order", "contract"] },
-        module: "subscription_closure",
-        operatorId: event.actorId
+        module: "subscription_closure"
       }
     }),
     tx.subscriptionOrder.findUnique({ where: { id: closureCase.orderId } }),
@@ -7586,9 +7597,10 @@ async function validateExactTerminalSuccessor(
       after.status === terminalStatus
     );
   });
+  const terminalAggregateAudits = [...terminalOrderAudits, ...terminalContractAudits];
   const terminalOrderAudit = terminalOrderAudits[0];
   const terminalContractAudit = terminalContractAudits[0];
-  const valid = Boolean(
+  return Boolean(
     settledRevision?.id === closureCase.currentSettlementRevisionId &&
     settledRevision.closureCaseId === closureCase.id &&
     settledRevision.stage === "SETTLED" &&
@@ -7651,7 +7663,7 @@ async function validateExactTerminalSuccessor(
     }) &&
     order?.orderStatus === terminalStatus &&
     contract?.status === terminalStatus &&
-    aggregateAudits.length === 2 &&
+    terminalAggregateAudits.length === 2 &&
     terminalOrderAudits.length === 1 &&
     terminalContractAudits.length === 1 &&
     terminalOrderAudit?.action === AuditAction.UPDATE &&
@@ -7691,7 +7703,6 @@ async function validateExactTerminalSuccessor(
     ) &&
     sameCanonicalReceiptValue(terminalContractAudit.afterSnapshot, physicalAuditSnapshot(contract))
   );
-  return valid;
 }
 
 async function validateExactInspectionSuccessorChain(
@@ -12276,7 +12287,7 @@ async function assertExactEarlyTerminationExecutionReplay(
   });
 }
 
-async function validateExactReturnManifestSuccessorChain(
+export async function validateExactReturnManifestSuccessorChain(
   tx: Prisma.TransactionClient,
   closureCase: Readonly<{
     caseNo: string;
@@ -12306,6 +12317,9 @@ async function validateExactReturnManifestSuccessorChain(
     (revisions.length === 3 && revisions[2]?.stage !== "ARCHIVED")
   ) {
     return false;
+  }
+  if (revisions.length > 1) {
+    return validateProducedReturnManifestSuccessorChain(tx, closureCase, revisions, current);
   }
   const revisionIds = revisions.map(({ id }) => id);
   const taskIds = revisions.map(({ contractESignTaskId }) => contractESignTaskId);
@@ -12386,9 +12400,11 @@ async function validateExactReturnManifestSuccessorChain(
       archivedBy: revision.archivedBy,
       closureCaseId,
       contractESignTaskId: revision.contractESignTaskId,
-      documentRevisionId: revision.id,
       documentSnapshot: revision.documentSnapshot,
       documentType: "RETURN_MANIFEST" as const,
+      ...(index === 0 && revision.sourceType === "SUBSCRIPTION_EXPIRY"
+        ? {}
+        : { documentRevisionId: revision.id }),
       expectedCurrentRevisionId: predecessor?.id ?? null,
       expectedVersion: event.sequence - 2,
       generatedAt: revision.generatedAt,
@@ -12567,6 +12583,425 @@ async function validateExactReturnManifestSuccessorChain(
           signedFile.uploadedBy === signedIntroduction!.signedBy))
     );
   });
+}
+
+async function validateProducedReturnManifestSuccessorChain(
+  tx: Prisma.TransactionClient,
+  closureCase: Readonly<{
+    caseNo: string;
+    contractId: string;
+    customerId: string;
+    id: string;
+    orderId: string;
+    returnAssetWorkOrderId: string | null;
+    returnHandoverWorkOrderId: string | null;
+    vehicleId: string;
+    vehicleReturnId: string | null;
+  }>,
+  revisions: readonly Prisma.SubscriptionClosureDocumentRevisionGetPayload<Record<string, never>>[],
+  current: Readonly<{
+    closureCaseId: string;
+    documentRevisionId: string;
+    documentType: string;
+    updatedBy: string;
+  }> | null
+) {
+  const [generated, signed, archived] = revisions;
+  if (
+    revisions.length !== 3 ||
+    !generated ||
+    !signed ||
+    !archived ||
+    generated.stage !== "GENERATED" ||
+    signed.stage !== "SIGNED" ||
+    archived.stage !== "ARCHIVED" ||
+    signed.contractESignTaskId !== archived.contractESignTaskId ||
+    generated.contractESignTaskId === signed.contractESignTaskId
+  ) {
+    return false;
+  }
+  const events = await tx.subscriptionClosureEvent.findMany({
+    orderBy: [{ sequence: "asc" }, { id: "asc" }],
+    where: {
+      closureCaseId: closureCase.id,
+      detailSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] },
+      eventType: "DOCUMENT_REVISION_CREATED"
+    }
+  });
+  const [tasks, receipts, eventAudits] = await Promise.all([
+    tx.contractESignTask.findMany({
+      include: {
+        callbacks: { orderBy: [{ receivedAt: "asc" }, { id: "asc" }] },
+        signers: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] }
+      },
+      where: {
+        OR: [
+          { id: { in: [generated.contractESignTaskId, signed.contractESignTaskId] } },
+          {
+            sourceId: closureCase.id,
+            sourceKey: { startsWith: "return-manifest-esign:" },
+            sourceType: "SUBSCRIPTION_CLOSURE"
+          }
+        ]
+      }
+    }),
+    tx.subscriptionClosureCommandReceipt.findMany({
+      where: {
+        closureCaseId: closureCase.id,
+        commandType: "CREATE_DOCUMENT_REVISION",
+        payloadSnapshot: { equals: "RETURN_MANIFEST", path: ["documentType"] }
+      }
+    }),
+    tx.auditLog.findMany({
+      where: {
+        entityId: { in: events.map(({ id }) => id) },
+        entityType: "subscription_closure_event",
+        module: "subscription_closure"
+      }
+    })
+  ]);
+  const generatedTask = tasks.find(({ id }) => id === generated.contractESignTaskId);
+  const task = tasks.find(({ id }) => id === signed.contractESignTaskId);
+  if (
+    tasks.length !== 2 ||
+    !generatedTask ||
+    !task ||
+    events.length !== 3 ||
+    receipts.length !== 3 ||
+    eventAudits.length !== 3
+  ) {
+    return false;
+  }
+  const request = jsonObject(task.requestSnapshot);
+  const response = jsonObject(task.responseSnapshot);
+  const taskSource = jsonObject(request.taskSource);
+  const signedSource = jsonObject(request.signedSource);
+  const archivedSource = jsonObject(request.archivedSource);
+  const sourceShape = jsonObject(request.sourceFile);
+  const providerShape = jsonObject(request.providerSourceFile);
+  const signedShape = jsonObject(response.signedFile);
+  const fileIds = [
+    generated.sourceFileId,
+    textValue(sourceShape.id),
+    textValue(providerShape.id),
+    signed.signedFileId
+  ].filter((value): value is string => Boolean(value));
+  const [files, taskAudits] = await Promise.all([
+    tx.fileObject.findMany({ where: { id: { in: [...new Set(fileIds)] } } }),
+    tx.auditLog.findMany({
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      where: {
+        entityId: task.id,
+        entityType: "contract_esign_task",
+        module: "subscription_closure"
+      }
+    })
+  ]);
+  const sourceFile = files.find(({ id }) => id === sourceShape.id);
+  const providerFile = files.find(({ id }) => id === providerShape.id);
+  const signedFile = files.find(({ id }) => id === signed.signedFileId);
+  const customerSigners = task.signers.filter(({ signerType }) => signerType === "CUSTOMER");
+  const platformSigners = task.signers.filter(({ signerType }) => signerType === "PLATFORM");
+  const callback = task.callbacks[0];
+  const providerStart = jsonObject(response.providerStart);
+  const providerStartCustomer = jsonObject(providerStart.customer);
+  const providerCompletion = jsonObject(response.providerCompletion);
+  const providerCompletionCustomer = jsonObject(providerCompletion.customer);
+  const providerCompletionPlatform = jsonObject(providerCompletion.platform);
+  const providerCompletionPdf = jsonObject(providerCompletion.signedPdf);
+  const auditChainValid =
+    taskAudits.length === 3 &&
+    taskAudits.every(
+      (audit) =>
+        audit.action === AuditAction.UPDATE &&
+        audit.operatorId === signed.generatedBy &&
+        audit.ipAddress === null &&
+        audit.userAgent === null
+    ) &&
+    taskAudits[0]?.createdAt.getTime() === task.startedAt?.getTime() &&
+    taskAudits[1]?.createdAt.getTime() === task.completedAt?.getTime() &&
+    taskAudits[2]?.createdAt.getTime() === task.updatedAt.getTime() &&
+    sameCanonicalReceiptValue(taskAudits[0]?.afterSnapshot, taskAudits[1]?.beforeSnapshot) &&
+    sameCanonicalReceiptValue(taskAudits[1]?.afterSnapshot, taskAudits[2]?.beforeSnapshot) &&
+    sameCanonicalReceiptValue(taskAudits[2]?.afterSnapshot, manifestTaskAuditSnapshot(task));
+  const customerSigner = customerSigners[0];
+  const platformSigner = platformSigners[0];
+  const taskValid = Boolean(
+    task.deletedAt === null &&
+    task.contractId === closureCase.contractId &&
+    task.customerId === closureCase.customerId &&
+    task.orderId === closureCase.orderId &&
+    task.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    task.signingStage === ESignSigningStage.STAGE2_DELIVERY_HANDOVER &&
+    (task.provider === ESignProviderType.MOCK || task.provider === ESignProviderType.FADADA) &&
+    task.taskStatus === ESignTaskStatus.COMPLETED &&
+    task.sourceType === taskSource.type &&
+    task.sourceId === taskSource.id &&
+    task.sourceKey === taskSource.key &&
+    taskSource.type === "SUBSCRIPTION_CLOSURE" &&
+    taskSource.id === closureCase.id &&
+    request.documentType === "RETURN_MANIFEST" &&
+    request.closureCaseId === closureCase.id &&
+    request.actorId === signed.generatedBy &&
+    request.generatedRevisionId === generated.id &&
+    request.documentSnapshotHash === signed.documentSnapshotHash &&
+    request.sourceFileHash === signed.sourceFileHash &&
+    sameCanonicalReceiptValue(request.documentSnapshot, signed.documentSnapshot) &&
+    task.documentName === providerFile?.originalName &&
+    task.documentObjectKey === providerFile?.objectKey &&
+    task.signedDocumentObjectKey === signedFile?.objectKey &&
+    task.providerTaskId === providerStart.providerTaskId &&
+    task.providerEnvelopeId === providerStart.providerEnvelopeId &&
+    task.startedAt !== null &&
+    task.completedAt !== null &&
+    task.updatedAt.getTime() === signed.generatedAt.getTime() &&
+    task.completedAt.getTime() <= signed.signedAt!.getTime() &&
+    response.signedFileHash === signed.signedFileHash &&
+    response.signedFileId === signed.signedFileId &&
+    providerCompletionPdf.sha256 === signed.signedFileHash &&
+    providerCompletionPdf.sizeBytes === signedFile?.sizeBytes.toString() &&
+    customerSigners.length === 1 &&
+    platformSigners.length === 1 &&
+    customerSigner?.deletedAt === null &&
+    platformSigner?.deletedAt === null &&
+    customerSigner?.taskId === task.id &&
+    platformSigner?.taskId === task.id &&
+    customerSigner?.slotId === "STAGE2_HANDOVER_CUSTOMER" &&
+    platformSigner?.slotId === "STAGE2_HANDOVER_PLATFORM" &&
+    customerSigner?.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    platformSigner?.documentType === ESignDocumentType.DELIVERY_HANDOVER &&
+    customerSigner?.providerActionType === "CUSTOMER_MANUAL_SIGN" &&
+    platformSigner?.providerActionType === "PLATFORM_AUTO_SEAL" &&
+    customerSigner?.required === true &&
+    platformSigner?.required === true &&
+    customerSigner?.customerId === closureCase.customerId &&
+    platformSigner?.customerId === null &&
+    typeof customerSigner?.signerName === "string" &&
+    customerSigner.signerName.length > 0 &&
+    typeof customerSigner.signerPhone === "string" &&
+    customerSigner.signerPhone.length > 0 &&
+    platformSigner?.signerName === "Subscription platform" &&
+    platformSigner?.signerPhone === null &&
+    sameCanonicalReceiptValue(customerSigner.snapshot, {
+      documentType: "RETURN_MANIFEST",
+      source: taskSource
+    }) &&
+    sameCanonicalReceiptValue(platformSigner.snapshot, {
+      documentType: "RETURN_MANIFEST",
+      source: taskSource
+    }) &&
+    customerSigner.signerStatus === "SIGNED" &&
+    platformSigner.signerStatus === "SIGNED" &&
+    customerSigner.createdAt.getTime() === task.createdAt.getTime() &&
+    platformSigner.createdAt.getTime() === task.createdAt.getTime() &&
+    customerSigner.updatedAt.getTime() === task.completedAt.getTime() &&
+    platformSigner.updatedAt.getTime() === task.completedAt.getTime() &&
+    customerSigner.signUrl === task.signUrl &&
+    customerSigner.signUrlExpiresAt?.getTime() === task.signUrlExpiresAt?.getTime() &&
+    platformSigner.signUrl === null &&
+    platformSigner.signUrlExpiresAt === null &&
+    customerSigner.signedAt?.getTime() === task.completedAt.getTime() &&
+    platformSigner.signedAt?.getTime() === task.completedAt.getTime() &&
+    customerSigner.providerSignerId === providerStartCustomer.providerCustomerId &&
+    customerSigner.providerTransactionId === providerStartCustomer.providerTransactionId &&
+    platformSigner.providerSignerId === providerCompletionPlatform.providerSignerId &&
+    platformSigner.providerTransactionId === providerCompletionPlatform.providerTransactionId &&
+    providerCompletionCustomer.providerTransactionId === customerSigner.providerTransactionId &&
+    task.callbacks.length === 1 &&
+    callback?.taskId === task.id &&
+    callback.provider === task.provider &&
+    callback.providerTaskId === task.providerTaskId &&
+    callback.providerTransactionId === task.providerTaskId &&
+    callback.verified &&
+    callback.handled &&
+    callback.handledAt?.getTime() === task.completedAt.getTime() &&
+    callback.payloadHash ===
+      createHash("sha256")
+        .update(canonicalSubscriptionClosureJson(callback.payload as never))
+        .digest("hex") &&
+    sameCanonicalReceiptValue(task.callbackSnapshot, callback.payload) &&
+    auditChainValid
+  );
+  const fileValid =
+    manifestFileMatches(sourceFile, sourceShape, "application/json") &&
+    manifestFileMatches(providerFile, providerShape, "application/pdf") &&
+    manifestFileMatches(signedFile, signedShape, "application/pdf") &&
+    sourceFile!.sizeBytes ===
+      BigInt(Buffer.byteLength(canonicalSubscriptionClosureJson(signed.documentSnapshot))) &&
+    providerFile!.sizeBytes > 0n &&
+    signedFile!.sizeBytes > 0n &&
+    request.providerSourceFileHash !== request.sourceFileHash;
+  const revisionsValid = revisions.every((revision, index) => {
+    const predecessor = index === 0 ? null : revisions[index - 1]!;
+    const event = events.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const receipt = receipts.find(({ sourceKey }) => sourceKey === revision.sourceKey);
+    const audit = eventAudits.find(({ entityId }) => entityId === event?.id);
+    if (!event || !receipt || !audit) return false;
+    const source = { id: revision.sourceId, key: revision.sourceKey, type: revision.sourceType };
+    const expectedCommand = {
+      actorId: revision.generatedBy,
+      archivedAt: revision.archivedAt,
+      archivedBy: revision.archivedBy,
+      closureCaseId: closureCase.id,
+      contractESignTaskId: revision.contractESignTaskId,
+      documentSnapshot: revision.documentSnapshot,
+      documentType: "RETURN_MANIFEST" as const,
+      ...(index === 0 && revision.sourceType === "SUBSCRIPTION_EXPIRY"
+        ? {}
+        : { documentRevisionId: revision.id }),
+      expectedCurrentRevisionId: predecessor?.id ?? null,
+      expectedVersion: event.sequence - 2,
+      generatedAt: revision.generatedAt,
+      handoverWorkOrderId: revision.handoverWorkOrderId,
+      signedAt: revision.signedAt,
+      signedBy: revision.signedBy,
+      signedFileHash: revision.signedFileHash,
+      signedFileId: revision.signedFileId,
+      source,
+      sourceFileHash: revision.sourceFileHash,
+      sourceFileId: revision.sourceFileId,
+      stage: revision.stage,
+      vehicleReturnId: revision.vehicleReturnId
+    };
+    const expectedOutcome = recoveryAuthorityDocumentOutcome(revision);
+    const expectedSuccessorSource = index === 1 ? signedSource : archivedSource;
+    return (
+      revision.revisionNumber === index + 1 &&
+      revision.supersedesRevisionId === (predecessor?.id ?? null) &&
+      revision.vehicleReturnId === closureCase.vehicleReturnId &&
+      revision.handoverWorkOrderId === closureCase.returnHandoverWorkOrderId &&
+      revision.documentSnapshotHash ===
+        hashSubscriptionClosureSnapshot(revision.documentSnapshot) &&
+      revision.sourceFileHash === revision.documentSnapshotHash &&
+      event.actorId === revision.generatedBy &&
+      event.closureCaseId === closureCase.id &&
+      event.sourceType === revision.sourceType &&
+      event.sourceId === revision.sourceId &&
+      event.sourceKey === revision.sourceKey &&
+      sameCanonicalReceiptValue(event.detailSnapshot, {
+        documentRevisionId: revision.id,
+        documentType: "RETURN_MANIFEST",
+        revisionNumber: index + 1
+      }) &&
+      receipt.actorId === revision.generatedBy &&
+      receipt.eventId === event.id &&
+      receipt.payloadHash === hashSubscriptionClosureSnapshot(expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.payloadSnapshot, expectedCommand) &&
+      sameCanonicalReceiptValue(receipt.outcomeSnapshot, expectedOutcome) &&
+      audit.action === AuditAction.CREATE &&
+      audit.operatorId === revision.generatedBy &&
+      audit.beforeSnapshot === null &&
+      audit.ipAddress === null &&
+      audit.userAgent === null &&
+      sameCanonicalReceiptValue(audit.afterSnapshot, {
+        action: "CREATE_DOCUMENT_REVISION",
+        closureCaseId: closureCase.id,
+        eventId: event.id,
+        outcome: expectedOutcome,
+        source
+      }) &&
+      (index === 0
+        ? revision.contractESignTaskId === generatedTask.id && revision.signedFileId === null
+        : revision.contractESignTaskId === task.id &&
+          revision.sourceFileId === sourceFile?.id &&
+          revision.signedFileId === signedFile?.id &&
+          revision.signedFileHash === response.signedFileHash &&
+          revision.sourceId === expectedSuccessorSource.id &&
+          revision.sourceKey === expectedSuccessorSource.key &&
+          revision.sourceType === expectedSuccessorSource.type)
+    );
+  });
+  return Boolean(
+    taskValid &&
+    fileValid &&
+    revisionsValid &&
+    archived.sourceFileId === signed.sourceFileId &&
+    archived.signedFileId === signed.signedFileId &&
+    archived.signedFileHash === signed.signedFileHash &&
+    archived.documentSnapshotHash === signed.documentSnapshotHash &&
+    archived.generatedAt.getTime() === signed.generatedAt.getTime() &&
+    archived.signedAt?.getTime() === signed.signedAt?.getTime() &&
+    archived.archivedAt?.getTime() === signed.signedAt?.getTime() &&
+    current?.closureCaseId === closureCase.id &&
+    current.documentType === "RETURN_MANIFEST" &&
+    current.documentRevisionId === archived.id &&
+    current.updatedBy === archived.generatedBy
+  );
+}
+
+function manifestFileMatches(
+  file:
+    | Readonly<{
+        bucket: string;
+        createdAt: Date;
+        id: string;
+        mimeType: string | null;
+        objectKey: string;
+        originalName: string;
+        sizeBytes: bigint;
+        uploadedBy: string | null;
+      }>
+    | undefined,
+  snapshot: Record<string, unknown>,
+  mimeType: string
+) {
+  return Boolean(
+    file &&
+    file.id === snapshot.id &&
+    file.bucket === snapshot.bucket &&
+    file.objectKey === snapshot.objectKey &&
+    file.originalName === snapshot.originalName &&
+    file.mimeType === mimeType &&
+    file.mimeType === snapshot.mimeType &&
+    file.sizeBytes.toString() === snapshot.sizeBytes &&
+    file.uploadedBy === snapshot.uploadedBy &&
+    file.createdAt.toISOString() === snapshot.createdAt
+  );
+}
+
+function manifestTaskAuditSnapshot(task: Readonly<Record<string, unknown>>) {
+  const value = (key: string) => {
+    const item = task[key];
+    if (item instanceof Date) return item.toISOString();
+    if (typeof item === "bigint") return item.toString();
+    return item;
+  };
+  return Object.fromEntries(
+    [
+      "callbackSnapshot",
+      "completedAt",
+      "contractId",
+      "createdAt",
+      "createdBy",
+      "customerId",
+      "deletedAt",
+      "documentName",
+      "documentObjectKey",
+      "documentType",
+      "errorSnapshot",
+      "id",
+      "orderId",
+      "provider",
+      "providerEnvelopeId",
+      "providerTaskId",
+      "requestSnapshot",
+      "responseSnapshot",
+      "signedDocumentObjectKey",
+      "signingStage",
+      "sourceId",
+      "sourceKey",
+      "sourceType",
+      "startedAt",
+      "taskNo",
+      "taskStatus",
+      "updatedAt",
+      "updatedBy"
+    ].map((key) => [key, value(key)])
+  );
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" && value ? value : undefined;
 }
 
 async function validateEarlyTerminationAgreementChainInTransaction(

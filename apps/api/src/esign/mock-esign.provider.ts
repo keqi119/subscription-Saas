@@ -3,6 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import {
   AutoSealTaskInput,
   AutoSealTaskResult,
+  CompleteReturnManifestProviderTaskInput,
+  CompleteReturnManifestProviderTaskResult,
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
@@ -10,6 +12,8 @@ import {
   GetSignerUrlInput,
   GetSignerUrlResult,
   QuerySignerStatusInput,
+  ReturnManifestProviderTaskInput,
+  ReturnManifestProviderTaskResult,
   VerifyCallbackResult
 } from "./esign.provider";
 
@@ -19,6 +23,140 @@ export class MockESignProvider implements ESignProvider {
   private readonly signerUrls = new Map<string, MockSignerUrl>();
 
   constructor(private readonly configService: ConfigService) {}
+
+  async createReturnManifestTask(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult> {
+    if (
+      !input.providerSourcePdf.buffer.subarray(0, 5).equals(Buffer.from("%PDF-", "utf8")) ||
+      !/^[a-f0-9]{64}$/i.test(input.providerSourcePdf.sha256)
+    ) {
+      throw new Error("MOCK_RETURN_MANIFEST_PROVIDER_SOURCE_INVALID");
+    }
+    const result = await this.createSignTask({
+      callbackUrl: input.callbackUrl,
+      contractId: input.contractId,
+      documentName: input.documentName,
+      documentType: "DELIVERY_HANDOVER",
+      signers: [
+        {
+          customerId: input.customer.customerId,
+          name: input.customer.name,
+          phone: input.customer.phone,
+          signerId: input.customer.signerId,
+          signerType: "CUSTOMER"
+        }
+      ],
+      signingSlots: [
+        {
+          documentType: "DELIVERY_HANDOVER",
+          keyword: "RETURN_MANIFEST_CUSTOMER_SIGNATURE",
+          providerActionType: "CUSTOMER_MANUAL_SIGN",
+          required: true,
+          signerRole: "CUSTOMER",
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          slotId: "STAGE2_HANDOVER_CUSTOMER"
+        }
+      ],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      sourcePdfHash: input.providerSourcePdf.sha256,
+      taskId: input.taskId,
+      taskNo: input.taskNo,
+      transactionId: input.transactionId
+    });
+    const customer = result.signers?.[0];
+    if (
+      !customer?.providerCustomerId ||
+      !customer.providerSignerId ||
+      !customer.providerTransactionId ||
+      !result.providerEnvelopeId
+    ) {
+      throw new Error("MOCK_RETURN_MANIFEST_PROVIDER_RESULT_INVALID");
+    }
+    return {
+      customer: {
+        providerCustomerId: customer.providerCustomerId,
+        providerSignerId: customer.providerSignerId,
+        providerTransactionId: customer.providerTransactionId,
+        signUrl: customer.signUrl,
+        signUrlExpiresAt: customer.signUrlExpiresAt
+      },
+      providerEnvelopeId: result.providerEnvelopeId,
+      providerTaskId: result.providerTaskId,
+      rawResponse: result.rawResponse
+    };
+  }
+
+  async completeReturnManifestTask(
+    input: CompleteReturnManifestProviderTaskInput
+  ): Promise<CompleteReturnManifestProviderTaskResult> {
+    const customer = await this.querySignerStatus({
+      contractId: input.taskNo,
+      providerCustomerId: input.customer.providerCustomerId,
+      providerTaskId: input.providerTaskId,
+      providerTransactionId: input.customer.providerTransactionId,
+      signerId: input.customer.signerId,
+      slotId: "STAGE2_HANDOVER_CUSTOMER",
+      taskId: input.taskId
+    });
+    if (customer.status !== "SIGNED") {
+      throw new Error("MOCK_RETURN_MANIFEST_CUSTOMER_NOT_SIGNED");
+    }
+    const platform = await this.autoSealTask({
+      contractId: input.contractId,
+      documentName: input.documentName,
+      documentType: "DELIVERY_HANDOVER",
+      platformCustomerId: "mock-platform",
+      platformSignatureId: "mock-platform-seal",
+      providerEnvelopeId: input.providerEnvelopeId,
+      providerTaskId: input.providerTaskId,
+      signerId: input.platform.signerId,
+      signingSlots: [
+        {
+          documentType: "DELIVERY_HANDOVER",
+          keyword: "RETURN_MANIFEST_PLATFORM_SEAL",
+          providerActionType: "PLATFORM_AUTO_SEAL",
+          required: true,
+          signerRole: "PLATFORM",
+          signingStage: "STAGE2_DELIVERY_HANDOVER",
+          slotId: "STAGE2_HANDOVER_PLATFORM"
+        }
+      ],
+      signingStage: "STAGE2_DELIVERY_HANDOVER",
+      taskId: input.taskId,
+      taskNo: input.taskNo,
+      transactionId: input.platform.transactionId
+    });
+    if (
+      platform.status !== "COMPLETED" ||
+      !platform.providerSignerId ||
+      !platform.providerTransactionId
+    ) {
+      throw new Error("MOCK_RETURN_MANIFEST_PLATFORM_NOT_SIGNED");
+    }
+    return {
+      customer: {
+        providerTransactionId: input.customer.providerTransactionId,
+        resultCode: customer.resultCode,
+        resultDescription: customer.resultDescription
+      },
+      platform: {
+        providerSignerId: platform.providerSignerId,
+        providerTransactionId: platform.providerTransactionId,
+        resultCode: platform.resultCode,
+        resultDescription: platform.resultDescription
+      },
+      rawResponse: { mock: true, taskId: input.taskId },
+      signedPdf: {
+        buffer: Buffer.concat([
+          input.providerSourcePdf,
+          Buffer.from(`\n% RETURN_MANIFEST_SIGNED ${input.taskId}\n`, "utf8")
+        ]),
+        contentType: "application/pdf",
+        fileName: input.documentName.replace(/\.pdf$/i, "-signed.pdf")
+      }
+    };
+  }
 
   async createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
     if (input.signingStage === "STAGE2_DELIVERY_HANDOVER") {
@@ -86,6 +224,7 @@ export class MockESignProvider implements ESignProvider {
           customerId: customerSigner.customerId,
           documentType: "DELIVERY_HANDOVER",
           providerActionType: "CUSTOMER_MANUAL_SIGN",
+          providerCustomerId: customerSigner.customerId,
           providerSignerId: transactionId,
           providerTransactionId: transactionId,
           signUrl,
@@ -244,11 +383,17 @@ export class MockESignProvider implements ESignProvider {
 
   async verifyCallback(payload: unknown): Promise<VerifyCallbackResult> {
     const record = asRecord(payload);
+    const providerTaskId = stringOrUndefined(record.providerTaskId);
+    const eventType = stringOrUndefined(record.eventType) ?? stringOrUndefined(record.event);
+    if (providerTaskId && /signed|completed/i.test(eventType ?? "")) {
+      const operation = this.signerOperations.get(providerTaskId);
+      if (operation) operation.status = "SIGNED";
+    }
 
     return {
-      eventType: stringOrUndefined(record.eventType) ?? stringOrUndefined(record.event),
+      eventType,
       payload,
-      providerTaskId: stringOrUndefined(record.providerTaskId),
+      providerTaskId,
       verified: true
     };
   }

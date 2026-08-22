@@ -10,6 +10,8 @@ import {
 import {
   AutoSealTaskInput,
   AutoSealTaskResult,
+  CompleteReturnManifestProviderTaskInput,
+  CompleteReturnManifestProviderTaskResult,
   CreateSignTaskInput,
   CreateSignTaskResult,
   ESignProvider,
@@ -20,6 +22,8 @@ import {
   GetSignerUrlInput,
   GetSignerUrlResult,
   QuerySignerStatusInput,
+  ReturnManifestProviderTaskInput,
+  ReturnManifestProviderTaskResult,
   VerifyCallbackResult
 } from "../esign.provider";
 import {
@@ -72,6 +76,132 @@ export class FadadaESignProvider implements ESignProvider {
     private readonly pdfArtifactService?: ContractPdfArtifactService,
     private readonly prisma?: PrismaService
   ) {}
+
+  async createReturnManifestTask(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult> {
+    if (!this.apiClient) {
+      throw new Error(
+        `${FADADA_PROVIDER_DEPENDENCY_MISSING}: return-manifest provider client is not wired`
+      );
+    }
+    if (
+      !input.providerSourcePdf.buffer.subarray(0, 5).equals(Buffer.from("%PDF-", "utf8")) ||
+      !/^[a-f0-9]{64}$/i.test(input.providerSourcePdf.sha256)
+    ) {
+      throw new Error("FADADA_RETURN_MANIFEST_PROVIDER_SOURCE_INVALID");
+    }
+    const formalProviderCustomerId = await this.findVerifiedProviderCustomerId(
+      input.customer.customerId
+    );
+    const resolvedSignerCustomer = resolveFadadaSignerCustomerId({
+      config: this.config,
+      contractId: input.contractId,
+      formalProviderCustomerId,
+      localCustomerId: input.customer.customerId,
+      mode: this.config.fullSigningSmokeEnabled ? "FULL_SIGNING_SMOKE" : "NORMAL",
+      orderId: undefined
+    });
+    assertFadadaTransactionId(input.transactionId);
+    const uploaded = await this.apiClient.uploadDocs({
+      contractId: input.taskNo,
+      docTitle: input.documentName,
+      fileName: input.providerSourcePdf.fileName,
+      pdf: input.providerSourcePdf.buffer
+    });
+    const signUrl = await this.apiClient.createExternalSignUrl({
+      contractId: input.taskNo,
+      customerId: resolvedSignerCustomer.providerCustomerId,
+      docTitle: input.documentName,
+      notifyUrl: input.callbackUrl ?? this.config.signNotifyUrl ?? "",
+      returnUrl: this.config.signReturnUrl ?? "",
+      signaturePositions: [{ pagenum: 1, x: 96, y: 690 }],
+      signerMobile: input.customer.phone,
+      signerName: input.customer.name,
+      transactionId: input.transactionId
+    });
+    return {
+      customer: {
+        providerCustomerId: resolvedSignerCustomer.providerCustomerId,
+        providerSignerId: input.transactionId,
+        providerTransactionId: input.transactionId,
+        signUrl: signUrl.signUrl,
+        signUrlExpiresAt: signUrl.signUrlExpiresAt
+      },
+      providerEnvelopeId: input.taskNo,
+      providerTaskId: input.transactionId,
+      rawResponse: {
+        sourcePdfHash: input.providerSourcePdf.sha256,
+        upload: uploaded.raw
+      }
+    };
+  }
+
+  async completeReturnManifestTask(
+    input: CompleteReturnManifestProviderTaskInput
+  ): Promise<CompleteReturnManifestProviderTaskResult> {
+    if (!this.apiClient) {
+      throw new Error(
+        `${FADADA_PROVIDER_DEPENDENCY_MISSING}: return-manifest provider client is not wired`
+      );
+    }
+    const customer = await this.apiClient.querySignResult({
+      contractId: input.providerEnvelopeId,
+      customerId: input.customer.providerCustomerId,
+      transactionId: input.customer.providerTransactionId
+    });
+    if (customer.status !== "SIGNED") {
+      throw new Error(
+        `FADADA_RETURN_MANIFEST_CUSTOMER_NOT_SIGNED: ${customer.resultCode ?? customer.status}`
+      );
+    }
+    const platformCustomerId = this.config.platformCustomerId;
+    const platformSignatureId = this.config.platformSignatureId;
+    if (!platformCustomerId || !platformSignatureId) {
+      throw new Error(FADADA_PLATFORM_AUTO_SEAL_CONFIG_MISSING);
+    }
+    assertFadadaTransactionId(input.platform.transactionId);
+    const platform = await this.apiClient.autoSealContract({
+      contractId: input.providerEnvelopeId,
+      customerId: platformCustomerId,
+      docTitle: input.documentName,
+      notifyUrl: this.config.signNotifyUrl,
+      signatureId: platformSignatureId,
+      signaturePositions: [{ pagenum: 1, x: 350, y: 690 }],
+      transactionId: input.platform.transactionId
+    });
+    if (!isSuccessfulAutoSealResult(platform.resultCode)) {
+      throw new Error(
+        `FADADA_RETURN_MANIFEST_PLATFORM_NOT_SIGNED: ${platform.resultCode ?? "unknown"}`
+      );
+    }
+    const signedPdf = await this.apiClient.downloadSignedContract({
+      contractId: input.providerEnvelopeId,
+      downloadUrl: customer.downloadUrl
+    });
+    return {
+      customer: {
+        providerTransactionId: input.customer.providerTransactionId,
+        resultCode: customer.resultCode,
+        resultDescription: customer.resultDesc
+      },
+      platform: {
+        providerSignerId: input.platform.transactionId,
+        providerTransactionId: input.platform.transactionId,
+        resultCode: platform.resultCode,
+        resultDescription: platform.resultDesc
+      },
+      rawResponse: {
+        customer: customer.raw,
+        platform: platform.raw
+      },
+      signedPdf: {
+        buffer: signedPdf.buffer,
+        contentType: signedPdf.contentType,
+        fileName: signedPdf.fileName
+      }
+    };
+  }
 
   async createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult> {
     if (input.signingStage === "STAGE1_CONTRACT") {

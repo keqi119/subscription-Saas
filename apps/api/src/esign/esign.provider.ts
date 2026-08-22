@@ -139,6 +139,71 @@ export interface VerifyCallbackResult {
   verified: boolean;
 }
 
+export interface ReturnManifestProviderTaskInput {
+  callbackUrl?: string;
+  contractId: string;
+  customer: {
+    customerId: string;
+    name: string;
+    phone: string;
+    signerId: string;
+  };
+  documentName: string;
+  providerSourcePdf: {
+    buffer: Buffer;
+    fileName: string;
+    sha256: string;
+  };
+  taskId: string;
+  taskNo: string;
+  transactionId: string;
+}
+
+export interface ReturnManifestProviderTaskResult {
+  customer: {
+    providerCustomerId: string;
+    providerSignerId: string;
+    providerTransactionId: string;
+    signUrl?: string;
+    signUrlExpiresAt?: Date;
+  };
+  providerEnvelopeId: string;
+  providerTaskId: string;
+  rawResponse?: unknown;
+}
+
+export interface CompleteReturnManifestProviderTaskInput {
+  contractId: string;
+  customer: {
+    providerCustomerId: string;
+    providerTransactionId: string;
+    signerId: string;
+  };
+  documentName: string;
+  platform: { signerId: string; transactionId: string };
+  providerEnvelopeId: string;
+  providerTaskId: string;
+  providerSourcePdf: Buffer;
+  taskId: string;
+  taskNo: string;
+}
+
+export interface CompleteReturnManifestProviderTaskResult {
+  customer: {
+    providerTransactionId: string;
+    resultCode?: string;
+    resultDescription?: string;
+  };
+  platform: {
+    providerSignerId: string;
+    providerTransactionId: string;
+    resultCode?: string;
+    resultDescription?: string;
+  };
+  rawResponse?: unknown;
+  signedPdf: { buffer: Buffer; contentType: "application/pdf"; fileName: string };
+}
+
 export interface AutoSealKeywordPlacement {
   keyx?: string;
   keyy?: string;
@@ -184,10 +249,17 @@ export interface AutoSealTaskResult {
 
 export interface ESignProvider {
   autoSealTask?(input: AutoSealTaskInput): Promise<AutoSealTaskResult>;
+  completeReturnManifestTask?(
+    input: CompleteReturnManifestProviderTaskInput
+  ): Promise<CompleteReturnManifestProviderTaskResult>;
+  createReturnManifestTask?(
+    input: ReturnManifestProviderTaskInput
+  ): Promise<ReturnManifestProviderTaskResult>;
   createSignTask(input: CreateSignTaskInput): Promise<CreateSignTaskResult>;
   getSignerUrl(input: GetSignerUrlInput): Promise<GetSignerUrlResult>;
-  querySignerStatus(
-    input: QuerySignerStatusInput
-  ): Promise<ESignProviderSignerStatusResult>;
-  verifyCallback(payload: unknown, headers?: Record<string, unknown>): Promise<VerifyCallbackResult>;
+  querySignerStatus(input: QuerySignerStatusInput): Promise<ESignProviderSignerStatusResult>;
+  verifyCallback(
+    payload: unknown,
+    headers?: Record<string, unknown>
+  ): Promise<VerifyCallbackResult>;
 }

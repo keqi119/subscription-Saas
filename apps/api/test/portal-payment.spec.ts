@@ -201,7 +201,11 @@ describe("portal payment foundation", () => {
 
   it("rejects Mock callbacks while Mock payment is disabled", async () => {
     const harness = createPaymentHarness({
-      config: { PAYMENT_MOCK_ENABLED: "false" }
+      config: {
+        APP_ENV: "test",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: ""
+      }
     });
     harness.addPaymentOrder({ providerTradeNo: "mock-disabled-trade-no" });
 

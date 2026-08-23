@@ -66,6 +66,9 @@ export function readPaymentRuntimeConfig(
   if (provider !== "mock" && mockEnabled) {
     throw new Error("PAYMENT_RUNTIME_MOCK_PROVIDER_MISMATCH");
   }
+  if (rawProvider === "mock" && !mockEnabled) {
+    throw new Error("PAYMENT_RUNTIME_MOCK_MUST_BE_ENABLED");
+  }
 
   return {
     defaultChannel,

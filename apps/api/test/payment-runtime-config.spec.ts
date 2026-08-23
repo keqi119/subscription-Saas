@@ -81,6 +81,18 @@ describe("readPaymentRuntimeConfig", () => {
     });
   });
 
+  it("rejects an explicitly selected non-Production Mock provider when Mock is disabled", () => {
+    expect(() =>
+      readPaymentRuntimeConfig({
+        APP_ENV: "staging",
+        PAYMENT_DEFAULT_CHANNEL: "MOCK",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: "mock",
+        WECHAT_PAY_ENABLED: "false"
+      })
+    ).toThrow("PAYMENT_RUNTIME_MOCK_MUST_BE_ENABLED");
+  });
+
   it("keeps an unconfigured test runtime inert rather than enabling Mock payment", () => {
     expect(readPaymentRuntimeConfig({ NODE_ENV: "test" })).toMatchObject({
       defaultChannel: PaymentChannel.MOCK,

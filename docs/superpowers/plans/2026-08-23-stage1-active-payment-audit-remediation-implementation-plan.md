@@ -106,23 +106,23 @@
 - Produces: journey vehicle display derived only from canonical snapshot fields
 - Produces: CI steps for Web tests and `pnpm release:check`
 
-- [ ] **Step 1: Record existing RED release check**
+- [x] **Step 1: Record existing RED release check**
 
   Run `pnpm release:check` and confirm `VEHICLE_MODEL_COMPATIBILITY_IDENTIFIER` at the journey view model.
 
-- [ ] **Step 2: Remove the forbidden compatibility read**
+- [x] **Step 2: Remove the forbidden compatibility read**
 
   Keep `modelDisplayNameSnapshot`, `model`, and `series`; remove only `vehicleModel`.
 
-- [ ] **Step 3: Verify the release guard is GREEN**
+- [x] **Step 3: Verify the release guard is GREEN**
 
   Run `pnpm release:check`.
 
-- [ ] **Step 4: Extend CI coverage**
+- [x] **Step 4: Extend CI coverage**
 
   Add `pnpm --filter @subscription-saas/web test` after Web typecheck and `pnpm release:check` after API tests. Preserve the existing PostgreSQL service and API gate.
 
-- [ ] **Step 5: Execute both added CI commands locally**
+- [x] **Step 5: Execute both added CI commands locally**
 
   Run Web tests and release check from the repository root.
 
@@ -245,9 +245,9 @@
 **Interfaces:**
 - Produces: fresh local evidence suitable for PR and main integration
 
-- [ ] **Step 1:** Run focused Stage 1 retirement, preflight, payment, worker, recovery, release, and Web UI tests.
-- [ ] **Step 2:** Run Prisma validate/generate and migration status.
-- [ ] **Step 3:** Run full lint, API/Web typecheck, Shared/Web/API full tests, and `pnpm release:check`.
-- [ ] **Step 4:** Run retirement database dry-run and confirm zero executable retired jobs.
-- [ ] **Step 5:** Inspect `git diff --check`, status, and the complete diff against `origin/main`.
+- [x] **Step 1:** Run focused Stage 1 retirement, preflight, payment, worker, recovery, release, and Web UI tests.
+- [x] **Step 2:** Run Prisma validate/generate and migration status.
+- [x] **Step 3:** Run full lint, API/Web typecheck, Shared/Web/API full tests, and `pnpm release:check`.
+- [x] **Step 4:** Run retirement database dry-run and confirm zero executable retired jobs.
+- [x] **Step 5:** Inspect `git diff --check`, status, and the complete diff against `origin/main`.
 - [ ] **Step 6:** Commit reviewable batches, perform two direct main-agent self-review passes, push, open PR, and merge only after PR and main CI are green.

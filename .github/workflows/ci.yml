@@ -75,6 +75,9 @@ jobs:
       - name: Web typecheck
         run: pnpm --filter @subscription-saas/web typecheck
 
+      - name: Web tests
+        run: pnpm --filter @subscription-saas/web test
+
       - name: Apply migrations
         run: pnpm --filter @subscription-saas/api prisma:migrate:deploy
 
@@ -83,3 +86,6 @@ jobs:
 
       - name: API tests
         run: pnpm --filter @subscription-saas/api test
+
+      - name: Release check
+        run: pnpm release:check

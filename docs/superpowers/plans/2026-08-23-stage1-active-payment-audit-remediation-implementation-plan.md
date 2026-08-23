@@ -79,19 +79,19 @@
 - Produces: callback rejection before provider verification when route provider differs from configured provider
 - Produces: provider-scoped payment-order lookup
 
-- [ ] **Step 1: Write failing callback security tests**
+- [x] **Step 1: Write failing callback security tests**
 
   Add cases proving that route/config mismatch does not call the adapter, Mock callback is rejected while Mock is disabled, unknown/missing paid events do not settle a bill, and a verified callback cannot select an order owned by another provider.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run only the new `portal-payment.spec.ts` cases and confirm current code settles or verifies at least one forbidden path.
 
-- [ ] **Step 3: Implement minimal callback guards**
+- [x] **Step 3: Implement minimal callback guards**
 
   Parse the route provider canonically, compare it to runtime configuration before invoking `verifyCallback`, require an explicit paid event, and add `provider` to every provider-reference lookup. Keep the `paymentOrderNo` race fallback only inside the matching provider predicate.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
   Run the full `portal-payment.spec.ts` and payment runtime configuration tests.
 

@@ -27,6 +27,7 @@ import { PortalPaymentOrdersQueryDto } from "../portal/portal-billing.dto";
 import { WeChatOAuthService } from "../wechat/wechat-oauth.service";
 import { CreatePortalPaymentOrderDto, PortalPayableBillsQueryDto } from "./payment.dto";
 import { PAYMENT_PROVIDER_CLIENT, PaymentProvider, WeChatJsapiPaymentParams } from "./payment-provider";
+import { readPaymentRuntimeConfigFromConfig } from "./payment-runtime.config";
 
 const PAYABLE_BILL_STATUSES: BillStatus[] = [
   BillStatus.PENDING,
@@ -331,6 +332,14 @@ export class PaymentOrderService {
     });
 
     try {
+      const runtimeConfig = readPaymentRuntimeConfigFromConfig(this.configService);
+      if (providerType !== runtimeConfig.providerType) {
+        return this.rejectCallback(callbackLog.id, "PAYMENT_CALLBACK_PROVIDER_MISMATCH");
+      }
+      if (providerType === PaymentProviderType.MOCK && !runtimeConfig.mockEnabled) {
+        return this.rejectCallback(callbackLog.id, "PAYMENT_CALLBACK_MOCK_DISABLED");
+      }
+
       const result = await this.provider.verifyCallback(payload, headers, rawBody);
       await this.prisma.paymentCallbackLog.update({
         data: {
@@ -347,7 +356,7 @@ export class PaymentOrderService {
         return { handled: false, received: true, verified: false };
       }
 
-      const paymentOrder = await this.findPaymentOrderByProviderRefs(result);
+      const paymentOrder = await this.findPaymentOrderByProviderRefs(result, providerType);
       if (!paymentOrder) {
         await this.prisma.paymentCallbackLog.update({
           data: { errorMessage: "未找到对应支付单" },
@@ -577,11 +586,14 @@ export class PaymentOrderService {
     }) ?? null;
   }
 
-  private async findPaymentOrderByProviderRefs(result: { providerTradeNo?: string; providerTransactionId?: string }) {
+  private async findPaymentOrderByProviderRefs(
+    result: { providerTradeNo?: string; providerTransactionId?: string },
+    provider: PaymentProviderType
+  ) {
     if (result.providerTradeNo) {
       const byTradeNo = await this.prisma.paymentOrder.findFirst({
         include: paymentOrderInclude,
-        where: { deletedAt: null, providerTradeNo: result.providerTradeNo }
+        where: { deletedAt: null, provider, providerTradeNo: result.providerTradeNo }
       });
       if (byTradeNo) {
         return byTradeNo;
@@ -589,7 +601,7 @@ export class PaymentOrderService {
 
       const byPaymentOrderNo = await this.prisma.paymentOrder.findFirst({
         include: paymentOrderInclude,
-        where: { deletedAt: null, paymentOrderNo: result.providerTradeNo }
+        where: { deletedAt: null, paymentOrderNo: result.providerTradeNo, provider }
       });
       if (byPaymentOrderNo) {
         return byPaymentOrderNo;
@@ -599,7 +611,7 @@ export class PaymentOrderService {
     if (result.providerTransactionId) {
       return this.prisma.paymentOrder.findFirst({
         include: paymentOrderInclude,
-        where: { deletedAt: null, providerTransactionId: result.providerTransactionId }
+        where: { deletedAt: null, provider, providerTransactionId: result.providerTransactionId }
       });
     }
 
@@ -615,6 +627,18 @@ export class PaymentOrderService {
       },
       where: { id: callbackLogId }
     });
+  }
+
+  private async rejectCallback(callbackLogId: string, errorMessage: string) {
+    await this.prisma.paymentCallbackLog.update({
+      data: {
+        errorMessage,
+        verified: false
+      },
+      where: { id: callbackLogId }
+    });
+
+    return { handled: false, received: true, verified: false };
   }
 
   private async resolveFinanceOperator(customerId: string | null) {
@@ -692,35 +716,19 @@ export class PaymentOrderService {
   }
 
   private get mockEnabled() {
-    return (this.configService.get<string>("PAYMENT_MOCK_ENABLED") ?? "false").toLowerCase() === "true";
+    return readPaymentRuntimeConfigFromConfig(this.configService).mockEnabled;
   }
 
   private get wechatPayEnabled() {
-    return (this.configService.get<string>("WECHAT_PAY_ENABLED") ?? "false").toLowerCase() === "true";
+    return readPaymentRuntimeConfigFromConfig(this.configService).wechatPayEnabled;
   }
 
   private get defaultPaymentChannel() {
-    const channel = (this.configService.get<string>("PAYMENT_DEFAULT_CHANNEL") ?? "MOCK").toUpperCase();
-    return Object.values(PaymentChannel).includes(channel as PaymentChannel)
-      ? (channel as PaymentChannel)
-      : PaymentChannel.MOCK;
+    return readPaymentRuntimeConfigFromConfig(this.configService).defaultChannel;
   }
 
   private get providerType() {
-    const provider = (this.configService.get<string>("PAYMENT_PROVIDER") ?? "mock").toLowerCase();
-    if (provider === "mock") {
-      return PaymentProviderType.MOCK;
-    }
-    if (provider === "wechat_pay" || provider === "wechat-pay" || provider === "wechat" || provider === "wxpay") {
-      return PaymentProviderType.WECHAT_PAY;
-    }
-    if (provider === "alipay") {
-      return PaymentProviderType.ALIPAY;
-    }
-    if (provider === "bank_transfer") {
-      return PaymentProviderType.BANK_TRANSFER;
-    }
-    return PaymentProviderType.OTHER;
+    return readPaymentRuntimeConfigFromConfig(this.configService).providerType;
   }
 }
 
@@ -844,7 +852,7 @@ function parseProviderType(provider: string) {
 }
 
 function isPaidCallbackEvent(eventType?: string) {
-  return !eventType || CALLBACK_PAID_EVENTS.has(eventType);
+  return Boolean(eventType && CALLBACK_PAID_EVENTS.has(eventType));
 }
 
 function arraysEqual(left: string[], right: string[]) {

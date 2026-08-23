@@ -225,15 +225,15 @@
 - Produces: retry behavior tested with a supported billing job
 - Produces: read-only historical wording for retained permissions and UI
 
-- [ ] **Step 1: Change the worker retry fixture**
+- [x] **Step 1: Change the worker retry fixture**
 
   Use a supported due/overdue notification job and a generic retryable billing error; no test may present `QUERY_DEBIT_ATTEMPT` as worker-supported.
 
-- [ ] **Step 2: Change read-only copy**
+- [x] **Step 2: Change read-only copy**
 
   Rename `刷新自动扣款` to `刷新历史记录`; describe retained auto-debit permissions as historical query/audit permissions without suggesting execution, retry, sync, pause, or revoke.
 
-- [ ] **Step 3: Run API worker and Web admin UI tests**
+- [x] **Step 3: Run API worker and Web admin UI tests**
 
   Confirm both suites pass and the historical panel exposes no mutation controls.
 

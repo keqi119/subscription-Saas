@@ -983,7 +983,7 @@ export default function MonthlyRentAutomationPage() {
                   value={attemptStatus}
                 />
                 <Button icon={<ReloadOutlined />} onClick={() => void loadAutomation()}>
-                  刷新自动扣款
+                  刷新历史记录
                 </Button>
               </Space>
             </Card>

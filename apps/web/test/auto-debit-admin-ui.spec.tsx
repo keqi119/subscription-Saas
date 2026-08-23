@@ -10,6 +10,11 @@ import {
   type AdminAutoDebitAttempt,
   type AdminPaymentMandate
 } from "../src/app/billing/monthly-rent/historical-auto-debit-panel";
+import {
+  MODULE_LABELS,
+  PERMISSION_DESCRIPTIONS,
+  PERMISSION_LABELS
+} from "../src/constants/labels";
 
 describe("historical auto-debit Admin views", () => {
   it("renders historical mandate and attempt facts without mutation controls", () => {
@@ -35,10 +40,28 @@ describe("historical auto-debit Admin views", () => {
 
     expect(monthlyRentSource).toContain("筛选授权状态");
     expect(monthlyRentSource).toContain("筛选扣款状态");
+    expect(monthlyRentSource).toContain("刷新历史记录");
     expect(monthlyRentSource).toContain("未分配收款");
+    expect(monthlyRentSource).not.toContain("刷新自动扣款");
     expect(monthlyRentSource).not.toMatch(
       /attempts\/\$\{attempt\.id\}\/query|bills\/\$\{attempt\.billId\}\/debit|mandates\/\$\{mandate\.id\}\/(sync|revoke)|mock\/attempts/
     );
+  });
+
+  it("describes retained permissions as historical query and audit access", () => {
+    expect(MODULE_LABELS.auto_debit).toBe("历史自动扣款");
+    expect(PERMISSION_LABELS).toMatchObject({
+      "auto_debit:execute": "查询历史扣款记录",
+      "auto_debit:manage": "审计历史支付授权",
+      "auto_debit:view": "查看历史自动扣款"
+    });
+    const descriptions = [
+      PERMISSION_DESCRIPTIONS["auto_debit:execute"],
+      PERMISSION_DESCRIPTIONS["auto_debit:manage"],
+      PERMISSION_DESCRIPTIONS["auto_debit:view"]
+    ].join(" ");
+    expect(descriptions).toContain("历史");
+    expect(descriptions).not.toMatch(/发起|执行|重试|同步|暂停|解除|撤销/);
   });
 
   it("traces historical facts through payment and write-off evidence", () => {

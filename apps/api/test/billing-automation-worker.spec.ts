@@ -114,15 +114,11 @@ describe("BillingAutomationWorker", () => {
     expect(harness.repository.reschedule).not.toHaveBeenCalled();
   });
 
-  it("reschedules a provider query that is still unresolved", async () => {
+  it("reschedules a supported billing notification after a retryable failure", async () => {
     const job = claimedJob({
-      jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
+      jobType: SubscriptionAutomationJobType.SEND_BILL_DUE_NOTICE
     });
-    const error = new BillingAutomationError({
-      code: "AUTO_DEBIT_QUERY_PENDING",
-      message: "Debit result is still pending provider confirmation.",
-      retryable: true
-    });
+    const error = new Error("temporary billing notification provider failure");
     const harness = createWorkerHarness({ error, jobs: [job] });
 
     await harness.worker.runOnce();
@@ -130,8 +126,8 @@ describe("BillingAutomationWorker", () => {
     expect(harness.repository.reschedule).toHaveBeenCalledWith(job.id, job.leaseToken, {
       delayMs: 60_000,
       error: {
-        code: "AUTO_DEBIT_QUERY_PENDING",
-        message: "Debit result is still pending provider confirmation.",
+        code: "BILLING_EXECUTION_ERROR",
+        message: "Billing automation operation failed.",
         retryable: true
       }
     });

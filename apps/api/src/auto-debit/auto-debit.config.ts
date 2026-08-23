@@ -1,5 +1,8 @@
 import { PaymentMandateProviderName } from "./auto-debit-provider";
-import { STAGE1_COLLECTION_MODE } from "./auto-debit.policy";
+import {
+  STAGE1_AUTO_DEBIT_DISABLED_CODE,
+  STAGE1_COLLECTION_MODE
+} from "./auto-debit.policy";
 
 export interface AutoDebitConfig {
   enabled: boolean;
@@ -22,22 +25,21 @@ export function readAutoDebitConfig(
 ): Stage1AutoDebitRuntimeConfig {
   const nodeEnvironment =
     normalize(environment.APP_ENV) || normalize(environment.NODE_ENV) || "development";
-  const provider = providerName(environment.PAYMENT_MANDATE_PROVIDER);
   const enabled = booleanValue(environment.AUTO_DEBIT_ENABLED);
-  const mockEnabled = booleanValue(environment.PAYMENT_MANDATE_MOCK_ENABLED);
-  const runTime = normalize(environment.AUTO_DEBIT_RUN_TIME) || "09:00";
-
-  if (!isValidLocalTime(runTime)) {
-    throw new Error("AUTO_DEBIT_RUN_TIME_INVALID");
-  }
   if (enabled) {
-    throw new Error("AUTO_DEBIT_STAGE1_BASELINE_DISABLED");
+    throw new Error(STAGE1_AUTO_DEBIT_DISABLED_CODE);
   }
+  const provider = providerName(environment.PAYMENT_MANDATE_PROVIDER);
+  const mockEnabled = booleanValue(environment.PAYMENT_MANDATE_MOCK_ENABLED);
   if (provider !== "disabled") {
     throw new Error("AUTO_DEBIT_STAGE1_PROVIDER_MUST_BE_DISABLED");
   }
   if (mockEnabled) {
     throw new Error("AUTO_DEBIT_STAGE1_MOCK_MUST_BE_DISABLED");
+  }
+  const runTime = normalize(environment.AUTO_DEBIT_RUN_TIME) || "09:00";
+  if (!isValidLocalTime(runTime)) {
+    throw new Error("AUTO_DEBIT_RUN_TIME_INVALID");
   }
 
   return {

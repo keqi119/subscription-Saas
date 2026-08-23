@@ -33,6 +33,7 @@ import {
   ProviderSnapshot
 } from "./auto-debit-provider";
 import { MockAutoDebitProvider } from "./mock-auto-debit.provider";
+import { stage1AutoDebitDisabledException } from "./auto-debit.policy";
 
 const UNRESOLVED_ATTEMPT_STATUSES = [
   DebitAttemptStatus.CREATED,
@@ -145,6 +146,7 @@ export class AutoDebitAdminService {
     user: RequestUser,
     context: RequestContext
   ) {
+    this.assertStage1MutationDisabled();
     const attempt = await this.prisma.debitAttempt.findUnique({ where: { id } });
     if (!attempt) {
       throw new NotFoundException("Debit attempt does not exist.");
@@ -189,6 +191,7 @@ export class AutoDebitAdminService {
     user: RequestUser,
     context: RequestContext
   ) {
+    this.assertStage1MutationDisabled();
     const job = await this.prisma.$transaction(async (tx) => {
       await lockBill(tx, billId);
       const bill = await tx.receivableBill.findUnique({ where: { id: billId } });
@@ -278,6 +281,7 @@ export class AutoDebitAdminService {
     user: RequestUser,
     context: RequestContext
   ) {
+    this.assertStage1MutationDisabled();
     const before = await this.prisma.subscriptionAutomationJob.findUnique({
       where: { id }
     });
@@ -324,6 +328,7 @@ export class AutoDebitAdminService {
     user: RequestUser,
     context: RequestContext
   ) {
+    this.assertStage1MutationDisabled();
     if (
       this.config.environment === "production" ||
       !this.config.mockEnabled ||
@@ -363,6 +368,10 @@ export class AutoDebitAdminService {
       nextResult: dto.nextResult,
       status: updated.status
     };
+  }
+
+  private assertStage1MutationDisabled() {
+    throw stage1AutoDebitDisabledException();
   }
 
   private async requeueQueryJob(id: string, now: Date) {

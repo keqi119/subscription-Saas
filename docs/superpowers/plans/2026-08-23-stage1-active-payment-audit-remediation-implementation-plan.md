@@ -167,23 +167,23 @@
 - Produces: one stable `AUTO_DEBIT_STAGE1_BASELINE_DISABLED` exception factory
 - Produces: module exports limited to the no-op scheduler needed by billing automation
 
-- [ ] **Step 1: Rewrite mutation tests to expect fail-closed behavior**
+- [x] **Step 1: Rewrite mutation tests to expect fail-closed behavior**
 
   `queryAttempt`, `requestManualDebit`, `cancelJob`, and `setMockNextResult` must reject before any Prisma/provider/audit call. Retain historical list tests.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run `test/auto-debit-admin.spec.ts` and confirm current mutation methods still write.
 
-- [ ] **Step 3: Add service guards and narrow module exports**
+- [x] **Step 3: Add service guards and narrow module exports**
 
   Guard all four mutation methods at entry and stop exporting `AutoDebitAdminService`, `AutoDebitHandlers`, tokens, and `PaymentMandateService`; retain `AutoDebitScheduler` for `BillingAutomationService`.
 
-- [ ] **Step 4: Stabilize configuration error precedence**
+- [x] **Step 4: Stabilize configuration error precedence**
 
   Add a failing test where `AUTO_DEBIT_ENABLED=true` and runtime time is malformed; it must report baseline-disabled before validating the historical run time. Move time validation after enabled/provider/mock checks.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
   Run all auto-debit configuration, controller, provider, scheduler, admin, and baseline tests.
 

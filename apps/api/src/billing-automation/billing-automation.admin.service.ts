@@ -13,6 +13,7 @@ import {
 import { AuditService } from "../audit/audit.service";
 import {
   isStage1AutoDebitJobType,
+  stage1AutoDebitDisabledException,
   STAGE1_AUTO_DEBIT_JOB_TYPES,
   STAGE1_COLLECTION_MODE
 } from "../auto-debit/auto-debit.policy";
@@ -312,10 +313,7 @@ export class BillingAutomationAdminService {
       throw new NotFoundException("自动化任务不存在。");
     }
     if (isStage1AutoDebitJobType(current.jobType)) {
-      throw new BadRequestException({
-        code: "AUTO_DEBIT_STAGE1_BASELINE_DISABLED",
-        message: "阶段 1 已停用委托代扣任务，历史任务不可重试。"
-      });
+      throw stage1AutoDebitDisabledException("阶段 1 已停用委托代扣任务，历史任务不可重试。");
     }
     const retried = await this.repository.retryDeadLetter(id);
     if (!retried) {

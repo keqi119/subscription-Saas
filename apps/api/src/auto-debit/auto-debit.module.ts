@@ -20,14 +20,7 @@ import { PaymentMandateService } from "./payment-mandate.service";
 
 @Module({
   controllers: [AutoDebitController],
-  exports: [
-    AUTO_DEBIT_CONFIG,
-    MANDATE_DEBIT_PROVIDER,
-    AutoDebitHandlers,
-    AutoDebitAdminService,
-    AutoDebitScheduler,
-    PaymentMandateService
-  ],
+  exports: [AutoDebitScheduler],
   imports: [AuditModule, AuthModule, ConfigModule, FinanceModule, NotificationModule],
   providers: [
     AutoDebitAdminService,

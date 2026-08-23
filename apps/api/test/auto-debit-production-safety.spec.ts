@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { readAutoDebitConfig } from "../src/auto-debit/auto-debit.config";
+import { AutoDebitModule } from "../src/auto-debit/auto-debit.module";
+import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 
 const repoRoot = join(__dirname, "..", "..", "..");
 
@@ -50,6 +52,10 @@ describe("auto debit deployment safety", () => {
     expect(production.AUTO_DEBIT_ENABLED).toBe("false");
     expect(production.BILLING_AUTOMATION_WORKER_ENABLED).toBe("true");
     expect(production.PAYMENT_PROVIDER).toBe("wechat_pay");
+  });
+
+  it("exports only the no-op scheduler needed by recurring billing", () => {
+    expect(Reflect.getMetadata("exports", AutoDebitModule)).toEqual([AutoDebitScheduler]);
   });
 
   it("serializes the PostgreSQL settlement integration with other database suites", () => {

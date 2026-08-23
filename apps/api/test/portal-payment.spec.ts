@@ -162,6 +162,111 @@ describe("portal payment foundation", () => {
     expect(harness.financeService.settlePaymentOrder).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a callback route that does not match the configured provider before verification", async () => {
+    const provider = {
+      createPayment: vi.fn(),
+      verifyCallback: vi.fn(async () => ({
+        eventType: "TRANSACTION_SUCCESS",
+        paidAmount: 1000,
+        providerTradeNo: "shared-trade-no",
+        verified: true
+      }))
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never
+    });
+    harness.addPaymentOrder({
+      paymentChannel: PaymentChannel.WECHAT_JSAPI,
+      provider: PaymentProviderType.WECHAT_PAY,
+      providerTradeNo: "shared-trade-no"
+    });
+
+    await expect(
+      harness.service.handleCallback("mock", {
+        eventType: "mock.payment.success",
+        providerTradeNo: "shared-trade-no"
+      })
+    ).resolves.toMatchObject({ handled: false, verified: false });
+
+    expect(provider.verifyCallback).not.toHaveBeenCalled();
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
+    expect(harness.state.callbacks[0]?.errorMessage).toBe("PAYMENT_CALLBACK_PROVIDER_MISMATCH");
+  });
+
+  it("rejects Mock callbacks while Mock payment is disabled", async () => {
+    const harness = createPaymentHarness({
+      config: {
+        APP_ENV: "test",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: ""
+      }
+    });
+    harness.addPaymentOrder({ providerTradeNo: "mock-disabled-trade-no" });
+
+    await expect(
+      harness.service.handleCallback("mock", {
+        eventType: "mock.payment.success",
+        providerTradeNo: "mock-disabled-trade-no"
+      })
+    ).resolves.toMatchObject({ handled: false, verified: false });
+
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
+    expect(harness.state.callbacks[0]?.errorMessage).toBe("PAYMENT_CALLBACK_MOCK_DISABLED");
+  });
+
+  it("does not settle a payment when a verified callback omits the paid event", async () => {
+    const harness = createPaymentHarness();
+    harness.addPaymentOrder({ providerTradeNo: "missing-event-trade-no" });
+
+    await expect(
+      harness.service.handleCallback("mock", {
+        providerTradeNo: "missing-event-trade-no"
+      })
+    ).resolves.toMatchObject({ handled: false, verified: true });
+
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
+    expect(harness.state.paymentOrders[0]?.paymentStatus).toBe(PaymentOrderStatus.CREATED);
+  });
+
+  it("does not select a payment order owned by another provider", async () => {
+    const provider = {
+      createPayment: vi.fn(),
+      verifyCallback: vi.fn(async () => ({
+        eventType: "TRANSACTION_SUCCESS",
+        paidAmount: 1000,
+        providerTradeNo: "cross-provider-trade-no",
+        verified: true
+      }))
+    };
+    const harness = createPaymentHarness({
+      config: {
+        PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PROVIDER: "wechat_pay",
+        WECHAT_PAY_ENABLED: "true"
+      },
+      provider: provider as never
+    });
+    harness.addPaymentOrder({
+      provider: PaymentProviderType.MOCK,
+      providerTradeNo: "cross-provider-trade-no"
+    });
+
+    await expect(
+      harness.service.handleCallback("wechat-pay", { resource: {} })
+    ).resolves.toMatchObject({ handled: false, verified: true });
+
+    expect(provider.verifyCallback).toHaveBeenCalledOnce();
+    expect(harness.financeService.settlePaymentOrder).not.toHaveBeenCalled();
+    expect(harness.state.paymentOrders[0]?.paymentStatus).toBe(PaymentOrderStatus.CREATED);
+  });
+
   it("returns a WeChat binding URL when JSAPI payment has no openid", async () => {
     const provider = {
       createPayment: vi.fn(),
@@ -171,6 +276,7 @@ describe("portal payment foundation", () => {
       config: {
         AUTO_DEBIT_ENABLED: "false",
         PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PROVIDER: "wechat_pay",
         WECHAT_PAY_ENABLED: "true"
       },
@@ -211,6 +317,7 @@ describe("portal payment foundation", () => {
     const harness = createPaymentHarness({
       config: {
         PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PROVIDER: "wechat_pay",
         WECHAT_PAY_ENABLED: "true"
       },
@@ -264,6 +371,7 @@ describe("portal payment foundation", () => {
       config: {
         AUTO_DEBIT_ENABLED: "false",
         PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PROVIDER: "wechat_pay",
         WECHAT_PAY_ENABLED: "true"
       },
@@ -335,6 +443,7 @@ describe("portal payment foundation", () => {
     const harness = createPaymentHarness({
       config: {
         PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+        PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PROVIDER: "wechat_pay",
         WECHAT_PAY_ENABLED: "true"
       },
@@ -763,10 +872,10 @@ function createPaymentHarness(options: {
         paymentOrderNo: input.paymentOrderNo ?? `PAY-${state.paymentOrders.length + 1}`,
         paymentRecordId: null,
         paymentStatus: input.paymentStatus ?? PaymentOrderStatus.CREATED,
-        provider: PaymentProviderType.MOCK,
-        providerPrepayId: null,
-        providerTradeNo: null,
-        providerTransactionId: null,
+        provider: input.provider ?? PaymentProviderType.MOCK,
+        providerPrepayId: input.providerPrepayId ?? null,
+        providerTradeNo: input.providerTradeNo ?? null,
+        providerTransactionId: input.providerTransactionId ?? null,
         subject: null,
         updatedAt: input.updatedAt ?? createdAt
       });
@@ -824,6 +933,12 @@ function matchesPaymentOrder(paymentOrder: AnyRecord, where: AnyRecord) {
     return false;
   }
   if (where.providerTradeNo && paymentOrder.providerTradeNo !== where.providerTradeNo) {
+    return false;
+  }
+  if (where.paymentOrderNo && paymentOrder.paymentOrderNo !== where.paymentOrderNo) {
+    return false;
+  }
+  if (where.provider && paymentOrder.provider !== where.provider) {
     return false;
   }
   if (where.providerTransactionId && paymentOrder.providerTransactionId !== where.providerTransactionId) {

@@ -192,8 +192,7 @@ export function getJourneyVehicleConfirmation(
   const model =
     readString(vehicleSnapshot?.modelDisplayNameSnapshot) ??
     readString(vehicleSnapshot?.model) ??
-    readString(vehicleSnapshot?.series) ??
-    readString(vehicleSnapshot?.vehicleModel);
+    readString(vehicleSnapshot?.series);
   const vehicle = {
     brandAndModel: [brand, model].filter(Boolean).join(" ") || "-",
     plateNo: readString(vehicleSnapshot?.plateNo) ?? "-",

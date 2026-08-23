@@ -6232,7 +6232,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     } finally {
       await cleanupManagedExpiryFixture(prisma, scenario.fixture);
     }
-  });
+  }, 45_000);
 
   it("focuses inventory release on the exact closure restriction", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma);

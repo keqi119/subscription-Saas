@@ -710,7 +710,15 @@ export function sanitizeForOutput(value) {
 
 export function isMainModule(importMetaUrl, argvPath) {
   if (!argvPath) return false;
-  return fileURLToPath(importMetaUrl) === resolve(argvPath);
+  return normalizeModulePath(fileURLToPath(importMetaUrl)) === normalizeModulePath(argvPath);
+}
+
+function normalizeModulePath(value) {
+  const normalized = value.replace(/\\/g, "/");
+  if (/^\/?[A-Za-z]:\//.test(normalized)) {
+    return normalized.replace(/^\//, "").toLowerCase();
+  }
+  return resolve(value).replace(/\\/g, "/");
 }
 
 function withSanitized(report) {

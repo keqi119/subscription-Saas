@@ -1,4 +1,3 @@
-import { BadRequestException, ServiceUnavailableException } from "@nestjs/common";
 import {
   BillStatus,
   DebitAttemptStatus,
@@ -14,6 +13,8 @@ import { describe, expect, it, vi } from "vitest";
 import { AutoDebitAdminService } from "../src/auto-debit/auto-debit.admin.service";
 import { AutoDebitActionReasonDto, SetMockDebitResultDto } from "../src/auto-debit/auto-debit.dto";
 import { MockAutoDebitProvider } from "../src/auto-debit/mock-auto-debit.provider";
+
+const STAGE1_DISABLED_CODE = "AUTO_DEBIT_STAGE1_BASELINE_DISABLED";
 
 describe("AutoDebitAdminService", () => {
   it("loads the PaymentOrder to PaymentRecord to WriteOff trace for operators", async () => {
@@ -37,161 +38,65 @@ describe("AutoDebitAdminService", () => {
     );
   });
 
-  it("requeues provider query for UNKNOWN attempts and records the operator reason", async () => {
+  it("rejects direct provider queries before reading or writing debit state", async () => {
     const harness = createHarness();
 
-    const result = await harness.service.queryAttempt(
-      harness.attempt.id,
-      { reason: "核实渠道最终状态" },
-      testUser(),
-      testContext()
-    );
-
-    expect(result).toMatchObject({
-      action: "QUERY_QUEUED",
-      attemptId: harness.attempt.id
-    });
-    expect(harness.job).toMatchObject({
-      jobStatus: SubscriptionAutomationJobStatus.PENDING,
-      jobType: SubscriptionAutomationJobType.QUERY_DEBIT_ATTEMPT
-    });
-    expect(harness.audits).toContainEqual(
-      expect.objectContaining({
-        after: expect.objectContaining({ reason: "核实渠道最终状态" }),
-        operatorId: testUser().id
-      })
-    );
-  });
-
-  it("does not turn a final failure into a retryable attempt", async () => {
-    const harness = createHarness();
-    harness.attempt.status = DebitAttemptStatus.FAILED_FINAL;
-
-    await expect(
+    await expectStage1Disabled(
       harness.service.queryAttempt(
         harness.attempt.id,
-        { reason: "错误重试" },
+        { reason: "核实渠道最终状态" },
         testUser(),
         testContext()
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(harness.job.jobStatus).toBe(SubscriptionAutomationJobStatus.DEAD_LETTER);
+    );
+    expect(harness.prisma.debitAttempt.findUnique).not.toHaveBeenCalled();
+    expect(harness.auditWrite).not.toHaveBeenCalled();
   });
 
-  it("creates one manual debit job only for an unpaid bill with an active mandate", async () => {
-    const harness = createHarness();
-    harness.attempt.status = DebitAttemptStatus.FAILED_FINAL;
-    harness.jobs.push({
-      ...harness.job,
-      completedAt: null,
-      id: "00000000-0000-4000-8000-000000000299",
-      idempotencyKey: `debit:${harness.bill.id}:D1`,
-      jobStatus: SubscriptionAutomationJobStatus.PENDING,
-      jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-      payload: { billId: harness.bill.id, retrySlot: DebitRetrySlot.D1 }
-    });
-
-    const result = await harness.service.requestManualDebit(
-      harness.bill.id,
-      { reason: "客户确认余额充足，请重新扣款" },
-      testUser(),
-      testContext()
-    );
-
-    expect(result).toMatchObject({
-      action: "DEBIT_QUEUED",
-      billId: harness.bill.id,
-      retrySlot: DebitRetrySlot.MANUAL
-    });
-    expect(harness.jobs).toContainEqual(
-      expect.objectContaining({
-        jobType: SubscriptionAutomationJobType.SUBMIT_BILL_DEBIT,
-        payload: expect.objectContaining({
-          billId: harness.bill.id,
-          retrySlot: DebitRetrySlot.MANUAL
-        })
-      })
-    );
-    expect(harness.jobs).toContainEqual(
-      expect.objectContaining({
-        idempotencyKey: `debit:${harness.bill.id}:D1`,
-        jobStatus: SubscriptionAutomationJobStatus.CANCELLED
-      })
-    );
-  });
-
-  it("rejects manual debit while an unresolved attempt exists", async () => {
+  it("rejects direct manual debit requests before opening a transaction", async () => {
     const harness = createHarness();
 
-    await expect(
+    await expectStage1Disabled(
       harness.service.requestManualDebit(
         harness.bill.id,
-        { reason: "重复扣款" },
+        { reason: "客户确认余额充足，请重新扣款" },
         testUser(),
         testContext()
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(harness.jobs).toHaveLength(1);
-  });
-
-  it("persists the next mock result in Staging and forbids it in Production", async () => {
-    const harness = createHarness();
-
-    await harness.service.setMockNextResult(
-      harness.attempt.id,
-      { nextResult: "SUCCEEDED", reason: "验收成功扣款" },
-      testUser(),
-      testContext()
     );
-    expect(harness.attempt.responseSnapshot).toMatchObject({
-      nextResult: "SUCCEEDED"
-    });
-
-    const production = createHarness({ environment: "production" });
-    await expect(
-      production.service.setMockNextResult(
-        production.attempt.id,
-        { nextResult: "SUCCEEDED", reason: "不应允许" },
-        testUser(),
-        testContext()
-      )
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.auditWrite).not.toHaveBeenCalled();
   });
 
-  it("cancels only a pending automation job and audits the reason", async () => {
+  it("rejects direct auto-debit job cancellation before reading the job", async () => {
     const harness = createHarness();
-    harness.job.jobStatus = SubscriptionAutomationJobStatus.PENDING;
-    harness.job.completedAt = null;
 
-    await expect(
+    await expectStage1Disabled(
       harness.service.cancelJob(
         harness.job.id,
         { reason: "订单改为主动支付" },
         testUser(),
         testContext()
       )
-    ).resolves.toMatchObject({ jobStatus: SubscriptionAutomationJobStatus.CANCELLED });
-    expect(harness.job.jobStatus).toBe(SubscriptionAutomationJobStatus.CANCELLED);
-    expect(harness.audits.at(-1)).toMatchObject({
-      after: expect.objectContaining({ reason: "订单改为主动支付" })
-    });
+    );
+    expect(harness.prisma.subscriptionAutomationJob.findUnique).not.toHaveBeenCalled();
+    expect(harness.auditWrite).not.toHaveBeenCalled();
   });
 
-  it("does not cancel a non-auto-debit billing job", async () => {
+  it("rejects direct mock result mutation before provider or database access", async () => {
     const harness = createHarness();
-    harness.job.jobStatus = SubscriptionAutomationJobStatus.PENDING;
-    harness.job.jobType = SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL;
 
-    await expect(
-      harness.service.cancelJob(
-        harness.job.id,
-        { reason: "越权取消" },
+    await expectStage1Disabled(
+      harness.service.setMockNextResult(
+        harness.attempt.id,
+        { nextResult: "SUCCEEDED", reason: "验收成功扣款" },
         testUser(),
         testContext()
       )
-    ).rejects.toBeInstanceOf(BadRequestException);
-
-    expect(harness.job.jobStatus).toBe(SubscriptionAutomationJobStatus.PENDING);
+    );
+    expect(harness.prisma.debitAttempt.findUnique).not.toHaveBeenCalled();
+    expect(harness.mockResultMutation).not.toHaveBeenCalled();
+    expect(harness.auditWrite).not.toHaveBeenCalled();
   });
 });
 
@@ -212,7 +117,7 @@ describe("auto debit admin DTOs", () => {
   });
 });
 
-function createHarness(options: { environment?: string } = {}) {
+function createHarness() {
   const audits: Array<Record<string, unknown>> = [];
   const bill = {
     billStatus: BillStatus.OVERDUE,
@@ -321,20 +226,40 @@ function createHarness(options: { environment?: string } = {}) {
       })
     }
   };
+  const provider = new MockAutoDebitProvider();
+  const mockResultMutation = vi.spyOn(provider, "withNextDebitResult");
+  const auditWrite = vi.fn(async (input) => audits.push(input));
   const service = new AutoDebitAdminService(
     prisma as never,
-    new MockAutoDebitProvider(),
+    provider,
     {
       enabled: true,
-      environment: options.environment ?? "staging",
+      environment: "staging",
       mockEnabled: true,
       provider: "mock",
       runTime: "09:00",
       wechatTemplateId: null
     },
-    { write: vi.fn(async (input) => audits.push(input)) } as never
+    { write: auditWrite } as never
   );
-  return { attempt, audits, bill, findAttempts, job, jobs, service };
+  return {
+    attempt,
+    auditWrite,
+    audits,
+    bill,
+    findAttempts,
+    job,
+    jobs,
+    mockResultMutation,
+    prisma,
+    service
+  };
+}
+
+async function expectStage1Disabled(result: Promise<unknown>) {
+  await expect(result).rejects.toMatchObject({
+    response: expect.objectContaining({ code: STAGE1_DISABLED_CODE })
+  });
 }
 
 function testUser() {

@@ -59,4 +59,14 @@ describe("readAutoDebitConfig", () => {
       })
     ).toThrow("AUTO_DEBIT_RUN_TIME_INVALID");
   });
+
+  it("reports the Stage 1 baseline before validating retired scheduler settings", () => {
+    expect(() =>
+      readAutoDebitConfig({
+        AUTO_DEBIT_ENABLED: "true",
+        AUTO_DEBIT_RUN_TIME: "25:70",
+        PAYMENT_MANDATE_PROVIDER: "disabled"
+      })
+    ).toThrow("AUTO_DEBIT_STAGE1_BASELINE_DISABLED");
+  });
 });

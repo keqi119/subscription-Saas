@@ -9,6 +9,7 @@ import { MockPaymentProvider } from "./mock-payment.provider";
 import { PaymentCallbackController } from "./payment.controller";
 import { PaymentOrderService } from "./payment-order.service";
 import { PAYMENT_PROVIDER_CLIENT } from "./payment-provider";
+import { readPaymentRuntimeConfigFromConfig } from "./payment-runtime.config";
 import { WeChatPayProvider } from "./wechat-pay.provider";
 
 @Module({
@@ -21,8 +22,8 @@ import { WeChatPayProvider } from "./wechat-pay.provider";
       inject: [ConfigService],
       provide: PAYMENT_PROVIDER_CLIENT,
       useFactory: (configService: ConfigService) => {
-        const provider = (configService.get<string>("PAYMENT_PROVIDER") ?? "mock").toLowerCase();
-        return provider === "wechat_pay" || provider === "wechat-pay" || provider === "wechat" || provider === "wxpay"
+        const runtime = readPaymentRuntimeConfigFromConfig(configService);
+        return runtime.provider === "wechat_pay"
           ? new WeChatPayProvider(configService)
           : new MockPaymentProvider(configService);
       }

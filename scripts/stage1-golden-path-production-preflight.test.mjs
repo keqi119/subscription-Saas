@@ -2,9 +2,81 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  validateProductionComposeGoldenPathConfig,
   validateProductionImageGoldenPathConfig,
   validateStage1GoldenPathPreflight
 } from "./stage1-golden-path-production-preflight.mjs";
+
+test("production compose accepts quoted literals and safe interpolation defaults", () => {
+  assert.deepEqual(validateProductionComposeGoldenPathConfig(validCompose()), []);
+  assert.deepEqual(
+    validateProductionComposeGoldenPathConfig(
+      validCompose({
+        AUTO_DEBIT_ENABLED: "${AUTO_DEBIT_ENABLED:-false}",
+        PAYMENT_DEFAULT_CHANNEL: '"${PAYMENT_DEFAULT_CHANNEL:-WECHAT_JSAPI}"',
+        PAYMENT_MANDATE_MOCK_ENABLED:
+          "${PAYMENT_MANDATE_MOCK_ENABLED:-false}",
+        PAYMENT_MANDATE_PROVIDER:
+          "${PAYMENT_MANDATE_PROVIDER:-disabled}",
+        PAYMENT_MOCK_ENABLED: "${PAYMENT_MOCK_ENABLED:-false}",
+        PAYMENT_PROVIDER: "${PAYMENT_PROVIDER:-wechat_pay}",
+        WECHAT_PAY_ENABLED: "${WECHAT_PAY_ENABLED:-true}"
+      })
+    ),
+    []
+  );
+});
+
+test("production compose rejects unsafe active-payment and delegated-debit values", () => {
+  for (const [key, value, code] of [
+    ["AUTO_DEBIT_ENABLED", "true", "AUTO_DEBIT_MUST_BE_DISABLED"],
+    ["PAYMENT_MANDATE_PROVIDER", "mock", "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED"],
+    ["PAYMENT_MANDATE_MOCK_ENABLED", "true", "AUTO_DEBIT_MOCK_MUST_BE_DISABLED"],
+    ["PAYMENT_PROVIDER", "mock", "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY"],
+    ["PAYMENT_MOCK_ENABLED", "true", "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED"],
+    ["PAYMENT_DEFAULT_CHANNEL", "MOCK", "WECHAT_TRADE_TYPE_INVALID"],
+    ["WECHAT_PAY_ENABLED", "false", "WECHAT_PAY_DISABLED"]
+  ]) {
+    assert.ok(
+      validateProductionComposeGoldenPathConfig(validCompose({ [key]: value })).some(
+        (blocker) => blocker.code === code && blocker.key === key
+      ),
+      `${key}=${value}`
+    );
+  }
+});
+
+test("production compose rejects unsafe or missing interpolation defaults", () => {
+  for (const [key, value, code] of [
+    [
+      "AUTO_DEBIT_ENABLED",
+      "${AUTO_DEBIT_ENABLED:-true}",
+      "AUTO_DEBIT_MUST_BE_DISABLED"
+    ],
+    [
+      "PAYMENT_MANDATE_PROVIDER",
+      "${PAYMENT_MANDATE_PROVIDER:-mock}",
+      "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED"
+    ],
+    [
+      "PAYMENT_PROVIDER",
+      "${PAYMENT_PROVIDER}",
+      "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY"
+    ],
+    [
+      "PAYMENT_MOCK_ENABLED",
+      "${UNRELATED_FLAG:-false}",
+      "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED"
+    ]
+  ]) {
+    assert.ok(
+      validateProductionComposeGoldenPathConfig(validCompose({ [key]: value })).some(
+        (blocker) => blocker.code === code && blocker.key === key
+      ),
+      `${key}=${value}`
+    );
+  }
+});
 
 test("accepts a complete controlled production acceptance configuration", () => {
   const result = validateStage1GoldenPathPreflight(validEnv());
@@ -246,4 +318,26 @@ function validEnv() {
     WECHAT_TEMPLATE_HANDOVER_PENDING: "configured-handover-template",
     WECHAT_TEMPLATE_PAYMENT_PENDING: "configured-payment-template"
   };
+}
+
+function validCompose(overrides = {}) {
+  const environment = {
+    AUTO_DEBIT_ENABLED: '"false"',
+    PAYMENT_DEFAULT_CHANNEL: "WECHAT_JSAPI",
+    PAYMENT_MANDATE_MOCK_ENABLED: '"false"',
+    PAYMENT_MANDATE_PROVIDER: '"disabled"',
+    PAYMENT_MOCK_ENABLED: '"false"',
+    PAYMENT_PROVIDER: "wechat_pay",
+    WECHAT_PAY_ENABLED: '"true"',
+    ...overrides
+  };
+  return [
+    "services:",
+    "  api:",
+    "    image: example/api:latest",
+    "    environment:",
+    ...Object.entries(environment).map(([key, value]) => `      ${key}: ${value}`),
+    "  web:",
+    "    image: example/web:latest"
+  ].join("\n");
 }

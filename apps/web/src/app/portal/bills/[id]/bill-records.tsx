@@ -2,7 +2,6 @@
 
 import { Empty, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
 
 import {
   PAYMENT_CHANNEL_LABELS,
@@ -11,6 +10,7 @@ import {
   PAYMENT_STATUS_LABELS,
   labelOf
 } from "../../../../constants/labels";
+import { formatShanghaiDateTime } from "../../../../lib/date-time";
 import type { PortalBillDetail } from "../../../../lib/portal-types";
 import styles from "./bill-records.module.css";
 
@@ -171,5 +171,5 @@ function formatMoney(amount?: number | null) {
 }
 
 function formatTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+  return formatShanghaiDateTime(value);
 }

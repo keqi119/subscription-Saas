@@ -2,7 +2,6 @@
 
 import { Empty, Spin, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
 
 import {
   ENTITLEMENT_TYPE_LABELS,
@@ -11,6 +10,7 @@ import {
   ENTITLEMENT_USAGE_STATUS_LABELS,
   labelOf
 } from "../../../constants/labels";
+import { formatShanghaiDateTime } from "../../../lib/date-time";
 import type { PortalEntitlementUsage } from "../../../lib/portal-types";
 import styles from "./entitlement-records.module.css";
 
@@ -130,5 +130,5 @@ function formatEntitlementAmount(value: number | null, unit: string) {
 }
 
 function formatTime(value?: string | null) {
-  return value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+  return formatShanghaiDateTime(value);
 }

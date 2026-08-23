@@ -51,19 +51,19 @@
 - Produces: `readPaymentRuntimeConfig(environment)` returning canonical provider, mock flag, default channel, WeChat enabled flag, and environment
 - Produces: `PaymentRuntimeConfig` with provider limited to `mock | wechat_pay`
 
-- [ ] **Step 1: Write failing configuration tests**
+- [x] **Step 1: Write failing configuration tests**
 
   Cover Production with missing/unknown provider, enabled Mock, non-JSAPI default channel, or disabled WeChat; each must throw a stable `PAYMENT_RUNTIME_*` code. Cover the valid Production tuple and the explicit non-production Mock tuple.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run `pnpm --filter @subscription-saas/api exec vitest run test/payment-runtime-config.spec.ts` and confirm failure because `readPaymentRuntimeConfig` does not exist.
 
-- [ ] **Step 3: Implement the strict parser and provider factory integration**
+- [x] **Step 3: Implement the strict parser and provider factory integration**
 
   `PaymentModule` must call the parser before constructing an adapter. Unknown providers never fall through to Mock. Production accepts only the exact canonical provider `wechat_pay`; non-production Mock requires `PAYMENT_MOCK_ENABLED=true` and `PAYMENT_DEFAULT_CHANNEL=MOCK`.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
   Run the configuration test and `test/portal-payment.spec.ts`.
 

@@ -196,19 +196,19 @@
 **Interfaces:**
 - Produces: `validateProductionComposeGoldenPathConfig(text)` returning stable blockers for unsafe literal/default expressions
 
-- [ ] **Step 1: Write failing compose-value tests**
+- [x] **Step 1: Write failing compose-value tests**
 
   Inline compose fixtures must reject `AUTO_DEBIT_ENABLED: true`, a Mock mandate provider, enabled mandate Mock, active-payment Mock, or unsafe interpolation defaults, even when every key exists.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
   Run `pnpm stage1:golden-path:preflight:test` and confirm dangerous values are not detected.
 
-- [ ] **Step 3: Implement exact value/default validation**
+- [x] **Step 3: Implement exact value/default validation**
 
   Validate the API environment entries for disabled delegated debit and safe Production WeChat active payment. Avoid adding a YAML dependency; accept quoted literals and the approved `${KEY:-safe_default}` expressions only.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
   Run preflight tests and `node scripts/stage1-golden-path-production-preflight.mjs --check-examples`.
 

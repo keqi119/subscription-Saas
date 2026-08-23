@@ -23,6 +23,50 @@ const REQUIRED_PROVIDER_KEYS = [
   "WECHAT_TEMPLATE_HANDOVER_PENDING",
   "WECHAT_TEMPLATE_PAYMENT_PENDING"
 ];
+const PRODUCTION_COMPOSE_RULES = [
+  {
+    code: "AUTO_DEBIT_MUST_BE_DISABLED",
+    expected: "false",
+    key: "AUTO_DEBIT_ENABLED",
+    message: "Production acceptance compose must keep auto debit disabled."
+  },
+  {
+    code: "AUTO_DEBIT_PROVIDER_MUST_BE_DISABLED",
+    expected: "disabled",
+    key: "PAYMENT_MANDATE_PROVIDER",
+    message: "Production acceptance compose must keep the mandate provider disabled."
+  },
+  {
+    code: "AUTO_DEBIT_MOCK_MUST_BE_DISABLED",
+    expected: "false",
+    key: "PAYMENT_MANDATE_MOCK_ENABLED",
+    message: "Production acceptance compose must keep mandate mock execution disabled."
+  },
+  {
+    code: "ACTIVE_PAYMENT_PROVIDER_MUST_BE_WECHAT_PAY",
+    expected: "wechat_pay",
+    key: "PAYMENT_PROVIDER",
+    message: "Production acceptance compose must use the WeChat payment provider."
+  },
+  {
+    code: "ACTIVE_PAYMENT_MOCK_MUST_BE_DISABLED",
+    expected: "false",
+    key: "PAYMENT_MOCK_ENABLED",
+    message: "Production acceptance compose must keep mock payment disabled."
+  },
+  {
+    code: "WECHAT_TRADE_TYPE_INVALID",
+    expected: "wechat_jsapi",
+    key: "PAYMENT_DEFAULT_CHANNEL",
+    message: "Production acceptance compose must use WECHAT_JSAPI."
+  },
+  {
+    code: "WECHAT_PAY_DISABLED",
+    expected: "true",
+    key: "WECHAT_PAY_ENABLED",
+    message: "Production acceptance compose must enable WeChat payment."
+  }
+];
 
 export function validateStage1GoldenPathPreflight(env) {
   const blockers = [];
@@ -198,6 +242,28 @@ export function validateProductionImageGoldenPathConfig(env) {
   return blockers;
 }
 
+export function validateProductionComposeGoldenPathConfig(text) {
+  const environment = parseApiComposeEnvironment(text);
+  const blockers = [];
+  for (const rule of PRODUCTION_COMPOSE_RULES) {
+    const value = environment[rule.key];
+    if (value === undefined) {
+      blockers.push(
+        blocker(
+          "COMPOSE_VARIABLE_MISSING",
+          rule.key,
+          `${rule.key} must be passed explicitly by the production API service.`
+        )
+      );
+      continue;
+    }
+    if (!isApprovedComposeValue(value, rule.key, rule.expected)) {
+      blockers.push(blocker(rule.code, rule.key, rule.message));
+    }
+  }
+  return blockers;
+}
+
 export async function checkReadOnlyHealth(env, transport = fetch) {
   const baseUrl = new URL(requiredValue(env.API_BASE_URL, "API_BASE_URL"));
   baseUrl.pathname = `${baseUrl.pathname.replace(/\/+$/, "")}/health`;
@@ -248,12 +314,8 @@ async function checkProductionExamples() {
     readFile(composePath, "utf8")
   ]);
   const blockers = validateProductionImageGoldenPathConfig(parseEnvExample(envText));
+  blockers.push(...validateProductionComposeGoldenPathConfig(compose));
   const requiredComposeKeys = [
-    "AUTO_DEBIT_ENABLED",
-    "PAYMENT_MOCK_ENABLED",
-    "PAYMENT_PROVIDER",
-    "PAYMENT_MANDATE_MOCK_ENABLED",
-    "PAYMENT_MANDATE_PROVIDER",
     "ESIGN_PROVIDER",
     "FADADA_ENV",
     "NOTIFICATION_PROVIDER",
@@ -295,6 +357,50 @@ function buildSafeSummary(env) {
     },
     sensitive
   };
+}
+
+function parseApiComposeEnvironment(text) {
+  const environment = {};
+  let apiIndent = null;
+  let environmentIndent = null;
+  for (const rawLine of String(text ?? "").split(/\r?\n/)) {
+    const content = rawLine.trim();
+    if (!content || content.startsWith("#")) continue;
+    const indent = rawLine.length - rawLine.trimStart().length;
+    if (apiIndent === null) {
+      if (content === "api:") apiIndent = indent;
+      continue;
+    }
+    if (indent <= apiIndent) break;
+    if (environmentIndent === null) {
+      if (content === "environment:") environmentIndent = indent;
+      continue;
+    }
+    if (indent <= environmentIndent) break;
+    const match = /^([A-Z][A-Z0-9_]*):(?:\s*(.*))?$/.exec(content);
+    if (match) environment[match[1]] = match[2] ?? "";
+  }
+  return environment;
+}
+
+function isApprovedComposeValue(rawValue, key, expected) {
+  const value = unquote(String(rawValue).trim());
+  if (normalized(value) === expected) return true;
+  const interpolation = /^\$\{([A-Z][A-Z0-9_]*):-([^}]*)\}$/.exec(value);
+  return Boolean(
+    interpolation && interpolation[1] === key && normalized(interpolation[2]) === expected
+  );
+}
+
+function unquote(value) {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
 }
 
 function maskIdentifier(value) {

@@ -1683,6 +1683,7 @@ class FakeDatabase {
       ) {
         throw this.options.workOrderNowaitError;
       }
+      if (sql.includes("clock_timestamp()")) return [{ recordedAt: NOW }];
       if (sql.includes("transaction_timestamp()")) return [{ transactionNow: NOW }];
       return [{ locked: true }];
     };

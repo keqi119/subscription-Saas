@@ -2083,6 +2083,7 @@ function createRealRepositoryCreateHarness() {
     if (sql.includes("txid_current()")) {
       return [{ transactionId: "one-pass-tx" }];
     }
+    if (sql.includes("clock_timestamp()")) return [{ recordedAt: NOW }];
     if (sql.includes("transaction_timestamp()")) return [{ transactionNow: NOW }];
     if (sql.includes("pg_advisory_xact_lock")) {
       if (String(query.values[0]).includes("source-ownership")) {

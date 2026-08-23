@@ -464,6 +464,29 @@ describe("AssetOperationsRepository PostgreSQL command behavior", () => {
     ).resolves.toEqual({ ...attached, wrote: false });
   });
 
+  it("records an event against a database write clock after the transaction has started", async () => {
+    const repository = new AssetOperationsRepository();
+    const created = await readCommitted(prisma, (tx) =>
+      repository.createWorkOrder(tx, createCommand(vehicleId, "event-write-clock-work-order"))
+    );
+
+    const outcome = await readCommitted(prisma, async (tx) => {
+      const [clock] = await tx.$queryRaw<Array<{ occurredAt: Date }>>(Prisma.sql`
+        SELECT clock_timestamp() AS "occurredAt"
+        FROM (SELECT pg_sleep(0.02)) AS delayed
+      `);
+      if (!clock?.occurredAt) throw new Error("Database clock unavailable");
+      return repository.appendNote(tx, {
+        ...noteCommand(created.workOrder.id, "event-write-clock-note"),
+        occurredAt: clock.occurredAt
+      });
+    });
+
+    expect(outcome.event.occurredAt.getTime()).toBeLessThanOrEqual(
+      outcome.event.recordedAt.getTime()
+    );
+  });
+
   it("serializes distinct-source same-version transitions on the work-order header", async () => {
     const repository = new AssetOperationsRepository();
     const created = await readCommitted(prisma, (tx) =>

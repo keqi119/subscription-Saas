@@ -137,19 +137,19 @@
 - Consumes: PostgreSQL transaction time
 - Produces: recovery journey timestamps that are demonstrably not later than the database event recording boundary
 
-- [ ] **Step 1: Add failure diagnostics and a deterministic regression**
+- [x] **Step 1: Add failure diagnostics and a deterministic regression**
 
   Exercise the final asset-event insert with database-derived time and assert the stored `occurredAt <= recordedAt` invariant. For the Task 9 B fixture, derive command timestamps from database time instead of incrementing an application-side timestamp without checking the next transaction boundary.
 
-- [ ] **Step 2: Verify the regression fails or reproduces the unsafe fixture boundary**
+- [x] **Step 2: Verify the regression fails or reproduces the unsafe fixture boundary**
 
   Run the exact asset-operations regression and Task 9 B test. If production repository behavior already satisfies the invariant, retain the fix in the fixture only; do not refactor production code without a failing production test.
 
-- [ ] **Step 3: Apply the smallest proven fix**
+- [x] **Step 3: Apply the smallest proven fix**
 
   Prefer database-derived fixture timestamps. Only if the repository regression fails, validate and persist one explicit database `recordedAt` value at the final `createEventRow` boundary.
 
-- [ ] **Step 4: Verify stability**
+- [x] **Step 4: Verify stability**
 
   Run Task 9 B repeatedly, then run the complete `subscription-expiry-return.integration.spec.ts` file.
 

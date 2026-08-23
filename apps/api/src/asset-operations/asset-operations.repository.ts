@@ -75,7 +75,7 @@ const ERROR_MESSAGES: Readonly<Record<AssetOperationErrorCode, string>> = {
   [ASSET_OPERATION_ERROR_CODE.EVENT_INVALID]:
     "The event must be emitted through its governed work-order command.",
   [ASSET_OPERATION_ERROR_CODE.EVENT_TIME_INVALID]:
-    "The event occurrence time cannot be later than the transaction clock.",
+    "The event occurrence time cannot be later than the database recording clock.",
   [ASSET_OPERATION_ERROR_CODE.FILE_NOT_FOUND]: "The referenced file is not live.",
   [ASSET_OPERATION_ERROR_CODE.RESTRICTION_INVALID]:
     "The vehicle operational restriction command is invalid.",
@@ -351,26 +351,30 @@ export class AssetOperationsRepository {
     const existing = await findWorkOrderByCreateSource(tx, normalized.source);
     if (existing) return replayCreate(tx, existing, normalized);
     await assertSourceNotOwnedByRestriction(tx, normalized.source);
-    await assertEventTime(tx, normalized.occurredAt);
+    const recordedAt = await assertEventTime(tx, normalized.occurredAt);
     const workOrder = await this.createHeaderWithUniqueBusinessNo(tx, normalized, workOrderId);
-    const event = await createEventRow(tx, {
-      actorId: normalized.actorId,
-      afterStatus: AssetWorkOrderStatus.PENDING,
-      beforeStatus: null,
-      detailSnapshot: commandEventDetail(
-        { command: normalized, kind: "create" },
-        {
-          authoritySnapshot: normalized.authoritySnapshot,
-          metadata: normalized.metadata
-        },
-        workOrder
-      ),
-      eventType: AssetWorkOrderEventType.CREATED,
-      occurredAt: normalized.occurredAt,
-      sequence: 1,
-      source: normalized.source,
-      workOrderId: workOrder.id
-    });
+    const event = await createEventRow(
+      tx,
+      {
+        actorId: normalized.actorId,
+        afterStatus: AssetWorkOrderStatus.PENDING,
+        beforeStatus: null,
+        detailSnapshot: commandEventDetail(
+          { command: normalized, kind: "create" },
+          {
+            authoritySnapshot: normalized.authoritySnapshot,
+            metadata: normalized.metadata
+          },
+          workOrder
+        ),
+        eventType: AssetWorkOrderEventType.CREATED,
+        occurredAt: normalized.occurredAt,
+        sequence: 1,
+        source: normalized.source,
+        workOrderId: workOrder.id
+      },
+      recordedAt
+    );
     return { event, workOrder, wrote: true };
   }
 
@@ -434,7 +438,7 @@ export class AssetOperationsRepository {
     if (TERMINAL_STATUSES.has(current.status)) {
       throw conflict(ASSET_OPERATION_ERROR_CODE.WORK_ORDER_TRANSITION_INVALID);
     }
-    await assertEventTime(tx, normalized.occurredAt);
+    const recordedAt = await assertEventTime(tx, normalized.occurredAt);
     const updated = await updateHeader(tx, current, normalized.expectedVersion, {
       assignedUserId: normalized.assignedUserId,
       scheduledAt: normalized.scheduledAt,
@@ -442,20 +446,24 @@ export class AssetOperationsRepository {
       updatedBy: normalized.actorId,
       version: { increment: 1 }
     });
-    const event = await appendEventRow(tx, {
-      actorId: normalized.actorId,
-      afterStatus: current.status,
-      beforeStatus: current.status,
-      detailSnapshot: commandEventDetail(
-        { command: normalized, kind: "assign" },
-        assignmentPayload(normalized),
-        updated
-      ),
-      eventType: AssetWorkOrderEventType.ASSIGNED,
-      occurredAt: normalized.occurredAt,
-      source: normalized.source,
-      workOrderId: current.id
-    });
+    const event = await appendEventRow(
+      tx,
+      {
+        actorId: normalized.actorId,
+        afterStatus: current.status,
+        beforeStatus: current.status,
+        detailSnapshot: commandEventDetail(
+          { command: normalized, kind: "assign" },
+          assignmentPayload(normalized),
+          updated
+        ),
+        eventType: AssetWorkOrderEventType.ASSIGNED,
+        occurredAt: normalized.occurredAt,
+        source: normalized.source,
+        workOrderId: current.id
+      },
+      recordedAt
+    );
     return { event, workOrder: updated, wrote: true };
   }
 
@@ -474,27 +482,31 @@ export class AssetOperationsRepository {
     const current = await lockedHeaderOrLoad(tx, normalized.workOrderId, lockedHeader);
     assertVersion(current, normalized.expectedVersion);
     assertTransition(current, normalized.targetStatus);
-    await assertEventTime(tx, normalized.occurredAt);
+    const recordedAt = await assertEventTime(tx, normalized.occurredAt);
     const updated = await updateHeader(
       tx,
       current,
       normalized.expectedVersion,
       transitionUpdate(current, normalized)
     );
-    const event = await appendEventRow(tx, {
-      actorId: normalized.actorId,
-      afterStatus: normalized.targetStatus,
-      beforeStatus: current.status,
-      detailSnapshot: commandEventDetail(
-        { command: normalized, kind: "transition" },
-        transitionPayload(normalized, current.status),
-        updated
-      ),
-      eventType: transitionEventType(current.status, normalized.targetStatus),
-      occurredAt: normalized.occurredAt,
-      source: normalized.source,
-      workOrderId: current.id
-    });
+    const event = await appendEventRow(
+      tx,
+      {
+        actorId: normalized.actorId,
+        afterStatus: normalized.targetStatus,
+        beforeStatus: current.status,
+        detailSnapshot: commandEventDetail(
+          { command: normalized, kind: "transition" },
+          transitionPayload(normalized, current.status),
+          updated
+        ),
+        eventType: transitionEventType(current.status, normalized.targetStatus),
+        occurredAt: normalized.occurredAt,
+        source: normalized.source,
+        workOrderId: current.id
+      },
+      recordedAt
+    );
     return { event, workOrder: updated, wrote: true };
   }
 
@@ -1304,25 +1316,38 @@ async function appendEventCommand(
   }
   const workOrder =
     options.headerAlreadyLocked ?? (await lockAndLoadWorkOrder(tx, command.workOrderId));
-  await assertEventTime(tx, command.occurredAt);
-  const event = await appendEventRow(tx, {
-    ...command,
-    detailSnapshot: commandEventDetail(envelope, command.detailSnapshot, workOrder)
-  });
+  const recordedAt = await assertEventTime(tx, command.occurredAt);
+  const event = await appendEventRow(
+    tx,
+    {
+      ...command,
+      detailSnapshot: commandEventDetail(envelope, command.detailSnapshot, workOrder)
+    },
+    recordedAt
+  );
   return { event, workOrder, wrote: true };
 }
 
-async function appendEventRow(tx: Prisma.TransactionClient, command: AppendWorkOrderEventCommand) {
+async function appendEventRow(
+  tx: Prisma.TransactionClient,
+  command: AppendWorkOrderEventCommand,
+  recordedAt: Date
+) {
   const aggregate = await tx.assetWorkOrderEvent.aggregate({
     _max: { sequence: true },
     where: { workOrderId: command.workOrderId }
   });
-  return createEventRow(tx, { ...command, sequence: (aggregate._max.sequence ?? 0) + 1 });
+  return createEventRow(
+    tx,
+    { ...command, sequence: (aggregate._max.sequence ?? 0) + 1 },
+    recordedAt
+  );
 }
 
 async function createEventRow(
   tx: Prisma.TransactionClient,
-  command: AppendWorkOrderEventCommand & { sequence: number }
+  command: AppendWorkOrderEventCommand & { sequence: number },
+  recordedAt: Date
 ) {
   try {
     return await tx.assetWorkOrderEvent.create({
@@ -1333,6 +1358,7 @@ async function createEventRow(
         detailSnapshot: command.detailSnapshot,
         eventType: command.eventType,
         occurredAt: command.occurredAt,
+        recordedAt,
         sequence: command.sequence,
         sourceId: command.source.id,
         sourceKey: command.source.key,
@@ -1362,7 +1388,19 @@ async function updateHeader(
 }
 
 async function assertEventTime(tx: Prisma.TransactionClient, occurredAt: Date) {
-  assertNotFuture(occurredAt, await transactionClock(tx));
+  const recordedAt = await eventRecordingClock(tx);
+  assertNotFuture(occurredAt, recordedAt);
+  return recordedAt;
+}
+
+async function eventRecordingClock(tx: Prisma.TransactionClient) {
+  const [clock] = await tx.$queryRaw<Array<{ recordedAt: Date }>>(
+    Prisma.sql`SELECT clock_timestamp() AS "recordedAt"`
+  );
+  if (!clock?.recordedAt) {
+    throw conflict(ASSET_OPERATION_ERROR_CODE.EVENT_TIME_INVALID);
+  }
+  return clock.recordedAt;
 }
 
 async function transactionClock(tx: Prisma.TransactionClient) {

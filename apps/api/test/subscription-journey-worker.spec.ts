@@ -156,7 +156,7 @@ describe("SubscriptionJourneyWorker", () => {
       applicationId: "application-1",
       factVersion: 3,
       reasonCodes: ["MATERIAL_REVIEW_PENDING"]
-    });
+    } as never);
 
     await harness.worker.runOnce();
 

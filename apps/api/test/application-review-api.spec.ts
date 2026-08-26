@@ -620,6 +620,49 @@ describe("application self-service review APIs", () => {
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
   });
 
+  it("does not request customer reconfirmation after JSONB only reorders final-plan keys", async () => {
+    const harness = createApplicationReviewHarness({
+      application: readyToFinalizeApplication()
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+    const reorderedSnapshot = Object.fromEntries(
+      Object.entries(planned.finalPlanSnapshot as Record<string, unknown>).reverse()
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        finalPlanSnapshot: reorderedSnapshot,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      }
+    });
+
+    const result = await harness.service.allocateJourneyVehicle(
+      harness.tx as never,
+      harness.application.id,
+      harness.vehicle.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(result.requiresCustomerReconfirmation).toBe(false);
+    expect(result.application).toEqual(
+      expect.objectContaining({
+        customerConfirmedPlanRevision: 1,
+        finalPlanRevision: 1,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      })
+    );
+    expect(
+      harness.journeySignal.requireCustomerReconfirmationAfterManualDecision
+    ).not.toHaveBeenCalled();
+  });
+
   it("keeps the existing vehicle-review endpoint as the journey allocation entry", async () => {
     const harness = createApplicationReviewHarness({
       application: readyToFinalizeApplication()

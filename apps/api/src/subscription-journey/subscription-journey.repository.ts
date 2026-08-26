@@ -18,6 +18,7 @@ import {
 import { randomUUID } from "node:crypto";
 
 import { journeyError } from "./subscription-journey.errors";
+import { sameJourneyJson } from "./subscription-journey-json";
 import {
   assertTransition,
   manualTaskTypeFor,
@@ -107,7 +108,7 @@ export class SubscriptionJourneyRepository {
       if (
         existing.eventType !== SubscriptionJourneyEventType.JOURNEY_STARTED ||
         existing.journey.applicationId !== applicationId ||
-        !sameJson(existing.payload, payload)
+        !sameJourneyJson(existing.payload, payload)
       ) {
         throw idempotencyConflict();
       }
@@ -633,7 +634,7 @@ export class SubscriptionJourneyRepository {
         existing.journeyId !== input.journeyId ||
         existing.stepId !== input.stepId ||
         existing.jobType !== input.jobType ||
-        !sameJson(existing.payload, input.payload ?? null)
+        !sameJourneyJson(existing.payload, input.payload ?? null)
       ) {
         throw idempotencyConflict();
       }
@@ -1392,26 +1393,10 @@ function requireExactEvent(
   if (
     existing.eventType !== expected.eventType ||
     existing.journeyId !== expected.journeyId ||
-    !sameJson(existing.payload, expected.payload)
+    !sameJourneyJson(existing.payload, expected.payload)
   ) {
     throw idempotencyConflict();
   }
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
-}
-
-function canonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJson);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalJson(item)])
-    );
-  }
-  return value ?? null;
 }
 
 function isUniqueConflict(error: unknown) {

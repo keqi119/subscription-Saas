@@ -53,6 +53,7 @@ import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.s
 import { StorageService } from "../storage/storage.service";
 import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
+import { commercialPlanHash } from "../subscription-journey/subscription-journey-json";
 import {
   buildApplicationCustomerProfileSnapshot,
   parseApplicationCustomerProfileSnapshot
@@ -3874,18 +3875,7 @@ function commercialPlanChanged(
   next: Prisma.InputJsonValue
 ): boolean {
   if (!isPlainRecord(previous) || !isPlainRecord(next)) return true;
-  const commercialKeys = [
-    "packageSnapshot",
-    "periodMonths",
-    "pricing",
-    "subscriptionPlan",
-    "subscriptionPlanId",
-    "vehicleId",
-    "vehicleSnapshot"
-  ] as const;
-  const select = (snapshot: Record<string, unknown>) =>
-    Object.fromEntries(commercialKeys.map((key) => [key, snapshot[key] ?? null]));
-  return JSON.stringify(select(previous)) !== JSON.stringify(select(next));
+  return commercialPlanHash(previous) !== commercialPlanHash(next);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

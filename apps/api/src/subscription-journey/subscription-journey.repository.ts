@@ -35,9 +35,11 @@ import {
   ClaimedJourneyOutbox,
   JourneyOperationalMetrics,
   OpenManualTaskInput,
+  RejectJourneyForApplicationInput,
   RecordJourneyExceptionInput,
   RescheduleJourneyJobInput,
-  WaitForCustomerInput
+  WaitForCustomerInput,
+  WaitForManualInput
 } from "./subscription-journey.types";
 
 type Tx = Prisma.TransactionClient;
@@ -270,13 +272,19 @@ export class SubscriptionJourneyRepository {
     await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
       currentStepCode: locked.stepCode,
       currentStepStatus: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+      ...(input.factVersion === undefined
+        ? {}
+        : { lastApplicationFactVersion: input.factVersion }),
       status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
       version: { increment: 1 }
     });
     const step = await tx.subscriptionJourneyStep.update({
       data: {
         status: SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
-        waitingAt: new Date()
+        waitingAt: new Date(),
+        ...(input.factVersion === undefined
+          ? {}
+          : { waitingReasonSnapshot: input.payload ?? { factVersion: input.factVersion } })
       },
       where: {
         id_journeyId: { id: input.stepId, journeyId: input.journeyId }
@@ -285,6 +293,114 @@ export class SubscriptionJourneyRepository {
     await this.writeEventAndOutbox(tx, {
       eventKey: input.eventKey,
       eventType: SubscriptionJourneyEventType.STEP_WAITING_CUSTOMER,
+      journeyId: input.journeyId,
+      payload: eventPayload,
+      sequence: input.expectedVersion + 1
+    });
+    return step;
+  }
+
+  async waitForManual(
+    tx: Tx,
+    input: WaitForManualInput
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    const eventPayload = transitionPayload(
+      "WAIT_FOR_MANUAL",
+      input.stepId,
+      input.payload
+    );
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (duplicate) {
+      requireExactEvent(duplicate, {
+        eventType: SubscriptionJourneyEventType.STEP_WAITING_MANUAL,
+        journeyId: input.journeyId,
+        payload: eventPayload
+      });
+      return this.readStep(tx, input.stepId, input.journeyId);
+    }
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    validateCurrentStep(locked, input.expectedVersion);
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      currentStepCode: locked.stepCode,
+      currentStepStatus: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+      lastApplicationFactVersion: input.factVersion,
+      status: SubscriptionJourneyStatus.WAITING_MANUAL,
+      version: { increment: 1 }
+    });
+    const step = await tx.subscriptionJourneyStep.update({
+      data: {
+        status: SubscriptionJourneyStepStatus.WAITING_MANUAL,
+        waitingAt: new Date(),
+        waitingReasonSnapshot: input.payload ?? { factVersion: input.factVersion }
+      },
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.STEP_WAITING_MANUAL,
+      journeyId: input.journeyId,
+      payload: eventPayload,
+      sequence: input.expectedVersion + 1
+    });
+    return step;
+  }
+
+  async rejectForApplication(
+    tx: Tx,
+    input: RejectJourneyForApplicationInput
+  ): Promise<SubscriptionJourneyStep> {
+    assertSafePayload(input.payload);
+    const eventPayload = transitionPayload(
+      "REJECT_APPLICATION",
+      input.stepId,
+      input.payload
+    );
+    await lockIdempotencyKey(tx, "journey-event", input.eventKey);
+    const duplicate = await tx.subscriptionJourneyEvent.findUnique({
+      where: { eventKey: input.eventKey }
+    });
+    if (duplicate) {
+      requireExactEvent(duplicate, {
+        eventType: SubscriptionJourneyEventType.JOURNEY_CANCELLED,
+        journeyId: input.journeyId,
+        payload: eventPayload
+      });
+      return this.readStep(tx, input.stepId, input.journeyId);
+    }
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    validateCurrentStep(locked, input.expectedVersion);
+    await this.updateJourneyVersion(tx, input.journeyId, input.expectedVersion, {
+      cancelledAt: new Date(),
+      currentStepStatus: SubscriptionJourneyStepStatus.CANCELLED,
+      lastApplicationFactVersion: input.factVersion,
+      status: SubscriptionJourneyStatus.CANCELLED,
+      version: { increment: 1 }
+    });
+    const step = await tx.subscriptionJourneyStep.update({
+      data: {
+        status: SubscriptionJourneyStepStatus.CANCELLED,
+        waitingReasonSnapshot: input.payload ?? { factVersion: input.factVersion }
+      },
+      where: {
+        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
+      }
+    });
+    await tx.subscriptionJourneyManualTask.updateMany({
+      data: { status: SubscriptionJourneyManualTaskStatus.CANCELLED },
+      where: {
+        journeyId: input.journeyId,
+        status: SubscriptionJourneyManualTaskStatus.OPEN
+      }
+    });
+    await this.writeEventAndOutbox(tx, {
+      eventKey: input.eventKey,
+      eventType: SubscriptionJourneyEventType.JOURNEY_CANCELLED,
       journeyId: input.journeyId,
       payload: eventPayload,
       sequence: input.expectedVersion + 1
@@ -1183,6 +1299,9 @@ export class SubscriptionJourneyRepository {
       currentStepStatus: followingStep
         ? SubscriptionJourneyStepStatus.PENDING
         : SubscriptionJourneyStepStatus.COMPLETED,
+      ...(input.factVersion === undefined
+        ? {}
+        : { lastApplicationFactVersion: input.factVersion }),
       status: followingStep
         ? SubscriptionJourneyStatus.RUNNING
         : SubscriptionJourneyStatus.COMPLETED,
@@ -1371,7 +1490,11 @@ function validateCurrentStep(
 }
 
 function transitionPayload(
-  operation: "COMPLETE_STEP" | "WAIT_FOR_CUSTOMER",
+  operation:
+    | "COMPLETE_STEP"
+    | "REJECT_APPLICATION"
+    | "WAIT_FOR_CUSTOMER"
+    | "WAIT_FOR_MANUAL",
   stepId: string,
   payload: Prisma.InputJsonValue | undefined
 ): Prisma.InputJsonValue {

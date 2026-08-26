@@ -1165,6 +1165,76 @@ describe("SubscriptionJourneyRepository", () => {
     expect(tx.subscriptionJourneyEvent.create).not.toHaveBeenCalled();
   });
 
+  it("persists an application business wait with reasons and observed fact version", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map());
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.waitForManual(tx as never, {
+      eventKey: "application:validation:facts:3:waiting-manual",
+      expectedVersion: 0,
+      factVersion: 3,
+      journeyId: step.journeyId,
+      payload: {
+        factVersion: 3,
+        reasonCodes: ["MATERIAL_REVIEW_PENDING"]
+      },
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+        currentStepStatus: "WAITING_MANUAL",
+        lastApplicationFactVersion: 3,
+        status: "WAITING_MANUAL",
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 0 }
+    });
+    expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledWith({
+      data: {
+        status: "WAITING_MANUAL",
+        waitingAt: expect.any(Date),
+        waitingReasonSnapshot: {
+          factVersion: 3,
+          reasonCodes: ["MATERIAL_REVIEW_PENDING"]
+        }
+      },
+      where: { id_journeyId: { id: step.id, journeyId: step.journeyId } }
+    });
+  });
+
+  it("closes the current step and open tasks for a rejected application", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map());
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.rejectForApplication(tx as never, {
+      eventKey: "application:validation:facts:4:rejected",
+      expectedVersion: 0,
+      factVersion: 4,
+      journeyId: step.journeyId,
+      payload: { factVersion: 4, reasonCodes: ["CREDIT_REVIEW_REJECTED"] },
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        cancelledAt: expect.any(Date),
+        currentStepStatus: "CANCELLED",
+        lastApplicationFactVersion: 4,
+        status: "CANCELLED",
+        version: { increment: 1 }
+      }),
+      where: { id: step.journeyId, version: 0 }
+    });
+    expect(tx.subscriptionJourneyManualTask.updateMany).toHaveBeenCalledWith({
+      data: { status: "CANCELLED" },
+      where: { journeyId: step.journeyId, status: "OPEN" }
+    });
+  });
+
   it("rejects reuse of a waiting event key for another step", async () => {
     const step = journeyStep({
       code: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
@@ -1297,6 +1367,7 @@ function journeyStep(
     status: "RUNNING",
     updatedAt: now,
     waitingAt: null,
+    waitingReasonSnapshot: null,
     ...overrides
   };
 }
@@ -1416,7 +1487,8 @@ function completeStepTransaction(
         manualTask = { id: "manual-task-1", ...input.data };
         return manualTask;
       }),
-      findFirst: vi.fn(async () => manualTask)
+      findFirst: vi.fn(async () => manualTask),
+      updateMany: vi.fn(async () => ({ count: manualTask ? 1 : 0 }))
     },
     subscriptionJourneyStep: {
       findUnique: vi.fn(async () => step),

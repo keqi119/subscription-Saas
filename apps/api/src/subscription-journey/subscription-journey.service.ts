@@ -898,15 +898,79 @@ export class SubscriptionJourneyService {
           "The application validation job does not match the current journey step."
         );
       }
-      await this.customerService!.validateJourneyApplication(
+      const readiness = await this.customerService!.validateJourneyApplication(
         tx,
         journey.applicationId
       );
+      if (readiness.factVersion < journey.lastApplicationFactVersion) {
+        return {
+          action: "APPLICATION_VALIDATION_FACTS_ALREADY_OBSERVED",
+          applicationId: journey.applicationId,
+          factVersion: readiness.factVersion
+        };
+      }
+      const payload = {
+        factVersion: readiness.factVersion,
+        reasonCodes: readiness.reasonCodes
+      };
+      if (readiness.outcome === "WAITING_MANUAL") {
+        await this.repository.waitForManual(tx, {
+          eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:facts:${readiness.factVersion}:waiting-manual`,
+          expectedVersion: journey.version,
+          factVersion: readiness.factVersion,
+          journeyId: journey.id,
+          payload,
+          stepId: step.id
+        });
+        return {
+          action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+          applicationId: journey.applicationId,
+          ...payload
+        };
+      }
+      if (readiness.outcome === "WAITING_CUSTOMER") {
+        await this.repository.waitForCustomer(tx, {
+          eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:facts:${readiness.factVersion}:waiting-customer`,
+          expectedVersion: journey.version,
+          factVersion: readiness.factVersion,
+          journeyId: journey.id,
+          payload,
+          stepId: step.id
+        });
+        return {
+          action: "APPLICATION_VALIDATION_WAITING_CUSTOMER",
+          applicationId: journey.applicationId,
+          ...payload
+        };
+      }
+      if (readiness.outcome === "REJECTED") {
+        await this.customerService!.releaseRejectedJourneyApplication(
+          tx,
+          journey.applicationId
+        );
+        await this.repository.rejectForApplication(tx, {
+          eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:facts:${readiness.factVersion}:rejected`,
+          expectedVersion: journey.version,
+          factVersion: readiness.factVersion,
+          journeyId: journey.id,
+          payload,
+          stepId: step.id
+        });
+        return {
+          action: "APPLICATION_VALIDATION_REJECTED",
+          applicationId: journey.applicationId,
+          ...payload
+        };
+      }
       await this.repository.completeStep(tx, {
         eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:completed`,
         expectedVersion: journey.version,
+        factVersion: readiness.factVersion,
         journeyId: journey.id,
-        payload: { applicationId: journey.applicationId },
+        payload: {
+          applicationId: journey.applicationId,
+          factVersion: readiness.factVersion
+        },
         stepId: step.id
       });
       return {

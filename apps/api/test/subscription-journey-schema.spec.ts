@@ -39,6 +39,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("currentStepCode", "SubscriptionJourneyStepCode"),
     f("currentStepStatus", "SubscriptionJourneyStepStatus", "required", "PENDING"),
     f("pausedFromStatus", "SubscriptionJourneyStatus", "optional"),
+    f("lastApplicationFactVersion", "Int", "required", "0"),
     f("version", "Int", "required", "0"),
     f("startedAt", "DateTime", "required", "now()"),
     f("completedAt", "DateTime", "optional"),
@@ -61,6 +62,7 @@ const JOURNEY_FIELDS: Record<string, FieldContract[]> = {
     f("attemptCount", "Int", "required", "0"),
     f("startedAt", "DateTime", "optional"),
     f("waitingAt", "DateTime", "optional"),
+    f("waitingReasonSnapshot", "Json", "optional"),
     f("completedAt", "DateTime", "optional"),
     f("lastErrorCode", "String", "optional"),
     f("createdAt", "DateTime", "required", "now()"),
@@ -286,6 +288,15 @@ describe("subscription journey persistence contract", () => {
     expect(schemaField("Application", "customerConfirmedPlanRevision")).toMatchObject(
       f("customerConfirmedPlanRevision", "Int", "optional")
     );
+    expect(schemaField("Application", "journeyFactVersion")).toMatchObject(
+      f("journeyFactVersion", "Int", "required", "0")
+    );
+    expect(schemaField("Application", "finalPlanCommercialHash")).toMatchObject(
+      f("finalPlanCommercialHash", "String", "optional")
+    );
+    expect(schemaAttributes("Application", "finalPlanCommercialHash")).toContain(
+      "@db.VarChar(71)"
+    );
     expect(schemaField("Application", "subscriptionJourney")).toMatchObject(
       f("subscriptionJourney", "SubscriptionJourney", "optional", undefined, "implicit")
     );
@@ -331,6 +342,21 @@ describe("subscription journey persistence contract", () => {
     expect(schemaField("SubscriptionJourneyException", "job").relation).toBe(
       "jobId,stepId,journeyId->id,stepId,journeyId"
     );
+  });
+
+  it("ships the stage1 business-wait migration with bounded versions and hash checks", () => {
+    const migration = readFileSync(
+      resolve(
+        process.cwd(),
+        "prisma/migrations/20260826010000_stage1_journey_business_wait/migration.sql"
+      ),
+      "utf8"
+    );
+
+    expect(migration).toContain("application_journey_fact_version_nonnegative");
+    expect(migration).toContain("application_final_plan_commercial_hash_format");
+    expect(migration).toContain("subscription_journey_last_application_fact_version_nonnegative");
+    expect(migration).toContain("jsonb_typeof(\"final_plan_snapshot\") = 'object'");
   });
 });
 

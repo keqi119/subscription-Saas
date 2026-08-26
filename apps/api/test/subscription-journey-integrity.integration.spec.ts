@@ -28,7 +28,8 @@ const CATALOG_COLUMNS: Record<string, string[]> = {
     "completed_at:timestamptz:YES",
     "cancelled_at:timestamptz:YES",
     "created_at:timestamptz:NO",
-    "updated_at:timestamptz:NO"
+    "updated_at:timestamptz:NO",
+    "last_application_fact_version:int4:NO"
   ],
   subscription_journey_step: [
     "id:text:NO",
@@ -41,7 +42,8 @@ const CATALOG_COLUMNS: Record<string, string[]> = {
     "completed_at:timestamptz:YES",
     "last_error_code:varchar:YES",
     "created_at:timestamptz:NO",
-    "updated_at:timestamptz:NO"
+    "updated_at:timestamptz:NO",
+    "waiting_reason_snapshot:jsonb:YES"
   ],
   subscription_journey_job: [
     "id:text:NO",
@@ -495,6 +497,76 @@ describe("subscription journey migrated database and seeded RBAC", () => {
     }
   });
 
+  it("persists fact-version defaults, waiting detail, and a bounded commercial hash", async () => {
+    const fixture = await createJourneyFixture();
+    const defaults = await client.query<{
+      final_plan_commercial_hash: string | null;
+      journey_fact_version: number;
+      last_application_fact_version: number;
+      waiting_reason_snapshot: unknown;
+    }>(
+      `SELECT application.journey_fact_version,
+              application.final_plan_commercial_hash,
+              journey.last_application_fact_version,
+              step.waiting_reason_snapshot
+       FROM subscription_journey AS journey
+       JOIN application ON application.id = journey.application_id
+       JOIN subscription_journey_step AS step ON step.journey_id = journey.id
+       WHERE journey.id = $1`,
+      [fixture.journeyA]
+    );
+
+    expect(defaults.rows[0]).toEqual({
+      final_plan_commercial_hash: null,
+      journey_fact_version: 0,
+      last_application_fact_version: 0,
+      waiting_reason_snapshot: null
+    });
+
+    await expect(
+      client.query(
+        "UPDATE application SET journey_fact_version = -1 WHERE id = $1::uuid",
+        [fixture.applicationA]
+      )
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      client.query(
+        "UPDATE subscription_journey SET last_application_fact_version = -1 WHERE id = $1",
+        [fixture.journeyA]
+      )
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      client.query(
+        "UPDATE application SET final_plan_commercial_hash = 'sha256:not-a-hash' WHERE id = $1::uuid",
+        [fixture.applicationA]
+      )
+    ).rejects.toMatchObject({ code: "23514" });
+
+    await expect(
+      client.query(
+        "UPDATE application SET final_plan_commercial_hash = $1 WHERE id = $2::uuid",
+        [`sha256:${"a".repeat(64)}`, fixture.applicationA]
+      )
+    ).resolves.toMatchObject({ rowCount: 1 });
+
+    const constraints = await client.query<{ conname: string }>(
+      `SELECT conname
+       FROM pg_constraint
+       WHERE conname = ANY($1::text[])
+       ORDER BY conname`,
+      [[
+        "application_final_plan_commercial_hash_format",
+        "application_journey_fact_version_nonnegative",
+        "subscription_journey_last_application_fact_version_nonnegative"
+      ]]
+    );
+    expect(constraints.rows.map((row) => row.conname)).toEqual([
+      "application_final_plan_commercial_hash_format",
+      "application_journey_fact_version_nonnegative",
+      "subscription_journey_last_application_fact_version_nonnegative"
+    ]);
+  });
+
   it("migrates the complete literal journey index catalog", async () => {
     const result = await client.query<{
       columns: string[];
@@ -847,7 +919,7 @@ async function createJourneyFixture() {
     [jobA, journeyA, stepA, `valid-job-${suffix}`]
   );
 
-  return { jobA, journeyA, journeyB, stepA, stepB, suffix };
+  return { applicationA, applicationB, jobA, journeyA, journeyB, stepA, stepB, suffix };
 }
 
 function runCommand(args: string[]) {

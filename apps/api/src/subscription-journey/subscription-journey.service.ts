@@ -62,8 +62,11 @@ const adminJourneyInclude = {
       applicationNo: true,
       applicationSource: true,
       customerId: true,
+      finalPeriodMonths: true,
+      finalPlanCommercialHash: true,
       finalPlanSnapshot: true,
       finalPlanRevision: true,
+      finalSubscriptionPlanId: true,
       finalVehicleId: true,
       id: true,
       softReservedVehicleId: true,
@@ -208,13 +211,20 @@ export class SubscriptionJourneyService {
         outbox.eventType === "DOMAIN_FACT_OBSERVED" &&
         isRecord(outbox.payload) &&
         outbox.payload.signalType === "CUSTOMER_PLAN_CONFIRMED" &&
-        outbox.payload.revision === current.application.finalPlanRevision;
+        outbox.payload.revision === current.application.finalPlanRevision &&
+        outbox.payload.commercialHash ===
+          current.application.finalPlanCommercialHash;
       if (isExactConfirmation) {
+        const commercialHash = current.application.finalPlanCommercialHash!;
+        const hashKey = commercialHash.slice("sha256:".length, 23);
         await this.repository.completeStep(tx, {
-          eventKey: `journey:${current.id}:step:CUSTOMER_PLAN_CONFIRMATION:revision:${current.application.finalPlanRevision}:completed`,
+          eventKey:
+            `journey:${current.id}:step:CUSTOMER_PLAN_CONFIRMATION:` +
+            `revision:${current.application.finalPlanRevision}:hash:${hashKey}:completed`,
           expectedVersion: current.version,
           journeyId: current.id,
           payload: {
+            finalPlanCommercialHash: commercialHash,
             finalPlanRevision: current.application.finalPlanRevision
           },
           stepId: current.step.id
@@ -231,7 +241,11 @@ export class SubscriptionJourneyService {
         eventKey: `journey:${current.id}:step:CUSTOMER_PLAN_CONFIRMATION:revision:${current.application.finalPlanRevision}:waiting`,
         expectedVersion: current.version,
         journeyId: current.id,
-        payload: { finalPlanRevision: current.application.finalPlanRevision },
+        payload: {
+          finalPlanCommercialHash:
+            current.application.finalPlanCommercialHash,
+          finalPlanRevision: current.application.finalPlanRevision
+        },
         stepId: current.step.id
       });
       return;
@@ -510,7 +524,12 @@ export class SubscriptionJourneyService {
       throw new Error("Journey application decision service is unavailable.");
     }
     return prisma.$transaction(async (tx) => {
-      const journey = await this.lockAdminJourney(tx, journeyId, dto.version);
+      const journey = await this.lockAdminJourney(tx, journeyId);
+      if (journey.version !== dto.version) {
+        const replay = this.resolveFinalPlanReplay(journey, dto);
+        if (replay) return replay;
+        throw new ConflictException("JOURNEY_OPTIMISTIC_LOCK_CONFLICT");
+      }
       this.requireCurrentStep(
         journey,
         SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
@@ -531,9 +550,21 @@ export class SubscriptionJourneyService {
         journey,
         "FINAL_PLAN_DECISION",
         user,
-        context
+        context,
+        {
+          finalPlanCommercialHash: application.finalPlanCommercialHash,
+          finalPlanRevision: application.finalPlanRevision,
+          softReservedVehicleId: application.softReservedVehicleId
+        }
       );
-      return { applicationId: application.id, journeyId };
+      return {
+        applicationId: application.id,
+        finalPlanCommercialHash: application.finalPlanCommercialHash,
+        finalPlanRevision: application.finalPlanRevision,
+        finalVehicleId: application.finalVehicleId,
+        journeyId,
+        replayed: false
+      };
     });
   }
 
@@ -1478,7 +1509,7 @@ export class SubscriptionJourneyService {
   private async lockAdminJourney(
     tx: Tx,
     journeyId: string,
-    expectedVersion: number
+    expectedVersion?: number
   ): Promise<AdminJourney> {
     await tx.$queryRaw(Prisma.sql`
       SELECT "id"
@@ -1493,10 +1524,48 @@ export class SubscriptionJourneyService {
     if (!journey) {
       throw new NotFoundException("Subscription journey not found.");
     }
-    if (journey.version !== expectedVersion) {
+    if (
+      expectedVersion !== undefined &&
+      journey.version !== expectedVersion
+    ) {
       throw new ConflictException("JOURNEY_OPTIMISTIC_LOCK_CONFLICT");
     }
     return journey;
+  }
+
+  private resolveFinalPlanReplay(
+    journey: AdminJourney,
+    dto: FinalPlanDecisionDto
+  ) {
+    const published =
+      journey.application.finalPlanRevision >= 1 &&
+      Boolean(journey.application.finalPlanCommercialHash) &&
+      journey.steps.some(
+        ({ code, status }) =>
+          code === SubscriptionJourneyStepCode.FINAL_PLAN_DECISION &&
+          status === SubscriptionJourneyStepStatus.COMPLETED
+      );
+    if (!published || dto.version > journey.version) return null;
+
+    const exact =
+      journey.application.finalPeriodMonths === dto.finalPeriodMonths &&
+      journey.application.finalSubscriptionPlanId ===
+        dto.finalSubscriptionPlanId &&
+      journey.application.finalVehicleId === dto.finalVehicleId;
+    if (!exact) {
+      throw journeyError(
+        "JOURNEY_IDEMPOTENCY_CONFLICT",
+        "The final-plan command was already committed with a different payload."
+      );
+    }
+    return {
+      applicationId: journey.application.id,
+      finalPlanCommercialHash: journey.application.finalPlanCommercialHash,
+      finalPlanRevision: journey.application.finalPlanRevision,
+      finalVehicleId: journey.application.finalVehicleId,
+      journeyId: journey.id,
+      replayed: true
+    };
   }
 
   private requireCurrentStep(
@@ -1952,7 +2021,12 @@ export class SubscriptionJourneyService {
   private async readCurrentJourney(tx: Tx, journeyId: string) {
     const journey = await tx.subscriptionJourney.findUnique({
       include: {
-        application: { select: { finalPlanRevision: true } },
+        application: {
+          select: {
+            finalPlanCommercialHash: true,
+            finalPlanRevision: true
+          }
+        },
         steps: true
       },
       where: { id: journeyId }
@@ -1990,12 +2064,14 @@ async function lockJourneyVehicle(tx: Tx, vehicleId: string) {
 
 const SAFE_JOURNEY_PAYLOAD_KEYS = new Set([
   "applicationId",
+  "commercialHash",
   "contractId",
   "decision",
   "deliveryId",
   "factType",
   "factVersion",
   "finalPlanRevision",
+  "finalPlanCommercialHash",
   "handoverId",
   "jobId",
   "journeyVersion",
@@ -2245,7 +2321,7 @@ function availableJourneyActions(journey: AdminJourney, user: RequestUser) {
       SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION &&
     can(user, PermissionCode.SUBSCRIPTION_JOURNEY_VEHICLE_ALLOCATE)
   ) {
-    actions.push("FINAL_VEHICLE_ALLOCATION");
+    actions.push("LEGACY_FINAL_VEHICLE_ALLOCATION");
   }
   if (
     journey.currentStepCode ===

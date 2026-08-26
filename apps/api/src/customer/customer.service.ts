@@ -1688,12 +1688,21 @@ export class CustomerService {
 
   async recordJourneyCustomerPlanConfirmation(
     tx: Prisma.TransactionClient,
-    input: { applicationId: string; revision: number }
+    input: {
+      applicationId: string;
+      commercialHash: string;
+      revision: number;
+    }
   ): Promise<void> {
     await this.subscriptionJourneySignal?.record(tx, {
       applicationId: input.applicationId,
-      eventKey: `application:${input.applicationId}:plan-confirmed:${input.revision}`,
-      payload: { revision: input.revision },
+      eventKey:
+        `application:${input.applicationId}:plan-confirmed:${input.revision}:` +
+        input.commercialHash.slice("sha256:".length, 23),
+      payload: {
+        commercialHash: input.commercialHash,
+        revision: input.revision
+      },
       type: "CUSTOMER_PLAN_CONFIRMED"
     });
   }
@@ -1835,23 +1844,84 @@ export class CustomerService {
     ensureCanAccessApplication(before, actor);
     ensureApplicationReviewWorkflowAllowed(before);
     assertApplicationHasNoOrder(before);
-    assertApplicationReadyForFinalPlan(before);
+    assertApplicationReadyForFinalPlan(before, input);
 
+    const resolvedInput = resolveApplicationFinalPlanInput(before, input);
+    await lockVehicleAvailabilityAuthorities(tx, [
+      resolvedInput.vehicleId,
+      before.softReservedVehicleId
+    ]);
     const details = await loadApplicationFinalPlanDetails(tx, before, input);
-    await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
+    if (
+      before.applicationSource === ApplicationSource.SELF_SERVICE &&
+      before.softReservedVehicleId !== details.vehicle.id
+    ) {
+      throw new BadRequestException(
+        "暂不支持审核中更换车辆，请取消当前进件后重新提交。"
+      );
+    }
+    await assertJourneyVehicleAllocationAllowed(tx, before, details.vehicle);
+    const alreadyHeld =
+      before.softReservedVehicleId === details.vehicle.id &&
+      details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
+    const reservedAt = before.softReservedAt ?? new Date();
+    if (!alreadyHeld) {
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        details.vehicle.id,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        reservedAt
+      );
+      const reserved = await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: actor.id },
+        where: {
+          deletedAt: null,
+          id: details.vehicle.id,
+          status: VehicleStatus.AVAILABLE
+        }
+      });
+      if (reserved.count !== 1) {
+        throw journeyError(
+          "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+          "The journey vehicle could not be reserved."
+        );
+      }
+      if (
+        before.softReservedVehicleId &&
+        before.softReservedVehicleId !== details.vehicle.id
+      ) {
+        await releaseApplicationSoftReservedVehicle(
+          tx,
+          before,
+          actor,
+          this.assetOperationsService
+        );
+      }
+    }
     const finalPlanRevision = before.finalPlanRevision + 1;
+    const planSnapshot = details.finalPlanSnapshot as Record<string, unknown>;
+    const vehicleSnapshot = planSnapshot.vehicleSnapshot as Record<
+      string,
+      unknown
+    >;
     const finalPlanSnapshot = {
-      ...(details.finalPlanSnapshot as Record<string, unknown>),
+      ...planSnapshot,
       customerConfirmedPlanRevision: null,
       finalPlanConfirmedAt: null,
       finalPlanRevision,
-      planConfirmStatus: PlanConfirmStatus.PENDING
+      planConfirmStatus: PlanConfirmStatus.PENDING,
+      vehicleSnapshot: {
+        ...vehicleSnapshot,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
     } satisfies Prisma.InputJsonValue;
+    const finalPlanCommercialHash = commercialPlanHash(finalPlanSnapshot);
     const application = await tx.application.update({
       data: {
         approvedAt: before.approvedAt ?? new Date(),
         customerConfirmedPlanRevision: null,
         finalPeriodMonths: details.periodMonths,
+        finalPlanCommercialHash,
         finalPlanConfirmedAt: null,
         finalPlanRevision,
         finalPlanSnapshot,
@@ -1862,9 +1932,14 @@ export class CustomerService {
         planConfirmStatus: PlanConfirmStatus.PENDING,
         productReviewStatus: OrderReviewStatus.APPROVED,
         rejectedReason: null,
+        softReservationExpiresAt:
+          before.softReservationExpiresAt ??
+          new Date(reservedAt.getTime() + 24 * 60 * 60 * 1000),
+        softReservedAt: reservedAt,
+        softReservedVehicleId: details.vehicle.id,
         status: ApplicationStatus.APPROVED,
         updatedBy: actor.id,
-        vehicleReviewStatus: OrderReviewStatus.PENDING
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
       },
       include: applicationInclude,
       where: { id: applicationId }
@@ -1877,12 +1952,16 @@ export class CustomerService {
       operator: actor,
       toStatus: ApplicationStatus.APPROVED
     });
-    await this.subscriptionJourneySignal?.completeManualDecision(tx, {
-      actorId: actor.id,
-      applicationId,
-      expectedStepCode: "FINAL_PLAN_DECISION",
-      payload: { finalPlanRevision }
-    });
+    await this.subscriptionJourneySignal?.completeFinalPlanAndVehicleAllocation(
+      tx,
+      {
+        actorId: actor.id,
+        applicationId,
+        finalPlanCommercialHash,
+        finalPlanRevision,
+        vehicleId: details.vehicle.id
+      }
+    );
     return application;
   }
 
@@ -3322,7 +3401,10 @@ async function assertJourneyVehicleAllocationAllowed(
   }
 }
 
-function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails) {
+function assertApplicationReadyForFinalPlan(
+  application: ApplicationWithDetails,
+  input?: JourneyFinalPlanDecisionInput
+) {
   if (
     application.materialReviewStatus !== OrderReviewStatus.APPROVED ||
     application.creditReviewStatus !== OrderReviewStatus.APPROVED
@@ -3332,13 +3414,7 @@ function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails)
   if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
     throw new BadRequestException("押金确认后才可以确认最终方案。");
   }
-  resolveApplicationFinalPlanInput(application);
-  if (
-    application.applicationSource !== ApplicationSource.SELF_SERVICE &&
-    application.finalVehicleBaseFeeAmount === null
-  ) {
-    throw new BadRequestException("进件缺少最终车辆基础费，无法确认最终方案。");
-  }
+  resolveApplicationFinalPlanInput(application, input);
 }
 
 function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {

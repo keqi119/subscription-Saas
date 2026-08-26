@@ -532,7 +532,7 @@ describe("application self-service review APIs", () => {
     );
   });
 
-  it("applies a journey final-plan decision as revision one without allocating the vehicle", async () => {
+  it("publishes revision one only after atomically holding the final vehicle", async () => {
     const harness = createApplicationReviewHarness({
       application: readyToFinalizeApplication()
     });
@@ -552,25 +552,224 @@ describe("application self-service review APIs", () => {
     expect(application).toEqual(
       expect.objectContaining({
         customerConfirmedPlanRevision: null,
+        finalPlanCommercialHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         finalPlanRevision: 1,
         planConfirmStatus: PlanConfirmStatus.PENDING,
         productReviewStatus: OrderReviewStatus.APPROVED,
-        vehicleReviewStatus: OrderReviewStatus.PENDING
+        softReservedVehicleId: harness.vehicle.id,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
       })
     );
     expect(application.finalPlanSnapshot).toEqual(
       expect.objectContaining({ finalPlanRevision: 1 })
     );
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledWith(
+    expect(
+      harness.journeySignal.completeFinalPlanAndVehicleAllocation
+    ).toHaveBeenCalledWith(
       harness.tx,
       {
         actorId: harness.user.id,
         applicationId: harness.application.id,
-        expectedStepCode: "FINAL_PLAN_DECISION",
-        payload: { finalPlanRevision: 1 }
+        finalPlanCommercialHash: application.finalPlanCommercialHash,
+        finalPlanRevision: 1,
+        vehicleId: harness.vehicle.id
       }
     );
+    expect(harness.journeySignal.completeManualDecision).not.toHaveBeenCalled();
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
+  });
+
+  it("soft-reserves an available assisted-sale vehicle before publishing the plan", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToFinalizeApplication(),
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      vehicle: { status: VehicleStatus.AVAILABLE }
+    });
+
+    const application = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {
+        finalPeriodMonths: 12,
+        finalSubscriptionPlanId: harness.plan.id,
+        finalVehicleId: harness.vehicle.id
+      },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.tx.vehicle.updateMany).toHaveBeenCalledWith({
+      data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: harness.user.id },
+      where: {
+        deletedAt: null,
+        id: harness.vehicle.id,
+        status: VehicleStatus.AVAILABLE
+      }
+    });
+    expect(application).toEqual(
+      expect.objectContaining({
+        softReservedVehicleId: harness.vehicle.id,
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
+      })
+    );
+    expect(application.finalPlanSnapshot).toEqual(
+      expect.objectContaining({
+        vehicleSnapshot: expect.objectContaining({
+          status: VehicleStatus.REVIEW_RESERVED
+        })
+      })
+    );
+  });
+
+  it("does not republish an assisted plan when the legacy route observes its hold", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToFinalizeApplication(),
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      vehicle: { status: VehicleStatus.AVAILABLE }
+    });
+    const planned = await harness.service.applyJourneyFinalPlanDecision(
+      harness.tx as never,
+      harness.application.id,
+      {
+        finalPeriodMonths: 12,
+        finalSubscriptionPlanId: harness.plan.id,
+        finalVehicleId: harness.vehicle.id
+      },
+      harness.user,
+      harness.context
+    );
+    await harness.tx.application.update({
+      data: {
+        customerConfirmedPlanRevision: planned.finalPlanRevision,
+        planConfirmStatus: PlanConfirmStatus.CONFIRMED
+      }
+    });
+
+    const result = await harness.service.allocateJourneyVehicle(
+      harness.tx as never,
+      harness.application.id,
+      harness.vehicle.id,
+      harness.user,
+      harness.context
+    );
+
+    expect(result.requiresCustomerReconfirmation).toBe(false);
+    expect(result.application.finalPlanRevision).toBe(1);
+    expect(
+      harness.journeySignal.requireCustomerReconfirmationAfterManualDecision
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the plan and vehicle hold when Journey publication fails", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToFinalizeApplication(),
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      vehicle: { status: VehicleStatus.AVAILABLE }
+    });
+    harness.journeySignal.completeFinalPlanAndVehicleAllocation.mockRejectedValueOnce(
+      new Error("simulated journey failure")
+    );
+
+    await expect(
+      harness.prisma.$transaction((tx: typeof harness.tx) =>
+        harness.service.applyJourneyFinalPlanDecision(
+          tx as never,
+          harness.application.id,
+          {
+            finalPeriodMonths: 12,
+            finalSubscriptionPlanId: harness.plan.id,
+            finalVehicleId: harness.vehicle.id
+          },
+          harness.user,
+          harness.context
+        )
+      )
+    ).rejects.toThrow("simulated journey failure");
+
+    expect(harness.state.application).toEqual(
+      expect.objectContaining({
+        finalPlanCommercialHash: null,
+        finalPlanRevision: 0,
+        softReservedVehicleId: null,
+        vehicleReviewStatus: OrderReviewStatus.PENDING
+      })
+    );
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+  });
+
+  it("allows only the first competing application to publish one vehicle", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        ...readyToFinalizeApplication(),
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      vehicle: { status: VehicleStatus.AVAILABLE }
+    });
+
+    await harness.prisma.$transaction((tx: typeof harness.tx) =>
+      harness.service.applyJourneyFinalPlanDecision(
+        tx as never,
+        harness.application.id,
+        {
+          finalPeriodMonths: 12,
+          finalSubscriptionPlanId: harness.plan.id,
+          finalVehicleId: harness.vehicle.id
+        },
+        harness.user,
+        harness.context
+      )
+    );
+    harness.state.application = makeApplication(
+      new Date("2026-06-05T10:00:00.000Z"),
+      {
+        ...readyToFinalizeApplication(),
+        applicationNo: "APP202606050002",
+        applicationSource: ApplicationSource.SALES_ASSISTED,
+        id: "application-2",
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      }
+    );
+
+    await expect(
+      harness.prisma.$transaction((tx: typeof harness.tx) =>
+        harness.service.applyJourneyFinalPlanDecision(
+          tx as never,
+          harness.state.application.id,
+          {
+            finalPeriodMonths: 12,
+            finalSubscriptionPlanId: harness.plan.id,
+            finalVehicleId: harness.vehicle.id
+          },
+          harness.user,
+          harness.context
+        )
+      )
+    ).rejects.toMatchObject({
+      code: "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE"
+    });
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.REVIEW_RESERVED);
+    expect(
+      harness.journeySignal.completeFinalPlanAndVehicleAllocation
+    ).toHaveBeenCalledOnce();
   });
 
   it("keeps the existing finalize endpoint as the journey final-plan decision entry", async () => {
@@ -588,10 +787,13 @@ describe("application self-service review APIs", () => {
     expect(application).toEqual(
       expect.objectContaining({
         finalPlanRevision: 1,
-        vehicleReviewStatus: OrderReviewStatus.PENDING
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
       })
     );
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledOnce();
+    expect(
+      harness.journeySignal.completeFinalPlanAndVehicleAllocation
+    ).toHaveBeenCalledOnce();
+    expect(harness.journeySignal.completeManualDecision).not.toHaveBeenCalled();
   });
 
   it("rejects journey vehicle allocation before exact customer confirmation", async () => {
@@ -748,7 +950,7 @@ describe("application self-service review APIs", () => {
         vehicleReviewStatus: OrderReviewStatus.APPROVED
       })
     );
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(2);
+    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledOnce();
   });
 
   it("keeps the allocated vehicle held while changed terms wait for reconfirmation", async () => {
@@ -797,7 +999,7 @@ describe("application self-service review APIs", () => {
       finalPlanRevision: 2,
       vehicleId: harness.vehicle.id
     });
-    expect(harness.journeySignal.completeManualDecision).toHaveBeenCalledTimes(1);
+    expect(harness.journeySignal.completeManualDecision).not.toHaveBeenCalled();
   });
 
   it("transfers the review hold to a different available final vehicle before reconfirmation", async () => {
@@ -1347,7 +1549,17 @@ function createApplicationReviewHarness(overrides: {
     }
   };
   const prisma = {
-    $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => callback(tx)),
+    $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<unknown>) => {
+      const applicationBefore = state.application;
+      const vehicleStatusBefore = state.vehicleStatus;
+      try {
+        return await callback(tx);
+      } catch (error) {
+        state.application = applicationBefore;
+        state.vehicleStatus = vehicleStatusBefore;
+        throw error;
+      }
+    }),
     application: {
       findMany: vi.fn(async () =>
         state.application.applicationSource === ApplicationSource.SELF_SERVICE
@@ -1362,6 +1574,7 @@ function createApplicationReviewHarness(overrides: {
   };
   const auditService = { write: vi.fn(async () => undefined) };
   const journeySignal = {
+    completeFinalPlanAndVehicleAllocation: vi.fn(async () => undefined),
     completeManualDecision: vi.fn(async () => undefined),
     record: vi.fn(async () => undefined),
     requireCustomerReconfirmationAfterManualDecision: vi.fn(
@@ -1549,6 +1762,7 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
     depositStatus: DepositStatus.PENDING_CONFIRM,
     finalDepositAmount: null,
     finalPeriodMonths: null,
+    finalPlanCommercialHash: null,
     finalPlanConfirmedAt: null,
     finalPlanRevision: 0,
     customerConfirmedPlanRevision: null,

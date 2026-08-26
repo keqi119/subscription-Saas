@@ -34,6 +34,8 @@ import { TEST_MODEL_CODES } from "./helpers/vehicle-model-codes";
 import { PortalApplicationService } from "../src/portal/portal-application.service";
 import { PortalCatalogService } from "../src/portal/portal-catalog.service";
 
+const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
+
 describe("PortalCatalogService", () => {
   it("lists public vehicles without internal asset fields", async () => {
     const prisma = createCatalogPrisma();
@@ -804,7 +806,10 @@ describe("PortalApplicationService", () => {
     await expect(
       harness.service.confirmFinalPlan(
         "application-1",
-        { revision: 1 },
+        {
+          commercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+          revision: 1
+        },
         currentCustomer("customer-1"),
         requestContext()
       )
@@ -812,7 +817,10 @@ describe("PortalApplicationService", () => {
 
     const result = await harness.service.confirmFinalPlan(
       "application-1",
-      { revision: 2 },
+      {
+        commercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        revision: 2
+      },
       currentCustomer("customer-1"),
       requestContext()
     );
@@ -826,6 +834,7 @@ describe("PortalApplicationService", () => {
       harness.customerService.recordJourneyCustomerPlanConfirmation
     ).toHaveBeenCalledWith(harness.tx, {
       applicationId: "application-1",
+      commercialHash: FINAL_PLAN_COMMERCIAL_HASH,
       revision: 2
     });
     expect(harness.tx.application.updateMany).toHaveBeenCalledWith(
@@ -1134,6 +1143,7 @@ function readyFinalPlanApplication(overrides: Record<string, unknown> = {}) {
     depositStatus: DepositStatus.CONFIRMED,
     finalDepositAmount: 300000n,
     finalPeriodMonths: 12,
+    finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
     finalPlanRevision: 1,
     finalPlanSnapshot: createFinalPlanSnapshot(),
     finalQuoteSnapshot: createFinalPlanSnapshot(),
@@ -1224,6 +1234,7 @@ function createApplication(overrides: Record<string, unknown> = {}) {
     depositRuleId: null,
     depositRuleSnapshot: null,
     depositStatus: DepositStatus.PENDING_CONFIRM,
+    finalPlanCommercialHash: null,
     finalDepositAmount: null,
     finalPeriodMonths: null,
     finalPlanRevision: 0,

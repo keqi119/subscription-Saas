@@ -6,7 +6,9 @@ import {
   SubscriptionJourneyEventType,
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyJobType,
-  SubscriptionJourneyStepCode
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -18,6 +20,8 @@ import type {
   ClaimedJourneyJob,
   ClaimedJourneyOutbox
 } from "../src/subscription-journey/subscription-journey.types";
+
+const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
 
 describe("subscription journey application validation", () => {
   it("runs validation and completes APPLICATION_VALIDATION in one transaction", async () => {
@@ -472,9 +476,12 @@ describe("subscription journey application dispatch", () => {
 
     expect(repository.waitForCustomer).toHaveBeenCalledWith(tx, {
       eventKey: "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:revision:1:waiting",
-      expectedVersion: 2,
+      expectedVersion: 3,
       journeyId: "journey-1",
-      payload: { finalPlanRevision: 1 },
+      payload: {
+        finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        finalPlanRevision: 1
+      },
       stepId: "step-customer-confirmation"
     });
   });
@@ -491,14 +498,23 @@ describe("subscription journey application dispatch", () => {
     await service.dispatchSignalOutbox(tx as never, {
       ...validationOutbox(),
       eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
-      payload: { revision: 1, signalType: "CUSTOMER_PLAN_CONFIRMED" }
+      payload: {
+        commercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        revision: 1,
+        signalType: "CUSTOMER_PLAN_CONFIRMED"
+      }
     });
 
     expect(repository.completeStep).toHaveBeenCalledWith(tx, {
-      eventKey: "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:revision:1:completed",
-      expectedVersion: 2,
+      eventKey:
+        "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:" +
+        `revision:1:hash:${"a".repeat(16)}:completed`,
+      expectedVersion: 3,
       journeyId: "journey-1",
-      payload: { finalPlanRevision: 1 },
+      payload: {
+        finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        finalPlanRevision: 1
+      },
       stepId: "step-customer-confirmation"
     });
     expect(repository.waitForCustomer).not.toHaveBeenCalled();
@@ -506,6 +522,53 @@ describe("subscription journey application dispatch", () => {
 });
 
 describe("subscription journey manual application decisions", () => {
+  it("completes final-plan and vehicle-allocation steps before customer confirmation", async () => {
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      decideManualTask: vi.fn(async () => undefined)
+    };
+    const tx = manualDecisionTransaction(
+      SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    );
+    const service = new SubscriptionJourneySignalService(
+      repository as never,
+      {} as never
+    );
+    const commercialHash = `sha256:${"a".repeat(64)}`;
+
+    await service.completeFinalPlanAndVehicleAllocation(tx as never, {
+      actorId: "00000000-0000-4000-8000-000000000001",
+      applicationId: "application-1",
+      finalPlanCommercialHash: commercialHash,
+      finalPlanRevision: 1,
+      vehicleId: "vehicle-1"
+    });
+
+    expect(repository.decideManualTask).toHaveBeenCalledOnce();
+    expect(repository.completeStep).toHaveBeenNthCalledWith(1, tx, {
+      eventKey: `journey:journey-1:step:FINAL_PLAN_DECISION:revision:1:hash:${"a".repeat(16)}`,
+      expectedVersion: 2,
+      journeyId: "journey-1",
+      payload: {
+        finalPlanCommercialHash: commercialHash,
+        finalPlanRevision: 1,
+        vehicleId: "vehicle-1"
+      },
+      stepId: "step-manual"
+    });
+    expect(repository.completeStep).toHaveBeenNthCalledWith(2, tx, {
+      eventKey: `journey:journey-1:step:FINAL_VEHICLE_ALLOCATION:revision:1:hash:${"a".repeat(16)}`,
+      expectedVersion: 3,
+      journeyId: "journey-1",
+      payload: {
+        finalPlanCommercialHash: commercialHash,
+        finalPlanRevision: 1,
+        vehicleId: "vehicle-1"
+      },
+      stepId: "step-vehicle-allocation"
+    });
+  });
+
   it("decides and completes a manual step through the transaction signal boundary", async () => {
     const repository = {
       completeStep: vi.fn(async () => undefined),
@@ -577,6 +640,57 @@ describe("subscription journey manual application decisions", () => {
   });
 });
 
+describe("subscription journey final-plan command replay", () => {
+  it("returns the committed publication for an exact stale-version replay", async () => {
+    const harness = finalPlanReplayHarness();
+
+    await expect(
+      harness.service.decideFinalPlan(
+        "journey-1",
+        {
+          finalPeriodMonths: 12,
+          finalSubscriptionPlanId: "plan-1",
+          finalVehicleId: "vehicle-1",
+          version: 2
+        },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toEqual({
+      applicationId: "application-1",
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+      finalPlanRevision: 1,
+      finalVehicleId: "vehicle-1",
+      journeyId: "journey-1",
+      replayed: true
+    });
+    expect(
+      harness.customerService.applyJourneyFinalPlanDecision
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects payload drift after the publication was committed", async () => {
+    const harness = finalPlanReplayHarness();
+
+    await expect(
+      harness.service.decideFinalPlan(
+        "journey-1",
+        {
+          finalPeriodMonths: 24,
+          finalSubscriptionPlanId: "plan-1",
+          finalVehicleId: "vehicle-1",
+          version: 2
+        },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
+    expect(
+      harness.customerService.applyJourneyFinalPlanDecision
+    ).not.toHaveBeenCalled();
+  });
+});
+
 function manualDecisionTransaction(stepCode: SubscriptionJourneyStepCode) {
   return {
     subscriptionJourney: {
@@ -595,6 +709,14 @@ function manualDecisionTransaction(stepCode: SubscriptionJourneyStepCode) {
         steps: [{ code: stepCode, id: "step-manual" }],
         version: 2
       }))
+    },
+    subscriptionJourneyStep: {
+      upsert: vi.fn(async () => ({
+        code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+        id: "step-vehicle-allocation",
+        journeyId: "journey-1",
+        status: "PENDING"
+      }))
     }
   };
 }
@@ -603,7 +725,10 @@ function customerConfirmationTransaction() {
   return {
     subscriptionJourney: {
       findUnique: vi.fn(async () => ({
-        application: { finalPlanRevision: 1 },
+        application: {
+          finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+          finalPlanRevision: 1
+        },
         applicationId: "application-1",
         currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
         id: "journey-1",
@@ -615,8 +740,60 @@ function customerConfirmationTransaction() {
             journeyId: "journey-1"
           }
         ],
-        version: 2
+        version: 3
       }))
+    }
+  };
+}
+
+function finalPlanReplayHarness() {
+  const journey = {
+    application: {
+      finalPeriodMonths: 12,
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+      finalPlanRevision: 1,
+      finalSubscriptionPlanId: "plan-1",
+      finalVehicleId: "vehicle-1",
+      id: "application-1"
+    },
+    applicationId: "application-1",
+    currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+    id: "journey-1",
+    status: SubscriptionJourneyStatus.RUNNING,
+    steps: [
+      {
+        code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        status: SubscriptionJourneyStepStatus.COMPLETED
+      }
+    ],
+    version: 4
+  };
+  const tx = {
+    $queryRaw: vi.fn(async () => [{ id: journey.id }]),
+    subscriptionJourney: {
+      findUnique: vi.fn(async () => journey)
+    }
+  };
+  const prisma = transactionHost(tx);
+  const customerService = {
+    applyJourneyFinalPlanDecision: vi.fn(async () => undefined)
+  };
+  const service = new SubscriptionJourneyService(
+    {} as never,
+    prisma as never,
+    customerService as never
+  );
+  return {
+    context: { ipAddress: "127.0.0.1", userAgent: "vitest" },
+    customerService,
+    service,
+    user: {
+      id: "00000000-0000-4000-8000-000000000001",
+      menus: [],
+      name: "Admin",
+      permissions: [],
+      roles: ["ADMIN"],
+      username: "admin"
     }
   };
 }

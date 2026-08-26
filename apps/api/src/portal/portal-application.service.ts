@@ -257,11 +257,13 @@ export class PortalApplicationService {
     assertPortalFinalPlanPending(application);
     if (
       application.subscriptionJourney &&
-      dto.revision !== application.finalPlanRevision
+      (dto.revision !== application.finalPlanRevision ||
+        !application.finalPlanCommercialHash ||
+        dto.commercialHash !== application.finalPlanCommercialHash)
     ) {
       throw journeyError(
         "FINAL_PLAN_REVISION_STALE",
-        "The displayed final plan revision is stale."
+        "The displayed final plan revision or commercial hash is stale."
       );
     }
 
@@ -333,6 +335,7 @@ export class PortalApplicationService {
       if (application.subscriptionJourney) {
         await this.customerService.recordJourneyCustomerPlanConfirmation(tx, {
           applicationId: id,
+          commercialHash: application.finalPlanCommercialHash!,
           revision: dto.revision
         });
       }
@@ -1059,6 +1062,7 @@ function toPortalFinalPlanView(application: PortalApplication) {
   return {
     applicationId: application.id,
     applicationNo: application.applicationNo,
+    finalPlanCommercialHash: application.finalPlanCommercialHash,
     finalPlanRevision: application.finalPlanRevision,
     changes: buildFinalPlanChanges(application, {
       finalDepositAmount,

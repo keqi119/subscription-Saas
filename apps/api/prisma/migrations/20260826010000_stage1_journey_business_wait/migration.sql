@@ -65,7 +65,7 @@ $$;
 
 UPDATE "application"
 SET "final_plan_commercial_hash" = 'sha256:' || encode(
-  digest(
+  public.digest(
     convert_to(
       pg_temp.stage1_canonical_jsonb(
         jsonb_build_object(

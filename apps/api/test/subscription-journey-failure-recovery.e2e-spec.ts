@@ -10,6 +10,8 @@ import {
   SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -18,9 +20,8 @@ import { SubscriptionJourneyService } from "../src/subscription-journey/subscrip
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
 const ROLLBACK = new Error("ROLL_BACK_JOURNEY_RECOVERY_FIXTURE");
-const BUSINESS_WAIT_RECONCILIATION_MODULE = new URL(
-  "../../../scripts/stage1-journey-business-wait-reconcile.mjs",
-  import.meta.url
+const BUSINESS_WAIT_RECONCILIATION_MODULE = pathToFileURL(
+  resolve(__dirname, "../../../scripts/stage1-journey-business-wait-reconcile.mjs")
 ).href;
 type Tx = Prisma.TransactionClient;
 

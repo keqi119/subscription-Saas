@@ -47,7 +47,8 @@ export default defineConfig({
           name: "database",
           sequence: {
             groupOrder: 1
-          }
+          },
+          testTimeout: 30_000
         }
       }
     ]

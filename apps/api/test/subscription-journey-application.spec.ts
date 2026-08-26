@@ -367,6 +367,49 @@ describe("subscription journey application dispatch", () => {
     expect(repository.enqueueJob).not.toHaveBeenCalled();
   });
 
+  it("enqueues validation only for a newer validation-targeted fact version", async () => {
+    const repository = {
+      enqueueJob: vi.fn(async () => undefined),
+      enqueueNotificationOutbox: vi.fn(async () => undefined),
+      openManualTask: vi.fn(async () => undefined)
+    };
+    const tx = validationTransaction({ lastApplicationFactVersion: 2 });
+    const service = new SubscriptionJourneyService(repository as never);
+    const outbox = {
+      ...validationOutbox(),
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      payload: {
+        factType: "material",
+        factVersion: 3,
+        signalType: "APPLICATION_FACTS_CHANGED",
+        sourceActionId: "application-action-3",
+        targetStepCode: "APPLICATION_VALIDATION"
+      }
+    };
+
+    await service.dispatchSignalOutbox(tx as never, outbox);
+    await service.dispatchSignalOutbox(
+      validationTransaction({ lastApplicationFactVersion: 3 }) as never,
+      outbox
+    );
+
+    expect(repository.enqueueJob).toHaveBeenCalledOnce();
+    expect(repository.enqueueJob).toHaveBeenCalledWith(expect.anything(), {
+      jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+      journeyId: "journey-1",
+      payload: {
+        applicationId: "application-1",
+        factType: "material",
+        factVersion: 3,
+        sourceActionId: "application-action-3",
+        stepCode: "APPLICATION_VALIDATION"
+      },
+      sourceKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:3",
+      stepId: "step-validation"
+    });
+    expect(repository.openManualTask).not.toHaveBeenCalled();
+  });
+
   it("opens exactly one FINAL_PLAN_DECISION task when dispatch is replayed", async () => {
     const openTasks = new Map<string, unknown>();
     const repository = {
@@ -578,20 +621,22 @@ function customerConfirmationTransaction() {
   };
 }
 
-function validationTransaction() {
+function validationTransaction(overrides: Record<string, unknown> = {}) {
   return {
     subscriptionJourney: {
       findUnique: vi.fn(async () => ({
         applicationId: "application-1",
         currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
         id: "journey-1",
+        lastApplicationFactVersion: 0,
         steps: [
           {
             code: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
             id: "step-validation"
           }
         ],
-        version: 0
+        version: 0,
+        ...overrides
       }))
     }
   };

@@ -30,6 +30,7 @@ import {
   QuoteStatus,
   RecordStatus,
   SalePriceStatus,
+  SubscriptionJourneyStepCode,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleStatus
@@ -372,10 +373,20 @@ export class CustomerService {
       status: string;
     }
   ) {
+    const versioned = await tx.application.update({
+      data: { journeyFactVersion: { increment: 1 } },
+      select: { journeyFactVersion: true },
+      where: { id: input.applicationId }
+    });
     await this.subscriptionJourneySignal?.record(tx, {
       applicationId: input.applicationId,
       eventKey: `application:${input.applicationId}:facts:${input.fact}:${input.actionId}`,
-      payload: { fact: input.fact, status: input.status },
+      payload: {
+        factType: input.fact,
+        factVersion: versioned.journeyFactVersion,
+        sourceActionId: input.actionId,
+        targetStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+      },
       type: "APPLICATION_FACTS_CHANGED"
     });
   }

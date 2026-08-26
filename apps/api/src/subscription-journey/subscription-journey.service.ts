@@ -173,6 +173,32 @@ export class SubscriptionJourneyService {
       );
     }
     const current = await this.readCurrentJourney(tx, outbox.journeyId);
+    const applicationFacts = readApplicationFactsChanged(outbox);
+    if (applicationFacts) {
+      if (
+        current.currentStepCode !==
+        SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+      ) {
+        return;
+      }
+      if (applicationFacts.factVersion <= current.lastApplicationFactVersion) {
+        return;
+      }
+      await this.repository.enqueueJob(tx, {
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: current.id,
+        payload: {
+          applicationId: current.applicationId,
+          factType: applicationFacts.factType,
+          factVersion: applicationFacts.factVersion,
+          sourceActionId: applicationFacts.sourceActionId,
+          stepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+        },
+        sourceKey: `journey:${current.id}:step:APPLICATION_VALIDATION:facts:${applicationFacts.factVersion}`,
+        stepId: current.step.id
+      });
+      return;
+    }
     await this.repository.enqueueNotificationOutbox(tx, outbox);
     if (
       current.currentStepCode ===
@@ -1967,6 +1993,8 @@ const SAFE_JOURNEY_PAYLOAD_KEYS = new Set([
   "contractId",
   "decision",
   "deliveryId",
+  "factType",
+  "factVersion",
   "finalPlanRevision",
   "handoverId",
   "jobId",
@@ -1976,10 +2004,13 @@ const SAFE_JOURNEY_PAYLOAD_KEYS = new Set([
   "operation",
   "orderId",
   "remainingAmount",
+  "reasonCodes",
   "signalType",
+  "sourceActionId",
   "stepCode",
   "stepId",
   "taskId",
+  "targetStepCode",
   "vehicleId",
   "workOrderId"
 ]);
@@ -2281,6 +2312,35 @@ function stableStepSourceKey(
 ) {
   const base = `journey:${journeyId}:step:${stepCode}:revision:${finalPlanRevision}`;
   return factVersion === undefined ? base : `${base}:facts:${factVersion}`;
+}
+
+function readApplicationFactsChanged(outbox: ClaimedJourneyOutbox): null | {
+  factType: "credit" | "material" | "product";
+  factVersion: number;
+  sourceActionId: string;
+} {
+  if (outbox.eventType !== SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED) {
+    return null;
+  }
+  const payload = isRecord(outbox.payload) ? outbox.payload : {};
+  if (payload.signalType !== "APPLICATION_FACTS_CHANGED") return null;
+  if (
+    !(["credit", "material", "product"] as unknown[]).includes(payload.factType) ||
+    !Number.isSafeInteger(payload.factVersion) ||
+    Number(payload.factVersion) < 0 ||
+    typeof payload.sourceActionId !== "string" ||
+    payload.targetStepCode !== SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+  ) {
+    throw journeyError(
+      "JOURNEY_INVALID_TRANSITION",
+      "The application-facts signal is missing its target or observed fact version."
+    );
+  }
+  return {
+    factType: payload.factType as "credit" | "material" | "product",
+    factVersion: payload.factVersion as number,
+    sourceActionId: payload.sourceActionId
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

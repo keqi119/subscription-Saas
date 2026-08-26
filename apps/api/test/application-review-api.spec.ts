@@ -277,7 +277,55 @@ describe("application self-service review APIs", () => {
       applicationId: harness.application.id,
       eventKey:
         "application:application-1:facts:credit:application-action-1",
-      payload: { fact: "credit", status: OrderReviewStatus.APPROVED },
+      payload: {
+        factType: "credit",
+        factVersion: 1,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
+  });
+
+  it("increments one application fact version for each committed review mutation", async () => {
+    const harness = createApplicationReviewHarness();
+
+    await harness.service.reviewApplication(
+      harness.application.id,
+      "material",
+      { action: OrderReviewStatus.APPROVED },
+      harness.user,
+      harness.context
+    );
+    await harness.service.reviewApplication(
+      harness.application.id,
+      "credit",
+      { action: OrderReviewStatus.APPROVED, customerGrade: CustomerGrade.A },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.application.journeyFactVersion).toBe(2);
+    expect(harness.journeySignal.record).toHaveBeenNthCalledWith(1, harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: "application:application-1:facts:material:application-action-1",
+      payload: {
+        factType: "material",
+        factVersion: 1,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
+    expect(harness.journeySignal.record).toHaveBeenNthCalledWith(2, harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: "application:application-1:facts:credit:application-action-1",
+      payload: {
+        factType: "credit",
+        factVersion: 2,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
       type: "APPLICATION_FACTS_CHANGED"
     });
   });
@@ -1163,9 +1211,25 @@ function createApplicationReviewHarness(overrides: {
       }),
       findUniqueOrThrow: vi.fn(async () => state.application),
       findUnique: vi.fn(async () => state.application),
-      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        state.application = makeApplication(now, { ...state.application, ...data });
-        return state.application;
+      update: vi.fn(async ({ data, select }: { data: Record<string, unknown>; select?: Record<string, boolean> }) => {
+        const nextData = { ...data };
+        const factVersion = data.journeyFactVersion;
+        if (
+          typeof factVersion === "object" &&
+          factVersion !== null &&
+          "increment" in factVersion
+        ) {
+          nextData.journeyFactVersion =
+            Number(state.application.journeyFactVersion) +
+            Number((factVersion as { increment: number }).increment);
+        }
+        state.application = makeApplication(now, { ...state.application, ...nextData });
+        if (!select) return state.application;
+        return Object.fromEntries(
+          Object.entries(select)
+            .filter(([, included]) => included)
+            .map(([key]) => [key, state.application[key as keyof typeof state.application]])
+        );
       })
     },
     applicationActionLog: {
@@ -1505,6 +1569,7 @@ function makeApplication(now: Date, overrides: Record<string, unknown> = {}) {
     intentVehicleId: "vehicle-1",
     intendedModel: "NIO_ET5",
     intendedPeriodMonths: 12,
+    journeyFactVersion: 0,
     materialGroups: [],
     materialReviewStatus: OrderReviewStatus.PENDING,
     materials: [],

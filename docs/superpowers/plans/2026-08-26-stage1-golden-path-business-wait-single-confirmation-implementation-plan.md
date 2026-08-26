@@ -272,4 +272,4 @@
 3. Run `pnpm test` and `pnpm build`.
 4. Run migration checksum/status checks against the dedicated test database; run both reconciliation scripts in dry-run mode.
 5. Review `git diff`, ensure no credentials or unrelated changes, and update acceptance issue entries with commit/test evidence but not “closed” before Staging verification.
-6. Push PR A, require CI green, merge, deploy, and perform the six-step A-group Staging acceptance before beginning PR B.
+6. Push PR A, require CI green, merge, deploy, and run automated Staging smoke checks only. Do not request user acceptance; begin PR B after the smoke checks pass.

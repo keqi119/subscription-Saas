@@ -314,4 +314,4 @@
 4. Run `pnpm test` and `pnpm build`.
 5. Review concurrency/failure-injection evidence and verify no dual active change, dual vehicle period, or orphan reservation.
 6. Update `ACC-20260826-04` with commits/test evidence, but close only after Staging verification.
-7. Push PR B, require CI green, merge, deploy, and manually verify extension, swap, early termination, and managed-other entry before beginning PR C.
+7. Push PR B, require CI green, merge, deploy, and run automated Staging smoke checks for the four change types. Do not request user acceptance; begin PR C after the smoke checks pass.

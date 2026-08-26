@@ -3579,7 +3579,7 @@ describe("SubscriptionExpiryService governed normal-closure PostgreSQL boundary"
     } finally {
       await cleanupManagedExpiryFixture(prisma, fixture);
     }
-  }, 20_000);
+  });
 
   it("focuses physical receipt replay over every touched fact and audit", async () => {
     const scenario = await setupFocusedPhysicalReceipt(prisma);

@@ -54,6 +54,45 @@ describe("subscription journey application validation", () => {
     expect(prisma.$transaction).toHaveBeenCalledOnce();
   });
 
+  it("persists a manual business wait without completing validation", async () => {
+    const tx = validationTransaction();
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      waitForManual: vi.fn(async () => undefined)
+    };
+    const customerService = {
+      validateJourneyApplication: vi.fn(async () => ({
+        factVersion: 3,
+        outcome: "WAITING_MANUAL",
+        reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+      }))
+    };
+    const service = new SubscriptionJourneyService(
+      repository as never,
+      transactionHost(tx) as never,
+      customerService as never
+    );
+
+    await expect(service.validateApplicationJob(validationJob())).resolves.toEqual({
+      action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+      applicationId: "application-1",
+      factVersion: 3,
+      reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+    });
+    expect(repository.waitForManual).toHaveBeenCalledWith(tx, {
+      eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:3:waiting-manual",
+      expectedVersion: 0,
+      factVersion: 3,
+      journeyId: "journey-1",
+      payload: {
+        factVersion: 3,
+        reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+      },
+      stepId: "step-validation"
+    });
+    expect(repository.completeStep).not.toHaveBeenCalled();
+  });
+
   it("propagates stable validation errors without completing the step", async () => {
     const tx = validationTransaction();
     const repository = { completeStep: vi.fn(async () => undefined) };
@@ -128,6 +167,50 @@ describe("subscription journey application dispatch", () => {
         })
       )
     ).resolves.toEqual({ action: "ORDER_AND_CONTRACT_CREATED" });
+  });
+
+  it("ignores a validation-targeted fact signal after the journey has advanced", async () => {
+    const repository = {
+      enqueueJob: vi.fn(async () => undefined),
+      enqueueNotificationOutbox: vi.fn(async () => undefined),
+      openManualTask: vi.fn(async () => undefined)
+    };
+    const tx = {
+      subscriptionJourney: {
+        findUnique: vi.fn(async () => ({
+          application: { finalPlanRevision: 0 },
+          applicationId: "application-1",
+          currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+          currentStepStatus: "PENDING",
+          id: "journey-1",
+          orderId: null,
+          steps: [
+            {
+              code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+              id: "step-final-plan",
+              journeyId: "journey-1"
+            }
+          ],
+          version: 4
+        }))
+      }
+    };
+    const service = new SubscriptionJourneyService(repository as never);
+
+    await service.dispatchSignalOutbox(tx as never, {
+      ...validationOutbox(),
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      payload: {
+        factType: "credit",
+        factVersion: 3,
+        signalType: "APPLICATION_FACTS_CHANGED",
+        sourceActionId: "application-action-3",
+        targetStepCode: "APPLICATION_VALIDATION"
+      }
+    });
+
+    expect(repository.openManualTask).not.toHaveBeenCalled();
+    expect(repository.enqueueJob).not.toHaveBeenCalled();
   });
 
   it("opens exactly one FINAL_PLAN_DECISION task when dispatch is replayed", async () => {

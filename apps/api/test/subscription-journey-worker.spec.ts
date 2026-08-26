@@ -148,6 +148,30 @@ describe("SubscriptionJourneyWorker", () => {
     expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
   });
 
+  it("completes an application-review business wait without retry or dead-letter", async () => {
+    const job = claimedJob({ jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION });
+    const harness = createWorkerHarness({ jobs: [job] });
+    harness.handlers.handle.mockResolvedValueOnce({
+      action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+      applicationId: "application-1",
+      factVersion: 3,
+      reasonCodes: ["MATERIAL_REVIEW_PENDING"]
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.repository.completeJob).toHaveBeenCalledWith(
+      expect.anything(),
+      job.id,
+      job.leaseToken,
+      expect.objectContaining({
+        action: "APPLICATION_VALIDATION_WAITING_MANUAL"
+      })
+    );
+    expect(harness.repository.rescheduleJob).not.toHaveBeenCalled();
+    expect(harness.repository.deadLetterJob).not.toHaveBeenCalled();
+  });
+
   it("applies bounded jitter when rescheduling a retryable job", async () => {
     vi.spyOn(Math, "random").mockReturnValue(1);
     const job = claimedJob({ attemptCount: 0 });

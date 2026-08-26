@@ -67,7 +67,6 @@ describe("Stage 1 subscription Journey Golden Path", () => {
     expect(admin.manualTaskTypes).toEqual(portal.manualTaskTypes);
     expect(portal.manualTaskTypes).toEqual([
       "FINAL_PLAN_DECISION",
-      "FINAL_VEHICLE_ALLOCATION",
       "DELIVERY_EVIDENCE_DECISION"
     ]);
     expect(stripEntrySpecificFacts(admin)).toEqual(stripEntrySpecificFacts(portal));
@@ -98,12 +97,22 @@ async function driveGoldenPath(
       finalPeriodMonths: 12,
       finalPlanConfirmedAt: new Date("2026-08-06T00:01:00.000Z"),
       finalPlanRevision: 1,
-      finalPlanSnapshot: { revision: 1, source: "approved-final-plan" }
+      finalPlanSnapshot: { revision: 1, source: "approved-final-plan" },
+      finalVehicleId: ids.vehicleId,
+      softReservedVehicleId: ids.vehicleId
     },
     where: { id: ids.applicationId }
   });
   await completeCurrent(tx, repository, journey.id, "final-plan-approved");
 
+  expect((await current(tx, journey.id)).currentStepCode).toBe(
+    SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION
+  );
+  await completeCurrent(tx, repository, journey.id, "vehicle-allocated-with-final-plan");
+
+  expect((await current(tx, journey.id)).currentStepCode).toBe(
+    SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+  );
   await waitForCustomer(tx, repository, journey.id, "confirm-revision-1");
   await tx.application.update({
     data: {
@@ -113,15 +122,6 @@ async function driveGoldenPath(
     where: { id: ids.applicationId }
   });
   await completeCurrent(tx, repository, journey.id, "revision-1-confirmed");
-
-  await decideCurrentManualTask(tx, repository, journey.id, ids.userId, {
-    vehicleId: ids.vehicleId
-  });
-  await tx.application.update({
-    data: { finalVehicleId: ids.vehicleId, softReservedVehicleId: ids.vehicleId },
-    where: { id: ids.applicationId }
-  });
-  await completeCurrent(tx, repository, journey.id, "vehicle-allocated");
 
   await adapter.createOrderAndContract(source);
   await tx.subscriptionJourney.update({

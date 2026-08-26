@@ -20,8 +20,8 @@ import {
 const STEPS = [
   "APPLICATION_VALIDATION",
   "FINAL_PLAN_DECISION",
-  "CUSTOMER_PLAN_CONFIRMATION",
   "FINAL_VEHICLE_ALLOCATION",
+  "CUSTOMER_PLAN_CONFIRMATION",
   "ORDER_AND_CONTRACT_CREATION",
   "FADADA_SIGNING_AND_ARCHIVE",
   "INITIAL_BILLING",
@@ -68,6 +68,7 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
     );
 
     expect(planHtml).toContain(getRecommendedOperatorAction(plan).label);
+    expect(planHtml).toContain("提交最终方案并软锁车辆");
     expect(planHtml).not.toContain(getRecommendedOperatorAction(vehicle).label);
     expect(planHtml.match(/<button/g)).toHaveLength(1);
     expect(deniedHtml).not.toContain("<button");

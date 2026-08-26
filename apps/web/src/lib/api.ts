@@ -88,9 +88,9 @@ export async function loadAdminJourneyByOrder(orderId: string) {
 export function decideJourneyFinalPlan(
   journeyId: string,
   input: {
-    finalPeriodMonths?: number;
-    finalSubscriptionPlanId?: string;
-    finalVehicleId?: string;
+    finalPeriodMonths: number;
+    finalSubscriptionPlanId: string;
+    finalVehicleId: string;
     version: number;
   }
 ) {

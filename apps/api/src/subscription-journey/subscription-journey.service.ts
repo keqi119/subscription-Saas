@@ -2152,7 +2152,10 @@ function toAdminJourneyProjection(journey: AdminJourney, user: RequestUser) {
       lastErrorCode: step.lastErrorCode,
       startedAt: step.startedAt,
       status: step.status,
-      waitingAt: step.waitingAt
+      waitingAt: step.waitingAt,
+      waitingReasonSnapshot: sanitizeJourneyPayload(
+        step.waitingReasonSnapshot
+      )
     })),
     version: journey.version
   };
@@ -2222,6 +2225,18 @@ function portalJourneyNextAction(
   }
   if (
     journey.currentStepCode ===
+      SubscriptionJourneyStepCode.APPLICATION_VALIDATION &&
+    journey.currentStepStatus ===
+      SubscriptionJourneyStepStatus.WAITING_CUSTOMER
+  ) {
+    return {
+      href: links.application,
+      label: "补充申请资料",
+      type: "SUPPLEMENT_APPLICATION_MATERIALS"
+    };
+  }
+  if (
+    journey.currentStepCode ===
       SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION &&
     journey.currentStepStatus ===
       SubscriptionJourneyStepStatus.WAITING_CUSTOMER
@@ -2269,6 +2284,23 @@ function portalJourneyNextAction(
 }
 
 function portalBlockerText(journey: PortalJourney) {
+  if (
+    journey.currentStepCode ===
+      SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+  ) {
+    if (
+      journey.currentStepStatus ===
+      SubscriptionJourneyStepStatus.WAITING_CUSTOMER
+    ) {
+      return "请补充申请资料后重新提交审核。";
+    }
+    if (
+      journey.currentStepStatus ===
+      SubscriptionJourneyStepStatus.WAITING_MANUAL
+    ) {
+      return "平台正在完成材料、信用与押金审核。";
+    }
+  }
   if (journey.status === SubscriptionJourneyStatus.EXCEPTION) {
     return "流程暂时受阻，请联系客户支持，我们会协助处理。";
   }

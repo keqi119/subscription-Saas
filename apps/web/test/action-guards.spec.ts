@@ -230,7 +230,7 @@ describe("action guards", () => {
 
   it.each([
     ["FINAL_PLAN_DECISION", "subscription_journey:plan_decide"],
-    ["FINAL_VEHICLE_ALLOCATION", "subscription_journey:vehicle_allocate"],
+    ["LEGACY_FINAL_VEHICLE_ALLOCATION", "subscription_journey:vehicle_allocate"],
     ["DELIVERY_EVIDENCE_DECISION", "subscription_journey:delivery_evidence_decide"],
     ["RETRY", "subscription_journey:recover"],
     ["PAUSE", "subscription_journey:recover"],

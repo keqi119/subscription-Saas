@@ -12,6 +12,7 @@ export interface AdminSubscriptionJourneyStep {
   startedAt: string | null;
   status: string;
   waitingAt: string | null;
+  waitingReasonSnapshot?: Record<string, unknown> | null;
 }
 
 export interface AdminSubscriptionJourneyTask {
@@ -28,6 +29,7 @@ export interface AdminSubscriptionJourney {
     applicationSource?: string;
     customerId?: string;
     finalPlanSnapshot?: Record<string, unknown> | null;
+    finalPlanCommercialHash?: string | null;
     finalPlanRevision?: number;
     finalVehicleId?: string | null;
     id: string;
@@ -147,7 +149,7 @@ const OPERATOR_ACTION_LABELS: Record<string, string> = {
   CANCEL: "取消流程",
   DELIVERY_EVIDENCE_DECISION: "复核交付证据",
   FINAL_PLAN_DECISION: "提交最终方案",
-  FINAL_VEHICLE_ALLOCATION: "确认分配车辆",
+  LEGACY_FINAL_VEHICLE_ALLOCATION: "恢复车辆分配",
   PAUSE: "暂停流程",
   RESUME: "恢复流程",
   RETRY: "重试失败步骤"
@@ -155,7 +157,7 @@ const OPERATOR_ACTION_LABELS: Record<string, string> = {
 
 const ACTION_PRIORITY = [
   "FINAL_PLAN_DECISION",
-  "FINAL_VEHICLE_ALLOCATION",
+  "LEGACY_FINAL_VEHICLE_ALLOCATION",
   "DELIVERY_EVIDENCE_DECISION",
   "RETRY",
   "RESUME",
@@ -179,6 +181,59 @@ export function getCurrentJourneyStepSummary(journey: AdminSubscriptionJourney) 
   const step = getSubscriptionJourneyStepPresentation(journey.currentStepCode);
   const status = getStepStatusPresentation(journey.currentStepStatus);
   return `${step.label} · ${status.label}`;
+}
+
+const APPLICATION_WAIT_REASON_LABELS: Record<string, string> = {
+  CREDIT_REVIEW_PENDING: "信用审核",
+  CREDIT_SUPPLEMENT_REQUIRED: "信用资料补充",
+  DEPOSIT_CONFIRMATION_PENDING: "押金方案确认",
+  MATERIAL_REVIEW_PENDING: "材料审核",
+  MATERIAL_SUPPLEMENT_REQUIRED: "申请资料补充",
+  PRICING_CONFIGURATION_INVALID: "价格配置处理",
+  PRODUCT_SELECTION_INVALID: "订阅套餐调整",
+  PRODUCT_SELECTION_REQUIRED: "订阅套餐确认",
+  VEHICLE_SELECTION_INVALID: "车辆选择调整",
+  VEHICLE_UNAVAILABLE: "车辆库存处理"
+};
+
+export function getApplicationValidationWaitPresentation(
+  journey: AdminSubscriptionJourney
+) {
+  if (
+    journey.currentStepCode !== "APPLICATION_VALIDATION" ||
+    !["WAITING_MANUAL", "WAITING_CUSTOMER"].includes(
+      journey.currentStepStatus
+    )
+  ) {
+    return null;
+  }
+  const step = journey.steps.find(
+    ({ code }) => code === "APPLICATION_VALIDATION"
+  );
+  const snapshot = readRecord(step?.waitingReasonSnapshot);
+  const reasonCodes = Array.isArray(snapshot?.reasonCodes)
+    ? snapshot.reasonCodes.filter(
+        (value): value is string => typeof value === "string"
+      )
+    : [];
+  const reasons = reasonCodes.map(
+    (code) => APPLICATION_WAIT_REASON_LABELS[code] ?? "业务资料处理"
+  );
+  const waitingForCustomer =
+    journey.currentStepStatus === "WAITING_CUSTOMER";
+  return {
+    description:
+      reasons.length > 0
+        ? `等待${[...new Set(reasons)].join("、")}`
+        : waitingForCustomer
+          ? "等待客户补充申请资料"
+          : "等待人工完成进件审核",
+    factVersion: readNonNegativeInteger(snapshot?.factVersion),
+    title: waitingForCustomer
+      ? "进件校验 · 等待客户补件"
+      : "进件校验 · 等待人工",
+    waitingAt: step?.waitingAt ?? null
+  };
 }
 
 export function getJourneyVehicleConfirmation(
@@ -315,4 +370,10 @@ function readRecord(value: unknown): Record<string, unknown> | null {
 
 function readPositiveInteger(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function readNonNegativeInteger(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
 }

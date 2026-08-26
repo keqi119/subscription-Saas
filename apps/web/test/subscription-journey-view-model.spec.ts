@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   getCustomerWaitLabel,
+  getApplicationValidationWaitPresentation,
   getJourneyStatusPresentation,
   getRecommendedOperatorAction,
   getSafeJourneyExceptionMessage,
@@ -131,6 +132,42 @@ describe("subscription journey view model", () => {
       action: null,
       label: "当前无需人工操作",
       reason: "流程正在自动推进或等待客户处理"
+    });
+  });
+
+  it("explains application-validation business waits from structured reasons", () => {
+    expect(
+      getApplicationValidationWaitPresentation(
+        journey({
+          currentStepCode: "APPLICATION_VALIDATION",
+          currentStepStatus: "WAITING_MANUAL",
+          status: "WAITING_MANUAL",
+          steps: [
+            {
+              attemptCount: 1,
+              code: "APPLICATION_VALIDATION",
+              completedAt: null,
+              id: "step-validation",
+              lastErrorCode: null,
+              startedAt: "2026-08-26T08:00:00.000Z",
+              status: "WAITING_MANUAL",
+              waitingAt: "2026-08-26T08:05:00.000Z",
+              waitingReasonSnapshot: {
+                factVersion: 3,
+                reasonCodes: [
+                  "MATERIAL_REVIEW_PENDING",
+                  "DEPOSIT_CONFIRMATION_PENDING"
+                ]
+              }
+            }
+          ]
+        })
+      )
+    ).toEqual({
+      description: "等待材料审核、押金方案确认",
+      factVersion: 3,
+      title: "进件校验 · 等待人工",
+      waitingAt: "2026-08-26T08:05:00.000Z"
     });
   });
 });

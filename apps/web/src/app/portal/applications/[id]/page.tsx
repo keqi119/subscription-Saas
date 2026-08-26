@@ -176,17 +176,25 @@ export default function PortalApplicationDetailPage() {
   }
 
   async function confirmFinalPlan() {
-    if (!params.id || !finalPlan?.finalPlanRevision) {
+    if (
+      !params.id ||
+      !finalPlan?.finalPlanRevision ||
+      !finalPlan.finalPlanCommercialHash
+    ) {
       void message.error("最终方案版本不可用，请刷新页面后重试");
       return;
     }
 
     try {
       setFinalPlanSubmitting(true);
-      await portalApiFetch(
+      const confirmed = await portalApiFetch<PortalFinalPlan>(
         `/portal/applications/${params.id}/final-plan/confirm`,
-        buildPortalFinalPlanConfirmationRequest(finalPlan.finalPlanRevision)
+        buildPortalFinalPlanConfirmationRequest(
+          finalPlan.finalPlanRevision,
+          finalPlan.finalPlanCommercialHash
+        )
       );
+      setFinalPlan(confirmed);
       void message.success("已确认最终方案，等待平台生成正式订单");
       await loadApplication();
     } catch (error) {
@@ -262,7 +270,10 @@ export default function PortalApplicationDetailPage() {
     );
   }
 
-  const canConfirmFinalPlan = finalPlan?.finalPlanStatus === "PENDING_CONFIRM" &&
+  const canConfirmFinalPlan =
+    finalPlan?.finalPlanStatus === "PENDING_CONFIRM" &&
+    Boolean(finalPlan.finalPlanRevision) &&
+    Boolean(finalPlan.finalPlanCommercialHash) &&
     progress?.nextAction === "CONFIRM_FINAL_PLAN";
   const canRejectFinalPlan = canConfirmFinalPlan;
   const nextActionCard = buildPortalApplicationNextActionCard(progress, application.nextStepHint);

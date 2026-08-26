@@ -24,6 +24,7 @@ import {
 } from "../../lib/api";
 import {
   getCurrentJourneyStepSummary,
+  getApplicationValidationWaitPresentation,
   getJourneyVehicleConfirmation,
   getJourneyStatusPresentation,
   type AdminSubscriptionJourney
@@ -55,20 +56,30 @@ export function ApplicationJourneyActions({
     permissions
   );
   const vehicleAvailability = canRunSubscriptionJourneyAction(
-    "FINAL_VEHICLE_ALLOCATION",
+    "LEGACY_FINAL_VEHICLE_ALLOCATION",
     journey.availableActions,
     permissions
   );
+  const validationWait = getApplicationValidationWaitPresentation(journey);
+  const canSubmitPlan =
+    Number.isSafeInteger(finalPeriodMonths) &&
+    Number(finalPeriodMonths) > 0 &&
+    Boolean(finalSubscriptionPlanId.trim()) &&
+    Boolean(finalVehicleId.trim());
 
   async function submitPlan() {
+    if (!canSubmitPlan || finalPeriodMonths === undefined) {
+      void message.warning("请完整填写订阅月数、订阅套餐和最终车辆");
+      return;
+    }
     setSubmitting(true);
     try {
       await runJourneyMutation(
         () =>
           decideJourneyFinalPlan(journey.id, {
             finalPeriodMonths,
-            finalSubscriptionPlanId: finalSubscriptionPlanId.trim() || undefined,
-            finalVehicleId: finalVehicleId.trim() || undefined,
+            finalSubscriptionPlanId: finalSubscriptionPlanId.trim(),
+            finalVehicleId: finalVehicleId.trim(),
             version: journey.version
           }),
         onChanged
@@ -116,32 +127,62 @@ export function ApplicationJourneyActions({
     >
       <Space orientation="vertical" size={12} style={{ width: "100%" }}>
         <Typography.Text>{getCurrentJourneyStepSummary(journey)}</Typography.Text>
+        {validationWait ? (
+          <Alert
+            description={
+              <Space orientation="vertical" size={2}>
+                <Typography.Text>{validationWait.description}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {validationWait.factVersion === null
+                    ? "等待最新业务事实"
+                    : `事实版本 ${validationWait.factVersion}`}
+                  {validationWait.waitingAt
+                    ? ` · 更新于 ${new Date(validationWait.waitingAt).toLocaleString("zh-CN", { hour12: false })}`
+                    : ""}
+                </Typography.Text>
+              </Space>
+            }
+            showIcon
+            title={validationWait.title}
+            type={journey.currentStepStatus === "WAITING_CUSTOMER" ? "warning" : "info"}
+          />
+        ) : null}
         {planAvailability.allowed ? (
-          <Space wrap>
-            <InputNumber
-              aria-label="订阅月数"
-              min={1}
-              onChange={(value) => setFinalPeriodMonths(value ?? undefined)}
-              placeholder="订阅月数"
-              value={finalPeriodMonths}
-            />
-            <Input
-              aria-label="订阅套餐 ID"
-              onChange={(event) => setFinalSubscriptionPlanId(event.target.value)}
-              placeholder="订阅套餐 ID（可选）"
-              style={{ width: 240 }}
-              value={finalSubscriptionPlanId}
-            />
-            <Input
-              aria-label="最终车辆 ID"
-              onChange={(event) => setFinalVehicleId(event.target.value)}
-              placeholder="最终车辆 ID（可选）"
-              style={{ width: 240 }}
-              value={finalVehicleId}
-            />
-            <Button loading={submitting} onClick={() => void submitPlan()} type="primary">
-              提交最终方案
-            </Button>
+          <Space orientation="vertical" size={8} style={{ width: "100%" }}>
+            <Typography.Text type="secondary">
+              请一次填写完整方案。提交后将软锁车辆并开放客户确认。
+            </Typography.Text>
+            <Space wrap>
+              <InputNumber
+                aria-label="订阅月数"
+                min={1}
+                onChange={(value) => setFinalPeriodMonths(value ?? undefined)}
+                placeholder="订阅月数"
+                value={finalPeriodMonths}
+              />
+              <Input
+                aria-label="订阅套餐 ID"
+                onChange={(event) => setFinalSubscriptionPlanId(event.target.value)}
+                placeholder="订阅套餐 ID"
+                style={{ width: 240 }}
+                value={finalSubscriptionPlanId}
+              />
+              <Input
+                aria-label="最终车辆 ID"
+                onChange={(event) => setFinalVehicleId(event.target.value)}
+                placeholder="最终车辆 ID"
+                style={{ width: 240 }}
+                value={finalVehicleId}
+              />
+              <Button
+                disabled={!canSubmitPlan}
+                loading={submitting}
+                onClick={() => void submitPlan()}
+                type="primary"
+              >
+                提交最终方案并软锁车辆
+              </Button>
+            </Space>
           </Space>
         ) : null}
         {vehicleAvailability.allowed ? (

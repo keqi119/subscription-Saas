@@ -26,7 +26,10 @@ describe("Portal journey pages", () => {
     const contract = source("../src/app/portal/contracts/[id]/page.tsx");
 
     expect(application).toContain("<PortalJourneyNextActionCard");
-    expect(application).toContain("buildPortalFinalPlanConfirmationRequest(finalPlan.finalPlanRevision)");
+    expect(application).toContain(
+      "buildPortalFinalPlanConfirmationRequest("
+    );
+    expect(application).toContain("finalPlan.finalPlanCommercialHash");
     expect(order).toContain("<PortalJourneyNextActionCard");
     expect(order).toContain('id="bills"');
     expect(contract).toContain("<PortalJourneyNextActionCard");

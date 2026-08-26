@@ -27,11 +27,14 @@ export function SubscriptionJourneyExceptionActions({
   const [reasonAction, setReasonAction] = useState<"PAUSE" | "CANCEL" | null>(null);
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const retryAvailability = canRunSubscriptionJourneyAction(
-    "RETRY",
-    journey.availableActions,
-    permissions
-  );
+  const retryAvailability =
+    journey.status === "EXCEPTION"
+      ? canRunSubscriptionJourneyAction(
+          "RETRY",
+          journey.availableActions,
+          permissions
+        )
+      : { allowed: false, reason: "业务等待不是技术失败" };
   const pauseAvailability = canRunSubscriptionJourneyAction(
     "PAUSE",
     journey.availableActions,

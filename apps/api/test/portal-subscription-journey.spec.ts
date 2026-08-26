@@ -81,6 +81,44 @@ describe("Portal subscription journey contract", () => {
       service.getPortalByOrder("another-order", currentCustomer())
     ).rejects.toBeInstanceOf(NotFoundException);
   });
+
+  it.each([
+    [
+      SubscriptionJourneyStatus.WAITING_MANUAL,
+      SubscriptionJourneyStepStatus.WAITING_MANUAL,
+      "平台正在完成材料、信用与押金审核。",
+      null
+    ],
+    [
+      SubscriptionJourneyStatus.WAITING_CUSTOMER,
+      SubscriptionJourneyStepStatus.WAITING_CUSTOMER,
+      "请补充申请资料后重新提交审核。",
+      {
+        href: "/portal/applications/application-1",
+        label: "补充申请资料",
+        type: "SUPPLEMENT_APPLICATION_MATERIALS"
+      }
+    ]
+  ])(
+    "projects application validation %s as a business wait",
+    async (status, currentStepStatus, blockerText, nextAction) => {
+      const findFirst = vi.fn(async () =>
+        portalJourneyRow({
+          currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+          currentStepStatus,
+          status
+        })
+      );
+      const service = new SubscriptionJourneyService(
+        {} as SubscriptionJourneyRepository,
+        { subscriptionJourney: { findFirst } } as never
+      );
+
+      await expect(
+        service.getPortalByApplication("application-1", currentCustomer())
+      ).resolves.toMatchObject({ blockerText, nextAction, status });
+    }
+  );
 });
 
 function currentCustomer() {
@@ -92,7 +130,7 @@ function currentCustomer() {
   };
 }
 
-function portalJourneyRow() {
+function portalJourneyRow(overrides: Record<string, unknown> = {}) {
   return {
     application: {
       applicationNo: "APP-1",
@@ -112,6 +150,7 @@ function portalJourneyRow() {
       ]
     },
     status: SubscriptionJourneyStatus.WAITING_CUSTOMER,
-    version: 4
+    version: 4,
+    ...overrides
   };
 }

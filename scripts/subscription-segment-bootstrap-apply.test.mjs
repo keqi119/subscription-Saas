@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -57,6 +58,11 @@ test("apply is transactional and an idempotent rerun creates no second BASE", as
     module: "subscription_change",
     operatorId: undefined
   });
+  const serializedAudit = JSON.stringify(harness.audits[0]);
+  assert.doesNotMatch(
+    serializedAudit,
+    /"(?:contractSnapshot|planSnapshot|quoteSnapshot)":|archivedDocument/
+  );
   assert.equal(harness.transactionCount(), 2);
 });
 
@@ -194,9 +200,34 @@ function createPrismaHarness(currentOrder = orderRecord(), { failAudit = false }
 }
 
 function expectSegmentAuditSnapshot(row) {
-  return JSON.parse(
-    JSON.stringify(row, (_key, value) => (typeof value === "bigint" ? value.toString() : value))
-  );
+  return {
+    activatedAt: row.activatedAt.toISOString(),
+    completedAt: null,
+    contractSnapshotDigest: jsonDigest(row.contractSnapshot),
+    endDate: row.endDate.toISOString(),
+    energyLimitCount: row.energyLimitCount,
+    energyLimitKwh: row.energyLimitKwh,
+    id: row.id,
+    mileageLimitKm: row.mileageLimitKm,
+    monthlyFeeAmount: row.monthlyFeeAmount.toString(),
+    orderId: row.orderId,
+    overMileageFeeAmount: row.overMileageFeeAmount.toString(),
+    planSnapshotDigest: jsonDigest(row.planSnapshot),
+    productId: row.productId,
+    productVersionId: row.productVersionId,
+    quoteSnapshotDigest: jsonDigest(row.quoteSnapshot),
+    segmentNo: row.segmentNo,
+    segmentType: row.segmentType,
+    sequenceNo: row.sequenceNo,
+    sourceContractId: row.sourceContractId,
+    startDate: row.startDate.toISOString(),
+    status: row.status,
+    subscriptionPlanId: row.subscriptionPlanId
+  };
+}
+
+function jsonDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 }
 
 function orderRecord() {

@@ -21,6 +21,7 @@ import type { Readable } from "node:stream";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { buildAllocationAvailabilityWhere } from "../asset-operations/vehicle-availability-query";
+import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { StorageService } from "../storage/storage.service";
 import { PortalVehicleCatalogQueryDto } from "./portal-catalog.dto";
 
@@ -74,7 +75,8 @@ const portalSubscriptionPlanInclude = {
           id: true,
           modelCode: true
         }
-      }
+      },
+      modelMembers: { select: { modelDefinitionId: true } }
     }
   }
 } satisfies Prisma.SubscriptionPlanInclude;
@@ -695,7 +697,7 @@ function isPlanAvailableForVehicle(
   if (!isPortalSubscriptionPlanAvailable(plan)) {
     return false;
   }
-  return vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId;
+  return vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId);
 }
 
 function packageBelongsToPlan(

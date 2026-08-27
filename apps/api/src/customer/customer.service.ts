@@ -48,6 +48,7 @@ import {
   type ModelDefinitionSnapshot,
   modelDefinitionSnapshotSelect
 } from "../common/vehicle-model-snapshot";
+import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
@@ -148,7 +149,8 @@ const selfServicePackageInclude = {
 
 const selfServiceVehiclePackageInclude = {
   ...selfServicePackageInclude,
-  modelDefinition: { select: modelDefinitionSnapshotSelect }
+  modelDefinition: { select: modelDefinitionSnapshotSelect },
+  modelMembers: { select: { modelDefinitionId: true } }
 } satisfies Prisma.VehiclePackageInclude;
 
 const selfServiceSubscriptionPlanInclude = {
@@ -1468,7 +1470,7 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+    if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     assertSelfServicePeriodInRange(dto.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);
@@ -1754,7 +1756,7 @@ export class CustomerService {
     });
     try {
       assertApplicationVehicleExists(vehicle);
-      if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+      if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
         throw new BadRequestException("vehicle model mismatch");
       }
       await assertApplicationVehicleReviewAllowed(tx, application, vehicle);
@@ -2161,7 +2163,7 @@ export class CustomerService {
     assertSelfServiceVehicleAvailable(vehicle);
     assertSelfServiceSubscriptionPlanAvailable(plan);
 
-    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+    if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
       throw new BadRequestException("所选套餐不适用于该车辆车型");
     }
     if (dto.periodMonths !== undefined) {
@@ -3167,7 +3169,7 @@ async function loadApplicationFinalPlanDetails(
 
   assertSelfServiceSubscriptionPlanAvailable(plan);
   assertApplicationVehicleExists(vehicle);
-  if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+  if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
     throw new BadRequestException("所选套餐不适用于该车辆车型。");
   }
   assertSelfServicePeriodInRange(input.periodMonths, plan.minPeriodMonths, plan.maxPeriodMonths);

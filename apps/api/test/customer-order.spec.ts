@@ -527,6 +527,12 @@ function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePacka
         modelCode: "NIO_ET5"
       },
       modelDefinitionId: "model-et5",
+      modelMembers: [
+        {
+          modelDefinitionId:
+            (vehiclePackageOverrides?.modelDefinitionId as string | undefined) ?? "model-et5"
+        }
+      ],
       vehicleModelName: "ET5",
       ...vehiclePackageOverrides
     },

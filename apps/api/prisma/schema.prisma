@@ -3486,6 +3486,7 @@ model VehiclePackage {
   productVersion         ProductVersion         @relation(fields: [productVersionId], references: [id])
   modelDefinitionId      String                 @map("model_definition_id") @db.Uuid
   modelDefinition        VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
+  modelMembers             VehiclePackageModelMember[]
   vehicleModelName       String?                @map("vehicle_model_name") @db.VarChar(128)
   brand                  String?                @db.VarChar(64)
   series                 String?                @db.VarChar(64)
@@ -3511,6 +3512,21 @@ model VehiclePackage {
   @@index([modelDefinitionId])
   @@index([status])
   @@map("vehicle_package")
+}
+
+model VehiclePackageModelMember {
+  id                String                 @id @default(uuid()) @db.Uuid
+  vehiclePackageId  String                 @map("vehicle_package_id") @db.Uuid
+  vehiclePackage    VehiclePackage         @relation(fields: [vehiclePackageId], references: [id])
+  modelDefinitionId String                 @map("model_definition_id") @db.Uuid
+  modelDefinition   VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?                @map("created_by") @db.Uuid
+
+  @@unique([vehiclePackageId, modelDefinitionId], map: "vehicle_package_model_member_package_model_key")
+  @@index([vehiclePackageId])
+  @@index([modelDefinitionId])
+  @@map("vehicle_package_model_member")
 }
 
 model MileagePackage {
@@ -4543,6 +4559,7 @@ model VehicleModelDefinition {
   deletedAt               DateTime?                       @map("deleted_at") @db.Timestamptz(6)
   vehicles                Vehicle[]
   vehiclePackages         VehiclePackage[]
+  vehiclePackageMembers   VehiclePackageModelMember[]
   productPriceRules       ProductPriceRule[]
   marketPriceObservations VehicleMarketPriceObservation[]
   residualCurves          VehicleResidualCurve[]

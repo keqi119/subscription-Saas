@@ -29,6 +29,7 @@ import { AssetOperationsService } from "../asset-operations/asset-operations.ser
 import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
+import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { requireActiveVehicleModelDefinition } from "../common/vehicle-model-resolver";
 import { trackVehicleModelUsage } from "../common/vehicle-model-usage-tracker";
 import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
@@ -70,6 +71,14 @@ const packageInclude = {
 const vehiclePackageInclude = {
   modelDefinition: {
     select: productModelDefinitionSelect
+  },
+  modelMembers: {
+    include: {
+      modelDefinition: {
+        select: productModelDefinitionSelect
+      }
+    },
+    orderBy: { createdAt: "asc" as const }
   },
   product: { select: { id: true, name: true, productNo: true, status: true } },
   productVersion: { select: { id: true, productId: true, status: true, versionNo: true } }
@@ -558,9 +567,9 @@ export class ProductService {
   async createVehiclePackage(dto: CreateVehiclePackageDto, user: RequestUser, context: RequestContext) {
     const version = await this.ensurePackageVersion(dto.productId, dto.productVersionId);
     ensureValidPeriod(dto.minPeriodMonths, dto.maxPeriodMonths);
-    const modelIdentity = await requireActiveVehicleModelDefinition(
-      this.prisma,
-      dto.modelDefinitionId
+    const modelDefinitionIds = await this.resolveVehiclePackageModelDefinitionIds(
+      dto.modelDefinitionId,
+      dto.modelDefinitionIds
     );
     const row = await withUniqueBusinessNoRetry(() => this.prisma.vehiclePackage.create({
       data: {
@@ -571,7 +580,13 @@ export class ProductService {
         maxPurchasePriceAmount: optionalBigInt(dto.maxPurchasePriceAmount),
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: optionalBigInt(dto.minPurchasePriceAmount),
-        modelDefinitionId: modelIdentity.modelDefinitionId,
+        modelDefinitionId: dto.modelDefinitionId,
+        modelMembers: {
+          create: modelDefinitionIds.map((modelDefinitionId) => ({
+            createdBy: user.id,
+            modelDefinitionId
+          }))
+        },
         monthlyFeeRate: new Prisma.Decimal(dto.monthlyFeeRate ?? 0.035),
         packageName: dto.packageName,
         packageNo: this.nextPackageNo("vehiclePackage", "VPK"),
@@ -601,6 +616,37 @@ export class ProductService {
               dto.modelDefinitionId
             )
           ).modelDefinitionId;
+    const effectivePrimaryModelDefinitionId = modelDefinitionId ?? before.modelDefinitionId;
+    const existingModelDefinitionIds =
+      before.modelMembers.length > 0
+        ? before.modelMembers.map((member) => member.modelDefinitionId)
+        : [before.modelDefinitionId];
+    const requestedModelDefinitionIds =
+      dto.modelDefinitionIds ??
+      (dto.modelDefinitionId === undefined
+        ? undefined
+        : before.modelMembers.length <= 1
+          ? [effectivePrimaryModelDefinitionId]
+          : existingModelDefinitionIds);
+    const normalizedRequestedModelDefinitionIds = requestedModelDefinitionIds
+      ? normalizeVehiclePackageModelDefinitionIds(
+          effectivePrimaryModelDefinitionId,
+          requestedModelDefinitionIds
+        )
+      : undefined;
+    const membershipChanged =
+      effectivePrimaryModelDefinitionId !== before.modelDefinitionId ||
+      (normalizedRequestedModelDefinitionIds !== undefined &&
+        !sameStringSet(normalizedRequestedModelDefinitionIds, existingModelDefinitionIds));
+    if (membershipChanged && before.productVersion.status !== ProductVersionStatus.DRAFT) {
+      throw new BadRequestException("已生效产品版本的车型成员不可修改，请创建新的产品版本。");
+    }
+    const modelDefinitionIds = membershipChanged
+      ? await this.resolveVehiclePackageModelDefinitionIds(
+          effectivePrimaryModelDefinitionId,
+          normalizedRequestedModelDefinitionIds
+        )
+      : undefined;
     const row = await this.prisma.vehiclePackage.update({
       data: {
         brand: dto.brand,
@@ -610,6 +656,15 @@ export class ProductService {
         minPeriodMonths: dto.minPeriodMonths,
         minPurchasePriceAmount: dto.minPurchasePriceAmount === undefined ? undefined : optionalBigInt(dto.minPurchasePriceAmount),
         modelDefinitionId,
+        modelMembers: modelDefinitionIds
+          ? {
+              create: modelDefinitionIds.map((memberModelDefinitionId) => ({
+                createdBy: user.id,
+                modelDefinitionId: memberModelDefinitionId
+              })),
+              deleteMany: {}
+            }
+          : undefined,
         monthlyFeeRate: dto.monthlyFeeRate === undefined ? undefined : new Prisma.Decimal(dto.monthlyFeeRate),
         packageName: dto.packageName,
         remark: dto.remark,
@@ -1039,7 +1094,7 @@ export class ProductService {
       .filter(isSubscriptionPlanCurrentlyAvailable)
       .filter((plan) =>
         vehicle
-          ? vehicle.modelDefinitionId === plan.vehiclePackage.modelDefinitionId
+          ? vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)
           : true
       )
       .map(toAvailableSubscriptionPlanView);
@@ -1166,7 +1221,7 @@ export class ProductService {
       const vehicle = await this.findAvailableVehicleForQuote(dto.vehicleId);
       const plan = await this.findSubscriptionPlanOrThrow(dto.subscriptionPlanId);
       ensureSubscriptionPlanAvailableForQuote(plan);
-      if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+      if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
         throw new BadRequestException("所选套餐不适用于该车型");
       }
       ensurePeriodInRange(dto.periodMonths, plan);
@@ -1710,6 +1765,22 @@ export class ProductService {
     return rule;
   }
 
+  private async resolveVehiclePackageModelDefinitionIds(
+    primaryModelDefinitionId: string,
+    requestedModelDefinitionIds?: string[]
+  ) {
+    const modelDefinitionIds = normalizeVehiclePackageModelDefinitionIds(
+      primaryModelDefinitionId,
+      requestedModelDefinitionIds
+    );
+    const identities = await Promise.all(
+      modelDefinitionIds.map((modelDefinitionId) =>
+        requireActiveVehicleModelDefinition(this.prisma, modelDefinitionId)
+      )
+    );
+    return identities.map((identity) => identity.modelDefinitionId);
+  }
+
   private async ensurePackageVersion(productId: string, productVersionId: string) {
     const version = await this.findVersionOrThrow(productVersionId);
     ensureSubscriptionProductType(version.product.productType);
@@ -1751,6 +1822,25 @@ export class ProductService {
       userAgent: context.userAgent
     });
   }
+}
+
+function normalizeVehiclePackageModelDefinitionIds(
+  primaryModelDefinitionId: string,
+  requestedModelDefinitionIds = [primaryModelDefinitionId]
+) {
+  if (new Set(requestedModelDefinitionIds).size !== requestedModelDefinitionIds.length) {
+    throw new BadRequestException("车型包成员不可重复。");
+  }
+  return [
+    primaryModelDefinitionId,
+    ...requestedModelDefinitionIds.filter(
+      (modelDefinitionId) => modelDefinitionId !== primaryModelDefinitionId
+    )
+  ];
+}
+
+function sameStringSet(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value) => right.includes(value));
 }
 
 function parseDateOnly(value: string, field: string) {
@@ -2359,6 +2449,19 @@ function toPackageView(row?: RecordSource | null) {
 
   if ("modelDefinitionId" in row) {
     const modelDefinition = toModelDefinitionSummary(row.modelDefinition);
+    const modelMembers = Array.isArray(row.modelMembers)
+      ? row.modelMembers
+          .map((member) => {
+            if (!isRecord(member)) return null;
+            return {
+              createdAt: member.createdAt,
+              id: toStringOrDash(member.id),
+              modelDefinition: toModelDefinitionSummary(member.modelDefinition),
+              modelDefinitionId: toStringOrDash(member.modelDefinitionId)
+            };
+          })
+          .filter(isNonNullable)
+      : [];
     result.brand = row.brand;
     result.configName = row.configName;
     result.maxPeriodMonths = row.maxPeriodMonths;
@@ -2367,6 +2470,8 @@ function toPackageView(row?: RecordSource | null) {
     result.minPurchasePriceAmount = row.minPurchasePriceAmount === null ? null : toNumberOrZero(row.minPurchasePriceAmount);
     result.modelDefinition = modelDefinition;
     result.modelDefinitionId = toStringOrNull(row.modelDefinitionId);
+    result.modelDefinitionIds = modelMembers.map((member) => member.modelDefinitionId);
+    result.modelMembers = modelMembers;
     result.modelCode = modelDefinition?.modelCode ?? "-";
     result.modelDisplayName = modelDefinition?.displayName ?? "-";
     result.monthlyFeeRate = toNumberOrZero(row.monthlyFeeRate);

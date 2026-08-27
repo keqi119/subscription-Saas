@@ -96,6 +96,24 @@ describe("SubscriptionExtensionPricingService", () => {
     ).rejects.toMatchObject({ code: "SUBSCRIPTION_PLAN_VEHICLE_MODEL_MISMATCH" });
   });
 
+  it("accepts a leased vehicle assigned as a non-primary package member", async () => {
+    const service = new SubscriptionExtensionPricingService(
+      pricingPrisma({
+        modelDefinitionId: "model-other",
+        modelDefinitionIds: ["model-other", "model-et5"]
+      }) as never
+    );
+
+    await expect(
+      service.calculate({
+        pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+        sourceSegment: sourceSegment(),
+        subscriptionPlanId: "plan-current",
+        vehicle: leasedVehicle()
+      })
+    ).resolves.toMatchObject({ monthlyFeeAmount: 97_000n });
+  });
+
   it("keeps a plan available through the end of its Shanghai effective date", async () => {
     const service = new SubscriptionExtensionPricingService(
       pricingPrisma({ effectiveTo: new Date("2026-08-05T00:00:00.000Z") }) as never
@@ -139,6 +157,7 @@ function pricingPrisma(
   options: {
     effectiveTo?: Date | null;
     modelDefinitionId?: string;
+    modelDefinitionIds?: string[];
     monthlyFeeMode?: MonthlyFeeMode;
     monthlyFeeRate?: { toNumber(): number; toString(): string };
     vehiclePackageMonthlyFeeRate?: { toNumber(): number; toString(): string };
@@ -211,6 +230,9 @@ function pricingPrisma(
       ...component,
       id: "vehicle-package-current",
       modelDefinitionId: options.modelDefinitionId ?? "model-et5",
+      modelMembers: (options.modelDefinitionIds ?? [options.modelDefinitionId ?? "model-et5"]).map(
+        (modelDefinitionId) => ({ modelDefinitionId })
+      ),
       monthlyFeeRate: options.vehiclePackageMonthlyFeeRate ?? {
         toNumber: () => 0.03,
         toString: () => "0.03"

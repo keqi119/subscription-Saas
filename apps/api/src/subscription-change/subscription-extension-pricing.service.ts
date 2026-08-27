@@ -10,6 +10,7 @@ import {
   SubscriptionPlanStatus
 } from "@prisma/client";
 
+import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { ExtensionPricingInput, ExtensionQuotePreview } from "./subscription-change.types";
@@ -20,7 +21,7 @@ const currentPlanInclude = Prisma.validator<Prisma.SubscriptionPlanInclude>()({
   mileagePackage: true,
   product: true,
   productVersion: true,
-  vehiclePackage: true
+  vehiclePackage: { include: { modelMembers: { select: { modelDefinitionId: true } } } }
 });
 
 type CurrentPlan = Prisma.SubscriptionPlanGetPayload<{ include: typeof currentPlanInclude }>;
@@ -93,7 +94,7 @@ export class SubscriptionExtensionPricingService {
         HttpStatus.BAD_REQUEST
       );
     }
-    if (plan.vehiclePackage.modelDefinitionId !== input.vehicle.modelDefinitionId) {
+    if (!vehiclePackageSupportsModel(plan.vehiclePackage, input.vehicle.modelDefinitionId)) {
       throw new SubscriptionChangeError(
         "SUBSCRIPTION_PLAN_VEHICLE_MODEL_MISMATCH",
         "The selected subscription plan does not apply to the leased vehicle model.",

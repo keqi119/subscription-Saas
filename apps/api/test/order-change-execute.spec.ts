@@ -868,6 +868,7 @@ function makePlan(now: Date, modelCode: string) {
         modelCode
       },
       modelDefinitionId: "model-et5",
+      modelMembers: [{ modelDefinitionId: "model-et5" }],
       minPeriodMonths: 6,
       minPurchasePriceAmount: null,
       monthlyFeeRate: 0.03,

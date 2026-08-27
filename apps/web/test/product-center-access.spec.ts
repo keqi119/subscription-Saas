@@ -121,6 +121,17 @@ describe("product center access isolation", () => {
       '<Input disabled={Boolean(editing)} placeholder="ET5T" />'
     );
   });
+
+  it("edits and displays all version-bound vehicle-package model members", () => {
+    expect(source).toContain('name="modelDefinitionIds"');
+    expect(source).toContain("modelMembers?: VehiclePackageModelMember[]");
+    expect(functionDeclarationSource(source, "buildPackagePayload")).toContain(
+      "modelDefinitionIds: values.modelDefinitionIds?.length"
+    );
+    expect(functionDeclarationSource(source, "packageModelDisplayName")).toContain(
+      "row.modelMembers"
+    );
+  });
 });
 
 function read(file: string) {

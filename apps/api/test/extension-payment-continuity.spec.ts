@@ -7,7 +7,9 @@ import {
   PaymentOrderStatus,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType,
-  SubscriptionChangeStatus
+  SubscriptionChangePricingMode,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,10 +25,15 @@ describe("extension payment continuity", () => {
     const receivableBill = { update: vi.fn(), updateMany: vi.fn() };
     const source = { id: "segment-base", status: ContractSegmentStatus.ACTIVE };
     const change = {
+      changeType: SubscriptionChangeType.EXTENSION,
+      extensionMonths: 6,
       id: "change-1",
       orderId: "order-1",
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
       sourceSegment: source,
       status: SubscriptionChangeStatus.SCHEDULED,
+      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
       version: 1
     };
     const target = {

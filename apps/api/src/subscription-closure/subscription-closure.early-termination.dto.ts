@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+
 export type EarlyTerminationEvidence = Readonly<{
   reference: string;
   type: string;
@@ -39,3 +41,34 @@ export type ArchivedEarlyTerminationAgreement = Readonly<{
   signedRevisionId: string;
   wrote: boolean;
 }>;
+
+export type InitiatedEarlyTermination = Readonly<{
+  authoritySnapshotHash: string;
+  closureCaseId: string;
+  wrote: boolean;
+}>;
+
+export type CancelledEarlyTermination = Readonly<{
+  closureCaseId: string;
+  wrote: boolean;
+}>;
+
+export type ExecutedEarlyTermination =
+  | Readonly<{
+      closureCaseId: string;
+      outcome: "AGREEMENT_STALE";
+      wrote: boolean;
+    }>
+  | Readonly<{
+      closureCaseId: string;
+      returnAssetWorkOrderId: string;
+      returnHandoverWorkOrderId: string;
+      returnManifestRevisionId: string;
+      vehicleReturnId: string;
+      wrote: boolean;
+    }>;
+
+export type EarlyTerminationTransactionAdapter<T> = (
+  tx: Prisma.TransactionClient,
+  result: T
+) => Promise<void> | void;

@@ -20,20 +20,19 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
+import { SubscriptionChangeRepository } from "./subscription-change.repository";
 import { ContractSegmentService } from "./contract-segment.service";
+import {
+  ExtensionChangeProjection,
+  requireExtensionChangeProjection
+} from "./subscription-extension-compat";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
-
-const ACTIVE_CHANGE_STATUSES: SubscriptionChangeStatus[] = [
-  SubscriptionChangeStatus.DRAFT,
-  SubscriptionChangeStatus.QUOTED,
-  SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
-  SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
-  SubscriptionChangeStatus.SCHEDULED,
-  SubscriptionChangeStatus.EXECUTING,
-  SubscriptionChangeStatus.MANUAL_TAKEOVER
-];
 
 const CANCELLABLE_STATUSES: SubscriptionChangeStatus[] = [
   SubscriptionChangeStatus.DRAFT,
@@ -50,6 +49,7 @@ const changeDetailInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclu
   confirmedQuote: true,
   contract: true,
   currentQuote: true,
+  extensionDetail: { include: { sourceSegment: true } },
   order: { include: { vehicle: true } },
   quotes: { orderBy: { revision: "desc" } },
   renewalConsideration: {
@@ -100,7 +100,8 @@ export class SubscriptionExtensionService {
     private readonly segmentService: ContractSegmentService,
     private readonly pricingService: SubscriptionExtensionPricingService,
     @Inject(SUBSCRIPTION_CHANGE_CONFIG)
-    private readonly config: SubscriptionChangeConfig
+    private readonly config: SubscriptionChangeConfig,
+    private readonly changeRepository: SubscriptionChangeRepository
   ) {}
 
   async createExtension(input: CreateExtensionInput, actor: RequestUser, context: RequestContext) {
@@ -131,27 +132,7 @@ export class SubscriptionExtensionService {
         HttpStatus.NOT_FOUND
       );
     }
-    if (!order.vehicle) {
-      throw badRequest(
-        "ORDER_VEHICLE_REQUIRED",
-        "A leased vehicle is required for extension pricing."
-      );
-    }
-    if (
-      order.businessType !== BusinessType.SUBSCRIPTION ||
-      order.orderStatus !== OrderStatus.ACTIVE
-    ) {
-      throw stateConflict(
-        "SUBSCRIPTION_ORDER_NOT_ACTIVE",
-        "Only an active subscription order can be extended."
-      );
-    }
-    if (order.vehicle.status !== VehicleStatus.LEASED) {
-      throw stateConflict(
-        "LEASED_VEHICLE_REQUIRED",
-        "The subscription vehicle must remain leased while the extension is created."
-      );
-    }
+    assertExtensionSourceOrder(order);
 
     await this.segmentService.ensureBaseSegment(order.id, actor.id);
     const sourceSegment = await this.prisma.subscriptionContractSegment.findFirst({
@@ -175,19 +156,22 @@ export class SubscriptionExtensionService {
       targetEndDate
     );
 
-    const active = await this.prisma.subscriptionChangeOrder.findFirst({
-      where: { orderId: order.id, status: { in: ACTIVE_CHANGE_STATUSES } }
-    });
-    if (active) {
-      throw new SubscriptionChangeError(
-        "ACTIVE_SUBSCRIPTION_CHANGE_EXISTS",
-        "The order already has an active subscription change."
-      );
-    }
-
     const requestHash = commandHash(input);
     try {
       return await this.prisma.$transaction(async (tx) => {
+        await this.changeRepository.lockCreationScope(tx, order.id);
+        const lockedOrder = await this.changeRepository.findOrder(tx, order.id);
+        assertExtensionSourceOrder(lockedOrder);
+        const lockedSourceSegment = await tx.subscriptionContractSegment.findFirst({
+          orderBy: { sequenceNo: "desc" },
+          where: { orderId: order.id, status: { not: "CANCELLED" } }
+        });
+        if (!lockedSourceSegment || lockedSourceSegment.id !== sourceSegment.id) {
+          throw stateConflict(
+            "SOURCE_CONTRACT_SEGMENT_CHANGED",
+            "The source contract segment changed while the extension was being created."
+          );
+        }
         const command = await reserveCommand(
           tx,
           actor.id,
@@ -195,21 +179,32 @@ export class SubscriptionExtensionService {
           input.idempotencyKey!,
           requestHash
         );
+        const active = await this.changeRepository.findActiveChange(tx, order.id);
+        if (active) {
+          throw new SubscriptionChangeError(
+            "ACTIVE_SUBSCRIPTION_CHANGE_EXISTS",
+            "The order already has an active subscription change."
+          );
+        }
         const change = await tx.subscriptionChangeOrder.create({
           data: {
             changeNo: createBusinessNo("SCO"),
             changeType: SubscriptionChangeType.EXTENSION,
             completionDeadlineAt,
             createdBy: actor.id,
-            extensionMonths: input.extensionMonths,
+            extensionDetail: {
+              create: {
+                extensionMonths: input.extensionMonths,
+                priceOverrideReason: normalizedReason(input.priceOverrideReason),
+                pricingMode: input.pricingMode,
+                sourceSegmentId: sourceSegment.id,
+                targetEndDate,
+                targetStartDate
+              }
+            },
             orderId: order.id,
-            priceOverrideReason: normalizedReason(input.priceOverrideReason),
-            pricingMode: input.pricingMode,
             renewalConsiderationId: input.renewalConsiderationId,
-            sourceSegmentId: sourceSegment.id,
             status: SubscriptionChangeStatus.DRAFT,
-            targetEndDate,
-            targetStartDate,
             updatedBy: actor.id
           },
           include: changeDetailInclude
@@ -227,7 +222,7 @@ export class SubscriptionExtensionService {
           tx
         );
         await completeCommand(tx, command.id, "CHANGE", change.id, this.config.now());
-        return change;
+        return requireExtensionChangeProjection(change);
       }, serializableTransaction);
     } catch (error) {
       return this.resolveWriteConflict(
@@ -280,12 +275,13 @@ export class SubscriptionExtensionService {
           where: { id }
         });
         if (!change) throw changeNotFound();
+        const extensionChange = requireExtensionChangeProjection(change);
         assertVersionMatches(change.version, input.version!);
         assertQuoteMutable(change);
         assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
 
         const pricing = await this.pricingService.calculate(
-          pricingInput(change, input, this.config.now())
+          pricingInput(extensionChange, input, this.config.now())
         );
         const latest = await tx.subscriptionChangeQuote.findFirst({
           orderBy: { revision: "desc" },
@@ -314,7 +310,7 @@ export class SubscriptionExtensionService {
             overMileageFeeAmount: pricing.overMileageFeeAmount,
             planSnapshot: pricing.planSnapshot,
             priceRuleSnapshot: pricing.priceRuleSnapshot,
-            pricingMode: change.pricingMode,
+            pricingMode: extensionChange.pricingMode,
             productId: pricing.productId,
             productVersionId: pricing.productVersionId,
             quoteNo: createBusinessNo("SCQ"),
@@ -330,8 +326,12 @@ export class SubscriptionExtensionService {
             customerConfirmationPublishedAt: null,
             customerConfirmationPublishedBy: null,
             currentQuoteId: quote.id,
-            priceOverrideApprovedAt: null,
-            priceOverrideApprovedBy: null,
+            extensionDetail: {
+              update: {
+                priceOverrideApprovedAt: null,
+                priceOverrideApprovedBy: null
+              }
+            },
             status: SubscriptionChangeStatus.QUOTED,
             updatedBy: actor.id,
             version: { increment: 1 }
@@ -418,9 +418,13 @@ export class SubscriptionExtensionService {
           throw badRequest("PRICE_OVERRIDE_REASON_REQUIRED", "Approval reason is required.");
         const updated = await tx.subscriptionChangeOrder.update({
           data: {
-            priceOverrideApprovedAt: this.config.now(),
-            priceOverrideApprovedBy: actor.id,
-            priceOverrideReason: reason,
+            extensionDetail: {
+              update: {
+                priceOverrideApprovedAt: this.config.now(),
+                priceOverrideApprovedBy: actor.id,
+                priceOverrideReason: reason
+              }
+            },
             updatedBy: actor.id,
             version: { increment: 1 }
           },
@@ -870,11 +874,12 @@ export class SubscriptionExtensionService {
 
   async listForOrder(orderId: string, actor: RequestUser) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
-    return this.prisma.subscriptionChangeOrder.findMany({
+    const changes = await this.prisma.subscriptionChangeOrder.findMany({
       include: changeDetailInclude,
       orderBy: { createdAt: "desc" },
-      where: { orderId }
+      where: { changeType: SubscriptionChangeType.EXTENSION, orderId }
     });
+    return changes.map(requireExtensionChangeProjection);
   }
 
   async timeline(id: string, actor: RequestUser) {
@@ -906,7 +911,10 @@ export class SubscriptionExtensionService {
     input: VersionedCommandInput,
     actor: RequestUser,
     context: RequestContext,
-    execute: (tx: Prisma.TransactionClient, change: ChangeDetail) => Promise<ChangeDetail>
+    execute: (
+      tx: Prisma.TransactionClient,
+      change: ExtensionChangeProjection<ChangeDetail>
+    ) => Promise<ChangeDetail>
   ) {
     const replay = await this.replayChange(operation, input.idempotencyKey!, actor.id, {
       id,
@@ -929,11 +937,12 @@ export class SubscriptionExtensionService {
           where: { id }
         });
         if (!change) throw changeNotFound();
-        assertVersionMatches(change.version, input.version);
-        assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
-        const updated = await execute(tx, change);
+        const extensionChange = requireExtensionChangeProjection(change);
+        assertVersionMatches(extensionChange.version, input.version);
+        assertBeforeDeadline(this.config.now(), extensionChange.completionDeadlineAt);
+        const updated = await execute(tx, extensionChange);
         await completeCommand(tx, command.id, "CHANGE", updated.id, this.config.now());
-        return updated;
+        return requireExtensionChangeProjection(updated);
       }, serializableTransaction);
     } catch (error) {
       return this.resolveWriteConflict(error, operation, input.idempotencyKey!, actor.id, {
@@ -1022,11 +1031,11 @@ export class SubscriptionExtensionService {
       where: { id }
     });
     if (!change) throw changeNotFound();
-    return change;
+    return requireExtensionChangeProjection(change);
   }
 
   private assertWriteEnabled() {
-    if (!this.config.enabled) {
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)) {
       throw new SubscriptionChangeError(
         "SUBSCRIPTION_EXTENSION_DISABLED",
         "Subscription extensions are disabled.",
@@ -1044,6 +1053,7 @@ const RETRYABLE_EXTENSION_JOB_TYPES: SubscriptionAutomationJobType[] = [
 ];
 
 function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
+  const extensionChange = requireExtensionChangeProjection(change);
   if (!change.order.vehicle) {
     throw badRequest(
       "ORDER_VEHICLE_REQUIRED",
@@ -1053,10 +1063,10 @@ function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
   return {
     asOf,
     discountedMonthlyFeeAmount: input.discountedMonthlyFeeAmount,
-    extensionMonths: change.extensionMonths,
-    pricingMode: change.pricingMode,
+    extensionMonths: extensionChange.extensionMonths,
+    pricingMode: extensionChange.pricingMode,
     requestedVehicleBaseFeeAmount: input.requestedVehicleBaseFeeAmount,
-    sourceSegment: change.sourceSegment,
+    sourceSegment: extensionChange.sourceSegment,
     subscriptionPlanId: input.subscriptionPlanId,
     vehicle: change.order.vehicle
   };
@@ -1277,6 +1287,44 @@ async function lockChange(tx: Prisma.TransactionClient, id: string) {
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "subscription_change_order" WHERE "id" = ${id}::uuid FOR UPDATE
   `);
+}
+
+function assertExtensionSourceOrder(
+  order: {
+    businessType: BusinessType;
+    deletedAt: Date | null;
+    orderStatus: OrderStatus;
+    vehicle: { status: VehicleStatus } | null;
+  } | null
+) {
+  if (!order || order.deletedAt) {
+    throw new SubscriptionChangeError(
+      "SUBSCRIPTION_ORDER_NOT_FOUND",
+      "Subscription order was not found.",
+      HttpStatus.NOT_FOUND
+    );
+  }
+  if (!order.vehicle) {
+    throw badRequest(
+      "ORDER_VEHICLE_REQUIRED",
+      "A leased vehicle is required for extension pricing."
+    );
+  }
+  if (
+    order.businessType !== BusinessType.SUBSCRIPTION ||
+    order.orderStatus !== OrderStatus.ACTIVE
+  ) {
+    throw stateConflict(
+      "SUBSCRIPTION_ORDER_NOT_ACTIVE",
+      "Only an active subscription order can be extended."
+    );
+  }
+  if (order.vehicle.status !== VehicleStatus.LEASED) {
+    throw stateConflict(
+      "LEASED_VEHICLE_REQUIRED",
+      "The subscription vehicle must remain leased while the extension is created."
+    );
+  }
 }
 
 function auditInput(

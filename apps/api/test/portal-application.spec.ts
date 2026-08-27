@@ -1312,6 +1312,7 @@ function createVehicle() {
     id: "vehicle-1",
     latestRegistrationDate: null,
     model: "ES6",
+    modelDefinitionId: "model-es6",
     modelYear: 2025,
     nextSalePriceReviewAt: null,
     plateNo: "沪A12345",
@@ -1409,6 +1410,8 @@ function createPlan() {
     vehiclePackage: {
       deletedAt: null,
       id: "vehicle-package-1",
+      modelDefinitionId: "model-es6",
+      modelMembers: [{ modelDefinitionId: "model-es6" }],
       monthlyFeeRate: new Prisma.Decimal("0.04"),
       packageName: "ES6 基础车包",
       productId: "product-1",

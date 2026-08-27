@@ -2,13 +2,23 @@ import {
   RenewalConsiderationStatus,
   RenewalDecision,
   SubscriptionChangeQuoteStatus,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { PortalRenewalService } from "../src/portal/portal-renewal.service";
+import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 
 describe("PortalRenewalService", () => {
+  it("projects whether the current quote has been published to the customer", async () => {
+    const harness = portalRenewalHarness({ publishedQuote: true });
+
+    const result = await harness.service.getChange("change-1", harness.customer);
+
+    expect(result.customerConfirmationPublishedAt).toBe("2026-08-05T04:00:00.000Z");
+  });
+
   it("sorts renewal customer actions before processing and terminal records", async () => {
     const harness = portalRenewalHarness();
     const action = {
@@ -95,6 +105,61 @@ describe("PortalRenewalService", () => {
     expect(retry.changeOrderId).toBe(first.changeOrderId);
     expect(harness.prisma.subscriptionChangeOrder.create).toHaveBeenCalledTimes(1);
     expect(harness.state.consideration.status).toBe(RenewalConsiderationStatus.RENEWAL_REQUESTED);
+  });
+
+  it("creates the renewal extension through typed detail facts behind the shared creation lock", async () => {
+    const harness = portalRenewalHarness();
+
+    await harness.service.decide(
+      "consideration-1",
+      { decision: RenewalDecision.RENEW, version: 0 },
+      harness.customer,
+      harness.context
+    );
+
+    const createData = harness.prisma.subscriptionChangeOrder.create.mock.calls[0]![0].data;
+    expect(createData).toEqual(
+      expect.objectContaining({
+        changeType: SubscriptionChangeType.EXTENSION,
+        extensionDetail: {
+          create: expect.objectContaining({
+            extensionMonths: 6,
+            pricingMode: "CURRENT_VERSION",
+            sourceSegmentId: "segment-1"
+          })
+        }
+      })
+    );
+    expect(harness.lockedTables()).toEqual(
+      expect.arrayContaining([
+        "subscription_order",
+        "subscription_contract_segment",
+        "subscription_change_order"
+      ])
+    );
+    for (const legacyField of [
+      "extensionMonths",
+      "pricingMode",
+      "sourceSegmentId",
+      "targetEndDate",
+      "targetStartDate"
+    ]) {
+      expect(createData).not.toHaveProperty(legacyField);
+    }
+  });
+
+  it("rejects renewal creation when the shared active-change slot is already occupied", async () => {
+    const harness = portalRenewalHarness({ activeChange: true });
+
+    await expect(
+      harness.service.decide(
+        "consideration-1",
+        { decision: RenewalDecision.RENEW, version: 0 },
+        harness.customer,
+        harness.context
+      )
+    ).rejects.toMatchObject({ status: 409 });
+    expect(harness.prisma.subscriptionChangeOrder.create).not.toHaveBeenCalled();
   });
 
   it("stops future renewal reminders after the customer chooses RENEW", async () => {
@@ -224,6 +289,7 @@ describe("PortalRenewalService", () => {
 });
 
 interface HarnessOptions {
+  activeChange?: boolean;
   publishedQuote?: boolean;
 }
 
@@ -269,6 +335,7 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
     },
     change: {
       cancelReason: null as string | null,
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuoteId: null as string | null,
       currentQuoteId: "quote-1",
@@ -305,8 +372,12 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
     }
   };
   state.change.sourceSegment = state.consideration.segment;
+  const querySql: string[] = [];
   const prisma = {
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(async (sql: { strings?: readonly string[] }) => {
+      querySql.push(sql.strings?.join(" ") ?? String(sql));
+      return [];
+    }),
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
     auditLog: { create: vi.fn(async () => ({})) },
     renewalConsideration: {
@@ -325,16 +396,17 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
         applyMutation(state.change, { ...data, id: "change-1" });
         return state.change;
       }),
-      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
-        where.id
-          ? {
-              ...state.change,
-              currentQuote: state.quote,
-              order: state.change.order,
-              quotes: [state.quote]
-            }
-          : null
-      ),
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) => {
+        if (where.id) {
+          return {
+            ...state.change,
+            currentQuote: state.quote,
+            order: state.change.order,
+            quotes: [state.quote]
+          };
+        }
+        return options.activeChange ? state.change : null;
+      }),
       findUnique: vi.fn(async () => ({
         ...state.change,
         currentQuote: state.quote,
@@ -366,9 +438,22 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
       enabled: true,
       now: () => new Date("2026-08-05T04:00:00.000Z"),
       quoteValidityHours: 72
-    }
+    },
+    new SubscriptionChangeRepository(prisma as never)
   );
-  return { context, customer, prisma, service, state };
+  return {
+    context,
+    customer,
+    lockedTables: () =>
+      querySql.flatMap((sql) =>
+        ["subscription_order", "subscription_contract_segment", "subscription_change_order"].filter(
+          (table) => sql.includes(`"${table}"`)
+        )
+      ),
+    prisma,
+    service,
+    state
+  };
 }
 
 function applyMutation(target: Record<string, unknown>, data: Record<string, unknown>) {

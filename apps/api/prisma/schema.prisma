@@ -604,6 +604,9 @@ enum SubscriptionJourneyOutboxStatus {
 
 enum SubscriptionChangeType {
   EXTENSION
+  VEHICLE_SWAP
+  EARLY_TERMINATION
+  MANAGED_OTHER
 
   @@map("subscription_change_type")
 }
@@ -645,6 +648,7 @@ enum SubscriptionChangeQuoteStatus {
 enum ContractSegmentType {
   BASE
   EXTENSION
+  VEHICLE_SWAP
 
   @@map("contract_segment_type")
 }
@@ -2649,6 +2653,7 @@ model User {
   approvedContractVersions                    ContractVersion[]               @relation("ContractVersionApprover")
   approvedOrderChanges                        OrderChange[]                   @relation("OrderChangeApprover")
   approvedSubscriptionChanges                 SubscriptionChangeOrder[]       @relation("SubscriptionChangePriceOverrideApprover")
+  approvedExtensionChangeDetails              SubscriptionExtensionChangeDetail[] @relation("SubscriptionExtensionDetailPriceOverrideApprover")
   takenOverSubscriptionChanges                SubscriptionChangeOrder[]       @relation("SubscriptionChangeManualTakeoverUser")
   confirmedMileageReadings                    VehicleMileageReading[]         @relation("VehicleMileageReadingConfirmer")
   voidedMileageReadings                       VehicleMileageReading[]         @relation("VehicleMileageReadingVoider")
@@ -3482,6 +3487,7 @@ model VehiclePackage {
   productVersion         ProductVersion         @relation(fields: [productVersionId], references: [id])
   modelDefinitionId      String                 @map("model_definition_id") @db.Uuid
   modelDefinition        VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
+  modelMembers             VehiclePackageModelMember[]
   vehicleModelName       String?                @map("vehicle_model_name") @db.VarChar(128)
   brand                  String?                @db.VarChar(64)
   series                 String?                @db.VarChar(64)
@@ -3495,6 +3501,7 @@ model VehiclePackage {
   remark                 String?                @db.Text
   quotes                 SubscriptionQuote[]
   subscriptionPlans      SubscriptionPlan[]
+  targetVehicleSwapChanges SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapTargetPackage")
   createdAt              DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime               @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy              String?                @map("created_by") @db.Uuid
@@ -3506,6 +3513,21 @@ model VehiclePackage {
   @@index([modelDefinitionId])
   @@index([status])
   @@map("vehicle_package")
+}
+
+model VehiclePackageModelMember {
+  id                String                 @id @default(uuid()) @db.Uuid
+  vehiclePackageId  String                 @map("vehicle_package_id") @db.Uuid
+  vehiclePackage    VehiclePackage         @relation(fields: [vehiclePackageId], references: [id])
+  modelDefinitionId String                 @map("model_definition_id") @db.Uuid
+  modelDefinition   VehicleModelDefinition @relation(fields: [modelDefinitionId], references: [id])
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy         String?                @map("created_by") @db.Uuid
+
+  @@unique([vehiclePackageId, modelDefinitionId], map: "vehicle_package_model_member_package_model_key")
+  @@index([vehiclePackageId])
+  @@index([modelDefinitionId])
+  @@map("vehicle_package_model_member")
 }
 
 model MileagePackage {
@@ -3624,6 +3646,7 @@ model SubscriptionPlan {
   entitlementAccounts          OrderEntitlementAccount[]
   subscriptionChangeQuotes     SubscriptionChangeQuote[]
   subscriptionContractSegments SubscriptionContractSegment[]
+  targetVehicleSwapChanges      SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapTargetPlan")
   createdAt                    DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                    DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                    String?                       @map("created_by") @db.Uuid
@@ -3734,6 +3757,8 @@ model Vehicle {
   operationalRestrictions       VehicleOperationalRestriction[]
   costLedgerEntries             VehicleCostLedgerEntry[]
   closureCases                  SubscriptionClosureCase[]
+  sourceVehicleSwapChanges      SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapSourceVehicle")
+  targetVehicleSwapChanges      SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapTargetVehicle")
   createdAt                     DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                     DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                     String?                         @map("created_by") @db.Uuid
@@ -3819,6 +3844,8 @@ model AssetWorkOrder {
   returnClosureCases       SubscriptionClosureCase[] @relation("SubscriptionClosureReturnAssetWorkOrder")
   recoveryClosureCases     SubscriptionClosureCase[] @relation("SubscriptionClosureRecoveryAssetWorkOrder")
   reconditioningClosureCases SubscriptionClosureCase[] @relation("SubscriptionClosureReconditioningAssetWorkOrder")
+  inboundVehicleSwapChanges SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapInboundWorkOrder")
+  outboundVehicleSwapChanges SubscriptionVehicleSwapChangeDetail[] @relation("SubscriptionVehicleSwapOutboundWorkOrder")
   createdAt                DateTime                        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                        @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                         @map("created_by") @db.Uuid
@@ -4080,6 +4107,7 @@ model SubscriptionClosureCase {
   currentDocuments SubscriptionClosureCurrentDocument[]
   settlementRevisions SubscriptionClosureSettlementRevision[] @relation("SubscriptionClosureSettlementRevisions")
   commandReceipts SubscriptionClosureCommandReceipt[]
+  earlyTerminationChangeDetail SubscriptionEarlyTerminationChangeDetail? @relation("SubscriptionEarlyTerminationClosureCase")
   createdBy String @map("created_by") @db.Uuid
   creator User @relation("SubscriptionClosureCaseCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
   updatedBy String @map("updated_by") @db.Uuid
@@ -4532,6 +4560,7 @@ model VehicleModelDefinition {
   deletedAt               DateTime?                       @map("deleted_at") @db.Timestamptz(6)
   vehicles                Vehicle[]
   vehiclePackages         VehiclePackage[]
+  vehiclePackageMembers   VehiclePackageModelMember[]
   productPriceRules       ProductPriceRule[]
   marketPriceObservations VehicleMarketPriceObservation[]
   residualCurves          VehicleResidualCurve[]
@@ -7410,6 +7439,8 @@ model Contract {
   assetWorkOrders          AssetWorkOrder[]
   costLedgerEntries        VehicleCostLedgerEntry[]
   closureCases             SubscriptionClosureCase[]
+  earlyTerminationAgreementChangeDetail SubscriptionEarlyTerminationChangeDetail? @relation("SubscriptionEarlyTerminationAgreementContract")
+  managedOtherSupplementChangeDetail SubscriptionManagedOtherChangeDetail? @relation("SubscriptionManagedOtherSupplementContract")
   createdAt                DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                String?                       @map("created_by") @db.Uuid
@@ -7549,21 +7580,21 @@ model SubscriptionChangeOrder {
   order                           SubscriptionOrder             @relation(fields: [orderId], references: [id])
   changeType                      SubscriptionChangeType        @default(EXTENSION) @map("change_type")
   status                          SubscriptionChangeStatus      @default(DRAFT)
-  sourceSegmentId                 String                        @map("source_segment_id") @db.Uuid
-  sourceSegment                   SubscriptionContractSegment   @relation("SubscriptionChangeSourceSegment", fields: [sourceSegmentId], references: [id])
+  sourceSegmentId                 String?                       @map("source_segment_id") @db.Uuid
+  sourceSegment                   SubscriptionContractSegment?  @relation("SubscriptionChangeSourceSegment", fields: [sourceSegmentId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_change_order_source_segment_id_fkey")
   renewalConsiderationId          String?                       @unique @map("renewal_consideration_id") @db.Uuid
   renewalConsideration            RenewalConsideration?         @relation("SubscriptionChangeOriginConsideration", fields: [renewalConsiderationId], references: [id])
   linkedRenewalConsideration      RenewalConsideration?         @relation("RenewalConsiderationChangeOrder")
-  extensionMonths                 Int                           @map("extension_months")
-  pricingMode                     SubscriptionChangePricingMode @map("pricing_mode")
+  extensionMonths                 Int?                          @map("extension_months")
+  pricingMode                     SubscriptionChangePricingMode? @map("pricing_mode")
   currentQuoteId                  String?                       @unique @map("current_quote_id") @db.Uuid
   currentQuote                    SubscriptionChangeQuote?      @relation("SubscriptionChangeCurrentQuote", fields: [currentQuoteId], references: [id])
   confirmedQuoteId                String?                       @unique @map("confirmed_quote_id") @db.Uuid
   confirmedQuote                  SubscriptionChangeQuote?      @relation("SubscriptionChangeConfirmedQuote", fields: [confirmedQuoteId], references: [id])
   contractId                      String?                       @unique @map("contract_id") @db.Uuid
   contract                        Contract?                     @relation(fields: [contractId], references: [id])
-  targetStartDate                 DateTime                      @map("target_start_date") @db.Date
-  targetEndDate                   DateTime                      @map("target_end_date") @db.Date
+  targetStartDate                 DateTime?                     @map("target_start_date") @db.Date
+  targetEndDate                   DateTime?                     @map("target_end_date") @db.Date
   completionDeadlineAt            DateTime                      @map("completion_deadline_at") @db.Timestamptz(6)
   priceOverrideReason             String?                       @map("price_override_reason") @db.Text
   priceOverrideApprovedBy         String?                       @map("price_override_approved_by") @db.Uuid
@@ -7582,6 +7613,10 @@ model SubscriptionChangeOrder {
   quotes                          SubscriptionChangeQuote[]     @relation("SubscriptionChangeQuotes")
   targetSegment                   SubscriptionContractSegment?  @relation("SubscriptionChangeTargetSegment")
   automationJobs                  SubscriptionAutomationJob[]
+  extensionDetail                 SubscriptionExtensionChangeDetail?
+  vehicleSwapDetail               SubscriptionVehicleSwapChangeDetail?
+  earlyTerminationDetail          SubscriptionEarlyTerminationChangeDetail?
+  managedOtherDetail              SubscriptionManagedOtherChangeDetail?
   createdAt                       DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                       DateTime                      @updatedAt @map("updated_at") @db.Timestamptz(6)
   createdBy                       String?                       @map("created_by") @db.Uuid
@@ -7595,6 +7630,96 @@ model SubscriptionChangeOrder {
   @@index([customerConfirmationPublishedAt])
   @@index([manualTakeoverBy])
   @@map("subscription_change_order")
+}
+
+model SubscriptionExtensionChangeDetail {
+  id                      String                        @id @default(uuid()) @db.Uuid
+  changeOrderId           String                        @unique @map("change_order_id") @db.Uuid
+  changeOrder             SubscriptionChangeOrder       @relation(fields: [changeOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_extension_detail_change_order_id_fkey")
+  sourceSegmentId         String                        @map("source_segment_id") @db.Uuid
+  sourceSegment           SubscriptionContractSegment   @relation("SubscriptionExtensionDetailSourceSegment", fields: [sourceSegmentId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_extension_detail_source_segment_id_fkey")
+  extensionMonths         Int                           @map("extension_months")
+  pricingMode             SubscriptionChangePricingMode @map("pricing_mode")
+  targetStartDate         DateTime                      @map("target_start_date") @db.Date
+  targetEndDate           DateTime                      @map("target_end_date") @db.Date
+  priceOverrideReason     String?                       @map("price_override_reason") @db.Text
+  priceOverrideApprovedBy String?                       @map("price_override_approved_by") @db.Uuid
+  priceOverrideApprover   User?                         @relation("SubscriptionExtensionDetailPriceOverrideApprover", fields: [priceOverrideApprovedBy], references: [id], onDelete: SetNull, onUpdate: Cascade, map: "subscription_extension_detail_price_approver_fkey")
+  priceOverrideApprovedAt DateTime?                     @map("price_override_approved_at") @db.Timestamptz(6)
+  createdAt               DateTime                      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime                      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([sourceSegmentId])
+  @@index([priceOverrideApprovedBy], map: "subscription_extension_change_detail_price_approver_idx")
+  @@map("subscription_extension_change_detail")
+}
+
+model SubscriptionVehicleSwapChangeDetail {
+  id                       String                  @id @default(uuid()) @db.Uuid
+  changeOrderId            String                  @unique @map("change_order_id") @db.Uuid
+  changeOrder              SubscriptionChangeOrder @relation(fields: [changeOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_change_order_id_fkey")
+  sourceVehicleId          String                  @map("source_vehicle_id") @db.Uuid
+  sourceVehicle            Vehicle                 @relation("SubscriptionVehicleSwapSourceVehicle", fields: [sourceVehicleId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_source_vehicle_id_fkey")
+  targetVehicleId          String                  @map("target_vehicle_id") @db.Uuid
+  targetVehicle            Vehicle                 @relation("SubscriptionVehicleSwapTargetVehicle", fields: [targetVehicleId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_target_vehicle_id_fkey")
+  targetSubscriptionPlanId String                  @map("target_subscription_plan_id") @db.Uuid
+  targetSubscriptionPlan   SubscriptionPlan        @relation("SubscriptionVehicleSwapTargetPlan", fields: [targetSubscriptionPlanId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_target_plan_id_fkey")
+  targetVehiclePackageId   String                  @map("target_vehicle_package_id") @db.Uuid
+  targetVehiclePackage     VehiclePackage          @relation("SubscriptionVehicleSwapTargetPackage", fields: [targetVehiclePackageId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_target_package_id_fkey")
+  plannedSwapAt            DateTime                @map("planned_swap_at") @db.Timestamptz(6)
+  actualSwapAt             DateTime?               @map("actual_swap_at") @db.Timestamptz(6)
+  inboundWorkOrderId       String?                 @unique(map: "subscription_vehicle_swap_change_detail_inbound_work_order_id_k") @map("inbound_work_order_id") @db.Uuid
+  inboundWorkOrder         AssetWorkOrder?         @relation("SubscriptionVehicleSwapInboundWorkOrder", fields: [inboundWorkOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_inbound_work_order_id_fkey")
+  outboundWorkOrderId      String?                 @unique(map: "subscription_vehicle_swap_change_detail_outbound_work_order_id_") @map("outbound_work_order_id") @db.Uuid
+  outboundWorkOrder        AssetWorkOrder?         @relation("SubscriptionVehicleSwapOutboundWorkOrder", fields: [outboundWorkOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_vehicle_swap_detail_outbound_work_order_id_fkey")
+  commercialSnapshot       Json                    @map("commercial_snapshot")
+  commercialSnapshotHash   String                  @map("commercial_snapshot_hash") @db.VarChar(64)
+  createdAt                DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([sourceVehicleId])
+  @@index([targetVehicleId])
+  @@index([targetSubscriptionPlanId], map: "subscription_vehicle_swap_change_detail_target_plan_id_idx")
+  @@index([targetVehiclePackageId], map: "subscription_vehicle_swap_change_detail_target_package_id_idx")
+  @@index([plannedSwapAt])
+  @@map("subscription_vehicle_swap_change_detail")
+}
+
+model SubscriptionEarlyTerminationChangeDetail {
+  id                          String                   @id @default(uuid()) @db.Uuid
+  changeOrderId               String                   @unique(map: "subscription_early_termination_detail_change_order_id_key") @map("change_order_id") @db.Uuid
+  changeOrder                 SubscriptionChangeOrder  @relation(fields: [changeOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_early_termination_detail_change_order_id_fkey")
+  effectiveDate               DateTime                 @map("effective_date") @db.Date
+  reasonSnapshot              Json                     @map("reason_snapshot")
+  estimatedSettlementRevision Int?                     @map("estimated_settlement_revision")
+  agreementContractId         String?                  @unique(map: "subscription_early_termination_detail_agreement_id_key") @map("agreement_contract_id") @db.Uuid
+  agreementContract           Contract?                @relation("SubscriptionEarlyTerminationAgreementContract", fields: [agreementContractId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_early_termination_detail_agreement_id_fkey")
+  closureCaseId               String?                  @unique(map: "subscription_early_termination_detail_closure_case_id_key") @map("closure_case_id") @db.Uuid
+  closureCase                 SubscriptionClosureCase? @relation("SubscriptionEarlyTerminationClosureCase", fields: [closureCaseId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_early_termination_detail_closure_case_id_fkey")
+  createdAt                   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                   DateTime                 @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([effectiveDate], map: "subscription_early_termination_detail_effective_date_idx")
+  @@map("subscription_early_termination_change_detail")
+}
+
+model SubscriptionManagedOtherChangeDetail {
+  id                        String                  @id @default(uuid()) @db.Uuid
+  changeOrderId             String                  @unique(map: "subscription_managed_other_detail_change_order_id_key") @map("change_order_id") @db.Uuid
+  changeOrder               SubscriptionChangeOrder @relation(fields: [changeOrderId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_managed_other_detail_change_order_id_fkey")
+  reason                    String                  @db.Text
+  effectiveDate             DateTime                @map("effective_date") @db.Date
+  evidenceSnapshot          Json                    @map("evidence_snapshot")
+  approvedOperationSnapshot Json                    @map("approved_operation_snapshot")
+  beforeSnapshot            Json                    @map("before_snapshot")
+  afterSnapshot             Json?                   @map("after_snapshot")
+  supplementContractId      String?                 @unique(map: "subscription_managed_other_detail_supplement_id_key") @map("supplement_contract_id") @db.Uuid
+  supplementContract        Contract?               @relation("SubscriptionManagedOtherSupplementContract", fields: [supplementContractId], references: [id], onDelete: Restrict, onUpdate: Cascade, map: "subscription_managed_other_detail_supplement_id_fkey")
+  createdAt                 DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                 DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([effectiveDate], map: "subscription_managed_other_detail_effective_date_idx")
+  @@map("subscription_managed_other_change_detail")
 }
 
 model SubscriptionChangeQuote {
@@ -7671,6 +7796,7 @@ model SubscriptionContractSegment {
   sourceChangeOrderId  String?                     @unique @map("source_change_order_id") @db.Uuid
   sourceChangeOrder    SubscriptionChangeOrder?    @relation("SubscriptionChangeTargetSegment", fields: [sourceChangeOrderId], references: [id])
   sourceChanges        SubscriptionChangeOrder[]   @relation("SubscriptionChangeSourceSegment")
+  extensionChangeDetails SubscriptionExtensionChangeDetail[] @relation("SubscriptionExtensionDetailSourceSegment")
   productId            String?                     @map("product_id") @db.Uuid
   product              Product?                    @relation(fields: [productId], references: [id])
   productVersionId     String?                     @map("product_version_id") @db.Uuid

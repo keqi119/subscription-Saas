@@ -40,4 +40,27 @@ describe("Admin subscription change pages", () => {
     expect(orderPage).toContain("旧版订单变更记录");
     expect(orderPage).toContain("/subscription-changes/");
   });
+
+  it("exposes four ACTIVE-order change types and names the legacy action as pre-delivery only", () => {
+    expect(orderPage).toContain('label: "发起合同变更"');
+    expect(orderPage).toContain("续期");
+    expect(orderPage).toContain("换车");
+    expect(orderPage).toContain("提前结束");
+    expect(orderPage).toContain("其他合同变更");
+    expect(orderPage).toContain("交付前退回重做方案");
+    expect(orderPage).toContain('activeSubscriptionPricingMode !== "ORIGINAL_PRICE"');
+    expect(orderPage).toContain("请选择目标订阅套餐 ID");
+    expect(orderPage).toContain("subscriptionChangesLoaded");
+    expect(orderPage).toContain("合同变更状态加载完成后才可发起变更");
+  });
+
+  it("renders typed change facts and only backend-provided actions", () => {
+    expect(detailPage).toContain("change.allowedActions");
+    expect(detailPage).toContain("SUBSCRIPTION_CHANGE_TYPE_LABELS");
+    expect(detailPage).toContain("inboundWorkOrderId");
+    expect(detailPage).toContain("outboundWorkOrderId");
+    expect(detailPage).toContain("closureCaseId");
+    expect(detailPage).toContain("approveManagedOtherChange");
+    expect(detailPage).toContain("executeManagedOtherChange");
+  });
 });

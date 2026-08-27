@@ -31,16 +31,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   RENEWAL_REMINDER_STATUS_LABELS,
   SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS,
-  SUBSCRIPTION_CHANGE_STATUS_LABELS
+  SUBSCRIPTION_CHANGE_STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_TYPE_LABELS
 } from "../../../constants/labels";
 import { ProtectedShell } from "../../../components/protected-shell";
 import { canRunSubscriptionChangeAction } from "../../../lib/action-guards";
 import { API_BASE_URL, apiFetch } from "../../../lib/api";
 import type { AuthMeResponse } from "../../../lib/auth";
 import {
+  approveManagedOtherChange,
   approveSubscriptionChangePrice,
   cancelSubscriptionChange,
   createSubscriptionChangeQuote,
+  executeManagedOtherChange,
   generateSubscriptionChangeContract,
   getSubscriptionChange,
   getSubscriptionChangeTimeline,
@@ -51,9 +54,13 @@ import {
   startSubscriptionChangeESign,
   takeOverSubscriptionChange,
   type AdminContractESignTask,
+  type AdminEarlyTerminationChangeDetail,
+  type AdminExtensionChangeDetail,
+  type AdminManagedOtherChangeDetail,
   type AdminRenewalReminder,
   type AdminSubscriptionChange,
-  type AdminSubscriptionChangeTimelineItem
+  type AdminSubscriptionChangeTimelineItem,
+  type AdminVehicleSwapChangeDetail
 } from "../../../lib/subscription-change-api";
 import {
   formatSubscriptionChangeMoney,
@@ -69,14 +76,26 @@ interface QuoteFormValues {
   subscriptionPlanId?: string;
 }
 
-type ReasonAction = "APPROVE" | "CANCEL" | "MANUAL";
+interface ReasonFormValues {
+  approvalReference?: string;
+  executionNote?: string;
+  reason?: string;
+  supplementContractId?: string;
+}
+
+type ReasonAction =
+  | "APPROVE_PRICE"
+  | "APPROVE_MANAGED_OTHER"
+  | "CANCEL"
+  | "EXECUTE_MANAGED_OTHER"
+  | "MANUAL";
 
 export default function SubscriptionChangeDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { message } = App.useApp();
   const [quoteForm] = Form.useForm<QuoteFormValues>();
-  const [reasonForm] = Form.useForm<{ reason: string }>();
+  const [reasonForm] = Form.useForm<ReasonFormValues>();
   const [change, setChange] = useState<AdminSubscriptionChange | null>(null);
   const [esignTasks, setEsignTasks] = useState<AdminContractESignTask[]>([]);
   const [timeline, setTimeline] = useState<AdminSubscriptionChangeTimelineItem[]>([]);
@@ -143,7 +162,13 @@ export default function SubscriptionChangeDetailPage() {
           break;
         }
         case "APPROVE_PRICE":
-          setReasonAction("APPROVE");
+          setReasonAction("APPROVE_PRICE");
+          return;
+        case "APPROVE_MANAGED_OTHER":
+          setReasonAction("APPROVE_MANAGED_OTHER");
+          return;
+        case "EXECUTE_MANAGED_OTHER":
+          setReasonAction("EXECUTE_MANAGED_OTHER");
           return;
         case "WAIT_CUSTOMER":
           await publishSubscriptionChangeQuote(change.id, change.version);
@@ -179,15 +204,28 @@ export default function SubscriptionChangeDetailPage() {
 
   async function submitReason() {
     if (!change || !reasonAction) return;
-    const { reason } = await reasonForm.validateFields();
+    const values = await reasonForm.validateFields();
+    const reason = values.reason?.trim() ?? "";
     setSubmitting(true);
     try {
-      if (reasonAction === "APPROVE") {
-        await approveSubscriptionChangePrice(change.id, change.version, reason.trim());
+      if (reasonAction === "APPROVE_PRICE") {
+        await approveSubscriptionChangePrice(change.id, change.version, reason);
+      } else if (reasonAction === "APPROVE_MANAGED_OTHER") {
+        await approveManagedOtherChange(change.id, {
+          approvalReason: reason,
+          approvalReference: values.approvalReference?.trim() ?? "",
+          supplementContractId: values.supplementContractId?.trim() || undefined,
+          version: change.version
+        });
+      } else if (reasonAction === "EXECUTE_MANAGED_OTHER") {
+        await executeManagedOtherChange(change.id, {
+          executionNote: values.executionNote?.trim() ?? "",
+          version: change.version
+        });
       } else if (reasonAction === "MANUAL") {
-        await takeOverSubscriptionChange(change.id, change.version, reason.trim());
+        await takeOverSubscriptionChange(change.id, change.version, reason);
       } else {
-        await cancelSubscriptionChange(change.id, change.version, reason.trim());
+        await cancelSubscriptionChange(change.id, change.version, reason);
       }
       setReasonAction(null);
       reasonForm.resetFields();
@@ -215,14 +253,18 @@ export default function SubscriptionChangeDetailPage() {
     }
   }
 
-  const canManual = permissions.has("subscription_change:manual_takeover");
-  const canCancel = permissions.has("subscription_change:cancel");
-  const cancellable = Boolean(
-    change &&
-    ["DRAFT", "QUOTED", "CUSTOMER_CONFIRMED", "SIGNING_OR_PAYMENT", "MANUAL_TAKEOVER"].includes(
-      change.status
-    )
-  );
+  const canManual = Boolean(change?.allowedActions?.includes("MANUAL_TAKEOVER"));
+  const canCancel = Boolean(change?.allowedActions?.includes("CANCEL"));
+  const managedOperation =
+    change?.changeType === "MANAGED_OTHER"
+      ? managedOperationName(
+          (change.detail as AdminManagedOtherChangeDetail | undefined)
+            ?.approvedOperationSnapshot
+        )
+      : null;
+  const managedSupplementRequired =
+    managedOperation === "RECORD_CONTRACT_CLARIFICATION" ||
+    managedOperation === "RECORD_SERVICE_ACCOMMODATION";
 
   return (
     <ProtectedShell>
@@ -241,7 +283,11 @@ export default function SubscriptionChangeDetailPage() {
               </Button>
             </Space>
           }
-          title={change ? `${change.changeNo} · 协议延长` : "合同变更详情"}
+          title={
+            change
+              ? `${change.changeNo} · ${SUBSCRIPTION_CHANGE_TYPE_LABELS[change.changeType]}`
+              : "合同变更详情"
+          }
         >
           {error ? (
             <Alert
@@ -315,12 +361,12 @@ export default function SubscriptionChangeDetailPage() {
                     {nextAction.label}
                   </Button>
                 ) : null}
-                {change.status === "FAILED" && canManual ? (
+                {canManual ? (
                   <Button icon={<AuditOutlined />} onClick={() => setReasonAction("MANUAL")}>
                     人工接管
                   </Button>
                 ) : null}
-                {cancellable && canCancel ? (
+                {canCancel ? (
                   <Button danger onClick={() => setReasonAction("CANCEL")}>
                     取消变更
                   </Button>
@@ -332,14 +378,16 @@ export default function SubscriptionChangeDetailPage() {
 
         {change ? (
           <>
-            <PriceApprovalCard change={change} />
+            {change.changeType === "EXTENSION" ? <PriceApprovalCard change={change} /> : null}
             <ContractCard change={change} esignTasks={esignTasks} />
-            <ReminderCard
-              canRetry={permissions.has("notification:manage")}
-              onRetry={retryReminder}
-              reminders={change.renewalConsideration?.reminders ?? []}
-              retrying={submitting}
-            />
+            {change.changeType === "EXTENSION" ? (
+              <ReminderCard
+                canRetry={permissions.has("notification:manage")}
+                onRetry={retryReminder}
+                reminders={change.renewalConsideration?.reminders ?? []}
+                retrying={submitting}
+              />
+            ) : null}
             <AutomationJobCard change={change} />
             <Card title="审计时间线">
               <Timeline
@@ -360,17 +408,58 @@ export default function SubscriptionChangeDetailPage() {
         onOk={() => void submitReason()}
         open={reasonAction !== null}
         title={
-          reasonAction === "APPROVE"
+          reasonAction === "APPROVE_PRICE"
             ? "审批价格例外"
+            : reasonAction === "APPROVE_MANAGED_OTHER"
+              ? "审批其他合同变更"
+              : reasonAction === "EXECUTE_MANAGED_OTHER"
+                ? "记录其他合同变更结果"
             : reasonAction === "MANUAL"
               ? "人工接管"
               : "取消合同变更"
         }
       >
         <Form form={reasonForm} layout="vertical">
-          <Form.Item label="原因" name="reason" rules={[{ required: true, message: "请填写原因" }]}>
-            <Input.TextArea autoSize={{ minRows: 3, maxRows: 6 }} maxLength={500} />
-          </Form.Item>
+          {reasonAction === "EXECUTE_MANAGED_OTHER" ? (
+            <Form.Item
+              label="执行结果说明"
+              name="executionNote"
+              rules={[{ required: true, message: "请填写执行结果说明" }]}
+            >
+              <Input.TextArea autoSize={{ minRows: 3, maxRows: 6 }} maxLength={2_000} />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              label="原因"
+              name="reason"
+              rules={[{ required: true, message: "请填写原因" }]}
+            >
+              <Input.TextArea autoSize={{ minRows: 3, maxRows: 6 }} maxLength={2_000} />
+            </Form.Item>
+          )}
+          {reasonAction === "APPROVE_MANAGED_OTHER" ? (
+            <>
+              <Form.Item
+                label="审批依据编号"
+                name="approvalReference"
+                rules={[{ required: true, message: "请填写审批依据编号" }]}
+              >
+                <Input maxLength={255} />
+              </Form.Item>
+              <Form.Item
+                extra="涉及合同权利义务调整时必须填写已签署、已归档的补充协议合同 ID。"
+                label="已归档补充协议合同 ID"
+                name="supplementContractId"
+                rules={
+                  managedSupplementRequired
+                    ? [{ required: true, message: "该操作必须填写已归档补充协议合同 ID" }]
+                    : undefined
+                }
+              >
+                <Input maxLength={64} />
+              </Form.Item>
+            </>
+          ) : null}
         </Form>
       </Modal>
     </ProtectedShell>
@@ -378,41 +467,133 @@ export default function SubscriptionChangeDetailPage() {
 }
 
 export function ChangeOverview({ change }: { change: AdminSubscriptionChange }) {
-  const dates = getSubscriptionChangeContractDates(change);
+  const items = subscriptionChangeOverviewItems(change);
   return (
     <Descriptions
       bordered
       column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
-      items={[
-        {
-          label: "订单",
-          children: (
-            <Link href={`/orders/${change.orderId}?tab=change`}>{change.order.orderNo}</Link>
-          )
-        },
-        {
-          label: "状态",
-          children: (
-            <Tag color={change.status === "COMPLETED" ? "green" : "blue"}>
-              {SUBSCRIPTION_CHANGE_STATUS_LABELS[change.status] ?? change.status}
-            </Tag>
-          )
-        },
-        {
-          label: "计价方式",
-          children:
-            SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[change.pricingMode] ?? change.pricingMode
-        },
-        { label: "原合同到期日", children: formatDate(dates.originalEndDate) },
-        { label: "拟续期至", children: formatDate(dates.proposedEndDate) },
-        { label: "已签约至", children: formatDate(dates.contractedThrough) },
-        { label: "续期月数", children: `${change.extensionMonths} 个月` },
-        { label: "完成期限", children: formatDateTime(change.completionDeadlineAt) },
-        { label: "版本", children: `V${change.version}` }
-      ]}
+      items={items}
       size="small"
     />
   );
+}
+
+function subscriptionChangeOverviewItems(change: AdminSubscriptionChange) {
+  const common = [
+    {
+      label: "订单",
+      children: <Link href={`/orders/${change.orderId}?tab=change`}>{change.order.orderNo}</Link>
+    },
+    { label: "变更类型", children: SUBSCRIPTION_CHANGE_TYPE_LABELS[change.changeType] },
+    {
+      label: "状态",
+      children: (
+        <Tag color={change.status === "COMPLETED" ? "green" : "blue"}>
+          {SUBSCRIPTION_CHANGE_STATUS_LABELS[change.status] ?? change.status}
+        </Tag>
+      )
+    },
+    { label: "完成期限", children: formatDateTime(change.completionDeadlineAt) },
+    { label: "版本", children: `V${change.version}` },
+    {
+      label: "后台开放动作",
+      children: change.allowedActions?.length ? change.allowedActions.join(" / ") : "无"
+    }
+  ];
+
+  if (change.changeType === "EXTENSION") {
+    const detail = change.detail as AdminExtensionChangeDetail | undefined;
+    const dates = getSubscriptionChangeContractDates(change);
+    return [
+      ...common,
+      {
+        label: "计价方式",
+        children:
+          SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[detail?.pricingMode ?? change.pricingMode ?? ""] ??
+          detail?.pricingMode ??
+          change.pricingMode ??
+          "-"
+      },
+      { label: "原合同到期日", children: formatDate(dates.originalEndDate) },
+      { label: "拟续期至", children: formatDate(detail?.targetEndDate ?? dates.proposedEndDate) },
+      { label: "已签约至", children: formatDate(dates.contractedThrough) },
+      {
+        label: "续期月数",
+        children: `${detail?.extensionMonths ?? change.extensionMonths ?? "-"} 个月`
+      }
+    ];
+  }
+
+  if (change.changeType === "VEHICLE_SWAP") {
+    const detail = change.detail as AdminVehicleSwapChangeDetail | undefined;
+    return [
+      ...common,
+      { label: "原车辆 ID", children: detail?.sourceVehicleId ?? "-" },
+      { label: "目标车辆 ID", children: detail?.targetVehicleId ?? "-" },
+      { label: "目标套餐 ID", children: detail?.targetSubscriptionPlanId ?? "-" },
+      { label: "计划换车时间", children: formatDateTime(detail?.plannedSwapAt) },
+      { label: "实际换车时间", children: formatDateTime(detail?.actualSwapAt) },
+      { label: "交回工单 ID", children: detail?.inboundWorkOrderId ?? "待创建" },
+      { label: "交付工单 ID", children: detail?.outboundWorkOrderId ?? "待创建" },
+      { label: "商业快照哈希", children: detail?.commercialSnapshotHash ?? "待报价" }
+    ];
+  }
+
+  if (change.changeType === "EARLY_TERMINATION") {
+    const detail = change.detail as AdminEarlyTerminationChangeDetail | undefined;
+    return [
+      ...common,
+      { label: "计划生效日", children: formatDate(detail?.effectiveDate) },
+      { label: "结算试算 revision", children: detail?.estimatedSettlementRevision ?? "待试算" },
+      {
+        label: "退车 / 结算闭环",
+        children: detail?.closureCaseId ? (
+          <Link href={`/orders/${change.orderId}?tab=overview`}>
+            Closure {detail.closureCaseId}
+          </Link>
+        ) : (
+          "待创建"
+        )
+      },
+      { label: "提前结束协议 ID", children: detail?.agreementContractId ?? "待生成" }
+    ];
+  }
+
+  const detail = change.detail as AdminManagedOtherChangeDetail | undefined;
+  return [
+    ...common,
+    {
+      label: "受控操作",
+      children: managedOperationName(detail?.approvedOperationSnapshot) ?? "-"
+    },
+    { label: "生效日", children: formatDate(detail?.effectiveDate) },
+    { label: "补充协议合同 ID", children: detail?.supplementContractId ?? "不适用 / 待提供" },
+    { label: "变更前事实", children: <SnapshotValue value={detail?.beforeSnapshot} /> },
+    { label: "批准后事实", children: <SnapshotValue value={detail?.afterSnapshot} /> },
+    { label: "证据快照", children: <SnapshotValue value={detail?.evidenceSnapshot} /> }
+  ];
+}
+
+function SnapshotValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return "-";
+  return (
+    <Typography.Text code style={{ whiteSpace: "pre-wrap" }}>
+      {JSON.stringify(value, null, 2)}
+    </Typography.Text>
+  );
+}
+
+function managedOperationName(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const snapshot = value as Record<string, unknown>;
+  const request =
+    snapshot.request &&
+    typeof snapshot.request === "object" &&
+    !Array.isArray(snapshot.request)
+      ? (snapshot.request as Record<string, unknown>)
+      : null;
+  const operation = snapshot.operation ?? request?.operation;
+  return typeof operation === "string" ? operation : null;
 }
 
 function PriceApprovalCard({ change }: { change: AdminSubscriptionChange }) {

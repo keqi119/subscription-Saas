@@ -10,6 +10,7 @@ import {
   UseGuards
 } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
+import { SubscriptionChangeType } from "@prisma/client";
 
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
@@ -17,15 +18,22 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import { ESignService } from "../esign/esign.service";
 import {
   ApproveSubscriptionExtensionPriceDto,
+  ApproveManagedOtherDto,
+  CreateSubscriptionChangeDto,
   CreateSubscriptionExtensionDto,
   CreateSubscriptionExtensionQuoteDto,
+  ExecuteManagedOtherDto,
   optionalMoney,
   ReasonedSubscriptionChangeDto,
   SubscriptionExtensionQuoteDto,
   VersionedSubscriptionChangeDto
 } from "./subscription-change.dto";
+import { SubscriptionChangeService } from "./subscription-change.service";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
+import { SubscriptionManagedOtherService } from "./subscription-managed-other.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
+import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
 
 @Controller("subscription-changes")
 @UseGuards(AuthGuard, PermissionsGuard)
@@ -33,8 +41,51 @@ export class SubscriptionChangeController {
   constructor(
     private readonly service: SubscriptionExtensionService,
     @Optional() private readonly contractService?: SubscriptionExtensionContractService,
-    @Optional() private readonly esignService?: ESignService
+    @Optional() private readonly esignService?: ESignService,
+    @Optional() private readonly changeService?: SubscriptionChangeService,
+    @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService,
+    @Optional()
+    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService,
+    @Optional()
+    private readonly managedOtherService?: SubscriptionManagedOtherService
   ) {}
+
+  @Post()
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_CREATE)
+  async create(
+    @Body() dto: CreateSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    const genericService =
+      this.changeService ?? (this.service as unknown as Pick<SubscriptionChangeService, "create">);
+    return apiSafe(
+      await genericService.create(
+        {
+          ...dto,
+          detail:
+            dto.changeType === "EXTENSION"
+              ? {
+                  ...dto.detail,
+                  discountedMonthlyFeeAmount: optionalMoney(
+                    "discountedMonthlyFeeAmount" in dto.detail
+                      ? dto.detail.discountedMonthlyFeeAmount
+                      : undefined
+                  ),
+                  requestedVehicleBaseFeeAmount: optionalMoney(
+                    "requestedVehicleBaseFeeAmount" in dto.detail
+                      ? dto.detail.requestedVehicleBaseFeeAmount
+                      : undefined
+                  )
+                }
+              : dto.detail,
+          idempotencyKey
+        } as never,
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
 
   @Post(":id/contracts")
   @RequirePermissions(PermissionCode.CONTRACT_GENERATE)
@@ -44,11 +95,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    if (!this.contractService) {
-      throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
-    }
+    const contractService = await this.contractServiceFor(id);
     return apiSafe(
-      await this.contractService.generate(
+      await contractService.generate(
         id,
         { idempotencyKey, version: dto.version },
         request.user,
@@ -85,8 +134,9 @@ export class SubscriptionChangeController {
     @Body() dto: SubscriptionExtensionQuoteDto,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.previewQuote(
+      await quoteService.previewQuote(
         id,
         {
           ...dto,
@@ -106,8 +156,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.createFormalQuote(
+      await quoteService.createFormalQuote(
         id,
         {
           ...dto,
@@ -147,8 +198,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.submitCustomerConfirmation(
+      await quoteService.submitCustomerConfirmation(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -166,7 +218,7 @@ export class SubscriptionChangeController {
     @Req() request: AuthenticatedRequest
   ) {
     return apiSafe(
-      await this.service.cancel(
+      await (this.changeService ?? this.service).cancel(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -184,7 +236,49 @@ export class SubscriptionChangeController {
     @Req() request: AuthenticatedRequest
   ) {
     return apiSafe(
-      await this.service.manualTakeover(
+      await (this.changeService ?? this.service).manualTakeover(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
+
+  @Post(":id/managed-other/approve")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_APPROVE)
+  async approveManagedOther(
+    @Param("id") id: string,
+    @Body() dto: ApproveManagedOtherDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    if (!this.managedOtherService) {
+      throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+    }
+    return apiSafe(
+      await this.managedOtherService.approve(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
+
+  @Post(":id/managed-other/execute")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE)
+  async executeManagedOther(
+    @Param("id") id: string,
+    @Body() dto: ExecuteManagedOtherDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    if (!this.managedOtherService) {
+      throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+    }
+    return apiSafe(
+      await this.managedOtherService.execute(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -238,19 +332,19 @@ export class SubscriptionChangeController {
   @Get("orders/:orderId")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async listForOrder(@Param("orderId") orderId: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.listForOrder(orderId, request.user));
+    return apiSafe(await (this.changeService ?? this.service).listForOrder(orderId, request.user));
   }
 
   @Get(":id/timeline")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async timeline(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.timeline(id, request.user));
+    return apiSafe(await (this.changeService ?? this.service).timeline(id, request.user));
   }
 
   @Get(":id")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async get(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.get(id, request.user));
+    return apiSafe(await (this.changeService ?? this.service).get(id, request.user));
   }
 
   private async startOrRetryESign(
@@ -262,8 +356,9 @@ export class SubscriptionChangeController {
     if (!this.esignService) {
       throw new Error("SUBSCRIPTION_EXTENSION_ESIGN_SERVICE_MISSING");
     }
+    const changeContractService = await this.esignCommandServiceFor(id);
     return apiSafe(
-      await this.service.startOrRetryESign(
+      await changeContractService.startOrRetryESign(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -277,6 +372,47 @@ export class SubscriptionChangeController {
         (contractId) => this.esignService!.findActiveTaskForContract(contractId, request.user)
       )
     );
+  }
+
+  private async contractServiceFor(id: string) {
+    if (this.changeService) {
+      const changeType = await this.changeService.getChangeType(id);
+      if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+        if (!this.vehicleSwapContractService) {
+          throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
+        }
+        return this.vehicleSwapContractService;
+      }
+      if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTerminationService) {
+          throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+        }
+        return this.earlyTerminationService;
+      }
+    }
+    if (!this.contractService) {
+      throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
+    }
+    return this.contractService;
+  }
+
+  private async esignCommandServiceFor(id: string) {
+    if (this.changeService) {
+      const changeType = await this.changeService.getChangeType(id);
+      if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+        if (!this.vehicleSwapContractService) {
+          throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
+        }
+        return this.vehicleSwapContractService;
+      }
+      if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTerminationService) {
+          throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+        }
+        return this.earlyTerminationService;
+      }
+    }
+    return this.service;
   }
 }
 

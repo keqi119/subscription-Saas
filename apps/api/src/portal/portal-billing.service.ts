@@ -8,7 +8,9 @@ import {
   ESignTaskStatus,
   OrderMileageReviewStatus,
   OrderStatus,
-  Prisma
+  Prisma,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
@@ -59,6 +61,11 @@ const PORTAL_SIGNABLE_TASK_STATUSES = new Set<ESignTaskStatus>([
   ESignTaskStatus.WAITING_CUSTOMER,
   ESignTaskStatus.SIGNING
 ]);
+const PORTAL_CUSTOMER_VISIBLE_CHANGE_TYPES: readonly SubscriptionChangeType[] = [
+  SubscriptionChangeType.EXTENSION,
+  SubscriptionChangeType.VEHICLE_SWAP,
+  SubscriptionChangeType.EARLY_TERMINATION
+];
 
 const portalOrderInclude = {
   contract: {
@@ -166,6 +173,25 @@ const portalOrderInclude = {
       remainingAmount: true
     },
     where: { deletedAt: null }
+  },
+  subscriptionChanges: {
+    orderBy: { createdAt: "desc" as const },
+    select: {
+      changeType: true,
+      id: true,
+      status: true
+    },
+    take: 1,
+    where: {
+      changeType: { in: [...PORTAL_CUSTOMER_VISIBLE_CHANGE_TYPES] },
+      status: {
+        notIn: [
+          SubscriptionChangeStatus.COMPLETED,
+          SubscriptionChangeStatus.CANCELLED,
+          SubscriptionChangeStatus.FAILED
+        ]
+      }
+    }
   },
   vehicle: {
     select: {
@@ -339,6 +365,10 @@ export class PortalBillingService {
 
     return {
       ...toPortalOrderListItem(order),
+      activeSubscriptionChange:
+        order.subscriptionChanges.find((change) =>
+          PORTAL_CUSTOMER_VISIBLE_CHANGE_TYPES.includes(change.changeType)
+        ) ?? null,
       billingSummary: billSummary,
       contractSummary: toContractSummary(order),
       depositSummary,

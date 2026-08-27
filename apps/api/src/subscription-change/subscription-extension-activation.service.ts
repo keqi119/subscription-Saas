@@ -23,6 +23,7 @@ import {
 } from "../order/order.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
+import { requireExtensionChangeProjection } from "./subscription-extension-compat";
 
 const CONTINUATION_JOB_TYPES = [
   SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
@@ -48,18 +49,22 @@ export class SubscriptionExtensionActivationService {
       const segment = await tx.subscriptionContractSegment.findUnique({
         include: {
           sourceChangeOrder: {
-            include: { sourceSegment: true }
+            include: {
+              extensionDetail: { include: { sourceSegment: true } },
+              sourceSegment: true
+            }
           }
         },
         where: { id: segmentId }
       });
-      const change = segment?.sourceChangeOrder;
-      if (!segment || !change) {
+      const storedChange = segment?.sourceChangeOrder;
+      if (!segment || !storedChange) {
         throw new SubscriptionChangeError(
           "EXTENSION_ACTIVATION_SOURCE_MISSING",
           "The scheduled extension segment and change order are required."
         );
       }
+      const change = requireExtensionChangeProjection(storedChange);
       if (now.getTime() < shanghaiStartOfDate(segment.startDate).getTime()) {
         throw new SubscriptionChangeError(
           "EXTENSION_ACTIVATION_NOT_DUE",

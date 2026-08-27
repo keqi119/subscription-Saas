@@ -667,6 +667,13 @@ export const SUBSCRIPTION_CHANGE_STATUS_LABELS: Record<string, string> = {
   SIGNING_OR_PAYMENT: "签约处理中"
 };
 
+export const SUBSCRIPTION_CHANGE_TYPE_LABELS: Record<string, string> = {
+  EARLY_TERMINATION: "提前结束",
+  EXTENSION: "续期",
+  MANAGED_OTHER: "其他合同变更",
+  VEHICLE_SWAP: "换车"
+};
+
 export const SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS: Record<string, string> = {
   APPROVED_DISCOUNT: "已审批折扣",
   CURRENT_VERSION: "当前版本价格",

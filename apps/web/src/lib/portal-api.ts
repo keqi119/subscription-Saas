@@ -92,7 +92,12 @@ export function getPortalSubscriptionChange(id: string) {
 
 export function confirmPortalRenewalQuote(
   id: string,
-  input: { quoteId: string; revision: number; version: number }
+  input: {
+    commercialSnapshotHash?: string;
+    quoteId: string;
+    revision: number;
+    version: number;
+  }
 ) {
   return portalApiFetch<PortalSubscriptionChange>(
     `/portal/subscription-changes/${encodeURIComponent(id)}/quote/confirm`,
@@ -102,7 +107,13 @@ export function confirmPortalRenewalQuote(
 
 export function rejectPortalRenewalQuote(
   id: string,
-  input: { quoteId: string; reason: string; revision: number; version: number }
+  input: {
+    commercialSnapshotHash?: string;
+    quoteId: string;
+    reason: string;
+    revision: number;
+    version: number;
+  }
 ) {
   return portalApiFetch<PortalSubscriptionChange>(
     `/portal/subscription-changes/${encodeURIComponent(id)}/quote/reject`,

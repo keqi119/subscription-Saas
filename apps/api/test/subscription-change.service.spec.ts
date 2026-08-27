@@ -6,6 +6,7 @@ import {
   SubscriptionChangePricingMode,
   SubscriptionChangeQuoteStatus,
   SubscriptionChangeStatus,
+  SubscriptionChangeType,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType,
   VehicleStatus
@@ -13,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { loadSubscriptionChangeConfig } from "../src/subscription-change/subscription-change.config";
+import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 import { SubscriptionExtensionService } from "../src/subscription-change/subscription-extension.service";
 
 describe("SubscriptionExtensionService", () => {
@@ -29,6 +31,22 @@ describe("SubscriptionExtensionService", () => {
     expect(loadSubscriptionChangeConfig({ SUBSCRIPTION_EXTENSION_ENABLED: "true" }).enabled).toBe(
       true
     );
+  });
+
+  it("loads the four active-term change flags independently and fails closed", () => {
+    expect(
+      loadSubscriptionChangeConfig({
+        SUBSCRIPTION_EARLY_TERMINATION_ENABLED: "true",
+        SUBSCRIPTION_EXTENSION_ENABLED: "true",
+        SUBSCRIPTION_MANAGED_OTHER_ENABLED: "false",
+        SUBSCRIPTION_VEHICLE_SWAP_ENABLED: "TRUE"
+      })
+    ).toMatchObject({
+      earlyTerminationEnabled: true,
+      extensionEnabled: true,
+      managedOtherEnabled: false,
+      vehicleSwapEnabled: false
+    });
   });
 
   it("fails closed when the feature flag is not the exact string true", async () => {
@@ -119,13 +137,87 @@ describe("SubscriptionExtensionService", () => {
       harness.context
     );
 
-    expect(harness.prisma.subscriptionChangeOrder.create).toHaveBeenCalledWith(
+    const createData = harness.prisma.subscriptionChangeOrder.create.mock.calls[0]![0].data;
+    expect(createData).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          completionDeadlineAt: new Date("2026-01-30T16:00:00.000Z"),
-          targetEndDate: new Date("2026-02-27T00:00:00.000Z"),
-          targetStartDate: new Date("2026-01-31T00:00:00.000Z")
-        })
+        completionDeadlineAt: new Date("2026-01-30T16:00:00.000Z"),
+        extensionDetail: {
+          create: expect.objectContaining({
+            extensionMonths: 1,
+            pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+            sourceSegmentId: "segment-base",
+            targetEndDate: new Date("2026-02-27T00:00:00.000Z"),
+            targetStartDate: new Date("2026-01-31T00:00:00.000Z")
+          })
+        }
+      })
+    );
+    for (const legacyField of [
+      "extensionMonths",
+      "priceOverrideReason",
+      "pricingMode",
+      "sourceSegmentId",
+      "targetEndDate",
+      "targetStartDate"
+    ]) {
+      expect(createData).not.toHaveProperty(legacyField);
+    }
+    expect(harness.lockedTables().slice(0, 3)).toEqual([
+      "subscription_order",
+      "subscription_contract_segment",
+      "subscription_change_order"
+    ]);
+  });
+
+  it("replays the exact extension create command and rejects a changed payload", async () => {
+    const harness = changeHarness({ persistCommands: true });
+
+    const first = await harness.service.createExtension(
+      createInput(),
+      harness.submitter,
+      harness.context
+    );
+    const replay = await harness.service.createExtension(
+      createInput(),
+      harness.submitter,
+      harness.context
+    );
+
+    expect(replay.id).toBe(first.id);
+    expect(harness.prisma.subscriptionChangeOrder.create).toHaveBeenCalledOnce();
+    await expect(
+      harness.service.createExtension(
+        { ...createInput(), extensionMonths: 12 },
+        harness.submitter,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+  });
+
+  it("prices an extension from its typed detail after legacy root fields become nullable", async () => {
+    const harness = changeHarness({ typedDetailOnly: true });
+
+    await harness.service.previewQuote("change-1", {}, harness.submitter);
+
+    expect(harness.pricingService.calculate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extensionMonths: 6,
+        pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+        sourceSegment: expect.objectContaining({ id: "segment-base" })
+      })
+    );
+  });
+
+  it("temporarily falls back to legacy root facts when no typed detail is present", async () => {
+    const harness = changeHarness({ legacyRootOnly: true });
+
+    await harness.service.previewQuote("change-1", {}, harness.submitter);
+
+    expect(harness.pricingService.calculate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extensionMonths: 6,
+        pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+        sourceSegment: expect.objectContaining({ id: "segment-base" })
       })
     );
   });
@@ -157,6 +249,36 @@ describe("SubscriptionExtensionService", () => {
     ).rejects.toMatchObject({ code: "PRICE_OVERRIDE_SELF_APPROVAL_FORBIDDEN" });
   });
 
+  it("stores price-exception approval on the typed extension detail", async () => {
+    const harness = changeHarness({
+      existingQuote: true,
+      pricingMode: SubscriptionChangePricingMode.ORIGINAL_PRICE,
+      typedDetailOnly: true
+    });
+    const approver = { ...harness.submitter, id: "approver-1", username: "approver" };
+
+    await harness.service.approvePriceOverride(
+      "change-1",
+      { idempotencyKey: "approve-typed-detail", reason: "retain agreed price", version: 0 },
+      approver,
+      harness.context
+    );
+
+    expect(harness.prisma.subscriptionChangeOrder.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          extensionDetail: {
+            update: {
+              priceOverrideApprovedAt: expect.any(Date),
+              priceOverrideApprovedBy: approver.id,
+              priceOverrideReason: "retain agreed price"
+            }
+          }
+        })
+      })
+    );
+  });
+
   it("creates append-only quote revisions and supersedes the prior formal quote", async () => {
     const harness = changeHarness({ existingQuote: true });
 
@@ -177,8 +299,12 @@ describe("SubscriptionExtensionService", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           customerConfirmationPublishedAt: null,
-          priceOverrideApprovedAt: null,
-          priceOverrideApprovedBy: null
+          extensionDetail: {
+            update: {
+              priceOverrideApprovedAt: null,
+              priceOverrideApprovedBy: null
+            }
+          }
         })
       })
     );
@@ -538,7 +664,9 @@ interface HarnessOptions {
   changeFailureCode?: string | null;
   jobContractSegmentId?: string | null;
   jobErrorCode?: string | null;
+  legacyRootOnly?: boolean;
   targetSegmentStatus?: ContractSegmentStatus;
+  typedDetailOnly?: boolean;
   vehicleStatus?: VehicleStatus;
 }
 
@@ -566,6 +694,7 @@ function changeHarness(options: HarnessOptions = {}) {
   };
   const state = {
     change: {
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuoteId: options.confirmedQuoteId ?? null,
       createdBy: submitter.id,
@@ -577,17 +706,19 @@ function changeHarness(options: HarnessOptions = {}) {
           : options.changeFailureCode,
       failureMessage: "provider timeout",
       currentQuoteId: options.existingQuote ? "quote-1" : null,
-      extensionMonths: 6,
+      extensionMonths: options.typedDetailOnly ? null : 6,
       id: "change-1",
       orderId: "order-1",
       priceOverrideApprovedAt: null as Date | null,
       priceOverrideApprovedBy: null as string | null,
-      pricingMode: options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION,
+      pricingMode: options.typedDetailOnly
+        ? null
+        : (options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION),
       renewalConsiderationId: null,
-      sourceSegmentId: "segment-base",
+      sourceSegmentId: options.typedDetailOnly ? null : "segment-base",
       status: options.status ?? SubscriptionChangeStatus.DRAFT,
-      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
-      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
+      targetEndDate: options.typedDetailOnly ? null : new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: options.typedDetailOnly ? null : new Date("2026-09-03T00:00:00.000Z"),
       version: 0
     },
     quote: {
@@ -613,6 +744,17 @@ function changeHarness(options: HarnessOptions = {}) {
     productVersionId: "version-old",
     quoteSnapshot: { quoteNo: "QUO-OLD" },
     subscriptionPlanId: "plan-old"
+  };
+  const extensionDetailState = {
+    extensionMonths: 6,
+    priceOverrideApprovedAt: null as Date | null,
+    priceOverrideApprovedBy: null as string | null,
+    priceOverrideReason: null as string | null,
+    pricingMode: options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION,
+    sourceSegment,
+    sourceSegmentId: sourceSegment.id,
+    targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+    targetStartDate: new Date("2026-09-03T00:00:00.000Z")
   };
   const order = {
     businessType: options.businessType ?? BusinessType.SUBSCRIPTION,
@@ -654,8 +796,12 @@ function changeHarness(options: HarnessOptions = {}) {
   const commandKey = (data: Record<string, unknown>) =>
     `${String(data.actorId)}:${String(data.operation)}:${String(data.idempotencyKey)}`;
   let transactionTail = Promise.resolve();
+  const querySql: string[] = [];
   const prisma = {
-    $queryRaw: vi.fn(async () => []),
+    $queryRaw: vi.fn(async (sql: { strings?: readonly string[] }) => {
+      querySql.push(sql.strings?.join(" ") ?? String(sql));
+      return [];
+    }),
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => {
       if (!options.serializeTransactions) return operation(prisma);
       let release: () => void = () => {};
@@ -719,10 +865,16 @@ function changeHarness(options: HarnessOptions = {}) {
       )
     },
     subscriptionChangeOrder: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...state.change,
-        ...data
-      })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const nested = data.extensionDetail as { create?: Record<string, unknown> } | undefined;
+        if (nested?.create) Object.assign(extensionDetailState, nested.create);
+        return {
+          ...state.change,
+          ...data,
+          extensionDetail: extensionDetailState,
+          sourceSegment: options.typedDetailOnly ? null : sourceSegment
+        };
+      }),
       findFirst: vi.fn(async () => (options.activeChange ? state.change : null)),
       findUnique: vi.fn(async () => ({
         ...state.change,
@@ -731,22 +883,28 @@ function changeHarness(options: HarnessOptions = {}) {
           ? { fileId: null, id: "contract-rendering", status: "GENERATED" }
           : { fileId: "file-1", id: "contract-1", status: "ARCHIVED" },
         currentQuote: options.existingQuote ? state.quote : null,
+        extensionDetail: options.legacyRootOnly ? null : extensionDetailState,
         order,
         quotes: options.existingQuote ? [state.quote] : [],
-        sourceSegment,
+        sourceSegment: options.typedDetailOnly ? null : sourceSegment,
         targetSegment: {
           id: "segment-extension",
           status: options.targetSegmentStatus ?? ContractSegmentStatus.ACTIVE
         }
       })),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        Object.assign(state.change, data);
+        const nested = data.extensionDetail as { update?: Record<string, unknown> } | undefined;
+        if (nested?.update) Object.assign(extensionDetailState, nested.update);
+        const rootData = { ...data };
+        delete rootData.extensionDetail;
+        Object.assign(state.change, rootData);
         return {
           ...state.change,
           currentQuote: options.existingQuote ? state.quote : null,
+          extensionDetail: options.legacyRootOnly ? null : extensionDetailState,
           order,
           quotes: options.existingQuote ? [state.quote] : [],
-          sourceSegment
+          sourceSegment: options.typedDetailOnly ? null : sourceSegment
         };
       })
     },
@@ -817,10 +975,25 @@ function changeHarness(options: HarnessOptions = {}) {
     auditService as never,
     segmentService as never,
     pricingService as never,
-    { enabled: options.enabled ?? true, now: () => now, quoteValidityHours: 72 }
+    { enabled: options.enabled ?? true, now: () => now, quoteValidityHours: 72 },
+    new SubscriptionChangeRepository(prisma as never)
   );
 
-  return { auditService, context, prisma, service, state, submitter };
+  return {
+    auditService,
+    context,
+    lockedTables: () =>
+      querySql.flatMap((sql) =>
+        ["subscription_order", "subscription_contract_segment", "subscription_change_order"].filter(
+          (table) => sql.includes(`"${table}"`)
+        )
+      ),
+    pricingService,
+    prisma,
+    service,
+    state,
+    submitter
+  };
 }
 
 function createInput() {

@@ -93,6 +93,8 @@ interface PackageRow {
   minPurchasePriceAmount?: number | null;
   modelDefinition?: VehicleModelDefinitionSummary | null;
   modelDefinitionId?: string | null;
+  modelDefinitionIds?: string[];
+  modelMembers?: VehiclePackageModelMember[];
   modelCode?: string | null;
   modelDisplayName?: string | null;
   monthlyEnergyCount?: number | null;
@@ -114,6 +116,12 @@ interface PackageRow {
   vehicleModelName?: string | null;
 }
 
+interface VehiclePackageModelMember {
+  id: string;
+  modelDefinition: VehicleModelDefinitionSummary | null;
+  modelDefinitionId: string;
+}
+
 type PackageKind = "benefit" | "energy" | "mileage" | "vehicle";
 
 interface PackageValues {
@@ -127,6 +135,7 @@ interface PackageValues {
   minPeriodMonths?: number;
   minPurchasePriceAmountYuan?: number | null;
   modelDefinitionId?: string | null;
+  modelDefinitionIds?: string[];
   monthlyEnergyCount?: number | null;
   monthlyEnergyKwh?: number | null;
   monthlyFeeRate?: number;
@@ -270,6 +279,12 @@ function modelDefinitionOptionLabel(definition: VehicleModelDefinitionSummary) {
 function packageModelDisplayName(row?: PackageRow | null) {
   if (!row) {
     return "-";
+  }
+  const memberNames = row.modelMembers
+    ?.map((member) => member.modelDefinition?.displayName)
+    .filter((name): name is string => Boolean(name));
+  if (memberNames?.length) {
+    return memberNames.join("、");
   }
   return row.modelDisplayName ?? row.modelDefinition?.displayName ?? "-";
 }
@@ -600,6 +615,10 @@ function ProductsPageContent() {
               ...row,
               maxPurchasePriceAmountYuan: row.maxPurchasePriceAmount ? row.maxPurchasePriceAmount / 100 : null,
               minPurchasePriceAmountYuan: row.minPurchasePriceAmount ? row.minPurchasePriceAmount / 100 : null,
+              modelDefinitionIds:
+                row.modelDefinitionIds ??
+                row.modelMembers?.map((member) => member.modelDefinitionId) ??
+                (row.modelDefinitionId ? [row.modelDefinitionId] : []),
               overMileageFeeAmountYuan: row.overMileageFeeAmount ? row.overMileageFeeAmount / 100 : undefined,
               priceAmountYuan: row.priceAmount ? row.priceAmount / 100 : 0
             }
@@ -1103,7 +1122,12 @@ function ProductsPageContent() {
               type="warning"
             />
           ) : null}
-          {packageFields(packageKind, vehicleModelDefinitionOptions, !editingPackage)}
+          {packageFields(
+            packageKind,
+            vehicleModelDefinitionOptions,
+            !editingPackage,
+            Boolean(editingPackage && editingPackage.productVersion.status !== "DRAFT")
+          )}
           <Form.Item label="备注" name="remark"><Input.TextArea rows={3} /></Form.Item>
         </Form>
       </Modal>
@@ -1278,7 +1302,14 @@ function ProductsPageContent() {
 function defaultPackageValues(kind: PackageKind): Partial<PackageValues> {
   const base = { priceAmountYuan: 0 };
   if (kind === "vehicle") {
-    return { ...base, maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: null, monthlyFeeRate: 0.035 };
+    return {
+      ...base,
+      maxPeriodMonths: 36,
+      minPeriodMonths: 12,
+      modelDefinitionId: null,
+      modelDefinitionIds: [],
+      monthlyFeeRate: 0.035
+    };
   }
   if (kind === "mileage") {
     return { ...base, monthlyMileageKm: 1500, overMileageFeeAmountYuan: 1 };
@@ -1313,6 +1344,9 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
       maxPurchasePriceAmount: toCents(values.maxPurchasePriceAmountYuan),
       minPeriodMonths: values.minPeriodMonths,
       minPurchasePriceAmount: toCents(values.minPurchasePriceAmountYuan),
+      modelDefinitionIds: values.modelDefinitionIds?.length
+        ? values.modelDefinitionIds
+        : undefined,
       monthlyFeeRate: values.monthlyFeeRate,
       vehicleModelName: values.vehicleModelName
     };
@@ -1351,7 +1385,8 @@ function buildPackagePayload(kind: PackageKind, values: PackageValues) {
 function packageFields(
   kind: PackageKind,
   modelDefinitionOptions: Array<{ label: string; value: string }>,
-  requireModelDefinition = false
+  requireModelDefinition = false,
+  disableModelMembership = false
 ) {
   if (kind === "vehicle") {
     return (
@@ -1367,9 +1402,23 @@ function packageFields(
           }
         >
           <Select
+            disabled={disableModelMembership}
             options={modelDefinitionOptions}
             showSearch
             optionFilterProp="label"
+          />
+        </Form.Item>
+        <Form.Item
+          extra="可增加主车型之外的适用车型；未选择时主车型会自动作为唯一成员。已生效版本不可修改，请通过新版本调整。"
+          label="适用车型成员"
+          name="modelDefinitionIds"
+        >
+          <Select
+            disabled={disableModelMembership}
+            mode="multiple"
+            options={modelDefinitionOptions}
+            optionFilterProp="label"
+            showSearch
           />
         </Form.Item>
         <Form.Item label="车型包展示名" name="vehicleModelName"><Input /></Form.Item>

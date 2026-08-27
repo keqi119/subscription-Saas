@@ -11,6 +11,7 @@ import {
   RenewalReminderStatus,
   SmsSendStatus,
   SubscriptionAutomationJobType,
+  SubscriptionChangeType,
   VehicleStatus
 } from "@prisma/client";
 
@@ -22,7 +23,11 @@ import { NotificationService } from "../notification/notification.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { SmsService } from "../sms/sms.service";
 import { dateKey, renewalSchedule, shanghaiBusinessDate } from "./renewal-calendar";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 
 const reminderSlots = [
@@ -68,7 +73,9 @@ export class RenewalConsiderationService {
   ) {}
 
   async enrollDueSegments(now = this.config.now()) {
-    if (!this.config.enabled) return { created: 0, skipped: 0 };
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)) {
+      return { created: 0, skipped: 0 };
+    }
     const businessDate = shanghaiBusinessDate(now);
     const dueThrough = addUtcDays(businessDate, 30);
     const segments = await this.prisma.subscriptionContractSegment.findMany({
@@ -91,7 +98,9 @@ export class RenewalConsiderationService {
   }
 
   async enrollSegment(segmentId: string, now = this.config.now()) {
-    if (!this.config.enabled) return null;
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)) {
+      return null;
+    }
     return this.prisma.$transaction(async (tx) => {
       const segment = await tx.subscriptionContractSegment.findUnique({
         include: {

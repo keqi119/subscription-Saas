@@ -1,11 +1,14 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetFactsModule } from "../asset-facts/asset-facts.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
 import { ESignModule } from "../esign/esign.module";
 import { NotificationModule } from "../notification/notification.module";
+import { OrderModule } from "../order/order.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
 import { SubscriptionClosureModule } from "../subscription-closure/subscription-closure.module";
@@ -18,11 +21,19 @@ import {
   loadSubscriptionChangeConfig
 } from "./subscription-change.config";
 import { SubscriptionChangeController } from "./subscription-change.controller";
+import { SubscriptionChangeRepository } from "./subscription-change.repository";
+import { SubscriptionChangeService } from "./subscription-change.service";
 import { SubscriptionChangeJobService } from "./subscription-change-job.service";
 import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
+import { SubscriptionManagedOtherService } from "./subscription-managed-other.service";
+import { SubscriptionVehicleSwapPricingService } from "./subscription-vehicle-swap-pricing.service";
+import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.service";
+import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
+import { SubscriptionVehicleSwapActivationService } from "./subscription-vehicle-swap-activation.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 import { SubscriptionExpiryService } from "./subscription-expiry.service";
 
@@ -35,16 +46,27 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionContractService,
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
-    SubscriptionExtensionService
+    SubscriptionExtensionService,
+    SubscriptionVehicleSwapPricingService,
+    SubscriptionVehicleSwapService,
+    SubscriptionVehicleSwapContractService,
+    SubscriptionVehicleSwapActivationService,
+    SubscriptionEarlyTerminationChangeService,
+    SubscriptionManagedOtherService,
+    SubscriptionChangeRepository,
+    SubscriptionChangeService
   ],
   imports: [
     AuditModule,
+    AssetFactsModule,
+    AssetOperationsModule,
     AuthModule,
     BillingAutomationModule,
     ContractSegmentModule,
     ContractModule,
     ESignModule,
     NotificationModule,
+    OrderModule,
     PrismaModule,
     SmsModule,
     SubscriptionClosureModule,
@@ -52,6 +74,8 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
   ],
   providers: [
     RenewalConsiderationService,
+    SubscriptionChangeRepository,
+    SubscriptionChangeService,
     SubscriptionChangeJobService,
     SubscriptionChangeWorker,
     SubscriptionExtensionPricingService,
@@ -59,6 +83,12 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
     SubscriptionExtensionService,
+    SubscriptionVehicleSwapPricingService,
+    SubscriptionVehicleSwapService,
+    SubscriptionVehicleSwapContractService,
+    SubscriptionVehicleSwapActivationService,
+    SubscriptionEarlyTerminationChangeService,
+    SubscriptionManagedOtherService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,
       useFactory: loadSubscriptionChangeConfig

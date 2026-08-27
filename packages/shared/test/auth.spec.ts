@@ -32,6 +32,7 @@ describe("subscription change shared permissions", () => {
     expect(permissions.SUBSCRIPTION_CHANGE_VIEW).toBe("subscription_change:view");
     expect(permissions.SUBSCRIPTION_CHANGE_CREATE).toBe("subscription_change:create");
     expect(permissions.SUBSCRIPTION_CHANGE_QUOTE).toBe("subscription_change:quote");
+    expect(permissions.SUBSCRIPTION_CHANGE_APPROVE).toBe("subscription_change:approve");
     expect(permissions.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE).toBe(
       "subscription_change:price_override_approve"
     );

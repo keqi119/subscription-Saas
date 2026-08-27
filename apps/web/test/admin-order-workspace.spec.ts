@@ -995,6 +995,15 @@ describe("admin order workspace shell", () => {
     expect(markup).not.toContain("查看合同");
   });
 
+  it("keeps the ACTIVE-order contract-change entry distinct from pre-delivery redesign", () => {
+    const orderPage = readFileSync(orderPagePath, "utf8");
+
+    expect(orderPage).toContain('key: "create-subscription-change"');
+    expect(orderPage).toContain('label: "发起合同变更"');
+    expect(orderPage).toContain('key: "return-to-plan"');
+    expect(orderPage).toContain('label: "交付前退回重做方案"');
+  });
+
   it("renders six compact guidance items with one primary and preserved secondary actions", () => {
     const summary = {
       asOf: "2026-07-29T01:10:00.000Z",

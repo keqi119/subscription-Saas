@@ -86,6 +86,16 @@ export interface ContractPdfExtensionTerms {
   planSnapshot: unknown;
 }
 
+export interface ContractPdfVehicleSwapTerms {
+  confirmedQuoteNo: ContractPdfValue;
+  depositDeltaAmount: ContractPdfValue;
+  mileageLimitDeltaKm: ContractPdfValue;
+  monthlyFeeDeltaAmount: ContractPdfValue;
+  plannedSwapAt: ContractPdfValue;
+  sourceVehicleNo: ContractPdfValue;
+  targetVehicleNo: ContractPdfValue;
+}
+
 export type ContractPdfStage1SigningSlotOccurrences = Record<ContractPdfSigningSlotId, number>;
 
 export interface ContractPdfRenderDiagnostics {
@@ -99,7 +109,7 @@ export interface ContractPdfRenderDiagnostics {
 }
 
 export interface ContractPdfRenderModel {
-  agreementKind?: "SUBSCRIPTION_EXTENSION" | "SUBSCRIPTION_STANDARD";
+  agreementKind?: "SUBSCRIPTION_EXTENSION" | "SUBSCRIPTION_STANDARD" | "VEHICLE_SWAP_SUPPLEMENT";
   appendix: ContractPdfAppendix;
   contentTemplate: string;
   contractId: string;
@@ -115,6 +125,7 @@ export interface ContractPdfRenderModel {
   signingSlots: ContractPdfSigningSlot[];
   signingStage: ContractPdfSigningStage;
   subscriberParty?: ContractPdfSubscriberPartyInfo;
+  swapTerms?: ContractPdfVehicleSwapTerms;
   templateName: string;
   templateVersion: string;
 }

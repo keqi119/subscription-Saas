@@ -858,6 +858,8 @@ function makeSubscriptionPlan(overrides: Record<string, unknown> = {}) {
 
 function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
   const modelDefinition = makeModelDefinition();
+  const modelDefinitionId =
+    (overrides.modelDefinitionId as string | undefined) ?? modelDefinition.id;
   return {
     brand: null,
     configName: null,
@@ -870,7 +872,8 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     minPeriodMonths: 12,
     minPurchasePriceAmount: BigInt(12000000),
     modelDefinition,
-    modelDefinitionId: modelDefinition.id,
+    modelDefinitionId,
+    modelMembers: [{ modelDefinitionId }],
     monthlyFeeRate: new Prisma.Decimal("0.035"),
     packageName: "ET5 standard",
     packageNo: "VPK2026060200001",

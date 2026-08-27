@@ -9,6 +9,13 @@ const IDS = {
 } as const;
 
 describe("SubscriptionClosureService early-termination command boundary", () => {
+  it("exposes the same-transaction adapter on every early-termination command", () => {
+    expect(SubscriptionClosureService.prototype.initiateEarlyTermination).toHaveLength(2);
+    expect(SubscriptionClosureService.prototype.archiveEarlyTerminationAgreement).toHaveLength(2);
+    expect(SubscriptionClosureService.prototype.executeEarlyTermination).toHaveLength(2);
+    expect(SubscriptionClosureService.prototype.cancelEarlyTermination).toHaveLength(2);
+  });
+
   it("exposes dedicated early-termination and recovery e-sign semantic carriers", () => {
     expect(ESignDocumentType).toMatchObject({
       EARLY_TERMINATION_AGREEMENT: "EARLY_TERMINATION_AGREEMENT",

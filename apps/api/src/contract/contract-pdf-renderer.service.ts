@@ -15,13 +15,16 @@ import {
 } from "./contract-pdf-render-model";
 
 export const CONTRACT_PDF_RENDER_EMPTY_TEMPLATE = "CONTRACT_PDF_RENDER_EMPTY_TEMPLATE";
-export const CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING = "CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING";
+export const CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING =
+  "CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING";
 export const CONTRACT_PDF_RENDER_CUSTOMER_SIGNATURE_KEYWORD_MISSING =
   "CONTRACT_PDF_RENDER_CUSTOMER_SIGNATURE_KEYWORD_MISSING";
 export const CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED = "CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED";
-export const CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED = "CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED";
+export const CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED =
+  "CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED";
 export const CONTRACT_PDF_RENDER_NOT_PDF = "CONTRACT_PDF_RENDER_NOT_PDF";
-export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING = "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING";
+export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING =
+  "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING";
 export const CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE =
   "CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE";
 export const CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING =
@@ -93,6 +96,7 @@ function buildDiagnostics(model: ContractPdfRenderModel): ContractPdfRenderDiagn
     model.templateVersion,
     model.contentTemplate,
     ...buildExtensionTermsSearchableText(model),
+    ...buildVehicleSwapTermsSearchableText(model),
     ...buildSigningSlotSearchableText(model.signingSlots),
     ...model.appendix.sections.flatMap((section) => [
       section.title,
@@ -122,10 +126,14 @@ function validateModel(model: ContractPdfRenderModel, diagnostics: ContractPdfRe
     throw new Error(`${CONTRACT_PDF_RENDER_EMPTY_TEMPLATE}: contentTemplate is required`);
   }
   if (!diagnostics.hasPlatformSealKeyword) {
-    throw new Error(`${CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING}: platform seal keyword is required`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_PLATFORM_SEAL_KEYWORD_MISSING}: platform seal keyword is required`
+    );
   }
   if (!diagnostics.hasCustomerSignatureKeyword) {
-    throw new Error(`${CONTRACT_PDF_RENDER_CUSTOMER_SIGNATURE_KEYWORD_MISSING}: customer signature keyword is required`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_CUSTOMER_SIGNATURE_KEYWORD_MISSING}: customer signature keyword is required`
+    );
   }
   if (!model.contractNo.trim()) {
     throw new Error("CONTRACT_PDF_RENDER_CONTRACT_NO_MISSING: contractNo is required");
@@ -137,11 +145,16 @@ function validateModel(model: ContractPdfRenderModel, diagnostics: ContractPdfRe
 function validateSubscriberParty(model: ContractPdfRenderModel) {
   const idNumber = formatPartyValue(model.subscriberParty?.subscriberIdNumber).trim();
   if (!idNumber) {
-    throw new Error(`${CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING}: subscriber ID number is required`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_SUBSCRIBER_ID_NUMBER_MISSING}: subscriber ID number is required`
+    );
   }
 }
 
-function resolveFontPath(options: ContractPdfRenderOptions, diagnostics: ContractPdfRenderDiagnostics) {
+function resolveFontPath(
+  options: ContractPdfRenderOptions,
+  diagnostics: ContractPdfRenderDiagnostics
+) {
   const configured = options.cjkFontPath?.trim();
   if (configured) {
     assertUsableFont(configured);
@@ -149,10 +162,14 @@ function resolveFontPath(options: ContractPdfRenderOptions, diagnostics: Contrac
   }
 
   if (diagnostics.hasCjkContent) {
-    throw new Error(`${CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED}: configured CJK font path is required`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED}: configured CJK font path is required`
+    );
   }
   if (!options.allowBuiltinFontForAsciiOnlyTests) {
-    throw new Error(`${CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED}: built-in font is test-only for ASCII content`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_BUILTIN_FONT_NOT_ALLOWED}: built-in font is test-only for ASCII content`
+    );
   }
 
   return undefined;
@@ -164,7 +181,9 @@ function assertUsableFont(fontPath: string) {
       throw new Error("not a file");
     }
   } catch {
-    throw new Error(`${CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED}: configured CJK font path is not usable`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_CJK_FONT_REQUIRED}: configured CJK font path is not usable`
+    );
   }
 }
 
@@ -197,19 +216,25 @@ async function renderPdf(
   }
 
   doc.info.Title = model.contractNo;
-  doc.info.Subject = model.agreementKind === "SUBSCRIPTION_EXTENSION"
-    ? "Subscription extension agreement signing artifact"
-    : "Stage 1 subscription contract signing artifact";
+  doc.info.Subject =
+    model.agreementKind === "SUBSCRIPTION_EXTENSION"
+      ? "Subscription extension agreement signing artifact"
+      : model.agreementKind === "VEHICLE_SWAP_SUPPLEMENT"
+        ? "Vehicle swap supplement signing artifact"
+        : "Stage 1 subscription contract signing artifact";
   doc.info.Keywords = "contract,esign";
 
   writeTitle(
     doc,
     model.agreementKind === "SUBSCRIPTION_EXTENSION"
       ? "汽车订阅服务续订补充协议"
-      : "汽车订阅服务合同"
+      : model.agreementKind === "VEHICLE_SWAP_SUPPLEMENT"
+        ? "汽车订阅服务换车补充协议"
+        : "汽车订阅服务合同"
   );
   writeMetadata(doc, model);
   writeExtensionReference(doc, model);
+  writeVehicleSwapReference(doc, model);
   writeSubscriberPartyInfo(doc, model.subscriberParty);
   writeSection(doc, "合同正文");
   writeParagraph(doc, buildStage1MainBodyText(model.contentTemplate));
@@ -276,7 +301,35 @@ function buildExtensionTermsSearchableText(model: ContractPdfRenderModel) {
   ].map(formatValue);
 }
 
-function writeSubscriberPartyInfo(doc: PDFKit.PDFDocument, party: ContractPdfSubscriberPartyInfo | undefined) {
+function writeVehicleSwapReference(doc: PDFKit.PDFDocument, model: ContractPdfRenderModel) {
+  if (model.agreementKind !== "VEHICLE_SWAP_SUPPLEMENT" || !model.swapTerms) return;
+  writeSection(doc, "换车补充协议关联信息");
+  writeKeyValue(doc, "原车辆编号", formatValue(model.swapTerms.sourceVehicleNo));
+  writeKeyValue(doc, "目标车辆编号", formatValue(model.swapTerms.targetVehicleNo));
+  writeKeyValue(doc, "计划换车时间", formatValue(model.swapTerms.plannedSwapAt));
+  writeKeyValue(doc, "客户确认报价", formatValue(model.swapTerms.confirmedQuoteNo));
+  writeKeyValue(doc, "月费变化（分）", formatValue(model.swapTerms.monthlyFeeDeltaAmount));
+  writeKeyValue(doc, "押金变化（分）", formatValue(model.swapTerms.depositDeltaAmount));
+  writeKeyValue(doc, "月里程额度变化（公里）", formatValue(model.swapTerms.mileageLimitDeltaKm));
+}
+
+function buildVehicleSwapTermsSearchableText(model: ContractPdfRenderModel) {
+  if (!model.swapTerms) return [];
+  return [
+    model.swapTerms.sourceVehicleNo,
+    model.swapTerms.targetVehicleNo,
+    model.swapTerms.plannedSwapAt,
+    model.swapTerms.confirmedQuoteNo,
+    model.swapTerms.monthlyFeeDeltaAmount,
+    model.swapTerms.depositDeltaAmount,
+    model.swapTerms.mileageLimitDeltaKm
+  ].map(formatValue);
+}
+
+function writeSubscriberPartyInfo(
+  doc: PDFKit.PDFDocument,
+  party: ContractPdfSubscriberPartyInfo | undefined
+) {
   if (!party) {
     return;
   }
@@ -307,7 +360,10 @@ function writeParagraph(doc: PDFKit.PDFDocument, text: string) {
   doc.moveDown(0.6);
 }
 
-function writeAppendix(doc: PDFKit.PDFDocument, sections: ContractPdfRenderModel["appendix"]["sections"]) {
+function writeAppendix(
+  doc: PDFKit.PDFDocument,
+  sections: ContractPdfRenderModel["appendix"]["sections"]
+) {
   for (const section of sections) {
     ensureSpace(doc, 60);
     doc.fontSize(11).text(section.title);
@@ -320,7 +376,9 @@ function writeAppendix(doc: PDFKit.PDFDocument, sections: ContractPdfRenderModel
 }
 
 function writeAppendixRow(doc: PDFKit.PDFDocument, row: ContractPdfAppendixRow) {
-  const suffix = row.redaction?.applied ? ` (redacted${row.redaction.reason ? `: ${row.redaction.reason}` : ""})` : "";
+  const suffix = row.redaction?.applied
+    ? ` (redacted${row.redaction.reason ? `: ${row.redaction.reason}` : ""})`
+    : "";
   writeKeyValue(doc, row.label, `${formatValue(row.value)}${suffix}`);
 }
 
@@ -382,19 +440,22 @@ function writeSigningSlot(
   const keywordBottom = writeVisibleSlotKeywordIfNeeded(doc, slot, left);
   const blankY = keywordBottom + 2;
 
-  doc.moveTo(blankX, blankY + SIGNING_BLANK_HEIGHT - 4)
+  doc
+    .moveTo(blankX, blankY + SIGNING_BLANK_HEIGHT - 4)
     .lineTo(right, blankY + SIGNING_BLANK_HEIGHT - 4)
     .stroke();
 
-  slotCoordinates.push(buildSlotCoordinate({
-    blankHeight: SIGNING_BLANK_HEIGHT,
-    blankWidth,
-    blankX,
-    blankY,
-    page: doc.page,
-    pageNumber: getPageNumber(),
-    slot
-  }));
+  slotCoordinates.push(
+    buildSlotCoordinate({
+      blankHeight: SIGNING_BLANK_HEIGHT,
+      blankWidth,
+      blankX,
+      blankY,
+      page: doc.page,
+      pageNumber: getPageNumber(),
+      slot
+    })
+  );
 
   doc.x = left;
   doc.y = Math.max(keywordBottom, blankY + SIGNING_BLANK_HEIGHT + 4);
@@ -487,10 +548,12 @@ function formatPartyValue(value: ContractPdfValue) {
 }
 
 function removeTrailingLegacySignatureBlock(contentTemplate: string) {
-  return contentTemplate.replace(
-    /\s*（以下无正文，系为签署页）\s*[\s\S]*?甲方（服务提供方）[：:][\s\S]*?（服务提供方盖章）[\s\S]*?日期[：:][^\n\r]*(?:\r?\n)+\s*乙方（订阅方）[：:][\s\S]*?（订阅方盖章\/签字）[\s\S]*?日期[：:][^\n\r]*\s*$/u,
-    ""
-  ).trimEnd();
+  return contentTemplate
+    .replace(
+      /\s*（以下无正文，系为签署页）\s*[\s\S]*?甲方（服务提供方）[：:][\s\S]*?（服务提供方盖章）[\s\S]*?日期[：:][^\n\r]*(?:\r?\n)+\s*乙方（订阅方）[：:][\s\S]*?（订阅方盖章\/签字）[\s\S]*?日期[：:][^\n\r]*\s*$/u,
+      ""
+    )
+    .trimEnd();
 }
 
 function buildStage1MainBodyText(contentTemplate: string) {
@@ -513,9 +576,11 @@ function isIndependentAttachment2Heading(line: string) {
     return false;
   }
 
-  return /^附件(?:2|二)(?:[：:、.-].*)?$/u.test(normalized) ||
+  return (
+    /^附件(?:2|二)(?:[：:、.-].*)?$/u.test(normalized) ||
     /^《?车辆交接确认单》?$/u.test(normalized) ||
-    /^车辆交接确认(?:单|文件|书|表)$/u.test(normalized);
+    /^车辆交接确认(?:单|文件|书|表)$/u.test(normalized)
+  );
 }
 
 function countStage1SlotOccurrences(model: ContractPdfRenderModel) {
@@ -537,14 +602,25 @@ function countStage1SlotOccurrences(model: ContractPdfRenderModel) {
       text,
       findSlotKeyword(model.signingSlots, "STAGE1_ATTACHMENT1_PLATFORM")
     ),
-    STAGE1_BODY_CUSTOMER: countOccurrences(text, findSlotKeyword(model.signingSlots, "STAGE1_BODY_CUSTOMER")),
-    STAGE1_BODY_PLATFORM: countOccurrences(text, findSlotKeyword(model.signingSlots, "STAGE1_BODY_PLATFORM"))
+    STAGE1_BODY_CUSTOMER: countOccurrences(
+      text,
+      findSlotKeyword(model.signingSlots, "STAGE1_BODY_CUSTOMER")
+    ),
+    STAGE1_BODY_PLATFORM: countOccurrences(
+      text,
+      findSlotKeyword(model.signingSlots, "STAGE1_BODY_PLATFORM")
+    )
   };
 }
 
-function validateStage1SigningSlots(model: ContractPdfRenderModel, diagnostics: ContractPdfRenderDiagnostics) {
+function validateStage1SigningSlots(
+  model: ContractPdfRenderModel,
+  diagnostics: ContractPdfRenderDiagnostics
+) {
   if (model.signingStage !== "STAGE1_CONTRACT") {
-    throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING}: Stage 1 signing stage is required`);
+    throw new Error(
+      `${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING}: Stage 1 signing stage is required`
+    );
   }
 
   for (const slotId of STAGE1_REQUIRED_SLOT_IDS) {
@@ -553,7 +629,9 @@ function validateStage1SigningSlots(model: ContractPdfRenderModel, diagnostics: 
       throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_MISSING}: ${slotId} is required`);
     }
     if (diagnostics.stage1SigningSlotOccurrences[slotId] !== 1) {
-      throw new Error(`${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE}: ${slotId} must render exactly once`);
+      throw new Error(
+        `${CONTRACT_PDF_RENDER_STAGE1_SIGNING_SLOT_NOT_UNIQUE}: ${slotId} must render exactly once`
+      );
     }
   }
 }

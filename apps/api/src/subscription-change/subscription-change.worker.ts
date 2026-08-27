@@ -53,7 +53,7 @@ export class SubscriptionChangeWorker implements OnModuleInit, OnModuleDestroy {
       if (this.isPublicWriteEnabled()) {
         await this.jobs.enqueueDueEnrollmentJobs(new Date(now));
       }
-      await this.jobs.reconcileExecutingChanges();
+      await this.jobs.reconcileActiveChanges();
     } catch (error) {
       this.nextMaintenanceAt = 0;
       throw error;

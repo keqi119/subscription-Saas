@@ -9,6 +9,7 @@ import {
   PortalRenewalDecisionDto
 } from "./portal-renewal.dto";
 import { PortalRenewalService } from "./portal-renewal.service";
+import { PortalSubscriptionChangeService } from "./portal-subscription-change.service";
 
 @Controller("portal/renewal-considerations")
 @UseGuards(CustomerAuthGuard)
@@ -39,7 +40,7 @@ export class PortalRenewalController {
 @Controller("portal/subscription-changes")
 @UseGuards(CustomerAuthGuard)
 export class PortalSubscriptionChangeController {
-  constructor(private readonly service: PortalRenewalService) {}
+  constructor(private readonly service: PortalSubscriptionChangeService) {}
 
   @Get(":id")
   get(@Param("id") id: string, @CurrentPortalCustomer() currentCustomer: CurrentCustomer) {

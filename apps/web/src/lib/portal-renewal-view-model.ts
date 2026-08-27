@@ -1,6 +1,7 @@
 import type {
   PortalRenewalConsideration,
   PortalRenewalDetail,
+  PortalExtensionSubscriptionChange,
   PortalSubscriptionChange
 } from "./portal-types";
 
@@ -121,7 +122,10 @@ export function toPortalRenewalDetail(
   renewal: PortalRenewalConsideration,
   change: PortalSubscriptionChange | null
 ): PortalRenewalDetail {
-  return { ...renewal, change };
+  if (change?.changeType && change.changeType !== "EXTENSION") {
+    throw new Error("A renewal consideration can only reference an extension change.");
+  }
+  return { ...renewal, change: change as PortalExtensionSubscriptionChange | null };
 }
 
 export function getPortalRenewalApplicationCard(input: PortalRenewalDetail) {

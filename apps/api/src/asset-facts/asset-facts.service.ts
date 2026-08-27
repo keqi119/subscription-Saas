@@ -261,6 +261,23 @@ export class AssetFactsService {
     return this.closeSubscriptionPeriodCommand(tx, dto, context, repositoryCapability);
   }
 
+  async openSubscriptionPeriodInTransaction(
+    tx: Prisma.TransactionClient,
+    dto: OpenSubscriptionPeriodDto,
+    context: AssetFactCommandContext,
+    capability: AssetFactsTransactionCapability
+  ) {
+    const capabilityState = this.takeCallerOwnedCapability(capability);
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      capabilityState,
+      tx,
+      "subscription",
+      "start",
+      dto.source
+    );
+    return this.openSubscriptionPeriodCommand(tx, dto, context, repositoryCapability);
+  }
+
   subscriptionCloseAuthorityRequirement(
     authoritySession: SubscriptionClosureAuthoritySession,
     command: CloseSubscriptionPeriodDto,
@@ -364,20 +381,32 @@ export class AssetFactsService {
   }
 
   async openSubscriptionPeriod(dto: OpenSubscriptionPeriodDto, context: AssetFactCommandContext) {
-    const startedAt = parseDate(dto.startedAt);
-    const confirmedAt = parseDate(dto.confirmedAt);
-    assertStartReason(dto.reason, "subscription");
-    assertConfirmationTime(confirmedAt, startedAt);
-    const metadata = normalizeMetadata(dto.snapshot);
-    assertSource(dto.source);
+    const prepared = prepareOpenSubscriptionPeriodCommand(dto);
+    return this.runCommand((tx) =>
+      this.openSubscriptionPeriodCommand(tx, dto, context, undefined, prepared)
+    );
+  }
 
-    return this.runCommand(async (tx) => {
+  private async openSubscriptionPeriodCommand(
+    tx: Prisma.TransactionClient,
+    dto: OpenSubscriptionPeriodDto,
+    context: AssetFactCommandContext,
+    repositoryCapability?: AssetFactsCallerOwnedCommandCapability,
+    preparedCommand?: ReturnType<typeof prepareOpenSubscriptionPeriodCommand>
+  ) {
+    const { confirmedAt, metadata, startedAt } =
+      preparedCommand ?? prepareOpenSubscriptionPeriodCommand(dto);
+
+    if (!repositoryCapability) {
       await this.repository.lockCommandSource(tx, "subscription", "start", dto.source);
-      await lockSubscriptionAuthorityRows(tx, dto);
-      const authority = await loadSubscriptionAuthority(tx, dto);
-      assertContractSegmentCoversStart(authority.contractSegment, startedAt);
-      const snapshot = buildSubscriptionSnapshot(authority, metadata);
-      const outcome = await this.repository.openSubscriptionPeriodWithOutcome(tx, {
+    }
+    await lockSubscriptionAuthorityRows(tx, dto);
+    const authority = await loadSubscriptionAuthority(tx, dto);
+    assertContractSegmentCoversStart(authority.contractSegment, startedAt);
+    const snapshot = buildSubscriptionSnapshot(authority, metadata);
+    const outcome = await this.repository.openSubscriptionPeriodWithOutcome(
+      tx,
+      {
         actorId: context.actorId,
         confirmedAt,
         contractId: authority.contract?.id ?? null,
@@ -389,18 +418,19 @@ export class AssetFactsService {
         source: dto.source,
         startedAt,
         vehicleId: authority.vehicle.id
-      });
-      if (outcome.wrote) {
-        await this.writeAudit(
-          tx,
-          AuditAction.CREATE,
-          "vehicle_subscription_period",
-          outcome.fact,
-          context
-        );
-      }
-      return outcome.fact;
-    });
+      },
+      repositoryCapability
+    );
+    if (outcome.wrote) {
+      await this.writeAudit(
+        tx,
+        AuditAction.CREATE,
+        "vehicle_subscription_period",
+        outcome.fact,
+        context
+      );
+    }
+    return outcome.fact;
   }
 
   async closeSubscriptionPeriod(dto: CloseSubscriptionPeriodDto, context: AssetFactCommandContext) {
@@ -1365,6 +1395,16 @@ function assertEndAfterStart(startedAt: Date, endedAt: Date) {
       "Period end must be later than period start."
     );
   }
+}
+
+function prepareOpenSubscriptionPeriodCommand(dto: OpenSubscriptionPeriodDto) {
+  const startedAt = parseDate(dto.startedAt);
+  const confirmedAt = parseDate(dto.confirmedAt);
+  assertStartReason(dto.reason, "subscription");
+  assertConfirmationTime(confirmedAt, startedAt);
+  const metadata = normalizeMetadata(dto.snapshot);
+  assertSource(dto.source);
+  return { confirmedAt, metadata, startedAt };
 }
 
 function assertContractSegmentCoversStart(

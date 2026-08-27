@@ -201,4 +201,122 @@ describe("subscription change view model", () => {
       kind: "MANUAL"
     });
   });
+
+  it.each([
+    [
+      change({
+        allowedActions: ["CREATE_QUOTE"],
+        changeType: "VEHICLE_SWAP",
+        detail: {
+          plannedSwapAt: "2026-09-15T02:00:00.000Z",
+          sourceVehicleId: "vehicle-source",
+          targetSubscriptionPlanId: "plan-target",
+          targetVehicleId: "vehicle-target",
+          targetVehiclePackageId: "package-target"
+        },
+        status: "DRAFT"
+      } as never),
+      { enabled: true, kind: "QUOTE", label: "生成换车报价" }
+    ],
+    [
+      change({
+        allowedActions: ["PUBLISH_CUSTOMER_CONFIRMATION"],
+        changeType: "EARLY_TERMINATION",
+        detail: {
+          effectiveDate: "2026-09-30",
+          reasonSnapshot: { currentEstimate: { revision: 1 } }
+        },
+        status: "QUOTED"
+      } as never),
+      { enabled: true, kind: "WAIT_CUSTOMER", label: "发布提前结束方案" }
+    ],
+    [
+      change({
+        allowedActions: ["APPROVE"],
+        changeType: "MANAGED_OTHER",
+        detail: {
+          approvedOperationSnapshot: {
+            approval: null,
+            request: { operation: "UPDATE_CONTACT_PREFERENCE" }
+          },
+          effectiveDate: "2026-09-30"
+        },
+        status: "DRAFT"
+      } as never),
+      { enabled: true, kind: "APPROVE_MANAGED_OTHER", label: "审批受控变更" }
+    ],
+    [
+      change({
+        allowedActions: ["EXECUTE", "CANCEL"],
+        changeType: "MANAGED_OTHER",
+        detail: {
+          approvedOperationSnapshot: {
+            approval: { approvalReference: "APR-1" },
+            request: { operation: "UPDATE_CONTACT_PREFERENCE" }
+          },
+          effectiveDate: "2026-09-30"
+        },
+        status: "SCHEDULED"
+      } as never),
+      { enabled: true, kind: "EXECUTE_MANAGED_OTHER", label: "记录受控变更结果" }
+    ]
+  ] as const)("maps each typed backend action to its governed UI action", (input, expected) => {
+    expect(getSubscriptionChangeNextAction(input)).toMatchObject(expected);
+  });
+
+  it("does not invent a quote action when the backend did not allow it", () => {
+    expect(
+      getSubscriptionChangeNextAction(
+        change({ allowedActions: [], status: "DRAFT" } as never)
+      )
+    ).toMatchObject({
+      enabled: false,
+      kind: "MANUAL",
+      reason: "当前状态未开放人工操作"
+    });
+  });
+
+  it.each([
+    change({
+      allowedActions: [],
+      currentQuote: {
+        createdBy: "operator-1",
+        id: "quote-1",
+        monthlyFeeAmount: "90000",
+        pricingMode: "APPROVED_DISCOUNT",
+        quoteNo: "SCQ001",
+        revision: 1,
+        status: "FORMAL",
+        validUntil: "2099-08-08T00:00:00.000Z"
+      },
+      pricingMode: "APPROVED_DISCOUNT",
+      status: "QUOTED"
+    }),
+    change({ allowedActions: [], status: "CUSTOMER_CONFIRMED" }),
+    change({
+      allowedActions: [],
+      contract: { contractNo: "CON001", id: "contract-1", status: "GENERATED" },
+      status: "SIGNING_OR_PAYMENT"
+    }),
+    change({
+      allowedActions: [],
+      automationJobs: [
+        { id: "job-1", jobStatus: "DEAD_LETTER", jobType: "EXTENSION_BILLING_RESUME" }
+      ],
+      status: "FAILED"
+    }),
+    change({
+      allowedActions: [],
+      automationJobs: [
+        { id: "job-1", jobStatus: "DEAD_LETTER", jobType: "EXTENSION_BILLING_RESUME" }
+      ],
+      status: "MANUAL_TAKEOVER"
+    })
+  ])("does not invent a governed action when allowedActions is empty", (input) => {
+    expect(getSubscriptionChangeNextAction(input)).toMatchObject({
+      enabled: false,
+      kind: "MANUAL",
+      reason: "当前状态未开放人工操作"
+    });
+  });
 });

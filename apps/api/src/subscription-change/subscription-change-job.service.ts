@@ -3,7 +3,8 @@ import {
   ContractSegmentStatus,
   RenewalReminderSlot,
   SubscriptionAutomationJobType,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 
 import { BillingAutomationRepository } from "../billing-automation/billing-automation.repository";
@@ -15,6 +16,16 @@ import { shanghaiBusinessDate } from "./renewal-calendar";
 import { RenewalConsiderationService } from "./renewal-consideration.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 import { SubscriptionExpiryService } from "./subscription-expiry.service";
+import { SubscriptionChangeError } from "./subscription-change.errors";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
+import { SubscriptionVehicleSwapActivationService } from "./subscription-vehicle-swap-activation.service";
+
+const EXTENSION_EXECUTION_JOB_TYPES = new Set<SubscriptionAutomationJobType>([
+  SubscriptionAutomationJobType.EXTENSION_SEGMENT_ACTIVATE,
+  SubscriptionAutomationJobType.EXTENSION_BILLING_RESUME,
+  SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
+  SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE
+]);
 
 @Injectable()
 export class SubscriptionChangeJobService {
@@ -40,7 +51,11 @@ export class SubscriptionChangeJobService {
     private readonly activation: SubscriptionExtensionActivationService,
     private readonly expiry: SubscriptionExpiryService,
     private readonly closure: SubscriptionClosureService,
-    @Optional() private readonly returnManifest?: ReturnManifestESignService
+    @Optional() private readonly returnManifest?: ReturnManifestESignService,
+    @Optional()
+    private readonly vehicleSwapActivation?: SubscriptionVehicleSwapActivationService,
+    @Optional()
+    private readonly earlyTermination?: SubscriptionEarlyTerminationChangeService
   ) {}
 
   async enqueueDueEnrollmentJobs(now = new Date()) {
@@ -134,23 +149,82 @@ export class SubscriptionChangeJobService {
   }
 
   async afterComplete(job: ClaimedBillingAutomationJob) {
-    return job.changeOrderId
+    return job.changeOrderId && EXTENSION_EXECUTION_JOB_TYPES.has(job.jobType)
       ? this.activation.completeIfReady(job.changeOrderId)
       : { completed: false };
   }
 
-  async reconcileExecutingChanges() {
+  async reconcileActiveChanges() {
+    const businessDate = shanghaiBusinessDate(new Date());
     const changes = await this.prisma.subscriptionChangeOrder.findMany({
-      select: { id: true },
+      select: { changeType: true, id: true, status: true },
       take: 200,
-      where: { status: SubscriptionChangeStatus.EXECUTING }
+      where: {
+        OR: [
+          {
+            changeType: SubscriptionChangeType.EXTENSION,
+            status: SubscriptionChangeStatus.EXECUTING
+          },
+          {
+            changeType: SubscriptionChangeType.VEHICLE_SWAP,
+            status: {
+              in: [SubscriptionChangeStatus.SCHEDULED, SubscriptionChangeStatus.EXECUTING]
+            }
+          },
+          {
+            changeType: SubscriptionChangeType.EARLY_TERMINATION,
+            OR: [
+              { status: SubscriptionChangeStatus.EXECUTING },
+              {
+                earlyTerminationDetail: { is: { effectiveDate: { lte: businessDate } } },
+                status: SubscriptionChangeStatus.SCHEDULED
+              }
+            ]
+          }
+        ]
+      }
     });
     let completed = 0;
     for (const change of changes) {
-      const result = await this.activation.completeIfReady(change.id);
-      if (result.completed) completed += 1;
+      if (change.changeType === SubscriptionChangeType.EXTENSION) {
+        const result = await this.activation.completeIfReady(change.id);
+        if (result.completed) completed += 1;
+        continue;
+      }
+      if (change.changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTermination) continue;
+        try {
+          const result =
+            change.status === SubscriptionChangeStatus.SCHEDULED
+              ? await this.earlyTermination.progress(change.id)
+              : await this.earlyTermination.reconcile(change.id);
+          if (result.outcome === "COMPLETED") completed += 1;
+        } catch (error) {
+          if (!(error instanceof SubscriptionChangeError)) throw error;
+          await this.earlyTermination.markManualTakeover(change.id, {
+            code: error.code,
+            message: subscriptionChangeErrorMessage(error)
+          });
+        }
+        continue;
+      }
+      if (!this.vehicleSwapActivation) continue;
+      try {
+        const result = await this.vehicleSwapActivation.progress(change.id);
+        if (result.outcome === "COMPLETED") completed += 1;
+      } catch (error) {
+        if (!(error instanceof SubscriptionChangeError)) throw error;
+        await this.vehicleSwapActivation.markManualTakeover(change.id, {
+          code: error.code,
+          message: subscriptionChangeErrorMessage(error)
+        });
+      }
     }
     return completed;
+  }
+
+  async reconcileExecutingChanges() {
+    return this.reconcileActiveChanges();
   }
 
   async markManualTakeover(
@@ -196,4 +270,11 @@ function payloadDate(payload: unknown, key: string) {
 
 function addUtcDays(value: Date, days: number) {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate() + days));
+}
+
+function subscriptionChangeErrorMessage(error: SubscriptionChangeError) {
+  const response = error.getResponse();
+  return response && typeof response === "object" && "message" in response
+    ? String(response.message).slice(0, 512)
+    : error.message.slice(0, 512);
 }

@@ -285,6 +285,41 @@ describe("self-service application intake API rules", () => {
     );
   });
 
+  it("accepts a vehicle assigned as a non-primary package member", async () => {
+    const secondaryModelDefinition = {
+      displayName: "NIO ES6",
+      id: "model-es6",
+      modelCode: "NIO_ES6"
+    };
+    const harness = createSelfServiceApplicationHarness({
+      plan: {
+        vehiclePackage: {
+          modelMembers: [
+            { modelDefinitionId: "model-et5" },
+            { modelDefinitionId: secondaryModelDefinition.id }
+          ]
+        }
+      },
+      vehicle: {
+        modelDefinition: secondaryModelDefinition,
+        modelDefinitionId: secondaryModelDefinition.id
+      }
+    });
+
+    await expect(
+      harness.service.createSelfServiceApplication(
+        {
+          customerId: harness.customer.id,
+          periodMonths: 12,
+          subscriptionPlanId: harness.plan.id,
+          vehicleId: harness.vehicle.id
+        },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toMatchObject({ status: ApplicationStatus.SUBMITTED });
+  });
+
   it("rejects manual quote plans for A-line self-service intake", async () => {
     const harness = createSelfServiceApplicationHarness({
       plan: { monthlyFeeMode: MonthlyFeeMode.MANUAL_QUOTE }
@@ -566,6 +601,12 @@ function makePlan(now: Date, overrides: Record<string, unknown> & { vehiclePacka
         modelCode: "NIO_ET5"
       },
       modelDefinitionId: "model-et5",
+      modelMembers: [
+        {
+          modelDefinitionId:
+            (vehiclePackageOverrides?.modelDefinitionId as string | undefined) ?? "model-et5"
+        }
+      ],
       vehicleModelName: "ET5",
       ...vehiclePackageOverrides
     },

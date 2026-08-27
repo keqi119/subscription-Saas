@@ -2655,6 +2655,7 @@ describe("seed permission calibration", () => {
       "subscription_change:cancel"
     ];
     const adminOnly = [
+      "subscription_change:approve",
       "subscription_change:price_override_approve",
       "subscription_change:manual_takeover"
     ];

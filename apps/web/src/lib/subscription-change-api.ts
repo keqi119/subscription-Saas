@@ -17,6 +17,69 @@ export type SubscriptionChangePricingMode =
   | "ORIGINAL_PRICE"
   | "APPROVED_DISCOUNT";
 
+export type SubscriptionChangeType =
+  | "EXTENSION"
+  | "VEHICLE_SWAP"
+  | "EARLY_TERMINATION"
+  | "MANAGED_OTHER";
+
+export type SubscriptionChangeAllowedAction =
+  | "CREATE_QUOTE"
+  | "APPROVE"
+  | "PUBLISH_CUSTOMER_CONFIRMATION"
+  | "GENERATE_CONTRACT"
+  | "START_ESIGN"
+  | "EXECUTE"
+  | "RETRY"
+  | "CANCEL"
+  | "MANUAL_TAKEOVER";
+
+export interface AdminExtensionChangeDetail {
+  extensionMonths: number;
+  pricingMode: SubscriptionChangePricingMode;
+  sourceSegment?: AdminSubscriptionContractSegment | null;
+  sourceSegmentId: string;
+  targetEndDate: string;
+  targetStartDate: string;
+}
+
+export interface AdminVehicleSwapChangeDetail {
+  actualSwapAt?: string | null;
+  commercialSnapshot?: unknown;
+  commercialSnapshotHash?: string;
+  inboundWorkOrderId?: string | null;
+  outboundWorkOrderId?: string | null;
+  plannedSwapAt: string;
+  sourceVehicleId: string;
+  targetSubscriptionPlanId: string;
+  targetVehicleId: string;
+  targetVehiclePackageId: string;
+}
+
+export interface AdminEarlyTerminationChangeDetail {
+  agreementContractId?: string | null;
+  closureCaseId?: string | null;
+  effectiveDate: string;
+  estimatedSettlementRevision?: number | null;
+  reasonSnapshot: unknown;
+}
+
+export interface AdminManagedOtherChangeDetail {
+  afterSnapshot?: unknown | null;
+  approvedOperationSnapshot: unknown;
+  beforeSnapshot?: unknown;
+  effectiveDate: string;
+  evidenceSnapshot?: unknown;
+  reason?: string;
+  supplementContractId?: string | null;
+}
+
+export type AdminSubscriptionChangeDetail =
+  | AdminExtensionChangeDetail
+  | AdminVehicleSwapChangeDetail
+  | AdminEarlyTerminationChangeDetail
+  | AdminManagedOtherChangeDetail;
+
 export interface AdminSubscriptionChangeQuote {
   createdBy?: string | null;
   confirmedAt?: string | null;
@@ -77,16 +140,18 @@ export interface AdminRenewalReminder {
 }
 
 export interface AdminSubscriptionChange {
+  allowedActions?: SubscriptionChangeAllowedAction[];
   automationJobs: AdminSubscriptionAutomationJob[];
   changeNo: string;
-  changeType: "EXTENSION";
+  changeType: SubscriptionChangeType;
   completionDeadlineAt: string;
   confirmedQuote?: AdminSubscriptionChangeQuote | null;
   contract: AdminSubscriptionChangeContract | null;
   createdAt: string;
   currentQuote: AdminSubscriptionChangeQuote | null;
   customerConfirmationPublishedAt?: string | null;
-  extensionMonths: number;
+  detail?: AdminSubscriptionChangeDetail;
+  extensionMonths?: number | null;
   failureCode?: string | null;
   failureMessage?: string | null;
   id: string;
@@ -101,7 +166,7 @@ export interface AdminSubscriptionChange {
   priceOverrideApprovedAt: string | null;
   priceOverrideApprovedBy: string | null;
   priceOverrideReason: string | null;
-  pricingMode: SubscriptionChangePricingMode;
+  pricingMode?: SubscriptionChangePricingMode | null;
   quotes: AdminSubscriptionChangeQuote[];
   renewalConsideration: {
     completionDeadlineAt?: string;
@@ -109,11 +174,11 @@ export interface AdminSubscriptionChange {
     reminders?: AdminRenewalReminder[];
     status: string;
   } | null;
-  sourceSegment: AdminSubscriptionContractSegment;
+  sourceSegment?: AdminSubscriptionContractSegment | null;
   status: SubscriptionChangeStatus;
-  targetEndDate: string;
+  targetEndDate?: string | null;
   targetSegment: AdminSubscriptionContractSegment | null;
-  targetStartDate: string;
+  targetStartDate?: string | null;
   updatedAt: string;
   version: number;
 }
@@ -172,8 +237,57 @@ export interface FormalQuoteInput {
   version: number;
 }
 
+export type CreateSubscriptionChangeInput =
+  | {
+      changeType: "EXTENSION";
+      detail: {
+        discountedMonthlyFeeAmount?: string;
+        extensionMonths: number;
+        priceOverrideReason?: string;
+        pricingMode: SubscriptionChangePricingMode;
+        requestedVehicleBaseFeeAmount?: string;
+        subscriptionPlanId?: string;
+      };
+      orderId: string;
+    }
+  | {
+      changeType: "VEHICLE_SWAP";
+      detail: {
+        plannedSwapAt: string;
+        targetSubscriptionPlanId: string;
+        targetVehicleId: string;
+        targetVehiclePackageId?: string;
+      };
+      orderId: string;
+    }
+  | {
+      changeType: "EARLY_TERMINATION";
+      detail: { effectiveDate: string; reason: string };
+      orderId: string;
+    }
+  | {
+      changeType: "MANAGED_OTHER";
+      detail: {
+        beforeSnapshot: Record<string, unknown>;
+        effectiveDate: string;
+        evidence: Array<Record<string, unknown>>;
+        operation: string;
+        operationPayload: Record<string, unknown>;
+        reason: string;
+      };
+      orderId: string;
+    };
+
 function commandHeaders() {
   return { "Idempotency-Key": crypto.randomUUID() };
+}
+
+export function createSubscriptionChange(input: CreateSubscriptionChangeInput) {
+  return apiFetch<AdminSubscriptionChange>("/subscription-changes", {
+    body: JSON.stringify(input),
+    headers: commandHeaders(),
+    method: "POST"
+  });
 }
 
 export function listRenewalConsiderations(
@@ -304,5 +418,30 @@ export function cancelSubscriptionChange(id: string, version: number, reason: st
       headers: commandHeaders(),
       method: "POST"
     }
+  );
+}
+
+export function approveManagedOtherChange(
+  id: string,
+  input: {
+    approvalReason: string;
+    approvalReference: string;
+    supplementContractId?: string;
+    version: number;
+  }
+) {
+  return apiFetch<AdminSubscriptionChange>(
+    `/subscription-changes/${encodeURIComponent(id)}/managed-other/approve`,
+    { body: JSON.stringify(input), headers: commandHeaders(), method: "POST" }
+  );
+}
+
+export function executeManagedOtherChange(
+  id: string,
+  input: { executionNote: string; version: number }
+) {
+  return apiFetch<AdminSubscriptionChange>(
+    `/subscription-changes/${encodeURIComponent(id)}/managed-other/execute`,
+    { body: JSON.stringify(input), headers: commandHeaders(), method: "POST" }
   );
 }

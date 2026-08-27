@@ -392,7 +392,8 @@ describe("PortalCatalogService enhanced vehicle listing", () => {
       vehiclePackage: {
         ...createPlan("plan-template").vehiclePackage,
         modelDefinition: definition,
-        modelDefinitionId: definition.id
+        modelDefinitionId: definition.id,
+        modelMembers: [{ modelDefinitionId: definition.id }]
       }
     });
     const vehicle = createVehicle({
@@ -931,6 +932,7 @@ function createPlan(id: string, overrides: Record<string, unknown> = {}) {
       id: "vehicle-package-1",
       modelDefinition: createModelDefinition(),
       modelDefinitionId: "model-es6",
+      modelMembers: [{ modelDefinitionId: "model-es6" }],
       monthlyFeeRate: new Prisma.Decimal("0.04"),
       packageName: "ES6 基础车包",
       productId: "product-1",

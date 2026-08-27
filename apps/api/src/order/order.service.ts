@@ -60,6 +60,7 @@ import { RequestContext, RequestUser } from "../auth/auth.types";
 import { BillingAutomationService } from "../billing-automation/billing-automation.service";
 import { createBusinessNo, withUniqueBusinessNoRetry } from "../common/business-number";
 import { resolveVehicleInsuranceCoverage } from "../common/vehicle-insurance-coverage";
+import { vehiclePackageSupportsModel } from "../common/vehicle-package-membership";
 import { buildVehicleModelSnapshot } from "../common/vehicle-model-snapshot";
 import { ContractPdfArtifactWriterService } from "../contract/contract-pdf-artifact-writer.service";
 import type { ContractPdfArtifactWriteResult } from "../contract/contract-pdf-artifact.types";
@@ -213,7 +214,8 @@ const modelDefinitionIdentitySelect = {
 
 const vehiclePackageInclude = {
   ...packageInclude,
-  modelDefinition: { select: modelDefinitionIdentitySelect }
+  modelDefinition: { select: modelDefinitionIdentitySelect },
+  modelMembers: { select: { modelDefinitionId: true } }
 } satisfies Prisma.VehiclePackageInclude;
 
 const subscriptionPlanInclude = {
@@ -1589,7 +1591,7 @@ export class OrderService {
     assertSubscriptionPlanAvailableForCustomerOrder(plan);
 
     const modelCode = vehicle.modelDefinition.modelCode;
-    if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
+    if (!vehiclePackageSupportsModel(plan.vehiclePackage, vehicle.modelDefinitionId)) {
       throw new BadRequestException("所选套餐不适用于该车型");
     }
     const modelSnapshot = buildVehicleModelSnapshot({
@@ -3362,7 +3364,9 @@ export class OrderService {
 
     return plans
       .filter(isSubscriptionPlanCurrentlyAvailableForOrder)
-      .filter((plan) => order.vehicle!.modelDefinitionId === plan.vehiclePackage.modelDefinitionId)
+      .filter((plan) =>
+        vehiclePackageSupportsModel(plan.vehiclePackage, order.vehicle!.modelDefinitionId)
+      )
       .map(toPlanChangeSubscriptionPlanView);
   }
 
@@ -5605,7 +5609,7 @@ async function assertCustomerOrderProductStillMatches(
     order.vehicle?.modelDefinitionId ??
     quote.vehicle?.modelDefinitionId ??
     order.modelDefinitionIdSnapshot;
-  if (modelDefinitionId !== quote.subscriptionPlan.vehiclePackage.modelDefinitionId) {
+  if (!vehiclePackageSupportsModel(quote.subscriptionPlan.vehiclePackage, modelDefinitionId)) {
     throw new BadRequestException("套餐仍需匹配订单车辆车型。");
   }
 }

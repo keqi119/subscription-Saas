@@ -7,6 +7,10 @@ const migrationPath = resolve(
   __dirname,
   "../prisma/migrations/20260805120000_stage1b_contract_extension_renewal/migration.sql"
 );
+const activeTermMigrationPath = resolve(
+  __dirname,
+  "../prisma/migrations/20260826020000_stage1_active_term_change_center/migration.sql"
+);
 
 function block(kind: "enum" | "model", name: string) {
   return schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
@@ -20,9 +24,19 @@ function migrationSql() {
   }
 }
 
+function activeTermMigrationSql() {
+  try {
+    return readFileSync(activeTermMigrationPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 describe("Stage 1B contract extension persistence contract", () => {
   it("defines the approved extension, quote, segment, consideration, and reminder enums", () => {
-    expect(block("enum", "SubscriptionChangeType")).toContain("EXTENSION");
+    expect(block("enum", "SubscriptionChangeType")).toMatch(
+      /EXTENSION[\s\S]*VEHICLE_SWAP[\s\S]*EARLY_TERMINATION[\s\S]*MANAGED_OTHER/
+    );
     expect(block("enum", "SubscriptionChangeStatus")).toMatch(
       /DRAFT[\s\S]*QUOTED[\s\S]*CUSTOMER_CONFIRMED[\s\S]*SIGNING_OR_PAYMENT[\s\S]*SCHEDULED[\s\S]*EXECUTING[\s\S]*COMPLETED[\s\S]*CANCELLED[\s\S]*FAILED[\s\S]*MANUAL_TAKEOVER/
     );
@@ -66,6 +80,74 @@ describe("Stage 1B contract extension persistence contract", () => {
     expect(quote).toContain("priceRuleSnapshot");
     expect(quote).toContain("validUntil");
     expect(quote).toContain("@@unique([changeOrderId, revision])");
+  });
+
+  it("stores one typed detail for each active-term change kind", () => {
+    const root = block("model", "SubscriptionChangeOrder");
+    const extension = block("model", "SubscriptionExtensionChangeDetail");
+    const swap = block("model", "SubscriptionVehicleSwapChangeDetail");
+    const termination = block("model", "SubscriptionEarlyTerminationChangeDetail");
+    const managedOther = block("model", "SubscriptionManagedOtherChangeDetail");
+
+    expect(root).toContain("extensionDetail");
+    expect(root).toContain("vehicleSwapDetail");
+    expect(root).toContain("earlyTerminationDetail");
+    expect(root).toContain("managedOtherDetail");
+    expect(root).toMatch(/extensionMonths\s+Int\?/);
+    expect(root).toMatch(/pricingMode\s+SubscriptionChangePricingMode\?/);
+    expect(root).toMatch(/sourceSegmentId\s+String\?/);
+    expect(root).toMatch(/targetStartDate\s+DateTime\?/);
+    expect(root).toMatch(/targetEndDate\s+DateTime\?/);
+
+    expect(extension).toMatch(/changeOrderId\s+String\s+@unique/);
+    expect(extension).toContain("sourceSegmentId");
+    expect(extension).toContain("extensionMonths");
+    expect(extension).toContain("pricingMode");
+    expect(extension).toContain("targetStartDate");
+    expect(extension).toContain("targetEndDate");
+    expect(extension).toContain("priceOverrideReason");
+
+    expect(swap).toMatch(/changeOrderId\s+String\s+@unique/);
+    expect(swap).toContain("sourceVehicleId");
+    expect(swap).toContain("targetVehicleId");
+    expect(swap).toContain("targetSubscriptionPlanId");
+    expect(swap).toContain("targetVehiclePackageId");
+    expect(swap).toContain("plannedSwapAt");
+    expect(swap).toContain("inboundWorkOrderId");
+    expect(swap).toContain("outboundWorkOrderId");
+    expect(swap).toContain("commercialSnapshot");
+    expect(swap).toContain("commercialSnapshotHash");
+
+    expect(termination).toMatch(/changeOrderId\s+String\s+@unique/);
+    expect(termination).toContain("effectiveDate");
+    expect(termination).toContain("reasonSnapshot");
+    expect(termination).toContain("estimatedSettlementRevision");
+    expect(termination).toContain("agreementContractId");
+    expect(termination).toContain("closureCaseId");
+
+    expect(managedOther).toMatch(/changeOrderId\s+String\s+@unique/);
+    expect(managedOther).toContain("effectiveDate");
+    expect(managedOther).toContain("evidenceSnapshot");
+    expect(managedOther).toContain("approvedOperationSnapshot");
+    expect(managedOther).toContain("beforeSnapshot");
+    expect(managedOther).toContain("afterSnapshot");
+    expect(managedOther).toContain("supplementContractId");
+  });
+
+  it("backfills extension details and defers exact detail-shape validation until commit", () => {
+    const sql = activeTermMigrationSql();
+
+    expect(sql).toContain("ALTER TYPE \"subscription_change_type\" ADD VALUE 'VEHICLE_SWAP'");
+    expect(sql).toContain("ALTER TYPE \"subscription_change_type\" ADD VALUE 'EARLY_TERMINATION'");
+    expect(sql).toContain("ALTER TYPE \"subscription_change_type\" ADD VALUE 'MANAGED_OTHER'");
+    expect(sql).toContain('CREATE TABLE "subscription_extension_change_detail"');
+    expect(sql).toContain('CREATE TABLE "subscription_vehicle_swap_change_detail"');
+    expect(sql).toContain('CREATE TABLE "subscription_early_termination_change_detail"');
+    expect(sql).toContain('CREATE TABLE "subscription_managed_other_change_detail"');
+    expect(sql).toContain('INSERT INTO "subscription_extension_change_detail"');
+    expect(sql).toContain("CREATE CONSTRAINT TRIGGER");
+    expect(sql).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(sql).toContain("subscription_change_detail_shape");
   });
 
   it("adds immutable contract segments and renewal consideration records", () => {

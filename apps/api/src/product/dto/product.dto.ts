@@ -9,6 +9,9 @@ import {
   SubscriptionPlanStatus
 } from "@prisma/client";
 import {
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
   IsEnum,
   IsInt,
   IsNumber,
@@ -412,6 +415,13 @@ export class CreateVehiclePackageDto {
   modelDefinitionId!: string;
 
   @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayUnique()
+  @IsUUID("4", { each: true })
+  modelDefinitionIds?: string[];
+
+  @IsOptional()
   @IsString()
   vehicleModelName?: string | null;
 
@@ -464,6 +474,13 @@ export class UpdateVehiclePackageDto {
   @IsOptional()
   @IsUUID()
   modelDefinitionId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayUnique()
+  @IsUUID("4", { each: true })
+  modelDefinitionIds?: string[];
 
   @IsOptional()
   @IsString()

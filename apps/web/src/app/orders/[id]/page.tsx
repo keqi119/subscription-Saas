@@ -62,6 +62,7 @@ import {
   SERVICE_CASE_TYPE_LABELS,
   STATUS_LABELS,
   SUBSCRIPTION_CHANGE_STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_TYPE_LABELS,
   VEHICLE_BASE_FEE_MODE_LABELS,
   VEHICLE_BATTERY_USAGE_TYPE_LABELS,
   VEHICLE_DAMAGE_LEVEL_LABELS,
@@ -137,8 +138,12 @@ import { loadAdminSubscriptionClosureByOrder } from "../../../lib/subscription-c
 import type { AdminSubscriptionClosureView } from "../../../lib/subscription-closure-view-model";
 import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 import {
+  createSubscriptionChange,
   listSubscriptionChangesForOrder,
-  type AdminSubscriptionChange
+  type AdminSubscriptionChange,
+  type CreateSubscriptionChangeInput,
+  type SubscriptionChangePricingMode,
+  type SubscriptionChangeType
 } from "../../../lib/subscription-change-api";
 import {
   formatSubscriptionChangeMoney,
@@ -292,6 +297,63 @@ interface OrderChangeRow {
 
 interface ChangeFormValues {
   reason: string;
+}
+
+interface ActiveSubscriptionChangeFormValues {
+  beforePreferredChannel?: "PHONE" | "SMS" | "WECHAT";
+  changeType: SubscriptionChangeType;
+  contactWindow?: string;
+  discountedMonthlyFeeAmount?: string;
+  effectiveDate?: Dayjs;
+  evidenceReference?: string;
+  extensionMonths?: number;
+  managedDescription?: string;
+  managedOperation?:
+    | "UPDATE_CONTACT_PREFERENCE"
+    | "RECORD_SERVICE_ACCOMMODATION"
+    | "RECORD_CONTRACT_CLARIFICATION";
+  plannedSwapAt?: Dayjs;
+  preferredChannel?: "PHONE" | "SMS" | "WECHAT";
+  priceOverrideReason?: string;
+  pricingMode?: SubscriptionChangePricingMode;
+  reason?: string;
+  requestedVehicleBaseFeeAmount?: string;
+  subscriptionPlanId?: string;
+  targetSubscriptionPlanId?: string;
+  targetVehicleId?: string;
+  targetVehiclePackageId?: string;
+}
+
+const contactPreferenceOptions = [
+  { label: "电话", value: "PHONE" },
+  { label: "短信", value: "SMS" },
+  { label: "微信", value: "WECHAT" }
+];
+
+function subscriptionChangeSummary(change: AdminSubscriptionChange) {
+  const detail = objectRecord(change.detail);
+  switch (change.changeType) {
+    case "EXTENSION": {
+      const dates = getSubscriptionChangeContractDates(change);
+      return `原合同到期日 ${formatDate(dates.originalEndDate)} · 已签约至 ${formatDate(dates.contractedThrough)} · 拟续期至 ${formatDate(dates.proposedEndDate)}`;
+    }
+    case "VEHICLE_SWAP":
+      return `目标车辆 ${String(detail?.targetVehicleId ?? "-")} · 计划换车 ${formatTime(detail?.plannedSwapAt)}`;
+    case "EARLY_TERMINATION":
+      return `计划生效日 ${formatDate(detail?.effectiveDate)} · Closure ${String(detail?.closureCaseId ?? "待创建")}`;
+    case "MANAGED_OTHER": {
+      const request = objectRecord(
+        objectRecord(detail?.approvedOperationSnapshot)?.request
+      );
+      return `批准操作 ${String(request?.operation ?? "待审批")} · 生效日 ${formatDate(detail?.effectiveDate)}`;
+    }
+  }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 interface PaymentWriteOffFormItem {
@@ -4640,6 +4702,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     []
   );
   const [changeForm] = Form.useForm<ChangeFormValues>();
+  const [activeSubscriptionChangeForm] = Form.useForm<ActiveSubscriptionChangeFormValues>();
   const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
   const [confirmDeliveryForm] = Form.useForm<ConfirmDeliveryFormValues>();
   const [confirmReturnForm] = Form.useForm<ConfirmReturnFormValues>();
@@ -4659,9 +4722,24 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
   const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
   const [changeModalOpen, setChangeModalOpen] = useState(false);
+  const [activeSubscriptionChangeModalOpen, setActiveSubscriptionChangeModalOpen] =
+    useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
   const [changesLoaded, setChangesLoaded] = useState(false);
   const [subscriptionChanges, setSubscriptionChanges] = useState<AdminSubscriptionChange[]>([]);
+  const [subscriptionChangesLoaded, setSubscriptionChangesLoaded] = useState(false);
+  const activeSubscriptionChangeType = Form.useWatch(
+    "changeType",
+    activeSubscriptionChangeForm
+  );
+  const activeManagedOperation = Form.useWatch(
+    "managedOperation",
+    activeSubscriptionChangeForm
+  );
+  const activeSubscriptionPricingMode = Form.useWatch(
+    "pricingMode",
+    activeSubscriptionChangeForm
+  );
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
   const [deductDepositModalOpen, setDeductDepositModalOpen] = useState(false);
@@ -4844,6 +4922,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   );
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
+  const canCreateSubscriptionChange = permissions.has("subscription_change:create");
   const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
   const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
   const hasOrderReviewPermission = permissions.has("order:review");
@@ -4996,6 +5075,19 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           (change.status === "PENDING" || change.status === "APPROVED")
       )
     : undefined;
+  const activeSubscriptionChange = hasSubscriptionChangeView
+    ? subscriptionChanges.find((change) =>
+        [
+          "DRAFT",
+          "QUOTED",
+          "CUSTOMER_CONFIRMED",
+          "SIGNING_OR_PAYMENT",
+          "SCHEDULED",
+          "EXECUTING",
+          "MANUAL_TAKEOVER"
+        ].includes(change.status)
+      )
+    : undefined;
   const changeGuard = getOrderWorkspaceChangeGuard({
     changesLoaded,
     hasActiveChange: Boolean(activeOrderChange),
@@ -5026,6 +5118,25 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         : "当前订单状态不允许发起变更",
     noPermissionReason: "无创建订单变更权限",
     permission: "order_change:create",
+    permissions
+  });
+  const createSubscriptionChangeAvailability = actionAvailability({
+    allowed: Boolean(
+      order &&
+        hasSubscriptionChangeView &&
+        subscriptionChangesLoaded &&
+        order.orderStatus === "ACTIVE" &&
+        !activeSubscriptionChange
+    ),
+    disabledReason: !hasSubscriptionChangeView
+      ? "无查看在租合同变更权限"
+      : !subscriptionChangesLoaded
+        ? "合同变更状态加载完成后才可发起变更"
+      : activeSubscriptionChange
+        ? `当前已有进行中的合同变更 ${activeSubscriptionChange.changeNo}`
+        : "仅在租订单可发起合同变更",
+    noPermissionReason: "无创建在租合同变更权限",
+    permission: "subscription_change:create",
     permissions
   });
   const cancelOrderAvailability = actionAvailability({
@@ -5308,6 +5419,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         setChanges(legacyChanges);
         setSubscriptionChanges(extensionChanges);
         setChangesLoaded(hasOrderChangeView);
+        setSubscriptionChangesLoaded(hasSubscriptionChangeView);
       });
     },
     [
@@ -5350,7 +5462,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     async (force: boolean) => {
       const loads: Promise<void>[] = [];
 
-      if (hasOrderChangeView) {
+      if (hasOrderChangeView && !hasSubscriptionChangeView) {
         loads.push(loadChangesDomain(force));
       }
 
@@ -5418,6 +5530,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       hasDeliveryViewPermission,
       hasOrderChangeView,
       hasReturnViewPermission,
+      hasSubscriptionChangeView,
       loadChangesDomain,
       loadWorkspaceResource,
       orderId,
@@ -5583,9 +5696,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
 
       try {
         await loadOrderDetail(force);
+        if (hasSubscriptionChangeView) {
+          await loadChangesDomain(force);
+        }
         switch (activeTab) {
           case "contract":
-            if (hasOrderChangeView) {
+            if (hasOrderChangeView && !hasSubscriptionChangeView) {
               await loadChangesDomain(force);
             }
             break;
@@ -5602,7 +5718,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             await loadFinanceDomain(force);
             break;
           case "change":
-            await loadChangesDomain(force);
+            if (!hasSubscriptionChangeView) {
+              await loadChangesDomain(force);
+            }
             break;
           case "overview":
             break;
@@ -5629,6 +5747,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     },
     [
       hasOrderChangeView,
+      hasSubscriptionChangeView,
       loadChangesDomain,
       loadEntitlementDomain,
       loadFinanceDomain,
@@ -5756,6 +5875,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     setOrder(null);
     setSummary(null);
     setSubscriptionChanges([]);
+    setSubscriptionChangesLoaded(false);
     setChangesLoaded(false);
     setDomainLoadStates(createWorkspaceDomainLoadStates());
     void loadWorkspaceShell();
@@ -6217,6 +6337,37 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     setChangeModalOpen(true);
   }, [canCreateChange, changeForm, message, order, orderChangeLocked]);
 
+  const openActiveSubscriptionChangeModal = useCallback(() => {
+    if (!order || !canCreateSubscriptionChange) return;
+    if (!subscriptionChangesLoaded) {
+      void message.error("合同变更状态加载完成后才可发起变更。");
+      return;
+    }
+    if (order.orderStatus !== "ACTIVE") {
+      void message.error("仅在租订单可发起续期、换车、提前结束或其他合同变更。");
+      return;
+    }
+    if (activeSubscriptionChange) {
+      void message.error(`当前已有进行中的合同变更 ${activeSubscriptionChange.changeNo}。`);
+      return;
+    }
+    activeSubscriptionChangeForm.resetFields();
+    activeSubscriptionChangeForm.setFieldsValue({
+      changeType: "EXTENSION",
+      extensionMonths: 6,
+      managedOperation: "UPDATE_CONTACT_PREFERENCE",
+      pricingMode: "CURRENT_VERSION"
+    });
+    setActiveSubscriptionChangeModalOpen(true);
+  }, [
+    activeSubscriptionChange,
+    activeSubscriptionChangeForm,
+    canCreateSubscriptionChange,
+    message,
+    order,
+    subscriptionChangesLoaded
+  ]);
+
   useEffect(() => {
     autoOpenChangeRequestedRef.current = createChangeRequested;
     setAutoOpenChangeModalDone(false);
@@ -6271,6 +6422,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   function closeChangeModal() {
     setChangeModalOpen(false);
     changeForm.resetFields();
+  }
+
+  function closeActiveSubscriptionChangeModal() {
+    setActiveSubscriptionChangeModalOpen(false);
+    activeSubscriptionChangeForm.resetFields();
   }
 
   function openPrepareDeliveryModal() {
@@ -7147,6 +7303,96 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
   }
 
+  async function createActiveSubscriptionChange() {
+    if (!order) return;
+    const values = await activeSubscriptionChangeForm.validateFields();
+    let input: CreateSubscriptionChangeInput;
+    switch (values.changeType) {
+      case "EXTENSION":
+        input = {
+          changeType: "EXTENSION",
+          detail: {
+            ...(values.discountedMonthlyFeeAmount?.trim()
+              ? { discountedMonthlyFeeAmount: values.discountedMonthlyFeeAmount.trim() }
+              : {}),
+            extensionMonths: values.extensionMonths!,
+            ...(values.priceOverrideReason?.trim()
+              ? { priceOverrideReason: values.priceOverrideReason.trim() }
+              : {}),
+            pricingMode: values.pricingMode!,
+            ...(values.requestedVehicleBaseFeeAmount?.trim()
+              ? { requestedVehicleBaseFeeAmount: values.requestedVehicleBaseFeeAmount.trim() }
+              : {}),
+            ...(values.subscriptionPlanId?.trim()
+              ? { subscriptionPlanId: values.subscriptionPlanId.trim() }
+              : {})
+          },
+          orderId: order.id
+        };
+        break;
+      case "VEHICLE_SWAP":
+        input = {
+          changeType: "VEHICLE_SWAP",
+          detail: {
+            plannedSwapAt: values.plannedSwapAt!.toISOString(),
+            targetSubscriptionPlanId: values.targetSubscriptionPlanId!.trim(),
+            targetVehicleId: values.targetVehicleId!.trim(),
+            ...(values.targetVehiclePackageId?.trim()
+              ? { targetVehiclePackageId: values.targetVehiclePackageId.trim() }
+              : {})
+          },
+          orderId: order.id
+        };
+        break;
+      case "EARLY_TERMINATION":
+        input = {
+          changeType: "EARLY_TERMINATION",
+          detail: {
+            effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
+            reason: values.reason!.trim()
+          },
+          orderId: order.id
+        };
+        break;
+      case "MANAGED_OTHER": {
+        const operation = values.managedOperation!;
+        const contactPreference = operation === "UPDATE_CONTACT_PREFERENCE";
+        input = {
+          changeType: "MANAGED_OTHER",
+          detail: {
+            beforeSnapshot: contactPreference
+              ? { preferredChannel: values.beforePreferredChannel }
+              : { description: "以关联证据和当前合同事实为准" },
+            effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
+            evidence: [{ reference: values.evidenceReference!.trim() }],
+            operation,
+            operationPayload: contactPreference
+              ? {
+                  ...(values.contactWindow?.trim()
+                    ? { contactWindow: values.contactWindow.trim() }
+                    : {}),
+                  preferredChannel: values.preferredChannel
+                }
+              : { description: values.managedDescription!.trim() },
+            reason: values.reason!.trim()
+          },
+          orderId: order.id
+        };
+        break;
+      }
+    }
+
+    try {
+      const created = await createSubscriptionChange(input);
+      void message.success("在租合同变更已创建");
+      closeActiveSubscriptionChangeModal();
+      await loadChangesDomain(true);
+      router.push(`/subscription-changes/${encodeURIComponent(created.id)}`);
+    } catch (error) {
+      void message.error(getErrorMessage(error));
+    }
+  }
+
   async function reviewChange(changeId: string, action: "approve" | "reject") {
     try {
       await apiFetch(`/order-changes/${changeId}/${action}`, { method: "POST" });
@@ -7290,14 +7536,20 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       });
     }
     workspaceOverflowActions.push({
-      disabled: !applyChangeAvailability.allowed,
-      key: "apply-change",
-      label: "申请变更方案",
+      disabled: !createSubscriptionChangeAvailability.allowed,
+      key: "create-subscription-change",
+      label: "发起合同变更",
       onClick: () => {
-        if (hasOrderChangeView) {
-          navigateWorkspace({ tab: "change" });
-          return;
-        }
+        navigateWorkspace({ tab: "change" });
+        openActiveSubscriptionChangeModal();
+      }
+    });
+    workspaceOverflowActions.push({
+      disabled: !applyChangeAvailability.allowed,
+      key: "return-to-plan",
+      label: "交付前退回重做方案",
+      onClick: () => {
+        navigateWorkspace({ tab: "change" });
         void openChangeModal();
       }
     });
@@ -7614,12 +7866,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         content = order ? (
           <>
             {hasSubscriptionChangeView ? (
-              <Card title="合同续订 / 协议延长">
+              <Card
+                extra={
+                  <Typography.Text type="secondary">
+                    合同续订 / 协议延长、换车、提前结束、其他合同变更
+                  </Typography.Text>
+                }
+                title="在租合同变更"
+              >
                 <List
                   dataSource={subscriptionChanges}
-                  locale={{ emptyText: "暂无 V2 协议延长记录" }}
+                  locale={{ emptyText: "暂无在租合同变更记录" }}
                   renderItem={(subscriptionChange) => {
-                    const dates = getSubscriptionChangeContractDates(subscriptionChange);
                     const nextAction = getSubscriptionChangeNextAction(subscriptionChange);
                     return (
                       <List.Item
@@ -7637,16 +7895,23 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                           description={
                             <Space orientation="vertical" size={2}>
                               <Typography.Text type="secondary">
-                                原合同到期日 {formatDate(dates.originalEndDate)} · 已签约至 {formatDate(dates.contractedThrough)} · 拟续期至 {formatDate(dates.proposedEndDate)}
+                                {subscriptionChangeSummary(subscriptionChange)}
                               </Typography.Text>
                               <Typography.Text type="secondary">
-                                当前报价 {formatSubscriptionChangeMoney(subscriptionChange.currentQuote?.monthlyFeeAmount)} / 下一步：{nextAction.label}
+                                {subscriptionChange.currentQuote
+                                  ? `当前报价 ${formatSubscriptionChangeMoney(subscriptionChange.currentQuote.monthlyFeeAmount)} / `
+                                  : ""}
+                                下一步：{nextAction.label}
                               </Typography.Text>
                             </Space>
                           }
                           title={
                             <Space wrap>
                               <Typography.Text strong>{subscriptionChange.changeNo}</Typography.Text>
+                              <Tag>
+                                {SUBSCRIPTION_CHANGE_TYPE_LABELS[subscriptionChange.changeType] ??
+                                  subscriptionChange.changeType}
+                              </Tag>
                               <Tag color={subscriptionChange.status === "COMPLETED" ? "green" : "blue"}>
                                 {SUBSCRIPTION_CHANGE_STATUS_LABELS[subscriptionChange.status] ?? subscriptionChange.status}
                               </Tag>
@@ -7657,7 +7922,31 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                     );
                   }}
                 />
+                <Space style={{ justifyContent: "flex-end", marginTop: 12, width: "100%" }}>
+                  <ActionButton
+                    availability={createSubscriptionChangeAvailability}
+                    onClick={openActiveSubscriptionChangeModal}
+                    type="primary"
+                  >
+                    发起合同变更
+                  </ActionButton>
+                </Space>
               </Card>
+            ) : null}
+            {activeSubscriptionChange ? (
+              <Alert
+                action={
+                  <Link
+                    href={`/subscription-changes/${encodeURIComponent(activeSubscriptionChange.id)}`}
+                  >
+                    查看进行中的变更
+                  </Link>
+                }
+                description="同一订单同一时间只允许一个活动合同变更；请先完成或取消当前变更。"
+                message={`当前活动变更：${activeSubscriptionChange.changeNo}`}
+                showIcon
+                type="warning"
+              />
             ) : null}
             {hasOrderChangeView ? (
               <Space style={{ justifyContent: "flex-end", width: "100%" }}>
@@ -7666,7 +7955,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 onClick={openChangeModal}
                 type="primary"
               >
-                申请变更方案
+                交付前退回重做方案
               </ActionButton>
               </Space>
             ) : null}
@@ -8802,14 +9091,233 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         </Modal>
 
         <Modal
+          destroyOnHidden
+          onCancel={closeActiveSubscriptionChangeModal}
+          onOk={() => void createActiveSubscriptionChange()}
+          open={activeSubscriptionChangeModalOpen}
+          title="发起在租合同变更"
+          width={720}
+        >
+          <Alert
+            description="租期、车辆、提前结束和其他受控变更使用独立流程；提交后不能通过通用字段编辑绕过审批。"
+            message="同一订单仅允许一个活动合同变更"
+            showIcon
+            style={{ marginBottom: 16 }}
+            type="info"
+          />
+          <Form form={activeSubscriptionChangeForm} layout="vertical">
+            <Form.Item
+              label="变更类型"
+              name="changeType"
+              rules={[{ required: true, message: "请选择变更类型" }]}
+            >
+              <Select
+                options={[
+                  { label: "续期", value: "EXTENSION" },
+                  { label: "换车", value: "VEHICLE_SWAP" },
+                  { label: "提前结束", value: "EARLY_TERMINATION" },
+                  { label: "其他合同变更", value: "MANAGED_OTHER" }
+                ]}
+              />
+            </Form.Item>
+
+            {activeSubscriptionChangeType === "EXTENSION" ? (
+              <>
+                <Form.Item
+                  label="续期月数"
+                  name="extensionMonths"
+                  rules={[{ required: true, message: "请填写续期月数" }]}
+                >
+                  <InputNumber min={1} precision={0} style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="计价方式"
+                  name="pricingMode"
+                  rules={[{ required: true, message: "请选择计价方式" }]}
+                >
+                  <Select
+                    options={[
+                      { label: "当前版本价格", value: "CURRENT_VERSION" },
+                      { label: "原合同价格", value: "ORIGINAL_PRICE" },
+                      { label: "已审批折扣", value: "APPROVED_DISCOUNT" }
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label={
+                    activeSubscriptionPricingMode === "ORIGINAL_PRICE"
+                      ? "目标订阅套餐 ID（可选）"
+                      : "目标订阅套餐 ID"
+                  }
+                  name="subscriptionPlanId"
+                  rules={
+                    activeSubscriptionPricingMode !== "ORIGINAL_PRICE"
+                      ? [{ required: true, message: "请选择目标订阅套餐 ID" }]
+                      : []
+                  }
+                >
+                  <Input placeholder="套餐 UUID" />
+                </Form.Item>
+                {activeSubscriptionPricingMode === "APPROVED_DISCOUNT" ? (
+                  <Form.Item
+                    label="折后月费（分）"
+                    name="discountedMonthlyFeeAmount"
+                    rules={[
+                      { pattern: /^\d+$/, message: "请输入整数分金额" },
+                      { required: true, message: "请填写折后月费" }
+                    ]}
+                  >
+                    <Input inputMode="numeric" />
+                  </Form.Item>
+                ) : null}
+                {activeSubscriptionPricingMode === "CURRENT_VERSION" ? (
+                  <Form.Item
+                    label="申请车辆基础月费（分，可选）"
+                    name="requestedVehicleBaseFeeAmount"
+                    rules={[{ pattern: /^\d+$/, message: "请输入整数分金额" }]}
+                  >
+                    <Input inputMode="numeric" />
+                  </Form.Item>
+                ) : null}
+                {activeSubscriptionPricingMode !== "CURRENT_VERSION" ? (
+                  <Form.Item
+                    label="价格例外原因"
+                    name="priceOverrideReason"
+                    rules={[{ required: true, message: "请填写价格例外原因" }]}
+                  >
+                    <Input.TextArea maxLength={2_000} rows={3} showCount />
+                  </Form.Item>
+                ) : null}
+              </>
+            ) : null}
+
+            {activeSubscriptionChangeType === "VEHICLE_SWAP" ? (
+              <>
+                <Form.Item
+                  label="目标车辆 ID"
+                  name="targetVehicleId"
+                  rules={[{ required: true, message: "请填写目标车辆 ID" }]}
+                >
+                  <Input placeholder="车辆 UUID" />
+                </Form.Item>
+                <Form.Item
+                  label="目标订阅套餐 ID"
+                  name="targetSubscriptionPlanId"
+                  rules={[{ required: true, message: "请填写目标订阅套餐 ID" }]}
+                >
+                  <Input placeholder="套餐 UUID" />
+                </Form.Item>
+                <Form.Item label="目标车型包 ID（可选）" name="targetVehiclePackageId">
+                  <Input placeholder="留空时使用套餐绑定车型包" />
+                </Form.Item>
+                <Form.Item
+                  label="计划换车时间"
+                  name="plannedSwapAt"
+                  rules={[{ required: true, message: "请选择计划换车时间" }]}
+                >
+                  <DatePicker showTime style={{ width: "100%" }} />
+                </Form.Item>
+              </>
+            ) : null}
+
+            {activeSubscriptionChangeType === "EARLY_TERMINATION" ? (
+              <>
+                <Form.Item
+                  label="提前结束生效日"
+                  name="effectiveDate"
+                  rules={[{ required: true, message: "请选择生效日" }]}
+                >
+                  <DatePicker style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="提前结束原因"
+                  name="reason"
+                  rules={[{ required: true, message: "请填写提前结束原因" }]}
+                >
+                  <Input.TextArea maxLength={2_000} rows={4} showCount />
+                </Form.Item>
+              </>
+            ) : null}
+
+            {activeSubscriptionChangeType === "MANAGED_OTHER" ? (
+              <>
+                <Form.Item
+                  label="批准操作"
+                  name="managedOperation"
+                  rules={[{ required: true, message: "请选择白名单操作" }]}
+                >
+                  <Select
+                    options={[
+                      { label: "更新联系偏好", value: "UPDATE_CONTACT_PREFERENCE" },
+                      { label: "记录服务安排", value: "RECORD_SERVICE_ACCOMMODATION" },
+                      { label: "记录合同澄清", value: "RECORD_CONTRACT_CLARIFICATION" }
+                    ]}
+                  />
+                </Form.Item>
+                {activeManagedOperation === "UPDATE_CONTACT_PREFERENCE" ? (
+                  <>
+                    <Form.Item
+                      label="变更前联系渠道"
+                      name="beforePreferredChannel"
+                      rules={[{ required: true, message: "请选择变更前联系渠道" }]}
+                    >
+                      <Select options={contactPreferenceOptions} />
+                    </Form.Item>
+                    <Form.Item
+                      label="批准后的联系渠道"
+                      name="preferredChannel"
+                      rules={[{ required: true, message: "请选择批准后的联系渠道" }]}
+                    >
+                      <Select options={contactPreferenceOptions} />
+                    </Form.Item>
+                    <Form.Item label="联系时间窗口（可选）" name="contactWindow">
+                      <Input maxLength={128} />
+                    </Form.Item>
+                  </>
+                ) : (
+                  <Form.Item
+                    label="批准后的处理结果"
+                    name="managedDescription"
+                    rules={[{ required: true, message: "请填写批准后的明确处理结果" }]}
+                  >
+                    <Input.TextArea maxLength={2_000} rows={4} showCount />
+                  </Form.Item>
+                )}
+                <Form.Item
+                  label="生效日"
+                  name="effectiveDate"
+                  rules={[{ required: true, message: "请选择生效日" }]}
+                >
+                  <DatePicker style={{ width: "100%" }} />
+                </Form.Item>
+                <Form.Item
+                  label="证据引用"
+                  name="evidenceReference"
+                  rules={[{ required: true, message: "请填写审批单、文件或沟通记录引用" }]}
+                >
+                  <Input maxLength={512} placeholder="例如：客服工单 CS-20260827-001" />
+                </Form.Item>
+                <Form.Item
+                  label="变更原因"
+                  name="reason"
+                  rules={[{ required: true, message: "请填写变更原因" }]}
+                >
+                  <Input.TextArea maxLength={2_000} rows={4} showCount />
+                </Form.Item>
+              </>
+            ) : null}
+          </Form>
+        </Modal>
+
+        <Modal
           onCancel={closeChangeModal}
           onOk={createChange}
           open={changeModalOpen}
-          title="申请变更方案 / 退回重做方案"
+          title="交付前退回重做方案"
         >
           <Form form={changeForm} layout="vertical">
             <Form.Item label="变更类型">
-              <Input disabled value="退回重做方案" />
+              <Input disabled value="交付前退回重做方案" />
             </Form.Item>
             <Space orientation="vertical" size={4} style={{ marginBottom: 12 }}>
               <Typography.Text strong>处理方式</Typography.Text>

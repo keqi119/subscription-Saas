@@ -151,7 +151,15 @@ CORS_ORIGIN=https://staging-admin.subauto.keybox.cloud
 NEXT_PUBLIC_API_BASE_URL=https://staging-api.subauto.keybox.cloud/api
 ADMIN_DOMAIN=staging-admin.subauto.keybox.cloud
 API_DOMAIN=staging-api.subauto.keybox.cloud
+SUBSCRIPTION_EXTENSION_ENABLED=true
+SUBSCRIPTION_VEHICLE_SWAP_ENABLED=true
+SUBSCRIPTION_EARLY_TERMINATION_ENABLED=true
+SUBSCRIPTION_MANAGED_OTHER_ENABLED=true
 ```
+
+The four contract-change flags are independent and fail closed. Before Stage 1 contract-change
+acceptance, follow `docs/runbooks/stage1-active-term-contract-change-release.md` and complete its
+dry-run/apply/dry-run bootstrap sequence against the confirmed Staging database.
 
 Do not use `ADMIN_ALLOWED_IPS` in this stage.
 The staging admin console is not IP-restricted.

@@ -222,6 +222,82 @@ describe("product component packages", () => {
 });
 
 describe("product component model definitions", () => {
+  it("creates one immutable membership row for every selected vehicle model", async () => {
+    const et5 = makeModelDefinition({ id: "model-et5", modelCode: "NIO_ET5" });
+    const es6 = makeModelDefinition({ id: "model-es6", modelCode: "NIO_ES6" });
+    const { prisma, service } = makeService({ modelDefinitions: [et5, es6] });
+
+    await service.createVehiclePackage(
+      {
+        maxPeriodMonths: 36,
+        minPeriodMonths: 12,
+        modelDefinitionId: et5.id,
+        modelDefinitionIds: [et5.id, es6.id],
+        packageName: "NIO shared package",
+        productId: "product-1",
+        productVersionId: "version-1"
+      } as never,
+      user,
+      context
+    );
+
+    expect(prisma.vehiclePackage.create.mock.calls[0]![0].data).toMatchObject({
+      modelDefinitionId: et5.id,
+      modelMembers: {
+        create: [
+          { createdBy: user.id, modelDefinitionId: et5.id },
+          { createdBy: user.id, modelDefinitionId: es6.id }
+        ]
+      }
+    });
+  });
+
+  it("rejects a multi-model package when any selected model is inactive", async () => {
+    const et5 = makeModelDefinition({ id: "model-et5", modelCode: "NIO_ET5" });
+    const inactiveEs6 = makeModelDefinition({
+      enabled: false,
+      id: "model-es6",
+      modelCode: "NIO_ES6"
+    });
+    const { prisma, service } = makeService({ modelDefinitions: [et5, inactiveEs6] });
+
+    await expect(
+      service.createVehiclePackage(
+        {
+          maxPeriodMonths: 36,
+          minPeriodMonths: 12,
+          modelDefinitionId: et5.id,
+          modelDefinitionIds: [et5.id, inactiveEs6.id],
+          packageName: "Invalid shared package",
+          productId: "product-1",
+          productVersionId: "version-1"
+        } as never,
+        user,
+        context
+      )
+    ).rejects.toThrow("车型主数据已停用。");
+    expect(prisma.vehiclePackage.create).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate model membership on a historical active product version", async () => {
+    const et5 = makeModelDefinition({ id: "model-et5", modelCode: "NIO_ET5" });
+    const es6 = makeModelDefinition({ id: "model-es6", modelCode: "NIO_ES6" });
+    const { prisma, service } = makeService({
+      modelDefinitions: [et5, es6],
+      vehiclePackages: [makeVehiclePackage({ modelDefinition: et5, modelDefinitionId: et5.id })]
+    });
+
+    await expect(
+      service.updateVehiclePackage(
+        "vehicle-1",
+        { modelDefinitionIds: [et5.id, es6.id] } as never,
+        user,
+        context
+      )
+    ).rejects.toThrow("已生效产品版本的车型成员不可修改");
+    expect(prisma.vehiclePackage.update).not.toHaveBeenCalled();
+  });
+
   it("creates vehicle packages from modelDefinitionId and writes its modelCode", async () => {
     const definition = makeModelDefinition({
       displayName: "ET5 Touring",
@@ -617,7 +693,8 @@ function makeService(seed: Partial<MockSeed> = {}) {
           (seed.modelDefinitions ?? [makeModelDefinition()]).find(
             (definition) =>
               (where.id === undefined || definition.id === where.id) &&
-              (where.deletedAt !== null || definition.deletedAt === null)
+                (where.deletedAt !== null || definition.deletedAt === null) &&
+                (where.enabled !== true || definition.enabled)
           ) ?? null
         )
       )
@@ -664,6 +741,7 @@ function filterRows<T extends { deletedAt?: Date | null; productVersionId?: stri
 }
 
 function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
+  const modelDefinition = makeModelDefinition();
   return {
     brand: null,
     configName: null,
@@ -676,8 +754,18 @@ function makeVehiclePackage(overrides: Record<string, unknown> = {}) {
     minPeriodMonths: 12,
     minPurchasePriceAmount: BigInt(12000000),
     monthlyFeeRate: new Prisma.Decimal("0.035"),
-    modelDefinition: makeModelDefinition(),
+    modelDefinition,
     modelDefinitionId: "model-et5",
+    modelMembers: [
+      {
+        createdAt: now,
+        createdBy: "user-1",
+        id: "vehicle-member-1",
+        modelDefinition,
+        modelDefinitionId: modelDefinition.id,
+        vehiclePackageId: "vehicle-1"
+      }
+    ],
     packageName: "ET5 standard",
     packageNo: "VPK2026060100001",
     product,

@@ -40,13 +40,17 @@ export type LeaseActivationEvaluation = LeaseActivationResult;
 
 export interface SubscriptionActivationResult {
   activatedAt: string;
+  baseSegmentId: string;
   deliveryId: string;
   deliveryStatus: "DELIVERED";
+  endDate: string;
   journeyStatus: "COMPLETED" | null;
   leaseId: string;
   leaseStatus: "ACTIVE";
   orderId: string;
   orderStatus: "ACTIVE";
+  startDate: string;
+  subscriptionPeriodId: string;
   vehicleId: string;
   vehicleStatus: "LEASED";
 }

@@ -65,4 +65,15 @@ describe("API Vitest project boundaries", () => {
     expect(databaseProject?.test?.fileParallelism).toBe(false);
     expect(unitProject?.test?.exclude).toContain(integrationSuite);
   });
+
+  it("runs the ACTIVE-order contract-change E2E suite in the serial database project", () => {
+    const projects = (config.test?.projects ?? []) as ProjectConfig[];
+    const databaseProject = projects.find((project) => project.test?.name === "database");
+    const unitProject = projects.find((project) => project.test?.name === "unit");
+    const integrationSuite = "test/subscription-change-active-order.e2e-spec.ts";
+
+    expect(databaseProject?.test?.include).toContain(integrationSuite);
+    expect(databaseProject?.test?.fileParallelism).toBe(false);
+    expect(unitProject?.test?.exclude).toContain(integrationSuite);
+  });
 });

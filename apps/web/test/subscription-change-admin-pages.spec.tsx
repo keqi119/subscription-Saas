@@ -40,4 +40,13 @@ describe("Admin subscription change pages", () => {
     expect(orderPage).toContain("旧版订单变更记录");
     expect(orderPage).toContain("/subscription-changes/");
   });
+
+  it("exposes four ACTIVE-order change types and names the legacy action as pre-delivery only", () => {
+    expect(orderPage).toContain('label: "发起合同变更"');
+    expect(orderPage).toContain("续期");
+    expect(orderPage).toContain("换车");
+    expect(orderPage).toContain("提前结束");
+    expect(orderPage).toContain("其他合同变更");
+    expect(orderPage).toContain("交付前退回重做方案");
+  });
 });

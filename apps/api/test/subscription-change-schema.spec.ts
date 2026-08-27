@@ -22,7 +22,9 @@ function migrationSql() {
 
 describe("Stage 1B contract extension persistence contract", () => {
   it("defines the approved extension, quote, segment, consideration, and reminder enums", () => {
-    expect(block("enum", "SubscriptionChangeType")).toContain("EXTENSION");
+    expect(block("enum", "SubscriptionChangeType")).toMatch(
+      /EXTENSION[\s\S]*VEHICLE_SWAP[\s\S]*EARLY_TERMINATION[\s\S]*MANAGED_OTHER/
+    );
     expect(block("enum", "SubscriptionChangeStatus")).toMatch(
       /DRAFT[\s\S]*QUOTED[\s\S]*CUSTOMER_CONFIRMED[\s\S]*SIGNING_OR_PAYMENT[\s\S]*SCHEDULED[\s\S]*EXECUTING[\s\S]*COMPLETED[\s\S]*CANCELLED[\s\S]*FAILED[\s\S]*MANUAL_TAKEOVER/
     );

@@ -248,7 +248,7 @@ export default function PortalSubscriptionChangeDetailPage() {
         </Card>
       ) : null}
 
-      <Card title="合同变更协议">
+      <Card title="合同变更补充协议">
         {change.contractId ? (
           <Flex align="center" gap={16} justify="space-between" wrap="wrap">
             <Space align="start">
@@ -437,22 +437,22 @@ function customerDecisionPayload(change: PortalSubscriptionChange): CustomerDeci
       version: change.version
     };
   }
-  const quote = change.currentQuote;
-  if (!quote || quote.status !== "FORMAL") return null;
+  const currentQuote = change.currentQuote;
+  if (!currentQuote || currentQuote.status !== "FORMAL") return null;
   if (isVehicleSwap(change)) {
     const commercialSnapshotHash =
-      quote.commercialSnapshotHash ?? change.detail.commercialSnapshotHash;
+      currentQuote.commercialSnapshotHash ?? change.detail.commercialSnapshotHash;
     if (!commercialSnapshotHash) return null;
     return {
       commercialSnapshotHash,
-      quoteId: quote.id,
-      revision: quote.revision,
+      quoteId: currentQuote.id,
+      revision: currentQuote.revision,
       version: change.version
     };
   }
   return {
-    quoteId: quote.id,
-    revision: quote.revision,
+    quoteId: currentQuote.id,
+    revision: currentQuote.revision,
     version: change.version
   };
 }

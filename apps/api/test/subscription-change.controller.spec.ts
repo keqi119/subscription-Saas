@@ -28,9 +28,11 @@ describe("SubscriptionChangeController", () => {
     [
       "MANAGED_OTHER",
       {
+        beforeSnapshot: { preferredChannel: "SMS" },
         effectiveDate: "2026-09-30",
         evidence: [{ fileId: "76fe601a-1d4c-45de-b6ba-4a4d1ba518d8" }],
         operation: "UPDATE_CONTACT_PREFERENCE",
+        operationPayload: { preferredChannel: "WECHAT" },
         reason: "Customer requests a governed contact-channel change"
       }
     ]
@@ -209,9 +211,11 @@ describe("SubscriptionChangeController", () => {
     [
       "MANAGED_OTHER",
       {
+        beforeSnapshot: { preferredChannel: "SMS" },
         effectiveDate: "2026-09-30",
         evidence: [{ fileId: "76fe601a-1d4c-45de-b6ba-4a4d1ba518d8" }],
         operation: "UPDATE_CONTACT_PREFERENCE",
+        operationPayload: { preferredChannel: "WECHAT" },
         reason: "governed update"
       }
     ]

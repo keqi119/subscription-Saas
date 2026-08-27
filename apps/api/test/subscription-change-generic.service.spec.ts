@@ -66,9 +66,11 @@ describe("SubscriptionChangeService", () => {
     [
       SubscriptionChangeType.MANAGED_OTHER,
       {
+        beforeSnapshot: { preferredChannel: "SMS" },
         effectiveDate: "2026-09-30",
         evidence: [{ fileId: "file-1" }],
         operation: "UPDATE_CONTACT_PREFERENCE",
+        operationPayload: { preferredChannel: "WECHAT" },
         reason: "Governed preference change"
       },
       "managedOtherDetail"
@@ -128,6 +130,31 @@ describe("SubscriptionChangeService", () => {
     expect(harness.prisma.subscriptionChangeOrder.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["reason", { reason: " " }, "MANAGED_OTHER_REASON_REQUIRED"],
+    ["effective date", { effectiveDate: "2026-02-30" }, "EFFECTIVE_DATE_INVALID"],
+    ["evidence", { evidence: [] }, "MANAGED_OTHER_EVIDENCE_REQUIRED"],
+    ["approved operation", { operation: " " }, "MANAGED_OTHER_OPERATION_REQUIRED"],
+    ["before snapshot", { beforeSnapshot: {} }, "MANAGED_OTHER_BEFORE_SNAPSHOT_REQUIRED"],
+    [
+      "operation payload",
+      { operationPayload: {} },
+      "MANAGED_OTHER_OPERATION_PAYLOAD_REQUIRED"
+    ]
+  ] as const)("requires managed-other %s before opening a transaction", async (_field, detail, code) => {
+    const harness = genericHarness();
+    const input = managedOtherInput(`managed-required-${code}`);
+
+    await expect(
+      harness.service.create(
+        { ...input, detail: { ...input.detail, ...detail } } as never,
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code });
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it("replays the exact completed create command and rejects an idempotency payload mismatch", async () => {
     const exact = genericHarness({ replay: "exact" });
     const mismatch = genericHarness({ replay: "mismatch" });
@@ -183,6 +210,33 @@ describe("SubscriptionChangeService", () => {
     });
   });
 
+  it("keeps a scheduled managed-other change cancellable before execution", async () => {
+    const harness = genericHarness({
+      changeStatus: SubscriptionChangeStatus.SCHEDULED,
+      changeVersion: 1
+    });
+
+    const view = await harness.service.get("change-existing", harness.actor);
+    expect(view.allowedActions).toContain("CANCEL");
+
+    const cancelled = await harness.service.cancel(
+      "change-existing",
+      {
+        idempotencyKey: "cancel-scheduled-managed-other",
+        reason: "Approved operation withdrawn before its effective date",
+        version: 1
+      },
+      harness.actor,
+      harness.context
+    );
+
+    expect(cancelled).toMatchObject({
+      allowedActions: [],
+      status: SubscriptionChangeStatus.CANCELLED,
+      version: 2
+    });
+  });
+
   it("keeps the Admin extension projection compatible when root facts are null", async () => {
     const harness = genericHarness({ typedExtension: true });
 
@@ -202,6 +256,7 @@ describe("SubscriptionChangeService", () => {
 
 interface HarnessOptions {
   activeChange?: boolean;
+  changeStatus?: SubscriptionChangeStatus;
   changeVersion?: number;
   concurrentReplay?: boolean;
   replay?: "exact" | "mismatch";
@@ -248,6 +303,7 @@ function genericHarness(options: HarnessOptions = {}) {
           targetStartDate: null
         }
       : {}),
+    status: options.changeStatus ?? SubscriptionChangeStatus.DRAFT,
     version: options.changeVersion ?? 0
   });
   const querySql: string[] = [];
@@ -374,9 +430,11 @@ function managedOtherInput(idempotencyKey: string) {
   return {
     changeType: SubscriptionChangeType.MANAGED_OTHER,
     detail: {
+      beforeSnapshot: { preferredChannel: "SMS" },
       effectiveDate: "2026-09-30",
       evidence: [{ fileId: "file-1" }],
       operation: "UPDATE_CONTACT_PREFERENCE",
+      operationPayload: { preferredChannel: "WECHAT" },
       reason: "Governed preference change"
     },
     idempotencyKey,
@@ -399,8 +457,14 @@ function changeFixture(overrides: Record<string, unknown> = {}) {
     extensionDetail: null,
     id: "change-existing",
     managedOtherDetail: {
-      approvedOperationSnapshot: { operation: "UPDATE_CONTACT_PREFERENCE" },
-      beforeSnapshot: {},
+      approvedOperationSnapshot: {
+        approval: null,
+        request: {
+          operation: "UPDATE_CONTACT_PREFERENCE",
+          operationPayload: { preferredChannel: "WECHAT" }
+        }
+      },
+      beforeSnapshot: { preferredChannel: "SMS" },
       effectiveDate: new Date("2026-09-30T00:00:00.000Z"),
       evidenceSnapshot: [{ fileId: "file-1" }],
       reason: "Governed preference change"

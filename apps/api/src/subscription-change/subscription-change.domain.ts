@@ -117,7 +117,8 @@ export function subscriptionChangeAllowedActions(
   }
   if (
     (CANCELLABLE_STATUSES.has(change.status) ||
-      (change.changeType === SubscriptionChangeType.EARLY_TERMINATION &&
+      ((change.changeType === SubscriptionChangeType.EARLY_TERMINATION ||
+        change.changeType === SubscriptionChangeType.MANAGED_OTHER) &&
         change.status === SubscriptionChangeStatus.SCHEDULED)) &&
     hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_CANCEL)
   ) {

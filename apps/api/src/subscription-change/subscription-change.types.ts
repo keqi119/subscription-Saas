@@ -57,10 +57,11 @@ export interface CreateEarlyTerminationChangeInput extends CreateSubscriptionCha
 export interface CreateManagedOtherChangeInput extends CreateSubscriptionChangeBase {
   changeType: typeof SubscriptionChangeType.MANAGED_OTHER;
   detail: {
-    beforeSnapshot?: Record<string, unknown>;
+    beforeSnapshot: Record<string, unknown>;
     effectiveDate: string;
     evidence: ReadonlyArray<Readonly<Record<string, unknown>>>;
     operation: string;
+    operationPayload: Record<string, unknown>;
     reason: string;
   };
 }

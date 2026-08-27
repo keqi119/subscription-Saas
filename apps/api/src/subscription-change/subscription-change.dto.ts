@@ -85,9 +85,11 @@ export class CreateManagedOtherChangeDetailDto {
   @MaxLength(128)
   operation!: string;
 
-  @IsOptional()
   @IsObject()
-  beforeSnapshot?: Record<string, unknown>;
+  operationPayload!: Record<string, unknown>;
+
+  @IsObject()
+  beforeSnapshot!: Record<string, unknown>;
 }
 
 export type CreateSubscriptionChangeDetailDto =
@@ -186,6 +188,26 @@ export class ReasonedSubscriptionChangeDto extends VersionedSubscriptionChangeDt
   @IsString()
   @MaxLength(2_000)
   reason!: string;
+}
+
+export class ApproveManagedOtherDto extends VersionedSubscriptionChangeDto {
+  @IsString()
+  @MaxLength(128)
+  approvalReference!: string;
+
+  @IsString()
+  @MaxLength(2_000)
+  approvalReason!: string;
+
+  @IsOptional()
+  @IsUUID()
+  supplementContractId?: string;
+}
+
+export class ExecuteManagedOtherDto extends VersionedSubscriptionChangeDto {
+  @IsString()
+  @MaxLength(2_000)
+  executionNote!: string;
 }
 
 export function optionalMoney(value: string | undefined) {

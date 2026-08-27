@@ -18,9 +18,11 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import { ESignService } from "../esign/esign.service";
 import {
   ApproveSubscriptionExtensionPriceDto,
+  ApproveManagedOtherDto,
   CreateSubscriptionChangeDto,
   CreateSubscriptionExtensionDto,
   CreateSubscriptionExtensionQuoteDto,
+  ExecuteManagedOtherDto,
   optionalMoney,
   ReasonedSubscriptionChangeDto,
   SubscriptionExtensionQuoteDto,
@@ -28,6 +30,7 @@ import {
 } from "./subscription-change.dto";
 import { SubscriptionChangeService } from "./subscription-change.service";
 import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
+import { SubscriptionManagedOtherService } from "./subscription-managed-other.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
@@ -42,7 +45,9 @@ export class SubscriptionChangeController {
     @Optional() private readonly changeService?: SubscriptionChangeService,
     @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService,
     @Optional()
-    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService
+    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService,
+    @Optional()
+    private readonly managedOtherService?: SubscriptionManagedOtherService
   ) {}
 
   @Post()
@@ -232,6 +237,48 @@ export class SubscriptionChangeController {
   ) {
     return apiSafe(
       await this.service.manualTakeover(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
+
+  @Post(":id/managed-other/approve")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_APPROVE)
+  async approveManagedOther(
+    @Param("id") id: string,
+    @Body() dto: ApproveManagedOtherDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    if (!this.managedOtherService) {
+      throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+    }
+    return apiSafe(
+      await this.managedOtherService.approve(
+        id,
+        { ...dto, idempotencyKey },
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
+
+  @Post(":id/managed-other/execute")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE)
+  async executeManagedOther(
+    @Param("id") id: string,
+    @Body() dto: ExecuteManagedOtherDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    if (!this.managedOtherService) {
+      throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+    }
+    return apiSafe(
+      await this.managedOtherService.execute(
         id,
         { ...dto, idempotencyKey },
         request.user,

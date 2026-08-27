@@ -19,6 +19,7 @@ import { projectSubscriptionChange } from "./subscription-change.domain";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionChangeRepository } from "./subscription-change.repository";
 import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
+import { normalizeManagedOtherRequest } from "./subscription-managed-other.service";
 import {
   CreateSubscriptionChangeInput,
   CreateVehicleSwapChangeInput
@@ -252,7 +253,10 @@ export class SubscriptionChangeService {
         const change = await this.repository.findChange(id, tx);
         if (!change) throw changeNotFound();
         if (change.version !== input.version) throw versionConflict();
-        if (!CANCELLABLE_STATUSES.has(change.status)) {
+        const scheduledManagedOther =
+          change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+          change.status === SubscriptionChangeStatus.SCHEDULED;
+        if (!CANCELLABLE_STATUSES.has(change.status) && !scheduledManagedOther) {
           throw new SubscriptionChangeError(
             "SUBSCRIPTION_CHANGE_NOT_CANCELLABLE",
             "The change can no longer be cancelled directly.",
@@ -434,13 +438,20 @@ function createDetailData(
     };
   }
   if (input.changeType === SubscriptionChangeType.MANAGED_OTHER) {
+    const normalized = normalizeManagedOtherRequest(input.detail);
     return {
       managedOtherDetail: {
         create: {
-          approvedOperationSnapshot: { operation: input.detail.operation.trim() },
-          beforeSnapshot: toJson(input.detail.beforeSnapshot ?? {}),
+          approvedOperationSnapshot: {
+            approval: null,
+            request: {
+              operation: normalized.operation,
+              operationPayload: normalized.operationPayload
+            }
+          },
+          beforeSnapshot: normalized.beforeSnapshot,
           effectiveDate: parseDate(input.detail.effectiveDate, "EFFECTIVE_DATE_INVALID"),
-          evidenceSnapshot: toJson(input.detail.evidence),
+          evidenceSnapshot: toJson(normalized.evidence),
           reason: input.detail.reason.trim()
         }
       }
@@ -474,8 +485,7 @@ function validateCreateInput(input: CreateSubscriptionChangeInput) {
   }
   if (input.changeType === SubscriptionChangeType.MANAGED_OTHER) {
     if (!input.detail.reason.trim()) required("MANAGED_OTHER_REASON_REQUIRED");
-    if (!input.detail.operation.trim()) required("MANAGED_OTHER_OPERATION_REQUIRED");
-    if (input.detail.evidence.length === 0) required("MANAGED_OTHER_EVIDENCE_REQUIRED");
+    normalizeManagedOtherRequest(input.detail);
     parseDate(input.detail.effectiveDate, "EFFECTIVE_DATE_INVALID");
   }
   if (input.changeType === SubscriptionChangeType.VEHICLE_SWAP) {

@@ -265,8 +265,8 @@ function validateSignedArtifact(contract, order) {
   const archivedAt = timestamp(contract.archivedAt);
   if (
     Date.parse(signedAt) > Date.parse(completedAt) ||
-    (contract.status === "ARCHIVED" &&
-      (!archivedAt || Date.parse(completedAt) > Date.parse(archivedAt)))
+    (contract.status === "ARCHIVED" && !archivedAt) ||
+    (archivedAt && Date.parse(completedAt) > Date.parse(archivedAt))
   ) {
     return { code: "CONTRACT_TIMELINE_INVALID" };
   }

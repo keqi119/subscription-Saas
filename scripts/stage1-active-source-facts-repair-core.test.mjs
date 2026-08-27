@@ -168,6 +168,20 @@ test("rejects an invalid contract signing timeline", () => {
   assert.equal(classify(input).exceptions[0].code, "CONTRACT_TIMELINE_INVALID");
 });
 
+test("rejects an inverted existing archive timestamp on a signed contract", () => {
+  const input = snapshot({
+    contracts: [
+      contract({
+        archivedAt: "2026-08-26T03:52:00.000Z",
+        eSignTasks: [eSignTask({ completedAt: "2026-08-26T03:53:26.694Z" })],
+        status: "SIGNED"
+      })
+    ]
+  });
+
+  assert.equal(classify(input).exceptions[0].code, "CONTRACT_TIMELINE_INVALID");
+});
+
 test("does not repair parent facts after downstream facts already exist", () => {
   const withSegment = snapshot({
     startDate: null,

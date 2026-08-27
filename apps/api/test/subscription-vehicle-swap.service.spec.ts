@@ -10,6 +10,18 @@ import { describe, expect, it, vi } from "vitest";
 import { SubscriptionVehicleSwapService } from "../src/subscription-change/subscription-vehicle-swap.service";
 
 describe("SubscriptionVehicleSwapService", () => {
+  it("exposes the generated supplement contract to the customer portal", async () => {
+    const harness = swapHarness({ formalQuote: true, published: true });
+    harness.state.change.contractId = "contract-swap";
+
+    await expect(
+      harness.service.getPortalChange("change-swap", harness.customer)
+    ).resolves.toMatchObject({
+      contractId: "contract-swap",
+      customerConfirmationPublishedAt: harness.now.toISOString()
+    });
+  });
+
   it("creates successive formal quote revisions and supersedes the previous formal quote", async () => {
     const harness = swapHarness();
 

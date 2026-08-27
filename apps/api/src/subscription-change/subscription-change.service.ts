@@ -29,6 +29,7 @@ import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.serv
 
 const CREATE_OPERATION = "CREATE_SUBSCRIPTION_CHANGE";
 const CANCEL_OPERATION = "CANCEL_SUBSCRIPTION_CHANGE";
+const MANUAL_TAKEOVER_OPERATION = "MANUAL_TAKEOVER_SUBSCRIPTION_CHANGE";
 
 const CANCELLABLE_STATUSES = new Set<SubscriptionChangeStatus>([
   SubscriptionChangeStatus.DRAFT,
@@ -141,6 +142,17 @@ export class SubscriptionChangeService {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     const changes = await this.repository.listForOrder(orderId);
     return changes.map((change) => projectSubscriptionChange(change, actor));
+  }
+
+  async timeline(id: string, actor: RequestUser) {
+    assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
+    const change = await this.repository.findChange(id);
+    if (!change) throw changeNotFound();
+    return this.repository.listTimeline([
+      change.id,
+      ...change.quotes.map((quote) => quote.id),
+      ...change.automationJobs.map((job) => job.id)
+    ]);
   }
 
   async previewQuote(id: string, input: QuoteInput, actor: RequestUser) {
@@ -287,6 +299,91 @@ export class SubscriptionChangeService {
       if (!isUniqueConstraintError(error)) throw error;
       const duplicate = await this.replay(
         CANCEL_OPERATION,
+        input.idempotencyKey!,
+        actor,
+        requestHash
+      );
+      if (duplicate) return duplicate;
+      throw error;
+    }
+  }
+
+  async manualTakeover(
+    id: string,
+    input: CancelSubscriptionChangeInput,
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_MANUAL_TAKEOVER);
+    assertIdempotencyKey(input.idempotencyKey);
+    assertVersion(input.version);
+    const reason = input.reason.trim();
+    if (!reason) {
+      throw new SubscriptionChangeError(
+        "MANUAL_TAKEOVER_REASON_REQUIRED",
+        "A manual takeover reason is required."
+      );
+    }
+
+    const current = await this.repository.findChange(id);
+    if (!current) throw changeNotFound();
+    if (current.changeType === SubscriptionChangeType.EXTENSION) {
+      const takenOver = await this.extensionService.manualTakeover(id, input, actor, context);
+      return projectSubscriptionChange(takenOver, actor);
+    }
+
+    const requestHash = commandHash({ id, ...input, reason });
+    const replay = await this.replay(
+      MANUAL_TAKEOVER_OPERATION,
+      input.idempotencyKey!,
+      actor,
+      requestHash
+    );
+    if (replay) return replay;
+
+    try {
+      const takenOver = await this.repository.transaction(async (tx) => {
+        await this.repository.lockChange(tx, id);
+        const change = await this.repository.findChange(id, tx);
+        if (!change) throw changeNotFound();
+        if (change.version !== input.version) throw versionConflict();
+        if (
+          change.status === SubscriptionChangeStatus.COMPLETED ||
+          change.status === SubscriptionChangeStatus.CANCELLED ||
+          change.status === SubscriptionChangeStatus.FAILED
+        ) {
+          throw new SubscriptionChangeError(
+            "SUBSCRIPTION_CHANGE_FINAL",
+            "A final change cannot enter manual takeover.",
+            HttpStatus.CONFLICT
+          );
+        }
+        const command = await this.repository.createCommand(tx, {
+          actorId: actor.id,
+          idempotencyKey: input.idempotencyKey!,
+          operation: MANUAL_TAKEOVER_OPERATION,
+          requestHash
+        });
+        const updated = await this.repository.updateChange(tx, id, {
+          manualTakeoverAt: this.config.now(),
+          manualTakeoverReason: reason,
+          manualTakeoverUser: { connect: { id: actor.id } },
+          status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+          updatedBy: actor.id,
+          version: { increment: 1 }
+        });
+        await this.auditService.write(
+          auditInput(AuditAction.UPDATE, id, actor, context, change, updated),
+          tx
+        );
+        await this.repository.completeCommand(tx, command.id, id, this.config.now());
+        return updated;
+      });
+      return projectSubscriptionChange(takenOver, actor);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const duplicate = await this.replay(
+        MANUAL_TAKEOVER_OPERATION,
         input.idempotencyKey!,
         actor,
         requestHash

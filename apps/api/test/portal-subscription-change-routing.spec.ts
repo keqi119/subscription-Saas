@@ -26,7 +26,7 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
       version: 5
     };
 
-    await harness.service.confirmQuote(
+    const result = await harness.service.confirmQuote(
       "change-early",
       input,
       harness.customer,
@@ -45,6 +45,8 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
     );
     expect(harness.swaps.confirmQuote).not.toHaveBeenCalled();
     expect(harness.renewal.confirmQuote).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: "change-early", type: "EARLY_TERMINATION" });
+    expect(JSON.stringify(result)).not.toContain("internalApprovalReference");
   });
 
   it("routes quote rejection as a REJECT decision", async () => {
@@ -56,7 +58,7 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
       version: 5
     };
 
-    await harness.service.rejectQuote(
+    const result = await harness.service.rejectQuote(
       "change-early",
       input,
       harness.customer,
@@ -76,6 +78,7 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
     );
     expect(harness.swaps.rejectQuote).not.toHaveBeenCalled();
     expect(harness.renewal.rejectQuote).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: "change-early", type: "EARLY_TERMINATION" });
   });
 });
 
@@ -103,7 +106,10 @@ function portalHarness() {
     rejectQuote: vi.fn()
   };
   const early = {
-    decide: vi.fn(async () => ({ status: "CUSTOMER_CONFIRMED" })),
+    decide: vi.fn(async () => ({
+      internalApprovalReference: "must-not-leak",
+      status: "CUSTOMER_CONFIRMED"
+    })),
     getPortalChange: vi.fn(async () => ({ id: "change-early", type: "EARLY_TERMINATION" }))
   };
   const service = new PortalSubscriptionChangeService(

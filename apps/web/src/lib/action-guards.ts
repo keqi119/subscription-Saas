@@ -68,9 +68,11 @@ export interface ProductVersionPlanState {
 export type SubscriptionChangeGuardAction =
   | "QUOTE"
   | "APPROVE_PRICE"
+  | "APPROVE_MANAGED_OTHER"
   | "WAIT_CUSTOMER"
   | "GENERATE_CONTRACT"
   | "START_ESIGN"
+  | "EXECUTE_MANAGED_OTHER"
   | "WAIT_ARCHIVE"
   | "WAIT_EFFECTIVE"
   | "RETRY"
@@ -97,7 +99,9 @@ export type LegacyJourneyAction =
 const SUBSCRIPTION_CHANGE_ACTION_PERMISSIONS: Partial<
   Record<SubscriptionChangeGuardAction, string>
 > = {
+  APPROVE_MANAGED_OTHER: "subscription_change:approve",
   APPROVE_PRICE: "subscription_change:price_override_approve",
+  EXECUTE_MANAGED_OTHER: "subscription_change:execute",
   GENERATE_CONTRACT: "contract:generate",
   MANUAL: "subscription_change:manual_takeover",
   QUOTE: "subscription_change:quote",

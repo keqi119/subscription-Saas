@@ -15,7 +15,9 @@ import {
   OrderSource,
   OrderMileageReviewStatus,
   OrderStatus,
-  Prisma
+  Prisma,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -264,6 +266,51 @@ describe("portal billing and entitlement center", () => {
         status: "NONE"
       })
     );
+  });
+
+  it("exposes only the current active subscription change on order detail", async () => {
+    const harness = createPortalBillingHarness();
+    harness.orders[0]!.subscriptionChanges = [
+      {
+        changeType: SubscriptionChangeType.VEHICLE_SWAP,
+        id: "change-active",
+        status: SubscriptionChangeStatus.QUOTED
+      },
+      {
+        changeType: SubscriptionChangeType.EXTENSION,
+        id: "change-completed",
+        status: SubscriptionChangeStatus.COMPLETED
+      }
+    ];
+
+    const result = await harness.service.getOrder(
+      "order_a",
+      harness.currentCustomer("customer_a")
+    );
+
+    expect(result.activeSubscriptionChange).toEqual({
+      changeType: SubscriptionChangeType.VEHICLE_SWAP,
+      id: "change-active",
+      status: SubscriptionChangeStatus.QUOTED
+    });
+  });
+
+  it("does not expose a managed-only change as a customer action", async () => {
+    const harness = createPortalBillingHarness();
+    harness.orders[0]!.subscriptionChanges = [
+      {
+        changeType: SubscriptionChangeType.MANAGED_OTHER,
+        id: "change-managed-only",
+        status: SubscriptionChangeStatus.DRAFT
+      }
+    ];
+
+    const result = await harness.service.getOrder(
+      "order_a",
+      harness.currentCustomer("customer_a")
+    );
+
+    expect(result.activeSubscriptionChange).toBeNull();
   });
 
   it("points an active customer to the current mileage review when submission is due", async () => {
@@ -554,6 +601,7 @@ function makeOrder(input: Partial<AnyRecord>): AnyRecord {
     quoteSnapshot: {},
     receivableBills: input.receivableBills ?? [],
     startDate: null,
+    subscriptionChanges: input.subscriptionChanges ?? [],
     vehicleModel: input.vehicleModel ?? TEST_MODEL_CODES.ET5,
     updatedAt: input.updatedAt ?? new Date("2026-06-18T00:00:00Z"),
     vehicle: {

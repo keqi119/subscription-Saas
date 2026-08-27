@@ -237,6 +237,45 @@ describe("SubscriptionChangeService", () => {
     });
   });
 
+  it("routes manual takeover for non-extension changes through the generic state owner", async () => {
+    const harness = genericHarness({ changeVersion: 2 });
+
+    const result = await harness.service.manualTakeover(
+      "change-existing",
+      {
+        idempotencyKey: "manual-managed-other",
+        reason: "Evidence requires offline review",
+        version: 2
+      },
+      harness.actor,
+      harness.context
+    );
+
+    expect(result).toMatchObject({
+      manualTakeoverReason: "Evidence requires offline review",
+      status: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+      version: 3
+    });
+    expect(harness.extensionService.manualTakeover).not.toHaveBeenCalled();
+  });
+
+  it("loads a non-extension audit timeline without using extension projection guards", async () => {
+    const harness = genericHarness();
+
+    const result = await harness.service.timeline("change-existing", harness.actor);
+
+    expect(result).toEqual([
+      expect.objectContaining({ action: "UPDATE", entityId: "change-existing" })
+    ]);
+    expect(harness.prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          entityId: { in: ["change-existing"] }
+        })
+      })
+    );
+  });
+
   it("keeps the Admin extension projection compatible when root facts are null", async () => {
     const harness = genericHarness({ typedExtension: true });
 
@@ -275,7 +314,8 @@ function genericHarness(options: HarnessOptions = {}) {
       PermissionCode.SUBSCRIPTION_CHANGE_CREATE,
       PermissionCode.SUBSCRIPTION_CHANGE_QUOTE,
       "subscription_change:approve",
-      PermissionCode.SUBSCRIPTION_CHANGE_CANCEL
+      PermissionCode.SUBSCRIPTION_CHANGE_CANCEL,
+      PermissionCode.SUBSCRIPTION_CHANGE_MANUAL_TAKEOVER
     ],
     roles: ["OP"],
     username: "operator"
@@ -314,6 +354,17 @@ function genericHarness(options: HarnessOptions = {}) {
       return [];
     }),
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
+    auditLog: {
+      findMany: vi.fn(async () => [
+        {
+          action: "UPDATE",
+          createdAt: now,
+          entityId: "change-existing",
+          entityType: "subscription_change_order",
+          id: "audit-1"
+        }
+      ])
+    },
     subscriptionChangeCommand: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (options.concurrentReplay) throw { code: "P2002" };
@@ -397,7 +448,8 @@ function genericHarness(options: HarnessOptions = {}) {
           targetStartDate: new Date("2026-09-03T00:00:00.000Z")
         }
       })
-    )
+    ),
+    manualTakeover: vi.fn()
   };
   const repository = new SubscriptionChangeRepository(prisma as never);
   const service = new SubscriptionChangeService(

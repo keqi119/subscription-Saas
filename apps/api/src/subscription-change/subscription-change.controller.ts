@@ -236,7 +236,7 @@ export class SubscriptionChangeController {
     @Req() request: AuthenticatedRequest
   ) {
     return apiSafe(
-      await this.service.manualTakeover(
+      await (this.changeService ?? this.service).manualTakeover(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -338,7 +338,7 @@ export class SubscriptionChangeController {
   @Get(":id/timeline")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async timeline(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.timeline(id, request.user));
+    return apiSafe(await (this.changeService ?? this.service).timeline(id, request.user));
   }
 
   @Get(":id")

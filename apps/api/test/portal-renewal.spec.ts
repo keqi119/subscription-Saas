@@ -11,6 +11,14 @@ import { PortalRenewalService } from "../src/portal/portal-renewal.service";
 import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 
 describe("PortalRenewalService", () => {
+  it("projects whether the current quote has been published to the customer", async () => {
+    const harness = portalRenewalHarness({ publishedQuote: true });
+
+    const result = await harness.service.getChange("change-1", harness.customer);
+
+    expect(result.customerConfirmationPublishedAt).toBe("2026-08-05T04:00:00.000Z");
+  });
+
   it("sorts renewal customer actions before processing and terminal records", async () => {
     const harness = portalRenewalHarness();
     const action = {

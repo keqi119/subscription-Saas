@@ -438,6 +438,9 @@ export interface PortalRenewalConsideration {
 }
 
 export interface PortalRenewalQuote {
+  commercialSnapshot?: unknown;
+  commercialSnapshotHash?: string | null;
+  depositAmount?: string;
   energyLimitCount?: number | null;
   energyLimitKwh?: number | null;
   id: string;
@@ -451,8 +454,21 @@ export interface PortalRenewalQuote {
   validUntil: string;
 }
 
-export interface PortalSubscriptionChange {
+interface PortalSubscriptionChangeBase {
+  cancelReason?: string | null;
+  completionDeadlineAt: string;
+  contractId?: string | null;
+  customerConfirmationPublishedAt?: string | null;
+  id: string;
+  orderId: string;
+  orderNo: string;
+  status: string;
+  version: number;
+}
+
+export interface PortalExtensionSubscriptionChange extends PortalSubscriptionChangeBase {
   cancelReason: string | null;
+  changeType?: "EXTENSION";
   completionDeadlineAt: string;
   confirmedQuoteId: string | null;
   contractId: string | null;
@@ -471,8 +487,38 @@ export interface PortalSubscriptionChange {
   version: number;
 }
 
+export interface PortalVehicleSwapSubscriptionChange extends PortalSubscriptionChangeBase {
+  changeType: "VEHICLE_SWAP";
+  confirmedQuoteId: string | null;
+  contractId: string | null;
+  currentQuote: PortalRenewalQuote | null;
+  detail: {
+    commercialSnapshotHash: string;
+    plannedSwapAt: string;
+    sourceVehicle: { id: string; modelDefinitionId: string | null };
+    targetSubscriptionPlanId: string;
+    targetVehicle: { id: string; modelDefinitionId: string | null };
+    targetVehiclePackageId: string;
+  };
+  quotes: PortalRenewalQuote[];
+}
+
+export interface PortalEarlyTerminationSubscriptionChange
+  extends PortalSubscriptionChangeBase {
+  changeType: "EARLY_TERMINATION";
+  currentEstimate: unknown;
+  customerConfirmationPublishedAt?: string | null;
+  effectiveDate: string;
+  estimateRevision: number | null;
+}
+
+export type PortalSubscriptionChange =
+  | PortalExtensionSubscriptionChange
+  | PortalVehicleSwapSubscriptionChange
+  | PortalEarlyTerminationSubscriptionChange;
+
 export interface PortalRenewalDetail extends PortalRenewalConsideration {
-  change: PortalSubscriptionChange | null;
+  change: PortalExtensionSubscriptionChange | null;
 }
 
 export interface PortalApplicationMaterialSupplementHint {
@@ -831,6 +877,11 @@ export interface PortalOrderListItem {
 }
 
 export interface PortalOrderDetail extends PortalOrderListItem {
+  activeSubscriptionChange: null | {
+    changeType: "EARLY_TERMINATION" | "EXTENSION" | "VEHICLE_SWAP";
+    id: string;
+    status: string;
+  };
   billingSummary: PortalOrderBillingSummary;
   contractSummary: PortalOrderContractSummary | null;
   depositSummary: PortalDepositAccount;

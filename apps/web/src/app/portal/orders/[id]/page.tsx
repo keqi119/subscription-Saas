@@ -12,6 +12,7 @@ import {
   BILL_TYPE_LABELS,
   ORDER_STATUS_LABELS,
   STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_TYPE_LABELS,
   VEHICLE_DOCUMENT_TYPE_LABELS,
   labelOf
 } from "../../../../constants/labels";
@@ -114,6 +115,34 @@ export default function PortalOrderDetailPage() {
         </Flex>
 
         <PortalJourneyNextActionCard orderId={params.id} />
+
+        {order.activeSubscriptionChange ? (
+          <section style={sectionStyle}>
+            <Flex align="center" gap={12} justify="space-between" wrap="wrap">
+              <div>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  在途合同变更
+                </Typography.Title>
+                <Typography.Text type="secondary">
+                  {labelOf(
+                    SUBSCRIPTION_CHANGE_TYPE_LABELS,
+                    order.activeSubscriptionChange.changeType
+                  )} · {order.activeSubscriptionChange.status}
+                </Typography.Text>
+              </div>
+              <Button
+                onClick={() =>
+                  router.push(
+                    `/portal/subscription-changes/${order.activeSubscriptionChange!.id}`
+                  )
+                }
+                type="primary"
+              >
+                查看并处理合同变更
+              </Button>
+            </Flex>
+          </section>
+        ) : null}
 
         {subscriptionClosure ? (
           <section style={sectionStyle}>

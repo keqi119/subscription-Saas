@@ -589,7 +589,10 @@ function toPortalSwapChange(change: SwapChange) {
     changeType: change.changeType,
     completionDeadlineAt: change.completionDeadlineAt.toISOString(),
     confirmedQuoteId: change.confirmedQuoteId,
+    contractId: change.contractId,
     currentQuote: change.currentQuote ? toPortalSwapQuote(change.currentQuote) : null,
+    customerConfirmationPublishedAt:
+      change.customerConfirmationPublishedAt?.toISOString() ?? null,
     detail: {
       commercialSnapshotHash: detail.commercialSnapshotHash,
       plannedSwapAt: detail.plannedSwapAt.toISOString(),

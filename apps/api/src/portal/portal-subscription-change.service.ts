@@ -41,7 +41,8 @@ export class PortalSubscriptionChangeService {
   ) {
     const changeType = await this.changeType(id, customer);
     if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
-      return this.requireEarlyTermination().decide(
+      const earlyTermination = this.requireEarlyTermination();
+      await earlyTermination.decide(
         id,
         {
           decision: "ACCEPT",
@@ -52,6 +53,7 @@ export class PortalSubscriptionChangeService {
         customer,
         context
       );
+      return earlyTermination.getPortalChange(id, customer);
     }
     if (changeType !== SubscriptionChangeType.VEHICLE_SWAP) {
       return this.renewalService.confirmQuote(id, input, customer, context);
@@ -72,7 +74,8 @@ export class PortalSubscriptionChangeService {
   ) {
     const changeType = await this.changeType(id, customer);
     if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
-      return this.requireEarlyTermination().decide(
+      const earlyTermination = this.requireEarlyTermination();
+      await earlyTermination.decide(
         id,
         {
           decision: "REJECT",
@@ -84,6 +87,7 @@ export class PortalSubscriptionChangeService {
         customer,
         context
       );
+      return earlyTermination.getPortalChange(id, customer);
     }
     if (changeType !== SubscriptionChangeType.VEHICLE_SWAP) {
       return this.renewalService.rejectQuote(id, input, customer, context);

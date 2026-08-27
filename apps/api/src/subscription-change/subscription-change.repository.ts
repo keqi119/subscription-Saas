@@ -193,4 +193,20 @@ export class SubscriptionChangeRepository {
       where: { orderId }
     });
   }
+
+  listTimeline(entityIds: string[]) {
+    return this.prisma.auditLog.findMany({
+      orderBy: { createdAt: "asc" },
+      where: {
+        entityId: { in: entityIds },
+        entityType: {
+          in: [
+            "subscription_change_order",
+            "subscription_change_quote",
+            "subscription_change_job_retry"
+          ]
+        }
+      }
+    });
+  }
 }

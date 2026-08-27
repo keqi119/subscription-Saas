@@ -444,6 +444,8 @@ function toChangeView(change: PortalChange) {
     confirmedQuoteId: change.confirmedQuoteId,
     contractId: change.contractId,
     currentQuote: change.currentQuote ? toQuoteView(change.currentQuote) : null,
+    customerConfirmationPublishedAt:
+      change.customerConfirmationPublishedAt?.toISOString() ?? null,
     extensionMonths: extensionChange.extensionMonths,
     id: change.id,
     orderId: change.orderId,

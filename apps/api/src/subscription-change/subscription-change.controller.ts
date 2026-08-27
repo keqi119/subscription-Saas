@@ -10,6 +10,7 @@ import {
   UseGuards
 } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
+import { SubscriptionChangeType } from "@prisma/client";
 
 import { RequirePermissions } from "../auth/auth.decorators";
 import { AuthenticatedRequest, AuthGuard } from "../auth/auth.guard";
@@ -28,6 +29,7 @@ import {
 import { SubscriptionChangeService } from "./subscription-change.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
+import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
 
 @Controller("subscription-changes")
 @UseGuards(AuthGuard, PermissionsGuard)
@@ -36,7 +38,8 @@ export class SubscriptionChangeController {
     private readonly service: SubscriptionExtensionService,
     @Optional() private readonly contractService?: SubscriptionExtensionContractService,
     @Optional() private readonly esignService?: ESignService,
-    @Optional() private readonly changeService?: SubscriptionChangeService
+    @Optional() private readonly changeService?: SubscriptionChangeService,
+    @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService
   ) {}
 
   @Post()
@@ -84,11 +87,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
-    if (!this.contractService) {
-      throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
-    }
+    const contractService = await this.contractServiceFor(id);
     return apiSafe(
-      await this.contractService.generate(
+      await contractService.generate(
         id,
         { idempotencyKey, version: dto.version },
         request.user,
@@ -305,8 +306,9 @@ export class SubscriptionChangeController {
     if (!this.esignService) {
       throw new Error("SUBSCRIPTION_EXTENSION_ESIGN_SERVICE_MISSING");
     }
+    const changeContractService = await this.esignCommandServiceFor(id);
     return apiSafe(
-      await this.service.startOrRetryESign(
+      await changeContractService.startOrRetryESign(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -320,6 +322,35 @@ export class SubscriptionChangeController {
         (contractId) => this.esignService!.findActiveTaskForContract(contractId, request.user)
       )
     );
+  }
+
+  private async contractServiceFor(id: string) {
+    if (this.changeService) {
+      const changeType = await this.changeService.getChangeType(id);
+      if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+        if (!this.vehicleSwapContractService) {
+          throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
+        }
+        return this.vehicleSwapContractService;
+      }
+    }
+    if (!this.contractService) {
+      throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
+    }
+    return this.contractService;
+  }
+
+  private async esignCommandServiceFor(id: string) {
+    if (this.changeService) {
+      const changeType = await this.changeService.getChangeType(id);
+      if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+        if (!this.vehicleSwapContractService) {
+          throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
+        }
+        return this.vehicleSwapContractService;
+      }
+    }
+    return this.service;
   }
 }
 

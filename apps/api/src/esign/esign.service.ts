@@ -26,6 +26,7 @@ import {
   NotificationType,
   OrderStatus,
   Prisma,
+  SubscriptionChangeType,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
@@ -118,7 +119,7 @@ const contractForESignInclude = {
       vehicle: true
     }
   },
-  subscriptionChange: { select: { id: true } }
+  subscriptionChange: { select: { changeType: true, id: true } }
 } satisfies Prisma.ContractInclude;
 
 const esignTaskInclude = {
@@ -223,14 +224,18 @@ const FADADA_CUSTOMER_SIGNING_NOT_READY = "FADADA_CUSTOMER_SIGNING_NOT_READY";
 const STAGE1_SIGNING_STAGE: ESignSigningStage = "STAGE1_CONTRACT";
 
 export function resolveContractESignProfile(contract: {
-  subscriptionChange?: { id: string } | null;
+  subscriptionChange?: { changeType?: SubscriptionChangeType; id: string } | null;
 }) {
   if (contract.subscriptionChange) {
     return {
       documentType: PrismaESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT,
       forceMultiSlot: true,
       providerSigningStage: STAGE1_SIGNING_STAGE,
-      signingStage: PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION
+      signingStage: PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
+      sourceType:
+        contract.subscriptionChange.changeType === SubscriptionChangeType.VEHICLE_SWAP
+          ? ("VEHICLE_SWAP_SUPPLEMENT" as const)
+          : ("SUBSCRIPTION_EXTENSION" as const)
     } as const;
   }
   return {
@@ -353,9 +358,7 @@ export class ESignService {
       return toESignTaskView(task);
     }
     if (BLOCKED_COMPLETE_ESIGN_TASK_STATUSES.includes(task.taskStatus)) {
-      throw new BadRequestException(
-        `JOURNEY_FADADA_TASK_TERMINAL: ${task.taskStatus}`
-      );
+      throw new BadRequestException(`JOURNEY_FADADA_TASK_TERMINAL: ${task.taskStatus}`);
     }
     if (!task.providerEnvelopeId || !task.providerTaskId || !task.customerId) {
       throw new BadRequestException(
@@ -382,8 +385,7 @@ export class ESignService {
 
     const pendingSigners = task.signers.filter(
       (signer) =>
-        signer.signerStatus !== ESignSignerStatus.SIGNED &&
-        Boolean(signer.providerSignerId)
+        signer.signerStatus !== ESignSignerStatus.SIGNED && Boolean(signer.providerSignerId)
     );
     const checkedTransactions = new Set<string>();
     let current = task;
@@ -474,11 +476,20 @@ export class ESignService {
       };
     }
     if (esignProfile.signingStage === PrismaESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION) {
-      requestSnapshotInput.extensionSigning = {
-        changeOrderId: contract.subscriptionChange!.id,
-        documentType: esignProfile.documentType,
-        signingStage: esignProfile.signingStage
-      };
+      if (esignProfile.sourceType === "VEHICLE_SWAP_SUPPLEMENT") {
+        requestSnapshotInput.vehicleSwapSigning = {
+          changeOrderId: contract.subscriptionChange!.id,
+          documentType: esignProfile.documentType,
+          signingStage: esignProfile.signingStage,
+          sourceType: esignProfile.sourceType
+        };
+      } else {
+        requestSnapshotInput.extensionSigning = {
+          changeOrderId: contract.subscriptionChange!.id,
+          documentType: esignProfile.documentType,
+          signingStage: esignProfile.signingStage
+        };
+      }
     }
     const platformStep = findPlatformSigningStep(approvedSigningPlan);
     const requestSnapshot = toJsonValue(requestSnapshotInput);
@@ -862,9 +873,7 @@ export class ESignService {
       }
     });
 
-    return sortByPortalListOrder(contracts, portalContractSortKey).map(
-      toPortalContractListItem
-    );
+    return sortByPortalListOrder(contracts, portalContractSortKey).map(toPortalContractListItem);
   }
 
   async getPortalContract(id: string, currentCustomer: CurrentCustomer) {
@@ -962,9 +971,7 @@ export class ESignService {
     const task = await this.findTaskOrThrow(taskId);
     ensureTaskOwnedByCustomer(task, currentCustomer.customerId);
     if (isReturnManifestTask(task)) {
-      throw new BadRequestException(
-        "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
-      );
+      throw new BadRequestException("RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED");
     }
 
     const completed = await this.completeTask(task.id, {
@@ -2377,9 +2384,7 @@ export class ESignService {
         throw new NotFoundException("电子签任务不存在。");
       }
       if (isReturnManifestTask(task)) {
-        throw new BadRequestException(
-          "RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED"
-        );
+        throw new BadRequestException("RETURN_MANIFEST_ESIGN_DEDICATED_COMPLETION_REQUIRED");
       }
 
       if (task.taskStatus === ESignTaskStatus.COMPLETED) {
@@ -3249,9 +3254,7 @@ export class ESignService {
     assertProductionHttpsUrl(config.baseUrl, "FADADA_BASE_URL");
     const callbackBaseUrl = this.configService.get<string>("API_BASE_URL")?.trim();
     if (!callbackBaseUrl) {
-      throw new BadRequestException(
-        "JOURNEY_FADADA_CALLBACK_REQUIRED: API_BASE_URL is required"
-      );
+      throw new BadRequestException("JOURNEY_FADADA_CALLBACK_REQUIRED: API_BASE_URL is required");
     }
     assertPublicHttpsUrl(callbackBaseUrl, "API_BASE_URL");
     if (!config.platformCustomerId || !config.platformSignatureId) {
@@ -3478,12 +3481,8 @@ function initialBillNotificationData(
     };
   }
   return {
-    hasDepositBill: bills.some(
-      (bill) => bill.billType === BillType.DEPOSIT && bill.amount > 0n
-    ),
-    initialBillAmountCents: bills
-      .reduce((total, bill) => total + bill.amount, 0n)
-      .toString(),
+    hasDepositBill: bills.some((bill) => bill.billType === BillType.DEPOSIT && bill.amount > 0n),
+    initialBillAmountCents: bills.reduce((total, bill) => total + bill.amount, 0n).toString(),
     initialBillDueAt: bills[0]?.dueDate.toISOString(),
     initialBillRemainingCents: bills
       .reduce((total, bill) => total + bill.remainingAmount, 0n)
@@ -4290,9 +4289,7 @@ function parseHttpsUrl(value: string, key: string) {
     );
   }
   if (url.protocol !== "https:") {
-    throw new BadRequestException(
-      `JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use HTTPS`
-    );
+    throw new BadRequestException(`JOURNEY_FADADA_PRODUCTION_URL_INVALID: ${key} must use HTTPS`);
   }
   return url;
 }

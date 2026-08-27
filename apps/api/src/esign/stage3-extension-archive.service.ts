@@ -12,7 +12,9 @@ import {
   RenewalReminderStatus,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType,
+  VehicleStatus
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -30,13 +32,17 @@ const extensionArchiveInclude = Prisma.validator<Prisma.SubscriptionChangeOrderI
   contract: true,
   extensionDetail: { include: { sourceSegment: true } },
   sourceSegment: true,
-  targetSegment: true
+  targetSegment: true,
+  vehicleSwapDetail: { include: { targetVehicle: true } }
 });
 
 type ExtensionArchiveChange = Prisma.SubscriptionChangeOrderGetPayload<{
   include: typeof extensionArchiveInclude;
 }>;
 type ProjectedExtensionArchiveChange = ExtensionChangeProjection<ExtensionArchiveChange>;
+type VehicleSwapArchiveChange = ExtensionArchiveChange & {
+  vehicleSwapDetail: NonNullable<ExtensionArchiveChange["vehicleSwapDetail"]>;
+};
 
 export interface FinalizeStage3ExtensionInput {
   completedAt: Date;
@@ -46,6 +52,8 @@ export interface FinalizeStage3ExtensionInput {
 }
 
 export type FinalizeStage3ExtensionResult =
+  | { changeOrderId: string; outcome: "DUPLICATE" }
+  | { changeOrderId: string; outcome: "SCHEDULED" }
   | { outcome: "DUPLICATE"; segmentId: string }
   | { outcome: "LATE_EVIDENCE_ONLY" }
   | { outcome: "SCHEDULED"; segmentId: string };
@@ -95,47 +103,49 @@ export class Stage3ExtensionArchiveService {
           404
         );
       }
-      const change = requireExtensionChangeProjection(storedChange);
       const task = await tx.contractESignTask.findUnique({ where: { id: input.taskId } });
       assertArchivedEvidence(task, input.contractId);
+      if (storedChange.changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+        return this.finalizeVehicleSwap(tx, requireVehicleSwapChange(storedChange), input);
+      }
+      const change = requireExtensionChangeProjection(storedChange);
       await lockExtensionBusinessRows(tx, change);
       const decisionAt = await readDatabaseClock(tx);
 
-      const existingSegment = change.targetSegment ??
-        await tx.subscriptionContractSegment.findFirst({
+      const existingSegment =
+        change.targetSegment ??
+        (await tx.subscriptionContractSegment.findFirst({
           where: { sourceChangeOrderId: change.id }
-        });
+        }));
       if (change.status === SubscriptionChangeStatus.SCHEDULED && existingSegment) {
         return { outcome: "DUPLICATE", segmentId: existingSegment.id };
       }
 
-      await archiveContractEvidence(
-        tx,
-        input.contractId,
-        input.completedAt,
-        decisionAt
-      );
+      await archiveContractEvidence(tx, input.contractId, input.completedAt, decisionAt);
       const consideration = change.renewalConsiderationId
         ? await tx.renewalConsideration.findUnique({
             where: { id: change.renewalConsiderationId }
           })
         : null;
       if (expiryWins(change, consideration?.status, decisionAt)) {
-        await this.auditService.write({
-          action: AuditAction.UPDATE,
-          after: {
-            changeStatus: change.status,
-            completedAt: input.completedAt,
-            considerationStatus: consideration?.status ?? null,
-            decisionAt,
-            outcome: "LATE_EVIDENCE_ONLY",
-            source: input.source,
-            taskId: input.taskId
+        await this.auditService.write(
+          {
+            action: AuditAction.UPDATE,
+            after: {
+              changeStatus: change.status,
+              completedAt: input.completedAt,
+              considerationStatus: consideration?.status ?? null,
+              decisionAt,
+              outcome: "LATE_EVIDENCE_ONLY",
+              source: input.source,
+              taskId: input.taskId
+            },
+            entityId: change.id,
+            entityType: "subscription_extension_archive",
+            module: "subscription_change"
           },
-          entityId: change.id,
-          entityType: "subscription_extension_archive",
-          module: "subscription_change"
-        }, tx);
+          tx
+        );
         return { outcome: "LATE_EVIDENCE_ONLY" };
       }
 
@@ -166,8 +176,7 @@ export class Stage3ExtensionArchiveService {
           subscriptionPlanId: quote.subscriptionPlanId
         }
       });
-      const activationIdempotencyKey =
-        `extension-activate:${segment.id}:${dateKey(segment.startDate)}`;
+      const activationIdempotencyKey = `extension-activate:${segment.id}:${dateKey(segment.startDate)}`;
       await tx.subscriptionAutomationJob.upsert({
         create: {
           availableAt: shanghaiStartOfDate(segment.startDate),
@@ -232,26 +241,134 @@ export class Stage3ExtensionArchiveService {
           }
         }
       });
-      await this.auditService.write({
-        action: AuditAction.CREATE,
-        after: {
-          changeOrderId: change.id,
-          completedAt: input.completedAt,
-          contractId: input.contractId,
-          decisionAt,
-          outcome: "SCHEDULED",
-          segmentId: segment.id,
-          source: input.source,
-          taskId: input.taskId
+      await this.auditService.write(
+        {
+          action: AuditAction.CREATE,
+          after: {
+            changeOrderId: change.id,
+            completedAt: input.completedAt,
+            contractId: input.contractId,
+            decisionAt,
+            outcome: "SCHEDULED",
+            segmentId: segment.id,
+            source: input.source,
+            taskId: input.taskId
+          },
+          entityId: segment.id,
+          entityType: "subscription_contract_segment",
+          module: "subscription_change"
         },
-        entityId: segment.id,
-        entityType: "subscription_contract_segment",
-        module: "subscription_change"
-      }, tx);
+        tx
+      );
 
       return { outcome: "SCHEDULED", segmentId: segment.id };
     });
   }
+
+  private async finalizeVehicleSwap(
+    tx: Prisma.TransactionClient,
+    change: VehicleSwapArchiveChange,
+    input: FinalizeStage3ExtensionInput
+  ): Promise<FinalizeStage3ExtensionResult> {
+    await lockVehicleSwapBusinessRows(tx, change);
+    const decisionAt = await readDatabaseClock(tx);
+    if (change.status === SubscriptionChangeStatus.SCHEDULED) {
+      return { changeOrderId: change.id, outcome: "DUPLICATE" };
+    }
+    await archiveContractEvidence(tx, input.contractId, input.completedAt, decisionAt);
+    if (
+      decisionAt >= change.completionDeadlineAt ||
+      EXPIRY_WINS_CHANGE_STATUSES.includes(change.status)
+    ) {
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: {
+            changeStatus: change.status,
+            completedAt: input.completedAt,
+            decisionAt,
+            outcome: "LATE_EVIDENCE_ONLY",
+            source: input.source,
+            taskId: input.taskId
+          },
+          entityId: change.id,
+          entityType: "subscription_vehicle_swap_archive",
+          module: "subscription_change"
+        },
+        tx
+      );
+      return { outcome: "LATE_EVIDENCE_ONLY" };
+    }
+    if (
+      change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT ||
+      !change.confirmedQuote ||
+      change.confirmedQuote.status !== "CUSTOMER_CONFIRMED" ||
+      !change.contract ||
+      change.contract.id !== input.contractId ||
+      change.vehicleSwapDetail.targetVehicle.status !== VehicleStatus.REVIEW_RESERVED
+    ) {
+      throw new SubscriptionChangeError(
+        "STAGE3_VEHICLE_SWAP_STATE_INVALID",
+        "The vehicle-swap supplement cannot be scheduled from its current state."
+      );
+    }
+    await tx.subscriptionChangeOrder.update({
+      data: {
+        status: SubscriptionChangeStatus.SCHEDULED,
+        version: { increment: 1 }
+      },
+      where: {
+        id: change.id,
+        status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+        version: change.version
+      }
+    });
+    await this.auditService.write(
+      {
+        action: AuditAction.UPDATE,
+        after: {
+          changeOrderId: change.id,
+          completedAt: input.completedAt,
+          contractId: input.contractId,
+          outcome: "SCHEDULED",
+          source: input.source,
+          targetVehicleId: change.vehicleSwapDetail.targetVehicleId,
+          taskId: input.taskId
+        },
+        entityId: change.id,
+        entityType: "subscription_vehicle_swap_archive",
+        module: "subscription_change"
+      },
+      tx
+    );
+    return { changeOrderId: change.id, outcome: "SCHEDULED" };
+  }
+}
+
+function requireVehicleSwapChange(change: ExtensionArchiveChange): VehicleSwapArchiveChange {
+  if (!change.vehicleSwapDetail) {
+    throw new SubscriptionChangeError(
+      "STAGE3_VEHICLE_SWAP_DETAIL_REQUIRED",
+      "The vehicle-swap detail is required for Stage 3 archival."
+    );
+  }
+  return change as VehicleSwapArchiveChange;
+}
+
+async function lockVehicleSwapBusinessRows(
+  tx: Prisma.TransactionClient,
+  change: VehicleSwapArchiveChange
+) {
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "subscription_order"
+    WHERE "id" = ${change.orderId}::uuid
+    FOR UPDATE
+  `);
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "vehicle"
+    WHERE "id" = ${change.vehicleSwapDetail.targetVehicleId}::uuid
+    FOR UPDATE
+  `);
 }
 
 function assertValidInput(input: FinalizeStage3ExtensionInput) {
@@ -293,10 +410,12 @@ function expiryWins(
   considerationStatus: RenewalConsiderationStatus | undefined,
   completedAt: Date
 ) {
-  return completedAt.getTime() >= change.completionDeadlineAt.getTime() ||
+  return (
+    completedAt.getTime() >= change.completionDeadlineAt.getTime() ||
     EXPIRY_WINS_CHANGE_STATUSES.includes(change.status) ||
     (considerationStatus !== undefined &&
-      EXPIRY_WINS_CONSIDERATION_STATUSES.includes(considerationStatus));
+      EXPIRY_WINS_CONSIDERATION_STATUSES.includes(considerationStatus))
+  );
 }
 
 function assertScheduleSource(
@@ -372,11 +491,7 @@ async function readDatabaseClock(tx: Prisma.TransactionClient) {
   return now;
 }
 
-async function lockArchiveRows(
-  tx: Prisma.TransactionClient,
-  contractId: string,
-  taskId: string
-) {
+async function lockArchiveRows(tx: Prisma.TransactionClient, contractId: string, taskId: string) {
   await tx.$queryRaw(Prisma.sql`
     SELECT "id"
     FROM "subscription_change_order"

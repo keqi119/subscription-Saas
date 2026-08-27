@@ -140,7 +140,7 @@ export class SubscriptionChangeService {
   }
 
   async previewQuote(id: string, input: QuoteInput, actor: RequestUser) {
-    const changeType = await this.findChangeType(id);
+    const changeType = await this.getChangeType(id);
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().previewQuote(id, actor);
     }
@@ -153,7 +153,7 @@ export class SubscriptionChangeService {
     actor: RequestUser,
     context: RequestContext
   ) {
-    const changeType = await this.findChangeType(id);
+    const changeType = await this.getChangeType(id);
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().createFormalQuote(
         id,
@@ -171,7 +171,7 @@ export class SubscriptionChangeService {
     actor: RequestUser,
     context: RequestContext
   ) {
-    const changeType = await this.findChangeType(id);
+    const changeType = await this.getChangeType(id);
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().publishCustomerConfirmation(
         id,
@@ -261,7 +261,7 @@ export class SubscriptionChangeService {
     }
   }
 
-  private async findChangeType(id: string) {
+  async getChangeType(id: string) {
     const change = await this.repository.findChange(id);
     if (!change) throw changeNotFound();
     if (

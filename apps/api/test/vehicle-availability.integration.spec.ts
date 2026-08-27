@@ -937,6 +937,7 @@ function buildBoundaryPlan(vehicle: { modelDefinition: unknown; modelDefinitionI
       minPurchasePriceAmount: null,
       modelDefinition: vehicle.modelDefinition,
       modelDefinitionId: vehicle.modelDefinitionId,
+      modelMembers: [{ modelDefinitionId: vehicle.modelDefinitionId }],
       monthlyFeeRate: new Prisma.Decimal("0.035"),
       packageName: "Vehicle",
       packageNo: "VEHICLE"

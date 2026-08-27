@@ -1,4 +1,4 @@
-import { ESignDocumentType, ESignSigningStage } from "@prisma/client";
+import { ESignDocumentType, ESignSigningStage, SubscriptionChangeType } from "@prisma/client";
 import { METHOD_METADATA, PATH_METADATA } from "@nestjs/common/constants";
 import { RequestMethod } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
@@ -9,11 +9,16 @@ import { SubscriptionChangeController } from "../src/subscription-change/subscri
 
 describe("Stage 3 extension e-sign mapping", () => {
   it("uses a dedicated persisted Stage 3 identity with the proven Stage 1 PDF slot protocol", () => {
-    expect(resolveContractESignProfile({ subscriptionChange: { id: "change-1" } })).toEqual({
+    expect(
+      resolveContractESignProfile({
+        subscriptionChange: { changeType: SubscriptionChangeType.EXTENSION, id: "change-1" }
+      })
+    ).toEqual({
       documentType: ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT,
       forceMultiSlot: true,
       providerSigningStage: "STAGE1_CONTRACT",
-      signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION
+      signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
+      sourceType: "SUBSCRIPTION_EXTENSION"
     });
   });
 

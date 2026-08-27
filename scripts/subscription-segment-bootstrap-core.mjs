@@ -124,6 +124,19 @@ export async function applySubscriptionSegmentBootstrapPlan(prisma, plan) {
         if (!winner || !matchesBootstrapCandidate(winner, candidate.data)) {
           throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_WRITE_CONFLICT:${candidate.orderId}`);
         }
+        if (inserted.count > 0) {
+          await tx.auditLog.create({
+            data: {
+              action: "CREATE",
+              afterSnapshot: jsonSnapshot(winner),
+              beforeSnapshot: undefined,
+              entityId: winner.id,
+              entityType: "subscription_contract_segment",
+              module: "subscription_change",
+              operatorId: undefined
+            }
+          });
+        }
         return { created: inserted.count, existing: inserted.count === 0 ? 1 : 0 };
       },
       { isolationLevel: "Serializable" }
@@ -207,4 +220,10 @@ function sameDate(left, right) {
 
 function isJsonObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function jsonSnapshot(value) {
+  return JSON.parse(
+    JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item))
+  );
 }

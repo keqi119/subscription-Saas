@@ -195,6 +195,7 @@ function resolveContractAuthority(order) {
       contract.deletedAt == null &&
       contract.orderId === order.id &&
       contract.customerId === order.customerId &&
+      contract.businessType === "SUBSCRIPTION" &&
       CONTRACT_STATUSES.has(contract.status)
   );
   let selected;
@@ -228,6 +229,7 @@ function validateSignedArtifact(contract, order) {
   const tasks = array(contract.eSignTasks).filter(
     (task) =>
       task &&
+      task.deletedAt == null &&
       task.contractId === contract.id &&
       task.orderId === order.id &&
       task.signingStage === "STAGE1_SUBSCRIPTION_CONTRACT" &&
@@ -237,6 +239,9 @@ function validateSignedArtifact(contract, order) {
   if (tasks.length > 1) return { code: "CONTRACT_AUTHORITY_AMBIGUOUS" };
   if (tasks.length !== 1) return { code: "SIGNED_ARTIFACT_INCOMPLETE" };
   const task = tasks[0];
+  if (task.customerId !== order.customerId) {
+    return { code: "SIGNED_ARTIFACT_MISMATCH" };
+  }
   const completedAt = timestamp(task.completedAt);
   if (!completedAt || !nonEmptyString(task.signedDocumentObjectKey)) {
     return { code: "SIGNED_ARTIFACT_INCOMPLETE" };

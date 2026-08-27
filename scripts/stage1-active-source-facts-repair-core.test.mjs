@@ -140,6 +140,17 @@ test("rejects incomplete and mismatched signed artifacts", () => {
     ]
   });
   assert.equal(classify(mismatchedObjectKey).exceptions[0].code, "SIGNED_ARTIFACT_MISMATCH");
+
+  const mismatchedTaskIdentity = snapshot({
+    contracts: [
+      contract({
+        eSignTasks: [eSignTask({ customerId: "customer-other" })],
+        status: "SIGNED",
+        archivedAt: null
+      })
+    ]
+  });
+  assert.equal(classify(mismatchedTaskIdentity).exceptions[0].code, "SIGNED_ARTIFACT_MISMATCH");
 });
 
 test("rejects an invalid contract signing timeline", () => {
@@ -217,6 +228,7 @@ test("classification is deterministic and never exposes raw object keys", () => 
           eSignTask({
             id: "task-2",
             contractId: "contract-2",
+            customerId: "customer-2",
             orderId: "order-2",
             signedDocumentObjectKey: "secret/raw-contract-2.pdf"
           })
@@ -302,6 +314,7 @@ function contract(overrides = {}) {
   const objectKey = overrides.file?.objectKey ?? "signed/contracts/contract-1.pdf";
   return {
     archivedAt: "2026-08-26T03:53:26.694Z",
+    businessType: "SUBSCRIPTION",
     contractNo: "CON-1",
     contractSnapshot: { terms: "signed" },
     customerId: "customer-1",
@@ -321,6 +334,8 @@ function eSignTask(overrides = {}) {
   return {
     completedAt: "2026-08-26T03:53:26.694Z",
     contractId: "contract-1",
+    customerId: "customer-1",
+    deletedAt: null,
     documentType: "SUBSCRIPTION_CONTRACT",
     id: "task-1",
     orderId: "order-1",

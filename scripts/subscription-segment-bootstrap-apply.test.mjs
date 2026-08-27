@@ -22,6 +22,16 @@ test("apply is transactional and an idempotent rerun creates no second BASE", as
   assert.equal(secondApply.created, 0);
   assert.equal(secondApply.existing, 1);
   assert.equal(harness.rows.size, 1);
+  assert.equal(harness.audits.length, 1);
+  assert.deepEqual(harness.audits[0], {
+    action: "CREATE",
+    afterSnapshot: expectSegmentAuditSnapshot(harness.rows.get("order-1:1")),
+    beforeSnapshot: undefined,
+    entityId: "segment-order-1-1",
+    entityType: "subscription_contract_segment",
+    module: "subscription_change",
+    operatorId: undefined
+  });
   assert.equal(harness.transactionCount(), 2);
 });
 
@@ -74,11 +84,35 @@ test("apply fails closed when a planned candidate is no longer eligible", async 
   assert.equal(harness.rows.size, 0);
 });
 
-function createPrismaHarness(currentOrder = orderRecord()) {
+test("BASE creation rolls back when its audit write fails", async () => {
+  const harness = createPrismaHarness(orderRecord(), { failAudit: true });
+
+  await assert.rejects(
+    executeSubscriptionSegmentBootstrap({
+      mode: "apply",
+      prisma: harness.prisma,
+      records: [orderRecord()]
+    }),
+    /INJECTED_SEGMENT_AUDIT_FAILURE/
+  );
+
+  assert.equal(harness.rows.size, 0);
+  assert.equal(harness.audits.length, 0);
+});
+
+function createPrismaHarness(currentOrder = orderRecord(), { failAudit = false } = {}) {
   const rows = new Map();
+  const audits = [];
   let transactions = 0;
   const tx = {
     $queryRawUnsafe: async () => [],
+    auditLog: {
+      create: async ({ data }) => {
+        if (failAudit) throw new Error("INJECTED_SEGMENT_AUDIT_FAILURE");
+        audits.push(structuredClone(data));
+        return data;
+      }
+    },
     subscriptionOrder: {
       findUnique: async ({ where }) => {
         if (where.id !== currentOrder.id) return null;
@@ -100,7 +134,10 @@ function createPrismaHarness(currentOrder = orderRecord()) {
         for (const row of data) {
           const key = `${row.orderId}:${row.sequenceNo}`;
           if (rows.has(key)) continue;
-          rows.set(key, structuredClone(row));
+          rows.set(key, {
+            id: `segment-${row.orderId}-${row.sequenceNo}`,
+            ...structuredClone(row)
+          });
           count += 1;
         }
         return { count };
@@ -113,12 +150,28 @@ function createPrismaHarness(currentOrder = orderRecord()) {
     prisma: {
       $transaction: async (operation) => {
         transactions += 1;
-        return operation(tx);
+        const rowsBefore = structuredClone([...rows.entries()]);
+        const auditsBefore = structuredClone(audits);
+        try {
+          return await operation(tx);
+        } catch (error) {
+          rows.clear();
+          for (const [key, value] of rowsBefore) rows.set(key, value);
+          audits.splice(0, audits.length, ...auditsBefore);
+          throw error;
+        }
       }
     },
+    audits,
     rows,
     transactionCount: () => transactions
   };
+}
+
+function expectSegmentAuditSnapshot(row) {
+  return JSON.parse(
+    JSON.stringify(row, (_key, value) => (typeof value === "bigint" ? value.toString() : value))
+  );
 }
 
 function orderRecord() {

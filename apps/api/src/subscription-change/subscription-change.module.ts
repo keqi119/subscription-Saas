@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
@@ -25,6 +26,8 @@ import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionVehicleSwapPricingService } from "./subscription-vehicle-swap-pricing.service";
+import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 import { SubscriptionExpiryService } from "./subscription-expiry.service";
 
@@ -38,11 +41,14 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
     SubscriptionExtensionService,
+    SubscriptionVehicleSwapPricingService,
+    SubscriptionVehicleSwapService,
     SubscriptionChangeRepository,
     SubscriptionChangeService
   ],
   imports: [
     AuditModule,
+    AssetOperationsModule,
     AuthModule,
     BillingAutomationModule,
     ContractSegmentModule,
@@ -65,6 +71,8 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
     SubscriptionExtensionService,
+    SubscriptionVehicleSwapPricingService,
+    SubscriptionVehicleSwapService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,
       useFactory: loadSubscriptionChangeConfig

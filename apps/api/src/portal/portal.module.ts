@@ -44,6 +44,7 @@ import {
   PortalSubscriptionChangeController
 } from "./portal-renewal.controller";
 import { PortalRenewalService } from "./portal-renewal.service";
+import { PortalSubscriptionChangeService } from "./portal-subscription-change.service";
 import { PortalServiceCaseController } from "./portal-service-case.controller";
 import { PortalWechatCallbackController, PortalWechatController } from "./portal-wechat.controller";
 
@@ -98,7 +99,8 @@ import { PortalWechatCallbackController, PortalWechatController } from "./portal
     PortalMileageReviewService,
     PortalProfileMaterialService,
     PortalProfileService,
-    PortalRenewalService
+    PortalRenewalService,
+    PortalSubscriptionChangeService
   ]
 })
 export class PortalModule {}

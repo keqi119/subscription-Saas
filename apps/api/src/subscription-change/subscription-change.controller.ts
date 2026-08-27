@@ -125,8 +125,9 @@ export class SubscriptionChangeController {
     @Body() dto: SubscriptionExtensionQuoteDto,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.previewQuote(
+      await quoteService.previewQuote(
         id,
         {
           ...dto,
@@ -146,8 +147,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.createFormalQuote(
+      await quoteService.createFormalQuote(
         id,
         {
           ...dto,
@@ -187,8 +189,9 @@ export class SubscriptionChangeController {
     @Headers("idempotency-key") idempotencyKey: string | undefined,
     @Req() request: AuthenticatedRequest
   ) {
+    const quoteService = this.changeService ?? this.service;
     return apiSafe(
-      await this.service.submitCustomerConfirmation(
+      await quoteService.submitCustomerConfirmation(
         id,
         { ...dto, idempotencyKey },
         request.user,

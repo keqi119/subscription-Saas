@@ -117,3 +117,38 @@ export interface ExtensionQuotePreview {
   targetEndDate: Date;
   targetStartDate: Date;
 }
+
+export interface VehicleSwapPricingInput {
+  currentDepositAmount: bigint;
+  plannedSwapAt: Date;
+  sourceSegment: SubscriptionContractSegment;
+  sourceVehicle: ExtensionVehicleFacts;
+  targetSubscriptionPlanId: string;
+  targetVehicle: ExtensionVehicleFacts;
+  targetVehiclePackageId: string;
+}
+
+export interface VehicleSwapQuotePreview {
+  classification: "OUT_OF_PACKAGE" | "PACKAGE_INCLUDED";
+  commercialSnapshot: Prisma.InputJsonValue;
+  commercialSnapshotHash: string;
+  depositAmount: bigint;
+  depositDeltaAmount: bigint;
+  energyLimitCount: number | null;
+  energyLimitCountDelta: number | null;
+  energyLimitKwh: number | null;
+  energyLimitKwhDelta: number | null;
+  mileageLimitDeltaKm: number;
+  mileageLimitKm: number;
+  monthlyFeeAmount: bigint;
+  monthlyFeeDeltaAmount: bigint;
+  overMileageFeeAmount: bigint;
+  planSnapshot: Prisma.InputJsonValue;
+  priceRuleSnapshot: Prisma.InputJsonValue;
+  pricingMode: SubscriptionChangePricingMode;
+  productId: string | null;
+  productVersionId: string | null;
+  quoteSnapshot: Prisma.InputJsonValue;
+  targetSubscriptionPlanId: string;
+  targetVehiclePackageId: string;
+}

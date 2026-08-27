@@ -1,6 +1,15 @@
 import { RenewalDecision } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsEnum, IsInt, IsString, IsUUID, MaxLength, Min } from "class-validator";
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+  Min
+} from "class-validator";
 
 export class PortalRenewalDecisionDto {
   @IsEnum(RenewalDecision)
@@ -25,6 +34,10 @@ export class PortalConfirmExtensionQuoteDto {
   @IsInt()
   @Min(0)
   version!: number;
+
+  @IsOptional()
+  @Matches(/^[a-f0-9]{64}$/i)
+  commercialSnapshotHash?: string;
 }
 
 export class PortalRejectExtensionQuoteDto extends PortalConfirmExtensionQuoteDto {

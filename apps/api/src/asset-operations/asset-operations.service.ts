@@ -9,6 +9,7 @@ import {
   AssetWorkOrderStatus,
   AuditAction,
   Prisma,
+  SubscriptionChangeStatus,
   VehicleOperationalRestrictionStatus,
   VehicleOperationalRestrictionType,
   VehicleStatus,
@@ -67,6 +68,8 @@ export const ASSET_OPERATION_SERVICE_CODE = {
   VEHICLE_NOT_FOUND: "ASSET_OPERATION_VEHICLE_NOT_FOUND",
   VEHICLE_NOT_AVAILABLE: "VEHICLE_NOT_AVAILABLE",
   VEHICLE_OPERATIONALLY_RESTRICTED: "VEHICLE_OPERATIONALLY_RESTRICTED",
+  VEHICLE_RESERVATION_NOT_OWNED: "VEHICLE_RESERVATION_NOT_OWNED",
+  TARGET_VEHICLE_RESERVATION_CONFLICT: "TARGET_VEHICLE_RESERVATION_CONFLICT",
   VEHICLE_RESTRICTION_RELEASE_FORBIDDEN: "VEHICLE_RESTRICTION_RELEASE_FORBIDDEN",
   WORK_ORDER_NOT_FOUND: ASSET_OPERATION_ERROR_CODE.WORK_ORDER_NOT_FOUND
 } as const;
@@ -88,6 +91,12 @@ export type AppendNoteServiceCommand = Omit<AppendNoteCommand, "actorId">;
 export type AppendEvidenceServiceCommand = Omit<AppendEvidenceCommand, "actorId">;
 export type CreateRestrictionServiceCommand = Omit<CreateRestrictionCommand, "actorId">;
 export type ReleaseRestrictionServiceCommand = Omit<ReleaseRestrictionCommand, "actorId">;
+export interface SubscriptionChangeVehicleReservationInput {
+  readonly actorId?: string;
+  readonly asOf?: Date;
+  readonly changeOrderId: string;
+  readonly vehicleId: string;
+}
 declare const assetOperationsTransactionCapabilityBrand: unique symbol;
 export type AssetOperationsTransactionCapability = Readonly<{
   [assetOperationsTransactionCapabilityBrand]: true;
@@ -1232,6 +1241,72 @@ export class AssetOperationsService {
     return decision;
   }
 
+  async reserveVehicleForSubscriptionChange(
+    tx: Prisma.TransactionClient,
+    input: SubscriptionChangeVehicleReservationInput
+  ) {
+    await lockVehicle(tx, input.vehicleId);
+    await assertVehicleSwapReservationOwnership(tx, input);
+    await this.assertVehicleAvailable(
+      tx,
+      input.vehicleId,
+      VehicleAvailabilityPurpose.ALLOCATION,
+      input.asOf
+    );
+    const reserved = await tx.vehicle.updateMany({
+      data: { status: VehicleStatus.REVIEW_RESERVED },
+      where: {
+        deletedAt: null,
+        id: input.vehicleId,
+        status: VehicleStatus.AVAILABLE
+      }
+    });
+    if (reserved.count !== 1) {
+      throw new ConflictException({
+        code: ASSET_OPERATION_SERVICE_CODE.TARGET_VEHICLE_RESERVATION_CONFLICT,
+        message: "The target vehicle was reserved by another operation."
+      });
+    }
+    return { reserved: true as const, vehicleId: input.vehicleId };
+  }
+
+  async releaseVehicleReservationForSubscriptionChange(
+    tx: Prisma.TransactionClient,
+    input: SubscriptionChangeVehicleReservationInput
+  ) {
+    await lockVehicle(tx, input.vehicleId);
+    await assertVehicleSwapReservationOwnership(tx, input);
+    const competingOwner = await tx.subscriptionVehicleSwapChangeDetail.findFirst({
+      select: { changeOrderId: true },
+      where: {
+        changeOrder: {
+          customerConfirmationPublishedAt: { not: null },
+          id: { not: input.changeOrderId },
+          status: {
+            in: [
+              SubscriptionChangeStatus.QUOTED,
+              SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
+              SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+              SubscriptionChangeStatus.SCHEDULED,
+              SubscriptionChangeStatus.EXECUTING
+            ]
+          }
+        },
+        targetVehicleId: input.vehicleId
+      }
+    });
+    if (competingOwner) return { released: false as const, vehicleId: input.vehicleId };
+    const released = await tx.vehicle.updateMany({
+      data: { status: VehicleStatus.AVAILABLE },
+      where: {
+        deletedAt: null,
+        id: input.vehicleId,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
+    });
+    return { released: released.count === 1, vehicleId: input.vehicleId };
+  }
+
   private async runWorkOrderCommand<T>(
     command: { source: StableAssetOperationSource; workOrderId: string },
     extraRows: ReadonlyArray<{ id: string; table: AuthorityTable }>,
@@ -1618,6 +1693,32 @@ async function loadLiveVehicle(tx: Prisma.TransactionClient, vehicleId: string) 
     throw notFound(ASSET_OPERATION_SERVICE_CODE.VEHICLE_NOT_FOUND, "Vehicle not found.");
   }
   return vehicle;
+}
+
+async function lockVehicle(tx: Prisma.TransactionClient, vehicleId: string) {
+  if (typeof tx.$queryRaw !== "function") return;
+  await tx.$queryRaw(Prisma.sql`
+    SELECT "id" FROM "vehicle" WHERE "id" = ${vehicleId}::uuid FOR UPDATE
+  `);
+}
+
+async function assertVehicleSwapReservationOwnership(
+  tx: Prisma.TransactionClient,
+  input: SubscriptionChangeVehicleReservationInput
+) {
+  const detail = await tx.subscriptionVehicleSwapChangeDetail.findFirst({
+    select: { changeOrderId: true },
+    where: {
+      changeOrderId: input.changeOrderId,
+      targetVehicleId: input.vehicleId
+    }
+  });
+  if (!detail) {
+    throw new ConflictException({
+      code: ASSET_OPERATION_SERVICE_CODE.VEHICLE_RESERVATION_NOT_OWNED,
+      message: "The subscription change does not own the target vehicle selection."
+    });
+  }
 }
 
 const HIGH_RISK_RESTRICTION_TYPES = new Set<VehicleOperationalRestrictionType>([

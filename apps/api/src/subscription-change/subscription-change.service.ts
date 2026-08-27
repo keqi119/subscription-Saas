@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable } from "@nestjs/common";
+import { HttpStatus, Inject, Injectable, Optional } from "@nestjs/common";
 import {
   AuditAction,
   BusinessType,
@@ -22,7 +22,8 @@ import {
   CreateSubscriptionChangeInput,
   CreateVehicleSwapChangeInput
 } from "./subscription-change.types";
-import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { QuoteInput, SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.service";
 
 const CREATE_OPERATION = "CREATE_SUBSCRIPTION_CHANGE";
 const CANCEL_OPERATION = "CANCEL_SUBSCRIPTION_CHANGE";
@@ -48,7 +49,8 @@ export class SubscriptionChangeService {
     private readonly auditService: AuditService,
     private readonly extensionService: SubscriptionExtensionService,
     @Inject(SUBSCRIPTION_CHANGE_CONFIG)
-    private readonly config: SubscriptionChangeConfig
+    private readonly config: SubscriptionChangeConfig,
+    @Optional() private readonly vehicleSwapService?: SubscriptionVehicleSwapService
   ) {}
 
   async create(input: CreateSubscriptionChangeInput, actor: RequestUser, context: RequestContext) {
@@ -137,6 +139,50 @@ export class SubscriptionChangeService {
     return changes.map((change) => projectSubscriptionChange(change, actor));
   }
 
+  async previewQuote(id: string, input: QuoteInput, actor: RequestUser) {
+    const changeType = await this.findChangeType(id);
+    if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+      return this.requireVehicleSwapService().previewQuote(id, actor);
+    }
+    return this.extensionService.previewQuote(id, input, actor);
+  }
+
+  async createFormalQuote(
+    id: string,
+    input: QuoteInput,
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    const changeType = await this.findChangeType(id);
+    if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+      return this.requireVehicleSwapService().createFormalQuote(
+        id,
+        { idempotencyKey: input.idempotencyKey, version: input.version! },
+        actor,
+        context
+      );
+    }
+    return this.extensionService.createFormalQuote(id, input, actor, context);
+  }
+
+  async submitCustomerConfirmation(
+    id: string,
+    input: { idempotencyKey?: string; version: number },
+    actor: RequestUser,
+    context: RequestContext
+  ) {
+    const changeType = await this.findChangeType(id);
+    if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+      return this.requireVehicleSwapService().publishCustomerConfirmation(
+        id,
+        input,
+        actor,
+        context
+      );
+    }
+    return this.extensionService.submitCustomerConfirmation(id, input, actor, context);
+  }
+
   async cancel(
     id: string,
     input: CancelSubscriptionChangeInput,
@@ -158,6 +204,10 @@ export class SubscriptionChangeService {
     if (!current) throw changeNotFound();
     if (current.changeType === SubscriptionChangeType.EXTENSION) {
       const cancelled = await this.extensionService.cancel(id, input, actor, context);
+      return projectSubscriptionChange(cancelled, actor);
+    }
+    if (current.changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+      const cancelled = await this.requireVehicleSwapService().cancel(id, input, actor, context);
       return projectSubscriptionChange(cancelled, actor);
     }
 
@@ -209,6 +259,29 @@ export class SubscriptionChangeService {
       if (duplicate) return duplicate;
       throw error;
     }
+  }
+
+  private async findChangeType(id: string) {
+    const change = await this.repository.findChange(id);
+    if (!change) throw changeNotFound();
+    if (
+      change.changeType !== SubscriptionChangeType.EXTENSION &&
+      change.changeType !== SubscriptionChangeType.VEHICLE_SWAP
+    ) {
+      throw new SubscriptionChangeError(
+        "SUBSCRIPTION_CHANGE_QUOTE_UNSUPPORTED",
+        "This subscription-change type does not support quote operations.",
+        HttpStatus.CONFLICT
+      );
+    }
+    return change.changeType;
+  }
+
+  private requireVehicleSwapService() {
+    if (!this.vehicleSwapService) {
+      throw new Error("SUBSCRIPTION_VEHICLE_SWAP_SERVICE_MISSING");
+    }
+    return this.vehicleSwapService;
   }
 
   private async vehicleSwapDetail(

@@ -118,6 +118,7 @@ interface PageResult<T> {
 }
 
 interface ReconcileResult {
+  blockedCount: number;
   createdCount: number;
   dryRun: boolean;
   eligibleCount: number;
@@ -127,17 +128,18 @@ interface ReconcileResult {
 }
 
 interface ReconcileItem {
-  action: "EXISTING" | "CREATED" | "WOULD_CREATE";
-  amountSource: string;
-  baselineReason: string;
+  action: "EXISTING" | "CREATED" | "WOULD_CREATE" | "BLOCKED";
+  amountSource: string | null;
+  baselineReason: string | null;
   basisBillId: string | null;
   basisPeriodStart: string | null;
+  blockerCode: string | null;
   leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
   leaseStatus: string | null;
   monthlyRentAmount: number | null;
-  nextCycleNo: number;
-  nextGenerateAt: string;
-  nextPeriodEnd: string;
+  nextCycleNo: number | null;
+  nextGenerateAt: string | null;
+  nextPeriodEnd: string | null;
   nextPeriodStart: string;
   orderId: string;
   orderNo: string;
@@ -324,7 +326,13 @@ export default function MonthlyRentAutomationPage() {
         method: "POST"
       });
       setReconcileResult(result);
-      void message.success(dryRun ? "协调预览完成" : "账单计划协调完成");
+      if (result.blockedCount > 0) {
+        void message.warning(
+          `${dryRun ? "协调预览" : "账单计划协调"}完成，${result.blockedCount} 单因源事实缺失被阻断。`
+        );
+      } else {
+        void message.success(dryRun ? "协调预览完成" : "账单计划协调完成");
+      }
       if (!dryRun) {
         await loadAutomation();
       }
@@ -446,12 +454,20 @@ export default function MonthlyRentAutomationPage() {
       dataIndex: "action",
       render: (value: ReconcileItem["action"]) =>
         ({
+          BLOCKED: "已阻断",
           CREATED: "已创建",
           EXISTING: "已有计划",
           WOULD_CREATE: "预计创建"
         })[value],
       title: "协调结果",
       width: 100
+    },
+    {
+      dataIndex: "blockerCode",
+      render: (value: string | null) =>
+        value ? <Typography.Text type="danger">{value}</Typography.Text> : "-",
+      title: "阻断原因",
+      width: 230
     },
     {
       dataIndex: "leaseAction",
@@ -479,7 +495,7 @@ export default function MonthlyRentAutomationPage() {
     },
     {
       dataIndex: "nextGenerateAt",
-      render: formatAutomationDate,
+      render: (value: string | null) => (value ? formatAutomationDate(value) : "-"),
       title: "计划生成时间",
       width: 170
     },
@@ -716,37 +732,39 @@ export default function MonthlyRentAutomationPage() {
           />
         ) : null}
 
-        {canViewBilling ? <Row gutter={[12, 12]}>
-          <SummaryCard
-            loading={automationLoading}
-            title="账单计划"
-            value={sumCounts(summary?.schedules)}
-          />
-          <SummaryCard
-            loading={automationLoading}
-            title="运行中"
-            value={summary?.schedules.ACTIVE ?? 0}
-          />
-          <SummaryCard
-            loading={automationLoading}
-            title="已暂停"
-            value={summary?.schedules.PAUSED ?? 0}
-          />
-          <SummaryCard
-            loading={automationLoading}
-            title="死信任务"
-            value={summary?.jobs.DEAD_LETTER ?? 0}
-            valueStyle={(summary?.jobs.DEAD_LETTER ?? 0) > 0 ? { color: "#cf1322" } : undefined}
-          />
-          <SummaryCard
-            loading={automationLoading}
-            title={`未分配收款（${formatYuan(summary?.payments.unallocated.amount)}）`}
-            value={summary?.payments.unallocated.count ?? 0}
-            valueStyle={
-              (summary?.payments.unallocated.count ?? 0) > 0 ? { color: "#cf1322" } : undefined
-            }
-          />
-        </Row> : null}
+        {canViewBilling ? (
+          <Row gutter={[12, 12]}>
+            <SummaryCard
+              loading={automationLoading}
+              title="账单计划"
+              value={sumCounts(summary?.schedules)}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="运行中"
+              value={summary?.schedules.ACTIVE ?? 0}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="已暂停"
+              value={summary?.schedules.PAUSED ?? 0}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title="死信任务"
+              value={summary?.jobs.DEAD_LETTER ?? 0}
+              valueStyle={(summary?.jobs.DEAD_LETTER ?? 0) > 0 ? { color: "#cf1322" } : undefined}
+            />
+            <SummaryCard
+              loading={automationLoading}
+              title={`未分配收款（${formatYuan(summary?.payments.unallocated.amount)}）`}
+              value={summary?.payments.unallocated.count ?? 0}
+              valueStyle={
+                (summary?.payments.unallocated.count ?? 0) > 0 ? { color: "#cf1322" } : undefined
+              }
+            />
+          </Row>
+        ) : null}
 
         {canViewAutoDebit ? (
           <Card title="历史自动扣款（已停用）">
@@ -771,9 +789,7 @@ export default function MonthlyRentAutomationPage() {
                 title="历史结果不明"
                 value={historicalAutoDebitSummary.unknownAttempts}
                 valueStyle={
-                  historicalAutoDebitSummary.unknownAttempts > 0
-                    ? { color: "#d48806" }
-                    : undefined
+                  historicalAutoDebitSummary.unknownAttempts > 0 ? { color: "#d48806" } : undefined
                 }
               />
               <SummaryCard
@@ -781,9 +797,7 @@ export default function MonthlyRentAutomationPage() {
                 title="历史扣款失败"
                 value={historicalAutoDebitSummary.failedAttempts}
                 valueStyle={
-                  historicalAutoDebitSummary.failedAttempts > 0
-                    ? { color: "#cf1322" }
-                    : undefined
+                  historicalAutoDebitSummary.failedAttempts > 0 ? { color: "#cf1322" } : undefined
                 }
               />
               <SummaryCard
@@ -795,112 +809,120 @@ export default function MonthlyRentAutomationPage() {
           </Card>
         ) : null}
 
-        {canViewBilling ? <Card
-          extra={
-            <Space>
-              <Button
-                icon={<SyncOutlined />}
-                loading={automationLoading}
-                onClick={() => void loadAutomation()}
-              >
-                刷新
-              </Button>
-              <ActionButton
-                availability={generateAvailability}
-                icon={<FileSearchOutlined />}
-                loading={actionLoading === "reconcile-preview"}
-                onClick={() => void reconcile(true)}
-              >
-                协调预览
-              </ActionButton>
-              <ActionButton
-                availability={generateAvailability}
-                icon={<CheckCircleOutlined />}
-                loading={actionLoading === "reconcile-apply"}
-                onClick={confirmReconcile}
-                type="primary"
-              >
-                执行协调
-              </ActionButton>
-            </Space>
-          }
-          title="自动化运行概览"
-        >
-          <Descriptions
-            column={3}
-            items={[
-              {
-                children: summary?.nextSchedule
-                  ? formatAutomationDate(summary.nextSchedule.nextGenerateAt)
-                  : "-",
-                label: "最近计划生成时间"
-              },
-              {
-                children: summary?.nextSchedule
-                  ? `${formatDate(summary.nextSchedule.nextPeriodStart)} 至 ${formatDate(
-                      summary.nextSchedule.nextPeriodEnd
-                    )}`
-                  : "-",
-                label: "最近待生成账期"
-              },
-              {
-                children: summary?.oldestPendingJob
-                  ? formatAutomationDate(summary.oldestPendingJob.availableAt)
-                  : "-",
-                label: "最早待执行任务"
-              }
-            ]}
-            size="small"
-          />
-          {reconcileResult ? (
-            <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
-              <Alert
-                message={
-                  reconcileResult.dryRun
-                    ? "当前为协调预览，未写入任何计划。"
-                    : "账单计划协调已执行。"
+        {canViewBilling ? (
+          <Card
+            extra={
+              <Space>
+                <Button
+                  icon={<SyncOutlined />}
+                  loading={automationLoading}
+                  onClick={() => void loadAutomation()}
+                >
+                  刷新
+                </Button>
+                <ActionButton
+                  availability={generateAvailability}
+                  icon={<FileSearchOutlined />}
+                  loading={actionLoading === "reconcile-preview"}
+                  onClick={() => void reconcile(true)}
+                >
+                  协调预览
+                </ActionButton>
+                <ActionButton
+                  availability={generateAvailability}
+                  icon={<CheckCircleOutlined />}
+                  loading={actionLoading === "reconcile-apply"}
+                  onClick={confirmReconcile}
+                  type="primary"
+                >
+                  执行协调
+                </ActionButton>
+              </Space>
+            }
+            title="自动化运行概览"
+          >
+            <Descriptions
+              column={3}
+              items={[
+                {
+                  children: summary?.nextSchedule
+                    ? formatAutomationDate(summary.nextSchedule.nextGenerateAt)
+                    : "-",
+                  label: "最近计划生成时间"
+                },
+                {
+                  children: summary?.nextSchedule
+                    ? `${formatDate(summary.nextSchedule.nextPeriodStart)} 至 ${formatDate(
+                        summary.nextSchedule.nextPeriodEnd
+                      )}`
+                    : "-",
+                  label: "最近待生成账期"
+                },
+                {
+                  children: summary?.oldestPendingJob
+                    ? formatAutomationDate(summary.oldestPendingJob.availableAt)
+                    : "-",
+                  label: "最早待执行任务"
                 }
-                description={`符合条件 ${reconcileResult.eligibleCount} 单；已有计划 ${reconcileResult.existingCount} 单；${
-                  reconcileResult.dryRun ? "预计新增" : "实际新增"
-                } ${reconcileResult.createdCount} 单；${
-                  reconcileResult.dryRun ? "预计恢复租约" : "实际恢复租约"
-                } ${reconcileResult.leaseActivationCount} 单。`}
-                showIcon
-                type={reconcileResult.dryRun ? "info" : "success"}
-              />
-              <Table
-                columns={reconcileColumns}
-                dataSource={reconcileResult.items}
-                pagination={{ pageSize: 10 }}
-                rowKey="orderId"
-                scroll={{ x: 1270 }}
-                size="small"
-              />
-            </Space>
-          ) : null}
-        </Card> : null}
+              ]}
+              size="small"
+            />
+            {reconcileResult ? (
+              <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
+                <Alert
+                  message={
+                    reconcileResult.dryRun
+                      ? "当前为协调预览，未写入任何计划。"
+                      : "账单计划协调已执行。"
+                  }
+                  description={`符合条件 ${reconcileResult.eligibleCount} 单；已有计划 ${reconcileResult.existingCount} 单；${
+                    reconcileResult.dryRun ? "预计新增" : "实际新增"
+                  } ${reconcileResult.createdCount} 单；${
+                    reconcileResult.dryRun ? "预计恢复租约" : "实际恢复租约"
+                  } ${reconcileResult.leaseActivationCount} 单；阻断 ${reconcileResult.blockedCount} 单。`}
+                  showIcon
+                  type={
+                    reconcileResult.blockedCount > 0
+                      ? "warning"
+                      : reconcileResult.dryRun
+                        ? "info"
+                        : "success"
+                  }
+                />
+                <Table
+                  columns={reconcileColumns}
+                  dataSource={reconcileResult.items}
+                  pagination={{ pageSize: 10 }}
+                  rowKey="orderId"
+                  scroll={{ x: 1500 }}
+                  size="small"
+                />
+              </Space>
+            ) : null}
+          </Card>
+        ) : null}
 
         {canViewBilling ? (
           <Card title="订单账单计划">
             <Table
               columns={scheduleColumns}
-            dataSource={schedules}
-            loading={automationLoading}
-            onChange={(pagination) =>
-              setSchedulePage((current) => ({
-                ...current,
-                current: pagination.current ?? 1,
-                pageSize: pagination.pageSize ?? current.pageSize
-              }))
-            }
-            pagination={{
-              current: schedulePage.current,
-              pageSize: schedulePage.pageSize,
-              showSizeChanger: true,
-              total: schedulePage.total
-            }}
-            rowKey="id"
-            scroll={{ x: 1260 }}
+              dataSource={schedules}
+              loading={automationLoading}
+              onChange={(pagination) =>
+                setSchedulePage((current) => ({
+                  ...current,
+                  current: pagination.current ?? 1,
+                  pageSize: pagination.pageSize ?? current.pageSize
+                }))
+              }
+              pagination={{
+                current: schedulePage.current,
+                pageSize: schedulePage.pageSize,
+                showSizeChanger: true,
+                total: schedulePage.total
+              }}
+              rowKey="id"
+              scroll={{ x: 1260 }}
               size="small"
             />
           </Card>
@@ -910,36 +932,36 @@ export default function MonthlyRentAutomationPage() {
           <Card
             extra={
               <Checkbox
-              checked={showJobHistory}
-              onChange={(event) => {
-                setShowJobHistory(event.target.checked);
-                setJobPage((current) => ({ ...current, current: 1 }));
-              }}
-            >
-              包含已完成历史
-            </Checkbox>
-          }
-          title="自动化任务与异常"
-        >
-          <Table
-            columns={jobColumns}
-            dataSource={jobs}
-            loading={automationLoading}
-            onChange={(pagination) =>
-              setJobPage((current) => ({
-                ...current,
-                current: pagination.current ?? 1,
-                pageSize: pagination.pageSize ?? current.pageSize
-              }))
+                checked={showJobHistory}
+                onChange={(event) => {
+                  setShowJobHistory(event.target.checked);
+                  setJobPage((current) => ({ ...current, current: 1 }));
+                }}
+              >
+                包含已完成历史
+              </Checkbox>
             }
-            pagination={{
-              current: jobPage.current,
-              pageSize: jobPage.pageSize,
-              showSizeChanger: true,
-              total: jobPage.total
-            }}
-            rowKey="id"
-            scroll={{ x: 1300 }}
+            title="自动化任务与异常"
+          >
+            <Table
+              columns={jobColumns}
+              dataSource={jobs}
+              loading={automationLoading}
+              onChange={(pagination) =>
+                setJobPage((current) => ({
+                  ...current,
+                  current: pagination.current ?? 1,
+                  pageSize: pagination.pageSize ?? current.pageSize
+                }))
+              }
+              pagination={{
+                current: jobPage.current,
+                pageSize: jobPage.pageSize,
+                showSizeChanger: true,
+                total: jobPage.total
+              }}
+              rowKey="id"
+              scroll={{ x: 1300 }}
               size="small"
             />
           </Card>
@@ -999,91 +1021,91 @@ export default function MonthlyRentAutomationPage() {
           <Card title="应急兜底：人工批量生成">
             <Space orientation="vertical" size={16} style={{ width: "100%" }}>
               <Alert
-              message="仅在 Worker 关闭或自动化异常尚未恢复时使用。请先试算；正式生成仍复用账单来源键，不会重复创建同一账期账单。"
-              showIcon
-              type="warning"
-            />
-            <Form
-              form={manualForm}
-              initialValues={{ billingDate: dayjs(), dryRun: true }}
-              layout="inline"
-            >
-              <Form.Item
-                label="账单生成日期"
-                name="billingDate"
-                rules={[{ required: true, message: "请选择账单生成日期" }]}
+                message="仅在 Worker 关闭或自动化异常尚未恢复时使用。请先试算；正式生成仍复用账单来源键，不会重复创建同一账期账单。"
+                showIcon
+                type="warning"
+              />
+              <Form
+                form={manualForm}
+                initialValues={{ billingDate: dayjs(), dryRun: true }}
+                layout="inline"
               >
-                <DatePicker allowClear={false} />
-              </Form.Item>
-              <Form.Item name="dryRun" valuePropName="checked">
-                <Checkbox>试算</Checkbox>
-              </Form.Item>
-              <Form.Item>
-                <Space>
-                  <ActionButton
-                    availability={generateAvailability}
-                    icon={<FileSearchOutlined />}
-                    loading={manualSubmitting}
-                    onClick={async () => submitManual(await manualForm.validateFields(), true)}
-                  >
-                    试算
-                  </ActionButton>
-                  <ActionButton
-                    availability={generateAvailability}
-                    icon={<CheckCircleOutlined />}
-                    loading={manualSubmitting}
-                    onClick={() =>
-                      modal.confirm({
-                        cancelText: "取消",
-                        content: "系统将为符合条件的订单创建月租应收账单。",
-                        okText: "确认生成",
-                        onOk: async () => submitManual(await manualForm.validateFields(), false),
-                        title: "正式生成人工月租账单"
-                      })
+                <Form.Item
+                  label="账单生成日期"
+                  name="billingDate"
+                  rules={[{ required: true, message: "请选择账单生成日期" }]}
+                >
+                  <DatePicker allowClear={false} />
+                </Form.Item>
+                <Form.Item name="dryRun" valuePropName="checked">
+                  <Checkbox>试算</Checkbox>
+                </Form.Item>
+                <Form.Item>
+                  <Space>
+                    <ActionButton
+                      availability={generateAvailability}
+                      icon={<FileSearchOutlined />}
+                      loading={manualSubmitting}
+                      onClick={async () => submitManual(await manualForm.validateFields(), true)}
+                    >
+                      试算
+                    </ActionButton>
+                    <ActionButton
+                      availability={generateAvailability}
+                      icon={<CheckCircleOutlined />}
+                      loading={manualSubmitting}
+                      onClick={() =>
+                        modal.confirm({
+                          cancelText: "取消",
+                          content: "系统将为符合条件的订单创建月租应收账单。",
+                          okText: "确认生成",
+                          onOk: async () => submitManual(await manualForm.validateFields(), false),
+                          title: "正式生成人工月租账单"
+                        })
+                      }
+                      type="primary"
+                    >
+                      正式生成
+                    </ActionButton>
+                  </Space>
+                </Form.Item>
+              </Form>
+              {manualResult ? (
+                <>
+                  <Descriptions
+                    bordered
+                    column={4}
+                    items={[
+                      {
+                        children: manualResult.generatedCount,
+                        label: "生成数量"
+                      },
+                      {
+                        children: manualResult.skippedCount,
+                        label: "跳过数量"
+                      },
+                      {
+                        children: manualResult.failedCount,
+                        label: "失败数量"
+                      },
+                      {
+                        children: manualResult.dryRun ? "是" : "否",
+                        label: "是否试算"
+                      }
+                    ]}
+                    size="small"
+                  />
+                  <Table
+                    columns={manualColumns}
+                    dataSource={manualResult.items}
+                    pagination={{ pageSize: 10 }}
+                    rowKey={(record, index) =>
+                      `${record.orderId}-${record.action}-${record.periodStart ?? index}`
                     }
-                    type="primary"
-                  >
-                    正式生成
-                  </ActionButton>
-                </Space>
-              </Form.Item>
-            </Form>
-            {manualResult ? (
-              <>
-                <Descriptions
-                  bordered
-                  column={4}
-                  items={[
-                    {
-                      children: manualResult.generatedCount,
-                      label: "生成数量"
-                    },
-                    {
-                      children: manualResult.skippedCount,
-                      label: "跳过数量"
-                    },
-                    {
-                      children: manualResult.failedCount,
-                      label: "失败数量"
-                    },
-                    {
-                      children: manualResult.dryRun ? "是" : "否",
-                      label: "是否试算"
-                    }
-                  ]}
-                  size="small"
-                />
-                <Table
-                  columns={manualColumns}
-                  dataSource={manualResult.items}
-                  pagination={{ pageSize: 10 }}
-                  rowKey={(record, index) =>
-                    `${record.orderId}-${record.action}-${record.periodStart ?? index}`
-                  }
-                  scroll={{ x: 900 }}
-                  size="small"
-                />
-              </>
+                    scroll={{ x: 900 }}
+                    size="small"
+                  />
+                </>
               ) : null}
             </Space>
           </Card>

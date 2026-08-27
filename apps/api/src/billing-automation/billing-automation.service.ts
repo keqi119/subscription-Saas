@@ -36,6 +36,12 @@ import { BillingAutomationError, ClaimedBillingAutomationJob } from "./billing-a
 export const BILLING_AUTOMATION_CLOCK = Symbol("BILLING_AUTOMATION_CLOCK");
 export type BillingAutomationClock = () => Date;
 
+const RECONCILIATION_BLOCKER_CODES = new Set<ContractSegmentError["code"]>([
+  "CONTRACT_SEGMENT_NOT_FOUND",
+  "BILLING_PERIOD_CROSSES_SEGMENT",
+  "CONTRACT_SEGMENT_INVALID_DATE_RANGE"
+]);
+
 type BillingScheduleDb = Pick<Prisma.TransactionClient, "billingSchedule">;
 
 @Injectable()
@@ -109,17 +115,18 @@ export class BillingAutomationService {
       }
     });
     const items: Array<{
-      action: "EXISTING" | "CREATED" | "WOULD_CREATE";
-      amountSource: string;
-      baselineReason: string;
+      action: "EXISTING" | "CREATED" | "WOULD_CREATE" | "BLOCKED";
+      amountSource: string | null;
+      baselineReason: string | null;
       basisBillId: string | null;
       basisPeriodStart: string | null;
+      blockerCode: ContractSegmentError["code"] | null;
       monthlyRentAmount: number | null;
       leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
       leaseStatus: LeaseStatus | null;
-      nextCycleNo: number;
-      nextGenerateAt: string;
-      nextPeriodEnd: string;
+      nextCycleNo: number | null;
+      nextGenerateAt: string | null;
+      nextPeriodEnd: string | null;
       nextPeriodStart: string;
       orderId: string;
       orderNo: string;
@@ -127,103 +134,140 @@ export class BillingAutomationService {
     }> = [];
 
     for (const order of orders) {
-      const effectiveServiceEndDate =
-        await this.contractSegmentService.resolveEffectiveServiceEndDate(order.id);
-      const leaseNeedsActivation =
-        !order.lease || Boolean(order.lease.deletedAt) || order.lease.status !== LeaseStatus.ACTIVE;
-      const leasePreview = {
-        leaseAction: leaseNeedsActivation ? ("WOULD_ACTIVATE" as const) : ("NONE" as const),
-        leaseStatus: order.lease?.status ?? null
-      };
-      if (order.billingSchedule) {
+      const baseline = order.billingSchedule
+        ? null
+        : reconciliationBaseline(order.actualDeliveryAt!, order.receivableBills, now);
+      const nextPeriodStart = order.billingSchedule?.nextPeriodStart ?? baseline!.cycle.periodStart;
+      try {
+        const effectiveServiceEndDate =
+          await this.contractSegmentService.resolveEffectiveServiceEndDate(order.id);
+        const leaseNeedsActivation =
+          !order.lease ||
+          Boolean(order.lease.deletedAt) ||
+          order.lease.status !== LeaseStatus.ACTIVE;
+        const leasePreview = {
+          leaseAction: leaseNeedsActivation ? ("WOULD_ACTIVATE" as const) : ("NONE" as const),
+          leaseStatus: order.lease?.status ?? null
+        };
+        if (order.billingSchedule) {
+          const amount = await this.reconciliationSegmentAmount(
+            order.id,
+            order.billingSchedule.nextPeriodStart
+          );
+          let leaseResult: {
+            leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
+            leaseStatus: LeaseStatus | null;
+          } = leasePreview;
+          if (!input.dryRun && leaseNeedsActivation) {
+            const repaired = await this.prisma.$transaction(async (tx) => {
+              const activation = await activateLeaseRecord(tx, {
+                activatedAt: order.actualDeliveryAt!,
+                orderId: order.id
+              });
+              await writeLeaseReconciliationAudit(tx, activation.existing, activation.lease);
+              return activation.lease;
+            });
+            leaseResult = {
+              leaseAction: "ACTIVATED",
+              leaseStatus: repaired.status
+            };
+          }
+          items.push({
+            action: "EXISTING",
+            ...amount,
+            ...leaseResult,
+            baselineReason: "EXISTING_SCHEDULE",
+            basisBillId: order.billingSchedule.lastGeneratedBillId,
+            basisPeriodStart: null,
+            blockerCode: null,
+            nextCycleNo: order.billingSchedule.nextCycleNo,
+            nextGenerateAt: isoDate(order.billingSchedule.nextGenerateAt),
+            nextPeriodEnd: isoDate(order.billingSchedule.nextPeriodEnd),
+            nextPeriodStart: isoDate(order.billingSchedule.nextPeriodStart),
+            orderId: order.id,
+            orderNo: order.orderNo,
+            scheduleId: order.billingSchedule.id
+          });
+          continue;
+        }
         const amount = await this.reconciliationSegmentAmount(
           order.id,
-          order.billingSchedule.nextPeriodStart
+          baseline!.cycle.periodStart
         );
-        let leaseResult: {
-          leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
-          leaseStatus: LeaseStatus | null;
-        } = leasePreview;
-        if (!input.dryRun && leaseNeedsActivation) {
-          const repaired = await this.prisma.$transaction(async (tx) => {
+        const completed =
+          effectiveServiceEndDate instanceof Date &&
+          baseline!.cycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
+        const itemFacts = {
+          ...amount,
+          baselineReason: baseline!.reason,
+          basisBillId: baseline!.basisBillId,
+          basisPeriodStart: baseline!.basisPeriodStart ? isoDate(baseline!.basisPeriodStart) : null,
+          blockerCode: null,
+          nextCycleNo: baseline!.cycle.cycleNo,
+          nextGenerateAt: isoDate(baseline!.cycle.generateAt),
+          nextPeriodEnd: isoDate(baseline!.cycle.periodEnd),
+          nextPeriodStart: isoDate(baseline!.cycle.periodStart)
+        };
+        if (input.dryRun) {
+          items.push({
+            action: "WOULD_CREATE",
+            ...itemFacts,
+            ...leasePreview,
+            orderId: order.id,
+            orderNo: order.orderNo,
+            scheduleId: null
+          });
+          continue;
+        }
+
+        const applied = await this.prisma.$transaction(async (tx) => {
+          let leaseStatus = order.lease?.status ?? null;
+          if (leaseNeedsActivation) {
             const activation = await activateLeaseRecord(tx, {
               activatedAt: order.actualDeliveryAt!,
               orderId: order.id
             });
             await writeLeaseReconciliationAudit(tx, activation.existing, activation.lease);
-            return activation.lease;
-          });
-          leaseResult = {
-            leaseAction: "ACTIVATED",
-            leaseStatus: repaired.status
-          };
-        }
-        items.push({
-          action: "EXISTING",
-          ...amount,
-          ...leaseResult,
-          baselineReason: "EXISTING_SCHEDULE",
-          basisBillId: order.billingSchedule.lastGeneratedBillId,
-          basisPeriodStart: null,
-          nextCycleNo: order.billingSchedule.nextCycleNo,
-          nextGenerateAt: isoDate(order.billingSchedule.nextGenerateAt),
-          nextPeriodEnd: isoDate(order.billingSchedule.nextPeriodEnd),
-          nextPeriodStart: isoDate(order.billingSchedule.nextPeriodStart),
-          orderId: order.id,
-          orderNo: order.orderNo,
-          scheduleId: order.billingSchedule.id
+            leaseStatus = activation.lease.status;
+          }
+          const schedule = await this.ensureScheduleAtCycle(
+            tx,
+            order.id,
+            baseline!.cycle,
+            completed
+          );
+          return { leaseStatus, schedule };
         });
-        continue;
-      }
-      const baseline = reconciliationBaseline(order.actualDeliveryAt!, order.receivableBills, now);
-      const amount = await this.reconciliationSegmentAmount(order.id, baseline.cycle.periodStart);
-      const completed =
-        effectiveServiceEndDate instanceof Date &&
-        baseline.cycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
-      const itemFacts = {
-        ...amount,
-        baselineReason: baseline.reason,
-        basisBillId: baseline.basisBillId,
-        basisPeriodStart: baseline.basisPeriodStart ? isoDate(baseline.basisPeriodStart) : null,
-        nextCycleNo: baseline.cycle.cycleNo,
-        nextGenerateAt: isoDate(baseline.cycle.generateAt),
-        nextPeriodEnd: isoDate(baseline.cycle.periodEnd),
-        nextPeriodStart: isoDate(baseline.cycle.periodStart)
-      };
-      if (input.dryRun) {
         items.push({
-          action: "WOULD_CREATE",
+          action: "CREATED",
           ...itemFacts,
-          ...leasePreview,
+          leaseAction: leaseNeedsActivation ? "ACTIVATED" : "NONE",
+          leaseStatus: applied.leaseStatus,
           orderId: order.id,
           orderNo: order.orderNo,
-          scheduleId: null
+          scheduleId: applied.schedule.id
         });
-        continue;
+      } catch (error) {
+        if (!isReconciliationBlocker(error)) throw error;
+        items.push({
+          action: "BLOCKED",
+          amountSource: null,
+          baselineReason: null,
+          basisBillId: null,
+          basisPeriodStart: null,
+          blockerCode: error.code,
+          leaseAction: "NONE",
+          leaseStatus: order.lease?.status ?? null,
+          monthlyRentAmount: null,
+          nextCycleNo: null,
+          nextGenerateAt: null,
+          nextPeriodEnd: null,
+          nextPeriodStart: isoDate(nextPeriodStart),
+          orderId: order.id,
+          orderNo: order.orderNo,
+          scheduleId: order.billingSchedule?.id ?? null
+        });
       }
-
-      const applied = await this.prisma.$transaction(async (tx) => {
-        let leaseStatus = order.lease?.status ?? null;
-        if (leaseNeedsActivation) {
-          const activation = await activateLeaseRecord(tx, {
-            activatedAt: order.actualDeliveryAt!,
-            orderId: order.id
-          });
-          await writeLeaseReconciliationAudit(tx, activation.existing, activation.lease);
-          leaseStatus = activation.lease.status;
-        }
-        const schedule = await this.ensureScheduleAtCycle(tx, order.id, baseline.cycle, completed);
-        return { leaseStatus, schedule };
-      });
-      items.push({
-        action: "CREATED",
-        ...itemFacts,
-        leaseAction: leaseNeedsActivation ? "ACTIVATED" : "NONE",
-        leaseStatus: applied.leaseStatus,
-        orderId: order.id,
-        orderNo: order.orderNo,
-        scheduleId: applied.schedule.id
-      });
     }
 
     return {
@@ -233,6 +277,7 @@ export class BillingAutomationService {
       dryRun: input.dryRun,
       eligibleCount: orders.length,
       existingCount: items.filter((item) => item.action === "EXISTING").length,
+      blockedCount: items.filter((item) => item.action === "BLOCKED").length,
       leaseActivationCount: items.filter(
         (item) => item.leaseAction === "ACTIVATED" || item.leaseAction === "WOULD_ACTIVATE"
       ).length,
@@ -882,6 +927,10 @@ function classifyExecutionError(error: unknown) {
 
 function isoDate(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+function isReconciliationBlocker(error: unknown): error is ContractSegmentError {
+  return error instanceof ContractSegmentError && RECONCILIATION_BLOCKER_CODES.has(error.code);
 }
 
 function earliestServiceEndDate(left: Date | null, right: Date | null) {

@@ -72,6 +72,41 @@ describe("BillingAutomationWorker", () => {
     });
   });
 
+  it("logs source-fact blockers and continues enqueueing and handling jobs", async () => {
+    const warn = vi.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const job = claimedJob();
+    const harness = createWorkerHarness({ jobs: [job] });
+    harness.service.reconcileSchedules.mockResolvedValueOnce({
+      blockedCount: 1,
+      createdCount: 1,
+      dryRun: false,
+      eligibleCount: 2,
+      existingCount: 0,
+      items: [
+        {
+          action: "BLOCKED",
+          blockerCode: "CONTRACT_SEGMENT_NOT_FOUND",
+          orderId: "order-blocked",
+          orderNo: "ORD-BLOCKED"
+        }
+      ],
+      leaseActivationCount: 0
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.service.enqueueDueSchedules).toHaveBeenCalledTimes(1);
+    expect(harness.repository.claimDue).toHaveBeenCalledTimes(1);
+    expect(harness.handlers.handle).toHaveBeenCalledWith(job);
+    expect(harness.repository.complete).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith({
+      blockedCount: 1,
+      blockerCodes: ["CONTRACT_SEGMENT_NOT_FOUND"],
+      operation: "BILLING_SCHEDULE_RECONCILIATION_BLOCKED"
+    });
+  });
+
   it("uses 1m, 5m, 15m, 1h, and 6h retry delays", async () => {
     const expectedDelays = [60_000, 300_000, 900_000, 3_600_000, 21_600_000];
 
@@ -285,6 +320,7 @@ function createWorkerHarness(
       enqueuedCount: 0
     }),
     reconcileSchedules: vi.fn().mockResolvedValue({
+      blockedCount: 0,
       createdCount: 0,
       dryRun: false,
       eligibleCount: 0,

@@ -876,10 +876,14 @@ function createHarness() {
   const autoDebitScheduler = new AutoDebitScheduler();
   const segmentMonthlyFeeAmount = order.monthlyFeeAmount;
   const contractSegmentService = {
-    resolveEffectiveServiceEndDate: vi.fn(async (_orderId: string) => order.endDate),
-    resolveSegmentForPeriod: vi.fn(async (_orderId: string) =>
-      segmentTerms(order, segmentMonthlyFeeAmount)
-    )
+    resolveEffectiveServiceEndDate: vi.fn(async (orderId: string) => {
+      void orderId;
+      return order.endDate;
+    }),
+    resolveSegmentForPeriod: vi.fn(async (orderId: string) => {
+      void orderId;
+      return segmentTerms(order, segmentMonthlyFeeAmount);
+    })
   };
   const service = new BillingAutomationService(
     prisma as never,

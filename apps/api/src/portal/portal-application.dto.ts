@@ -1,6 +1,16 @@
 import { ApplicationMaterialType } from "@prisma/client";
 import { Type } from "class-transformer";
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength, Min } from "class-validator";
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+  Min
+} from "class-validator";
 
 export class CreatePortalSelfServiceApplicationDto {
   @IsUUID()
@@ -50,6 +60,10 @@ export class RejectPortalFinalPlanDto {
 }
 
 export class ConfirmPortalFinalPlanDto {
+  @IsOptional()
+  @Matches(/^sha256:[0-9a-f]{64}$/i)
+  commercialHash?: string;
+
   @IsInt()
   @Min(1)
   @Type(() => Number)

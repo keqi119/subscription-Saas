@@ -25,10 +25,49 @@ describe("Portal journey view model", () => {
     expect(toPortalJourneyCardModel(journey({ status })).title).toBe(title);
   });
 
-  it("submits exactly the final plan revision displayed to the customer", () => {
-    expect(buildPortalFinalPlanConfirmationRequest(7)).toEqual({
-      body: JSON.stringify({ revision: 7 }),
+  it("submits exactly the final plan revision and commercial hash displayed to the customer", () => {
+    const commercialHash = `sha256:${"a".repeat(64)}`;
+    expect(buildPortalFinalPlanConfirmationRequest(7, commercialHash)).toEqual({
+      body: JSON.stringify({ commercialHash, revision: 7 }),
       method: "POST"
+    });
+  });
+
+  it("presents validation waits as review or supplementation instead of exceptions", () => {
+    expect(
+      toPortalJourneyCardModel(
+        journey({
+          blockerText: "平台正在完成材料、信用与押金审核。",
+          currentStepCode: "APPLICATION_VALIDATION",
+          currentStepStatus: "WAITING_MANUAL",
+          nextAction: null,
+          status: "WAITING_MANUAL"
+        })
+      )
+    ).toMatchObject({
+      action: null,
+      description: "平台正在完成材料、信用与押金审核。",
+      title: "资料审核中",
+      tone: "info"
+    });
+    expect(
+      toPortalJourneyCardModel(
+        journey({
+          currentStepCode: "APPLICATION_VALIDATION",
+          currentStepStatus: "WAITING_CUSTOMER",
+          nextAction: {
+            href: "/portal/applications/application-1",
+            label: "补充申请资料",
+            type: "SUPPLEMENT_APPLICATION_MATERIALS"
+          },
+          status: "WAITING_CUSTOMER"
+        })
+      )
+    ).toMatchObject({
+      action: { label: "补充申请资料" },
+      description: "请补充申请资料后重新提交审核。",
+      title: "需要补充资料",
+      tone: "warning"
     });
   });
 });

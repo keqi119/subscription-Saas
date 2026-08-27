@@ -4,7 +4,8 @@ export type PortalJourneyActionType =
   | "COOPERATE_HANDOVER"
   | "NONE"
   | "PAY_INITIAL_BILLS"
-  | "SIGN_CONTRACT";
+  | "SIGN_CONTRACT"
+  | "SUPPLEMENT_APPLICATION_MATERIALS";
 
 export interface PortalJourneyAction {
   href: string;
@@ -127,6 +128,30 @@ export function toPortalJourneyCardModel(
       tone: "warning"
     };
   }
+  if (
+    journey.currentStepCode === "APPLICATION_VALIDATION" &&
+    journey.currentStepStatus === "WAITING_CUSTOMER"
+  ) {
+    return {
+      action: visibleAction(nextAction(journey)),
+      description:
+        journey.blockerText ?? "请补充申请资料后重新提交审核。",
+      title: "需要补充资料",
+      tone: "warning"
+    };
+  }
+  if (
+    journey.currentStepCode === "APPLICATION_VALIDATION" &&
+    journey.currentStepStatus === "WAITING_MANUAL"
+  ) {
+    return {
+      action: null,
+      description:
+        journey.blockerText ?? "平台正在完成材料、信用与押金审核。",
+      title: "资料审核中",
+      tone: "info"
+    };
+  }
   if (journey.status === "WAITING_CUSTOMER") {
     return {
       action: visibleAction(nextAction(journey)),
@@ -152,13 +177,20 @@ export function toPortalJourneyCardModel(
 }
 
 export function buildPortalFinalPlanConfirmationRequest(
-  finalPlanRevision: number
+  finalPlanRevision: number,
+  finalPlanCommercialHash: string
 ): RequestInit {
   if (!Number.isSafeInteger(finalPlanRevision) || finalPlanRevision < 1) {
     throw new Error("最终方案版本无效，请刷新页面后重试。");
   }
+  if (!/^sha256:[0-9a-f]{64}$/i.test(finalPlanCommercialHash)) {
+    throw new Error("最终方案校验值无效，请刷新页面后重试。");
+  }
   return {
-    body: JSON.stringify({ revision: finalPlanRevision }),
+    body: JSON.stringify({
+      commercialHash: finalPlanCommercialHash,
+      revision: finalPlanRevision
+    }),
     method: "POST"
   };
 }

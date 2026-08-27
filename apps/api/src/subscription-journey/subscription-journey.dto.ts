@@ -31,19 +31,16 @@ export class JourneyReasonDto extends JourneyVersionDto {
 }
 
 export class FinalPlanDecisionDto extends JourneyVersionDto {
-  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  finalPeriodMonths?: number;
+  finalPeriodMonths!: number;
 
-  @IsOptional()
   @IsUUID()
-  finalSubscriptionPlanId?: string;
+  finalSubscriptionPlanId!: string;
 
-  @IsOptional()
   @IsUUID()
-  finalVehicleId?: string;
+  finalVehicleId!: string;
 }
 
 export class VehicleAllocationDecisionDto extends JourneyVersionDto {

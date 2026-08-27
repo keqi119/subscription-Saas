@@ -64,3 +64,17 @@ test("resolves the pg Client constructor from its CommonJS default export", () =
 
   assert.equal(resolveClient({ default: { Client } }), Client);
 });
+
+test("targets the Prisma URL schema with an identifier-safe search path", () => {
+  const resolveSearchPath = requiredExport("resolveMigrationSearchPath");
+
+  assert.equal(resolveSearchPath("postgresql://user:pass@db.example/app"), '"public"');
+  assert.equal(
+    resolveSearchPath("postgresql://user:pass@db.example/app?schema=a9_full_green"),
+    '"a9_full_green"'
+  );
+  assert.equal(
+    resolveSearchPath("postgresql://user:pass@db.example/app?schema=tenant%22one"),
+    '"tenant""one"'
+  );
+});

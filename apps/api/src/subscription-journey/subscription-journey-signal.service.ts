@@ -142,6 +142,109 @@ export class SubscriptionJourneySignalService {
     });
   }
 
+  async completeFinalPlanAndVehicleAllocation(
+    tx: Prisma.TransactionClient,
+    input: {
+      actorId: string;
+      applicationId: string;
+      finalPlanCommercialHash: string;
+      finalPlanRevision: number;
+      vehicleId: string;
+    }
+  ): Promise<void> {
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: {
+        manualTasks: {
+          where: { status: SubscriptionJourneyManualTaskStatus.OPEN }
+        },
+        steps: true
+      },
+      where: { applicationId: input.applicationId }
+    });
+    if (!journey) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The subscription journey was not found."
+      );
+    }
+    if (
+      journey.currentStepCode !==
+      SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    ) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "The final-plan publication does not match the current journey step."
+      );
+    }
+    if (
+      input.finalPlanRevision < 1 ||
+      !/^sha256:[0-9a-f]{64}$/i.test(input.finalPlanCommercialHash)
+    ) {
+      throw journeyError(
+        "JOURNEY_IDEMPOTENCY_CONFLICT",
+        "The final-plan publication identity is invalid."
+      );
+    }
+
+    const finalPlanStep = journey.steps.find(
+      ({ code }) => code === SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    );
+    const task = journey.manualTasks.find(
+      ({ stepId }) => stepId === finalPlanStep?.id
+    );
+    if (!finalPlanStep || !task) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The open final-plan decision task was not found."
+      );
+    }
+    const vehicleStep = await tx.subscriptionJourneyStep.upsert({
+      create: {
+        code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+        journeyId: journey.id
+      },
+      update: {},
+      where: {
+        journeyId_code: {
+          code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+          journeyId: journey.id
+        }
+      }
+    });
+    const payload = {
+      finalPlanCommercialHash: input.finalPlanCommercialHash,
+      finalPlanRevision: input.finalPlanRevision,
+      vehicleId: input.vehicleId
+    } satisfies Prisma.InputJsonValue;
+    const hashKey = input.finalPlanCommercialHash.slice("sha256:".length, 23);
+
+    await this.repository.decideManualTask(tx, {
+      decidedBy: input.actorId,
+      decision: SubscriptionJourneyManualDecision.APPROVED,
+      expectedVersion: task.version,
+      journeyId: journey.id,
+      taskId: task.id
+    });
+    await this.repository.completeStep(tx, {
+      eventKey:
+        `journey:${journey.id}:step:FINAL_PLAN_DECISION:` +
+        `revision:${input.finalPlanRevision}:hash:${hashKey}`,
+      expectedVersion: journey.version,
+      journeyId: journey.id,
+      payload,
+      stepId: finalPlanStep.id
+    });
+    await this.repository.completeStep(tx, {
+      eventKey:
+        `journey:${journey.id}:step:FINAL_VEHICLE_ALLOCATION:` +
+        `revision:${input.finalPlanRevision}:hash:${hashKey}`,
+      expectedVersion: journey.version + 1,
+      journeyId: journey.id,
+      payload,
+      stepId: vehicleStep.id
+    });
+  }
+
   async completeHandoverEvidenceDecision(
     tx: Prisma.TransactionClient,
     input: {

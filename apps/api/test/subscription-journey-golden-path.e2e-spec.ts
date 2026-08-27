@@ -33,9 +33,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { JOURNEY_STEP_SEQUENCE } from "../src/subscription-journey/subscription-journey-state-machine";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
+import { SubscriptionJourneySignalService } from "../src/subscription-journey/subscription-journey-signal.service";
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
 const ROLLBACK = new Error("ROLL_BACK_GOLDEN_PATH_FIXTURE");
+const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
 
 type Tx = Prisma.TransactionClient;
 type FlowSnapshot = Awaited<ReturnType<typeof driveGoldenPath>>;
@@ -67,7 +69,6 @@ describe("Stage 1 subscription Journey Golden Path", () => {
     expect(admin.manualTaskTypes).toEqual(portal.manualTaskTypes);
     expect(portal.manualTaskTypes).toEqual([
       "FINAL_PLAN_DECISION",
-      "FINAL_VEHICLE_ALLOCATION",
       "DELIVERY_EVIDENCE_DECISION"
     ]);
     expect(stripEntrySpecificFacts(admin)).toEqual(stripEntrySpecificFacts(portal));
@@ -81,6 +82,7 @@ async function driveGoldenPath(
 ) {
   const ids = fixtureIds(source);
   const adapter = new DeterministicExternalAdapter(tx, ids);
+  const signal = new SubscriptionJourneySignalService(repository, {} as never);
   await createEntryFacts(tx, ids, source);
   const journey = await repository.createOrGetForApplication(
     tx,
@@ -89,21 +91,57 @@ async function driveGoldenPath(
   );
 
   await completeCurrent(tx, repository, journey.id, "application-validated");
-  await decideCurrentManualTask(tx, repository, journey.id, ids.userId, {
-    finalPlanRevision: 1
+  const finalPlanStep = await current(tx, journey.id);
+  await repository.openManualTask(tx, {
+    inputSnapshot: {
+      applicationId: ids.applicationId,
+      finalPlanRevision: 0
+    },
+    journeyId: journey.id,
+    stepId: finalPlanStep.step.id
   });
   await tx.application.update({
     data: {
       finalDepositAmount: 500_000n,
       finalPeriodMonths: 12,
-      finalPlanConfirmedAt: new Date("2026-08-06T00:01:00.000Z"),
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
       finalPlanRevision: 1,
-      finalPlanSnapshot: { revision: 1, source: "approved-final-plan" }
+      finalPlanSnapshot: {
+        periodMonths: 12,
+        subscriptionPlanId: "approved-plan",
+        vehicleId: ids.vehicleId
+      },
+      finalSubscriptionPlanId: randomUUID(),
+      finalVehicleId: ids.vehicleId,
+      softReservedVehicleId: ids.vehicleId
     },
     where: { id: ids.applicationId }
   });
-  await completeCurrent(tx, repository, journey.id, "final-plan-approved");
+  await signal.completeFinalPlanAndVehicleAllocation(tx, {
+    actorId: ids.userId,
+    applicationId: ids.applicationId,
+    finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+    finalPlanRevision: 1,
+    vehicleId: ids.vehicleId
+  });
+  await tx.auditLog.create({
+    data: {
+      action: "UPDATE",
+      afterSnapshot: {
+        finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        finalPlanRevision: 1,
+        softReservedVehicleId: ids.vehicleId,
+        steps: ["FINAL_PLAN_DECISION", "FINAL_VEHICLE_ALLOCATION"]
+      },
+      entityId: ids.applicationId,
+      entityType: "Application",
+      module: `subscription_journey:${ids.applicationId}`
+    }
+  });
 
+  expect((await current(tx, journey.id)).currentStepCode).toBe(
+    SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION
+  );
   await waitForCustomer(tx, repository, journey.id, "confirm-revision-1");
   await tx.application.update({
     data: {
@@ -113,15 +151,6 @@ async function driveGoldenPath(
     where: { id: ids.applicationId }
   });
   await completeCurrent(tx, repository, journey.id, "revision-1-confirmed");
-
-  await decideCurrentManualTask(tx, repository, journey.id, ids.userId, {
-    vehicleId: ids.vehicleId
-  });
-  await tx.application.update({
-    data: { finalVehicleId: ids.vehicleId, softReservedVehicleId: ids.vehicleId },
-    where: { id: ids.applicationId }
-  });
-  await completeCurrent(tx, repository, journey.id, "vehicle-allocated");
 
   await adapter.createOrderAndContract(source);
   await tx.subscriptionJourney.update({
@@ -231,7 +260,7 @@ async function driveGoldenPath(
       status: DeliveryHandoverStatus.ARCHIVED
     })
   ]);
-  expect(audits).toBe(JOURNEY_STEP_SEQUENCE.length);
+  expect(audits).toBe(JOURNEY_STEP_SEQUENCE.length - 1);
   expect([mandates, debitAttempts]).toEqual([0, 0]);
 
   return {
@@ -583,7 +612,11 @@ async function waitForCustomer(
     eventKey: `${journeyId}:${value.step.code}:${eventSuffix}`,
     expectedVersion: value.version,
     journeyId,
-    payload: { finalPlanRevision: 1, stepCode: value.step.code },
+    payload: {
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+      finalPlanRevision: 1,
+      stepCode: value.step.code
+    },
     stepId: value.step.id
   });
 }

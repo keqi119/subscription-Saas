@@ -6,7 +6,9 @@ import {
   SubscriptionJourneyEventType,
   SubscriptionJourneyJobStatus,
   SubscriptionJourneyJobType,
-  SubscriptionJourneyStepCode
+  SubscriptionJourneyStatus,
+  SubscriptionJourneyStepCode,
+  SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -19,12 +21,18 @@ import type {
   ClaimedJourneyOutbox
 } from "../src/subscription-journey/subscription-journey.types";
 
+const FINAL_PLAN_COMMERCIAL_HASH = `sha256:${"a".repeat(64)}`;
+
 describe("subscription journey application validation", () => {
   it("runs validation and completes APPLICATION_VALIDATION in one transaction", async () => {
     const tx = validationTransaction();
     const prisma = transactionHost(tx);
     const customerService = {
-      validateJourneyApplication: vi.fn(async () => undefined)
+      validateJourneyApplication: vi.fn(async () => ({
+        factVersion: 0,
+        outcome: "READY",
+        reasonCodes: []
+      }))
     };
     const repository = {
       completeStep: vi.fn(async () => undefined)
@@ -47,20 +55,143 @@ describe("subscription journey application validation", () => {
     expect(repository.completeStep).toHaveBeenCalledWith(tx, {
       eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:completed",
       expectedVersion: 0,
+      factVersion: 0,
       journeyId: "journey-1",
-      payload: { applicationId: "application-1" },
+      payload: { applicationId: "application-1", factVersion: 0 },
       stepId: "step-validation"
     });
     expect(prisma.$transaction).toHaveBeenCalledOnce();
   });
 
-  it("propagates stable validation errors without completing the step", async () => {
+  it("persists a manual business wait without completing validation", async () => {
+    const tx = validationTransaction();
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      waitForManual: vi.fn(async () => undefined)
+    };
+    const customerService = {
+      validateJourneyApplication: vi.fn(async () => ({
+        factVersion: 3,
+        outcome: "WAITING_MANUAL",
+        reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+      }))
+    };
+    const service = new SubscriptionJourneyService(
+      repository as never,
+      transactionHost(tx) as never,
+      customerService as never
+    );
+
+    await expect(service.validateApplicationJob(validationJob())).resolves.toEqual({
+      action: "APPLICATION_VALIDATION_WAITING_MANUAL",
+      applicationId: "application-1",
+      factVersion: 3,
+      reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+    });
+    expect(repository.waitForManual).toHaveBeenCalledWith(tx, {
+      eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:3:waiting-manual",
+      expectedVersion: 0,
+      factVersion: 3,
+      journeyId: "journey-1",
+      payload: {
+        factVersion: 3,
+        reasonCodes: ["MATERIAL_REVIEW_PENDING", "CREDIT_REVIEW_PENDING"]
+      },
+      stepId: "step-validation"
+    });
+    expect(repository.completeStep).not.toHaveBeenCalled();
+  });
+
+  it("persists a customer supplementation wait without completing validation", async () => {
+    const tx = validationTransaction();
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      waitForCustomer: vi.fn(async () => undefined)
+    };
+    const customerService = {
+      validateJourneyApplication: vi.fn(async () => ({
+        factVersion: 4,
+        outcome: "WAITING_CUSTOMER",
+        reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+      }))
+    };
+    const service = new SubscriptionJourneyService(
+      repository as never,
+      transactionHost(tx) as never,
+      customerService as never
+    );
+
+    await expect(service.validateApplicationJob(validationJob())).resolves.toEqual({
+      action: "APPLICATION_VALIDATION_WAITING_CUSTOMER",
+      applicationId: "application-1",
+      factVersion: 4,
+      reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+    });
+    expect(repository.waitForCustomer).toHaveBeenCalledWith(tx, {
+      eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:4:waiting-customer",
+      expectedVersion: 0,
+      factVersion: 4,
+      journeyId: "journey-1",
+      payload: {
+        factVersion: 4,
+        reasonCodes: ["MATERIAL_SUPPLEMENT_REQUIRED"]
+      },
+      stepId: "step-validation"
+    });
+    expect(repository.completeStep).not.toHaveBeenCalled();
+  });
+
+  it("closes a rejected application journey and releases its reservation", async () => {
+    const tx = validationTransaction();
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      rejectForApplication: vi.fn(async () => undefined)
+    };
+    const customerService = {
+      releaseRejectedJourneyApplication: vi.fn(async () => undefined),
+      validateJourneyApplication: vi.fn(async () => ({
+        factVersion: 5,
+        outcome: "REJECTED",
+        reasonCodes: ["CREDIT_REVIEW_REJECTED"]
+      }))
+    };
+    const service = new SubscriptionJourneyService(
+      repository as never,
+      transactionHost(tx) as never,
+      customerService as never
+    );
+
+    await expect(service.validateApplicationJob(validationJob())).resolves.toEqual({
+      action: "APPLICATION_VALIDATION_REJECTED",
+      applicationId: "application-1",
+      factVersion: 5,
+      reasonCodes: ["CREDIT_REVIEW_REJECTED"]
+    });
+    expect(customerService.releaseRejectedJourneyApplication).toHaveBeenCalledWith(
+      tx,
+      "application-1"
+    );
+    expect(repository.rejectForApplication).toHaveBeenCalledWith(tx, {
+      eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:5:rejected",
+      expectedVersion: 0,
+      factVersion: 5,
+      journeyId: "journey-1",
+      payload: {
+        factVersion: 5,
+        reasonCodes: ["CREDIT_REVIEW_REJECTED"]
+      },
+      stepId: "step-validation"
+    });
+    expect(repository.completeStep).not.toHaveBeenCalled();
+  });
+
+  it("propagates technical validation errors without completing the step", async () => {
     const tx = validationTransaction();
     const repository = { completeStep: vi.fn(async () => undefined) };
     const customerService = {
       validateJourneyApplication: vi.fn(async () => {
         throw Object.assign(new Error("materials incomplete"), {
-          code: "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE"
+          code: "JOURNEY_APPLICATION_NOT_FOUND"
         });
       })
     };
@@ -71,7 +202,7 @@ describe("subscription journey application validation", () => {
     );
 
     await expect(service.validateApplicationJob(validationJob())).rejects.toMatchObject({
-      code: "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE"
+      code: "JOURNEY_APPLICATION_NOT_FOUND"
     });
     expect(repository.completeStep).not.toHaveBeenCalled();
   });
@@ -79,17 +210,30 @@ describe("subscription journey application validation", () => {
   it.each([
     [
       { materialReviewStatus: OrderReviewStatus.PENDING },
-      "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE"
+      "WAITING_MANUAL",
+      ["MATERIAL_REVIEW_PENDING"]
     ],
     [
       { creditReviewStatus: OrderReviewStatus.PENDING },
-      "JOURNEY_APPLICATION_CREDIT_NOT_APPROVED"
+      "WAITING_MANUAL",
+      ["CREDIT_REVIEW_PENDING"]
+    ],
+    [
+      { materialReviewStatus: OrderReviewStatus.NEED_MORE_INFO },
+      "WAITING_CUSTOMER",
+      ["MATERIAL_SUPPLEMENT_REQUIRED"]
+    ],
+    [
+      { creditReviewStatus: OrderReviewStatus.REJECTED },
+      "REJECTED",
+      ["CREDIT_REVIEW_REJECTED"]
     ],
     [
       { finalSubscriptionPlanId: null, intentSubscriptionPlanId: null },
-      "JOURNEY_APPLICATION_PRODUCT_INVALID"
+      "WAITING_MANUAL",
+      ["PRODUCT_SELECTION_REQUIRED"]
     ]
-  ])("returns a stable domain code for invalid application facts", async (override, code) => {
+  ])("returns structured readiness for incomplete application facts", async (override, outcome, reasonCodes) => {
     const application = readyApplication(override);
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: application.id }]),
@@ -102,9 +246,62 @@ describe("subscription journey application validation", () => {
       {} as never
     );
 
-    await expect(
-      service.validateJourneyApplication(tx as never, application.id)
-    ).rejects.toMatchObject({ code });
+    await expect(service.validateJourneyApplication(tx as never, application.id)).resolves.toEqual({
+      factVersion: 0,
+      outcome,
+      reasonCodes
+    });
+  });
+
+  it("releases a rejected application soft reservation in the validation transaction", async () => {
+    const application = readyApplication({
+      creditReviewStatus: OrderReviewStatus.REJECTED,
+      softReservedAt: new Date("2026-08-26T00:00:00.000Z"),
+      softReservedVehicleId: "vehicle-1",
+      status: ApplicationStatus.REJECTED
+    });
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: application.id }]),
+      application: {
+        findUnique: vi.fn(async () => application),
+        update: vi.fn(async (input) => ({ ...application, ...input.data }))
+      },
+      vehicle: {
+        findUnique: vi.fn(async () => ({
+          deletedAt: null,
+          id: "vehicle-1",
+          status: "REVIEW_RESERVED"
+        })),
+        update: vi.fn(async (input) => ({ id: "vehicle-1", ...input.data }))
+      }
+    };
+    const assetOperations = {
+      assertVehicleAvailable: vi.fn(async () => undefined)
+    };
+    const service = new CustomerService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      assetOperations as never
+    );
+
+    await service.releaseRejectedJourneyApplication(tx as never, application.id);
+
+    expect(tx.vehicle.update).toHaveBeenCalledWith({
+      data: { status: "AVAILABLE" },
+      where: { id: "vehicle-1" }
+    });
+    expect(tx.application.update).toHaveBeenCalledWith({
+      data: {
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      where: { id: application.id }
+    });
   });
 });
 
@@ -128,6 +325,93 @@ describe("subscription journey application dispatch", () => {
         })
       )
     ).resolves.toEqual({ action: "ORDER_AND_CONTRACT_CREATED" });
+  });
+
+  it("ignores a validation-targeted fact signal after the journey has advanced", async () => {
+    const repository = {
+      enqueueJob: vi.fn(async () => undefined),
+      enqueueNotificationOutbox: vi.fn(async () => undefined),
+      openManualTask: vi.fn(async () => undefined)
+    };
+    const tx = {
+      subscriptionJourney: {
+        findUnique: vi.fn(async () => ({
+          application: { finalPlanRevision: 0 },
+          applicationId: "application-1",
+          currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+          currentStepStatus: "PENDING",
+          id: "journey-1",
+          orderId: null,
+          steps: [
+            {
+              code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+              id: "step-final-plan",
+              journeyId: "journey-1"
+            }
+          ],
+          version: 4
+        }))
+      }
+    };
+    const service = new SubscriptionJourneyService(repository as never);
+
+    await service.dispatchSignalOutbox(tx as never, {
+      ...validationOutbox(),
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      payload: {
+        factType: "credit",
+        factVersion: 3,
+        signalType: "APPLICATION_FACTS_CHANGED",
+        sourceActionId: "application-action-3",
+        targetStepCode: "APPLICATION_VALIDATION"
+      }
+    });
+
+    expect(repository.openManualTask).not.toHaveBeenCalled();
+    expect(repository.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it("enqueues validation only for a newer validation-targeted fact version", async () => {
+    const repository = {
+      enqueueJob: vi.fn(async () => undefined),
+      enqueueNotificationOutbox: vi.fn(async () => undefined),
+      openManualTask: vi.fn(async () => undefined)
+    };
+    const tx = validationTransaction({ lastApplicationFactVersion: 2 });
+    const service = new SubscriptionJourneyService(repository as never);
+    const outbox = {
+      ...validationOutbox(),
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      payload: {
+        factType: "material",
+        factVersion: 3,
+        signalType: "APPLICATION_FACTS_CHANGED",
+        sourceActionId: "application-action-3",
+        targetStepCode: "APPLICATION_VALIDATION"
+      }
+    };
+
+    await service.dispatchSignalOutbox(tx as never, outbox);
+    await service.dispatchSignalOutbox(
+      validationTransaction({ lastApplicationFactVersion: 3 }) as never,
+      outbox
+    );
+
+    expect(repository.enqueueJob).toHaveBeenCalledOnce();
+    expect(repository.enqueueJob).toHaveBeenCalledWith(expect.anything(), {
+      jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+      journeyId: "journey-1",
+      payload: {
+        applicationId: "application-1",
+        factType: "material",
+        factVersion: 3,
+        sourceActionId: "application-action-3",
+        stepCode: "APPLICATION_VALIDATION"
+      },
+      sourceKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:3",
+      stepId: "step-validation"
+    });
+    expect(repository.openManualTask).not.toHaveBeenCalled();
   });
 
   it("opens exactly one FINAL_PLAN_DECISION task when dispatch is replayed", async () => {
@@ -192,9 +476,12 @@ describe("subscription journey application dispatch", () => {
 
     expect(repository.waitForCustomer).toHaveBeenCalledWith(tx, {
       eventKey: "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:revision:1:waiting",
-      expectedVersion: 2,
+      expectedVersion: 3,
       journeyId: "journey-1",
-      payload: { finalPlanRevision: 1 },
+      payload: {
+        finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        finalPlanRevision: 1
+      },
       stepId: "step-customer-confirmation"
     });
   });
@@ -211,14 +498,23 @@ describe("subscription journey application dispatch", () => {
     await service.dispatchSignalOutbox(tx as never, {
       ...validationOutbox(),
       eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
-      payload: { revision: 1, signalType: "CUSTOMER_PLAN_CONFIRMED" }
+      payload: {
+        commercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        revision: 1,
+        signalType: "CUSTOMER_PLAN_CONFIRMED"
+      }
     });
 
     expect(repository.completeStep).toHaveBeenCalledWith(tx, {
-      eventKey: "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:revision:1:completed",
-      expectedVersion: 2,
+      eventKey:
+        "journey:journey-1:step:CUSTOMER_PLAN_CONFIRMATION:" +
+        `revision:1:hash:${"a".repeat(16)}:completed`,
+      expectedVersion: 3,
       journeyId: "journey-1",
-      payload: { finalPlanRevision: 1 },
+      payload: {
+        finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+        finalPlanRevision: 1
+      },
       stepId: "step-customer-confirmation"
     });
     expect(repository.waitForCustomer).not.toHaveBeenCalled();
@@ -226,6 +522,53 @@ describe("subscription journey application dispatch", () => {
 });
 
 describe("subscription journey manual application decisions", () => {
+  it("completes final-plan and vehicle-allocation steps before customer confirmation", async () => {
+    const repository = {
+      completeStep: vi.fn(async () => undefined),
+      decideManualTask: vi.fn(async () => undefined)
+    };
+    const tx = manualDecisionTransaction(
+      SubscriptionJourneyStepCode.FINAL_PLAN_DECISION
+    );
+    const service = new SubscriptionJourneySignalService(
+      repository as never,
+      {} as never
+    );
+    const commercialHash = `sha256:${"a".repeat(64)}`;
+
+    await service.completeFinalPlanAndVehicleAllocation(tx as never, {
+      actorId: "00000000-0000-4000-8000-000000000001",
+      applicationId: "application-1",
+      finalPlanCommercialHash: commercialHash,
+      finalPlanRevision: 1,
+      vehicleId: "vehicle-1"
+    });
+
+    expect(repository.decideManualTask).toHaveBeenCalledOnce();
+    expect(repository.completeStep).toHaveBeenNthCalledWith(1, tx, {
+      eventKey: `journey:journey-1:step:FINAL_PLAN_DECISION:revision:1:hash:${"a".repeat(16)}`,
+      expectedVersion: 2,
+      journeyId: "journey-1",
+      payload: {
+        finalPlanCommercialHash: commercialHash,
+        finalPlanRevision: 1,
+        vehicleId: "vehicle-1"
+      },
+      stepId: "step-manual"
+    });
+    expect(repository.completeStep).toHaveBeenNthCalledWith(2, tx, {
+      eventKey: `journey:journey-1:step:FINAL_VEHICLE_ALLOCATION:revision:1:hash:${"a".repeat(16)}`,
+      expectedVersion: 3,
+      journeyId: "journey-1",
+      payload: {
+        finalPlanCommercialHash: commercialHash,
+        finalPlanRevision: 1,
+        vehicleId: "vehicle-1"
+      },
+      stepId: "step-vehicle-allocation"
+    });
+  });
+
   it("decides and completes a manual step through the transaction signal boundary", async () => {
     const repository = {
       completeStep: vi.fn(async () => undefined),
@@ -297,6 +640,57 @@ describe("subscription journey manual application decisions", () => {
   });
 });
 
+describe("subscription journey final-plan command replay", () => {
+  it("returns the committed publication for an exact stale-version replay", async () => {
+    const harness = finalPlanReplayHarness();
+
+    await expect(
+      harness.service.decideFinalPlan(
+        "journey-1",
+        {
+          finalPeriodMonths: 12,
+          finalSubscriptionPlanId: "plan-1",
+          finalVehicleId: "vehicle-1",
+          version: 2
+        },
+        harness.user,
+        harness.context
+      )
+    ).resolves.toEqual({
+      applicationId: "application-1",
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+      finalPlanRevision: 1,
+      finalVehicleId: "vehicle-1",
+      journeyId: "journey-1",
+      replayed: true
+    });
+    expect(
+      harness.customerService.applyJourneyFinalPlanDecision
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects payload drift after the publication was committed", async () => {
+    const harness = finalPlanReplayHarness();
+
+    await expect(
+      harness.service.decideFinalPlan(
+        "journey-1",
+        {
+          finalPeriodMonths: 24,
+          finalSubscriptionPlanId: "plan-1",
+          finalVehicleId: "vehicle-1",
+          version: 2
+        },
+        harness.user,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "JOURNEY_IDEMPOTENCY_CONFLICT" });
+    expect(
+      harness.customerService.applyJourneyFinalPlanDecision
+    ).not.toHaveBeenCalled();
+  });
+});
+
 function manualDecisionTransaction(stepCode: SubscriptionJourneyStepCode) {
   return {
     subscriptionJourney: {
@@ -315,6 +709,14 @@ function manualDecisionTransaction(stepCode: SubscriptionJourneyStepCode) {
         steps: [{ code: stepCode, id: "step-manual" }],
         version: 2
       }))
+    },
+    subscriptionJourneyStep: {
+      upsert: vi.fn(async () => ({
+        code: SubscriptionJourneyStepCode.FINAL_VEHICLE_ALLOCATION,
+        id: "step-vehicle-allocation",
+        journeyId: "journey-1",
+        status: "PENDING"
+      }))
     }
   };
 }
@@ -323,7 +725,10 @@ function customerConfirmationTransaction() {
   return {
     subscriptionJourney: {
       findUnique: vi.fn(async () => ({
-        application: { finalPlanRevision: 1 },
+        application: {
+          finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+          finalPlanRevision: 1
+        },
         applicationId: "application-1",
         currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
         id: "journey-1",
@@ -335,26 +740,80 @@ function customerConfirmationTransaction() {
             journeyId: "journey-1"
           }
         ],
-        version: 2
+        version: 3
       }))
     }
   };
 }
 
-function validationTransaction() {
+function finalPlanReplayHarness() {
+  const journey = {
+    application: {
+      finalPeriodMonths: 12,
+      finalPlanCommercialHash: FINAL_PLAN_COMMERCIAL_HASH,
+      finalPlanRevision: 1,
+      finalSubscriptionPlanId: "plan-1",
+      finalVehicleId: "vehicle-1",
+      id: "application-1"
+    },
+    applicationId: "application-1",
+    currentStepCode: SubscriptionJourneyStepCode.CUSTOMER_PLAN_CONFIRMATION,
+    id: "journey-1",
+    status: SubscriptionJourneyStatus.RUNNING,
+    steps: [
+      {
+        code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+        status: SubscriptionJourneyStepStatus.COMPLETED
+      }
+    ],
+    version: 4
+  };
+  const tx = {
+    $queryRaw: vi.fn(async () => [{ id: journey.id }]),
+    subscriptionJourney: {
+      findUnique: vi.fn(async () => journey)
+    }
+  };
+  const prisma = transactionHost(tx);
+  const customerService = {
+    applyJourneyFinalPlanDecision: vi.fn(async () => undefined)
+  };
+  const service = new SubscriptionJourneyService(
+    {} as never,
+    prisma as never,
+    customerService as never
+  );
+  return {
+    context: { ipAddress: "127.0.0.1", userAgent: "vitest" },
+    customerService,
+    service,
+    user: {
+      id: "00000000-0000-4000-8000-000000000001",
+      menus: [],
+      name: "Admin",
+      permissions: [],
+      roles: ["ADMIN"],
+      username: "admin"
+    }
+  };
+}
+
+function validationTransaction(overrides: Record<string, unknown> = {}) {
   return {
     subscriptionJourney: {
       findUnique: vi.fn(async () => ({
         applicationId: "application-1",
         currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
         id: "journey-1",
+        lastApplicationFactVersion: 0,
         steps: [
           {
             code: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
             id: "step-validation"
           }
         ],
-        version: 0
+        version: 0,
+        ...overrides
       }))
     }
   };
@@ -433,6 +892,7 @@ function readyApplication(overrides: Record<string, unknown> = {}) {
     intentSubscriptionPlanId: null,
     intentVehicleId: null,
     intendedPeriodMonths: null,
+    journeyFactVersion: 0,
     materialReviewStatus: OrderReviewStatus.APPROVED,
     orders: [],
     productReviewStatus: OrderReviewStatus.PENDING,

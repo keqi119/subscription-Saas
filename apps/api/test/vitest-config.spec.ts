@@ -6,12 +6,22 @@ type ProjectConfig = {
   test?: {
     exclude?: string[];
     fileParallelism?: boolean;
+    hookTimeout?: number;
     include?: string[];
     name?: string;
+    testTimeout?: number;
   };
 };
 
 describe("API Vitest project boundaries", () => {
+  it("gives serialized database tests a realistic timeout budget", () => {
+    const projects = (config.test?.projects ?? []) as ProjectConfig[];
+    const databaseProject = projects.find((project) => project.test?.name === "database");
+
+    expect(databaseProject?.test?.testTimeout).toBe(30_000);
+    expect(databaseProject?.test?.hookTimeout).toBe(30_000);
+  });
+
   it("runs the journey repository integration suite in the serial database project", () => {
     const projects = (config.test?.projects ?? []) as ProjectConfig[];
     const databaseProject = projects.find((project) => project.test?.name === "database");

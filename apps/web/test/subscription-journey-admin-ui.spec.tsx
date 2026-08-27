@@ -38,7 +38,7 @@ describe("subscription journey Admin UI", () => {
       <ApplicationJourneyActions
         journey={journey({
           application: finalVehicleApplication(),
-          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          availableActions: ["LEGACY_FINAL_VEHICLE_ALLOCATION"],
           currentStepCode: "FINAL_VEHICLE_ALLOCATION",
           currentStepStatus: "WAITING_MANUAL"
         })}
@@ -48,7 +48,10 @@ describe("subscription journey Admin UI", () => {
     );
 
     expect(noPermission).not.toContain("提交最终方案");
-    expect(planPermission).toContain("提交最终方案");
+    expect(planPermission).toContain("提交最终方案并软锁车辆");
+    expect(planPermission).toContain("提交后将软锁车辆并开放客户确认");
+    expect(planPermission).not.toContain("（可选）");
+    expect(planPermission).toContain("disabled");
     expect(vehiclePermission).toContain("确认沿用已软锁车辆");
   });
 
@@ -57,7 +60,7 @@ describe("subscription journey Admin UI", () => {
       <ApplicationJourneyActions
         journey={journey({
           application: finalVehicleApplication(),
-          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          availableActions: ["LEGACY_FINAL_VEHICLE_ALLOCATION"],
           currentStepCode: "FINAL_VEHICLE_ALLOCATION",
           currentStepStatus: "WAITING_MANUAL"
         })}
@@ -87,7 +90,7 @@ describe("subscription journey Admin UI", () => {
     const html = renderToStaticMarkup(
       <ApplicationJourneyActions
         journey={journey({
-          availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+          availableActions: ["LEGACY_FINAL_VEHICLE_ALLOCATION"],
           currentStepCode: "FINAL_VEHICLE_ALLOCATION",
           currentStepStatus: "WAITING_MANUAL"
         })}
@@ -128,7 +131,10 @@ describe("subscription journey Admin UI", () => {
     );
     const recoveryHtml = renderToStaticMarkup(
       <SubscriptionJourneyExceptionActions
-        journey={journey({ availableActions: ["RETRY", "PAUSE", "CANCEL"] })}
+        journey={journey({
+          availableActions: ["RETRY", "PAUSE", "CANCEL"],
+          status: "EXCEPTION"
+        })}
         onChanged={vi.fn()}
         permissions={new Set([
           "subscription_journey:recover",
@@ -142,6 +148,41 @@ describe("subscription journey Admin UI", () => {
     expect(recoveryHtml).toContain("重试失败步骤");
     expect(recoveryHtml).toContain("暂停流程");
     expect(recoveryHtml).toContain("取消流程");
+  });
+
+  it("renders business waiting reasons without failure retry controls", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationJourneyActions
+        journey={journey({
+          availableActions: ["RETRY"],
+          currentStepCode: "APPLICATION_VALIDATION",
+          currentStepStatus: "WAITING_MANUAL",
+          status: "WAITING_MANUAL",
+          steps: [
+            {
+              attemptCount: 1,
+              code: "APPLICATION_VALIDATION",
+              completedAt: null,
+              id: "step-validation",
+              lastErrorCode: null,
+              startedAt: "2026-08-26T08:00:00.000Z",
+              status: "WAITING_MANUAL",
+              waitingAt: "2026-08-26T08:05:00.000Z",
+              waitingReasonSnapshot: {
+                factVersion: 3,
+                reasonCodes: ["CREDIT_REVIEW_PENDING"]
+              }
+            }
+          ]
+        })}
+        onChanged={vi.fn()}
+        permissions={new Set(["subscription_journey:recover"])}
+      />
+    );
+
+    expect(html).toContain("进件校验 · 等待人工");
+    expect(html).toContain("等待信用审核");
+    expect(html).not.toContain("重试失败步骤");
   });
 
   it("refetches on stale-version 409 and requires an explicit cancel reason", async () => {

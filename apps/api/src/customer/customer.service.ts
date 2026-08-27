@@ -30,6 +30,7 @@ import {
   QuoteStatus,
   RecordStatus,
   SalePriceStatus,
+  SubscriptionJourneyStepCode,
   SubscriptionPlanStatus,
   VehicleBatteryUsageType,
   VehicleStatus
@@ -52,7 +53,13 @@ import { PrismaService } from "../prisma/prisma.service";
 import { RiskService, riskResultInclude, toRiskResultView } from "../risk/risk.service";
 import { StorageService } from "../storage/storage.service";
 import { SubscriptionJourneySignalService } from "../subscription-journey/subscription-journey-signal.service";
+import {
+  addApplicationReadinessReason,
+  classifyApplicationReadiness,
+  type ApplicationReadinessResult
+} from "../subscription-journey/application-readiness";
 import { journeyError } from "../subscription-journey/subscription-journey.errors";
+import { commercialPlanHash } from "../subscription-journey/subscription-journey-json";
 import {
   buildApplicationCustomerProfileSnapshot,
   parseApplicationCustomerProfileSnapshot
@@ -366,10 +373,20 @@ export class CustomerService {
       status: string;
     }
   ) {
+    const versioned = await tx.application.update({
+      data: { journeyFactVersion: { increment: 1 } },
+      select: { journeyFactVersion: true },
+      where: { id: input.applicationId }
+    });
     await this.subscriptionJourneySignal?.record(tx, {
       applicationId: input.applicationId,
       eventKey: `application:${input.applicationId}:facts:${input.fact}:${input.actionId}`,
-      payload: { fact: input.fact, status: input.status },
+      payload: {
+        factType: input.fact,
+        factVersion: versioned.journeyFactVersion,
+        sourceActionId: input.actionId,
+        targetStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION
+      },
       type: "APPLICATION_FACTS_CHANGED"
     });
   }
@@ -1671,12 +1688,21 @@ export class CustomerService {
 
   async recordJourneyCustomerPlanConfirmation(
     tx: Prisma.TransactionClient,
-    input: { applicationId: string; revision: number }
+    input: {
+      applicationId: string;
+      commercialHash: string;
+      revision: number;
+    }
   ): Promise<void> {
     await this.subscriptionJourneySignal?.record(tx, {
       applicationId: input.applicationId,
-      eventKey: `application:${input.applicationId}:plan-confirmed:${input.revision}`,
-      payload: { revision: input.revision },
+      eventKey:
+        `application:${input.applicationId}:plan-confirmed:${input.revision}:` +
+        input.commercialHash.slice("sha256:".length, 23),
+      payload: {
+        commercialHash: input.commercialHash,
+        revision: input.revision
+      },
       type: "CUSTOMER_PLAN_CONFIRMED"
     });
   }
@@ -1684,7 +1710,7 @@ export class CustomerService {
   async validateJourneyApplication(
     tx: Prisma.TransactionClient,
     applicationId: string
-  ): Promise<void> {
+  ): Promise<ApplicationReadinessResult> {
     await lockJourneyApplication(tx, applicationId);
     const application = await tx.application.findUnique({
       include: applicationInclude,
@@ -1696,31 +1722,14 @@ export class CustomerService {
         "The journey application was not found."
       );
     }
-    if (application.materialReviewStatus !== OrderReviewStatus.APPROVED) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE",
-        "The journey application materials have not been approved."
-      );
-    }
-    if (
-      application.creditReviewStatus !== OrderReviewStatus.APPROVED ||
-      application.depositStatus !== DepositStatus.CONFIRMED ||
-      application.finalDepositAmount === null
-    ) {
-      throw journeyError(
-        "JOURNEY_APPLICATION_CREDIT_NOT_APPROVED",
-        "The journey application credit and deposit facts have not been approved."
-      );
-    }
+    const readiness = classifyApplicationReadiness(application);
+    if (readiness.outcome !== "READY") return readiness;
 
     let input: ApplicationFinalPlanInput;
     try {
       input = resolveApplicationFinalPlanInput(application);
     } catch {
-      throw journeyError(
-        "JOURNEY_APPLICATION_PRODUCT_INVALID",
-        "The journey application does not contain a valid subscription plan selection."
-      );
+      return addApplicationReadinessReason(readiness, "PRODUCT_SELECTION_REQUIRED");
     }
 
     const plan = await tx.subscriptionPlan.findUnique({
@@ -1734,11 +1743,9 @@ export class CustomerService {
         plan.minPeriodMonths,
         plan.maxPeriodMonths
       );
-    } catch {
-      throw journeyError(
-        "JOURNEY_APPLICATION_PRODUCT_INVALID",
-        "The journey application subscription plan is not available."
-      );
+    } catch (error) {
+      if (!isApplicationReadinessBusinessError(error)) throw error;
+      return addApplicationReadinessReason(readiness, "PRODUCT_SELECTION_INVALID");
     }
 
     const vehicle = await tx.vehicle.findUnique({
@@ -1748,24 +1755,71 @@ export class CustomerService {
     try {
       assertApplicationVehicleExists(vehicle);
       if (vehicle.modelDefinitionId !== plan.vehiclePackage.modelDefinitionId) {
-        throw new Error("vehicle model mismatch");
+        throw new BadRequestException("vehicle model mismatch");
       }
       await assertApplicationVehicleReviewAllowed(tx, application, vehicle);
-    } catch {
-      throw journeyError(
-        "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
-        "The journey application vehicle is not available for this plan."
-      );
+    } catch (error) {
+      if (!isApplicationReadinessBusinessError(error)) throw error;
+      return addApplicationReadinessReason(readiness, "VEHICLE_UNAVAILABLE");
     }
 
     try {
       await loadApplicationFinalPlanDetails(tx, application);
-    } catch {
+    } catch (error) {
+      if (!isApplicationReadinessBusinessError(error)) throw error;
+      return addApplicationReadinessReason(readiness, "PRICING_CONFIGURATION_INVALID");
+    }
+    return readiness;
+  }
+
+  async releaseRejectedJourneyApplication(
+    tx: Prisma.TransactionClient,
+    applicationId: string
+  ): Promise<void> {
+    await lockJourneyApplication(tx, applicationId);
+    const application = await tx.application.findUnique({
+      include: applicationInclude,
+      where: { id: applicationId }
+    });
+    if (!application || application.deletedAt) {
       throw journeyError(
-        "JOURNEY_APPLICATION_PRODUCT_INVALID",
-        "The journey application pricing facts are invalid."
+        "JOURNEY_APPLICATION_NOT_FOUND",
+        "The rejected journey application was not found."
       );
     }
+    if (classifyApplicationReadiness(application).outcome !== "REJECTED") {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "Only a rejected application can release its journey reservation."
+      );
+    }
+    if (!application.softReservedVehicleId) return;
+
+    await lockVehicleAvailabilityAuthorities(tx, [application.softReservedVehicleId]);
+    const vehicle = await tx.vehicle.findUnique({
+      where: { id: application.softReservedVehicleId }
+    });
+    if (vehicle && !vehicle.deletedAt && vehicle.status === VehicleStatus.REVIEW_RESERVED) {
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        vehicle.id,
+        VehicleAvailabilityPurpose.MARK_AVAILABLE,
+        new Date(),
+        VehicleStatus.AVAILABLE
+      );
+      await tx.vehicle.update({
+        data: { status: VehicleStatus.AVAILABLE },
+        where: { id: vehicle.id }
+      });
+    }
+    await tx.application.update({
+      data: {
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null
+      },
+      where: { id: applicationId }
+    });
   }
 
   async applyJourneyFinalPlanDecision(
@@ -1790,23 +1844,84 @@ export class CustomerService {
     ensureCanAccessApplication(before, actor);
     ensureApplicationReviewWorkflowAllowed(before);
     assertApplicationHasNoOrder(before);
-    assertApplicationReadyForFinalPlan(before);
+    assertApplicationReadyForFinalPlan(before, input);
 
+    const resolvedInput = resolveApplicationFinalPlanInput(before, input);
+    await lockVehicleAvailabilityAuthorities(tx, [
+      resolvedInput.vehicleId,
+      before.softReservedVehicleId
+    ]);
     const details = await loadApplicationFinalPlanDetails(tx, before, input);
-    await assertApplicationVehicleReviewAllowed(tx, before, details.vehicle);
+    if (
+      before.applicationSource === ApplicationSource.SELF_SERVICE &&
+      before.softReservedVehicleId !== details.vehicle.id
+    ) {
+      throw new BadRequestException(
+        "暂不支持审核中更换车辆，请取消当前进件后重新提交。"
+      );
+    }
+    await assertJourneyVehicleAllocationAllowed(tx, before, details.vehicle);
+    const alreadyHeld =
+      before.softReservedVehicleId === details.vehicle.id &&
+      details.vehicle.status === VehicleStatus.REVIEW_RESERVED;
+    const reservedAt = before.softReservedAt ?? new Date();
+    if (!alreadyHeld) {
+      await this.assetOperationsService?.assertVehicleAvailable(
+        tx,
+        details.vehicle.id,
+        VehicleAvailabilityPurpose.ALLOCATION,
+        reservedAt
+      );
+      const reserved = await tx.vehicle.updateMany({
+        data: { status: VehicleStatus.REVIEW_RESERVED, updatedBy: actor.id },
+        where: {
+          deletedAt: null,
+          id: details.vehicle.id,
+          status: VehicleStatus.AVAILABLE
+        }
+      });
+      if (reserved.count !== 1) {
+        throw journeyError(
+          "JOURNEY_APPLICATION_VEHICLE_UNAVAILABLE",
+          "The journey vehicle could not be reserved."
+        );
+      }
+      if (
+        before.softReservedVehicleId &&
+        before.softReservedVehicleId !== details.vehicle.id
+      ) {
+        await releaseApplicationSoftReservedVehicle(
+          tx,
+          before,
+          actor,
+          this.assetOperationsService
+        );
+      }
+    }
     const finalPlanRevision = before.finalPlanRevision + 1;
+    const planSnapshot = details.finalPlanSnapshot as Record<string, unknown>;
+    const vehicleSnapshot = planSnapshot.vehicleSnapshot as Record<
+      string,
+      unknown
+    >;
     const finalPlanSnapshot = {
-      ...(details.finalPlanSnapshot as Record<string, unknown>),
+      ...planSnapshot,
       customerConfirmedPlanRevision: null,
       finalPlanConfirmedAt: null,
       finalPlanRevision,
-      planConfirmStatus: PlanConfirmStatus.PENDING
+      planConfirmStatus: PlanConfirmStatus.PENDING,
+      vehicleSnapshot: {
+        ...vehicleSnapshot,
+        status: VehicleStatus.REVIEW_RESERVED
+      }
     } satisfies Prisma.InputJsonValue;
+    const finalPlanCommercialHash = commercialPlanHash(finalPlanSnapshot);
     const application = await tx.application.update({
       data: {
         approvedAt: before.approvedAt ?? new Date(),
         customerConfirmedPlanRevision: null,
         finalPeriodMonths: details.periodMonths,
+        finalPlanCommercialHash,
         finalPlanConfirmedAt: null,
         finalPlanRevision,
         finalPlanSnapshot,
@@ -1817,9 +1932,14 @@ export class CustomerService {
         planConfirmStatus: PlanConfirmStatus.PENDING,
         productReviewStatus: OrderReviewStatus.APPROVED,
         rejectedReason: null,
+        softReservationExpiresAt:
+          before.softReservationExpiresAt ??
+          new Date(reservedAt.getTime() + 24 * 60 * 60 * 1000),
+        softReservedAt: reservedAt,
+        softReservedVehicleId: details.vehicle.id,
         status: ApplicationStatus.APPROVED,
         updatedBy: actor.id,
-        vehicleReviewStatus: OrderReviewStatus.PENDING
+        vehicleReviewStatus: OrderReviewStatus.APPROVED
       },
       include: applicationInclude,
       where: { id: applicationId }
@@ -1832,12 +1952,16 @@ export class CustomerService {
       operator: actor,
       toStatus: ApplicationStatus.APPROVED
     });
-    await this.subscriptionJourneySignal?.completeManualDecision(tx, {
-      actorId: actor.id,
-      applicationId,
-      expectedStepCode: "FINAL_PLAN_DECISION",
-      payload: { finalPlanRevision }
-    });
+    await this.subscriptionJourneySignal?.completeFinalPlanAndVehicleAllocation(
+      tx,
+      {
+        actorId: actor.id,
+        applicationId,
+        finalPlanCommercialHash,
+        finalPlanRevision,
+        vehicleId: details.vehicle.id
+      }
+    );
     return application;
   }
 
@@ -3277,7 +3401,10 @@ async function assertJourneyVehicleAllocationAllowed(
   }
 }
 
-function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails) {
+function assertApplicationReadyForFinalPlan(
+  application: ApplicationWithDetails,
+  input?: JourneyFinalPlanDecisionInput
+) {
   if (
     application.materialReviewStatus !== OrderReviewStatus.APPROVED ||
     application.creditReviewStatus !== OrderReviewStatus.APPROVED
@@ -3287,13 +3414,7 @@ function assertApplicationReadyForFinalPlan(application: ApplicationWithDetails)
   if (application.depositStatus !== DepositStatus.CONFIRMED || application.finalDepositAmount === null) {
     throw new BadRequestException("押金确认后才可以确认最终方案。");
   }
-  resolveApplicationFinalPlanInput(application);
-  if (
-    application.applicationSource !== ApplicationSource.SELF_SERVICE &&
-    application.finalVehicleBaseFeeAmount === null
-  ) {
-    throw new BadRequestException("进件缺少最终车辆基础费，无法确认最终方案。");
-  }
+  resolveApplicationFinalPlanInput(application, input);
 }
 
 function assertApplicationCanCreateOrder(application: ApplicationWithDetails) {
@@ -3874,22 +3995,15 @@ function commercialPlanChanged(
   next: Prisma.InputJsonValue
 ): boolean {
   if (!isPlainRecord(previous) || !isPlainRecord(next)) return true;
-  const commercialKeys = [
-    "packageSnapshot",
-    "periodMonths",
-    "pricing",
-    "subscriptionPlan",
-    "subscriptionPlanId",
-    "vehicleId",
-    "vehicleSnapshot"
-  ] as const;
-  const select = (snapshot: Record<string, unknown>) =>
-    Object.fromEntries(commercialKeys.map((key) => [key, snapshot[key] ?? null]));
-  return JSON.stringify(select(previous)) !== JSON.stringify(select(next));
+  return commercialPlanHash(previous) !== commercialPlanHash(next);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isApplicationReadinessBusinessError(error: unknown): boolean {
+  return error instanceof BadRequestException;
 }
 
 function toAuditSnapshot(value: unknown) {

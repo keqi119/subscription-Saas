@@ -29,6 +29,7 @@ export interface JourneySignalInput {
 export interface CompleteJourneyStepInput {
   eventKey: string;
   expectedVersion: number;
+  factVersion?: number;
   journeyId: string;
   payload?: Prisma.InputJsonValue;
   stepId: string;
@@ -44,9 +45,18 @@ export interface CompleteJourneyActivationInput {
 export interface WaitForCustomerInput {
   eventKey: string;
   expectedVersion: number;
+  factVersion?: number;
   journeyId: string;
   payload?: Prisma.InputJsonValue;
   stepId: string;
+}
+
+export interface WaitForManualInput extends WaitForCustomerInput {
+  factVersion: number;
+}
+
+export interface RejectJourneyForApplicationInput extends WaitForCustomerInput {
+  factVersion: number;
 }
 
 export interface OpenManualTaskInput {

@@ -18,6 +18,11 @@ export function resolvePgClient(pgModule) {
   return Client;
 }
 
+export function resolveMigrationSearchPath(databaseUrl) {
+  const schema = new URL(databaseUrl).searchParams.get("schema")?.trim() || "public";
+  return `"${schema.replaceAll('"', '""')}"`;
+}
+
 export function compareMigrationChecksums(localMigrations, appliedMigrations) {
   const localByName = new Map(localMigrations.map((row) => [row.migrationName, row.checksum]));
   const appliedByName = new Map();
@@ -112,6 +117,9 @@ async function createDatabaseClient() {
   const Client = resolvePgClient(await import(pathToFileURL(requireFromApi.resolve("pg")).href));
   const client = new Client({ connectionString: normalizeLocalhostDatabaseUrl(databaseUrl) });
   await client.connect();
+  await client.query("SELECT set_config('search_path', $1, false)", [
+    resolveMigrationSearchPath(databaseUrl)
+  ]);
   return client;
 }
 

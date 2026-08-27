@@ -20,8 +20,8 @@ import {
 const STEPS = [
   "APPLICATION_VALIDATION",
   "FINAL_PLAN_DECISION",
-  "CUSTOMER_PLAN_CONFIRMATION",
   "FINAL_VEHICLE_ALLOCATION",
+  "CUSTOMER_PLAN_CONFIRMATION",
   "ORDER_AND_CONTRACT_CREATION",
   "FADADA_SIGNING_AND_ARCHIVE",
   "INITIAL_BILLING",
@@ -46,7 +46,7 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
         softReservedVehicleId: "vehicle-1",
         status: "APPROVED"
       },
-      availableActions: ["FINAL_VEHICLE_ALLOCATION"],
+      availableActions: ["LEGACY_FINAL_VEHICLE_ALLOCATION"],
       currentStepCode: "FINAL_VEHICLE_ALLOCATION"
     });
     const planHtml = renderToStaticMarkup(
@@ -68,6 +68,9 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
     );
 
     expect(planHtml).toContain(getRecommendedOperatorAction(plan).label);
+    expect(planHtml).toContain("提交最终方案并软锁车辆");
+    expect(planHtml).toContain("提交后将软锁车辆并开放客户确认");
+    expect(planHtml).not.toContain("（可选）");
     expect(planHtml).not.toContain(getRecommendedOperatorAction(vehicle).label);
     expect(planHtml.match(/<button/g)).toHaveLength(1);
     expect(deniedHtml).not.toContain("<button");
@@ -75,6 +78,29 @@ describe("Stage 1 subscription Journey UI Golden Path", () => {
     expect(vehicleHtml).not.toContain("分配车辆 ID");
     expect(vehicleHtml).not.toContain(getRecommendedOperatorAction(plan).label);
     expect(vehicleHtml.match(/<button/g)).toHaveLength(1);
+  });
+
+  it("does not render a separate vehicle action on the normal customer-confirmation path", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationJourneyActions
+        journey={adminJourney({
+          application: {
+            ...adminJourney().application,
+            finalVehicleId: "vehicle-1",
+            softReservedVehicleId: "vehicle-1"
+          },
+          availableActions: [],
+          currentStepCode: "CUSTOMER_PLAN_CONFIRMATION",
+          currentStepStatus: "WAITING_CUSTOMER",
+          status: "WAITING_CUSTOMER"
+        })}
+        onChanged={vi.fn()}
+        permissions={new Set(["subscription_journey:vehicle_allocate"])}
+      />
+    );
+
+    expect(html).not.toContain("确认沿用已软锁车辆");
+    expect(html).not.toContain("确认最终车辆");
   });
 
   it("renders evidence/recovery only when available and never reveals raw failures", () => {

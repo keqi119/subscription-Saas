@@ -10,6 +10,8 @@ import {
   SubscriptionJourneyStepStatus
 } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { PrismaService } from "../src/prisma/prisma.service";
@@ -18,6 +20,9 @@ import { SubscriptionJourneyService } from "../src/subscription-journey/subscrip
 
 const TEST_DATABASE_URL = requiredTestDatabaseUrl();
 const ROLLBACK = new Error("ROLL_BACK_JOURNEY_RECOVERY_FIXTURE");
+const BUSINESS_WAIT_RECONCILIATION_MODULE = pathToFileURL(
+  resolve(__dirname, "../../../scripts/stage1-journey-business-wait-reconcile.mjs")
+).href;
 type Tx = Prisma.TransactionClient;
 
 describe("Stage 1 subscription Journey failure recovery", () => {
@@ -36,7 +41,10 @@ describe("Stage 1 subscription Journey failure recovery", () => {
 
   it("retries every external boundary without duplicating its durable job", async () => {
     await rolledBack(prisma, async (tx) => {
-      const fixture = await createFixture(tx, SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE);
+      const fixture = await createFixture(
+        tx,
+        SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
+      );
       const failures = [
         [SubscriptionJourneyJobType.START_FADADA_SIGNING, "FADADA_START_TIMEOUT"],
         [SubscriptionJourneyJobType.RECONCILE_FADADA_SIGNING, "FADADA_ARCHIVE_STORAGE_TIMEOUT"],
@@ -100,7 +108,10 @@ describe("Stage 1 subscription Journey failure recovery", () => {
 
   it("projects a dead letter as a safe exception and supports retry, pause, resume and completion", async () => {
     await rolledBack(prisma, async (tx) => {
-      const fixture = await createFixture(tx, SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE);
+      const fixture = await createFixture(
+        tx,
+        SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE
+      );
       const job = await repository.enqueueJob(tx, {
         availableAt: new Date("2000-01-01T00:00:00.000Z"),
         jobType: SubscriptionJourneyJobType.START_FADADA_SIGNING,
@@ -266,6 +277,118 @@ describe("Stage 1 subscription Journey failure recovery", () => {
     });
   });
 
+  it("recovers a historical validation business-wait exception into canonical revalidation", async () => {
+    const reconciliation = await import(BUSINESS_WAIT_RECONCILIATION_MODULE);
+    await rolledBack(prisma, async (tx) => {
+      const fixture = await createFixture(tx, SubscriptionJourneyStepCode.APPLICATION_VALIDATION);
+      const job = await repository.enqueueJob(tx, {
+        availableAt: new Date("2000-01-01T00:00:00.000Z"),
+        jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+        journeyId: fixture.journeyId,
+        maxAttempts: 1,
+        payload: { stepCode: fixture.stepCode },
+        sourceKey: `${fixture.prefix}:legacy-business-wait`,
+        stepId: fixture.stepId
+      });
+      const [claimed] = await repository.claimJobs(tx, 1, 120_000);
+      await repository.deadLetterJob(tx, {
+        error: {
+          code: "JOURNEY_APPLICATION_MATERIALS_INCOMPLETE",
+          message: "Legacy material review pending.",
+          retryable: false
+        },
+        jobId: job.id,
+        journeyId: fixture.journeyId,
+        leaseToken: claimed!.leaseToken,
+        stepId: fixture.stepId
+      });
+      const historical = await tx.subscriptionJourney.findUniqueOrThrow({
+        include: {
+          application: {
+            select: {
+              creditReviewStatus: true,
+              depositStatus: true,
+              finalDepositAmount: true,
+              journeyFactVersion: true,
+              materialReviewStatus: true,
+              status: true
+            }
+          },
+          exceptions: {
+            select: { code: true, id: true, status: true },
+            where: { status: "OPEN" }
+          },
+          steps: {
+            select: { code: true, id: true, status: true },
+            where: { code: SubscriptionJourneyStepCode.APPLICATION_VALIDATION }
+          }
+        },
+        where: { id: fixture.journeyId }
+      });
+      const planned = reconciliation.toReconciliationRow(historical);
+
+      await expect(
+        reconciliation.applyBusinessWaitCandidateInTransaction(tx, planned)
+      ).resolves.toEqual({
+        action: "REVALIDATE_APPLICATION",
+        journeyId: fixture.journeyId
+      });
+      await expect(
+        reconciliation.applyBusinessWaitCandidateInTransaction(tx, planned)
+      ).resolves.toEqual({
+        action: "SKIPPED",
+        journeyId: fixture.journeyId
+      });
+      await expect(
+        tx.subscriptionJourney.findUniqueOrThrow({
+          where: { id: fixture.journeyId }
+        })
+      ).resolves.toMatchObject({
+        currentStepCode: SubscriptionJourneyStepCode.APPLICATION_VALIDATION,
+        currentStepStatus: SubscriptionJourneyStepStatus.PENDING,
+        status: SubscriptionJourneyStatus.RUNNING,
+        version: 2
+      });
+      await expect(
+        tx.subscriptionJourneyException.findFirstOrThrow({
+          where: { journeyId: fixture.journeyId }
+        })
+      ).resolves.toMatchObject({ status: "RESOLVED" });
+      await expect(
+        tx.subscriptionJourneyStep.findUniqueOrThrow({
+          where: { id: fixture.stepId }
+        })
+      ).resolves.toMatchObject({ lastErrorCode: null, status: "PENDING" });
+
+      const recoveryOutbox = await tx.subscriptionJourneyOutbox.findUniqueOrThrow({
+        where: {
+          eventKey:
+            `journey:${fixture.journeyId}:reconcile:` + "application-validation:version:1:outbox"
+        }
+      });
+      const service = new SubscriptionJourneyService(repository);
+      await service.dispatchSignalOutbox(tx, recoveryOutbox as never);
+      expect(
+        await tx.subscriptionJourneyJob.count({
+          where: {
+            jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+            journeyId: fixture.journeyId,
+            status: SubscriptionJourneyJobStatus.PENDING
+          }
+        })
+      ).toBe(1);
+      expect(
+        await tx.auditLog.count({
+          where: {
+            entityId: fixture.applicationId,
+            entityType: "subscription_journey",
+            userAgent: "stage1-journey-business-wait-reconcile"
+          }
+        })
+      ).toBe(1);
+    });
+  });
+
   it("reclaims an expired worker lease and permits only safe pre-order cancellation", async () => {
     await rolledBack(prisma, async (tx) => {
       const fixture = await createFixture(tx, SubscriptionJourneyStepCode.APPLICATION_VALIDATION);
@@ -324,7 +447,12 @@ async function createFixture(
     }
   });
   await tx.customer.create({
-    data: { customerNo: `${prefix}-C`, id: customerId, mobile: "13800000000", name: "Recovery Customer" }
+    data: {
+      customerNo: `${prefix}-C`,
+      id: customerId,
+      mobile: "13800000000",
+      name: "Recovery Customer"
+    }
   });
   await tx.application.create({
     data: { applicationNo: `${prefix}-A`, customerId, id: applicationId, salesUserId: userId }
@@ -478,8 +606,12 @@ function requiredTestDatabaseUrl(value = process.env.DATABASE_URL) {
 function isLoopbackHostname(hostname: string) {
   if (hostname === "localhost" || hostname === "[::1]") return true;
   const octets = hostname.split(".");
-  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => {
-    const value = Number(octet);
-    return /^\d{1,3}$/.test(octet) && value >= 0 && value <= 255;
-  });
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => {
+      const value = Number(octet);
+      return /^\d{1,3}$/.test(octet) && value >= 0 && value <= 255;
+    })
+  );
 }

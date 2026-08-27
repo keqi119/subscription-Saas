@@ -17,8 +17,8 @@ describe("subscription journey state machine", () => {
   it("advances through every journey step in deterministic order", () => {
     const expected = [
       "FINAL_PLAN_DECISION",
-      "CUSTOMER_PLAN_CONFIRMATION",
       "FINAL_VEHICLE_ALLOCATION",
+      "CUSTOMER_PLAN_CONFIRMATION",
       "ORDER_AND_CONTRACT_CREATION",
       "FADADA_SIGNING_AND_ARCHIVE",
       "INITIAL_BILLING",

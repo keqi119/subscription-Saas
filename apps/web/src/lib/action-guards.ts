@@ -79,7 +79,7 @@ export type SubscriptionChangeGuardAction =
 
 export type SubscriptionJourneyGuardAction =
   | "FINAL_PLAN_DECISION"
-  | "FINAL_VEHICLE_ALLOCATION"
+  | "LEGACY_FINAL_VEHICLE_ALLOCATION"
   | "DELIVERY_EVIDENCE_DECISION"
   | "RETRY"
   | "PAUSE"
@@ -113,7 +113,7 @@ const SUBSCRIPTION_JOURNEY_ACTION_PERMISSIONS: Record<
   CANCEL: "subscription_journey:cancel",
   DELIVERY_EVIDENCE_DECISION: "subscription_journey:delivery_evidence_decide",
   FINAL_PLAN_DECISION: "subscription_journey:plan_decide",
-  FINAL_VEHICLE_ALLOCATION: "subscription_journey:vehicle_allocate",
+  LEGACY_FINAL_VEHICLE_ALLOCATION: "subscription_journey:vehicle_allocate",
   PAUSE: "subscription_journey:recover",
   RESUME: "subscription_journey:recover",
   RETRY: "subscription_journey:recover"

@@ -25,6 +25,7 @@ import { sortByPortalListOrder } from "../common/portal-list-ordering";
 import type { PortalListSortKey } from "../common/portal-list-ordering";
 import { PrismaService } from "../prisma/prisma.service";
 import {
+  isSubscriptionChangeTypeEnabled,
   SUBSCRIPTION_CHANGE_CONFIG,
   SubscriptionChangeConfig
 } from "../subscription-change/subscription-change.config";
@@ -331,7 +332,7 @@ export class PortalRenewalService {
   }
 
   private assertEnabled() {
-    if (!this.config.enabled) {
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)) {
       throw new ServiceUnavailableException("Subscription renewal is temporarily unavailable.");
     }
   }

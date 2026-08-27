@@ -10,6 +10,19 @@ import { describe, expect, it, vi } from "vitest";
 import { SubscriptionVehicleSwapService } from "../src/subscription-change/subscription-vehicle-swap.service";
 
 describe("SubscriptionVehicleSwapService", () => {
+  it("uses the vehicle-swap rollout flag independently from extension", async () => {
+    const harness = swapHarness({ extensionEnabled: false, vehicleSwapEnabled: true });
+
+    await expect(
+      harness.service.createFormalQuote(
+        "change-swap",
+        { idempotencyKey: "quote-independent-flag", version: 0 },
+        harness.actor,
+        harness.context
+      )
+    ).resolves.toMatchObject({ revision: 1, status: SubscriptionChangeQuoteStatus.FORMAL });
+  });
+
   it("exposes the generated supplement contract to the customer portal", async () => {
     const harness = swapHarness({ formalQuote: true, published: true });
     harness.state.change.contractId = "contract-swap";
@@ -189,9 +202,11 @@ describe("SubscriptionVehicleSwapService", () => {
 
 interface HarnessOptions {
   expired?: boolean;
+  extensionEnabled?: boolean;
   formalQuote?: boolean;
   published?: boolean;
   reservationConflict?: boolean;
+  vehicleSwapEnabled?: boolean;
 }
 
 interface QuoteState extends Record<string, unknown> {
@@ -438,7 +453,12 @@ function swapHarness(options: HarnessOptions = {}) {
       { write: vi.fn(async () => undefined) } as never,
       assetOperations as never,
       pricing as never,
-      { enabled: true, now: () => now, quoteValidityHours: 72 }
+      {
+        enabled: options.extensionEnabled ?? true,
+        now: () => now,
+        quoteValidityHours: 72,
+        vehicleSwapEnabled: options.vehicleSwapEnabled ?? true
+      }
     ),
     state
   };

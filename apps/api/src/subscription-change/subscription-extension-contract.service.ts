@@ -10,7 +10,8 @@ import {
   ContractVersionStatus,
   Prisma,
   SubscriptionChangeQuoteStatus,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import type { Contract, ContractVersion } from "@prisma/client";
 
@@ -28,7 +29,11 @@ import {
 import { PrismaService } from "../prisma/prisma.service";
 import { VehicleInsuranceService } from "../vehicle-insurance/vehicle-insurance.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import {
   ExtensionChangeProjection,
   requireExtensionChangeProjection
@@ -559,7 +564,9 @@ export class SubscriptionExtensionContractService {
   }
 
   private assertEnabled() {
-    if (!this.changeConfig.enabled) {
+    if (
+      !isSubscriptionChangeTypeEnabled(this.changeConfig, SubscriptionChangeType.EXTENSION)
+    ) {
       throw new SubscriptionChangeError(
         "SUBSCRIPTION_EXTENSION_DISABLED",
         "Subscription extensions are disabled.",

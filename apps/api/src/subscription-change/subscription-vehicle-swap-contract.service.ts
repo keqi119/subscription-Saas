@@ -31,7 +31,11 @@ import {
 } from "../contract/contract-pdf-render-model";
 import { PrismaService } from "../prisma/prisma.service";
 import { VehicleInsuranceService } from "../vehicle-insurance/vehicle-insurance.service";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
@@ -491,10 +495,15 @@ export class SubscriptionVehicleSwapContractService {
   }
 
   private assertEnabled() {
-    if (!this.changeConfig.enabled) {
+    if (
+      !isSubscriptionChangeTypeEnabled(
+        this.changeConfig,
+        SubscriptionChangeType.VEHICLE_SWAP
+      )
+    ) {
       throw new SubscriptionChangeError(
-        "SUBSCRIPTION_CHANGE_DISABLED",
-        "Subscription changes are disabled.",
+        "SUBSCRIPTION_VEHICLE_SWAP_DISABLED",
+        "Subscription vehicle swaps are disabled.",
         503
       );
     }

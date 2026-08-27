@@ -14,7 +14,11 @@ import { createHash } from "node:crypto";
 import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { projectSubscriptionChange } from "./subscription-change.domain";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionChangeRepository } from "./subscription-change.repository";
@@ -61,6 +65,7 @@ export class SubscriptionChangeService {
   async create(input: CreateSubscriptionChangeInput, actor: RequestUser, context: RequestContext) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_CREATE);
     assertIdempotencyKey(input.idempotencyKey);
+    assertChangeTypeEnabled(this.config, input.changeType);
 
     if (input.changeType === SubscriptionChangeType.EXTENSION) {
       const change = await this.extensionService.createExtension(
@@ -513,6 +518,24 @@ export class SubscriptionChangeService {
     }
     return projectSubscriptionChange(change, actor);
   }
+}
+
+function assertChangeTypeEnabled(
+  config: SubscriptionChangeConfig,
+  changeType: SubscriptionChangeType
+) {
+  if (isSubscriptionChangeTypeEnabled(config, changeType)) return;
+  const codeByType: Record<SubscriptionChangeType, string> = {
+    [SubscriptionChangeType.EARLY_TERMINATION]: "SUBSCRIPTION_EARLY_TERMINATION_DISABLED",
+    [SubscriptionChangeType.EXTENSION]: "SUBSCRIPTION_EXTENSION_DISABLED",
+    [SubscriptionChangeType.MANAGED_OTHER]: "SUBSCRIPTION_MANAGED_OTHER_DISABLED",
+    [SubscriptionChangeType.VEHICLE_SWAP]: "SUBSCRIPTION_VEHICLE_SWAP_DISABLED"
+  };
+  throw new SubscriptionChangeError(
+    codeByType[changeType],
+    `Subscription change type ${changeType} is disabled.`,
+    HttpStatus.SERVICE_UNAVAILABLE
+  );
 }
 
 function createDetailData(

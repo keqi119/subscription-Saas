@@ -131,6 +131,28 @@ describe("SubscriptionChangeService", () => {
   });
 
   it.each([
+    [SubscriptionChangeType.EXTENSION, "extensionEnabled", "SUBSCRIPTION_EXTENSION_DISABLED"],
+    [SubscriptionChangeType.VEHICLE_SWAP, "vehicleSwapEnabled", "SUBSCRIPTION_VEHICLE_SWAP_DISABLED"],
+    [
+      SubscriptionChangeType.EARLY_TERMINATION,
+      "earlyTerminationEnabled",
+      "SUBSCRIPTION_EARLY_TERMINATION_DISABLED"
+    ],
+    [SubscriptionChangeType.MANAGED_OTHER, "managedOtherEnabled", "SUBSCRIPTION_MANAGED_OTHER_DISABLED"]
+  ] as const)("fails closed when the %s rollout flag is disabled", async (changeType, flag, code) => {
+    const harness = genericHarness({ config: { [flag]: false } });
+
+    await expect(
+      harness.service.create(
+        { ...managedOtherInput(`disabled-${changeType}`), changeType } as never,
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code, status: 503 });
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["reason", { reason: " " }, "MANAGED_OTHER_REASON_REQUIRED"],
     ["effective date", { effectiveDate: "2026-02-30" }, "EFFECTIVE_DATE_INVALID"],
     ["evidence", { evidence: [] }, "MANAGED_OTHER_EVIDENCE_REQUIRED"],
@@ -297,6 +319,12 @@ interface HarnessOptions {
   activeChange?: boolean;
   changeStatus?: SubscriptionChangeStatus;
   changeVersion?: number;
+  config?: Partial<{
+    earlyTerminationEnabled: boolean;
+    extensionEnabled: boolean;
+    managedOtherEnabled: boolean;
+    vehicleSwapEnabled: boolean;
+  }>;
   concurrentReplay?: boolean;
   replay?: "exact" | "mismatch";
   typedExtension?: boolean;
@@ -456,7 +484,16 @@ function genericHarness(options: HarnessOptions = {}) {
     repository,
     { write: vi.fn(async () => undefined) } as never,
     extensionService as never,
-    { enabled: true, now: () => now, quoteValidityHours: 72 }
+    {
+      earlyTerminationEnabled: true,
+      enabled: true,
+      extensionEnabled: true,
+      managedOtherEnabled: true,
+      now: () => now,
+      quoteValidityHours: 72,
+      vehicleSwapEnabled: true,
+      ...options.config
+    }
   );
   return {
     actor,

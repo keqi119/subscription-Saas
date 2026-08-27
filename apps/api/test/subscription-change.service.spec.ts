@@ -33,6 +33,22 @@ describe("SubscriptionExtensionService", () => {
     );
   });
 
+  it("loads the four active-term change flags independently and fails closed", () => {
+    expect(
+      loadSubscriptionChangeConfig({
+        SUBSCRIPTION_EARLY_TERMINATION_ENABLED: "true",
+        SUBSCRIPTION_EXTENSION_ENABLED: "true",
+        SUBSCRIPTION_MANAGED_OTHER_ENABLED: "false",
+        SUBSCRIPTION_VEHICLE_SWAP_ENABLED: "TRUE"
+      })
+    ).toMatchObject({
+      earlyTerminationEnabled: true,
+      extensionEnabled: true,
+      managedOtherEnabled: false,
+      vehicleSwapEnabled: false
+    });
+  });
+
   it("fails closed when the feature flag is not the exact string true", async () => {
     const harness = changeHarness({ enabled: false });
 

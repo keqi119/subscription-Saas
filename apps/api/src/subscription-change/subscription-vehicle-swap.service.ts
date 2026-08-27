@@ -22,7 +22,11 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionVehicleSwapPricingService } from "./subscription-vehicle-swap-pricing.service";
 
@@ -559,10 +563,10 @@ export class SubscriptionVehicleSwapService {
   }
 
   private assertWriteEnabled() {
-    if (!this.config.enabled) {
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.VEHICLE_SWAP)) {
       throw new SubscriptionChangeError(
-        "SUBSCRIPTION_CHANGE_DISABLED",
-        "Subscription changes are disabled.",
+        "SUBSCRIPTION_VEHICLE_SWAP_DISABLED",
+        "Subscription vehicle swaps are disabled.",
         HttpStatus.SERVICE_UNAVAILABLE
       );
     }

@@ -20,7 +20,11 @@ import { AuditService } from "../audit/audit.service";
 import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
 import { PrismaService } from "../prisma/prisma.service";
-import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_CONFIG,
+  SubscriptionChangeConfig
+} from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionChangeRepository } from "./subscription-change.repository";
 import { ContractSegmentService } from "./contract-segment.service";
@@ -1031,7 +1035,7 @@ export class SubscriptionExtensionService {
   }
 
   private assertWriteEnabled() {
-    if (!this.config.enabled) {
+    if (!isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)) {
       throw new SubscriptionChangeError(
         "SUBSCRIPTION_EXTENSION_DISABLED",
         "Subscription extensions are disabled.",

@@ -79,6 +79,13 @@ export class SubscriptionChangeService {
         const order = await this.repository.findOrder(tx, input.orderId);
         assertActiveOrder(order);
 
+        const command = await this.repository.createCommand(tx, {
+          actorId: actor.id,
+          idempotencyKey: input.idempotencyKey!,
+          operation: CREATE_OPERATION,
+          requestHash
+        });
+
         const active = await this.repository.findActiveChange(tx, input.orderId);
         if (active) throw activeChangeExists();
 
@@ -86,12 +93,6 @@ export class SubscriptionChangeService {
           input.changeType === SubscriptionChangeType.VEHICLE_SWAP
             ? await this.vehicleSwapDetail(tx, input, order.vehicleId!)
             : createDetailData(input, actor, this.config.now());
-        const command = await this.repository.createCommand(tx, {
-          actorId: actor.id,
-          idempotencyKey: input.idempotencyKey!,
-          operation: CREATE_OPERATION,
-          requestHash
-        });
         const change = await this.repository.createChange(tx, {
           changeNo: createBusinessNo("SCO"),
           changeType: input.changeType,

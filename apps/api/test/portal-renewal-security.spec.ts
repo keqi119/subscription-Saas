@@ -2,6 +2,7 @@ import { NotFoundException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import { PortalRenewalService } from "../src/portal/portal-renewal.service";
+import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 
 describe("Portal renewal ownership", () => {
   it("returns 404 rather than exposing another customer's consideration", async () => {
@@ -11,7 +12,8 @@ describe("Portal renewal ownership", () => {
     const service = new PortalRenewalService(
       prisma as never,
       { write: vi.fn() } as never,
-      { enabled: true, now: () => new Date(), quoteValidityHours: 72 }
+      { enabled: true, now: () => new Date(), quoteValidityHours: 72 },
+      new SubscriptionChangeRepository(prisma as never)
     );
 
     await expect(service.get("consideration-other", customer())).rejects.toBeInstanceOf(
@@ -34,7 +36,8 @@ describe("Portal renewal ownership", () => {
     const service = new PortalRenewalService(
       prisma as never,
       { write: vi.fn() } as never,
-      { enabled: true, now: () => new Date(), quoteValidityHours: 72 }
+      { enabled: true, now: () => new Date(), quoteValidityHours: 72 },
+      new SubscriptionChangeRepository(prisma as never)
     );
 
     await expect(service.getChange("change-other", customer())).rejects.toBeInstanceOf(

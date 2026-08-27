@@ -13,6 +13,7 @@ export const subscriptionChangeInclude = Prisma.validator<Prisma.SubscriptionCha
   managedOtherDetail: true,
   order: { select: { id: true, orderNo: true } },
   quotes: { orderBy: { revision: "desc" } },
+  sourceSegment: true,
   targetSegment: true,
   vehicleSwapDetail: true
 });

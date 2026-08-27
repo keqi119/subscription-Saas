@@ -80,10 +80,7 @@ describe("SubscriptionExtensionActivationService", () => {
 
   it("moves the change to manual takeover after a continuation job exhausts retries", async () => {
     const harness = createActivationHarness();
-    await harness.service.activate(
-      "segment-extension",
-      new Date("2026-09-03T00:00:00.000Z")
-    );
+    await harness.service.activate("segment-extension", new Date("2026-09-03T00:00:00.000Z"));
 
     await harness.service.markManualTakeover(
       {
@@ -129,21 +126,32 @@ describe("SubscriptionExtensionActivationService", () => {
   it("enqueues an account-period renewal even when the extension has no grant components", async () => {
     const harness = createActivationHarness({ packageSnapshot: {} });
 
-    await harness.service.activate(
-      "segment-extension",
-      new Date("2026-09-03T00:00:00.000Z")
-    );
+    await harness.service.activate("segment-extension", new Date("2026-09-03T00:00:00.000Z"));
 
     expect(harness.enqueued).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          idempotencyKey:
-            "extension-entitlement:order-1:segment-extension:2026-09-03:ACCOUNT",
+          idempotencyKey: "extension-entitlement:order-1:segment-extension:2026-09-03:ACCOUNT",
           jobType: SubscriptionAutomationJobType.EXTENSION_ENTITLEMENT_RENEW,
           payload: { periodStart: "2026-09-03" }
         })
       ])
     );
+  });
+
+  it("activates identically when extension-owned root fields are null", async () => {
+    const legacy = createActivationHarness();
+    const typed = createActivationHarness(undefined, { typedDetailOnly: true });
+    const effectiveAt = new Date("2026-09-03T00:00:00.000Z");
+
+    const legacyResult = await legacy.service.activate("segment-extension", effectiveAt);
+    const typedResult = await typed.service.activate("segment-extension", effectiveAt);
+
+    expect(typedResult).toEqual(legacyResult);
+    expect(typed.state.source.status).toBe(legacy.state.source.status);
+    expect(typed.state.target.status).toBe(legacy.state.target.status);
+    expect(typed.state.change.status).toBe(legacy.state.change.status);
+    expect(typed.enqueued).toEqual(legacy.enqueued);
   });
 });
 
@@ -157,8 +165,9 @@ describe("extension effective notice", () => {
           records.push(record);
           return record;
         }),
-        findUnique: vi.fn(async ({ where }) =>
-          records.find((record) => record.notificationNo === where.notificationNo) ?? null
+        findUnique: vi.fn(
+          async ({ where }) =>
+            records.find((record) => record.notificationNo === where.notificationNo) ?? null
         )
       }
     };
@@ -197,18 +206,19 @@ function createActivationHarness(
     packageSnapshot: {
       mileagePackage: { monthlyMileageKm: 1800 }
     }
-  }
+  },
+  options: { typedDetailOnly?: boolean } = {}
 ) {
   const state = {
     change: {
       changeType: SubscriptionChangeType.EXTENSION,
-      extensionMonths: 6,
+      extensionMonths: options.typedDetailOnly ? null : 6,
       id: "change-1",
       orderId: "order-1",
-      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+      pricingMode: options.typedDetailOnly ? null : SubscriptionChangePricingMode.CURRENT_VERSION,
       status: SubscriptionChangeStatus.SCHEDULED,
-      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
-      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
+      targetEndDate: options.typedDetailOnly ? null : new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: options.typedDetailOnly ? null : new Date("2026-09-03T00:00:00.000Z"),
       version: 3
     },
     source: {
@@ -228,7 +238,20 @@ function createActivationHarness(
   };
   state.target.sourceChangeOrder = {
     ...state.change,
-    sourceSegment: state.source
+    extensionDetail: options.typedDetailOnly
+      ? {
+          extensionMonths: 6,
+          priceOverrideApprovedAt: null,
+          priceOverrideApprovedBy: null,
+          priceOverrideReason: null,
+          pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+          sourceSegment: state.source,
+          sourceSegmentId: state.source.id,
+          targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+          targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+        }
+      : null,
+    sourceSegment: options.typedDetailOnly ? null : state.source
   };
   const enqueued: Array<Record<string, unknown>> = [];
   const jobs: Array<Record<string, unknown>> = [];
@@ -237,22 +260,18 @@ function createActivationHarness(
     $transaction: vi.fn(async (operation: (tx: unknown) => unknown) => operation(prisma)),
     subscriptionAutomationJob: {
       findMany: vi.fn(async ({ where }) =>
-        jobs.filter((job) =>
-          job.changeOrderId === where.changeOrderId && where.jobType.in.includes(job.jobType)
+        jobs.filter(
+          (job) =>
+            job.changeOrderId === where.changeOrderId && where.jobType.in.includes(job.jobType)
         )
       )
     },
     subscriptionChangeOrder: {
       findUnique: vi.fn(async () => state.change),
       updateMany: vi.fn(async ({ data, where }) => {
-        if (
-          where.status?.in &&
-          !where.status.in.includes(state.change.status)
-        ) return { count: 0 };
-        if (
-          typeof where.status === "string" &&
-          state.change.status !== where.status
-        ) return { count: 0 };
+        if (where.status?.in && !where.status.in.includes(state.change.status)) return { count: 0 };
+        if (typeof where.status === "string" && state.change.status !== where.status)
+          return { count: 0 };
         Object.assign(state.change, {
           ...data,
           version: data.version?.increment

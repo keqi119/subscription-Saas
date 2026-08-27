@@ -81,6 +81,28 @@ describe("SubscriptionExtensionContractService", () => {
     });
   });
 
+  it("generates identical contract terms from typed-only and legacy-compatible extension facts", async () => {
+    const legacy = contractHarness();
+    const typed = contractHarness({ typedDetailOnly: true });
+
+    await legacy.service.generate(
+      "change-1",
+      contractCommand("legacy"),
+      legacy.actor,
+      legacy.context
+    );
+    await typed.service.generate("change-1", contractCommand("typed"), typed.actor, typed.context);
+
+    const legacyCreate = legacy.prisma.contract.create.mock.calls[0]![0];
+    const typedCreate = typed.prisma.contract.create.mock.calls[0]![0];
+    expect(typedCreate.data.contractSnapshot).toEqual(legacyCreate.data.contractSnapshot);
+    const legacyRender = legacy.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls[0]![0]
+      .renderModel as Record<string, unknown>;
+    const typedRender = typed.artifactWriter.writeGeneratedContractPdfArtifact.mock.calls[0]![0]
+      .renderModel as Record<string, unknown>;
+    expect(typedRender.extensionTerms).toEqual(legacyRender.extensionTerms);
+  });
+
   it("returns the existing effective extension contract on a safe retry", async () => {
     const harness = contractHarness({ existingContract: true });
 
@@ -233,6 +255,7 @@ interface HarnessOptions {
   now?: Date;
   status?: SubscriptionChangeStatus;
   template?: Record<string, unknown> | null;
+  typedDetailOnly?: boolean;
 }
 
 interface PrismaHarness {
@@ -317,6 +340,12 @@ function contractHarness(options: HarnessOptions = {}) {
         updatedAt: new Date("2026-08-05T04:00:00.000Z")
       }
     : null;
+  const sourceSegment = {
+    endDate: new Date("2026-09-02T00:00:00.000Z"),
+    id: "segment-base",
+    sourceContract: originalContract,
+    sourceContractId: originalContract.id
+  };
   const state = {
     change: {
       changeType: SubscriptionChangeType.EXTENSION,
@@ -325,7 +354,20 @@ function contractHarness(options: HarnessOptions = {}) {
       confirmedQuoteId: quote?.id ?? null,
       contract: existingContract,
       contractId: existingContract?.id ?? null,
-      extensionMonths: 6,
+      extensionDetail: options.typedDetailOnly
+        ? {
+            extensionMonths: 6,
+            priceOverrideApprovedAt: null,
+            priceOverrideApprovedBy: null,
+            priceOverrideReason: null,
+            pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+            sourceSegment,
+            sourceSegmentId: sourceSegment.id,
+            targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+            targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+          }
+        : null,
+      extensionMonths: options.typedDetailOnly ? null : 6,
       id: "change-1",
       order: {
         businessType: BusinessType.SUBSCRIPTION,
@@ -350,20 +392,15 @@ function contractHarness(options: HarnessOptions = {}) {
         vehicleId: "vehicle-1"
       },
       orderId: "order-1",
-      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
-      sourceSegment: {
-        endDate: new Date("2026-09-02T00:00:00.000Z"),
-        id: "segment-base",
-        sourceContract: originalContract,
-        sourceContractId: originalContract.id
-      },
+      pricingMode: options.typedDetailOnly ? null : SubscriptionChangePricingMode.CURRENT_VERSION,
+      sourceSegment: options.typedDetailOnly ? null : sourceSegment,
       status:
         options.status ??
         (options.existingContract
           ? SubscriptionChangeStatus.SIGNING_OR_PAYMENT
           : SubscriptionChangeStatus.CUSTOMER_CONFIRMED),
-      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
-      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
+      targetEndDate: options.typedDetailOnly ? null : new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: options.typedDetailOnly ? null : new Date("2026-09-03T00:00:00.000Z"),
       version: 2
     },
     order: { contractId: "contract-original" }

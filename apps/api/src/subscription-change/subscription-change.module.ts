@@ -38,6 +38,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
     SubscriptionExtensionService,
+    SubscriptionChangeRepository,
     SubscriptionChangeService
   ],
   imports: [

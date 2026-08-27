@@ -2,6 +2,8 @@ import { ConfigService } from "@nestjs/config";
 import {
   ContractStatus,
   Prisma,
+  RenewalConsiderationStatus,
+  RenewalDecision,
   SubscriptionChangePricingMode,
   SubscriptionChangeQuoteStatus,
   SubscriptionChangeStatus
@@ -11,8 +13,10 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AuditService } from "../src/audit/audit.service";
+import { PortalRenewalService } from "../src/portal/portal-renewal.service";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
+import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 import { SubscriptionExtensionPricingService } from "../src/subscription-change/subscription-extension-pricing.service";
 import { SubscriptionExtensionService } from "../src/subscription-change/subscription-extension.service";
 
@@ -22,12 +26,15 @@ const TEST_DATABASE_URL =
 
 describe("SubscriptionExtensionService PostgreSQL integration", () => {
   let prisma: PrismaService;
+  let repository: SubscriptionChangeRepository;
+  let segmentService: ContractSegmentService;
   let service: SubscriptionExtensionService;
 
   beforeAll(async () => {
     prisma = new PrismaService(new ConfigService({ DATABASE_URL: TEST_DATABASE_URL }));
     await prisma.onModuleInit();
-    const segmentService = new ContractSegmentService(prisma);
+    segmentService = new ContractSegmentService(prisma);
+    repository = new SubscriptionChangeRepository(prisma);
     service = new SubscriptionExtensionService(
       prisma,
       new AuditService(prisma),
@@ -37,7 +44,8 @@ describe("SubscriptionExtensionService PostgreSQL integration", () => {
         enabled: true,
         now: () => new Date("2026-08-05T04:00:00.000Z"),
         quoteValidityHours: 72
-      }
+      },
+      repository
     );
   });
 
@@ -47,6 +55,15 @@ describe("SubscriptionExtensionService PostgreSQL integration", () => {
 
   it("persists an ORIGINAL_PRICE extension, append-only quote and idempotent command result", async () => {
     const fixture = await createFixture(prisma);
+    const approverId = randomUUID();
+    await prisma.user.create({
+      data: {
+        id: approverId,
+        name: "Integration Price Approver",
+        passwordHash: "not-used-by-test",
+        username: `extension-approver-${approverId}`
+      }
+    });
     const actor = {
       id: randomUUID(),
       menus: [],
@@ -78,6 +95,24 @@ describe("SubscriptionExtensionService PostgreSQL integration", () => {
         targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
         targetEndDate: new Date("2027-03-02T00:00:00.000Z")
       });
+      const stored = await prisma.subscriptionChangeOrder.findUniqueOrThrow({
+        include: { extensionDetail: true },
+        where: { id: change.id }
+      });
+      expect(stored).toMatchObject({
+        extensionMonths: null,
+        pricingMode: null,
+        sourceSegmentId: null,
+        targetEndDate: null,
+        targetStartDate: null,
+        extensionDetail: {
+          extensionMonths: 6,
+          pricingMode: SubscriptionChangePricingMode.ORIGINAL_PRICE,
+          sourceSegmentId: expect.any(String),
+          targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+          targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+        }
+      });
 
       const quoteInput = {
         idempotencyKey: `quote:${change.id}:1`,
@@ -100,6 +135,128 @@ describe("SubscriptionExtensionService PostgreSQL integration", () => {
           where: { actorId: actor.id, resourceId: { in: [change.id, quote.id] } }
         })
       ).resolves.toBe(2);
+
+      const approver = {
+        ...actor,
+        id: approverId,
+        permissions: [PermissionCode.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE],
+        username: `extension-approver-${approverId}`
+      };
+      await service.approvePriceOverride(
+        change.id,
+        {
+          idempotencyKey: `approve:${change.id}:1`,
+          reason: "Approved against the archived agreement",
+          version: 1
+        },
+        approver,
+        context
+      );
+
+      const approved = await prisma.subscriptionChangeOrder.findUniqueOrThrow({
+        include: { extensionDetail: true },
+        where: { id: change.id }
+      });
+      expect(approved).toMatchObject({
+        priceOverrideApprovedAt: null,
+        priceOverrideApprovedBy: null,
+        priceOverrideReason: null,
+        extensionDetail: {
+          priceOverrideApprovedAt: new Date("2026-08-05T04:00:00.000Z"),
+          priceOverrideApprovedBy: approverId,
+          priceOverrideReason: "Approved against the archived agreement"
+        }
+      });
+    } finally {
+      await cleanupFixture(prisma, fixture.orderId);
+      await prisma.user.deleteMany({ where: { id: approverId } });
+    }
+  });
+
+  it("serializes Admin and customer-renewal creation through one active-change slot", async () => {
+    const fixture = await createFixture(prisma);
+    const actor = {
+      id: randomUUID(),
+      menus: [],
+      name: "Integration Operator",
+      permissions: [PermissionCode.SUBSCRIPTION_CHANGE_CREATE],
+      roles: ["OP"],
+      username: "integration-op"
+    };
+    const context = { ipAddress: "127.0.0.1", userAgent: "vitest-integration" };
+
+    try {
+      const segment = await segmentService.ensureBaseSegment(fixture.orderId, actor.id);
+      const consideration = await prisma.renewalConsideration.create({
+        data: {
+          completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
+          considerationNo: `RNC${randomUUID().replaceAll("-", "").slice(0, 20)}`,
+          considerationStartAt: new Date("2026-08-03T00:00:00.000Z"),
+          orderId: fixture.orderId,
+          segmentId: segment.id,
+          status: RenewalConsiderationStatus.PENDING_DECISION
+        }
+      });
+      const portal = new PortalRenewalService(
+        prisma,
+        new AuditService(prisma),
+        {
+          enabled: true,
+          now: () => new Date("2026-08-05T04:00:00.000Z"),
+          quoteValidityHours: 72
+        },
+        repository
+      );
+
+      const results = await Promise.allSettled([
+        service.createExtension(
+          {
+            extensionMonths: 6,
+            idempotencyKey: `admin:${fixture.orderId}`,
+            orderId: fixture.orderId,
+            pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION
+          },
+          actor,
+          context
+        ),
+        portal.decide(
+          consideration.id,
+          { decision: RenewalDecision.RENEW, version: 0 },
+          {
+            accountStatus: "ACTIVE",
+            customerAccountId: randomUUID(),
+            customerId: fixture.customerId,
+            phone: "13800138000"
+          } as never,
+          context
+        )
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+      await expect(
+        prisma.subscriptionChangeOrder.count({
+          where: {
+            orderId: fixture.orderId,
+            status: {
+              in: [
+                SubscriptionChangeStatus.DRAFT,
+                SubscriptionChangeStatus.QUOTED,
+                SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
+                SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+                SubscriptionChangeStatus.SCHEDULED,
+                SubscriptionChangeStatus.EXECUTING,
+                SubscriptionChangeStatus.MANUAL_TAKEOVER
+              ]
+            }
+          }
+        })
+      ).resolves.toBe(1);
+      await expect(
+        prisma.subscriptionExtensionChangeDetail.count({
+          where: { changeOrder: { orderId: fixture.orderId } }
+        })
+      ).resolves.toBe(1);
     } finally {
       await cleanupFixture(prisma, fixture.orderId);
     }
@@ -223,7 +380,7 @@ async function createFixture(prisma: PrismaService) {
     `);
   });
 
-  return { contractId, orderId, productId, productVersionId, vehicleId };
+  return { contractId, customerId, orderId, productId, productVersionId, vehicleId };
 }
 
 async function cleanupFixture(prisma: PrismaService, orderId: string) {
@@ -254,6 +411,15 @@ async function cleanupFixture(prisma: PrismaService, orderId: string) {
       WHERE "change_order_id" IN (
         SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
       )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "subscription_extension_change_detail"
+      WHERE "change_order_id" IN (
+        SELECT "id" FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid
+      )
+    `);
+    await tx.$executeRaw(Prisma.sql`
+      DELETE FROM "renewal_consideration" WHERE "order_id" = ${orderId}::uuid
     `);
     await tx.$executeRaw(Prisma.sql`
       DELETE FROM "subscription_change_order" WHERE "order_id" = ${orderId}::uuid

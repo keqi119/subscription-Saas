@@ -28,6 +28,7 @@ import {
   SUBSCRIPTION_CHANGE_CONFIG,
   SubscriptionChangeConfig
 } from "../subscription-change/subscription-change.config";
+import { SubscriptionChangeRepository } from "../subscription-change/subscription-change.repository";
 import { requireExtensionChangeProjection } from "../subscription-change/subscription-extension-compat";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
@@ -47,7 +48,6 @@ const PORTAL_RENEWAL_HISTORY_STATUSES = new Set<RenewalConsiderationStatus>([
   RenewalConsiderationStatus.EXPIRED,
   RenewalConsiderationStatus.CANCELLED
 ]);
-
 const considerationInclude = Prisma.validator<Prisma.RenewalConsiderationInclude>()({
   changeOrder: {
     include: { confirmedQuote: true, currentQuote: true }
@@ -92,7 +92,8 @@ export class PortalRenewalService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     @Inject(SUBSCRIPTION_CHANGE_CONFIG)
-    private readonly config: SubscriptionChangeConfig
+    private readonly config: SubscriptionChangeConfig,
+    private readonly changeRepository: SubscriptionChangeRepository
   ) {}
 
   async list(currentCustomer: CurrentCustomer) {
@@ -101,9 +102,7 @@ export class PortalRenewalService {
       orderBy: [{ completionDeadlineAt: "asc" }, { createdAt: "desc" }],
       where: { order: { customerId: currentCustomer.customerId } }
     });
-    return sortByPortalListOrder(considerations, portalRenewalSortKey).map(
-      toConsiderationView
-    );
+    return sortByPortalListOrder(considerations, portalRenewalSortKey).map(toConsiderationView);
   }
 
   async get(id: string, currentCustomer: CurrentCustomer) {
@@ -130,22 +129,8 @@ export class PortalRenewalService {
 
       let changeOrderId: string | null = null;
       if (input.decision === RenewalDecision.RENEW) {
-        const active = await tx.subscriptionChangeOrder.findFirst({
-          where: {
-            orderId: consideration.orderId,
-            status: {
-              in: [
-                SubscriptionChangeStatus.DRAFT,
-                SubscriptionChangeStatus.QUOTED,
-                SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
-                SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
-                SubscriptionChangeStatus.SCHEDULED,
-                SubscriptionChangeStatus.EXECUTING,
-                SubscriptionChangeStatus.MANUAL_TAKEOVER
-              ]
-            }
-          }
-        });
+        await this.changeRepository.lockCreationScope(tx, consideration.orderId);
+        const active = await this.changeRepository.findActiveChange(tx, consideration.orderId);
         if (active)
           throw new ConflictException("The order already has an active subscription change.");
         const extensionMonths = Math.max(1, consideration.order.periodMonths);
@@ -156,14 +141,18 @@ export class PortalRenewalService {
             changeNo: createBusinessNo("SCO"),
             changeType: SubscriptionChangeType.EXTENSION,
             completionDeadlineAt: consideration.completionDeadlineAt,
-            extensionMonths,
+            extensionDetail: {
+              create: {
+                extensionMonths,
+                pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+                sourceSegmentId: consideration.segmentId,
+                targetEndDate,
+                targetStartDate
+              }
+            },
             orderId: consideration.orderId,
-            pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
             renewalConsiderationId: consideration.id,
-            sourceSegmentId: consideration.segmentId,
-            status: SubscriptionChangeStatus.DRAFT,
-            targetEndDate,
-            targetStartDate
+            status: SubscriptionChangeStatus.DRAFT
           }
         });
         changeOrderId = change.id;
@@ -520,8 +509,7 @@ function considerationNextAction(consideration: PortalConsideration) {
 function portalRenewalSortKey(consideration: PortalConsideration): PortalListSortKey {
   const nextAction = considerationNextAction(consideration);
   const terminal =
-    PORTAL_RENEWAL_HISTORY_STATUSES.has(consideration.status) ||
-    nextAction === "RENEWAL_COMPLETED";
+    PORTAL_RENEWAL_HISTORY_STATUSES.has(consideration.status) || nextAction === "RENEWAL_COMPLETED";
 
   return {
     createdAt: consideration.createdAt,

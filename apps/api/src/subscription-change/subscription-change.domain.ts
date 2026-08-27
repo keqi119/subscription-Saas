@@ -1,9 +1,14 @@
-import { SubscriptionChangeStatus, SubscriptionChangeType } from "@prisma/client";
+import {
+  SubscriptionChangePricingMode,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
+} from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequestUser } from "../auth/auth.types";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionChangeAction } from "./subscription-change.types";
+import { requireExtensionChangeProjection } from "./subscription-extension-compat";
 
 const FINAL_STATUSES = new Set<SubscriptionChangeStatus>([
   SubscriptionChangeStatus.COMPLETED,
@@ -22,14 +27,24 @@ const CANCELLABLE_STATUSES = new Set<SubscriptionChangeStatus>([
 interface ChangeProjectionSource {
   changeType: SubscriptionChangeType;
   earlyTerminationDetail?: unknown | null;
-  extensionDetail?: unknown | null;
-  extensionMonths?: number | null;
+  extensionDetail?: {
+    extensionMonths: number;
+    priceOverrideApprovedAt?: Date | null;
+    priceOverrideApprovedBy?: string | null;
+    priceOverrideReason?: string | null;
+    pricingMode: SubscriptionChangePricingMode;
+    sourceSegment?: unknown | null;
+    targetEndDate: Date;
+    targetStartDate: Date;
+  } | null;
+  extensionMonths: number | null;
   managedOtherDetail?: unknown | null;
-  pricingMode?: unknown | null;
-  sourceSegmentId?: string | null;
+  pricingMode: SubscriptionChangePricingMode | null;
+  sourceSegment: unknown | null;
+  sourceSegmentId: string | null;
   status: SubscriptionChangeStatus;
-  targetEndDate?: Date | null;
-  targetStartDate?: Date | null;
+  targetEndDate: Date | null;
+  targetStartDate: Date | null;
   vehicleSwapDetail?: unknown | null;
 }
 
@@ -37,10 +52,14 @@ export function projectSubscriptionChange<T extends ChangeProjectionSource>(
   change: T,
   actor: RequestUser
 ) {
+  const compatible =
+    change.changeType === SubscriptionChangeType.EXTENSION
+      ? requireExtensionChangeProjection(change)
+      : change;
   return {
-    ...change,
-    allowedActions: subscriptionChangeAllowedActions(change, actor),
-    detail: changeDetail(change)
+    ...compatible,
+    allowedActions: subscriptionChangeAllowedActions(compatible, actor),
+    detail: changeDetail(compatible)
   };
 }
 

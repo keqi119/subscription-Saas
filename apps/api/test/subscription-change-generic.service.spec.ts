@@ -141,6 +141,20 @@ describe("SubscriptionChangeService", () => {
     expect(exact.prisma.subscriptionChangeOrder.create).not.toHaveBeenCalled();
   });
 
+  it("replays an exact concurrent create after the shared creation lock exposes the winner", async () => {
+    const harness = genericHarness({ activeChange: true, concurrentReplay: true });
+
+    await expect(
+      harness.service.create(
+        managedOtherInput("concurrent-replay-key"),
+        harness.actor,
+        harness.context
+      )
+    ).resolves.toMatchObject({ id: "change-existing" });
+    expect(harness.prisma.subscriptionChangeCommand.create).toHaveBeenCalledOnce();
+    expect(harness.prisma.subscriptionChangeOrder.create).not.toHaveBeenCalled();
+  });
+
   it("returns server-derived allowedActions and enforces optimistic cancellation", async () => {
     const harness = genericHarness({ changeVersion: 3 });
 
@@ -168,12 +182,30 @@ describe("SubscriptionChangeService", () => {
       version: 4
     });
   });
+
+  it("keeps the Admin extension projection compatible when root facts are null", async () => {
+    const harness = genericHarness({ typedExtension: true });
+
+    const view = await harness.service.get("change-existing", harness.actor);
+
+    expect(view).toMatchObject({
+      changeType: SubscriptionChangeType.EXTENSION,
+      detail: expect.objectContaining({ extensionMonths: 6 }),
+      extensionMonths: 6,
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+      sourceSegment: expect.objectContaining({ id: "segment-base" }),
+      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+    });
+  });
 });
 
 interface HarnessOptions {
   activeChange?: boolean;
   changeVersion?: number;
+  concurrentReplay?: boolean;
   replay?: "exact" | "mismatch";
+  typedExtension?: boolean;
 }
 
 function genericHarness(options: HarnessOptions = {}) {
@@ -193,8 +225,33 @@ function genericHarness(options: HarnessOptions = {}) {
     roles: ["OP"],
     username: "operator"
   };
-  const change = changeFixture({ version: options.changeVersion ?? 0 });
+  const change = changeFixture({
+    ...(options.typedExtension
+      ? {
+          changeType: SubscriptionChangeType.EXTENSION,
+          extensionDetail: {
+            extensionMonths: 6,
+            priceOverrideApprovedAt: null,
+            priceOverrideApprovedBy: null,
+            priceOverrideReason: null,
+            pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+            sourceSegment: { id: "segment-base" },
+            sourceSegmentId: "segment-base",
+            targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+            targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+          },
+          extensionMonths: null,
+          pricingMode: null,
+          sourceSegment: null,
+          sourceSegmentId: null,
+          targetEndDate: null,
+          targetStartDate: null
+        }
+      : {}),
+    version: options.changeVersion ?? 0
+  });
   const querySql: string[] = [];
+  let commandLookups = 0;
   const prisma = {
     $queryRaw: vi.fn(async (sql: { strings?: readonly string[] }) => {
       querySql.push(sql.strings?.join(" ") ?? String(sql));
@@ -202,20 +259,29 @@ function genericHarness(options: HarnessOptions = {}) {
     }),
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
     subscriptionChangeCommand: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...data,
-        id: "command-1"
-      })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (options.concurrentReplay) throw { code: "P2002" };
+        return {
+          ...data,
+          id: "command-1"
+        };
+      }),
       findUnique: vi.fn(async () => {
-        if (!options.replay) return null;
+        commandLookups += 1;
+        const concurrentReplayVisible = options.concurrentReplay && commandLookups > 1;
+        if (!options.replay && !concurrentReplayVisible) return null;
         return {
           actorId: actor.id,
           id: "command-existing",
-          idempotencyKey: "replay-key",
+          idempotencyKey: options.concurrentReplay ? "concurrent-replay-key" : "replay-key",
           operation: "CREATE_SUBSCRIPTION_CHANGE",
           requestHash:
-            options.replay === "exact"
-              ? testCommandHash(managedOtherInput("replay-key"))
+            options.concurrentReplay || options.replay === "exact"
+              ? testCommandHash(
+                  managedOtherInput(
+                    options.concurrentReplay ? "concurrent-replay-key" : "replay-key"
+                  )
+                )
               : "mismatched-hash",
           resourceId: "change-existing",
           resourceType: "CHANGE"
@@ -341,9 +407,14 @@ function changeFixture(overrides: Record<string, unknown> = {}) {
     },
     order: { id: "order-1", orderNo: "ORD-ACTIVE-1" },
     orderId: "order-1",
+    pricingMode: null,
     quotes: [],
     status: SubscriptionChangeStatus.DRAFT,
     targetSegment: null,
+    targetEndDate: null,
+    targetStartDate: null,
+    sourceSegment: null,
+    sourceSegmentId: null,
     updatedAt: new Date("2026-08-27T03:00:00.000Z"),
     vehicleSwapDetail: null,
     version: 0,

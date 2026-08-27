@@ -4,6 +4,9 @@ import { SubscriptionChangeError } from "./subscription-change.errors";
 
 interface ExtensionDetailProjection {
   extensionMonths: number;
+  priceOverrideApprovedAt?: Date | null;
+  priceOverrideApprovedBy?: string | null;
+  priceOverrideReason?: string | null;
   pricingMode: SubscriptionChangePricingMode;
   sourceSegment?: unknown | null;
   targetEndDate: Date;
@@ -14,14 +17,20 @@ interface ExtensionChangeProjectionInput {
   changeType: SubscriptionChangeType;
   extensionDetail?: ExtensionDetailProjection | null;
   extensionMonths: number | null;
+  priceOverrideApprovedAt?: Date | null;
+  priceOverrideApprovedBy?: string | null;
+  priceOverrideReason?: string | null;
   pricingMode: SubscriptionChangePricingMode | null;
-  sourceSegment: unknown | null;
+  sourceSegment?: unknown | null;
   targetEndDate: Date | null;
   targetStartDate: Date | null;
 }
 
 export type ExtensionChangeProjection<TChange extends ExtensionChangeProjectionInput> = TChange & {
   extensionMonths: number;
+  priceOverrideApprovedAt: Date | null;
+  priceOverrideApprovedBy: string | null;
+  priceOverrideReason: string | null;
   pricingMode: SubscriptionChangePricingMode;
   sourceSegment: NonNullable<TChange["sourceSegment"]>;
   targetEndDate: Date;
@@ -41,6 +50,15 @@ export function requireExtensionChangeProjection<TChange extends ExtensionChange
 
   const detail = change.extensionDetail;
   const extensionMonths = detail?.extensionMonths ?? change.extensionMonths;
+  const priceOverrideApprovedAt = detail
+    ? (detail.priceOverrideApprovedAt ?? null)
+    : (change.priceOverrideApprovedAt ?? null);
+  const priceOverrideApprovedBy = detail
+    ? (detail.priceOverrideApprovedBy ?? null)
+    : (change.priceOverrideApprovedBy ?? null);
+  const priceOverrideReason = detail
+    ? (detail.priceOverrideReason ?? null)
+    : (change.priceOverrideReason ?? null);
   const pricingMode = detail?.pricingMode ?? change.pricingMode;
   const sourceSegment = (detail?.sourceSegment ?? change.sourceSegment) as NonNullable<
     TChange["sourceSegment"]
@@ -61,6 +79,9 @@ export function requireExtensionChangeProjection<TChange extends ExtensionChange
   return {
     ...change,
     extensionMonths,
+    priceOverrideApprovedAt,
+    priceOverrideApprovedBy,
+    priceOverrideReason,
     pricingMode,
     sourceSegment,
     targetEndDate,

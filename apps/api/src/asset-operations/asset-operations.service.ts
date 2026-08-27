@@ -300,6 +300,57 @@ export class AssetOperationsService {
     return this.createWorkOrderCommand(tx, commandSnapshot, context, repositoryCapability);
   }
 
+  async createWorkOrderRestrictionInTransaction(
+    tx: Prisma.TransactionClient,
+    command: CreateRestrictionServiceCommand & { readonly workOrderId: string },
+    context: AssetOperationCommandContext,
+    capability: AssetOperationsTransactionCapability
+  ): Promise<RestrictionCommandOutcome> {
+    const capabilityState = this.takeCallerOwnedCapability(capability);
+    const commandSnapshot = snapshotRestrictionCreateCommand(
+      command
+    ) as CreateRestrictionServiceCommand & { readonly workOrderId: string };
+    const repositoryCapability = this.assertCallerOwnedCapability(
+      capabilityState,
+      tx,
+      commandSnapshot.source
+    );
+    const lockHandle = await this.repository.attestCallerOwnedWorkOrderAuthority(
+      tx,
+      commandSnapshot.workOrderId,
+      commandSnapshot.source,
+      repositoryCapability
+    );
+    const header = await loadWorkOrderAuditPreimage(tx, commandSnapshot.workOrderId);
+    if (header.vehicleId !== commandSnapshot.vehicleId) throw authorityMismatch();
+    const authority = await loadAuthority(tx, header);
+    assertAuthorityConsistency(authority);
+    const outcome = await this.repository.createPreparedRestriction(
+      tx,
+      { ...commandSnapshot, actorId: context.actorId },
+      lockHandle
+    );
+    if (outcome.wrote) {
+      await this.writeAudit(
+        tx,
+        AuditAction.CREATE,
+        "vehicle_operational_restriction",
+        outcome.restriction,
+        context
+      );
+      if (outcome.event) {
+        await this.writeAudit(
+          tx,
+          AuditAction.CREATE,
+          "asset_work_order_event",
+          outcome.event,
+          context
+        );
+      }
+    }
+    return outcome;
+  }
+
   async attestCallerOwnedCreateAuthorityInTransaction(
     tx: Prisma.TransactionClient,
     authoritySession: SubscriptionClosureAuthoritySession,

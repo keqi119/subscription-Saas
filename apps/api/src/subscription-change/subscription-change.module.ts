@@ -1,12 +1,14 @@
 import { Module } from "@nestjs/common";
 
 import { AuditModule } from "../audit/audit.module";
+import { AssetFactsModule } from "../asset-facts/asset-facts.module";
 import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
 import { AuthModule } from "../auth/auth.module";
 import { BillingAutomationModule } from "../billing-automation/billing-automation.module";
 import { ContractModule } from "../contract/contract.module";
 import { ESignModule } from "../esign/esign.module";
 import { NotificationModule } from "../notification/notification.module";
+import { OrderModule } from "../order/order.module";
 import { PrismaModule } from "../prisma/prisma.module";
 import { SmsModule } from "../sms/sms.module";
 import { SubscriptionClosureModule } from "../subscription-closure/subscription-closure.module";
@@ -29,6 +31,7 @@ import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionVehicleSwapPricingService } from "./subscription-vehicle-swap-pricing.service";
 import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.service";
 import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
+import { SubscriptionVehicleSwapActivationService } from "./subscription-vehicle-swap-activation.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 import { SubscriptionExpiryService } from "./subscription-expiry.service";
 
@@ -45,11 +48,13 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionVehicleSwapPricingService,
     SubscriptionVehicleSwapService,
     SubscriptionVehicleSwapContractService,
+    SubscriptionVehicleSwapActivationService,
     SubscriptionChangeRepository,
     SubscriptionChangeService
   ],
   imports: [
     AuditModule,
+    AssetFactsModule,
     AssetOperationsModule,
     AuthModule,
     BillingAutomationModule,
@@ -57,6 +62,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     ContractModule,
     ESignModule,
     NotificationModule,
+    OrderModule,
     PrismaModule,
     SmsModule,
     SubscriptionClosureModule,
@@ -76,6 +82,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionVehicleSwapPricingService,
     SubscriptionVehicleSwapService,
     SubscriptionVehicleSwapContractService,
+    SubscriptionVehicleSwapActivationService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,
       useFactory: loadSubscriptionChangeConfig

@@ -28,7 +28,7 @@ describe("SubscriptionChangeWorker", () => {
       enqueueDueEnrollmentJobs: vi.fn(async () => 0),
       handle: vi.fn(),
       markManualTakeover: vi.fn(),
-      reconcileExecutingChanges: vi.fn(async () => 0),
+      reconcileActiveChanges: vi.fn(async () => 0),
       supportedJobTypes: []
     };
     const worker = new SubscriptionChangeWorker(
@@ -47,7 +47,7 @@ describe("SubscriptionChangeWorker", () => {
 
     expect(repository.claimDue).toHaveBeenCalledOnce();
     expect(jobs.enqueueDueEnrollmentJobs).not.toHaveBeenCalled();
-    expect(jobs.reconcileExecutingChanges).toHaveBeenCalledOnce();
+    expect(jobs.reconcileActiveChanges).toHaveBeenCalledOnce();
   });
 
   it("completes a claimed reminder only once across duplicate polls", async () => {
@@ -71,7 +71,7 @@ describe("SubscriptionChangeWorker", () => {
       enqueueDueEnrollmentJobs: vi.fn(async () => 0),
       handle: vi.fn(async () => ({ action: "SENT" })),
       markManualTakeover: vi.fn(),
-      reconcileExecutingChanges: vi.fn(async () => 0)
+      reconcileActiveChanges: vi.fn(async () => 0)
     };
     const worker = new SubscriptionChangeWorker(
       repository as never,
@@ -85,7 +85,7 @@ describe("SubscriptionChangeWorker", () => {
     expect(jobs.handle).toHaveBeenCalledTimes(1);
     expect(repository.complete).toHaveBeenCalledTimes(1);
     expect(jobs.afterComplete).toHaveBeenCalledTimes(1);
-    expect(jobs.reconcileExecutingChanges).toHaveBeenCalledTimes(1);
+    expect(jobs.reconcileActiveChanges).toHaveBeenCalledTimes(1);
   });
 
   it("moves an exhausted extension continuation job to manual takeover after dead-lettering", async () => {
@@ -112,7 +112,7 @@ describe("SubscriptionChangeWorker", () => {
         throw new Error("billing unavailable");
       }),
       markManualTakeover: vi.fn(async () => ({ updated: true })),
-      reconcileExecutingChanges: vi.fn(async () => 0)
+      reconcileActiveChanges: vi.fn(async () => 0)
     };
     const worker = new SubscriptionChangeWorker(
       repository as never,
@@ -156,7 +156,7 @@ describe("SubscriptionChangeWorker", () => {
       enqueueDueEnrollmentJobs: vi.fn(async () => 0),
       handle: vi.fn(async () => ({ sent: true })),
       markManualTakeover: vi.fn(),
-      reconcileExecutingChanges: vi.fn(async () => 0)
+      reconcileActiveChanges: vi.fn(async () => 0)
     };
     const worker = new SubscriptionChangeWorker(
       repository as never,

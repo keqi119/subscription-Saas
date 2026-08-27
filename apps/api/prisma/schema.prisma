@@ -648,6 +648,7 @@ enum SubscriptionChangeQuoteStatus {
 enum ContractSegmentType {
   BASE
   EXTENSION
+  VEHICLE_SWAP
 
   @@map("contract_segment_type")
 }

@@ -54,7 +54,10 @@ describe("subscription extension release orchestration", () => {
       ...base,
       jobType: SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE
     } as never);
-    await service.afterComplete(base as never);
+    await service.afterComplete({
+      ...base,
+      jobType: SubscriptionAutomationJobType.EXTENSION_EFFECTIVE_NOTICE
+    } as never);
 
     expect(activation.activate).toHaveBeenCalledWith("segment-extension");
     expect(activation.resumeBilling).toHaveBeenCalledWith("segment-extension");
@@ -112,7 +115,7 @@ describe("subscription extension release orchestration", () => {
         .mockRejectedValueOnce(new Error("temporary database disconnect"))
         .mockResolvedValueOnce({ action: "SENT" }),
       markManualTakeover: vi.fn(),
-      reconcileExecutingChanges: vi.fn(async () => 0),
+      reconcileActiveChanges: vi.fn(async () => 0),
       supportedJobTypes: [SubscriptionAutomationJobType.RENEWAL_REMINDER_D30]
     };
 

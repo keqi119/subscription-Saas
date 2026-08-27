@@ -5,6 +5,7 @@ import {
   EntitlementGrantStatus,
   EntitlementType,
   EntitlementUnit,
+  EntitlementUsageStatus,
   Prisma
 } from "@prisma/client";
 
@@ -169,6 +170,151 @@ export class OrderEntitlementService {
         }
       });
     }
+  }
+
+  async replaceFutureGrantsForVehicleSwap(
+    tx: Tx,
+    input: {
+      actorId: string | null;
+      changeOrderId: string;
+      effectiveDate: Date;
+      orderId: string;
+      planSnapshot: Prisma.JsonValue;
+      subscriptionPlanId: string | null;
+      targetVehicleId: string;
+    }
+  ) {
+    const [lockedAccount] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id"
+      FROM "order_entitlement_account"
+      WHERE "order_id" = ${input.orderId}::uuid
+        AND "deleted_at" IS NULL
+      ORDER BY "created_at" DESC
+      LIMIT 1
+      FOR UPDATE
+    `);
+    if (!lockedAccount) {
+      throw new BadRequestException("The active order entitlement account was not found.");
+    }
+    const account = await tx.orderEntitlementAccount.findUnique({
+      where: { id: lockedAccount.id }
+    });
+    if (!account || account.deletedAt) {
+      throw new BadRequestException("The active order entitlement account was not found.");
+    }
+
+    const futureGrants = await tx.orderEntitlementGrant.findMany({
+      include: {
+        usages: {
+          select: { id: true },
+          where: { usageStatus: EntitlementUsageStatus.CONFIRMED }
+        }
+      },
+      orderBy: [{ grantPeriodStart: "asc" }, { id: "asc" }],
+      where: {
+        accountId: account.id,
+        deletedAt: null,
+        grantPeriodStart: { gte: toBusinessDate(input.effectiveDate) },
+        status: EntitlementGrantStatus.ACTIVE
+      }
+    });
+    const periods = new Map<
+      string,
+      { end: Date | null; grants: typeof futureGrants; hasUsage: boolean; start: Date }
+    >();
+    for (const grant of futureGrants) {
+      const key = grant.grantPeriodStart.toISOString();
+      const period = periods.get(key) ?? {
+        end: grant.grantPeriodEnd,
+        grants: [],
+        hasUsage: false,
+        start: grant.grantPeriodStart
+      };
+      period.grants.push(grant);
+      period.hasUsage ||= grant.usages.length > 0;
+      periods.set(key, period);
+    }
+
+    const normalizedPlan = normalizePackageSnapshot(input.planSnapshot);
+    const targetGrants = buildGrantInputs(normalizedPlan);
+    if (targetGrants.length === 0) {
+      throw new BadRequestException(
+        "The vehicle-swap plan snapshot has no entitlement components."
+      );
+    }
+    let cancelled = 0;
+    let created = 0;
+    for (const period of periods.values()) {
+      if (period.hasUsage) continue;
+      const ids = period.grants.map(({ id }) => id);
+      if (ids.length > 0) {
+        const outcome = await tx.orderEntitlementGrant.updateMany({
+          data: {
+            remark: `Superseded by vehicle swap ${input.changeOrderId}.`,
+            status: EntitlementGrantStatus.CANCELLED,
+            updatedBy: input.actorId
+          },
+          where: { id: { in: ids }, status: EntitlementGrantStatus.ACTIVE }
+        });
+        cancelled += outcome.count;
+      }
+      for (const grant of targetGrants) {
+        await tx.orderEntitlementGrant.create({
+          data: {
+            accountId: account.id,
+            createdBy: input.actorId,
+            customerId: account.customerId,
+            entitlementName: grant.entitlementName,
+            entitlementType: grant.entitlementType,
+            grantNo: createBusinessNo("EG"),
+            grantPeriodEnd: period.end,
+            grantPeriodStart: period.start,
+            grantSource: EntitlementGrantSource.MONTHLY_RENEWAL,
+            orderId: input.orderId,
+            remainingAmount: grant.remainingAmount,
+            snapshot: jsonValue({
+              grantSnapshot: grant.snapshot,
+              source: "VEHICLE_SWAP",
+              sourceChangeOrderId: input.changeOrderId,
+              targetVehicleId: input.targetVehicleId
+            }),
+            status: EntitlementGrantStatus.ACTIVE,
+            totalAmount: grant.totalAmount,
+            unit: grant.unit,
+            updatedBy: input.actorId,
+            usedAmount: grant.usedAmount
+          }
+        });
+        created += 1;
+      }
+    }
+
+    const snapshot = asRecord(account.snapshot) ?? {};
+    const history = Array.isArray(snapshot.vehicleSwapHistory) ? snapshot.vehicleSwapHistory : [];
+    await tx.orderEntitlementAccount.update({
+      data: {
+        snapshot: jsonValue({
+          ...snapshot,
+          packageSnapshot: normalizedPlan,
+          vehicleSwapHistory: [
+            ...history,
+            {
+              changeOrderId: input.changeOrderId,
+              effectiveDate: toBusinessDate(input.effectiveDate).toISOString(),
+              targetVehicleId: input.targetVehicleId
+            }
+          ]
+        }),
+        subscriptionPlanId: input.subscriptionPlanId,
+        updatedBy: input.actorId
+      },
+      where: { id: account.id }
+    });
+    return {
+      cancelled,
+      created,
+      preservedPeriods: [...periods.values()].filter((p) => p.hasUsage).length
+    };
   }
 }
 

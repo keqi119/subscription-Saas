@@ -22,4 +22,17 @@ describe("API runtime media contract", () => {
       /apt-get\s+-o\s+Acquire::Retries=3\s+install\s+-y/
     );
   });
+
+  it("packages the Stage 1 contract-change release tooling", () => {
+    const dockerfile = readFileSync(join(repoRoot, "Dockerfile.api"), "utf8");
+
+    for (const script of [
+      "prisma-migration-checksums.mjs",
+      "stage1-contract-change-bootstrap-core.mjs",
+      "stage1-contract-change-bootstrap.mjs",
+      "subscription-segment-bootstrap-core.mjs"
+    ]) {
+      expect(dockerfile).toContain(`COPY --from=build /app/scripts/${script} ./scripts/${script}`);
+    }
+  });
 });

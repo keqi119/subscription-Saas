@@ -54,6 +54,10 @@ COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/scripts/prisma-migration-checksums.mjs ./scripts/prisma-migration-checksums.mjs
+COPY --from=build /app/scripts/stage1-contract-change-bootstrap-core.mjs ./scripts/stage1-contract-change-bootstrap-core.mjs
+COPY --from=build /app/scripts/stage1-contract-change-bootstrap.mjs ./scripts/stage1-contract-change-bootstrap.mjs
+COPY --from=build /app/scripts/subscription-segment-bootstrap-core.mjs ./scripts/subscription-segment-bootstrap-core.mjs
 
 RUN mkdir -p /app/uploads /app/apps/api/uploads
 

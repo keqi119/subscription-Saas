@@ -805,7 +805,7 @@ async function ensureSettlementBills(
       })
     );
   }
-  return bills;
+  return bills.sort();
 }
 
 async function ensureSettlementBill(

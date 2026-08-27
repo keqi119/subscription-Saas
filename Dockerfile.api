@@ -55,9 +55,16 @@ COPY --from=build /app/packages/shared/package.json ./packages/shared/package.js
 COPY --from=build /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/scripts/prisma-migration-checksums.mjs ./scripts/prisma-migration-checksums.mjs
+COPY --from=build /app/scripts/stage1-active-source-facts-repair-core.mjs ./scripts/stage1-active-source-facts-repair-core.mjs
+COPY --from=build /app/scripts/stage1-active-source-facts-repair-executor.mjs ./scripts/stage1-active-source-facts-repair-executor.mjs
+COPY --from=build /app/scripts/stage1-active-source-facts-repair.mjs ./scripts/stage1-active-source-facts-repair.mjs
 COPY --from=build /app/scripts/stage1-contract-change-bootstrap-core.mjs ./scripts/stage1-contract-change-bootstrap-core.mjs
 COPY --from=build /app/scripts/stage1-contract-change-bootstrap.mjs ./scripts/stage1-contract-change-bootstrap.mjs
+COPY --from=build /app/scripts/stage1c-period-backfill-core.mjs ./scripts/stage1c-period-backfill-core.mjs
+COPY --from=build /app/scripts/stage1c-period-backfill-executor.mjs ./scripts/stage1c-period-backfill-executor.mjs
+COPY --from=build /app/scripts/stage1c-period-backfill.mjs ./scripts/stage1c-period-backfill.mjs
 COPY --from=build /app/scripts/subscription-segment-bootstrap-core.mjs ./scripts/subscription-segment-bootstrap-core.mjs
+COPY --from=build /app/scripts/subscription-segment-bootstrap.mjs ./scripts/subscription-segment-bootstrap.mjs
 
 RUN mkdir -p /app/uploads /app/apps/api/uploads
 

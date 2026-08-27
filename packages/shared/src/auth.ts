@@ -145,6 +145,7 @@ export enum PermissionCode {
   SUBSCRIPTION_CHANGE_VIEW = "subscription_change:view",
   SUBSCRIPTION_CHANGE_CREATE = "subscription_change:create",
   SUBSCRIPTION_CHANGE_QUOTE = "subscription_change:quote",
+  SUBSCRIPTION_CHANGE_APPROVE = "subscription_change:approve",
   SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE = "subscription_change:price_override_approve",
   SUBSCRIPTION_CHANGE_SUBMIT = "subscription_change:submit",
   SUBSCRIPTION_CHANGE_ESIGN_RETRY = "subscription_change:esign_retry",

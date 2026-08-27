@@ -18,6 +18,8 @@ import {
   loadSubscriptionChangeConfig
 } from "./subscription-change.config";
 import { SubscriptionChangeController } from "./subscription-change.controller";
+import { SubscriptionChangeRepository } from "./subscription-change.repository";
+import { SubscriptionChangeService } from "./subscription-change.service";
 import { SubscriptionChangeJobService } from "./subscription-change-job.service";
 import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
@@ -35,7 +37,8 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionExtensionContractService,
     SubscriptionExtensionActivationService,
     SubscriptionExpiryService,
-    SubscriptionExtensionService
+    SubscriptionExtensionService,
+    SubscriptionChangeService
   ],
   imports: [
     AuditModule,
@@ -52,6 +55,8 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
   ],
   providers: [
     RenewalConsiderationService,
+    SubscriptionChangeRepository,
+    SubscriptionChangeService,
     SubscriptionChangeJobService,
     SubscriptionChangeWorker,
     SubscriptionExtensionPricingService,

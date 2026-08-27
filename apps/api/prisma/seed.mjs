@@ -96,6 +96,7 @@ const permissionRows = [
   ["subscription_change:view", "查看合同变更", "subscription_change", "view"],
   ["subscription_change:create", "创建合同变更", "subscription_change", "create"],
   ["subscription_change:quote", "生成合同变更报价", "subscription_change", "quote"],
+  ["subscription_change:approve", "审批合同变更", "subscription_change", "approve"],
   [
     "subscription_change:price_override_approve",
     "审批合同变更价格例外",
@@ -820,6 +821,7 @@ const subscriptionChangeOperationalPermissions = [
 
 const subscriptionChangeAdminPermissions = [
   ...subscriptionChangeOperationalPermissions,
+  "subscription_change:approve",
   "subscription_change:price_override_approve",
   "subscription_change:manual_takeover"
 ];

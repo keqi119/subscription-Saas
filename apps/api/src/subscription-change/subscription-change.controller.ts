@@ -17,6 +17,7 @@ import { PermissionsGuard } from "../auth/permissions.guard";
 import { ESignService } from "../esign/esign.service";
 import {
   ApproveSubscriptionExtensionPriceDto,
+  CreateSubscriptionChangeDto,
   CreateSubscriptionExtensionDto,
   CreateSubscriptionExtensionQuoteDto,
   optionalMoney,
@@ -24,6 +25,7 @@ import {
   SubscriptionExtensionQuoteDto,
   VersionedSubscriptionChangeDto
 } from "./subscription-change.dto";
+import { SubscriptionChangeService } from "./subscription-change.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 
@@ -33,8 +35,46 @@ export class SubscriptionChangeController {
   constructor(
     private readonly service: SubscriptionExtensionService,
     @Optional() private readonly contractService?: SubscriptionExtensionContractService,
-    @Optional() private readonly esignService?: ESignService
+    @Optional() private readonly esignService?: ESignService,
+    @Optional() private readonly changeService?: SubscriptionChangeService
   ) {}
+
+  @Post()
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_CREATE)
+  async create(
+    @Body() dto: CreateSubscriptionChangeDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
+    @Req() request: AuthenticatedRequest
+  ) {
+    const genericService =
+      this.changeService ?? (this.service as unknown as Pick<SubscriptionChangeService, "create">);
+    return apiSafe(
+      await genericService.create(
+        {
+          ...dto,
+          detail:
+            dto.changeType === "EXTENSION"
+              ? {
+                  ...dto.detail,
+                  discountedMonthlyFeeAmount: optionalMoney(
+                    "discountedMonthlyFeeAmount" in dto.detail
+                      ? dto.detail.discountedMonthlyFeeAmount
+                      : undefined
+                  ),
+                  requestedVehicleBaseFeeAmount: optionalMoney(
+                    "requestedVehicleBaseFeeAmount" in dto.detail
+                      ? dto.detail.requestedVehicleBaseFeeAmount
+                      : undefined
+                  )
+                }
+              : dto.detail,
+          idempotencyKey
+        } as never,
+        request.user,
+        requestContext(request)
+      )
+    );
+  }
 
   @Post(":id/contracts")
   @RequirePermissions(PermissionCode.CONTRACT_GENERATE)
@@ -166,7 +206,7 @@ export class SubscriptionChangeController {
     @Req() request: AuthenticatedRequest
   ) {
     return apiSafe(
-      await this.service.cancel(
+      await (this.changeService ?? this.service).cancel(
         id,
         { ...dto, idempotencyKey },
         request.user,
@@ -238,7 +278,7 @@ export class SubscriptionChangeController {
   @Get("orders/:orderId")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async listForOrder(@Param("orderId") orderId: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.listForOrder(orderId, request.user));
+    return apiSafe(await (this.changeService ?? this.service).listForOrder(orderId, request.user));
   }
 
   @Get(":id/timeline")
@@ -250,7 +290,7 @@ export class SubscriptionChangeController {
   @Get(":id")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async get(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
-    return apiSafe(await this.service.get(id, request.user));
+    return apiSafe(await (this.changeService ?? this.service).get(id, request.user));
   }
 
   private async startOrRetryESign(

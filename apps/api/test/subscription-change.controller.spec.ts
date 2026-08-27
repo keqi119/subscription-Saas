@@ -4,6 +4,7 @@ import { validate } from "class-validator";
 import { REQUIRED_PERMISSIONS_KEY } from "../src/auth/auth.decorators";
 import { SubscriptionChangeController } from "../src/subscription-change/subscription-change.controller";
 import {
+  CreateSubscriptionChangeDto,
   CreateSubscriptionExtensionDto,
   CreateSubscriptionExtensionQuoteDto
 } from "../src/subscription-change/subscription-change.dto";
@@ -155,6 +156,51 @@ describe("SubscriptionChangeController", () => {
 
     expect(await validate(invalidMoney)).not.toHaveLength(0);
     expect(await validate(invalidVersion)).not.toHaveLength(0);
+  });
+
+  it.each([
+    ["EXTENSION", { extensionMonths: 6, pricingMode: "CURRENT_VERSION" }],
+    [
+      "VEHICLE_SWAP",
+      {
+        plannedSwapAt: "2026-09-15T02:00:00.000Z",
+        targetSubscriptionPlanId: "4eb90e2b-8fd5-44e4-9f06-04f60dff6df0",
+        targetVehicleId: "e84fbcb0-8cb8-4913-99f7-bc00c545bb5e"
+      }
+    ],
+    ["EARLY_TERMINATION", { effectiveDate: "2026-09-30", reason: "relocation" }],
+    [
+      "MANAGED_OTHER",
+      {
+        effectiveDate: "2026-09-30",
+        evidence: [{ fileId: "76fe601a-1d4c-45de-b6ba-4a4d1ba518d8" }],
+        operation: "UPDATE_CONTACT_PREFERENCE",
+        reason: "governed update"
+      }
+    ]
+  ])("validates the %s discriminated detail shape", async (changeType, detail) => {
+    const dto = plainToInstance(CreateSubscriptionChangeDto, {
+      changeType,
+      detail,
+      orderId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a"
+    });
+    const mismatched = plainToInstance(CreateSubscriptionChangeDto, {
+      changeType,
+      detail: { effectiveDate: "not-a-date" },
+      orderId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a"
+    });
+
+    expect(await validate(dto)).toEqual([]);
+    expect(await validate(mismatched)).not.toHaveLength(0);
+  });
+
+  it("requires a typed detail payload", async () => {
+    const dto = plainToInstance(CreateSubscriptionChangeDto, {
+      changeType: "EARLY_TERMINATION",
+      orderId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a"
+    });
+
+    expect((await validate(dto)).map((error) => error.property)).toContain("detail");
   });
 });
 

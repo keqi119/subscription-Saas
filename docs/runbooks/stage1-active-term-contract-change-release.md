@@ -95,7 +95,8 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
 批准后执行：
 
 ```bash
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T \
+  -e SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY=1 api \
   node scripts/subscription-segment-bootstrap.mjs --apply \
   > "$REPORT_DIR/05-base-segments-apply.json"
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T api \

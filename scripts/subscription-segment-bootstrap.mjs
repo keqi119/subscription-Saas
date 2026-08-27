@@ -11,6 +11,12 @@ import {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 
+export function assertSubscriptionSegmentBootstrapApplyConfirmation(mode, env) {
+  if (mode === "apply" && env.SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY !== "1") {
+    throw new Error("SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY_CONFIRMATION_REQUIRED");
+  }
+}
+
 export async function executeSubscriptionSegmentBootstrap({ mode, prisma, records }) {
   const plan = buildSubscriptionSegmentBootstrapPlan(records);
   const applied =
@@ -44,6 +50,7 @@ export async function loadSubscriptionSegmentBootstrapRecords(prisma) {
 
 async function main() {
   const mode = parseSubscriptionSegmentBootstrapMode(process.argv.slice(2));
+  assertSubscriptionSegmentBootstrapApplyConfirmation(mode, process.env);
   const prisma = await createPrismaClient();
   try {
     const records = await loadSubscriptionSegmentBootstrapRecords(prisma);

@@ -1,7 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { executeSubscriptionSegmentBootstrap } from "./subscription-segment-bootstrap.mjs";
+import {
+  assertSubscriptionSegmentBootstrapApplyConfirmation,
+  executeSubscriptionSegmentBootstrap
+} from "./subscription-segment-bootstrap.mjs";
+
+test("apply confirmation is narrowly named and requires the exact value 1", () => {
+  assert.doesNotThrow(() =>
+    assertSubscriptionSegmentBootstrapApplyConfirmation("dry-run", {})
+  );
+  assert.throws(
+    () => assertSubscriptionSegmentBootstrapApplyConfirmation("apply", {}),
+    /SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY_CONFIRMATION_REQUIRED/
+  );
+  assert.throws(
+    () =>
+      assertSubscriptionSegmentBootstrapApplyConfirmation("apply", {
+        SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY: "true"
+      }),
+    /SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY_CONFIRMATION_REQUIRED/
+  );
+  assert.doesNotThrow(() =>
+    assertSubscriptionSegmentBootstrapApplyConfirmation("apply", {
+      SUBSCRIPTION_SEGMENT_BOOTSTRAP_APPLY: "1"
+    })
+  );
+});
 
 test("apply is transactional and an idempotent rerun creates no second BASE", async () => {
   const harness = createPrismaHarness();

@@ -67,7 +67,21 @@ export class BillingAutomationWorker implements OnModuleInit, OnModuleDestroy {
 
     this.nextMaintenanceAt = now + MAINTENANCE_INTERVAL_MS;
     try {
-      await this.service.reconcileSchedules({ dryRun: false });
+      const reconciliation = await this.service.reconcileSchedules({ dryRun: false });
+      if (reconciliation.blockedCount > 0) {
+        this.logger.warn({
+          blockedCount: reconciliation.blockedCount,
+          blockerCodes: [
+            ...new Set(
+              reconciliation.items
+                .filter((item) => item.action === "BLOCKED")
+                .map((item) => item.blockerCode)
+                .filter((code) => code !== null)
+            )
+          ].sort(),
+          operation: "BILLING_SCHEDULE_RECONCILIATION_BLOCKED"
+        });
+      }
       await this.service.enqueueDueSchedules();
     } catch (error) {
       this.nextMaintenanceAt = 0;

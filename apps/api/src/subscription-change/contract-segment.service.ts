@@ -37,56 +37,65 @@ export class ContractSegmentService {
   ): Promise<SubscriptionContractSegment> {
     return this.serializable(async (tx) => {
       await lockOrder(tx, orderId);
-
-      const existing = await tx.subscriptionContractSegment.findFirst({
-        where: {
-          orderId,
-          segmentType: ContractSegmentType.BASE
-        }
-      });
-      if (existing) return existing;
-
-      const order = await tx.subscriptionOrder.findUnique({
-        include: {
-          contract: true
-        },
-        where: { id: orderId }
-      });
-      if (!order) {
-        throw new ContractSegmentError("ORDER_NOT_FOUND", "Subscription order was not found.");
-      }
-
-      assertBaseSourceComplete(order);
-      const contract = order.contract!;
-
-      return withUniqueBusinessNoRetry(() =>
-        tx.subscriptionContractSegment.create({
-          data: {
-            activatedAt: order.startDate,
-            contractSnapshot: contract.contractSnapshot as Prisma.InputJsonObject,
-            createdBy: actorId,
-            endDate: order.endDate!,
-            energyLimitCount: order.energyLimitCount,
-            energyLimitKwh: order.energyLimitKwh,
-            mileageLimitKm: order.mileageLimitKm,
-            monthlyFeeAmount: order.monthlyFeeAmount,
-            orderId: order.id,
-            overMileageFeeAmount: order.overMileageFeeAmount,
-            planSnapshot: order.finalPlanSnapshot!,
-            productId: order.productId,
-            productVersionId: order.productVersionId,
-            quoteSnapshot: order.quoteSnapshot as Prisma.InputJsonObject,
-            segmentNo: createBusinessNo("SEG"),
-            segmentType: ContractSegmentType.BASE,
-            sequenceNo: 1,
-            sourceContractId: contract.id,
-            startDate: order.startDate!,
-            status: ContractSegmentStatus.ACTIVE,
-            subscriptionPlanId: null
-          }
-        })
-      );
+      return this.ensureBaseSegmentInTransaction(tx, orderId, actorId);
     });
+  }
+
+  async ensureBaseSegmentInTransaction(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    actorId?: string
+  ): Promise<SubscriptionContractSegment> {
+    const order = await tx.subscriptionOrder.findUnique({
+      include: {
+        contract: true
+      },
+      where: { id: orderId }
+    });
+    if (!order) {
+      throw new ContractSegmentError("ORDER_NOT_FOUND", "Subscription order was not found.");
+    }
+
+    assertBaseSourceComplete(order);
+    const existing = await tx.subscriptionContractSegment.findFirst({
+      where: {
+        orderId,
+        segmentType: ContractSegmentType.BASE
+      }
+    });
+    if (existing) {
+      assertBaseMatchesAuthority(existing, order);
+      return existing;
+    }
+
+    const contract = order.contract!;
+    return withUniqueBusinessNoRetry(() =>
+      tx.subscriptionContractSegment.create({
+        data: {
+          activatedAt: order.startDate,
+          contractSnapshot: contract.contractSnapshot as Prisma.InputJsonObject,
+          createdBy: actorId,
+          endDate: order.endDate!,
+          energyLimitCount: order.energyLimitCount,
+          energyLimitKwh: order.energyLimitKwh,
+          mileageLimitKm: order.mileageLimitKm,
+          monthlyFeeAmount: order.monthlyFeeAmount,
+          orderId: order.id,
+          overMileageFeeAmount: order.overMileageFeeAmount,
+          planSnapshot: order.finalPlanSnapshot!,
+          productId: order.productId,
+          productVersionId: order.productVersionId,
+          quoteSnapshot: order.quoteSnapshot as Prisma.InputJsonObject,
+          segmentNo: createBusinessNo("SEG"),
+          segmentType: ContractSegmentType.BASE,
+          sequenceNo: 1,
+          sourceContractId: contract.id,
+          startDate: order.startDate!,
+          status: ContractSegmentStatus.ACTIVE,
+          subscriptionPlanId: null
+        }
+      })
+    );
   }
 
   async resolveEffectiveServiceEndDate(
@@ -282,6 +291,79 @@ function assertBaseSourceComplete(order: {
       "Original order dates, plan snapshot, and archived main contract are required."
     );
   }
+}
+
+function assertBaseMatchesAuthority(
+  segment: SubscriptionContractSegment,
+  order: {
+    contract: null | {
+      contractSnapshot: Prisma.JsonValue;
+      id: string;
+    };
+    endDate: Date | null;
+    energyLimitCount: number | null;
+    energyLimitKwh: number | null;
+    finalPlanSnapshot: Prisma.JsonValue | null;
+    id: string;
+    mileageLimitKm: number;
+    monthlyFeeAmount: bigint;
+    overMileageFeeAmount: bigint;
+    productId: string;
+    productVersionId: string;
+    quoteSnapshot: Prisma.JsonValue;
+    startDate: Date | null;
+  }
+) {
+  const contract = order.contract!;
+  const matches =
+    segment.orderId === order.id &&
+    segment.segmentType === ContractSegmentType.BASE &&
+    segment.sequenceNo === 1 &&
+    segment.status === ContractSegmentStatus.ACTIVE &&
+    segment.sourceContractId === contract.id &&
+    segment.subscriptionPlanId === null &&
+    sameDate(segment.startDate, order.startDate) &&
+    sameDate(segment.endDate, order.endDate) &&
+    sameDate(segment.activatedAt, order.startDate) &&
+    segment.productId === order.productId &&
+    segment.productVersionId === order.productVersionId &&
+    segment.monthlyFeeAmount === order.monthlyFeeAmount &&
+    segment.mileageLimitKm === order.mileageLimitKm &&
+    segment.overMileageFeeAmount === order.overMileageFeeAmount &&
+    segment.energyLimitKwh === order.energyLimitKwh &&
+    segment.energyLimitCount === order.energyLimitCount &&
+    sameJson(segment.planSnapshot, order.finalPlanSnapshot) &&
+    sameJson(segment.quoteSnapshot, order.quoteSnapshot) &&
+    sameJson(segment.contractSnapshot, contract.contractSnapshot);
+  if (!matches) {
+    throw new ContractSegmentError(
+      "CONTRACT_SEGMENT_SOURCE_CONFLICT",
+      "The existing BASE segment differs from the archived order authority."
+    );
+  }
+}
+
+function sameDate(left: Date | null, right: Date | null) {
+  return left instanceof Date &&
+    right instanceof Date &&
+    left.getTime() === right.getTime();
+}
+
+function sameJson(left: Prisma.JsonValue, right: Prisma.JsonValue | null) {
+  return stableJson(left) === stableJson(right);
+}
+
+function stableJson(value: Prisma.JsonValue | null): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key] ?? null)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function isJsonObject(value: Prisma.JsonValue | null): value is Prisma.JsonObject {

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const ELIGIBLE_ORDER_STATUSES = new Set(["ACTIVE", "PENDING_RETURN"]);
 
 export function parseSubscriptionSegmentBootstrapMode(args) {
@@ -124,6 +126,19 @@ export async function applySubscriptionSegmentBootstrapPlan(prisma, plan) {
         if (!winner || !matchesBootstrapCandidate(winner, candidate.data)) {
           throw new Error(`SUBSCRIPTION_SEGMENT_BOOTSTRAP_WRITE_CONFLICT:${candidate.orderId}`);
         }
+        if (inserted.count > 0) {
+          await tx.auditLog.create({
+            data: {
+              action: "CREATE",
+              afterSnapshot: segmentAuditSnapshot(winner),
+              beforeSnapshot: undefined,
+              entityId: winner.id,
+              entityType: "subscription_contract_segment",
+              module: "subscription_change",
+              operatorId: undefined
+            }
+          });
+        }
         return { created: inserted.count, existing: inserted.count === 0 ? 1 : 0 };
       },
       { isolationLevel: "Serializable" }
@@ -207,4 +222,55 @@ function sameDate(left, right) {
 
 function isJsonObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function segmentAuditSnapshot(segment) {
+  return {
+    activatedAt: iso(segment.activatedAt),
+    completedAt: iso(segment.completedAt),
+    contractSnapshotDigest: jsonDigest(segment.contractSnapshot),
+    endDate: iso(segment.endDate),
+    energyLimitCount: segment.energyLimitCount,
+    energyLimitKwh: segment.energyLimitKwh,
+    id: segment.id,
+    mileageLimitKm: segment.mileageLimitKm,
+    monthlyFeeAmount: String(segment.monthlyFeeAmount),
+    orderId: segment.orderId,
+    overMileageFeeAmount: String(segment.overMileageFeeAmount),
+    planSnapshotDigest: jsonDigest(segment.planSnapshot),
+    productId: segment.productId,
+    productVersionId: segment.productVersionId,
+    quoteSnapshotDigest: jsonDigest(segment.quoteSnapshot),
+    segmentNo: segment.segmentNo,
+    segmentType: segment.segmentType,
+    sequenceNo: segment.sequenceNo,
+    sourceContractId: segment.sourceContractId,
+    startDate: iso(segment.startDate),
+    status: segment.status,
+    subscriptionPlanId: segment.subscriptionPlanId
+  };
+}
+
+function jsonDigest(value) {
+  return createHash("sha256").update(stableJson(value), "utf8").digest("hex");
+}
+
+function stableJson(value) {
+  return JSON.stringify(canonical(value));
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    );
+  }
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+function iso(value) {
+  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
 }

@@ -1252,13 +1252,13 @@ describe("AssetFactsService audited commands", () => {
       }
     ],
     [
-      "before its inclusive UTC start day",
+      "before its inclusive Shanghai start day",
       (segment: ServiceContractSegmentRecord) => {
         segment.startDate = new Date("2026-08-02T00:00:00.000Z");
       }
     ],
     [
-      "after its inclusive UTC end day",
+      "after its inclusive Shanghai end day",
       (segment: ServiceContractSegmentRecord) => {
         segment.endDate = new Date("2026-07-31T00:00:00.000Z");
       }
@@ -1276,11 +1276,30 @@ describe("AssetFactsService audited commands", () => {
     expect(harness.auditLogs).toEqual([]);
   });
 
+  it("uses the Shanghai business date when checking contract-segment coverage", async () => {
+    const harness = createServiceHarness();
+    harness.records.contractSegments.get("segment-1")!.startDate = new Date(
+      "2026-08-02T00:00:00.000Z"
+    );
+
+    const fact = await harness.service.openSubscriptionPeriod(
+      serviceSubscriptionOpenDto({
+        confirmedAt: "2026-08-01T16:05:00.000Z",
+        startedAt: "2026-08-01T16:00:00.000Z"
+      }),
+      serviceContext()
+    );
+
+    expect(fact.startSnapshot).toMatchObject({
+      authority: { contractSegment: { startDate: "2026-08-02" } }
+    });
+  });
+
   it.each([
-    ["start", "2026-08-01T23:59:59.999Z", "2026-08-02T00:00:00.000Z"],
-    ["end", "2026-10-31T23:59:59.999Z", "2026-11-01T00:00:00.000Z"]
+    ["start", "2026-07-31T16:00:00.000Z", "2026-07-31T16:00:01.000Z"],
+    ["end", "2026-10-31T15:59:59.999Z", "2026-10-31T16:00:00.000Z"]
   ] as const)(
-    "accepts the exact inclusive UTC %s boundary day for a selected contract segment",
+    "accepts the exact inclusive Shanghai %s boundary day for a selected contract segment",
     async (_boundary, startedAt, confirmedAt) => {
       const harness = createServiceHarness();
 

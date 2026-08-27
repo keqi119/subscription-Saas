@@ -2,6 +2,7 @@ import { HttpException, HttpStatus } from "@nestjs/common";
 
 export type ContractSegmentErrorCode =
   | "BASE_SEGMENT_SOURCE_INCOMPLETE"
+  | "CONTRACT_SEGMENT_SOURCE_CONFLICT"
   | "CONTRACT_SEGMENT_INVALID_DATE_RANGE"
   | "BILLING_PERIOD_CROSSES_SEGMENT"
   | "CONTRACT_SEGMENT_NOT_CONTIGUOUS"

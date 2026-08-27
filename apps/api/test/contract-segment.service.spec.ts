@@ -11,6 +11,60 @@ const BASE_START = date("2026-03-03");
 const BASE_END = date("2026-09-02");
 
 describe("ContractSegmentService", () => {
+  it("establishes BASE inside a caller-owned transaction", async () => {
+    const harness = createHarness();
+
+    await expect(
+      harness.service.ensureBaseSegmentInTransaction(
+        harness.tx as never,
+        "order-1",
+        "actor-1"
+      )
+    ).resolves.toMatchObject({
+      segmentType: ContractSegmentType.BASE,
+      sequenceNo: 1
+    });
+
+    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    expect(harness.tx.subscriptionContractSegment.create).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["order identity", { orderId: "order-2" }],
+    ["segment type", { segmentType: ContractSegmentType.EXTENSION }],
+    ["sequence", { sequenceNo: 2 }],
+    ["status", { status: ContractSegmentStatus.SCHEDULED }],
+    ["source contract", { sourceContractId: "contract-2" }],
+    ["subscription plan binding", { subscriptionPlanId: "plan-1" }],
+    ["start date", { startDate: date("2026-03-04") }],
+    ["end date", { endDate: date("2026-09-03") }],
+    ["activation date", { activatedAt: date("2026-03-04") }],
+    ["product", { productId: "product-2" }],
+    ["product version", { productVersionId: "version-2" }],
+    ["monthly fee", { monthlyFeeAmount: 999n }],
+    ["mileage limit", { mileageLimitKm: 1_499 }],
+    ["over-mileage fee", { overMileageFeeAmount: 99n }],
+    ["energy kWh", { energyLimitKwh: 99 }],
+    ["energy count", { energyLimitCount: 1 }],
+    ["plan snapshot", { planSnapshot: { changed: true } }],
+    ["quote snapshot", { quoteSnapshot: { changed: true } }],
+    ["contract snapshot", { contractSnapshot: { changed: true } }]
+  ])("fails closed when an existing BASE differs in %s", async (_label, drift) => {
+    const harness = createHarness({
+      existingBase: true,
+      existingBaseOverrides: drift
+    });
+
+    await expect(
+      harness.service.ensureBaseSegmentInTransaction(
+        harness.tx as never,
+        "order-1"
+      )
+    ).rejects.toMatchObject({
+      code: "CONTRACT_SEGMENT_SOURCE_CONFLICT"
+    });
+  });
+
   it("bootstraps one idempotent BASE segment from archived contract facts", async () => {
     const harness = createHarness();
 
@@ -142,6 +196,7 @@ describe("ContractSegmentService", () => {
 
 function createHarness(options?: {
   existingBase?: boolean;
+  existingBaseOverrides?: Record<string, unknown>;
   existingExtension?: boolean;
   order?: Record<string, unknown>;
 }) {
@@ -171,7 +226,7 @@ function createHarness(options?: {
     sourceContractId: "contract-1",
     startDate: BASE_START,
     status: ContractSegmentStatus.ACTIVE,
-    subscriptionPlanId: "plan-1"
+    subscriptionPlanId: null
   };
   const extension = {
     ...base,
@@ -186,7 +241,9 @@ function createHarness(options?: {
     startDate: date("2026-09-03"),
     status: ContractSegmentStatus.SCHEDULED
   };
-  let storedBase = options?.existingBase ? base : null;
+  let storedBase = options?.existingBase
+    ? { ...base, ...options.existingBaseOverrides }
+    : null;
   const order = deepMerge(
     {
       contract: {
@@ -239,6 +296,7 @@ function createHarness(options?: {
   };
 
   return {
+    prisma,
     service: new ContractSegmentService(prisma as never),
     tx
   };

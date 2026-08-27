@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AutoDebitScheduler } from "../src/auto-debit/auto-debit.scheduler";
 import { BillingAutomationService } from "../src/billing-automation/billing-automation.service";
+import { ContractSegmentError } from "../src/subscription-change/subscription-change.errors";
 
 describe("BillingAutomationService", () => {
   it("creates one active schedule when initialization is repeated", async () => {
@@ -231,6 +232,68 @@ describe("BillingAutomationService", () => {
       nextCycleNo: 5,
       nextPeriodStart: new Date("2026-06-10T00:00:00.000Z")
     });
+  });
+
+  it("isolates a source-fact blocker while reconciling a healthy order", async () => {
+    const harness = createHarness();
+    const blockedOrder = structuredClone(harness.order);
+    blockedOrder.id = randomUUID();
+    blockedOrder.orderNo = "ORD-BLOCKED";
+    blockedOrder.lease = null;
+    harness.orders.push(blockedOrder);
+    harness.contractSegmentService.resolveSegmentForPeriod.mockImplementation(
+      async (orderId: string) => {
+        if (orderId === blockedOrder.id) {
+          throw new ContractSegmentError(
+            "CONTRACT_SEGMENT_NOT_FOUND",
+            "No effective contract segment contains the billing period start."
+          );
+        }
+        return segmentTerms(harness.order);
+      }
+    );
+
+    const result = await harness.service.reconcileSchedules({ dryRun: false });
+
+    expect(result.blockedCount).toBe(1);
+    expect(result.items).toEqual([
+      expect.objectContaining({ action: "CREATED", orderId: harness.order.id }),
+      {
+        action: "BLOCKED",
+        amountSource: null,
+        baselineReason: null,
+        basisBillId: null,
+        basisPeriodStart: null,
+        blockerCode: "CONTRACT_SEGMENT_NOT_FOUND",
+        leaseAction: "NONE",
+        leaseStatus: null,
+        monthlyRentAmount: null,
+        nextCycleNo: null,
+        nextGenerateAt: null,
+        nextPeriodEnd: null,
+        nextPeriodStart: "2026-07-10",
+        orderId: blockedOrder.id,
+        orderNo: blockedOrder.orderNo,
+        scheduleId: null
+      }
+    ]);
+    expect(blockedOrder.lease).toBeNull();
+    expect(harness.schedules).toHaveLength(1);
+    expect(harness.schedules[0]?.orderId).toBe(harness.order.id);
+  });
+
+  it("does not swallow infrastructure failures during reconciliation", async () => {
+    const harness = createHarness();
+    harness.contractSegmentService.resolveSegmentForPeriod.mockRejectedValueOnce(
+      new Error("database unavailable")
+    );
+
+    await expect(harness.service.reconcileSchedules({ dryRun: false })).rejects.toThrow(
+      "database unavailable"
+    );
+
+    expect(harness.schedules).toHaveLength(0);
+    expect(harness.audits).toHaveLength(0);
   });
 
   it("enqueues a due schedule once across repeated dispatcher scans", async () => {
@@ -590,6 +653,7 @@ function createHarness() {
     quoteSnapshot: null
   };
   order.lease!.orderId = order.id;
+  const orders = [order];
   const schedules: Array<Record<string, unknown>> = [];
   const bills: Array<Record<string, unknown>> = [];
   const jobs = new Map<string, Record<string, unknown>>();
@@ -731,19 +795,19 @@ function createHarness() {
     },
     subscriptionOrder: {
       async findMany({ where }: { where?: Record<string, unknown> } = {}) {
-        if (
-          where?.lease &&
-          (!order.lease || order.lease.deletedAt || order.lease.status !== LeaseStatus.ACTIVE)
-        ) {
-          return [];
-        }
-        return [
-          {
-            ...order,
-            billingSchedule: schedules.find((schedule) => schedule.orderId === order.id) ?? null,
-            receivableBills: bills
-          }
-        ];
+        const selected = where?.lease
+          ? orders.filter(
+              (candidate) =>
+                candidate.lease &&
+                !candidate.lease.deletedAt &&
+                candidate.lease.status === LeaseStatus.ACTIVE
+            )
+          : orders;
+        return selected.map((candidate) => ({
+          ...candidate,
+          billingSchedule: schedules.find((schedule) => schedule.orderId === candidate.id) ?? null,
+          receivableBills: candidate.id === order.id ? bills : []
+        }));
       }
     }
   };
@@ -811,35 +875,51 @@ function createHarness() {
   };
   const autoDebitScheduler = new AutoDebitScheduler();
   const segmentMonthlyFeeAmount = order.monthlyFeeAmount;
+  const contractSegmentService = {
+    resolveEffectiveServiceEndDate: vi.fn(async (orderId: string) => {
+      void orderId;
+      return order.endDate;
+    }),
+    resolveSegmentForPeriod: vi.fn(async (orderId: string) => {
+      void orderId;
+      return segmentTerms(order, segmentMonthlyFeeAmount);
+    })
+  };
   const service = new BillingAutomationService(
     prisma as never,
     repository as never,
     finance as never,
     autoDebitScheduler,
-    {
-      resolveEffectiveServiceEndDate: vi.fn(async () => order.endDate),
-      resolveSegmentForPeriod: vi.fn(async () => ({
-        endDate: order.endDate,
-        mileageLimitKm: 1_500,
-        monthlyFeeAmount: segmentMonthlyFeeAmount,
-        overMileageFeeAmount: 100n,
-        planSnapshot: {},
-        segmentId: "segment-base",
-        startDate: new Date("2026-06-10T00:00:00.000Z")
-      }))
-    } as never,
+    contractSegmentService as never,
     () => now
   );
 
   return {
     audits,
     bills,
+    contractSegmentService,
     finance,
     jobs,
     order,
+    orders,
     schedules,
     service,
     tx
+  };
+}
+
+function segmentTerms(
+  order: { endDate: Date; monthlyFeeAmount: bigint },
+  monthlyFeeAmount = order.monthlyFeeAmount
+) {
+  return {
+    endDate: order.endDate,
+    mileageLimitKm: 1_500,
+    monthlyFeeAmount,
+    overMileageFeeAmount: 100n,
+    planSnapshot: {},
+    segmentId: "segment-base",
+    startDate: new Date("2026-06-10T00:00:00.000Z")
   };
 }
 

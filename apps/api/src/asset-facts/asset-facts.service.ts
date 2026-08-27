@@ -1412,7 +1412,7 @@ function assertContractSegmentCoversStart(
   startedAt: Date
 ) {
   if (!segment) return;
-  const startedDate = utcCalendarDate(startedAt);
+  const startedDate = shanghaiBusinessDate(startedAt);
   const segmentStartDate = utcCalendarDate(segment.startDate);
   const segmentEndDate = utcCalendarDate(segment.endDate);
   if (
@@ -1469,6 +1469,10 @@ function toIso(value: Date | null) {
 
 function utcCalendarDate(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+function shanghaiBusinessDate(value: Date) {
+  return new Date(value.getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 function isAuthorityLockUnavailableError(value: unknown) {

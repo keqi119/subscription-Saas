@@ -20,6 +20,7 @@ import {
   SubscriptionJourneyStatus,
   SubscriptionJourneyStepCode,
   SubscriptionJourneyStepStatus,
+  VehicleSubscriptionPeriodStartReason,
   VehicleHandoverOpsReviewStatus,
   VehicleHandoverType,
   VehicleHandoverWorkOrderStatus,
@@ -29,6 +30,7 @@ import {
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
+import { AssetFactsService } from "../asset-facts/asset-facts.service";
 import { AssetOperationsService } from "../asset-operations/asset-operations.service";
 import { VehicleAvailabilityPurpose } from "../asset-operations/vehicle-availability";
 import { RequestContext, RequestUser } from "../auth/auth.types";
@@ -50,8 +52,10 @@ import { OrderEntitlementService } from "../order/order-entitlement.service";
 import { lockDeliveryConfirmationGateRows } from "../order/delivery-confirmation-gate-lock";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionJourneyRepository } from "../subscription-journey/subscription-journey.repository";
+import { ContractSegmentService } from "../subscription-change/contract-segment.service";
 import { VehicleMileageService } from "../vehicle-mileage/vehicle-mileage.service";
 import { activateLeaseRecord } from "./lease-activation.persistence";
+import { deriveOriginalSubscriptionPeriod } from "./subscription-performance-calendar";
 import {
   LEASE_ACTIVATION_CLOCK,
   LeaseActivationClock,
@@ -61,20 +65,19 @@ import {
   SubscriptionActivationResult
 } from "./lease-activation.types";
 
-const LEASE_ACTIVATION_REJECTED_REASON =
-  "MISSING_LEASE_ACTIVATION_CONDITIONS";
+const LEASE_ACTIVATION_REJECTED_REASON = "MISSING_LEASE_ACTIVATION_CONDITIONS";
 
 type Tx = Prisma.TransactionClient;
 
-type AuthorityFacts = Awaited<
-  ReturnType<LeaseActivationEngine["readAuthorityFacts"]>
->;
+type AuthorityFacts = Awaited<ReturnType<LeaseActivationEngine["readAuthorityFacts"]>>;
 
 @Injectable()
 export class LeaseActivationEngine {
   constructor(
     private readonly auditService: AuditService,
     private readonly prisma: PrismaService,
+    private readonly assetFactsService: AssetFactsService,
+    private readonly contractSegmentService: ContractSegmentService,
     @Optional()
     @Inject(LEASE_ACTIVATION_CLOCK)
     private readonly clock: LeaseActivationClock = () => new Date(),
@@ -98,15 +101,10 @@ export class LeaseActivationEngine {
   ) {}
 
   async evaluate(orderId: string): Promise<LeaseActivationEvaluation> {
-    return this.prisma.$transaction((tx) =>
-      this.evaluateInTransaction(tx, orderId)
-    );
+    return this.prisma.$transaction((tx) => this.evaluateInTransaction(tx, orderId));
   }
 
-  async evaluateInTransaction(
-    tx: Tx,
-    orderId: string
-  ): Promise<LeaseActivationEvaluation> {
+  async evaluateInTransaction(tx: Tx, orderId: string): Promise<LeaseActivationEvaluation> {
     await lockDeliveryConfirmationGateRows(tx, orderId);
     const facts = await this.readAuthorityFacts(tx, orderId);
     return this.evaluateFacts(facts);
@@ -145,14 +143,15 @@ export class LeaseActivationEngine {
       });
     }
     const journey = facts.order.subscriptionJourney;
-    if (
-      input.journeyId &&
-      (!journey || journey.id !== input.journeyId)
-    ) {
+    if (input.journeyId && (!journey || journey.id !== input.journeyId)) {
       throw new BadRequestException("JOURNEY_ORDER_MISMATCH");
     }
 
     const activatedAt = facts.handover.completedAt!;
+    const { endDate, startDate } = deriveOriginalSubscriptionPeriod(
+      activatedAt,
+      facts.order.periodMonths
+    );
     const mileageKm = facts.workOrder.handoverMileageKm!;
     const actorId = input.actorId;
     const mileageService = this.requireDependency(
@@ -207,7 +206,9 @@ export class LeaseActivationEngine {
     const order = await tx.subscriptionOrder.update({
       data: {
         actualDeliveryAt: activatedAt,
+        endDate,
         orderStatus: OrderStatus.ACTIVE,
+        startDate,
         updatedBy: actorId
       },
       where: { id: input.orderId }
@@ -221,16 +222,44 @@ export class LeaseActivationEngine {
       actorId,
       orderId: input.orderId
     });
-    await billingAutomationService.ensureActiveSchedule(
+    const baseSegment = await this.contractSegmentService.ensureBaseSegmentInTransaction(
       tx,
-      input.orderId,
-      activatedAt
-    );
-    await entitlementService.ensureInitialEntitlements(
-      tx,
-      input.orderId,
+      order.id,
       actorId
     );
+    const subscriptionPeriodSource = {
+      id: facts.delivery.id,
+      key: `authoritative-delivery:${facts.delivery.id}:subscription-open`,
+      type: "VEHICLE_DELIVERY"
+    } as const;
+    const subscriptionPeriodCapability = await this.assetFactsService.prepareCallerOwnedTransaction(
+      tx,
+      "subscription",
+      "start",
+      subscriptionPeriodSource
+    );
+    const subscriptionPeriod = await this.assetFactsService.openSubscriptionPeriodInTransaction(
+      tx,
+      {
+        confirmedAt: activatedAt.toISOString(),
+        contractId: order.contractId,
+        contractSegmentId: baseSegment.id,
+        customerId: order.customerId,
+        orderId: order.id,
+        reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED,
+        snapshot: {
+          deliveryId: facts.delivery.id,
+          handoverId: facts.handover.id
+        },
+        source: subscriptionPeriodSource,
+        startedAt: activatedAt.toISOString(),
+        vehicleId: order.vehicleId!
+      },
+      { actorId },
+      subscriptionPeriodCapability
+    );
+    await billingAutomationService.ensureActiveSchedule(tx, input.orderId, activatedAt);
+    await entitlementService.ensureInitialEntitlements(tx, input.orderId, actorId);
     await tx.orderEntitlementAccount.updateMany({
       data: {
         accountStatus: EntitlementAccountStatus.ACTIVE,
@@ -244,16 +273,14 @@ export class LeaseActivationEngine {
 
     if (journey) {
       const activationStep = journey.steps.find(
-        ({ code }) =>
-          code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
+        ({ code }) => code === SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION
       );
       if (!activationStep || !this.journeyRepository) {
         throw new Error("Subscription journey activation is unavailable.");
       }
       if (journey.status !== SubscriptionJourneyStatus.COMPLETED) {
         if (
-          journey.currentStepCode !==
-            SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
+          journey.currentStepCode !== SubscriptionJourneyStepCode.AUTHORITATIVE_ACTIVATION ||
           journey.currentStepStatus === SubscriptionJourneyStepStatus.COMPLETED
         ) {
           throw new BadRequestException("JOURNEY_ACTIVATION_STEP_MISMATCH");
@@ -277,10 +304,14 @@ export class LeaseActivationEngine {
         action: leaseBefore ? AuditAction.UPDATE : AuditAction.CREATE,
         after: {
           activatedAt: activatedAt.toISOString(),
+          baseSegmentId: baseSegment.id,
           deliveryId: delivery.id,
+          endDate: endDate.toISOString(),
           leaseId: lease.id,
           orderId: order.id,
           source: "AUTHORITATIVE_STAGE2_HANDOVER",
+          startDate: startDate.toISOString(),
+          subscriptionPeriodId: subscriptionPeriod.id,
           vehicleId: vehicle.id
         },
         before: leaseBefore
@@ -300,23 +331,23 @@ export class LeaseActivationEngine {
 
     return {
       activatedAt: activatedAt.toISOString(),
+      baseSegmentId: baseSegment.id,
       deliveryId: delivery.id,
       deliveryStatus: "DELIVERED",
+      endDate: endDate.toISOString(),
       journeyStatus: journey ? "COMPLETED" : null,
       leaseId: lease.id,
       leaseStatus: "ACTIVE",
       orderId: order.id,
       orderStatus: "ACTIVE",
+      startDate: startDate.toISOString(),
+      subscriptionPeriodId: subscriptionPeriod.id,
       vehicleId: vehicle.id,
       vehicleStatus: "LEASED"
     };
   }
 
-  async activate(
-    orderId: string,
-    user?: RequestUser,
-    context?: RequestContext
-  ) {
+  async activate(orderId: string, user?: RequestUser, context?: RequestContext) {
     void context;
     const actorId = user?.id;
     if (!actorId) {
@@ -391,13 +422,7 @@ export class LeaseActivationEngine {
         }
       })
     ]);
-    const [
-      contractFile,
-      workOrder,
-      evidenceReadiness,
-      settlement,
-      handoverAuthorityValid
-    ] =
+    const [contractFile, workOrder, evidenceReadiness, settlement, handoverAuthorityValid] =
       await Promise.all([
         order.contract?.fileId
           ? tx.fileObject.findUnique({ where: { id: order.contract.fileId } })
@@ -454,20 +479,12 @@ export class LeaseActivationEngine {
     const requiredDeposit = order.finalDepositAmount ?? order.depositAmount;
     if (
       requiredDeposit > 0n &&
-      !isAuthoritativelySettled(
-        facts.bills,
-        BillType.DEPOSIT,
-        requiredDeposit
-      )
+      !isAuthoritativelySettled(facts.bills, BillType.DEPOSIT, requiredDeposit)
     ) {
       pushUnique(missingConditions, "DEPOSIT_PAYMENT_MISSING");
     }
     if (
-      !isAuthoritativelySettled(
-        facts.bills,
-        BillType.FIRST_MONTHLY_FEE,
-        order.monthlyFeeAmount
-      ) ||
+      !isAuthoritativelySettled(facts.bills, BillType.FIRST_MONTHLY_FEE, order.monthlyFeeAmount) ||
       !facts.settlement.paid
     ) {
       pushUnique(missingConditions, "FIRST_RENT_PAYMENT_MISSING");
@@ -507,10 +524,7 @@ export class LeaseActivationEngine {
     ) {
       pushUnique(missingConditions, "HANDOVER_ARCHIVED_ARTIFACT_MISSING");
     }
-    appendEvidenceMissingConditions(
-      missingConditions,
-      facts.evidenceReadiness
-    );
+    appendEvidenceMissingConditions(missingConditions, facts.evidenceReadiness);
     if (
       !workOrder ||
       !facts.handoverAuthorityValid ||
@@ -546,10 +560,7 @@ export class LeaseActivationEngine {
     if (
       !deliveryAt ||
       !order.vehicle ||
-      !resolveVehicleInsuranceCoverage(
-        order.vehicle.insurancePolicies,
-        deliveryAt
-      ).covered
+      !resolveVehicleInsuranceCoverage(order.vehicle.insurancePolicies, deliveryAt).covered
     ) {
       pushUnique(missingConditions, "INSURANCE_NOT_COVERED");
     }
@@ -563,30 +574,18 @@ export class LeaseActivationEngine {
     return {
       canActivate: missingConditions.length === 0,
       missingConditions,
-      ...(missingConditions.length > 0
-        ? { reason: LEASE_ACTIVATION_REJECTED_REASON }
-        : {})
+      ...(missingConditions.length > 0 ? { reason: LEASE_ACTIVATION_REJECTED_REASON } : {})
     };
   }
 
   private getDeliveryEvidenceService() {
-    return (
-      this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma)
-    );
+    return this.deliveryEvidenceService ?? new DeliveryEvidenceService(this.prisma);
   }
 
-  private async validateHandoverAuthority(
-    tx: Tx,
-    orderId: string,
-    handoverId: string | null
-  ) {
+  private async validateHandoverAuthority(tx: Tx, orderId: string, handoverId: string | null) {
     if (!this.handoverWorkOrderService) return true;
     try {
-      await this.handoverWorkOrderService.assertDeliveryCanBeConfirmed(
-        orderId,
-        handoverId,
-        tx
-      );
+      await this.handoverWorkOrderService.assertDeliveryCanBeConfirmed(orderId, handoverId, tx);
       return true;
     } catch {
       return false;
@@ -605,14 +604,9 @@ function isAuthoritativelySettled(
   requiredAmount: bigint
 ) {
   const bill = bills.find(
-    (candidate) =>
-      candidate.billType === billType && candidate.amount === requiredAmount
+    (candidate) => candidate.billType === billType && candidate.amount === requiredAmount
   );
-  if (
-    !bill ||
-    bill.billStatus !== BillStatus.PAID ||
-    bill.remainingAmount !== 0n
-  ) {
+  if (!bill || bill.billStatus !== BillStatus.PAID || bill.remainingAmount !== 0n) {
     return false;
   }
   const confirmedWriteOffAmount = bill.writeOffs.reduce(
@@ -650,7 +644,10 @@ function normalizeSha256(value: unknown) {
   if (typeof value !== "string") {
     return null;
   }
-  const normalized = value.trim().replace(/^sha256:/i, "").toLowerCase();
+  const normalized = value
+    .trim()
+    .replace(/^sha256:/i, "")
+    .toLowerCase();
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 }
 

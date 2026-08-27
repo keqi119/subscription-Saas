@@ -21,6 +21,8 @@ import {
   ASSET_OPERATION_SERVICE_CODE,
   AssetOperationsService
 } from "../src/asset-operations/asset-operations.service";
+import { AssetFactsRepository } from "../src/asset-facts/asset-facts.repository";
+import { AssetFactsService } from "../src/asset-facts/asset-facts.service";
 import { AssetOperationsRepository } from "../src/asset-operations/asset-operations.repository";
 import {
   evaluateVehicleAvailability,
@@ -35,6 +37,7 @@ import { PrismaService } from "../src/prisma/prisma.service";
 import { ProductService } from "../src/product/product.service";
 import { SubscriptionJourneyRepository } from "../src/subscription-journey/subscription-journey.repository";
 import { SubscriptionJourneyService } from "../src/subscription-journey/subscription-journey.service";
+import { ContractSegmentService } from "../src/subscription-change/contract-segment.service";
 import { requiredVehicleAvailabilityTestDatabaseUrl } from "./helpers/test-database-url";
 
 const TEST_DATABASE_URL = requiredVehicleAvailabilityTestDatabaseUrl(process.env.DATABASE_URL);
@@ -89,6 +92,8 @@ describe("authoritative vehicle availability PostgreSQL boundaries", () => {
     leaseActivationEngine = new LeaseActivationEngine(
       new AuditService(prisma),
       prisma,
+      new AssetFactsService(prisma, new AssetFactsRepository(), new AuditService(prisma)),
+      new ContractSegmentService(prisma),
       undefined,
       undefined,
       undefined,

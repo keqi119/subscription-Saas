@@ -6,6 +6,7 @@ import {
   OrderStatus,
   PaymentStatus,
   SubscriptionJourneyStatus,
+  VehicleSubscriptionPeriodStartReason,
   VehicleHandoverOpsReviewStatus,
   VehicleHandoverWorkOrderStatus,
   VehicleInsurancePolicyStatus,
@@ -61,9 +62,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
 
     const result = await harness.engine.evaluate(harness.orderId);
 
-    expect(result.missingConditions).toContain(
-      "CONTRACT_ARCHIVED_ARTIFACT_MISSING"
-    );
+    expect(result.missingConditions).toContain("CONTRACT_ARCHIVED_ARTIFACT_MISSING");
     expect(harness.state.writeCount).toBe(0);
   });
 
@@ -78,10 +77,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
     const result = await harness.engine.evaluate(harness.orderId);
 
     expect(result.missingConditions).toEqual(
-      expect.arrayContaining([
-        "DEPOSIT_PAYMENT_MISSING",
-        "FIRST_RENT_PAYMENT_MISSING"
-      ])
+      expect.arrayContaining(["DEPOSIT_PAYMENT_MISSING", "FIRST_RENT_PAYMENT_MISSING"])
     );
     expect(harness.state.writeCount).toBe(0);
   });
@@ -96,10 +92,7 @@ describe("LeaseActivationEngine authoritative gate", () => {
     const result = await harness.engine.evaluate(harness.orderId);
 
     expect(result.missingConditions).toEqual(
-      expect.arrayContaining([
-        "DEPOSIT_PAYMENT_MISSING",
-        "FIRST_RENT_PAYMENT_MISSING"
-      ])
+      expect.arrayContaining(["DEPOSIT_PAYMENT_MISSING", "FIRST_RENT_PAYMENT_MISSING"])
     );
   });
 
@@ -109,7 +102,11 @@ describe("LeaseActivationEngine authoritative gate", () => {
     ["lapsed insurance", { insuranceCovered: false }, "INSURANCE_NOT_COVERED"],
     ["mismatched vehicle", { deliveryVehicleMatches: false }, "VEHICLE_MISMATCH"],
     ["missing delivery mileage", { handoverMileageKm: null }, "DELIVERY_MILEAGE_MISSING"],
-    ["unarchived Stage 2 artifact", { handoverArchived: false }, "HANDOVER_ARCHIVED_ARTIFACT_MISSING"]
+    [
+      "unarchived Stage 2 artifact",
+      { handoverArchived: false },
+      "HANDOVER_ARCHIVED_ARTIFACT_MISSING"
+    ]
   ] as const)("rejects %s with a stable blocker", async (_name, overrides, blocker) => {
     const harness = createHarness(overrides);
 
@@ -131,15 +128,48 @@ describe("LeaseActivationEngine authoritative gate", () => {
     );
 
     expect(result).toMatchObject({
+      baseSegmentId: "segment-1",
       deliveryStatus: "DELIVERED",
+      endDate: "2027-08-05T00:00:00.000Z",
       journeyStatus: "COMPLETED",
       leaseStatus: "ACTIVE",
       orderStatus: "ACTIVE",
+      startDate: "2026-08-06T00:00:00.000Z",
+      subscriptionPeriodId: "subscription-period-1",
       vehicleStatus: "LEASED"
     });
+    expect(harness.state.actualDeliveryAt).toEqual(harness.state.completedAt);
+    expect(harness.state.startDate).toEqual(new Date("2026-08-06T00:00:00.000Z"));
+    expect(harness.state.endDate).toEqual(new Date("2027-08-05T00:00:00.000Z"));
+    expect(harness.state.contractSegments).toEqual([
+      expect.objectContaining({
+        id: "segment-1",
+        orderId: harness.orderId,
+        startDate: new Date("2026-08-06T00:00:00.000Z"),
+        endDate: new Date("2027-08-05T00:00:00.000Z")
+      })
+    ]);
+    expect(harness.state.subscriptionPeriods).toEqual([
+      expect.objectContaining({
+        contractSegmentId: "segment-1",
+        reason: VehicleSubscriptionPeriodStartReason.DELIVERY_CONFIRMED,
+        startedAt: harness.state.completedAt
+      })
+    ]);
     expect(harness.state.billingScheduleCount).toBe(1);
     expect(harness.state.entitlementCount).toBe(1);
     expect(harness.state.journeyCompletedEventCount).toBe(1);
+    expect(harness.auditService.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        after: expect.objectContaining({
+          baseSegmentId: "segment-1",
+          endDate: "2027-08-05T00:00:00.000Z",
+          startDate: "2026-08-06T00:00:00.000Z",
+          subscriptionPeriodId: "subscription-period-1"
+        })
+      }),
+      harness.tx
+    );
     expect(harness.auditService.write).toHaveBeenCalledWith(
       expect.objectContaining({ entityType: "subscription_activation" }),
       harness.tx
@@ -172,14 +202,36 @@ describe("LeaseActivationEngine authoritative gate", () => {
     expect(harness.state.billingScheduleCount).toBe(1);
     expect(harness.state.entitlementCount).toBe(1);
     expect(harness.state.journeyCompletedEventCount).toBe(1);
+    expect(harness.state.contractSegments).toHaveLength(1);
+    expect(harness.state.subscriptionPeriods).toHaveLength(1);
+  });
+
+  it("rolls back dates, BASE segment and subscription period when period opening fails", async () => {
+    const harness = createHarness({ failAfterBaseSegment: true, journey: true });
+
+    await expect(harness.engine.activate(harness.orderId, harness.user)).rejects.toThrow(
+      "injected post-base-segment failure"
+    );
+
+    expect(harness.state.actualDeliveryAt).toBeNull();
+    expect(harness.state.startDate).toBeNull();
+    expect(harness.state.endDate).toBeNull();
+    expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
+    expect(harness.state.deliveryStatus).toBe(DeliveryStatus.READY);
+    expect(harness.state.contractSegments).toHaveLength(0);
+    expect(harness.state.subscriptionPeriods).toHaveLength(0);
+    expect(harness.state.leaseCount).toBe(0);
+    expect(harness.state.billingScheduleCount).toBe(0);
+    expect(harness.state.entitlementCount).toBe(0);
   });
 
   it("rolls every aggregate back when a write fails after the vehicle update", async () => {
     const harness = createHarness({ failAfterVehicleUpdate: true, journey: true });
 
-    await expect(
-      harness.engine.activate(harness.orderId, harness.user)
-    ).rejects.toThrow("injected post-vehicle failure");
+    await expect(harness.engine.activate(harness.orderId, harness.user)).rejects.toThrow(
+      "injected post-vehicle failure"
+    );
 
     expect(harness.state.orderStatus).toBe(OrderStatus.PENDING_DELIVERY);
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.RESERVED);
@@ -208,12 +260,14 @@ function createHarness(overrides: Partial<State> = {}) {
   const deliveryId = "delivery-1";
   const manifestHash = "a".repeat(64);
   const state: State = {
+    actualDeliveryAt: null,
     approvedManifestHash: manifestHash,
     billingScheduleCount: 0,
     completedAt: new Date("2026-08-06T08:00:00.000Z"),
     contractArchivedAt: new Date("2026-08-05T09:00:00.000Z"),
     contractFileId: "stage1-file-1",
     contractStatus: ContractStatus.ARCHIVED,
+    contractSegments: [],
     deliveryMileageKm: null,
     deliveryStatus: DeliveryStatus.READY,
     deliveryVehicleMatches: true,
@@ -221,6 +275,8 @@ function createHarness(overrides: Partial<State> = {}) {
     depositStatus: BillStatus.PAID,
     depositWriteOffConfirmed: true,
     entitlementCount: 0,
+    endDate: null,
+    failAfterBaseSegment: false,
     failAfterVehicleUpdate: false,
     firstRentRemainingAmount: 0n,
     firstRentStatus: BillStatus.PAID,
@@ -237,7 +293,10 @@ function createHarness(overrides: Partial<State> = {}) {
     leaseCount: 0,
     legacyMoneyBooleans: false,
     orderStatus: OrderStatus.PENDING_DELIVERY,
+    periodMonths: 12,
     vehicleStatus: VehicleStatus.RESERVED,
+    startDate: null,
+    subscriptionPeriods: [],
     workOrderApproved: true,
     writeCount: 0,
     ...overrides
@@ -272,19 +331,28 @@ function createHarness(overrides: Partial<State> = {}) {
         }
       : null;
   const buildOrder = () => ({
+    actualDeliveryAt: state.actualDeliveryAt,
     contract: {
       archivedAt: state.contractArchivedAt,
+      contractSnapshot: { source: "archived-main-contract" },
       deletedAt: null,
       fileId: state.contractFileId,
       id: "contract-1",
       status: state.contractStatus
     },
+    contractId: "contract-1",
+    customerId: "customer-1",
     deletedAt: null,
     depositAmount: 500000n,
     finalDepositAmount: 500000n,
+    finalPlanSnapshot: { plan: "final" },
     id: orderId,
     monthlyFeeAmount: 300000n,
     orderStatus: state.orderStatus,
+    periodMonths: state.periodMonths,
+    quoteSnapshot: { quote: "confirmed" },
+    startDate: state.startDate,
+    endDate: state.endDate,
     subscriptionJourney: buildJourney(),
     vehicle: {
       deletedAt: null,
@@ -302,10 +370,7 @@ function createHarness(overrides: Partial<State> = {}) {
     deliveryNo: "DLV-1",
     deliveryStatus: state.deliveryStatus,
     depositReceivedConfirmed: state.legacyMoneyBooleans,
-    deliveredAt:
-      state.deliveryStatus === DeliveryStatus.DELIVERED
-        ? state.completedAt
-        : null,
+    deliveredAt: state.deliveryStatus === DeliveryStatus.DELIVERED ? state.completedAt : null,
     firstMonthlyFeeReceivedConfirmed: state.legacyMoneyBooleans,
     handoverDocumentsConfirmed: true,
     handoverMileageKm: state.deliveryMileageKm,
@@ -399,10 +464,23 @@ function createHarness(overrides: Partial<State> = {}) {
     receivableBill: { findMany: vi.fn(async () => buildBills()) },
     subscriptionOrder: {
       findUnique: vi.fn(async () => buildOrder()),
-      update: vi.fn(async () => {
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         state.writeCount += 1;
-        state.orderStatus = OrderStatus.ACTIVE;
-        return { id: orderId, orderStatus: state.orderStatus };
+        state.actualDeliveryAt =
+          (data.actualDeliveryAt as Date | undefined) ?? state.actualDeliveryAt;
+        state.startDate = (data.startDate as Date | undefined) ?? state.startDate;
+        state.endDate = (data.endDate as Date | undefined) ?? state.endDate;
+        state.orderStatus = (data.orderStatus as OrderStatus | undefined) ?? state.orderStatus;
+        return {
+          actualDeliveryAt: state.actualDeliveryAt,
+          contractId: "contract-1",
+          customerId: "customer-1",
+          endDate: state.endDate,
+          id: orderId,
+          orderStatus: state.orderStatus,
+          startDate: state.startDate,
+          vehicleId
+        };
       })
     },
     vehicle: {
@@ -489,11 +567,8 @@ function createHarness(overrides: Partial<State> = {}) {
   };
   const financeService = {
     evaluateInitialBillSettlement: vi.fn(async () => ({
-      paid:
-        state.depositRemainingAmount === 0n &&
-        state.firstRentRemainingAmount === 0n,
-      remainingAmount:
-        state.depositRemainingAmount + state.firstRentRemainingAmount
+      paid: state.depositRemainingAmount === 0n && state.firstRentRemainingAmount === 0n,
+      remainingAmount: state.depositRemainingAmount + state.firstRentRemainingAmount
     }))
   };
   const mileageService = {
@@ -527,9 +602,50 @@ function createHarness(overrides: Partial<State> = {}) {
       }
     })
   };
+  const contractSegmentService = {
+    ensureBaseSegmentInTransaction: vi.fn(async () => {
+      const existing = state.contractSegments[0];
+      if (existing) return existing;
+      const segment = {
+        endDate: state.endDate!,
+        id: "segment-1",
+        orderId,
+        startDate: state.startDate!
+      };
+      state.writeCount += 1;
+      state.contractSegments.push(segment);
+      return segment;
+    })
+  };
+  const assetFactsService = {
+    prepareCallerOwnedTransaction: vi.fn(async () => Object.freeze({})),
+    openSubscriptionPeriodInTransaction: vi.fn(
+      async (_tx: unknown, command: SubscriptionPeriodCommand) => {
+        if (state.failAfterBaseSegment) {
+          throw new Error("injected post-base-segment failure");
+        }
+        const existing = state.subscriptionPeriods.find(
+          ({ sourceKey }) => sourceKey === command.source.key
+        );
+        if (existing) return existing;
+        const period = {
+          contractSegmentId: command.contractSegmentId,
+          id: "subscription-period-1",
+          reason: command.reason,
+          sourceKey: command.source.key,
+          startedAt: new Date(command.startedAt)
+        };
+        state.writeCount += 1;
+        state.subscriptionPeriods.push(period);
+        return period;
+      }
+    )
+  };
   const engine = new LeaseActivationEngine(
     auditService as never,
     prisma as never,
+    assetFactsService as never,
+    contractSegmentService as never,
     () => now,
     deliveryEvidenceService as never,
     billingAutomationService as never,
@@ -584,18 +700,17 @@ function buildInsurancePolicies(state: State, now: Date) {
   const effectiveTo = state.insuranceCovered
     ? new Date("2027-08-06T00:00:00.000Z")
     : new Date("2026-08-01T00:00:00.000Z");
-  return [
-    VehicleInsurancePolicyType.COMPULSORY_TRAFFIC,
-    VehicleInsurancePolicyType.COMMERCIAL
-  ].map((policyType, index) => ({
-    deletedAt: null,
-    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
-    effectiveTo,
-    id: `policy-${index}`,
-    policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
-    policyType,
-    updatedAt: now
-  }));
+  return [VehicleInsurancePolicyType.COMPULSORY_TRAFFIC, VehicleInsurancePolicyType.COMMERCIAL].map(
+    (policyType, index) => ({
+      deletedAt: null,
+      effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+      effectiveTo,
+      id: `policy-${index}`,
+      policyStatus: VehicleInsurancePolicyStatus.ACTIVE,
+      policyType,
+      updatedAt: now
+    })
+  );
 }
 
 function snapshotState(state: State): State {
@@ -603,12 +718,14 @@ function snapshotState(state: State): State {
 }
 
 interface State {
+  actualDeliveryAt: Date | null;
   approvedManifestHash: string | null;
   billingScheduleCount: number;
   completedAt: Date;
   contractArchivedAt: Date | null;
   contractFileId: string | null;
   contractStatus: ContractStatus;
+  contractSegments: ContractSegmentFact[];
   deliveryMileageKm: number | null;
   deliveryStatus: DeliveryStatus;
   deliveryVehicleMatches: boolean;
@@ -616,6 +733,8 @@ interface State {
   depositStatus: BillStatus;
   depositWriteOffConfirmed: boolean;
   entitlementCount: number;
+  endDate: Date | null;
+  failAfterBaseSegment: boolean;
   failAfterVehicleUpdate: boolean;
   firstRentRemainingAmount: bigint;
   firstRentStatus: BillStatus;
@@ -631,8 +750,33 @@ interface State {
   leaseCount: number;
   legacyMoneyBooleans: boolean;
   orderStatus: OrderStatus;
+  periodMonths: number;
   operationallyRestricted: boolean;
   vehicleStatus: VehicleStatus;
+  startDate: Date | null;
+  subscriptionPeriods: SubscriptionPeriodFact[];
   workOrderApproved: boolean;
   writeCount: number;
+}
+
+interface ContractSegmentFact {
+  endDate: Date;
+  id: string;
+  orderId: string;
+  startDate: Date;
+}
+
+interface SubscriptionPeriodFact {
+  contractSegmentId: string | null | undefined;
+  id: string;
+  reason: VehicleSubscriptionPeriodStartReason;
+  sourceKey: string;
+  startedAt: Date;
+}
+
+interface SubscriptionPeriodCommand {
+  contractSegmentId?: string | null;
+  reason: VehicleSubscriptionPeriodStartReason;
+  source: { key: string };
+  startedAt: string;
 }

@@ -4,8 +4,10 @@ import {
   ContractStatus,
   ContractTemplateType,
   ContractVersionStatus,
+  SubscriptionChangePricingMode,
   SubscriptionChangeQuoteStatus,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -317,6 +319,7 @@ function contractHarness(options: HarnessOptions = {}) {
     : null;
   const state = {
     change: {
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuote: quote,
       confirmedQuoteId: quote?.id ?? null,
@@ -347,6 +350,7 @@ function contractHarness(options: HarnessOptions = {}) {
         vehicleId: "vehicle-1"
       },
       orderId: "order-1",
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
       sourceSegment: {
         endDate: new Date("2026-09-02T00:00:00.000Z"),
         id: "segment-base",

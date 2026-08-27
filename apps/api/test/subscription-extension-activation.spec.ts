@@ -2,7 +2,9 @@ import {
   ContractSegmentStatus,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType,
-  SubscriptionChangeStatus
+  SubscriptionChangePricingMode,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -199,9 +201,14 @@ function createActivationHarness(
 ) {
   const state = {
     change: {
+      changeType: SubscriptionChangeType.EXTENSION,
+      extensionMonths: 6,
       id: "change-1",
       orderId: "order-1",
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
       status: SubscriptionChangeStatus.SCHEDULED,
+      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
       version: 3
     },
     source: {

@@ -6,7 +6,9 @@ import {
   ESignSigningStage,
   ESignTaskStatus,
   RenewalConsiderationStatus,
-  SubscriptionChangeStatus
+  SubscriptionChangePricingMode,
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -175,6 +177,7 @@ interface ArchiveHarnessOptions {
 function archiveHarness(options: ArchiveHarnessOptions = {}) {
   const state = {
     change: {
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuote: {
         energyLimitCount: 2,
@@ -197,8 +200,10 @@ function archiveHarness(options: ArchiveHarnessOptions = {}) {
         id: "contract-extension"
       },
       contractId: "contract-extension",
+      extensionMonths: 6,
       id: "change-1",
       orderId: "order-1",
+      pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
       renewalConsiderationId: "consideration-1",
       sourceSegment: {
         endDate: new Date("2026-09-02T00:00:00.000Z"),

@@ -6,6 +6,7 @@ import {
   SubscriptionChangePricingMode,
   SubscriptionChangeQuoteStatus,
   SubscriptionChangeStatus,
+  SubscriptionChangeType,
   SubscriptionAutomationJobStatus,
   SubscriptionAutomationJobType,
   VehicleStatus
@@ -123,9 +124,32 @@ describe("SubscriptionExtensionService", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           completionDeadlineAt: new Date("2026-01-30T16:00:00.000Z"),
+          extensionDetail: {
+            create: expect.objectContaining({
+              extensionMonths: 1,
+              pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+              sourceSegmentId: "segment-base",
+              targetEndDate: new Date("2026-02-27T00:00:00.000Z"),
+              targetStartDate: new Date("2026-01-31T00:00:00.000Z")
+            })
+          },
           targetEndDate: new Date("2026-02-27T00:00:00.000Z"),
           targetStartDate: new Date("2026-01-31T00:00:00.000Z")
         })
+      })
+    );
+  });
+
+  it("prices an extension from its typed detail after legacy root fields become nullable", async () => {
+    const harness = changeHarness({ typedDetailOnly: true });
+
+    await harness.service.previewQuote("change-1", {}, harness.submitter);
+
+    expect(harness.pricingService.calculate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extensionMonths: 6,
+        pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+        sourceSegment: expect.objectContaining({ id: "segment-base" })
       })
     );
   });
@@ -539,6 +563,7 @@ interface HarnessOptions {
   jobContractSegmentId?: string | null;
   jobErrorCode?: string | null;
   targetSegmentStatus?: ContractSegmentStatus;
+  typedDetailOnly?: boolean;
   vehicleStatus?: VehicleStatus;
 }
 
@@ -566,6 +591,7 @@ function changeHarness(options: HarnessOptions = {}) {
   };
   const state = {
     change: {
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuoteId: options.confirmedQuoteId ?? null,
       createdBy: submitter.id,
@@ -577,17 +603,19 @@ function changeHarness(options: HarnessOptions = {}) {
           : options.changeFailureCode,
       failureMessage: "provider timeout",
       currentQuoteId: options.existingQuote ? "quote-1" : null,
-      extensionMonths: 6,
+      extensionMonths: options.typedDetailOnly ? null : 6,
       id: "change-1",
       orderId: "order-1",
       priceOverrideApprovedAt: null as Date | null,
       priceOverrideApprovedBy: null as string | null,
-      pricingMode: options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION,
+      pricingMode: options.typedDetailOnly
+        ? null
+        : (options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION),
       renewalConsiderationId: null,
-      sourceSegmentId: "segment-base",
+      sourceSegmentId: options.typedDetailOnly ? null : "segment-base",
       status: options.status ?? SubscriptionChangeStatus.DRAFT,
-      targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
-      targetStartDate: new Date("2026-09-03T00:00:00.000Z"),
+      targetEndDate: options.typedDetailOnly ? null : new Date("2027-03-02T00:00:00.000Z"),
+      targetStartDate: options.typedDetailOnly ? null : new Date("2026-09-03T00:00:00.000Z"),
       version: 0
     },
     quote: {
@@ -731,9 +759,19 @@ function changeHarness(options: HarnessOptions = {}) {
           ? { fileId: null, id: "contract-rendering", status: "GENERATED" }
           : { fileId: "file-1", id: "contract-1", status: "ARCHIVED" },
         currentQuote: options.existingQuote ? state.quote : null,
+        extensionDetail: options.typedDetailOnly
+          ? {
+              extensionMonths: 6,
+              pricingMode: options.pricingMode ?? SubscriptionChangePricingMode.CURRENT_VERSION,
+              sourceSegment,
+              sourceSegmentId: sourceSegment.id,
+              targetEndDate: new Date("2027-03-02T00:00:00.000Z"),
+              targetStartDate: new Date("2026-09-03T00:00:00.000Z")
+            }
+          : null,
         order,
         quotes: options.existingQuote ? [state.quote] : [],
-        sourceSegment,
+        sourceSegment: options.typedDetailOnly ? null : sourceSegment,
         targetSegment: {
           id: "segment-extension",
           status: options.targetSegmentStatus ?? ContractSegmentStatus.ACTIVE
@@ -820,7 +858,7 @@ function changeHarness(options: HarnessOptions = {}) {
     { enabled: options.enabled ?? true, now: () => now, quoteValidityHours: 72 }
   );
 
-  return { auditService, context, prisma, service, state, submitter };
+  return { auditService, context, pricingService, prisma, service, state, submitter };
 }
 
 function createInput() {

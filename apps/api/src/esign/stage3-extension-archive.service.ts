@@ -20,10 +20,15 @@ import { createBusinessNo } from "../common/business-number";
 import { runSerializableTransaction } from "../common/serializable-transaction";
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "../subscription-change/subscription-change.errors";
+import {
+  ExtensionChangeProjection,
+  requireExtensionChangeProjection
+} from "../subscription-change/subscription-extension-compat";
 
 const extensionArchiveInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclude>()({
   confirmedQuote: true,
   contract: true,
+  extensionDetail: { include: { sourceSegment: true } },
   sourceSegment: true,
   targetSegment: true
 });
@@ -31,6 +36,7 @@ const extensionArchiveInclude = Prisma.validator<Prisma.SubscriptionChangeOrderI
 type ExtensionArchiveChange = Prisma.SubscriptionChangeOrderGetPayload<{
   include: typeof extensionArchiveInclude;
 }>;
+type ProjectedExtensionArchiveChange = ExtensionChangeProjection<ExtensionArchiveChange>;
 
 export interface FinalizeStage3ExtensionInput {
   completedAt: Date;
@@ -78,17 +84,18 @@ export class Stage3ExtensionArchiveService {
 
     return runSerializableTransaction(this.prisma, async (tx) => {
       await lockArchiveRows(tx, input.contractId, input.taskId);
-      const change = await tx.subscriptionChangeOrder.findUnique({
+      const storedChange = await tx.subscriptionChangeOrder.findUnique({
         include: extensionArchiveInclude,
         where: { contractId: input.contractId }
       });
-      if (!change) {
+      if (!storedChange) {
         throw new SubscriptionChangeError(
           "STAGE3_EXTENSION_CHANGE_NOT_FOUND",
           "The extension change for this contract was not found.",
           404
         );
       }
+      const change = requireExtensionChangeProjection(storedChange);
       const task = await tx.contractESignTask.findUnique({ where: { id: input.taskId } });
       assertArchivedEvidence(task, input.contractId);
       await lockExtensionBusinessRows(tx, change);
@@ -282,7 +289,7 @@ function assertArchivedEvidence(
 }
 
 function expiryWins(
-  change: ExtensionArchiveChange,
+  change: ProjectedExtensionArchiveChange,
   considerationStatus: RenewalConsiderationStatus | undefined,
   completedAt: Date
 ) {
@@ -293,7 +300,7 @@ function expiryWins(
 }
 
 function assertScheduleSource(
-  change: ExtensionArchiveChange,
+  change: ProjectedExtensionArchiveChange,
   considerationStatus: RenewalConsiderationStatus | undefined
 ) {
   if (
@@ -314,7 +321,7 @@ function assertScheduleSource(
 
 async function lockExtensionBusinessRows(
   tx: Prisma.TransactionClient,
-  change: ExtensionArchiveChange
+  change: ProjectedExtensionArchiveChange
 ) {
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "renewal_consideration"
@@ -323,7 +330,7 @@ async function lockExtensionBusinessRows(
   `);
   await tx.$queryRaw(Prisma.sql`
     SELECT "id" FROM "subscription_contract_segment"
-    WHERE "id" = ${change.sourceSegmentId}::uuid
+    WHERE "id" = ${change.sourceSegment.id}::uuid
        OR "source_change_order_id" = ${change.id}::uuid
     ORDER BY "sequence_no"
     FOR UPDATE

@@ -23,6 +23,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { ContractSegmentService } from "./contract-segment.service";
+import { requireExtensionChangeProjection } from "./subscription-extension-compat";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
 
 const ACTIVE_CHANGE_STATUSES: SubscriptionChangeStatus[] = [
@@ -50,6 +51,7 @@ const changeDetailInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclu
   confirmedQuote: true,
   contract: true,
   currentQuote: true,
+  extensionDetail: { include: { sourceSegment: true } },
   order: { include: { vehicle: true } },
   quotes: { orderBy: { revision: "desc" } },
   renewalConsideration: {
@@ -201,6 +203,16 @@ export class SubscriptionExtensionService {
             changeType: SubscriptionChangeType.EXTENSION,
             completionDeadlineAt,
             createdBy: actor.id,
+            extensionDetail: {
+              create: {
+                extensionMonths: input.extensionMonths,
+                priceOverrideReason: normalizedReason(input.priceOverrideReason),
+                pricingMode: input.pricingMode,
+                sourceSegmentId: sourceSegment.id,
+                targetEndDate,
+                targetStartDate
+              }
+            },
             extensionMonths: input.extensionMonths,
             orderId: order.id,
             priceOverrideReason: normalizedReason(input.priceOverrideReason),
@@ -280,12 +292,13 @@ export class SubscriptionExtensionService {
           where: { id }
         });
         if (!change) throw changeNotFound();
+        const extensionChange = requireExtensionChangeProjection(change);
         assertVersionMatches(change.version, input.version!);
         assertQuoteMutable(change);
         assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
 
         const pricing = await this.pricingService.calculate(
-          pricingInput(change, input, this.config.now())
+          pricingInput(extensionChange, input, this.config.now())
         );
         const latest = await tx.subscriptionChangeQuote.findFirst({
           orderBy: { revision: "desc" },
@@ -314,7 +327,7 @@ export class SubscriptionExtensionService {
             overMileageFeeAmount: pricing.overMileageFeeAmount,
             planSnapshot: pricing.planSnapshot,
             priceRuleSnapshot: pricing.priceRuleSnapshot,
-            pricingMode: change.pricingMode,
+            pricingMode: extensionChange.pricingMode,
             productId: pricing.productId,
             productVersionId: pricing.productVersionId,
             quoteNo: createBusinessNo("SCQ"),
@@ -1044,6 +1057,7 @@ const RETRYABLE_EXTENSION_JOB_TYPES: SubscriptionAutomationJobType[] = [
 ];
 
 function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
+  const extensionChange = requireExtensionChangeProjection(change);
   if (!change.order.vehicle) {
     throw badRequest(
       "ORDER_VEHICLE_REQUIRED",
@@ -1053,10 +1067,10 @@ function pricingInput(change: ChangeDetail, input: QuoteInput, asOf: Date) {
   return {
     asOf,
     discountedMonthlyFeeAmount: input.discountedMonthlyFeeAmount,
-    extensionMonths: change.extensionMonths,
-    pricingMode: change.pricingMode,
+    extensionMonths: extensionChange.extensionMonths,
+    pricingMode: extensionChange.pricingMode,
     requestedVehicleBaseFeeAmount: input.requestedVehicleBaseFeeAmount,
-    sourceSegment: change.sourceSegment,
+    sourceSegment: extensionChange.sourceSegment,
     subscriptionPlanId: input.subscriptionPlanId,
     vehicle: change.order.vehicle
   };

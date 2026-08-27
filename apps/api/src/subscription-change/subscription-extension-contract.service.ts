@@ -29,12 +29,23 @@ import { PrismaService } from "../prisma/prisma.service";
 import { VehicleInsuranceService } from "../vehicle-insurance/vehicle-insurance.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscription-change.config";
+import {
+  ExtensionChangeProjection,
+  requireExtensionChangeProjection
+} from "./subscription-extension-compat";
 
 const CONTRACT_PDF_CJK_FONT_PATH_ENV = "CONTRACT_PDF_CJK_FONT_PATH";
 
 const extensionContractInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclude>()({
   confirmedQuote: true,
   contract: true,
+  extensionDetail: {
+    include: {
+      sourceSegment: {
+        include: { sourceContract: true }
+      }
+    }
+  },
   order: {
     include: {
       customer: {
@@ -64,9 +75,10 @@ const extensionContractInclude = Prisma.validator<Prisma.SubscriptionChangeOrder
 type ExtensionContractChange = Prisma.SubscriptionChangeOrderGetPayload<{
   include: typeof extensionContractInclude;
 }>;
+type ProjectedExtensionContractChange = ExtensionChangeProjection<ExtensionContractChange>;
 
 interface GenerationRenderReservation {
-  change: ExtensionContractChange;
+  change: ProjectedExtensionContractChange;
   commandId: string;
   contract: Contract;
   generatedAt: Date;
@@ -195,7 +207,7 @@ export class SubscriptionExtensionContractService {
         404
       );
     }
-    return change;
+    return requireExtensionChangeProjection(change);
   }
 
   private async reserveGeneration(
@@ -256,17 +268,18 @@ export class SubscriptionExtensionContractService {
           }
 
           await lockChange(tx, changeOrderId);
-          const change = await tx.subscriptionChangeOrder.findUnique({
+          const storedChange = await tx.subscriptionChangeOrder.findUnique({
             include: extensionContractInclude,
             where: { id: changeOrderId }
           });
-          if (!change) {
+          if (!storedChange) {
             throw new SubscriptionChangeError(
               "SUBSCRIPTION_CHANGE_NOT_FOUND",
               "Subscription change order was not found.",
               404
             );
           }
+          const change = requireExtensionChangeProjection(storedChange);
 
           if (recovering) {
             if (
@@ -451,16 +464,21 @@ export class SubscriptionExtensionContractService {
         throw generationInProgress();
       }
       await lockChange(tx, reservation.change.id);
-      const change = await tx.subscriptionChangeOrder.findUnique({
+      const storedChange = await tx.subscriptionChangeOrder.findUnique({
         include: extensionContractInclude,
         where: { id: reservation.change.id }
       });
-      if (!change || change.contractId !== reservation.contract.id || !change.contract) {
+      if (
+        !storedChange ||
+        storedChange.contractId !== reservation.contract.id ||
+        !storedChange.contract
+      ) {
         throw conflict(
           "IDEMPOTENCY_RESOURCE_MISSING",
           "The reserved extension contract is missing."
         );
       }
+      const change = requireExtensionChangeProjection(storedChange);
       if (change.version !== input.version) {
         throw conflict(
           "VERSION_CONFLICT",
@@ -470,7 +488,7 @@ export class SubscriptionExtensionContractService {
       assertGeneratable(change, this.now());
       const contract = await tx.contract.update({
         data: {
-          contractSnapshot: appendArtifact(change.contract.contractSnapshot, artifact),
+          contractSnapshot: appendArtifact(storedChange.contract.contractSnapshot, artifact),
           fileId: artifact.fileId,
           updatedBy: actor.id
         },
@@ -669,7 +687,7 @@ function isPrismaUniqueConstraintError(error: unknown) {
   );
 }
 
-function assertGeneratable(change: ExtensionContractChange, now: Date) {
+function assertGeneratable(change: ProjectedExtensionContractChange, now: Date) {
   if (change.status !== SubscriptionChangeStatus.CUSTOMER_CONFIRMED) {
     throw new SubscriptionChangeError(
       "EXTENSION_CUSTOMER_CONFIRMATION_REQUIRED",
@@ -718,7 +736,7 @@ const serializableTransaction = {
 };
 
 function buildExtensionContractSnapshot(
-  change: ExtensionContractChange
+  change: ProjectedExtensionContractChange
 ): ExtensionContractSnapshot {
   const quote = change.confirmedQuote;
   const original = change.sourceSegment.sourceContract;
@@ -777,7 +795,7 @@ function buildExtensionPdfRenderModel(
     contractNo: string;
     id: string;
   },
-  change: ExtensionContractChange,
+  change: ProjectedExtensionContractChange,
   template: {
     contentTemplate: string;
     templateName: string;

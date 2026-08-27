@@ -2,7 +2,8 @@ import {
   RenewalConsiderationStatus,
   RenewalDecision,
   SubscriptionChangeQuoteStatus,
-  SubscriptionChangeStatus
+  SubscriptionChangeStatus,
+  SubscriptionChangeType
 } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
@@ -269,6 +270,7 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
     },
     change: {
       cancelReason: null as string | null,
+      changeType: SubscriptionChangeType.EXTENSION,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
       confirmedQuoteId: null as string | null,
       currentQuoteId: "quote-1",

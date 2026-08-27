@@ -28,6 +28,7 @@ import {
   SUBSCRIPTION_CHANGE_CONFIG,
   SubscriptionChangeConfig
 } from "../subscription-change/subscription-change.config";
+import { requireExtensionChangeProjection } from "../subscription-change/subscription-extension-compat";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
   PortalConfirmExtensionQuoteDto,
@@ -69,6 +70,7 @@ const changeInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclude>()(
   confirmedQuote: true,
   contract: true,
   currentQuote: true,
+  extensionDetail: { include: { sourceSegment: true } },
   order: {
     select: { customerId: true, id: true, orderNo: true }
   },
@@ -446,23 +448,24 @@ function toConsiderationView(consideration: PortalConsideration) {
 }
 
 function toChangeView(change: PortalChange) {
+  const extensionChange = requireExtensionChangeProjection(change);
   return {
     cancelReason: change.cancelReason,
     completionDeadlineAt: change.completionDeadlineAt.toISOString(),
     confirmedQuoteId: change.confirmedQuoteId,
     contractId: change.contractId,
     currentQuote: change.currentQuote ? toQuoteView(change.currentQuote) : null,
-    extensionMonths: change.extensionMonths,
+    extensionMonths: extensionChange.extensionMonths,
     id: change.id,
     orderId: change.orderId,
     orderNo: change.order.orderNo,
-    pricingMode: change.pricingMode,
+    pricingMode: extensionChange.pricingMode,
     quotes: change.quotes.map(toQuoteView),
-    sourceSegment: toSegmentView(change.sourceSegment),
+    sourceSegment: toSegmentView(extensionChange.sourceSegment),
     status: change.status,
-    targetEndDate: dateOnly(change.targetEndDate),
+    targetEndDate: dateOnly(extensionChange.targetEndDate),
     targetSegment: change.targetSegment ? toSegmentView(change.targetSegment) : null,
-    targetStartDate: dateOnly(change.targetStartDate),
+    targetStartDate: dateOnly(extensionChange.targetStartDate),
     version: change.version
   };
 }

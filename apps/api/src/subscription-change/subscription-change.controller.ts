@@ -27,6 +27,7 @@ import {
   VersionedSubscriptionChangeDto
 } from "./subscription-change.dto";
 import { SubscriptionChangeService } from "./subscription-change.service";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
@@ -39,7 +40,9 @@ export class SubscriptionChangeController {
     @Optional() private readonly contractService?: SubscriptionExtensionContractService,
     @Optional() private readonly esignService?: ESignService,
     @Optional() private readonly changeService?: SubscriptionChangeService,
-    @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService
+    @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService,
+    @Optional()
+    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService
   ) {}
 
   @Post()
@@ -333,6 +336,12 @@ export class SubscriptionChangeController {
         }
         return this.vehicleSwapContractService;
       }
+      if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTerminationService) {
+          throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+        }
+        return this.earlyTerminationService;
+      }
     }
     if (!this.contractService) {
       throw new Error("SUBSCRIPTION_EXTENSION_CONTRACT_SERVICE_MISSING");
@@ -348,6 +357,12 @@ export class SubscriptionChangeController {
           throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
         }
         return this.vehicleSwapContractService;
+      }
+      if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTerminationService) {
+          throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+        }
+        return this.earlyTerminationService;
       }
     }
     return this.service;

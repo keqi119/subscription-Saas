@@ -1,8 +1,9 @@
-import { HttpStatus, Injectable, NotFoundException } from "@nestjs/common";
+import { HttpStatus, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { SubscriptionChangeType } from "@prisma/client";
 
 import { PrismaService } from "../prisma/prisma.service";
 import { SubscriptionChangeError } from "../subscription-change/subscription-change.errors";
+import { SubscriptionEarlyTerminationChangeService } from "../subscription-change/subscription-early-termination-change.service";
 import { SubscriptionVehicleSwapService } from "../subscription-change/subscription-vehicle-swap.service";
 import { CurrentCustomer, PortalRequestContext } from "./portal-auth.types";
 import {
@@ -16,13 +17,20 @@ export class PortalSubscriptionChangeService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly renewalService: PortalRenewalService,
-    private readonly vehicleSwapService: SubscriptionVehicleSwapService
+    private readonly vehicleSwapService: SubscriptionVehicleSwapService,
+    @Optional()
+    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService
   ) {}
 
   async getChange(id: string, customer: CurrentCustomer) {
-    return (await this.changeType(id, customer)) === SubscriptionChangeType.VEHICLE_SWAP
-      ? this.vehicleSwapService.getPortalChange(id, customer)
-      : this.renewalService.getChange(id, customer);
+    const changeType = await this.changeType(id, customer);
+    if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
+      return this.vehicleSwapService.getPortalChange(id, customer);
+    }
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTermination().getPortalChange(id, customer);
+    }
+    return this.renewalService.getChange(id, customer);
   }
 
   async confirmQuote(
@@ -31,7 +39,21 @@ export class PortalSubscriptionChangeService {
     customer: CurrentCustomer,
     context: PortalRequestContext
   ) {
-    if ((await this.changeType(id, customer)) !== SubscriptionChangeType.VEHICLE_SWAP) {
+    const changeType = await this.changeType(id, customer);
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTermination().decide(
+        id,
+        {
+          decision: "ACCEPT",
+          idempotencyKey: portalDecisionKey(customer.customerId, "ACCEPT", input),
+          revision: input.revision,
+          version: input.version
+        },
+        customer,
+        context
+      );
+    }
+    if (changeType !== SubscriptionChangeType.VEHICLE_SWAP) {
       return this.renewalService.confirmQuote(id, input, customer, context);
     }
     return this.vehicleSwapService.confirmQuote(
@@ -48,7 +70,22 @@ export class PortalSubscriptionChangeService {
     customer: CurrentCustomer,
     context: PortalRequestContext
   ) {
-    if ((await this.changeType(id, customer)) !== SubscriptionChangeType.VEHICLE_SWAP) {
+    const changeType = await this.changeType(id, customer);
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTermination().decide(
+        id,
+        {
+          decision: "REJECT",
+          idempotencyKey: portalDecisionKey(customer.customerId, "REJECT", input),
+          reason: input.reason,
+          revision: input.revision,
+          version: input.version
+        },
+        customer,
+        context
+      );
+    }
+    if (changeType !== SubscriptionChangeType.VEHICLE_SWAP) {
       return this.renewalService.rejectQuote(id, input, customer, context);
     }
     return this.vehicleSwapService.rejectQuote(
@@ -67,7 +104,8 @@ export class PortalSubscriptionChangeService {
     if (!change) throw new NotFoundException("Subscription change was not found.");
     if (
       change.changeType !== SubscriptionChangeType.EXTENSION &&
-      change.changeType !== SubscriptionChangeType.VEHICLE_SWAP
+      change.changeType !== SubscriptionChangeType.VEHICLE_SWAP &&
+      change.changeType !== SubscriptionChangeType.EARLY_TERMINATION
     ) {
       throw new SubscriptionChangeError(
         "PORTAL_SUBSCRIPTION_CHANGE_UNSUPPORTED",
@@ -76,6 +114,13 @@ export class PortalSubscriptionChangeService {
       );
     }
     return change.changeType;
+  }
+
+  private requireEarlyTermination() {
+    if (!this.earlyTerminationService) {
+      throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+    }
+    return this.earlyTerminationService;
   }
 }
 
@@ -88,4 +133,12 @@ function requireCommercialHash(value: string | undefined) {
     );
   }
   return value;
+}
+
+function portalDecisionKey(
+  customerId: string,
+  decision: "ACCEPT" | "REJECT",
+  input: Pick<PortalConfirmExtensionQuoteDto, "revision" | "version">
+) {
+  return `portal-early-termination:${customerId}:${decision}:${input.revision}:${input.version}`;
 }

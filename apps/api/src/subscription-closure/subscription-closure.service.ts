@@ -100,8 +100,12 @@ import type {
   ArchiveEarlyTerminationAgreementInput,
   ArchivedEarlyTerminationAgreement,
   CancelEarlyTerminationInput,
+  CancelledEarlyTermination,
+  EarlyTerminationTransactionAdapter,
   ExecuteEarlyTerminationInput,
-  InitiateEarlyTerminationInput
+  ExecutedEarlyTermination,
+  InitiateEarlyTerminationInput,
+  InitiatedEarlyTermination
 } from "./subscription-closure.early-termination.dto";
 
 export const SUBSCRIPTION_CLOSURE_SERVICE_ERROR_CODE = {
@@ -4454,7 +4458,10 @@ export class SubscriptionClosureService {
     return Object.freeze({ closureCaseId: closureCase.id, vehicleId: vehicle.id });
   }
 
-  async initiateEarlyTermination(input: InitiateEarlyTerminationInput) {
+  async initiateEarlyTermination(
+    input: InitiateEarlyTerminationInput,
+    adapter?: EarlyTerminationTransactionAdapter<InitiatedEarlyTermination>
+  ): Promise<InitiatedEarlyTermination> {
     const command = normalizeEarlyTerminationInitiation(input);
     if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
     return this.prisma.$transaction(
@@ -4494,11 +4501,15 @@ export class SubscriptionClosureService {
             earlyTerminationReplayCaseCommand(sourceCase, initiationSource),
             this.closureAudit(sourceCase.createdBy)
           );
-          return Object.freeze({
-            authoritySnapshotHash: replay.outcome.authoritySnapshotHash,
-            closureCaseId: replay.outcome.id,
-            wrote: replay.wrote
-          });
+          return applyEarlyTerminationAdapter(
+            tx,
+            Object.freeze({
+              authoritySnapshotHash: replay.outcome.authoritySnapshotHash,
+              closureCaseId: replay.outcome.id,
+              wrote: replay.wrote
+            }),
+            adapter
+          );
         }
         if (
           await tx.subscriptionClosureCase.findFirst({
@@ -4552,18 +4563,23 @@ export class SubscriptionClosureService {
           caseId,
           this.closureAudit(command.actorId)
         );
-        return Object.freeze({
-          authoritySnapshotHash: created.outcome.authoritySnapshotHash,
-          closureCaseId: created.outcome.id,
-          wrote: created.wrote
-        });
+        return applyEarlyTerminationAdapter(
+          tx,
+          Object.freeze({
+            authoritySnapshotHash: created.outcome.authoritySnapshotHash,
+            closureCaseId: created.outcome.id,
+            wrote: created.wrote
+          }),
+          adapter
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
     );
   }
 
   async archiveEarlyTerminationAgreement(
-    input: ArchiveEarlyTerminationAgreementInput
+    input: ArchiveEarlyTerminationAgreementInput,
+    adapter?: EarlyTerminationTransactionAdapter<ArchivedEarlyTerminationAgreement>
   ): Promise<ArchivedEarlyTerminationAgreement> {
     if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
     const command = normalizeArchiveEarlyTerminationAgreement(input);
@@ -4600,7 +4616,11 @@ export class SubscriptionClosureService {
             sources
           );
           if (!replay) throw serviceConflict("AUTHORITY_MISMATCH");
-          return Object.freeze({ ...replay, wrote: false });
+          return applyEarlyTerminationAdapter(
+            tx,
+            Object.freeze({ ...replay, wrote: false }),
+            adapter
+          );
         }
 
         const databaseClock = await readDatabaseClock(tx);
@@ -4804,13 +4824,20 @@ export class SubscriptionClosureService {
           sources
         );
         if (!created) throw serviceConflict("AUTHORITY_MISMATCH");
-        return Object.freeze({ ...created, wrote: true });
+        return applyEarlyTerminationAdapter(
+          tx,
+          Object.freeze({ ...created, wrote: true }),
+          adapter
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
     );
   }
 
-  async cancelEarlyTermination(input: CancelEarlyTerminationInput) {
+  async cancelEarlyTermination(
+    input: CancelEarlyTerminationInput,
+    adapter?: EarlyTerminationTransactionAdapter<CancelledEarlyTermination>
+  ): Promise<CancelledEarlyTermination> {
     if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
     const command = normalizeCancelEarlyTermination(input);
     return this.prisma.$transaction(
@@ -4848,7 +4875,11 @@ export class SubscriptionClosureService {
             cancellationSource,
             priorReceipt
           );
-          return Object.freeze({ closureCaseId: observedCase.id, wrote: false });
+          return applyEarlyTerminationAdapter(
+            tx,
+            Object.freeze({ closureCaseId: observedCase.id, wrote: false }),
+            adapter
+          );
         }
         assertEarlyTerminationCancellationCase(observedCase);
         const observedAgreement = await resolveEarlyTerminationCancellationAgreement(
@@ -4951,13 +4982,20 @@ export class SubscriptionClosureService {
           this.closureAudit(command.actorId),
           "early-cancel"
         );
-        return Object.freeze({ closureCaseId: observedCase.id, wrote: result.wrote });
+        return applyEarlyTerminationAdapter(
+          tx,
+          Object.freeze({ closureCaseId: observedCase.id, wrote: result.wrote }),
+          adapter
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
     );
   }
 
-  async executeEarlyTermination(input: ExecuteEarlyTerminationInput) {
+  async executeEarlyTermination(
+    input: ExecuteEarlyTerminationInput,
+    adapter?: EarlyTerminationTransactionAdapter<ExecutedEarlyTermination>
+  ): Promise<ExecutedEarlyTermination> {
     if (!this.prisma) throw serviceConflict("CAPABILITY_INVALID");
     const command = normalizeExecuteEarlyTermination(input);
     return this.prisma.$transaction(
@@ -5074,11 +5112,15 @@ export class SubscriptionClosureService {
               priorReceipt,
               lockedCase
             );
-            return Object.freeze({
-              closureCaseId: initialCase.id,
-              outcome: "AGREEMENT_STALE" as const,
-              wrote: false
-            });
+            return applyEarlyTerminationAdapter(
+              tx,
+              Object.freeze({
+                closureCaseId: initialCase.id,
+                outcome: "AGREEMENT_STALE" as const,
+                wrote: false
+              }),
+              adapter
+            );
           }
           await this.repository.lockAuthorityRows(
             tx,
@@ -5090,7 +5132,11 @@ export class SubscriptionClosureService {
             executionSource,
             priorReceipt
           );
-          return Object.freeze({ ...replay, wrote: false });
+          return applyEarlyTerminationAdapter(
+            tx,
+            Object.freeze({ ...replay, wrote: false }),
+            adapter
+          );
         }
 
         const databaseClock = await readDatabaseClock(tx);
@@ -5188,11 +5234,15 @@ export class SubscriptionClosureService {
             this.closureAudit(command.actorId),
             "early-stale"
           );
-          return Object.freeze({
-            closureCaseId: initialCase.id,
-            outcome: "AGREEMENT_STALE" as const,
-            wrote: result.wrote
-          });
+          return applyEarlyTerminationAdapter(
+            tx,
+            Object.freeze({
+              closureCaseId: initialCase.id,
+              outcome: "AGREEMENT_STALE" as const,
+              wrote: result.wrote
+            }),
+            adapter
+          );
         }
         const observed = await resolveEarlyTerminationAgreementDraft(tx, command.closureCaseId);
         assertEarlyTerminationExecutionCase(observed.closureCase);
@@ -5517,14 +5567,18 @@ export class SubscriptionClosureService {
           generatedRevisionId: manifest.id,
           orderId: locked.closureCase.orderId
         });
-        return Object.freeze({
-          closureCaseId: locked.closureCase.id,
-          returnAssetWorkOrderId: common.workOrder.id,
-          returnHandoverWorkOrderId: specialist.id,
-          returnManifestRevisionId: manifest.id,
-          vehicleReturnId,
-          wrote: true
-        });
+        return applyEarlyTerminationAdapter(
+          tx,
+          Object.freeze({
+            closureCaseId: locked.closureCase.id,
+            returnAssetWorkOrderId: common.workOrder.id,
+            returnHandoverWorkOrderId: specialist.id,
+            returnManifestRevisionId: manifest.id,
+            vehicleReturnId,
+            wrote: true
+          }),
+          adapter
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }
     );
@@ -10241,6 +10295,15 @@ function earlyTerminationSource(orderId: string, key: string): SubscriptionClosu
   return Object.freeze({ id: orderId, key, type: "SUBSCRIPTION_EARLY_TERMINATION" });
 }
 
+async function applyEarlyTerminationAdapter<T>(
+  tx: Prisma.TransactionClient,
+  result: T,
+  adapter?: EarlyTerminationTransactionAdapter<T>
+) {
+  await adapter?.(tx, result);
+  return result;
+}
+
 function stableEarlyTerminationId(value: string): string {
   const hex = createHash("sha256").update(`early-termination\u0000${value}`).digest("hex");
   const variant = ((Number.parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16);
@@ -11477,6 +11540,11 @@ async function applyEarlyTerminationCoreBoundary(
       version: { increment: 1 }
     },
     where: {
+      NOT: {
+        earlyTerminationDetail: {
+          is: { closureCaseId: authority.closureCase.id }
+        }
+      },
       orderId: authority.order.id,
       status: {
         in: [

@@ -17,6 +17,7 @@ import { RenewalConsiderationService } from "./renewal-consideration.service";
 import { SubscriptionExtensionActivationService } from "./subscription-extension-activation.service";
 import { SubscriptionExpiryService } from "./subscription-expiry.service";
 import { SubscriptionChangeError } from "./subscription-change.errors";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
 import { SubscriptionVehicleSwapActivationService } from "./subscription-vehicle-swap-activation.service";
 
 const EXTENSION_EXECUTION_JOB_TYPES = new Set<SubscriptionAutomationJobType>([
@@ -52,7 +53,9 @@ export class SubscriptionChangeJobService {
     private readonly closure: SubscriptionClosureService,
     @Optional() private readonly returnManifest?: ReturnManifestESignService,
     @Optional()
-    private readonly vehicleSwapActivation?: SubscriptionVehicleSwapActivationService
+    private readonly vehicleSwapActivation?: SubscriptionVehicleSwapActivationService,
+    @Optional()
+    private readonly earlyTermination?: SubscriptionEarlyTerminationChangeService
   ) {}
 
   async enqueueDueEnrollmentJobs(now = new Date()) {
@@ -152,6 +155,7 @@ export class SubscriptionChangeJobService {
   }
 
   async reconcileActiveChanges() {
+    const businessDate = shanghaiBusinessDate(new Date());
     const changes = await this.prisma.subscriptionChangeOrder.findMany({
       select: { changeType: true, id: true, status: true },
       take: 200,
@@ -166,6 +170,16 @@ export class SubscriptionChangeJobService {
             status: {
               in: [SubscriptionChangeStatus.SCHEDULED, SubscriptionChangeStatus.EXECUTING]
             }
+          },
+          {
+            changeType: SubscriptionChangeType.EARLY_TERMINATION,
+            OR: [
+              { status: SubscriptionChangeStatus.EXECUTING },
+              {
+                earlyTerminationDetail: { is: { effectiveDate: { lte: businessDate } } },
+                status: SubscriptionChangeStatus.SCHEDULED
+              }
+            ]
           }
         ]
       }
@@ -175,6 +189,23 @@ export class SubscriptionChangeJobService {
       if (change.changeType === SubscriptionChangeType.EXTENSION) {
         const result = await this.activation.completeIfReady(change.id);
         if (result.completed) completed += 1;
+        continue;
+      }
+      if (change.changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        if (!this.earlyTermination) continue;
+        try {
+          const result =
+            change.status === SubscriptionChangeStatus.SCHEDULED
+              ? await this.earlyTermination.progress(change.id)
+              : await this.earlyTermination.reconcile(change.id);
+          if (result.outcome === "COMPLETED") completed += 1;
+        } catch (error) {
+          if (!(error instanceof SubscriptionChangeError)) throw error;
+          await this.earlyTermination.markManualTakeover(change.id, {
+            code: error.code,
+            message: subscriptionChangeErrorMessage(error)
+          });
+        }
         continue;
       }
       if (!this.vehicleSwapActivation) continue;

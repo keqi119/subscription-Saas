@@ -28,6 +28,7 @@ import { SubscriptionChangeWorker } from "./subscription-change.worker";
 import { SubscriptionExtensionPricingService } from "./subscription-extension-pricing.service";
 import { SubscriptionExtensionContractService } from "./subscription-extension-contract.service";
 import { SubscriptionExtensionService } from "./subscription-extension.service";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
 import { SubscriptionVehicleSwapPricingService } from "./subscription-vehicle-swap-pricing.service";
 import { SubscriptionVehicleSwapService } from "./subscription-vehicle-swap.service";
 import { SubscriptionVehicleSwapContractService } from "./subscription-vehicle-swap-contract.service";
@@ -49,6 +50,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionVehicleSwapService,
     SubscriptionVehicleSwapContractService,
     SubscriptionVehicleSwapActivationService,
+    SubscriptionEarlyTerminationChangeService,
     SubscriptionChangeRepository,
     SubscriptionChangeService
   ],
@@ -83,6 +85,7 @@ import { SubscriptionExpiryService } from "./subscription-expiry.service";
     SubscriptionVehicleSwapService,
     SubscriptionVehicleSwapContractService,
     SubscriptionVehicleSwapActivationService,
+    SubscriptionEarlyTerminationChangeService,
     {
       provide: SUBSCRIPTION_CHANGE_CONFIG,
       useFactory: loadSubscriptionChangeConfig

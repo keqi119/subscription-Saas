@@ -18,6 +18,7 @@ import { SUBSCRIPTION_CHANGE_CONFIG, SubscriptionChangeConfig } from "./subscrip
 import { projectSubscriptionChange } from "./subscription-change.domain";
 import { SubscriptionChangeError } from "./subscription-change.errors";
 import { SubscriptionChangeRepository } from "./subscription-change.repository";
+import { SubscriptionEarlyTerminationChangeService } from "./subscription-early-termination-change.service";
 import {
   CreateSubscriptionChangeInput,
   CreateVehicleSwapChangeInput
@@ -50,7 +51,9 @@ export class SubscriptionChangeService {
     private readonly extensionService: SubscriptionExtensionService,
     @Inject(SUBSCRIPTION_CHANGE_CONFIG)
     private readonly config: SubscriptionChangeConfig,
-    @Optional() private readonly vehicleSwapService?: SubscriptionVehicleSwapService
+    @Optional() private readonly vehicleSwapService?: SubscriptionVehicleSwapService,
+    @Optional()
+    private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService
   ) {}
 
   async create(input: CreateSubscriptionChangeInput, actor: RequestUser, context: RequestContext) {
@@ -141,6 +144,9 @@ export class SubscriptionChangeService {
 
   async previewQuote(id: string, input: QuoteInput, actor: RequestUser) {
     const changeType = await this.getChangeType(id);
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTerminationService().previewEstimate(id, actor);
+    }
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().previewQuote(id, actor);
     }
@@ -154,6 +160,14 @@ export class SubscriptionChangeService {
     context: RequestContext
   ) {
     const changeType = await this.getChangeType(id);
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTerminationService().createEstimate(
+        id,
+        { idempotencyKey: input.idempotencyKey, version: input.version! },
+        actor,
+        context
+      );
+    }
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().createFormalQuote(
         id,
@@ -172,6 +186,14 @@ export class SubscriptionChangeService {
     context: RequestContext
   ) {
     const changeType = await this.getChangeType(id);
+    if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      return this.requireEarlyTerminationService().publishCustomerConfirmation(
+        id,
+        input,
+        actor,
+        context
+      );
+    }
     if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       return this.requireVehicleSwapService().publishCustomerConfirmation(
         id,
@@ -208,6 +230,15 @@ export class SubscriptionChangeService {
     }
     if (current.changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       const cancelled = await this.requireVehicleSwapService().cancel(id, input, actor, context);
+      return projectSubscriptionChange(cancelled, actor);
+    }
+    if (current.changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+      const cancelled = await this.requireEarlyTerminationService().cancel(
+        id,
+        input,
+        actor,
+        context
+      );
       return projectSubscriptionChange(cancelled, actor);
     }
 
@@ -266,7 +297,8 @@ export class SubscriptionChangeService {
     if (!change) throw changeNotFound();
     if (
       change.changeType !== SubscriptionChangeType.EXTENSION &&
-      change.changeType !== SubscriptionChangeType.VEHICLE_SWAP
+      change.changeType !== SubscriptionChangeType.VEHICLE_SWAP &&
+      change.changeType !== SubscriptionChangeType.EARLY_TERMINATION
     ) {
       throw new SubscriptionChangeError(
         "SUBSCRIPTION_CHANGE_QUOTE_UNSUPPORTED",
@@ -282,6 +314,13 @@ export class SubscriptionChangeService {
       throw new Error("SUBSCRIPTION_VEHICLE_SWAP_SERVICE_MISSING");
     }
     return this.vehicleSwapService;
+  }
+
+  private requireEarlyTerminationService() {
+    if (!this.earlyTerminationService) {
+      throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
+    }
+    return this.earlyTerminationService;
   }
 
   private async vehicleSwapDetail(

@@ -116,7 +116,9 @@ export function subscriptionChangeAllowedActions(
     actions.push("RETRY");
   }
   if (
-    CANCELLABLE_STATUSES.has(change.status) &&
+    (CANCELLABLE_STATUSES.has(change.status) ||
+      (change.changeType === SubscriptionChangeType.EARLY_TERMINATION &&
+        change.status === SubscriptionChangeStatus.SCHEDULED)) &&
     hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_CANCEL)
   ) {
     actions.push("CANCEL");

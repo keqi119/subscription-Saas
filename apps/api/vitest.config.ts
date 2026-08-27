@@ -23,6 +23,7 @@ const databaseTestFiles = [
   "test/subscription-journey-integrity.integration.spec.ts",
   "test/subscription-journey.repository.integration.spec.ts",
   "test/subscription-extension.integration.spec.ts",
+  "test/subscription-early-termination-change.e2e-spec.ts",
   "test/subscription-vehicle-swap.integration.spec.ts",
   "test/subscription-vehicle-swap.e2e-spec.ts",
   "test/subscription-vehicle-swap-failure-injection.spec.ts"

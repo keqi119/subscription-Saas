@@ -132,6 +132,43 @@ describe("SubscriptionChangeController", () => {
     );
   });
 
+  it("routes early-termination agreement generation through the Closure-backed adapter", async () => {
+    const earlyTermination = {
+      generate: vi.fn(async () => ({ id: "contract-early", status: "ARCHIVED" }))
+    };
+    const changeService = {
+      getChangeType: vi.fn(async () => "EARLY_TERMINATION")
+    };
+    const controller = new SubscriptionChangeController(
+      {} as never,
+      undefined,
+      undefined,
+      changeService as never,
+      undefined,
+      earlyTermination as never
+    );
+    const request = {
+      headers: { "user-agent": "vitest" },
+      ip: "127.0.0.1",
+      user: user()
+    } as never;
+
+    await expect(
+      controller.generateExtensionContract(
+        "change-early",
+        { version: 4 },
+        "early-agreement-1",
+        request
+      )
+    ).resolves.toEqual({ id: "contract-early", status: "ARCHIVED" });
+    expect(earlyTermination.generate).toHaveBeenCalledWith(
+      "change-early",
+      { idempotencyKey: "early-agreement-1", version: 4 },
+      user(),
+      { ipAddress: "127.0.0.1", userAgent: "vitest" }
+    );
+  });
+
   it("serializes BigInt amounts in HTTP responses as digit strings", async () => {
     const service = {
       get: vi.fn(async () => ({ monthlyFeeAmount: 97_000n, nested: { amount: 125n } }))

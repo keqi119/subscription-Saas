@@ -139,6 +139,7 @@ export interface FieldEvidenceUploadOptions {
 
 export interface FieldHandoverFieldFacts {
   accessoryChecklist?: unknown;
+  accessoryItems?: FieldHandoverAccessoryItem[] | null;
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
@@ -147,8 +148,25 @@ export interface FieldHandoverFieldFacts {
   fieldSubmittedAt?: string | null;
   fuelLevelText?: string | null;
   handoverMileageKm?: number | null;
+  handoverFactHash?: string | null;
+  handoverFactRevision?: number | null;
+  keyState?: "COMPLETE" | "PARTIAL" | "MISSING" | "DAMAGED" | string | null;
   noVisibleDamageDeclared?: boolean | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: "HANDED_OVER" | "NOT_AVAILABLE" | "DAMAGED" | string | null;
   scheduledAt?: string | null;
+  spareKeyCount?: number | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
+}
+
+export interface FieldHandoverAccessoryItem {
+  code: string;
+  name: string;
+  quantity: number;
+  remark?: string | null;
+  state: "PRESENT" | "MISSING" | "DAMAGED";
 }
 
 export interface FieldHandoverWorkOrderDetail extends FieldHandoverWorkOrderListItem {
@@ -219,15 +237,22 @@ export interface FieldHandoverReviewContext {
 }
 
 export interface UpdateFieldHandoverFactsInput {
-  accessoryChecklist?: unknown;
+  accessoryItems?: FieldHandoverAccessoryItem[];
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
   fieldNotes?: string | null;
   fuelLevelText?: string | null;
   handoverMileageKm?: number | null;
+  keyState?: "COMPLETE" | "PARTIAL" | "MISSING" | "DAMAGED" | null;
   noVisibleDamageDeclared?: boolean | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: "HANDED_OVER" | "NOT_AVAILABLE" | "DAMAGED" | null;
   scheduledAt?: string | null;
+  spareKeyCount?: number | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
 }
 
 export interface FieldHandoverReadiness {

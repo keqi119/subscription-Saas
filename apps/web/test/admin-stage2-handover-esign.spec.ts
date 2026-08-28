@@ -5,15 +5,18 @@ import { join } from "node:path";
 import { ApiError } from "../src/lib/api";
 import {
   createAdminStage2DeliveryVerifier,
+  decideAdminStage2RegistrationException,
   getAdminStage2HandoverESignDisplay,
   getAdminStage2HandoverESignErrorMessage,
   getAdminStage2HandoverWorkflowDisplay,
   loadAdminStage2HandoverESign,
   loadAdminStage2HandoverESignWithInitialAssignmentPolling,
+  loadAdminStage2RegistrationException,
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2HandoverArchive,
   retryAdminStage2PlatformSeal,
   retryAdminStage2WorkflowJob,
+  requestAdminStage2RegistrationException,
   startAdminStage2HandoverESign,
   validateAdminStage2HandoverFallbackReason,
   validateAdminStage2HandoverVoidReason,
@@ -38,6 +41,53 @@ const repoRoot = join(__dirname, "..", "..", "..");
 const orderPagePath = join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx");
 
 describe("Admin Stage 2 handover eSign API", () => {
+  it("uses governed registration-exception endpoints with exact idempotency headers", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ id: "approval-1", status: "PENDING" }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await loadAdminStage2RegistrationException("work order");
+    await requestAdminStage2RegistrationException(
+      "work order",
+      "  registration   unavailable  ",
+      "request-key-1"
+    );
+    await decideAdminStage2RegistrationException(
+      "work order",
+      "approval/1",
+      {
+        comment: "  verified   by admin  ",
+        decision: "APPROVED",
+        expectedVersion: 0
+      },
+      "decision-key-1"
+    );
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://localhost:3001/api/handover-work-orders/work%20order/registration-exception",
+      "http://localhost:3001/api/handover-work-orders/work%20order/registration-exception/request",
+      "http://localhost:3001/api/handover-work-orders/work%20order/registration-exception/approval%2F1/decide"
+    ]);
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      body: JSON.stringify({ reason: "registration unavailable" }),
+      headers: expect.objectContaining({ "Idempotency-Key": "request-key-1" }),
+      method: "POST"
+    });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({
+      body: JSON.stringify({
+        comment: "verified by admin",
+        decision: "APPROVED",
+        expectedVersion: 0
+      }),
+      headers: expect.objectContaining({ "Idempotency-Key": "decision-key-1" }),
+      method: "POST"
+    });
+  });
+
   it.each([
     ["load", loadAdminStage2HandoverESign, "GET", "/handover-work-orders/work%20order/esign"],
     [

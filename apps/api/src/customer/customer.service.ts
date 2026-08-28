@@ -371,7 +371,7 @@ export class CustomerService {
     input: {
       actionId: string;
       applicationId: string;
-      fact: "credit" | "material" | "product";
+      fact: "application" | "credit" | "material" | "product" | "vehicle";
       status: string;
     }
   ) {
@@ -657,13 +657,19 @@ export class CustomerService {
           where: { id }
         });
 
-        await createApplicationActionLog(tx, {
+        const action = await createApplicationActionLog(tx, {
           actionType: ApplicationActionType.NEED_MORE_INFO,
           applicationId: id,
           comment,
           fromStatus: before.status,
           operator: user,
           toStatus: ApplicationStatus.NEED_MORE_INFO
+        });
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: reviewType,
+          status: OrderReviewStatus.NEED_MORE_INFO
         });
 
         return tx.application.findUniqueOrThrow({
@@ -2259,7 +2265,7 @@ export class CustomerService {
         where: { id: before.customerId }
       });
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.SUBMIT,
         applicationId: id,
         comment: normalizeOptionalText(dto.comment),
@@ -2268,12 +2274,21 @@ export class CustomerService {
         toStatus: ApplicationStatus.SUBMITTED
       });
 
-      await this.subscriptionJourneySignal?.record(tx, {
-        applicationId: id,
-        eventKey: `application:${id}:submitted`,
-        payload: { source: before.applicationSource },
-        type: "APPLICATION_SUBMITTED"
-      });
+      if (before.status === ApplicationStatus.NEED_MORE_INFO) {
+        await this.recordJourneyApplicationFactsChanged(tx, {
+          actionId: action.id,
+          applicationId: id,
+          fact: "application",
+          status: ApplicationStatus.SUBMITTED
+        });
+      } else {
+        await this.subscriptionJourneySignal?.record(tx, {
+          applicationId: id,
+          eventKey: `application:${id}:submitted`,
+          payload: { source: before.applicationSource },
+          type: "APPLICATION_SUBMITTED"
+        });
+      }
 
       return tx.application.findUniqueOrThrow({
         include: applicationInclude,
@@ -2689,13 +2704,19 @@ export class CustomerService {
         where: { id }
       });
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.NEED_MORE_INFO,
         applicationId: id,
         comment,
         fromStatus: before.status,
         operator: user,
         toStatus: ApplicationStatus.NEED_MORE_INFO
+      });
+      await this.recordJourneyApplicationFactsChanged(tx, {
+        actionId: action.id,
+        applicationId: id,
+        fact: "material",
+        status: OrderReviewStatus.NEED_MORE_INFO
       });
 
       return tx.application.findUniqueOrThrow({
@@ -2853,7 +2874,11 @@ export class CustomerService {
       );
       const application = await tx.application.update({
         data: {
+          journeyFactVersion: { increment: 1 },
           rejectedReason: comment,
+          softReservationExpiresAt: null,
+          softReservedAt: null,
+          softReservedVehicleId: null,
           status: ApplicationStatus.CANCELLED,
           updatedBy: user.id
         },
@@ -2861,13 +2886,20 @@ export class CustomerService {
         where: { id }
       });
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.REJECT,
         applicationId: id,
         comment,
         fromStatus: before.status,
         operator: user,
         toStatus: ApplicationStatus.CANCELLED
+      });
+      await this.subscriptionJourneySignal?.terminateApplication(tx, {
+        actionId: action.id,
+        applicationId: id,
+        factVersion: application.journeyFactVersion,
+        outcome: "CANCELLED",
+        reason: comment
       });
 
       return { application, vehicleRelease };
@@ -2912,7 +2944,11 @@ export class CustomerService {
         this.assetOperationsService
       );
       const data: Prisma.ApplicationUpdateInput = {
+        journeyFactVersion: { increment: 1 },
         rejectedReason: comment,
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null,
         status: ApplicationStatus.REJECTED,
         updatedBy: user.id
       };
@@ -2931,13 +2967,20 @@ export class CustomerService {
         where: { id: before.customerId }
       });
 
-      await createApplicationActionLog(tx, {
+      const action = await createApplicationActionLog(tx, {
         actionType: ApplicationActionType.REJECT,
         applicationId: id,
         comment,
         fromStatus: before.status,
         operator: user,
         toStatus: ApplicationStatus.REJECTED
+      });
+      await this.subscriptionJourneySignal?.terminateApplication(tx, {
+        actionId: action.id,
+        applicationId: id,
+        factVersion: application.journeyFactVersion,
+        outcome: "REJECTED",
+        reason: comment
       });
 
       return { application, vehicleRelease };

@@ -2,6 +2,7 @@ import type {
   FieldHandoverDisplayStatus,
   FieldHandoverEvidenceItem,
   FieldHandoverEvidenceProgress,
+  FieldHandoverAccessoryItem,
   FieldHandoverFieldFacts,
   FieldHandoverWorkOrderDetail,
   FieldHandoverWorkOrderListItem,
@@ -92,15 +93,24 @@ export interface FieldStage2HandoverView {
 }
 
 export interface FieldHandoverFactsDraft {
-  accessoryChecklistText?: string | null;
+  accessoryItems?: FieldHandoverAccessoryItem[];
+  accessoryItemsConfirmed?: boolean;
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
   fieldNotes?: string | null;
   fuelLevelText?: string | null;
   handoverMileageKm?: number | null;
+  keyState?: "COMPLETE" | "PARTIAL" | "MISSING" | "DAMAGED" | null;
+  legacyAccessoryChecklistText?: string | null;
   noVisibleDamageDeclared?: boolean | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: "HANDED_OVER" | "NOT_AVAILABLE" | "DAMAGED" | null;
   scheduledAt?: string | null;
+  spareKeyCount?: number | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
 }
 
 const HANDOVER_TYPE_LABELS: Record<string, string> = {
@@ -384,8 +394,29 @@ export function validateFieldHandoverFactsInput(
   if (options.requireComplete && !normalizeText(input.energyLevelText) && !normalizeText(input.fuelLevelText)) {
     errors.push("请填写能源/油量状态");
   }
-  if (options.requireComplete && !normalizeText(input.accessoryChecklistText)) {
-    errors.push("请填写随车物品清单");
+  if (options.requireComplete && input.vehicleConditionConfirmed !== true) {
+    errors.push("请确认车辆车况");
+  }
+  if (
+    options.requireComplete &&
+    (
+      !isNonNegativeInteger(input.primaryKeyCount) ||
+      !isNonNegativeInteger(input.spareKeyCount) ||
+      !input.keyState
+    )
+  ) {
+    errors.push("请确认主钥匙、备用钥匙数量及状态");
+  }
+  if (options.requireComplete && !input.registrationDocumentState) {
+    errors.push("请确认行驶证交付状态");
+  }
+  if (options.requireComplete && input.accessoryItemsConfirmed !== true) {
+    errors.push("请逐项确认随车附件；无附件时也需勾选确认");
+  }
+  for (const [index, item] of (input.accessoryItems ?? []).entries()) {
+    if (!normalizeText(item.code) || !normalizeText(item.name) || !isNonNegativeInteger(item.quantity) || !item.state) {
+      errors.push(`请完整填写第 ${index + 1} 项随车附件`);
+    }
   }
   if (input.damageDeclared === true && input.noVisibleDamageDeclared === true) {
     errors.push("损伤状态冲突，请选择存在损伤或无可见损伤");
@@ -414,29 +445,45 @@ export function getFieldHandoverSubmitBlockers(
 
 export function buildFieldHandoverFactsPayload(input: FieldHandoverFactsDraft): UpdateFieldHandoverFactsInput {
   return {
-    accessoryChecklist: parseAccessoryChecklist(input.accessoryChecklistText),
+    accessoryItems: input.accessoryItemsConfirmed ? normalizeAccessoryItems(input.accessoryItems ?? []) : undefined,
     damageDeclared: input.damageDeclared ?? null,
     deliveryLocation: normalizeText(input.deliveryLocation) || null,
     energyLevelText: normalizeText(input.energyLevelText) || null,
     fieldNotes: normalizeText(input.fieldNotes) || null,
     fuelLevelText: normalizeText(input.fuelLevelText) || null,
     handoverMileageKm: input.handoverMileageKm ?? null,
+    keyState: input.keyState ?? null,
     noVisibleDamageDeclared: input.noVisibleDamageDeclared ?? null,
-    scheduledAt: normalizeText(input.scheduledAt) || null
+    primaryKeyCount: input.primaryKeyCount ?? null,
+    registrationDocumentRemarks: normalizeText(input.registrationDocumentRemarks) || null,
+    registrationDocumentState: input.registrationDocumentState ?? null,
+    scheduledAt: normalizeText(input.scheduledAt) || null,
+    spareKeyCount: input.spareKeyCount ?? null,
+    vehicleConditionConfirmed: input.vehicleConditionConfirmed ?? null,
+    vehicleConditionRemarks: normalizeText(input.vehicleConditionRemarks) || null
   };
 }
 
 export function fieldFactsToDraft(fieldFacts: FieldHandoverFieldFacts | null | undefined): FieldHandoverFactsDraft {
   return {
-    accessoryChecklistText: formatAccessoryChecklist(fieldFacts?.accessoryChecklist),
+    accessoryItems: normalizeAccessoryItems(fieldFacts?.accessoryItems ?? []),
+    accessoryItemsConfirmed: Array.isArray(fieldFacts?.accessoryItems),
     damageDeclared: fieldFacts?.damageDeclared ?? null,
     deliveryLocation: fieldFacts?.deliveryLocation ?? null,
     energyLevelText: fieldFacts?.energyLevelText ?? null,
     fieldNotes: fieldFacts?.fieldNotes ?? null,
     fuelLevelText: fieldFacts?.fuelLevelText ?? null,
     handoverMileageKm: fieldFacts?.handoverMileageKm ?? null,
+    keyState: normalizeKeyState(fieldFacts?.keyState),
+    legacyAccessoryChecklistText: formatAccessoryChecklist(fieldFacts?.accessoryChecklist),
     noVisibleDamageDeclared: fieldFacts?.noVisibleDamageDeclared ?? null,
-    scheduledAt: fieldFacts?.scheduledAt ?? null
+    primaryKeyCount: fieldFacts?.primaryKeyCount ?? null,
+    registrationDocumentRemarks: fieldFacts?.registrationDocumentRemarks ?? null,
+    registrationDocumentState: normalizeRegistrationDocumentState(fieldFacts?.registrationDocumentState),
+    scheduledAt: fieldFacts?.scheduledAt ?? null,
+    spareKeyCount: fieldFacts?.spareKeyCount ?? null,
+    vehicleConditionConfirmed: fieldFacts?.vehicleConditionConfirmed ?? null,
+    vehicleConditionRemarks: fieldFacts?.vehicleConditionRemarks ?? null
   };
 }
 
@@ -476,7 +523,10 @@ function formatChecklistSummary(detail: FieldHandoverWorkOrderDetail) {
 const FIELD_FACT_BLOCKER_MESSAGES = new Set([
   "请填写交接里程",
   "请填写能源/油量状态",
-  "请填写随车物品清单",
+  "请确认车辆车况",
+  "请确认主钥匙、备用钥匙数量及状态",
+  "请确认行驶证交付状态",
+  "请逐项确认随车附件；无附件时也需勾选确认",
   "损伤状态冲突，请选择存在损伤或无可见损伤",
   "请先声明是否存在损伤/瑕疵"
 ]);
@@ -588,15 +638,43 @@ function formatDamageState(fieldFacts: FieldHandoverFieldFacts | null | undefine
   return "未声明";
 }
 
-function parseAccessoryChecklist(value: string | null | undefined) {
-  const lines = normalizeText(value)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (lines.length === 0) {
-    return {};
+function normalizeAccessoryItems(value: unknown): FieldHandoverAccessoryItem[] {
+  if (!Array.isArray(value)) {
+    return [];
   }
-  return Object.fromEntries(lines.map((line, index) => [`item${index + 1}`, line]));
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return [];
+    }
+    const item = entry as Partial<FieldHandoverAccessoryItem>;
+    return [{
+      code: normalizeText(item.code).toUpperCase(),
+      name: normalizeText(item.name),
+      quantity: isNonNegativeInteger(item.quantity) ? item.quantity : 0,
+      remark: normalizeText(item.remark) || null,
+      state: ["PRESENT", "MISSING", "DAMAGED"].includes(String(item.state))
+        ? item.state as FieldHandoverAccessoryItem["state"]
+        : "PRESENT"
+    }];
+  });
+}
+
+function normalizeKeyState(value: unknown): FieldHandoverFactsDraft["keyState"] {
+  return ["COMPLETE", "PARTIAL", "MISSING", "DAMAGED"].includes(String(value))
+    ? value as FieldHandoverFactsDraft["keyState"]
+    : null;
+}
+
+function normalizeRegistrationDocumentState(
+  value: unknown
+): FieldHandoverFactsDraft["registrationDocumentState"] {
+  return ["HANDED_OVER", "NOT_AVAILABLE", "DAMAGED"].includes(String(value))
+    ? value as FieldHandoverFactsDraft["registrationDocumentState"]
+    : null;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function formatAccessoryChecklist(value: unknown) {

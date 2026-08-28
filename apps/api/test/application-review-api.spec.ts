@@ -226,6 +226,97 @@ describe("application self-service review APIs", () => {
     );
   });
 
+  it("publishes a versioned validation fact after a need-more-info resubmission", async () => {
+    const harness = createApplicationReviewHarness({
+      application: {
+        customerProfileSnapshot: {
+          snapshotVersion: 1,
+          source: "CUSTOMER_PORTAL_PROFILE"
+        },
+        materialGroups: approvedRequiredMaterialGroups(
+          new Date("2026-06-05T10:00:00.000Z")
+        ),
+        status: ApplicationStatus.NEED_MORE_INFO
+      }
+    });
+
+    await harness.service.submitApplication(
+      harness.application.id,
+      {},
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.application.journeyFactVersion).toBe(1);
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: "application:application-1:facts:application:application-action-1",
+      payload: {
+        factType: "application",
+        factVersion: 1,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
+    expect(harness.journeySignal.record).not.toHaveBeenCalledWith(
+      harness.tx,
+      expect.objectContaining({
+        eventKey: "application:application-1:submitted",
+        type: "APPLICATION_SUBMITTED"
+      })
+    );
+  });
+
+  it("publishes the need-more-info review as a versioned validation fact", async () => {
+    const harness = createApplicationReviewHarness();
+
+    await harness.service.reviewApplication(
+      harness.application.id,
+      "material",
+      { action: OrderReviewStatus.NEED_MORE_INFO, comment: "请补充身份证反面" },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.application.journeyFactVersion).toBe(1);
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: "application:application-1:facts:material:application-action-1",
+      payload: {
+        factType: "material",
+        factVersion: 1,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
+  });
+
+  it("publishes a general supplement request as a versioned validation fact", async () => {
+    const harness = createApplicationReviewHarness();
+
+    await harness.service.needMoreInfo(
+      harness.application.id,
+      { comment: "请补充最新居住证明" },
+      harness.user,
+      harness.context
+    );
+
+    expect(harness.state.application.journeyFactVersion).toBe(1);
+    expect(harness.journeySignal.record).toHaveBeenCalledWith(harness.tx, {
+      applicationId: harness.application.id,
+      eventKey: "application:application-1:facts:material:application-action-1",
+      payload: {
+        factType: "material",
+        factVersion: 1,
+        sourceActionId: "application-action-1",
+        targetStepCode: "APPLICATION_VALIDATION"
+      },
+      type: "APPLICATION_FACTS_CHANGED"
+    });
+  });
+
   it("approves material review status", async () => {
     const harness = createApplicationReviewHarness();
 
@@ -401,10 +492,54 @@ describe("application self-service review APIs", () => {
     expect(application).toEqual(
       expect.objectContaining({
         creditReviewStatus: OrderReviewStatus.REJECTED,
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null,
         status: ApplicationStatus.REJECTED
       })
     );
     expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    expect(harness.journeySignal.terminateApplication).toHaveBeenCalledWith(
+      harness.tx,
+      {
+        actionId: "application-action-1",
+        applicationId: harness.application.id,
+        factVersion: 1,
+        outcome: "REJECTED",
+        reason: "资质未通过"
+      }
+    );
+  });
+
+  it("cancels an application, releases its review-reserved vehicle, and terminates its journey", async () => {
+    const harness = createApplicationReviewHarness();
+
+    const application = await harness.service.cancelApplication(
+      harness.application.id,
+      { reason: "客户撤销申请" },
+      harness.user,
+      harness.context
+    );
+
+    expect(application).toEqual(
+      expect.objectContaining({
+        softReservationExpiresAt: null,
+        softReservedAt: null,
+        softReservedVehicleId: null,
+        status: ApplicationStatus.CANCELLED
+      })
+    );
+    expect(harness.state.vehicleStatus).toBe(VehicleStatus.AVAILABLE);
+    expect(harness.journeySignal.terminateApplication).toHaveBeenCalledWith(
+      harness.tx,
+      {
+        actionId: "application-action-1",
+        applicationId: harness.application.id,
+        factVersion: 1,
+        outcome: "CANCELLED",
+        reason: "客户撤销申请"
+      }
+    );
   });
 
   it("approves product review and writes final plan fields", async () => {
@@ -1579,7 +1714,8 @@ function createApplicationReviewHarness(overrides: {
     record: vi.fn(async () => undefined),
     requireCustomerReconfirmationAfterManualDecision: vi.fn(
       async () => undefined
-    )
+    ),
+    terminateApplication: vi.fn(async () => undefined)
   };
   const riskService = {
     createApprovalRiskResult: vi.fn(async (_tx: typeof tx, input: ApprovalRiskInput) => ({

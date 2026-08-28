@@ -266,24 +266,46 @@ async function renderPdf(
     ["车辆品牌/型号", model.vehicle.brandModel],
     ["车架号（VIN）", model.vehicle.vin],
     ["当前里程数", model.fieldFacts.handoverMileageKm],
-    ["油量/电量", joinValues([model.fieldFacts.fuelLevelText, model.fieldFacts.energyLevelText])],
-    ["随车证件", model.fieldFacts.accessoryChecklistText]
+    ["油量/电量", joinValues([model.fieldFacts.fuelLevelText, model.fieldFacts.energyLevelText])]
   ]);
 
   writeSection(doc, "二、车况确认（核心条款）");
-  writeParagraph(doc, "车辆外观、内饰及随车物品以现场确认和证据摘要为准。已有损伤、瑕疵或补充说明如下：");
+  writeParagraph(doc, "车辆外观、内饰及车况以现场独立确认和证据摘要为准。已有损伤、瑕疵或补充说明如下：");
   writeKeyValueTable(doc, [
-    ["仪表盘故障灯", EMPTY_VALUE],
-    ["空调/暖风", EMPTY_VALUE],
-    ["灯光系统", EMPTY_VALUE],
-    ["轮胎/备胎", EMPTY_VALUE],
-    ["内饰清洁度", EMPTY_VALUE],
-    ["随车工具", model.fieldFacts.accessoryChecklistText],
+    ["车况已现场确认", model.fieldFacts.vehicleConditionConfirmed],
+    ["车况确认说明", model.fieldFacts.vehicleConditionRemarks],
     ["损伤状态", model.fieldFacts.damageStatus],
     ["备注", model.fieldFacts.fieldNotes]
   ]);
 
-  writeSection(doc, "三、费用及押金确认");
+  writeSection(doc, "三、车辆钥匙交付确认");
+  writeKeyValueTable(doc, [
+    ["主钥匙数量", model.fieldFacts.primaryKeyCount],
+    ["备用钥匙数量", model.fieldFacts.spareKeyCount],
+    ["钥匙状态", model.fieldFacts.keyState]
+  ]);
+
+  writeSection(doc, "四、行驶证交付确认");
+  writeKeyValueTable(doc, [
+    ["行驶证交付状态", model.fieldFacts.registrationDocumentState],
+    ["行驶证说明", model.fieldFacts.registrationDocumentRemarks]
+  ]);
+
+  writeSection(doc, "五、随车附件逐项确认");
+  if (model.fieldFacts.accessoryItems.length === 0) {
+    writeParagraph(doc, "已确认无其他随车附件。");
+  } else {
+    writeKeyValueTable(doc, model.fieldFacts.accessoryItems.map((item) => [
+      `${item.name}（${item.code}）`,
+      `数量 ${item.quantity}；状态 ${item.state}；备注 ${item.remark}`
+    ]));
+  }
+  writeParagraph(
+    doc,
+    `交接事实版本 ${model.fieldFacts.handoverFactRevision}；事实哈希 ${model.fieldFacts.handoverFactHash}`
+  );
+
+  writeSection(doc, "六、费用及押金确认");
   writeKeyValueTable(doc, [
     ["车辆押金", model.fees.vehicleDeposit],
     ["违章押金", model.fees.violationDeposit],
@@ -291,13 +313,13 @@ async function renderPdf(
     ["其他费用", model.fees.otherFees]
   ]);
 
-  writeSection(doc, "四、特别约定与告知");
+  writeSection(doc, "七、特别约定与告知");
   model.specialNotices.forEach((notice) => writeParagraph(doc, notice));
 
-  writeSection(doc, "五、证据包声明");
+  writeSection(doc, "八、证据包声明");
   writeEvidencePackageDeclaration(doc, model, evidencePackageUrl);
 
-  writeSection(doc, "六、证据摘要");
+  writeSection(doc, "九、证据摘要");
   writeEvidenceSummaryTable(doc, model);
 
   await writePhotoAttachments(doc, model, options.loadAsset!);

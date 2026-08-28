@@ -391,11 +391,58 @@ export class SubscriptionJourneyRepository {
         id_journeyId: { id: input.stepId, journeyId: input.journeyId }
       }
     });
+    await tx.subscriptionJourneyJob.updateMany({
+      data: {
+        completedAt: new Date(),
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyJobStatus.CANCELLED
+      },
+      where: {
+        ...(input.activeJobId ? { id: { not: input.activeJobId } } : {}),
+        journeyId: input.journeyId,
+        status: {
+          notIn: [
+            SubscriptionJourneyJobStatus.COMPLETED,
+            SubscriptionJourneyJobStatus.CANCELLED
+          ]
+        }
+      }
+    });
+    await tx.subscriptionJourneyOutbox.updateMany({
+      data: {
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: SubscriptionJourneyOutboxStatus.CANCELLED
+      },
+      where: {
+        journeyId: input.journeyId,
+        status: {
+          in: [
+            SubscriptionJourneyOutboxStatus.PENDING,
+            SubscriptionJourneyOutboxStatus.PROCESSING
+          ]
+        }
+      }
+    });
     await tx.subscriptionJourneyManualTask.updateMany({
       data: { status: SubscriptionJourneyManualTaskStatus.CANCELLED },
       where: {
         journeyId: input.journeyId,
         status: SubscriptionJourneyManualTaskStatus.OPEN
+      }
+    });
+    await tx.subscriptionJourneyStep.updateMany({
+      data: { status: SubscriptionJourneyStepStatus.CANCELLED },
+      where: {
+        id: { not: input.stepId },
+        journeyId: input.journeyId,
+        status: {
+          notIn: [
+            SubscriptionJourneyStepStatus.COMPLETED,
+            SubscriptionJourneyStepStatus.CANCELLED
+          ]
+        }
       }
     });
     await this.writeEventAndOutbox(tx, {

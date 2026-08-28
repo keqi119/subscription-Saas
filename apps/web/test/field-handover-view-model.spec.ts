@@ -194,7 +194,8 @@ describe("field handover view model", () => {
     expect(
       validateFieldHandoverFactsInput(
         {
-          accessoryChecklistText: "",
+          accessoryItems: [],
+          accessoryItemsConfirmed: false,
           damageDeclared: true,
           energyLevelText: "",
           handoverMileageKm: 0,
@@ -205,7 +206,10 @@ describe("field handover view model", () => {
     ).toEqual([
       "请填写交接里程",
       "请填写能源/油量状态",
-      "请填写随车物品清单",
+      "请确认车辆车况",
+      "请确认主钥匙、备用钥匙数量及状态",
+      "请确认行驶证交付状态",
+      "请逐项确认随车附件；无附件时也需勾选确认",
       "损伤状态冲突，请选择存在损伤或无可见损伤"
     ]);
 
@@ -264,7 +268,8 @@ describe("field handover view model", () => {
 
   it("preserves a local facts draft during upload reconciliation refresh", () => {
     const draft = {
-      accessoryChecklistText: "本地未保存清单",
+      accessoryItems: [{ code: "LOCAL", name: "本地未保存附件", quantity: 1, state: "PRESENT" as const }],
+      accessoryItemsConfirmed: true,
       energyLevelText: "本地 70%",
       fieldNotes: "上传期间编辑的草稿",
       handoverMileageKm: 321
@@ -301,7 +306,8 @@ describe("field handover view model", () => {
 
   it("preserves all local facts after a damage-state refresh", () => {
     const draft = {
-      accessoryChecklistText: "两把钥匙、充电线",
+      accessoryItems: [{ code: "CABLE", name: "充电线", quantity: 1, state: "PRESENT" as const }],
+      accessoryItemsConfirmed: true,
       damageDeclared: true,
       deliveryLocation: "上海交付中心 B 区",
       energyLevelText: "72%",
@@ -386,13 +392,19 @@ function sampleDetail(): FieldHandoverWorkOrderDetail {
     },
     fieldFacts: {
       accessoryChecklist: { chargingCable: true, keys: 2 },
+      accessoryItems: [{ code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }],
       damageDeclared: false,
       deliveryLocation: "上海交付中心",
       energyLevelText: "80%",
       fieldNotes: "safe note",
       handoverMileageKm: 1200,
+      keyState: "COMPLETE",
       noVisibleDamageDeclared: true,
-      scheduledAt: "2026-07-22T10:00:00.000Z"
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      scheduledAt: "2026-07-22T10:00:00.000Z",
+      spareKeyCount: 1,
+      vehicleConditionConfirmed: true
     },
     status: "FIELD_IN_PROGRESS"
   } as FieldHandoverWorkOrderDetail;

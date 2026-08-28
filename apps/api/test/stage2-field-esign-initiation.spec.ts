@@ -24,11 +24,30 @@ import { FieldOperatorAuthController } from "../src/field-operator/field-operato
 import { FieldOperatorAuthGuard } from "../src/field-operator/field-operator-auth.guard";
 import { StartFieldStage2ESignDto } from "../src/handover-work-order/handover-work-order.dto";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { buildBoundHandoverFactSnapshot, buildPhysicalHandoverFactSnapshot } from "../src/handover-work-order/handover-explicit-facts";
 import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
 
 const FIELD_PHONE = "13800000000";
 const OTHER_PHONE = "13900000000";
 const SOURCE_PDF_HASH = "b".repeat(64);
+
+function createHandoverFactBinding() {
+  const physical = buildPhysicalHandoverFactSnapshot(completeHandoverFacts());
+  const bound = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+  return { handoverFactHash: bound.hash, handoverFacts: bound.snapshot };
+}
+
+function completeHandoverFacts() {
+  return {
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true
+  } as const;
+}
 
 describe("Stage 2 Field PDF review and eSign initiation", () => {
   it("exposes only authenticated Field PDF preview, download, and eSign routes", () => {
@@ -626,17 +645,21 @@ describe("Stage 2 Field PDF review and eSign initiation", () => {
 function createHarness() {
   const checklist = emptyChecklist();
   const manifestHash = buildDeliveryHandoverEvidencePackage({
+    ...createHandoverFactBinding(),
     evidenceChecklist: checklist,
     handoverId: "handover-1",
     orderId: "order-1",
     workOrderId: "work-order-1"
   }).manifestHash;
   const workOrder = {
+    ...completeHandoverFacts(),
     assignedInternalUserId: "internal-user-1",
     createdAt: new Date("2026-07-27T08:00:00.000Z"),
     customerConfirmedAt: new Date("2026-07-27T07:00:00.000Z"),
     fieldOperatorPhone: FIELD_PHONE,
     handoverId: "handover-1",
+    handoverFactHash: buildPhysicalHandoverFactSnapshot(completeHandoverFacts()).hash,
+    handoverFactRevision: 1,
     id: "work-order-1",
     orderId: "order-1",
     operatorType: "INTERNAL",

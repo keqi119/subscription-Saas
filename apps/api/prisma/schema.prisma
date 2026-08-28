@@ -7025,6 +7025,17 @@ model VehicleHandoverWorkOrder {
   energyLevelText              String?                           @map("energy_level_text") @db.VarChar(64)
   fuelLevelText                String?                           @map("fuel_level_text") @db.VarChar(64)
   accessoryChecklist           Json?                             @map("accessory_checklist")
+  vehicleConditionConfirmed    Boolean?                          @map("vehicle_condition_confirmed")
+  vehicleConditionRemarks      String?                           @map("vehicle_condition_remarks") @db.Text
+  primaryKeyCount              Int?                              @map("primary_key_count")
+  spareKeyCount                Int?                              @map("spare_key_count")
+  keyState                     String?                           @map("key_state") @db.VarChar(32)
+  registrationDocumentState    String?                           @map("registration_document_state") @db.VarChar(32)
+  registrationDocumentRemarks  String?                           @map("registration_document_remarks") @db.Text
+  accessoryItems               Json?                             @map("accessory_items")
+  handoverFactSnapshot         Json?                             @map("handover_fact_snapshot")
+  handoverFactHash             String?                           @map("handover_fact_hash") @db.VarChar(71)
+  handoverFactRevision         Int                               @default(0) @map("handover_fact_revision")
   damageDeclared               Boolean?                          @map("damage_declared")
   noVisibleDamageDeclared      Boolean?                          @map("no_visible_damage_declared")
   fieldNotes                   String?                           @map("field_notes") @db.Text

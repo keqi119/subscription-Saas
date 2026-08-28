@@ -27,6 +27,7 @@ import {
 } from "react";
 
 import { ActionButton } from "../../../components/action-button";
+import { Stage2RegistrationExceptionActions } from "../../../components/stage2-registration-exception-actions";
 import {
   OrderTransactionGuide,
   type OrderTransactionGuideItem
@@ -1080,7 +1081,17 @@ const handoverFieldFactOptions = [
   { label: "能源状态", value: "energyLevelText" },
   { label: "油量状态", value: "fuelLevelText" },
   { label: "交接地点", value: "deliveryLocation" },
-  { label: "随车物品", value: "accessoryChecklist" },
+  { label: "车辆车况确认", value: "vehicleConditionConfirmed" },
+  { label: "车辆车况说明", value: "vehicleConditionRemarks" },
+  { label: "主钥匙数量", value: "primaryKeyCount" },
+  { label: "备用钥匙数量", value: "spareKeyCount" },
+  { label: "钥匙状态", value: "keyState" },
+  { label: "行驶证交付状态", value: "registrationDocumentState" },
+  { label: "行驶证说明", value: "registrationDocumentRemarks" },
+  { label: "随车附件逐项确认", value: "accessoryItems" },
+  { label: "历史随车物品记录", value: "accessoryChecklist" },
+  { label: "交接事实版本", value: "handoverFactRevision" },
+  { label: "交接事实哈希", value: "handoverFactHash" },
   { label: "损伤状态", value: "damageDeclared" },
   { label: "无可见损伤声明", value: "noVisibleDamageDeclared" },
   { label: "现场备注", value: "fieldNotes" },
@@ -2765,7 +2776,11 @@ function FinancePanel({
 
 function Stage2HandoverWorkflowCell({
   actionLoading,
+  canApproveRegistrationException = false,
   canRecoverWorkflow,
+  canRequestRegistrationException = false,
+  canViewRegistrationException = false,
+  currentUserId = null,
   error,
   loading,
   mutationInFlight,
@@ -2777,7 +2792,11 @@ function Stage2HandoverWorkflowCell({
   workOrder
 }: {
   actionLoading: string | null;
+  canApproveRegistrationException?: boolean;
   canRecoverWorkflow: boolean;
+  canRequestRegistrationException?: boolean;
+  canViewRegistrationException?: boolean;
+  currentUserId?: string | null;
   error?: string | null;
   loading: boolean;
   mutationInFlight: boolean;
@@ -2882,6 +2901,20 @@ function Stage2HandoverWorkflowCell({
         </Space>
       ) : null}
       {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
+      <Stage2RegistrationExceptionActions
+        canApprove={canApproveRegistrationException}
+        canRequest={canRequestRegistrationException}
+        canView={canViewRegistrationException}
+        currentUserId={currentUserId}
+        onChanged={() => onRefresh(workOrder.id)}
+        visible={Boolean(
+          status?.blockers.some(
+            (blocker) =>
+              blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+          )
+        )}
+        workOrderId={workOrder.id}
+      />
       <Space size={[6, 6]} wrap>
         {actionDisplay?.voidAvailable ? (
           <Button
@@ -2937,8 +2970,11 @@ function Stage2HandoverWorkflowCell({
 function Stage2HandoverReviewPanel({
   actionLoading,
   canAssignExternal,
+  canApproveRegistrationException,
   canHandleObjection,
   canRecoverWorkflow,
+  canRequestRegistrationException,
+  canViewRegistrationException,
   createAvailability,
   esignErrors,
   esignLoading,
@@ -2946,11 +2982,13 @@ function Stage2HandoverReviewPanel({
   loading,
   loadState,
   mutationInFlight,
+  currentUserId,
   onAcknowledge,
   onAssignExternal,
   onCreateWorkOrder,
   onRecoverWorkflow,
   onRefreshESign,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onStartESign,
@@ -2960,8 +2998,11 @@ function Stage2HandoverReviewPanel({
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
+  canApproveRegistrationException: boolean;
   canHandleObjection: boolean;
   canRecoverWorkflow: boolean;
+  canRequestRegistrationException: boolean;
+  canViewRegistrationException: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
   esignErrors: Record<string, string | undefined>;
   esignLoading: Record<string, boolean | undefined>;
@@ -2969,6 +3010,7 @@ function Stage2HandoverReviewPanel({
   loading: boolean;
   loadState: HandoverWorkOrdersLoadState;
   mutationInFlight: boolean;
+  currentUserId: string | null;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
@@ -2977,6 +3019,7 @@ function Stage2HandoverReviewPanel({
     recovery: AdminStage2HandoverWorkflowRecovery
   ) => void;
   onRefreshESign: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
@@ -3013,7 +3056,11 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Stage2HandoverWorkflowCell
           actionLoading={actionLoading}
+          canApproveRegistrationException={canApproveRegistrationException}
           canRecoverWorkflow={canRecoverWorkflow}
+          canRequestRegistrationException={canRequestRegistrationException}
+          canViewRegistrationException={canViewRegistrationException}
+          currentUserId={currentUserId}
           error={esignErrors[row.id]}
           loading={esignLoading[row.id] === true}
           mutationInFlight={mutationInFlight}
@@ -3077,6 +3124,7 @@ function Stage2HandoverReviewPanel({
           canHandleObjection={canHandleObjection}
           onAcknowledge={onAcknowledge}
           onAssignExternal={onAssignExternal}
+          onReopenConfirmed={onReopenConfirmed}
           onRequestResubmission={onRequestResubmission}
           onSendCustomerReview={onSendCustomerReview}
           onViewDetail={onViewDetail}
@@ -3158,6 +3206,7 @@ function Stage2HandoverReviewActions({
   canHandleObjection,
   onAcknowledge,
   onAssignExternal,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onViewDetail,
@@ -3168,6 +3217,7 @@ function Stage2HandoverReviewActions({
   canHandleObjection: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onViewDetail: (id: string) => void;
@@ -3220,6 +3270,16 @@ function Stage2HandoverReviewActions({
       >
         送回客户复核
       </Button>
+      <Button
+        disabled={
+          !canHandleObjection || workOrder.status !== "CUSTOMER_CONFIRMED"
+        }
+        loading={actionLoading === `reopen-confirmed:${workOrder.id}`}
+        onClick={() => onReopenConfirmed(workOrder.id)}
+        size="small"
+      >
+        重新打开交接复核
+      </Button>
     </Space>
   );
 }
@@ -3239,6 +3299,7 @@ function Stage2HandoverReviewDetailModal({
   onClose,
   onRecoverWorkflow,
   onRefreshESign,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onStartESign,
@@ -3262,6 +3323,7 @@ function Stage2HandoverReviewDetailModal({
     recovery: AdminStage2HandoverWorkflowRecovery
   ) => void;
   onRefreshESign: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
@@ -3314,6 +3376,7 @@ function Stage2HandoverReviewDetailModal({
             canHandleObjection={canHandleObjection}
             onAcknowledge={onAcknowledge}
             onAssignExternal={onAssignExternal}
+            onReopenConfirmed={onReopenConfirmed}
             onRequestResubmission={onRequestResubmission}
             onSendCustomerReview={onSendCustomerReview}
             onViewDetail={() => undefined}
@@ -6028,6 +6091,43 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
   }
 
+  function reopenConfirmedHandoverReview(id: string) {
+    Modal.confirm({
+      content:
+        "该操作会失效原客户确认。缺少新版交接字段时返回现场补录；仅批准/证据版本变化时返回客户重新确认。",
+      okText: "确认重新打开",
+      onOk: async () => {
+        setHandoverActionLoading(`reopen-confirmed:${id}`);
+        try {
+          await apiFetch<HandoverWorkOrderDetail>(
+            `/handover-work-orders/${encodeURIComponent(id)}/reopen-confirmed-review`,
+            {
+              body: JSON.stringify({
+                note: "交接事实或批准快照变化，重新发起有效确认"
+              }),
+              method: "POST"
+            }
+          );
+          void message.success("已重新打开交接复核");
+          await loadOrder();
+          if (handoverWorkOrderDetail?.id === id) {
+            setHandoverWorkOrderDetail(
+              await apiFetch<HandoverWorkOrderDetail>(
+                `/handover-work-orders/${encodeURIComponent(id)}`
+              )
+            );
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+          throw error;
+        } finally {
+          setHandoverActionLoading(null);
+        }
+      },
+      title: "重新打开交接复核？"
+    });
+  }
+
   async function runStage2WorkflowRecovery(
     id: string,
     recovery: AdminStage2HandoverWorkflowRecovery
@@ -7719,9 +7819,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               <Stage2HandoverReviewPanel
                 actionLoading={handoverActionLoading}
                 canAssignExternal={permissions.has("delivery:prepare")}
+                canApproveRegistrationException={permissions.has("business_exception:approve")}
                 canHandleObjection={permissions.has("delivery:confirm")}
                 canRecoverWorkflow={permissions.has("delivery:confirm")}
+                canRequestRegistrationException={permissions.has("business_exception:request")}
+                canViewRegistrationException={permissions.has("business_exception:view")}
                 createAvailability={createHandoverWorkOrderAvailability}
+                currentUserId={me?.user.id ?? null}
                 esignErrors={handoverESignErrors}
                 esignLoading={handoverESignLoading}
                 esignStatuses={handoverESignStatuses}
@@ -7733,6 +7837,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 onCreateWorkOrder={createHandoverWorkOrder}
                 onRecoverWorkflow={confirmStage2WorkflowRecovery}
                 onRefreshESign={refreshStage2HandoverESignStatus}
+                onReopenConfirmed={reopenConfirmedHandoverReview}
                 onRequestResubmission={requestCustomerObjectionResubmission}
                 onSendCustomerReview={sendCustomerObjectionBackToReview}
                 onStartESign={confirmAdminStage2Fallback}
@@ -8174,6 +8279,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
           onRecoverWorkflow={confirmStage2WorkflowRecovery}
           onRefreshESign={refreshStage2HandoverESignStatus}
+          onReopenConfirmed={reopenConfirmedHandoverReview}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
           onStartESign={confirmAdminStage2Fallback}

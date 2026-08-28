@@ -1006,6 +1006,7 @@ export class SubscriptionJourneyService {
           journey.applicationId
         );
         await this.repository.rejectForApplication(tx, {
+          activeJobId: job.id,
           eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:facts:${readiness.factVersion}:rejected`,
           expectedVersion: journey.version,
           factVersion: readiness.factVersion,
@@ -2423,7 +2424,7 @@ function stableStepSourceKey(
 }
 
 function readApplicationFactsChanged(outbox: ClaimedJourneyOutbox): null | {
-  factType: "credit" | "material" | "product";
+  factType: "application" | "credit" | "material" | "product" | "vehicle";
   factVersion: number;
   sourceActionId: string;
 } {
@@ -2433,7 +2434,9 @@ function readApplicationFactsChanged(outbox: ClaimedJourneyOutbox): null | {
   const payload = isRecord(outbox.payload) ? outbox.payload : {};
   if (payload.signalType !== "APPLICATION_FACTS_CHANGED") return null;
   if (
-    !(["credit", "material", "product"] as unknown[]).includes(payload.factType) ||
+    !(["application", "credit", "material", "product", "vehicle"] as unknown[]).includes(
+      payload.factType
+    ) ||
     !Number.isSafeInteger(payload.factVersion) ||
     Number(payload.factVersion) < 0 ||
     typeof payload.sourceActionId !== "string" ||
@@ -2445,7 +2448,12 @@ function readApplicationFactsChanged(outbox: ClaimedJourneyOutbox): null | {
     );
   }
   return {
-    factType: payload.factType as "credit" | "material" | "product",
+    factType: payload.factType as
+      | "application"
+      | "credit"
+      | "material"
+      | "product"
+      | "vehicle",
     factVersion: payload.factVersion as number,
     sourceActionId: payload.sourceActionId
   };

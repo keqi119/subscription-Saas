@@ -93,6 +93,28 @@ export interface AdminStage2HandoverSignedDocumentState {
   workOrderId: string;
 }
 
+export interface AdminStage2RegistrationExceptionApproval {
+  approvalNo: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  decision: "APPROVED" | "REJECTED" | null;
+  id: string;
+  requestReason: string;
+  requestedAt: string;
+  requestedBy: string;
+  status: "APPROVED" | "EXPIRED" | "PENDING" | "REJECTED";
+  subjectSnapshotHash: string;
+  version: number;
+}
+
+export interface AdminStage2RegistrationExceptionState {
+  allowed: boolean;
+  approval: AdminStage2RegistrationExceptionApproval | null;
+  documentPresent: boolean;
+  latestApproval: AdminStage2RegistrationExceptionApproval | null;
+  snapshotHash: string;
+}
+
 export interface AdminStage2HandoverESignDisplayState {
   color?: string;
   detail?: string | null;
@@ -155,6 +177,8 @@ export interface AdminStage2DeliveryVerification {
 }
 
 const BLOCKER_MESSAGES: Record<string, string> = {
+  VEHICLE_REGISTRATION_DOCUMENT_MISSING:
+    "缺少行驶证资料，需补录或完成管理员例外审批",
   ACTIVE_ESIGN_TASK_CONFLICT: "已有进行中的电子签任务",
   ADMIN_REVIEW_PENDING: "最新交接资料仍待后台复核",
   CONFIRMED_FIELD_FACTS_MISMATCH: "客户确认未覆盖当前交接信息",
@@ -215,6 +239,51 @@ export function loadAdminStage2HandoverESign(id: string) {
   return apiFetch<AdminStage2HandoverESignStatus>(stage2ESignPath(id), {
     method: "GET"
   });
+}
+
+export function loadAdminStage2RegistrationException(id: string) {
+  return apiFetch<AdminStage2RegistrationExceptionState>(
+    registrationExceptionPath(id),
+    { method: "GET" }
+  );
+}
+
+export function requestAdminStage2RegistrationException(
+  id: string,
+  reason: string,
+  idempotencyKey = crypto.randomUUID()
+) {
+  return apiFetch<AdminStage2RegistrationExceptionApproval>(
+    `${registrationExceptionPath(id)}/request`,
+    {
+      body: JSON.stringify({ reason: reason.trim().replace(/\s+/g, " ") }),
+      headers: { "Idempotency-Key": idempotencyKey },
+      method: "POST"
+    }
+  );
+}
+
+export function decideAdminStage2RegistrationException(
+  workOrderId: string,
+  approvalId: string,
+  input: {
+    comment: string;
+    decision: "APPROVED" | "REJECTED";
+    expectedVersion: number;
+  },
+  idempotencyKey = crypto.randomUUID()
+) {
+  return apiFetch<AdminStage2RegistrationExceptionApproval>(
+    `${registrationExceptionPath(workOrderId)}/${encodeURIComponent(approvalId)}/decide`,
+    {
+      body: JSON.stringify({
+        ...input,
+        comment: input.comment.trim().replace(/\s+/g, " ")
+      }),
+      headers: { "Idempotency-Key": idempotencyKey },
+      method: "POST"
+    }
+  );
 }
 
 export async function loadAdminStage2HandoverESignWithInitialAssignmentPolling(
@@ -599,6 +668,10 @@ function postStage2ESignStatus(id: string, suffix: string) {
 
 function stage2ESignPath(id: string) {
   return `/handover-work-orders/${encodeURIComponent(id)}/esign`;
+}
+
+function registrationExceptionPath(id: string) {
+  return `/handover-work-orders/${encodeURIComponent(id)}/registration-exception`;
 }
 
 const WORKFLOW_STEP_KEYS: AdminStage2HandoverWorkflowStepKey[] = [

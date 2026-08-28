@@ -855,26 +855,28 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     };
     const first = createHarness(firstIdentity);
     const second = createHarness(secondIdentity);
+    const firstManifestHash = (await first.service.getCurrentEvidencePackage(firstIdentity.workOrderId)).manifestHash;
+    const secondManifestHash = (await second.service.getCurrentEvidencePackage(secondIdentity.workOrderId)).manifestHash;
 
     await expect(
       ensureStage2HandoverPdf(
         first.service,
         firstIdentity.workOrderId,
-        firstIdentity.manifestHash
+        firstManifestHash
       )
     ).resolves.toMatchObject({ status: "GENERATED" });
     await expect(
       ensureStage2HandoverPdf(
         second.service,
         secondIdentity.workOrderId,
-        secondIdentity.manifestHash
+        secondManifestHash
       )
     ).resolves.toMatchObject({ status: "GENERATED" });
     await expect(
       ensureStage2HandoverPdf(
         second.service,
         secondIdentity.workOrderId,
-        secondIdentity.manifestHash
+        secondManifestHash
       )
     ).resolves.toMatchObject({ status: "GENERATED" });
 
@@ -1171,6 +1173,32 @@ describe("HandoverWorkOrderService Stage 2 PDF generation", () => {
     expect(downloaded).not.toHaveProperty("objectKey");
   });
 
+  it("keeps a schema-v1 generated PDF downloadable as historical read-only evidence", async () => {
+    const harness = createServiceHarness({
+      handover: { sourceDocumentFileId: "file-pdf-1" }
+    });
+    Object.assign(harness.records.workOrder, {
+      accessoryItems: null,
+      handoverFactHash: null,
+      handoverFactRevision: 0,
+      keyState: null,
+      primaryKeyCount: null,
+      registrationDocumentState: null,
+      spareKeyCount: null,
+      vehicleConditionConfirmed: null
+    });
+    const contractSnapshot = harness.records.handover.handoverContract
+      .contractSnapshot as Record<string, unknown>;
+    contractSnapshot.evidencePackage = {
+      manifest: { schemaVersion: 1 },
+      manifestHash: harness.currentManifestHash
+    };
+
+    await expect(
+      harness.service.downloadStage2HandoverPdf("work-order-1")
+    ).resolves.toMatchObject({ filename: "handover.pdf" });
+  });
+
   it("downloads the authoritative archived signed PDF through its linked FileObject", async () => {
     const harness = createServiceHarness({
       handover: {
@@ -1318,6 +1346,7 @@ describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
     const controller = new HandoverWorkOrderAdminController(
       handoverService as never,
       {} as never,
+      {} as never,
       {} as never
     );
     const response = { setHeader: vi.fn() };
@@ -1353,6 +1382,7 @@ describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
     };
     const controller = new HandoverWorkOrderAdminController(
       handoverService as never,
+      {} as never,
       {} as never,
       {} as never
     );
@@ -1518,6 +1548,9 @@ function createRenderModelInput() {
     },
     workOrder: {
       accessoryChecklist: ["行驶证", "钥匙", "随车工具"],
+      accessoryItems: [
+        { code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }
+      ],
       customerConfirmedAt: new Date("2026-07-24T09:00:00.000Z"),
       damageDeclared: false,
       deliveryLocation: "上海虹桥交付中心",
@@ -1528,10 +1561,17 @@ function createRenderModelInput() {
       fieldSubmittedAt: new Date("2026-07-24T08:30:00.000Z"),
       fuelLevelText: null,
       handoverMileageKm: 1288,
+      handoverFactRevision: 1,
       id: "work-order-1",
+      keyState: "COMPLETE",
       noVisibleDamageDeclared: true,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
       scheduledAt: new Date("2026-07-24T08:00:00.000Z"),
-      status: "CUSTOMER_CONFIRMED"
+      spareKeyCount: 1,
+      status: "CUSTOMER_CONFIRMED",
+      vehicleConditionConfirmed: true,
+      vehicleConditionRemarks: "车况已现场确认"
     }
   };
 }
@@ -1634,6 +1674,9 @@ function createServiceHarness(options: {
     },
     workOrder: {
       accessoryChecklist: ["行驶证", "钥匙", "随车工具"],
+      accessoryItems: [
+        { code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }
+      ],
       customerConfirmedAt: new Date("2026-07-24T09:00:00.000Z"),
       damageDeclared: false,
       deliveryLocation: "上海虹桥交付中心",
@@ -1642,11 +1685,18 @@ function createServiceHarness(options: {
       fuelLevelText: null,
       handoverId: "handover-1",
       handoverMileageKm: 1288,
+      handoverFactRevision: 1,
       id: "work-order-1",
+      keyState: "COMPLETE",
       noVisibleDamageDeclared: true,
       orderId: "order-1",
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
       scheduledAt: new Date("2026-07-24T08:00:00.000Z"),
-      status: "CUSTOMER_CONFIRMED"
+      spareKeyCount: 1,
+      status: "CUSTOMER_CONFIRMED",
+      vehicleConditionConfirmed: true,
+      vehicleConditionRemarks: "车况已现场确认"
     }
   };
   const workflowJobs: Array<Record<string, unknown>> = [];

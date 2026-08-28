@@ -4,6 +4,10 @@ import {
   buildDeliveryHandoverEvidencePackage,
   STAGE2_EVIDENCE_ARTIFACT_NOT_READY
 } from "../src/delivery-handover/delivery-handover-evidence-manifest";
+import {
+  buildBoundHandoverFactSnapshot,
+  buildPhysicalHandoverFactSnapshot
+} from "../src/handover-work-order/handover-explicit-facts";
 
 describe("Stage 2 handover evidence manifest", () => {
   it("produces the same canonical manifest hash regardless of checklist query order", () => {
@@ -11,12 +15,14 @@ describe("Stage 2 handover evidence manifest", () => {
     const reversed = { items: [...checklist.items].reverse() };
 
     const first = buildDeliveryHandoverEvidencePackage({
+      ...createHandoverFactBinding(),
       evidenceChecklist: checklist,
       handoverId: "handover-1",
       orderId: "order-1",
       workOrderId: "work-order-1"
     });
     const second = buildDeliveryHandoverEvidencePackage({
+      ...createHandoverFactBinding(),
       evidenceChecklist: reversed,
       handoverId: "handover-1",
       orderId: "order-1",
@@ -39,6 +45,7 @@ describe("Stage 2 handover evidence manifest", () => {
 
   it("includes every source file exactly once with immutable source and derivative identifiers", () => {
     const result = buildDeliveryHandoverEvidencePackage({
+      ...createHandoverFactBinding(),
       evidenceChecklist: createChecklist(),
       handoverId: "handover-1",
       orderId: "order-1",
@@ -68,6 +75,33 @@ describe("Stage 2 handover evidence manifest", () => {
     expect(new Set(result.manifest.files.map((file) => file.evidenceFileId)).size).toBe(2);
   });
 
+  it("changes the customer-confirmed manifest when an explicit handover fact changes", () => {
+    const firstBinding = createHandoverFactBinding();
+    const physical = buildPhysicalHandoverFactSnapshot({
+      ...firstBinding.handoverFacts,
+      primaryKeyCount: 2
+    });
+    const changed = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+    const first = buildDeliveryHandoverEvidencePackage({
+      ...firstBinding,
+      evidenceChecklist: createChecklist(),
+      handoverId: "handover-1",
+      orderId: "order-1",
+      workOrderId: "work-order-1"
+    });
+    const second = buildDeliveryHandoverEvidencePackage({
+      evidenceChecklist: createChecklist(),
+      handoverFactHash: changed.hash,
+      handoverFacts: changed.snapshot,
+      handoverId: "handover-1",
+      orderId: "order-1",
+      workOrderId: "work-order-1"
+    });
+
+    expect(second.manifest.handoverFacts.primaryKeyCount).toBe(2);
+    expect(second.manifestHash).not.toBe(first.manifestHash);
+  });
+
   it.each([
     {
       evidenceType: "VEHICLE_FRONT",
@@ -92,6 +126,7 @@ describe("Stage 2 handover evidence manifest", () => {
     mutate(target!.files[0]!.metadata);
 
     expect(() => buildDeliveryHandoverEvidencePackage({
+      ...createHandoverFactBinding(),
       evidenceChecklist: checklist,
       handoverId: "handover-1",
       orderId: "order-1",
@@ -99,6 +134,20 @@ describe("Stage 2 handover evidence manifest", () => {
     })).toThrow(STAGE2_EVIDENCE_ARTIFACT_NOT_READY);
   });
 });
+
+function createHandoverFactBinding() {
+  const physical = buildPhysicalHandoverFactSnapshot({
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true
+  });
+  const bound = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+  return { handoverFactHash: bound.hash, handoverFacts: bound.snapshot };
+}
 
 function createChecklist() {
   return {

@@ -237,6 +237,34 @@ describe("Stage2HandoverESignReadinessService", () => {
     await expectBlocker(harness.service, "FIELD_FACTS_INCOMPLETE");
   });
 
+  it("keeps a missing vehicle registration document as an actionable readiness blocker", async () => {
+    const harness = createHarness({ registrationAllowed: false });
+
+    await expectBlocker(
+      harness.service,
+      "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+    );
+    expect(harness.registrationExceptionService.getGate).toHaveBeenCalledWith(
+      "work-order-1",
+      harness.prisma
+    );
+    expectNoSideEffects(harness.sideEffects);
+  });
+
+  it("accepts a current vehicle registration document or exact-snapshot approval", async () => {
+    const documentHarness = createHarness({ registrationAllowed: true });
+    const approvedExceptionHarness = createHarness({ registrationAllowed: true });
+
+    await expect(documentHarness.service.getReadiness("work-order-1")).resolves.toMatchObject({
+      blockers: [],
+      ready: true
+    });
+    await expect(approvedExceptionHarness.service.getReadiness("work-order-1")).resolves.toMatchObject({
+      blockers: [],
+      ready: true
+    });
+  });
+
   it("requires exactly one affirmative damage-state declaration", async () => {
     const harness = createHarness();
     Object.assign(harness.state.workOrder!, {
@@ -652,6 +680,7 @@ function createHarness(overrides: {
   env?: Record<string, string>;
   evidenceReadiness?: Record<string, unknown>;
   fileObject?: null | ReadyState["fileObject"];
+  registrationAllowed?: boolean;
   workOrder?: null | ReadyState["workOrder"];
 } = {}) {
   const state: ReadyState = {
@@ -744,6 +773,14 @@ function createHarness(overrides: {
     getReadiness: vi.fn(async () => state.customerReadiness),
     providerCall: sideEffects.provider
   };
+  const registrationExceptionService = {
+    getGate: vi.fn(async () => ({
+      allowed: overrides.registrationAllowed ?? true,
+      approval: null,
+      documentPresent: overrides.registrationAllowed ?? true,
+      snapshotHash: "d".repeat(64)
+    }))
+  };
   const config = new ConfigService({
     FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
     FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1",
@@ -755,11 +792,13 @@ function createHarness(overrides: {
     deliveryEvidenceService as never,
     fadadaReadinessService as never,
     handoverWorkOrderService as never,
+    registrationExceptionService as never,
     config
   );
 
   return {
     prisma,
+    registrationExceptionService,
     service,
     sideEffects,
     state
@@ -788,6 +827,7 @@ interface ReadyState {
 function readyWorkOrder() {
   return {
     accessoryChecklist: [{ key: "spare-key", checked: true }],
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
     adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
     customerConfirmedAt: NOW,
     customerObjectedAt: null,
@@ -842,10 +882,16 @@ function readyWorkOrder() {
       status: DeliveryHandoverStatus.SOURCE_GENERATED
     },
     handoverId: "handover-1",
+    handoverFactHash: `sha256:${"c".repeat(64)}`,
+    handoverFactRevision: 1,
     handoverMileageKm: 28000,
     fieldSubmittedAt: NOW,
     id: "work-order-1",
+    keyState: "COMPLETE",
     noVisibleDamageDeclared: true,
+    primaryKeyCount: 1,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: "HANDED_OVER",
     order: {
       actualDeliveryAt: null,
       contractId: "contract-stage1-1",
@@ -856,7 +902,10 @@ function readyWorkOrder() {
     },
     orderId: "order-1",
     scheduledAt: new Date("2026-07-27T02:00:00.000Z"),
-    status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED
+    spareKeyCount: 1,
+    status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    vehicleConditionConfirmed: true,
+    vehicleConditionRemarks: "No unrecorded damage"
   };
 }
 
@@ -923,15 +972,24 @@ function matchesReadinessTaskWhere(
 
 function readyFieldFactsSnapshot() {
   return {
-    accessoryChecklist: [{ checked: true, key: "spare-key" }],
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
     damageDeclared: false,
     deliveryLocation: "garage bay A",
     energyLevelText: "80%",
     fieldNotes: "ready for delivery",
     fuelLevelText: null,
     handoverMileageKm: 28000,
+    handoverFactHash: `sha256:${"c".repeat(64)}`,
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
     noVisibleDamageDeclared: true,
-    scheduledAt: "2026-07-27T02:00:00.000Z"
+    primaryKeyCount: 1,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: "HANDED_OVER",
+    scheduledAt: "2026-07-27T02:00:00.000Z",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true,
+    vehicleConditionRemarks: "No unrecorded damage"
   };
 }
 

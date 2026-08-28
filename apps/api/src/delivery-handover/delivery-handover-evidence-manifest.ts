@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
-export const STAGE2_EVIDENCE_MANIFEST_SCHEMA_VERSION = 1;
+import {
+  type BoundHandoverFactSnapshot,
+  hashCanonical
+} from "../handover-work-order/handover-explicit-facts";
+
+export const STAGE2_EVIDENCE_MANIFEST_SCHEMA_VERSION = 2;
 export const STAGE2_EVIDENCE_ARTIFACT_NOT_READY = "STAGE2_EVIDENCE_ARTIFACT_NOT_READY";
 export const STAGE2_EVIDENCE_CONFIRMATION_TEXT =
   "本人已查看本次交接证据包所列全部照片和视频，并确认其反映的车辆交接状态。证据包及文件清单构成本车辆交接确认书不可分割的组成部分。";
@@ -48,6 +53,8 @@ export interface DeliveryHandoverEvidenceManifest {
   evidencePackageId: string;
   files: DeliveryHandoverEvidenceManifestFile[];
   handoverId: string;
+  handoverFactHash: string;
+  handoverFacts: BoundHandoverFactSnapshot;
   orderId: string;
   schemaVersion: number;
   workOrderId: string;
@@ -66,6 +73,8 @@ export interface DeliveryHandoverEvidencePackage {
 
 export interface BuildDeliveryHandoverEvidencePackageInput {
   evidenceChecklist: unknown;
+  handoverFactHash: string;
+  handoverFacts: BoundHandoverFactSnapshot;
   handoverId: string;
   orderId: string;
   workOrderId: string;
@@ -77,10 +86,16 @@ export function buildDeliveryHandoverEvidencePackage(
   const checklist = asRecord(input.evidenceChecklist);
   const items = Array.isArray(checklist?.items) ? checklist.items.filter(isPlainObject) : [];
   const files = items.flatMap((item) => normalizeEvidenceFiles(item)).sort(compareManifestFiles);
+  const handoverFactHash = requireSha256(input.handoverFactHash, "handoverFactHash");
+  if (hashCanonical(input.handoverFacts) !== handoverFactHash) {
+    notReady("handover fact hash does not match the bound fact snapshot");
+  }
   const manifest: DeliveryHandoverEvidenceManifest = {
     evidencePackageId: requireIdentifier(input.handoverId, "handoverId"),
     files,
     handoverId: requireIdentifier(input.handoverId, "handoverId"),
+    handoverFactHash,
+    handoverFacts: input.handoverFacts,
     orderId: requireIdentifier(input.orderId, "orderId"),
     schemaVersion: STAGE2_EVIDENCE_MANIFEST_SCHEMA_VERSION,
     workOrderId: requireIdentifier(input.workOrderId, "workOrderId")
@@ -205,6 +220,14 @@ function requireString(value: unknown, key: string) {
     return notReady(`${key} is missing`);
   }
   return value.trim();
+}
+
+function requireSha256(value: unknown, key: string) {
+  const digest = requireString(value, key);
+  if (!SHA256_PATTERN.test(digest)) {
+    return notReady(`${key} is invalid`);
+  }
+  return digest;
 }
 
 function requirePositiveInteger(value: unknown, key: string) {

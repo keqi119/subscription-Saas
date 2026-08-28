@@ -172,6 +172,7 @@ describe("subscription journey application validation", () => {
       "application-1"
     );
     expect(repository.rejectForApplication).toHaveBeenCalledWith(tx, {
+      activeJobId: "job-validation",
       eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:5:rejected",
       expectedVersion: 0,
       factVersion: 5,
@@ -414,6 +415,42 @@ describe("subscription journey application dispatch", () => {
     expect(repository.openManualTask).not.toHaveBeenCalled();
   });
 
+  it("accepts application-status facts as validation-targeted versions", async () => {
+    const repository = {
+      enqueueJob: vi.fn(async () => undefined),
+      enqueueNotificationOutbox: vi.fn(async () => undefined),
+      openManualTask: vi.fn(async () => undefined)
+    };
+    const tx = validationTransaction({ lastApplicationFactVersion: 3 });
+    const service = new SubscriptionJourneyService(repository as never);
+
+    await service.dispatchSignalOutbox(tx as never, {
+      ...validationOutbox(),
+      eventType: SubscriptionJourneyEventType.DOMAIN_FACT_OBSERVED,
+      payload: {
+        factType: "application",
+        factVersion: 4,
+        signalType: "APPLICATION_FACTS_CHANGED",
+        sourceActionId: "application-action-4",
+        targetStepCode: "APPLICATION_VALIDATION"
+      }
+    });
+
+    expect(repository.enqueueJob).toHaveBeenCalledWith(expect.anything(), {
+      jobType: SubscriptionJourneyJobType.VALIDATE_APPLICATION,
+      journeyId: "journey-1",
+      payload: {
+        applicationId: "application-1",
+        factType: "application",
+        factVersion: 4,
+        sourceActionId: "application-action-4",
+        stepCode: "APPLICATION_VALIDATION"
+      },
+      sourceKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:4",
+      stepId: "step-validation"
+    });
+  });
+
   it("opens exactly one FINAL_PLAN_DECISION task when dispatch is replayed", async () => {
     const openTasks = new Map<string, unknown>();
     const repository = {
@@ -522,6 +559,55 @@ describe("subscription journey application dispatch", () => {
 });
 
 describe("subscription journey manual application decisions", () => {
+  it("terminates an open application journey at its current step", async () => {
+    const repository = {
+      rejectForApplication: vi.fn(async () => undefined)
+    };
+    const tx = {
+      subscriptionJourney: {
+        findUnique: vi.fn(async () => ({
+          applicationId: "application-1",
+          currentStepCode: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+          id: "journey-1",
+          status: "WAITING_MANUAL",
+          steps: [
+            {
+              code: SubscriptionJourneyStepCode.FINAL_PLAN_DECISION,
+              id: "step-final-plan"
+            }
+          ],
+          version: 7
+        }))
+      }
+    };
+    const service = new SubscriptionJourneySignalService(
+      repository as never,
+      {} as never
+    );
+
+    await service.terminateApplication(tx as never, {
+      actionId: "application-action-7",
+      applicationId: "application-1",
+      factVersion: 5,
+      outcome: "REJECTED",
+      reason: "资质未通过"
+    });
+
+    expect(repository.rejectForApplication).toHaveBeenCalledWith(tx, {
+      eventKey:
+        "application:application-1:terminated:rejected:application-action-7",
+      expectedVersion: 7,
+      factVersion: 5,
+      journeyId: "journey-1",
+      payload: {
+        decision: "REJECTED",
+        factVersion: 5,
+        reasonCodes: ["APPLICATION_REJECTED"]
+      },
+      stepId: "step-final-plan"
+    });
+  });
+
   it("completes final-plan and vehicle-allocation steps before customer confirmation", async () => {
     const repository = {
       completeStep: vi.fn(async () => undefined),

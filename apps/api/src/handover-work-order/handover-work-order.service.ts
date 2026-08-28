@@ -43,6 +43,7 @@ import {
   VehicleHandoverEventType,
   VehicleHandoverType,
   VehicleHandoverWorkOrderStatus,
+  VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
@@ -60,7 +61,8 @@ import {
 } from "../delivery-handover/delivery-handover-evidence-artifact.service";
 import {
   buildDeliveryHandoverEvidencePackage,
-  DeliveryHandoverEvidencePackage
+  DeliveryHandoverEvidencePackage,
+  STAGE2_EVIDENCE_ARTIFACT_NOT_READY
 } from "../delivery-handover/delivery-handover-evidence-manifest";
 import {
   buildDeliveryHandoverPdfRenderModel,
@@ -105,6 +107,15 @@ import {
   projectFieldHandoverWorkflow,
   type FieldHandoverWorkflowProjection
 } from "./field-handover-workflow-projection";
+import {
+  buildBoundHandoverFactSnapshot,
+  buildPhysicalHandoverFactSnapshot,
+  getExplicitHandoverFactBlockingCodes,
+  type HandoverAccessoryState,
+  type HandoverKeyState,
+  type HandoverRegistrationDocumentState
+} from "./handover-explicit-facts";
+import { Stage2HandoverRegistrationExceptionService } from "./stage2-handover-registration-exception.service";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 import {
   bindSubscriptionClosureAuthorityConsumer,
@@ -197,15 +208,33 @@ const PREVIEWABLE_EVIDENCE_MIME_TYPES = new Set([
   ...SAFE_FIELD_VIDEO_MIME_TYPES
 ]);
 const HANDOVER_FIELD_FACT_KEYS = [
-  "accessoryChecklist",
+  "accessoryItems",
   "damageDeclared",
   "deliveryLocation",
   "energyLevelText",
   "fieldNotes",
   "fuelLevelText",
   "handoverMileageKm",
+  "keyState",
   "noVisibleDamageDeclared",
-  "scheduledAt"
+  "primaryKeyCount",
+  "registrationDocumentRemarks",
+  "registrationDocumentState",
+  "scheduledAt",
+  "spareKeyCount",
+  "vehicleConditionConfirmed",
+  "vehicleConditionRemarks"
+] as const;
+
+const EXPLICIT_HANDOVER_FIELD_FACT_KEYS = [
+  "accessoryItems",
+  "keyState",
+  "primaryKeyCount",
+  "registrationDocumentRemarks",
+  "registrationDocumentState",
+  "spareKeyCount",
+  "vehicleConditionConfirmed",
+  "vehicleConditionRemarks"
 ] as const;
 
 export type HandoverFieldFactKey = typeof HANDOVER_FIELD_FACT_KEYS[number];
@@ -225,6 +254,7 @@ export interface WorkOrderRecord {
   accessTokenRevokedAt?: Date | null;
   adminReviewStatus?: string | null;
   accessoryChecklist?: unknown;
+  accessoryItems?: unknown;
   assignedInternalUserId?: string | null;
   createdAt?: Date | null;
   customerConfirmedAt?: Date | null;
@@ -245,19 +275,29 @@ export interface WorkOrderRecord {
   firstAccessedAt?: Date | null;
   fuelLevelText?: string | null;
   handoverId?: string | null;
+  handoverFactHash?: string | null;
+  handoverFactRevision?: number | null;
+  handoverFactSnapshot?: unknown;
   handoverMileageKm?: number | null;
   handoverType?: string | null;
   id: string;
+  keyState?: string | null;
   lastAccessedAt?: Date | null;
   metadata?: unknown;
   noVisibleDamageDeclared?: boolean | null;
   operatorType?: string | null;
   orderId: string;
   opsReviewStatus?: string | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: string | null;
   reviewVersion?: number | null;
   scheduledAt?: Date | null;
+  spareKeyCount?: number | null;
   status: string;
   updatedAt?: Date | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
   vehicleDeliveryId?: string | null;
 }
 
@@ -338,15 +378,28 @@ export interface AssignExternalOperatorInput {
 }
 
 export interface UpdateFieldFactsInput {
-  accessoryChecklist?: unknown;
+  accessoryItems?: Array<{
+    code: string;
+    name: string;
+    quantity: number;
+    remark?: string | null;
+    state: HandoverAccessoryState;
+  }>;
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
   fieldNotes?: string | null;
   fuelLevelText?: string | null;
   handoverMileageKm?: number | null;
+  keyState?: HandoverKeyState | null;
   noVisibleDamageDeclared?: boolean | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: HandoverRegistrationDocumentState | null;
   scheduledAt?: Date | string | null;
+  spareKeyCount?: number | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
 }
 
 export interface AttachFieldEvidenceFileInput {
@@ -539,7 +592,8 @@ export class HandoverWorkOrderService {
     @Optional() private readonly workflowRepository?: Stage2HandoverWorkflowRepository,
     @Optional() private readonly financeService?: FinanceService,
     @Optional() private readonly journeySignal?: SubscriptionJourneySignalService,
-    @Optional() private readonly assetOperationsService?: AssetOperationsService
+    @Optional() private readonly assetOperationsService?: AssetOperationsService,
+    @Optional() private readonly registrationExceptionService?: Stage2HandoverRegistrationExceptionService
   ) {}
 
   async prepareReturnInboundInTransaction(
@@ -2186,24 +2240,83 @@ export class HandoverWorkOrderService {
     }
     assertDamageState(input.damageDeclared, input.noVisibleDamageDeclared);
     const switchesToDamage = input.damageDeclared === true && input.noVisibleDamageDeclared !== true;
+    const explicitFactChanged = EXPLICIT_HANDOVER_FIELD_FACT_KEYS.some(
+      (key) => input[key] !== undefined
+    );
+    const explicitFactRevision = explicitFactChanged
+      ? (workOrder.handoverFactRevision ?? 0) + 1
+      : workOrder.handoverFactRevision ?? 0;
+    const nextExplicitFacts = explicitFactChanged
+      ? {
+          accessoryItems: input.accessoryItems ?? workOrder.accessoryItems,
+          handoverFactRevision: explicitFactRevision,
+          keyState: input.keyState === undefined ? workOrder.keyState : input.keyState,
+          primaryKeyCount:
+            input.primaryKeyCount === undefined
+              ? workOrder.primaryKeyCount
+              : input.primaryKeyCount,
+          registrationDocumentRemarks:
+            input.registrationDocumentRemarks === undefined
+              ? workOrder.registrationDocumentRemarks
+              : input.registrationDocumentRemarks,
+          registrationDocumentState:
+            input.registrationDocumentState === undefined
+              ? workOrder.registrationDocumentState
+              : input.registrationDocumentState,
+          spareKeyCount:
+            input.spareKeyCount === undefined
+              ? workOrder.spareKeyCount
+              : input.spareKeyCount,
+          vehicleConditionConfirmed:
+            input.vehicleConditionConfirmed === undefined
+              ? workOrder.vehicleConditionConfirmed
+              : input.vehicleConditionConfirmed,
+          vehicleConditionRemarks:
+            input.vehicleConditionRemarks === undefined
+              ? workOrder.vehicleConditionRemarks
+              : input.vehicleConditionRemarks
+        }
+      : null;
+    const explicitFactArtifact =
+      nextExplicitFacts && getExplicitHandoverFactBlockingCodes(nextExplicitFacts).length === 0
+        ? buildPhysicalHandoverFactSnapshot(nextExplicitFacts)
+        : null;
     return this.runTransaction(async (tx) => {
       if (workOrder.status === "DRAFT") {
         await this.assertDeliveryStartAvailable(tx, workOrder);
       }
       const updated = await this.updateWorkOrderVersioned(workOrder, compactUndefined({
-        accessoryChecklist: input.accessoryChecklist === undefined ? undefined : toJsonValue(input.accessoryChecklist),
+        accessoryItems: input.accessoryItems === undefined ? undefined : toJsonValue(input.accessoryItems),
         damageDeclared: input.noVisibleDamageDeclared === true ? false : input.damageDeclared,
         deliveryLocation: input.deliveryLocation === undefined ? undefined : normalizeOptionalText(input.deliveryLocation),
         energyLevelText: input.energyLevelText === undefined ? undefined : normalizeOptionalText(input.energyLevelText),
         fieldNotes: input.fieldNotes === undefined ? undefined : normalizeOptionalText(input.fieldNotes),
         fuelLevelText: input.fuelLevelText === undefined ? undefined : normalizeOptionalText(input.fuelLevelText),
+        handoverFactHash: explicitFactChanged ? explicitFactArtifact?.hash ?? null : undefined,
+        handoverFactRevision: explicitFactChanged ? explicitFactRevision : undefined,
+        handoverFactSnapshot: explicitFactChanged
+          ? explicitFactArtifact ? toJsonValue(explicitFactArtifact.snapshot) : Prisma.DbNull
+          : undefined,
         handoverMileageKm: input.handoverMileageKm,
+        keyState: input.keyState,
         metadata: mergeMetadata(workOrder.metadata, { fieldFactsUpdatedBy: actorId ?? null }),
         noVisibleDamageDeclared: input.damageDeclared === true ? false : input.noVisibleDamageDeclared,
+        primaryKeyCount: input.primaryKeyCount,
+        registrationDocumentRemarks:
+          input.registrationDocumentRemarks === undefined
+            ? undefined
+            : normalizeOptionalText(input.registrationDocumentRemarks),
+        registrationDocumentState: input.registrationDocumentState,
         scheduledAt: input.scheduledAt === undefined ? undefined : (
           input.scheduledAt ? parseDate(input.scheduledAt, "scheduledAt") : null
         ),
-        status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status
+        spareKeyCount: input.spareKeyCount,
+        status: workOrder.status === "DRAFT" ? "FIELD_IN_PROGRESS" : workOrder.status,
+        vehicleConditionConfirmed: input.vehicleConditionConfirmed,
+        vehicleConditionRemarks:
+          input.vehicleConditionRemarks === undefined
+            ? undefined
+            : normalizeOptionalText(input.vehicleConditionRemarks)
       }), tx);
       if (expectedFieldPhone) {
         if (!isFieldAccessibleWorkOrder(updated, expectedFieldPhone)) {
@@ -2381,6 +2494,192 @@ export class HandoverWorkOrderService {
         detail: { note: normalizeOptionalText(note) },
         reviewAttemptId: attempt ? String(attempt.id) : null
       }, tx);
+      return current;
+    });
+    return this.toAdminWorkOrderDetail(updated);
+  }
+
+  async reopenConfirmedReview(id: string, actorId: string, note?: string | null) {
+    const reason = normalizeRequiredText(
+      note,
+      "请填写重新打开交接复核的原因。"
+    );
+    const updated = await this.runSerializableTransaction(async (tx) => {
+      const workOrder = await this.getWorkOrderOrThrow(id, tx);
+      this.assertMutable(workOrder);
+      if (workOrder.status !== "CUSTOMER_CONFIRMED") {
+        throw new BadRequestException("仅已由客户确认、尚未签署的交接单可重新打开。");
+      }
+
+      const handover = await this.findStage2HandoverForWorkOrder(
+        workOrder,
+        { includeHandoverContract: true },
+        tx
+      );
+      const handoverStatus = handover ? readString(handover, "status") : null;
+      if (
+        handover &&
+        (
+          readString(handover, "handoverESignTaskId") ||
+          (
+            handoverStatus !== DeliveryHandoverStatus.DRAFT &&
+            handoverStatus !== DeliveryHandoverStatus.SOURCE_GENERATED
+          )
+        )
+      ) {
+        throw new ConflictException(
+          "交接确认单已进入签署；请先作废未完成的电子签任务，再重新打开复核。"
+        );
+      }
+
+      const processingJob = await tx.vehicleHandoverWorkflowJob.findFirst({
+        select: { id: true },
+        where: {
+          jobStatus: VehicleHandoverWorkflowJobStatus.PROCESSING,
+          workOrderId: workOrder.id
+        }
+      });
+      if (processingJob) {
+        throw new ConflictException(
+          "交接确认单后台任务正在处理，请稍后刷新后重试。"
+        );
+      }
+
+      const factBlockers = getExplicitHandoverFactBlockingCodes(workOrder);
+      const requiresFieldUpgrade =
+        factBlockers.length > 0 ||
+        !workOrder.handoverFactHash ||
+        (workOrder.handoverFactRevision ?? 0) < 1;
+      const latestAttempt = await this.findLatestReviewAttempt(workOrder.id, tx);
+      if (!latestAttempt || readString(latestAttempt, "status") !== "CUSTOMER_CONFIRMED") {
+        throw new ConflictException("未找到可失效的客户确认记录。");
+      }
+
+      if (!requiresFieldUpgrade) {
+        const currentPackage = await this.buildCurrentEvidencePackage(
+          workOrder,
+          undefined,
+          tx
+        );
+        const confirmedManifestHash = readEvidencePackageManifestHash(
+          readUnknownRecordValue(latestAttempt, "evidenceSnapshot")
+        );
+        if (confirmedManifestHash === currentPackage.manifestHash) {
+          throw new BadRequestException("交接事实与客户已确认版本一致，无需重新确认。");
+        }
+      }
+
+      const now = new Date();
+      await tx.vehicleHandoverWorkflowJob.updateMany({
+        data: {
+          completedAt: now,
+          jobStatus: VehicleHandoverWorkflowJobStatus.CANCELLED,
+          leaseExpiresAt: null,
+          leaseToken: null
+        },
+        where: {
+          jobStatus: {
+            in: [
+              VehicleHandoverWorkflowJobStatus.PENDING,
+              VehicleHandoverWorkflowJobStatus.DEAD_LETTER
+            ]
+          },
+          workOrderId: workOrder.id
+        }
+      });
+      await this.getReviewAttemptModel(tx)!.update({
+        data: {
+          metadata: toJsonValue(
+            mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+              invalidatedAt: now.toISOString(),
+              invalidatedBy: actorId,
+              invalidationReason: reason
+            })
+          ),
+          status: "VOIDED"
+        },
+        where: { id: String(latestAttempt.id) }
+      });
+
+      const targetStatus = requiresFieldUpgrade
+        ? "FIELD_IN_PROGRESS"
+        : "CUSTOMER_REVIEWING";
+      const current = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: requiresFieldUpgrade
+            ? VehicleHandoverAdminReviewStatus.RESUBMISSION_REQUESTED
+            : VehicleHandoverAdminReviewStatus.SENT_BACK_TO_CUSTOMER_REVIEW,
+          customerConfirmedAt: null,
+          customerReviewStartedAt: requiresFieldUpgrade ? null : now,
+          fieldSubmittedAt: requiresFieldUpgrade ? null : workOrder.fieldSubmittedAt,
+          metadata: mergeMetadata(workOrder.metadata, {
+            handoverReviewRecoveryReason: reason,
+            handoverReviewReopenedAt: now.toISOString(),
+            handoverReviewReopenedBy: actorId,
+            handoverReviewRequiresExplicitFactUpgrade: requiresFieldUpgrade,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: requiresFieldUpgrade
+              ? ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+              : ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
+          }),
+          status: targetStatus
+        },
+        tx
+      );
+      const attemptData = {
+        adminNotes: reason,
+        adminStatus: requiresFieldUpgrade
+          ? ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+          : ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
+        customerReviewStartedAt: requiresFieldUpgrade ? null : now,
+        resubmissionRequestedAt: requiresFieldUpgrade ? now : null,
+        resubmissionRequestedById: requiresFieldUpgrade ? actorId : null,
+        sentBackToCustomerReviewAt: requiresFieldUpgrade ? null : now,
+        sentBackToCustomerReviewById: requiresFieldUpgrade ? null : actorId
+      };
+      const attempt = requiresFieldUpgrade
+        ? await this.getReviewAttemptModel(tx)!.create({
+            data: compactUndefined({
+              ...attemptData,
+              attemptNo: nextAttemptNo(latestAttempt),
+              evidenceSnapshot: readUnknownRecordValue(
+                latestAttempt,
+                "evidenceSnapshot"
+              ),
+              fieldFactsSnapshot: readUnknownRecordValue(
+                latestAttempt,
+                "fieldFactsSnapshot"
+              ),
+              handoverId: current.handoverId ?? null,
+              orderId: current.orderId,
+              status: "RESUBMISSION_REQUESTED",
+              workOrderId: current.id
+            })
+          })
+        : await this.createReviewAttempt(
+            current,
+            "CUSTOMER_REVIEWING",
+            attemptData,
+            tx
+          );
+      await this.recordEvent(
+        current,
+        requiresFieldUpgrade
+          ? VehicleHandoverEventType.RESUBMISSION_REQUESTED
+          : VehicleHandoverEventType.SENT_BACK_TO_CUSTOMER_REVIEW,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: {
+            reason,
+            recoveryType: requiresFieldUpgrade
+              ? "EXPLICIT_FACT_UPGRADE"
+              : "MANIFEST_RECONFIRMATION"
+          },
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
       return current;
     });
     return this.toAdminWorkOrderDetail(updated);
@@ -2571,6 +2870,7 @@ export class HandoverWorkOrderService {
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }, tx);
+      await this.assertRegistrationReadyForCustomerConfirmation(workOrder, tx);
       const evidencePackage = await this.buildCurrentEvidencePackage(
         workOrder,
         evidenceChecklist,
@@ -3152,6 +3452,26 @@ export class HandoverWorkOrderService {
       readyForStage2ESign: blockingReasons.length === 0,
       readyForStage2Pdf: blockingReasons.length === 0,
       workOrderId: id
+    };
+  }
+
+  async getCustomerConfirmationReadiness(id: string) {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    if (!this.registrationExceptionService) {
+      const ready = workOrder.registrationDocumentState === "HANDED_OVER";
+      return {
+        blockingReason: ready
+          ? null
+          : "行驶证未完成现场交付，需等待管理员批准例外。",
+        ready
+      };
+    }
+    const gate = await this.registrationExceptionService.getGate(id);
+    return {
+      blockingReason: gate.allowed
+        ? null
+        : "行驶证未完成现场交付，需等待管理员批准例外。",
+      ready: gate.allowed
     };
   }
 
@@ -4070,7 +4390,7 @@ export class HandoverWorkOrderService {
     const historicalBinding = validateStage2SourceArtifactBinding({
       expectedCustomerId,
       expectedHandoverId: workOrder.handoverId ?? "",
-      expectedManifestHash: expectedManifestDigest,
+      expectedManifestHash: readString(handover, "manifestHash") ?? "",
       expectedOrderId: workOrder.orderId,
       expectedWorkOrderId: workOrder.id,
       fileObject,
@@ -4305,6 +4625,14 @@ export class HandoverWorkOrderService {
     const generatedManifestHash = evidencePackageSnapshot
       ? readString(evidencePackageSnapshot, "manifestHash")
       : null;
+    const generatedManifest = asRecord(evidencePackageSnapshot?.manifest);
+    if (
+      (workOrder.handoverFactRevision ?? 0) === 0 &&
+      toNumberOrNull(generatedManifest?.schemaVersion) === 1 &&
+      generatedManifestHash
+    ) {
+      return;
+    }
     const currentPackage = await this.buildCurrentEvidencePackage(workOrder);
     if (!generatedManifestHash || generatedManifestHash !== currentPackage.manifestHash) {
       throw new ConflictException(
@@ -4722,6 +5050,7 @@ export class HandoverWorkOrderService {
       ),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
+        accessoryItems: workOrder.accessoryItems,
         damageDeclared: workOrder.damageDeclared,
         deliveryLocation: workOrder.deliveryLocation,
         energyLevelText: workOrder.energyLevelText,
@@ -4730,8 +5059,17 @@ export class HandoverWorkOrderService {
         fieldSubmittedAt: workOrder.fieldSubmittedAt,
         fuelLevelText: workOrder.fuelLevelText,
         handoverMileageKm: workOrder.handoverMileageKm,
+        handoverFactHash: workOrder.handoverFactHash,
+        handoverFactRevision: workOrder.handoverFactRevision,
+        keyState: workOrder.keyState,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
-        scheduledAt: workOrder.scheduledAt
+        primaryKeyCount: workOrder.primaryKeyCount,
+        registrationDocumentRemarks: workOrder.registrationDocumentRemarks,
+        registrationDocumentState: workOrder.registrationDocumentState,
+        scheduledAt: workOrder.scheduledAt,
+        spareKeyCount: workOrder.spareKeyCount,
+        vehicleConditionConfirmed: workOrder.vehicleConditionConfirmed,
+        vehicleConditionRemarks: workOrder.vehicleConditionRemarks
       },
       readiness
     };
@@ -4843,12 +5181,52 @@ export class HandoverWorkOrderService {
     if (!workOrder.handoverId) {
       throw new BadRequestException("交接工单尚未关联车辆交接记录。");
     }
+    let physicalFacts: ReturnType<typeof buildPhysicalHandoverFactSnapshot>;
+    try {
+      physicalFacts = buildPhysicalHandoverFactSnapshot(workOrder);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("HANDOVER_EXPLICIT_FACTS_INVALID:")) {
+        throw new Error(
+          `${STAGE2_EVIDENCE_ARTIFACT_NOT_READY}: ${error.message}`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+    const registrationGate = this.registrationExceptionService
+      ? await this.registrationExceptionService.getGate(workOrder.id, db)
+      : null;
+    const boundFacts = buildBoundHandoverFactSnapshot(
+      physicalFacts.snapshot,
+      registrationGate
+    );
     return buildDeliveryHandoverEvidencePackage({
       evidenceChecklist: checklist,
+      handoverFactHash: boundFacts.hash,
+      handoverFacts: boundFacts.snapshot,
       handoverId: workOrder.handoverId,
       orderId: workOrder.orderId,
       workOrderId: workOrder.id
     });
+  }
+
+  private async assertRegistrationReadyForCustomerConfirmation(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService
+  ) {
+    if (!this.registrationExceptionService) {
+      if (workOrder.registrationDocumentState === "HANDED_OVER") {
+        return;
+      }
+      throw new Error("STAGE2_REGISTRATION_EXCEPTION_SERVICE_UNAVAILABLE");
+    }
+    const gate = await this.registrationExceptionService.getGate(workOrder.id, db);
+    if (!gate.allowed) {
+      throw new BadRequestException({
+        code: "STAGE2_REGISTRATION_EXCEPTION_REQUIRED",
+        message: "行驶证未完成现场交付，需管理员批准例外后客户方可确认。"
+      });
+    }
   }
 
   private async buildReviewAttemptSnapshot(
@@ -4879,14 +5257,24 @@ export class HandoverWorkOrderService {
       }),
       fieldFactsSnapshot: toJsonValue({
         accessoryChecklist: workOrder.accessoryChecklist ?? null,
+        accessoryItems: workOrder.accessoryItems ?? null,
         damageDeclared: workOrder.damageDeclared ?? null,
         deliveryLocation: workOrder.deliveryLocation ?? null,
         energyLevelText: workOrder.energyLevelText ?? null,
         fieldNotes: workOrder.fieldNotes ?? null,
         fuelLevelText: workOrder.fuelLevelText ?? null,
         handoverMileageKm: workOrder.handoverMileageKm ?? null,
+        handoverFactHash: workOrder.handoverFactHash ?? null,
+        handoverFactRevision: workOrder.handoverFactRevision ?? 0,
+        keyState: workOrder.keyState ?? null,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared ?? null,
-        scheduledAt: workOrder.scheduledAt?.toISOString?.() ?? null
+        primaryKeyCount: workOrder.primaryKeyCount ?? null,
+        registrationDocumentRemarks: workOrder.registrationDocumentRemarks ?? null,
+        registrationDocumentState: workOrder.registrationDocumentState ?? null,
+        scheduledAt: workOrder.scheduledAt?.toISOString?.() ?? null,
+        spareKeyCount: workOrder.spareKeyCount ?? null,
+        vehicleConditionConfirmed: workOrder.vehicleConditionConfirmed ?? null,
+        vehicleConditionRemarks: workOrder.vehicleConditionRemarks ?? null
       }),
       fieldSubmittedAt: workOrder.fieldSubmittedAt ?? null,
       metadata: toJsonValue({
@@ -5454,6 +5842,7 @@ export class HandoverWorkOrderService {
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, evidenceRouteBase),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
+        accessoryItems: workOrder.accessoryItems,
         damageDeclared: workOrder.damageDeclared,
         deliveryLocation: workOrder.deliveryLocation,
         energyLevelText: workOrder.energyLevelText,
@@ -5462,8 +5851,17 @@ export class HandoverWorkOrderService {
         fieldSubmittedAt: workOrder.fieldSubmittedAt,
         fuelLevelText: workOrder.fuelLevelText,
         handoverMileageKm: workOrder.handoverMileageKm,
+        handoverFactHash: workOrder.handoverFactHash,
+        handoverFactRevision: workOrder.handoverFactRevision,
+        keyState: workOrder.keyState,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
-        scheduledAt: workOrder.scheduledAt
+        primaryKeyCount: workOrder.primaryKeyCount,
+        registrationDocumentRemarks: workOrder.registrationDocumentRemarks,
+        registrationDocumentState: workOrder.registrationDocumentState,
+        scheduledAt: workOrder.scheduledAt,
+        spareKeyCount: workOrder.spareKeyCount,
+        vehicleConditionConfirmed: workOrder.vehicleConditionConfirmed,
+        vehicleConditionRemarks: workOrder.vehicleConditionRemarks
       },
       reviewContext: toFieldReviewContext(
         workOrder,
@@ -6085,8 +6483,8 @@ function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
   if (!normalizeOptionalText(workOrder.energyLevelText) && !normalizeOptionalText(workOrder.fuelLevelText)) {
     reasons.push("请填写能源/油量状态。");
   }
-  if (!hasAccessoryChecklist(workOrder.accessoryChecklist)) {
-    reasons.push("请填写随车物品清单。");
+  for (const code of getExplicitHandoverFactBlockingCodes(workOrder)) {
+    reasons.push(EXPLICIT_HANDOVER_FACT_BLOCKER_MESSAGES[code]);
   }
   if (workOrder.damageDeclared === true && workOrder.noVisibleDamageDeclared === true) {
     reasons.push("损伤状态冲突，请选择存在损伤或无可见损伤。");
@@ -6095,6 +6493,13 @@ function getFieldFactsBlockingReasons(workOrder: WorkOrderRecord) {
   }
   return reasons;
 }
+
+const EXPLICIT_HANDOVER_FACT_BLOCKER_MESSAGES = {
+  ACCESSORY_CONFIRMATION_MISSING: "请逐项确认随车附件及其数量、状态。",
+  KEY_CONFIRMATION_MISSING: "请确认主钥匙、备用钥匙数量及钥匙状态。",
+  REGISTRATION_DOCUMENT_CONFIRMATION_MISSING: "请确认行驶证交付状态。",
+  VEHICLE_CONDITION_CONFIRMATION_MISSING: "请确认车辆车况并填写必要说明。"
+} as const;
 
 function assertFieldSessionEditable(workOrder: WorkOrderRecord) {
   if (hasActiveCustomerObjection(workOrder) && isFieldResubmissionRequested(workOrder)) {
@@ -6661,19 +7066,6 @@ function toFieldEvidenceState(workOrder: WorkOrderRecord): DeliveryEvidenceField
     damageDeclared: workOrder.damageDeclared,
     noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared
   };
-}
-
-function hasAccessoryChecklist(value: unknown) {
-  if (!value) {
-    return false;
-  }
-  if (Array.isArray(value)) {
-    return value.length > 0;
-  }
-  if (typeof value === "object") {
-    return Object.keys(value).length > 0;
-  }
-  return false;
 }
 
 async function calculateFileSha256(filePath: string) {

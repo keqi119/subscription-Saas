@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import { AuthModule } from "../auth/auth.module";
 import { AssetOperationsModule } from "../asset-operations/asset-operations.module";
+import { AssetAccountingModule } from "../asset-accounting/asset-accounting.module";
 import { DeliveryEvidenceModule } from "../delivery-evidence/delivery-evidence.module";
 import { DeliveryHandoverEvidenceArtifactService } from "../delivery-handover/delivery-handover-evidence-artifact.service";
 import { DeliveryHandoverPdfRendererService } from "../delivery-handover/delivery-handover-pdf-renderer.service";
@@ -28,6 +29,7 @@ import {
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignReadinessService } from "./stage2-handover-esign-readiness.service";
 import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
+import { Stage2HandoverRegistrationExceptionService } from "./stage2-handover-registration-exception.service";
 import { Stage2HandoverWorkflowRepository } from "./stage2-handover-workflow.repository";
 import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
 import { STAGE2_HANDOVER_WORKFLOW_HANDLER } from "./stage2-handover-workflow.types";
@@ -49,6 +51,7 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
   ],
   imports: [
     AuthModule,
+    AssetAccountingModule,
     AssetOperationsModule,
     DeliveryEvidenceModule,
     ESignModule,
@@ -72,6 +75,7 @@ import { Stage2HandoverWorkflowWorker } from "./stage2-handover-workflow.worker"
     HandoverWorkOrderService,
     Stage2HandoverESignReadinessService,
     Stage2HandoverESignService,
+    Stage2HandoverRegistrationExceptionService,
     Stage2HandoverWorkflowRepository,
     Stage2HandoverWorkflowService,
     {

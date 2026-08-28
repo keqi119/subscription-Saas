@@ -253,13 +253,22 @@ export class PortalHandoverReviewService {
   }
 
   private async toReviewDetail(workOrder: PortalHandoverReviewRecord) {
-    const [listItem, evidenceChecklist, readiness, stage2Workflow] = await Promise.all([
+    const [
+      listItem,
+      evidenceChecklist,
+      readiness,
+      customerConfirmationReadiness,
+      stage2Workflow
+    ] = await Promise.all([
       this.toReviewListItem(workOrder),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
       this.handoverWorkOrderService.getReadiness(workOrder.id),
+      this.handoverWorkOrderService.getCustomerConfirmationReadiness(
+        workOrder.id
+      ),
       this.stage2HandoverWorkflowService?.getProjection(workOrder.id) ??
         Promise.resolve(null)
     ]);
@@ -278,6 +287,9 @@ export class PortalHandoverReviewService {
       ...listItem,
       ...(stage2Workflow ? { stage2Workflow } : {}),
       evidencePackage: {
+        confirmationBlockingReason:
+          customerConfirmationReadiness.blockingReason,
+        confirmationReady: customerConfirmationReadiness.ready,
         confirmationText: STAGE2_EVIDENCE_CONFIRMATION_TEXT,
         evidencePackageId: evidencePackage?.manifest.evidencePackageId ?? null,
         fileCount: evidencePackage?.stats.fileCount ?? checklistStats.fileCount,
@@ -290,6 +302,7 @@ export class PortalHandoverReviewService {
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, workOrder.id),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
+        accessoryItems: workOrder.accessoryItems,
         damageDeclared: workOrder.damageDeclared,
         deliveryLocation: workOrder.deliveryLocation,
         energyLevelText: workOrder.energyLevelText,
@@ -298,8 +311,17 @@ export class PortalHandoverReviewService {
         fieldSubmittedAt: workOrder.fieldSubmittedAt,
         fuelLevelText: workOrder.fuelLevelText,
         handoverMileageKm: workOrder.handoverMileageKm,
+        handoverFactHash: workOrder.handoverFactHash,
+        handoverFactRevision: workOrder.handoverFactRevision,
+        keyState: workOrder.keyState,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
-        scheduledAt: workOrder.scheduledAt
+        primaryKeyCount: workOrder.primaryKeyCount,
+        registrationDocumentRemarks: workOrder.registrationDocumentRemarks,
+        registrationDocumentState: workOrder.registrationDocumentState,
+        scheduledAt: workOrder.scheduledAt,
+        spareKeyCount: workOrder.spareKeyCount,
+        vehicleConditionConfirmed: workOrder.vehicleConditionConfirmed,
+        vehicleConditionRemarks: workOrder.vehicleConditionRemarks
       },
       reviewHistory: (workOrder.reviewAttempts ?? []).map((attempt) => ({
         adminStatus: attempt.adminStatus,

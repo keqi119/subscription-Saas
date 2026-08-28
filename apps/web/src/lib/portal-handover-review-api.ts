@@ -56,6 +56,13 @@ export interface PortalHandoverReviewListItem {
 
 export interface PortalHandoverReviewFieldFacts {
   accessoryChecklist?: unknown;
+  accessoryItems?: Array<{
+    code: string;
+    name: string;
+    quantity: number;
+    remark?: string | null;
+    state: string;
+  }> | null;
   damageDeclared?: boolean | null;
   deliveryLocation?: string | null;
   energyLevelText?: string | null;
@@ -64,8 +71,17 @@ export interface PortalHandoverReviewFieldFacts {
   fieldSubmittedAt?: string | null;
   fuelLevelText?: string | null;
   handoverMileageKm?: number | null;
+  handoverFactHash?: string | null;
+  handoverFactRevision?: number | null;
+  keyState?: string | null;
   noVisibleDamageDeclared?: boolean | null;
+  primaryKeyCount?: number | null;
+  registrationDocumentRemarks?: string | null;
+  registrationDocumentState?: string | null;
   scheduledAt?: string | null;
+  spareKeyCount?: number | null;
+  vehicleConditionConfirmed?: boolean | null;
+  vehicleConditionRemarks?: string | null;
 }
 
 export interface PortalHandoverReviewEvidenceChecklist {
@@ -136,6 +152,8 @@ export interface PortalHandoverReviewHistoryItem {
 }
 
 export interface PortalHandoverReviewEvidencePackage {
+  confirmationBlockingReason?: string | null;
+  confirmationReady?: boolean | null;
   confirmationText?: string | null;
   evidencePackageId?: string | null;
   fileCount?: number | null;

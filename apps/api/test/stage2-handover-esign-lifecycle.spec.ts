@@ -3849,6 +3849,93 @@ describe("Stage2HandoverESignService", () => {
 });
 
 describe("Stage 2 handover eSign Admin API contract", () => {
+  it("exposes governed vehicle-registration exception routes with split request and approval permissions", () => {
+    const prototype = HandoverWorkOrderAdminController.prototype;
+    const expected = [
+      [
+        "getRegistrationException",
+        "handover-work-orders/:id/registration-exception",
+        RequestMethod.GET,
+        [PermissionCode.DELIVERY_VIEW, PermissionCode.BUSINESS_EXCEPTION_VIEW]
+      ],
+      [
+        "requestRegistrationException",
+        "handover-work-orders/:id/registration-exception/request",
+        RequestMethod.POST,
+        [PermissionCode.DELIVERY_PREPARE, PermissionCode.BUSINESS_EXCEPTION_REQUEST]
+      ],
+      [
+        "decideRegistrationException",
+        "handover-work-orders/:id/registration-exception/:approvalId/decide",
+        RequestMethod.POST,
+        [PermissionCode.DELIVERY_CONFIRM, PermissionCode.BUSINESS_EXCEPTION_APPROVE]
+      ]
+    ] as const;
+
+    for (const [methodName, path, method, permissions] of expected) {
+      const handler = prototype[methodName];
+      expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(path);
+      expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(method);
+      expect(Reflect.getMetadata(REQUIRED_PERMISSIONS_KEY, handler)).toEqual(permissions);
+    }
+  });
+
+  it("requires one exact idempotency header before requesting a registration exception", async () => {
+    const requestException = vi.fn(async () => ({ id: "approval-1" }));
+    const handler = HandoverWorkOrderAdminController.prototype
+      .requestRegistrationException as unknown as (
+        this: object,
+        id: string,
+        dto: { reason: string },
+        request: Record<string, unknown>
+      ) => Promise<unknown>;
+    const request = {
+      headers: { "user-agent": "vitest" },
+      ip: "127.0.0.1",
+      rawHeaders: ["Idempotency-Key", "registration-request-1"],
+      user: {
+        id: "admin-1",
+        permissions: [
+          PermissionCode.DELIVERY_PREPARE,
+          PermissionCode.BUSINESS_EXCEPTION_REQUEST
+        ]
+      }
+    };
+
+    await handler.call(
+      { registrationExceptionService: { request: requestException } },
+      "work-order-1",
+      { reason: "registration unavailable" },
+      request
+    );
+    expect(requestException).toHaveBeenCalledWith(
+      "work-order-1",
+      "registration unavailable",
+      expect.objectContaining({ idempotencyKey: "registration-request-1" })
+    );
+
+    expect(() =>
+      handler.call(
+        { registrationExceptionService: { request: requestException } },
+        "work-order-1",
+        { reason: "registration unavailable" },
+        {
+          ...request,
+          rawHeaders: [
+            "Idempotency-Key",
+            "registration-request-1",
+            "Idempotency-Key",
+            "registration-request-2"
+          ]
+        }
+      )
+    ).toThrow(expect.objectContaining({
+      response: expect.objectContaining({
+        code: "STAGE2_REGISTRATION_IDEMPOTENCY_KEY_REQUIRED"
+      })
+    }));
+  });
+
   it("exposes only the five Admin routes with the required permissions and guards", () => {
     const prototype = HandoverWorkOrderAdminController.prototype;
     const expected = [

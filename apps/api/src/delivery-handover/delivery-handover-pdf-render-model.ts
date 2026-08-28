@@ -4,6 +4,10 @@ import {
   DeliveryHandoverEvidencePackage,
   STAGE2_EVIDENCE_CONFIRMATION_TEXT
 } from "./delivery-handover-evidence-manifest";
+import {
+  buildBoundHandoverFactSnapshot,
+  buildPhysicalHandoverFactSnapshot
+} from "../handover-work-order/handover-explicit-facts";
 
 export const STAGE2_HANDOVER_PDF_EVIDENCE_ITEM_COUNT = 14;
 
@@ -57,13 +61,28 @@ export interface DeliveryHandoverPdfRenderModel {
     violationDeposit: string;
   };
   fieldFacts: {
-    accessoryChecklistText: string;
+    accessoryItems: Array<{
+      code: string;
+      name: string;
+      quantity: string;
+      remark: string;
+      state: string;
+    }>;
     damageDescription: string;
     damageStatus: string;
     energyLevelText: string;
     fieldNotes: string;
     fuelLevelText: string;
     handoverMileageKm: string;
+    handoverFactHash: string;
+    handoverFactRevision: string;
+    keyState: string;
+    primaryKeyCount: string;
+    registrationDocumentRemarks: string;
+    registrationDocumentState: string;
+    spareKeyCount: string;
+    vehicleConditionConfirmed: string;
+    vehicleConditionRemarks: string;
   };
   generatedAt: string;
   handoverDate: string;
@@ -124,12 +143,19 @@ export function buildDeliveryHandoverPdfRenderModel(
   const template = asRecord(input.template);
   const generatedAt = toIso(input.generatedAt) ?? new Date().toISOString();
   const evidenceItems = normalizeEvidenceSummary(input.evidenceChecklist);
-  const evidencePackage = input.evidencePackage ?? buildDeliveryHandoverEvidencePackage({
-    evidenceChecklist: input.evidenceChecklist,
-    handoverId: readString(handover, "id") ?? "",
-    orderId: readString(order, "id") ?? "",
-    workOrderId: readString(workOrder, "id") ?? ""
-  });
+  const evidencePackage = input.evidencePackage ?? (() => {
+    const physicalFacts = buildPhysicalHandoverFactSnapshot(workOrder ?? {});
+    const boundFacts = buildBoundHandoverFactSnapshot(physicalFacts.snapshot, null);
+    return buildDeliveryHandoverEvidencePackage({
+      evidenceChecklist: input.evidenceChecklist,
+      handoverFactHash: boundFacts.hash,
+      handoverFacts: boundFacts.snapshot,
+      handoverId: readString(handover, "id") ?? "",
+      orderId: readString(order, "id") ?? "",
+      workOrderId: readString(workOrder, "id") ?? ""
+    });
+  })();
+  const boundFacts = evidencePackage.manifest.handoverFacts;
   const noVisibleDamageDeclared = readBoolean(workOrder, "noVisibleDamageDeclared");
   const damageDeclared = readBoolean(workOrder, "damageDeclared");
 
@@ -171,7 +197,13 @@ export function buildDeliveryHandoverPdfRenderModel(
       violationDeposit: EMPTY_VALUE
     },
     fieldFacts: {
-      accessoryChecklistText: formatAccessoryChecklist(workOrder?.accessoryChecklist),
+      accessoryItems: boundFacts.accessoryItems.map((item) => ({
+        code: item.code,
+        name: item.name,
+        quantity: String(item.quantity),
+        remark: item.remark ?? EMPTY_VALUE,
+        state: item.state
+      })),
       damageDescription: normalizeText(readString(workOrder, "fieldNotes")) ?? EMPTY_VALUE,
       damageStatus: damageDeclared === true
         ? "现场声明存在损伤"
@@ -181,7 +213,16 @@ export function buildDeliveryHandoverPdfRenderModel(
       energyLevelText: readString(workOrder, "energyLevelText") ?? EMPTY_VALUE,
       fieldNotes: readString(workOrder, "fieldNotes") ?? EMPTY_VALUE,
       fuelLevelText: readString(workOrder, "fuelLevelText") ?? EMPTY_VALUE,
-      handoverMileageKm: formatMileage(workOrder?.handoverMileageKm)
+      handoverMileageKm: formatMileage(workOrder?.handoverMileageKm),
+      handoverFactHash: evidencePackage.manifest.handoverFactHash,
+      handoverFactRevision: String(boundFacts.handoverFactRevision),
+      keyState: boundFacts.keyState,
+      primaryKeyCount: String(boundFacts.primaryKeyCount),
+      registrationDocumentRemarks: boundFacts.registrationDocumentRemarks ?? EMPTY_VALUE,
+      registrationDocumentState: boundFacts.registrationDocumentState,
+      spareKeyCount: String(boundFacts.spareKeyCount),
+      vehicleConditionConfirmed: boundFacts.vehicleConditionConfirmed ? "已确认" : "未确认",
+      vehicleConditionRemarks: boundFacts.vehicleConditionRemarks ?? EMPTY_VALUE
     },
     generatedAt,
     handoverDate: formatDateTime(readDate(workOrder, "scheduledAt") ?? readDate(workOrder, "fieldSubmittedAt")),
@@ -278,20 +319,6 @@ function assertNoUnsafeKeys(value: unknown, path: string[] = []) {
     }
     assertNoUnsafeKeys(entry, [...path, key]);
   }
-}
-
-function formatAccessoryChecklist(value: unknown) {
-  if (Array.isArray(value)) {
-    const entries = value.map((item) => normalizeText(item)).filter(Boolean);
-    return entries.length ? entries.join("、") : EMPTY_VALUE;
-  }
-  if (isPlainObject(value)) {
-    const entries = Object.entries(value)
-      .filter(([, entry]) => Boolean(entry))
-      .map(([key]) => key);
-    return entries.length ? entries.join("、") : EMPTY_VALUE;
-  }
-  return normalizeText(value) ?? EMPTY_VALUE;
 }
 
 function formatCurrencyLike(value: unknown) {

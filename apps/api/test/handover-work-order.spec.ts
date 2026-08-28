@@ -2585,6 +2585,132 @@ describe("HandoverWorkOrderService", () => {
     expect(harness.state.vehicleInspection).toBeNull();
   });
 
+  it("blocks customer confirmation until the registration-document exception is approved", async () => {
+    const harness = createReadyForCustomerReviewHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      registrationDocumentState: "NOT_AVAILABLE"
+    });
+    Reflect.set(harness.service, "registrationExceptionService", {
+      getGate: vi.fn(async () => ({
+        allowed: false,
+        approval: null,
+        documentPresent: false,
+        snapshotHash: `sha256:${"4".repeat(64)}`
+      }))
+    });
+    const manifestHash = (
+      await harness.service.getCurrentEvidencePackage("work-order-1")
+    ).manifestHash;
+
+    await expect(
+      harness.service.customerConfirmNoObjection(
+        "work-order-1",
+        "customer-1",
+        manifestHash
+      )
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        code: "STAGE2_REGISTRATION_EXCEPTION_REQUIRED"
+      })
+    });
+    expect(harness.state.workOrders[0]).toMatchObject({
+      customerConfirmedAt: null,
+      status: "CUSTOMER_REVIEWING"
+    });
+  });
+
+  it("reopens a confirmed review when an approved authority snapshot changes the manifest", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    const physicalFacts = buildPhysicalHandoverFactSnapshot(
+      harness.state.workOrders[0]!
+    );
+    Object.assign(harness.state.workOrders[0]!, {
+      handoverFactHash: physicalFacts.hash,
+      handoverFactRevision: 1,
+      handoverFactSnapshot: physicalFacts.snapshot
+    });
+    Reflect.set(harness.service, "registrationExceptionService", {
+      getGate: vi.fn(async () => ({
+        allowed: true,
+        approval: {
+          approvalNo: "BEA-REG-1",
+          decidedAt: harness.now,
+          decidedBy: harness.admin.id,
+          decision: "APPROVE",
+          id: "approval-registration-1",
+          requestReason: "行驶证补发中",
+          requestedAt: harness.now,
+          requestedBy: harness.admin.id,
+          status: "APPROVED",
+          subjectSnapshotHash: `sha256:${"5".repeat(64)}`,
+          version: 1
+        },
+        documentPresent: false,
+        snapshotHash: `sha256:${"5".repeat(64)}`
+      }))
+    });
+
+    const reopened = await harness.service.reopenConfirmedReview(
+      "work-order-1",
+      harness.admin.id,
+      "行驶证例外批准后重新确认"
+    );
+
+    expect(reopened).toMatchObject({
+      customerConfirmedAt: null,
+      status: "CUSTOMER_REVIEWING"
+    });
+    expect(harness.state.reviewAttempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "review-attempt-confirmed", status: "VOIDED" }),
+        expect.objectContaining({ attemptNo: 2, status: "CUSTOMER_REVIEWING" })
+      ])
+    );
+  });
+
+  it("reopens a legacy confirmed unsigned handover for explicit fact upgrade", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      accessoryItems: null,
+      fieldOperatorPhone: "13800000000",
+      handoverFactHash: null,
+      handoverFactRevision: 0,
+      handoverFactSnapshot: null,
+      keyState: null,
+      operatorType: "EXTERNAL",
+      primaryKeyCount: null,
+      registrationDocumentState: null,
+      spareKeyCount: null,
+      vehicleConditionConfirmed: null
+    });
+
+    const reopened = await harness.service.reopenConfirmedReview(
+      "work-order-1",
+      harness.admin.id,
+      "升级交接确认字段"
+    );
+
+    expect(reopened).toMatchObject({
+      customerConfirmedAt: null,
+      status: "FIELD_IN_PROGRESS"
+    });
+    await expect(
+      harness.service.updateFieldAccessibleFacts(
+        "work-order-1",
+        "13800000000",
+        {
+          accessoryItems: explicitAccessoryItems(),
+          keyState: "COMPLETE",
+          primaryKeyCount: 1,
+          registrationDocumentState: "HANDED_OVER",
+          spareKeyCount: 1,
+          vehicleConditionConfirmed: true
+        },
+        "field-session-upgrade"
+      )
+    ).resolves.toMatchObject({ handoverFactRevision: 1 });
+  });
+
   it("blocks ops review pending before post-signing work-order states", async () => {
     const blockedStatuses = [
       "DRAFT",
@@ -3728,6 +3854,13 @@ function createHandoverWorkOrderHarness() {
       })
     },
     vehicleHandoverWorkflowJob: {
+      findFirst: vi.fn(async ({ where }: { where: { jobStatus?: string; workOrderId?: string } }) =>
+        state.workflowJobs.find(
+          (job) =>
+            job.workOrderId === where.workOrderId &&
+            (!where.jobStatus || job.jobStatus === where.jobStatus)
+        ) ?? null
+      ),
       findMany: vi.fn(async ({ where }: { where: { workOrderId?: string } }) =>
         state.workflowJobs
           .filter((job) => job.workOrderId === where.workOrderId)
@@ -3736,7 +3869,23 @@ function createHandoverWorkOrderHarness() {
               new Date(String(right.updatedAt)).getTime() -
               new Date(String(left.updatedAt)).getTime()
           )
-      )
+      ),
+      updateMany: vi.fn(async ({ data, where }: {
+        data: Record<string, unknown>;
+        where: { jobStatus?: { in?: string[] }; workOrderId?: string };
+      }) => {
+        let count = 0;
+        for (const job of state.workflowJobs) {
+          if (
+            job.workOrderId === where.workOrderId &&
+            (!where.jobStatus?.in || where.jobStatus.in.includes(String(job.jobStatus)))
+          ) {
+            Object.assign(job, data, { updatedAt: now });
+            count += 1;
+          }
+        }
+        return { count };
+      })
     },
     $queryRaw: vi.fn(async (query: { sql?: string; strings?: readonly string[]; values?: readonly unknown[] }) => {
       const sql = query.sql ?? query.strings?.join("?") ?? "";

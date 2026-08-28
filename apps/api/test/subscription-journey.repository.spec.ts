@@ -1211,6 +1211,7 @@ describe("SubscriptionJourneyRepository", () => {
     const repository = new SubscriptionJourneyRepository();
 
     await repository.rejectForApplication(tx as never, {
+      activeJobId: "job-validating-application",
       eventKey: "application:validation:facts:4:rejected",
       expectedVersion: 0,
       factVersion: 4,
@@ -1241,6 +1242,7 @@ describe("SubscriptionJourneyRepository", () => {
         status: "CANCELLED"
       },
       where: {
+        id: { not: "job-validating-application" },
         journeyId: step.journeyId,
         status: { notIn: ["COMPLETED", "CANCELLED"] }
       }

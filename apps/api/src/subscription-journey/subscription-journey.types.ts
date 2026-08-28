@@ -56,6 +56,7 @@ export interface WaitForManualInput extends WaitForCustomerInput {
 }
 
 export interface RejectJourneyForApplicationInput extends WaitForCustomerInput {
+  activeJobId?: string;
   factVersion: number;
 }
 

@@ -190,6 +190,29 @@ describe("Portal handover review API", () => {
     expect(serialized).not.toContain("SYNTHETIC_ID_SHOULD_NOT_LEAK");
   });
 
+  it("projects the registration approval blocker into the customer confirmation surface", async () => {
+    const harness = createPortalReviewHarness();
+    harness.state.workOrders.push(completeReviewWorkOrder(harness));
+    vi.spyOn(
+      harness.handoverWorkOrderService,
+      "getCustomerConfirmationReadiness"
+    ).mockResolvedValueOnce({
+      blockingReason: "行驶证尚未交付，请等待管理员完成例外审批后再确认。",
+      ready: false
+    });
+
+    const detail = await harness.service.getReview(
+      "work-order-1",
+      currentCustomer("customer-1")
+    );
+
+    expect(detail.evidencePackage).toMatchObject({
+      confirmationBlockingReason:
+        "行驶证尚未交付，请等待管理员完成例外审批后再确认。",
+      confirmationReady: false
+    });
+  });
+
   it("returns Portal evidence file links as safe proxy URLs only", async () => {
     const harness = createPortalReviewHarness();
     harness.state.workOrders.push(completeReviewWorkOrder(harness));

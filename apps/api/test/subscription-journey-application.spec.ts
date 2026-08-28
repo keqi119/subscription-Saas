@@ -172,6 +172,7 @@ describe("subscription journey application validation", () => {
       "application-1"
     );
     expect(repository.rejectForApplication).toHaveBeenCalledWith(tx, {
+      activeJobId: "job-validation",
       eventKey: "journey:journey-1:step:APPLICATION_VALIDATION:facts:5:rejected",
       expectedVersion: 0,
       factVersion: 5,

@@ -43,6 +43,7 @@ import {
   VehicleHandoverEventType,
   VehicleHandoverType,
   VehicleHandoverWorkOrderStatus,
+  VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 
@@ -2498,6 +2499,192 @@ export class HandoverWorkOrderService {
     return this.toAdminWorkOrderDetail(updated);
   }
 
+  async reopenConfirmedReview(id: string, actorId: string, note?: string | null) {
+    const reason = normalizeRequiredText(
+      note,
+      "请填写重新打开交接复核的原因。"
+    );
+    const updated = await this.runSerializableTransaction(async (tx) => {
+      const workOrder = await this.getWorkOrderOrThrow(id, tx);
+      this.assertMutable(workOrder);
+      if (workOrder.status !== "CUSTOMER_CONFIRMED") {
+        throw new BadRequestException("仅已由客户确认、尚未签署的交接单可重新打开。");
+      }
+
+      const handover = await this.findStage2HandoverForWorkOrder(
+        workOrder,
+        { includeHandoverContract: true },
+        tx
+      );
+      const handoverStatus = handover ? readString(handover, "status") : null;
+      if (
+        handover &&
+        (
+          readString(handover, "handoverESignTaskId") ||
+          (
+            handoverStatus !== DeliveryHandoverStatus.DRAFT &&
+            handoverStatus !== DeliveryHandoverStatus.SOURCE_GENERATED
+          )
+        )
+      ) {
+        throw new ConflictException(
+          "交接确认单已进入签署；请先作废未完成的电子签任务，再重新打开复核。"
+        );
+      }
+
+      const processingJob = await tx.vehicleHandoverWorkflowJob.findFirst({
+        select: { id: true },
+        where: {
+          jobStatus: VehicleHandoverWorkflowJobStatus.PROCESSING,
+          workOrderId: workOrder.id
+        }
+      });
+      if (processingJob) {
+        throw new ConflictException(
+          "交接确认单后台任务正在处理，请稍后刷新后重试。"
+        );
+      }
+
+      const factBlockers = getExplicitHandoverFactBlockingCodes(workOrder);
+      const requiresFieldUpgrade =
+        factBlockers.length > 0 ||
+        !workOrder.handoverFactHash ||
+        (workOrder.handoverFactRevision ?? 0) < 1;
+      const latestAttempt = await this.findLatestReviewAttempt(workOrder.id, tx);
+      if (!latestAttempt || readString(latestAttempt, "status") !== "CUSTOMER_CONFIRMED") {
+        throw new ConflictException("未找到可失效的客户确认记录。");
+      }
+
+      if (!requiresFieldUpgrade) {
+        const currentPackage = await this.buildCurrentEvidencePackage(
+          workOrder,
+          undefined,
+          tx
+        );
+        const confirmedManifestHash = readEvidencePackageManifestHash(
+          readUnknownRecordValue(latestAttempt, "evidenceSnapshot")
+        );
+        if (confirmedManifestHash === currentPackage.manifestHash) {
+          throw new BadRequestException("交接事实与客户已确认版本一致，无需重新确认。");
+        }
+      }
+
+      const now = new Date();
+      await tx.vehicleHandoverWorkflowJob.updateMany({
+        data: {
+          completedAt: now,
+          jobStatus: VehicleHandoverWorkflowJobStatus.CANCELLED,
+          leaseExpiresAt: null,
+          leaseToken: null
+        },
+        where: {
+          jobStatus: {
+            in: [
+              VehicleHandoverWorkflowJobStatus.PENDING,
+              VehicleHandoverWorkflowJobStatus.DEAD_LETTER
+            ]
+          },
+          workOrderId: workOrder.id
+        }
+      });
+      await this.getReviewAttemptModel(tx)!.update({
+        data: {
+          metadata: toJsonValue(
+            mergeMetadata(readUnknownRecordValue(latestAttempt, "metadata"), {
+              invalidatedAt: now.toISOString(),
+              invalidatedBy: actorId,
+              invalidationReason: reason
+            })
+          ),
+          status: "VOIDED"
+        },
+        where: { id: String(latestAttempt.id) }
+      });
+
+      const targetStatus = requiresFieldUpgrade
+        ? "FIELD_IN_PROGRESS"
+        : "CUSTOMER_REVIEWING";
+      const current = await this.updateWorkOrderVersioned(
+        workOrder,
+        {
+          adminReviewStatus: requiresFieldUpgrade
+            ? VehicleHandoverAdminReviewStatus.RESUBMISSION_REQUESTED
+            : VehicleHandoverAdminReviewStatus.SENT_BACK_TO_CUSTOMER_REVIEW,
+          customerConfirmedAt: null,
+          customerReviewStartedAt: requiresFieldUpgrade ? null : now,
+          fieldSubmittedAt: requiresFieldUpgrade ? null : workOrder.fieldSubmittedAt,
+          metadata: mergeMetadata(workOrder.metadata, {
+            handoverReviewRecoveryReason: reason,
+            handoverReviewReopenedAt: now.toISOString(),
+            handoverReviewReopenedBy: actorId,
+            handoverReviewRequiresExplicitFactUpgrade: requiresFieldUpgrade,
+            [HANDOVER_REVIEW_ADMIN_STATUS_KEY]: requiresFieldUpgrade
+              ? ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+              : ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW
+          }),
+          status: targetStatus
+        },
+        tx
+      );
+      const attemptData = {
+        adminNotes: reason,
+        adminStatus: requiresFieldUpgrade
+          ? ADMIN_REVIEW_STATUS_RESUBMISSION_REQUESTED
+          : ADMIN_REVIEW_STATUS_SENT_BACK_TO_CUSTOMER_REVIEW,
+        customerReviewStartedAt: requiresFieldUpgrade ? null : now,
+        resubmissionRequestedAt: requiresFieldUpgrade ? now : null,
+        resubmissionRequestedById: requiresFieldUpgrade ? actorId : null,
+        sentBackToCustomerReviewAt: requiresFieldUpgrade ? null : now,
+        sentBackToCustomerReviewById: requiresFieldUpgrade ? null : actorId
+      };
+      const attempt = requiresFieldUpgrade
+        ? await this.getReviewAttemptModel(tx)!.create({
+            data: compactUndefined({
+              ...attemptData,
+              attemptNo: nextAttemptNo(latestAttempt),
+              evidenceSnapshot: readUnknownRecordValue(
+                latestAttempt,
+                "evidenceSnapshot"
+              ),
+              fieldFactsSnapshot: readUnknownRecordValue(
+                latestAttempt,
+                "fieldFactsSnapshot"
+              ),
+              handoverId: current.handoverId ?? null,
+              orderId: current.orderId,
+              status: "RESUBMISSION_REQUESTED",
+              workOrderId: current.id
+            })
+          })
+        : await this.createReviewAttempt(
+            current,
+            "CUSTOMER_REVIEWING",
+            attemptData,
+            tx
+          );
+      await this.recordEvent(
+        current,
+        requiresFieldUpgrade
+          ? VehicleHandoverEventType.RESUBMISSION_REQUESTED
+          : VehicleHandoverEventType.SENT_BACK_TO_CUSTOMER_REVIEW,
+        {
+          actorId,
+          actorType: VehicleHandoverEventActorType.ADMIN,
+          detail: {
+            reason,
+            recoveryType: requiresFieldUpgrade
+              ? "EXPLICIT_FACT_UPGRADE"
+              : "MANIFEST_RECONFIRMATION"
+          },
+          reviewAttemptId: attempt ? String(attempt.id) : null
+        },
+        tx
+      );
+      return current;
+    });
+    return this.toAdminWorkOrderDetail(updated);
+  }
+
   private async attachEvidenceFileForWorkOrder(
     workOrder: WorkOrderRecord,
     itemId: string,
@@ -2683,6 +2870,7 @@ export class HandoverWorkOrderService {
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }, tx);
+      await this.assertRegistrationReadyForCustomerConfirmation(workOrder, tx);
       const evidencePackage = await this.buildCurrentEvidencePackage(
         workOrder,
         evidenceChecklist,
@@ -3264,6 +3452,26 @@ export class HandoverWorkOrderService {
       readyForStage2ESign: blockingReasons.length === 0,
       readyForStage2Pdf: blockingReasons.length === 0,
       workOrderId: id
+    };
+  }
+
+  async getCustomerConfirmationReadiness(id: string) {
+    const workOrder = await this.getWorkOrderOrThrow(id);
+    if (!this.registrationExceptionService) {
+      const ready = workOrder.registrationDocumentState === "HANDED_OVER";
+      return {
+        blockingReason: ready
+          ? null
+          : "行驶证未完成现场交付，需等待管理员批准例外。",
+        ready
+      };
+    }
+    const gate = await this.registrationExceptionService.getGate(id);
+    return {
+      blockingReason: gate.allowed
+        ? null
+        : "行驶证未完成现场交付，需等待管理员批准例外。",
+      ready: gate.allowed
     };
   }
 
@@ -4182,7 +4390,7 @@ export class HandoverWorkOrderService {
     const historicalBinding = validateStage2SourceArtifactBinding({
       expectedCustomerId,
       expectedHandoverId: workOrder.handoverId ?? "",
-      expectedManifestHash: expectedManifestDigest,
+      expectedManifestHash: readString(handover, "manifestHash") ?? "",
       expectedOrderId: workOrder.orderId,
       expectedWorkOrderId: workOrder.id,
       fileObject,
@@ -5000,6 +5208,25 @@ export class HandoverWorkOrderService {
       orderId: workOrder.orderId,
       workOrderId: workOrder.id
     });
+  }
+
+  private async assertRegistrationReadyForCustomerConfirmation(
+    workOrder: WorkOrderRecord,
+    db: Prisma.TransactionClient | PrismaService
+  ) {
+    if (!this.registrationExceptionService) {
+      if (workOrder.registrationDocumentState === "HANDED_OVER") {
+        return;
+      }
+      throw new Error("STAGE2_REGISTRATION_EXCEPTION_SERVICE_UNAVAILABLE");
+    }
+    const gate = await this.registrationExceptionService.getGate(workOrder.id, db);
+    if (!gate.allowed) {
+      throw new BadRequestException({
+        code: "STAGE2_REGISTRATION_EXCEPTION_REQUIRED",
+        message: "行驶证未完成现场交付，需管理员批准例外后客户方可确认。"
+      });
+    }
   }
 
   private async buildReviewAttemptSnapshot(

@@ -123,6 +123,26 @@ describe("portal handover review view model", () => {
     });
   });
 
+  it("explains a registration blocker while keeping the objection path actionable", () => {
+    const detail = buildPortalHandoverReviewDetailView({
+      ...sampleDetail(),
+      evidencePackage: {
+        confirmationBlockingReason:
+          "行驶证尚未交付，请等待管理员完成例外审批后再确认。",
+        confirmationReady: false,
+        manifestHash: "sha256:blocked",
+        ready: true
+      }
+    });
+
+    expect(detail.decision).toMatchObject({
+      message: "行驶证尚未交付，请等待管理员完成例外审批后再确认。",
+      mode: "ACTIONABLE",
+      primaryText: "确认无异议",
+      secondaryText: "提交异议"
+    });
+  });
+
   it.each([
     {
       detail: {

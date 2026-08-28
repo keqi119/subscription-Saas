@@ -1006,6 +1006,7 @@ export class SubscriptionJourneyService {
           journey.applicationId
         );
         await this.repository.rejectForApplication(tx, {
+          activeJobId: job.id,
           eventKey: `journey:${journey.id}:step:APPLICATION_VALIDATION:facts:${readiness.factVersion}:rejected`,
           expectedVersion: journey.version,
           factVersion: readiness.factVersion,

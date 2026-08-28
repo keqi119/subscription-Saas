@@ -46,6 +46,7 @@ describe("portal handover review pages", () => {
     expect(source).toContain("已确认无异议");
     expect(source).toContain("已提交异议，工作人员将联系您处理");
     expect(source).toContain("confirmPortalHandoverReview");
+    expect(source).toContain("review.evidencePackage.confirmationReady !== false");
     expect(source).toContain("objectPortalHandoverReview");
     expect(source).toContain("getPortalHandoverReview");
     expect(source).toContain("item.files");

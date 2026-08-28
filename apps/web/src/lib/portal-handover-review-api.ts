@@ -152,6 +152,8 @@ export interface PortalHandoverReviewHistoryItem {
 }
 
 export interface PortalHandoverReviewEvidencePackage {
+  confirmationBlockingReason?: string | null;
+  confirmationReady?: boolean | null;
   confirmationText?: string | null;
   evidencePackageId?: string | null;
   fileCount?: number | null;

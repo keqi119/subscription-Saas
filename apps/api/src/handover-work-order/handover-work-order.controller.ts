@@ -360,6 +360,20 @@ export class HandoverWorkOrderAdminController {
   ) {
     return this.handoverWorkOrderService.sendCustomerObjectionBackToReview(id, request.user.id, dto.note);
   }
+
+  @Post("handover-work-orders/:id/reopen-confirmed-review")
+  @RequirePermissions(PermissionCode.DELIVERY_CONFIRM)
+  reopenConfirmedReview(
+    @Param("id") id: string,
+    @Body() dto: HandoverObjectionActionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.handoverWorkOrderService.reopenConfirmedReview(
+      id,
+      request.user.id,
+      dto.note
+    );
+  }
 }
 
 @Controller()

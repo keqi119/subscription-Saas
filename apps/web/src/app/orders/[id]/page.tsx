@@ -2988,6 +2988,7 @@ function Stage2HandoverReviewPanel({
   onCreateWorkOrder,
   onRecoverWorkflow,
   onRefreshESign,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onStartESign,
@@ -3018,6 +3019,7 @@ function Stage2HandoverReviewPanel({
     recovery: AdminStage2HandoverWorkflowRecovery
   ) => void;
   onRefreshESign: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
@@ -3122,6 +3124,7 @@ function Stage2HandoverReviewPanel({
           canHandleObjection={canHandleObjection}
           onAcknowledge={onAcknowledge}
           onAssignExternal={onAssignExternal}
+          onReopenConfirmed={onReopenConfirmed}
           onRequestResubmission={onRequestResubmission}
           onSendCustomerReview={onSendCustomerReview}
           onViewDetail={onViewDetail}
@@ -3203,6 +3206,7 @@ function Stage2HandoverReviewActions({
   canHandleObjection,
   onAcknowledge,
   onAssignExternal,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onViewDetail,
@@ -3213,6 +3217,7 @@ function Stage2HandoverReviewActions({
   canHandleObjection: boolean;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onViewDetail: (id: string) => void;
@@ -3265,6 +3270,16 @@ function Stage2HandoverReviewActions({
       >
         送回客户复核
       </Button>
+      <Button
+        disabled={
+          !canHandleObjection || workOrder.status !== "CUSTOMER_CONFIRMED"
+        }
+        loading={actionLoading === `reopen-confirmed:${workOrder.id}`}
+        onClick={() => onReopenConfirmed(workOrder.id)}
+        size="small"
+      >
+        重新打开交接复核
+      </Button>
     </Space>
   );
 }
@@ -3284,6 +3299,7 @@ function Stage2HandoverReviewDetailModal({
   onClose,
   onRecoverWorkflow,
   onRefreshESign,
+  onReopenConfirmed,
   onRequestResubmission,
   onSendCustomerReview,
   onStartESign,
@@ -3307,6 +3323,7 @@ function Stage2HandoverReviewDetailModal({
     recovery: AdminStage2HandoverWorkflowRecovery
   ) => void;
   onRefreshESign: (id: string) => void;
+  onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
   onSendCustomerReview: (id: string) => void;
   onStartESign: (id: string) => void;
@@ -3359,6 +3376,7 @@ function Stage2HandoverReviewDetailModal({
             canHandleObjection={canHandleObjection}
             onAcknowledge={onAcknowledge}
             onAssignExternal={onAssignExternal}
+            onReopenConfirmed={onReopenConfirmed}
             onRequestResubmission={onRequestResubmission}
             onSendCustomerReview={onSendCustomerReview}
             onViewDetail={() => undefined}
@@ -6073,6 +6091,43 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     return runHandoverObjectionAction(id, "send-customer-review", "已送回客户复核");
   }
 
+  function reopenConfirmedHandoverReview(id: string) {
+    Modal.confirm({
+      content:
+        "该操作会失效原客户确认。缺少新版交接字段时返回现场补录；仅批准/证据版本变化时返回客户重新确认。",
+      okText: "确认重新打开",
+      onOk: async () => {
+        setHandoverActionLoading(`reopen-confirmed:${id}`);
+        try {
+          await apiFetch<HandoverWorkOrderDetail>(
+            `/handover-work-orders/${encodeURIComponent(id)}/reopen-confirmed-review`,
+            {
+              body: JSON.stringify({
+                note: "交接事实或批准快照变化，重新发起有效确认"
+              }),
+              method: "POST"
+            }
+          );
+          void message.success("已重新打开交接复核");
+          await loadOrder();
+          if (handoverWorkOrderDetail?.id === id) {
+            setHandoverWorkOrderDetail(
+              await apiFetch<HandoverWorkOrderDetail>(
+                `/handover-work-orders/${encodeURIComponent(id)}`
+              )
+            );
+          }
+        } catch (error) {
+          void message.error(getErrorMessage(error));
+          throw error;
+        } finally {
+          setHandoverActionLoading(null);
+        }
+      },
+      title: "重新打开交接复核？"
+    });
+  }
+
   async function runStage2WorkflowRecovery(
     id: string,
     recovery: AdminStage2HandoverWorkflowRecovery
@@ -7782,6 +7837,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 onCreateWorkOrder={createHandoverWorkOrder}
                 onRecoverWorkflow={confirmStage2WorkflowRecovery}
                 onRefreshESign={refreshStage2HandoverESignStatus}
+                onReopenConfirmed={reopenConfirmedHandoverReview}
                 onRequestResubmission={requestCustomerObjectionResubmission}
                 onSendCustomerReview={sendCustomerObjectionBackToReview}
                 onStartESign={confirmAdminStage2Fallback}
@@ -8223,6 +8279,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           onClose={() => setHandoverWorkOrderDetailOpen(false)}
           onRecoverWorkflow={confirmStage2WorkflowRecovery}
           onRefreshESign={refreshStage2HandoverESignStatus}
+          onReopenConfirmed={reopenConfirmedHandoverReview}
           onRequestResubmission={requestCustomerObjectionResubmission}
           onSendCustomerReview={sendCustomerObjectionBackToReview}
           onStartESign={confirmAdminStage2Fallback}

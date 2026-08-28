@@ -17,6 +17,9 @@ describe("Admin Stage 2 handover review order page", () => {
     expect(source).toContain("acknowledgeCustomerObjection");
     expect(source).toContain("requestCustomerObjectionResubmission");
     expect(source).toContain("sendCustomerObjectionBackToReview");
+    expect(source).toContain("reopenConfirmedHandoverReview");
+    expect(source).toContain("/reopen-confirmed-review");
+    expect(source).toContain("重新打开交接复核");
     expect(source).toContain("createHandoverWorkOrder");
     expect(source).toContain("assignExternalHandover");
     expect(source).toContain("/assign-external");

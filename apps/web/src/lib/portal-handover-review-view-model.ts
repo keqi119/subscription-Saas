@@ -434,8 +434,12 @@ function formatAccessoryItems(
 
 function buildDecisionView(detail: PortalHandoverReviewDetail): PortalHandoverReviewDecisionView {
   if (isPortalHandoverReviewActionable(detail.status)) {
+    const confirmationBlocked = detail.evidencePackage?.confirmationReady === false;
     return {
-      message: "请核对交接资料后选择确认无异议或提出异议。",
+      message: confirmationBlocked
+        ? detail.evidencePackage?.confirmationBlockingReason ||
+          "当前交接资料需后台处理后方可确认，您仍可提交异议。"
+        : "请核对交接资料后选择确认无异议或提出异议。",
       mode: "ACTIONABLE",
       primaryText: "确认无异议",
       secondaryText: "提交异议"

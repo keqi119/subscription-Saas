@@ -399,6 +399,7 @@ export class SubscriptionJourneyRepository {
         status: SubscriptionJourneyJobStatus.CANCELLED
       },
       where: {
+        ...(input.activeJobId ? { id: { not: input.activeJobId } } : {}),
         journeyId: input.journeyId,
         status: {
           notIn: [

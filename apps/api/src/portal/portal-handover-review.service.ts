@@ -253,13 +253,22 @@ export class PortalHandoverReviewService {
   }
 
   private async toReviewDetail(workOrder: PortalHandoverReviewRecord) {
-    const [listItem, evidenceChecklist, readiness, stage2Workflow] = await Promise.all([
+    const [
+      listItem,
+      evidenceChecklist,
+      readiness,
+      customerConfirmationReadiness,
+      stage2Workflow
+    ] = await Promise.all([
       this.toReviewListItem(workOrder),
       this.deliveryEvidenceService.getChecklist({
         handoverId: workOrder.handoverId ?? null,
         orderId: workOrder.orderId
       }),
       this.handoverWorkOrderService.getReadiness(workOrder.id),
+      this.handoverWorkOrderService.getCustomerConfirmationReadiness(
+        workOrder.id
+      ),
       this.stage2HandoverWorkflowService?.getProjection(workOrder.id) ??
         Promise.resolve(null)
     ]);
@@ -278,6 +287,9 @@ export class PortalHandoverReviewService {
       ...listItem,
       ...(stage2Workflow ? { stage2Workflow } : {}),
       evidencePackage: {
+        confirmationBlockingReason:
+          customerConfirmationReadiness.blockingReason,
+        confirmationReady: customerConfirmationReadiness.ready,
         confirmationText: STAGE2_EVIDENCE_CONFIRMATION_TEXT,
         evidencePackageId: evidencePackage?.manifest.evidencePackageId ?? null,
         fileCount: evidencePackage?.stats.fileCount ?? checklistStats.fileCount,

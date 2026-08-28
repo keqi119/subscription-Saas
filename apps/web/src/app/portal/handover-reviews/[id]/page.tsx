@@ -449,7 +449,9 @@ export default function PortalHandoverReviewDetailPage() {
           <DecisionArea
             acknowledged={acknowledged}
             canConfirmEvidencePackage={Boolean(
-              review.evidencePackage?.ready && review.evidencePackage.manifestHash
+              review.evidencePackage?.ready &&
+              review.evidencePackage.confirmationReady !== false &&
+              review.evidencePackage.manifestHash
             )}
             confirming={confirming}
             decision={view.decision}

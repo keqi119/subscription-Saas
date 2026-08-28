@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import {
   Prisma,
+  SubscriptionJourneyStatus,
   SubscriptionJourneyManualDecision,
   SubscriptionJourneyManualTaskStatus,
   SubscriptionJourneyStepCode
@@ -79,6 +80,52 @@ export class SubscriptionJourneySignalService {
       if (!existingJourney) return;
     }
     await this.repository.recordSignal(tx, input);
+  }
+
+  async terminateApplication(
+    tx: Prisma.TransactionClient,
+    input: {
+      actionId: string;
+      applicationId: string;
+      factVersion: number;
+      outcome: "CANCELLED" | "REJECTED";
+      reason: string;
+    }
+  ): Promise<void> {
+    const journey = await tx.subscriptionJourney.findUnique({
+      include: { steps: true },
+      where: { applicationId: input.applicationId }
+    });
+    if (!journey || journey.status === SubscriptionJourneyStatus.CANCELLED) {
+      return;
+    }
+    if (journey.status === SubscriptionJourneyStatus.COMPLETED) {
+      throw journeyError(
+        "JOURNEY_INVALID_TRANSITION",
+        "A completed subscription journey cannot be terminated from the application."
+      );
+    }
+    const step = journey.steps.find(({ code }) => code === journey.currentStepCode);
+    if (!step) {
+      throw journeyError(
+        "JOURNEY_NOT_FOUND",
+        "The current subscription journey step was not found."
+      );
+    }
+    await this.repository.rejectForApplication(tx, {
+      eventKey:
+        `application:${input.applicationId}:terminated:` +
+        `${input.outcome.toLowerCase()}:${input.actionId}`,
+      expectedVersion: journey.version,
+      factVersion: input.factVersion,
+      journeyId: journey.id,
+      payload: {
+        decision: input.outcome,
+        factVersion: input.factVersion,
+        reasonCodes: [`APPLICATION_${input.outcome}`]
+      },
+      stepId: step.id
+    });
   }
 
   async completeManualDecision(

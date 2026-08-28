@@ -1233,6 +1233,37 @@ describe("SubscriptionJourneyRepository", () => {
       data: { status: "CANCELLED" },
       where: { journeyId: step.journeyId, status: "OPEN" }
     });
+    expect(tx.subscriptionJourneyJob.updateMany).toHaveBeenCalledWith({
+      data: {
+        completedAt: expect.any(Date),
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: "CANCELLED"
+      },
+      where: {
+        journeyId: step.journeyId,
+        status: { notIn: ["COMPLETED", "CANCELLED"] }
+      }
+    });
+    expect(tx.subscriptionJourneyOutbox.updateMany).toHaveBeenCalledWith({
+      data: {
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: "CANCELLED"
+      },
+      where: {
+        journeyId: step.journeyId,
+        status: { in: ["PENDING", "PROCESSING"] }
+      }
+    });
+    expect(tx.subscriptionJourneyStep.updateMany).toHaveBeenCalledWith({
+      data: { status: "CANCELLED" },
+      where: {
+        id: { not: step.id },
+        journeyId: step.journeyId,
+        status: { notIn: ["COMPLETED", "CANCELLED"] }
+      }
+    });
   });
 
   it("rejects reuse of a waiting event key for another step", async () => {
@@ -1470,6 +1501,9 @@ function completeStepTransaction(
         return { count: 1 };
       })
     },
+    subscriptionJourneyJob: {
+      updateMany: vi.fn(async () => ({ count: 0 }))
+    },
     subscriptionJourneyEvent: {
       create: vi.fn(async (input: { data: { eventKey: string; journeyId: string } }) => {
         eventRows.set(input.data.eventKey, input.data);
@@ -1480,6 +1514,7 @@ function completeStepTransaction(
       )
     },
     subscriptionJourneyOutbox: {
+      updateMany: vi.fn(async () => ({ count: 0 })),
       upsert: vi.fn(async (input) => input.create)
     },
     subscriptionJourneyManualTask: {
@@ -1496,7 +1531,8 @@ function completeStepTransaction(
       update: vi.fn(async (input) => {
         Object.assign(step, input.data);
         return step;
-      })
+      }),
+      updateMany: vi.fn(async () => ({ count: 0 }))
     }
   };
 }

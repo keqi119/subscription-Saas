@@ -16,8 +16,11 @@ export type InitiateEarlyTerminationInput = Readonly<{
 
 export type ArchiveEarlyTerminationAgreementInput = Readonly<{
   actorId: string;
+  agreementContractId?: string;
   closureCaseId: string;
   idempotencyKey: string;
+  providerTaskId?: string;
+  syntheticTestEvidence?: true;
 }>;
 
 export type ExecuteEarlyTerminationInput = Readonly<{

@@ -1,10 +1,4 @@
-import {
-  Children,
-  createElement,
-  isValidElement,
-  type ReactElement,
-  type ReactNode
-} from "react";
+import { Children, createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -83,7 +77,9 @@ describe("admin order workspace navigation model", () => {
     expect(location).toBe(
       "/orders/order-1?tab=handover&focus=work+order%2F%E4%BA%A4%E6%8E%A5%3Fstep%3D1%26ready%3Dtrue"
     );
-    expect(parseOrderWorkspaceLocation(new URL(location, "https://workspace.test").searchParams)).toEqual({
+    expect(
+      parseOrderWorkspaceLocation(new URL(location, "https://workspace.test").searchParams)
+    ).toEqual({
       focus,
       tab: "handover"
     });
@@ -103,7 +99,9 @@ describe("admin order workspace navigation model", () => {
         tab: "overview"
       })
     ).toBe("/orders/order-1?tab=overview");
-    expect(parseOrderWorkspaceLocation(new URLSearchParams({ focus: "", tab: "overview" }))).toEqual({
+    expect(
+      parseOrderWorkspaceLocation(new URLSearchParams({ focus: "", tab: "overview" }))
+    ).toEqual({
       tab: "overview"
     });
   });
@@ -213,27 +211,15 @@ describe("admin order workspace permission contract", () => {
   });
 
   it("does not expose handover for deposit access alone", () => {
-    expect(getVisibleOrderWorkspaceTabs(["deposit_ledger:view"])).toEqual([
-      "overview",
-      "finance"
-    ]);
+    expect(getVisibleOrderWorkspaceTabs(["deposit_ledger:view"])).toEqual(["overview", "finance"]);
   });
 
   it.each([
     [["payment:view"], []],
     [["billing:view"], []],
-    [
-      ["billing:generate"],
-      [{ href: "/billing/monthly-rent", label: "月租账单模块" }]
-    ],
-    [
-      ["auto_debit:view"],
-      [{ href: "/billing/monthly-rent", label: "月租账单与自动扣款" }]
-    ],
-    [
-      ["collection:view"],
-      [{ href: "/billing/collections", label: "逾期催收模块" }]
-    ],
+    [["billing:generate"], [{ href: "/billing/monthly-rent", label: "月租账单模块" }]],
+    [["auto_debit:view"], [{ href: "/billing/monthly-rent", label: "月租账单与自动扣款" }]],
+    [["collection:view"], [{ href: "/billing/collections", label: "逾期催收模块" }]],
     [
       ["collection:view", "billing:generate"],
       [
@@ -342,17 +328,8 @@ describe("admin order workspace refresh and focus helpers", () => {
       change: getOrderWorkspaceRecordIds("change-1"),
       contract: getOrderWorkspaceRecordIds("contract-1"),
       entitlement: getOrderWorkspaceRecordIds("account-1"),
-      finance: getOrderWorkspaceRecordIds(
-        "bill-1",
-        "ledger-1",
-        "payment-1",
-        "collection-1"
-      ),
-      handover: getOrderWorkspaceRecordIds(
-        "work-order-1",
-        "handover-1",
-        "handover-1"
-      ),
+      finance: getOrderWorkspaceRecordIds("bill-1", "ledger-1", "payment-1", "collection-1"),
+      handover: getOrderWorkspaceRecordIds("work-order-1", "handover-1", "handover-1"),
       service: getOrderWorkspaceRecordIds("service-1")
     };
 
@@ -365,10 +342,7 @@ describe("admin order workspace refresh and focus helpers", () => {
       service: ["service-1"]
     });
     expect(
-      getOrderWorkspaceFallbackRecordIds(targetMatrix.finance, [
-        "bill-1",
-        "ledger-1"
-      ])
+      getOrderWorkspaceFallbackRecordIds(targetMatrix.finance, ["bill-1", "ledger-1"])
     ).toEqual(["payment-1", "collection-1"]);
   });
 
@@ -380,9 +354,7 @@ describe("admin order workspace refresh and focus helpers", () => {
         escaped.push(value);
         return "escaped-focus";
       })
-    ).toBe(
-      '[data-workspace-record="escaped-focus"],[data-workspace-record-alias="escaped-focus"]'
-    );
+    ).toBe('[data-workspace-record="escaped-focus"],[data-workspace-record-alias="escaped-focus"]');
     expect(escaped).toEqual(['handover"] [data-secret="raw']);
   });
 
@@ -402,9 +374,7 @@ describe("admin order workspace refresh and focus helpers", () => {
       summaryAsOf: "2026-07-29T08:00:00.000Z"
     });
 
-    expect(failedSummaryAttempt).toBe(
-      '["handover","return-work-order-1",null]'
-    );
+    expect(failedSummaryAttempt).toBe('["handover","return-work-order-1",null]');
     expect(successfulSummaryAttempt).toBe(
       '["handover","return-work-order-1","2026-07-29T08:00:00.000Z"]'
     );
@@ -507,13 +477,11 @@ describe("admin order workspace refresh and focus helpers", () => {
 
   it("destroys every scoped confirm handle on disposal and rejects late handles", () => {
     const destroyed: string[] = [];
-    const scope = createOrderWorkspaceConfirmScope(
-      ({ id }: { id: string }) => ({
-        destroy: () => {
-          destroyed.push(id);
-        }
-      })
-    );
+    const scope = createOrderWorkspaceConfirmScope(({ id }: { id: string }) => ({
+      destroy: () => {
+        destroyed.push(id);
+      }
+    }));
 
     scope.confirm({ id: "first" });
     scope.confirm({ id: "second" });
@@ -558,36 +526,22 @@ describe("admin order detail workspace migration", () => {
       "const loadActiveWorkspaceTab = useCallback"
     );
 
-    expect(serviceLoader).toContain(
-      "apiFetch<PortalPagedResponse<PortalServiceCase>>"
-    );
-    expect(serviceLoader).toContain(
-      "`/service-cases?${query.toString()}`"
-    );
+    expect(serviceLoader).toContain("apiFetch<PortalPagedResponse<PortalServiceCase>>");
+    expect(serviceLoader).toContain("`/service-cases?${query.toString()}`");
     expect(serviceLoader).toContain(
       "`/orders/${encodeURIComponent(orderId)}/workspace/service-cases/${encodeURIComponent(focus)}`"
     );
     expect(serviceLoader).not.toContain(
       "apiFetch<PortalServiceCase>(`/service-cases/${encodeURIComponent(focus)}`)"
     );
-    expect(serviceLoader).toContain(
-      "mergeOrderWorkspaceFocusedServiceCase"
-    );
-    expect(source).toContain(
-      "shouldLoadOrderWorkspaceFocusedServiceCase({"
-    );
-    expect(source).toContain(
-      'void loadActiveWorkspaceTab("service", true)'
-    );
+    expect(serviceLoader).toContain("mergeOrderWorkspaceFocusedServiceCase");
+    expect(source).toContain("shouldLoadOrderWorkspaceFocusedServiceCase({");
+    expect(source).toContain('void loadActiveWorkspaceTab("service", true)');
   });
 
   it("loads the permission-filtered workspace detail and keeps contract data out of overview", () => {
     const source = readFileSync(orderPagePath, "utf8");
-    const detailType = sourceBetween(
-      source,
-      "interface OrderDetail",
-      "interface FinanceSummary"
-    );
+    const detailType = sourceBetween(source, "interface OrderDetail", "interface FinanceSummary");
     const detailLoader = sourceBetween(
       source,
       "const loadOrderDetail = useCallback",
@@ -603,15 +557,9 @@ describe("admin order detail workspace migration", () => {
       "function renderActiveWorkspaceTab()",
       "const stage2FallbackPdfDownloadUrl"
     );
-    const contractSlot = sourceBetween(
-      renderer,
-      'case "contract":',
-      'case "handover":'
-    );
+    const contractSlot = sourceBetween(renderer, 'case "contract":', 'case "handover":');
 
-    expect(detailLoader).toContain(
-      "`/orders/${orderId}/workspace/detail`"
-    );
+    expect(detailLoader).toContain("`/orders/${orderId}/workspace/detail`");
     expect(detailLoader).not.toContain("`/orders/${orderId}`");
     expect(detailType).toContain("customerId?: string;");
     expect(detailType).not.toContain("customerId: string;");
@@ -642,26 +590,10 @@ describe("admin order detail workspace migration", () => {
       "function renderActiveWorkspaceTab()",
       "const stage2FallbackPdfDownloadUrl"
     );
-    const contractSlot = sourceBetween(
-      renderer,
-      'case "contract":',
-      'case "handover":'
-    );
-    const handoverSlot = sourceBetween(
-      renderer,
-      'case "handover":',
-      'case "entitlement":'
-    );
-    const pageHeader = sourceBetween(
-      source,
-      "<OrderWorkspaceHeader",
-      "<OrderTransactionGuide"
-    );
-    const overviewSlot = sourceBetween(
-      renderer,
-      'case "overview":',
-      'case "contract":'
-    );
+    const contractSlot = sourceBetween(renderer, 'case "contract":', 'case "handover":');
+    const handoverSlot = sourceBetween(renderer, 'case "handover":', 'case "entitlement":');
+    const pageHeader = sourceBetween(source, "<OrderWorkspaceHeader", "<OrderTransactionGuide");
+    const overviewSlot = sourceBetween(renderer, 'case "overview":', 'case "contract":');
 
     expect(contractSlot).toContain("generateContractAvailability");
     expect(contractSlot).toContain("generateContract");
@@ -683,9 +615,7 @@ describe("admin order detail workspace migration", () => {
     const source = readFileSync(orderPagePath, "utf8");
 
     expect(source).not.toContain("<li key={reason}>");
-    expect(
-      source.match(/blockingReasons\.map\(\(reason, index\) =>/g)
-    ).toHaveLength(2);
+    expect(source.match(/blockingReasons\.map\(\(reason, index\) =>/g)).toHaveLength(2);
     expect(source.match(/key=\{`\$\{reason\}-\$\{index\}`\}/g)).toHaveLength(2);
   });
 
@@ -698,7 +628,9 @@ describe("admin order detail workspace migration", () => {
     );
 
     expect(source).toContain("confirmationDefaults?: DeliveryConfirmationDefaults | null;");
-    expect(openModal).toContain("apiFetch<DeliveryCheck>(`/orders/${order.id}/delivery-check`)");
+    expect(openModal).toMatch(
+      /apiFetch<DeliveryCheck>\(\s*`\/orders\/\$\{order\.id\}\/delivery-check`\s*\)/
+    );
     expect(openModal).toContain("nextDeliveryCheck.confirmationDefaults");
     expect(source).toContain("getDeliveryConfirmationAdjustmentState");
     expect(source).toContain("deliveryConfirmationSourceHints.deliveredAt");
@@ -749,13 +681,9 @@ describe("admin order detail workspace migration", () => {
       "export default function OrderDetailPage()"
     );
 
-    expect(source).toContain(
-      "function OrderDetailPageContent({ orderId }: { orderId: string })"
-    );
+    expect(source).toContain("function OrderDetailPageContent({ orderId }: { orderId: string })");
     expect(routeBoundary).toContain("const { id: orderId } = useParams");
-    expect(routeBoundary).toContain(
-      "<OrderDetailPageContent key={orderId} orderId={orderId} />"
-    );
+    expect(routeBoundary).toContain("<OrderDetailPageContent key={orderId} orderId={orderId} />");
   });
 
   it("re-arms legacy createChange intent from search params for back and forward", () => {
@@ -771,12 +699,8 @@ describe("admin order detail workspace migration", () => {
     );
     expect(legacyChangeEffect).toContain("setAutoOpenChangeModalDone(false)");
     expect(legacyChangeEffect).toContain("createChange: true");
-    expect(legacyChangeEffect).toContain(
-      '!visibleTabs.includes("change")'
-    );
-    expect(legacyChangeEffect).toContain(
-      "autoOpenChangeRequestedRef.current = false"
-    );
+    expect(legacyChangeEffect).toContain('!visibleTabs.includes("change")');
+    expect(legacyChangeEffect).toContain("autoOpenChangeRequestedRef.current = false");
     expect(legacyChangeEffect).toMatch(
       /\[\s*activeTab,[\s\S]*createChangeRequested,[\s\S]*visibleTabs\s*\]/
     );
@@ -812,19 +736,14 @@ describe("admin order detail workspace migration", () => {
     );
 
     expect(source).toContain("getVisibleOrderWorkspaceTabs(permissions)");
-    expect(source).toContain(
-      "getOrderWorkspaceChangeGuard({"
-    );
+    expect(source).toContain("getOrderWorkspaceChangeGuard({");
     expect(handoverLoader).toContain("hasOrderChangeView");
-    expect(handoverLoader).toContain(
-      'vehicleReturnWorkspaceState !== "HIDDEN"'
+    expect(handoverLoader).toContain('vehicleReturnWorkspaceState !== "HIDDEN"');
+    expect(handoverLoader.indexOf('vehicleReturnWorkspaceState !== "HIDDEN"')).toBeLessThan(
+      handoverLoader.indexOf("/return-check")
     );
-    expect(handoverLoader.indexOf('vehicleReturnWorkspaceState !== "HIDDEN"'))
-      .toBeLessThan(handoverLoader.indexOf("/return-check"));
     expect(handoverLoader).not.toContain("loadDepositSettlementDomain");
-    expect(activeLoader).toContain(
-      'case "contract":'
-    );
+    expect(activeLoader).toContain('case "contract":');
     expect(activeLoader).toContain("hasOrderChangeView");
     expect(mutationRefresh).toContain("refreshActiveOrderWorkspaceTab({");
     expect(mutationRefresh).toContain("activeTabRef");
@@ -833,18 +752,12 @@ describe("admin order detail workspace migration", () => {
   it("renders the return entry only after delivery and expands only for a return record", () => {
     const source = readFileSync(orderPagePath, "utf8");
     const renderedWorkspace = source.slice(source.indexOf("let content: ReactNode;"));
-    const handoverTab = sourceBetween(
-      renderedWorkspace,
-      'case "handover":',
-      'case "entitlement":'
-    );
+    const handoverTab = sourceBetween(renderedWorkspace, 'case "handover":', 'case "entitlement":');
 
     expect(source).toContain(
       "const vehicleReturnWorkspaceState = getVehicleReturnWorkspaceState({"
     );
-    expect(handoverTab).toContain(
-      'vehicleReturnWorkspaceState === "ENTRY"'
-    );
+    expect(handoverTab).toContain('vehicleReturnWorkspaceState === "ENTRY"');
     expect(handoverTab).toContain("<VehicleReturnEntry");
     expect(handoverTab).toMatch(
       /vehicleReturnWorkspaceState === "WORKFLOW"[\s\S]*vehicleReturnWorkspaceState === "COMPLETED"[\s\S]*<ReturnPanel/
@@ -932,11 +845,7 @@ describe("admin order workspace shell", () => {
         activeTab: "overview",
         onTabChange: () => undefined,
         slots: {
-          overview: createElement(
-            "div",
-            { "data-mobile-content": "true" },
-            "移动端内容"
-          )
+          overview: createElement("div", { "data-mobile-content": "true" }, "移动端内容")
         }
       })
     );
@@ -950,12 +859,8 @@ describe("admin order workspace shell", () => {
     const styles = readFileSync(globalStylesPath, "utf8");
 
     expect(styles).toContain("@media (max-width: 575px)");
-    expect(styles).toContain(
-      '[data-workspace-active-content] .ant-descriptions-row'
-    );
-    expect(styles).toContain(
-      "grid-template-columns: minmax(88px, 34%) minmax(0, 1fr)"
-    );
+    expect(styles).toContain("[data-workspace-active-content] .ant-descriptions-row");
+    expect(styles).toContain("grid-template-columns: minmax(88px, 34%) minmax(0, 1fr)");
     expect(styles).toContain("overflow-wrap: anywhere");
   });
 
@@ -1144,9 +1049,7 @@ describe("admin order workspace shell", () => {
 });
 
 function guidanceItem(
-  category: (typeof TAB_KEYS)[number] extends infer Tab
-    ? Exclude<Tab, "overview">
-    : never,
+  category: (typeof TAB_KEYS)[number] extends infer Tab ? Exclude<Tab, "overview"> : never,
   state: Parameters<typeof getWorkspaceStatePresentation>[0],
   actionCode: string | null,
   additionalCount = 0
@@ -1186,11 +1089,7 @@ function findWorkspaceAction(node: ReactNode, kind: string): WorkspaceActionElem
       }
 
       visit(child.props.children);
-      if (
-        !match &&
-        typeof child.type === "function" &&
-        child.type.name === "GuideItem"
-      ) {
+      if (!match && typeof child.type === "function" && child.type.name === "GuideItem") {
         visit(child.type(child.props));
       }
     });

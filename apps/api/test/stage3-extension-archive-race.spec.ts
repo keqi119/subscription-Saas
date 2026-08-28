@@ -40,19 +40,29 @@ describe("Stage3ExtensionArchiveService deadline arbitration", () => {
     expect(harness.state.contract.status).toBe(ContractStatus.ARCHIVED);
     expect(harness.state.order.endDate).toEqual(new Date("2026-09-02T00:00:00.000Z"));
     expect(harness.prisma.subscriptionOrder.update).not.toHaveBeenCalled();
-    expect((harness.tx.subscriptionAutomationJob as {
-      updateMany: ReturnType<typeof vi.fn>;
-    }).updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({
-        OR: expect.arrayContaining([
-          { changeOrderId: "change-1" },
-          { renewalConsiderationId: "consideration-1" }
-        ])
+    expect(
+      (
+        harness.tx.subscriptionAutomationJob as {
+          updateMany: ReturnType<typeof vi.fn>;
+        }
+      ).updateMany
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            { changeOrderId: "change-1" },
+            { renewalConsiderationId: "consideration-1" }
+          ])
+        })
       })
-    }));
-    expect((harness.tx.subscriptionAutomationJob as {
-      upsert: ReturnType<typeof vi.fn>;
-    }).upsert).toHaveBeenCalledWith({
+    );
+    expect(
+      (
+        harness.tx.subscriptionAutomationJob as {
+          upsert: ReturnType<typeof vi.fn>;
+        }
+      ).upsert
+    ).toHaveBeenCalledWith({
       create: expect.objectContaining({
         availableAt: new Date("2026-09-02T16:00:00.000Z"),
         changeOrderId: "change-1",
@@ -89,12 +99,14 @@ describe("Stage3ExtensionArchiveService deadline arbitration", () => {
       databaseNow: new Date("2026-09-02T15:59:59.999Z")
     });
 
-    await expect(harness.service.finalizeArchivedContract({
-      completedAt: new Date("2026-09-02T15:59:59.999Z"),
-      contractId: "contract-extension",
-      source: "RECONCILE",
-      taskId: "task-extension"
-    })).resolves.toMatchObject({ outcome: "SCHEDULED" });
+    await expect(
+      harness.service.finalizeArchivedContract({
+        completedAt: new Date("2026-09-02T15:59:59.999Z"),
+        contractId: "contract-extension",
+        source: "RECONCILE",
+        taskId: "task-extension"
+      })
+    ).resolves.toMatchObject({ outcome: "SCHEDULED" });
   });
 
   it("treats completion exactly at the deadline as late evidence only", async () => {
@@ -112,7 +124,9 @@ describe("Stage3ExtensionArchiveService deadline arbitration", () => {
     expect(result).toEqual({ outcome: "LATE_EVIDENCE_ONLY" });
     expect(harness.state.segments).toHaveLength(0);
     expect(harness.state.change.status).toBe(SubscriptionChangeStatus.SIGNING_OR_PAYMENT);
-    expect(harness.state.consideration.status).toBe(RenewalConsiderationStatus.EXTENSION_IN_PROGRESS);
+    expect(harness.state.consideration.status).toBe(
+      RenewalConsiderationStatus.EXTENSION_IN_PROGRESS
+    );
     expect(harness.state.contract.status).toBe(ContractStatus.ARCHIVED);
   });
 
@@ -157,12 +171,14 @@ describe("Stage3ExtensionArchiveService deadline arbitration", () => {
   it("requires a completed typed Stage 3 task and a retained signed artifact", async () => {
     const harness = archiveHarness({ signedDocumentObjectKey: null });
 
-    await expect(harness.service.finalizeArchivedContract({
-      completedAt: new Date("2026-09-02T15:59:59.000Z"),
-      contractId: "contract-extension",
-      source: "CALLBACK",
-      taskId: "task-extension"
-    })).rejects.toMatchObject({ code: "STAGE3_SIGNED_ARTIFACT_REQUIRED" });
+    await expect(
+      harness.service.finalizeArchivedContract({
+        completedAt: new Date("2026-09-02T15:59:59.000Z"),
+        contractId: "contract-extension",
+        source: "CALLBACK",
+        taskId: "task-extension"
+      })
+    ).rejects.toMatchObject({ code: "STAGE3_SIGNED_ARTIFACT_REQUIRED" });
     expect(harness.state.segments).toHaveLength(0);
   });
 });
@@ -237,17 +253,23 @@ function archiveHarness(options: ArchiveHarnessOptions = {}) {
       contractId: "contract-extension",
       documentType: ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT,
       id: "task-extension",
-      signedDocumentObjectKey: options.signedDocumentObjectKey === undefined
-        ? "contracts/contract-extension/signed.pdf"
-        : options.signedDocumentObjectKey,
+      signedDocumentObjectKey:
+        options.signedDocumentObjectKey === undefined
+          ? "contracts/contract-extension/signed.pdf"
+          : options.signedDocumentObjectKey,
       signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
+      sourceId: "change-1",
+      sourceKey: "subscription-change:change-1:esign:attempt:1",
+      sourceType: "SUBSCRIPTION_EXTENSION",
       taskStatus: ESignTaskStatus.COMPLETED
     }
   };
 
   const tx: Record<string, unknown> = {};
   Object.assign(tx, {
-    $queryRaw: vi.fn(async () => [{ now: options.databaseNow ?? new Date("2026-09-02T15:59:59.000Z") }]),
+    $queryRaw: vi.fn(async () => [
+      { now: options.databaseNow ?? new Date("2026-09-02T15:59:59.000Z") }
+    ]),
     contract: {
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(state.contract, data);
@@ -291,7 +313,9 @@ function archiveHarness(options: ArchiveHarnessOptions = {}) {
     }
   });
   const prisma = {
-    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)),
+    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) =>
+      operation(tx)
+    ),
     subscriptionOrder: { update: vi.fn() }
   };
   const auditService = { write: vi.fn(async () => undefined) };

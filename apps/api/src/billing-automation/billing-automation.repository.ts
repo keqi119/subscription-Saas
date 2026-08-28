@@ -80,8 +80,7 @@ export class BillingAutomationRepository {
         )
           AND "subscription_automation_job"."job_type" IN (${Prisma.join(
             supportedJobTypes.map(
-              (jobType) =>
-                Prisma.sql`${jobType}::"subscription_automation_job_type"`
+              (jobType) => Prisma.sql`${jobType}::"subscription_automation_job_type"`
             )
           )})
           AND (
@@ -133,11 +132,7 @@ export class BillingAutomationRepository {
     });
   }
 
-  async complete(
-    jobId: string,
-    leaseToken: string,
-    result?: Prisma.InputJsonValue
-  ) {
+  async complete(jobId: string, leaseToken: string, result?: Prisma.InputJsonValue) {
     const updated = await this.prisma.subscriptionAutomationJob.updateMany({
       data: {
         completedAt: new Date(),
@@ -153,11 +148,7 @@ export class BillingAutomationRepository {
     return updated.count === 1;
   }
 
-  async reschedule(
-    jobId: string,
-    leaseToken: string,
-    input: RescheduleBillingAutomationJobInput
-  ) {
+  async reschedule(jobId: string, leaseToken: string, input: RescheduleBillingAutomationJobInput) {
     return this.prisma.$transaction(async (tx) => {
       const availableAt = await databaseAvailableAt(tx, input.delayMs);
       const updated = await tx.subscriptionAutomationJob.updateMany({
@@ -176,11 +167,7 @@ export class BillingAutomationRepository {
     });
   }
 
-  async defer(
-    jobId: string,
-    leaseToken: string,
-    reason: BillingAutomationFailure
-  ) {
+  async defer(jobId: string, leaseToken: string, reason: BillingAutomationFailure) {
     return this.prisma.$transaction(async (tx) => {
       const availableAt = await databaseAvailableAt(tx, 0);
       const updated = await tx.subscriptionAutomationJob.updateMany({
@@ -198,11 +185,7 @@ export class BillingAutomationRepository {
     });
   }
 
-  async deadLetter(
-    jobId: string,
-    leaseToken: string,
-    error: BillingAutomationFailure
-  ) {
+  async deadLetter(jobId: string, leaseToken: string, error: BillingAutomationFailure) {
     const updated = await this.prisma.subscriptionAutomationJob.updateMany({
       data: {
         attemptCount: { increment: 1 },
@@ -218,17 +201,11 @@ export class BillingAutomationRepository {
     return updated.count === 1;
   }
 
-  cancelPendingForBills(
-    tx: BillingAutomationDb,
-    billIds: string[]
-  ) {
+  cancelPendingForBills(tx: BillingAutomationDb, billIds: string[]) {
     return cancelPendingBillAutomationJobs(tx, billIds);
   }
 
-  async cancelPendingForSchedule(
-    tx: BillingAutomationDb,
-    billingScheduleId: string
-  ) {
+  async cancelPendingForSchedule(tx: BillingAutomationDb, billingScheduleId: string) {
     const now = new Date();
     const updated = await tx.subscriptionAutomationJob.updateMany({
       data: {
@@ -239,6 +216,35 @@ export class BillingAutomationRepository {
       where: {
         billingScheduleId,
         jobStatus: SubscriptionAutomationJobStatus.PENDING
+      }
+    });
+    return updated.count;
+  }
+
+  async reactivateCancelledScheduleGeneration(
+    tx: BillingAutomationDb,
+    billingScheduleId: string,
+    idempotencyKey: string,
+    availableAt: Date
+  ) {
+    const updated = await tx.subscriptionAutomationJob.updateMany({
+      data: {
+        attemptCount: 0,
+        availableAt,
+        cancelledAt: null,
+        completedAt: null,
+        jobStatus: SubscriptionAutomationJobStatus.PENDING,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        startedAt: null
+      },
+      where: {
+        billingScheduleId,
+        idempotencyKey,
+        jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+        jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
       }
     });
     return updated.count;
@@ -266,10 +272,7 @@ export class BillingAutomationRepository {
   }
 }
 
-export async function cancelPendingBillAutomationJobs(
-  tx: BillingAutomationDb,
-  billIds: string[]
-) {
+export async function cancelPendingBillAutomationJobs(tx: BillingAutomationDb, billIds: string[]) {
   if (billIds.length === 0) {
     return 0;
   }
@@ -298,32 +301,20 @@ function processingLease(jobId: string, leaseToken: string) {
   };
 }
 
-function hasLease(
-  job: SubscriptionAutomationJob
-): job is ClaimedBillingAutomationJob {
-  return (
-    job.leaseExpiresAt instanceof Date &&
-    typeof job.leaseToken === "string"
-  );
+function hasLease(job: SubscriptionAutomationJob): job is ClaimedBillingAutomationJob {
+  return job.leaseExpiresAt instanceof Date && typeof job.leaseToken === "string";
 }
 
-async function databaseAvailableAt(
-  db: BillingAutomationDb,
-  delayMs: number
-) {
+async function databaseAvailableAt(db: BillingAutomationDb, delayMs: number) {
   if (!Number.isSafeInteger(delayMs) || delayMs < 0) {
-    throw new RangeError(
-      "Billing automation delay must be a non-negative integer."
-    );
+    throw new RangeError("Billing automation delay must be a non-negative integer.");
   }
 
   const [row] = await db.$queryRaw<Array<{ availableAt: Date }>>(Prisma.sql`
     SELECT now() + (${delayMs} * interval '1 millisecond') AS "availableAt"
   `);
   if (!(row?.availableAt instanceof Date)) {
-    throw new Error(
-      "PostgreSQL did not return a billing automation schedule."
-    );
+    throw new Error("PostgreSQL did not return a billing automation schedule.");
   }
   return row.availableAt;
 }

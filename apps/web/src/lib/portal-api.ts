@@ -76,11 +76,16 @@ export function getPortalRenewal(id: string) {
 
 export function submitPortalRenewalDecision(
   id: string,
-  input: { decision: "RENEW" | "EXPIRE"; version: number }
+  input: { decision: "RENEW" | "EXPIRE"; version: number },
+  idempotencyKey = crypto.randomUUID()
 ) {
   return portalApiFetch<PortalRenewalConsideration>(
     `/portal/renewal-considerations/${encodeURIComponent(id)}/decision`,
-    { body: JSON.stringify(input), method: "POST" }
+    {
+      body: JSON.stringify(input),
+      headers: { "Idempotency-Key": idempotencyKey },
+      method: "POST"
+    }
   );
 }
 
@@ -97,11 +102,16 @@ export function confirmPortalRenewalQuote(
     quoteId: string;
     revision: number;
     version: number;
-  }
+  },
+  idempotencyKey = crypto.randomUUID()
 ) {
   return portalApiFetch<PortalSubscriptionChange>(
     `/portal/subscription-changes/${encodeURIComponent(id)}/quote/confirm`,
-    { body: JSON.stringify(input), method: "POST" }
+    {
+      body: JSON.stringify(input),
+      headers: { "Idempotency-Key": idempotencyKey },
+      method: "POST"
+    }
   );
 }
 
@@ -113,11 +123,16 @@ export function rejectPortalRenewalQuote(
     reason: string;
     revision: number;
     version: number;
-  }
+  },
+  idempotencyKey = crypto.randomUUID()
 ) {
   return portalApiFetch<PortalSubscriptionChange>(
     `/portal/subscription-changes/${encodeURIComponent(id)}/quote/reject`,
-    { body: JSON.stringify(input), method: "POST" }
+    {
+      body: JSON.stringify(input),
+      headers: { "Idempotency-Key": idempotencyKey },
+      method: "POST"
+    }
   );
 }
 

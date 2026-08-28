@@ -11,6 +11,38 @@ import { PortalRenewalService } from "../src/portal/portal-renewal.service";
 import { SubscriptionChangeRepository } from "../src/subscription-change/subscription-change.repository";
 
 describe("PortalRenewalService", () => {
+  it("keeps expiry available while hiding renewal when the extension capability is off", async () => {
+    const disabled = portalRenewalHarness({ enabled: false });
+
+    await expect(disabled.service.get("consideration-1", disabled.customer)).resolves.toMatchObject(
+      {
+        allowedActions: ["EXPIRE"],
+        featureAvailability: {
+          enabled: false,
+          flagName: "SUBSCRIPTION_EXTENSION_ENABLED"
+        }
+      }
+    );
+    await expect(
+      disabled.service.decide(
+        "consideration-1",
+        { decision: RenewalDecision.EXPIRE, idempotencyKey: "expire-while-disabled", version: 0 },
+        disabled.customer,
+        disabled.context
+      )
+    ).resolves.toMatchObject({ decision: RenewalDecision.EXPIRE });
+
+    const renewDisabled = portalRenewalHarness({ enabled: false });
+    await expect(
+      renewDisabled.service.decide(
+        "consideration-1",
+        { decision: RenewalDecision.RENEW, idempotencyKey: "renew-while-disabled", version: 0 },
+        renewDisabled.customer,
+        renewDisabled.context
+      )
+    ).rejects.toMatchObject({ status: 503 });
+  });
+
   it("projects whether the current quote has been published to the customer", async () => {
     const harness = portalRenewalHarness({ publishedQuote: true });
 
@@ -91,13 +123,13 @@ describe("PortalRenewalService", () => {
 
     const first = await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.RENEW, version: 0 },
+      { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-decision-1", version: 0 },
       harness.customer,
       harness.context
     );
     const retry = await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.RENEW, version: 1 },
+      { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-decision-1", version: 0 },
       harness.customer,
       harness.context
     );
@@ -112,7 +144,7 @@ describe("PortalRenewalService", () => {
 
     await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.RENEW, version: 0 },
+      { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-typed-create", version: 0 },
       harness.customer,
       harness.context
     );
@@ -154,7 +186,7 @@ describe("PortalRenewalService", () => {
     await expect(
       harness.service.decide(
         "consideration-1",
-        { decision: RenewalDecision.RENEW, version: 0 },
+        { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-active-conflict", version: 0 },
         harness.customer,
         harness.context
       )
@@ -167,7 +199,7 @@ describe("PortalRenewalService", () => {
 
     await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.RENEW, version: 0 },
+      { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-reminders", version: 0 },
       harness.customer,
       harness.context
     );
@@ -188,7 +220,7 @@ describe("PortalRenewalService", () => {
     const harness = portalRenewalHarness();
     await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.RENEW, version: 0 },
+      { decision: RenewalDecision.RENEW, idempotencyKey: "renewal-drift", version: 0 },
       harness.customer,
       harness.context
     );
@@ -196,7 +228,7 @@ describe("PortalRenewalService", () => {
     await expect(
       harness.service.decide(
         "consideration-1",
-        { decision: RenewalDecision.EXPIRE, version: 1 },
+        { decision: RenewalDecision.EXPIRE, idempotencyKey: "renewal-drift", version: 0 },
         harness.customer,
         harness.context
       )
@@ -208,7 +240,7 @@ describe("PortalRenewalService", () => {
 
     await harness.service.decide(
       "consideration-1",
-      { decision: RenewalDecision.EXPIRE, version: 0 },
+      { decision: RenewalDecision.EXPIRE, idempotencyKey: "renewal-expire", version: 0 },
       harness.customer,
       harness.context
     );
@@ -227,7 +259,12 @@ describe("PortalRenewalService", () => {
 
     const result = await harness.service.confirmQuote(
       "change-1",
-      { quoteId: "quote-1", revision: 2, version: 0 },
+      {
+        idempotencyKey: "portal-extension-confirm-1",
+        quoteId: "quote-1",
+        revision: 2,
+        version: 0
+      },
       harness.customer,
       harness.context
     );
@@ -243,7 +280,12 @@ describe("PortalRenewalService", () => {
     await expect(
       harness.service.confirmQuote(
         "change-1",
-        { quoteId: "quote-old", revision: 1, version: 0 },
+        {
+          idempotencyKey: "portal-extension-stale-1",
+          quoteId: "quote-old",
+          revision: 1,
+          version: 0
+        },
         harness.customer,
         harness.context
       )
@@ -254,7 +296,12 @@ describe("PortalRenewalService", () => {
     const harness = portalRenewalHarness({ publishedQuote: true });
     await harness.service.confirmQuote(
       "change-1",
-      { quoteId: "quote-1", revision: 2, version: 0 },
+      {
+        idempotencyKey: "portal-extension-replay-1",
+        quoteId: "quote-1",
+        revision: 2,
+        version: 0
+      },
       harness.customer,
       harness.context
     );
@@ -262,12 +309,32 @@ describe("PortalRenewalService", () => {
     await expect(
       harness.service.confirmQuote(
         "change-1",
-        { quoteId: "quote-1", revision: 2, version: 1 },
+        {
+          idempotencyKey: "portal-extension-replay-1",
+          quoteId: "quote-1",
+          revision: 2,
+          version: 0
+        },
         harness.customer,
         harness.context
       )
     ).resolves.toMatchObject({ confirmedQuoteId: "quote-1" });
     expect(harness.prisma.subscriptionChangeQuote.update).toHaveBeenCalledTimes(1);
+    await expect(
+      harness.service.confirmQuote(
+        "change-1",
+        {
+          idempotencyKey: "portal-extension-replay-1",
+          quoteId: "quote-1",
+          revision: 2,
+          version: 1
+        },
+        harness.customer,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      response: { code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" }
+    });
   });
 
   it("cancels a customer-rejected quote with the supplied reason", async () => {
@@ -275,7 +342,13 @@ describe("PortalRenewalService", () => {
 
     const result = await harness.service.rejectQuote(
       "change-1",
-      { quoteId: "quote-1", reason: "价格方案暂不接受", revision: 2, version: 0 },
+      {
+        idempotencyKey: "portal-extension-reject-1",
+        quoteId: "quote-1",
+        reason: "价格方案暂不接受",
+        revision: 2,
+        version: 0
+      },
       harness.customer,
       harness.context
     );
@@ -290,6 +363,7 @@ describe("PortalRenewalService", () => {
 
 interface HarnessOptions {
   activeChange?: boolean;
+  enabled?: boolean;
   publishedQuote?: boolean;
 }
 
@@ -302,6 +376,7 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
   } as never;
   const context = { ipAddress: "127.0.0.1", userAgent: "vitest" };
   const state = {
+    commands: [] as Array<Record<string, unknown>>,
     consideration: {
       changeOrderId: null as string | null,
       completionDeadlineAt: new Date("2026-09-02T16:00:00.000Z"),
@@ -391,6 +466,40 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
     },
     renewalReminder: { updateMany: vi.fn(async () => ({ count: 3 })) },
     subscriptionAutomationJob: { updateMany: vi.fn(async () => ({ count: 3 })) },
+    subscriptionChangeCommand: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const command = {
+          ...data,
+          completedAt: null,
+          id: `command-${state.commands.length + 1}`,
+          resourceId: null,
+          resourceType: null
+        };
+        state.commands.push(command);
+        return command;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const identity = where.actorId_operation_idempotencyKey as
+          | { actorId: string; idempotencyKey: string; operation: string }
+          | undefined;
+        return identity
+          ? (state.commands.find(
+              (command) =>
+                command.actorId === identity.actorId &&
+                command.idempotencyKey === identity.idempotencyKey &&
+                command.operation === identity.operation
+            ) ?? null)
+          : null;
+      }),
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const command = state.commands.find((item) => item.id === where.id);
+          if (!command) throw new Error("command missing");
+          Object.assign(command, data);
+          return command;
+        }
+      )
+    },
     subscriptionChangeOrder: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         applyMutation(state.change, { ...data, id: "change-1" });
@@ -435,7 +544,8 @@ function portalRenewalHarness(options: HarnessOptions = {}) {
     prisma as never,
     { write: vi.fn(async () => undefined) } as never,
     {
-      enabled: true,
+      enabled: options.enabled ?? true,
+      extensionEnabled: options.enabled ?? true,
       now: () => new Date("2026-08-05T04:00:00.000Z"),
       quoteValidityHours: 72
     },

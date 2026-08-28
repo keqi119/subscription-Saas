@@ -224,12 +224,14 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       const agreement = await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: first.closureCaseId,
-        idempotencyKey: "task-7-agreement"
+        idempotencyKey: "task-7-agreement",
+        syntheticTestEvidence: true
       });
       const agreementReplay = await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: first.closureCaseId,
-        idempotencyKey: "task-7-agreement"
+        idempotencyKey: "task-7-agreement",
+        syntheticTestEvidence: true
       });
       expect(agreement).toMatchObject({
         archivedRevisionId: expectUuid(),
@@ -457,7 +459,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: initiated.closureCaseId,
-        idempotencyKey: "task-7-paused-agreement"
+        idempotencyKey: "task-7-paused-agreement",
+        syntheticTestEvidence: true
       });
       await awaitDatabaseClockPast(prisma, new Date(now.getTime() + 500));
       await closure.executeEarlyTermination({
@@ -565,7 +568,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
         await baseClosure.archiveEarlyTerminationAgreement({
           actorId: fixture.actorId,
           closureCaseId: initiated.closureCaseId,
-          idempotencyKey: `task-7-billing-race-${winner}-agreement`
+          idempotencyKey: `task-7-billing-race-${winner}-agreement`,
+          syntheticTestEvidence: true
         });
         await awaitDatabaseClockPast(prisma, new Date(now.getTime() + 500));
         const periodStart = new Date("2026-08-03T00:00:00.000Z");
@@ -722,7 +726,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: created.closureCaseId,
-        idempotencyKey: "task-7-cancel-agreement"
+        idempotencyKey: "task-7-cancel-agreement",
+        syntheticTestEvidence: true
       });
       await expect(
         closure.executeEarlyTermination({
@@ -1032,7 +1037,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: early.closureCaseId,
-        idempotencyKey: "task-7-cancel-before-expiry-agreement"
+        idempotencyKey: "task-7-cancel-before-expiry-agreement",
+        syntheticTestEvidence: true
       });
       await closure.cancelEarlyTermination({
         actorId: fixture.actorId,
@@ -1105,7 +1111,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: created.closureCaseId,
-        idempotencyKey: "task-7-drift-agreement"
+        idempotencyKey: "task-7-drift-agreement",
+        syntheticTestEvidence: true
       });
       await prisma.subscriptionContractSegment.update({
         data: { endDate: new Date("2026-09-01T00:00:00.000Z") },
@@ -1222,7 +1229,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
         closure.archiveEarlyTerminationAgreement({
           actorId: fixture.actorId,
           closureCaseId: created.closureCaseId,
-          idempotencyKey: "task-7-drift-agreement"
+          idempotencyKey: "task-7-drift-agreement",
+          syntheticTestEvidence: true
         })
       ).resolves.toMatchObject({ wrote: false });
       await expect(
@@ -1286,7 +1294,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: created.closureCaseId,
-        idempotencyKey: "task-7-rollback-agreement"
+        idempotencyKey: "task-7-rollback-agreement",
+        syntheticTestEvidence: true
       });
       await awaitDatabaseClockPast(
         prisma,
@@ -1394,7 +1403,8 @@ describe("SubscriptionClosureService Task 7 early-termination initiation", () =>
       await closure.archiveEarlyTerminationAgreement({
         actorId: fixture.actorId,
         closureCaseId: created.closureCaseId,
-        idempotencyKey: "task-7-boundary-drift-agreement"
+        idempotencyKey: "task-7-boundary-drift-agreement",
+        syntheticTestEvidence: true
       });
       await awaitDatabaseClockPast(
         prisma,
@@ -10903,7 +10913,7 @@ async function seedTask6ExtensionArchivePrerequisites(
       INSERT INTO "contract_esign_task" (
         "id", "task_no", "contract_id", "order_id", "customer_id", "provider",
         "signing_stage", "document_type", "task_status", "signed_document_object_key",
-        "completed_at", "created_at", "updated_at"
+        "source_type", "source_id", "source_key", "completed_at", "created_at", "updated_at"
       ) VALUES (
         ${taskId}::uuid,
         ${`ESGTASK6${taskId.replaceAll("-", "").slice(0, 18)}`},
@@ -10915,6 +10925,9 @@ async function seedTask6ExtensionArchivePrerequisites(
         ${ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT}::esign_document_type,
         ${ESignTaskStatus.COMPLETED}::esign_task_status,
         'signed/task-6-extension-race.pdf',
+        'SUBSCRIPTION_EXTENSION',
+        ${changeId}::uuid,
+        ${`subscription-change:${changeId}:esign:attempt:1`},
         ${completedAt},
         clock_timestamp(),
         clock_timestamp()
@@ -12337,9 +12350,10 @@ async function createRaceFixture(prisma: PrismaService) {
     await tx.$executeRaw(Prisma.sql`
       INSERT INTO "contract_esign_task" (
         "id", "task_no", "contract_id", "order_id", "customer_id", "provider", "signing_stage",
-        "document_type", "task_status", "signed_document_object_key", "completed_at", "created_at", "updated_at"
-      ) VALUES (${taskId}::uuid, ${`ESGRACE${taskId.replaceAll("-", "").slice(0, 18)}`}, ${contractId}::uuid, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, ${ESignProviderType.MOCK}::esign_provider_type, ${ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION}::esign_signing_stage, ${ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT}::esign_document_type, ${ESignTaskStatus.COMPLETED}::esign_task_status, 'signed/race.pdf', '2026-08-20T15:59:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
-    `);
+        "document_type", "task_status", "signed_document_object_key", "source_type", "source_id",
+        "source_key", "completed_at", "created_at", "updated_at"
+      ) VALUES (${taskId}::uuid, ${`ESGRACE${taskId.replaceAll("-", "").slice(0, 18)}`}, ${contractId}::uuid, ${fixture.orderId}::uuid, ${fixture.customerId}::uuid, ${ESignProviderType.MOCK}::esign_provider_type, ${ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION}::esign_signing_stage, ${ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT}::esign_document_type, ${ESignTaskStatus.COMPLETED}::esign_task_status, 'signed/race.pdf', 'SUBSCRIPTION_EXTENSION', ${changeId}::uuid, ${`subscription-change:${changeId}:esign:attempt:1`}, '2026-08-20T15:59:00Z'::timestamptz, clock_timestamp(), clock_timestamp())
+      `);
   });
   return { ...fixture, actorId, changeId, considerationId, contractId, quoteId, taskId };
 }

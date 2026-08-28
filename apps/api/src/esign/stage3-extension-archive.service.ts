@@ -30,7 +30,9 @@ import {
 const extensionArchiveInclude = Prisma.validator<Prisma.SubscriptionChangeOrderInclude>()({
   confirmedQuote: true,
   contract: true,
+  earlyTerminationDetail: true,
   extensionDetail: { include: { sourceSegment: true } },
+  managedOtherDetail: true,
   sourceSegment: true,
   targetSegment: true,
   vehicleSwapDetail: { include: { targetVehicle: true } }
@@ -104,7 +106,13 @@ export class Stage3ExtensionArchiveService {
         );
       }
       const task = await tx.contractESignTask.findUnique({ where: { id: input.taskId } });
-      assertArchivedEvidence(task, input.contractId);
+      assertArchivedEvidence(task, input.contractId, storedChange);
+      if (storedChange.changeType === SubscriptionChangeType.EARLY_TERMINATION) {
+        return this.finalizeEarlyTermination(tx, storedChange, input);
+      }
+      if (storedChange.changeType === SubscriptionChangeType.MANAGED_OTHER) {
+        return this.finalizeManagedOther(tx, storedChange, input);
+      }
       if (storedChange.changeType === SubscriptionChangeType.VEHICLE_SWAP) {
         return this.finalizeVehicleSwap(tx, requireVehicleSwapChange(storedChange), input);
       }
@@ -343,6 +351,172 @@ export class Stage3ExtensionArchiveService {
     );
     return { changeOrderId: change.id, outcome: "SCHEDULED" };
   }
+
+  private async finalizeEarlyTermination(
+    tx: Prisma.TransactionClient,
+    change: ExtensionArchiveChange,
+    input: FinalizeStage3ExtensionInput
+  ): Promise<FinalizeStage3ExtensionResult> {
+    const decisionAt = await readDatabaseClock(tx);
+    if (change.status === SubscriptionChangeStatus.SCHEDULED) {
+      return { changeOrderId: change.id, outcome: "DUPLICATE" };
+    }
+    await archiveContractEvidence(tx, input.contractId, input.completedAt, decisionAt);
+    if (
+      decisionAt >= change.completionDeadlineAt ||
+      EXPIRY_WINS_CHANGE_STATUSES.includes(change.status)
+    ) {
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: {
+            changeStatus: change.status,
+            completedAt: input.completedAt,
+            decisionAt,
+            outcome: "LATE_EVIDENCE_ONLY",
+            source: input.source,
+            taskId: input.taskId
+          },
+          entityId: change.id,
+          entityType: "subscription_early_termination_archive",
+          module: "subscription_change"
+        },
+        tx
+      );
+      return { outcome: "LATE_EVIDENCE_ONLY" };
+    }
+    if (
+      change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT ||
+      !change.contract ||
+      change.contract.id !== input.contractId ||
+      !change.earlyTerminationDetail?.closureCaseId ||
+      change.earlyTerminationDetail.agreementContractId !== input.contractId
+    ) {
+      throw new SubscriptionChangeError(
+        "STAGE3_EARLY_TERMINATION_STATE_INVALID",
+        "The early-termination agreement cannot be scheduled from its current state."
+      );
+    }
+    const updated = await tx.subscriptionChangeOrder.updateMany({
+      data: {
+        status: SubscriptionChangeStatus.SCHEDULED,
+        version: { increment: 1 }
+      },
+      where: {
+        contractId: input.contractId,
+        id: change.id,
+        status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+        version: change.version
+      }
+    });
+    if (updated.count !== 1) {
+      throw new SubscriptionChangeError(
+        "STAGE3_EARLY_TERMINATION_STATE_CONFLICT",
+        "The early-termination agreement changed during archival."
+      );
+    }
+    await this.auditService.write(
+      {
+        action: AuditAction.UPDATE,
+        after: {
+          changeOrderId: change.id,
+          closureCaseId: change.earlyTerminationDetail.closureCaseId,
+          completedAt: input.completedAt,
+          contractId: input.contractId,
+          outcome: "SCHEDULED",
+          source: input.source,
+          taskId: input.taskId
+        },
+        entityId: change.id,
+        entityType: "subscription_early_termination_archive",
+        module: "subscription_change"
+      },
+      tx
+    );
+    return { changeOrderId: change.id, outcome: "SCHEDULED" };
+  }
+
+  private async finalizeManagedOther(
+    tx: Prisma.TransactionClient,
+    change: ExtensionArchiveChange,
+    input: FinalizeStage3ExtensionInput
+  ): Promise<FinalizeStage3ExtensionResult> {
+    const decisionAt = await readDatabaseClock(tx);
+    if (change.status === SubscriptionChangeStatus.SCHEDULED) {
+      return { changeOrderId: change.id, outcome: "DUPLICATE" };
+    }
+    await archiveContractEvidence(tx, input.contractId, input.completedAt, decisionAt);
+    if (
+      decisionAt >= change.completionDeadlineAt ||
+      EXPIRY_WINS_CHANGE_STATUSES.includes(change.status)
+    ) {
+      await this.auditService.write(
+        {
+          action: AuditAction.UPDATE,
+          after: {
+            changeStatus: change.status,
+            completedAt: input.completedAt,
+            decisionAt,
+            outcome: "LATE_EVIDENCE_ONLY",
+            source: input.source,
+            taskId: input.taskId
+          },
+          entityId: change.id,
+          entityType: "subscription_managed_other_archive",
+          module: "subscription_change"
+        },
+        tx
+      );
+      return { outcome: "LATE_EVIDENCE_ONLY" };
+    }
+    if (
+      change.status !== SubscriptionChangeStatus.SIGNING_OR_PAYMENT ||
+      !change.contract ||
+      change.contract.id !== input.contractId ||
+      change.managedOtherDetail?.supplementContractId !== input.contractId
+    ) {
+      throw new SubscriptionChangeError(
+        "STAGE3_MANAGED_OTHER_STATE_INVALID",
+        "The managed-other supplement cannot be scheduled from its current state."
+      );
+    }
+    const updated = await tx.subscriptionChangeOrder.updateMany({
+      data: {
+        status: SubscriptionChangeStatus.SCHEDULED,
+        version: { increment: 1 }
+      },
+      where: {
+        contractId: input.contractId,
+        id: change.id,
+        status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+        version: change.version
+      }
+    });
+    if (updated.count !== 1) {
+      throw new SubscriptionChangeError(
+        "STAGE3_MANAGED_OTHER_STATE_CONFLICT",
+        "The managed-other supplement changed during archival."
+      );
+    }
+    await this.auditService.write(
+      {
+        action: AuditAction.UPDATE,
+        after: {
+          changeOrderId: change.id,
+          completedAt: input.completedAt,
+          contractId: input.contractId,
+          outcome: "SCHEDULED",
+          source: input.source,
+          taskId: input.taskId
+        },
+        entityId: change.id,
+        entityType: "subscription_managed_other_archive",
+        module: "subscription_change"
+      },
+      tx
+    );
+    return { changeOrderId: change.id, outcome: "SCHEDULED" };
+  }
 }
 
 function requireVehicleSwapChange(change: ExtensionArchiveChange): VehicleSwapArchiveChange {
@@ -386,23 +560,50 @@ function assertArchivedEvidence(
     documentType: ESignDocumentType;
     signedDocumentObjectKey: string | null;
     signingStage: ESignSigningStage;
+    sourceId: string | null;
+    sourceKey: string | null;
+    sourceType: string | null;
     taskStatus: ESignTaskStatus;
   },
-  contractId: string
+  contractId: string,
+  change: Pick<ExtensionArchiveChange, "changeType" | "id">
 ) {
+  const expectedSourceType = stage3SourceType(change.changeType);
   if (
     !task ||
     task.contractId !== contractId ||
     task.signingStage !== ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION ||
     task.documentType !== ESignDocumentType.SUBSCRIPTION_EXTENSION_AGREEMENT ||
     task.taskStatus !== ESignTaskStatus.COMPLETED ||
-    !task.signedDocumentObjectKey
+    !task.signedDocumentObjectKey ||
+    task.sourceId !== change.id ||
+    task.sourceType !== expectedSourceType ||
+    !isStage3AttemptKey(task.sourceKey, change.id)
   ) {
     throw new SubscriptionChangeError(
       "STAGE3_SIGNED_ARTIFACT_REQUIRED",
       "A completed Stage 3 task with a retained signed PDF is required."
     );
   }
+}
+
+function stage3SourceType(changeType: SubscriptionChangeType) {
+  switch (changeType) {
+    case SubscriptionChangeType.VEHICLE_SWAP:
+      return "VEHICLE_SWAP_SUPPLEMENT";
+    case SubscriptionChangeType.EARLY_TERMINATION:
+      return "EARLY_TERMINATION_SUPPLEMENT";
+    case SubscriptionChangeType.MANAGED_OTHER:
+      return "MANAGED_OTHER_SUPPLEMENT";
+    case SubscriptionChangeType.EXTENSION:
+      return "SUBSCRIPTION_EXTENSION";
+  }
+}
+
+function isStage3AttemptKey(sourceKey: string | null, changeOrderId: string) {
+  if (!sourceKey) return false;
+  const prefix = `subscription-change:${changeOrderId}:esign:attempt:`;
+  return sourceKey.startsWith(prefix) && /^[1-9]\d*$/.test(sourceKey.slice(prefix.length));
 }
 
 function expiryWins(

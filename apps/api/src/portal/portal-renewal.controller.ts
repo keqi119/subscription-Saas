@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Post, Req, UseGuards } from "@nestjs/common";
 
 import { CustomerAuthGuard } from "./portal-auth.guard";
 import { CurrentCustomer, PortalAuthenticatedRequest } from "./portal-auth.types";
@@ -30,10 +30,16 @@ export class PortalRenewalController {
   decide(
     @Param("id") id: string,
     @Body() dto: PortalRenewalDecisionDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
     @Req() request: PortalAuthenticatedRequest
   ) {
-    return this.service.decide(id, dto, currentCustomer, requestContext(request));
+    return this.service.decide(
+      id,
+      { ...dto, idempotencyKey },
+      currentCustomer,
+      requestContext(request)
+    );
   }
 }
 
@@ -51,20 +57,32 @@ export class PortalSubscriptionChangeController {
   confirmQuote(
     @Param("id") id: string,
     @Body() dto: PortalConfirmExtensionQuoteDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
     @Req() request: PortalAuthenticatedRequest
   ) {
-    return this.service.confirmQuote(id, dto, currentCustomer, requestContext(request));
+    return this.service.confirmQuote(
+      id,
+      { ...dto, idempotencyKey },
+      currentCustomer,
+      requestContext(request)
+    );
   }
 
   @Post(":id/quote/reject")
   rejectQuote(
     @Param("id") id: string,
     @Body() dto: PortalRejectExtensionQuoteDto,
+    @Headers("idempotency-key") idempotencyKey: string | undefined,
     @CurrentPortalCustomer() currentCustomer: CurrentCustomer,
     @Req() request: PortalAuthenticatedRequest
   ) {
-    return this.service.rejectQuote(id, dto, currentCustomer, requestContext(request));
+    return this.service.rejectQuote(
+      id,
+      { ...dto, idempotencyKey },
+      currentCustomer,
+      requestContext(request)
+    );
   }
 }
 

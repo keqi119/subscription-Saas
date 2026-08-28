@@ -11,10 +11,7 @@ const detailPage = readFileSync(
   join(repoRoot, "apps/web/src/app/subscription-changes/[id]/page.tsx"),
   "utf8"
 );
-const orderPage = readFileSync(
-  join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx"),
-  "utf8"
-);
+const orderPage = readFileSync(join(repoRoot, "apps/web/src/app/orders/[id]/page.tsx"), "utf8");
 
 describe("Admin subscription change pages", () => {
   it("builds the center from renewal considerations with explicit retry/error and SMS failure filtering", () => {
@@ -46,7 +43,7 @@ describe("Admin subscription change pages", () => {
     expect(orderPage).toContain("续期");
     expect(orderPage).toContain("换车");
     expect(orderPage).toContain("提前结束");
-    expect(orderPage).toContain("其他合同变更");
+    expect(orderPage).toContain("其他受控变更");
     expect(orderPage).toContain("交付前退回重做方案");
     expect(orderPage).toContain('activeSubscriptionPricingMode !== "ORIGINAL_PRICE"');
     expect(orderPage).toContain("请选择目标订阅套餐 ID");

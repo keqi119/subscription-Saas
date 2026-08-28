@@ -1,17 +1,16 @@
 import { ESignDocumentType, ESignSigningStage, SubscriptionChangeType } from "@prisma/client";
-import { PermissionCode } from "@subscription-saas/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { resolveContractESignProfile } from "../src/esign/esign.service";
 import { SubscriptionChangeController } from "../src/subscription-change/subscription-change.controller";
 
-describe("vehicle-swap supplement e-sign mapping", () => {
-  it("uses the Stage 3 slot protocol with a distinct governed vehicle-swap source", () => {
+describe("managed-other supplement routing", () => {
+  it("uses the Stage 3 provider protocol with a distinct governed source", () => {
     expect(
       resolveContractESignProfile({
         subscriptionChange: {
-          changeType: SubscriptionChangeType.VEHICLE_SWAP,
-          id: "change-swap"
+          changeType: SubscriptionChangeType.MANAGED_OTHER,
+          id: "change-managed"
         }
       })
     ).toEqual({
@@ -19,30 +18,30 @@ describe("vehicle-swap supplement e-sign mapping", () => {
       forceMultiSlot: true,
       providerSigningStage: "STAGE1_CONTRACT",
       signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
-      sourceType: "VEHICLE_SWAP_SUPPLEMENT"
+      sourceType: "MANAGED_OTHER_SUPPLEMENT"
     });
   });
 
-  it("dispatches supplement generation and e-sign start through the swap contract service", async () => {
+  it("dispatches generation and e-sign through the managed-other workflow", async () => {
     const extension = { startOrRetryESign: vi.fn() };
     const extensionContract = { generate: vi.fn() };
     const esign = {
-      createTaskForContract: vi.fn(async () => ({ id: "task-swap" })),
+      createTaskForContract: vi.fn(async () => ({ id: "task-managed" })),
       findActiveTaskForContract: vi.fn(async () => null),
       getTask: vi.fn()
     };
     const changeService = {
-      getWorkflowChangeType: vi.fn(async () => SubscriptionChangeType.VEHICLE_SWAP)
+      getWorkflowChangeType: vi.fn(async () => SubscriptionChangeType.MANAGED_OTHER)
     };
-    const swapContract = {
-      generate: vi.fn(async () => ({ id: "contract-swap" })),
+    const managed = {
+      generate: vi.fn(async () => ({ id: "contract-managed" })),
       startOrRetryESign: vi.fn(
         async (
           _id: string,
           _input: unknown,
           _actor: unknown,
           start: (contractId: string) => Promise<unknown>
-        ) => start("contract-swap")
+        ) => start("contract-managed")
       )
     };
     const controller = new SubscriptionChangeController(
@@ -50,37 +49,34 @@ describe("vehicle-swap supplement e-sign mapping", () => {
       extensionContract as never,
       esign as never,
       changeService as never,
-      swapContract as never
+      undefined,
+      undefined,
+      managed as never
     );
     const request = {
       headers: { "user-agent": "vitest" },
       ip: "127.0.0.1",
-      user: {
-        id: "operator-1",
-        menus: [],
-        name: "Operator",
-        permissions: [
-          PermissionCode.CONTRACT_GENERATE,
-          PermissionCode.SUBSCRIPTION_CHANGE_ESIGN_RETRY
-        ],
-        roles: ["OP"],
-        username: "operator"
-      }
+      user: { id: "operator-1", permissions: [] }
     };
 
     await controller.generateExtensionContract(
-      "change-swap",
-      { version: 3 },
-      "generate-swap",
+      "change-managed",
+      { version: 1 },
+      "generate-managed",
       request as never
     );
-    await controller.startESign("change-swap", { version: 4 }, "esign-swap", request as never);
+    await controller.startESign(
+      "change-managed",
+      { version: 2 },
+      "esign-managed",
+      request as never
+    );
 
-    expect(swapContract.generate).toHaveBeenCalledOnce();
-    expect(swapContract.startOrRetryESign).toHaveBeenCalledOnce();
+    expect(managed.generate).toHaveBeenCalledOnce();
+    expect(managed.startOrRetryESign).toHaveBeenCalledOnce();
     expect(extensionContract.generate).not.toHaveBeenCalled();
     expect(extension.startOrRetryESign).not.toHaveBeenCalled();
-    expect(esign.createTaskForContract).toHaveBeenCalledWith("contract-swap", request.user, {
+    expect(esign.createTaskForContract).toHaveBeenCalledWith("contract-managed", request.user, {
       ipAddress: "127.0.0.1",
       userAgent: "vitest"
     });

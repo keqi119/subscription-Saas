@@ -29,6 +29,9 @@ describe("Portal renewal pages", () => {
     expect(renewalDetail).toContain('decision: "RENEW"');
     expect(renewalDetail).toContain('decide("RENEW")');
     expect(renewalDetail).toContain('decide("EXPIRE")');
+    expect(renewalDetail).toContain('detail.allowedActions.includes("RENEW")');
+    expect(renewalDetail).toContain('detail.allowedActions.includes("EXPIRE")');
+    expect(renewalDetail).toContain("detail.featureAvailability.enabled");
     expect(renewalDetail).toContain("申请续订");
     expect(renewalDetail).toContain("到期结束");
   });
@@ -50,7 +53,7 @@ describe("Portal renewal pages", () => {
 
   it("uses responsive cards without horizontal table overflow", () => {
     for (const source of [renewals, renewalDetail, changeDetail]) {
-      expect(source).toContain('maxWidth: 920');
+      expect(source).toContain("maxWidth: 920");
       expect(source).not.toContain("<Table");
       expect(source).not.toContain("scroll={{ x:");
     }

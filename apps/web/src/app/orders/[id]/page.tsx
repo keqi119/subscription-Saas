@@ -10,7 +10,29 @@ import {
   SendOutlined,
   UserAddOutlined
 } from "@ant-design/icons";
-import { Alert, App, Button, Card, Checkbox, DatePicker, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Progress, Select, Space, Spin, Table, Tag, Timeline, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Checkbox,
+  DatePicker,
+  Descriptions,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  List,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Spin,
+  Table,
+  Tag,
+  Timeline,
+  Typography
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import Link from "next/link";
@@ -79,12 +101,7 @@ import {
   canExecuteOrderChange,
   canGenerateContract as getGenerateContractAvailability
 } from "../../../lib/action-guards";
-import {
-  apiFetch,
-  ApiError,
-  API_BASE_URL,
-  loadAdminJourneyByOrder
-} from "../../../lib/api";
+import { apiFetch, ApiError, API_BASE_URL, loadAdminJourneyByOrder } from "../../../lib/api";
 import { formatFieldEvidenceVideoQuality } from "../../../lib/field-handover-video-quality";
 import {
   getDeliveryConfirmationAdjustmentState,
@@ -140,9 +157,11 @@ import type { AdminSubscriptionClosureView } from "../../../lib/subscription-clo
 import type { AdminSubscriptionJourney } from "../../../lib/subscription-journey-view-model";
 import {
   createSubscriptionChange,
+  getSubscriptionChangeCapabilities,
   listSubscriptionChangesForOrder,
   type AdminSubscriptionChange,
   type CreateSubscriptionChangeInput,
+  type SubscriptionChangeCapabilities,
   type SubscriptionChangePricingMode,
   type SubscriptionChangeType
 } from "../../../lib/subscription-change-api";
@@ -151,10 +170,7 @@ import {
   getSubscriptionChangeContractDates,
   getSubscriptionChangeNextAction
 } from "../../../lib/subscription-change-view-model";
-import type {
-  PortalPagedResponse,
-  PortalServiceCase
-} from "../../../lib/portal-types";
+import type { PortalPagedResponse, PortalServiceCase } from "../../../lib/portal-types";
 import {
   OrderAutoDebitTracePanel,
   type AdminAutoDebitAttempt,
@@ -343,9 +359,7 @@ function subscriptionChangeSummary(change: AdminSubscriptionChange) {
     case "EARLY_TERMINATION":
       return `计划生效日 ${formatDate(detail?.effectiveDate)} · Closure ${String(detail?.closureCaseId ?? "待创建")}`;
     case "MANAGED_OTHER": {
-      const request = objectRecord(
-        objectRecord(detail?.approvedOperationSnapshot)?.request
-      );
+      const request = objectRecord(objectRecord(detail?.approvedOperationSnapshot)?.request);
       return `批准操作 ${String(request?.operation ?? "待审批")} · 生效日 ${formatDate(detail?.effectiveDate)}`;
     }
   }
@@ -486,7 +500,12 @@ interface HandoverWorkOrderSummary {
   customerObjectedAt?: string | null;
   customerReviewStartedAt?: string | null;
   deliveryLocation?: string | null;
-  evidenceProgress?: { approved?: number | null; required?: number | null; total?: number | null; uploaded?: number | null } | null;
+  evidenceProgress?: {
+    approved?: number | null;
+    required?: number | null;
+    total?: number | null;
+    uploaded?: number | null;
+  } | null;
   events?: HandoverEvent[];
   fieldReceipt?: {
     firstOpenedAt?: string | null;
@@ -498,24 +517,34 @@ interface HandoverWorkOrderSummary {
   handoverId?: string | null;
   handoverType?: string | null;
   id: string;
-  objection?: { adminStatus?: string | null; details?: string | null; objectedAt?: string | null; reason?: string | null } | null;
+  objection?: {
+    adminStatus?: string | null;
+    details?: string | null;
+    objectedAt?: string | null;
+    reason?: string | null;
+  } | null;
   operator?: { name?: string | null; phone?: string | null; type?: string | null } | null;
   orderId?: string | null;
   orderNo?: string | null;
-  readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
+  readiness?: {
+    blockingReasons?: string[];
+    readyForStage2Pdf?: boolean;
+    readyForStage2ESign?: boolean;
+  } | null;
   reviewAttempts?: HandoverReviewAttempt[];
   scheduledAt?: string | null;
   stage2Pdf?: Stage2HandoverPdfArtifact | null;
   status?: string | null;
-  vehicle?: { brand?: string | null; model?: string | null; plateMasked?: string | null; vinSuffix?: string | null } | null;
+  vehicle?: {
+    brand?: string | null;
+    model?: string | null;
+    plateMasked?: string | null;
+    vinSuffix?: string | null;
+  } | null;
   workflowJobs?: AdminStage2HandoverWorkflowJob[];
 }
 
-type HandoverWorkOrdersLoadState =
-  | "ERROR"
-  | "LOADED"
-  | "LOADING"
-  | "UNKNOWN";
+type HandoverWorkOrdersLoadState = "ERROR" | "LOADED" | "LOADING" | "UNKNOWN";
 
 interface AssignExternalHandoverFormValues {
   expiresAt?: Dayjs;
@@ -542,7 +571,11 @@ interface Stage2FallbackFormValues {
 interface HandoverWorkOrderDetail extends HandoverWorkOrderSummary {
   evidenceChecklist?: HandoverEvidenceChecklist | null;
   fieldFacts?: Record<string, unknown> | null;
-  readiness?: { blockingReasons?: string[]; readyForStage2Pdf?: boolean; readyForStage2ESign?: boolean } | null;
+  readiness?: {
+    blockingReasons?: string[];
+    readyForStage2Pdf?: boolean;
+    readyForStage2ESign?: boolean;
+  } | null;
 }
 
 interface PrepareDeliveryFormValues {
@@ -1008,7 +1041,7 @@ function formatHandoverWorkOrderStatus(value?: string | null) {
     PLATFORM_SEALED: "平台已盖章",
     SIGNING: "签署中"
   };
-  return value ? labels[value] ?? value : "-";
+  return value ? (labels[value] ?? value) : "-";
 }
 
 function formatAdminReviewStatus(value?: string | null) {
@@ -1019,7 +1052,7 @@ function formatAdminReviewStatus(value?: string | null) {
     RESUBMITTED_PENDING_ADMIN: "现场已重提，待后台送回",
     SENT_BACK_TO_CUSTOMER_REVIEW: "已送回客户复核"
   };
-  return value ? labels[value] ?? value : "无后台处理";
+  return value ? (labels[value] ?? value) : "无后台处理";
 }
 
 function formatHandoverAttemptStatus(value?: string | null) {
@@ -1031,7 +1064,7 @@ function formatHandoverAttemptStatus(value?: string | null) {
     RESUBMITTED_PENDING_ADMIN: "重提待后台复核",
     SENT_BACK_TO_CUSTOMER_REVIEW: "送回客户复核"
   };
-  return value ? labels[value] ?? value : "-";
+  return value ? (labels[value] ?? value) : "-";
 }
 
 function formatHandoverEventType(value?: string | null) {
@@ -1060,7 +1093,7 @@ function formatHandoverEventType(value?: string | null) {
     WORK_ORDER_CREATED: "创建交付工单",
     WORK_ORDER_TERMINATED: "终止交付工单"
   };
-  return value ? labels[value] ?? value : "-";
+  return value ? (labels[value] ?? value) : "-";
 }
 
 function formatHandoverEventActor(event: HandoverEvent) {
@@ -1073,7 +1106,7 @@ function formatHandoverEventActor(event: HandoverEvent) {
     FIELD_OPERATOR: "Field 交付人员",
     SYSTEM: "系统"
   };
-  return event.actorType ? labels[event.actorType] ?? event.actorType : "-";
+  return event.actorType ? (labels[event.actorType] ?? event.actorType) : "-";
 }
 
 const handoverFieldFactOptions = [
@@ -1248,7 +1281,9 @@ function formatBillPeriod(start?: string | null, end?: string | null) {
 
   const formattedStart = formatDate(start);
   const formattedEnd = formatDate(end);
-  return formattedStart === "-" || formattedEnd === "-" ? "-" : `${formattedStart} 至 ${formattedEnd}`;
+  return formattedStart === "-" || formattedEnd === "-"
+    ? "-"
+    : `${formattedStart} 至 ${formattedEnd}`;
 }
 
 function formatPercent(value?: unknown) {
@@ -1299,7 +1334,7 @@ function todayBusinessDate() {
 
 function formatOperationAction(action?: string | null) {
   const value = safeText(action);
-  return value === "-" ? "-" : entitlementOperationActionLabels[value] ?? value;
+  return value === "-" ? "-" : (entitlementOperationActionLabels[value] ?? value);
 }
 
 function formatOperationCount(value?: unknown) {
@@ -1307,7 +1342,9 @@ function formatOperationCount(value?: unknown) {
   return count === null ? "-" : count.toLocaleString("zh-CN");
 }
 
-function normalizeEntitlementOperationItems(result?: { items?: EntitlementOperationItem[] } | EntitlementOperationItem | null) {
+function normalizeEntitlementOperationItems(
+  result?: { items?: EntitlementOperationItem[] } | EntitlementOperationItem | null
+) {
   if (!result) {
     return [];
   }
@@ -1385,8 +1422,16 @@ function getEntitlementPlanText(account: OrderEntitlementAccount | null) {
   if (!account) {
     return "-";
   }
-  const planNo = getSnapshotValue(account.snapshot, "packageSnapshot.subscriptionPlan.planNo", "sourceSnapshot.subscriptionPlan.planNo");
-  const planName = getSnapshotValue(account.snapshot, "packageSnapshot.subscriptionPlan.planName", "sourceSnapshot.subscriptionPlan.planName");
+  const planNo = getSnapshotValue(
+    account.snapshot,
+    "packageSnapshot.subscriptionPlan.planNo",
+    "sourceSnapshot.subscriptionPlan.planNo"
+  );
+  const planName = getSnapshotValue(
+    account.snapshot,
+    "packageSnapshot.subscriptionPlan.planName",
+    "sourceSnapshot.subscriptionPlan.planName"
+  );
   return joinText(planNo, planName, account.subscriptionPlanId);
 }
 
@@ -1443,7 +1488,9 @@ function photoUrlsToText(value?: string[] | null) {
 }
 
 function normalizePhotoUrls(value?: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    : [];
 }
 
 function toNumber(value?: unknown) {
@@ -1591,21 +1638,33 @@ function EntitlementAccountStatusTag({ value }: { value?: string | null }) {
   if (!value) {
     return <Tag>-</Tag>;
   }
-  return <Tag color={entitlementAccountStatusColors[value]}>{labelOf(ENTITLEMENT_ACCOUNT_STATUS_LABELS, value)}</Tag>;
+  return (
+    <Tag color={entitlementAccountStatusColors[value]}>
+      {labelOf(ENTITLEMENT_ACCOUNT_STATUS_LABELS, value)}
+    </Tag>
+  );
 }
 
 function EntitlementGrantStatusTag({ value }: { value?: string | null }) {
   if (!value) {
     return <Tag>-</Tag>;
   }
-  return <Tag color={entitlementGrantStatusColors[value]}>{labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}</Tag>;
+  return (
+    <Tag color={entitlementGrantStatusColors[value]}>
+      {labelOf(ENTITLEMENT_GRANT_STATUS_LABELS, value)}
+    </Tag>
+  );
 }
 
 function EntitlementUsageStatusTag({ value }: { value?: string | null }) {
   if (!value) {
     return <Tag>-</Tag>;
   }
-  return <Tag color={entitlementUsageStatusColors[value]}>{labelOf(ENTITLEMENT_USAGE_STATUS_LABELS, value)}</Tag>;
+  return (
+    <Tag color={entitlementUsageStatusColors[value]}>
+      {labelOf(ENTITLEMENT_USAGE_STATUS_LABELS, value)}
+    </Tag>
+  );
 }
 
 function DamageStatusTag({ value }: { value?: string | null }) {
@@ -1635,7 +1694,10 @@ function canFinalizeOrder(order: OrderDetail) {
   );
 }
 
-function getGenerateEntitlementDisabledReason(order: OrderDetail | null, account: OrderEntitlementAccount | null) {
+function getGenerateEntitlementDisabledReason(
+  order: OrderDetail | null,
+  account: OrderEntitlementAccount | null
+) {
   if (!order) {
     return "数据加载完成后才能操作";
   }
@@ -1651,7 +1713,10 @@ function getGenerateEntitlementDisabledReason(order: OrderDetail | null, account
   return null;
 }
 
-function getRenewMonthlyEntitlementDisabledReason(order: OrderDetail | null, account: OrderEntitlementAccount | null) {
+function getRenewMonthlyEntitlementDisabledReason(
+  order: OrderDetail | null,
+  account: OrderEntitlementAccount | null
+) {
   if (!order) {
     return "数据加载完成后才能操作";
   }
@@ -1721,7 +1786,10 @@ function ReviewPanel({
   onConfirmCustomer: () => Promise<void>;
   onFinalizePlan: () => Promise<void>;
   onRejectOrder: () => Promise<void>;
-  onReview: (type: "credit" | "product" | "vehicle", status: "APPROVED" | "NEED_MORE_INFO" | "REJECTED") => Promise<void>;
+  onReview: (
+    type: "credit" | "product" | "vehicle",
+    status: "APPROVED" | "NEED_MORE_INFO" | "REJECTED"
+  ) => Promise<void>;
   order: OrderDetail;
 }) {
   if (order.orderSource !== "CUSTOMER_SELF_SERVICE") {
@@ -1737,15 +1805,35 @@ function ReviewPanel({
           bordered
           column={3}
           items={[
-            { label: "订单来源", children: ORDER_SOURCE_LABELS[order.orderSource] ?? order.orderSource },
-            { label: "客户资质审核", children: <ReviewStatusTag value={order.creditReviewStatus} /> },
-            { label: "产品匹配审核", children: <ReviewStatusTag value={order.productReviewStatus} /> },
-            { label: "车辆库存审核", children: <ReviewStatusTag value={order.vehicleReviewStatus} /> },
+            {
+              label: "订单来源",
+              children: ORDER_SOURCE_LABELS[order.orderSource] ?? order.orderSource
+            },
+            {
+              label: "客户资质审核",
+              children: <ReviewStatusTag value={order.creditReviewStatus} />
+            },
+            {
+              label: "产品匹配审核",
+              children: <ReviewStatusTag value={order.productReviewStatus} />
+            },
+            {
+              label: "车辆库存审核",
+              children: <ReviewStatusTag value={order.vehicleReviewStatus} />
+            },
             { label: "押金状态", children: <ReviewStatusTag value={order.depositStatus} /> },
-            { label: "最终押金", children: formatYuan(order.finalDepositAmount ?? order.depositAmount) },
+            {
+              label: "最终押金",
+              children: formatYuan(order.finalDepositAmount ?? order.depositAmount)
+            },
             { label: "最终方案确认时间", children: formatTime(order.finalPlanConfirmedAt) },
             { label: "客户确认时间", children: formatTime(order.customerConfirmedAt) },
-            { label: "车辆", children: order.vehicle ? joinText(order.vehicle.vehicleNo, order.vehicle.plateNo, order.vehicle.vin) : "-" }
+            {
+              label: "车辆",
+              children: order.vehicle
+                ? joinText(order.vehicle.vehicleNo, order.vehicle.plateNo, order.vehicle.vin)
+                : "-"
+            }
           ]}
         />
 
@@ -1754,7 +1842,10 @@ function ReviewPanel({
             <Space wrap>
               <Typography.Text strong>客户资质审核</Typography.Text>
               <Form form={creditForm} initialValues={{ customerGrade: "A" }} layout="inline">
-                <Form.Item name="customerGrade" rules={[{ required: true, message: "请选择客户等级" }]}>
+                <Form.Item
+                  name="customerGrade"
+                  rules={[{ required: true, message: "请选择客户等级" }]}
+                >
                   <Select options={customerGradeOptions} style={{ width: 96 }} />
                 </Form.Item>
               </Form>
@@ -1806,7 +1897,8 @@ function ReviewPanel({
                 后台代客户确认并进入签约
               </Button>
             ) : null}
-            {canRejectOrder && ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
+            {canRejectOrder &&
+            ["PENDING_REVIEW", "PENDING_CUSTOMER_CONFIRMATION"].includes(order.orderStatus) ? (
               <Button danger onClick={onRejectOrder} size="small">
                 拒绝订单
               </Button>
@@ -1862,7 +1954,11 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
   const fixedRate =
     getSnapshotValue(snapshot, "fixedRate", "packageSnapshot.pricing.fixedRate") ??
     (vehicleBaseFeeMode === "RATE_FORMULA"
-      ? getSnapshotValue(snapshot, "packageSnapshot.subscriptionPlan.monthlyFeeRate", "monthlyFeeRate")
+      ? getSnapshotValue(
+          snapshot,
+          "packageSnapshot.subscriptionPlan.monthlyFeeRate",
+          "monthlyFeeRate"
+        )
       : undefined);
 
   return (
@@ -1872,17 +1968,43 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
           bordered
           column={2}
           items={[
-            { label: "报价编号", children: safeText(getSnapshotValue(snapshot, "quoteNo") ?? order.quote?.quoteNo) },
+            {
+              label: "报价编号",
+              children: safeText(getSnapshotValue(snapshot, "quoteNo") ?? order.quote?.quoteNo)
+            },
             {
               label: "订阅套餐",
               children: joinText(
-                getSnapshotValue(snapshot, "subscriptionPlan.planNo", "packageSnapshot.subscriptionPlan.planNo"),
-                getSnapshotValue(snapshot, "subscriptionPlan.planName", "packageSnapshot.subscriptionPlan.planName")
+                getSnapshotValue(
+                  snapshot,
+                  "subscriptionPlan.planNo",
+                  "packageSnapshot.subscriptionPlan.planNo"
+                ),
+                getSnapshotValue(
+                  snapshot,
+                  "subscriptionPlan.planName",
+                  "packageSnapshot.subscriptionPlan.planName"
+                )
               )
             },
-            { label: "产品名称", children: safeText(getSnapshotValue(snapshot, "productVersion.product.name", "product.name")) },
-            { label: "产品版本", children: safeText(getSnapshotValue(snapshot, "productVersion.versionNo", "productVersion.versionName")) },
-            { label: "订阅周期", children: formatMonths(getSnapshotValue(snapshot, "periodMonths") ?? order.periodMonths) },
+            {
+              label: "产品名称",
+              children: safeText(
+                getSnapshotValue(snapshot, "productVersion.product.name", "product.name")
+              )
+            },
+            {
+              label: "产品版本",
+              children: safeText(
+                getSnapshotValue(snapshot, "productVersion.versionNo", "productVersion.versionName")
+              )
+            },
+            {
+              label: "订阅周期",
+              children: formatMonths(
+                getSnapshotValue(snapshot, "periodMonths") ?? order.periodMonths
+              )
+            },
             {
               label: "报价状态",
               children: quoteStatus === "-" ? "-" : <Tag>{labelOf(STATUS_LABELS, quoteStatus)}</Tag>
@@ -1898,10 +2020,31 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
           bordered
           column={2}
           items={[
-            { label: "VIN", children: safeText(getSnapshotValue(vehicleSnapshot, "vin") ?? getSnapshotValue(snapshot, "vin")) },
-            { label: "车牌号", children: safeText(getSnapshotValue(vehicleSnapshot, "plateNo") ?? getSnapshotValue(snapshot, "plateNo")) },
-            { label: "品牌", children: safeText(getSnapshotValue(vehicleSnapshot, "brand") ?? getSnapshotValue(snapshot, "brand")) },
-            { label: "车系", children: safeText(getSnapshotValue(vehicleSnapshot, "series") ?? getSnapshotValue(snapshot, "series")) },
+            {
+              label: "VIN",
+              children: safeText(
+                getSnapshotValue(vehicleSnapshot, "vin") ?? getSnapshotValue(snapshot, "vin")
+              )
+            },
+            {
+              label: "车牌号",
+              children: safeText(
+                getSnapshotValue(vehicleSnapshot, "plateNo") ??
+                  getSnapshotValue(snapshot, "plateNo")
+              )
+            },
+            {
+              label: "品牌",
+              children: safeText(
+                getSnapshotValue(vehicleSnapshot, "brand") ?? getSnapshotValue(snapshot, "brand")
+              )
+            },
+            {
+              label: "车系",
+              children: safeText(
+                getSnapshotValue(vehicleSnapshot, "series") ?? getSnapshotValue(snapshot, "series")
+              )
+            },
             {
               label: "车型",
               children: orderModelDisplay(order)
@@ -1925,11 +2068,17 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
             {
               label: "当前里程",
-              children: formatKilometers(getSnapshotValue(vehicleSnapshot, "currentMileageKm") ?? getSnapshotValue(snapshot, "currentMileageKm"))
+              children: formatKilometers(
+                getSnapshotValue(vehicleSnapshot, "currentMileageKm") ??
+                  getSnapshotValue(snapshot, "currentMileageKm")
+              )
             },
             {
               label: "资产位置",
-              children: safeText(getSnapshotValue(vehicleSnapshot, "assetLocation") ?? getSnapshotValue(snapshot, "assetLocation"))
+              children: safeText(
+                getSnapshotValue(vehicleSnapshot, "assetLocation") ??
+                  getSnapshotValue(snapshot, "assetLocation")
+              )
             }
           ]}
         />
@@ -1947,42 +2096,80 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
             {
               label: "车辆基础费上限",
               children: formatYuan(
-                getSnapshotValue(snapshot, "vehicleBaseFeeCapAmount", "monthlyFeeCapAmount", "packageSnapshot.pricing.vehicleBaseFeeCapAmount")
+                getSnapshotValue(
+                  snapshot,
+                  "vehicleBaseFeeCapAmount",
+                  "monthlyFeeCapAmount",
+                  "packageSnapshot.pricing.vehicleBaseFeeCapAmount"
+                )
               )
             },
             {
               label: "车辆基础费报价",
-              children: formatYuan(getSnapshotValue(snapshot, "vehicleBaseFeeAmount", "packageSnapshot.pricing.vehicleBaseFeeAmount"))
+              children: formatYuan(
+                getSnapshotValue(
+                  snapshot,
+                  "vehicleBaseFeeAmount",
+                  "packageSnapshot.pricing.vehicleBaseFeeAmount"
+                )
+              )
             },
             {
               label: "里程包价格",
               children: formatYuan(
-                getSnapshotValue(snapshot, "mileagePackagePriceAmount", "packageSnapshot.pricing.mileagePackagePriceAmount", "packageSnapshot.mileagePackage.priceAmount")
+                getSnapshotValue(
+                  snapshot,
+                  "mileagePackagePriceAmount",
+                  "packageSnapshot.pricing.mileagePackagePriceAmount",
+                  "packageSnapshot.mileagePackage.priceAmount"
+                )
               )
             },
             {
               label: "补能包价格",
               children: formatYuan(
-                getSnapshotValue(snapshot, "energyPackagePriceAmount", "packageSnapshot.pricing.energyPackagePriceAmount", "packageSnapshot.energyPackage.priceAmount")
+                getSnapshotValue(
+                  snapshot,
+                  "energyPackagePriceAmount",
+                  "packageSnapshot.pricing.energyPackagePriceAmount",
+                  "packageSnapshot.energyPackage.priceAmount"
+                )
               )
             },
             {
               label: "权益包价格",
               children: formatYuan(
-                getSnapshotValue(snapshot, "benefitPackagePriceAmount", "packageSnapshot.pricing.benefitPackagePriceAmount", "packageSnapshot.benefitPackage.priceAmount")
+                getSnapshotValue(
+                  snapshot,
+                  "benefitPackagePriceAmount",
+                  "packageSnapshot.pricing.benefitPackagePriceAmount",
+                  "packageSnapshot.benefitPackage.priceAmount"
+                )
               )
             },
             {
               label: "套餐月费合计",
-              children: formatYuan(getSnapshotValue(snapshot, "monthlyFeeAmount", "packageSnapshot.pricing.monthlyFeeAmount") ?? order.monthlyFeeAmount)
+              children: formatYuan(
+                getSnapshotValue(
+                  snapshot,
+                  "monthlyFeeAmount",
+                  "packageSnapshot.pricing.monthlyFeeAmount"
+                ) ?? order.monthlyFeeAmount
+              )
             },
             {
               label: "押金金额",
-              children: formatYuan(getSnapshotValue(snapshot, "depositAmount", "depositRuleSnapshot.depositAmount") ?? order.depositAmount)
+              children: formatYuan(
+                getSnapshotValue(snapshot, "depositAmount", "depositRuleSnapshot.depositAmount") ??
+                  order.depositAmount
+              )
             },
             {
               label: "违约率",
-              children: formatPercent(getSnapshotValue(depositRuleSnapshot, "defaultRate") ?? getSnapshotValue(snapshot, "defaultRate"))
+              children: formatPercent(
+                getSnapshotValue(depositRuleSnapshot, "defaultRate") ??
+                  getSnapshotValue(snapshot, "defaultRate")
+              )
             }
           ]}
         />
@@ -1990,7 +2177,8 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
           车辆基础费上限 = 当前车辆销售价 × 车型包系数。
         </Typography.Paragraph>
         <Typography.Text type="secondary">
-          套餐月费合计 = 车辆基础费 + 里程包价格 + 补能包价格 + 权益包价格；车型包系数只约束车辆基础费，不约束套餐月费合计。
+          套餐月费合计 = 车辆基础费 + 里程包价格 + 补能包价格 +
+          权益包价格；车型包系数只约束车辆基础费，不约束套餐月费合计。
         </Typography.Text>
       </Card>
 
@@ -2027,11 +2215,35 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
                 getSnapshotValue(packageSnapshot, "benefitPackage.packageName")
               )
             },
-            { label: "月里程额度", children: formatKilometers(getSnapshotValue(packageSnapshot, "mileagePackage.monthlyMileageKm") ?? order.mileageLimitKm) },
-            { label: "超里程单价", children: formatYuan(getSnapshotValue(packageSnapshot, "mileagePackage.overMileageFeeAmount")) },
-            { label: "月补能额度", children: formatKwh(getSnapshotValue(packageSnapshot, "energyPackage.monthlyEnergyKwh")) },
-            { label: "月补能次数", children: formatCount(getSnapshotValue(packageSnapshot, "energyPackage.monthlyEnergyCount")) },
-            { label: "权益说明", children: safeText(getSnapshotValue(packageSnapshot, "benefitPackage.description")) }
+            {
+              label: "月里程额度",
+              children: formatKilometers(
+                getSnapshotValue(packageSnapshot, "mileagePackage.monthlyMileageKm") ??
+                  order.mileageLimitKm
+              )
+            },
+            {
+              label: "超里程单价",
+              children: formatYuan(
+                getSnapshotValue(packageSnapshot, "mileagePackage.overMileageFeeAmount")
+              )
+            },
+            {
+              label: "月补能额度",
+              children: formatKwh(
+                getSnapshotValue(packageSnapshot, "energyPackage.monthlyEnergyKwh")
+              )
+            },
+            {
+              label: "月补能次数",
+              children: formatCount(
+                getSnapshotValue(packageSnapshot, "energyPackage.monthlyEnergyCount")
+              )
+            },
+            {
+              label: "权益说明",
+              children: safeText(getSnapshotValue(packageSnapshot, "benefitPackage.description"))
+            }
           ]}
         />
       </Card>
@@ -2050,11 +2262,17 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
             },
             {
               label: "押金金额",
-              children: formatYuan(getSnapshotValue(snapshot, "depositAmount", "depositRuleSnapshot.depositAmount") ?? order.depositAmount)
+              children: formatYuan(
+                getSnapshotValue(snapshot, "depositAmount", "depositRuleSnapshot.depositAmount") ??
+                  order.depositAmount
+              )
             },
             {
               label: "违约率",
-              children: formatPercent(getSnapshotValue(depositRuleSnapshot, "defaultRate") ?? getSnapshotValue(snapshot, "defaultRate"))
+              children: formatPercent(
+                getSnapshotValue(depositRuleSnapshot, "defaultRate") ??
+                  getSnapshotValue(snapshot, "defaultRate")
+              )
             },
             {
               label: "风控评分",
@@ -2066,7 +2284,6 @@ function QuoteSnapshotSection({ order }: { order: OrderDetail | null }) {
           ]}
         />
       </Card>
-
     </Space>
   );
 }
@@ -2093,18 +2310,29 @@ function OrderInfoSections({
           column={2}
           items={[
             { label: "订单编号", children: safeText(order.orderNo) },
-            { label: "订单状态", children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag> },
+            {
+              label: "订单状态",
+              children: <Tag>{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag>
+            },
             { label: "订单来源", children: labelOf(ORDER_SOURCE_LABELS, order.orderSource) },
             { label: "订阅周期", children: formatMonths(order.periodMonths) },
             {
               label: "关联进件",
               children: order.application ? (
-                <Link href={`/applications/${order.application.id}`}>{order.application.applicationNo}</Link>
-              ) : "-"
+                <Link href={`/applications/${order.application.id}`}>
+                  {order.application.applicationNo}
+                </Link>
+              ) : (
+                "-"
+              )
             },
             {
               label: "关联报价",
-              children: order.quote ? <Link href={`/quotes/${order.quote.id}`}>{order.quote.quoteNo}</Link> : "-"
+              children: order.quote ? (
+                <Link href={`/quotes/${order.quote.id}`}>{order.quote.quoteNo}</Link>
+              ) : (
+                "-"
+              )
             },
             { label: "创建时间", children: formatTime(order.createdAt) },
             { label: "最终方案确认时间", children: formatTime(order.finalPlanConfirmedAt) }
@@ -2120,9 +2348,18 @@ function OrderInfoSections({
             { label: "客户姓名", children: safeText(customerLabel) },
             { label: "手机号", children: safeText(customerMobile) },
             { label: "客户确认时间", children: formatTime(order.customerConfirmedAt) },
-            { label: "押金状态", children: order.depositStatus ? labelOf(STATUS_LABELS, order.depositStatus) : "-" },
-            { label: "押金金额", children: formatYuan(order.finalDepositAmount ?? order.depositAmount) },
-            { label: "客户资质审核", children: <ReviewStatusTag value={order.creditReviewStatus} /> }
+            {
+              label: "押金状态",
+              children: order.depositStatus ? labelOf(STATUS_LABELS, order.depositStatus) : "-"
+            },
+            {
+              label: "押金金额",
+              children: formatYuan(order.finalDepositAmount ?? order.depositAmount)
+            },
+            {
+              label: "客户资质审核",
+              children: <ReviewStatusTag value={order.creditReviewStatus} />
+            }
           ]}
         />
       </Card>
@@ -2132,26 +2369,60 @@ function OrderInfoSections({
           bordered
           column={2}
           items={[
-            { label: "车辆编号", children: safeText(order.vehicle?.vehicleNo ?? getSnapshotValue(vehicleSnapshot, "vehicleNo")) },
-            { label: "VIN", children: safeText(order.vehicle?.vin ?? getSnapshotValue(vehicleSnapshot, "vin")) },
-            { label: "车牌号", children: safeText(order.vehicle?.plateNo ?? getSnapshotValue(vehicleSnapshot, "plateNo")) },
+            {
+              label: "车辆编号",
+              children: safeText(
+                order.vehicle?.vehicleNo ?? getSnapshotValue(vehicleSnapshot, "vehicleNo")
+              )
+            },
+            {
+              label: "VIN",
+              children: safeText(order.vehicle?.vin ?? getSnapshotValue(vehicleSnapshot, "vin"))
+            },
+            {
+              label: "车牌号",
+              children: safeText(
+                order.vehicle?.plateNo ?? getSnapshotValue(vehicleSnapshot, "plateNo")
+              )
+            },
             { label: "车型", children: orderModelDisplay(order) },
-            { label: "电池容量", children: formatKwh(order.vehicle?.batteryCapacityKwh ?? getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")) },
+            {
+              label: "电池容量",
+              children: formatKwh(
+                order.vehicle?.batteryCapacityKwh ??
+                  getSnapshotValue(vehicleSnapshot, "batteryCapacityKwh")
+              )
+            },
             {
               label: "电池使用方式",
               children: formatBatteryUsageType(
-                order.vehicle?.batteryUsageType ?? getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
-                order.vehicle?.batteryUsageTypeLabel ?? getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
+                order.vehicle?.batteryUsageType ??
+                  getSnapshotValue(vehicleSnapshot, "batteryUsageType"),
+                order.vehicle?.batteryUsageTypeLabel ??
+                  getSnapshotValue(vehicleSnapshot, "batteryUsageTypeLabel")
               )
             },
-            { label: "车辆状态", children: safeText(order.vehicle?.status ?? getSnapshotValue(vehicleSnapshot, "status")) },
+            {
+              label: "车辆状态",
+              children: safeText(
+                order.vehicle?.status ?? getSnapshotValue(vehicleSnapshot, "status")
+              )
+            },
             { label: "当前车辆销售价", children: formatYuan(currentVehicleSalePrice) },
-            { label: "当前里程", children: formatKilometers(order.vehicle?.currentMileageKm ?? getSnapshotValue(vehicleSnapshot, "currentMileageKm")) },
-            { label: "车辆库存审核", children: <ReviewStatusTag value={order.vehicleReviewStatus} /> }
+            {
+              label: "当前里程",
+              children: formatKilometers(
+                order.vehicle?.currentMileageKm ??
+                  getSnapshotValue(vehicleSnapshot, "currentMileageKm")
+              )
+            },
+            {
+              label: "车辆库存审核",
+              children: <ReviewStatusTag value={order.vehicleReviewStatus} />
+            }
           ]}
         />
       </Card>
-
     </Space>
   );
 }
@@ -2233,19 +2504,22 @@ function EntitlementPanel({
     { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
     {
       dataIndex: "totalAmount",
-      render: (value: unknown, record) => isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
+      render: (value: unknown, record) =>
+        isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
       title: "总量",
       width: 120
     },
     {
       dataIndex: "usedAmount",
-      render: (value: unknown, record) => isTextEntitlement(record) ? "-" : formatEntitlementAmount(value, record.unit),
+      render: (value: unknown, record) =>
+        isTextEntitlement(record) ? "-" : formatEntitlementAmount(value, record.unit),
       title: "已用",
       width: 120
     },
     {
       dataIndex: "remainingAmount",
-      render: (value: unknown, record) => isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
+      render: (value: unknown, record) =>
+        isTextEntitlement(record) ? "文本权益" : formatEntitlementAmount(value, record.unit),
       title: "剩余",
       width: 120
     },
@@ -2268,7 +2542,8 @@ function EntitlementPanel({
       width: 110
     },
     {
-      render: (_, record) => formatEntitlementPeriod(record.grantPeriodStart, record.grantPeriodEnd),
+      render: (_, record) =>
+        formatEntitlementPeriod(record.grantPeriodStart, record.grantPeriodEnd),
       title: "有效期",
       width: 180
     },
@@ -2284,7 +2559,11 @@ function EntitlementPanel({
           permissions
         });
         return (
-          <ActionButton availability={availability} onClick={() => onOpenConsume(record)} size="small">
+          <ActionButton
+            availability={availability}
+            onClick={() => onOpenConsume(record)}
+            size="small"
+          >
             消耗权益
           </ActionButton>
         );
@@ -2372,7 +2651,10 @@ function EntitlementPanel({
               column={3}
               items={[
                 { label: "权益账户编号", children: safeText(account.accountNo) },
-                { label: "账户状态", children: <EntitlementAccountStatusTag value={account.accountStatus} /> },
+                {
+                  label: "账户状态",
+                  children: <EntitlementAccountStatusTag value={account.accountStatus} />
+                },
                 { label: "订单编号", children: safeText(order.orderNo) },
                 { label: "客户", children: joinText(customerLabel, customerMobile) },
                 { label: "订阅套餐", children: getEntitlementPlanText(account) },
@@ -2394,7 +2676,11 @@ function EntitlementPanel({
             type="warning"
           />
           {hasPastActiveGrant ? (
-            <Alert showIcon title="该订单存在已超过有效期但尚未处理的可用权益，建议先处理过期权益。" type="warning" />
+            <Alert
+              showIcon
+              title="该订单存在已超过有效期但尚未处理的可用权益，建议先处理过期权益。"
+              type="warning"
+            />
           ) : null}
 
           <Table<OrderEntitlementGrant>
@@ -2446,11 +2732,14 @@ function EntitlementGrantBalance({ grant }: { grant: OrderEntitlementGrant }) {
   return (
     <Space orientation="vertical" size={8} style={{ width: "100%" }}>
       <Typography.Text>
-        {formatEntitlementAmount(grant.totalAmount, grant.unit)} / 已用 {formatEntitlementAmount(grant.usedAmount, grant.unit)} / 剩余{" "}
+        {formatEntitlementAmount(grant.totalAmount, grant.unit)} / 已用{" "}
+        {formatEntitlementAmount(grant.usedAmount, grant.unit)} / 剩余{" "}
         {formatEntitlementAmount(grant.remainingAmount, grant.unit)}
       </Typography.Text>
       {percent === null ? null : <Progress percent={percent} size="small" />}
-      <Typography.Text type="secondary">最近消耗：{formatTime(grant.latestUsageAt)}</Typography.Text>
+      <Typography.Text type="secondary">
+        最近消耗：{formatTime(grant.latestUsageAt)}
+      </Typography.Text>
     </Space>
   );
 }
@@ -2470,11 +2759,23 @@ function EntitlementOperationResultView({
   const renewalResult = isRenewal ? (result as EntitlementRenewalResponse) : null;
   const expireResult = isRenewal ? null : (result as ExpireEntitlementsResponse);
   const items = normalizeEntitlementOperationItems(result);
-  const firstAction = isRenewal ? safeText(items[0]?.action ?? renewalResult?.action) : safeText(items[0]?.action);
-  const hasFailure = items.some((item) => safeText(item.action).includes("FAILED") || safeText(item.action) === "FAILED");
+  const firstAction = isRenewal
+    ? safeText(items[0]?.action ?? renewalResult?.action)
+    : safeText(items[0]?.action);
+  const hasFailure = items.some(
+    (item) => safeText(item.action).includes("FAILED") || safeText(item.action) === "FAILED"
+  );
   const isSkipped = firstAction.startsWith("SKIPPED") || firstAction === "DRY_RUN_SKIP";
-  const resultMessage = isRenewal ? getRenewalResultText(renewalResult) : getExpireResultText(expireResult);
-  const alertType = hasFailure ? "error" : isSkipped ? "warning" : result.dryRun ? "info" : "success";
+  const resultMessage = isRenewal
+    ? getRenewalResultText(renewalResult)
+    : getExpireResultText(expireResult);
+  const alertType = hasFailure
+    ? "error"
+    : isSkipped
+      ? "warning"
+      : result.dryRun
+        ? "info"
+        : "success";
   const summaryItems = [
     { label: "执行模式", children: result.dryRun ? "试算" : "正式执行" },
     ...(renewalResult?.generatedCount !== undefined
@@ -2490,7 +2791,12 @@ function EntitlementOperationResultView({
       ? [{ label: "失败数量", children: formatOperationCount(renewalResult.failedCount) }]
       : []),
     ...(renewalResult?.periodStart || renewalResult?.periodEnd
-      ? [{ label: "账期", children: formatEntitlementPeriod(renewalResult.periodStart, renewalResult.periodEnd) }]
+      ? [
+          {
+            label: "账期",
+            children: formatEntitlementPeriod(renewalResult.periodStart, renewalResult.periodEnd)
+          }
+        ]
       : []),
     ...(renewalResult?.grantCount !== undefined
       ? [{ label: "权益数量", children: formatOperationCount(renewalResult.grantCount) }]
@@ -2565,7 +2871,8 @@ function EntitlementOperationResultView({
     { dataIndex: "entitlementName", render: safeText, title: "权益名称", width: 180 },
     {
       render: (_, record) => {
-        const action = record.action ?? (isRenewal ? undefined : result.dryRun ? "DRY_RUN_EXPIRE" : "EXPIRED");
+        const action =
+          record.action ?? (isRenewal ? undefined : result.dryRun ? "DRY_RUN_EXPIRE" : "EXPIRED");
         return formatOperationAction(action);
       },
       title: "动作",
@@ -2647,7 +2954,9 @@ function FinancePanel({
   const monthlyRentBills = bills.filter(validMonthlyRentBill);
   const latestMonthlyRentBill = [...monthlyRentBills]
     .filter((bill) => bill.billPeriodStart)
-    .sort((left, right) => String(right.billPeriodStart).localeCompare(String(left.billPeriodStart)))[0];
+    .sort((left, right) =>
+      String(right.billPeriodStart).localeCompare(String(left.billPeriodStart))
+    )[0];
   const billColumns: ColumnsType<ReceivableBillRow> = [
     { dataIndex: "billNo", title: "账单编号" },
     {
@@ -2724,15 +3033,28 @@ function FinancePanel({
             { label: "押金应收", children: formatYuan(summary?.depositReceivableAmount) },
             { label: "押金已收", children: formatYuan(summary?.depositPaidAmount) },
             { label: "押金状态", children: <BillStatusTag value={summary?.depositStatus} /> },
-            { label: "首期月费应收", children: formatYuan(summary?.firstMonthlyFeeReceivableAmount) },
+            {
+              label: "首期月费应收",
+              children: formatYuan(summary?.firstMonthlyFeeReceivableAmount)
+            },
             { label: "首期月费已收", children: formatYuan(summary?.firstMonthlyFeePaidAmount) },
-            { label: "首期月费状态", children: <BillStatusTag value={summary?.firstMonthlyFeeStatus} /> },
+            {
+              label: "首期月费状态",
+              children: <BillStatusTag value={summary?.firstMonthlyFeeStatus} />
+            },
             { label: "已登记收款", children: formatYuan(summary?.registeredReceiptAmount) },
             { label: "已核销金额", children: formatYuan(summary?.allocatedPaidAmount) },
             { label: "待核销收款", children: formatYuan(summary?.unallocatedReceiptAmount) },
             { label: "总应收", children: formatYuan(summary?.totalReceivableAmount) },
             { label: "总已收", children: formatYuan(summary?.totalPaidAmount) },
-            { label: "交付付款条件", children: deliverySatisfied ? <Tag color="green">已满足</Tag> : <Tag color="orange">未满足</Tag> }
+            {
+              label: "交付付款条件",
+              children: deliverySatisfied ? (
+                <Tag color="green">已满足</Tag>
+              ) : (
+                <Tag color="orange">未满足</Tag>
+              )
+            }
           ]}
         />
 
@@ -2742,12 +3064,21 @@ function FinancePanel({
           title="月租账单概览"
           items={[
             { label: "已生成月租账单数量", children: monthlyRentBills.length },
-            { label: "月租账单待收金额", children: formatYuan(sumBillAmount(monthlyRentBills, "remainingAmount")) },
-            { label: "月租账单已收金额", children: formatYuan(sumBillAmount(monthlyRentBills, "paidAmount")) },
+            {
+              label: "月租账单待收金额",
+              children: formatYuan(sumBillAmount(monthlyRentBills, "remainingAmount"))
+            },
+            {
+              label: "月租账单已收金额",
+              children: formatYuan(sumBillAmount(monthlyRentBills, "paidAmount"))
+            },
             {
               label: "最近一期月租账期",
               children: latestMonthlyRentBill
-                ? formatBillPeriod(latestMonthlyRentBill.billPeriodStart, latestMonthlyRentBill.billPeriodEnd)
+                ? formatBillPeriod(
+                    latestMonthlyRentBill.billPeriodStart,
+                    latestMonthlyRentBill.billPeriodEnd
+                  )
                 : "-"
             }
           ]}
@@ -2800,10 +3131,7 @@ function Stage2HandoverWorkflowCell({
   error?: string | null;
   loading: boolean;
   mutationInFlight: boolean;
-  onRecover: (
-    workOrderId: string,
-    recovery: AdminStage2HandoverWorkflowRecovery
-  ) => void;
+  onRecover: (workOrderId: string, recovery: AdminStage2HandoverWorkflowRecovery) => void;
   onRefresh: (id: string) => void;
   onStart: (id: string) => void;
   onVoid: (id: string) => void;
@@ -2821,9 +3149,7 @@ function Stage2HandoverWorkflowCell({
     pdfStatus: workOrder.stage2Pdf?.status,
     workflowJobs: workOrder.workflowJobs
   });
-  const actionDisplay = status
-    ? getAdminStage2HandoverESignDisplay(status)
-    : null;
+  const actionDisplay = status ? getAdminStage2HandoverESignDisplay(status) : null;
   const documentDownload = getAdminStage2HandoverDocumentDownload({
     archiveStatus: workOrder.stage2Pdf?.archiveStatus,
     handoverStatus: workOrder.stage2Pdf?.handoverStatus,
@@ -2832,11 +3158,7 @@ function Stage2HandoverWorkflowCell({
     workOrderId: workOrder.id
   });
   return (
-    <Space
-      orientation="vertical"
-      size={6}
-      style={{ minHeight: 188, minWidth: 280, width: "100%" }}
-    >
+    <Space orientation="vertical" size={6} style={{ minHeight: 188, minWidth: 280, width: "100%" }}>
       <Space align="center" size={6}>
         <Typography.Text strong>交接签署流程</Typography.Text>
         {loading ? <Spin size="small" /> : null}
@@ -2855,9 +3177,7 @@ function Stage2HandoverWorkflowCell({
         items={display.steps.map((step) => ({
           content: (
             <Space orientation="vertical" size={0}>
-              <Typography.Text
-                style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}
-              >
+              <Typography.Text style={{ color: step.state === "waiting" ? "#8c8c8c" : undefined }}>
                 {step.label}
               </Typography.Text>
               {step.detail ? (
@@ -2909,8 +3229,7 @@ function Stage2HandoverWorkflowCell({
         onChanged={() => onRefresh(workOrder.id)}
         visible={Boolean(
           status?.blockers.some(
-            (blocker) =>
-              blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+            (blocker) => blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
           )
         )}
         workOrderId={workOrder.id}
@@ -2944,10 +3263,7 @@ function Stage2HandoverWorkflowCell({
           <Button
             disabled={!canRecoverWorkflow || mutationInFlight}
             key={recovery.jobId}
-            loading={
-              actionLoading ===
-              `workflow-recovery:${workOrder.id}:${recovery.jobId}`
-            }
+            loading={actionLoading === `workflow-recovery:${workOrder.id}:${recovery.jobId}`}
             onClick={() => onRecover(workOrder.id, recovery)}
             size="small"
           >
@@ -3014,10 +3330,7 @@ function Stage2HandoverReviewPanel({
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
-  onRecoverWorkflow: (
-    workOrderId: string,
-    recovery: AdminStage2HandoverWorkflowRecovery
-  ) => void;
+  onRecoverWorkflow: (workOrderId: string, recovery: AdminStage2HandoverWorkflowRecovery) => void;
   onRefreshESign: (id: string) => void;
   onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
@@ -3045,7 +3358,9 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
           <Tag>{formatHandoverWorkOrderStatus(row.status)}</Tag>
-          <Typography.Text type="secondary">{formatAdminReviewStatus(row.adminReview?.status)}</Typography.Text>
+          <Typography.Text type="secondary">
+            {formatAdminReviewStatus(row.adminReview?.status)}
+          </Typography.Text>
         </Space>
       ),
       title: "状态",
@@ -3097,7 +3412,9 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Space orientation="vertical" size={2}>
           <Typography.Text>{formatTime(row.fieldSubmittedAt)}</Typography.Text>
-          <Typography.Text type="secondary">{formatHandoverEvidenceProgress(row.evidenceProgress)}</Typography.Text>
+          <Typography.Text type="secondary">
+            {formatHandoverEvidenceProgress(row.evidenceProgress)}
+          </Typography.Text>
         </Space>
       ),
       title: "现场资料",
@@ -3109,9 +3426,13 @@ function Stage2HandoverReviewPanel({
         row.objection?.reason ? (
           <Space orientation="vertical" size={2}>
             <Typography.Text type="danger">{row.objection.reason}</Typography.Text>
-            <Typography.Text type="secondary">{formatTime(row.objection.objectedAt)}</Typography.Text>
+            <Typography.Text type="secondary">
+              {formatTime(row.objection.objectedAt)}
+            </Typography.Text>
           </Space>
-        ) : "-",
+        ) : (
+          "-"
+        ),
       title: "客户异议",
       width: 180
     },
@@ -3223,7 +3544,8 @@ function Stage2HandoverReviewActions({
   onViewDetail: (id: string) => void;
   workOrder: HandoverWorkOrderSummary;
 }) {
-  const hasObjection = workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt);
+  const hasObjection =
+    workOrder.status === "CUSTOMER_OBJECTED" || Boolean(workOrder.customerObjectedAt);
   const canAcknowledge = workOrder.adminReview?.canAcknowledge === true;
   const canRequestResubmission = workOrder.adminReview?.canRequestResubmission === true;
   const canSendBack = workOrder.adminReview?.canSendBackToCustomerReview === true;
@@ -3271,9 +3593,7 @@ function Stage2HandoverReviewActions({
         送回客户复核
       </Button>
       <Button
-        disabled={
-          !canHandleObjection || workOrder.status !== "CUSTOMER_CONFIRMED"
-        }
+        disabled={!canHandleObjection || workOrder.status !== "CUSTOMER_CONFIRMED"}
         loading={actionLoading === `reopen-confirmed:${workOrder.id}`}
         onClick={() => onReopenConfirmed(workOrder.id)}
         size="small"
@@ -3318,10 +3638,7 @@ function Stage2HandoverReviewDetailModal({
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onClose: () => void;
-  onRecoverWorkflow: (
-    workOrderId: string,
-    recovery: AdminStage2HandoverWorkflowRecovery
-  ) => void;
+  onRecoverWorkflow: (workOrderId: string, recovery: AdminStage2HandoverWorkflowRecovery) => void;
   onRefreshESign: (id: string) => void;
   onReopenConfirmed: (id: string) => void;
   onRequestResubmission: (id: string) => void;
@@ -3338,7 +3655,10 @@ function Stage2HandoverReviewDetailModal({
             bordered
             column={2}
             items={[
-              { label: "工单状态", children: <Tag>{formatHandoverWorkOrderStatus(detail.status)}</Tag> },
+              {
+                label: "工单状态",
+                children: <Tag>{formatHandoverWorkOrderStatus(detail.status)}</Tag>
+              },
               { label: "后台处理", children: formatAdminReviewStatus(detail.adminReview?.status) },
               { label: "现场提交时间", children: formatTime(detail.fieldSubmittedAt) },
               { label: "客户复核开始", children: formatTime(detail.customerReviewStartedAt) },
@@ -3392,7 +3712,9 @@ function Stage2HandoverReviewDetailModal({
                   description={
                     <Space direction="vertical" size={4}>
                       <Space size={[6, 6]} wrap>
-                        <Tag>{item.isRequired ? "必传" : item.isConditional ? "条件必传" : "选填"}</Tag>
+                        <Tag>
+                          {item.isRequired ? "必传" : item.isConditional ? "条件必传" : "选填"}
+                        </Tag>
                         <Tag>{formatHandoverEvidenceStatus(item)}</Tag>
                         <Tag>{numberOrZero(item.fileCount)} 个文件</Tag>
                       </Space>
@@ -3410,7 +3732,8 @@ function Stage2HandoverReviewDetailModal({
                                 wrap
                               >
                                 <Typography.Text type="secondary">
-                                  {file.displayName ?? "资料文件"} / {formatEvidenceFileSize(file.sizeBytes)}
+                                  {file.displayName ?? "资料文件"} /{" "}
+                                  {formatEvidenceFileSize(file.sizeBytes)}
                                 </Typography.Text>
                                 {videoQualityText ? (
                                   <Typography.Text type="secondary">
@@ -3440,10 +3763,16 @@ function Stage2HandoverReviewDetailModal({
                           })}
                         </Space>
                       ) : null}
-                      {item.rejectionReason ? <Typography.Text type="danger">{item.rejectionReason}</Typography.Text> : null}
+                      {item.rejectionReason ? (
+                        <Typography.Text type="danger">{item.rejectionReason}</Typography.Text>
+                      ) : null}
                     </Space>
                   }
-                  title={<Typography.Text strong>{item.title || item.evidenceType || "现场资料"}</Typography.Text>}
+                  title={
+                    <Typography.Text strong>
+                      {item.title || item.evidenceType || "现场资料"}
+                    </Typography.Text>
+                  }
                 />
               </List.Item>
             )}
@@ -3468,7 +3797,11 @@ function Stage2HandoverReviewDetailModal({
           <Table
             columns={[
               { dataIndex: "eventType", render: formatHandoverEventType, title: "事件" },
-              { key: "actor", render: (_value, row: HandoverEvent) => formatHandoverEventActor(row), title: "操作人" },
+              {
+                key: "actor",
+                render: (_value, row: HandoverEvent) => formatHandoverEventActor(row),
+                title: "操作人"
+              },
               { dataIndex: "createdAt", render: formatTime, title: "时间" }
             ]}
             dataSource={detail.events ?? []}
@@ -3530,7 +3863,10 @@ function DeliveryPanel({
   const readyForDelivery = !alreadyDelivered && deliveryStatus === "READY";
   const zeroDepositSatisfied = deliveryCheck?.depositRequired === false;
   const checklistItems: Array<{ help?: string; label: string; value?: boolean }> = [
-    { label: "合同签署确认", value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned },
+    {
+      label: "合同签署确认",
+      value: delivery?.contractSignedConfirmed ?? deliveryCheck?.contractSigned
+    },
     ...(delivery?.depositReceivedConfirmed === true
       ? [{ help: "历史只读字段", label: "押金收取确认", value: true }]
       : []),
@@ -3600,12 +3936,17 @@ function DeliveryPanel({
                   : "交付条件已满足"
           }
           showIcon
-          type={alreadyDelivered || readyForDelivery || blockingReasons.length === 0 ? "success" : "warning"}
+          type={
+            alreadyDelivered || readyForDelivery || blockingReasons.length === 0
+              ? "success"
+              : "warning"
+          }
         />
 
         {!alreadyDelivered ? (
           <Typography.Text type="secondary">
-            签约锁定（RESERVED）：车辆已被订单锁定，处于合同 / 付款 / 交付前流程中，不能被其他订单选择；交付完成后车辆进入已出租（LEASED）状态。
+            签约锁定（RESERVED）：车辆已被订单锁定，处于合同 / 付款 /
+            交付前流程中，不能被其他订单选择；交付完成后车辆进入已出租（LEASED）状态。
           </Typography.Text>
         ) : null}
 
@@ -3615,7 +3956,10 @@ function DeliveryPanel({
             column={2}
             title="交付条件检查"
             items={[
-              { label: "合同签署状态", children: <BooleanTag checked={deliveryCheck?.contractSigned} /> },
+              {
+                label: "合同签署状态",
+                children: <BooleanTag checked={deliveryCheck?.contractSigned} />
+              },
               {
                 label: "押金确认状态",
                 children: zeroDepositSatisfied ? (
@@ -3624,13 +3968,14 @@ function DeliveryPanel({
                   <BooleanTag checked={deliveryCheck?.depositReceivedConfirmed} />
                 )
               },
-              { label: "首期月费确认状态", children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} /> },
+              {
+                label: "首期月费确认状态",
+                children: <BooleanTag checked={deliveryCheck?.firstMonthlyFeeReceivedConfirmed} />
+              },
               {
                 label: "交强险期限覆盖",
                 children: (
-                  <BooleanTag
-                    checked={deliveryCheck?.insuranceCoverage.compulsoryTrafficCovered}
-                  />
+                  <BooleanTag checked={deliveryCheck?.insuranceCoverage.compulsoryTrafficCovered} />
                 )
               },
               {
@@ -3643,17 +3988,28 @@ function DeliveryPanel({
                 label: "保险人工核验",
                 children: <BooleanTag checked={delivery?.insuranceValidConfirmed} />
               },
-              { label: "车辆整备状态", children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} /> },
+              {
+                label: "车辆整备状态",
+                children: <BooleanTag checked={deliveryCheck?.vehiclePrepared} />
+              },
               {
                 label: "车辆状态",
-                children: deliveryCheck?.vehicleStatus ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus) : "-"
+                children: deliveryCheck?.vehicleStatus
+                  ? labelOf(STATUS_LABELS, deliveryCheck.vehicleStatus)
+                  : "-"
               },
               {
                 label: "车辆当前销售价初始化状态",
                 children: <BooleanTag checked={deliveryCheck?.currentSalePriceInitialized} />
               },
-              { label: "是否可准备交付", children: <BooleanTag checked={deliveryCheck?.canPrepareDelivery} /> },
-              { label: "是否可确认交付", children: <BooleanTag checked={deliveryCheck?.canConfirmDelivery} /> }
+              {
+                label: "是否可准备交付",
+                children: <BooleanTag checked={deliveryCheck?.canPrepareDelivery} />
+              },
+              {
+                label: "是否可确认交付",
+                children: <BooleanTag checked={deliveryCheck?.canConfirmDelivery} />
+              }
             ]}
           />
         ) : null}
@@ -3711,10 +4067,13 @@ function ReturnPanel({
 }) {
   const returnStatus = returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null;
   const alreadyReturned = Boolean(
-    returnCheck?.alreadyReturned || order.actualReturnAt || returnStatus === "CONFIRMED" || vehicleReturn?.returnedAt
+    returnCheck?.alreadyReturned ||
+    order.actualReturnAt ||
+    returnStatus === "CONFIRMED" ||
+    vehicleReturn?.returnedAt
   );
   const readyForReturn = !alreadyReturned && returnStatus === "READY";
-  const blockingReasons = alreadyReturned ? [] : returnCheck?.blockingReasons ?? [];
+  const blockingReasons = alreadyReturned ? [] : (returnCheck?.blockingReasons ?? []);
   const vehicleStatus = returnCheck?.vehicleStatus ?? order.vehicle?.status ?? null;
   const checklistItems = [
     { label: "钥匙已归还", value: vehicleReturn?.keysReturnedConfirmed },
@@ -3744,7 +4103,8 @@ function ReturnPanel({
     { dataIndex: "description", render: safeText, title: "损伤描述" },
     {
       dataIndex: "responsibleParty",
-      render: (value?: string | null) => labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
+      render: (value?: string | null) =>
+        labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
       title: "责任方"
     },
     {
@@ -3764,7 +4124,9 @@ function ReturnPanel({
               </Typography.Link>
             ))}
           </Space>
-        ) : "-";
+        ) : (
+          "-"
+        );
       },
       title: "照片"
     },
@@ -3797,9 +4159,15 @@ function ReturnPanel({
             alreadyReturned ? (
               <Space orientation="vertical" size={4}>
                 <Typography.Text>
-                  {vehicleStatus === "MAINTENANCE" ? "车辆需维修" : vehicleStatus === "RETURNED" ? "车辆已退回" : "该订单已完成退车"}
+                  {vehicleStatus === "MAINTENANCE"
+                    ? "车辆需维修"
+                    : vehicleStatus === "RETURNED"
+                      ? "车辆已退回"
+                      : "该订单已完成退车"}
                 </Typography.Text>
-                <Typography.Text>订单状态：{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Typography.Text>
+                <Typography.Text>
+                  订单状态：{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}
+                </Typography.Text>
                 <Typography.Text>
                   车辆状态：{vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-"}
                 </Typography.Text>
@@ -3829,7 +4197,11 @@ function ReturnPanel({
                   : "退车条件已满足"
           }
           showIcon
-          type={alreadyReturned || readyForReturn || blockingReasons.length === 0 ? "success" : "warning"}
+          type={
+            alreadyReturned || readyForReturn || blockingReasons.length === 0
+              ? "success"
+              : "warning"
+          }
         />
 
         <Descriptions
@@ -3837,12 +4209,27 @@ function ReturnPanel({
           column={2}
           title="退车条件检查"
           items={[
-            { label: "订单状态", children: labelOf(ORDER_STATUS_LABELS, returnCheck?.orderStatus ?? order.orderStatus) },
-            { label: "车辆状态", children: vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-" },
-            { label: "是否已交付", children: <BooleanTag checked={Boolean(order.actualDeliveryAt)} /> },
+            {
+              label: "订单状态",
+              children: labelOf(ORDER_STATUS_LABELS, returnCheck?.orderStatus ?? order.orderStatus)
+            },
+            {
+              label: "车辆状态",
+              children: vehicleStatus ? labelOf(STATUS_LABELS, vehicleStatus) : "-"
+            },
+            {
+              label: "是否已交付",
+              children: <BooleanTag checked={Boolean(order.actualDeliveryAt)} />
+            },
             { label: "是否已退车", children: <BooleanTag checked={alreadyReturned} /> },
-            { label: "是否可准备退车", children: <BooleanTag checked={returnCheck?.canPrepareReturn} /> },
-            { label: "是否可确认退车", children: <BooleanTag checked={returnCheck?.canConfirmReturn} /> }
+            {
+              label: "是否可准备退车",
+              children: <BooleanTag checked={returnCheck?.canPrepareReturn} />
+            },
+            {
+              label: "是否可确认退车",
+              children: <BooleanTag checked={returnCheck?.canConfirmReturn} />
+            }
           ]}
         />
 
@@ -3852,18 +4239,32 @@ function ReturnPanel({
           title="当前退车记录"
           items={[
             { label: "退车单号", children: safeText(vehicleReturn?.returnNo) },
-            { label: "退车状态", children: <ReturnStatusTag value={vehicleReturn?.returnStatus} /> },
+            {
+              label: "退车状态",
+              children: <ReturnStatusTag value={vehicleReturn?.returnStatus} />
+            },
             {
               label: "退车类型",
-              children: vehicleReturn?.returnType ? labelOf(VEHICLE_RETURN_TYPE_LABELS, vehicleReturn.returnType) : "-"
+              children: vehicleReturn?.returnType
+                ? labelOf(VEHICLE_RETURN_TYPE_LABELS, vehicleReturn.returnType)
+                : "-"
             },
             { label: "预约退车时间", children: formatTime(vehicleReturn?.scheduledAt) },
             { label: "退车地点", children: safeText(vehicleReturn?.returnLocation) },
             { label: "实际退车时间", children: formatTime(vehicleReturn?.returnedAt) },
             { label: "退车里程", children: formatKilometers(vehicleReturn?.returnMileageKm) },
-            { label: "是否需清洁", children: <BooleanTag checked={vehicleReturn?.cleaningRequired} /> },
-            { label: "是否需维修", children: <BooleanTag checked={vehicleReturn?.maintenanceRequired} /> },
-            { label: "是否发现损伤", children: <BooleanTag checked={vehicleReturn?.damageFound} /> },
+            {
+              label: "是否需清洁",
+              children: <BooleanTag checked={vehicleReturn?.cleaningRequired} />
+            },
+            {
+              label: "是否需维修",
+              children: <BooleanTag checked={vehicleReturn?.maintenanceRequired} />
+            },
+            {
+              label: "是否发现损伤",
+              children: <BooleanTag checked={vehicleReturn?.damageFound} />
+            },
             { label: "备注", children: safeText(vehicleReturn?.remark) }
           ]}
         />
@@ -3945,7 +4346,9 @@ function DepositSettlementPanel({
   const alreadyReturned = isOrderReturned(order);
   const damageRows = settlement?.damages ?? [];
   const ledgerRows = settlement?.depositLedgers ?? [];
-  const billNoById = new Map((settlement?.damageFeeBills ?? []).map((bill) => [bill.id, bill.billNo]));
+  const billNoById = new Map(
+    (settlement?.damageFeeBills ?? []).map((bill) => [bill.id, bill.billNo])
+  );
   const damageColumns: ColumnsType<DepositSettlementDamage> = [
     {
       dataIndex: "damageType",
@@ -3960,7 +4363,8 @@ function DepositSettlementPanel({
     { dataIndex: "description", render: safeText, title: "描述" },
     {
       dataIndex: "responsibleParty",
-      render: (value?: string | null) => labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
+      render: (value?: string | null) =>
+        labelOf(VEHICLE_DAMAGE_RESPONSIBLE_PARTY_LABELS, value ?? "UNKNOWN"),
       title: "责任方"
     },
     {
@@ -3985,7 +4389,9 @@ function DepositSettlementPanel({
               </Typography.Link>
             ))}
           </Space>
-        ) : "-";
+        ) : (
+          "-"
+        );
       },
       title: "照片"
     }
@@ -4059,7 +4465,12 @@ function DepositSettlementPanel({
             { label: "保证金已收", children: formatYuan(settlement?.collectedAmount) },
             { label: "已扣减", children: formatYuan(settlement?.deductedAmount) },
             { label: "已退款", children: formatYuan(settlement?.refundedAmount) },
-            { label: "当前可用余额", children: formatYuan(settlement?.availableDepositBalance ?? settlement?.availableBalance) },
+            {
+              label: "当前可用余额",
+              children: formatYuan(
+                settlement?.availableDepositBalance ?? settlement?.availableBalance
+              )
+            },
             { label: "损伤费用账单", children: formatYuan(settlement?.damageFeeAmount) },
             { label: "已抵扣", children: formatYuan(settlement?.damageFeeDeductedAmount) },
             { label: "剩余未收", children: formatYuan(settlement?.damageFeeRemainingAmount) },
@@ -4113,7 +4524,11 @@ function getPrepareDeliveryDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+  if (
+    deliveryCheck?.alreadyDelivered ||
+    isOrderDelivered(order) ||
+    delivery?.deliveryStatus === "DELIVERED"
+  ) {
     return "订单已交付，不能重新准备交付";
   }
   if (!DELIVERY_PREPARE_ORDER_STATUSES.has(order.orderStatus)) {
@@ -4147,7 +4562,11 @@ function getConfirmDeliveryDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (deliveryCheck?.alreadyDelivered || isOrderDelivered(order) || delivery?.deliveryStatus === "DELIVERED") {
+  if (
+    deliveryCheck?.alreadyDelivered ||
+    isOrderDelivered(order) ||
+    delivery?.deliveryStatus === "DELIVERED"
+  ) {
     return "订单已交付，不能重复确认交付";
   }
   if (delivery?.deliveryStatus !== "READY") {
@@ -4180,7 +4599,11 @@ function getPrepareReturnDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (returnCheck?.alreadyReturned || isOrderReturned(order) || vehicleReturn?.returnStatus === "CONFIRMED") {
+  if (
+    returnCheck?.alreadyReturned ||
+    isOrderReturned(order) ||
+    vehicleReturn?.returnStatus === "CONFIRMED"
+  ) {
     return "该订单已完成退车";
   }
   if (order.orderStatus !== "ACTIVE" || !order.actualDeliveryAt) {
@@ -4210,7 +4633,11 @@ function getConfirmReturnDisabledReason(
   if (orderChangeLocked) {
     return "当前订单存在进行中的变更申请";
   }
-  if (returnCheck?.alreadyReturned || isOrderReturned(order) || vehicleReturn?.returnStatus === "CONFIRMED") {
+  if (
+    returnCheck?.alreadyReturned ||
+    isOrderReturned(order) ||
+    vehicleReturn?.returnStatus === "CONFIRMED"
+  ) {
     return "该订单已完成退车";
   }
   if (vehicleReturn?.returnStatus !== "READY") {
@@ -4236,7 +4663,9 @@ function isOrderDelivered(order: OrderDetail) {
 }
 
 function isOrderReturned(order: OrderDetail) {
-  return Boolean(order.actualReturnAt || order.orderStatus === "COMPLETED" || order.orderStatus === "TERMINATED");
+  return Boolean(
+    order.actualReturnAt || order.orderStatus === "COMPLETED" || order.orderStatus === "TERMINATED"
+  );
 }
 
 function isContractSigned(status?: string | null) {
@@ -4305,10 +4734,7 @@ function RecentOrderActivity({
             ]}
             data-workspace-record={item.id}
           >
-            <List.Item.Meta
-              description={formatTime(item.occurredAt)}
-              title={item.title}
-            />
+            <List.Item.Meta description={formatTime(item.occurredAt)} title={item.title} />
           </List.Item>
         )}
         size="small"
@@ -4351,9 +4777,7 @@ function ServiceCasesPanel({
     },
     {
       dataIndex: "caseStatus",
-      render: (value: string) => (
-        <Tag>{labelOf(SERVICE_CASE_STATUS_LABELS, value)}</Tag>
-      ),
+      render: (value: string) => <Tag>{labelOf(SERVICE_CASE_STATUS_LABELS, value)}</Tag>,
       title: "状态",
       width: 130
     },
@@ -4364,8 +4788,7 @@ function ServiceCasesPanel({
     },
     {
       dataIndex: "updatedAt",
-      render: (value: string | null, record) =>
-        formatTime(value ?? record.createdAt),
+      render: (value: string | null, record) => formatTime(value ?? record.createdAt),
       title: "更新时间",
       width: 180
     }
@@ -4374,9 +4797,7 @@ function ServiceCasesPanel({
   return (
     <Card
       extra={
-        <Link href={`/service-cases?orderId=${encodeURIComponent(orderId)}`}>
-          进入服务工单列表
-        </Link>
+        <Link href={`/service-cases?orderId=${encodeURIComponent(orderId)}`}>进入服务工单列表</Link>
       }
       title="订单服务工单"
     >
@@ -4406,9 +4827,7 @@ function HandoverProgressRecords({
   resolvedRecordIds: readonly string[];
   summary: OrderWorkspaceSummary | null;
 }) {
-  const guidance = summary?.guidance.filter(
-    (item) => item.category === "handover"
-  ) ?? [];
+  const guidance = summary?.guidance.filter((item) => item.category === "handover") ?? [];
   const targetIds = getOrderWorkspaceFallbackRecordIds(
     getOrderWorkspaceRecordIds(
       summary?.primaryAction?.targetTab === "handover"
@@ -4428,9 +4847,7 @@ function HandoverProgressRecords({
       <List
         dataSource={targetIds}
         renderItem={(targetId) => {
-          const state = guidance.find(
-            (item) => item.targetRecordId === targetId
-          )?.state;
+          const state = guidance.find((item) => item.targetRecordId === targetId)?.state;
           return (
             <List.Item data-workspace-record={targetId}>
               <Space wrap>
@@ -4440,9 +4857,7 @@ function HandoverProgressRecords({
                     {getWorkspaceStatePresentation(state).label}
                   </Tag>
                 ) : null}
-                <Typography.Text type="secondary">
-                  请在当前交接工作台继续查看和处理
-                </Typography.Text>
+                <Typography.Text type="secondary">请在当前交接工作台继续查看和处理</Typography.Text>
               </Space>
             </List.Item>
           );
@@ -4462,14 +4877,10 @@ function FinanceProgressRecords({
   resolvedRecordIds: readonly string[];
   summary: OrderWorkspaceSummary | null;
 }) {
-  const guidance = summary?.guidance.filter(
-    (item) => item.category === "finance"
-  ) ?? [];
+  const guidance = summary?.guidance.filter((item) => item.category === "finance") ?? [];
   const targetIds = getOrderWorkspaceFallbackRecordIds(
     getOrderWorkspaceRecordIds(
-      summary?.primaryAction?.targetTab === "finance"
-        ? summary.primaryAction.targetRecordId
-        : null,
+      summary?.primaryAction?.targetTab === "finance" ? summary.primaryAction.targetRecordId : null,
       ...guidance.map((item) => item.targetRecordId)
     ),
     resolvedRecordIds
@@ -4495,9 +4906,7 @@ function FinanceProgressRecords({
         <List
           dataSource={targetIds}
           renderItem={(targetId) => {
-            const state = guidance.find(
-              (item) => item.targetRecordId === targetId
-            )?.state;
+            const state = guidance.find((item) => item.targetRecordId === targetId)?.state;
             return (
               <List.Item data-workspace-record={targetId}>
                 <Space wrap>
@@ -4507,9 +4916,7 @@ function FinanceProgressRecords({
                       {getWorkspaceStatePresentation(state).label}
                     </Tag>
                   ) : null}
-                  <Typography.Text type="secondary">
-                    请在现有财务模块继续查看和处理
-                  </Typography.Text>
+                  <Typography.Text type="secondary">请在现有财务模块继续查看和处理</Typography.Text>
                 </Space>
               </List.Item>
             );
@@ -4517,9 +4924,7 @@ function FinanceProgressRecords({
           size="small"
         />
       ) : (
-        <Typography.Text type="secondary">
-          当前没有需要定位的财务推进记录
-        </Typography.Text>
+        <Typography.Text type="secondary">当前没有需要定位的财务推进记录</Typography.Text>
       )}
     </Card>
   );
@@ -4705,10 +5110,7 @@ function SubscriptionClosureAdminPanel({
   );
 }
 
-function createWorkspaceDomainLoadStates(): Record<
-  OrderWorkspaceTabKey,
-  WorkspaceDomainLoadState
-> {
+function createWorkspaceDomainLoadStates(): Record<OrderWorkspaceTabKey, WorkspaceDomainLoadState> {
   return {
     change: { error: null, loaded: false, loading: false },
     contract: { error: null, loaded: false, loading: false },
@@ -4748,22 +5150,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }),
     []
   );
-  useEffect(
-    () => {
-      const scope = createOrderWorkspaceConfirmScope(
-        (config: Parameters<typeof modal.confirm>[0]) =>
-          modalConfirmRef.current(config)
-      );
-      scopedConfirmRef.current = scope;
-      return () => {
-        scope.destroy();
-        if (scopedConfirmRef.current === scope) {
-          scopedConfirmRef.current = null;
-        }
-      };
-    },
-    []
-  );
+  useEffect(() => {
+    const scope = createOrderWorkspaceConfirmScope((config: Parameters<typeof modal.confirm>[0]) =>
+      modalConfirmRef.current(config)
+    );
+    scopedConfirmRef.current = scope;
+    return () => {
+      scope.destroy();
+      if (scopedConfirmRef.current === scope) {
+        scopedConfirmRef.current = null;
+      }
+    };
+  }, []);
   const [changeForm] = Form.useForm<ChangeFormValues>();
   const [activeSubscriptionChangeForm] = Form.useForm<ActiveSubscriptionChangeFormValues>();
   const [assignExternalHandoverForm] = Form.useForm<AssignExternalHandoverFormValues>();
@@ -4785,24 +5183,17 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [assignExternalHandoverId, setAssignExternalHandoverId] = useState<string | null>(null);
   const [assignExternalHandoverOpen, setAssignExternalHandoverOpen] = useState(false);
   const [changeModalOpen, setChangeModalOpen] = useState(false);
-  const [activeSubscriptionChangeModalOpen, setActiveSubscriptionChangeModalOpen] =
-    useState(false);
+  const [activeSubscriptionChangeModalOpen, setActiveSubscriptionChangeModalOpen] = useState(false);
+  const [creatingActiveSubscriptionChange, setCreatingActiveSubscriptionChange] = useState(false);
   const [changes, setChanges] = useState<OrderChangeRow[]>([]);
   const [changesLoaded, setChangesLoaded] = useState(false);
   const [subscriptionChanges, setSubscriptionChanges] = useState<AdminSubscriptionChange[]>([]);
+  const [subscriptionChangeCapabilities, setSubscriptionChangeCapabilities] =
+    useState<SubscriptionChangeCapabilities | null>(null);
   const [subscriptionChangesLoaded, setSubscriptionChangesLoaded] = useState(false);
-  const activeSubscriptionChangeType = Form.useWatch(
-    "changeType",
-    activeSubscriptionChangeForm
-  );
-  const activeManagedOperation = Form.useWatch(
-    "managedOperation",
-    activeSubscriptionChangeForm
-  );
-  const activeSubscriptionPricingMode = Form.useWatch(
-    "pricingMode",
-    activeSubscriptionChangeForm
-  );
+  const activeSubscriptionChangeType = Form.useWatch("changeType", activeSubscriptionChangeForm);
+  const activeManagedOperation = Form.useWatch("managedOperation", activeSubscriptionChangeForm);
+  const activeSubscriptionPricingMode = Form.useWatch("pricingMode", activeSubscriptionChangeForm);
   const [confirmDeliveryModalOpen, setConfirmDeliveryModalOpen] = useState(false);
   const [confirmReturnModalOpen, setConfirmReturnModalOpen] = useState(false);
   const [deductDepositModalOpen, setDeductDepositModalOpen] = useState(false);
@@ -4813,31 +5204,29 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [handoverWorkOrdersLoading, setHandoverWorkOrdersLoading] = useState(false);
   const [handoverWorkOrdersLoadState, setHandoverWorkOrdersLoadState] =
     useState<HandoverWorkOrdersLoadState>("UNKNOWN");
-  const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] = useState<HandoverWorkOrderDetail | null>(null);
+  const [handoverWorkOrderDetail, setHandoverWorkOrderDetail] =
+    useState<HandoverWorkOrderDetail | null>(null);
   const [handoverWorkOrderDetailOpen, setHandoverWorkOrderDetailOpen] = useState(false);
   const [handoverActionLoading, setHandoverActionLoading] = useState<string | null>(null);
-  const [handoverESignErrors, setHandoverESignErrors] = useState<Record<string, string | undefined>>({});
-  const [handoverESignLoading, setHandoverESignLoading] = useState<Record<string, boolean | undefined>>({});
+  const [handoverESignErrors, setHandoverESignErrors] = useState<
+    Record<string, string | undefined>
+  >({});
+  const [handoverESignLoading, setHandoverESignLoading] = useState<
+    Record<string, boolean | undefined>
+  >({});
   const [handoverESignStatuses, setHandoverESignStatuses] = useState<
     Record<string, AdminStage2HandoverESignStatus | undefined>
   >({});
-  const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] =
-    useState(false);
+  const [stage2WorkflowRecoveryInFlight, setStage2WorkflowRecoveryInFlight] = useState(false);
   const [stage2FallbackOpen, setStage2FallbackOpen] = useState(false);
-  const [
-    stage2FallbackSourceArtifact,
-    setStage2FallbackSourceArtifact
-  ] = useState<
-    NonNullable<
-      AdminStage2HandoverESignStatus["sourceArtifact"]
-    > | null
-  >(null);
-  const [stage2FallbackWorkOrderId, setStage2FallbackWorkOrderId] =
-    useState<string | null>(null);
+  const [stage2FallbackSourceArtifact, setStage2FallbackSourceArtifact] = useState<NonNullable<
+    AdminStage2HandoverESignStatus["sourceArtifact"]
+  > | null>(null);
+  const [stage2FallbackWorkOrderId, setStage2FallbackWorkOrderId] = useState<string | null>(null);
   const [stage2VoidOpen, setStage2VoidOpen] = useState(false);
-  const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] =
-    useState<string | null>(null);
-  const [handoverResubmissionDetail, setHandoverResubmissionDetail] = useState<HandoverWorkOrderDetail | null>(null);
+  const [stage2VoidWorkOrderId, setStage2VoidWorkOrderId] = useState<string | null>(null);
+  const [handoverResubmissionDetail, setHandoverResubmissionDetail] =
+    useState<HandoverWorkOrderDetail | null>(null);
   const [handoverResubmissionOpen, setHandoverResubmissionOpen] = useState(false);
   const [consumeEntitlementModalOpen, setConsumeEntitlementModalOpen] = useState(false);
   const [consumeEntitlementSubmitting, setConsumeEntitlementSubmitting] = useState(false);
@@ -4851,9 +5240,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [entitlementUsagePageSize, setEntitlementUsagePageSize] = useState(10);
   const [entitlementUsageTotal, setEntitlementUsageTotal] = useState(0);
   const [entitlementUsages, setEntitlementUsages] = useState<OrderEntitlementUsage[]>([]);
-  const [entitlements, setEntitlements] = useState<OrderEntitlementsResponse>({ account: null, grants: [] });
+  const [entitlements, setEntitlements] = useState<OrderEntitlementsResponse>({
+    account: null,
+    grants: []
+  });
   const [expireEntitlementModalOpen, setExpireEntitlementModalOpen] = useState(false);
-  const [expireEntitlementResult, setExpireEntitlementResult] = useState<ExpireEntitlementsResponse | null>(null);
+  const [expireEntitlementResult, setExpireEntitlementResult] =
+    useState<ExpireEntitlementsResponse | null>(null);
   const [expiringEntitlements, setExpiringEntitlements] = useState(false);
   const [financeLoading, setFinanceLoading] = useState(false);
   const [financeSummary, setFinanceSummary] = useState<FinanceSummary | null>(null);
@@ -4865,9 +5258,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [generatingMonthlyRentBill, setGeneratingMonthlyRentBill] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [domainLoadStates, setDomainLoadStates] = useState(
-    createWorkspaceDomainLoadStates
-  );
+  const [domainLoadStates, setDomainLoadStates] = useState(createWorkspaceDomainLoadStates);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [journey, setJourney] = useState<AdminSubscriptionJourney | null>(null);
   const [subscriptionClosure, setSubscriptionClosure] =
@@ -4881,7 +5272,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const [refundDepositModalOpen, setRefundDepositModalOpen] = useState(false);
   const [refundingDeposit, setRefundingDeposit] = useState(false);
   const [renewEntitlementModalOpen, setRenewEntitlementModalOpen] = useState(false);
-  const [renewEntitlementResult, setRenewEntitlementResult] = useState<EntitlementRenewalResponse | null>(null);
+  const [renewEntitlementResult, setRenewEntitlementResult] =
+    useState<EntitlementRenewalResponse | null>(null);
   const [renewingEntitlements, setRenewingEntitlements] = useState(false);
   const [returnCheck, setReturnCheck] = useState<ReturnCheck | null>(null);
   const [serviceCases, setServiceCases] = useState<PortalServiceCase[]>([]);
@@ -4949,17 +5341,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const hasEntitlementViewPermission = permissions.has("entitlement:view");
   const hasOrderChangeView = permissions.has("order_change:view");
   const hasSubscriptionChangeView = permissions.has("subscription_change:view");
-  const visibleTabs = useMemo(
-    () => getVisibleOrderWorkspaceTabs(permissions),
-    [permissions]
-  );
+  const visibleTabs = useMemo(() => getVisibleOrderWorkspaceTabs(permissions), [permissions]);
   const activeTab = visibleTabs.includes(workspaceLocation.tab)
     ? workspaceLocation.tab
     : "overview";
   const activeTabRef = useRef<OrderWorkspaceTabKey>(activeTab);
   activeTabRef.current = activeTab;
-  const focus =
-    activeTab === workspaceLocation.tab ? workspaceLocation.focus : undefined;
+  const focus = activeTab === workspaceLocation.tab ? workspaceLocation.focus : undefined;
   const activeDomainState = domainLoadStates[activeTab];
   const activeDomainError = activeDomainState.error;
   const activeDomainLoading = activeDomainState.loading;
@@ -4977,16 +5365,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         customer: order?.customer,
         summaryLabel: summary?.header.customerLabel
       }),
-    [
-      hasCustomerViewPermission,
-      order?.customer,
-      summary?.header.customerLabel
-    ]
+    [hasCustomerViewPermission, order?.customer, summary?.header.customerLabel]
   );
   const canRecordReturnDamage = permissions.has("vehicle_return:damage_record");
   const canCreateChange = permissions.has("order_change:create");
   const canCreateSubscriptionChange = permissions.has("subscription_change:create");
-  const canRejectChange = permissions.has("order_change:reject") || permissions.has("order_change:approve");
+  const canRejectChange =
+    permissions.has("order_change:reject") || permissions.has("order_change:approve");
   const isAdminOrOperator = roles.has("ADMIN") || roles.has("OP") || roles.has("GM");
   const hasOrderReviewPermission = permissions.has("order:review");
   const canReviewCredit = hasOrderReviewPermission && (isAdminOrOperator || roles.has("RC"));
@@ -4996,13 +5381,25 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const canRejectCustomerOrder = permissions.has("order:reject") || isAdminOrOperator;
   const currentVehicleSalePrice = toNumber(
     order?.vehicle?.currentSalePriceAmount ??
-      getSnapshotValue(order?.quoteSnapshot, "vehicleSnapshot.currentSalePriceAmount", "vehicleSalePriceAmount")
+      getSnapshotValue(
+        order?.quoteSnapshot,
+        "vehicleSnapshot.currentSalePriceAmount",
+        "vehicleSalePriceAmount"
+      )
   );
-  const validInitialBills = useMemo(() => receivableBills.filter(validInitialBill), [receivableBills]);
+  const validInitialBills = useMemo(
+    () => receivableBills.filter(validInitialBill),
+    [receivableBills]
+  );
   const hasDepositBill = validInitialBills.some((bill) => bill.billType === "DEPOSIT");
-  const hasFirstMonthlyFeeBill = validInitialBills.some((bill) => bill.billType === "FIRST_MONTHLY_FEE");
+  const hasFirstMonthlyFeeBill = validInitialBills.some(
+    (bill) => bill.billType === "FIRST_MONTHLY_FEE"
+  );
   const unsettledBills = useMemo(
-    () => receivableBills.filter((bill) => bill.billStatus !== "CANCELLED" && hasPositiveAmount(bill.remainingAmount)),
+    () =>
+      receivableBills.filter(
+        (bill) => bill.billStatus !== "CANCELLED" && hasPositiveAmount(bill.remainingAmount)
+      ),
     [receivableBills]
   );
   const damageFeeBills = useMemo(
@@ -5025,12 +5422,10 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     actualDeliveryAt: order?.actualDeliveryAt,
     actualReturnAt: order?.actualReturnAt,
     deliveryAlreadyDelivered: deliveryCheck?.alreadyDelivered,
-    deliveryStatus:
-      deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null,
+    deliveryStatus: deliveryCheck?.deliveryStatus ?? delivery?.deliveryStatus ?? null,
     hasReturnRecord: Boolean(vehicleReturn),
     returnAlreadyCompleted: returnCheck?.alreadyReturned,
-    returnStatus:
-      returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null
+    returnStatus: returnCheck?.returnStatus ?? vehicleReturn?.returnStatus ?? null
   });
   const availableDepositBalance = getDepositAvailableBalance(depositSettlement);
   const damageFeeRemainingAmount = getDamageFeeRemainingAmount(depositSettlement);
@@ -5064,7 +5459,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       )
     : undefined;
   const orderHasInitialBillAmounts = Boolean(
-    order && hasNonNegativeAmount(initialDepositAmount) && hasPositiveAmount(initialMonthlyFeeAmount)
+    order &&
+    hasNonNegativeAmount(initialDepositAmount) &&
+    hasPositiveAmount(initialMonthlyFeeAmount)
   );
   const generateInitialBillsDisabledReason = !order
     ? "数据加载完成后才可操作"
@@ -5125,7 +5522,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       ? "没有可核销的未结清账单"
       : null;
   const writeOffTotalExceedsPayment = Boolean(
-    writeOffEnabled && watchedWriteOffTotalAmount > 0 && watchedWriteOffTotalAmount > watchedPaymentAmount
+    writeOffEnabled &&
+    watchedWriteOffTotalAmount > 0 &&
+    watchedWriteOffTotalAmount > watchedPaymentAmount
   );
   const isCustomerSelfServiceOrder = order?.orderSource === "CUSTOMER_SELF_SERVICE";
   const returnToPlanHint = isCustomerSelfServiceOrder
@@ -5134,8 +5533,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const activeOrderChange = hasOrderChangeView
     ? changes.find(
         (change) =>
-          !change.executedAt &&
-          (change.status === "PENDING" || change.status === "APPROVED")
+          !change.executedAt && (change.status === "PENDING" || change.status === "APPROVED")
       )
     : undefined;
   const activeSubscriptionChange = hasSubscriptionChangeView
@@ -5159,20 +5557,20 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const orderChangeLocked = changeGuard.locked;
   const canCancelActiveChange = Boolean(
     activeOrderChange &&
-      activeOrderChange.status === "PENDING" &&
-      (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
+    activeOrderChange.status === "PENDING" &&
+    (roles.has("ADMIN") || activeOrderChange.createdBy === me?.user.id)
   );
   const generateContractAvailability = changeGuard.waiting
     ? { allowed: false, reason: "订单变更状态加载完成后才可生成合同" }
     : orderChangeLocked
-    ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
-    : getGenerateContractAvailability(order, permissions);
+      ? { allowed: false, reason: "当前订单存在进行中的变更申请，请先处理后再生成合同" }
+      : getGenerateContractAvailability(order, permissions);
   const applyChangeAvailability = actionAvailability({
     allowed: Boolean(
       order &&
-        !changeGuard.waiting &&
-        !orderChangeLocked &&
-        PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
+      !changeGuard.waiting &&
+      !orderChangeLocked &&
+      PRE_CONTRACT_CHANGE_ORDER_STATUSES.has(order.orderStatus)
     ),
     disabledReason: changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
@@ -5183,21 +5581,32 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     permission: "order_change:create",
     permissions
   });
+  const enabledSubscriptionChangeTypes = useMemo(
+    () =>
+      (["EXTENSION", "VEHICLE_SWAP", "EARLY_TERMINATION", "MANAGED_OTHER"] as const).filter(
+        (changeType) => subscriptionChangeCapabilities?.changeTypes[changeType]?.enabled === true
+      ),
+    [subscriptionChangeCapabilities]
+  );
   const createSubscriptionChangeAvailability = actionAvailability({
     allowed: Boolean(
       order &&
-        hasSubscriptionChangeView &&
-        subscriptionChangesLoaded &&
-        order.orderStatus === "ACTIVE" &&
-        !activeSubscriptionChange
+      hasSubscriptionChangeView &&
+      subscriptionChangesLoaded &&
+      subscriptionChangeCapabilities &&
+      enabledSubscriptionChangeTypes.length > 0 &&
+      order.orderStatus === "ACTIVE" &&
+      !activeSubscriptionChange
     ),
     disabledReason: !hasSubscriptionChangeView
       ? "无查看在租合同变更权限"
-      : !subscriptionChangesLoaded
+      : !subscriptionChangesLoaded || !subscriptionChangeCapabilities
         ? "合同变更状态加载完成后才可发起变更"
-      : activeSubscriptionChange
-        ? `当前已有进行中的合同变更 ${activeSubscriptionChange.changeNo}`
-        : "仅在租订单可发起合同变更",
+        : enabledSubscriptionChangeTypes.length === 0
+          ? "当前环境未启用任何在租合同变更类型"
+          : activeSubscriptionChange
+            ? `当前已有进行中的合同变更 ${activeSubscriptionChange.changeNo}`
+            : "仅在租订单可发起合同变更",
     noPermissionReason: "无创建在租合同变更权限",
     permission: "subscription_change:create",
     permissions
@@ -5205,9 +5614,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const cancelOrderAvailability = actionAvailability({
     allowed: Boolean(
       order &&
-        !changeGuard.waiting &&
-        ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
-        !orderChangeLocked
+      !changeGuard.waiting &&
+      ["PENDING_CONTRACT", "PENDING_SIGN", "PENDING_PAYMENT"].includes(order.orderStatus) &&
+      !orderChangeLocked
     ),
     disabledReason: changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
@@ -5228,27 +5637,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     permission: "delivery:prepare",
     permissions
   });
-  const activeHandoverWorkOrders = handoverWorkOrders.filter(
-    isActiveHandoverWorkOrder
-  );
+  const activeHandoverWorkOrders = handoverWorkOrders.filter(isActiveHandoverWorkOrder);
   const activeHandoverWorkOrder = activeHandoverWorkOrders[0];
   const stage2SigningComplete =
     handoverWorkOrdersLoadState === "LOADED" &&
-    (
-      activeHandoverWorkOrders.length === 0 ||
-      (
-        activeHandoverWorkOrders.length === 1 &&
+    (activeHandoverWorkOrders.length === 0 ||
+      (activeHandoverWorkOrders.length === 1 &&
         activeHandoverWorkOrder !== undefined &&
-        getAdminStage2HandoverWorkflowDisplay(
-          handoverESignStatuses[activeHandoverWorkOrder.id],
-          {
-            customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
-            pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
-            workflowJobs: activeHandoverWorkOrder.workflowJobs
-          }
-        ).deliveryConfirmationAvailable
-      )
-    );
+        getAdminStage2HandoverWorkflowDisplay(handoverESignStatuses[activeHandoverWorkOrder.id], {
+          customerConfirmedAt: activeHandoverWorkOrder.customerConfirmedAt,
+          pdfStatus: activeHandoverWorkOrder.stage2Pdf?.status,
+          workflowJobs: activeHandoverWorkOrder.workflowJobs
+        }).deliveryConfirmationAvailable));
   const confirmDeliveryDisabledReason = changeGuard.waiting
     ? "订单变更状态加载完成后才可操作"
     : getConfirmDeliveryDisabledReason(
@@ -5270,16 +5670,16 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     : changeGuard.waiting
       ? "订单变更状态加载完成后才可操作"
       : orderChangeLocked
-      ? "当前订单存在进行中的变更申请"
-      : activeHandoverWorkOrder
-        ? "已存在进行中的交付工单"
-        : !deliveryCheck
-          ? "交付条件检查加载完成后才可操作"
-          : !deliveryCheck.canPrepareDelivery
-            ? deliveryCheck.blockingReasons[0] ?? "请先完成交付准备项"
-            : delivery?.deliveryStatus !== "READY"
-              ? "请先在车辆交付模块完成准备交付"
-              : null;
+        ? "当前订单存在进行中的变更申请"
+        : activeHandoverWorkOrder
+          ? "已存在进行中的交付工单"
+          : !deliveryCheck
+            ? "交付条件检查加载完成后才可操作"
+            : !deliveryCheck.canPrepareDelivery
+              ? (deliveryCheck.blockingReasons[0] ?? "请先完成交付准备项")
+              : delivery?.deliveryStatus !== "READY"
+                ? "请先在车辆交付模块完成准备交付"
+                : null;
   const createHandoverWorkOrderAvailability = actionAvailability({
     allowed: createHandoverWorkOrderDisabledReason === null,
     disabledReason: createHandoverWorkOrderDisabledReason ?? "请先完成交付准备项",
@@ -5375,21 +5775,26 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     permissions
   });
 
-  const loadEntitlementUsages = useCallback(async (orderId: string, page: number, pageSize: number) => {
-    setEntitlementUsageLoading(true);
-    try {
-      const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
-      const result = await apiFetch<OrderEntitlementUsageResponse>(`/orders/${orderId}/entitlement-usages?${query}`);
-      setEntitlementUsages(result.items);
-      setEntitlementUsageTotal(result.total);
-      setEntitlementUsagePage(result.page);
-      setEntitlementUsagePageSize(result.pageSize);
-    } catch (error) {
-      void message.error(getErrorMessage(error));
-    } finally {
-      setEntitlementUsageLoading(false);
-    }
-  }, [message]);
+  const loadEntitlementUsages = useCallback(
+    async (orderId: string, page: number, pageSize: number) => {
+      setEntitlementUsageLoading(true);
+      try {
+        const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+        const result = await apiFetch<OrderEntitlementUsageResponse>(
+          `/orders/${orderId}/entitlement-usages?${query}`
+        );
+        setEntitlementUsages(result.items);
+        setEntitlementUsageTotal(result.total);
+        setEntitlementUsagePage(result.page);
+        setEntitlementUsagePageSize(result.pageSize);
+      } catch (error) {
+        void message.error(getErrorMessage(error));
+      } finally {
+        setEntitlementUsageLoading(false);
+      }
+    },
+    [message]
+  );
 
   const refreshStage2HandoverESignStatus = useCallback(async (id: string) => {
     setHandoverESignLoading((current) => ({ ...current, [id]: true }));
@@ -5408,11 +5813,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   }, []);
 
   const navigateWorkspace = useCallback(
-    (target: {
-      createChange?: boolean;
-      focus?: string;
-      tab: OrderWorkspaceTabKey;
-    }) => {
+    (target: { createChange?: boolean; focus?: string; tab: OrderWorkspaceTabKey }) => {
       const location = buildOrderWorkspaceLocation({
         ...(target.createChange ? { createChange: true } : {}),
         ...(target.focus ? { focus: target.focus } : {}),
@@ -5429,9 +5830,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       if (!force && loadedResourcesRef.current.has("order") && orderRef.current) {
         return;
       }
-      const nextOrder = await apiFetch<OrderDetail>(
-        `/orders/${orderId}/workspace/detail`
-      );
+      const nextOrder = await apiFetch<OrderDetail>(`/orders/${orderId}/workspace/detail`);
       orderRef.current = nextOrder;
       setOrder(nextOrder);
       loadedResourcesRef.current.add("order");
@@ -5471,26 +5870,23 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         return;
       }
       await loadWorkspaceResource("changes", force, async () => {
-        const [legacyChanges, extensionChanges] = await Promise.all([
+        const [legacyChanges, extensionChanges, capabilities] = await Promise.all([
           hasOrderChangeView
             ? apiFetch<OrderChangeRow[]>(`/orders/${orderId}/changes`)
             : Promise.resolve([]),
           hasSubscriptionChangeView
             ? listSubscriptionChangesForOrder(orderId)
-            : Promise.resolve([])
+            : Promise.resolve([]),
+          hasSubscriptionChangeView ? getSubscriptionChangeCapabilities() : Promise.resolve(null)
         ]);
         setChanges(legacyChanges);
         setSubscriptionChanges(extensionChanges);
+        setSubscriptionChangeCapabilities(capabilities);
         setChangesLoaded(hasOrderChangeView);
         setSubscriptionChangesLoaded(hasSubscriptionChangeView);
       });
     },
-    [
-      hasOrderChangeView,
-      hasSubscriptionChangeView,
-      loadWorkspaceResource,
-      orderId
-    ]
+    [hasOrderChangeView, hasSubscriptionChangeView, loadWorkspaceResource, orderId]
   );
 
   const loadDepositSettlementDomain = useCallback(
@@ -5514,11 +5910,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         setDepositSettlementLoading(false);
       }
     },
-    [
-      hasDepositSettlementViewPermission,
-      loadWorkspaceResource,
-      orderId
-    ]
+    [hasDepositSettlementViewPermission, loadWorkspaceResource, orderId]
   );
 
   const loadHandoverDomain = useCallback(
@@ -5551,9 +5943,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               setHandoverWorkOrders(nextWorkOrders);
               setHandoverWorkOrdersLoadState("LOADED");
               await Promise.all(
-                nextWorkOrders.map((workOrder) =>
-                  refreshStage2HandoverESignStatus(workOrder.id)
-                )
+                nextWorkOrders.map((workOrder) => refreshStage2HandoverESignStatus(workOrder.id))
               );
             } catch (error) {
               setHandoverWorkOrdersLoadState("ERROR");
@@ -5565,10 +5955,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         );
       }
 
-      if (
-        hasReturnViewPermission &&
-        vehicleReturnWorkspaceState !== "HIDDEN"
-      ) {
+      if (hasReturnViewPermission && vehicleReturnWorkspaceState !== "HIDDEN") {
         loads.push(
           loadWorkspaceResource("vehicle-return", force, async () => {
             const [nextReturnCheck, nextReturn] = await Promise.all([
@@ -5612,9 +5999,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       try {
         await loadWorkspaceResource("entitlement", force, async () => {
           const [nextEntitlements, nextUsages] = await Promise.all([
-            apiFetch<OrderEntitlementsResponse>(
-              `/orders/${orderId}/entitlements`
-            ),
+            apiFetch<OrderEntitlementsResponse>(`/orders/${orderId}/entitlements`),
             apiFetch<OrderEntitlementUsageResponse>(
               `/orders/${orderId}/entitlement-usages?page=1&pageSize=10`
             )
@@ -5630,11 +6015,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         setEntitlementUsageLoading(false);
       }
     },
-    [
-      hasEntitlementViewPermission,
-      loadWorkspaceResource,
-      orderId
-    ]
+    [hasEntitlementViewPermission, loadWorkspaceResource, orderId]
   );
 
   const loadFinanceDomain = useCallback(
@@ -5720,10 +6101,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             `/service-cases?${query.toString()}`
           );
           let nextItems = result.items;
-          if (
-            focus &&
-            !nextItems.some((serviceCase) => serviceCase.id === focus)
-          ) {
+          if (focus && !nextItems.some((serviceCase) => serviceCase.id === focus)) {
             const focused = await apiFetch<PortalServiceCase>(
               `/orders/${encodeURIComponent(orderId)}/workspace/service-cases/${encodeURIComponent(focus)}`
             );
@@ -5896,9 +6274,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     try {
-      setSubscriptionClosure(
-        await loadAdminSubscriptionClosureByOrder(orderId, permissions)
-      );
+      setSubscriptionClosure(await loadAdminSubscriptionClosureByOrder(orderId, permissions));
     } catch {
       setSubscriptionClosure(null);
       void message.warning("订阅闭环刷新失败，请稍后重试");
@@ -5920,12 +6296,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       refreshTab: (tab) => loadActiveWorkspaceTab(tab, true)
     });
     await Promise.all([refreshJourney(), refreshSubscriptionClosure()]);
-  }, [
-    loadActiveWorkspaceTab,
-    loadWorkspaceSummary,
-    refreshJourney,
-    refreshSubscriptionClosure
-  ]);
+  }, [loadActiveWorkspaceTab, loadWorkspaceSummary, refreshJourney, refreshSubscriptionClosure]);
 
   useEffect(() => {
     loadedDomainsRef.current.clear();
@@ -5975,13 +6346,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     void loadActiveWorkspaceTab("service", true);
-  }, [
-    activeDomainState.loaded,
-    activeTab,
-    focus,
-    loadActiveWorkspaceTab,
-    serviceCases
-  ]);
+  }, [activeDomainState.loaded, activeTab, focus, loadActiveWorkspaceTab, serviceCases]);
 
   useEffect(() => {
     if (!focus || !focusAttemptKey) {
@@ -6016,7 +6381,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   async function viewHandoverWorkOrderDetail(id: string) {
     setHandoverActionLoading(`detail:${id}`);
     try {
-      const detail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+      const detail = await apiFetch<HandoverWorkOrderDetail>(
+        `/handover-work-orders/${encodeURIComponent(id)}`
+      );
       setHandoverWorkOrderDetail(detail);
       setHandoverWorkOrderDetailOpen(true);
     } catch (error) {
@@ -6054,14 +6421,19 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   ) {
     setHandoverActionLoading(`${action}:${id}`);
     try {
-      await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}/objection/${action}`, {
-        body: JSON.stringify(body),
-        method: "POST"
-      });
+      await apiFetch<HandoverWorkOrderDetail>(
+        `/handover-work-orders/${encodeURIComponent(id)}/objection/${action}`,
+        {
+          body: JSON.stringify(body),
+          method: "POST"
+        }
+      );
       void message.success(successMessage);
       await loadOrder();
       if (handoverWorkOrderDetail?.id === id) {
-        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(`/handover-work-orders/${encodeURIComponent(id)}`);
+        const nextDetail = await apiFetch<HandoverWorkOrderDetail>(
+          `/handover-work-orders/${encodeURIComponent(id)}`
+        );
         setHandoverWorkOrderDetail(nextDetail);
       }
     } catch (error) {
@@ -6132,17 +6504,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     id: string,
     recovery: AdminStage2HandoverWorkflowRecovery
   ) {
-    if (
-      !permissions.has("delivery:confirm") ||
-      stage2WorkflowRecoveryInFlightRef.current
-    ) {
+    if (!permissions.has("delivery:confirm") || stage2WorkflowRecoveryInFlightRef.current) {
       return;
     }
     stage2WorkflowRecoveryInFlightRef.current = true;
     setStage2WorkflowRecoveryInFlight(true);
-    setHandoverActionLoading(
-      `workflow-recovery:${id}:${recovery.jobId}`
-    );
+    setHandoverActionLoading(`workflow-recovery:${id}:${recovery.jobId}`);
     try {
       const executed = await runAdminStage2WorkflowRecovery({
         allowed: permissions.has("delivery:confirm"),
@@ -6150,10 +6517,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           if (selectedRecovery.kind === "RECONCILE_CUSTOMER") {
             await reconcileAdminStage2CustomerSignature(workOrderId);
           } else {
-            await retryAdminStage2WorkflowJob(
-              workOrderId,
-              selectedRecovery.jobId
-            );
+            await retryAdminStage2WorkflowJob(workOrderId, selectedRecovery.jobId);
           }
         },
         recovery,
@@ -6198,10 +6562,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     });
   }
 
-  async function refreshAfterStage2Action(
-    id: string,
-    status: AdminStage2HandoverESignStatus
-  ) {
+  async function refreshAfterStage2Action(id: string, status: AdminStage2HandoverESignStatus) {
     setHandoverESignStatuses((current) => ({ ...current, [id]: status }));
     setHandoverESignErrors((current) => ({ ...current, [id]: undefined }));
     await loadOrder();
@@ -6213,14 +6574,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
   }
 
-  async function runAdminStage2Fallback(
-    id: string,
-    values: Stage2FallbackFormValues
-  ) {
-    if (
-      !permissions.has("delivery:confirm") ||
-      stage2WorkflowRecoveryInFlightRef.current
-    ) {
+  async function runAdminStage2Fallback(id: string, values: Stage2FallbackFormValues) {
+    if (!permissions.has("delivery:confirm") || stage2WorkflowRecoveryInFlightRef.current) {
       return;
     }
     const sourceArtifact = stage2FallbackSourceArtifact;
@@ -6260,10 +6615,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     const status = handoverESignStatuses[id];
-    if (
-      !status?.canAdminInitiate ||
-      !status.sourceArtifact
-    ) {
+    if (!status?.canAdminInitiate || !status.sourceArtifact) {
       void message.warning("当前不满足后台兜底发起条件，请刷新状态");
       return;
     }
@@ -6297,18 +6649,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     const values = await stage2FallbackForm.validateFields();
-    const validationError =
-      validateAdminStage2HandoverFallbackReason(values.reason);
+    const validationError = validateAdminStage2HandoverFallbackReason(values.reason);
     if (validationError) {
-      stage2FallbackForm.setFields([
-        { errors: [validationError], name: "reason" }
-      ]);
+      stage2FallbackForm.setFields([{ errors: [validationError], name: "reason" }]);
       return;
     }
-    await runAdminStage2Fallback(
-      stage2FallbackWorkOrderId,
-      values
-    );
+    await runAdminStage2Fallback(stage2FallbackWorkOrderId, values);
   }
 
   function openAdminStage2Void(id: string) {
@@ -6338,13 +6684,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     const values = await stage2VoidForm.validateFields();
-    const validationError = validateAdminStage2HandoverVoidReason(
-      values.reason
-    );
+    const validationError = validateAdminStage2HandoverVoidReason(values.reason);
     if (validationError) {
-      stage2VoidForm.setFields([
-        { errors: [validationError], name: "reason" }
-      ]);
+      stage2VoidForm.setFields([{ errors: [validationError], name: "reason" }]);
       return;
     }
 
@@ -6353,10 +6695,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     setStage2WorkflowRecoveryInFlight(true);
     setHandoverActionLoading(`stage2-void:${id}`);
     try {
-      const status = await voidAdminStage2HandoverESign(
-        id,
-        values.reason
-      );
+      const status = await voidAdminStage2HandoverESign(id, values.reason);
       setStage2VoidOpen(false);
       setStage2VoidWorkOrderId(null);
       stage2VoidForm.resetFields();
@@ -6386,15 +6725,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
     setHandoverActionLoading(`assign:${assignExternalHandoverId}`);
     try {
-      await apiFetch(`/handover-work-orders/${encodeURIComponent(assignExternalHandoverId)}/assign-external`, {
-        body: JSON.stringify({
-          expiresAt: values.expiresAt?.toISOString(),
-          name: values.name.trim(),
-          organization: values.organization?.trim() || undefined,
-          phone: values.phone.trim()
-        }),
-        method: "POST"
-      });
+      await apiFetch(
+        `/handover-work-orders/${encodeURIComponent(assignExternalHandoverId)}/assign-external`,
+        {
+          body: JSON.stringify({
+            expiresAt: values.expiresAt?.toISOString(),
+            name: values.name.trim(),
+            organization: values.organization?.trim() || undefined,
+            phone: values.phone.trim()
+          }),
+          method: "POST"
+        }
+      );
       void message.success("Field 交付人员已指派");
       setAssignExternalHandoverOpen(false);
       setAssignExternalHandoverId(null);
@@ -6411,16 +6753,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     if (!id) {
       return;
     }
-    await runHandoverObjectionAction(
-      id,
-      "request-resubmission",
-      "已要求现场重新提交资料",
-      {
-        note: values.note.trim(),
-        targetEvidenceItemIds: values.targetEvidenceItemIds ?? [],
-        targetFieldKeys: values.targetFieldKeys ?? []
-      }
-    );
+    await runHandoverObjectionAction(id, "request-resubmission", "已要求现场重新提交资料", {
+      note: values.note.trim(),
+      targetEvidenceItemIds: values.targetEvidenceItemIds ?? [],
+      targetFieldKeys: values.targetFieldKeys ?? []
+    });
     setHandoverResubmissionOpen(false);
     setHandoverResubmissionDetail(null);
   }
@@ -6444,7 +6781,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     if (order.orderStatus !== "ACTIVE") {
-      void message.error("仅在租订单可发起续期、换车、提前结束或其他合同变更。");
+      void message.error("仅在租订单可发起续期、换车、提前结束或其他受控变更。");
       return;
     }
     if (activeSubscriptionChange) {
@@ -6453,7 +6790,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
     activeSubscriptionChangeForm.resetFields();
     activeSubscriptionChangeForm.setFieldsValue({
-      changeType: "EXTENSION",
+      changeType: enabledSubscriptionChangeTypes[0],
       extensionMonths: 6,
       managedOperation: "UPDATE_CONTACT_PREFERENCE",
       pricingMode: "CURRENT_VERSION"
@@ -6463,6 +6800,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     activeSubscriptionChange,
     activeSubscriptionChangeForm,
     canCreateSubscriptionChange,
+    enabledSubscriptionChangeTypes,
     message,
     order,
     subscriptionChangesLoaded
@@ -6477,18 +6815,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     if (authLoading) {
       return;
     }
-    if (
-      autoOpenChangeRequestedRef.current &&
-      !visibleTabs.includes("change")
-    ) {
+    if (autoOpenChangeRequestedRef.current && !visibleTabs.includes("change")) {
       autoOpenChangeRequestedRef.current = false;
       return;
     }
-    if (
-      autoOpenChangeRequestedRef.current &&
-      activeTab !== "change" &&
-      !autoOpenChangeModalDone
-    ) {
+    if (autoOpenChangeRequestedRef.current && activeTab !== "change" && !autoOpenChangeModalDone) {
       navigateWorkspace({ createChange: true, tab: "change" });
       return;
     }
@@ -6556,7 +6887,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       await stage2DeliveryConfirmationController.run({
         boundary: "MODAL_OPEN",
         onAllowed: async () => {
-          const nextDeliveryCheck = await apiFetch<DeliveryCheck>(`/orders/${order.id}/delivery-check`);
+          const nextDeliveryCheck = await apiFetch<DeliveryCheck>(
+            `/orders/${order.id}/delivery-check`
+          );
           setDeliveryCheck(nextDeliveryCheck);
           const defaults = nextDeliveryCheck.confirmationDefaults;
           if (!defaults) {
@@ -6600,7 +6933,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   function openConfirmReturnModal() {
     confirmReturnForm.setFieldsValue({
       batteryCheckedConfirmed: vehicleReturn?.batteryCheckedConfirmed ?? false,
-      chargingEquipmentReturnedConfirmed: vehicleReturn?.chargingEquipmentReturnedConfirmed ?? false,
+      chargingEquipmentReturnedConfirmed:
+        vehicleReturn?.chargingEquipmentReturnedConfirmed ?? false,
       cleaningRequired: vehicleReturn?.cleaningRequired ?? false,
       customerItemsClearedConfirmed: vehicleReturn?.customerItemsClearedConfirmed ?? false,
       damageFound: vehicleReturn?.damageFound ?? false,
@@ -6681,13 +7015,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     refundDepositForm.resetFields();
   }
 
-  async function refreshEntitlementData(page = entitlementUsagePage, pageSize = entitlementUsagePageSize) {
+  async function refreshEntitlementData(
+    page = entitlementUsagePage,
+    pageSize = entitlementUsagePageSize
+  ) {
     if (!order || !hasEntitlementViewPermission) {
       return;
     }
     setEntitlementLoading(true);
     try {
-      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(`/orders/${order.id}/entitlements`);
+      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(
+        `/orders/${order.id}/entitlements`
+      );
       setEntitlements(nextEntitlements);
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -6704,11 +7043,16 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     const hadAccount = Boolean(entitlements.account);
     setGeneratingEntitlements(true);
     try {
-      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(`/orders/${order.id}/entitlements/generate`, {
-        method: "POST"
-      });
+      const nextEntitlements = await apiFetch<OrderEntitlementsResponse>(
+        `/orders/${order.id}/entitlements/generate`,
+        {
+          method: "POST"
+        }
+      );
       setEntitlements(nextEntitlements);
-      void message.success(hadAccount ? "该订单已生成权益账户，已刷新权益信息。" : "订单权益已生成");
+      void message.success(
+        hadAccount ? "该订单已生成权益账户，已刷新权益信息。" : "订单权益已生成"
+      );
       await loadEntitlementUsages(order.id, entitlementUsagePage, entitlementUsagePageSize);
     } catch (error) {
       void message.error(getErrorMessage(error));
@@ -6751,10 +7095,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     renewEntitlementForm.setFieldsValue({ dryRun });
     setRenewingEntitlements(true);
     try {
-      const result = await apiFetch<EntitlementRenewalResponse>(`/orders/${order.id}/entitlements/renew-monthly`, {
-        body: JSON.stringify({ asOfDate, dryRun }),
-        method: "POST"
-      });
+      const result = await apiFetch<EntitlementRenewalResponse>(
+        `/orders/${order.id}/entitlements/renew-monthly`,
+        {
+          body: JSON.stringify({ asOfDate, dryRun }),
+          method: "POST"
+        }
+      );
       setRenewEntitlementResult(result);
       const text = getRenewalResultText(result);
       if (dryRun) {
@@ -6943,9 +7290,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
     setGeneratingMonthlyRentBill(true);
     try {
-      const bill = await apiFetch<MonthlyRentBillResponse>(`/orders/${order.id}/generate-next-monthly-bill`, {
-        method: "POST"
-      });
+      const bill = await apiFetch<MonthlyRentBillResponse>(
+        `/orders/${order.id}/generate-next-monthly-bill`,
+        {
+          method: "POST"
+        }
+      );
       void message.success(
         bill.created === false ? "该账期月租账单已存在，已刷新账单列表" : "下一期月租账单已生成"
       );
@@ -6963,9 +7313,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
     setGeneratingDamageFeeBill(true);
     try {
-      const bill = await apiFetch<DamageFeeBillResponse>(`/orders/${order.id}/generate-damage-fee-bill`, {
-        method: "POST"
-      });
+      const bill = await apiFetch<DamageFeeBillResponse>(
+        `/orders/${order.id}/generate-damage-fee-bill`,
+        {
+          method: "POST"
+        }
+      );
       void message.success(
         bill.created === false ? "损伤费用账单已存在，已刷新结算信息。" : "损伤费用账单已生成"
       );
@@ -7108,7 +7461,10 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         return;
       }
 
-      const writeOffTotalAmount = writeOffItemsPayload.reduce((sum, item) => sum + item.writeOffAmount, 0);
+      const writeOffTotalAmount = writeOffItemsPayload.reduce(
+        (sum, item) => sum + item.writeOffAmount,
+        0
+      );
       if (writeOffTotalAmount > paymentAmount) {
         void message.error("核销金额不能超过收款金额");
         return;
@@ -7214,20 +7570,19 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
     }
     const values = await confirmDeliveryForm.validateFields();
     try {
-      const submitted =
-        await stage2DeliveryConfirmationController.run({
-          boundary: "BEFORE_POST",
-          onAllowed: () =>
-            apiFetch(`/orders/${order.id}/confirm-delivery`, {
-              body: JSON.stringify({
-                deliveredAt: values.deliveredAt!.toISOString(),
-                handoverMileageKm: values.handoverMileageKm,
-                remark: values.remark
-              }),
-              method: "POST"
+      const submitted = await stage2DeliveryConfirmationController.run({
+        boundary: "BEFORE_POST",
+        onAllowed: () =>
+          apiFetch(`/orders/${order.id}/confirm-delivery`, {
+            body: JSON.stringify({
+              deliveredAt: values.deliveredAt!.toISOString(),
+              handoverMileageKm: values.handoverMileageKm,
+              remark: values.remark
             }),
-          orderId: order.id
-        });
+            method: "POST"
+          }),
+        orderId: order.id
+      });
       if (!submitted) {
         return;
       }
@@ -7267,7 +7622,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       return;
     }
     const values = await confirmReturnForm.validateFields();
-    const damageRows = canRecordReturnDamage ? values.damages ?? [] : [];
+    const damageRows = canRecordReturnDamage ? (values.damages ?? []) : [];
     const damages = damageRows
       .filter(
         (damage) =>
@@ -7404,85 +7759,92 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   }
 
   async function createActiveSubscriptionChange() {
-    if (!order) return;
-    const values = await activeSubscriptionChangeForm.validateFields();
-    let input: CreateSubscriptionChangeInput;
-    switch (values.changeType) {
-      case "EXTENSION":
-        input = {
-          changeType: "EXTENSION",
-          detail: {
-            ...(values.discountedMonthlyFeeAmount?.trim()
-              ? { discountedMonthlyFeeAmount: values.discountedMonthlyFeeAmount.trim() }
-              : {}),
-            extensionMonths: values.extensionMonths!,
-            ...(values.priceOverrideReason?.trim()
-              ? { priceOverrideReason: values.priceOverrideReason.trim() }
-              : {}),
-            pricingMode: values.pricingMode!,
-            ...(values.requestedVehicleBaseFeeAmount?.trim()
-              ? { requestedVehicleBaseFeeAmount: values.requestedVehicleBaseFeeAmount.trim() }
-              : {}),
-            ...(values.subscriptionPlanId?.trim()
-              ? { subscriptionPlanId: values.subscriptionPlanId.trim() }
-              : {})
-          },
-          orderId: order.id
-        };
-        break;
-      case "VEHICLE_SWAP":
-        input = {
-          changeType: "VEHICLE_SWAP",
-          detail: {
-            plannedSwapAt: values.plannedSwapAt!.toISOString(),
-            targetSubscriptionPlanId: values.targetSubscriptionPlanId!.trim(),
-            targetVehicleId: values.targetVehicleId!.trim(),
-            ...(values.targetVehiclePackageId?.trim()
-              ? { targetVehiclePackageId: values.targetVehiclePackageId.trim() }
-              : {})
-          },
-          orderId: order.id
-        };
-        break;
-      case "EARLY_TERMINATION":
-        input = {
-          changeType: "EARLY_TERMINATION",
-          detail: {
-            effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
-            reason: values.reason!.trim()
-          },
-          orderId: order.id
-        };
-        break;
-      case "MANAGED_OTHER": {
-        const operation = values.managedOperation!;
-        const contactPreference = operation === "UPDATE_CONTACT_PREFERENCE";
-        input = {
-          changeType: "MANAGED_OTHER",
-          detail: {
-            beforeSnapshot: contactPreference
-              ? { preferredChannel: values.beforePreferredChannel }
-              : { description: "以关联证据和当前合同事实为准" },
-            effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
-            evidence: [{ reference: values.evidenceReference!.trim() }],
-            operation,
-            operationPayload: contactPreference
-              ? {
-                  ...(values.contactWindow?.trim()
-                    ? { contactWindow: values.contactWindow.trim() }
-                    : {}),
-                  preferredChannel: values.preferredChannel
-                }
-              : { description: values.managedDescription!.trim() },
-            reason: values.reason!.trim()
-          },
-          orderId: order.id
-        };
-        break;
-      }
-    }
-
+    if (!order || creatingActiveSubscriptionChange) return;
+    setCreatingActiveSubscriptionChange(true);
     try {
+      const values = await activeSubscriptionChangeForm.validateFields();
+      if (
+        !values.changeType ||
+        subscriptionChangeCapabilities?.changeTypes[values.changeType]?.enabled !== true
+      ) {
+        void message.error("当前环境未启用所选合同变更类型，请刷新后重试");
+        return;
+      }
+      let input: CreateSubscriptionChangeInput;
+      switch (values.changeType) {
+        case "EXTENSION":
+          input = {
+            changeType: "EXTENSION",
+            detail: {
+              ...(values.discountedMonthlyFeeAmount?.trim()
+                ? { discountedMonthlyFeeAmount: values.discountedMonthlyFeeAmount.trim() }
+                : {}),
+              extensionMonths: values.extensionMonths!,
+              ...(values.priceOverrideReason?.trim()
+                ? { priceOverrideReason: values.priceOverrideReason.trim() }
+                : {}),
+              pricingMode: values.pricingMode!,
+              ...(values.requestedVehicleBaseFeeAmount?.trim()
+                ? { requestedVehicleBaseFeeAmount: values.requestedVehicleBaseFeeAmount.trim() }
+                : {}),
+              ...(values.subscriptionPlanId?.trim()
+                ? { subscriptionPlanId: values.subscriptionPlanId.trim() }
+                : {})
+            },
+            orderId: order.id
+          };
+          break;
+        case "VEHICLE_SWAP":
+          input = {
+            changeType: "VEHICLE_SWAP",
+            detail: {
+              plannedSwapAt: values.plannedSwapAt!.toISOString(),
+              targetSubscriptionPlanId: values.targetSubscriptionPlanId!.trim(),
+              targetVehicleId: values.targetVehicleId!.trim(),
+              ...(values.targetVehiclePackageId?.trim()
+                ? { targetVehiclePackageId: values.targetVehiclePackageId.trim() }
+                : {})
+            },
+            orderId: order.id
+          };
+          break;
+        case "EARLY_TERMINATION":
+          input = {
+            changeType: "EARLY_TERMINATION",
+            detail: {
+              effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
+              reason: values.reason!.trim()
+            },
+            orderId: order.id
+          };
+          break;
+        case "MANAGED_OTHER": {
+          const operation = values.managedOperation!;
+          const contactPreference = operation === "UPDATE_CONTACT_PREFERENCE";
+          input = {
+            changeType: "MANAGED_OTHER",
+            detail: {
+              beforeSnapshot: contactPreference
+                ? { preferredChannel: values.beforePreferredChannel }
+                : { description: "以关联证据和当前合同事实为准" },
+              effectiveDate: values.effectiveDate!.format("YYYY-MM-DD"),
+              evidence: [{ reference: values.evidenceReference!.trim() }],
+              operation,
+              operationPayload: contactPreference
+                ? {
+                    ...(values.contactWindow?.trim()
+                      ? { contactWindow: values.contactWindow.trim() }
+                      : {}),
+                    preferredChannel: values.preferredChannel
+                  }
+                : { description: values.managedDescription!.trim() },
+              reason: values.reason!.trim()
+            },
+            orderId: order.id
+          };
+          break;
+        }
+      }
       const created = await createSubscriptionChange(input);
       void message.success("在租合同变更已创建");
       closeActiveSubscriptionChangeModal();
@@ -7490,6 +7852,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       router.push(`/subscription-changes/${encodeURIComponent(created.id)}`);
     } catch (error) {
       void message.error(getErrorMessage(error));
+    } finally {
+      setCreatingActiveSubscriptionChange(false);
     }
   }
 
@@ -7524,20 +7888,37 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   }
 
   const changeColumns: ColumnsType<OrderChangeRow> = [
-    { dataIndex: "changeType", render: (value: string) => labelOf(ORDER_CHANGE_TYPE_LABELS, value), title: "变更类型" },
+    {
+      dataIndex: "changeType",
+      render: (value: string) => labelOf(ORDER_CHANGE_TYPE_LABELS, value),
+      title: "变更类型"
+    },
     { dataIndex: "reason", title: "变更原因" },
-    { dataIndex: "status", render: (value: string) => <Tag>{labelOf(STATUS_LABELS, value)}</Tag>, title: "状态" },
-    { dataIndex: "creator", render: (value?: OrderChangeRow["creator"]) => value?.name ?? "-", title: "创建人" },
+    {
+      dataIndex: "status",
+      render: (value: string) => <Tag>{labelOf(STATUS_LABELS, value)}</Tag>,
+      title: "状态"
+    },
+    {
+      dataIndex: "creator",
+      render: (value?: OrderChangeRow["creator"]) => value?.name ?? "-",
+      title: "创建人"
+    },
     { dataIndex: "createdAt", render: formatTime, title: "创建时间" },
     {
       dataIndex: "executedAt",
-      render: (value?: string | null) => value ? <Tag color="green">已退回 / {formatTime(value)}</Tag> : <Tag>未退回</Tag>,
+      render: (value?: string | null) =>
+        value ? <Tag color="green">已退回 / {formatTime(value)}</Tag> : <Tag>未退回</Tag>,
       title: "退回状态"
     },
     {
       render: (_, record) => {
         const cancelChangeAvailability = actionAvailability({
-          allowed: Boolean(record.status === "PENDING" && !record.executedAt && (roles.has("ADMIN") || record.createdBy === me?.user.id)),
+          allowed: Boolean(
+            record.status === "PENDING" &&
+            !record.executedAt &&
+            (roles.has("ADMIN") || record.createdBy === me?.user.id)
+          ),
           disabledReason: record.executedAt ? "该变更已执行" : "当前变更状态不允许取消",
           permissions
         });
@@ -7598,12 +7979,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const visibleGuideSummary = summary
     ? {
         ...summary,
-        guidance: summary.guidance.filter((item) =>
-          visibleTabs.includes(item.targetTab)
-        ),
+        guidance: summary.guidance.filter((item) => visibleTabs.includes(item.targetTab)),
         primaryAction:
-          summary.primaryAction &&
-          visibleTabs.includes(summary.primaryAction.targetTab)
+          summary.primaryAction && visibleTabs.includes(summary.primaryAction.targetTab)
             ? summary.primaryAction
             : null
       }
@@ -7611,19 +7989,14 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   const workspaceHeader: OrderWorkspaceHeaderData = summary
     ? {
         ...summary.header,
-        orderStatusLabel: labelOf(
-          ORDER_STATUS_LABELS,
-          summary.header.orderStatus
-        )
+        orderStatusLabel: labelOf(ORDER_STATUS_LABELS, summary.header.orderStatus)
       }
     : {
         currentVehicleLabel: null,
         customerLabel: authLoading ? "加载中" : "-",
         orderNo: order?.orderNo ?? "订单工作台",
         orderStatus: order?.orderStatus ?? "LOADING",
-        orderStatusLabel: order
-          ? labelOf(ORDER_STATUS_LABELS, order.orderStatus)
-          : "加载中",
+        orderStatusLabel: order ? labelOf(ORDER_STATUS_LABELS, order.orderStatus) : "加载中",
         ownerLabel: null
       };
   const workspaceOverflowActions: OrderWorkspaceHeaderAction[] = [];
@@ -7660,16 +8033,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       label: "取消订单",
       onClick: cancelOrder
     });
-    if (
-      order.orderStatus === "CANCELLED" &&
-      order.application &&
-      !isCustomerSelfServiceOrder
-    ) {
+    if (order.orderStatus === "CANCELLED" && order.application && !isCustomerSelfServiceOrder) {
       workspaceOverflowActions.push({
         key: "return-application",
         label: "返回进件重新生成方案",
-        onClick: () =>
-          router.push(`/applications/${order.application?.id}`)
+        onClick: () => router.push(`/applications/${order.application?.id}`)
       });
     }
   }
@@ -7719,11 +8087,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
       case "contract":
         content = order ? (
           <>
-            <div
-              {...(order.contract
-                ? { "data-workspace-record": order.contract.id }
-                : {})}
-            >
+            <div {...(order.contract ? { "data-workspace-record": order.contract.id } : {})}>
               <Card
                 extra={
                   <Space wrap>
@@ -7737,11 +8101,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                       </ActionButton>
                     )}
                     {order.contract ? (
-                      <Button
-                        onClick={() =>
-                          router.push(`/contracts/${order.contract?.id}`)
-                        }
-                      >
+                      <Button onClick={() => router.push(`/contracts/${order.contract?.id}`)}>
                         查看合同
                       </Button>
                     ) : null}
@@ -7764,9 +8124,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                       label: "合同状态"
                     },
                     {
-                      children: (
-                        <ReviewStatusTag value={order.productReviewStatus} />
-                      ),
+                      children: <ReviewStatusTag value={order.productReviewStatus} />,
                       label: "产品匹配审核"
                     },
                     {
@@ -7795,12 +8153,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             <HandoverProgressRecords
               resolvedRecordIds={getOrderWorkspaceRecordIds(
                 ...handoverWorkOrders.map((workOrder) => workOrder.id),
-                ...handoverWorkOrders.map(
-                  (workOrder) => workOrder.handoverId
-                ),
-                ...Object.values(handoverESignStatuses).map(
-                  (status) => status?.handoverId
-                )
+                ...handoverWorkOrders.map((workOrder) => workOrder.handoverId),
+                ...Object.values(handoverESignStatuses).map((status) => status?.handoverId)
               )}
               summary={summary}
             />
@@ -7846,18 +8200,15 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 workOrders={handoverWorkOrders}
               />
             ) : null}
-            {hasReturnViewPermission &&
-            vehicleReturnWorkspaceState === "ENTRY" ? (
+            {hasReturnViewPermission && vehicleReturnWorkspaceState === "ENTRY" ? (
               <VehicleReturnEntry
                 onOpenPrepare={openPrepareReturnModal}
                 prepareAvailability={prepareReturnAvailability}
               />
             ) : null}
             {hasReturnViewPermission &&
-            (
-              vehicleReturnWorkspaceState === "WORKFLOW" ||
-              vehicleReturnWorkspaceState === "COMPLETED"
-            ) ? (
+            (vehicleReturnWorkspaceState === "WORKFLOW" ||
+              vehicleReturnWorkspaceState === "COMPLETED") ? (
               <ReturnPanel
                 confirmAvailability={confirmReturnAvailability}
                 onOpenConfirm={openConfirmReturnModal}
@@ -7916,9 +8267,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               resolvedRecordIds={getOrderWorkspaceRecordIds(
                 ...receivableBills.map((bill) => bill.id),
                 ...autoDebitAttempts.map((attempt) => attempt.id),
-                ...(depositSettlement?.depositLedgers ?? []).map(
-                  (ledger) => ledger.id
-                )
+                ...(depositSettlement?.depositLedgers ?? []).map((ledger) => ledger.id)
               )}
               summary={summary}
             />
@@ -7927,9 +8276,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 bills={receivableBills}
                 financeLoading={financeLoading}
                 generateAvailability={generateInitialBillsAvailability}
-                generateMonthlyRentAvailability={
-                  generateMonthlyRentAvailability
-                }
+                generateMonthlyRentAvailability={generateMonthlyRentAvailability}
                 generatingBills={generatingBills}
                 generatingMonthlyRentBill={generatingMonthlyRentBill}
                 journeyManaged={Boolean(journey)}
@@ -7974,7 +8321,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               <Card
                 extra={
                   <Typography.Text type="secondary">
-                    合同续订 / 协议延长、换车、提前结束、其他合同变更
+                    合同续订 / 协议延长、换车、提前结束、其他受控变更
                   </Typography.Text>
                 }
                 title="在租合同变更"
@@ -8012,13 +8359,18 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                           }
                           title={
                             <Space wrap>
-                              <Typography.Text strong>{subscriptionChange.changeNo}</Typography.Text>
+                              <Typography.Text strong>
+                                {subscriptionChange.changeNo}
+                              </Typography.Text>
                               <Tag>
                                 {SUBSCRIPTION_CHANGE_TYPE_LABELS[subscriptionChange.changeType] ??
                                   subscriptionChange.changeType}
                               </Tag>
-                              <Tag color={subscriptionChange.status === "COMPLETED" ? "green" : "blue"}>
-                                {SUBSCRIPTION_CHANGE_STATUS_LABELS[subscriptionChange.status] ?? subscriptionChange.status}
+                              <Tag
+                                color={subscriptionChange.status === "COMPLETED" ? "green" : "blue"}
+                              >
+                                {SUBSCRIPTION_CHANGE_STATUS_LABELS[subscriptionChange.status] ??
+                                  subscriptionChange.status}
                               </Tag>
                             </Space>
                           }
@@ -8055,13 +8407,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             ) : null}
             {hasOrderChangeView ? (
               <Space style={{ justifyContent: "flex-end", width: "100%" }}>
-              <ActionButton
-                availability={applyChangeAvailability}
-                onClick={openChangeModal}
-                type="primary"
-              >
-                交付前退回重做方案
-              </ActionButton>
+                <ActionButton
+                  availability={applyChangeAvailability}
+                  onClick={openChangeModal}
+                  type="primary"
+                >
+                  交付前退回重做方案
+                </ActionButton>
               </Space>
             ) : null}
             {hasOrderChangeView && activeOrderChange ? (
@@ -8080,9 +8432,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                       allowed={activeOrderChange.status === "PENDING"}
                       disabledReason="当前变更状态不允许审批"
                       noPermissionReason="无审批订单变更权限"
-                      onClick={() =>
-                        reviewChange(activeOrderChange.id, "approve")
-                      }
+                      onClick={() => reviewChange(activeOrderChange.id, "approve")}
                       permission="order_change:approve"
                       permissions={permissions}
                       size="small"
@@ -8094,10 +8444,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                       availability={
                         canRejectChange
                           ? actionAvailability({
-                              allowed:
-                                activeOrderChange.status === "PENDING",
-                              disabledReason:
-                                "当前变更状态不允许拒绝",
+                              allowed: activeOrderChange.status === "PENDING",
+                              disabledReason: "当前变更状态不允许拒绝",
                               permissions
                             })
                           : {
@@ -8106,22 +8454,14 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                             }
                       }
                       danger
-                      onClick={() =>
-                        reviewChange(activeOrderChange.id, "reject")
-                      }
+                      onClick={() => reviewChange(activeOrderChange.id, "reject")}
                       size="small"
                     >
                       拒绝变更
                     </ActionButton>
                     <ActionButton
-                      availability={canExecuteOrderChange(
-                        activeOrderChange,
-                        order,
-                        permissions
-                      )}
-                      onClick={() =>
-                        returnChangeToPlan(activeOrderChange.id)
-                      }
+                      availability={canExecuteOrderChange(activeOrderChange, order, permissions)}
+                      onClick={() => returnChangeToPlan(activeOrderChange.id)}
                       size="small"
                       type="primary"
                     >
@@ -8139,9 +8479,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               <Alert
                 action={
                   !isCustomerSelfServiceOrder && order.application ? (
-                    <Link href={`/applications/${order.application.id}`}>
-                      返回进件重新生成方案
-                    </Link>
+                    <Link href={`/applications/${order.application.id}`}>返回进件重新生成方案</Link>
                   ) : undefined
                 }
                 description={returnToPlanHint}
@@ -8150,21 +8488,23 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 type="info"
               />
             ) : null}
-            {hasOrderChangeView ? <Card title="旧版订单变更记录">
-              <Table
-                columns={changeColumns}
-                dataSource={changes}
-                onRow={(change) =>
-                  ({
-                    "data-workspace-record": change.id
-                  }) as HTMLAttributes<HTMLTableRowElement>
-                }
-                pagination={false}
-                rowKey="id"
-                scroll={{ x: 1280 }}
-                size="small"
-              />
-            </Card> : null}
+            {hasOrderChangeView ? (
+              <Card title="旧版订单变更记录">
+                <Table
+                  columns={changeColumns}
+                  dataSource={changes}
+                  onRow={(change) =>
+                    ({
+                      "data-workspace-record": change.id
+                    }) as HTMLAttributes<HTMLTableRowElement>
+                  }
+                  pagination={false}
+                  rowKey="id"
+                  scroll={{ x: 1280 }}
+                  size="small"
+                />
+              </Card>
+            ) : null}
             {hasOrderChangeView ? <OrderChangeSnapshots changes={changes} /> : null}
           </>
         ) : null;
@@ -8179,12 +8519,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         style={{ width: "100%" }}
       >
         {authError ? (
-          <Alert
-            description={authError}
-            message="权限信息加载失败"
-            showIcon
-            type="error"
-          />
+          <Alert description={authError} message="权限信息加载失败" showIcon type="error" />
         ) : null}
         {activeDomainError ? (
           <Alert
@@ -8211,9 +8546,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
   }
 
   const stage2FallbackPdfDownloadUrl = stage2FallbackWorkOrderId
-    ? buildAdminStage2HandoverPdfDownloadUrl(
-        stage2FallbackWorkOrderId
-      )
+    ? buildAdminStage2HandoverPdfDownloadUrl(stage2FallbackWorkOrderId)
     : null;
 
   return (
@@ -8242,10 +8575,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         ) : null}
 
         {visibleGuideSummary ? (
-          <OrderTransactionGuide
-            onNavigate={navigateWorkspace}
-            summary={visibleGuideSummary}
-          />
+          <OrderTransactionGuide onNavigate={navigateWorkspace} summary={visibleGuideSummary} />
         ) : (
           <section
             aria-label="订单推进指引"
@@ -8270,9 +8600,15 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           canHandleObjection={permissions.has("delivery:confirm")}
           canRecoverWorkflow={permissions.has("delivery:confirm")}
           detail={handoverWorkOrderDetail}
-          esignError={handoverWorkOrderDetail ? handoverESignErrors[handoverWorkOrderDetail.id] : undefined}
-          esignLoading={Boolean(handoverWorkOrderDetail && handoverESignLoading[handoverWorkOrderDetail.id])}
-          esignStatus={handoverWorkOrderDetail ? handoverESignStatuses[handoverWorkOrderDetail.id] : undefined}
+          esignError={
+            handoverWorkOrderDetail ? handoverESignErrors[handoverWorkOrderDetail.id] : undefined
+          }
+          esignLoading={Boolean(
+            handoverWorkOrderDetail && handoverESignLoading[handoverWorkOrderDetail.id]
+          )}
+          esignStatus={
+            handoverWorkOrderDetail ? handoverESignStatuses[handoverWorkOrderDetail.id] : undefined
+          }
           mutationInFlight={stage2WorkflowRecoveryInFlight}
           onAcknowledge={acknowledgeCustomerObjection}
           onAssignExternal={openAssignExternalHandover}
@@ -8293,8 +8629,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           }}
           confirmLoading={Boolean(
             stage2FallbackWorkOrderId &&
-            handoverActionLoading ===
-              `stage2-start:${stage2FallbackWorkOrderId}`
+            handoverActionLoading === `stage2-start:${stage2FallbackWorkOrderId}`
           )}
           destroyOnHidden
           okText="确认发起"
@@ -8304,11 +8639,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           title="确认后台兜底发起签署"
           width={680}
         >
-          <Space
-            orientation="vertical"
-            size={12}
-            style={{ width: "100%" }}
-          >
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
             <Alert
               message="后台将以 ADMIN_FALLBACK 身份发起，不会代替 Field 经办人。"
               showIcon
@@ -8319,9 +8650,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               column={1}
               items={[
                 {
-                  children:
-                    stage2FallbackSourceArtifact
-                      ?.artifactVersion ?? "-",
+                  children: stage2FallbackSourceArtifact?.artifactVersion ?? "-",
                   label: "PDF 版本"
                 },
                 {
@@ -8329,18 +8658,15 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                     <Typography.Text
                       code
                       copyable={{
-                        text:
-                          stage2FallbackSourceArtifact
-                            .sourcePdfHash
+                        text: stage2FallbackSourceArtifact.sourcePdfHash
                       }}
                       style={{ overflowWrap: "anywhere" }}
                     >
-                      {
-                        stage2FallbackSourceArtifact
-                          .sourcePdfHash
-                      }
+                      {stage2FallbackSourceArtifact.sourcePdfHash}
                     </Typography.Text>
-                  ) : "-",
+                  ) : (
+                    "-"
+                  ),
                   label: "SHA-256"
                 }
               ]}
@@ -8356,19 +8682,14 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 预览/下载 PDF
               </Button>
             ) : null}
-            <Form<Stage2FallbackFormValues>
-              form={stage2FallbackForm}
-              layout="vertical"
-            >
+            <Form<Stage2FallbackFormValues> form={stage2FallbackForm} layout="vertical">
               <Form.Item
                 name="acknowledgement"
                 rules={[
                   {
                     validator: async (_, value) => {
                       if (value !== true) {
-                        throw new Error(
-                          "请先核对当前交接确认单"
-                        );
+                        throw new Error("请先核对当前交接确认单");
                       }
                     }
                   }
@@ -8387,10 +8708,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                   },
                   {
                     validator: async (_, value) => {
-                      const validationError =
-                        validateAdminStage2HandoverFallbackReason(
-                          value ?? ""
-                        );
+                      const validationError = validateAdminStage2HandoverFallbackReason(
+                        value ?? ""
+                      );
                       if (validationError) {
                         throw new Error(validationError);
                       }
@@ -8398,9 +8718,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                   }
                 ]}
               >
-                <Input.TextArea
-                  autoSize={{ maxRows: 6, minRows: 3 }}
-                />
+                <Input.TextArea autoSize={{ maxRows: 6, minRows: 3 }} />
               </Form.Item>
             </Form>
           </Space>
@@ -8419,10 +8737,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           open={stage2VoidOpen}
           title="作废并重新发起"
         >
-          <Form<Stage2VoidFormValues>
-            form={stage2VoidForm}
-            layout="vertical"
-          >
+          <Form<Stage2VoidFormValues> form={stage2VoidForm} layout="vertical">
             <Form.Item
               label="作废原因"
               name="reason"
@@ -8430,8 +8745,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 { required: true, message: "请填写作废原因" },
                 {
                   validator: async (_, value) => {
-                    const validationError =
-                      validateAdminStage2HandoverVoidReason(value ?? "");
+                    const validationError = validateAdminStage2HandoverVoidReason(value ?? "");
                     if (validationError) {
                       throw new Error(validationError);
                     }
@@ -8439,10 +8753,7 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 }
               ]}
             >
-              <Input.TextArea
-                autoSize={{ maxRows: 6, minRows: 3 }}
-                maxLength={500}
-              />
+              <Input.TextArea autoSize={{ maxRows: 6, minRows: 3 }} maxLength={500} />
             </Form.Item>
           </Form>
         </Modal>
@@ -8459,7 +8770,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             layout="vertical"
             onFinish={assignExternalHandover}
           >
-            <Form.Item label="姓名" name="name" rules={[{ required: true, message: "请填写 Field 交付人员姓名" }]}>
+            <Form.Item
+              label="姓名"
+              name="name"
+              rules={[{ required: true, message: "请填写 Field 交付人员姓名" }]}
+            >
               <Input maxLength={64} />
             </Form.Item>
             <Form.Item
@@ -8475,14 +8790,21 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             <Form.Item label="所属机构" name="organization">
               <Input maxLength={128} />
             </Form.Item>
-            <Form.Item label="访问有效期" name="expiresAt" rules={[{ required: true, message: "请选择访问有效期" }]}>
+            <Form.Item
+              label="访问有效期"
+              name="expiresAt"
+              rules={[{ required: true, message: "请选择访问有效期" }]}
+            >
               <DatePicker showTime style={{ width: "100%" }} />
             </Form.Item>
             <Button
               block
               htmlType="submit"
               icon={<UserAddOutlined />}
-              loading={Boolean(assignExternalHandoverId && handoverActionLoading === `assign:${assignExternalHandoverId}`)}
+              loading={Boolean(
+                assignExternalHandoverId &&
+                handoverActionLoading === `assign:${assignExternalHandoverId}`
+              )}
               type="primary"
             >
               确认指派
@@ -8523,7 +8845,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               />
             </Form.Item>
             <Form.Item label="需要复检的现场信息" name="targetFieldKeys">
-              <Select mode="multiple" options={handoverFieldFactOptions} placeholder="不选择则允许复检全部现场信息" />
+              <Select
+                mode="multiple"
+                options={handoverFieldFactOptions}
+                placeholder="不选择则允许复检全部现场信息"
+              />
             </Form.Item>
             <Button
               block
@@ -8567,7 +8893,10 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                 disabled
                 value={
                   consumingGrant
-                    ? formatEntitlementPeriod(consumingGrant.grantPeriodStart, consumingGrant.grantPeriodEnd)
+                    ? formatEntitlementPeriod(
+                        consumingGrant.grantPeriodStart,
+                        consumingGrant.grantPeriodEnd
+                      )
                     : "-"
                 }
               />
@@ -8595,7 +8924,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               ]}
             >
               <InputNumber
-                addonAfter={consumingGrant ? labelOf(ENTITLEMENT_UNIT_LABELS, consumingGrant.unit) : undefined}
+                addonAfter={
+                  consumingGrant ? labelOf(ENTITLEMENT_UNIT_LABELS, consumingGrant.unit) : undefined
+                }
                 max={toNumber(consumingGrant?.remainingAmount) ?? undefined}
                 min={0.01}
                 precision={2}
@@ -8790,7 +9121,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             <Form.Item name="writeOffEnabled" valuePropName="checked">
               <Checkbox disabled={Boolean(writeOffDisabledReason)}>同时核销账单</Checkbox>
             </Form.Item>
-            {writeOffDisabledReason ? <Alert message={writeOffDisabledReason} showIcon type="info" /> : null}
+            {writeOffDisabledReason ? (
+              <Alert message={writeOffDisabledReason} showIcon type="info" />
+            ) : null}
 
             {writeOffEnabled ? (
               <Space orientation="vertical" size={12} style={{ width: "100%" }}>
@@ -8815,7 +9148,10 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                         column={3}
                         size="small"
                         items={[
-                          { label: "账单状态", children: <BillStatusTag value={bill.billStatus} /> },
+                          {
+                            label: "账单状态",
+                            children: <BillStatusTag value={bill.billStatus} />
+                          },
                           { label: "应收金额", children: formatYuan(bill.amount) },
                           { label: "剩余金额", children: formatYuan(bill.remainingAmount) }
                         ]}
@@ -8883,7 +9219,8 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                     const amount = yuanToCents(value);
                     const billId = deductDepositForm.getFieldValue("billId");
                     const bill = billId ? damageFeeBills.find((item) => item.id === billId) : null;
-                    const billRemainingAmount = toNumber(bill?.remainingAmount) ?? damageFeeRemainingAmount;
+                    const billRemainingAmount =
+                      toNumber(bill?.remainingAmount) ?? damageFeeRemainingAmount;
 
                     if (!amount || amount <= 0) {
                       throw new Error("扣减金额必须大于 0");
@@ -9013,7 +9350,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                   <Typography.Text type="secondary">
                     {deliveryConfirmationSourceHints.deliveredAt}
                   </Typography.Text>
-                  {deliveryConfirmationAdjustments.deliveredAt ? <Tag color="orange">已人工调整</Tag> : null}
+                  {deliveryConfirmationAdjustments.deliveredAt ? (
+                    <Tag color="orange">已人工调整</Tag>
+                  ) : null}
                 </Space>
               }
               label="实际交付时间"
@@ -9028,7 +9367,9 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                   <Typography.Text type="secondary">
                     {deliveryConfirmationSourceHints.handoverMileageKm}
                   </Typography.Text>
-                  {deliveryConfirmationAdjustments.handoverMileageKm ? <Tag color="orange">已人工调整</Tag> : null}
+                  {deliveryConfirmationAdjustments.handoverMileageKm ? (
+                    <Tag color="orange">已人工调整</Tag>
+                  ) : null}
                 </Space>
               }
               label="交付里程"
@@ -9051,7 +9392,11 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           title="准备退车"
         >
           <Form form={prepareReturnForm} layout="vertical">
-            <Form.Item label="退车类型" name="returnType" rules={[{ required: true, message: "请选择退车类型" }]}>
+            <Form.Item
+              label="退车类型"
+              name="returnType"
+              rules={[{ required: true, message: "请选择退车类型" }]}
+            >
               <Select options={returnTypeOptions} />
             </Form.Item>
             <Form.Item label="预约退车时间" name="scheduledAt">
@@ -9075,13 +9420,25 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
           width={860}
         >
           <Form form={confirmReturnForm} layout="vertical">
-            <Form.Item label="退车类型" name="returnType" rules={[{ required: true, message: "请选择退车类型" }]}>
+            <Form.Item
+              label="退车类型"
+              name="returnType"
+              rules={[{ required: true, message: "请选择退车类型" }]}
+            >
               <Select options={returnTypeOptions} />
             </Form.Item>
-            <Form.Item label="实际退车时间" name="returnedAt" rules={[{ required: true, message: "请选择实际退车时间" }]}>
+            <Form.Item
+              label="实际退车时间"
+              name="returnedAt"
+              rules={[{ required: true, message: "请选择实际退车时间" }]}
+            >
               <DatePicker showTime style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label="退车里程" name="returnMileageKm" rules={[{ required: true, message: "请填写退车里程" }]}>
+            <Form.Item
+              label="退车里程"
+              name="returnMileageKm"
+              rules={[{ required: true, message: "请填写退车里程" }]}
+            >
               <InputNumber min={0} precision={0} addonAfter="km" style={{ width: "100%" }} />
             </Form.Item>
             <Space orientation="vertical" size={0} style={{ width: "100%" }}>
@@ -9179,7 +9536,12 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
                         <Select options={responsiblePartyOptions} />
                       </Form.Item>
                       <Form.Item label="预估维修金额" name={[field.name, "estimatedRepairAmount"]}>
-                        <InputNumber min={0} precision={2} addonAfter="元" style={{ width: "100%" }} />
+                        <InputNumber
+                          min={0}
+                          precision={2}
+                          addonAfter="元"
+                          style={{ width: "100%" }}
+                        />
                       </Form.Item>
                       <Form.Item label="照片 URL" name={[field.name, "photoUrlsText"]}>
                         <Input.TextArea placeholder="多个 URL 可用逗号或换行分隔" rows={2} />
@@ -9197,9 +9559,17 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
         </Modal>
 
         <Modal
+          confirmLoading={creatingActiveSubscriptionChange}
           destroyOnHidden
           onCancel={closeActiveSubscriptionChangeModal}
           onOk={() => void createActiveSubscriptionChange()}
+          okButtonProps={{
+            disabled:
+              creatingActiveSubscriptionChange ||
+              !activeSubscriptionChangeType ||
+              subscriptionChangeCapabilities?.changeTypes[activeSubscriptionChangeType]?.enabled !==
+                true
+          }}
           open={activeSubscriptionChangeModalOpen}
           title="发起在租合同变更"
           width={720}
@@ -9218,12 +9588,24 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               rules={[{ required: true, message: "请选择变更类型" }]}
             >
               <Select
+                disabled={
+                  !subscriptionChangeCapabilities ||
+                  !Object.values(subscriptionChangeCapabilities.changeTypes).some(
+                    ({ enabled }) => enabled
+                  )
+                }
+                placeholder="仅显示当前环境已启用的合同变更类型"
                 options={[
                   { label: "续期", value: "EXTENSION" },
                   { label: "换车", value: "VEHICLE_SWAP" },
                   { label: "提前结束", value: "EARLY_TERMINATION" },
-                  { label: "其他合同变更", value: "MANAGED_OTHER" }
-                ]}
+                  { label: "其他受控变更", value: "MANAGED_OTHER" }
+                ].filter(
+                  (option) =>
+                    subscriptionChangeCapabilities?.changeTypes[
+                      option.value as SubscriptionChangeType
+                    ]?.enabled === true
+                )}
               />
             </Form.Item>
 
@@ -9427,17 +9809,26 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
             </Form.Item>
             <Space orientation="vertical" size={4} style={{ marginBottom: 12 }}>
               <Typography.Text strong>处理方式</Typography.Text>
-              <Typography.Text>审批通过后，由运营取消当前订单、作废未签署合同并释放车辆。</Typography.Text>
+              <Typography.Text>
+                审批通过后，由运营取消当前订单、作废未签署合同并释放车辆。
+              </Typography.Text>
               <Typography.Text>{returnToPlanHint}</Typography.Text>
               <Typography.Text strong>当前订单车辆</Typography.Text>
               <Typography.Text>
-                车辆：{order?.vehicle ? joinText(order.vehicle.vehicleNo, order.vehicle.plateNo, order.vehicle.vin) : "-"}
+                车辆：
+                {order?.vehicle
+                  ? joinText(order.vehicle.vehicleNo, order.vehicle.plateNo, order.vehicle.vin)
+                  : "-"}
               </Typography.Text>
               <Typography.Text>车辆状态：{order?.vehicle?.status ?? "-"}</Typography.Text>
               <Typography.Text>车型：{orderModelDisplay(order)}</Typography.Text>
               <Typography.Text>当前销售价：{formatYuan(currentVehicleSalePrice)}</Typography.Text>
             </Space>
-            <Form.Item label="变更原因" name="reason" rules={[{ required: true, message: "请填写变更原因" }]}>
+            <Form.Item
+              label="变更原因"
+              name="reason"
+              rules={[{ required: true, message: "请填写变更原因" }]}
+            >
               <Input.TextArea rows={4} />
             </Form.Item>
           </Form>

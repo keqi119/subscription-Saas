@@ -2,15 +2,18 @@ import {
   Body,
   Controller,
   Get,
+  Optional,
   Param,
   ParseUUIDPipe,
   Post,
   Query,
   Req,
+  ServiceUnavailableException,
   UseGuards,
   UsePipes,
   ValidationPipe
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { PermissionCode } from "@subscription-saas/shared";
 
 import { RequirePermissions } from "../auth/auth.decorators";
@@ -44,7 +47,8 @@ import { SubscriptionClosureService } from "./subscription-closure.service";
 export class SubscriptionClosureController {
   constructor(
     private readonly service: SubscriptionClosureService,
-    private readonly projection: SubscriptionClosureProjectionService
+    private readonly projection: SubscriptionClosureProjectionService,
+    @Optional() private readonly config?: ConfigService
   ) {}
 
   @Get(":id")
@@ -245,6 +249,7 @@ export class SubscriptionClosureController {
     @Body() dto: InitiateEarlyTerminationDto,
     @Req() request: AuthenticatedRequest
   ) {
+    assertLegacyEarlyTerminationEnabled(this.config);
     return this.service.initiateEarlyTermination({
       ...dto,
       actorId: request.user.id,
@@ -262,6 +267,7 @@ export class SubscriptionClosureController {
     @Body() dto: CancelEarlyTerminationDto,
     @Req() request: AuthenticatedRequest
   ) {
+    assertLegacyEarlyTerminationEnabled(this.config);
     return this.service.cancelEarlyTermination({ ...dto, actorId: request.user.id, closureCaseId });
   }
 
@@ -272,12 +278,21 @@ export class SubscriptionClosureController {
     @Body() dto: ExecuteEarlyTerminationDto,
     @Req() request: AuthenticatedRequest
   ) {
+    assertLegacyEarlyTerminationEnabled(this.config);
     return this.service.executeEarlyTermination({
       ...dto,
       actorId: request.user.id,
       closureCaseId
     });
   }
+}
+
+function assertLegacyEarlyTerminationEnabled(config?: ConfigService) {
+  if (config?.get<string>("SUBSCRIPTION_EARLY_TERMINATION_ENABLED") === "true") return;
+  throw new ServiceUnavailableException({
+    code: "SUBSCRIPTION_EARLY_TERMINATION_DISABLED",
+    message: "Early termination is disabled in this environment."
+  });
 }
 
 function settlementInput(

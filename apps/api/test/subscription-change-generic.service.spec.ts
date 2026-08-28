@@ -1,5 +1,7 @@
 import {
   BusinessType,
+  ContractStatus,
+  ESignTaskStatus,
   OrderStatus,
   SubscriptionChangePricingMode,
   SubscriptionChangeStatus,
@@ -132,25 +134,36 @@ describe("SubscriptionChangeService", () => {
 
   it.each([
     [SubscriptionChangeType.EXTENSION, "extensionEnabled", "SUBSCRIPTION_EXTENSION_DISABLED"],
-    [SubscriptionChangeType.VEHICLE_SWAP, "vehicleSwapEnabled", "SUBSCRIPTION_VEHICLE_SWAP_DISABLED"],
+    [
+      SubscriptionChangeType.VEHICLE_SWAP,
+      "vehicleSwapEnabled",
+      "SUBSCRIPTION_VEHICLE_SWAP_DISABLED"
+    ],
     [
       SubscriptionChangeType.EARLY_TERMINATION,
       "earlyTerminationEnabled",
       "SUBSCRIPTION_EARLY_TERMINATION_DISABLED"
     ],
-    [SubscriptionChangeType.MANAGED_OTHER, "managedOtherEnabled", "SUBSCRIPTION_MANAGED_OTHER_DISABLED"]
-  ] as const)("fails closed when the %s rollout flag is disabled", async (changeType, flag, code) => {
-    const harness = genericHarness({ config: { [flag]: false } });
+    [
+      SubscriptionChangeType.MANAGED_OTHER,
+      "managedOtherEnabled",
+      "SUBSCRIPTION_MANAGED_OTHER_DISABLED"
+    ]
+  ] as const)(
+    "fails closed when the %s rollout flag is disabled",
+    async (changeType, flag, code) => {
+      const harness = genericHarness({ config: { [flag]: false } });
 
-    await expect(
-      harness.service.create(
-        { ...managedOtherInput(`disabled-${changeType}`), changeType } as never,
-        harness.actor,
-        harness.context
-      )
-    ).rejects.toMatchObject({ code, status: 503 });
-    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
-  });
+      await expect(
+        harness.service.create(
+          { ...managedOtherInput(`disabled-${changeType}`), changeType } as never,
+          harness.actor,
+          harness.context
+        )
+      ).rejects.toMatchObject({ code, status: 503 });
+      expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    }
+  );
 
   it.each([
     ["reason", { reason: " " }, "MANAGED_OTHER_REASON_REQUIRED"],
@@ -158,24 +171,23 @@ describe("SubscriptionChangeService", () => {
     ["evidence", { evidence: [] }, "MANAGED_OTHER_EVIDENCE_REQUIRED"],
     ["approved operation", { operation: " " }, "MANAGED_OTHER_OPERATION_REQUIRED"],
     ["before snapshot", { beforeSnapshot: {} }, "MANAGED_OTHER_BEFORE_SNAPSHOT_REQUIRED"],
-    [
-      "operation payload",
-      { operationPayload: {} },
-      "MANAGED_OTHER_OPERATION_PAYLOAD_REQUIRED"
-    ]
-  ] as const)("requires managed-other %s before opening a transaction", async (_field, detail, code) => {
-    const harness = genericHarness();
-    const input = managedOtherInput(`managed-required-${code}`);
+    ["operation payload", { operationPayload: {} }, "MANAGED_OTHER_OPERATION_PAYLOAD_REQUIRED"]
+  ] as const)(
+    "requires managed-other %s before opening a transaction",
+    async (_field, detail, code) => {
+      const harness = genericHarness();
+      const input = managedOtherInput(`managed-required-${code}`);
 
-    await expect(
-      harness.service.create(
-        { ...input, detail: { ...input.detail, ...detail } } as never,
-        harness.actor,
-        harness.context
-      )
-    ).rejects.toMatchObject({ code });
-    expect(harness.prisma.$transaction).not.toHaveBeenCalled();
-  });
+      await expect(
+        harness.service.create(
+          { ...input, detail: { ...input.detail, ...detail } } as never,
+          harness.actor,
+          harness.context
+        )
+      ).rejects.toMatchObject({ code });
+      expect(harness.prisma.$transaction).not.toHaveBeenCalled();
+    }
+  );
 
   it("replays the exact completed create command and rejects an idempotency payload mismatch", async () => {
     const exact = genericHarness({ replay: "exact" });
@@ -232,6 +244,55 @@ describe("SubscriptionChangeService", () => {
     });
   });
 
+  it("does not advertise quote mutation or republication after customer publication", async () => {
+    const harness = genericHarness({
+      changeStatus: SubscriptionChangeStatus.QUOTED,
+      publishedAt: new Date("2026-08-27T02:00:00.000Z")
+    });
+
+    const view = await harness.service.get("change-existing", harness.actor);
+
+    expect(view.allowedActions).not.toEqual(
+      expect.arrayContaining(["APPROVE", "CREATE_QUOTE", "PUBLISH_CUSTOMER_CONFIRMATION"])
+    );
+  });
+
+  it("returns flag availability and removes actions for a disabled change type", async () => {
+    const harness = genericHarness({ config: { managedOtherEnabled: false } });
+
+    await expect(harness.service.get("change-existing", harness.actor)).resolves.toMatchObject({
+      allowedActions: [],
+      featureAvailability: {
+        enabled: false,
+        flagName: "SUBSCRIPTION_MANAGED_OTHER_ENABLED"
+      }
+    });
+    expect(harness.service.capabilities(harness.actor)).toMatchObject({
+      changeTypes: {
+        EARLY_TERMINATION: { enabled: true },
+        EXTENSION: { enabled: true },
+        MANAGED_OTHER: { enabled: false },
+        VEHICLE_SWAP: { enabled: true }
+      }
+    });
+    await expect(
+      harness.service.cancel(
+        "change-existing",
+        {
+          idempotencyKey: "cancel-disabled-managed-other",
+          reason: "Must not bypass the exact rollout flag",
+          version: 0
+        },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      code: "SUBSCRIPTION_MANAGED_OTHER_DISABLED",
+      status: 503
+    });
+    expect(harness.prisma.subscriptionChangeOrder.update).not.toHaveBeenCalled();
+  });
+
   it("keeps a scheduled managed-other change cancellable before execution", async () => {
     const harness = genericHarness({
       changeStatus: SubscriptionChangeStatus.SCHEDULED,
@@ -257,6 +318,115 @@ describe("SubscriptionChangeService", () => {
       status: SubscriptionChangeStatus.CANCELLED,
       version: 2
     });
+  });
+
+  it("cancels a generated managed-other supplement and its active e-sign task atomically", async () => {
+    const harness = genericHarness({
+      changeStatus: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+      changeVersion: 4,
+      managedSupplementStatus: ContractStatus.GENERATED
+    });
+
+    await expect(
+      harness.service.cancel(
+        "change-existing",
+        {
+          idempotencyKey: "cancel-generated-managed-other",
+          reason: "Customer withdrew before signing completed",
+          version: 4
+        },
+        harness.actor,
+        harness.context
+      )
+    ).resolves.toMatchObject({
+      status: SubscriptionChangeStatus.CANCELLED,
+      version: 5
+    });
+    expect(harness.prisma.contractESignTask.updateMany).toHaveBeenCalledWith({
+      data: {
+        cancelledAt: new Date("2026-08-27T03:00:00.000Z"),
+        taskStatus: ESignTaskStatus.CANCELLED,
+        updatedBy: "operator-1"
+      },
+      where: {
+        contractId: "contract-managed-supplement",
+        taskStatus: {
+          in: [
+            ESignTaskStatus.CREATED,
+            ESignTaskStatus.WAITING_CUSTOMER,
+            ESignTaskStatus.SIGNING,
+            ESignTaskStatus.FAILED
+          ]
+        }
+      }
+    });
+    expect(harness.prisma.contract.updateMany).toHaveBeenCalledWith({
+      data: { status: ContractStatus.CANCELLED, updatedBy: "operator-1" },
+      where: {
+        id: "contract-managed-supplement",
+        status: ContractStatus.GENERATED
+      }
+    });
+  });
+
+  it("does not offer or execute ordinary cancellation after a managed-other supplement is archived", async () => {
+    const harness = genericHarness({
+      changeStatus: SubscriptionChangeStatus.SCHEDULED,
+      changeVersion: 5,
+      managedSupplementStatus: ContractStatus.ARCHIVED
+    });
+
+    const view = await harness.service.get("change-existing", harness.actor);
+    expect(view.allowedActions).not.toContain("CANCEL");
+
+    await expect(
+      harness.service.cancel(
+        "change-existing",
+        {
+          idempotencyKey: "cancel-archived-managed-other",
+          reason: "Cannot revoke signed archived rights through ordinary cancellation",
+          version: 5
+        },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      code: "SUBSCRIPTION_CHANGE_NOT_CANCELLABLE",
+      status: 409
+    });
+    expect(harness.prisma.contract.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("offers one governed cancellation exit after an archived managed-other supplement enters manual takeover", async () => {
+    const harness = genericHarness({
+      changeStatus: SubscriptionChangeStatus.MANUAL_TAKEOVER,
+      changeVersion: 6,
+      managedSupplementStatus: ContractStatus.ARCHIVED
+    });
+    harness.actor.permissions.push(PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE);
+
+    const view = await harness.service.get("change-existing", harness.actor);
+    expect(view.allowedActions).toContain("CANCEL");
+    expect(view.allowedActions).not.toContain("RETRY");
+
+    await expect(
+      harness.service.cancel(
+        "change-existing",
+        {
+          idempotencyKey: "cancel-archived-managed-other-takeover",
+          reason: "Governed abandonment after offline reconciliation",
+          version: 6
+        },
+        harness.actor,
+        harness.context
+      )
+    ).resolves.toMatchObject({
+      cancelReason: "Governed abandonment after offline reconciliation",
+      status: SubscriptionChangeStatus.CANCELLED,
+      version: 7
+    });
+    expect(harness.prisma.contractESignTask.updateMany).not.toHaveBeenCalled();
+    expect(harness.prisma.contract.updateMany).not.toHaveBeenCalled();
   });
 
   it("routes manual takeover for non-extension changes through the generic state owner", async () => {
@@ -326,6 +496,8 @@ interface HarnessOptions {
     vehicleSwapEnabled: boolean;
   }>;
   concurrentReplay?: boolean;
+  managedSupplementStatus?: ContractStatus;
+  publishedAt?: Date;
   replay?: "exact" | "mismatch";
   typedExtension?: boolean;
 }
@@ -372,8 +544,22 @@ function genericHarness(options: HarnessOptions = {}) {
         }
       : {}),
     status: options.changeStatus ?? SubscriptionChangeStatus.DRAFT,
+    customerConfirmationPublishedAt: options.publishedAt ?? null,
     version: options.changeVersion ?? 0
   });
+  if (options.managedSupplementStatus) {
+    Object.assign(change, {
+      contract: {
+        id: "contract-managed-supplement",
+        status: options.managedSupplementStatus
+      },
+      contractId: "contract-managed-supplement",
+      managedOtherDetail: {
+        ...change.managedOtherDetail,
+        supplementContractId: "contract-managed-supplement"
+      }
+    });
+  }
   const querySql: string[] = [];
   let commandLookups = 0;
   const prisma = {
@@ -392,6 +578,12 @@ function genericHarness(options: HarnessOptions = {}) {
           id: "audit-1"
         }
       ])
+    },
+    contract: {
+      updateMany: vi.fn(async () => ({ count: 1 }))
+    },
+    contractESignTask: {
+      updateMany: vi.fn(async () => ({ count: 1 }))
     },
     subscriptionChangeCommand: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {

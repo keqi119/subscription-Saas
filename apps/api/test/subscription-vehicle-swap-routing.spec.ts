@@ -106,6 +106,7 @@ describe("vehicle-swap subscription-change routing", () => {
       "swap-1",
       {
         commercialSnapshotHash: "a".repeat(64),
+        idempotencyKey: "portal-swap-confirm-1",
         quoteId: "quote-swap",
         revision: 1,
         version: 2
@@ -115,7 +116,12 @@ describe("vehicle-swap subscription-change routing", () => {
     );
     await service.confirmQuote(
       "extension-1",
-      { quoteId: "quote-extension", revision: 1, version: 2 },
+      {
+        idempotencyKey: "portal-extension-confirm-1",
+        quoteId: "quote-extension",
+        revision: 1,
+        version: 2
+      },
       customer,
       context
     );

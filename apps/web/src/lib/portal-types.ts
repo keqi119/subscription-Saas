@@ -419,11 +419,16 @@ export interface PortalRenewalReminder {
 }
 
 export interface PortalRenewalConsideration {
+  allowedActions: Array<"EXPIRE" | "RENEW">;
   changeOrderId: string | null;
   completionDeadlineAt: string;
   considerationStartAt: string;
   decision: "RENEW" | "EXPIRE" | null;
   decidedAt: string | null;
+  featureAvailability: {
+    enabled: boolean;
+    flagName: "SUBSCRIPTION_EXTENSION_ENABLED";
+  };
   id: string;
   nextAction: string;
   order: {
@@ -455,11 +460,16 @@ export interface PortalRenewalQuote {
 }
 
 interface PortalSubscriptionChangeBase {
+  allowedActions: Array<"CONFIRM_QUOTE" | "REJECT_QUOTE">;
   cancelReason?: string | null;
   completionDeadlineAt: string;
   contractId?: string | null;
   customerConfirmationPublishedAt?: string | null;
   id: string;
+  featureAvailability: {
+    enabled: boolean;
+    flagName: string;
+  };
   orderId: string;
   orderNo: string;
   status: string;
@@ -503,8 +513,7 @@ export interface PortalVehicleSwapSubscriptionChange extends PortalSubscriptionC
   quotes: PortalRenewalQuote[];
 }
 
-export interface PortalEarlyTerminationSubscriptionChange
-  extends PortalSubscriptionChangeBase {
+export interface PortalEarlyTerminationSubscriptionChange extends PortalSubscriptionChangeBase {
   changeType: "EARLY_TERMINATION";
   currentEstimate: unknown;
   customerConfirmationPublishedAt?: string | null;

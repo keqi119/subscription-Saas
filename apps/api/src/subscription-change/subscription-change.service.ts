@@ -2,6 +2,8 @@ import { HttpStatus, Inject, Injectable, Optional } from "@nestjs/common";
 import {
   AuditAction,
   BusinessType,
+  ContractStatus,
+  ESignTaskStatus,
   OrderStatus,
   Prisma,
   SubscriptionChangeStatus,
@@ -16,6 +18,7 @@ import { RequestContext, RequestUser } from "../auth/auth.types";
 import { createBusinessNo } from "../common/business-number";
 import {
   isSubscriptionChangeTypeEnabled,
+  SUBSCRIPTION_CHANGE_FLAG_NAMES,
   SUBSCRIPTION_CHANGE_CONFIG,
   SubscriptionChangeConfig
 } from "./subscription-change.config";
@@ -77,7 +80,7 @@ export class SubscriptionChangeService {
         actor,
         context
       );
-      return projectSubscriptionChange(change, actor);
+      return projectChange(change, actor, this.config);
     }
 
     validateCreateInput(input);
@@ -122,7 +125,7 @@ export class SubscriptionChangeService {
         await this.repository.completeCommand(tx, command.id, change.id, this.config.now());
         return change;
       });
-      return projectSubscriptionChange(created, actor);
+      return projectChange(created, actor, this.config);
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
       const duplicate = await this.replay(
@@ -140,13 +143,25 @@ export class SubscriptionChangeService {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     const change = await this.repository.findChange(id);
     if (!change) throw changeNotFound();
-    return projectSubscriptionChange(change, actor);
+    return projectChange(change, actor, this.config);
   }
 
   async listForOrder(orderId: string, actor: RequestUser) {
     assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
     const changes = await this.repository.listForOrder(orderId);
-    return changes.map((change) => projectSubscriptionChange(change, actor));
+    return changes.map((change) => projectChange(change, actor, this.config));
+  }
+
+  capabilities(actor: RequestUser) {
+    assertPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_VIEW);
+    return {
+      changeTypes: Object.fromEntries(
+        Object.values(SubscriptionChangeType).map((changeType) => [
+          changeType,
+          changeTypeAvailability(this.config, changeType)
+        ])
+      )
+    };
   }
 
   async timeline(id: string, actor: RequestUser) {
@@ -242,13 +257,14 @@ export class SubscriptionChangeService {
 
     const current = await this.repository.findChange(id);
     if (!current) throw changeNotFound();
+    assertChangeTypeEnabled(this.config, current.changeType);
     if (current.changeType === SubscriptionChangeType.EXTENSION) {
       const cancelled = await this.extensionService.cancel(id, input, actor, context);
-      return projectSubscriptionChange(cancelled, actor);
+      return projectChange(cancelled, actor, this.config);
     }
     if (current.changeType === SubscriptionChangeType.VEHICLE_SWAP) {
       const cancelled = await this.requireVehicleSwapService().cancel(id, input, actor, context);
-      return projectSubscriptionChange(cancelled, actor);
+      return projectChange(cancelled, actor, this.config);
     }
     if (current.changeType === SubscriptionChangeType.EARLY_TERMINATION) {
       const cancelled = await this.requireEarlyTerminationService().cancel(
@@ -257,7 +273,7 @@ export class SubscriptionChangeService {
         actor,
         context
       );
-      return projectSubscriptionChange(cancelled, actor);
+      return projectChange(cancelled, actor, this.config);
     }
 
     const requestHash = commandHash({ id, ...input });
@@ -272,7 +288,8 @@ export class SubscriptionChangeService {
         if (change.version !== input.version) throw versionConflict();
         const scheduledManagedOther =
           change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
-          change.status === SubscriptionChangeStatus.SCHEDULED;
+          change.status === SubscriptionChangeStatus.SCHEDULED &&
+          !change.contractId;
         if (!CANCELLABLE_STATUSES.has(change.status) && !scheduledManagedOther) {
           throw new SubscriptionChangeError(
             "SUBSCRIPTION_CHANGE_NOT_CANCELLABLE",
@@ -286,6 +303,55 @@ export class SubscriptionChangeService {
           operation: CANCEL_OPERATION,
           requestHash
         });
+        const archivedManagedOtherSupplement =
+          change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+          change.contractId &&
+          change.contract?.status === ContractStatus.ARCHIVED;
+        if (
+          archivedManagedOtherSupplement &&
+          change.status !== SubscriptionChangeStatus.MANUAL_TAKEOVER
+        ) {
+          throw new SubscriptionChangeError(
+            "MANAGED_OTHER_ARCHIVED_SUPPLEMENT_REQUIRES_TAKEOVER",
+            "An archived managed-other supplement can only be abandoned from governed manual takeover.",
+            HttpStatus.CONFLICT
+          );
+        }
+        if (
+          change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+          change.contractId &&
+          !archivedManagedOtherSupplement
+        ) {
+          await tx.contractESignTask.updateMany({
+            data: {
+              cancelledAt: this.config.now(),
+              taskStatus: ESignTaskStatus.CANCELLED,
+              updatedBy: actor.id
+            },
+            where: {
+              contractId: change.contractId,
+              taskStatus: {
+                in: [
+                  ESignTaskStatus.CREATED,
+                  ESignTaskStatus.WAITING_CUSTOMER,
+                  ESignTaskStatus.SIGNING,
+                  ESignTaskStatus.FAILED
+                ]
+              }
+            }
+          });
+          const contractCancelled = await tx.contract.updateMany({
+            data: { status: ContractStatus.CANCELLED, updatedBy: actor.id },
+            where: { id: change.contractId, status: ContractStatus.GENERATED }
+          });
+          if (contractCancelled.count !== 1) {
+            throw new SubscriptionChangeError(
+              "MANAGED_OTHER_SUPPLEMENT_CANCEL_CONFLICT",
+              "The managed-other supplement could not be cancelled before archival.",
+              HttpStatus.CONFLICT
+            );
+          }
+        }
         const updated = await this.repository.updateChange(tx, id, {
           cancelReason: reason,
           status: SubscriptionChangeStatus.CANCELLED,
@@ -299,7 +365,7 @@ export class SubscriptionChangeService {
         await this.repository.completeCommand(tx, command.id, id, this.config.now());
         return updated;
       });
-      return projectSubscriptionChange(cancelled, actor);
+      return projectChange(cancelled, actor, this.config);
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
       const duplicate = await this.replay(
@@ -332,9 +398,10 @@ export class SubscriptionChangeService {
 
     const current = await this.repository.findChange(id);
     if (!current) throw changeNotFound();
+    assertChangeTypeEnabled(this.config, current.changeType);
     if (current.changeType === SubscriptionChangeType.EXTENSION) {
       const takenOver = await this.extensionService.manualTakeover(id, input, actor, context);
-      return projectSubscriptionChange(takenOver, actor);
+      return projectChange(takenOver, actor, this.config);
     }
 
     const requestHash = commandHash({ id, ...input, reason });
@@ -384,7 +451,7 @@ export class SubscriptionChangeService {
         await this.repository.completeCommand(tx, command.id, id, this.config.now());
         return updated;
       });
-      return projectSubscriptionChange(takenOver, actor);
+      return projectChange(takenOver, actor, this.config);
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
       const duplicate = await this.replay(
@@ -412,6 +479,12 @@ export class SubscriptionChangeService {
         HttpStatus.CONFLICT
       );
     }
+    return change.changeType;
+  }
+
+  async getWorkflowChangeType(id: string) {
+    const change = await this.repository.findChange(id);
+    if (!change) throw changeNotFound();
     return change.changeType;
   }
 
@@ -516,7 +589,7 @@ export class SubscriptionChangeService {
         HttpStatus.CONFLICT
       );
     }
-    return projectSubscriptionChange(change, actor);
+    return projectChange(change, actor, this.config);
   }
 }
 
@@ -536,6 +609,67 @@ function assertChangeTypeEnabled(
     `Subscription change type ${changeType} is disabled.`,
     HttpStatus.SERVICE_UNAVAILABLE
   );
+}
+
+function projectChange<T extends Parameters<typeof projectSubscriptionChange>[0]>(
+  change: T,
+  actor: RequestUser,
+  config: SubscriptionChangeConfig
+) {
+  const availability = changeTypeAvailability(config, change.changeType);
+  const projected = projectSubscriptionChange(change, actor);
+  const managedOtherSupplementStatus =
+    change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+    (
+      change as typeof change & {
+        contract?: { status?: ContractStatus } | null;
+        contractId?: string | null;
+      }
+    ).contractId
+      ? (change as typeof change & { contract?: { status?: ContractStatus } | null }).contract
+          ?.status
+      : null;
+  const finalizedManagedOtherSupplement =
+    change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+    change.status === SubscriptionChangeStatus.SCHEDULED &&
+    managedOtherSupplementStatus === ContractStatus.ARCHIVED;
+  const customerConfirmationAlreadyPublished = Boolean(
+    (change as typeof change & { customerConfirmationPublishedAt?: Date | null })
+      .customerConfirmationPublishedAt
+  );
+  return {
+    ...projected,
+    allowedActions: availability.enabled
+      ? projected.allowedActions.filter(
+          (action) =>
+            !(finalizedManagedOtherSupplement && action === "CANCEL") &&
+            !(change.changeType === SubscriptionChangeType.MANAGED_OTHER && action === "RETRY") &&
+            !(
+              customerConfirmationAlreadyPublished &&
+              ["APPROVE", "CREATE_QUOTE", "PUBLISH_CUSTOMER_CONFIRMATION"].includes(action)
+            )
+        )
+      : [],
+    featureAvailability: availability
+  };
+}
+
+function changeTypeAvailability(
+  config: SubscriptionChangeConfig,
+  changeType: SubscriptionChangeType
+) {
+  const flagName =
+    changeType === SubscriptionChangeType.EXTENSION
+      ? SUBSCRIPTION_CHANGE_FLAG_NAMES.extension
+      : changeType === SubscriptionChangeType.VEHICLE_SWAP
+        ? SUBSCRIPTION_CHANGE_FLAG_NAMES.vehicleSwap
+        : changeType === SubscriptionChangeType.EARLY_TERMINATION
+          ? SUBSCRIPTION_CHANGE_FLAG_NAMES.earlyTermination
+          : SUBSCRIPTION_CHANGE_FLAG_NAMES.managedOther;
+  return {
+    enabled: isSubscriptionChangeTypeEnabled(config, changeType),
+    flagName
+  };
 }
 
 function createDetailData(
@@ -666,8 +800,11 @@ function assertPermission(actor: RequestUser, permission: PermissionCode) {
 }
 
 function assertIdempotencyKey(value: string | undefined) {
-  if (!value?.trim()) {
-    throw new SubscriptionChangeError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required.");
+  if (!value?.trim() || value.length > 128) {
+    throw new SubscriptionChangeError(
+      "IDEMPOTENCY_KEY_REQUIRED",
+      "A valid Idempotency-Key header is required."
+    );
   }
 }
 

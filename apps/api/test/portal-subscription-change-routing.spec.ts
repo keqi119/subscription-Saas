@@ -11,16 +11,14 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
       id: "change-early",
       type: "EARLY_TERMINATION"
     });
-    expect(harness.early.getPortalChange).toHaveBeenCalledWith(
-      "change-early",
-      harness.customer
-    );
+    expect(harness.early.getPortalChange).toHaveBeenCalledWith("change-early", harness.customer);
     expect(harness.renewal.getChange).not.toHaveBeenCalled();
   });
 
   it("routes quote confirmation as an ACCEPT decision", async () => {
     const harness = portalHarness();
     const input = {
+      idempotencyKey: "portal-confirm-early-1",
       quoteId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a",
       revision: 2,
       version: 5
@@ -35,11 +33,14 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
 
     expect(harness.early.decide).toHaveBeenCalledWith(
       "change-early",
-      expect.objectContaining({
+      {
+        commercialSnapshotHash: undefined,
         decision: "ACCEPT",
+        idempotencyKey: "portal-confirm-early-1",
+        quoteId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a",
         revision: 2,
         version: 5
-      }),
+      },
       harness.customer,
       harness.context
     );
@@ -52,6 +53,7 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
   it("routes quote rejection as a REJECT decision", async () => {
     const harness = portalHarness();
     const input = {
+      idempotencyKey: "portal-reject-early-1",
       quoteId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a",
       reason: "Customer declined",
       revision: 2,
@@ -67,12 +69,15 @@ describe("PortalSubscriptionChangeService early-termination routing", () => {
 
     expect(harness.early.decide).toHaveBeenCalledWith(
       "change-early",
-      expect.objectContaining({
+      {
+        commercialSnapshotHash: undefined,
         decision: "REJECT",
+        idempotencyKey: "portal-reject-early-1",
+        quoteId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a",
         reason: "Customer declined",
         revision: 2,
         version: 5
-      }),
+      },
       harness.customer,
       harness.context
     );

@@ -113,6 +113,7 @@ describe("SubscriptionVehicleSwapService", () => {
         "change-swap",
         {
           commercialSnapshotHash: "different-hash",
+          idempotencyKey: "confirm-stale-hash",
           quoteId: quote.id,
           revision: quote.revision,
           version: 2
@@ -126,6 +127,7 @@ describe("SubscriptionVehicleSwapService", () => {
       "change-swap",
       {
         commercialSnapshotHash: harness.commercialSnapshotHash,
+        idempotencyKey: "confirm-swap-1",
         quoteId: quote.id,
         revision: quote.revision,
         version: 2
@@ -142,6 +144,42 @@ describe("SubscriptionVehicleSwapService", () => {
     expect(harness.state.quotes[0]!.status).toBe(SubscriptionChangeQuoteStatus.CUSTOMER_CONFIRMED);
   });
 
+  it("replays the exact portal confirmation and rejects idempotency payload drift", async () => {
+    const harness = swapHarness({ formalQuote: true, published: true });
+    const quote = harness.state.quotes[0]!;
+    const input = {
+      commercialSnapshotHash: harness.commercialSnapshotHash,
+      idempotencyKey: "portal-confirm-replay-1",
+      quoteId: quote.id,
+      revision: quote.revision,
+      version: 2
+    };
+
+    const first = await harness.service.confirmQuote(
+      "change-swap",
+      input,
+      harness.customer,
+      harness.context
+    );
+    const replay = await harness.service.confirmQuote(
+      "change-swap",
+      input,
+      harness.customer,
+      harness.context
+    );
+
+    expect(replay).toEqual(first);
+    expect(harness.state.change.version).toBe(3);
+    await expect(
+      harness.service.confirmQuote(
+        "change-swap",
+        { ...input, version: 3 },
+        harness.customer,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+  });
+
   it.each(["reject", "cancel"] as const)(
     "%s releases only the target reservation owned by the change",
     async (operation) => {
@@ -153,6 +191,7 @@ describe("SubscriptionVehicleSwapService", () => {
           "change-swap",
           {
             commercialSnapshotHash: harness.commercialSnapshotHash,
+            idempotencyKey: "reject-swap-1",
             quoteId: quote.id,
             reason: "Customer changed plans",
             revision: quote.revision,
@@ -317,7 +356,8 @@ function swapHarness(options: HarnessOptions = {}) {
     },
     version: options.formalQuote ? (options.published ? 2 : 1) : 0
   };
-  const state = { change, quotes, sourceVehicle, targetVehicle };
+  const commands: Array<Record<string, unknown>> = [];
+  const state = { change, commands, quotes, sourceVehicle, targetVehicle };
   const refreshRelations = () => {
     state.change.currentQuote =
       state.quotes.find((quote) => quote.id === state.change.currentQuoteId) ?? null;
@@ -343,6 +383,7 @@ function swapHarness(options: HarnessOptions = {}) {
         return await operation(prisma);
       } catch (error) {
         Object.assign(state.change, before.change);
+        state.commands.splice(0, state.commands.length, ...before.commands);
         state.quotes.splice(0, state.quotes.length, ...before.quotes);
         Object.assign(state.targetVehicle, before.targetVehicle);
         refreshRelations();
@@ -350,12 +391,42 @@ function swapHarness(options: HarnessOptions = {}) {
       }
     }),
     subscriptionChangeCommand: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        ...data,
-        id: `command-${String(data.idempotencyKey)}`
-      })),
-      findUnique: vi.fn(async () => null),
-      update: vi.fn(async () => ({}))
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const command = {
+          ...data,
+          completedAt: null,
+          id: `command-${state.commands.length + 1}`,
+          resourceId: null,
+          resourceType: null,
+          updatedAt: now
+        };
+        state.commands.push(command);
+        return command;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        if (typeof where.id === "string") {
+          return state.commands.find((command) => command.id === where.id) ?? null;
+        }
+        const identity = where.actorId_operation_idempotencyKey as
+          | { actorId: string; idempotencyKey: string; operation: string }
+          | undefined;
+        return identity
+          ? (state.commands.find(
+              (command) =>
+                command.actorId === identity.actorId &&
+                command.idempotencyKey === identity.idempotencyKey &&
+                command.operation === identity.operation
+            ) ?? null)
+          : null;
+      }),
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const command = state.commands.find((item) => item.id === where.id);
+          if (!command) throw new Error("command missing");
+          Object.assign(command, data, { updatedAt: now });
+          return command;
+        }
+      )
     },
     subscriptionChangeOrder: {
       findFirst: vi.fn(async () => refreshRelations()),

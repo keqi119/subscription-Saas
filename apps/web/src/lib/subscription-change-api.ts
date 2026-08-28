@@ -34,6 +34,10 @@ export type SubscriptionChangeAllowedAction =
   | "CANCEL"
   | "MANUAL_TAKEOVER";
 
+export interface SubscriptionChangeCapabilities {
+  changeTypes: Record<SubscriptionChangeType, { enabled: boolean; flagName: string }>;
+}
+
 export interface AdminExtensionChangeDetail {
   extensionMonths: number;
   pricingMode: SubscriptionChangePricingMode;
@@ -154,6 +158,7 @@ export interface AdminSubscriptionChange {
   extensionMonths?: number | null;
   failureCode?: string | null;
   failureMessage?: string | null;
+  featureAvailability?: { enabled: boolean; flagName: string };
   id: string;
   manualTakeoverReason?: string | null;
   order: {
@@ -278,16 +283,53 @@ export type CreateSubscriptionChangeInput =
       orderId: string;
     };
 
-function commandHeaders() {
-  return { "Idempotency-Key": crypto.randomUUID() };
+const commandStates = new Map<string, { idempotencyKey: string; inFlight?: Promise<unknown> }>();
+
+function runIdempotentCommand<T>(
+  operation: string,
+  input: unknown,
+  request: (idempotencyKey: string) => Promise<T>
+): Promise<T> {
+  const identity = `${operation}:${stableCommandJson(input)}`;
+  const existing = commandStates.get(identity);
+  if (existing?.inFlight) return existing.inFlight as Promise<T>;
+  const state = existing ?? { idempotencyKey: crypto.randomUUID() };
+  const inFlight = request(state.idempotencyKey)
+    .then((result) => {
+      commandStates.delete(identity);
+      return result;
+    })
+    .catch((error) => {
+      state.inFlight = undefined;
+      commandStates.set(identity, state);
+      throw error;
+    });
+  state.inFlight = inFlight;
+  commandStates.set(identity, state);
+  return inFlight;
+}
+
+function commandHeaders(idempotencyKey: string) {
+  return { "Idempotency-Key": idempotencyKey };
+}
+
+function stableCommandJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableCommandJson).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableCommandJson(item)}`)
+    .join(",")}}`;
 }
 
 export function createSubscriptionChange(input: CreateSubscriptionChangeInput) {
-  return apiFetch<AdminSubscriptionChange>("/subscription-changes", {
-    body: JSON.stringify(input),
-    headers: commandHeaders(),
-    method: "POST"
-  });
+  return runIdempotentCommand("CREATE_SUBSCRIPTION_CHANGE", input, (idempotencyKey) =>
+    apiFetch<AdminSubscriptionChange>("/subscription-changes", {
+      body: JSON.stringify(input),
+      headers: commandHeaders(idempotencyKey),
+      method: "POST"
+    })
+  );
 }
 
 export function listRenewalConsiderations(
@@ -312,6 +354,10 @@ export function getSubscriptionChange(id: string) {
   return apiFetch<AdminSubscriptionChange>(`/subscription-changes/${encodeURIComponent(id)}`);
 }
 
+export function getSubscriptionChangeCapabilities() {
+  return apiFetch<SubscriptionChangeCapabilities>("/subscription-changes/capabilities");
+}
+
 export function listSubscriptionChangesForOrder(orderId: string) {
   return apiFetch<AdminSubscriptionChange[]>(
     `/subscription-changes/orders/${encodeURIComponent(orderId)}`
@@ -331,64 +377,89 @@ export function listSubscriptionChangeESignTasks(contractId: string) {
 }
 
 export function createSubscriptionChangeQuote(id: string, input: FormalQuoteInput) {
-  return apiFetch<AdminSubscriptionChangeQuote>(
-    `/subscription-changes/${encodeURIComponent(id)}/quotes`,
-    { body: JSON.stringify(input), headers: commandHeaders(), method: "POST" }
+  return runIdempotentCommand("CREATE_SUBSCRIPTION_CHANGE_QUOTE", { id, input }, (idempotencyKey) =>
+    apiFetch<AdminSubscriptionChangeQuote>(
+      `/subscription-changes/${encodeURIComponent(id)}/quotes`,
+      { body: JSON.stringify(input), headers: commandHeaders(idempotencyKey), method: "POST" }
+    )
   );
 }
 
 export function approveSubscriptionChangePrice(id: string, version: number, reason: string) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/price-override/approve`,
-    {
-      body: JSON.stringify({ reason, version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  const input = { id, reason, version };
+  return runIdempotentCommand("APPROVE_SUBSCRIPTION_CHANGE_PRICE", input, (idempotencyKey) =>
+    apiFetch<AdminSubscriptionChange>(
+      `/subscription-changes/${encodeURIComponent(id)}/price-override/approve`,
+      {
+        body: JSON.stringify({ reason, version }),
+        headers: commandHeaders(idempotencyKey),
+        method: "POST"
+      }
+    )
   );
 }
 
 export function publishSubscriptionChangeQuote(id: string, version: number) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/submit-customer-confirmation`,
-    {
-      body: JSON.stringify({ version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "PUBLISH_SUBSCRIPTION_CHANGE_QUOTE",
+    { id, version },
+    (idempotencyKey) =>
+      apiFetch<AdminSubscriptionChange>(
+        `/subscription-changes/${encodeURIComponent(id)}/submit-customer-confirmation`,
+        {
+          body: JSON.stringify({ version }),
+          headers: commandHeaders(idempotencyKey),
+          method: "POST"
+        }
+      )
   );
 }
 
 export function generateSubscriptionChangeContract(id: string, version: number) {
-  return apiFetch<AdminSubscriptionChangeContract>(
-    `/subscription-changes/${encodeURIComponent(id)}/contracts`,
-    {
-      body: JSON.stringify({ version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "GENERATE_SUBSCRIPTION_CHANGE_CONTRACT",
+    { id, version },
+    (idempotencyKey) =>
+      apiFetch<AdminSubscriptionChangeContract>(
+        `/subscription-changes/${encodeURIComponent(id)}/contracts`,
+        {
+          body: JSON.stringify({ version }),
+          headers: commandHeaders(idempotencyKey),
+          method: "POST"
+        }
+      )
   );
 }
 
 export function startSubscriptionChangeESign(changeId: string, version: number, retry = false) {
-  return apiFetch<AdminContractESignTask>(
-    `/subscription-changes/${encodeURIComponent(changeId)}/esign/${retry ? "retry" : "start"}`,
-    {
-      body: JSON.stringify({ version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "START_SUBSCRIPTION_CHANGE_ESIGN",
+    { changeId, retry, version },
+    (idempotencyKey) =>
+      apiFetch<AdminContractESignTask>(
+        `/subscription-changes/${encodeURIComponent(changeId)}/esign/${retry ? "retry" : "start"}`,
+        {
+          body: JSON.stringify({ version }),
+          headers: commandHeaders(idempotencyKey),
+          method: "POST"
+        }
+      )
   );
 }
 
 export function retrySubscriptionChangeJob(changeId: string, jobId: string, version: number) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(changeId)}/jobs/${encodeURIComponent(jobId)}/retry`,
-    {
-      body: JSON.stringify({ version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "RETRY_SUBSCRIPTION_CHANGE_JOB",
+    { changeId, jobId, version },
+    (idempotencyKey) =>
+      apiFetch<AdminSubscriptionChange>(
+        `/subscription-changes/${encodeURIComponent(changeId)}/jobs/${encodeURIComponent(jobId)}/retry`,
+        {
+          body: JSON.stringify({ version }),
+          headers: commandHeaders(idempotencyKey),
+          method: "POST"
+        }
+      )
   );
 }
 
@@ -400,24 +471,31 @@ export function retryRenewalReminder(considerationId: string, slot: string) {
 }
 
 export function takeOverSubscriptionChange(id: string, version: number, reason: string) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/manual-takeover`,
-    {
-      body: JSON.stringify({ reason, version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "TAKE_OVER_SUBSCRIPTION_CHANGE",
+    { id, reason, version },
+    (idempotencyKey) =>
+      apiFetch<AdminSubscriptionChange>(
+        `/subscription-changes/${encodeURIComponent(id)}/manual-takeover`,
+        {
+          body: JSON.stringify({ reason, version }),
+          headers: commandHeaders(idempotencyKey),
+          method: "POST"
+        }
+      )
   );
 }
 
 export function cancelSubscriptionChange(id: string, version: number, reason: string) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/cancel`,
-    {
-      body: JSON.stringify({ reason, version }),
-      headers: commandHeaders(),
-      method: "POST"
-    }
+  return runIdempotentCommand(
+    "CANCEL_SUBSCRIPTION_CHANGE",
+    { id, reason, version },
+    (idempotencyKey) =>
+      apiFetch<AdminSubscriptionChange>(`/subscription-changes/${encodeURIComponent(id)}/cancel`, {
+        body: JSON.stringify({ reason, version }),
+        headers: commandHeaders(idempotencyKey),
+        method: "POST"
+      })
   );
 }
 
@@ -426,13 +504,14 @@ export function approveManagedOtherChange(
   input: {
     approvalReason: string;
     approvalReference: string;
-    supplementContractId?: string;
     version: number;
   }
 ) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/managed-other/approve`,
-    { body: JSON.stringify(input), headers: commandHeaders(), method: "POST" }
+  return runIdempotentCommand("APPROVE_MANAGED_OTHER_CHANGE", { id, input }, (idempotencyKey) =>
+    apiFetch<AdminSubscriptionChange>(
+      `/subscription-changes/${encodeURIComponent(id)}/managed-other/approve`,
+      { body: JSON.stringify(input), headers: commandHeaders(idempotencyKey), method: "POST" }
+    )
   );
 }
 
@@ -440,8 +519,10 @@ export function executeManagedOtherChange(
   id: string,
   input: { executionNote: string; version: number }
 ) {
-  return apiFetch<AdminSubscriptionChange>(
-    `/subscription-changes/${encodeURIComponent(id)}/managed-other/execute`,
-    { body: JSON.stringify(input), headers: commandHeaders(), method: "POST" }
+  return runIdempotentCommand("EXECUTE_MANAGED_OTHER_CHANGE", { id, input }, (idempotencyKey) =>
+    apiFetch<AdminSubscriptionChange>(
+      `/subscription-changes/${encodeURIComponent(id)}/managed-other/execute`,
+      { body: JSON.stringify(input), headers: commandHeaders(idempotencyKey), method: "POST" }
+    )
   );
 }

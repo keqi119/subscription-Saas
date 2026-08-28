@@ -196,7 +196,13 @@ describe("SubscriptionClosureController governed boundary", () => {
 
   it("derives actor and aggregate identities from authentication and route params", async () => {
     const service = { initiateEarlyTermination: vi.fn(async () => ({ closureCaseId: "case" })) };
-    const controller = new SubscriptionClosureController(service as never, {} as never);
+    const controller = new SubscriptionClosureController(
+      service as never,
+      {} as never,
+      {
+        get: vi.fn(() => "true")
+      } as never
+    );
     const request = {
       headers: { "user-agent": "test" },
       ip: "127.0.0.1",
@@ -218,6 +224,31 @@ describe("SubscriptionClosureController governed boundary", () => {
         orderId: "00000000-0000-4000-8000-000000000001"
       })
     );
+  });
+
+  it("fails closed for the legacy Closure early-termination route when the exact flag is off", async () => {
+    const service = { initiateEarlyTermination: vi.fn() };
+    const controller = new SubscriptionClosureController(
+      service as never,
+      {} as never,
+      {
+        get: vi.fn(() => "false")
+      } as never
+    );
+
+    expect(() =>
+      controller.initiateEarlyTermination(
+        {
+          effectiveAt: "2026-08-24T00:00:00.000Z",
+          evidence: [],
+          idempotencyKey: "early-disabled",
+          orderId: "00000000-0000-4000-8000-000000000001",
+          reason: "customer request"
+        },
+        { user: { id: "00000000-0000-4000-8000-000000000009" } } as never
+      )
+    ).toThrowError(expect.objectContaining({ status: 503 }));
+    expect(service.initiateEarlyTermination).not.toHaveBeenCalled();
   });
 });
 

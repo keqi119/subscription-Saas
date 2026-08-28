@@ -26,7 +26,7 @@ import {
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { SUBSCRIPTION_CHANGE_TYPE_LABELS } from "../../../../constants/labels";
 import {
@@ -63,6 +63,7 @@ export default function PortalSubscriptionChangeDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
+  const decisionKeys = useRef(new Map<string, string>());
 
   const loadChange = useCallback(async () => {
     if (!params.id) return;
@@ -97,7 +98,10 @@ export default function PortalSubscriptionChangeDetailPage() {
       onOk: async () => {
         setSubmitting(true);
         try {
-          await confirmPortalRenewalQuote(change.id, payload);
+          const commandIdentity = `confirm:${change.id}:${payload.quoteId}:${payload.revision}:${payload.version}`;
+          const idempotencyKey = decisionKeys.current.get(commandIdentity) ?? crypto.randomUUID();
+          decisionKeys.current.set(commandIdentity, idempotencyKey);
+          await confirmPortalRenewalQuote(change.id, payload, idempotencyKey);
           void message.success("合同变更方案已确认");
           await loadChange();
         } catch (error) {
@@ -106,7 +110,9 @@ export default function PortalSubscriptionChangeDetailPage() {
             await loadChange();
             return;
           }
-          void message.error(error instanceof PortalApiError ? error.message : "无法确认合同变更方案");
+          void message.error(
+            error instanceof PortalApiError ? error.message : "无法确认合同变更方案"
+          );
         } finally {
           setSubmitting(false);
         }
@@ -122,7 +128,15 @@ export default function PortalSubscriptionChangeDetailPage() {
     const { reason } = await rejectForm.validateFields();
     setSubmitting(true);
     try {
-      await rejectPortalRenewalQuote(change.id, { ...payload, reason: reason.trim() });
+      const normalizedReason = reason.trim();
+      const commandIdentity = `reject:${change.id}:${payload.quoteId}:${payload.revision}:${payload.version}:${normalizedReason}`;
+      const idempotencyKey = decisionKeys.current.get(commandIdentity) ?? crypto.randomUUID();
+      decisionKeys.current.set(commandIdentity, idempotencyKey);
+      await rejectPortalRenewalQuote(
+        change.id,
+        { ...payload, reason: normalizedReason },
+        idempotencyKey
+      );
       setRejectOpen(false);
       rejectForm.resetFields();
       void message.success("已拒绝当前方案，运营将看到拒绝原因");
@@ -162,7 +176,10 @@ export default function PortalSubscriptionChangeDetailPage() {
     );
   }
 
-  const decisionActionable = customerDecisionPayload(change) !== null;
+  const decisionActionable =
+    change.allowedActions.includes("CONFIRM_QUOTE") &&
+    change.allowedActions.includes("REJECT_QUOTE") &&
+    customerDecisionPayload(change) !== null;
   return (
     <PageShell>
       <Modal
@@ -218,6 +235,15 @@ export default function PortalSubscriptionChangeDetailPage() {
           </Tag>
         </Flex>
         <ChangeStatusAlert change={change} />
+        {!change.featureAvailability.enabled ? (
+          <Alert
+            description={`当前环境已关闭此类合同变更（${change.featureAvailability.flagName}）。页面仅提供历史事实查看。`}
+            message="当前变更不可操作"
+            showIcon
+            style={{ marginTop: 16 }}
+            type="warning"
+          />
+        ) : null}
       </Card>
 
       <CustomerTermsCard change={change} />
@@ -290,12 +316,7 @@ function ChangeStatusAlert({ change }: { change: PortalSubscriptionChange }) {
   }
   if (change.status === "SCHEDULED" || change.status === "EXECUTING") {
     return (
-      <Alert
-        message="协议已归档，等待计划生效"
-        showIcon
-        style={{ marginTop: 16 }}
-        type="success"
-      />
+      <Alert message="协议已归档，等待计划生效" showIcon style={{ marginTop: 16 }} type="success" />
     );
   }
   if (change.status === "SIGNING_OR_PAYMENT") {
@@ -394,10 +415,7 @@ function CustomerQuoteCard({ change }: { change: PortalSubscriptionChange }) {
   if (isEarlyTermination(change)) return null;
   const currentQuote = change.currentQuote;
   return (
-    <Card
-      style={{ marginBottom: 14 }}
-      title={isVehicleSwap(change) ? "换车报价" : "续期报价"}
-    >
+    <Card style={{ marginBottom: 14 }} title={isVehicleSwap(change) ? "换车报价" : "续期报价"}>
       {currentQuote ? (
         <Descriptions
           column={{ lg: 2, md: 2, sm: 1, xs: 1 }}
@@ -428,7 +446,12 @@ function quoteDescriptionItems(quote: PortalRenewalQuote) {
 }
 
 function customerDecisionPayload(change: PortalSubscriptionChange): CustomerDecisionPayload | null {
-  if (change.status !== "QUOTED" || !change.customerConfirmationPublishedAt) return null;
+  if (
+    !change.allowedActions.includes("CONFIRM_QUOTE") ||
+    change.status !== "QUOTED" ||
+    !change.customerConfirmationPublishedAt
+  )
+    return null;
   if (isEarlyTermination(change)) {
     if (!change.estimateRevision) return null;
     return {

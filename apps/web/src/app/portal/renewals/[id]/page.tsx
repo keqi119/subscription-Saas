@@ -1,11 +1,23 @@
 "use client";
 
 import { ArrowLeftOutlined, CheckOutlined, ReloadOutlined, StopOutlined } from "@ant-design/icons";
-import { Alert, App, Button, Card, Descriptions, Empty, Flex, Space, Spin, Tag, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Descriptions,
+  Empty,
+  Flex,
+  Space,
+  Spin,
+  Tag,
+  Typography
+} from "antd";
 import dayjs from "dayjs";
 import { useParams, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   getPortalRenewal,
@@ -27,6 +39,7 @@ export default function PortalRenewalDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>();
+  const decisionKeys = useRef(new Map<string, string>());
 
   const load = useCallback(async () => {
     if (!params.id) return;
@@ -40,7 +53,9 @@ export default function PortalRenewalDetailPage() {
       setDetail(toPortalRenewalDetail(renewal, change));
     } catch (error) {
       if (error instanceof PortalApiError && error.status === 401) {
-        router.replace(`/portal/login?redirect=${encodeURIComponent(`/portal/renewals/${params.id}`)}`);
+        router.replace(
+          `/portal/login?redirect=${encodeURIComponent(`/portal/renewals/${params.id}`)}`
+        );
         return;
       }
       setErrorMessage(error instanceof PortalApiError ? error.message : "无法加载续订详情");
@@ -54,7 +69,8 @@ export default function PortalRenewalDetailPage() {
   }, [load]);
 
   function decide(decision: "RENEW" | "EXPIRE") {
-    if (!detail || detail.decision || submitting) return;
+    if (!detail || detail.decision || submitting || !detail.allowedActions.includes(decision))
+      return;
     modal.confirm({
       content:
         decision === "RENEW"
@@ -65,7 +81,14 @@ export default function PortalRenewalDetailPage() {
       onOk: async () => {
         setSubmitting(true);
         try {
-          await submitPortalRenewalDecision(detail.id, { decision, version: detail.version });
+          const commandIdentity = `${detail.id}:${decision}:${detail.version}`;
+          const idempotencyKey = decisionKeys.current.get(commandIdentity) ?? crypto.randomUUID();
+          decisionKeys.current.set(commandIdentity, idempotencyKey);
+          await submitPortalRenewalDecision(
+            detail.id,
+            { decision, version: detail.version },
+            idempotencyKey
+          );
           void message.success(decision === "RENEW" ? "续订申请已提交" : "到期结束决定已提交");
           await load();
         } catch (error) {
@@ -84,14 +107,22 @@ export default function PortalRenewalDetailPage() {
   }
 
   if (loading && !detail) {
-    return <PageShell><Flex justify="center" style={{ padding: 64 }}><Spin /></Flex></PageShell>;
+    return (
+      <PageShell>
+        <Flex justify="center" style={{ padding: 64 }}>
+          <Spin />
+        </Flex>
+      </PageShell>
+    );
   }
 
   if (!detail) {
     return (
       <PageShell>
         <Empty description={errorMessage ?? "续订安排不存在"}>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>重试</Button>
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            重试
+          </Button>
         </Empty>
       </PageShell>
     );
@@ -101,21 +132,41 @@ export default function PortalRenewalDetailPage() {
   return (
     <PageShell>
       <Flex align="center" justify="space-between" style={{ marginBottom: 18 }} wrap="wrap">
-        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal/renewals")}>返回续订列表</Button>
-        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>刷新</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => router.push("/portal/renewals")}>
+          返回续订列表
+        </Button>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()}>
+          刷新
+        </Button>
       </Flex>
 
       <Card style={{ marginBottom: 14 }}>
         <Flex align="flex-start" gap={16} justify="space-between" wrap="wrap">
           <div>
-            <Typography.Title level={2} style={{ margin: 0 }}>{action.title}</Typography.Title>
-            <Typography.Text type="secondary">订单 {detail.order.orderNo} · {detail.order.plateMasked ?? "车牌待补充"}</Typography.Text>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              {action.title}
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              订单 {detail.order.orderNo} · {detail.order.plateMasked ?? "车牌待补充"}
+            </Typography.Text>
           </div>
-          <Tag color={action.step === "EXTENDED" ? "green" : action.step === "RETURN" ? "orange" : "blue"}>
+          <Tag
+            color={
+              action.step === "EXTENDED" ? "green" : action.step === "RETURN" ? "orange" : "blue"
+            }
+          >
             {detail.status}
           </Tag>
         </Flex>
-        <Alert description={action.helper} message="当前进度" showIcon style={{ marginTop: 16 }} type={action.step === "RETURN" ? "warning" : action.step === "EXTENDED" ? "success" : "info"} />
+        <Alert
+          description={action.helper}
+          message="当前进度"
+          showIcon
+          style={{ marginTop: 16 }}
+          type={
+            action.step === "RETURN" ? "warning" : action.step === "EXTENDED" ? "success" : "info"
+          }
+        />
       </Card>
 
       <Card style={{ marginBottom: 14 }} title="合同期限">
@@ -124,7 +175,10 @@ export default function PortalRenewalDetailPage() {
           items={[
             { label: "当前合同开始日", children: formatDate(detail.segment.startDate) },
             { label: "当前合同到期日", children: formatDate(detail.segment.endDate) },
-            { label: "续订完成期限", children: dayjs(detail.completionDeadlineAt).format("YYYY-MM-DD HH:mm") },
+            {
+              label: "续订完成期限",
+              children: dayjs(detail.completionDeadlineAt).format("YYYY-MM-DD HH:mm")
+            },
             { label: "当前月租", children: formatMoney(detail.segment.monthlyFeeAmount) }
           ]}
           size="small"
@@ -133,14 +187,35 @@ export default function PortalRenewalDetailPage() {
 
       {!detail.decision ? (
         <Card style={{ marginBottom: 14 }} title="请选择到期安排">
+          {!detail.featureAvailability.enabled ? (
+            <Alert
+              description="当前环境暂未开放续期申请；您仍可选择按原合同到期结束。"
+              message="续期功能暂未开放"
+              showIcon
+              style={{ marginBottom: 12 }}
+              type="warning"
+            />
+          ) : null}
           <Typography.Paragraph type="secondary">
             两个选择互斥且提交后不可切换。申请续订还需要完成报价确认、补充协议签署和归档。
           </Typography.Paragraph>
           <Space size={12} wrap>
-            <Button icon={<CheckOutlined />} loading={submitting} onClick={() => decide("RENEW")} type="primary">
+            <Button
+              disabled={!detail.allowedActions.includes("RENEW")}
+              icon={<CheckOutlined />}
+              loading={submitting}
+              onClick={() => decide("RENEW")}
+              type="primary"
+            >
               申请续订
             </Button>
-            <Button danger icon={<StopOutlined />} loading={submitting} onClick={() => decide("EXPIRE")}>
+            <Button
+              danger
+              disabled={!detail.allowedActions.includes("EXPIRE")}
+              icon={<StopOutlined />}
+              loading={submitting}
+              onClick={() => decide("EXPIRE")}
+            >
               到期结束
             </Button>
           </Space>
@@ -152,17 +227,23 @@ export default function PortalRenewalDetailPage() {
           <Space orientation="vertical" size={8} style={{ width: "100%" }}>
             {detail.reminders.map((reminder) => (
               <Flex key={reminder.slot} justify="space-between" wrap="wrap">
-                <Typography.Text>{reminder.slot} · {dayjs(reminder.scheduledAt).format("YYYY-MM-DD HH:mm")}</Typography.Text>
+                <Typography.Text>
+                  {reminder.slot} · {dayjs(reminder.scheduledAt).format("YYYY-MM-DD HH:mm")}
+                </Typography.Text>
                 <Tag>{reminder.status}</Tag>
               </Flex>
             ))}
           </Space>
-        ) : <Empty description="暂无提醒记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+        ) : (
+          <Empty description="暂无提醒记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        )}
       </Card>
 
       {action.href && action.href !== `/portal/renewals/${detail.id}` ? (
         <Flex justify="flex-end" style={{ marginTop: 16 }}>
-          <Button onClick={() => router.push(action.href!)} type="primary">继续处理</Button>
+          <Button onClick={() => router.push(action.href!)} type="primary">
+            继续处理
+          </Button>
         </Flex>
       ) : null}
     </PageShell>

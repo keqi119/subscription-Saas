@@ -15,6 +15,23 @@ import {
 import { subscriptionChangeAllowedActions } from "../src/subscription-change/subscription-change.domain";
 
 describe("SubscriptionEarlyTerminationChangeService", () => {
+  it("rejects early-termination writes when its exact rollout flag is disabled", async () => {
+    const harness = serviceHarness({ enabled: false });
+
+    await expect(
+      harness.service.createEstimate(
+        harness.change.id,
+        { idempotencyKey: "early-disabled", version: 2 },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({
+      code: "SUBSCRIPTION_EARLY_TERMINATION_DISABLED",
+      status: 503
+    });
+    expect(harness.tx.subscriptionChangeOrder.update).not.toHaveBeenCalled();
+  });
+
   it("builds a revisioned contract-based estimate without cancelling future bills", () => {
     const estimate = buildEarlyTerminationEstimate({
       bills: [
@@ -69,7 +86,7 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
     expect(earlyTerminationCompletionOutcome(closureStatus)).toBe(expected);
   });
 
-  it("keeps governed cancellation visible before effective execution", () => {
+  it("keeps governed cancellation visible without advertising a missing execute route", () => {
     const harness = serviceHarness({ status: SubscriptionChangeStatus.SCHEDULED });
 
     expect(
@@ -80,11 +97,14 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
         },
         harness.actor
       )
-    ).toEqual(expect.arrayContaining(["EXECUTE", "CANCEL"]));
+    ).toEqual(["CANCEL"]);
   });
 
   it("persists an immutable estimate revision and publishes that revision", async () => {
-    const harness = serviceHarness({ status: SubscriptionChangeStatus.DRAFT });
+    const harness = serviceHarness({
+      now: new Date("2026-09-29T15:00:00.000Z"),
+      status: SubscriptionChangeStatus.DRAFT
+    });
 
     const estimated = await harness.service.createEstimate(
       harness.change.id,
@@ -106,9 +126,29 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
       harness.context
     );
     expect(harness.change.customerConfirmationPublishedAt).toEqual(
-      new Date("2026-09-30T00:00:01.000Z")
+      new Date("2026-09-29T15:00:00.000Z")
     );
     expect(harness.change.version).toBe(4);
+  });
+
+  it("rejects publishing an already published estimate with a new current-version command", async () => {
+    const harness = serviceHarness({
+      now: new Date("2026-09-29T15:00:00.000Z"),
+      status: SubscriptionChangeStatus.QUOTED
+    });
+    const publishedAt = new Date("2026-09-29T14:00:00.000Z");
+    harness.change.customerConfirmationPublishedAt = publishedAt;
+
+    await expect(
+      harness.service.publishCustomerConfirmation(
+        harness.change.id,
+        { idempotencyKey: "termination-republish", version: 2 },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "EARLY_TERMINATION_ALREADY_PUBLISHED" });
+    expect(harness.change.customerConfirmationPublishedAt).toEqual(publishedAt);
+    expect(harness.change.version).toBe(2);
   });
 
   it.each([
@@ -116,7 +156,10 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
     ["REJECT", SubscriptionChangeStatus.CANCELLED],
     ["DISPUTE", SubscriptionChangeStatus.MANUAL_TAKEOVER]
   ] as const)("records customer %s without executing Closure", async (decision, expectedStatus) => {
-    const harness = serviceHarness({ status: SubscriptionChangeStatus.QUOTED });
+    const harness = serviceHarness({
+      now: new Date("2026-09-29T15:00:00.000Z"),
+      status: SubscriptionChangeStatus.QUOTED
+    });
     harness.change.customerConfirmationPublishedAt = new Date("2026-09-29T00:00:00.000Z");
 
     await harness.service.decide(
@@ -124,6 +167,7 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
       {
         decision,
         idempotencyKey: `termination-${decision.toLowerCase()}-1`,
+        quoteId: harness.change.id,
         reason: decision === "ACCEPT" ? undefined : "Customer response",
         revision: 1,
         version: 2
@@ -137,7 +181,83 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
     expect(harness.tx.receivableBill.updateMany).not.toHaveBeenCalled();
   });
 
-  it("links the Closure case and archived agreement, then enters SCHEDULED", async () => {
+  it("replays an exact customer decision and rejects idempotency payload drift", async () => {
+    const harness = serviceHarness({
+      now: new Date("2026-09-29T15:00:00.000Z"),
+      status: SubscriptionChangeStatus.QUOTED
+    });
+    harness.change.customerConfirmationPublishedAt = new Date("2026-09-29T00:00:00.000Z");
+    const input = {
+      decision: "REJECT" as const,
+      idempotencyKey: "termination-reject-replay-1",
+      quoteId: harness.change.id,
+      reason: "Customer no longer needs the vehicle",
+      revision: 1,
+      version: 2
+    };
+
+    const first = await harness.service.decide(
+      harness.change.id,
+      input,
+      { customerId: "customer-1" },
+      harness.context
+    );
+    const replay = await harness.service.decide(
+      harness.change.id,
+      input,
+      { customerId: "customer-1" },
+      harness.context
+    );
+
+    expect(replay).toEqual(first);
+    expect(harness.change.version).toBe(3);
+    await expect(
+      harness.service.decide(
+        harness.change.id,
+        { ...input, reason: "A different reason" },
+        { customerId: "customer-1" },
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+    await expect(
+      harness.service.decide(
+        harness.change.id,
+        { ...input, quoteId: "another-change" },
+        { customerId: "customer-1" },
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST" });
+  });
+
+  it("hides and rejects customer decisions at the completion deadline", async () => {
+    const harness = serviceHarness({
+      now: new Date("2026-09-29T16:00:00.000Z"),
+      status: SubscriptionChangeStatus.QUOTED
+    });
+    harness.change.customerConfirmationPublishedAt = new Date("2026-09-29T15:00:00.000Z");
+
+    await expect(
+      harness.service.getPortalChange(harness.change.id, { customerId: "customer-1" })
+    ).resolves.toMatchObject({ allowedActions: [] });
+    await expect(
+      harness.service.decide(
+        harness.change.id,
+        {
+          decision: "ACCEPT",
+          idempotencyKey: "termination-expired-decision",
+          quoteId: harness.change.id,
+          revision: 1,
+          version: 2
+        },
+        { customerId: "customer-1" },
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "EARLY_TERMINATION_DECISION_DEADLINE_PASSED" });
+    expect(harness.change.status).toBe(SubscriptionChangeStatus.QUOTED);
+    expect(harness.change.version).toBe(2);
+  });
+
+  it("generates a PDF agreement and waits for provider e-sign before scheduling", async () => {
     const harness = serviceHarness({ now: new Date("2026-09-29T15:00:00.000Z") });
 
     const agreement = await harness.service.generate(
@@ -156,16 +276,9 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
       }),
       expect.any(Function)
     );
-    expect(harness.closure.archiveEarlyTerminationAgreement).toHaveBeenCalledWith(
-      expect.objectContaining({
-        closureCaseId: "closure-1",
-        idempotencyKey: "early-termination-change:change-1:agreement"
-      }),
-      expect.any(Function)
-    );
     expect(agreement).toMatchObject({
-      fileId: "signed-file-1",
-      status: ContractStatus.ARCHIVED
+      fileId: "generated-pdf-file-1",
+      status: ContractStatus.GENERATED
     });
     expect(harness.change).toMatchObject({
       contractId: "agreement-contract-1",
@@ -173,7 +286,7 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
         agreementContractId: "agreement-contract-1",
         closureCaseId: "closure-1"
       },
-      status: SubscriptionChangeStatus.SCHEDULED,
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
       version: 3
     });
     await expect(
@@ -183,9 +296,49 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
         harness.actor,
         harness.context
       )
-    ).resolves.toMatchObject({ id: "agreement-contract-1" });
+    ).resolves.toMatchObject({ id: "agreement-contract-1", fileId: "generated-pdf-file-1" });
     expect(harness.closure.initiateEarlyTermination).toHaveBeenCalledOnce();
-    expect(harness.closure.archiveEarlyTerminationAgreement).toHaveBeenCalledOnce();
+    expect(harness.closure.archiveEarlyTerminationAgreement).not.toHaveBeenCalled();
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledOnce();
+  });
+
+  it("recovers the same PDF agreement reservation after object storage succeeds but finalize fails", async () => {
+    const harness = serviceHarness({ now: new Date("2026-09-29T15:00:00.000Z") });
+    harness.artifactWriter.writeGeneratedContractPdfArtifact.mockImplementationOnce(async () => {
+      harness.failNextTransaction(new Error("transient finalize failure"));
+      return generatedEarlyTerminationArtifact();
+    });
+
+    await expect(
+      harness.service.generate(
+        harness.change.id,
+        { idempotencyKey: "termination-agreement-recover", version: 2 },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toThrow("transient finalize failure");
+    expect(harness.change).toMatchObject({
+      contractId: "agreement-contract-1",
+      status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
+      version: 2
+    });
+
+    await expect(
+      harness.service.generate(
+        harness.change.id,
+        { idempotencyKey: "termination-agreement-recover", version: 2 },
+        harness.actor,
+        harness.context
+      )
+    ).resolves.toMatchObject({
+      fileId: "generated-pdf-file-1",
+      id: "agreement-contract-1"
+    });
+    expect(harness.change).toMatchObject({
+      status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT,
+      version: 3
+    });
+    expect(harness.artifactWriter.writeGeneratedContractPdfArtifact).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an effective business date whose Shanghai boundary has already passed", async () => {
@@ -202,17 +355,30 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
     expect(harness.closure.initiateEarlyTermination).not.toHaveBeenCalled();
   });
 
-  it("returns the authoritative archived Closure e-sign task", async () => {
-    const harness = serviceHarness({ status: SubscriptionChangeStatus.SCHEDULED });
+  it("starts the provider e-sign task for the generated PDF agreement", async () => {
+    const harness = serviceHarness({ status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT });
     harness.change.earlyTerminationDetail.closureCaseId = "closure-1";
+    harness.change.earlyTerminationDetail.agreementContractId = "agreement-contract-1";
+    harness.change.earlyTerminationDetail.agreementContract = {
+      contractSnapshot: {},
+      fileId: "generated-pdf-file-1",
+      id: "agreement-contract-1",
+      status: ContractStatus.GENERATED
+    };
+    harness.change.contractId = "agreement-contract-1";
+    const start = vi.fn(async () => ({ id: "esign-task-1", taskStatus: "WAITING_CUSTOMER" }));
+    const replay = vi.fn(async () => ({ id: "esign-task-1", taskStatus: "WAITING_CUSTOMER" }));
 
     await expect(
       harness.service.startOrRetryESign(
         harness.change.id,
         { idempotencyKey: "termination-esign-1", version: 2 },
-        harness.actor
+        harness.actor,
+        start,
+        replay
       )
-    ).resolves.toMatchObject({ id: "esign-task-1", taskStatus: "COMPLETED" });
+    ).resolves.toMatchObject({ id: "esign-task-1", taskStatus: "WAITING_CUSTOMER" });
+    expect(start).toHaveBeenCalledWith("agreement-contract-1");
   });
 
   it("does not stop billing or execute return before the signed agreement effective time", async () => {
@@ -270,6 +436,32 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
       )
     ).resolves.toMatchObject({ closureCaseId: "closure-1" });
     expect(harness.tx.receivableBill.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not archive or execute when the customer-signed agreement facts drift before first execution", async () => {
+    const harness = serviceHarness({ status: SubscriptionChangeStatus.SCHEDULED });
+    harness.change.earlyTerminationDetail.closureCaseId = "closure-1";
+    harness.change.earlyTerminationDetail.agreementContractId = "agreement-contract-1";
+    harness.change.contractId = "agreement-contract-1";
+    Object.assign(harness.change.earlyTerminationDetail.reasonSnapshot, {
+      currentEstimate: {
+        estimatedAmountDue: "999999",
+        revision: 1
+      },
+      reason: "Customer relocation"
+    });
+
+    await expect(
+      harness.service.execute(
+        harness.change.id,
+        { idempotencyKey: "termination-execute-signed-drift", version: 2 },
+        harness.actor,
+        harness.context
+      )
+    ).rejects.toMatchObject({ code: "EARLY_TERMINATION_SIGNED_FACT_DRIFT" });
+    expect(harness.closure.archiveEarlyTerminationAgreement).not.toHaveBeenCalled();
+    expect(harness.closure.executeEarlyTermination).not.toHaveBeenCalled();
+    expect(harness.change.status).toBe(SubscriptionChangeStatus.SCHEDULED);
   });
 
   it("automatically advances a due scheduled change with a stable internal command", async () => {
@@ -354,6 +546,61 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
     expect(harness.tx.receivableBill.updateMany).not.toHaveBeenCalled();
   });
 
+  it("cancels a generated agreement and its active e-sign task before archival", async () => {
+    const harness = serviceHarness({ status: SubscriptionChangeStatus.SIGNING_OR_PAYMENT });
+    harness.change.contractId = "agreement-contract-1";
+    harness.change.earlyTerminationDetail.agreementContractId = "agreement-contract-1";
+    harness.change.earlyTerminationDetail.agreementContract.status = ContractStatus.GENERATED;
+
+    await harness.service.cancel(
+      harness.change.id,
+      { idempotencyKey: "termination-cancel-generated", reason: "Customer withdrew", version: 2 },
+      harness.actor,
+      harness.context
+    );
+
+    expect(harness.tx.contractESignTask.updateMany).toHaveBeenCalledWith({
+      data: {
+        cancelledAt: new Date("2026-09-30T00:00:01.000Z"),
+        taskStatus: "CANCELLED",
+        updatedBy: "operator-1"
+      },
+      where: {
+        contractId: "agreement-contract-1",
+        taskStatus: { in: ["CREATED", "WAITING_CUSTOMER", "SIGNING", "FAILED"] }
+      }
+    });
+    expect(harness.tx.contract.updateMany).toHaveBeenCalledWith({
+      data: { status: ContractStatus.CANCELLED, updatedBy: "operator-1" },
+      where: { id: "agreement-contract-1", status: ContractStatus.GENERATED }
+    });
+  });
+
+  it("preserves an archived agreement as historical evidence when cancelling the remaining workflow", async () => {
+    const harness = serviceHarness({ status: SubscriptionChangeStatus.MANUAL_TAKEOVER });
+    harness.change.contractId = "agreement-contract-1";
+    harness.change.earlyTerminationDetail.agreementContractId = "agreement-contract-1";
+    harness.change.earlyTerminationDetail.closureCaseId = "closure-1";
+    harness.change.earlyTerminationDetail.agreementContract.status = ContractStatus.ARCHIVED;
+
+    await harness.service.cancel(
+      harness.change.id,
+      {
+        idempotencyKey: "termination-cancel-after-archive",
+        reason: "Close stale request without rewriting signed evidence",
+        version: 2
+      },
+      harness.actor,
+      harness.context
+    );
+
+    expect(harness.tx.contract.updateMany).not.toHaveBeenCalled();
+    expect(harness.change.earlyTerminationDetail.agreementContract.status).toBe(
+      ContractStatus.ARCHIVED
+    );
+    expect(harness.change.status).toBe(SubscriptionChangeStatus.CANCELLED);
+  });
+
   it("completes only after the linked Closure reaches TERMINATED", async () => {
     const harness = serviceHarness({ status: SubscriptionChangeStatus.EXECUTING });
     harness.change.earlyTerminationDetail.closureCaseId = "closure-1";
@@ -371,6 +618,7 @@ describe("SubscriptionEarlyTerminationChangeService", () => {
 
 function serviceHarness(
   options: {
+    enabled?: boolean;
     now?: Date;
     status?: SubscriptionChangeStatus;
   } = {}
@@ -399,7 +647,25 @@ function serviceHarness(
     contractId: null as string | null,
     customerConfirmationPublishedAt: null as Date | null,
     earlyTerminationDetail: {
-      agreementContract: { id: "agreement-contract-1", status: ContractStatus.ARCHIVED },
+      agreementContract: {
+        contractSnapshot: {
+          agreementFacts: {
+            closureCaseId: "closure-1",
+            effectiveDate: "2026-09-30T00:00:00.000Z",
+            estimate: null,
+            estimateRevision: 1,
+            reason: "Customer relocation"
+          }
+        },
+        fileId: "generated-pdf-file-1",
+        id: "agreement-contract-1",
+        status: ContractStatus.ARCHIVED
+      } as {
+        contractSnapshot: Record<string, unknown>;
+        fileId: string | null;
+        id: string;
+        status: ContractStatus;
+      },
       agreementContractId: null as string | null,
       changeOrderId: "change-1",
       closureCaseId: null as string | null,
@@ -415,9 +681,10 @@ function serviceHarness(
     order: {
       contract: {
         contractSnapshot: { earlyTerminationFeeAmount: "30000" },
+        contractNo: "CON-BASE-1",
         contractVersionId: "contract-version-1",
         id: "contract-base",
-        status: ContractStatus.ARCHIVED
+        status: ContractStatus.SIGNED
       },
       customerId: "customer-1",
       depositAmount: 50_000n,
@@ -431,15 +698,58 @@ function serviceHarness(
     updatedBy: "operator-1",
     version: 2
   };
+  const commands: Array<Record<string, unknown>> = [];
+  let nextTransactionError: Error | null = null;
+  let agreementContract: Record<string, unknown> & {
+    contractSnapshot: Record<string, unknown>;
+    fileId: string | null;
+    id: string;
+    status: ContractStatus;
+  } = change.earlyTerminationDetail.agreementContract;
   const tx = {
     $queryRaw: vi.fn(async () => []),
     contract: {
-      create: vi.fn(async () => ({
-        fileId: "signed-file-1",
-        id: "agreement-contract-1",
-        status: ContractStatus.ARCHIVED
-      })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        agreementContract = {
+          ...data,
+          contractSnapshot: data.contractSnapshot ?? {},
+          fileId: null,
+          id: "agreement-contract-1",
+          status: ContractStatus.GENERATED
+        } as typeof agreementContract;
+        change.earlyTerminationDetail.agreementContract = agreementContract;
+        return agreementContract;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        agreementContract.id === where.id ? agreementContract : null
+      ),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(agreementContract, data);
+        change.earlyTerminationDetail.agreementContract = agreementContract;
+        return agreementContract;
+      }),
       updateMany: vi.fn(async () => ({ count: 1 }))
+    },
+    contractESignTask: {
+      updateMany: vi.fn(async () => ({ count: 1 }))
+    },
+    contractVersion: {
+      findFirst: vi.fn(async () => ({
+        contentTemplate: "Early termination supplement legal terms",
+        effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+        id: "supplement-template-1",
+        templateName: "Subscription supplement",
+        templateType: "SUBSCRIPTION_EXTENSION",
+        versionNo: "1"
+      })),
+      findUnique: vi.fn(async () => ({
+        contentTemplate: "Early termination supplement legal terms",
+        effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+        id: "supplement-template-1",
+        templateName: "Subscription supplement",
+        templateType: "SUBSCRIPTION_EXTENSION",
+        versionNo: "1"
+      }))
     },
     receivableBill: {
       findMany: vi.fn(async () => [
@@ -467,6 +777,41 @@ function serviceHarness(
         return { count: 1 };
       })
     },
+    subscriptionChangeCommand: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const command = {
+          ...data,
+          completedAt: null,
+          id: `command-${commands.length + 1}`,
+          resourceId: null,
+          resourceType: null
+        };
+        commands.push(command);
+        return command;
+      }),
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const identity = where.actorId_operation_idempotencyKey as
+          | { actorId: string; idempotencyKey: string; operation: string }
+          | undefined;
+        return identity
+          ? (commands.find(
+              (command) =>
+                command.actorId === identity.actorId &&
+                command.idempotencyKey === identity.idempotencyKey &&
+                command.operation === identity.operation
+            ) ?? null)
+          : null;
+      }),
+      update: vi.fn(
+        async ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
+          const command = commands.find((item) => item.id === where.id);
+          if (!command) throw new Error("command missing");
+          Object.assign(command, data);
+          return command;
+        }
+      ),
+      deleteMany: vi.fn(async () => ({ count: 1 }))
+    },
     subscriptionClosureCase: {
       findUnique: vi.fn(async () => ({ id: "closure-1", status: "PREPARING_RETURN" }))
     },
@@ -474,17 +819,25 @@ function serviceHarness(
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         Object.assign(change.earlyTerminationDetail, data);
         return change.earlyTerminationDetail;
-      })
+      }),
+      updateMany: vi.fn(async () => ({ count: 1 }))
     }
   };
   const prisma = {
-    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)),
+    $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => {
+      if (nextTransactionError) {
+        const error = nextTransactionError;
+        nextTransactionError = null;
+        throw error;
+      }
+      return operation(tx);
+    }),
     contract: {
-      findUniqueOrThrow: vi.fn(async () => ({
-        fileId: "signed-file-1",
-        id: "agreement-contract-1",
-        status: ContractStatus.ARCHIVED
-      }))
+      findUnique: tx.contract.findUnique,
+      findUniqueOrThrow: vi.fn(async () => agreementContract)
+    },
+    contractESignTask: {
+      findFirst: vi.fn(async () => ({ id: "provider-esign-task-1" }))
     },
     subscriptionClosureCurrentDocument: {
       findUnique: vi.fn(async () => ({
@@ -493,11 +846,12 @@ function serviceHarness(
         }
       }))
     },
+    subscriptionChangeCommand: tx.subscriptionChangeCommand,
     subscriptionChangeOrder: tx.subscriptionChangeOrder
   };
   const closure = {
     archiveEarlyTerminationAgreement: vi.fn(
-      async (_input: unknown, adapter: (client: typeof tx, result: unknown) => Promise<void>) => {
+      async (_input: unknown, adapter?: (client: typeof tx, result: unknown) => Promise<void>) => {
         const result = {
           archivedRevisionId: "agreement-archived-1",
           generatedRevisionId: "agreement-generated-1",
@@ -506,7 +860,7 @@ function serviceHarness(
           signedRevisionId: "agreement-signed-1",
           wrote: true
         };
-        await adapter(tx, result);
+        await adapter?.(tx, result);
         return result;
       }
     ),
@@ -543,13 +897,46 @@ function serviceHarness(
       }
     )
   };
+  const artifactWriter = {
+    writeGeneratedContractPdfArtifact: vi.fn(async () => generatedEarlyTerminationArtifact())
+  };
   const service = new SubscriptionEarlyTerminationChangeService(
     prisma as never,
     closure as never,
     { write: vi.fn(async () => undefined) } as never,
-    { enabled: true, now: () => now, quoteValidityHours: 72 } as never
+    {
+      earlyTerminationEnabled: options.enabled ?? true,
+      enabled: true,
+      now: () => now,
+      quoteValidityHours: 72
+    } as never,
+    artifactWriter as never,
+    { get: vi.fn(() => undefined) } as never
   );
-  return { actor, change, closure, context, service, tx };
+  return {
+    actor,
+    artifactWriter,
+    change,
+    closure,
+    context,
+    failNextTransaction: (error: Error) => {
+      nextTransactionError = error;
+    },
+    service,
+    tx
+  };
+}
+
+function generatedEarlyTerminationArtifact() {
+  return {
+    bucket: "contracts",
+    diagnostics: { hasLegalBody: true },
+    fileId: "generated-pdf-file-1",
+    mimeType: "application/pdf",
+    objectKey: "contracts/generated/early-termination.pdf",
+    originalName: "early-termination.pdf",
+    sizeBytes: "2048"
+  };
 }
 
 function applyChangeUpdate(change: Record<string, unknown>, data: Record<string, unknown>) {

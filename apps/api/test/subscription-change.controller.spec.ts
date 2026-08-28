@@ -21,10 +21,7 @@ describe("SubscriptionChangeController", () => {
         targetVehicleId: "e84fbcb0-8cb8-4913-99f7-bc00c545bb5e"
       }
     ],
-    [
-      "EARLY_TERMINATION",
-      { effectiveDate: "2026-09-30", reason: "Customer relocation" }
-    ],
+    ["EARLY_TERMINATION", { effectiveDate: "2026-09-30", reason: "Customer relocation" }],
     [
       "MANAGED_OTHER",
       {
@@ -36,41 +33,44 @@ describe("SubscriptionChangeController", () => {
         reason: "Customer requests a governed contact-channel change"
       }
     ]
-  ] as const)("creates a %s change through the unified controller boundary", async (changeType, detail) => {
-    const service = {
-      create: vi.fn(async () => ({ changeType, id: `change-${changeType}`, status: "DRAFT" }))
-    };
-    const controller = new SubscriptionChangeController(service as never);
-    const create = Reflect.get(controller, "create") as
-      | ((
-          dto: { changeType: string; detail: unknown; orderId: string },
-          idempotencyKey: string,
-          request: unknown
-        ) => Promise<unknown>)
-      | undefined;
+  ] as const)(
+    "creates a %s change through the unified controller boundary",
+    async (changeType, detail) => {
+      const service = {
+        create: vi.fn(async () => ({ changeType, id: `change-${changeType}`, status: "DRAFT" }))
+      };
+      const controller = new SubscriptionChangeController(service as never);
+      const create = Reflect.get(controller, "create") as
+        | ((
+            dto: { changeType: string; detail: unknown; orderId: string },
+            idempotencyKey: string,
+            request: unknown
+          ) => Promise<unknown>)
+        | undefined;
 
-    expect(create, "POST /subscription-changes must expose a unified create handler").toBeTypeOf(
-      "function"
-    );
-    if (!create) return;
+      expect(create, "POST /subscription-changes must expose a unified create handler").toBeTypeOf(
+        "function"
+      );
+      if (!create) return;
 
-    const result = await create.call(
-      controller,
-      {
-        changeType,
-        detail,
-        orderId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a"
-      },
-      `idem-${changeType}`,
-      {
-        headers: { "user-agent": "vitest" },
-        ip: "127.0.0.1",
-        user: user()
-      }
-    );
+      const result = await create.call(
+        controller,
+        {
+          changeType,
+          detail,
+          orderId: "2afc7002-7f35-4c7e-93be-2d4c87efa51a"
+        },
+        `idem-${changeType}`,
+        {
+          headers: { "user-agent": "vitest" },
+          ip: "127.0.0.1",
+          user: user()
+        }
+      );
 
-    expect(result).toEqual({ changeType, id: `change-${changeType}`, status: "DRAFT" });
-  });
+      expect(result).toEqual({ changeType, id: `change-${changeType}`, status: "DRAFT" });
+    }
+  );
 
   it("forwards Idempotency-Key, actor and request context when creating an extension", async () => {
     const service = { createExtension: vi.fn(async () => ({ id: "change-1" })) };
@@ -139,7 +139,7 @@ describe("SubscriptionChangeController", () => {
       generate: vi.fn(async () => ({ id: "contract-early", status: "ARCHIVED" }))
     };
     const changeService = {
-      getChangeType: vi.fn(async () => "EARLY_TERMINATION")
+      getWorkflowChangeType: vi.fn(async () => "EARLY_TERMINATION")
     };
     const controller = new SubscriptionChangeController(
       {} as never,

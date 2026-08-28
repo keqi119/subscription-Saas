@@ -35,18 +35,21 @@ export class PortalSubscriptionChangeService {
 
   async confirmQuote(
     id: string,
-    input: PortalConfirmExtensionQuoteDto,
+    input: PortalConfirmExtensionQuoteDto & { idempotencyKey?: string },
     customer: CurrentCustomer,
     context: PortalRequestContext
   ) {
+    const idempotencyKey = requireIdempotencyKey(input.idempotencyKey);
     const changeType = await this.changeType(id, customer);
     if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
       const earlyTermination = this.requireEarlyTermination();
       await earlyTermination.decide(
         id,
         {
+          commercialSnapshotHash: input.commercialSnapshotHash,
           decision: "ACCEPT",
-          idempotencyKey: portalDecisionKey(customer.customerId, "ACCEPT", input),
+          idempotencyKey,
+          quoteId: input.quoteId,
           revision: input.revision,
           version: input.version
         },
@@ -60,7 +63,11 @@ export class PortalSubscriptionChangeService {
     }
     return this.vehicleSwapService.confirmQuote(
       id,
-      { ...input, commercialSnapshotHash: requireCommercialHash(input.commercialSnapshotHash) },
+      {
+        ...input,
+        commercialSnapshotHash: requireCommercialHash(input.commercialSnapshotHash),
+        idempotencyKey
+      },
       customer,
       context
     );
@@ -68,18 +75,21 @@ export class PortalSubscriptionChangeService {
 
   async rejectQuote(
     id: string,
-    input: PortalRejectExtensionQuoteDto,
+    input: PortalRejectExtensionQuoteDto & { idempotencyKey?: string },
     customer: CurrentCustomer,
     context: PortalRequestContext
   ) {
+    const idempotencyKey = requireIdempotencyKey(input.idempotencyKey);
     const changeType = await this.changeType(id, customer);
     if (changeType === SubscriptionChangeType.EARLY_TERMINATION) {
       const earlyTermination = this.requireEarlyTermination();
       await earlyTermination.decide(
         id,
         {
+          commercialSnapshotHash: input.commercialSnapshotHash,
           decision: "REJECT",
-          idempotencyKey: portalDecisionKey(customer.customerId, "REJECT", input),
+          idempotencyKey,
+          quoteId: input.quoteId,
           reason: input.reason,
           revision: input.revision,
           version: input.version
@@ -94,7 +104,11 @@ export class PortalSubscriptionChangeService {
     }
     return this.vehicleSwapService.rejectQuote(
       id,
-      { ...input, commercialSnapshotHash: requireCommercialHash(input.commercialSnapshotHash) },
+      {
+        ...input,
+        commercialSnapshotHash: requireCommercialHash(input.commercialSnapshotHash),
+        idempotencyKey
+      },
       customer,
       context
     );
@@ -139,10 +153,14 @@ function requireCommercialHash(value: string | undefined) {
   return value;
 }
 
-function portalDecisionKey(
-  customerId: string,
-  decision: "ACCEPT" | "REJECT",
-  input: Pick<PortalConfirmExtensionQuoteDto, "revision" | "version">
-) {
-  return `portal-early-termination:${customerId}:${decision}:${input.revision}:${input.version}`;
+function requireIdempotencyKey(value: string | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 128) {
+    throw new SubscriptionChangeError(
+      "IDEMPOTENCY_KEY_REQUIRED",
+      "A valid Idempotency-Key header is required.",
+      HttpStatus.BAD_REQUEST
+    );
+  }
+  return normalized;
 }

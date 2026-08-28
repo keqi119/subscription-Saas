@@ -471,6 +471,12 @@ export class SubscriptionExtensionService {
             "Only a quoted change can be published to the customer."
           );
         }
+        if (change.customerConfirmationPublishedAt) {
+          throw stateConflict(
+            "PUBLISHED_QUOTE_IMMUTABLE",
+            "A published extension quote cannot be republished or replaced."
+          );
+        }
         if (
           change.pricingMode !== SubscriptionChangePricingMode.CURRENT_VERSION &&
           (!change.priceOverrideApprovedBy || !change.priceOverrideApprovedAt)
@@ -1094,7 +1100,9 @@ function assertPricingSelection(
   }
 }
 
-function assertQuoteMutable(change: Pick<ChangeDetail, "confirmedQuoteId" | "status">) {
+function assertQuoteMutable(
+  change: Pick<ChangeDetail, "confirmedQuoteId" | "customerConfirmationPublishedAt" | "status">
+) {
   if (change.confirmedQuoteId || change.status === SubscriptionChangeStatus.CUSTOMER_CONFIRMED) {
     throw stateConflict(
       "CONFIRMED_QUOTE_IMMUTABLE",
@@ -1109,6 +1117,12 @@ function assertQuoteMutable(change: Pick<ChangeDetail, "confirmedQuoteId" | "sta
     throw stateConflict(
       "SUBSCRIPTION_CHANGE_NOT_QUOTABLE",
       "The change is not in a quotable state."
+    );
+  }
+  if (change.customerConfirmationPublishedAt) {
+    throw stateConflict(
+      "PUBLISHED_QUOTE_IMMUTABLE",
+      "A published extension quote cannot be replaced."
     );
   }
 }

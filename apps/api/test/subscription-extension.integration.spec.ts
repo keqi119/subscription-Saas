@@ -221,7 +221,11 @@ describe("SubscriptionExtensionService PostgreSQL integration", () => {
         ),
         portal.decide(
           consideration.id,
-          { decision: RenewalDecision.RENEW, version: 0 },
+          {
+            decision: RenewalDecision.RENEW,
+            idempotencyKey: `portal-renewal:${consideration.id}`,
+            version: 0
+          },
           {
             accountStatus: "ACTIVE",
             customerAccountId: randomUUID(),

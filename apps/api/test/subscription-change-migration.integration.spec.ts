@@ -76,6 +76,12 @@ describe("Stage 1B migration deployment", () => {
         WHERE schemaname = current_schema()
           AND indexname = 'contract_esign_task_one_active_per_contract_key'
       `);
+      const activeSubscriptionChangeTaskIndex = await client.query<{ indexdef: string }>(`
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND indexname = 'contract_esign_task_one_active_subscription_change_source_key'
+      `);
       const changeTypes = await client.query<{ enumlabel: string }>(`
         SELECT value.enumlabel
         FROM pg_type type
@@ -116,6 +122,9 @@ describe("Stage 1B migration deployment", () => {
       expect(commandColumn.rows).toEqual([{ data_type: "timestamp with time zone" }]);
       expect(activeTaskIndex.rows[0]?.indexdef).toContain("UNIQUE INDEX");
       expect(activeTaskIndex.rows[0]?.indexdef).toContain("contract_id");
+      expect(activeSubscriptionChangeTaskIndex.rows[0]?.indexdef).toContain("UNIQUE INDEX");
+      expect(activeSubscriptionChangeTaskIndex.rows[0]?.indexdef).toContain("source_type");
+      expect(activeSubscriptionChangeTaskIndex.rows[0]?.indexdef).toContain("source_id");
       expect(changeTypes.rows.map((row) => row.enumlabel)).toEqual([
         "EXTENSION",
         "VEHICLE_SWAP",

@@ -97,7 +97,8 @@ export default function SubscriptionChangesPage() {
       key: "contractedThrough",
       render: (_value, item) =>
         formatDate(
-          item.changeOrder && ["SCHEDULED", "EXECUTING", "COMPLETED"].includes(item.changeOrder.status)
+          item.changeOrder &&
+            ["SCHEDULED", "EXECUTING", "COMPLETED"].includes(item.changeOrder.status)
             ? item.changeOrder.targetEndDate
             : item.segment.endDate
         ),
@@ -110,7 +111,8 @@ export default function SubscriptionChangesPage() {
           <Space orientation="vertical" size={0}>
             <Typography.Text>{item.changeOrder.changeNo}</Typography.Text>
             <Tag color={statusColor(item.changeOrder.status)}>
-              {SUBSCRIPTION_CHANGE_STATUS_LABELS[item.changeOrder.status] ?? item.changeOrder.status}
+              {SUBSCRIPTION_CHANGE_STATUS_LABELS[item.changeOrder.status] ??
+                item.changeOrder.status}
             </Tag>
           </Space>
         ) : (
@@ -167,7 +169,7 @@ export default function SubscriptionChangesPage() {
         title="合同变更中心"
       >
         <Alert
-          description="续期、换车、提前结束、其他合同变更统一从在租订单工作台发起，并在订单变更页按后端开放动作推进。本列表保留系统自动产生的续期考虑期、提醒失败和到期事实。"
+          description="续期、换车、提前结束、其他受控变更统一从在租订单工作台发起，并在订单变更页按后端开放动作推进。本列表保留系统自动产生的续期考虑期、提醒失败和到期事实。"
           message="四类在租合同变更已接入统一详情与订单入口"
           showIcon
           style={{ marginBottom: 16 }}

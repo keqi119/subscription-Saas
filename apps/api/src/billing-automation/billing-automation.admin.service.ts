@@ -7,7 +7,8 @@ import {
   PaymentMandateStatus,
   Prisma,
   SubscriptionAutomationJob,
-  SubscriptionAutomationJobStatus
+  SubscriptionAutomationJobStatus,
+  SubscriptionAutomationJobType
 } from "@prisma/client";
 
 import { AuditService } from "../audit/audit.service";
@@ -21,7 +22,10 @@ import { RequestContext, RequestUser } from "../auth/auth.types";
 import { PrismaService } from "../prisma/prisma.service";
 import { BillingAutomationJobQueryDto, BillingScheduleQueryDto } from "./billing-automation.dto";
 import { BillingAutomationRepository } from "./billing-automation.repository";
-import { BillingAutomationService } from "./billing-automation.service";
+import {
+  BillingAutomationService,
+  isReconciliationPauseReason
+} from "./billing-automation.service";
 
 @Injectable()
 export class BillingAutomationAdminService {
@@ -293,20 +297,42 @@ export class BillingAutomationAdminService {
     if (before.status !== BillingScheduleStatus.PAUSED) {
       throw new BadRequestException("只有已暂停的账单计划可以恢复。");
     }
-    const schedule = await this.prisma.billingSchedule.update({
+    if (isReconciliationPauseReason(before.pauseReason)) {
+      throw new BadRequestException({
+        code: "BILLING_SCHEDULE_SOURCE_FACT_BLOCKED",
+        message:
+          "The billing schedule is paused by invalid source facts. Repair the facts and run reconciliation before resuming."
+      });
+    }
+    const resumed = await this.prisma.billingSchedule.updateMany({
       data: {
         pauseReason: null,
-        status: BillingScheduleStatus.ACTIVE
+        status: BillingScheduleStatus.ACTIVE,
+        version: { increment: 1 }
       },
-      where: { id }
+      where: {
+        id,
+        status: BillingScheduleStatus.PAUSED,
+        version: before.version
+      }
     });
+    if (resumed.count !== 1) {
+      throw new BadRequestException({
+        code: "BILLING_SCHEDULE_STATE_CONFLICT",
+        message: "The billing schedule changed concurrently. Refresh and try again."
+      });
+    }
+    const schedule = await this.prisma.billingSchedule.findUniqueOrThrow({ where: { id } });
     await this.writeScheduleAudit(before, schedule, user, context);
     return toScheduleView(schedule);
   }
 
   async retryJob(id: string, user: RequestUser, context: RequestContext) {
     const current = await this.prisma.subscriptionAutomationJob.findUnique({
-      select: { jobType: true },
+      select: {
+        billingSchedule: { select: { pauseReason: true, status: true } },
+        jobType: true
+      },
       where: { id }
     });
     if (!current) {
@@ -314,6 +340,16 @@ export class BillingAutomationAdminService {
     }
     if (isStage1AutoDebitJobType(current.jobType)) {
       throw stage1AutoDebitDisabledException("阶段 1 已停用委托代扣任务，历史任务不可重试。");
+    }
+    if (
+      current.jobType === SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL &&
+      current.billingSchedule?.status === BillingScheduleStatus.PAUSED
+    ) {
+      throw new BadRequestException({
+        code: "BILLING_SCHEDULE_SOURCE_FACT_BLOCKED",
+        message:
+          "The billing schedule is paused. Repair source facts and reconcile the schedule before retrying."
+      });
     }
     const retried = await this.repository.retryDeadLetter(id);
     if (!retried) {

@@ -670,7 +670,7 @@ export const SUBSCRIPTION_CHANGE_STATUS_LABELS: Record<string, string> = {
 export const SUBSCRIPTION_CHANGE_TYPE_LABELS: Record<string, string> = {
   EARLY_TERMINATION: "提前结束",
   EXTENSION: "续期",
-  MANAGED_OTHER: "其他合同变更",
+  MANAGED_OTHER: "其他受控变更",
   VEHICLE_SWAP: "换车"
 };
 

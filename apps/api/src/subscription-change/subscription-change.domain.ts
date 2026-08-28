@@ -71,16 +71,20 @@ export function subscriptionChangeAllowedActions(
 
   const actions: SubscriptionChangeAction[] = [];
   if (
-    change.status === SubscriptionChangeStatus.DRAFT &&
+    (change.status === SubscriptionChangeStatus.DRAFT ||
+      change.status === SubscriptionChangeStatus.QUOTED) &&
     change.changeType !== SubscriptionChangeType.MANAGED_OTHER &&
     hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_QUOTE)
   ) {
     actions.push("CREATE_QUOTE");
   }
   if (
-    (change.status === SubscriptionChangeStatus.DRAFT ||
-      change.status === SubscriptionChangeStatus.QUOTED) &&
-    hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_APPROVE)
+    (change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
+      change.status === SubscriptionChangeStatus.DRAFT &&
+      hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_APPROVE)) ||
+    (change.changeType !== SubscriptionChangeType.MANAGED_OTHER &&
+      change.status === SubscriptionChangeStatus.QUOTED &&
+      hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_PRICE_OVERRIDE_APPROVE))
   ) {
     actions.push("APPROVE");
   }
@@ -103,6 +107,7 @@ export function subscriptionChangeAllowedActions(
     actions.push("START_ESIGN");
   }
   if (
+    change.changeType === SubscriptionChangeType.MANAGED_OTHER &&
     (change.status === SubscriptionChangeStatus.SCHEDULED ||
       change.status === SubscriptionChangeStatus.EXECUTING) &&
     hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE)
@@ -111,6 +116,8 @@ export function subscriptionChangeAllowedActions(
   }
   if (
     change.status === SubscriptionChangeStatus.MANUAL_TAKEOVER &&
+    (change.changeType === SubscriptionChangeType.EXTENSION ||
+      change.changeType === SubscriptionChangeType.VEHICLE_SWAP) &&
     hasPermission(actor, PermissionCode.SUBSCRIPTION_CHANGE_EXECUTE)
   ) {
     actions.push("RETRY");

@@ -80,7 +80,6 @@ interface ReasonFormValues {
   approvalReference?: string;
   executionNote?: string;
   reason?: string;
-  supplementContractId?: string;
 }
 
 type ReasonAction =
@@ -214,7 +213,6 @@ export default function SubscriptionChangeDetailPage() {
         await approveManagedOtherChange(change.id, {
           approvalReason: reason,
           approvalReference: values.approvalReference?.trim() ?? "",
-          supplementContractId: values.supplementContractId?.trim() || undefined,
           version: change.version
         });
       } else if (reasonAction === "EXECUTE_MANAGED_OTHER") {
@@ -255,16 +253,6 @@ export default function SubscriptionChangeDetailPage() {
 
   const canManual = Boolean(change?.allowedActions?.includes("MANUAL_TAKEOVER"));
   const canCancel = Boolean(change?.allowedActions?.includes("CANCEL"));
-  const managedOperation =
-    change?.changeType === "MANAGED_OTHER"
-      ? managedOperationName(
-          (change.detail as AdminManagedOtherChangeDetail | undefined)
-            ?.approvedOperationSnapshot
-        )
-      : null;
-  const managedSupplementRequired =
-    managedOperation === "RECORD_CONTRACT_CLARIFICATION" ||
-    managedOperation === "RECORD_SERVICE_ACCOMMODATION";
 
   return (
     <ProtectedShell>
@@ -411,12 +399,12 @@ export default function SubscriptionChangeDetailPage() {
           reasonAction === "APPROVE_PRICE"
             ? "审批价格例外"
             : reasonAction === "APPROVE_MANAGED_OTHER"
-              ? "审批其他合同变更"
+              ? "审批其他受控变更"
               : reasonAction === "EXECUTE_MANAGED_OTHER"
-                ? "记录其他合同变更结果"
-            : reasonAction === "MANUAL"
-              ? "人工接管"
-              : "取消合同变更"
+                ? "记录其他受控变更结果"
+                : reasonAction === "MANUAL"
+                  ? "人工接管"
+                  : "取消合同变更"
         }
       >
         <Form form={reasonForm} layout="vertical">
@@ -446,18 +434,11 @@ export default function SubscriptionChangeDetailPage() {
               >
                 <Input maxLength={255} />
               </Form.Item>
-              <Form.Item
-                extra="涉及合同权利义务调整时必须填写已签署、已归档的补充协议合同 ID。"
-                label="已归档补充协议合同 ID"
-                name="supplementContractId"
-                rules={
-                  managedSupplementRequired
-                    ? [{ required: true, message: "该操作必须填写已归档补充协议合同 ID" }]
-                    : undefined
-                }
-              >
-                <Input maxLength={64} />
-              </Form.Item>
+              <Alert
+                showIcon
+                type="info"
+                message="涉及客户权利义务时，审批后系统将自动生成补充协议并进入电子签，无需手工填写合同 ID。"
+              />
             </>
           ) : null}
         </Form>
@@ -469,12 +450,7 @@ export default function SubscriptionChangeDetailPage() {
 export function ChangeOverview({ change }: { change: AdminSubscriptionChange }) {
   const items = subscriptionChangeOverviewItems(change);
   return (
-    <Descriptions
-      bordered
-      column={{ lg: 3, md: 2, sm: 1, xs: 1 }}
-      items={items}
-      size="small"
-    />
+    <Descriptions bordered column={{ lg: 3, md: 2, sm: 1, xs: 1 }} items={items} size="small" />
   );
 }
 
@@ -509,7 +485,9 @@ function subscriptionChangeOverviewItems(change: AdminSubscriptionChange) {
       {
         label: "计价方式",
         children:
-          SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[detail?.pricingMode ?? change.pricingMode ?? ""] ??
+          SUBSCRIPTION_CHANGE_PRICING_MODE_LABELS[
+            detail?.pricingMode ?? change.pricingMode ?? ""
+          ] ??
           detail?.pricingMode ??
           change.pricingMode ??
           "-"
@@ -587,9 +565,7 @@ function managedOperationName(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const snapshot = value as Record<string, unknown>;
   const request =
-    snapshot.request &&
-    typeof snapshot.request === "object" &&
-    !Array.isArray(snapshot.request)
+    snapshot.request && typeof snapshot.request === "object" && !Array.isArray(snapshot.request)
       ? (snapshot.request as Record<string, unknown>)
       : null;
   const operation = snapshot.operation ?? request?.operation;

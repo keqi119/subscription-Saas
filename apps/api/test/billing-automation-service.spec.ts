@@ -282,6 +282,215 @@ describe("BillingAutomationService", () => {
     expect(harness.schedules[0]?.orderId).toBe(harness.order.id);
   });
 
+  it("pauses an existing blocked schedule, cancels its pending work, and resumes once after repair", async () => {
+    const harness = createHarness();
+    const healthySchedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    const blockedOrder = structuredClone(harness.order);
+    blockedOrder.id = randomUUID();
+    blockedOrder.orderNo = "ORD-BLOCKED-EXISTING";
+    blockedOrder.lease!.orderId = blockedOrder.id;
+    harness.orders.push(blockedOrder);
+    const blockedSchedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      blockedOrder.id,
+      blockedOrder.actualDeliveryAt
+    );
+    const blockedSourceKey = `monthly-rent:${blockedOrder.id}:2026-07-10`;
+    harness.jobs.set(blockedSourceKey, {
+      billingScheduleId: blockedSchedule.id,
+      id: randomUUID(),
+      idempotencyKey: blockedSourceKey,
+      jobStatus: SubscriptionAutomationJobStatus.PENDING,
+      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+    });
+    let repaired = false;
+    harness.contractSegmentService.resolveSegmentForPeriod.mockImplementation(
+      async (orderId: string) => {
+        if (orderId === blockedOrder.id && !repaired) {
+          throw new ContractSegmentError(
+            "CONTRACT_SEGMENT_NOT_FOUND",
+            "No effective contract segment contains the billing period start."
+          );
+        }
+        return segmentTerms(harness.order);
+      }
+    );
+
+    const blocked = await harness.service.reconcileSchedules({ dryRun: false });
+
+    expect(blocked.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "EXISTING", orderId: harness.order.id }),
+        expect.objectContaining({
+          action: "BLOCKED",
+          blockerCode: "CONTRACT_SEGMENT_NOT_FOUND",
+          orderId: blockedOrder.id,
+          scheduleId: blockedSchedule.id
+        })
+      ])
+    );
+    expect(harness.schedules.find((schedule) => schedule.id === blockedSchedule.id)).toMatchObject({
+      pauseReason: "CONTRACT_SEGMENT_NOT_FOUND",
+      status: BillingScheduleStatus.PAUSED,
+      version: 1
+    });
+    expect(harness.jobs.get(blockedSourceKey)).toMatchObject({
+      jobStatus: SubscriptionAutomationJobStatus.CANCELLED
+    });
+
+    const blockedDispatch = await harness.service.enqueueDueSchedules(
+      new Date("2026-07-07T00:00:00.000Z")
+    );
+    expect(blockedDispatch).toMatchObject({ dueCount: 1, enqueuedCount: 1 });
+    expect([...harness.jobs.values()]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ billingScheduleId: healthySchedule.id }),
+        expect.objectContaining({
+          billingScheduleId: blockedSchedule.id,
+          jobStatus: SubscriptionAutomationJobStatus.CANCELLED
+        })
+      ])
+    );
+
+    repaired = true;
+    const resumed = await harness.service.reconcileSchedules({ dryRun: false });
+    expect(resumed.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "EXISTING", orderId: blockedOrder.id })
+      ])
+    );
+    expect(harness.schedules.find((schedule) => schedule.id === blockedSchedule.id)).toMatchObject({
+      pauseReason: null,
+      status: BillingScheduleStatus.ACTIVE,
+      version: 2
+    });
+
+    await harness.service.enqueueDueSchedules(new Date("2026-07-07T00:00:00.000Z"));
+    await harness.service.enqueueDueSchedules(new Date("2026-07-07T00:00:00.000Z"));
+    expect(harness.jobs.get(blockedSourceKey)).toMatchObject({
+      billingScheduleId: blockedSchedule.id,
+      jobStatus: SubscriptionAutomationJobStatus.PENDING
+    });
+    expect(
+      [...harness.jobs.values()].filter(
+        (job) =>
+          job.idempotencyKey === blockedSourceKey &&
+          job.jobStatus === SubscriptionAutomationJobStatus.PENDING
+      )
+    ).toHaveLength(1);
+  });
+
+  it("keeps a reconciliation-blocked schedule paused when its full billing period still crosses a contract segment", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    Object.assign(schedule, {
+      pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+      status: BillingScheduleStatus.PAUSED,
+      version: 1
+    });
+    const sourceKey = `monthly-rent:${harness.order.id}:2026-07-10`;
+    harness.jobs.set(sourceKey, {
+      billingScheduleId: schedule.id,
+      id: randomUUID(),
+      idempotencyKey: sourceKey,
+      jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+    });
+    harness.contractSegmentService.resolveSegmentForPeriod.mockImplementation(
+      async (_orderId: string, _periodStart: Date, options?: { periodEnd?: Date }) => {
+        if (options?.periodEnd) {
+          throw new ContractSegmentError(
+            "BILLING_PERIOD_CROSSES_SEGMENT",
+            "The billing period crosses a contract segment boundary."
+          );
+        }
+        return segmentTerms(harness.order);
+      }
+    );
+
+    const result = await harness.service.reconcileSchedules({ dryRun: false });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        action: "BLOCKED",
+        blockerCode: "BILLING_PERIOD_CROSSES_SEGMENT",
+        scheduleId: schedule.id
+      })
+    ]);
+    expect(schedule).toMatchObject({
+      pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+      status: BillingScheduleStatus.PAUSED
+    });
+    expect(harness.jobs.get(sourceKey)).toMatchObject({
+      jobStatus: SubscriptionAutomationJobStatus.CANCELLED
+    });
+    expect(harness.contractSegmentService.resolveSegmentForPeriod).toHaveBeenCalledWith(
+      harness.order.id,
+      new Date("2026-07-10T00:00:00.000Z"),
+      { periodEnd: new Date("2026-08-09T00:00:00.000Z") }
+    );
+  });
+
+  it("does not cancel pending work when a concurrent reconciliation has already repaired the schedule", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    Object.assign(schedule, {
+      pauseReason: "CONTRACT_SEGMENT_NOT_FOUND",
+      status: BillingScheduleStatus.PAUSED,
+      version: 1
+    });
+    const sourceKey = `monthly-rent:${harness.order.id}:2026-07-10`;
+    harness.jobs.set(sourceKey, {
+      billingScheduleId: schedule.id,
+      id: randomUUID(),
+      idempotencyKey: sourceKey,
+      jobStatus: SubscriptionAutomationJobStatus.PENDING,
+      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+    });
+    harness.contractSegmentService.resolveSegmentForPeriod.mockImplementationOnce(async () => {
+      Object.assign(schedule, {
+        pauseReason: null,
+        status: BillingScheduleStatus.ACTIVE,
+        version: 2
+      });
+      throw new ContractSegmentError(
+        "CONTRACT_SEGMENT_NOT_FOUND",
+        "The stale reconciliation lost its compare-and-swap race."
+      );
+    });
+
+    const result = await harness.service.reconcileSchedules({ dryRun: false });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        action: "BLOCKED",
+        blockerCode: "CONTRACT_SEGMENT_NOT_FOUND",
+        scheduleId: schedule.id
+      })
+    ]);
+    expect(schedule).toMatchObject({
+      pauseReason: null,
+      status: BillingScheduleStatus.ACTIVE,
+      version: 2
+    });
+    expect(harness.jobs.get(sourceKey)).toMatchObject({
+      jobStatus: SubscriptionAutomationJobStatus.PENDING
+    });
+    expect(harness.repository.cancelPendingForSchedule).not.toHaveBeenCalled();
+  });
+
   it("does not swallow infrastructure failures during reconciliation", async () => {
     const harness = createHarness();
     harness.contractSegmentService.resolveSegmentForPeriod.mockRejectedValueOnce(
@@ -315,6 +524,39 @@ describe("BillingAutomationService", () => {
         jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
       })
     ]);
+  });
+
+  it("does not reactivate cancelled generation work when a stale dispatcher snapshot races with pause", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    const sourceKey = `monthly-rent:${harness.order.id}:2026-07-10`;
+    harness.jobs.set(sourceKey, {
+      billingScheduleId: schedule.id,
+      id: randomUUID(),
+      idempotencyKey: sourceKey,
+      jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+      jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+    });
+    harness.beforeTransaction.mockImplementationOnce(async () => {
+      Object.assign(schedule, {
+        pauseReason: "CONTRACT_SEGMENT_NOT_FOUND",
+        status: BillingScheduleStatus.PAUSED,
+        version: 1
+      });
+    });
+
+    const result = await harness.service.enqueueDueSchedules(new Date("2026-07-07T00:00:00.000Z"));
+
+    expect(result).toMatchObject({ dueCount: 1, enqueuedCount: 0 });
+    expect(harness.jobs.get(sourceKey)).toMatchObject({
+      jobStatus: SubscriptionAutomationJobStatus.CANCELLED
+    });
+    expect(harness.repository.reactivateCancelledScheduleGeneration).not.toHaveBeenCalled();
+    expect(harness.repository.enqueue).not.toHaveBeenCalled();
   });
 
   it("creates a bill, advances the schedule, and enqueues follow-up work atomically", async () => {
@@ -497,6 +739,40 @@ describe("BillingAutomationService", () => {
     expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
   });
 
+  it("pauses instead of dead-lettering when a claimed cycle discovers a source-fact blocker", async () => {
+    const harness = createHarness();
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.contractSegmentService.resolveSegmentForPeriod.mockRejectedValueOnce(
+      new ContractSegmentError(
+        "CONTRACT_SEGMENT_NOT_FOUND",
+        "No effective contract segment contains the billing period start."
+      )
+    );
+
+    await expect(
+      harness.service.generateScheduledMonthlyRent(
+        claimedJob({
+          billingScheduleId: schedule.id,
+          idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+          orderId: harness.order.id
+        })
+      )
+    ).rejects.toMatchObject({
+      code: "BILLING_SCHEDULE_PAUSED",
+      retryable: true
+    });
+    expect(harness.schedules[0]).toMatchObject({
+      pauseReason: "CONTRACT_SEGMENT_NOT_FOUND",
+      status: BillingScheduleStatus.PAUSED,
+      version: 1
+    });
+    expect(harness.finance.generateMonthlyRentBillForCycle).not.toHaveBeenCalled();
+  });
+
   it("reclassifies an optimistic update conflict as paused when pause wins the race", async () => {
     const harness = createHarness();
     const schedule = await harness.service.ensureActiveSchedule(
@@ -556,6 +832,39 @@ describe("BillingAutomationService", () => {
       version: 1
     });
     expect(harness.jobs.size).toBe(0);
+  });
+
+  it("does not pause an ended schedule during maintenance before the worker completes it", async () => {
+    const harness = createHarness();
+    harness.order.endDate = new Date("2026-07-09T00:00:00.000Z");
+    const schedule = await harness.service.ensureActiveSchedule(
+      harness.tx as never,
+      harness.order.id,
+      harness.order.actualDeliveryAt
+    );
+    harness.contractSegmentService.resolveSegmentForPeriod.mockRejectedValue(
+      new ContractSegmentError(
+        "CONTRACT_SEGMENT_NOT_FOUND",
+        "No effective contract segment contains the billing period start."
+      )
+    );
+
+    const reconciliation = await harness.service.reconcileSchedules({ dryRun: false });
+
+    expect(reconciliation).toMatchObject({ blockedCount: 0, existingCount: 1 });
+    expect(schedule).toMatchObject({ pauseReason: null, status: BillingScheduleStatus.ACTIVE });
+    expect(harness.contractSegmentService.resolveSegmentForPeriod).not.toHaveBeenCalled();
+
+    const result = await harness.service.generateScheduledMonthlyRent(
+      claimedJob({
+        billingScheduleId: schedule.id,
+        idempotencyKey: `monthly-rent:${harness.order.id}:2026-07-10`,
+        orderId: harness.order.id
+      })
+    );
+
+    expect(result).toMatchObject({ billId: null, completed: true, created: false });
+    expect(schedule).toMatchObject({ status: BillingScheduleStatus.COMPLETED });
   });
 
   it("enqueues one overdue notification only after an overdue fact is confirmed", async () => {
@@ -658,6 +967,7 @@ function createHarness() {
   const bills: Array<Record<string, unknown>> = [];
   const jobs = new Map<string, Record<string, unknown>>();
   const audits: Array<Record<string, unknown>> = [];
+  const beforeTransaction = vi.fn(async () => undefined);
   const tx = {
     $queryRaw: vi.fn(async () => [{ id: "locked" }]),
     auditLog: {
@@ -750,6 +1060,40 @@ function createHarness() {
       }
     },
     subscriptionAutomationJob: {
+      async updateMany({
+        data,
+        where
+      }: {
+        data: Record<string, unknown>;
+        where: {
+          billingScheduleId?: string;
+          idempotencyKey?: string;
+          jobStatus?: SubscriptionAutomationJobStatus;
+          jobType?: SubscriptionAutomationJobType;
+        };
+      }) {
+        let count = 0;
+        for (const job of jobs.values()) {
+          if (
+            (where.billingScheduleId && job.billingScheduleId !== where.billingScheduleId) ||
+            (where.idempotencyKey && job.idempotencyKey !== where.idempotencyKey) ||
+            (where.jobStatus && job.jobStatus !== where.jobStatus) ||
+            (where.jobType && job.jobType !== where.jobType)
+          ) {
+            continue;
+          }
+          const attemptCount = data.attemptCount as { increment?: number } | number | undefined;
+          Object.assign(job, data, {
+            ...(typeof attemptCount === "object"
+              ? {
+                  attemptCount: Number(job.attemptCount ?? 0) + Number(attemptCount.increment ?? 0)
+                }
+              : {})
+          });
+          count += 1;
+        }
+        return { count };
+      },
       async upsert({
         create,
         where
@@ -773,7 +1117,10 @@ function createHarness() {
     }
   };
   const prisma = {
-    $transaction: (operation: (client: typeof tx) => unknown) => operation(tx),
+    $transaction: async (operation: (client: typeof tx) => unknown) => {
+      await beforeTransaction();
+      return operation(tx);
+    },
     billingSchedule: {
       async findUnique({ where }: { where: { id: string } }) {
         return schedules.find((item) => item.id === where.id) ?? null;
@@ -805,13 +1152,29 @@ function createHarness() {
           : orders;
         return selected.map((candidate) => ({
           ...candidate,
-          billingSchedule: schedules.find((schedule) => schedule.orderId === candidate.id) ?? null,
+          billingSchedule: schedules.find((schedule) => schedule.orderId === candidate.id)
+            ? { ...schedules.find((schedule) => schedule.orderId === candidate.id)! }
+            : null,
           receivableBills: candidate.id === order.id ? bills : []
         }));
       }
-    }
+    },
+    subscriptionAutomationJob: tx.subscriptionAutomationJob
   };
   const repository = {
+    cancelPendingForSchedule: vi.fn(async (db: typeof tx, billingScheduleId: string) =>
+      db.subscriptionAutomationJob.updateMany({
+        data: {
+          cancelledAt: now,
+          completedAt: now,
+          jobStatus: SubscriptionAutomationJobStatus.CANCELLED
+        },
+        where: {
+          billingScheduleId,
+          jobStatus: SubscriptionAutomationJobStatus.PENDING
+        }
+      })
+    ),
     enqueue: vi.fn(
       async (
         _db: unknown,
@@ -839,6 +1202,29 @@ function createHarness() {
         jobs.set(input.idempotencyKey, created);
         return created;
       }
+    ),
+    reactivateCancelledScheduleGeneration: vi.fn(
+      async (db: typeof tx, billingScheduleId: string, idempotencyKey: string, availableAt: Date) =>
+        db.subscriptionAutomationJob.updateMany({
+          data: {
+            attemptCount: 0,
+            availableAt,
+            cancelledAt: null,
+            completedAt: null,
+            jobStatus: SubscriptionAutomationJobStatus.PENDING,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            leaseExpiresAt: null,
+            leaseToken: null,
+            startedAt: null
+          },
+          where: {
+            billingScheduleId,
+            idempotencyKey,
+            jobStatus: SubscriptionAutomationJobStatus.CANCELLED,
+            jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+          }
+        })
     )
   };
   const finance = {
@@ -880,10 +1266,14 @@ function createHarness() {
       void orderId;
       return order.endDate;
     }),
-    resolveSegmentForPeriod: vi.fn(async (orderId: string) => {
-      void orderId;
-      return segmentTerms(order, segmentMonthlyFeeAmount);
-    })
+    resolveSegmentForPeriod: vi.fn(
+      async (orderId: string, periodStart: Date, options?: { periodEnd?: Date }) => {
+        void periodStart;
+        void options;
+        void orderId;
+        return segmentTerms(order, segmentMonthlyFeeAmount);
+      }
+    )
   };
   const service = new BillingAutomationService(
     prisma as never,
@@ -897,11 +1287,13 @@ function createHarness() {
   return {
     audits,
     bills,
+    beforeTransaction,
     contractSegmentService,
     finance,
     jobs,
     order,
     orders,
+    repository,
     schedules,
     service,
     tx

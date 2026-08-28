@@ -235,7 +235,11 @@ export function resolveContractESignProfile(contract: {
       sourceType:
         contract.subscriptionChange.changeType === SubscriptionChangeType.VEHICLE_SWAP
           ? ("VEHICLE_SWAP_SUPPLEMENT" as const)
-          : ("SUBSCRIPTION_EXTENSION" as const)
+          : contract.subscriptionChange.changeType === SubscriptionChangeType.EARLY_TERMINATION
+            ? ("EARLY_TERMINATION_SUPPLEMENT" as const)
+            : contract.subscriptionChange.changeType === SubscriptionChangeType.MANAGED_OTHER
+              ? ("MANAGED_OTHER_SUPPLEMENT" as const)
+              : ("SUBSCRIPTION_EXTENSION" as const)
     } as const;
   }
   return {
@@ -439,15 +443,22 @@ export class ESignService {
     this.assertContractCanStartESign(contract);
     const esignProfile = resolveContractESignProfile(contract);
 
-    const existingTask = contract.esignTasks.find((task) =>
-      ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
-    );
+    const existingTask = findReusableContractESignTask(contract, esignProfile);
     if (existingTask) {
       const task = await this.findTaskOrThrow(existingTask.id);
       return toESignTaskView(task);
     }
     await this.assertCustomerReadyForProviderSigning(contract.customerId);
     const signingPdfArtifact = await this.preflightSigningPdfArtifact(contract.id);
+    const subscriptionChangeAttempt =
+      contract.subscriptionChange && "sourceType" in esignProfile
+        ? (await this.prisma.contractESignTask.count({
+            where: {
+              sourceId: contract.subscriptionChange.id,
+              sourceType: esignProfile.sourceType
+            }
+          })) + 1
+        : null;
 
     const documentName = contract.contractTitle || `合同 ${contract.contractNo}`;
     const requestSnapshotInput: Record<string, unknown> = {
@@ -487,7 +498,8 @@ export class ESignService {
         requestSnapshotInput.extensionSigning = {
           changeOrderId: contract.subscriptionChange!.id,
           documentType: esignProfile.documentType,
-          signingStage: esignProfile.signingStage
+          signingStage: esignProfile.signingStage,
+          sourceType: esignProfile.sourceType
         };
       }
     }
@@ -538,6 +550,13 @@ export class ESignService {
             provider: this.providerType,
             requestSnapshot,
             signingStage: esignProfile.signingStage,
+            ...(contract.subscriptionChange && "sourceType" in esignProfile
+              ? {
+                  sourceId: contract.subscriptionChange.id,
+                  sourceKey: `subscription-change:${contract.subscriptionChange.id}:esign:attempt:${subscriptionChangeAttempt}`,
+                  sourceType: esignProfile.sourceType
+                }
+              : {}),
             signers: {
               create: signerCreates
             },
@@ -851,15 +870,8 @@ export class ESignService {
   }
 
   async findActiveTaskForContract(contractId: string, user: RequestUser) {
-    const task = await this.prisma.contractESignTask.findFirst({
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-      where: {
-        contractId,
-        deletedAt: null,
-        taskStatus: { in: ACTIVE_ESIGN_TASK_STATUSES }
-      }
-    });
+    const contract = await this.findContractForESign(contractId);
+    const task = findReusableContractESignTask(contract, resolveContractESignProfile(contract));
     return task ? this.getTask(task.id, user) : null;
   }
 
@@ -3463,6 +3475,33 @@ export class ESignService {
       (this.configService.get<string>("ESIGN_MOCK_ENABLED") ?? "true").toLowerCase() === "true"
     );
   }
+}
+
+function findReusableContractESignTask(
+  contract: ContractForESign,
+  profile: ReturnType<typeof resolveContractESignProfile>
+) {
+  const activeTasks = contract.esignTasks.filter((task) =>
+    ACTIVE_ESIGN_TASK_STATUSES.includes(task.taskStatus)
+  );
+  if (contract.subscriptionChange && "sourceType" in profile) {
+    return activeTasks.find(
+      (task) =>
+        task.sourceId === contract.subscriptionChange!.id &&
+        task.sourceType === profile.sourceType &&
+        isSubscriptionChangeESignAttemptKey(task.sourceKey, contract.subscriptionChange!.id)
+    );
+  }
+  return activeTasks.find(
+    (task) => task.sourceId === null && task.sourceKey === null && task.sourceType === null
+  );
+}
+
+function isSubscriptionChangeESignAttemptKey(sourceKey: string | null, changeOrderId: string) {
+  if (!sourceKey) return false;
+  const prefix = `subscription-change:${changeOrderId}:esign:attempt:`;
+  if (!sourceKey.startsWith(prefix)) return false;
+  return /^[1-9]\d*$/.test(sourceKey.slice(prefix.length));
 }
 
 function initialBillNotificationData(

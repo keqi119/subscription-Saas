@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import {
+  BillingScheduleStatus,
   DebitAttemptStatus,
   PaymentMandateStatus,
   SubscriptionAutomationJobStatus,
@@ -82,6 +83,38 @@ describe("BillingAutomationController", () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it("rejects retrying a generation job while its source-fact schedule is paused", async () => {
+    const prisma = {
+      subscriptionAutomationJob: {
+        findUnique: vi.fn().mockResolvedValue({
+          billingSchedule: {
+            pauseReason: "CONTRACT_SEGMENT_NOT_FOUND",
+            status: BillingScheduleStatus.PAUSED
+          },
+          jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL
+        })
+      }
+    };
+    const repository = {
+      retryDeadLetter: vi.fn().mockResolvedValue(true)
+    };
+    const service = new BillingAutomationAdminService(
+      prisma as never,
+      repository as never,
+      {} as never,
+      {} as never
+    );
+
+    await expect(
+      service.retryJob("00000000-0000-4000-8000-000000000001", testUser(), {})
+    ).rejects.toMatchObject({
+      response: {
+        code: "BILLING_SCHEDULE_SOURCE_FACT_BLOCKED"
+      }
+    });
+    expect(repository.retryDeadLetter).not.toHaveBeenCalled();
+  });
+
   it("rejects retrying a retired auto-debit dead letter", async () => {
     const prisma = {
       subscriptionAutomationJob: {
@@ -108,6 +141,87 @@ describe("BillingAutomationController", () => {
       }
     });
     expect(repository.retryDeadLetter).not.toHaveBeenCalled();
+  });
+
+  it("rejects manually resuming a schedule that is paused by source-fact reconciliation", async () => {
+    const updateMany = vi.fn();
+    const prisma = {
+      billingSchedule: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "00000000-0000-4000-8000-000000000003",
+          pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+          status: BillingScheduleStatus.PAUSED,
+          version: 4
+        }),
+        updateMany
+      }
+    };
+    const service = new BillingAutomationAdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never
+    );
+
+    await expect(
+      service.resumeSchedule("00000000-0000-4000-8000-000000000003", testUser(), {})
+    ).rejects.toMatchObject({
+      response: {
+        code: "BILLING_SCHEDULE_SOURCE_FACT_BLOCKED"
+      }
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("uses compare-and-swap when manually resuming an ordinary paused schedule", async () => {
+    const before = {
+      id: "00000000-0000-4000-8000-000000000003",
+      pauseReason: "operator pause",
+      status: BillingScheduleStatus.PAUSED,
+      version: 4
+    };
+    const after = {
+      ...before,
+      pauseReason: null,
+      status: BillingScheduleStatus.ACTIVE,
+      version: 5
+    };
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const prisma = {
+      billingSchedule: {
+        findUnique: vi.fn().mockResolvedValue(before),
+        findUniqueOrThrow: vi.fn().mockResolvedValue(after),
+        updateMany
+      }
+    };
+    const auditService = { write: vi.fn().mockResolvedValue(undefined) };
+    const service = new BillingAutomationAdminService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      auditService as never
+    );
+
+    const result = await service.resumeSchedule(before.id, testUser(), {});
+
+    expect(updateMany).toHaveBeenCalledWith({
+      data: {
+        pauseReason: null,
+        status: BillingScheduleStatus.ACTIVE,
+        version: { increment: 1 }
+      },
+      where: {
+        id: before.id,
+        status: BillingScheduleStatus.PAUSED,
+        version: 4
+      }
+    });
+    expect(result).toMatchObject({
+      id: before.id,
+      pauseReason: null,
+      status: BillingScheduleStatus.ACTIVE
+    });
+    expect(auditService.write).toHaveBeenCalledOnce();
   });
 
   it("separates live billing metrics from historical auto-debit facts", async () => {

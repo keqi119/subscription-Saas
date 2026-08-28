@@ -56,6 +56,7 @@ interface CancelVehicleSwapInput extends VersionedCommandInput {
 
 export interface ExactVehicleSwapQuoteInput {
   commercialSnapshotHash: string;
+  idempotencyKey?: string;
   quoteId: string;
   revision: number;
   version: number;
@@ -299,7 +300,10 @@ export class SubscriptionVehicleSwapService {
   }
 
   async getPortalChange(id: string, customer: PortalSubscriptionChangeCustomer) {
-    return toPortalSwapChange(await findOwnedSwapChange(this.prisma, id, customer.customerId));
+    return toPortalSwapChange(
+      await findOwnedSwapChange(this.prisma, id, customer.customerId),
+      isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.VEHICLE_SWAP)
+    );
   }
 
   async confirmQuote(
@@ -309,37 +313,66 @@ export class SubscriptionVehicleSwapService {
     context: RequestContext
   ) {
     this.assertWriteEnabled();
+    assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
-    return this.prisma.$transaction(async (tx) => {
-      await lockChange(tx, id);
-      const change = await findOwnedSwapChange(tx, id, customer.customerId);
-      assertVersionMatches(change.version, input.version);
-      const quote = assertExactPublishedQuote(change, input, this.config.now());
-      if (requireSwapDetail(change).targetVehicle.status !== VehicleStatus.REVIEW_RESERVED) {
-        throw reservationConflict();
-      }
-      await tx.subscriptionChangeQuote.update({
-        data: {
-          confirmedAt: this.config.now(),
-          status: SubscriptionChangeQuoteStatus.CUSTOMER_CONFIRMED
-        },
-        where: { id: quote.id }
-      });
-      const updated = await tx.subscriptionChangeOrder.update({
-        data: {
-          confirmedQuoteId: quote.id,
-          status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
-          version: change.version + 1
-        },
-        include: swapChangeInclude,
-        where: { id }
-      });
-      await this.auditService.write(
-        portalAudit(AuditAction.UPDATE, id, customer.customerId, context, change, updated),
-        tx
+    const operation = "PORTAL_CONFIRM_VEHICLE_SWAP_QUOTE";
+    const commandInput = { id, ...input };
+    const replay = await this.replayChange(
+      operation,
+      input.idempotencyKey,
+      customer.customerId,
+      commandInput
+    );
+    if (replay) return toPortalSwapChange(replay, true);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await reserveCommand(
+          tx,
+          customer.customerId,
+          operation,
+          input.idempotencyKey!,
+          commandHash(commandInput)
+        );
+        await lockChange(tx, id);
+        const change = await findOwnedSwapChange(tx, id, customer.customerId);
+        assertVersionMatches(change.version, input.version);
+        const quote = assertExactPublishedQuote(change, input, this.config.now());
+        if (requireSwapDetail(change).targetVehicle.status !== VehicleStatus.REVIEW_RESERVED) {
+          throw reservationConflict();
+        }
+        await tx.subscriptionChangeQuote.update({
+          data: {
+            confirmedAt: this.config.now(),
+            status: SubscriptionChangeQuoteStatus.CUSTOMER_CONFIRMED
+          },
+          where: { id: quote.id }
+        });
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            confirmedQuoteId: quote.id,
+            status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
+            version: change.version + 1
+          },
+          include: swapChangeInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          portalAudit(AuditAction.UPDATE, id, customer.customerId, context, change, updated),
+          tx
+        );
+        await completeCommand(tx, command.id, "CHANGE", id, this.config.now());
+        return toPortalSwapChange(updated, true);
+      }, serializableTransaction);
+    } catch (error) {
+      const recovered = await this.resolveWriteConflict(
+        error,
+        operation,
+        input.idempotencyKey,
+        customer.customerId,
+        commandInput
       );
-      return toPortalSwapChange(updated);
-    }, serializableTransaction);
+      return toPortalSwapChange(recovered, true);
+    }
   }
 
   async rejectQuote(
@@ -349,41 +382,70 @@ export class SubscriptionVehicleSwapService {
     context: RequestContext
   ) {
     this.assertWriteEnabled();
+    assertIdempotencyKey(input.idempotencyKey);
     assertVersion(input.version);
     const reason = normalizedReason(input.reason);
     if (!reason)
       throw badRequest("QUOTE_REJECTION_REASON_REQUIRED", "A rejection reason is required.");
-    return this.prisma.$transaction(async (tx) => {
-      await lockChange(tx, id);
-      const change = await findOwnedSwapChange(tx, id, customer.customerId);
-      assertVersionMatches(change.version, input.version);
-      const quote = assertExactPublishedQuote(change, input, this.config.now());
-      await tx.subscriptionChangeQuote.update({
-        data: {
-          rejectedAt: this.config.now(),
-          status: SubscriptionChangeQuoteStatus.CUSTOMER_REJECTED
-        },
-        where: { id: quote.id }
-      });
-      await this.assetOperations.releaseVehicleReservationForSubscriptionChange(
-        tx,
-        reservationInput(change, undefined, this.config.now())
+    const operation = "PORTAL_REJECT_VEHICLE_SWAP_QUOTE";
+    const commandInput = { id, ...input, reason };
+    const replay = await this.replayChange(
+      operation,
+      input.idempotencyKey,
+      customer.customerId,
+      commandInput
+    );
+    if (replay) return toPortalSwapChange(replay, true);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await reserveCommand(
+          tx,
+          customer.customerId,
+          operation,
+          input.idempotencyKey!,
+          commandHash(commandInput)
+        );
+        await lockChange(tx, id);
+        const change = await findOwnedSwapChange(tx, id, customer.customerId);
+        assertVersionMatches(change.version, input.version);
+        const quote = assertExactPublishedQuote(change, input, this.config.now());
+        await tx.subscriptionChangeQuote.update({
+          data: {
+            rejectedAt: this.config.now(),
+            status: SubscriptionChangeQuoteStatus.CUSTOMER_REJECTED
+          },
+          where: { id: quote.id }
+        });
+        await this.assetOperations.releaseVehicleReservationForSubscriptionChange(
+          tx,
+          reservationInput(change, undefined, this.config.now())
+        );
+        const updated = await tx.subscriptionChangeOrder.update({
+          data: {
+            cancelReason: `CUSTOMER_QUOTE_REJECTED: ${reason}`,
+            status: SubscriptionChangeStatus.CANCELLED,
+            version: change.version + 1
+          },
+          include: swapChangeInclude,
+          where: { id }
+        });
+        await this.auditService.write(
+          portalAudit(AuditAction.UPDATE, id, customer.customerId, context, change, updated),
+          tx
+        );
+        await completeCommand(tx, command.id, "CHANGE", id, this.config.now());
+        return toPortalSwapChange(updated, true);
+      }, serializableTransaction);
+    } catch (error) {
+      const recovered = await this.resolveWriteConflict(
+        error,
+        operation,
+        input.idempotencyKey,
+        customer.customerId,
+        commandInput
       );
-      const updated = await tx.subscriptionChangeOrder.update({
-        data: {
-          cancelReason: `CUSTOMER_QUOTE_REJECTED: ${reason}`,
-          status: SubscriptionChangeStatus.CANCELLED,
-          version: change.version + 1
-        },
-        include: swapChangeInclude,
-        where: { id }
-      });
-      await this.auditService.write(
-        portalAudit(AuditAction.UPDATE, id, customer.customerId, context, change, updated),
-        tx
-      );
-      return toPortalSwapChange(updated);
-    }, serializableTransaction);
+      return toPortalSwapChange(recovered, true);
+    }
   }
 
   async cancel(
@@ -586,17 +648,26 @@ function pricingInput(change: SwapChange) {
   };
 }
 
-function toPortalSwapChange(change: SwapChange) {
+function toPortalSwapChange(change: SwapChange, featureEnabled: boolean) {
   const detail = requireSwapDetail(change);
+  const customerDecisionReady = Boolean(
+    featureEnabled &&
+    change.status === SubscriptionChangeStatus.QUOTED &&
+    change.customerConfirmationPublishedAt &&
+    change.currentQuote?.status === SubscriptionChangeQuoteStatus.FORMAL &&
+    change.currentQuote.quoteSnapshot &&
+    isRecord(change.currentQuote.quoteSnapshot) &&
+    typeof change.currentQuote.quoteSnapshot.commercialSnapshotHash === "string"
+  );
   return {
+    allowedActions: customerDecisionReady ? ["CONFIRM_QUOTE", "REJECT_QUOTE"] : [],
     cancelReason: change.cancelReason,
     changeType: change.changeType,
     completionDeadlineAt: change.completionDeadlineAt.toISOString(),
     confirmedQuoteId: change.confirmedQuoteId,
     contractId: change.contractId,
     currentQuote: change.currentQuote ? toPortalSwapQuote(change.currentQuote) : null,
-    customerConfirmationPublishedAt:
-      change.customerConfirmationPublishedAt?.toISOString() ?? null,
+    customerConfirmationPublishedAt: change.customerConfirmationPublishedAt?.toISOString() ?? null,
     detail: {
       commercialSnapshotHash: detail.commercialSnapshotHash,
       plannedSwapAt: detail.plannedSwapAt.toISOString(),
@@ -610,6 +681,10 @@ function toPortalSwapChange(change: SwapChange) {
         modelDefinitionId: detail.targetVehicle.modelDefinitionId
       },
       targetVehiclePackageId: detail.targetVehiclePackageId
+    },
+    featureAvailability: {
+      enabled: featureEnabled,
+      flagName: "SUBSCRIPTION_VEHICLE_SWAP_ENABLED"
     },
     id: change.id,
     orderId: change.orderId,

@@ -55,6 +55,9 @@ describe("vehicle-swap Stage 3 archive", () => {
           id: "task-swap",
           signedDocumentObjectKey: "signed/swap.pdf",
           signingStage: ESignSigningStage.STAGE3_SUBSCRIPTION_EXTENSION,
+          sourceId: "change-swap",
+          sourceKey: "subscription-change:change-swap:esign:attempt:1",
+          sourceType: "VEHICLE_SWAP_SUPPLEMENT",
           taskStatus: ESignTaskStatus.COMPLETED
         }))
       },

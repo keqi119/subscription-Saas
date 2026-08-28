@@ -85,8 +85,8 @@ describe("BillingAutomationService contract segment billing", () => {
     });
 
     await expect(harness.service.generateScheduledMonthlyRent(harness.job)).rejects.toMatchObject({
-      code: "BILLING_PERIOD_CROSSES_SEGMENT",
-      retryable: false
+      code: "BILLING_SCHEDULE_PAUSED",
+      retryable: true
     });
 
     expect(harness.schedule).toMatchObject({

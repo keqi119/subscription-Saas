@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -18,6 +19,7 @@ import {
   SubscriptionChangeStatus,
   SubscriptionChangeType
 } from "@prisma/client";
+import { createHash } from "node:crypto";
 
 import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-number";
@@ -103,209 +105,334 @@ export class PortalRenewalService {
       orderBy: [{ completionDeadlineAt: "asc" }, { createdAt: "desc" }],
       where: { order: { customerId: currentCustomer.customerId } }
     });
-    return sortByPortalListOrder(considerations, portalRenewalSortKey).map(toConsiderationView);
+    return sortByPortalListOrder(considerations, portalRenewalSortKey).map((consideration) =>
+      this.projectConsideration(consideration)
+    );
   }
 
   async get(id: string, currentCustomer: CurrentCustomer) {
-    return toConsiderationView(await this.findOwnedConsideration(id, currentCustomer.customerId));
+    return this.projectConsideration(
+      await this.findOwnedConsideration(id, currentCustomer.customerId)
+    );
   }
 
   async decide(
     id: string,
-    input: PortalRenewalDecisionDto,
+    input: PortalRenewalDecisionDto & { idempotencyKey?: string },
     currentCustomer: CurrentCustomer,
     context: PortalRequestContext
   ) {
-    this.assertEnabled();
-    return this.prisma.$transaction(async (tx) => {
-      await lockRow(tx, "renewal_consideration", id);
-      const consideration = await findOwnedConsideration(tx, id, currentCustomer.customerId);
-      if (!consideration) throw hiddenNotFound();
-      if (consideration.decision) {
-        if (consideration.decision === input.decision) return toConsiderationView(consideration);
-        throw new ConflictException("A different renewal decision has already been recorded.");
-      }
-      assertVersion(consideration.version, input.version);
-      assertBeforeDeadline(this.config.now(), consideration.completionDeadlineAt);
-
-      let changeOrderId: string | null = null;
-      if (input.decision === RenewalDecision.RENEW) {
-        await this.changeRepository.lockCreationScope(tx, consideration.orderId);
-        const active = await this.changeRepository.findActiveChange(tx, consideration.orderId);
-        if (active)
-          throw new ConflictException("The order already has an active subscription change.");
-        const extensionMonths = Math.max(1, consideration.order.periodMonths);
-        const targetStartDate = addUtcDays(consideration.segment.endDate, 1);
-        const targetEndDate = addUtcDays(addCalendarMonths(targetStartDate, extensionMonths), -1);
-        const change = await tx.subscriptionChangeOrder.create({
+    if (input.decision === RenewalDecision.RENEW) this.assertEnabled();
+    const idempotencyKey = assertPortalIdempotencyKey(input.idempotencyKey);
+    const operation = "PORTAL_RENEWAL_DECISION";
+    const requestHash = portalCommandHash({
+      decision: input.decision,
+      id,
+      version: input.version
+    });
+    const replay = await replayPortalRenewalDecision(
+      this.prisma,
+      operation,
+      idempotencyKey,
+      currentCustomer.customerId,
+      requestHash
+    );
+    if (replay)
+      return this.projectConsideration(
+        await this.findOwnedConsideration(id, currentCustomer.customerId)
+      );
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await tx.subscriptionChangeCommand.create({
           data: {
-            changeNo: createBusinessNo("SCO"),
-            changeType: SubscriptionChangeType.EXTENSION,
-            completionDeadlineAt: consideration.completionDeadlineAt,
-            extensionDetail: {
-              create: {
-                extensionMonths,
-                pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
-                sourceSegmentId: consideration.segmentId,
-                targetEndDate,
-                targetStartDate
-              }
-            },
-            orderId: consideration.orderId,
-            renewalConsiderationId: consideration.id,
-            status: SubscriptionChangeStatus.DRAFT
+            actorId: currentCustomer.customerId,
+            idempotencyKey,
+            operation,
+            requestHash
           }
         });
-        changeOrderId = change.id;
-      }
+        await lockRow(tx, "renewal_consideration", id);
+        const consideration = await findOwnedConsideration(tx, id, currentCustomer.customerId);
+        if (!consideration) throw hiddenNotFound();
+        if (consideration.decision) {
+          if (consideration.decision === input.decision) {
+            await completePortalRenewalDecisionCommand(tx, command.id, id, this.config.now());
+            return this.projectConsideration(consideration);
+          }
+          throw new ConflictException("A different renewal decision has already been recorded.");
+        }
+        assertVersion(consideration.version, input.version);
+        assertBeforeDeadline(this.config.now(), consideration.completionDeadlineAt);
 
-      const status =
-        input.decision === RenewalDecision.RENEW
-          ? RenewalConsiderationStatus.RENEWAL_REQUESTED
-          : RenewalConsiderationStatus.EXPIRY_CONFIRMED;
-      await tx.renewalConsideration.update({
-        data: {
-          changeOrderId,
-          decidedAt: this.config.now(),
-          decision: input.decision,
-          status,
-          version: { increment: 1 }
-        },
-        where: { id }
-      });
-      await cancelMarketingReminders(tx, id, this.config.now());
-      const updated = await findOwnedConsideration(tx, id, currentCustomer.customerId);
-      if (!updated) throw hiddenNotFound();
-      await this.auditService.write(
-        portalAudit(
-          AuditAction.UPDATE,
-          "renewal_consideration",
-          id,
-          currentCustomer.customerId,
-          context,
-          toConsiderationView(consideration),
-          toConsiderationView(updated)
-        ),
-        tx
+        let changeOrderId: string | null = null;
+        if (input.decision === RenewalDecision.RENEW) {
+          await this.changeRepository.lockCreationScope(tx, consideration.orderId);
+          const active = await this.changeRepository.findActiveChange(tx, consideration.orderId);
+          if (active)
+            throw new ConflictException("The order already has an active subscription change.");
+          const extensionMonths = Math.max(1, consideration.order.periodMonths);
+          const targetStartDate = addUtcDays(consideration.segment.endDate, 1);
+          const targetEndDate = addUtcDays(addCalendarMonths(targetStartDate, extensionMonths), -1);
+          const change = await tx.subscriptionChangeOrder.create({
+            data: {
+              changeNo: createBusinessNo("SCO"),
+              changeType: SubscriptionChangeType.EXTENSION,
+              completionDeadlineAt: consideration.completionDeadlineAt,
+              extensionDetail: {
+                create: {
+                  extensionMonths,
+                  pricingMode: SubscriptionChangePricingMode.CURRENT_VERSION,
+                  sourceSegmentId: consideration.segmentId,
+                  targetEndDate,
+                  targetStartDate
+                }
+              },
+              orderId: consideration.orderId,
+              renewalConsiderationId: consideration.id,
+              status: SubscriptionChangeStatus.DRAFT
+            }
+          });
+          changeOrderId = change.id;
+        }
+
+        const status =
+          input.decision === RenewalDecision.RENEW
+            ? RenewalConsiderationStatus.RENEWAL_REQUESTED
+            : RenewalConsiderationStatus.EXPIRY_CONFIRMED;
+        await tx.renewalConsideration.update({
+          data: {
+            changeOrderId,
+            decidedAt: this.config.now(),
+            decision: input.decision,
+            status,
+            version: { increment: 1 }
+          },
+          where: { id }
+        });
+        await cancelMarketingReminders(tx, id, this.config.now());
+        const updated = await findOwnedConsideration(tx, id, currentCustomer.customerId);
+        if (!updated) throw hiddenNotFound();
+        await this.auditService.write(
+          portalAudit(
+            AuditAction.UPDATE,
+            "renewal_consideration",
+            id,
+            currentCustomer.customerId,
+            context,
+            this.projectConsideration(consideration),
+            this.projectConsideration(updated)
+          ),
+          tx
+        );
+        await completePortalRenewalDecisionCommand(tx, command.id, id, this.config.now());
+        return this.projectConsideration(updated);
+      }, serializableTransaction);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const concurrentReplay = await replayPortalRenewalDecision(
+        this.prisma,
+        operation,
+        idempotencyKey,
+        currentCustomer.customerId,
+        requestHash
       );
-      return toConsiderationView(updated);
-    }, serializableTransaction);
+      if (!concurrentReplay) throw error;
+      return this.projectConsideration(
+        await this.findOwnedConsideration(id, currentCustomer.customerId)
+      );
+    }
   }
 
   async getChange(id: string, currentCustomer: CurrentCustomer) {
-    return toChangeView(await this.findOwnedChange(id, currentCustomer.customerId));
+    return toChangeView(
+      await this.findOwnedChange(id, currentCustomer.customerId),
+      isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)
+    );
   }
 
   async confirmQuote(
     changeId: string,
-    input: PortalConfirmExtensionQuoteDto,
+    input: PortalConfirmExtensionQuoteDto & { idempotencyKey?: string },
     currentCustomer: CurrentCustomer,
     context: PortalRequestContext
   ) {
     this.assertEnabled();
-    return this.prisma.$transaction(async (tx) => {
-      await lockRow(tx, "subscription_change_order", changeId);
-      const change = await findOwnedChange(tx, changeId, currentCustomer.customerId);
-      if (!change) throw hiddenNotFound();
-      if (change.confirmedQuoteId) {
-        const confirmed = change.quotes.find((quote) => quote.id === change.confirmedQuoteId);
-        if (confirmed?.id === input.quoteId && confirmed.revision === input.revision) {
-          return toChangeView(change);
-        }
-        throw new ConflictException("A different quote revision has already been confirmed.");
-      }
-      assertVersion(change.version, input.version);
-      assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
-      const quote = assertExactPublishableQuote(change, input, this.config.now());
-      await tx.subscriptionChangeQuote.update({
-        data: {
-          confirmedAt: this.config.now(),
-          status: SubscriptionChangeQuoteStatus.CUSTOMER_CONFIRMED
-        },
-        where: { id: quote.id }
-      });
-      await tx.subscriptionChangeOrder.update({
-        data: {
-          confirmedQuoteId: quote.id,
-          status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
-          version: { increment: 1 }
-        },
-        where: { id: change.id }
-      });
-      const updated = await findOwnedChange(tx, changeId, currentCustomer.customerId);
-      if (!updated) throw hiddenNotFound();
-      await this.auditService.write(
-        portalAudit(
-          AuditAction.UPDATE,
-          "subscription_change_order",
-          change.id,
-          currentCustomer.customerId,
-          context,
-          toChangeView(change),
-          toChangeView(updated)
-        ),
-        tx
+    const idempotencyKey = assertPortalIdempotencyKey(input.idempotencyKey);
+    const operation = "PORTAL_CONFIRM_EXTENSION_QUOTE";
+    const requestHash = portalCommandHash({ changeId, ...input, idempotencyKey });
+    const replay = await replayPortalChangeCommand(
+      this.prisma,
+      operation,
+      idempotencyKey,
+      currentCustomer.customerId,
+      requestHash
+    );
+    if (replay)
+      return toChangeView(
+        await this.findOwnedChange(changeId, currentCustomer.customerId),
+        isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)
       );
-      return toChangeView(updated);
-    }, serializableTransaction);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await tx.subscriptionChangeCommand.create({
+          data: {
+            actorId: currentCustomer.customerId,
+            idempotencyKey,
+            operation,
+            requestHash
+          }
+        });
+        await lockRow(tx, "subscription_change_order", changeId);
+        const change = await findOwnedChange(tx, changeId, currentCustomer.customerId);
+        if (!change) throw hiddenNotFound();
+        assertVersion(change.version, input.version);
+        assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
+        const quote = assertExactPublishableQuote(change, input, this.config.now());
+        await tx.subscriptionChangeQuote.update({
+          data: {
+            confirmedAt: this.config.now(),
+            status: SubscriptionChangeQuoteStatus.CUSTOMER_CONFIRMED
+          },
+          where: { id: quote.id }
+        });
+        await tx.subscriptionChangeOrder.update({
+          data: {
+            confirmedQuoteId: quote.id,
+            status: SubscriptionChangeStatus.CUSTOMER_CONFIRMED,
+            version: { increment: 1 }
+          },
+          where: { id: change.id }
+        });
+        const updated = await findOwnedChange(tx, changeId, currentCustomer.customerId);
+        if (!updated) throw hiddenNotFound();
+        await this.auditService.write(
+          portalAudit(
+            AuditAction.UPDATE,
+            "subscription_change_order",
+            change.id,
+            currentCustomer.customerId,
+            context,
+            toChangeView(change, true),
+            toChangeView(updated, true)
+          ),
+          tx
+        );
+        await completePortalChangeCommand(tx, command.id, change.id, this.config.now());
+        return toChangeView(updated, true);
+      }, serializableTransaction);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const concurrentReplay = await replayPortalChangeCommand(
+        this.prisma,
+        operation,
+        idempotencyKey,
+        currentCustomer.customerId,
+        requestHash
+      );
+      if (!concurrentReplay) throw error;
+      return toChangeView(
+        await this.findOwnedChange(changeId, currentCustomer.customerId),
+        isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)
+      );
+    }
   }
 
   async rejectQuote(
     changeId: string,
-    input: PortalRejectExtensionQuoteDto,
+    input: PortalRejectExtensionQuoteDto & { idempotencyKey?: string },
     currentCustomer: CurrentCustomer,
     context: PortalRequestContext
   ) {
     this.assertEnabled();
+    const idempotencyKey = assertPortalIdempotencyKey(input.idempotencyKey);
     const reason = input.reason.trim();
     if (!reason) throw new ConflictException("A quote rejection reason is required.");
-    return this.prisma.$transaction(async (tx) => {
-      await lockRow(tx, "subscription_change_order", changeId);
-      const change = await findOwnedChange(tx, changeId, currentCustomer.customerId);
-      if (!change) throw hiddenNotFound();
-      assertVersion(change.version, input.version);
-      assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
-      const quote = assertExactPublishableQuote(change, input, this.config.now());
-      await tx.subscriptionChangeQuote.update({
-        data: {
-          rejectedAt: this.config.now(),
-          status: SubscriptionChangeQuoteStatus.CUSTOMER_REJECTED
-        },
-        where: { id: quote.id }
-      });
-      await tx.subscriptionChangeOrder.update({
-        data: {
-          cancelReason: `CUSTOMER_QUOTE_REJECTED: ${reason}`,
-          status: SubscriptionChangeStatus.CANCELLED,
-          version: { increment: 1 }
-        },
-        where: { id: change.id }
-      });
-      if (change.renewalConsiderationId) {
-        await tx.renewalConsideration.update({
+    const operation = "PORTAL_REJECT_EXTENSION_QUOTE";
+    const requestHash = portalCommandHash({ changeId, ...input, idempotencyKey, reason });
+    const replay = await replayPortalChangeCommand(
+      this.prisma,
+      operation,
+      idempotencyKey,
+      currentCustomer.customerId,
+      requestHash
+    );
+    if (replay)
+      return toChangeView(
+        await this.findOwnedChange(changeId, currentCustomer.customerId),
+        isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)
+      );
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const command = await tx.subscriptionChangeCommand.create({
           data: {
-            status: RenewalConsiderationStatus.RENEWAL_REQUESTED,
+            actorId: currentCustomer.customerId,
+            idempotencyKey,
+            operation,
+            requestHash
+          }
+        });
+        await lockRow(tx, "subscription_change_order", changeId);
+        const change = await findOwnedChange(tx, changeId, currentCustomer.customerId);
+        if (!change) throw hiddenNotFound();
+        assertVersion(change.version, input.version);
+        assertBeforeDeadline(this.config.now(), change.completionDeadlineAt);
+        const quote = assertExactPublishableQuote(change, input, this.config.now());
+        await tx.subscriptionChangeQuote.update({
+          data: {
+            rejectedAt: this.config.now(),
+            status: SubscriptionChangeQuoteStatus.CUSTOMER_REJECTED
+          },
+          where: { id: quote.id }
+        });
+        await tx.subscriptionChangeOrder.update({
+          data: {
+            cancelReason: `CUSTOMER_QUOTE_REJECTED: ${reason}`,
+            status: SubscriptionChangeStatus.CANCELLED,
             version: { increment: 1 }
           },
-          where: { id: change.renewalConsiderationId }
+          where: { id: change.id }
         });
-      }
-      const updated = await findOwnedChange(tx, changeId, currentCustomer.customerId);
-      if (!updated) throw hiddenNotFound();
-      await this.auditService.write(
-        portalAudit(
-          AuditAction.UPDATE,
-          "subscription_change_order",
-          change.id,
-          currentCustomer.customerId,
-          context,
-          toChangeView(change),
-          toChangeView(updated)
-        ),
-        tx
+        if (change.renewalConsiderationId) {
+          await tx.renewalConsideration.update({
+            data: {
+              status: RenewalConsiderationStatus.RENEWAL_REQUESTED,
+              version: { increment: 1 }
+            },
+            where: { id: change.renewalConsiderationId }
+          });
+        }
+        const updated = await findOwnedChange(tx, changeId, currentCustomer.customerId);
+        if (!updated) throw hiddenNotFound();
+        await this.auditService.write(
+          portalAudit(
+            AuditAction.UPDATE,
+            "subscription_change_order",
+            change.id,
+            currentCustomer.customerId,
+            context,
+            toChangeView(change, true),
+            toChangeView(updated, true)
+          ),
+          tx
+        );
+        await completePortalChangeCommand(tx, command.id, change.id, this.config.now());
+        return toChangeView(updated, true);
+      }, serializableTransaction);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      const concurrentReplay = await replayPortalChangeCommand(
+        this.prisma,
+        operation,
+        idempotencyKey,
+        currentCustomer.customerId,
+        requestHash
       );
-      return toChangeView(updated);
-    }, serializableTransaction);
+      if (!concurrentReplay) throw error;
+      return toChangeView(
+        await this.findOwnedChange(changeId, currentCustomer.customerId),
+        isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION)
+      );
+    }
   }
 
   async listContractSegments(orderId: string, currentCustomer: CurrentCustomer) {
@@ -329,6 +456,14 @@ export class PortalRenewalService {
       if (!value) throw hiddenNotFound();
       return value;
     });
+  }
+
+  private projectConsideration(consideration: PortalConsideration) {
+    return toConsiderationView(
+      consideration,
+      isSubscriptionChangeTypeEnabled(this.config, SubscriptionChangeType.EXTENSION),
+      this.config.now()
+    );
   }
 
   private assertEnabled() {
@@ -412,13 +547,26 @@ async function cancelMarketingReminders(
   });
 }
 
-function toConsiderationView(consideration: PortalConsideration) {
+function toConsiderationView(
+  consideration: PortalConsideration,
+  extensionEnabled: boolean,
+  now: Date
+) {
+  const decisionReady =
+    !consideration.decision && now.getTime() < consideration.completionDeadlineAt.getTime();
   return {
+    allowedActions: decisionReady
+      ? [...(extensionEnabled ? (["RENEW"] as const) : []), "EXPIRE"]
+      : [],
     changeOrderId: consideration.changeOrderId,
     completionDeadlineAt: consideration.completionDeadlineAt.toISOString(),
     considerationStartAt: consideration.considerationStartAt.toISOString(),
     decision: consideration.decision,
     decidedAt: consideration.decidedAt?.toISOString() ?? null,
+    featureAvailability: {
+      enabled: extensionEnabled,
+      flagName: "SUBSCRIPTION_EXTENSION_ENABLED"
+    },
     id: consideration.id,
     nextAction: considerationNextAction(consideration),
     order: {
@@ -437,17 +585,27 @@ function toConsiderationView(consideration: PortalConsideration) {
   };
 }
 
-function toChangeView(change: PortalChange) {
+function toChangeView(change: PortalChange, featureEnabled: boolean) {
   const extensionChange = requireExtensionChangeProjection(change);
+  const customerDecisionReady = Boolean(
+    featureEnabled &&
+    change.status === SubscriptionChangeStatus.QUOTED &&
+    change.customerConfirmationPublishedAt &&
+    change.currentQuote?.status === SubscriptionChangeQuoteStatus.FORMAL
+  );
   return {
+    allowedActions: customerDecisionReady ? ["CONFIRM_QUOTE", "REJECT_QUOTE"] : [],
     cancelReason: change.cancelReason,
     completionDeadlineAt: change.completionDeadlineAt.toISOString(),
     confirmedQuoteId: change.confirmedQuoteId,
     contractId: change.contractId,
     currentQuote: change.currentQuote ? toQuoteView(change.currentQuote) : null,
-    customerConfirmationPublishedAt:
-      change.customerConfirmationPublishedAt?.toISOString() ?? null,
+    customerConfirmationPublishedAt: change.customerConfirmationPublishedAt?.toISOString() ?? null,
     extensionMonths: extensionChange.extensionMonths,
+    featureAvailability: {
+      enabled: featureEnabled,
+      flagName: "SUBSCRIPTION_EXTENSION_ENABLED"
+    },
     id: change.id,
     orderId: change.orderId,
     orderNo: change.order.orderNo,
@@ -594,6 +752,118 @@ function maskPlate(value: string | null | undefined) {
   const plate = value?.trim().toUpperCase() ?? "";
   if (plate.length <= 2) return plate || "-";
   return `${plate.slice(0, 1)}${"*".repeat(Math.max(2, plate.length - 3))}${plate.slice(-2)}`;
+}
+
+function assertPortalIdempotencyKey(value: string | undefined) {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 128) {
+    throw new BadRequestException({
+      code: "IDEMPOTENCY_KEY_REQUIRED",
+      message: "A valid Idempotency-Key header is required."
+    });
+  }
+  return normalized;
+}
+
+function portalCommandHash(value: unknown) {
+  return createHash("sha256").update(stablePortalJson(value)).digest("hex");
+}
+
+function stablePortalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stablePortalJson).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stablePortalJson(item)}`)
+    .join(",")}}`;
+}
+
+async function replayPortalRenewalDecision(
+  db: Pick<Prisma.TransactionClient, "subscriptionChangeCommand">,
+  operation: string,
+  idempotencyKey: string,
+  actorId: string,
+  requestHash: string
+) {
+  const command = await db.subscriptionChangeCommand.findUnique({
+    where: { actorId_operation_idempotencyKey: { actorId, idempotencyKey, operation } }
+  });
+  if (!command) return null;
+  if (command.requestHash !== requestHash) {
+    throw new ConflictException({
+      code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
+      message: "The Idempotency-Key was already used with a different request."
+    });
+  }
+  if (
+    command.resourceType !== "RENEWAL_CONSIDERATION" ||
+    !command.resourceId ||
+    !command.completedAt
+  ) {
+    throw new ConflictException({
+      code: "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+      message: "The idempotent renewal decision has not completed."
+    });
+  }
+  return command;
+}
+
+async function completePortalRenewalDecisionCommand(
+  tx: Pick<Prisma.TransactionClient, "subscriptionChangeCommand">,
+  commandId: string,
+  considerationId: string,
+  completedAt: Date
+) {
+  await tx.subscriptionChangeCommand.update({
+    data: {
+      completedAt,
+      resourceId: considerationId,
+      resourceType: "RENEWAL_CONSIDERATION"
+    },
+    where: { id: commandId }
+  });
+}
+
+async function replayPortalChangeCommand(
+  db: Pick<Prisma.TransactionClient, "subscriptionChangeCommand">,
+  operation: string,
+  idempotencyKey: string,
+  actorId: string,
+  requestHash: string
+) {
+  const command = await db.subscriptionChangeCommand.findUnique({
+    where: { actorId_operation_idempotencyKey: { actorId, idempotencyKey, operation } }
+  });
+  if (!command) return null;
+  if (command.requestHash !== requestHash) {
+    throw new ConflictException({
+      code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST",
+      message: "The Idempotency-Key was already used with a different request."
+    });
+  }
+  if (command.resourceType !== "CHANGE" || !command.resourceId || !command.completedAt) {
+    throw new ConflictException({
+      code: "IDEMPOTENCY_COMMAND_IN_PROGRESS",
+      message: "The idempotent command has not completed."
+    });
+  }
+  return command;
+}
+
+async function completePortalChangeCommand(
+  tx: Pick<Prisma.TransactionClient, "subscriptionChangeCommand">,
+  commandId: string,
+  changeId: string,
+  completedAt: Date
+) {
+  await tx.subscriptionChangeCommand.update({
+    data: { completedAt, resourceId: changeId, resourceType: "CHANGE" },
+    where: { id: commandId }
+  });
+}
+
+function isUniqueConstraintError(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
 const serializableTransaction = {

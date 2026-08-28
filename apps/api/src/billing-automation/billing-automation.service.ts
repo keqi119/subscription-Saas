@@ -150,10 +150,28 @@ export class BillingAutomationService {
           leaseStatus: order.lease?.status ?? null
         };
         if (order.billingSchedule) {
-          const amount = await this.reconciliationSegmentAmount(
-            order.id,
-            order.billingSchedule.nextPeriodStart
+          const scheduleServiceEndDate = earliestServiceEndDate(
+            effectiveServiceEndDate,
+            order.billingSchedule.serviceEndDate
           );
+          const contractEnded = isPeriodAfterServiceEnd(
+            order.billingSchedule.nextPeriodStart,
+            scheduleServiceEndDate
+          );
+          const amount = contractEnded
+            ? { amountSource: null, monthlyRentAmount: null }
+            : await this.reconciliationSegmentAmount(
+                order.id,
+                order.billingSchedule.nextPeriodStart,
+                order.billingSchedule.nextPeriodEnd
+              );
+          if (
+            !input.dryRun &&
+            order.billingSchedule.status === BillingScheduleStatus.PAUSED &&
+            isReconciliationPauseReason(order.billingSchedule.pauseReason)
+          ) {
+            await this.resumeReconciledSchedule(order.billingSchedule);
+          }
           let leaseResult: {
             leaseAction: "NONE" | "ACTIVATED" | "WOULD_ACTIVATE";
             leaseStatus: LeaseStatus | null;
@@ -190,13 +208,17 @@ export class BillingAutomationService {
           });
           continue;
         }
-        const amount = await this.reconciliationSegmentAmount(
-          order.id,
-          baseline!.cycle.periodStart
+        const completed = isPeriodAfterServiceEnd(
+          baseline!.cycle.periodStart,
+          effectiveServiceEndDate
         );
-        const completed =
-          effectiveServiceEndDate instanceof Date &&
-          baseline!.cycle.periodStart.getTime() > effectiveServiceEndDate.getTime();
+        const amount = completed
+          ? { amountSource: null, monthlyRentAmount: null }
+          : await this.reconciliationSegmentAmount(
+              order.id,
+              baseline!.cycle.periodStart,
+              baseline!.cycle.periodEnd
+            );
         const itemFacts = {
           ...amount,
           baselineReason: baseline!.reason,
@@ -249,6 +271,9 @@ export class BillingAutomationService {
         });
       } catch (error) {
         if (!isReconciliationBlocker(error)) throw error;
+        if (!input.dryRun && order.billingSchedule) {
+          await this.pauseReconciliationBlockedSchedule(order.billingSchedule, error.code);
+        }
         items.push({
           action: "BLOCKED",
           amountSource: null,
@@ -294,33 +319,175 @@ export class BillingAutomationService {
       }
     });
 
-    for (const schedule of schedules) {
-      await this.repository.enqueue(this.prisma, {
-        availableAt: schedule.nextGenerateAt,
-        billingScheduleId: schedule.id,
-        idempotencyKey: billingSourceKey(schedule.orderId, schedule.nextPeriodStart),
-        jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
-        orderId: schedule.orderId,
-        payload: {
-          cycleNo: schedule.nextCycleNo,
-          periodEnd: isoDate(schedule.nextPeriodEnd),
-          periodStart: isoDate(schedule.nextPeriodStart)
+    let enqueuedCount = 0;
+    for (const snapshot of schedules) {
+      const enqueued = await this.prisma.$transaction(async (tx) => {
+        const [lockedSchedule] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id"
+          FROM "billing_schedule"
+          WHERE "id" = ${snapshot.id}::uuid
+          FOR UPDATE
+        `);
+        if (!lockedSchedule) return false;
+
+        const schedule = await tx.billingSchedule.findUnique({
+          where: { id: snapshot.id }
+        });
+        if (
+          !schedule ||
+          schedule.status !== BillingScheduleStatus.ACTIVE ||
+          schedule.nextGenerateAt.getTime() > now.getTime()
+        ) {
+          return false;
         }
+
+        const sourceKey = billingSourceKey(schedule.orderId, schedule.nextPeriodStart);
+        await this.repository.reactivateCancelledScheduleGeneration(
+          tx,
+          schedule.id,
+          sourceKey,
+          schedule.nextGenerateAt
+        );
+        await this.repository.enqueue(tx, {
+          availableAt: schedule.nextGenerateAt,
+          billingScheduleId: schedule.id,
+          idempotencyKey: sourceKey,
+          jobType: SubscriptionAutomationJobType.GENERATE_MONTHLY_RENT_BILL,
+          orderId: schedule.orderId,
+          payload: {
+            cycleNo: schedule.nextCycleNo,
+            periodEnd: isoDate(schedule.nextPeriodEnd),
+            periodStart: isoDate(schedule.nextPeriodStart)
+          }
+        });
+        return true;
       });
+      if (enqueued) enqueuedCount += 1;
     }
 
     return {
       dueCount: schedules.length,
-      enqueuedCount: schedules.length
+      enqueuedCount
     };
   }
 
-  private async reconciliationSegmentAmount(orderId: string, periodStart: Date) {
-    const segment = await this.contractSegmentService.resolveSegmentForPeriod(orderId, periodStart);
+  private async reconciliationSegmentAmount(orderId: string, periodStart: Date, periodEnd: Date) {
+    const segment = await this.contractSegmentService.resolveSegmentForPeriod(
+      orderId,
+      periodStart,
+      { periodEnd }
+    );
     return {
       amountSource: "CONTRACT_SEGMENT",
       monthlyRentAmount: Number(segment.monthlyFeeAmount)
     };
+  }
+
+  private async pauseReconciliationBlockedSchedule(
+    schedule: {
+      id: string;
+      pauseReason: string | null;
+      status: BillingScheduleStatus;
+      version: number;
+    },
+    blockerCode: ContractSegmentError["code"]
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      const paused = await tx.billingSchedule.updateMany({
+        data: {
+          pauseReason: blockerCode,
+          status: BillingScheduleStatus.PAUSED,
+          version: { increment: 1 }
+        },
+        where: {
+          id: schedule.id,
+          status:
+            schedule.status === BillingScheduleStatus.ACTIVE
+              ? BillingScheduleStatus.ACTIVE
+              : BillingScheduleStatus.PAUSED,
+          version: schedule.version
+        }
+      });
+      if (paused.count === 0) {
+        const current = await tx.billingSchedule.findUnique({
+          select: {
+            pauseReason: true,
+            status: true
+          },
+          where: { id: schedule.id }
+        });
+        if (
+          current?.status !== BillingScheduleStatus.PAUSED ||
+          !isReconciliationPauseReason(current.pauseReason)
+        ) {
+          return;
+        }
+      }
+      await this.repository.cancelPendingForSchedule(tx, schedule.id);
+      if (paused.count === 1) {
+        await tx.auditLog.create({
+          data: {
+            action: AuditAction.UPDATE,
+            afterSnapshot: {
+              actorType: "SYSTEM",
+              blockerCode,
+              reason: "BILLING_RECONCILIATION_SOURCE_FACT_BLOCKED"
+            },
+            entityId: schedule.id,
+            entityType: "billing_schedule",
+            module: "billing",
+            operatorId: null
+          }
+        });
+      }
+    });
+  }
+
+  private async resumeReconciledSchedule(schedule: {
+    id: string;
+    nextGenerateAt: Date;
+    nextPeriodStart: Date;
+    orderId: string;
+    pauseReason: string | null;
+    status: BillingScheduleStatus;
+    version: number;
+  }) {
+    await this.prisma.$transaction(async (tx) => {
+      const resumed = await tx.billingSchedule.updateMany({
+        data: {
+          pauseReason: null,
+          status: BillingScheduleStatus.ACTIVE,
+          version: { increment: 1 }
+        },
+        where: {
+          id: schedule.id,
+          pauseReason: schedule.pauseReason,
+          status: BillingScheduleStatus.PAUSED,
+          version: schedule.version
+        }
+      });
+      if (resumed.count !== 1) return;
+      await this.repository.reactivateCancelledScheduleGeneration(
+        tx,
+        schedule.id,
+        billingSourceKey(schedule.orderId, schedule.nextPeriodStart),
+        schedule.nextGenerateAt
+      );
+      await tx.auditLog.create({
+        data: {
+          action: AuditAction.UPDATE,
+          afterSnapshot: {
+            actorType: "SYSTEM",
+            previousPauseReason: schedule.pauseReason,
+            reason: "BILLING_RECONCILIATION_SOURCE_FACT_REPAIRED"
+          },
+          entityId: schedule.id,
+          entityType: "billing_schedule",
+          module: "billing",
+          operatorId: null
+        }
+      });
+    });
   }
 
   async generateScheduledMonthlyRent(job: ClaimedBillingAutomationJob) {
@@ -436,11 +603,9 @@ export class BillingAutomationService {
             { db: tx, periodEnd: cycle.periodEnd }
           );
         } catch (error) {
-          if (
-            error instanceof ContractSegmentError &&
-            error.code === "BILLING_PERIOD_CROSSES_SEGMENT"
-          ) {
-            await this.moveCrossingPeriodToManualTakeover(tx, {
+          if (isReconciliationBlocker(error)) {
+            await this.moveSourceFactBlockerToPaused(tx, {
+              blockerCode: error.code,
               changeOrderId: error.context?.changeOrderId,
               generatedAt,
               jobId: job.id,
@@ -448,7 +613,7 @@ export class BillingAutomationService {
               scheduleVersion: schedule.version,
               sourceKey
             });
-            return { billingFailure: crossingSegmentError() } as const;
+            return { billingFailure: pausedScheduleError() } as const;
           }
           throw error;
         }
@@ -638,9 +803,10 @@ export class BillingAutomationService {
     });
   }
 
-  private async moveCrossingPeriodToManualTakeover(
+  private async moveSourceFactBlockerToPaused(
     tx: Prisma.TransactionClient,
     input: {
+      blockerCode: ContractSegmentError["code"];
       changeOrderId?: string;
       generatedAt: Date;
       jobId: string;
@@ -651,7 +817,7 @@ export class BillingAutomationService {
   ) {
     const paused = await tx.billingSchedule.updateMany({
       data: {
-        pauseReason: "BILLING_PERIOD_CROSSES_SEGMENT",
+        pauseReason: input.blockerCode,
         status: BillingScheduleStatus.PAUSED,
         version: { increment: 1 }
       },
@@ -664,7 +830,7 @@ export class BillingAutomationService {
     if (paused.count !== 1) {
       throw retryableExecutionError();
     }
-    if (input.changeOrderId) {
+    if (input.changeOrderId && input.blockerCode === "BILLING_PERIOD_CROSSES_SEGMENT") {
       await tx.subscriptionChangeOrder.updateMany({
         data: {
           failureCode: "BILLING_PERIOD_CROSSES_SEGMENT",
@@ -690,9 +856,10 @@ export class BillingAutomationService {
         action: AuditAction.UPDATE,
         afterSnapshot: {
           actorType: "SYSTEM",
+          blockerCode: input.blockerCode,
           changeOrderId: input.changeOrderId ?? null,
           jobId: input.jobId,
-          reason: "BILLING_PERIOD_CROSSES_SEGMENT",
+          reason: "BILLING_SOURCE_FACT_BLOCKED",
           sourceKey: input.sourceKey
         },
         entityId: input.scheduleId,
@@ -901,14 +1068,6 @@ function pausedScheduleError() {
   });
 }
 
-function crossingSegmentError() {
-  return new BillingAutomationError({
-    code: "BILLING_PERIOD_CROSSES_SEGMENT",
-    message: "The billing period crosses a contract segment boundary and requires manual takeover.",
-    retryable: false
-  });
-}
-
 function classifyExecutionError(error: unknown) {
   if (error instanceof BillingAutomationError) {
     return error;
@@ -933,8 +1092,18 @@ function isReconciliationBlocker(error: unknown): error is ContractSegmentError 
   return error instanceof ContractSegmentError && RECONCILIATION_BLOCKER_CODES.has(error.code);
 }
 
+export function isReconciliationPauseReason(reason: string | null | undefined) {
+  return Boolean(
+    reason && RECONCILIATION_BLOCKER_CODES.has(reason as ContractSegmentError["code"])
+  );
+}
+
 function earliestServiceEndDate(left: Date | null, right: Date | null) {
   if (!left) return right;
   if (!right) return left;
   return left.getTime() <= right.getTime() ? left : right;
+}
+
+function isPeriodAfterServiceEnd(periodStart: Date, serviceEndDate: Date | null) {
+  return serviceEndDate instanceof Date && periodStart.getTime() > serviceEndDate.getTime();
 }

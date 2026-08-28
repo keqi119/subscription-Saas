@@ -43,7 +43,8 @@ export class SubscriptionChangeController {
     @Optional() private readonly contractService?: SubscriptionExtensionContractService,
     @Optional() private readonly esignService?: ESignService,
     @Optional() private readonly changeService?: SubscriptionChangeService,
-    @Optional() private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService,
+    @Optional()
+    private readonly vehicleSwapContractService?: SubscriptionVehicleSwapContractService,
     @Optional()
     private readonly earlyTerminationService?: SubscriptionEarlyTerminationChangeService,
     @Optional()
@@ -335,6 +336,15 @@ export class SubscriptionChangeController {
     return apiSafe(await (this.changeService ?? this.service).listForOrder(orderId, request.user));
   }
 
+  @Get("capabilities")
+  @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
+  capabilities(@Req() request: AuthenticatedRequest) {
+    if (!this.changeService) {
+      throw new Error("SUBSCRIPTION_CHANGE_SERVICE_MISSING");
+    }
+    return apiSafe(this.changeService.capabilities(request.user));
+  }
+
   @Get(":id/timeline")
   @RequirePermissions(PermissionCode.SUBSCRIPTION_CHANGE_VIEW)
   async timeline(@Param("id") id: string, @Req() request: AuthenticatedRequest) {
@@ -376,7 +386,7 @@ export class SubscriptionChangeController {
 
   private async contractServiceFor(id: string) {
     if (this.changeService) {
-      const changeType = await this.changeService.getChangeType(id);
+      const changeType = await this.changeService.getWorkflowChangeType(id);
       if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
         if (!this.vehicleSwapContractService) {
           throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
@@ -388,6 +398,12 @@ export class SubscriptionChangeController {
           throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
         }
         return this.earlyTerminationService;
+      }
+      if (changeType === SubscriptionChangeType.MANAGED_OTHER) {
+        if (!this.managedOtherService) {
+          throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+        }
+        return this.managedOtherService;
       }
     }
     if (!this.contractService) {
@@ -398,7 +414,7 @@ export class SubscriptionChangeController {
 
   private async esignCommandServiceFor(id: string) {
     if (this.changeService) {
-      const changeType = await this.changeService.getChangeType(id);
+      const changeType = await this.changeService.getWorkflowChangeType(id);
       if (changeType === SubscriptionChangeType.VEHICLE_SWAP) {
         if (!this.vehicleSwapContractService) {
           throw new Error("SUBSCRIPTION_VEHICLE_SWAP_CONTRACT_SERVICE_MISSING");
@@ -410,6 +426,12 @@ export class SubscriptionChangeController {
           throw new Error("SUBSCRIPTION_EARLY_TERMINATION_SERVICE_MISSING");
         }
         return this.earlyTerminationService;
+      }
+      if (changeType === SubscriptionChangeType.MANAGED_OTHER) {
+        if (!this.managedOtherService) {
+          throw new Error("SUBSCRIPTION_MANAGED_OTHER_SERVICE_MISSING");
+        }
+        return this.managedOtherService;
       }
     }
     return this.service;

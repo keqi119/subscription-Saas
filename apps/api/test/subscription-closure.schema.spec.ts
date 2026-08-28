@@ -33,6 +33,13 @@ const esignSourceImmutabilityMigrationPath = resolve(
 const esignSourceImmutabilityMigration = existsSync(esignSourceImmutabilityMigrationPath)
   ? readFileSync(esignSourceImmutabilityMigrationPath, "utf8")
   : "";
+const esignAttemptGuardMigrationPath = resolve(
+  apiRoot,
+  "prisma/migrations/20260828020000_stage1_subscription_change_esign_attempt_guard/migration.sql"
+);
+const esignAttemptGuardMigration = existsSync(esignAttemptGuardMigrationPath)
+  ? readFileSync(esignAttemptGuardMigrationPath, "utf8")
+  : "";
 const activeClosureMigrationPath = resolve(
   apiRoot,
   "prisma/migrations/20260822020000_stage1_p0_active_closure_and_service_boundary/migration.sql"
@@ -167,6 +174,20 @@ describe("Stage 1 P0 subscription closure persistence contract", () => {
     expect(esignSourceImmutabilityMigration).toContain(
       "contract_esign_task_source_tuple_immutable_trg"
     );
+    expect(esignAttemptGuardMigration).toContain(
+      "contract_esign_task_one_active_subscription_change_source_key"
+    );
+    expect(esignAttemptGuardMigration).toContain(
+      'ON "contract_esign_task"("contract_id", "source_type", "source_id")'
+    );
+    for (const sourceType of [
+      "SUBSCRIPTION_EXTENSION",
+      "VEHICLE_SWAP_SUPPLEMENT",
+      "EARLY_TERMINATION_SUPPLEMENT",
+      "MANAGED_OTHER_SUPPLEMENT"
+    ]) {
+      expect(esignAttemptGuardMigration).toContain(`'${sourceType}'`);
+    }
   });
   it("declares the exact closure, document, settlement, event, and command enums", () => {
     for (const contract of enumContracts) {

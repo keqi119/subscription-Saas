@@ -237,6 +237,34 @@ describe("Stage2HandoverESignReadinessService", () => {
     await expectBlocker(harness.service, "FIELD_FACTS_INCOMPLETE");
   });
 
+  it("keeps a missing vehicle registration document as an actionable readiness blocker", async () => {
+    const harness = createHarness({ registrationAllowed: false });
+
+    await expectBlocker(
+      harness.service,
+      "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+    );
+    expect(harness.registrationExceptionService.getGate).toHaveBeenCalledWith(
+      "work-order-1",
+      harness.prisma
+    );
+    expectNoSideEffects(harness.sideEffects);
+  });
+
+  it("accepts a current vehicle registration document or exact-snapshot approval", async () => {
+    const documentHarness = createHarness({ registrationAllowed: true });
+    const approvedExceptionHarness = createHarness({ registrationAllowed: true });
+
+    await expect(documentHarness.service.getReadiness("work-order-1")).resolves.toMatchObject({
+      blockers: [],
+      ready: true
+    });
+    await expect(approvedExceptionHarness.service.getReadiness("work-order-1")).resolves.toMatchObject({
+      blockers: [],
+      ready: true
+    });
+  });
+
   it("requires exactly one affirmative damage-state declaration", async () => {
     const harness = createHarness();
     Object.assign(harness.state.workOrder!, {
@@ -652,6 +680,7 @@ function createHarness(overrides: {
   env?: Record<string, string>;
   evidenceReadiness?: Record<string, unknown>;
   fileObject?: null | ReadyState["fileObject"];
+  registrationAllowed?: boolean;
   workOrder?: null | ReadyState["workOrder"];
 } = {}) {
   const state: ReadyState = {
@@ -744,6 +773,14 @@ function createHarness(overrides: {
     getReadiness: vi.fn(async () => state.customerReadiness),
     providerCall: sideEffects.provider
   };
+  const registrationExceptionService = {
+    getGate: vi.fn(async () => ({
+      allowed: overrides.registrationAllowed ?? true,
+      approval: null,
+      documentPresent: overrides.registrationAllowed ?? true,
+      snapshotHash: "d".repeat(64)
+    }))
+  };
   const config = new ConfigService({
     FADADA_PLATFORM_CUSTOMER_ID: "platform-customer-1",
     FADADA_PLATFORM_SIGNATURE_ID: "platform-signature-1",
@@ -755,11 +792,13 @@ function createHarness(overrides: {
     deliveryEvidenceService as never,
     fadadaReadinessService as never,
     handoverWorkOrderService as never,
+    registrationExceptionService as never,
     config
   );
 
   return {
     prisma,
+    registrationExceptionService,
     service,
     sideEffects,
     state

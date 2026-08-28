@@ -1318,6 +1318,7 @@ describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
     const controller = new HandoverWorkOrderAdminController(
       handoverService as never,
       {} as never,
+      {} as never,
       {} as never
     );
     const response = { setHeader: vi.fn() };
@@ -1353,6 +1354,7 @@ describe("HandoverWorkOrderAdminController signed Stage 2 PDF download", () => {
     };
     const controller = new HandoverWorkOrderAdminController(
       handoverService as never,
+      {} as never,
       {} as never,
       {} as never
     );

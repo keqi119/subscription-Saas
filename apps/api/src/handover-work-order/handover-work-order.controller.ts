@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Req, Res, StreamableFile, UseGuards } from "@nestjs/common";
 import { PermissionCode } from "@subscription-saas/shared";
 import type { Response } from "express";
 
@@ -10,9 +10,11 @@ import {
   AssignInternalOperatorDto,
   AttachFieldEvidenceFileDto,
   CreateHandoverWorkOrderDto,
+  DecideStage2RegistrationExceptionDto,
   HandoverObjectionActionDto,
   HandoverObjectionResubmissionDto,
   OpsReviewDto,
+  RequestStage2RegistrationExceptionDto,
   StartAdminStage2ESignDto,
   Stage2WorkflowRecoveryResultDto,
   UpdateHandoverFieldFactsDto,
@@ -21,6 +23,7 @@ import {
 } from "./handover-work-order.dto";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { Stage2HandoverESignService } from "./stage2-handover-esign.service";
+import { Stage2HandoverRegistrationExceptionService } from "./stage2-handover-registration-exception.service";
 import { Stage2HandoverWorkflowService } from "./stage2-handover-workflow.service";
 
 @Controller()
@@ -29,6 +32,7 @@ export class HandoverWorkOrderAdminController {
   constructor(
     private readonly handoverWorkOrderService: HandoverWorkOrderService,
     private readonly stage2HandoverESignService: Stage2HandoverESignService,
+    private readonly registrationExceptionService: Stage2HandoverRegistrationExceptionService,
     private readonly stage2HandoverWorkflowService: Stage2HandoverWorkflowService
   ) {}
 
@@ -147,6 +151,51 @@ export class HandoverWorkOrderAdminController {
   @RequirePermissions(PermissionCode.DELIVERY_VIEW)
   getReadiness(@Param("id") id: string) {
     return this.handoverWorkOrderService.getReadiness(id);
+  }
+
+  @Get("handover-work-orders/:id/registration-exception")
+  @RequirePermissions(
+    PermissionCode.DELIVERY_VIEW,
+    PermissionCode.BUSINESS_EXCEPTION_VIEW
+  )
+  getRegistrationException(@Param("id") id: string) {
+    return this.registrationExceptionService.getState(id);
+  }
+
+  @Post("handover-work-orders/:id/registration-exception/request")
+  @RequirePermissions(
+    PermissionCode.DELIVERY_PREPARE,
+    PermissionCode.BUSINESS_EXCEPTION_REQUEST
+  )
+  requestRegistrationException(
+    @Param("id") id: string,
+    @Body() dto: RequestStage2RegistrationExceptionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.registrationExceptionService.request(
+      id,
+      dto.reason,
+      registrationExceptionContext(request)
+    );
+  }
+
+  @Post("handover-work-orders/:id/registration-exception/:approvalId/decide")
+  @RequirePermissions(
+    PermissionCode.DELIVERY_CONFIRM,
+    PermissionCode.BUSINESS_EXCEPTION_APPROVE
+  )
+  decideRegistrationException(
+    @Param("id") id: string,
+    @Param("approvalId") approvalId: string,
+    @Body() dto: DecideStage2RegistrationExceptionDto,
+    @Req() request: AuthenticatedRequest
+  ) {
+    return this.registrationExceptionService.decide(
+      id,
+      approvalId,
+      dto,
+      registrationExceptionContext(request)
+    );
   }
 
   @Get("handover-work-orders/:id/pdf")
@@ -359,4 +408,27 @@ function setEvidenceFileHeaders(
     response.setHeader("Content-Length", String(file.sizeBytes));
   }
   response.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+}
+
+function registrationExceptionContext(request: AuthenticatedRequest) {
+  const keys: string[] = [];
+  for (let index = 0; index + 1 < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === "idempotency-key") {
+      keys.push(request.rawHeaders[index + 1]!);
+    }
+  }
+  if (keys.length !== 1 || keys[0]!.trim().length === 0) {
+    throw new BadRequestException({
+      code: "STAGE2_REGISTRATION_IDEMPOTENCY_KEY_REQUIRED",
+      message: "Exactly one nonblank Idempotency-Key header is required."
+    });
+  }
+  const userAgent = request.headers["user-agent"];
+  return {
+    actorId: request.user.id,
+    idempotencyKey: keys[0]!,
+    ipAddress: request.ip,
+    permissions: [...request.user.permissions],
+    userAgent: typeof userAgent === "string" ? userAgent : undefined
+  };
 }

@@ -19,6 +19,7 @@ import { FadadaCustomerReadinessService } from "../esign/fadada-customer-readine
 import { PrismaService } from "../prisma/prisma.service";
 import { HandoverWorkOrderService } from "./handover-work-order.service";
 import { STAGE2_HANDOVER_SOURCE_ARTIFACT_VERSION } from "./stage2-handover-source-artifact";
+import { Stage2HandoverRegistrationExceptionService } from "./stage2-handover-registration-exception.service";
 import {
   buildAuthoritativeStage2TaskWhere
 } from "./stage2-handover-task-binding";
@@ -60,6 +61,7 @@ export type Stage2HandoverESignBlockerCode =
   | "SOURCE_TEMPLATE_NOT_ACTIVE"
   | "STAGE1_CONTRACT_NOT_CURRENT"
   | "STAGE1_CONTRACT_NOT_SIGNED"
+  | "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
   | "WORK_ORDER_MISSING"
   | "WORK_ORDER_NOT_READY_FOR_ESIGN"
   | "WORK_ORDER_TERMINAL";
@@ -122,6 +124,8 @@ const BLOCKER_MESSAGES: Record<Stage2HandoverESignBlockerCode, string> = {
   SOURCE_TEMPLATE_NOT_ACTIVE: "The Stage 2 Contract template is not an active delivery handover template.",
   STAGE1_CONTRACT_NOT_CURRENT: "The signed Stage 1 Contract is no longer current for the order.",
   STAGE1_CONTRACT_NOT_SIGNED: "The current Stage 1 subscription Contract is not signed.",
+  VEHICLE_REGISTRATION_DOCUMENT_MISSING:
+    "A vehicle registration document or current approved exception is required.",
   WORK_ORDER_MISSING: "The Stage 2 handover work order is missing.",
   WORK_ORDER_NOT_READY_FOR_ESIGN: "The handover work order is not ready to start Stage 2 signing.",
   WORK_ORDER_TERMINAL: "The handover work order is terminal."
@@ -195,6 +199,7 @@ export class Stage2HandoverESignReadinessService {
     private readonly deliveryEvidenceService: DeliveryEvidenceService,
     private readonly fadadaCustomerReadinessService: FadadaCustomerReadinessService,
     private readonly handoverWorkOrderService: HandoverWorkOrderService,
+    private readonly registrationExceptionService: Stage2HandoverRegistrationExceptionService,
     private readonly configService: ConfigService
   ) {}
 
@@ -231,6 +236,17 @@ export class Stage2HandoverESignReadinessService {
     this.checkOrder(workOrder, addBlocker);
     this.checkWorkOrder(workOrder, addBlocker);
     this.checkFieldFacts(workOrder, addBlocker);
+    try {
+      const registrationGate = await this.registrationExceptionService.getGate(
+        workOrderId,
+        db
+      );
+      if (!registrationGate.allowed) {
+        addBlocker("VEHICLE_REGISTRATION_DOCUMENT_MISSING");
+      }
+    } catch {
+      addBlocker("VEHICLE_REGISTRATION_DOCUMENT_MISSING");
+    }
 
     const handover = workOrder.handover;
     if (!handover || handover.deletedAt) {

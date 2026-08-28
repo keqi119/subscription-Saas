@@ -27,6 +27,7 @@ import {
 } from "react";
 
 import { ActionButton } from "../../../components/action-button";
+import { Stage2RegistrationExceptionActions } from "../../../components/stage2-registration-exception-actions";
 import {
   OrderTransactionGuide,
   type OrderTransactionGuideItem
@@ -2765,7 +2766,11 @@ function FinancePanel({
 
 function Stage2HandoverWorkflowCell({
   actionLoading,
+  canApproveRegistrationException = false,
   canRecoverWorkflow,
+  canRequestRegistrationException = false,
+  canViewRegistrationException = false,
+  currentUserId = null,
   error,
   loading,
   mutationInFlight,
@@ -2777,7 +2782,11 @@ function Stage2HandoverWorkflowCell({
   workOrder
 }: {
   actionLoading: string | null;
+  canApproveRegistrationException?: boolean;
   canRecoverWorkflow: boolean;
+  canRequestRegistrationException?: boolean;
+  canViewRegistrationException?: boolean;
+  currentUserId?: string | null;
   error?: string | null;
   loading: boolean;
   mutationInFlight: boolean;
@@ -2882,6 +2891,20 @@ function Stage2HandoverWorkflowCell({
         </Space>
       ) : null}
       {error ? <Typography.Text type="danger">{error}</Typography.Text> : null}
+      <Stage2RegistrationExceptionActions
+        canApprove={canApproveRegistrationException}
+        canRequest={canRequestRegistrationException}
+        canView={canViewRegistrationException}
+        currentUserId={currentUserId}
+        onChanged={() => onRefresh(workOrder.id)}
+        visible={Boolean(
+          status?.blockers.some(
+            (blocker) =>
+              blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+          )
+        )}
+        workOrderId={workOrder.id}
+      />
       <Space size={[6, 6]} wrap>
         {actionDisplay?.voidAvailable ? (
           <Button
@@ -2937,8 +2960,11 @@ function Stage2HandoverWorkflowCell({
 function Stage2HandoverReviewPanel({
   actionLoading,
   canAssignExternal,
+  canApproveRegistrationException,
   canHandleObjection,
   canRecoverWorkflow,
+  canRequestRegistrationException,
+  canViewRegistrationException,
   createAvailability,
   esignErrors,
   esignLoading,
@@ -2946,6 +2972,7 @@ function Stage2HandoverReviewPanel({
   loading,
   loadState,
   mutationInFlight,
+  currentUserId,
   onAcknowledge,
   onAssignExternal,
   onCreateWorkOrder,
@@ -2960,8 +2987,11 @@ function Stage2HandoverReviewPanel({
 }: {
   actionLoading: string | null;
   canAssignExternal: boolean;
+  canApproveRegistrationException: boolean;
   canHandleObjection: boolean;
   canRecoverWorkflow: boolean;
+  canRequestRegistrationException: boolean;
+  canViewRegistrationException: boolean;
   createAvailability: ReturnType<typeof actionAvailability>;
   esignErrors: Record<string, string | undefined>;
   esignLoading: Record<string, boolean | undefined>;
@@ -2969,6 +2999,7 @@ function Stage2HandoverReviewPanel({
   loading: boolean;
   loadState: HandoverWorkOrdersLoadState;
   mutationInFlight: boolean;
+  currentUserId: string | null;
   onAcknowledge: (id: string) => void;
   onAssignExternal: (id: string) => void;
   onCreateWorkOrder: () => void;
@@ -3013,7 +3044,11 @@ function Stage2HandoverReviewPanel({
       render: (_value, row) => (
         <Stage2HandoverWorkflowCell
           actionLoading={actionLoading}
+          canApproveRegistrationException={canApproveRegistrationException}
           canRecoverWorkflow={canRecoverWorkflow}
+          canRequestRegistrationException={canRequestRegistrationException}
+          canViewRegistrationException={canViewRegistrationException}
+          currentUserId={currentUserId}
           error={esignErrors[row.id]}
           loading={esignLoading[row.id] === true}
           mutationInFlight={mutationInFlight}
@@ -7719,9 +7754,13 @@ function OrderDetailPageContent({ orderId }: { orderId: string }) {
               <Stage2HandoverReviewPanel
                 actionLoading={handoverActionLoading}
                 canAssignExternal={permissions.has("delivery:prepare")}
+                canApproveRegistrationException={permissions.has("business_exception:approve")}
                 canHandleObjection={permissions.has("delivery:confirm")}
                 canRecoverWorkflow={permissions.has("delivery:confirm")}
+                canRequestRegistrationException={permissions.has("business_exception:request")}
+                canViewRegistrationException={permissions.has("business_exception:view")}
                 createAvailability={createHandoverWorkOrderAvailability}
+                currentUserId={me?.user.id ?? null}
                 esignErrors={handoverESignErrors}
                 esignLoading={handoverESignLoading}
                 esignStatuses={handoverESignStatuses}

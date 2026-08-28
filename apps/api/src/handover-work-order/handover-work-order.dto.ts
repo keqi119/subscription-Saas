@@ -1,4 +1,5 @@
 import {
+  BusinessExceptionDecision,
   DeliveryEvidenceMediaType,
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
@@ -164,6 +165,33 @@ export class StartAdminStage2ESignDto extends StartFieldStage2ESignDto {
   @MinLength(3)
   @MaxLength(500)
   reason!: string;
+}
+
+export class RequestStage2RegistrationExceptionDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === "string" ? value.trim().replace(/\s+/g, " ") : value
+  )
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason!: string;
+}
+
+export class DecideStage2RegistrationExceptionDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === "string" ? value.trim().replace(/\s+/g, " ") : value
+  )
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  comment!: string;
+
+  @IsEnum(BusinessExceptionDecision)
+  decision!: BusinessExceptionDecision;
+
+  @IsInt()
+  @Min(0)
+  expectedVersion!: number;
 }
 
 export class OpsReviewDto {

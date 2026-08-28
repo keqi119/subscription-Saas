@@ -83,6 +83,23 @@ describe("Admin Stage 2 handover review order page", () => {
     );
   });
 
+  it("renders the governed vehicle-registration exception entry without exposing internal notes", () => {
+    const source = read(orderPagePath);
+    const component = read(
+      "apps/web/src/components/stage2-registration-exception-actions.tsx"
+    );
+
+    expect(source).toContain("Stage2RegistrationExceptionActions");
+    expect(source).toContain("VEHICLE_REGISTRATION_DOCUMENT_MISSING");
+    expect(source).toContain('permissions.has("business_exception:request")');
+    expect(source).toContain('permissions.has("business_exception:approve")');
+    expect(component).toContain("申请例外审批");
+    expect(component).toContain("批准例外");
+    expect(component).toContain("驳回例外");
+    expect(component).toContain("申请人与审批人不能为同一账号");
+    expect(component).not.toMatch(/decisionComment|objectKey|bucket|internalNote/i);
+  });
+
   it("refreshes order and workflow state after recovery without advancing delivery", () => {
     const source = read(orderPagePath);
     const actionBlock = source.slice(

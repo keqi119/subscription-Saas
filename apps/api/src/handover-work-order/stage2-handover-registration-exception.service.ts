@@ -67,7 +67,10 @@ export class Stage2HandoverRegistrationExceptionService {
     db: RegistrationDatabase = this.prisma
   ): Promise<Stage2RegistrationGate> {
     const authority = await resolveRegistrationAuthority(db, workOrderId);
-    if (authority.documentPresent) {
+    if (
+      authority.documentPresent &&
+      authority.registrationDocumentState === "HANDED_OVER"
+    ) {
       return {
         allowed: true,
         approval: null,
@@ -92,7 +95,7 @@ export class Stage2HandoverRegistrationExceptionService {
     return {
       allowed: Boolean(approval),
       approval,
-      documentPresent: false,
+      documentPresent: authority.documentPresent,
       snapshotHash: authority.snapshotHash
     };
   }
@@ -145,7 +148,10 @@ export class Stage2HandoverRegistrationExceptionService {
               lockedTx,
               workOrderId
             );
-            if (authority.documentPresent) {
+            if (
+              authority.documentPresent &&
+              authority.registrationDocumentState === "HANDED_OVER"
+            ) {
               throw new BadRequestException({
                 code: "STAGE2_REGISTRATION_EXCEPTION_NOT_REQUIRED",
                 message: "A usable vehicle registration document is already present."
@@ -202,14 +208,17 @@ export async function resolveRegistrationAuthority(
   workOrderId: string
 ): Promise<{
   documentPresent: boolean;
+  registrationDocumentState: string | null;
   snapshot: BusinessExceptionSnapshot;
   snapshotHash: string;
 }> {
   const workOrder = await db.vehicleHandoverWorkOrder.findUnique({
     select: {
       id: true,
+      handoverFactRevision: true,
       order: { select: { id: true, vehicleId: true } },
-      orderId: true
+      orderId: true,
+      registrationDocumentState: true
     },
     where: { id: workOrderId }
   });
@@ -247,13 +256,16 @@ export async function resolveRegistrationAuthority(
     activeDocument: projectDocument(activeDocument),
     documentLedgerHead: projectDocument(ledgerHead),
     documentType: VehicleDocumentType.VEHICLE_LICENSE,
+    handoverFactRevision: workOrder.handoverFactRevision,
     orderId: workOrder.orderId,
+    registrationDocumentState: workOrder.registrationDocumentState,
     schemaVersion: 1,
     vehicleId,
     workOrderId: workOrder.id
   };
   return {
     documentPresent: Boolean(activeDocument),
+    registrationDocumentState: workOrder.registrationDocumentState,
     snapshot,
     snapshotHash: hashBusinessExceptionSnapshot(snapshot)
   };

@@ -290,6 +290,7 @@ export class PortalHandoverReviewService {
       evidenceChecklist: toSafeEvidenceChecklist(evidenceChecklist, workOrder.id),
       fieldFacts: {
         accessoryChecklist: workOrder.accessoryChecklist,
+        accessoryItems: workOrder.accessoryItems,
         damageDeclared: workOrder.damageDeclared,
         deliveryLocation: workOrder.deliveryLocation,
         energyLevelText: workOrder.energyLevelText,
@@ -298,8 +299,17 @@ export class PortalHandoverReviewService {
         fieldSubmittedAt: workOrder.fieldSubmittedAt,
         fuelLevelText: workOrder.fuelLevelText,
         handoverMileageKm: workOrder.handoverMileageKm,
+        handoverFactHash: workOrder.handoverFactHash,
+        handoverFactRevision: workOrder.handoverFactRevision,
+        keyState: workOrder.keyState,
         noVisibleDamageDeclared: workOrder.noVisibleDamageDeclared,
-        scheduledAt: workOrder.scheduledAt
+        primaryKeyCount: workOrder.primaryKeyCount,
+        registrationDocumentRemarks: workOrder.registrationDocumentRemarks,
+        registrationDocumentState: workOrder.registrationDocumentState,
+        scheduledAt: workOrder.scheduledAt,
+        spareKeyCount: workOrder.spareKeyCount,
+        vehicleConditionConfirmed: workOrder.vehicleConditionConfirmed,
+        vehicleConditionRemarks: workOrder.vehicleConditionRemarks
       },
       reviewHistory: (workOrder.reviewAttempts ?? []).map((attempt) => ({
         adminStatus: attempt.adminStatus,

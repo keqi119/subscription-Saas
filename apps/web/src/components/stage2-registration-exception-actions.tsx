@@ -102,7 +102,7 @@ export function Stage2RegistrationExceptionActions({
         description={
           <Space orientation="vertical" size={4}>
             <Typography.Text>
-              请先在车辆证照档案补录有效行驶证；确因外部原因暂时无法补录时，可走管理员例外审批。
+              请先在车辆证照档案补录有效行驶证并完成现场交付确认；确因外部原因无法补录或交付时，可走管理员例外审批。
             </Typography.Text>
             {loading && !state ? <Spin size="small" /> : null}
             {latest ? (
@@ -178,7 +178,7 @@ export function Stage2RegistrationExceptionActions({
         <Input.TextArea
           maxLength={1000}
           onChange={(event) => setReason(event.target.value)}
-          placeholder={dialogMode === "REQUEST" ? "说明无法及时补录行驶证的原因" : "填写核验结论和审批意见"}
+          placeholder={dialogMode === "REQUEST" ? "说明无法及时补录或现场交付行驶证的原因" : "填写核验结论和审批意见"}
           rows={4}
           showCount
           value={reason}

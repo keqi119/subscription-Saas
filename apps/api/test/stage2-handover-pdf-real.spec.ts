@@ -36,6 +36,35 @@ type PdfMethod = (
 ) => unknown;
 
 describe("Stage 2 handover PDF real PDFKit geometry", () => {
+  it("renders the four explicit handover confirmation groups and their bound fact hash", async () => {
+    const prototype = PDFDocument.prototype as unknown as Record<"text", PdfMethod>;
+    const originalText = prototype.text;
+    const visibleText: string[] = [];
+    prototype.text = function (...args) {
+      visibleText.push(String(args[0] ?? ""));
+      return Reflect.apply(originalText, this, args);
+    };
+
+    try {
+      const model = createDeterministicStage2PdfModel();
+      const result = await new DeliveryHandoverPdfRendererService().render(model, {
+        evidencePackageUrl: "https://portal.example.test/portal/handover-reviews/explicit-facts"
+      });
+      const text = visibleText.join("\n");
+
+      expect(result.buffer.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+      expect(text).toContain("车况确认（核心条款）");
+      expect(text).toContain("车辆钥匙交付确认");
+      expect(text).toContain("行驶证交付确认");
+      expect(text).toContain("随车附件逐项确认");
+      expect(text).toContain("CHARGING_CABLE");
+      expect(text).toContain(model.fieldFacts.handoverFactHash);
+      expect(text.match(/随车附件逐项确认/g)).toHaveLength(1);
+    } finally {
+      prototype.text = originalText;
+    }
+  });
+
   it("keeps every signing-table border and date row inside the final page when the source page is short", async () => {
     const prototype = PDFDocument.prototype as unknown as Record<
       "addPage" | "rect" | "text",

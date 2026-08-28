@@ -164,7 +164,11 @@ describe("Portal handover review API", () => {
       },
       fieldFacts: {
         accessoryChecklist: { chargingCable: true, keys: 2 },
+        accessoryItems: [
+          { code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }
+        ],
         handoverMileageKm: 28600,
+        keyState: "COMPLETE",
         noVisibleDamageDeclared: true
       },
       readiness: {
@@ -1036,6 +1040,9 @@ function completeReviewWorkOrder(
   return {
     adminReviewStatus: "NONE",
     accessoryChecklist: { chargingCable: true, keys: 2 },
+    accessoryItems: [
+      { code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }
+    ],
     createdAt: harness.now,
     customerConfirmedAt: null,
     customerObjectedAt: null,
@@ -1056,17 +1063,26 @@ function completeReviewWorkOrder(
       status: "DRAFT"
     },
     handoverId: "handover-1",
+    handoverFactHash: `sha256:${"c".repeat(64)}`,
+    handoverFactRevision: 1,
     handoverMileageKm: 28600,
     handoverType: "DELIVERY_OUTBOUND",
     id: "work-order-1",
+    keyState: "COMPLETE",
     metadata: null,
     noVisibleDamageDeclared: true,
     operatorType: "EXTERNAL",
     orderId: harness.orderId,
+    primaryKeyCount: 1,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: "HANDED_OVER",
     reviewVersion: 0,
     scheduledAt: new Date("2026-07-23T02:00:00.000Z"),
+    spareKeyCount: 1,
     status: "CUSTOMER_REVIEWING",
     updatedAt: harness.now,
+    vehicleConditionConfirmed: true,
+    vehicleConditionRemarks: "车况已现场确认",
     vehicleDeliveryId: "delivery-1",
     ...overrides
   };

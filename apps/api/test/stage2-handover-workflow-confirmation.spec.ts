@@ -7,8 +7,23 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/delivery-handover-evidence-manifest";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { buildBoundHandoverFactSnapshot, buildPhysicalHandoverFactSnapshot } from "../src/handover-work-order/handover-explicit-facts";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { Stage2HandoverWorkflowService } from "../src/handover-work-order/stage2-handover-workflow.service";
+
+function createHandoverFactBinding() {
+  const physical = buildPhysicalHandoverFactSnapshot({
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true
+  });
+  const bound = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+  return { handoverFactHash: bound.hash, handoverFacts: bound.snapshot };
+}
 
 describe("Stage 2 workflow customer confirmation", () => {
   it("commits customer confirmation and GENERATE_SOURCE_PDF in one transaction", async () => {
@@ -259,6 +274,7 @@ function createConfirmationHarness(options: {
   const customerId = "customer-1";
   const workOrder = {
     accessoryChecklist: { chargingCable: true, keys: 2 },
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" as const }],
     customerConfirmedAt: null as Date | null,
     customerObjectedAt: null as Date | null,
     customerObjectionReason: null as null | string,
@@ -269,14 +285,29 @@ function createConfirmationHarness(options: {
     fieldSubmittedAt: now,
     fuelLevelText: null,
     handoverId: "handover-1",
+    handoverFactHash: buildPhysicalHandoverFactSnapshot({
+      accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+      handoverFactRevision: 1,
+      keyState: "COMPLETE",
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      vehicleConditionConfirmed: true
+    }).hash,
+    handoverFactRevision: 1,
     handoverMileageKm: 1288,
     id: "work-order-1",
+    keyState: "COMPLETE",
     metadata: null as null | Record<string, unknown>,
     noVisibleDamageDeclared: true,
     orderId: "order-1",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
     reviewVersion: 0,
     scheduledAt: now,
-    status: "CUSTOMER_REVIEWING"
+    spareKeyCount: 1,
+    status: "CUSTOMER_REVIEWING",
+    vehicleConditionConfirmed: true
   };
   const reviewAttempt = {
     attemptNo: 1,
@@ -288,6 +319,7 @@ function createConfirmationHarness(options: {
   };
   const evidenceChecklist = { blockingReasons: [], items: [], ready: true };
   const manifestHash = buildDeliveryHandoverEvidencePackage({
+    ...createHandoverFactBinding(),
     evidenceChecklist,
     handoverId: workOrder.handoverId,
     orderId: workOrder.orderId,

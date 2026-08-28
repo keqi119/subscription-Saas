@@ -101,11 +101,16 @@ describe("field handover API client", () => {
 
     await startFieldHandoverWorkOrder("work-order-1");
     await updateFieldHandoverFacts("work-order-1", {
-      accessoryChecklist: { chargingCable: true, keys: 2 },
+      accessoryItems: [{ code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }],
       damageDeclared: false,
       energyLevelText: "80%",
       handoverMileageKm: 28600,
-      noVisibleDamageDeclared: true
+      keyState: "COMPLETE",
+      noVisibleDamageDeclared: true,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      vehicleConditionConfirmed: true
     });
     await declareFieldHandoverNoVisibleDamage("work-order-1");
     await getFieldHandoverReadiness("work-order-1");

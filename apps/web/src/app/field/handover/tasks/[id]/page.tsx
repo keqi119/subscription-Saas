@@ -24,6 +24,7 @@ import {
   Popconfirm,
   Progress,
   Radio,
+  Select,
   Spin,
   Tag,
   Tooltip,
@@ -150,6 +151,38 @@ export default function FieldHandoverTaskDetailPage() {
   const [detail, setDetail] = useState<FieldHandoverWorkOrderDetail | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [facts, setFacts] = useState<FieldHandoverFactsDraft>({});
+  const addAccessoryItem = () => {
+    setFacts((current) => ({
+      ...current,
+      accessoryItems: [
+        ...(current.accessoryItems ?? []),
+        {
+          code: `ITEM_${Date.now()}_${current.accessoryItems?.length ?? 0}`,
+          name: "",
+          quantity: 1,
+          remark: null,
+          state: "PRESENT"
+        }
+      ]
+    }));
+  };
+  const removeAccessoryItem = (index: number) => {
+    setFacts((current) => ({
+      ...current,
+      accessoryItems: (current.accessoryItems ?? []).filter((_, itemIndex) => itemIndex !== index)
+    }));
+  };
+  const updateAccessoryItem = (
+    index: number,
+    patch: Partial<NonNullable<FieldHandoverFactsDraft["accessoryItems"]>[number]>
+  ) => {
+    setFacts((current) => ({
+      ...current,
+      accessoryItems: (current.accessoryItems ?? []).map((item, itemIndex) =>
+        itemIndex === index ? { ...item, ...patch } : item
+      )
+    }));
+  };
   const [eSignAcknowledged, setESignAcknowledged] = useState(false);
   const [eSignDialogOpen, setESignDialogOpen] = useState(false);
   const [hasActiveUploadRequest, setHasActiveUploadRequest] = useState(false);
@@ -928,19 +961,149 @@ export default function FieldHandoverTaskDetailPage() {
                     value={facts.deliveryLocation ?? ""}
                   />
                 </LabeledControl>
-                <LabeledControl label="随车物品">
-                  <Input.TextArea
-                    autoSize={{ maxRows: 5, minRows: 3 }}
-                    disabled={!captureView.canEdit}
-                    onChange={(event) =>
-                      setFacts((current) => ({
-                        ...current,
-                        accessoryChecklistText: event.target.value
-                      }))
-                    }
-                    placeholder="逐行填写钥匙、充电线、随车工具等"
-                    value={facts.accessoryChecklistText ?? ""}
-                  />
+                <LabeledControl label="车辆车况确认">
+                  <Flex gap={8} vertical>
+                    <Checkbox
+                      checked={facts.vehicleConditionConfirmed === true}
+                      disabled={!captureView.canEdit}
+                      onChange={(event) =>
+                        setFacts((current) => ({
+                          ...current,
+                          vehicleConditionConfirmed: event.target.checked
+                        }))
+                      }
+                    >
+                      已现场核对车辆外观、内饰、仪表及现有损伤，记录与证据一致
+                    </Checkbox>
+                    <Input.TextArea
+                      autoSize={{ maxRows: 4, minRows: 2 }}
+                      disabled={!captureView.canEdit}
+                      onChange={(event) =>
+                        setFacts((current) => ({ ...current, vehicleConditionRemarks: event.target.value }))
+                      }
+                      placeholder="车况补充说明；无异常可填写“无未记录异常”"
+                      value={facts.vehicleConditionRemarks ?? ""}
+                    />
+                  </Flex>
+                </LabeledControl>
+                <LabeledControl label="车辆钥匙确认">
+                  <Flex gap={8} wrap>
+                    <InputNumber
+                      addonBefore="主钥匙"
+                      disabled={!captureView.canEdit}
+                      min={0}
+                      onChange={(value) => setFacts((current) => ({ ...current, primaryKeyCount: value ?? null }))}
+                      value={facts.primaryKeyCount ?? null}
+                    />
+                    <InputNumber
+                      addonBefore="备用钥匙"
+                      disabled={!captureView.canEdit}
+                      min={0}
+                      onChange={(value) => setFacts((current) => ({ ...current, spareKeyCount: value ?? null }))}
+                      value={facts.spareKeyCount ?? null}
+                    />
+                    <Select
+                      disabled={!captureView.canEdit}
+                      onChange={(value) => setFacts((current) => ({ ...current, keyState: value }))}
+                      options={KEY_STATE_OPTIONS}
+                      placeholder="选择钥匙状态"
+                      style={{ minWidth: 180 }}
+                      value={facts.keyState ?? undefined}
+                    />
+                  </Flex>
+                </LabeledControl>
+                <LabeledControl label="行驶证交付确认">
+                  <Flex gap={8} vertical>
+                    <Select
+                      disabled={!captureView.canEdit}
+                      onChange={(value) =>
+                        setFacts((current) => ({ ...current, registrationDocumentState: value }))
+                      }
+                      options={REGISTRATION_DOCUMENT_STATE_OPTIONS}
+                      placeholder="选择行驶证交付状态"
+                      value={facts.registrationDocumentState ?? undefined}
+                    />
+                    <Input.TextArea
+                      autoSize={{ maxRows: 3, minRows: 2 }}
+                      disabled={!captureView.canEdit}
+                      onChange={(event) =>
+                        setFacts((current) => ({ ...current, registrationDocumentRemarks: event.target.value }))
+                      }
+                      placeholder="记录行驶证编号、异常或未能交付原因"
+                      value={facts.registrationDocumentRemarks ?? ""}
+                    />
+                    {facts.registrationDocumentState === "NOT_AVAILABLE" ? (
+                      <Alert
+                        message="行驶证未能交付将阻断签署；后台管理员可提交并审批例外后继续。"
+                        showIcon
+                        type="warning"
+                      />
+                    ) : null}
+                  </Flex>
+                </LabeledControl>
+                <LabeledControl label="随车附件逐项确认">
+                  <Flex gap={8} vertical>
+                    {facts.legacyAccessoryChecklistText && facts.accessoryItemsConfirmed !== true ? (
+                      <Alert
+                        description={facts.legacyAccessoryChecklistText}
+                        message="历史随车物品记录（只读，请按下方新格式重新确认）"
+                        showIcon
+                        type="info"
+                      />
+                    ) : null}
+                    {(facts.accessoryItems ?? []).map((item, index) => (
+                      <Flex gap={8} key={item.code} wrap>
+                        <Input
+                          disabled={!captureView.canEdit}
+                          onChange={(event) => updateAccessoryItem(index, { name: event.target.value })}
+                          placeholder="附件名称"
+                          style={{ minWidth: 180 }}
+                          value={item.name}
+                        />
+                        <InputNumber
+                          addonBefore="数量"
+                          disabled={!captureView.canEdit}
+                          min={0}
+                          onChange={(value) => updateAccessoryItem(index, { quantity: value ?? 0 })}
+                          value={item.quantity}
+                        />
+                        <Select
+                          disabled={!captureView.canEdit}
+                          onChange={(value) => updateAccessoryItem(index, { state: value })}
+                          options={ACCESSORY_STATE_OPTIONS}
+                          style={{ minWidth: 140 }}
+                          value={item.state}
+                        />
+                        <Input
+                          disabled={!captureView.canEdit}
+                          onChange={(event) => updateAccessoryItem(index, { remark: event.target.value })}
+                          placeholder="备注（可选）"
+                          style={{ minWidth: 180 }}
+                          value={item.remark ?? ""}
+                        />
+                        <Button
+                          danger
+                          disabled={!captureView.canEdit}
+                          icon={<DeleteOutlined />}
+                          onClick={() => removeAccessoryItem(index)}
+                        />
+                      </Flex>
+                    ))}
+                    <Flex gap={8} wrap>
+                      <Button disabled={!captureView.canEdit} onClick={addAccessoryItem}>
+                        添加随车附件
+                      </Button>
+                      <Checkbox
+                        checked={facts.accessoryItemsConfirmed === true}
+                        disabled={!captureView.canEdit}
+                        onChange={(event) =>
+                          setFacts((current) => ({ ...current, accessoryItemsConfirmed: event.target.checked }))
+                        }
+                      >
+                        已逐项核对；列表为空时表示确认无其他随车附件
+                      </Checkbox>
+                    </Flex>
+                  </Flex>
                 </LabeledControl>
                 <LabeledControl label="损伤状态">
                   <Radio.Group
@@ -1531,13 +1694,39 @@ const submitBarStyle: CSSProperties = {
 };
 
 const REVIEW_FIELD_LABELS: Record<string, string> = {
-  accessoryChecklist: "随车物品",
+  accessoryItems: "随车附件逐项确认",
   damageDeclared: "损伤状态",
   deliveryLocation: "交接地点",
   energyLevelText: "能源状态",
   fieldNotes: "现场备注",
   fuelLevelText: "油量状态",
   handoverMileageKm: "交接里程",
+  keyState: "钥匙状态",
   noVisibleDamageDeclared: "无可见损伤声明",
-  scheduledAt: "预约时间"
+  primaryKeyCount: "主钥匙数量",
+  registrationDocumentRemarks: "行驶证说明",
+  registrationDocumentState: "行驶证交付状态",
+  scheduledAt: "预约时间",
+  spareKeyCount: "备用钥匙数量",
+  vehicleConditionConfirmed: "车辆车况确认",
+  vehicleConditionRemarks: "车辆车况说明"
 };
+
+const KEY_STATE_OPTIONS = [
+  { label: "完整", value: "COMPLETE" },
+  { label: "部分缺失", value: "PARTIAL" },
+  { label: "全部缺失", value: "MISSING" },
+  { label: "损坏", value: "DAMAGED" }
+];
+
+const REGISTRATION_DOCUMENT_STATE_OPTIONS = [
+  { label: "已交付", value: "HANDED_OVER" },
+  { label: "无法交付", value: "NOT_AVAILABLE" },
+  { label: "已交付但损坏", value: "DAMAGED" }
+];
+
+const ACCESSORY_STATE_OPTIONS = [
+  { label: "在场", value: "PRESENT" },
+  { label: "缺失", value: "MISSING" },
+  { label: "损坏", value: "DAMAGED" }
+];

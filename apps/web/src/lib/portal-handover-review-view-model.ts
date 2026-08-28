@@ -398,11 +398,38 @@ function buildFieldFactRows(detail: PortalHandoverReviewDetail) {
   return [
     { label: "交接里程", value: formatMileage(facts?.handoverMileageKm) },
     { label: "能源/油量", value: joinNonEmpty([facts?.energyLevelText, facts?.fuelLevelText]) || "-" },
-    { label: "随车物品", value: formatAccessoryChecklist(facts?.accessoryChecklist) },
+    { label: "车辆车况确认", value: facts?.vehicleConditionConfirmed === true ? "已确认" : "未确认" },
+    { label: "车辆车况说明", value: facts?.vehicleConditionRemarks || "-" },
+    { label: "主钥匙 / 备用钥匙", value: `${facts?.primaryKeyCount ?? "-"} / ${facts?.spareKeyCount ?? "-"}` },
+    { label: "钥匙状态", value: facts?.keyState || "-" },
+    { label: "行驶证交付状态", value: facts?.registrationDocumentState || "-" },
+    { label: "行驶证说明", value: facts?.registrationDocumentRemarks || "-" },
+    { label: "随车附件逐项确认", value: formatAccessoryItems(facts?.accessoryItems) },
+    { label: "历史随车物品记录", value: formatAccessoryChecklist(facts?.accessoryChecklist) },
     { label: "损伤情况", value: formatDamageState(facts) },
     { label: "现场备注", value: facts?.fieldNotes || "-" },
     { label: "现场提交时间", value: formatDateTime(facts?.fieldSubmittedAt ?? detail.fieldSubmittedAt) }
   ];
+}
+
+function formatAccessoryItems(
+  value: Array<{
+    code: string;
+    name: string;
+    quantity: number;
+    remark?: string | null;
+    state: string;
+  }> | null | undefined
+) {
+  if (!Array.isArray(value)) {
+    return "未按新格式确认";
+  }
+  if (value.length === 0) {
+    return "已确认无其他随车附件";
+  }
+  return value.map((item) =>
+    `${item.name} × ${item.quantity}（${item.state}${item.remark ? `；${item.remark}` : ""}）`
+  ).join("；");
 }
 
 function buildDecisionView(detail: PortalHandoverReviewDetail): PortalHandoverReviewDecisionView {

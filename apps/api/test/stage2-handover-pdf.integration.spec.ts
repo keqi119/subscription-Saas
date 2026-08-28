@@ -5,6 +5,7 @@ import {
   ContractTemplateType,
   ContractVersionStatus,
   DeliveryHandoverStatus,
+  Prisma,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
 import { createHash, randomUUID } from "node:crypto";
@@ -25,6 +26,7 @@ import { buildDeliveryHandoverEvidencePackage } from "../src/delivery-handover/d
 import { DeliveryHandoverPdfRenderModel } from "../src/delivery-handover/delivery-handover-pdf-render-model";
 import { DeliveryHandoverPdfRendererService } from "../src/delivery-handover/delivery-handover-pdf-renderer.service";
 import { HandoverWorkOrderService } from "../src/handover-work-order/handover-work-order.service";
+import { buildBoundHandoverFactSnapshot, buildPhysicalHandoverFactSnapshot } from "../src/handover-work-order/handover-explicit-facts";
 import { Stage2HandoverWorkflowRepository } from "../src/handover-work-order/stage2-handover-workflow.repository";
 import { PrismaService } from "../src/prisma/prisma.service";
 import { createDeterministicStage2PdfModel } from "./stage2-handover-pdf-real-render.fixture";
@@ -32,6 +34,20 @@ import { createDeterministicStage2PdfModel } from "./stage2-handover-pdf-real-re
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgresql://subscription:subscription@127.0.0.1:5432/subscription_saas?schema=public";
+
+function createHandoverFactBinding() {
+  const physical = buildPhysicalHandoverFactSnapshot({
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true
+  });
+  const bound = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+  return { handoverFactHash: bound.hash, handoverFacts: bound.snapshot };
+}
 
 describe("Stage 2 source PDF PostgreSQL finalization", () => {
   let prisma: PrismaService;
@@ -254,6 +270,7 @@ async function createDatabaseFixture(prisma: PrismaService) {
     ready: true
   };
   const evidencePackage = buildDeliveryHandoverEvidencePackage({
+    ...createHandoverFactBinding(),
     evidenceChecklist,
     handoverId,
     orderId,
@@ -350,6 +367,7 @@ async function createDatabaseFixture(prisma: PrismaService) {
   await prisma.vehicleHandoverWorkOrder.create({
     data: {
       accessoryChecklist: { keys: 2 },
+      accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
       customerConfirmedAt: new Date(),
       damageDeclared: false,
       deliveryLocation: "Stage 2 integration center",
@@ -357,9 +375,17 @@ async function createDatabaseFixture(prisma: PrismaService) {
       fieldSubmittedAt: new Date(),
       handoverId,
       handoverMileageKm: 1200,
+      handoverFactHash: evidencePackage.manifest.handoverFacts.physicalFactHash,
+      handoverFactRevision: 1,
+      handoverFactSnapshot: evidencePackage.manifest.handoverFacts as unknown as Prisma.InputJsonValue,
       handoverType: "DELIVERY_OUTBOUND",
+      keyState: "COMPLETE",
       id: workOrderId,
       noVisibleDamageDeclared: true,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      vehicleConditionConfirmed: true,
       orderId,
       status: "CUSTOMER_CONFIRMED"
     }

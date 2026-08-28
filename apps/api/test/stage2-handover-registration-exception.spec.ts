@@ -41,6 +41,30 @@ describe("Stage2HandoverRegistrationExceptionService", () => {
     expect(harness.prisma.businessExceptionApproval.findFirst).not.toHaveBeenCalled();
   });
 
+  it("requires an exact approval when the physical registration document was not handed over", async () => {
+    const harness = createHarness({
+      documents: [registrationDocument({ objectKey: "vehicle/license-v1.pdf" })],
+      registrationDocumentState: "NOT_AVAILABLE"
+    });
+
+    await expect(harness.service.getGate(harness.workOrderId)).resolves.toMatchObject({
+      allowed: false,
+      approval: null,
+      documentPresent: true
+    });
+    const authority = await resolveRegistrationAuthority(
+      harness.prisma as never,
+      harness.workOrderId
+    );
+    harness.state.approvedSnapshotHash = authority.snapshotHash;
+
+    await expect(harness.service.getGate(harness.workOrderId)).resolves.toMatchObject({
+      allowed: true,
+      approval: { id: "approval-1" },
+      documentPresent: true
+    });
+  });
+
   it("allows only an approval bound to the exact current document-ledger snapshot", async () => {
     const harness = createHarness({
       documents: [
@@ -154,6 +178,7 @@ describe("Stage2HandoverRegistrationExceptionService", () => {
 
 function createHarness(overrides: {
   documents?: ReturnType<typeof registrationDocument>[];
+  registrationDocumentState?: "HANDED_OVER" | "NOT_AVAILABLE";
   resolveRequestAuthority?: boolean;
 } = {}) {
   const workOrderId = "00000000-0000-4000-8000-000000000101";
@@ -196,12 +221,15 @@ function createHarness(overrides: {
     },
     vehicleHandoverWorkOrder: {
       findUnique: vi.fn(async () => ({
+        handoverFactRevision: 1,
         id: workOrderId,
         order: {
           id: "00000000-0000-4000-8000-000000000102",
           vehicleId: "00000000-0000-4000-8000-000000000103"
         },
-        orderId: "00000000-0000-4000-8000-000000000102"
+        orderId: "00000000-0000-4000-8000-000000000102",
+        registrationDocumentState:
+          overrides.registrationDocumentState ?? "HANDED_OVER"
       }))
     }
   };

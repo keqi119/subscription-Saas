@@ -827,6 +827,7 @@ interface ReadyState {
 function readyWorkOrder() {
   return {
     accessoryChecklist: [{ key: "spare-key", checked: true }],
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
     adminReviewStatus: VehicleHandoverAdminReviewStatus.NONE,
     customerConfirmedAt: NOW,
     customerObjectedAt: null,
@@ -881,10 +882,16 @@ function readyWorkOrder() {
       status: DeliveryHandoverStatus.SOURCE_GENERATED
     },
     handoverId: "handover-1",
+    handoverFactHash: `sha256:${"c".repeat(64)}`,
+    handoverFactRevision: 1,
     handoverMileageKm: 28000,
     fieldSubmittedAt: NOW,
     id: "work-order-1",
+    keyState: "COMPLETE",
     noVisibleDamageDeclared: true,
+    primaryKeyCount: 1,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: "HANDED_OVER",
     order: {
       actualDeliveryAt: null,
       contractId: "contract-stage1-1",
@@ -895,7 +902,10 @@ function readyWorkOrder() {
     },
     orderId: "order-1",
     scheduledAt: new Date("2026-07-27T02:00:00.000Z"),
-    status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED
+    spareKeyCount: 1,
+    status: VehicleHandoverWorkOrderStatus.CUSTOMER_CONFIRMED,
+    vehicleConditionConfirmed: true,
+    vehicleConditionRemarks: "No unrecorded damage"
   };
 }
 
@@ -962,15 +972,24 @@ function matchesReadinessTaskWhere(
 
 function readyFieldFactsSnapshot() {
   return {
-    accessoryChecklist: [{ checked: true, key: "spare-key" }],
+    accessoryItems: [{ code: "CHARGING_CABLE", name: "Charging cable", quantity: 1, state: "PRESENT" }],
     damageDeclared: false,
     deliveryLocation: "garage bay A",
     energyLevelText: "80%",
     fieldNotes: "ready for delivery",
     fuelLevelText: null,
     handoverMileageKm: 28000,
+    handoverFactHash: `sha256:${"c".repeat(64)}`,
+    handoverFactRevision: 1,
+    keyState: "COMPLETE",
     noVisibleDamageDeclared: true,
-    scheduledAt: "2026-07-27T02:00:00.000Z"
+    primaryKeyCount: 1,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: "HANDED_OVER",
+    scheduledAt: "2026-07-27T02:00:00.000Z",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true,
+    vehicleConditionRemarks: "No unrecorded damage"
   };
 }
 

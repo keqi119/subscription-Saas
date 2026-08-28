@@ -484,13 +484,18 @@ function createStage2HandoverE2EHarness() {
         workOrderId,
         FIELD_OPERATOR_PHONE,
         {
-          accessoryChecklist: { chargingCable: true, keys: 2, reflectiveVest: true },
+          accessoryItems: [{ code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" }],
           damageDeclared: false,
           deliveryLocation: "本地交付测试点",
           energyLevelText: "80%",
           fieldNotes: "本地合成现场资料已提交",
           handoverMileageKm: 28600,
-          noVisibleDamageDeclared: true
+          keyState: "COMPLETE",
+          noVisibleDamageDeclared: true,
+          primaryKeyCount: 1,
+          registrationDocumentState: "HANDED_OVER",
+          spareKeyCount: 1,
+          vehicleConditionConfirmed: true
         },
         "field-session-local"
       );

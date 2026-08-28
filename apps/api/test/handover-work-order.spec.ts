@@ -27,9 +27,36 @@ import {
   HandoverWorkOrderService
 } from "../src/handover-work-order/handover-work-order.service";
 import {
+  buildBoundHandoverFactSnapshot,
+  buildPhysicalHandoverFactSnapshot
+} from "../src/handover-work-order/handover-explicit-facts";
+import {
   SubscriptionClosureRepository,
   type SubscriptionClosureAuthorityRequirement
 } from "../src/subscription-closure/subscription-closure.repository";
+
+function explicitAccessoryItems() {
+  return [
+    { code: "CHARGING_CABLE", name: "充电线", quantity: 1, state: "PRESENT" as const }
+  ];
+}
+
+function explicitHandoverFacts() {
+  return {
+    accessoryItems: explicitAccessoryItems(),
+    keyState: "COMPLETE",
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    vehicleConditionConfirmed: true
+  } as const;
+}
+
+function handoverFactBinding(source: Record<string, unknown>) {
+  const physical = buildPhysicalHandoverFactSnapshot(source);
+  const bound = buildBoundHandoverFactSnapshot(physical.snapshot, null);
+  return { handoverFactHash: bound.hash, handoverFacts: bound.snapshot };
+}
 
 describe("Field handover workflow projection", () => {
   const base = {
@@ -1499,6 +1526,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       accessoryChecklist: { chargingCable: true, keys: 2 },
+      ...explicitHandoverFacts(),
       deliveryLocation: "上海市测试交付点",
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
@@ -1570,11 +1598,16 @@ describe("HandoverWorkOrderService", () => {
       "work-order-visible",
       "13800000000",
       {
-        accessoryChecklist: { chargingCable: true, keys: 2 },
+        accessoryItems: explicitAccessoryItems(),
         damageDeclared: false,
         energyLevelText: "80%",
         handoverMileageKm: 28600,
-        noVisibleDamageDeclared: true
+        keyState: "COMPLETE",
+        noVisibleDamageDeclared: true,
+        primaryKeyCount: 1,
+        registrationDocumentState: "HANDED_OVER",
+        spareKeyCount: 1,
+        vehicleConditionConfirmed: true
       },
       "field-session-1"
     );
@@ -1587,7 +1620,9 @@ describe("HandoverWorkOrderService", () => {
       expect.any(Date)
     );
     expect(updated).toMatchObject({
-      accessoryChecklist: { chargingCable: true, keys: 2 },
+      accessoryItems: explicitAccessoryItems(),
+      handoverFactHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      handoverFactRevision: 1,
       energyLevelText: "80%",
       handoverMileageKm: 28600,
       noVisibleDamageDeclared: true
@@ -2370,6 +2405,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       accessoryChecklist: { chargingCable: true, keys: 2 },
+      ...explicitHandoverFacts(),
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
       fieldOperatorPhone: "13800000000",
@@ -2418,6 +2454,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       accessoryChecklist: { chargingCable: true, keys: 2 },
+      ...explicitHandoverFacts(),
       damageDeclared: true,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
@@ -2441,6 +2478,7 @@ describe("HandoverWorkOrderService", () => {
       ...baseWorkOrder(harness),
       accessTokenExpiresAt: new Date("2026-07-28T08:00:00.000Z"),
       accessoryChecklist: { chargingCable: true, keys: 2 },
+      ...explicitHandoverFacts(),
       damageDeclared: false,
       energyLevelText: "80%",
       externalOperatorPhone: "13800000000",
@@ -2483,11 +2521,16 @@ describe("HandoverWorkOrderService", () => {
     await expect(harness.service.submitEvidence(draft.id, harness.internalUser.id)).rejects.toThrow(BadRequestException);
 
     await harness.service.updateFieldFacts(draft.id, {
-      accessoryChecklist: { chargingCable: true, keys: 2 },
+      accessoryItems: explicitAccessoryItems(),
       deliveryLocation: "上海市测试交付点",
       energyLevelText: "80%",
       handoverMileageKm: 28500,
-      noVisibleDamageDeclared: true
+      keyState: "COMPLETE",
+      noVisibleDamageDeclared: true,
+      primaryKeyCount: 1,
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: 1,
+      vehicleConditionConfirmed: true
     }, harness.internalUser.id);
 
     harness.evidenceService.setFieldComplete(false);
@@ -2659,6 +2702,7 @@ describe("HandoverWorkOrderService", () => {
     );
 
     const manifestHash = buildDeliveryHandoverEvidencePackage({
+      ...handoverFactBinding(harness.state.workOrders[0]!),
       evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
       handoverId: "handover-1",
       orderId: harness.orderId,
@@ -3202,11 +3246,17 @@ function createReadyForCustomerReviewHarness() {
   harness.state.workOrders.push({
     ...baseWorkOrder(harness),
     accessoryChecklist: { chargingCable: true, keys: 2 },
+    accessoryItems: explicitAccessoryItems(),
     energyLevelText: "80%",
     fieldSubmittedAt: harness.now,
     handoverMileageKm: 28500,
+    keyState: "COMPLETE",
     noVisibleDamageDeclared: true,
-    status: "CUSTOMER_REVIEWING"
+    primaryKeyCount: 1,
+    registrationDocumentState: "HANDED_OVER",
+    spareKeyCount: 1,
+    status: "CUSTOMER_REVIEWING",
+    vehicleConditionConfirmed: true
   });
   return harness;
 }
@@ -3218,6 +3268,7 @@ function createConfirmedWorkOrderHarness() {
     status: "CUSTOMER_CONFIRMED"
   });
   const evidencePackage = buildDeliveryHandoverEvidencePackage({
+    ...handoverFactBinding(harness.state.workOrders[0]!),
     evidenceChecklist: harness.evidenceService.getCurrentChecklist(),
     handoverId: "handover-1",
     orderId: harness.orderId,
@@ -3266,6 +3317,7 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     accessTokenRevokedAt: null,
     adminReviewStatus: "NONE",
     accessoryChecklist: null,
+    accessoryItems: null,
     assignedInternalUserId: null,
     createdAt: harness.now,
     customerConfirmedAt: null,
@@ -3287,9 +3339,13 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     firstAccessedAt: null,
     fuelLevelText: null,
     handoverId: "handover-1",
+    handoverFactHash: null,
+    handoverFactRevision: 0,
+    handoverFactSnapshot: null,
     handoverMileageKm: null,
     handoverType: "DELIVERY_OUTBOUND",
     id: "work-order-1",
+    keyState: null,
     lastAccessedAt: null,
     metadata: null,
     noVisibleDamageDeclared: null,
@@ -3299,10 +3355,16 @@ function baseWorkOrder(harness: ReturnType<typeof createHandoverWorkOrderHarness
     opsReviewedAt: null,
     opsReviewedBy: null,
     orderId: harness.orderId,
+    primaryKeyCount: null,
+    registrationDocumentRemarks: null,
+    registrationDocumentState: null,
     reviewVersion: 0,
     scheduledAt: null,
+    spareKeyCount: null,
     status: "DRAFT",
     updatedAt: harness.now,
+    vehicleConditionConfirmed: null,
+    vehicleConditionRemarks: null,
     vehicleDeliveryId: "delivery-1"
   };
 }
@@ -3869,8 +3931,7 @@ function createHandoverWorkOrderHarness() {
     orderId,
     prisma,
     service,
-    state
-    ,
+    state,
     storageService,
     workflowRepository
   };

@@ -32,7 +32,7 @@ export function createDeterministicStage2PdfModel(
       files: [],
       manifestHash: identity.manifestHash ?? `sha256:${"a".repeat(64)}`,
       packageId: identity.handoverId ?? "handover-deterministic-1",
-      schemaVersion: 1,
+      schemaVersion: 2,
       stats: {
         fileCount: 0,
         photoCount: 0,
@@ -50,13 +50,24 @@ export function createDeterministicStage2PdfModel(
       violationDeposit: "0"
     },
     fieldFacts: {
-      accessoryChecklistText: "keys, tools",
+      accessoryItems: [
+        { code: "CHARGING_CABLE", name: "Charging cable", quantity: "1", remark: "-", state: "PRESENT" }
+      ],
       damageDescription: "-",
       damageStatus: "NO_VISIBLE_DAMAGE",
       energyLevelText: "80%",
       fieldNotes: "ready",
       fuelLevelText: "-",
-      handoverMileageKm: "1200 km"
+      handoverMileageKm: "1200 km",
+      handoverFactHash: `sha256:${"b".repeat(64)}`,
+      handoverFactRevision: "1",
+      keyState: "COMPLETE",
+      primaryKeyCount: "1",
+      registrationDocumentRemarks: "-",
+      registrationDocumentState: "HANDED_OVER",
+      spareKeyCount: "1",
+      vehicleConditionConfirmed: "CONFIRMED",
+      vehicleConditionRemarks: "No unrecorded damage"
     },
     generatedAt: identity.generatedAt ?? "2026-07-25T10:00:00.000Z",
     handoverDate: "2026-07-25 08:00:00",

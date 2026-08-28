@@ -4,7 +4,7 @@ import {
   VehicleHandoverWorkflowJobStatus,
   VehicleHandoverWorkflowJobType
 } from "@prisma/client";
-import { Transform } from "class-transformer";
+import { Transform, Type } from "class-transformer";
 import {
   ArrayMaxSize,
   Equals,
@@ -13,28 +13,35 @@ import {
   IsEnum,
   IsIn,
   IsInt,
-  IsObject,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
   Matches,
   Min,
-  MinLength
+  MinLength,
+  ValidateNested
 } from "class-validator";
 
 import type { HandoverFieldFactKey } from "./handover-work-order.service";
 
 const HANDOVER_FIELD_FACT_KEYS: HandoverFieldFactKey[] = [
-  "accessoryChecklist",
+  "accessoryItems",
   "damageDeclared",
   "deliveryLocation",
   "energyLevelText",
   "fieldNotes",
   "fuelLevelText",
   "handoverMileageKm",
+  "keyState",
   "noVisibleDamageDeclared",
-  "scheduledAt"
+  "primaryKeyCount",
+  "registrationDocumentRemarks",
+  "registrationDocumentState",
+  "scheduledAt",
+  "spareKeyCount",
+  "vehicleConditionConfirmed",
+  "vehicleConditionRemarks"
 ];
 
 export class CreateHandoverWorkOrderDto {
@@ -64,10 +71,35 @@ export class AssignExternalOperatorDto {
   phone!: string;
 }
 
+export class HandoverAccessoryItemDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{1,64}$/)
+  code!: string;
+
+  @IsString()
+  @MaxLength(128)
+  name!: string;
+
+  @IsInt()
+  @Min(0)
+  quantity!: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  remark?: string;
+
+  @IsIn(["PRESENT", "MISSING", "DAMAGED"])
+  state!: "PRESENT" | "MISSING" | "DAMAGED";
+}
+
 export class UpdateHandoverFieldFactsDto {
   @IsOptional()
-  @IsObject()
-  accessoryChecklist?: Record<string, unknown>;
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => HandoverAccessoryItemDto)
+  accessoryItems?: HandoverAccessoryItemDto[];
 
   @IsOptional()
   @IsBoolean()
@@ -95,12 +127,44 @@ export class UpdateHandoverFieldFactsDto {
   handoverMileageKm?: number;
 
   @IsOptional()
+  @IsIn(["COMPLETE", "PARTIAL", "MISSING", "DAMAGED"])
+  keyState?: "COMPLETE" | "PARTIAL" | "MISSING" | "DAMAGED";
+
+  @IsOptional()
   @IsBoolean()
   noVisibleDamageDeclared?: boolean;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  primaryKeyCount?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  registrationDocumentRemarks?: string;
+
+  @IsOptional()
+  @IsIn(["HANDED_OVER", "NOT_AVAILABLE", "DAMAGED"])
+  registrationDocumentState?: "HANDED_OVER" | "NOT_AVAILABLE" | "DAMAGED";
+
+  @IsOptional()
   @IsString()
   scheduledAt?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  spareKeyCount?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  vehicleConditionConfirmed?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  vehicleConditionRemarks?: string;
 }
 
 export class AttachFieldEvidenceFileDto {

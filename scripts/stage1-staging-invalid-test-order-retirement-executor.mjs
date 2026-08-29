@@ -36,12 +36,22 @@ const SNAPSHOT_RELATIONS = Object.freeze([
   "receivable_bill",
   "renewal_consideration",
   "revenue_right_assignment",
+  "role",
   "service_case",
   "subscription_automation_job",
   "subscription_change_order",
   "subscription_closure_case",
   "subscription_contract_segment",
+  "subscription_journey",
+  "subscription_journey_event",
+  "subscription_journey_exception",
+  "subscription_journey_job",
+  "subscription_journey_manual_task",
+  "subscription_journey_outbox",
+  "subscription_journey_step",
   "subscription_order",
+  "user",
+  "user_role",
   "vehicle",
   "vehicle_cost_ledger_entry",
   "vehicle_delivery",
@@ -267,6 +277,53 @@ export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { 
     },
     where: { id: operatorId }
   });
+  const journey = await db.subscriptionJourney.findUnique({
+    select: {
+      currentStepCode: true,
+      currentStepStatus: true,
+      events: {
+        orderBy: { id: "asc" },
+        select: { eventType: true, id: true, sequence: true }
+      },
+      exceptions: {
+        orderBy: { id: "asc" },
+        select: {
+          code: true,
+          id: true,
+          jobId: true,
+          retryable: true,
+          status: true,
+          stepId: true
+        }
+      },
+      id: true,
+      jobs: {
+        orderBy: { id: "asc" },
+        select: { id: true, jobType: true, status: true, stepId: true }
+      },
+      manualTasks: {
+        orderBy: { id: "asc" },
+        select: { id: true, status: true, stepId: true, taskType: true }
+      },
+      orderId: true,
+      outboxRows: {
+        orderBy: { id: "asc" },
+        select: {
+          aggregateId: true,
+          aggregateType: true,
+          eventType: true,
+          id: true,
+          status: true
+        }
+      },
+      status: true,
+      steps: {
+        orderBy: { id: "asc" },
+        select: { code: true, id: true, status: true }
+      }
+    },
+    where: { orderId: TARGET.orderId }
+  });
   const vehicleDeliveries = await db.vehicleDelivery.findMany({
     orderBy: { id: "asc" },
     select: { deliveredAt: true, deliveryStatus: true, id: true },
@@ -437,6 +494,7 @@ export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { 
       handoverWorkOrders,
       handoverWorkflowJobs
     },
+    journey,
     lease,
     operator: normalizeOperator(operatorRow),
     order,

@@ -257,6 +257,25 @@ test("requires one active ADMIN operator and terminal background evidence", () =
       ({ code }) => code === "NONTERMINAL_HANDOVER_WORK_ORDER"
     )
   );
+
+  const journeyCases = [
+    ["status", "RUNNING", "NONTERMINAL_SUBSCRIPTION_JOURNEY"],
+    ["steps", "RUNNING", "NONTERMINAL_SUBSCRIPTION_JOURNEY_STEP"],
+    ["jobs", "PENDING", "NONTERMINAL_SUBSCRIPTION_JOURNEY_JOB"],
+    ["manualTasks", "OPEN", "NONTERMINAL_SUBSCRIPTION_JOURNEY_MANUAL_TASK"],
+    ["exceptions", "ACKNOWLEDGED", "UNRESOLVED_SUBSCRIPTION_JOURNEY_EXCEPTION"],
+    ["outboxRows", "PROCESSING", "NONTERMINAL_SUBSCRIPTION_JOURNEY_OUTBOX"]
+  ];
+  for (const [field, status, blockerCode] of journeyCases) {
+    const pendingJourney = cleanSnapshot();
+    pendingJourney.journey = terminalJourney();
+    if (field === "status") pendingJourney.journey.status = status;
+    else pendingJourney.journey[field][0].status = status;
+    assert.ok(
+      classify(pendingJourney).blockers.some(({ code }) => code === blockerCode),
+      `${field} must fail closed`
+    );
+  }
 });
 
 test("evidence digest is deterministic and public classification is credential safe", () => {
@@ -480,6 +499,7 @@ function cleanSnapshot(overrides = {}) {
         }
       ]
     },
+    journey: null,
     lease: {
       activatedAt: "2026-07-31T03:01:04.000Z",
       deletedAt: null,
@@ -526,6 +546,65 @@ function cleanSnapshot(overrides = {}) {
     },
     vehicleDeliveries: [],
     ...overrides
+  };
+}
+
+function terminalJourney() {
+  return {
+    currentStepCode: "AUTHORITATIVE_ACTIVATION",
+    currentStepStatus: "COMPLETED",
+    events: [
+      {
+        eventType: "JOURNEY_COMPLETED",
+        id: "journey-event-1",
+        sequence: 12
+      }
+    ],
+    exceptions: [
+      {
+        code: "REVIEW_RESOLVED",
+        id: "journey-exception-1",
+        jobId: null,
+        retryable: false,
+        status: "RESOLVED",
+        stepId: "journey-step-1"
+      }
+    ],
+    id: "journey-1",
+    jobs: [
+      {
+        id: "journey-job-1",
+        jobType: "ACTIVATE_SUBSCRIPTION",
+        status: "COMPLETED",
+        stepId: "journey-step-1"
+      }
+    ],
+    manualTasks: [
+      {
+        id: "journey-task-1",
+        status: "COMPLETED",
+        stepId: "journey-step-1",
+        taskType: "DELIVERY_EVIDENCE_DECISION"
+      }
+    ],
+    orderId: selectors.orderId,
+    outboxRows: [
+      {
+        aggregateId: "journey-1",
+        aggregateType: "SUBSCRIPTION_JOURNEY",
+        eventType: "JOURNEY_COMPLETED",
+        id: "journey-outbox-1",
+        status: "DELIVERED"
+      }
+    ],
+    status: "COMPLETED",
+    steps: [
+      {
+        code: "AUTHORITATIVE_ACTIVATION",
+        id: "journey-step-1",
+        status: "COMPLETED"
+      }
+    ]
   };
 }
 

@@ -2767,6 +2767,22 @@ describe("HandoverWorkOrderService", () => {
     }
   });
 
+  it("blocks ops review pending when the parent order is cancelled", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    Object.assign(harness.state.workOrders[0]!, {
+      fieldCompletedAt: harness.now,
+      status: "FIELD_COMPLETED"
+    });
+    harness.state.order.orderStatus = "CANCELLED";
+
+    await expect(
+      harness.service.markOpsReviewPending("work-order-1", harness.admin.id)
+    ).rejects.toThrow("已取消或不存在的订单不能重新推进交付 Journey。");
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).not.toHaveBeenCalled();
+  });
+
   it("publishes readiness and decides the exact aggregate review in the same transaction", async () => {
     const harness = createReadyForCustomerReviewHarness();
     harness.state.vehicleInspection = null;
@@ -2861,6 +2877,24 @@ describe("HandoverWorkOrderService", () => {
         (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
       )
     ).toHaveLength(1);
+  });
+
+  it("blocks archived convergence when the parent order is cancelled", async () => {
+    const harness = createConfirmedWorkOrderHarness();
+    setCompleteArchivedHandover(harness);
+    harness.state.order.orderStatus = "CANCELLED";
+
+    await expect(
+      harness.service.reconcileArchivedStage2JourneyEvidence("work-order-1")
+    ).rejects.toThrow("已取消或不存在的订单不能重新推进交付 Journey。");
+    expect(
+      harness.evidenceService.recordJourneyEvidenceReady
+    ).not.toHaveBeenCalled();
+    expect(
+      harness.state.events.filter(
+        (event) => event.eventType === VehicleHandoverEventType.OPS_REVIEW_UPDATED
+      )
+    ).toHaveLength(0);
   });
 
   it.each([
@@ -2972,6 +3006,8 @@ describe("HandoverWorkOrderService", () => {
         handoverType: "DELIVERY_OUTBOUND",
         order: {
           is: {
+            deletedAt: null,
+            orderStatus: { not: "CANCELLED" },
             subscriptionJourney: {
               is: {
                 currentStepCode: "HANDOVER_AND_STAGE2_CREATION",

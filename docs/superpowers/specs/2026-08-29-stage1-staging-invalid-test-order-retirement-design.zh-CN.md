@@ -136,6 +136,8 @@ node scripts/stage1-staging-invalid-test-order-retirement.mjs \
 
 已有交接工单只允许 `FIELD_COMPLETED/OPS_REVIEWED/VOIDED/CANCELLED`；交接 workflow job 只允许 `COMPLETED/CANCELLED`。`DEAD_LETTER` 仍可通过恢复入口重试，因此不是终态，必须先受管取消或隔离，不能随订单一起退役。
 
+若目标订单存在 `SubscriptionJourney`，Journey 本身及当前步骤必须为终态；全部 step、job、manual task、exception、outbox 也必须分别处于 `COMPLETED/SKIPPED/CANCELLED`、`COMPLETED/CANCELLED`、`COMPLETED/CANCELLED`、`RESOLVED`、`DELIVERED/CANCELLED`。完整 Journey 图只进入脱敏摘要，不被本工具修改；任一可恢复或待处理事实都会阻断 apply。apply 同时锁定 Journey、step、job、manual task、event、exception、outbox 七张关系表。
+
 ### 6.3 分类结果
 
 分类器只返回三种顶层结果：
@@ -197,6 +199,7 @@ apply 使用单个 Serializable 事务：
 - Stage 1C 周期补录只分类 `ACTIVE/PENDING_RETURN/COMPLETED/TERMINATED` 或具有退车事实的订单，不会再包含该订单；
 - 合同变更 bootstrap 只处理 `ACTIVE` 订单，不会再包含该订单；
 - BillingSchedule 为 `CANCELLED` 且没有自动任务，不会再被账单 worker 执行；
+- 交接运营复核入口在父订单已 `CANCELLED` 时硬拒绝，既有 `FIELD_COMPLETED/OPS_REVIEWED` 工单不能在退役后重新写入 Journey 信号；
 - 车辆为 `AVAILABLE`，可重新进入正常库存分配校验。
 
 这使方案 C 是业务范围退出，而不是只在页面上隐藏异常。
@@ -265,6 +268,7 @@ apply 使用单个 Serializable 事务：
 - dry-run 使用只读事务且零写入；
 - apply 使用 Serializable、advisory lock、快照关系表锁和目标行锁；
 - 真实 PostgreSQL 双并发只允许一笔提交；竞争事务可以 `40001` 回滚，随后 replay 必须为 `UNCHANGED`；
+- 真实 PostgreSQL 集成测试只读取专用 `STAGE1_RETIREMENT_TEST_DATABASE_URL`，且数据库名必须为固定测试名或 `subscription_saas_retirement_verify_` 前缀；禁止继承 Staging/Production 的 `DATABASE_URL`；
 - apply 事务内重新分类并拒绝陈旧摘要；
 - 四个状态转换、时间、版本、操作人和审计一致；
 - 任一步骤注入失败时全部回滚；

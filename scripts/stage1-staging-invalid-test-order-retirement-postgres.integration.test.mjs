@@ -14,8 +14,33 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const requireFromApi = createRequire(resolve(repoRoot, "apps/api/package.json"));
 const { Pool } = requireFromApi("pg");
 const operatorId = "11111111-1111-4111-8111-111111111111";
-const databaseUrl = process.env.DATABASE_URL?.trim() ?? null;
+const databaseUrl = process.env.STAGE1_RETIREMENT_TEST_DATABASE_URL?.trim() ?? null;
+if (databaseUrl) assertSafeTestDatabaseUrl(databaseUrl);
 const integrationTest = databaseUrl ? test : test.skip;
+
+test("integration database guard only accepts explicitly named test databases", () => {
+  for (const database of [
+    "subscription_saas_test",
+    "subscription_saas_codex",
+    "subscription_saas_retirement_verify_20260829"
+  ]) {
+    assert.doesNotThrow(() =>
+      assertSafeTestDatabaseUrl(
+        `postgresql://postgres:postgres@localhost:5432/${database}?schema=public`
+      )
+    );
+  }
+
+  for (const database of ["subscription_saas_staging", "subscription_saas", "postgres"]) {
+    assert.throws(
+      () =>
+        assertSafeTestDatabaseUrl(
+          `postgresql://postgres:postgres@localhost:5432/${database}?schema=public`
+        ),
+      /STAGE1_RETIREMENT_INTEGRATION_TEST_DATABASE_REQUIRED/
+    );
+  }
+});
 
 integrationTest(
   "real PostgreSQL serializes apply/replay and rolls back audit failure",
@@ -327,6 +352,17 @@ function emptyBlockingCounts() {
 function quoteIdentifier(value) {
   if (!/^[a-z0-9_]+$/.test(value)) throw new Error("INVALID_TEST_SCHEMA");
   return `"${value}"`;
+}
+
+function assertSafeTestDatabaseUrl(value) {
+  const database = decodeURIComponent(new URL(value).pathname.slice(1));
+  if (
+    database !== "subscription_saas_test" &&
+    database !== "subscription_saas_codex" &&
+    !database.startsWith("subscription_saas_retirement_verify_")
+  ) {
+    throw new Error("STAGE1_RETIREMENT_INTEGRATION_TEST_DATABASE_REQUIRED");
+  }
 }
 
 function iso(value) {

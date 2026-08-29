@@ -112,6 +112,7 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
     cleanSnapshot().evidenceReferences.evidenceFiles
   );
   assert.deepEqual(snapshot.blockingCounts, emptyBlockingCounts());
+  assert.deepEqual(snapshot.journey, cleanSnapshot().journey);
 
   const orderRead = calls.find(
     ([model, method]) => model === "subscriptionOrder" && method === "findUnique"
@@ -134,6 +135,12 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
   });
   const userRead = calls.find(([model, method]) => model === "user" && method === "findUnique");
   assert.deepEqual(userRead[2].where, { id: operatorId });
+  const journeyRead = calls.find(
+    ([model, method]) => model === "subscriptionJourney" && method === "findUnique"
+  );
+  assert.deepEqual(journeyRead[2].where, { orderId: TARGET.orderId });
+  assert.equal(journeyRead[2].select.jobs.select.payload, undefined);
+  assert.equal(journeyRead[2].select.outboxRows.select.payload, undefined);
   const evidenceFileRead = calls.find(
     ([model, method]) => model === "vehicleDeliveryEvidenceFile" && method === "findMany"
   );
@@ -198,6 +205,21 @@ test("apply updates four states and creates four correlated audits atomically", 
   assert.equal(harness.state.auditLogs.length, 4);
   assert.ok(harness.calls.includes("database.identity"));
   assert.ok(harness.calls.includes("relations.lock"));
+  const relationLock = harness.calls.find((call) => call.startsWith("LOCK TABLE"));
+  for (const relation of [
+    '"user"',
+    '"user_role"',
+    '"role"',
+    '"subscription_journey"',
+    '"subscription_journey_step"',
+    '"subscription_journey_job"',
+    '"subscription_journey_manual_task"',
+    '"subscription_journey_event"',
+    '"subscription_journey_exception"',
+    '"subscription_journey_outbox"'
+  ]) {
+    assert.match(relationLock, new RegExp(relation));
+  }
   assert.deepEqual(
     [...new Set(harness.state.auditLogs.map(({ afterSnapshot }) => afterSnapshot.correlationId))],
     [correlationId]
@@ -375,8 +397,9 @@ function createApplyHarness({
           calls.push("database.identity");
           return [{ databaseName }];
         }
-        if (query.startsWith("LOCK TABLE")) calls.push("relations.lock");
-        else if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
+        if (query.startsWith("LOCK TABLE")) {
+          calls.push("relations.lock", query);
+        } else if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
         else if (query.includes("FOR UPDATE")) calls.push("row.lock");
         else throw new Error(`UNEXPECTED_LOCK_QUERY:${query}`);
         return [];
@@ -584,6 +607,9 @@ function snapshotDatabase() {
     subscriptionChangeOrder: { count: count("subscriptionChangeOrder") },
     subscriptionClosureCase: { count: count("subscriptionClosureCase") },
     subscriptionContractSegment: { count: count("subscriptionContractSegment") },
+    subscriptionJourney: {
+      findUnique: record("subscriptionJourney", "findUnique", cleanSnapshot().journey)
+    },
     subscriptionOrder: {
       findMany: record("subscriptionOrder", "findMany", []),
       findUnique: record("subscriptionOrder", "findUnique", cleanSnapshot().order)
@@ -755,6 +781,7 @@ function cleanSnapshot() {
         }
       ]
     },
+    journey: terminalJourney(),
     lease: {
       activatedAt: new Date("2026-07-31T03:01:04.000Z"),
       deletedAt: null,
@@ -794,6 +821,22 @@ function cleanSnapshot() {
       vin: TARGET.vin
     },
     vehicleDeliveries: []
+  };
+}
+
+function terminalJourney() {
+  return {
+    currentStepCode: "AUTHORITATIVE_ACTIVATION",
+    currentStepStatus: "COMPLETED",
+    events: [{ eventType: "JOURNEY_COMPLETED", id: "journey-event-1", sequence: 12 }],
+    exceptions: [],
+    id: "journey-1",
+    jobs: [],
+    manualTasks: [],
+    orderId: TARGET.orderId,
+    outboxRows: [],
+    status: "COMPLETED",
+    steps: [{ code: "AUTHORITATIVE_ACTIVATION", id: "journey-step-1", status: "COMPLETED" }]
   };
 }
 

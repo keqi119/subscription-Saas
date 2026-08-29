@@ -57,6 +57,12 @@ const TERMINAL_HANDOVER_WORK_ORDER_STATUSES = new Set([
   "VOIDED",
   "CANCELLED"
 ]);
+const TERMINAL_JOURNEY_STATUSES = new Set(["COMPLETED", "CANCELLED"]);
+const TERMINAL_JOURNEY_STEP_STATUSES = new Set(["COMPLETED", "SKIPPED", "CANCELLED"]);
+const TERMINAL_JOURNEY_JOB_STATUSES = new Set(["COMPLETED", "CANCELLED"]);
+const TERMINAL_JOURNEY_MANUAL_TASK_STATUSES = new Set(["COMPLETED", "CANCELLED"]);
+const TERMINAL_JOURNEY_EXCEPTION_STATUSES = new Set(["RESOLVED"]);
+const TERMINAL_JOURNEY_OUTBOX_STATUSES = new Set(["DELIVERED", "CANCELLED"]);
 const SELECTOR_OPTIONS = new Map([
   ["--order-id", "orderId"],
   ["--order-no", "orderNo"],
@@ -268,6 +274,65 @@ function inspectStableIdentityAndForbiddenFacts(snapshot) {
       });
     }
   }
+  blockers.push(...inspectJourneyGraph(snapshot.journey));
+  return blockers;
+}
+
+function inspectJourneyGraph(journey) {
+  if (!journey) return [];
+  const blockers = [];
+  if (journey.orderId !== STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_TARGET.orderId) {
+    blockers.push({ code: "SUBSCRIPTION_JOURNEY_IDENTITY_MISMATCH" });
+  }
+  if (!TERMINAL_JOURNEY_STATUSES.has(journey.status)) {
+    blockers.push({ code: "NONTERMINAL_SUBSCRIPTION_JOURNEY", entityId: journey.id ?? null });
+  }
+  if (!TERMINAL_JOURNEY_STEP_STATUSES.has(journey.currentStepStatus)) {
+    blockers.push({
+      code: "NONTERMINAL_SUBSCRIPTION_JOURNEY_CURRENT_STEP",
+      entityId: journey.id ?? null
+    });
+  }
+  for (const step of array(journey.steps)) {
+    if (!TERMINAL_JOURNEY_STEP_STATUSES.has(step?.status)) {
+      blockers.push({
+        code: "NONTERMINAL_SUBSCRIPTION_JOURNEY_STEP",
+        entityId: step?.id ?? null
+      });
+    }
+  }
+  for (const job of array(journey.jobs)) {
+    if (!TERMINAL_JOURNEY_JOB_STATUSES.has(job?.status)) {
+      blockers.push({
+        code: "NONTERMINAL_SUBSCRIPTION_JOURNEY_JOB",
+        entityId: job?.id ?? null
+      });
+    }
+  }
+  for (const task of array(journey.manualTasks)) {
+    if (!TERMINAL_JOURNEY_MANUAL_TASK_STATUSES.has(task?.status)) {
+      blockers.push({
+        code: "NONTERMINAL_SUBSCRIPTION_JOURNEY_MANUAL_TASK",
+        entityId: task?.id ?? null
+      });
+    }
+  }
+  for (const exception of array(journey.exceptions)) {
+    if (!TERMINAL_JOURNEY_EXCEPTION_STATUSES.has(exception?.status)) {
+      blockers.push({
+        code: "UNRESOLVED_SUBSCRIPTION_JOURNEY_EXCEPTION",
+        entityId: exception?.id ?? null
+      });
+    }
+  }
+  for (const outbox of array(journey.outboxRows)) {
+    if (!TERMINAL_JOURNEY_OUTBOX_STATUSES.has(outbox?.status)) {
+      blockers.push({
+        code: "NONTERMINAL_SUBSCRIPTION_JOURNEY_OUTBOX",
+        entityId: outbox?.id ?? null
+      });
+    }
+  }
   return blockers;
 }
 
@@ -443,6 +508,7 @@ function publicEvidenceReview(snapshot) {
     relatedCounts: Object.fromEntries(
       BLOCKING_COUNT_FIELDS.map((field) => [field, snapshot.blockingCounts?.[field] ?? null])
     ),
+    journey: safeJourney(snapshot.journey),
     vehicleAvailability: {
       activeOtherLeases: array(snapshot.vehicle?.activeOtherLeases).length,
       activeOtherOrders: array(snapshot.vehicle?.activeOtherOrders).length,
@@ -529,6 +595,7 @@ function digestEvidence(snapshot) {
         "workOrderId"
       ])
     },
+    journey: safeJourney(snapshot.journey),
     lease: safeEntity(snapshot.lease, ["activatedAt", "deletedAt", "id", "orderId", "status"]),
     operator: {
       ...safeEntity(snapshot.operator, ["deletedAt", "id", "status"]),
@@ -598,6 +665,32 @@ function safeRecords(records, fields) {
   return array(records)
     .map((record) => safeEntity(record, fields))
     .sort((left, right) => compare(left?.id ?? stableJson(left), right?.id ?? stableJson(right)));
+}
+
+function safeJourney(journey) {
+  if (!journey || typeof journey !== "object") return null;
+  return {
+    ...safeEntity(journey, ["currentStepCode", "currentStepStatus", "id", "orderId", "status"]),
+    events: safeRecords(journey.events, ["eventType", "id", "sequence"]),
+    exceptions: safeRecords(journey.exceptions, [
+      "code",
+      "id",
+      "jobId",
+      "retryable",
+      "status",
+      "stepId"
+    ]),
+    jobs: safeRecords(journey.jobs, ["id", "jobType", "status", "stepId"]),
+    manualTasks: safeRecords(journey.manualTasks, ["id", "status", "stepId", "taskType"]),
+    outboxRows: safeRecords(journey.outboxRows, [
+      "aggregateId",
+      "aggregateType",
+      "eventType",
+      "id",
+      "status"
+    ]),
+    steps: safeRecords(journey.steps, ["code", "id", "status"])
+  };
 }
 
 function canonical(value) {

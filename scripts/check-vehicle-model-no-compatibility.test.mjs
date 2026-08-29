@@ -91,11 +91,11 @@ test("release check runs the compatibility guard and its tests", () => {
 
   assert.match(
     releaseCheck,
-    /\["VehicleModel no-compatibility guard", "node", \["scripts\/check-vehicle-model-no-compatibility\.mjs"\]\]/
+    /\[\s*"VehicleModel no-compatibility guard"\s*,\s*"node"\s*,\s*\[\s*"scripts\/check-vehicle-model-no-compatibility\.mjs"\s*\]\s*\]/
   );
   assert.match(
     releaseCheck,
-    /\["VehicleModel no-compatibility guard tests", "node", \["--test", "scripts\/check-vehicle-model-no-compatibility\.test\.mjs"\]\]/
+    /\[\s*"VehicleModel no-compatibility guard tests"\s*,\s*"node"\s*,\s*\[\s*"--test"\s*,\s*"scripts\/check-vehicle-model-no-compatibility\.test\.mjs"\s*\]\s*\]/
   );
 });
 

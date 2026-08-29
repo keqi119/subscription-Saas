@@ -122,7 +122,7 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   const customer = classifyCustomer(snapshot.customer, selection, exceptions);
   const catalog = classifyCatalog(snapshot.catalog, exceptions);
   const templates = classifyTemplates(snapshot.templates, exceptions);
-  const vehicle = classifyVehicle(snapshot.vehicle, selection, exceptions);
+  const vehicle = classifyVehicle(snapshot.vehicle, selection, catalog, exceptions);
   const targetCountEvidence = copyTargetCountEvidence(snapshot.target);
   const targetForbiddenCounts = canonical(targetCountEvidence.forbiddenCounts ?? {});
   classifyTarget(snapshot.target, targetCountEvidence, exceptions);
@@ -261,7 +261,7 @@ function classifyCatalog(catalog = {}, exceptions) {
   if (products.length === 0 || productVersions.length === 0 || depositRules.length === 0 || vehiclePackages.length === 0 || subscriptionPlans.length === 0) {
     exception(exceptions, "CATALOG_ACTIVE_SET_EMPTY", "catalog", "active");
   }
-  const byId = (rows, id) => rows.some((row) => row.id === id);
+  const byId = (rows, id) => rows.filter((row) => row.id === id).length === 1;
   const closesProductVersion = (row) => byId(products, row.productId);
   const closesProductVersionBoundRow = (row) => byId(products, row.productId) && byId(productVersions, row.productVersionId);
   const closed =
@@ -279,7 +279,7 @@ function classifyCatalog(catalog = {}, exceptions) {
         byId(vehiclePackages, row.vehiclePackageId) &&
         byId(mileagePackages, row.mileagePackageId) &&
         byId(energyPackages, row.energyPackageId) &&
-        byId(benefitPackages, row.benefitPackageId)
+        (row.benefitPackageId === null || byId(benefitPackages, row.benefitPackageId))
     );
   if (!closed) exception(exceptions, "CATALOG_REFERENCE_NOT_CLOSED", "catalog", "references");
   return sortRows({
@@ -346,7 +346,7 @@ function classifyTemplates(templates = {}, exceptions) {
   });
 }
 
-function classifyVehicle(vehicle = {}, selection, exceptions) {
+function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
   const closure = {
     assetOwners: [],
     vehicleAssetCostProfiles: [],
@@ -369,6 +369,11 @@ function classifyVehicle(vehicle = {}, selection, exceptions) {
     return closure;
   }
   const vehicles = array(vehicle.vehicles);
+  const allInsurancePolicies = array(vehicle.vehicleInsurancePolicies);
+  const allInsuranceCoverages = array(vehicle.vehicleInsuranceCoverages);
+  const insuranceCoverageReferencesClosed = allInsuranceCoverages.every(
+    (coverage) => allInsurancePolicies.filter((policy) => policy.id === coverage?.policyId).length === 1
+  );
   for (const vehicleId of selection.vehicleIds) {
     const matches = vehicles.filter((row) => row?.id === vehicleId);
     const evidence = vehicle.eligibilityEvidence?.[vehicleId];
@@ -377,47 +382,67 @@ function classifyVehicle(vehicle = {}, selection, exceptions) {
       continue;
     }
     const item = matches[0];
-    const owners = active(array(vehicle.assetOwners)).filter((row) => row.id === item.assetOwnerId);
+    const currentOwnershipPeriods = rowsForVehicle(vehicle.vehicleOwnershipPeriods, item.id).filter(
+      (row) => row?.endedAt === null
+    );
+    const currentOwnership = currentOwnershipPeriods.length === 1 ? currentOwnershipPeriods[0] : undefined;
+    const owners = currentOwnership
+      ? array(vehicle.assetOwners).filter(
+          (row) => row?.id === currentOwnership.assetOwnerId && row.status === "ACTIVE"
+        )
+      : [];
     const models = array(vehicle.vehicleModelDefinitions).filter(
       (row) => row?.id === item.modelDefinitionId && row.deletedAt == null && row.enabled === true && row.portalVisible === true
     );
     const profiles = array(vehicle.vehicleListingProfiles).filter(
-      (row) => row?.id === item.listingProfileId && row.vehicleId === item.id && row.deletedAt == null && row.listingStatus === "PUBLISHED"
+      (row) => row?.vehicleId === item.id && row.deletedAt == null && row.listingStatus === "PUBLISHED"
     );
-    if (owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
+    if (currentOwnershipPeriods.length !== 1 || owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
       continue;
     }
     const profile = profiles[0];
     const documentBatches = rowsForVehicle(vehicle.vehicleDocumentBatches, item.id);
-    const insurancePolicies = rowsForVehicle(vehicle.vehicleInsurancePolicies, item.id);
-    const documentBatchIds = new Set(documentBatches.map(({ id }) => id));
+    const insurancePolicies = rowsForVehicle(allInsurancePolicies, item.id);
     const insurancePolicyIds = new Set(insurancePolicies.map(({ id }) => id));
-    const listingMedia = rowsForReference(vehicle.vehicleListingMedia, "listingProfileId", profile.id);
-    const listingPlans = rowsForReference(vehicle.vehicleListingPlans, "listingProfileId", profile.id);
-    const documents = array(vehicle.vehicleDocuments).filter((row) => row?.vehicleId === item.id && documentBatchIds.has(row.batchId));
-    const coverages = array(vehicle.vehicleInsuranceCoverages).filter((row) => insurancePolicyIds.has(row?.policyId));
-    const vehicleDocuments = rowsForVehicle(vehicle.vehicleDocuments, item.id);
+    const listingMedia = rowsForVehicle(vehicle.vehicleListingMedia, item.id);
+    const listingPlans = rowsForVehicle(vehicle.vehicleListingPlans, item.id);
+    const documents = rowsForVehicle(vehicle.vehicleDocuments, item.id);
+    const sourceBindings = rowsForVehicle(vehicle.vehicleListingSourceBindings, item.id);
+    const coverages = allInsuranceCoverages.filter((row) => insurancePolicyIds.has(row?.policyId));
     if (
-      documents.length !== vehicleDocuments.length ||
-      coverages.length !== rowsForInsurancePolicies(vehicle.vehicleInsuranceCoverages, insurancePolicyIds).length
+      !listingMedia.every((row) => row.listingProfileId === null || row.listingProfileId === profile.id) ||
+      !listingPlans.every(
+        (row) =>
+          (row.listingProfileId === null || row.listingProfileId === profile.id) &&
+          array(catalog?.subscriptionPlans).filter((plan) => plan.id === row.subscriptionPlanId).length === 1
+      ) ||
+      !documents.every(
+        (row) =>
+          (row.batchId === null || documentBatches.filter((batch) => batch.id === row.batchId).length === 1) &&
+          (row.policyId === null || insurancePolicies.filter((policy) => policy.id === row.policyId).length === 1)
+      ) ||
+      !sourceBindings.every(
+        (binding) => documents.filter((document) => document.id === binding.documentId).length === 1
+      ) ||
+      !insuranceCoverageReferencesClosed
     ) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
       continue;
     }
     closure.vehicles.push(item);
-    closure.assetOwners.push(owners[0]);
-    closure.vehicleModelDefinitions.push(models[0]);
+    pushUniqueRow(closure.assetOwners, owners[0]);
+    pushUniqueRow(closure.vehicleModelDefinitions, models[0]);
     closure.vehicleListingProfiles.push(profile);
     closure.vehicleListingMedia.push(...listingMedia);
     closure.vehicleListingPlans.push(...listingPlans);
     closure.vehicleDocumentBatches.push(...documentBatches);
     closure.vehicleDocuments.push(...documents);
-    closure.vehicleListingSourceBindings.push(...rowsForVehicle(vehicle.vehicleListingSourceBindings, item.id));
+    closure.vehicleListingSourceBindings.push(...sourceBindings);
     closure.vehicleInsurancePolicies.push(...insurancePolicies);
     closure.vehicleInsuranceCoverages.push(...coverages);
     closure.vehicleSalePriceHistories.push(...rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id));
-    closure.vehicleOwnershipPeriods.push(...rowsForVehicle(vehicle.vehicleOwnershipPeriods, item.id));
+    closure.vehicleOwnershipPeriods.push(currentOwnership);
     closure.vehicleAssetCostProfiles.push(...rowsForVehicle(vehicle.vehicleAssetCostProfiles, item.id));
     closure.vehicleCostLedgerEntries.push(...rowsForVehicle(vehicle.vehicleCostLedgerEntries, item.id));
   }
@@ -621,12 +646,8 @@ function rowsForVehicle(rows, vehicleId) {
   return array(rows).filter((row) => row?.vehicleId === vehicleId);
 }
 
-function rowsForReference(rows, foreignKey, expectedId) {
-  return array(rows).filter((row) => row?.[foreignKey] === expectedId);
-}
-
-function rowsForInsurancePolicies(rows, policyIds) {
-  return array(rows).filter((row) => policyIds.has(row?.policyId));
+function pushUniqueRow(rows, row) {
+  if (!rows.some((item) => item.id === row.id)) rows.push(row);
 }
 
 function copyTargetCountEvidence(target = {}) {

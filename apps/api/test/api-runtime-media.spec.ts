@@ -31,6 +31,8 @@ describe("API runtime media contract", () => {
       "stage1-active-source-facts-repair.mjs",
       "stage1-contract-change-bootstrap-core.mjs",
       "stage1-contract-change-bootstrap.mjs",
+      "stage1-return-closure-backfill-core.mjs",
+      "stage1-return-closure-backfill.mjs",
       "stage1c-period-backfill-core.mjs",
       "stage1c-period-backfill-executor.mjs",
       "stage1c-period-backfill.mjs",

@@ -288,7 +288,7 @@ function classifyTemplates(templates = {}, exceptions) {
     }
     const row = versions[0];
     const files = allFileObjects.filter((item) => item?.id === row.fileId);
-    if (files.length !== 1 || !active(files).length || !validPdfFile(files[0])) {
+    if (files.length !== 1 || !validPdfFile(files[0])) {
       exception(exceptions, "CONTRACT_TEMPLATE_FILE_INVALID", "templates", row.id);
       continue;
     }
@@ -503,7 +503,15 @@ function requiredCodes(value) {
 }
 
 function validPdfFile(file) {
-  return Boolean(file) && file.mimeType === "application/pdf" && nonEmpty(file.objectKey) && positive(file.sizeBytes);
+  return Boolean(file) &&
+    nonEmpty(file.id) &&
+    nonEmpty(file.bucket) &&
+    nonEmpty(file.objectKey) &&
+    nonEmpty(file.originalName) &&
+    typeof file.mimeType === "string" &&
+    file.mimeType.toLowerCase().split(";", 1)[0].trim() === "application/pdf" &&
+    positive(file.sizeBytes) &&
+    SHA256.test(file.contentSha256 ?? "");
 }
 
 function copyTargetCountEvidence(target = {}) {

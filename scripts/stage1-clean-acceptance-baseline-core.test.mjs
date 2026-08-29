@@ -78,7 +78,7 @@ function completeSnapshot(overrides = {}) {
       contractVersions: [
         { fileId: "file-1", id: "contract-version-1", status: "ACTIVE", templateCode: "STAGE1_SUBSCRIPTION" }
       ],
-      fileObjects: [{ id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", sizeBytes: 1, status: "ACTIVE" }],
+      fileObjects: [{ bucket: "stage1-contracts", contentSha256: "a".repeat(64), id: "file-1", mimeType: "application/pdf", objectKey: "contracts/template.pdf", originalName: "stage1-subscription.pdf", sizeBytes: 1 }],
       notificationTemplates: [{ code: "STAGE1_NOTICE", id: "notification-1", status: "ACTIVE" }],
       requiredContractTemplateCodes: ["STAGE1_SUBSCRIPTION"],
       requiredNotificationTemplateCodes: ["STAGE1_NOTICE"]
@@ -245,6 +245,29 @@ test("classification requires explicit active template and notification closure 
   }
 });
 
+test("classification accepts the actual FileObject scalar shape when its contract file is complete", () => {
+  const result = classifyStage1CleanAcceptanceBaseline(
+    completeSnapshot({
+      templates: {
+        fileObjects: [
+          {
+            bucket: "stage1-contracts",
+            contentSha256: "a".repeat(64),
+            id: "file-1",
+            mimeType: "application/pdf",
+            objectKey: "contracts/template.pdf",
+            originalName: "stage1-subscription.pdf",
+            sizeBytes: 1
+          }
+        ]
+      }
+    }),
+    selection()
+  );
+  assert.equal(result.safeToApply, true);
+  assert.equal(result.rows.templates.fileObjects[0].bucket, "stage1-contracts");
+});
+
 test("classification rejects unknown statuses and includes the complete selected vehicle closure", () => {
   const unknownStatus = classifyStage1CleanAcceptanceBaseline(
     completeSnapshot({ access: { users: [{ id: "admin-user", username: "keqi_119" }] } }),
@@ -345,7 +368,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   });
 
   assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "4ab1be2c2369b82b927324e121e13be0aa5ca7f2541ef565722bb63f43dc057a");
+  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "ce5194479ce9a073abefede294b4225eac7288419d9057fbbd81b5209ae2b0ab");
   assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
 });
 

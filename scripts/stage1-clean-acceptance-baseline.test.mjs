@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import * as hostFsSync from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
@@ -56,14 +58,12 @@ test("controlled evidence paths stay outside the repository and reject missing p
   await mkdir(evidence);
   t.after(() => rm(root, { force: true, recursive: true }));
 
-  const createSecurity = { intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence) };
-  const readSecurity = { intent: "read", platform: "win32", verifyWindowsAcl: windowsAcl(evidence) };
+  const createSecurity = hostEvidenceSecurity(evidence, "create");
+  const readSecurity = hostEvidenceSecurity(evidence, "read");
   assert.equal(assertControlledEvidencePath(join(evidence, "report.json"), repo, createSecurity), resolve(evidence, "report.json"));
   assert.throws(() => assertControlledEvidencePath(join(repo, "report.json"), repo, createSecurity), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
   assert.throws(() => assertControlledEvidencePath(join(root, "missing", "report.json"), repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(evidence, repo, {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(root)
-  }), /EVIDENCE_TARGET_EXISTS/);
+  assert.throws(() => assertControlledEvidencePath(evidence, repo, hostEvidenceSecurity(root, "create")), /EVIDENCE_TARGET_EXISTS/);
 
   const realFile = join(evidence, "existing.json");
   const linkFile = join(evidence, "linked.json");
@@ -79,64 +79,67 @@ test("controlled evidence paths stay outside the repository and reject missing p
   }
 });
 
-test("controlled evidence directories reject aliases, unsafe ownership/mode/ACL, and case-insensitive repository paths", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "stage1-cli-security-"));
-  const repo = join(root, "repo");
-  const evidence = join(root, "repo-evidence");
-  await mkdir(repo);
-  await mkdir(evidence);
-  t.after(() => rm(root, { force: true, recursive: true }));
-  const output = join(evidence, "report.json");
+test("virtual Win32 paths enforce case-insensitive containment, canonical parents, ACLs, and non-link reads", () => {
+  const repo = "C:\\acceptance\\repo";
+  const evidence = "C:\\acceptance\\repo-evidence";
+  const fsSync = virtualWindowsFs();
+  const createSecurity = {
+    fsSync,
+    intent: "create",
+    pathApi: path.win32,
+    platform: "win32",
+    verifyWindowsAcl: windowsAcl(evidence, true, path.win32)
+  };
 
-  assert.equal(assertControlledEvidencePath(output, repo, {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
-  }), resolve(output), "an adjacent repository prefix is not inside the repository");
-  assert.equal(assertControlledEvidencePath(resolve(output).replaceAll("\\", "/"), repo, {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
-  }), resolve(output), "separator normalization preserves the canonical path");
-  assert.throws(() => assertControlledEvidencePath(output.toUpperCase(), repo, {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
-  }), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(join(repo, "inside.json"), repo.toUpperCase(), {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(repo)
-  }), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence, false)
+  assert.throws(() => assertControlledEvidencePath("c:\\ACCEPTANCE\\REPO\\inside.json", repo, createSecurity), /EVIDENCE_PATH_INSIDE_REPOSITORY/);
+  assert.equal(
+    assertControlledEvidencePath(`${evidence}\\report.json`, repo, createSecurity),
+    `${evidence}\\report.json`,
+    "an adjacent repository prefix is not inside the repository"
+  );
+  assert.equal(
+    assertControlledEvidencePath("C:/acceptance/repo-evidence/report.json", repo, createSecurity),
+    `${evidence}\\report.json`,
+    "Win32 separator normalization preserves the canonical path"
+  );
+  assert.throws(() => assertControlledEvidencePath("C:\\acceptance\\evidence-alias\\report.json", repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
+  assert.throws(() => assertControlledEvidencePath("C:\\acceptance\\evidence-junction\\report.json", repo, createSecurity), /EVIDENCE_PARENT_INVALID/);
+  assert.throws(() => assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
+    ...createSecurity, verifyWindowsAcl: undefined
   }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    intent: "create", platform: "win32"
+  assert.throws(() => assertControlledEvidencePath(`${evidence}\\report.json`, repo, {
+    ...createSecurity, verifyWindowsAcl: windowsAcl(evidence, false, path.win32)
   }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
 
-  const actualFs = await import("node:fs");
-  const baseStat = actualFs.lstatSync(evidence);
-  const fsWithParent = (overrides = {}, realpath = evidence) => ({
-    existsSync: actualFs.existsSync,
-    lstatSync(path) {
-      const stat = actualFs.lstatSync(path);
-      if (resolve(path) !== resolve(evidence)) return stat;
-      return {
-        ...stat,
-        ...overrides,
-        isDirectory: () => overrides.isDirectory ?? true,
-        isFile: () => false,
-        isSymbolicLink: () => overrides.isSymbolicLink ?? false
-      };
-    },
-    realpathSync(path) { return resolve(path) === resolve(evidence) ? realpath : actualFs.realpathSync(path); }
+  const readSecurity = { ...createSecurity, intent: "read" };
+  assert.equal(
+    assertControlledEvidencePath(`${evidence}\\existing.json`, repo, readSecurity),
+    `${evidence}\\existing.json`
+  );
+  assert.throws(() => assertControlledEvidencePath(`${evidence}\\linked.json`, repo, readSecurity), /EVIDENCE_TARGET_INVALID/);
+});
+
+test("virtual POSIX paths require a root-owned mode-0700 evidence directory", () => {
+  const repo = "/acceptance/repo";
+  const evidence = "/acceptance/repo-evidence";
+  const options = (uid, mode) => ({
+    fsSync: virtualPosixDirectoryFs(evidence, uid, mode),
+    intent: "create",
+    pathApi: path.posix,
+    platform: "linux"
   });
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    fsSync: fsWithParent({ uid: 1000, mode: 0o40700 }), intent: "create", platform: "linux"
-  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    fsSync: fsWithParent({ uid: 0, mode: 0o40755 }), intent: "create", platform: "linux"
-  }), /EVIDENCE_DIRECTORY_NOT_CONTROLLED/);
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    fsSync: fsWithParent({ isSymbolicLink: true }), intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
-  }), /EVIDENCE_PARENT_INVALID/);
-  assert.throws(() => assertControlledEvidencePath(output, repo, {
-    fsSync: fsWithParent({}, join(root, "elsewhere")), intent: "create", platform: "win32", verifyWindowsAcl: windowsAcl(evidence)
-  }), /EVIDENCE_PARENT_INVALID/);
-  assert.ok(baseStat.isDirectory());
+  assert.equal(
+    assertControlledEvidencePath(`${evidence}/report.json`, repo, options(0, 0o40700)),
+    `${evidence}/report.json`
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(`${evidence}/report.json`, repo, options(1000, 0o40700)),
+    /EVIDENCE_DIRECTORY_NOT_CONTROLLED/
+  );
+  assert.throws(
+    () => assertControlledEvidencePath(`${evidence}/report.json`, repo, options(0, 0o40755)),
+    /EVIDENCE_DIRECTORY_NOT_CONTROLLED/
+  );
 });
 
 test("controlled JSON writing is same-directory atomic, private on Unix, and cleans only its own temp on failure", async (t) => {
@@ -145,7 +148,7 @@ test("controlled JSON writing is same-directory atomic, private on Unix, and cle
   await mkdir(repo);
   t.after(() => rm(root, { force: true, recursive: true }));
   const output = join(root, "report.json");
-  const security = { platform: "win32", repoRoot: repo, verifyWindowsAcl: windowsAcl(root) };
+  const security = { ...hostEvidenceSecurity(root, "create"), repoRoot: repo };
   await writeControlledJsonFile(output, { ok: true }, undefined, security);
   assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { ok: true });
   if (process.platform !== "win32") assert.equal((await lstat(output)).mode & 0o777, 0o600);
@@ -411,8 +414,88 @@ function approvedManifest() {
   };
 }
 
-function windowsAcl(canonicalPath, safe = true) {
-  return () => ({ canonicalPath: resolve(canonicalPath), safe });
+function hostEvidenceSecurity(parent, intent) {
+  if (process.platform === "win32") {
+    return { intent, platform: "win32", verifyWindowsAcl: windowsAcl(parent, true, path.win32) };
+  }
+  const canonicalParent = resolve(parent);
+  return {
+    fsSync: {
+      existsSync: hostFsSync.existsSync,
+      lstatSync(candidate) {
+        const stat = hostFsSync.lstatSync(candidate);
+        if (resolve(candidate) !== canonicalParent) return stat;
+        return {
+          ...stat,
+          uid: 0,
+          mode: (stat.mode & ~0o777) | 0o700,
+          isDirectory: () => stat.isDirectory(),
+          isFile: () => stat.isFile(),
+          isSymbolicLink: () => stat.isSymbolicLink()
+        };
+      },
+      realpathSync: hostFsSync.realpathSync
+    },
+    intent,
+    pathApi: path,
+    platform: process.platform
+  };
+}
+
+function virtualWindowsFs() {
+  const entries = new Map();
+  const add = (entryPath, kind, realpath = entryPath) => {
+    const canonicalPath = path.win32.normalize(entryPath);
+    entries.set(canonicalPath.toLowerCase(), { canonicalPath, kind, realpath: path.win32.normalize(realpath) });
+  };
+  add("C:\\acceptance\\repo", "directory");
+  add("C:\\acceptance\\repo-evidence", "directory");
+  add("C:\\acceptance\\evidence-alias", "directory", "C:\\acceptance\\repo-evidence");
+  add("C:\\acceptance\\evidence-junction", "junction", "C:\\acceptance\\repo-evidence");
+  add("C:\\acceptance\\repo-evidence\\existing.json", "file");
+  add("C:\\acceptance\\repo-evidence\\linked.json", "symlink", "C:\\acceptance\\repo-evidence\\existing.json");
+
+  const entry = (candidate) => entries.get(path.win32.normalize(candidate).toLowerCase());
+  return {
+    existsSync: (candidate) => Boolean(entry(candidate)),
+    lstatSync(candidate) {
+      const value = entry(candidate);
+      if (!value) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return {
+        mode: value.kind === "directory" ? 0o40700 : 0o100600,
+        uid: 0,
+        isDirectory: () => value.kind === "directory" || value.kind === "junction",
+        isFile: () => value.kind === "file",
+        isSymbolicLink: () => value.kind === "symlink" || value.kind === "junction"
+      };
+    },
+    realpathSync(candidate) {
+      const value = entry(candidate);
+      if (!value) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return value.realpath;
+    }
+  };
+}
+
+function virtualPosixDirectoryFs(parent, uid, mode) {
+  return {
+    existsSync: (candidate) => path.posix.normalize(candidate) === parent,
+    lstatSync(candidate) {
+      if (path.posix.normalize(candidate) !== parent) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return {
+        mode,
+        uid,
+        isDirectory: () => true,
+        isFile: () => false,
+        isSymbolicLink: () => false
+      };
+    },
+    realpathSync: (candidate) => path.posix.normalize(candidate)
+  };
+}
+
+function windowsAcl(canonicalPath, safe = true, pathApi = path) {
+  return () => ({ canonicalPath: pathApi.resolve(canonicalPath), safe });
 }
 
 function createBaselineHarness({ approved = approvedManifest(), approvedReport, candidates = [], canonicalManifestSha = SHA, env = BASE_ENV, scenario } = {}) {

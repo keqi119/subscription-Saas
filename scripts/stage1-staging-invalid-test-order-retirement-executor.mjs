@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_TARGET as TARGET,
   classifyStage1StagingInvalidTestOrderRetirement
@@ -5,6 +7,8 @@ import {
 
 const TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 120_000 };
 const RETIREMENT_MODULE = "STAGE1_STAGING_TEST_DATA_RETIREMENT";
+const RETIREMENT_REASON = "STAGING_INVALID_TEST_DATA_RETIREMENT";
+const APPLY_LOCK_KEY = "stage1-staging-invalid-test-order-retirement:apply";
 const NONTERMINAL_ORDER_STATUSES = [
   "PENDING_REVIEW",
   "PENDING_CUSTOMER_CONFIRMATION",
@@ -52,29 +56,101 @@ const COUNT_QUERIES = [
 
 export async function executeStage1StagingInvalidTestOrderRetirement({
   classify = classifyStage1StagingInvalidTestOrderRetirement,
+  expectedEvidenceDigest,
   generatedAt = new Date().toISOString(),
   loadSnapshot = loadStage1StagingInvalidTestOrderRetirementSnapshot,
   mode,
+  now = () => new Date(),
   operatorId,
-  prisma
+  prisma,
+  randomUuid = randomUUID
 }) {
-  if (mode !== "dry-run") {
+  if (mode === "dry-run") {
+    const classification = await prisma.$transaction(
+      async (tx) => classify(await loadSnapshot(tx, { operatorId })),
+      { ...TRANSACTION_OPTIONS, isolationLevel: "RepeatableRead" }
+    );
+    const safeToApply = classification.disposition !== "BLOCKED";
+    return {
+      exitCode: safeToApply ? 0 : 1,
+      report: {
+        applied: null,
+        classification,
+        generatedAt,
+        mode,
+        safeToApply
+      }
+    };
+  }
+  if (mode !== "apply") {
     throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_MODE_INVALID");
   }
-  const classification = await prisma.$transaction(
-    async (tx) => classify(await loadSnapshot(tx, { operatorId })),
-    { ...TRANSACTION_OPTIONS, isolationLevel: "RepeatableRead" }
+
+  const outcome = await prisma.$transaction(
+    async (tx) => {
+      await lockApply(tx);
+      await lockTargetRows(tx);
+      const snapshot = await loadSnapshot(tx, { operatorId });
+      const classification = classify(snapshot);
+      if (classification.disposition === "BLOCKED") {
+        return {
+          applied: emptyApplyResult({ blocked: true }),
+          classification,
+          safeToApply: false
+        };
+      }
+      if (classification.evidenceDigest !== expectedEvidenceDigest) {
+        throw new Error(
+          "STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH"
+        );
+      }
+      if (classification.disposition === "UNCHANGED") {
+        return {
+          applied: emptyApplyResult({ blocked: false, skippedUnchanged: 1 }),
+          classification,
+          safeToApply: true
+        };
+      }
+
+      const changedAt = now();
+      const correlationId = randomUuid();
+      await cancelBillingSchedule(tx, snapshot, changedAt);
+      await completeLease(tx, snapshot, operatorId);
+      await cancelOrder(tx, snapshot, operatorId);
+      await releaseVehicle(tx, snapshot, operatorId);
+      await createRetirementAudits(tx, snapshot, {
+        changedAt,
+        correlationId,
+        evidenceDigest: classification.evidenceDigest,
+        operatorId
+      });
+      await assertPostconditions(tx, {
+        classify,
+        evidenceDigest: classification.evidenceDigest,
+        loadSnapshot,
+        operatorId
+      });
+      return {
+        applied: {
+          auditsCreated: 4,
+          billingSchedulesUpdated: 1,
+          blocked: false,
+          correlationId,
+          leasesUpdated: 1,
+          ordersUpdated: 1,
+          skippedUnchanged: 0,
+          vehiclesUpdated: 1
+        },
+        classification,
+        safeToApply: true
+      };
+    },
+    { ...TRANSACTION_OPTIONS, isolationLevel: "Serializable" }
   );
-  const safeToApply = classification.disposition !== "BLOCKED";
+
   return {
-    exitCode: safeToApply ? 0 : 1,
-    report: {
-      applied: null,
-      classification,
-      generatedAt,
-      mode,
-      safeToApply
-    }
+    exitCode: outcome.safeToApply ? 0 : 1,
+    report: { ...outcome, generatedAt, mode }
   };
 }
 
@@ -271,4 +347,206 @@ function normalizeOperator(operator) {
     })),
     status: operator.status
   };
+}
+
+async function lockApply(tx) {
+  await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1))", APPLY_LOCK_KEY);
+}
+
+async function lockTargetRows(tx) {
+  await tx.$queryRawUnsafe(
+    "SELECT id FROM subscription_order WHERE id = $1::uuid FOR UPDATE",
+    TARGET.orderId
+  );
+  await tx.$queryRawUnsafe(
+    "SELECT id FROM lease WHERE order_id = $1::uuid FOR UPDATE",
+    TARGET.orderId
+  );
+  await tx.$queryRawUnsafe(
+    "SELECT id FROM billing_schedule WHERE order_id = $1::uuid FOR UPDATE",
+    TARGET.orderId
+  );
+  await tx.$queryRawUnsafe(
+    "SELECT id FROM vehicle WHERE id = $1::uuid FOR UPDATE",
+    TARGET.vehicleId
+  );
+}
+
+async function cancelBillingSchedule(tx, snapshot, changedAt) {
+  const current = snapshot.billingSchedule;
+  const updated = await tx.billingSchedule.updateMany({
+    data: {
+      cancelledAt: changedAt,
+      pauseReason: RETIREMENT_REASON,
+      status: "CANCELLED",
+      version: { increment: 1 }
+    },
+    where: {
+      cancelledAt: current.cancelledAt,
+      id: current.id,
+      lastGeneratedBillId: current.lastGeneratedBillId,
+      orderId: TARGET.orderId,
+      status: "PAUSED",
+      version: current.version
+    }
+  });
+  assertSingleUpdate(updated, "BILLING_SCHEDULE");
+}
+
+async function completeLease(tx, snapshot, operatorId) {
+  const current = snapshot.lease;
+  const updated = await tx.lease.updateMany({
+    data: { status: "COMPLETED", updatedBy: operatorId },
+    where: {
+      deletedAt: null,
+      id: current.id,
+      orderId: TARGET.orderId,
+      status: "ACTIVE"
+    }
+  });
+  assertSingleUpdate(updated, "LEASE");
+}
+
+async function cancelOrder(tx, snapshot, operatorId) {
+  const current = snapshot.order;
+  const updated = await tx.subscriptionOrder.updateMany({
+    data: { orderStatus: "CANCELLED", updatedBy: operatorId },
+    where: {
+      actualReturnAt: null,
+      deletedAt: null,
+      id: TARGET.orderId,
+      orderNo: TARGET.orderNo,
+      orderStatus: "ACTIVE",
+      vehicleId: TARGET.vehicleId
+    }
+  });
+  assertSingleUpdate(updated, "ORDER");
+}
+
+async function releaseVehicle(tx, snapshot, operatorId) {
+  const current = snapshot.vehicle;
+  const updated = await tx.vehicle.updateMany({
+    data: { status: "AVAILABLE", updatedBy: operatorId },
+    where: {
+      currentSalePriceAmount: current.currentSalePriceAmount,
+      deletedAt: null,
+      id: TARGET.vehicleId,
+      salePriceStatus: "EFFECTIVE",
+      status: "LEASED",
+      vehicleNo: TARGET.vehicleNo,
+      vin: TARGET.vin
+    }
+  });
+  assertSingleUpdate(updated, "VEHICLE");
+}
+
+async function createRetirementAudits(
+  tx,
+  snapshot,
+  { changedAt, correlationId, evidenceDigest, operatorId }
+) {
+  const rows = [
+    {
+      after: {
+        cancelledAt: iso(changedAt),
+        status: "CANCELLED",
+        version: snapshot.billingSchedule.version + 1
+      },
+      before: {
+        cancelledAt: iso(snapshot.billingSchedule.cancelledAt),
+        status: "PAUSED",
+        version: snapshot.billingSchedule.version
+      },
+      entityId: snapshot.billingSchedule.id,
+      entityType: "billing_schedule"
+    },
+    {
+      after: { status: "COMPLETED" },
+      before: { status: "ACTIVE" },
+      entityId: snapshot.lease.id,
+      entityType: "lease"
+    },
+    {
+      after: { orderNo: TARGET.orderNo, status: "CANCELLED" },
+      before: { orderNo: TARGET.orderNo, status: "ACTIVE" },
+      entityId: TARGET.orderId,
+      entityType: "subscription_order"
+    },
+    {
+      after: { status: "AVAILABLE", vehicleNo: TARGET.vehicleNo },
+      before: { status: "LEASED", vehicleNo: TARGET.vehicleNo },
+      entityId: TARGET.vehicleId,
+      entityType: "vehicle"
+    }
+  ];
+  for (const row of rows) {
+    await tx.auditLog.create({
+      data: {
+        action: "UPDATE",
+        afterSnapshot: retirementAuditSnapshot(row.after, {
+          correlationId,
+          entityId: row.entityId,
+          evidenceDigest
+        }),
+        beforeSnapshot: retirementAuditSnapshot(row.before, {
+          correlationId,
+          entityId: row.entityId,
+          evidenceDigest
+        }),
+        entityId: row.entityId,
+        entityType: row.entityType,
+        module: RETIREMENT_MODULE,
+        operatorId,
+        userAgent: "stage1-staging-invalid-test-order-retirement-cli"
+      }
+    });
+  }
+}
+
+function retirementAuditSnapshot(state, { correlationId, entityId, evidenceDigest }) {
+  return {
+    ...state,
+    correlationId,
+    entityId,
+    evidenceDigest,
+    reasonCode: RETIREMENT_REASON
+  };
+}
+
+async function assertPostconditions(
+  tx,
+  { classify, evidenceDigest, loadSnapshot, operatorId }
+) {
+  const classification = classify(await loadSnapshot(tx, { operatorId }));
+  if (
+    classification.disposition !== "UNCHANGED" ||
+    classification.evidenceDigest !== evidenceDigest
+  ) {
+    throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_POSTCONDITION_FAILED");
+  }
+}
+
+function emptyApplyResult({ blocked, skippedUnchanged = 0 }) {
+  return {
+    auditsCreated: 0,
+    billingSchedulesUpdated: 0,
+    blocked,
+    correlationId: null,
+    leasesUpdated: 0,
+    ordersUpdated: 0,
+    skippedUnchanged,
+    vehiclesUpdated: 0
+  };
+}
+
+function assertSingleUpdate(result, entity) {
+  if (result.count !== 1) {
+    throw new Error(`STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_STALE_${entity}`);
+  }
+}
+
+function iso(value) {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }

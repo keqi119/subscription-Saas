@@ -136,6 +136,140 @@ test("loader scopes every prohibited relation count to the target order", async 
   }
 });
 
+test("apply updates four states and creates four correlated audits atomically", async () => {
+  const harness = createApplyHarness();
+  const evidenceDigest = classify(harness.snapshot()).evidenceDigest;
+  const correlationId = "22222222-2222-4222-8222-222222222222";
+  const changedAt = new Date("2026-08-29T01:00:00.000Z");
+
+  const result = await executeApply(harness, {
+    evidenceDigest,
+    now: () => changedAt,
+    randomUuid: () => correlationId
+  });
+
+  assert.equal(harness.state.order.orderStatus, "CANCELLED");
+  assert.equal(harness.state.lease.status, "COMPLETED");
+  assert.equal(harness.state.billingSchedule.status, "CANCELLED");
+  assert.equal(harness.state.billingSchedule.version, 1);
+  assert.equal(harness.state.billingSchedule.cancelledAt.toISOString(), changedAt.toISOString());
+  assert.equal(
+    harness.state.billingSchedule.pauseReason,
+    "STAGING_INVALID_TEST_DATA_RETIREMENT"
+  );
+  assert.equal(harness.state.vehicle.status, "AVAILABLE");
+  assert.equal(harness.state.order.actualReturnAt, null);
+  assert.equal(harness.state.order.actualDeliveryAt.toISOString(), "2026-07-31T03:01:04.000Z");
+  assert.equal(harness.state.auditLogs.length, 4);
+  assert.deepEqual(
+    [...new Set(harness.state.auditLogs.map(({ afterSnapshot }) => afterSnapshot.correlationId))],
+    [correlationId]
+  );
+  assert.deepEqual(result.report.applied, {
+    auditsCreated: 4,
+    billingSchedulesUpdated: 1,
+    blocked: false,
+    correlationId,
+    leasesUpdated: 1,
+    ordersUpdated: 1,
+    skippedUnchanged: 0,
+    vehiclesUpdated: 1
+  });
+  assert.equal(result.exitCode, 0);
+
+  const audits = JSON.stringify(harness.state.auditLogs);
+  assert.doesNotMatch(audits, /objectKey|signedDocumentObjectKey|DATABASE_URL|private\//);
+  assert.match(audits, /STAGING_INVALID_TEST_DATA_RETIREMENT/);
+  assert.match(audits, new RegExp(evidenceDigest));
+});
+
+test("blocked apply locks and reclassifies but performs zero business writes", async () => {
+  const harness = createApplyHarness();
+  harness.state.blockingCounts.receivableBills = 1;
+  const result = await executeApply(harness, { evidenceDigest: "a".repeat(64) });
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.safeToApply, false);
+  assert.deepEqual(result.report.applied, {
+    auditsCreated: 0,
+    billingSchedulesUpdated: 0,
+    blocked: true,
+    correlationId: null,
+    leasesUpdated: 0,
+    ordersUpdated: 0,
+    skippedUnchanged: 0,
+    vehiclesUpdated: 0
+  });
+  assert.equal(harness.calls.filter((call) => call.endsWith("updateMany")).length, 0);
+  assert.equal(harness.state.auditLogs.length, 0);
+});
+
+test("apply rejects a stale dry-run evidence digest before any update", async () => {
+  const harness = createApplyHarness();
+  await assert.rejects(
+    executeApply(harness, { evidenceDigest: "0".repeat(64) }),
+    /STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH/
+  );
+
+  assert.equal(harness.state.order.orderStatus, "ACTIVE");
+  assert.equal(harness.state.lease.status, "ACTIVE");
+  assert.equal(harness.state.billingSchedule.status, "PAUSED");
+  assert.equal(harness.state.vehicle.status, "LEASED");
+  assert.equal(harness.state.auditLogs.length, 0);
+  assert.ok(harness.calls.includes("transaction.rollback"));
+});
+
+test("each conditional update or audit failure rolls back every earlier write", async () => {
+  for (const failure of ["schedule", "lease", "order", "vehicle", "audit-4"]) {
+    const harness = createApplyHarness({ failure });
+    const initial = harness.businessState();
+    const evidenceDigest = classify(harness.snapshot()).evidenceDigest;
+
+    await assert.rejects(executeApply(harness, { evidenceDigest }), undefined, failure);
+
+    assert.deepEqual(harness.businessState(), initial, failure);
+    assert.equal(harness.state.auditLogs.length, 0, failure);
+    assert.ok(harness.calls.includes("transaction.rollback"), failure);
+  }
+});
+
+test("serialized concurrent apply and replay commit once and audit once", async () => {
+  const harness = createApplyHarness({ serializeTransactions: true });
+  const evidenceDigest = classify(harness.snapshot()).evidenceDigest;
+  const input = { evidenceDigest };
+
+  const [left, right] = await Promise.all([
+    executeApply(harness, input),
+    executeApply(harness, input)
+  ]);
+  const replay = await executeApply(harness, input);
+
+  assert.deepEqual(
+    [left, right].map(({ report }) => report.applied.ordersUpdated).sort(),
+    [0, 1]
+  );
+  assert.equal(replay.report.applied.skippedUnchanged, 1);
+  assert.equal(replay.report.applied.ordersUpdated, 0);
+  assert.equal(harness.state.auditLogs.length, 4);
+  assert.equal(harness.calls.filter((call) => call === "advisory.lock").length, 3);
+});
+
+test("apply refuses a partial retirement state instead of continuing it", async () => {
+  const harness = createApplyHarness();
+  harness.state.order.orderStatus = "CANCELLED";
+  const result = await executeApply(harness, { evidenceDigest: "a".repeat(64) });
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.report.applied.blocked, true);
+  assert.ok(
+    result.report.classification.blockers.some(
+      ({ code }) => code === "PARTIAL_RETIREMENT_STATE"
+    )
+  );
+  assert.equal(harness.state.lease.status, "ACTIVE");
+  assert.equal(harness.state.auditLogs.length, 0);
+});
+
 async function executeDryRun(snapshot) {
   const execute = required("executeStage1StagingInvalidTestOrderRetirement");
   return execute({
@@ -145,6 +279,180 @@ async function executeDryRun(snapshot) {
     operatorId,
     prisma: { $transaction: (work) => work({}) }
   });
+}
+
+async function executeApply(harness, overrides = {}) {
+  const execute = required("executeStage1StagingInvalidTestOrderRetirement");
+  return execute({
+    expectedEvidenceDigest:
+      overrides.evidenceDigest ?? classify(harness.snapshot()).evidenceDigest,
+    generatedAt: "2026-08-29T01:00:00.000Z",
+    loadSnapshot: async () => harness.snapshot(),
+    mode: "apply",
+    now: overrides.now ?? (() => new Date("2026-08-29T01:00:00.000Z")),
+    operatorId,
+    prisma: harness.prisma,
+    randomUuid:
+      overrides.randomUuid ?? (() => "22222222-2222-4222-8222-222222222222")
+  });
+}
+
+function createApplyHarness({ failure = null, serializeTransactions = false } = {}) {
+  const state = cleanSnapshot();
+  const calls = [];
+  let auditAttempts = 0;
+  let tail = Promise.resolve();
+
+  async function run(work, options) {
+    assert.deepEqual(options, {
+      isolationLevel: "Serializable",
+      maxWait: 10_000,
+      timeout: 120_000
+    });
+    const previous = tail;
+    let release;
+    if (serializeTransactions) {
+      tail = new Promise((resolve) => {
+        release = resolve;
+      });
+      await previous;
+    }
+    const before = structuredClone(state);
+    calls.push("transaction.begin");
+    const tx = {
+      $queryRawUnsafe: async (query) => {
+        if (query.includes("pg_advisory_xact_lock")) calls.push("advisory.lock");
+        else if (query.includes("FOR UPDATE")) calls.push("row.lock");
+        else throw new Error(`UNEXPECTED_LOCK_QUERY:${query}`);
+        return [];
+      },
+      auditLog: {
+        create: async ({ data }) => {
+          auditAttempts += 1;
+          if (failure === `audit-${auditAttempts}`) throw new Error("INJECTED_AUDIT_FAILURE");
+          state.auditLogs.push(structuredClone(data));
+          calls.push("audit.create");
+          return data;
+        }
+      },
+      billingSchedule: {
+        updateMany: async ({ data, where }) => {
+          if (failure === "schedule" || !matchesSchedule(state.billingSchedule, where)) {
+            return { count: 0 };
+          }
+          applyData(state.billingSchedule, data);
+          calls.push("billingSchedule.updateMany");
+          return { count: 1 };
+        }
+      },
+      lease: {
+        updateMany: async ({ data, where }) => {
+          if (failure === "lease" || !matchesLease(state.lease, where)) return { count: 0 };
+          applyData(state.lease, data);
+          calls.push("lease.updateMany");
+          return { count: 1 };
+        }
+      },
+      subscriptionOrder: {
+        updateMany: async ({ data, where }) => {
+          if (failure === "order" || !matchesOrder(state.order, where)) return { count: 0 };
+          applyData(state.order, data);
+          calls.push("subscriptionOrder.updateMany");
+          return { count: 1 };
+        }
+      },
+      vehicle: {
+        updateMany: async ({ data, where }) => {
+          if (failure === "vehicle" || !matchesVehicle(state.vehicle, where)) return { count: 0 };
+          applyData(state.vehicle, data);
+          calls.push("vehicle.updateMany");
+          return { count: 1 };
+        }
+      }
+    };
+    try {
+      const result = await work(tx);
+      calls.push("transaction.commit");
+      return result;
+    } catch (error) {
+      replaceObject(state, before);
+      calls.push("transaction.rollback");
+      throw error;
+    } finally {
+      release?.();
+    }
+  }
+
+  return {
+    businessState: () => ({
+      billingSchedule: structuredClone(state.billingSchedule),
+      lease: structuredClone(state.lease),
+      order: structuredClone(state.order),
+      vehicle: structuredClone(state.vehicle)
+    }),
+    calls,
+    prisma: { $transaction: run },
+    snapshot: () => structuredClone(state),
+    state
+  };
+}
+
+function matchesSchedule(record, where) {
+  return (
+    record.cancelledAt === where.cancelledAt &&
+    record.id === where.id &&
+    record.lastGeneratedBillId === where.lastGeneratedBillId &&
+    record.orderId === where.orderId &&
+    record.status === where.status &&
+    record.version === where.version
+  );
+}
+
+function matchesLease(record, where) {
+  return (
+    record.deletedAt === where.deletedAt &&
+    record.id === where.id &&
+    record.orderId === where.orderId &&
+    record.status === where.status
+  );
+}
+
+function matchesOrder(record, where) {
+  return (
+    record.actualReturnAt === where.actualReturnAt &&
+    record.deletedAt === where.deletedAt &&
+    record.id === where.id &&
+    record.orderNo === where.orderNo &&
+    record.orderStatus === where.orderStatus &&
+    record.vehicleId === where.vehicleId
+  );
+}
+
+function matchesVehicle(record, where) {
+  return (
+    record.currentSalePriceAmount === where.currentSalePriceAmount &&
+    record.deletedAt === where.deletedAt &&
+    record.id === where.id &&
+    record.salePriceStatus === where.salePriceStatus &&
+    record.status === where.status &&
+    record.vehicleNo === where.vehicleNo &&
+    record.vin === where.vin
+  );
+}
+
+function applyData(record, data) {
+  for (const [field, value] of Object.entries(data)) {
+    if (value && typeof value === "object" && "increment" in value) {
+      record[field] += value.increment;
+    } else {
+      record[field] = structuredClone(value);
+    }
+  }
+}
+
+function replaceObject(target, source) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, structuredClone(source));
 }
 
 function snapshotDatabase() {

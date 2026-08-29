@@ -163,6 +163,9 @@ export function classifyStage1StagingInvalidTestOrderRetirement(snapshot = {}) {
 function inspectCandidateSnapshot(snapshot) {
   const blockers = inspectStableIdentityAndForbiddenFacts(snapshot);
   const { billingSchedule, lease, order, vehicle } = snapshot;
+  if (array(snapshot.auditLogs).length > 0) {
+    blockers.push({ code: "RETIREMENT_AUDIT_UNEXPECTED" });
+  }
   if (order?.deletedAt != null) blockers.push({ code: "ORDER_DELETED" });
   if (order?.orderStatus !== "ACTIVE") blockers.push({ code: "ORDER_STATUS_INVALID" });
   if (lease?.deletedAt != null) blockers.push({ code: "LEASE_DELETED" });

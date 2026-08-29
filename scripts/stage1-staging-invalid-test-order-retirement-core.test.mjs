@@ -306,6 +306,22 @@ test("mixed initial and terminal states never auto-continue", () => {
   assert.ok(result.blockers.some(({ code }) => code === "PARTIAL_RETIREMENT_STATE"));
 });
 
+test("initial state with a prior retirement audit is blocked", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const input = cleanSnapshot();
+  input.auditLogs = [{
+    action: "UPDATE",
+    entityId: input.order.id,
+    entityType: "subscription_order",
+    module: "STAGE1_STAGING_TEST_DATA_RETIREMENT",
+    operatorId
+  }];
+
+  const result = classify(input);
+  assert.equal(result.disposition, "BLOCKED");
+  assert.ok(result.blockers.some(({ code }) => code === "RETIREMENT_AUDIT_UNEXPECTED"));
+});
+
 function cleanSnapshot(overrides = {}) {
   return {
     auditLogs: [],

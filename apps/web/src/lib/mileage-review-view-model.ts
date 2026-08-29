@@ -91,13 +91,16 @@ const STATUS_PRESENTATION: Record<
 };
 
 export function getMileageReviewPresentation(
-  status: MileageReviewStatus,
+  status: string,
   overdue: boolean
 ) {
   if (status === "PENDING_SUBMISSION" && overdue) {
     return { color: "red", label: "逾期待提交" };
   }
-  return STATUS_PRESENTATION[status];
+  return STATUS_PRESENTATION[status as MileageReviewStatus] ?? {
+    color: "default",
+    label: status || "未知状态"
+  };
 }
 
 export function isMileageReviewOverdue(

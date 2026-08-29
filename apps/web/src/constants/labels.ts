@@ -654,6 +654,14 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   TERMINATED: "已终止"
 };
 
+export const PAYMENT_SUMMARY_STATUS_LABELS: Record<string, string> = {
+  NONE: "暂无账单",
+  OVERDUE: "已逾期",
+  PAID: "已结清",
+  PARTIALLY_PAID: "部分支付",
+  PENDING: "待支付"
+};
+
 export const SUBSCRIPTION_CHANGE_STATUS_LABELS: Record<string, string> = {
   CANCELLED: "已取消",
   COMPLETED: "已完成",

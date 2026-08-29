@@ -6,7 +6,12 @@ import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { ORDER_STATUS_LABELS, STATUS_LABELS, labelOf } from "../../../constants/labels";
+import {
+  ORDER_STATUS_LABELS,
+  PAYMENT_SUMMARY_STATUS_LABELS,
+  STATUS_LABELS,
+  labelOf
+} from "../../../constants/labels";
 import { PortalApiError, portalApiFetch } from "../../../lib/portal-api";
 import { PortalOrderListItem, PortalPagedResponse } from "../../../lib/portal-types";
 
@@ -75,7 +80,7 @@ export default function PortalOrdersPage() {
                     </Typography.Text>
                     <Space size={[6, 6]} wrap>
                       <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag>
-                      <Tag>{labelOf(STATUS_LABELS, order.paymentStatus)}</Tag>
+                      <Tag>{labelOf(PAYMENT_SUMMARY_STATUS_LABELS, order.paymentStatus)}</Tag>
                       {order.contractStatus ? <Tag>{labelOf(STATUS_LABELS, order.contractStatus)}</Tag> : null}
                     </Space>
                   </Space>

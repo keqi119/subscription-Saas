@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   executeStage1CleanAcceptanceBaseline
@@ -270,6 +271,7 @@ test("required ownership and cost-ledger JSON rejects null or undefined and roll
       const source = createDatabaseFake("subscription_saas_staging", rows);
       const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
       const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+      assert.equal(dry.safe, true);
       await assert.rejects(
         executeStage1CleanAcceptanceBaseline({
           ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
@@ -277,8 +279,41 @@ test("required ownership and cost-ledger JSON rejects null or undefined and roll
         }),
         (error) => error?.message === "MANIFEST_CLASSIFICATION_INVALID"
       );
+      const writeTx = target.transactions.find((entry) => entry.isolationLevel === "Serializable");
+      assert.ok(writeTx);
+      assert.match(writeTx.calls[0].sql, /pg_advisory_xact_lock/);
+      const expectedPrecedingDelegate = delegate === "vehicleOwnershipPeriod"
+        ? "vehicleSalePriceHistory"
+        : "vehicleAssetCostProfile";
+      assert.ok(writeTx.calls.some((call) => call.operation === "createMany" && call.delegate === expectedPrecedingDelegate));
+      assert.equal(writeTx.calls.some((call) => call.delegate === "auditLog" && isWrite(call)), false);
       assert.deepEqual(target.rows, {});
     }
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("the fake rejects a reversal that changes trigger-protected accounting facts", async () => {
+  const rows = sourceRows();
+  rows.vehicleCostLedgerEntry[1].customerId = null;
+  rows.vehicleCostLedgerEntry[1].actionType = "WRITE_OFF";
+  rows.vehicleCostLedgerEntry[1].assetOwnerSnapshot = { ownerNo: "CHANGED" };
+  const source = createDatabaseFake("subscription_saas_staging", rows);
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  assert.equal(dry.safe, true);
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await assert.rejects(
+      executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      }),
+      (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR"
+    );
+    assert.deepEqual(target.rows, {});
   } finally {
     restoreEnv(previous);
   }
@@ -383,7 +418,7 @@ function sourceRows() {
     vehicleAssetCostProfile: [{ id: COST_PROFILE_ID, vehicleId: VEHICLE_ID, profileStatus: "ACTIVE", depreciationMethod: "STRAIGHT_LINE", depreciationStartDate: at, usefulLifeMonths: 60, residualValueAmount: 10000n, capitalCostRateBps: null, annualInsuranceCostAmount: null, annualMaintenanceReserveAmount: null, otherMonthlyCostAmount: null, remark: null, snapshot: null, createdAt: at, updatedAt: at, createdBy: null, updatedBy: null, deletedAt: null }],
     vehicleCostLedgerEntry: [
       { id: LEDGER_ID_1, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: CUSTOMER_ID, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "ORIGINAL", actionType: "ACTUAL_COST", costCategory: "OTHER", amountCents: 10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: null, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:original", createdAt: at },
-      { id: LEDGER_ID_2, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: null, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: { ownerNo: "OWNER-1" }, evidenceSnapshot: { reason: "reversal" }, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "REVERSAL", actionType: "WRITE_OFF", costCategory: "OTHER", amountCents: -10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: LEDGER_ID_1, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:reversal", createdAt: at }
+      { id: LEDGER_ID_2, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: CUSTOMER_ID, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "REVERSAL", actionType: "ACTUAL_COST", costCategory: "OTHER", amountCents: -10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: LEDGER_ID_1, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:reversal", createdAt: at }
     ]
   };
   return rows;
@@ -530,6 +565,7 @@ function validateFakeCreateInput(delegate, row, rows, batch) {
     if (typeof row.amountCents !== "bigint") throw new TypeError(`${delegate}.amountCents is required`);
     requireDate(row.occurredOn, `${delegate}.occurredOn`);
     requireDate(row.confirmedAt, `${delegate}.confirmedAt`);
+    validateFakeReversalContract(row, rows, batch);
   }
 
   const has = (target, id) => (rows[target] ?? []).some((item) => item.id === id);
@@ -544,6 +580,23 @@ function validateFakeCreateInput(delegate, row, rows, batch) {
         [row.orderId, row.contractId, row.workOrderId, row.evidenceId].some((value) => value != null)) {
       throw new Error("dangling cost ledger endpoint");
     }
+  }
+}
+
+function validateFakeReversalContract(row, rows, batch) {
+  if (row.entryKind !== "REVERSAL") return;
+  const candidates = [...(rows.vehicleCostLedgerEntry ?? []), ...batch];
+  const original = candidates.find((item) => item.id === row.reversalOfEntryId);
+  if (!original || original.entryKind === "REVERSAL") throw new Error("invalid reversal target");
+  if (row.amountCents !== -original.amountCents) throw new Error("invalid reversal amount");
+  const protectedFields = [
+    "vehicleId", "orderId", "contractId", "customerId", "assetOwnerId", "workOrderId",
+    "occurredOn", "accountingPeriod", "actionType", "costCategory", "responsiblePartyType",
+    "responsiblePartyId", "assetOwnerSnapshot", "evidenceId", "evidenceSnapshot",
+    "responsibilitySnapshot"
+  ];
+  if (protectedFields.some((field) => !isDeepStrictEqual(row[field], original[field]))) {
+    throw new Error("reversal must preserve trigger-protected facts");
   }
 }
 

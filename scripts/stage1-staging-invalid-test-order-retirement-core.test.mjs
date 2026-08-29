@@ -111,3 +111,346 @@ test("target assertion accepts only the frozen five-field identity", () => {
     );
   }
 });
+
+test("classifies only the exact empty-history active tuple as a candidate", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const result = classify(cleanSnapshot());
+
+  assert.equal(result.disposition, "CANDIDATE");
+  assert.deepEqual(result.blockers, []);
+  assert.match(result.evidenceDigest, /^[0-9a-f]{64}$/);
+  assert.deepEqual(result.candidate, {
+    billingScheduleId: "36054e6d-5104-4daf-b8a7-cb7e956fc436",
+    leaseId: "44444444-4444-4444-8444-444444444444",
+    orderId: selectors.orderId,
+    transitions: {
+      billingSchedule: ["PAUSED", "CANCELLED"],
+      lease: ["ACTIVE", "COMPLETED"],
+      order: ["ACTIVE", "CANCELLED"],
+      vehicle: ["LEASED", "AVAILABLE"]
+    },
+    vehicleId: selectors.vehicleId
+  });
+  assert.deepEqual(result.summary, { blockers: 0, inspectedOrders: 1 });
+});
+
+test("every prohibited relation fails closed with a stable count blocker", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  for (const field of Object.keys(cleanSnapshot().blockingCounts)) {
+    const input = cleanSnapshot();
+    input.blockingCounts[field] = 1;
+    const result = classify(input);
+    assert.equal(result.disposition, "BLOCKED", field);
+    assert.ok(
+      result.blockers.some(
+        ({ code, count, relation }) =>
+          code === "RELATED_RECORDS_PRESENT" && count === 1 && relation === field
+      ),
+      field
+    );
+  }
+});
+
+test("rejects target identity, lifecycle, delivery, return, occupation, and price drift", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const cases = [
+    [
+      "TARGET_IDENTITY_MISMATCH",
+      { order: { ...cleanSnapshot().order, orderNo: "ORD-WRONG" } }
+    ],
+    ["ORDER_STATUS_INVALID", { order: { ...cleanSnapshot().order, orderStatus: "SUSPENDED" } }],
+    ["LEASE_STATUS_INVALID", { lease: { ...cleanSnapshot().lease, status: "RETURN_DUE" } }],
+    [
+      "BILLING_SCHEDULE_STATUS_INVALID",
+      { billingSchedule: { ...cleanSnapshot().billingSchedule, status: "ACTIVE" } }
+    ],
+    ["VEHICLE_STATUS_INVALID", { vehicle: { ...cleanSnapshot().vehicle, status: "RENTED" } }],
+    ["VEHICLE_DELIVERY_PRESENT", { vehicleDeliveries: [{ id: "delivery-1" }] }],
+    [
+      "ORDER_ACTUAL_RETURN_PRESENT",
+      { order: { ...cleanSnapshot().order, actualReturnAt: "2026-08-29T00:00:00.000Z" } }
+    ],
+    [
+      "VEHICLE_OTHER_ACTIVE_ORDER",
+      { vehicle: { ...cleanSnapshot().vehicle, activeOtherOrders: [{ id: "other-order" }] } }
+    ],
+    [
+      "VEHICLE_OTHER_ACTIVE_LEASE",
+      { vehicle: { ...cleanSnapshot().vehicle, activeOtherLeases: [{ id: "other-lease" }] } }
+    ],
+    [
+      "VEHICLE_ACTIVE_RESTRICTION",
+      { vehicle: { ...cleanSnapshot().vehicle, activeRestrictions: [{ id: "restriction" }] } }
+    ],
+    [
+      "VEHICLE_SALE_PRICE_NOT_EFFECTIVE",
+      { vehicle: { ...cleanSnapshot().vehicle, salePriceStatus: "PENDING_INITIALIZE" } }
+    ],
+    [
+      "VEHICLE_SALE_PRICE_NOT_POSITIVE",
+      { vehicle: { ...cleanSnapshot().vehicle, currentSalePriceAmount: 0n } }
+    ],
+    [
+      "BILLING_SCHEDULE_LAST_BILL_PRESENT",
+      { billingSchedule: { ...cleanSnapshot().billingSchedule, lastGeneratedBillId: "bill-1" } }
+    ]
+  ];
+
+  for (const [code, overrides] of cases) {
+    const result = classify(cleanSnapshot(overrides));
+    assert.ok(result.blockers.some((row) => row.code === code), code);
+  }
+});
+
+test("requires one active ADMIN operator and terminal background evidence", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const disabledOperator = cleanSnapshot();
+  disabledOperator.operator.status = "DISABLED";
+  assert.ok(
+    classify(disabledOperator).blockers.some(({ code }) => code === "OPERATOR_NOT_ACTIVE_ADMIN")
+  );
+
+  const noAdmin = cleanSnapshot();
+  noAdmin.operator.roles = [{
+    code: "OP",
+    deletedAt: null,
+    roleDeletedAt: null,
+    roleStatus: "ACTIVE"
+  }];
+  assert.ok(classify(noAdmin).blockers.some(({ code }) => code === "OPERATOR_NOT_ACTIVE_ADMIN"));
+
+  const pendingEsign = cleanSnapshot();
+  pendingEsign.evidenceReferences.eSignTasks[0].taskStatus = "SIGNING";
+  assert.ok(
+    classify(pendingEsign).blockers.some(({ code }) => code === "NONTERMINAL_ESIGN_TASK")
+  );
+
+  const pendingHandoverJob = cleanSnapshot();
+  pendingHandoverJob.evidenceReferences.handoverWorkflowJobs[0].jobStatus = "PENDING";
+  assert.ok(
+    classify(pendingHandoverJob).blockers.some(
+      ({ code }) => code === "NONTERMINAL_HANDOVER_WORKFLOW_JOB"
+    )
+  );
+});
+
+test("evidence digest is deterministic and public classification is credential safe", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const first = cleanSnapshot();
+  first.evidenceReferences.contracts.push({
+    id: "00000000-0000-4000-8000-000000000002",
+    objectKey: "private/second-contract.pdf",
+    status: "ARCHIVED"
+  });
+  const second = structuredClone(first);
+  second.evidenceReferences.contracts.reverse();
+
+  const left = classify(first);
+  const right = classify(second);
+  assert.equal(left.evidenceDigest, right.evidenceDigest);
+  const publicReport = JSON.stringify(left);
+  assert.doesNotMatch(publicReport, /private\//);
+  assert.doesNotMatch(publicReport, /objectKey|signedDocumentObjectKey|DATABASE_URL|mobile/);
+});
+
+test("recognizes only a complete matching four-audit replay", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const before = classify(cleanSnapshot());
+  const terminal = terminalSnapshot(cleanSnapshot(), before.evidenceDigest);
+
+  const replay = classify(terminal);
+  assert.equal(replay.disposition, "UNCHANGED");
+  assert.equal(replay.evidenceDigest, before.evidenceDigest);
+
+  terminal.auditLogs.pop();
+  const missingAudit = classify(terminal);
+  assert.equal(missingAudit.disposition, "BLOCKED");
+  assert.ok(missingAudit.blockers.some(({ code }) => code === "RETIREMENT_AUDIT_MISMATCH"));
+});
+
+test("terminal replay still blocks newly introduced forbidden facts", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const before = classify(cleanSnapshot());
+  const terminal = terminalSnapshot(cleanSnapshot(), before.evidenceDigest);
+  terminal.blockingCounts.receivableBills = 1;
+
+  const replay = classify(terminal);
+  assert.equal(replay.disposition, "BLOCKED");
+  assert.ok(
+    replay.blockers.some(
+      ({ code, relation }) => code === "RELATED_RECORDS_PRESENT" && relation === "receivableBills"
+    )
+  );
+});
+
+test("mixed initial and terminal states never auto-continue", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const input = cleanSnapshot();
+  input.order.orderStatus = "CANCELLED";
+
+  const result = classify(input);
+  assert.equal(result.disposition, "BLOCKED");
+  assert.ok(result.blockers.some(({ code }) => code === "PARTIAL_RETIREMENT_STATE"));
+});
+
+function cleanSnapshot(overrides = {}) {
+  return {
+    auditLogs: [],
+    billingSchedule: {
+      cancelledAt: null,
+      id: "36054e6d-5104-4daf-b8a7-cb7e956fc436",
+      lastGeneratedBillId: null,
+      pauseReason: "legacy-test-order",
+      status: "PAUSED",
+      version: 0
+    },
+    blockingCounts: emptyBlockingCounts(),
+    evidenceReferences: {
+      contracts: [
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          objectKey: "private/original-contract.pdf",
+          status: "SIGNED"
+        }
+      ],
+      eSignTasks: [
+        {
+          id: "00000000-0000-4000-8000-000000000003",
+          signedDocumentObjectKey: "private/signed-contract.pdf",
+          taskStatus: "COMPLETED"
+        }
+      ],
+      handovers: [
+        {
+          archiveStatus: "ARCHIVED",
+          id: "bfc5a943-0000-4000-8000-000000000000",
+          status: "ARCHIVED"
+        }
+      ],
+      handoverWorkflowJobs: [
+        {
+          id: "00000000-0000-4000-8000-000000000004",
+          jobStatus: "COMPLETED"
+        }
+      ]
+    },
+    lease: {
+      activatedAt: "2026-07-31T03:01:04.000Z",
+      deletedAt: null,
+      id: "44444444-4444-4444-8444-444444444444",
+      status: "ACTIVE"
+    },
+    operator: {
+      deletedAt: null,
+      id: operatorId,
+      roles: [
+        {
+          code: "ADMIN",
+          deletedAt: null,
+          roleDeletedAt: null,
+          roleStatus: "ACTIVE"
+        }
+      ],
+      status: "ACTIVE"
+    },
+    order: {
+      actualDeliveryAt: "2026-07-31T03:01:04.000Z",
+      actualReturnAt: null,
+      contractId: null,
+      deletedAt: null,
+      endDate: null,
+      id: selectors.orderId,
+      orderNo: selectors.orderNo,
+      orderStatus: "ACTIVE",
+      startDate: null,
+      vehicleId: selectors.vehicleId
+    },
+    vehicle: {
+      activeOtherLeases: [],
+      activeOtherOrders: [],
+      activeRestrictions: [],
+      currentSalePriceAmount: 18500000n,
+      deletedAt: null,
+      id: selectors.vehicleId,
+      salePriceStatus: "EFFECTIVE",
+      status: "LEASED",
+      vehicleNo: selectors.vehicleNo,
+      vin: selectors.vin
+    },
+    vehicleDeliveries: [],
+    ...overrides
+  };
+}
+
+function emptyBlockingCounts() {
+  return {
+    assetWorkOrders: 0,
+    automationJobs: 0,
+    closureCases: 0,
+    collectionActions: 0,
+    collectionCaseBills: 0,
+    collectionCases: 0,
+    contractSegments: 0,
+    costLedgerEntries: 0,
+    debitAttempts: 0,
+    depositLedgers: 0,
+    entitlementAccounts: 0,
+    entitlementGrants: 0,
+    entitlementUsages: 0,
+    insuranceClaims: 0,
+    mileageReadings: 0,
+    mileageReviews: 0,
+    orderChanges: 0,
+    paymentMandates: 0,
+    paymentOrders: 0,
+    paymentRecords: 0,
+    paymentWriteOffs: 0,
+    receivableBills: 0,
+    renewalConsiderations: 0,
+    returnDamages: 0,
+    returns: 0,
+    revenueRightAssignments: 0,
+    serviceCases: 0,
+    subscriptionChanges: 0,
+    subscriptionPeriods: 0
+  };
+}
+
+function terminalSnapshot(snapshot, evidenceDigest) {
+  const terminal = structuredClone(snapshot);
+  terminal.billingSchedule.cancelledAt = "2026-08-29T01:00:00.000Z";
+  terminal.billingSchedule.pauseReason = "STAGING_INVALID_TEST_DATA_RETIREMENT";
+  terminal.billingSchedule.status = "CANCELLED";
+  terminal.billingSchedule.version += 1;
+  terminal.lease.status = "COMPLETED";
+  terminal.order.orderStatus = "CANCELLED";
+  terminal.vehicle.status = "AVAILABLE";
+  const correlationId = "22222222-2222-4222-8222-222222222222";
+  terminal.auditLogs = [
+    ["billing_schedule", terminal.billingSchedule.id, "PAUSED", "CANCELLED"],
+    ["lease", terminal.lease.id, "ACTIVE", "COMPLETED"],
+    ["subscription_order", terminal.order.id, "ACTIVE", "CANCELLED"],
+    ["vehicle", terminal.vehicle.id, "LEASED", "AVAILABLE"]
+  ].map(([entityType, entityId, beforeStatus, afterStatus]) => ({
+    action: "UPDATE",
+    afterSnapshot: {
+      correlationId,
+      entityId,
+      evidenceDigest,
+      reasonCode: "STAGING_INVALID_TEST_DATA_RETIREMENT",
+      status: afterStatus
+    },
+    beforeSnapshot: {
+      correlationId,
+      entityId,
+      evidenceDigest,
+      reasonCode: "STAGING_INVALID_TEST_DATA_RETIREMENT",
+      status: beforeStatus
+    },
+    entityId,
+    entityType,
+    module: "STAGE1_STAGING_TEST_DATA_RETIREMENT",
+    operatorId
+  }));
+  return terminal;
+}

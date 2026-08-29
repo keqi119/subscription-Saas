@@ -23,6 +23,10 @@ describe("mileage review view model", () => {
       color: "red",
       label: "逾期待提交"
     });
+    expect(getMileageReviewPresentation("FUTURE_STATE", false)).toEqual({
+      color: "default",
+      label: "FUTURE_STATE"
+    });
     expect(
       isMileageReviewOverdue(
         review({ dueAt: "2026-09-02T15:59:59.000Z", status: "PENDING_SUBMISSION" }),

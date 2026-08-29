@@ -582,6 +582,40 @@ describe("AssetFactsRepository PostgreSQL command behavior", () => {
     }
   );
 
+  it("returns an exact ownership start replay while its authority row is locked", async () => {
+    const fixture = await createRepositoryFixture(prisma);
+    const input = serviceOpenDto(
+      "ownership",
+      fixture,
+      "service-ownership-start-replay-locked-authority"
+    );
+    const service = createAssetFactsService(prisma);
+    const original = await serviceOpen(service, "ownership", input);
+    const authorityLocked = deferred<void>();
+    const releaseAuthority = deferred<void>();
+    const mutationPromise = prisma.$transaction(async (tx) => {
+      await tx.vehicle.update({
+        data: { status: VehicleStatus.AVAILABLE },
+        where: { id: fixture.vehicleId }
+      });
+      authorityLocked.resolve();
+      await releaseAuthority.promise;
+    });
+    void mutationPromise.catch(authorityLocked.reject);
+    await authorityLocked.promise;
+
+    const replayPromise = settled(serviceOpen(service, "ownership", input));
+    const replay = await settlesWithin(replayPromise, 1_000);
+    releaseAuthority.resolve();
+    await mutationPromise;
+
+    expect(replay.finished).toBe(true);
+    if (!replay.finished) {
+      throw new Error("Exact ownership replay did not finish while authority remained locked.");
+    }
+    expect(fulfilledValue(replay.value).id).toBe(original.id);
+  });
+
   it.each(["subscription", "ownership"] as const)(
     "serializes an exact concurrent %s close before authority snapshot selection and audits once",
     async (periodKind) => {

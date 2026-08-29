@@ -28,7 +28,11 @@ import { useParams, useRouter } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { SUBSCRIPTION_CHANGE_TYPE_LABELS } from "../../../../constants/labels";
+import {
+  SUBSCRIPTION_CHANGE_STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_TYPE_LABELS,
+  labelOf
+} from "../../../../constants/labels";
 import {
   confirmPortalRenewalQuote,
   getPortalSubscriptionChange,
@@ -231,7 +235,7 @@ export default function PortalSubscriptionChangeDetailPage() {
                   : "blue"
             }
           >
-            {change.status}
+            {labelOf(SUBSCRIPTION_CHANGE_STATUS_LABELS, change.status)}
           </Tag>
         </Flex>
         <ChangeStatusAlert change={change} />

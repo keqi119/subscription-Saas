@@ -1,3 +1,5 @@
+import type { MileageReviewStatus } from "./mileage-review-view-model";
+
 export interface PortalCatalogVehicle {
   available: boolean;
   batteryCapacityKwh: number | null;
@@ -914,7 +916,7 @@ export interface PortalOrderDetail extends PortalOrderListItem {
     overdue: boolean;
     overMileageBillId: string | null;
     scheduledReviewAt: string | null;
-    status: string;
+    status: MileageReviewStatus;
   };
   nextAction: string;
   nextActionTarget: null | {

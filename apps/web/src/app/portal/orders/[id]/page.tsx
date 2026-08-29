@@ -11,13 +11,16 @@ import {
   BILL_STATUS_LABELS,
   BILL_TYPE_LABELS,
   ORDER_STATUS_LABELS,
+  PAYMENT_SUMMARY_STATUS_LABELS,
   STATUS_LABELS,
+  SUBSCRIPTION_CHANGE_STATUS_LABELS,
   SUBSCRIPTION_CHANGE_TYPE_LABELS,
   VEHICLE_DOCUMENT_TYPE_LABELS,
   labelOf
 } from "../../../../constants/labels";
 import { PORTAL_API_BASE_URL, PortalApiError, portalApiFetch } from "../../../../lib/portal-api";
 import { PortalOrderDetail, PortalPaymentOrder, PortalVehicleDocument } from "../../../../lib/portal-types";
+import { getMileageReviewPresentation } from "../../../../lib/mileage-review-view-model";
 import { loadPortalSubscriptionClosureByOrder } from "../../../../lib/subscription-closure-api";
 import type { CustomerSubscriptionClosureView } from "../../../../lib/subscription-closure-view-model";
 import { PortalJourneyNextActionCard } from "../../../../components/portal/portal-journey-next-action-card";
@@ -131,7 +134,10 @@ export default function PortalOrderDetailPage() {
                   {labelOf(
                     SUBSCRIPTION_CHANGE_TYPE_LABELS,
                     order.activeSubscriptionChange.changeType
-                  )} · {order.activeSubscriptionChange.status}
+                  )} · {labelOf(
+                    SUBSCRIPTION_CHANGE_STATUS_LABELS,
+                    order.activeSubscriptionChange.status
+                  )}
                 </Typography.Text>
               </div>
               <Button
@@ -168,7 +174,7 @@ export default function PortalOrderDetailPage() {
             </div>
             <Space size={[6, 6]} wrap>
               <Tag color="blue">{labelOf(ORDER_STATUS_LABELS, order.orderStatus)}</Tag>
-              <Tag>{labelOf(STATUS_LABELS, order.paymentStatus)}</Tag>
+              <Tag>{labelOf(PAYMENT_SUMMARY_STATUS_LABELS, order.paymentStatus)}</Tag>
             </Space>
           </Flex>
           <Alert
@@ -208,7 +214,10 @@ export default function PortalOrderDetailPage() {
               <div>
                 <Typography.Title level={4} style={{ margin: 0 }}>月度里程复核</Typography.Title>
                 <Typography.Text type="secondary">
-                  第 {order.mileageReviewSummary.cycleNo} 期 · {order.mileageReviewSummary.overdue ? "已逾期" : order.mileageReviewSummary.status}
+                  第 {order.mileageReviewSummary.cycleNo} 期 · {getMileageReviewPresentation(
+                    order.mileageReviewSummary.status,
+                    order.mileageReviewSummary.overdue
+                  ).label}
                 </Typography.Text>
               </div>
               <Button

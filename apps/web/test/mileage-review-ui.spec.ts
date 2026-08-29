@@ -62,6 +62,11 @@ describe("mileage review workspaces", () => {
     expect(portalHome).toContain("/portal/mileage-reviews");
     expect(portalHome).toContain("月度里程复核");
     expect(portalOrder).toContain("mileageReviewSummary");
+    expect(portalOrder).toContain("getMileageReviewPresentation");
+    expect(portalOrder).not.toContain("as MileageReviewStatus");
+    expect(portalOrder).not.toContain(
+      'order.mileageReviewSummary.overdue ? "已逾期" : order.mileageReviewSummary.status'
+    );
     expect(portalOrder).toContain("SUBMIT_MILEAGE_REVIEW");
     expect(portalOrder).toContain("nextActionTarget");
     expect(adminOrder).toContain("/mileage-reviews?orderId=");

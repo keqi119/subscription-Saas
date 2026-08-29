@@ -173,6 +173,7 @@ export class SubscriptionJourneyRepository {
         journeyId: input.journeyId,
         payload: eventPayload
       });
+      await this.resolveStepExceptions(tx, input.journeyId, input.stepId);
       return this.readStep(tx, input.stepId, input.journeyId);
     }
 
@@ -188,6 +189,7 @@ export class SubscriptionJourneyRepository {
         id_journeyId: { id: input.stepId, journeyId: input.journeyId }
       }
     });
+    await this.resolveStepExceptions(tx, input.journeyId, input.stepId);
     await this.writeEventAndOutbox(tx, {
       eventKey: input.eventKey,
       eventType: SubscriptionJourneyEventType.STEP_COMPLETED,
@@ -822,31 +824,45 @@ export class SubscriptionJourneyRepository {
     tx: Tx,
     input: RecordJourneyExceptionInput
   ): Promise<SubscriptionJourneyException> {
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
+    return this.recordLockedException(tx, input, locked);
+  }
+
+  private async recordLockedException(
+    tx: Tx,
+    input: RecordJourneyExceptionInput,
+    locked: LockedJourneyStep
+  ): Promise<SubscriptionJourneyException> {
     const failure = safeFailure(input.error);
+    const alreadyTerminal =
+      ([
+        SubscriptionJourneyStepStatus.COMPLETED,
+        SubscriptionJourneyStepStatus.SKIPPED,
+        SubscriptionJourneyStepStatus.CANCELLED
+      ] as SubscriptionJourneyStepStatus[]).includes(locked.stepStatus) ||
+      locked.journeyStatus === SubscriptionJourneyStatus.COMPLETED ||
+      locked.journeyStatus === SubscriptionJourneyStatus.CANCELLED;
     const exception = await tx.subscriptionJourneyException.create({
       data: {
         code: failure.code,
         jobId: input.jobId,
         journeyId: input.journeyId,
         message: failure.message,
+        ...(alreadyTerminal
+          ? {
+              resolutionNotes:
+                "Automatically resolved because the journey or step was already terminal.",
+              resolvedAt: new Date(),
+              status: SubscriptionJourneyExceptionStatus.RESOLVED
+            }
+          : {}),
         retryable: failure.retryable,
         stepId: input.stepId
       }
     });
-    const journey = await tx.subscriptionJourney.findUnique({
-      where: { id: input.journeyId }
-    });
-    const step = await tx.subscriptionJourneyStep.findUnique({
-      where: {
-        id_journeyId: { id: input.stepId, journeyId: input.journeyId }
-      }
-    });
     if (
-      !journey ||
-      !step ||
-      journey.currentStepCode !== step.code ||
-      journey.status === SubscriptionJourneyStatus.COMPLETED ||
-      journey.status === SubscriptionJourneyStatus.CANCELLED
+      alreadyTerminal ||
+      locked.currentStepCode !== locked.stepCode
     ) {
       return exception;
     }
@@ -860,11 +876,23 @@ export class SubscriptionJourneyRepository {
         id_journeyId: { id: input.stepId, journeyId: input.journeyId }
       }
     });
-    await this.updateJourneyVersion(tx, input.journeyId, journey.version, {
-      currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
-      status: SubscriptionJourneyStatus.EXCEPTION,
-      version: { increment: 1 }
-    });
+    await this.updateJourneyVersion(
+      tx,
+      input.journeyId,
+      locked.journeyVersion,
+      locked.journeyStatus === SubscriptionJourneyStatus.PAUSED
+        ? {
+            currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
+            pausedFromStatus: SubscriptionJourneyStatus.EXCEPTION,
+            status: SubscriptionJourneyStatus.PAUSED,
+            version: { increment: 1 }
+          }
+        : {
+            currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
+            status: SubscriptionJourneyStatus.EXCEPTION,
+            version: { increment: 1 }
+          }
+    );
     await this.writeEventAndOutbox(tx, {
       eventKey: `journey:${input.journeyId}:exception:${exception.id}`,
       eventType: SubscriptionJourneyEventType.STEP_EXCEPTION,
@@ -876,7 +904,7 @@ export class SubscriptionJourneyRepository {
         retryable: failure.retryable,
         stepId: input.stepId
       }),
-      sequence: journey.version + 1
+      sequence: locked.journeyVersion + 1
     });
     return exception;
   }
@@ -1294,6 +1322,7 @@ export class SubscriptionJourneyRepository {
     input: DeadLetterJourneyJobInput
   ): Promise<SubscriptionJourneyException> {
     const failure = safeFailure(input.error);
+    const locked = await lockJourneyStep(tx, input.journeyId, input.stepId);
     const updated = await tx.$executeRaw(Prisma.sql`
       UPDATE "subscription_journey_job"
       SET
@@ -1311,7 +1340,7 @@ export class SubscriptionJourneyRepository {
         AND "lease_expires_at" > clock_timestamp()
     `);
     requireLease(updated);
-    return this.recordException(tx, { ...input, error: failure });
+    return this.recordLockedException(tx, { ...input, error: failure }, locked);
   }
 
   private async advanceJourney(
@@ -1367,6 +1396,26 @@ export class SubscriptionJourneyRepository {
       where: { id: journeyId, version: expectedVersion }
     });
     if (updated.count !== 1) throw optimisticConflict();
+  }
+
+  private resolveStepExceptions(tx: Tx, journeyId: string, stepId: string) {
+    return tx.subscriptionJourneyException.updateMany({
+      data: {
+        resolutionNotes: "Automatically resolved after successful step completion.",
+        resolvedAt: new Date(),
+        status: SubscriptionJourneyExceptionStatus.RESOLVED
+      },
+      where: {
+        journeyId,
+        status: {
+          in: [
+            SubscriptionJourneyExceptionStatus.OPEN,
+            SubscriptionJourneyExceptionStatus.ACKNOWLEDGED
+          ]
+        },
+        stepId
+      }
+    });
   }
 
   private async readStep(tx: Tx, stepId: string, journeyId: string) {
@@ -1519,6 +1568,7 @@ function validateCurrentStep(
   if (
     locked.journeyStatus === SubscriptionJourneyStatus.COMPLETED ||
     locked.journeyStatus === SubscriptionJourneyStatus.CANCELLED ||
+    locked.journeyStatus === SubscriptionJourneyStatus.PAUSED ||
     locked.currentStepCode !== locked.stepCode ||
     locked.currentStepStatus !== locked.stepStatus ||
     !([

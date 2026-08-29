@@ -39,7 +39,120 @@ describe("SubscriptionJourneyRepository", () => {
 
     expect(second).toEqual(first);
     expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.subscriptionJourneyException.updateMany).toHaveBeenCalledTimes(2);
     expect(tx.subscriptionJourneyEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves open step exceptions when a later attempt completes successfully", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map());
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.completeStep(tx as never, {
+      eventKey: "application:validation:completed-after-remediation",
+      expectedVersion: 0,
+      journeyId: step.journeyId,
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourneyException.updateMany).toHaveBeenCalledWith({
+      data: {
+        resolutionNotes: "Automatically resolved after successful step completion.",
+        resolvedAt: expect.any(Date),
+        status: "RESOLVED"
+      },
+      where: {
+        journeyId: step.journeyId,
+        status: { in: ["OPEN", "ACKNOWLEDGED"] },
+        stepId: step.id
+      }
+    });
+  });
+
+  it("stores late exceptions as resolved when their step is already terminal", async () => {
+    const step = journeyStep({ status: SubscriptionJourneyStepStatus.COMPLETED } as never);
+    const tx = completeStepTransaction(step, new Map(), {
+      status: SubscriptionJourneyStatus.RUNNING
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.recordException(tx as never, {
+      error: {
+        code: "LATE_PROVIDER_FAILURE",
+        message: "Late provider failure.",
+        retryable: false
+      },
+      journeyId: step.journeyId,
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourneyException.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        resolutionNotes:
+          "Automatically resolved because the journey or step was already terminal.",
+        resolvedAt: expect.any(Date),
+        status: "RESOLVED"
+      })
+    });
+    expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyStep.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let an in-flight worker complete a paused journey", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map(), {
+      pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+      status: SubscriptionJourneyStatus.PAUSED,
+      version: 1
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await expect(
+      repository.completeStep(tx as never, {
+        eventKey: "paused:worker:late-completion",
+        expectedVersion: 1,
+        journeyId: step.journeyId,
+        stepId: step.id
+      })
+    ).rejects.toMatchObject({ code: "JOURNEY_INVALID_TRANSITION" });
+
+    expect(tx.subscriptionJourney.updateMany).not.toHaveBeenCalled();
+    expect(tx.subscriptionJourneyStep.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps a paused journey paused when an in-flight worker fails", async () => {
+    const step = journeyStep();
+    const tx = completeStepTransaction(step, new Map(), {
+      pausedFromStatus: SubscriptionJourneyStatus.RUNNING,
+      status: SubscriptionJourneyStatus.PAUSED,
+      version: 1
+    } as never);
+    const repository = new SubscriptionJourneyRepository();
+
+    await repository.recordException(tx as never, {
+      error: {
+        code: "PAUSED_IN_FLIGHT_FAILURE",
+        message: "The already claimed job failed after an administrator paused the journey.",
+        retryable: false
+      },
+      journeyId: step.journeyId,
+      stepId: step.id
+    });
+
+    expect(tx.subscriptionJourneyStep.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: SubscriptionJourneyStepStatus.EXCEPTION })
+      })
+    );
+    expect(tx.subscriptionJourney.updateMany).toHaveBeenCalledWith({
+      data: {
+        currentStepStatus: SubscriptionJourneyStepStatus.EXCEPTION,
+        pausedFromStatus: SubscriptionJourneyStatus.EXCEPTION,
+        status: SubscriptionJourneyStatus.PAUSED,
+        version: { increment: 1 }
+      },
+      where: { id: step.journeyId, version: 1 }
+    });
   });
 
   it("writes one terminal JOURNEY_COMPLETED event and outbox row on activation retries", async () => {
@@ -805,6 +918,18 @@ describe("SubscriptionJourneyRepository", () => {
         .mockResolvedValue(0);
       const tx = {
         $executeRaw: executeRaw,
+        $queryRaw: vi.fn(async () => [
+          {
+            currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+            currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+            journeyId: "journey-1",
+            journeyStatus: SubscriptionJourneyStatus.RUNNING,
+            journeyVersion: 0,
+            stepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+            stepId: "step-1",
+            stepStatus: SubscriptionJourneyStepStatus.RUNNING
+          }
+        ]),
         subscriptionJourneyException: { create: vi.fn() },
       };
       const repository = new SubscriptionJourneyRepository();
@@ -895,9 +1020,23 @@ describe("SubscriptionJourneyRepository", () => {
     const updateJourney = vi.fn(async () => ({ count: 1 }));
     const repository = new SubscriptionJourneyRepository();
 
+    const queryRaw = vi.fn(async () => [
+      {
+        currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+        currentStepStatus: SubscriptionJourneyStepStatus.RUNNING,
+        journeyId: "journey-1",
+        journeyStatus: SubscriptionJourneyStatus.RUNNING,
+        journeyVersion: 0,
+        stepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
+        stepId: "step-1",
+        stepStatus: SubscriptionJourneyStepStatus.RUNNING
+      }
+    ]);
+
     await repository.deadLetterJob(
       {
         $executeRaw: executeRaw,
+        $queryRaw: queryRaw,
         subscriptionJourney: {
           findUnique: vi.fn(async () => ({
             currentStepCode: SubscriptionJourneyStepCode.FADADA_SIGNING_AND_ARCHIVE,
@@ -957,6 +1096,9 @@ describe("SubscriptionJourneyRepository", () => {
         }),
         where: { id: "journey-1", version: 0 }
       })
+    );
+    expect(queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      executeRaw.mock.invocationCallOrder[0]!
     );
   });
 
@@ -1504,6 +1646,10 @@ function completeStepTransaction(
       })
     },
     subscriptionJourneyJob: {
+      updateMany: vi.fn(async () => ({ count: 0 }))
+    },
+    subscriptionJourneyException: {
+      create: vi.fn(async (input) => ({ id: "exception-1", ...input.data })),
       updateMany: vi.fn(async () => ({ count: 0 }))
     },
     subscriptionJourneyEvent: {

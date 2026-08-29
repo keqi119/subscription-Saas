@@ -219,6 +219,15 @@ export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection
   return { access, asOf, catalog, customer, templates, vehicle };
 }
 
+export async function discoverStage1CleanAcceptanceVehicleCandidates(tx, options = {}) {
+  const asOf = resolveAsOf(options.asOf);
+  const { guardedWhere } = vehicleEligibilityFilters(asOf);
+  return sortById(await tx.vehicle.findMany({
+    select: { id: true, salePriceStatus: true, status: true },
+    where: guardedWhere
+  }));
+}
+
 function resolveAsOf(value) {
   if (value === undefined) return new Date();
   if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
@@ -448,16 +457,11 @@ async function loadTemplates(tx, asOf) {
 }
 
 async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
-  const blockingRestrictionWhere = {
-    scopes: { has: "ALLOCATION" },
-    severity: "BLOCKING",
-    startedAt: { lte: asOf },
-    status: "ACTIVE"
-  };
-  const overlappingSubscriptionPeriodWhere = {
-    OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
-    startedAt: { lte: asOf }
-  };
+  const {
+    blockingRestrictionWhere,
+    guardedWhere,
+    overlappingSubscriptionPeriodWhere
+  } = vehicleEligibilityFilters(asOf);
   const diagnostics = sortById(await tx.vehicle.findMany({
     select: {
       _count: {
@@ -476,19 +480,8 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
   const guardedVehicles = sortById(await tx.vehicle.findMany({
     select: { id: true },
     where: {
-      currentSalePriceAmount: { gt: 0 },
-      deletedAt: null,
+      ...guardedWhere,
       id: { in: vehicleIds },
-      listingProfile: {
-        is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
-      },
-      modelDefinition: {
-        is: { deletedAt: null, enabled: true, portalVisible: true }
-      },
-      operationalRestrictions: { none: blockingRestrictionWhere },
-      salePriceStatus: "EFFECTIVE",
-      status: "AVAILABLE",
-      subscriptionPeriods: { none: overlappingSubscriptionPeriodWhere }
     }
   }));
   if (!sameIds(diagnostics, vehicleIds) || !sameIds(guardedVehicles, vehicleIds)) {
@@ -581,6 +574,37 @@ async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
     vehicleOwnershipPeriods,
     vehicleSalePriceHistories,
     vehicles
+  };
+}
+
+function vehicleEligibilityFilters(asOf) {
+  const blockingRestrictionWhere = {
+    scopes: { has: "ALLOCATION" },
+    severity: "BLOCKING",
+    startedAt: { lte: asOf },
+    status: "ACTIVE"
+  };
+  const overlappingSubscriptionPeriodWhere = {
+    OR: [{ endedAt: null }, { endedAt: { gt: asOf } }],
+    startedAt: { lte: asOf }
+  };
+  return {
+    blockingRestrictionWhere,
+    guardedWhere: {
+      currentSalePriceAmount: { gt: 0 },
+      deletedAt: null,
+      listingProfile: {
+        is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+      },
+      modelDefinition: {
+        is: { deletedAt: null, enabled: true, portalVisible: true }
+      },
+      operationalRestrictions: { none: blockingRestrictionWhere },
+      salePriceStatus: "EFFECTIVE",
+      status: "AVAILABLE",
+      subscriptionPeriods: { none: overlappingSubscriptionPeriodWhere }
+    },
+    overlappingSubscriptionPeriodWhere
   };
 }
 

@@ -71,30 +71,19 @@ async function execute(options) {
       });
     }, { isolationLevel: "Serializable" });
 
-    await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256, options);
+    await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
     return result("apply", options.approvedManifestSha256, total(manifest.counts), 1);
   }
 
   await options.targetPrisma.$transaction(async (tx) => {
     await advisoryLock(tx);
-    const lockedTarget = await readTargetWithinTransaction(tx);
-    assertReplayForbiddenCounts(lockedTarget.snapshot);
-    const audit = await loadBaselineAudit(tx, manifest, options.approvedManifestSha256, options);
-    if (audit.length !== 1) fail("MANIFEST_STALE");
-    const targetRows = await loadStage1CleanAcceptanceSourceSnapshot(
-      tx,
-      options.selection,
-      { asOf }
-    );
-    const replayClassification = classifyStage1CleanAcceptanceBaseline(
-      { ...targetRows, target: emptyTargetEvidence(lockedTarget.snapshot) },
-      options.selection
-    );
-    const replayContext = buildContext(options, generatedAt, hashSalt, source, lockedTarget);
-    assertApprovedManifest(replayClassification, replayContext, options.approvedManifestSha256);
+    await validateStage1CleanAcceptanceTargetBaseline(tx, {
+      approvedManifest: manifest,
+      approvedManifestSha256: options.approvedManifestSha256
+    });
   }, { isolationLevel: "Serializable" });
 
-  await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256, options);
+  await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
   return result("replay", options.approvedManifestSha256, 0, 0);
 }
 
@@ -169,6 +158,63 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
   });
 }
 
+export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = {}) {
+  const approvedManifest = options.approvedManifest;
+  const approvedManifestSha256 = options.approvedManifestSha256;
+  if (
+    !approvedManifest ||
+    typeof approvedManifest !== "object" ||
+    Array.isArray(approvedManifest) ||
+    !SHA256.test(approvedManifestSha256 ?? "") ||
+    hashStage1CleanAcceptanceManifest(approvedManifest) !== approvedManifestSha256
+  ) {
+    fail("MANIFEST_STALE");
+  }
+
+  const asOf = parseInstant(approvedManifest.generatedAt);
+  const vehicleIds = (await tx.vehicle.findMany({ select: { id: true } }))
+    .map((row) => row?.id)
+    .filter((id) => typeof id === "string")
+    .sort();
+  const selection = {
+    adminUsername: "keqi_119",
+    customerPhone: "18616570212",
+    vehicleIds
+  };
+  const databaseName = await loadDatabaseName(tx);
+  const targetSnapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx);
+  const targetRows = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
+  const classification = classifyStage1CleanAcceptanceBaseline(
+    { ...targetRows, target: emptyTargetEvidence(targetSnapshot) },
+    selection
+  );
+  if (!isStage1CleanAcceptanceBaselineSafe(classification)) fail("MANIFEST_STALE");
+  assertExactAllowedCounts(targetSnapshot.tableCounts, classification.rows);
+  assertReplayForbiddenCounts(targetSnapshot);
+
+  const target = digestContext(databaseName, targetSnapshot);
+  const rebuiltManifest = buildStage1CleanAcceptanceManifest(classification, {
+    generatedAt: approvedManifest.generatedAt,
+    gitSha: approvedManifest.gitSha,
+    hashSalt: approvedManifest.hashSalt,
+    imageRef: approvedManifest.imageRef,
+    source: approvedManifest.source,
+    target
+  });
+  if (hashStage1CleanAcceptanceManifest(rebuiltManifest) !== approvedManifestSha256) {
+    fail("MANIFEST_STALE");
+  }
+  const audit = await loadBaselineAudit(tx, rebuiltManifest, approvedManifestSha256, approvedManifest);
+  if (audit.length !== 1) fail("MANIFEST_STALE");
+
+  return {
+    counts: rebuiltManifest.counts,
+    manifestSha256: approvedManifestSha256,
+    safe: true,
+    target
+  };
+}
+
 async function readSource(prisma, selection, asOf) {
   return prisma.$transaction(async (tx) => {
     await readOnly(tx);
@@ -192,14 +238,13 @@ async function readTargetWithinTransaction(tx) {
   return { context: digestContext(databaseName, snapshot), snapshot };
 }
 
-async function verifyCommittedTarget(prisma, manifest, manifestSha256, context) {
+async function verifyCommittedTarget(prisma, manifest, manifestSha256) {
   await prisma.$transaction(async (tx) => {
     await readOnly(tx);
-    const snapshot = await loadStage1CleanAcceptanceTargetSnapshot(tx);
-    assertAllowedCounts(snapshot.tableCounts, manifest.counts);
-    assertReplayForbiddenCounts(snapshot);
-    const audit = await loadBaselineAudit(tx, manifest, manifestSha256, context);
-    if (audit.length !== 1) fail("MANIFEST_STALE");
+    await validateStage1CleanAcceptanceTargetBaseline(tx, {
+      approvedManifest: manifest,
+      approvedManifestSha256: manifestSha256
+    });
   }, { isolationLevel: "RepeatableRead" });
 }
 
@@ -295,9 +340,50 @@ function assertReplayForbiddenCounts(snapshot) {
   }
 }
 
-function assertAllowedCounts(actual, domainCounts) {
-  const expectedTotal = total(domainCounts);
-  if (total(actual) !== expectedTotal) fail("MANIFEST_STALE");
+function assertExactAllowedCounts(actual, rows) {
+  const expected = {
+    assetOwner: rows.vehicle.assetOwners.length,
+    benefitPackage: rows.catalog.benefitPackages.length,
+    contractVersion: rows.templates.contractVersions.length,
+    customer: rows.customer.customers.length,
+    customerAccount: rows.customer.customerAccounts.length,
+    customerESignProviderAccount: rows.customer.customerESignProviderAccounts.length,
+    customerIdentity: rows.customer.customerIdentities.length,
+    customerProfile: rows.customer.customerProfiles.length,
+    depositRule: rows.catalog.depositRules.length,
+    energyPackage: rows.catalog.energyPackages.length,
+    fileObject: rows.templates.fileObjects.length,
+    menu: rows.access.menus.length,
+    mileagePackage: rows.catalog.mileagePackages.length,
+    notificationTemplate: rows.templates.notificationTemplates.length,
+    permission: rows.access.permissions.length,
+    product: rows.catalog.products.length,
+    productPriceRule: rows.catalog.productPriceRules.length,
+    productVersion: rows.catalog.productVersions.length,
+    role: rows.access.roles.length,
+    roleMenu: rows.access.roleMenus.length,
+    rolePermission: rows.access.rolePermissions.length,
+    subscriptionPlan: rows.catalog.subscriptionPlans.length,
+    user: rows.access.users.length,
+    userRole: rows.access.userRoles.length,
+    vehicle: rows.vehicle.vehicles.length,
+    vehicleAssetCostProfile: rows.vehicle.vehicleAssetCostProfiles.length,
+    vehicleCostLedgerEntry: rows.vehicle.vehicleCostLedgerEntries.length,
+    vehicleDocument: rows.vehicle.vehicleDocuments.length,
+    vehicleDocumentBatch: rows.vehicle.vehicleDocumentBatches.length,
+    vehicleInsuranceCoverage: rows.vehicle.vehicleInsuranceCoverages.length,
+    vehicleInsurancePolicy: rows.vehicle.vehicleInsurancePolicies.length,
+    vehicleListingMedia: rows.vehicle.vehicleListingMedia.length,
+    vehicleListingPlan: rows.vehicle.vehicleListingPlans.length,
+    vehicleListingProfile: rows.vehicle.vehicleListingProfiles.length,
+    vehicleListingSourceBinding: rows.vehicle.vehicleListingSourceBindings.length,
+    vehicleModelDefinition: rows.vehicle.vehicleModelDefinitions.length,
+    vehicleOwnershipPeriod: rows.vehicle.vehicleOwnershipPeriods.length,
+    vehiclePackage: rows.catalog.vehiclePackages.length,
+    vehiclePackageModelMember: rows.catalog.vehiclePackageModelMembers.length,
+    vehicleSalePriceHistory: rows.vehicle.vehicleSalePriceHistories.length
+  };
+  if (stableJson(actual) !== stableJson(expected)) fail("MANIFEST_STALE");
 }
 
 async function insert(delegate, rows, adapt = identity) {

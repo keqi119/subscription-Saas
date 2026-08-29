@@ -3,7 +3,8 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
 import {
-  executeStage1CleanAcceptanceBaseline
+  executeStage1CleanAcceptanceBaseline,
+  validateStage1CleanAcceptanceTargetBaseline
 } from "./stage1-clean-acceptance-baseline-executor.mjs";
 
 const VEHICLE_ID = "11111111-1111-4111-8111-111111111111";
@@ -204,6 +205,73 @@ test("replay proves the approved target without any writer or repair call", asyn
       (error) => error?.message === "MANIFEST_STALE"
     );
     assert.equal(target.calls.some((call) => ["update", "upsert", "delete"].includes(call.operation)), false);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("target-only validation proves per-table rows, fingerprints, forbidden domains, and the exact audit", async () => {
+  const metadata = {
+    migrationRows: [{ id: "migration-1", checksum: "checksum", migrationName: "0001", startedAt: new Date(0), finishedAt: new Date(1), rolledBackAt: null, appliedStepsCount: 1 }],
+    schemaRows: [{ tableName: "user", columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, columnDefault: null, udtName: "uuid" }]
+  };
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, metadata);
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await executeStage1CleanAcceptanceBaseline({
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
+      approvedManifestSha256: dry.manifestSha256
+    });
+    const sourceCallsBefore = source.calls.length;
+    const result = await target.client.$transaction(
+      (tx) => validateStage1CleanAcceptanceTargetBaseline(tx, {
+        approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      }),
+      { isolationLevel: "RepeatableRead" }
+    );
+    assert.equal(result.safe, true);
+    assert.equal(result.manifestSha256, dry.manifestSha256);
+    assert.deepEqual(result.counts, dry.manifest.counts);
+    assert.deepEqual(Object.keys(result.target).sort(), ["databaseDigest", "migrationCatalogDigest", "schemaDigest"]);
+    assert.equal(JSON.stringify(result).includes(HASH_SALT), false);
+    assert.equal(JSON.stringify(result).includes(VEHICLE_ID), false);
+    assert.equal(source.calls.length, sourceCallsBefore);
+
+    const mutations = [
+      (rows) => rows.menu.push({ ...structuredClone(rows.menu[0]), id: "extra-menu" }),
+      (rows) => {
+        rows.permission.pop();
+        rows.menu.push({ ...structuredClone(rows.menu[0]), id: "replacement-menu" });
+      },
+      (rows) => { rows.application = [{ id: "forbidden" }]; },
+      (rows) => { rows.auditLog[0].afterSnapshot.summary = "tampered"; },
+      (_rows, currentMetadata) => currentMetadata.migrationRows.push({ ...currentMetadata.migrationRows[0], id: "migration-2", migrationName: "0002" }),
+      (_rows, currentMetadata) => currentMetadata.schemaRows.push({ ...currentMetadata.schemaRows[0], columnName: "tampered", ordinalPosition: 2 })
+    ];
+    for (const mutate of mutations) {
+      const caseMetadata = structuredClone(metadata);
+      const caseSource = createDatabaseFake("subscription_saas_staging", sourceRows());
+      const caseTarget = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, caseMetadata);
+      const caseDry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", caseSource, caseTarget));
+      await executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", caseSource, caseTarget),
+        approvedManifest: caseDry.manifest,
+        approvedManifestSha256: caseDry.manifestSha256
+      });
+      mutate(caseTarget.rows, caseMetadata);
+      await assert.rejects(
+        caseTarget.client.$transaction((tx) => validateStage1CleanAcceptanceTargetBaseline(tx, {
+          approvedManifest: caseDry.manifest,
+          approvedManifestSha256: caseDry.manifestSha256
+        })),
+        (error) => error?.message === "MANIFEST_STALE"
+      );
+    }
   } finally {
     restoreEnv(previous);
   }
@@ -470,8 +538,8 @@ function createClient(getRows, calls, options) {
       const sql = strings.raw ? strings.raw.join("?") : strings.join("?");
       calls.push({ operation: "$queryRaw", sql });
       if (/current_database/i.test(sql)) return [{ databaseName: this.__databaseName }];
-      if (/_prisma_migrations/i.test(sql)) return [{ id: "migration-1", checksum: "checksum", migrationName: "0001", startedAt: new Date(0), finishedAt: new Date(1), rolledBackAt: null, appliedStepsCount: 1 }];
-      if (/information_schema\.columns/i.test(sql)) return [{ tableName: "user", columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, columnDefault: null, udtName: "uuid" }];
+      if (/_prisma_migrations/i.test(sql)) return structuredClone(options.migrationRows ?? [{ id: "migration-1", checksum: "checksum", migrationName: "0001", startedAt: new Date(0), finishedAt: new Date(1), rolledBackAt: null, appliedStepsCount: 1 }]);
+      if (/information_schema\.columns/i.test(sql)) return structuredClone(options.schemaRows ?? [{ tableName: "user", columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, columnDefault: null, udtName: "uuid" }]);
       return [];
     },
     async $executeRaw() {

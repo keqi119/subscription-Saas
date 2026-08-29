@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES,
   countStage1CleanAcceptanceForbiddenDomains,
+  discoverStage1CleanAcceptanceVehicleCandidates,
   loadStage1CleanAcceptanceSourceSnapshot,
   loadStage1CleanAcceptanceTargetSnapshot
 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
@@ -381,6 +382,46 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
     (error) => error?.message === "VEHICLE_NOT_ELIGIBLE"
   );
   assert.equal(partial.calls.filter(({ delegate }) => delegate === "vehicle").length, 2);
+});
+
+test("vehicle discovery reuses the strict guard without an id filter and returns only stable minimal fields", async () => {
+  const laterId = "22222222-2222-4222-8222-222222222222";
+  const fake = createPrismaFake({
+    rows: {
+      vehicle: () => [
+        { id: laterId, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" },
+        { id: VEHICLE_A, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" }
+      ]
+    }
+  });
+  const asOf = new Date("2026-08-30T12:34:56.000Z");
+
+  const candidates = await discoverStage1CleanAcceptanceVehicleCandidates(fake.tx, { asOf });
+
+  assert.deepEqual(candidates, [
+    { id: VEHICLE_A, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" },
+    { id: laterId, salePriceStatus: "EFFECTIVE", status: "AVAILABLE" }
+  ]);
+  const discovery = findCall(fake, "vehicle");
+  assert.equal(hasKeyDeep(discovery.args.where, "id"), false);
+  assert.deepEqual(Object.keys(discovery.args.select).sort(), ["id", "salePriceStatus", "status"]);
+  assert.equal(discovery.args.where.deletedAt, null);
+  assert.deepEqual(discovery.args.where.currentSalePriceAmount, { gt: 0 });
+  assert.equal(discovery.args.where.salePriceStatus, "EFFECTIVE");
+  assert.equal(discovery.args.where.status, "AVAILABLE");
+  assert.deepEqual(discovery.args.where.modelDefinition, {
+    is: { deletedAt: null, enabled: true, portalVisible: true }
+  });
+  assert.deepEqual(discovery.args.where.listingProfile, {
+    is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+  });
+  assert.deepEqual(discovery.args.where.operationalRestrictions.none.startedAt, { lte: asOf });
+  assert.deepEqual(discovery.args.where.subscriptionPeriods.none.startedAt, { lte: asOf });
+
+  await assert.rejects(
+    discoverStage1CleanAcceptanceVehicleCandidates(fake.tx, { asOf: new Date("invalid") }),
+    (error) => error?.message === "MANIFEST_CONTEXT_INVALID"
+  );
 });
 
 test("source loader returns endpoint-closed access/customer rows and catalog model union in stable order", async () => {

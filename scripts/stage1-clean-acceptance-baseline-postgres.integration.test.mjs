@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 
@@ -21,7 +21,7 @@ import {
 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
 const ADMIN_DATABASE_URL_ENV = "STAGE1_ACCEPTANCE_INTEGRATION_ADMIN_DATABASE_URL";
-const DATABASE_NAME = /^subscription_saas_test_stage1_(source|target)_[a-f0-9]{32}$/;
+const DATABASE_NAME = /^subscription_saas_s1_(source|target)_[a-f0-9]{32}$/;
 const GENERATED_AT = "2026-08-30T12:00:00.000Z";
 const GIT_SHA = "a".repeat(40);
 const HASH_SALT = "b".repeat(64);
@@ -103,23 +103,30 @@ test("PostgreSQL integration harness has no generic database URL fallback", () =
 });
 
 test("disposable database names must match the exact source/target test prefixes", () => {
+  const generatedNames = [];
   for (const kind of ["source", "target"]) {
-    assert.doesNotThrow(() =>
-      assertDisposableDatabaseName(`subscription_saas_test_stage1_${kind}_${"a".repeat(32)}`)
-    );
+    const name = `subscription_saas_s1_${kind}_${"a".repeat(32)}`;
+    generatedNames.push(name);
+    assert.doesNotThrow(() => assertDisposableDatabaseName(name));
+    assert.ok(Buffer.byteLength(name, "utf8") <= 63);
   }
+  assert.deepEqual(
+    generatedNames.map((name) => Buffer.byteLength(name, "utf8")),
+    [60, 60]
+  );
   for (const unsafe of [
     "postgres",
     "subscription_saas_staging",
-    "subscription_saas_test_stage1_source_abc",
-    `subscription_saas_test_stage1_target_${"a".repeat(32)}_extra`
+    "subscription_saas_s1_source_abc",
+    `subscription_saas_s1_target_${"a".repeat(32)}_extra`,
+    `subscription_saas_test_stage1_source_${"a".repeat(32)}`
   ]) {
     assert.throws(() => assertDisposableDatabaseName(unsafe), /UNSAFE_INTEGRATION_DATABASE_NAME/);
   }
 });
 
 test("cleanup ownership is registered only after CREATE DATABASE succeeds", async () => {
-  const name = `subscription_saas_test_stage1_source_${"a".repeat(32)}`;
+  const name = `subscription_saas_s1_source_${"a".repeat(32)}`;
   for (const scenario of ["collision", "create-failure"]) {
     const admin = createAdminFake({
       collision: scenario === "collision",
@@ -138,6 +145,7 @@ test("cleanup ownership is registered only after CREATE DATABASE succeeds", asyn
   assert.deepEqual(admin.createCalls, [
     `CREATE DATABASE "${name}" TEMPLATE template0 ENCODING 'UTF8'`
   ]);
+  assert.deepEqual(admin.databaseNameParameters, [name, name]);
   assert.deepEqual(admin.dropCalls, [`DROP DATABASE "${name}" WITH (FORCE)`]);
 });
 
@@ -198,14 +206,25 @@ test("migration child receives only the derived database URL and captured output
     PGSSLROOTCERT: "pg-root-cert-secret"
   };
   const derivedUrl = "postgresql://temporary-derived";
+  const portableWindowsNode = "C:\\portable\\nodejs\\node.exe";
   let childOptions;
+  let childExecutable;
+  let childArgs;
   runMigrationDeploy(derivedUrl, {
+    nodeExecutable: portableWindowsNode,
     parentEnv,
-    spawn: (_executable, _args, options) => {
+    platform: "win32",
+    spawn: (executable, args, options) => {
+      childExecutable = executable;
+      childArgs = args;
       childOptions = options;
       return { status: 0, stdout: "", stderr: "" };
     }
   });
+  assert.equal(childExecutable, portableWindowsNode);
+  assert.equal(childArgs[0], "C:\\portable\\nodejs\\node_modules\\corepack\\dist\\pnpm.js");
+  assert.equal(win32.isAbsolute(childArgs[0]), true);
+  assert.equal(childArgs.includes("pnpm.cmd"), false);
   assert.equal(childOptions.env.DATABASE_URL, derivedUrl);
   assert.equal(childOptions.env.PATH, "tool-path");
   assert.equal(childOptions.env.SystemRoot, "system-root");
@@ -247,6 +266,18 @@ test("migration child receives only the derived database URL and captured output
     ["DATABASE_URL"]
   );
   assert.equal(childOptions.env.STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV, "1");
+
+  let linuxLaunch;
+  runMigrationDeploy(derivedUrl, {
+    parentEnv,
+    platform: "linux",
+    spawn: (executable, args) => {
+      linuxLaunch = { args, executable };
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+  assert.equal(linuxLaunch.executable, "pnpm");
+  assert.equal(linuxLaunch.args[0], "--filter");
 
   assert.throws(
     () =>
@@ -421,8 +452,8 @@ async function createPostgresHarness(connectionString) {
   const databaseRegistry = createDisposableDatabaseRegistry(adminClient);
   let closed = false;
   const suffix = randomUUID().replaceAll("-", "");
-  const sourceName = `subscription_saas_test_stage1_source_${suffix}`;
-  const targetName = `subscription_saas_test_stage1_target_${suffix}`;
+  const sourceName = `subscription_saas_s1_source_${suffix}`;
+  const targetName = `subscription_saas_s1_target_${suffix}`;
   const sourceUrl = databaseUrlFor(connectionString, sourceName);
   const targetUrl = databaseUrlFor(connectionString, targetName);
   const applyApplicationNames = [
@@ -1197,11 +1228,15 @@ function createDisposableDatabaseRegistry(adminClient) {
 function createAdminFake(options = {}) {
   let exists = options.collision === true;
   const createCalls = [];
+  const databaseNameParameters = [];
   const dropCalls = [];
   return {
     client: {
-      async query(sql) {
-        if (/^SELECT 1 FROM pg_database/.test(sql)) return { rowCount: exists ? 1 : 0 };
+      async query(sql, parameters) {
+        if (/^SELECT 1 FROM pg_database/.test(sql)) {
+          databaseNameParameters.push(parameters?.[0]);
+          return { rowCount: exists ? 1 : 0 };
+        }
         if (/^CREATE DATABASE/.test(sql)) {
           if (options.createFailure) throw new Error("INJECTED_CREATE_FAILURE");
           createCalls.push(sql);
@@ -1217,6 +1252,7 @@ function createAdminFake(options = {}) {
       }
     },
     createCalls,
+    databaseNameParameters,
     dropCalls
   };
 }
@@ -1278,27 +1314,39 @@ async function createPrismaClient(databaseUrl) {
 }
 
 function runMigrationDeploy(databaseUrl, injected = {}) {
-  const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const result = (injected.spawn ?? spawnSync)(
-    executable,
-    [
-      "--filter",
-      "@subscription-saas/api",
-      "exec",
-      "prisma",
-      "migrate",
-      "deploy",
-      "--schema",
-      "prisma/schema.prisma"
-    ],
-    {
-      cwd: repoRoot,
-      encoding: "utf8",
-      env: buildMigrationChildEnv(injected.parentEnv ?? process.env, databaseUrl),
-      stdio: "pipe",
-      timeout: 60_000
-    }
-  );
+  const platform = injected.platform ?? process.platform;
+  const nodeExecutable = injected.nodeExecutable ?? process.execPath;
+  const migrationArgs = [
+    "--filter",
+    "@subscription-saas/api",
+    "exec",
+    "prisma",
+    "migrate",
+    "deploy",
+    "--schema",
+    "prisma/schema.prisma"
+  ];
+  const executable = platform === "win32" ? nodeExecutable : "pnpm";
+  const args =
+    platform === "win32"
+      ? [
+          win32.resolve(
+            win32.dirname(nodeExecutable),
+            "node_modules",
+            "corepack",
+            "dist",
+            "pnpm.js"
+          ),
+          ...migrationArgs
+        ]
+      : migrationArgs;
+  const result = (injected.spawn ?? spawnSync)(executable, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: buildMigrationChildEnv(injected.parentEnv ?? process.env, databaseUrl),
+    stdio: "pipe",
+    timeout: 60_000
+  });
   if (result.status !== 0) throw new Error("INTEGRATION_MIGRATION_DEPLOY_FAILED");
 }
 

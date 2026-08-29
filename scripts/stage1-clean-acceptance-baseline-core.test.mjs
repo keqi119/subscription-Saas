@@ -46,25 +46,30 @@ function completeSnapshot(overrides = {}) {
       ]
     },
     catalog: {
-      depositRules: [{ id: "deposit-1", status: "ACTIVE" }],
+      benefitPackages: [{ id: "benefit-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
+      depositRules: [{ gradeCode: "STANDARD", id: "deposit-1", status: "ACTIVE" }],
+      energyPackages: [{ id: "energy-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
+      mileagePackages: [{ id: "mileage-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }],
       products: [{ id: "product-1", status: "ACTIVE" }],
       productVersions: [
-        { depositRuleId: "deposit-1", id: "product-version-1", productId: "product-1", status: "ACTIVE" }
+        { id: "product-version-1", productId: "product-1", status: "ACTIVE" }
       ],
+      productPriceRules: [{ id: "price-rule-1", modelDefinitionId: "model-1", productVersionId: "product-version-1", status: "ACTIVE" }],
       subscriptionPlans: [
-        { id: "plan-1", productVersionId: "product-version-1", status: "ACTIVE", vehiclePackageId: "package-1" }
+        { benefitPackageId: "benefit-1", energyPackageId: "energy-1", id: "plan-1", mileagePackageId: "mileage-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE", vehiclePackageId: "package-1" }
       ],
-      vehiclePackages: [{ id: "package-1", status: "ACTIVE" }]
+      vehiclePackageModelMembers: [{ id: "package-member-1", modelDefinitionId: "model-1", vehiclePackageId: "package-1" }],
+      vehiclePackages: [{ id: "package-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }]
     },
     customer: {
       customerAccounts: [
-        { customerId: "customer-1", id: "customer-account-1", phone: "18616570212", status: "ACTIVE" }
+        { accountStatus: "ACTIVE", customerId: "customer-1", id: "customer-account-1", phone: "18616570212" }
       ],
       customerESignProviderAccounts: [
-        { customerId: "customer-1", id: "esign-1", providerAccountId: "provider-1", status: "ACTIVE" }
+        { certBindingStatus: "BOUND", customerId: "customer-1", id: "esign-1", provider: "FADADA", providerOpenId: "provider-open-id-1", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED" }
       ],
-      customerIdentities: [{ customerId: "customer-1", id: "identity-1", status: "ACTIVE" }],
-      customerProfiles: [{ customerId: "customer-1", id: "profile-1", status: "ACTIVE" }],
+      customerIdentities: [{ customerId: "customer-1", id: "identity-1", realnameVerified: true }],
+      customerProfiles: [{ customerId: "customer-1", id: "profile-1" }],
       customers: [{ id: "customer-1", status: "ACTIVE" }]
     },
     target: {
@@ -85,17 +90,38 @@ function completeSnapshot(overrides = {}) {
     },
     vehicle: {
       assetOwners: [{ id: "owner-1", status: "ACTIVE" }],
+      eligibilityEvidence: {
+        [VEHICLE_A]: {
+          blockingRestrictionCount: 0,
+          currentSalePricePositive: true,
+          overlappingSubscriptionPeriodCount: 0,
+          salePriceStatusEffective: true
+        }
+      },
       vehicles: [
         {
           assetOwnerId: "owner-1",
+          currentSalePriceAmount: 100,
           id: VEHICLE_A,
           listingProfileId: "listing-1",
+          modelDefinitionId: "model-1",
+          salePriceStatus: "EFFECTIVE",
           status: "AVAILABLE",
-          vehicleModelDefinitionId: "model-1"
         }
       ],
-      vehicleListingProfiles: [{ id: "listing-1", status: "ACTIVE", vehicleId: VEHICLE_A }],
-      vehicleModelDefinitions: [{ id: "model-1", status: "ACTIVE" }]
+      vehicleAssetCostProfiles: [{ id: "cost-profile-1", vehicleId: VEHICLE_A }],
+      vehicleCostLedgerEntries: [{ id: "cost-ledger-1", vehicleId: VEHICLE_A }],
+      vehicleDocumentBatches: [{ id: "document-batch-1", vehicleId: VEHICLE_A }],
+      vehicleDocuments: [{ batchId: "document-batch-1", id: "document-1", vehicleId: VEHICLE_A }],
+      vehicleInsuranceCoverages: [{ id: "coverage-1", policyId: "policy-1" }],
+      vehicleInsurancePolicies: [{ id: "policy-1", vehicleId: VEHICLE_A }],
+      vehicleListingMedia: [{ id: "media-1", listingProfileId: "listing-1" }],
+      vehicleListingPlans: [{ id: "listing-plan-1", listingProfileId: "listing-1" }],
+      vehicleListingProfiles: [{ id: "listing-1", listingStatus: "PUBLISHED", vehicleId: VEHICLE_A }],
+      vehicleListingSourceBindings: [{ id: "source-binding-1", vehicleId: VEHICLE_A }],
+      vehicleModelDefinitions: [{ enabled: true, id: "model-1", portalVisible: true }],
+      vehicleOwnershipPeriods: [{ assetOwnerId: "owner-1", id: "ownership-1", vehicleId: VEHICLE_A }],
+      vehicleSalePriceHistories: [{ id: "sale-price-1", vehicleId: VEHICLE_A }]
     }
   };
   return deepMerge(snapshot, overrides);
@@ -195,6 +221,73 @@ test("classification closes the complete fixed baseline and marks it safe", () =
   assert.equal(result.rows.customer.customers[0].id, "customer-1");
   assert.equal(result.rows.vehicle.vehicles[0].id, VEHICLE_A);
   assert.deepEqual(result.targetForbiddenCounts, { auditLog: 0, subscriptionOrder: 0 });
+});
+
+test("classification retains the real Prisma catalog, customer, and vehicle whitelist closures losslessly", () => {
+  const result = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
+  assert.equal(result.safeToApply, true);
+  assert.equal("depositRuleId" in result.rows.catalog.productVersions[0], false);
+  assert.deepEqual(Object.keys(result.rows.catalog).sort(), [
+    "benefitPackages",
+    "depositRules",
+    "energyPackages",
+    "mileagePackages",
+    "productPriceRules",
+    "productVersions",
+    "products",
+    "subscriptionPlans",
+    "vehiclePackageModelMembers",
+    "vehiclePackages"
+  ]);
+  assert.equal(result.rows.customer.customerAccounts[0].accountStatus, "ACTIVE");
+  assert.equal(result.rows.customer.customerESignProviderAccounts[0].providerOpenId, "provider-open-id-1");
+  assert.equal("providerAccountId" in result.rows.customer.customerESignProviderAccounts[0], false);
+  assert.deepEqual(Object.keys(result.rows.vehicle).sort(), [
+    "assetOwners",
+    "vehicleAssetCostProfiles",
+    "vehicleCostLedgerEntries",
+    "vehicleDocumentBatches",
+    "vehicleDocuments",
+    "vehicleInsuranceCoverages",
+    "vehicleInsurancePolicies",
+    "vehicleListingMedia",
+    "vehicleListingPlans",
+    "vehicleListingProfiles",
+    "vehicleListingSourceBindings",
+    "vehicleModelDefinitions",
+    "vehicleOwnershipPeriods",
+    "vehicleSalePriceHistories",
+    "vehicles"
+  ]);
+  assert.equal(result.rows.vehicle.vehicleInsuranceCoverages[0].policyId, "policy-1");
+});
+
+test("vehicle closure keeps each explicitly selected vehicle and its one-to-many rows", () => {
+  const snapshot = completeSnapshot();
+  snapshot.vehicle.eligibilityEvidence[VEHICLE_B] = {
+    blockingRestrictionCount: 0,
+    currentSalePricePositive: true,
+    overlappingSubscriptionPeriodCount: 0,
+    salePriceStatusEffective: true
+  };
+  snapshot.vehicle.vehicles.push({ assetOwnerId: "owner-1", currentSalePriceAmount: 200, id: VEHICLE_B, listingProfileId: "listing-2", modelDefinitionId: "model-1", salePriceStatus: "EFFECTIVE", status: "AVAILABLE" });
+  snapshot.vehicle.vehicleListingProfiles.push({ id: "listing-2", listingStatus: "PUBLISHED", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleListingMedia.push({ id: "media-2", listingProfileId: "listing-2" });
+  snapshot.vehicle.vehicleListingPlans.push({ id: "listing-plan-2", listingProfileId: "listing-2" });
+  snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleDocuments.push({ batchId: "document-batch-2", id: "document-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleListingSourceBindings.push({ id: "source-binding-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleInsurancePolicies.push({ id: "policy-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleInsuranceCoverages.push({ id: "coverage-2", policyId: "policy-2" });
+  snapshot.vehicle.vehicleSalePriceHistories.push({ id: "sale-price-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleOwnershipPeriods.push({ assetOwnerId: "owner-1", id: "ownership-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleAssetCostProfiles.push({ id: "cost-profile-2", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleCostLedgerEntries.push({ id: "cost-ledger-2", vehicleId: VEHICLE_B });
+
+  const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection([VEHICLE_A, VEHICLE_B]));
+  assert.equal(result.safeToApply, true);
+  assert.deepEqual(result.rows.vehicle.vehicles.map(({ id }) => id), [VEHICLE_A, VEHICLE_B]);
+  assert.deepEqual(result.rows.vehicle.vehicleInsuranceCoverages.map(({ id }) => id), ["coverage-1", "coverage-2"]);
 });
 
 test("classification blocks exceptions, ambiguity, target rows, schema drift, and incomplete vehicle closure", () => {
@@ -325,7 +418,7 @@ test("manifest rejects malformed context and classification and salts every publ
   assert.match(manifest.exceptions[0].subjectDigest, /^[0-9a-f]{64}$/);
   assert.notEqual(manifest.rowDigests.vehicle, classification.rowDigests.vehicle);
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
-  assert.equal(manifest.rowDigests.vehicle, "f7e6f602d7d98e896347141d087de9c0ec1c6176ae696ef30b9724602e92c063");
+  assert.equal(manifest.rowDigests.vehicle, "a2e459ed40b3b01b34ac0fe36086e76d277824c5795a71beea4b87ece6768833");
   assert.equal(manifest.exceptions[0].subjectDigest, "dd881d6b5f32438dfc1e23709a232088240e855697d0d5baa0789e32fb27833e");
 });
 
@@ -368,13 +461,13 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   });
 
   assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "ce5194479ce9a073abefede294b4225eac7288419d9057fbbd81b5209ae2b0ab");
+  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "f50fefe10fbfa7b3d636d22799ac28a8ddfab9996a4f5981b1f416380e9f2ad6");
   assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
 });
 
 test("manifest contains salted domain digests but no identity, VIN, plate, or object key", () => {
   const classification = classifyStage1CleanAcceptanceBaseline(
-    completeSnapshot({ vehicle: { vehicles: [{ assetOwnerId: "owner-1", id: VEHICLE_A, licensePlate: "沪A12345", listingProfileId: "listing-1", status: "AVAILABLE", vehicleModelDefinitionId: "model-1", vin: "VIN-SECRET" }] } }),
+    completeSnapshot({ vehicle: { vehicles: [{ assetOwnerId: "owner-1", currentSalePriceAmount: 100, id: VEHICLE_A, licensePlate: "沪A12345", listingProfileId: "listing-1", modelDefinitionId: "model-1", salePriceStatus: "EFFECTIVE", status: "AVAILABLE", vin: "VIN-SECRET" }] } }),
     selection()
   );
   const manifest = buildStage1CleanAcceptanceManifest(classification, validManifestContext());

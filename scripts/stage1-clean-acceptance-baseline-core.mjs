@@ -223,17 +223,19 @@ function classifyAccess(access = {}, selection, exceptions) {
 }
 
 function classifyCustomer(customer = {}, selection, exceptions) {
-  const accounts = active(array(customer.customerAccounts).filter((row) => row.phone === selection.customerPhone));
+  const accounts = array(customer.customerAccounts).filter(
+    (row) => row?.phone === selection.customerPhone && row.deletedAt == null && row.accountStatus === "ACTIVE"
+  );
   if (accounts.length === 0) exception(exceptions, "CUSTOMER_NOT_FOUND", "customer", selection.customerPhone);
   if (accounts.length > 1) exception(exceptions, "CUSTOMER_AMBIGUOUS", "customer", selection.customerPhone);
   const account = accounts.length === 1 ? accounts[0] : undefined;
   const customers = account ? active(array(customer.customers).filter((row) => row.id === account.customerId)) : [];
   if (account && customers.length !== 1) exception(exceptions, customers.length === 0 ? "CUSTOMER_NOT_FOUND" : "CUSTOMER_AMBIGUOUS", "customer", account.customerId);
   const customerId = customers[0]?.id;
-  const identities = active(array(customer.customerIdentities).filter((row) => row.customerId === customerId));
-  const profiles = active(array(customer.customerProfiles).filter((row) => row.customerId === customerId));
-  const eSignAccounts = active(array(customer.customerESignProviderAccounts).filter((row) => row.customerId === customerId));
-  if (customerId && (identities.length === 0 || profiles.length === 0 || eSignAccounts.length !== 1 || !eSignAccounts[0].providerAccountId)) {
+  const identities = array(customer.customerIdentities).filter((row) => row?.customerId === customerId && row.deletedAt == null);
+  const profiles = array(customer.customerProfiles).filter((row) => row?.customerId === customerId && row.deletedAt == null);
+  const eSignAccounts = array(customer.customerESignProviderAccounts).filter((row) => row?.customerId === customerId && validCustomerESignAccount(row));
+  if (customerId && (identities.length !== 1 || profiles.length !== 1 || eSignAccounts.length !== 1)) {
     exception(exceptions, "CUSTOMER_ESIGN_BINDING_INVALID", "customer", customerId);
   }
   return sortRows({
@@ -250,14 +252,48 @@ function classifyCatalog(catalog = {}, exceptions) {
   const productVersions = active(array(catalog.productVersions));
   const depositRules = active(array(catalog.depositRules));
   const vehiclePackages = active(array(catalog.vehiclePackages));
+  const vehiclePackageModelMembers = array(catalog.vehiclePackageModelMembers);
+  const mileagePackages = active(array(catalog.mileagePackages));
+  const energyPackages = active(array(catalog.energyPackages));
+  const benefitPackages = active(array(catalog.benefitPackages));
   const subscriptionPlans = active(array(catalog.subscriptionPlans));
-  if (products.length === 0 || productVersions.length === 0 || subscriptionPlans.length === 0) {
+  const productPriceRules = active(array(catalog.productPriceRules));
+  if (products.length === 0 || productVersions.length === 0 || depositRules.length === 0 || vehiclePackages.length === 0 || subscriptionPlans.length === 0) {
     exception(exceptions, "CATALOG_ACTIVE_SET_EMPTY", "catalog", "active");
   }
-  const closed = productVersions.every((row) => products.some((item) => item.id === row.productId) && depositRules.some((item) => item.id === row.depositRuleId)) &&
-    subscriptionPlans.every((row) => productVersions.some((item) => item.id === row.productVersionId) && vehiclePackages.some((item) => item.id === row.vehiclePackageId));
+  const byId = (rows, id) => rows.some((row) => row.id === id);
+  const closesProductVersion = (row) => byId(products, row.productId);
+  const closesProductVersionBoundRow = (row) => byId(products, row.productId) && byId(productVersions, row.productVersionId);
+  const closed =
+    productVersions.every(closesProductVersion) &&
+    vehiclePackages.every(closesProductVersionBoundRow) &&
+    vehiclePackageModelMembers.every((row) => byId(vehiclePackages, row.vehiclePackageId) && nonEmpty(row.modelDefinitionId)) &&
+    mileagePackages.every(closesProductVersionBoundRow) &&
+    energyPackages.every(closesProductVersionBoundRow) &&
+    benefitPackages.every(closesProductVersionBoundRow) &&
+    productPriceRules.every((row) => byId(productVersions, row.productVersionId) && nonEmpty(row.modelDefinitionId)) &&
+    subscriptionPlans.every(
+      (row) =>
+        byId(products, row.productId) &&
+        byId(productVersions, row.productVersionId) &&
+        byId(vehiclePackages, row.vehiclePackageId) &&
+        byId(mileagePackages, row.mileagePackageId) &&
+        byId(energyPackages, row.energyPackageId) &&
+        byId(benefitPackages, row.benefitPackageId)
+    );
   if (!closed) exception(exceptions, "CATALOG_REFERENCE_NOT_CLOSED", "catalog", "references");
-  return sortRows({ depositRules, products, productVersions, subscriptionPlans, vehiclePackages });
+  return sortRows({
+    benefitPackages,
+    depositRules,
+    energyPackages,
+    mileagePackages,
+    productPriceRules,
+    productVersions,
+    products,
+    subscriptionPlans,
+    vehiclePackageModelMembers,
+    vehiclePackages
+  });
 }
 
 function classifyTemplates(templates = {}, exceptions) {
@@ -313,8 +349,19 @@ function classifyTemplates(templates = {}, exceptions) {
 function classifyVehicle(vehicle = {}, selection, exceptions) {
   const closure = {
     assetOwners: [],
+    vehicleAssetCostProfiles: [],
+    vehicleCostLedgerEntries: [],
+    vehicleDocumentBatches: [],
+    vehicleDocuments: [],
+    vehicleInsuranceCoverages: [],
+    vehicleInsurancePolicies: [],
+    vehicleListingMedia: [],
+    vehicleListingPlans: [],
     vehicleListingProfiles: [],
+    vehicleListingSourceBindings: [],
     vehicleModelDefinitions: [],
+    vehicleOwnershipPeriods: [],
+    vehicleSalePriceHistories: [],
     vehicles: []
   };
   if (selection.vehicleIds.length === 0) {
@@ -324,22 +371,55 @@ function classifyVehicle(vehicle = {}, selection, exceptions) {
   const vehicles = array(vehicle.vehicles);
   for (const vehicleId of selection.vehicleIds) {
     const matches = vehicles.filter((row) => row?.id === vehicleId);
-    if (matches.length !== 1 || matches[0].status !== "AVAILABLE" || matches[0].deletedAt != null) {
+    const evidence = vehicle.eligibilityEvidence?.[vehicleId];
+    if (matches.length !== 1 || !eligibleVehicle(matches[0], evidence)) {
       exception(exceptions, "VEHICLE_NOT_ELIGIBLE", "vehicle", vehicleId);
       continue;
     }
     const item = matches[0];
     const owners = active(array(vehicle.assetOwners)).filter((row) => row.id === item.assetOwnerId);
-    const models = active(array(vehicle.vehicleModelDefinitions)).filter((row) => row.id === item.vehicleModelDefinitionId);
-    const profiles = active(array(vehicle.vehicleListingProfiles)).filter((row) => row.id === item.listingProfileId && row.vehicleId === item.id);
+    const models = array(vehicle.vehicleModelDefinitions).filter(
+      (row) => row?.id === item.modelDefinitionId && row.deletedAt == null && row.enabled === true && row.portalVisible === true
+    );
+    const profiles = array(vehicle.vehicleListingProfiles).filter(
+      (row) => row?.id === item.listingProfileId && row.vehicleId === item.id && row.deletedAt == null && row.listingStatus === "PUBLISHED"
+    );
     if (owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
+      exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
+      continue;
+    }
+    const profile = profiles[0];
+    const documentBatches = rowsForVehicle(vehicle.vehicleDocumentBatches, item.id);
+    const insurancePolicies = rowsForVehicle(vehicle.vehicleInsurancePolicies, item.id);
+    const documentBatchIds = new Set(documentBatches.map(({ id }) => id));
+    const insurancePolicyIds = new Set(insurancePolicies.map(({ id }) => id));
+    const listingMedia = rowsForReference(vehicle.vehicleListingMedia, "listingProfileId", profile.id);
+    const listingPlans = rowsForReference(vehicle.vehicleListingPlans, "listingProfileId", profile.id);
+    const documents = array(vehicle.vehicleDocuments).filter((row) => row?.vehicleId === item.id && documentBatchIds.has(row.batchId));
+    const coverages = array(vehicle.vehicleInsuranceCoverages).filter((row) => insurancePolicyIds.has(row?.policyId));
+    const vehicleDocuments = rowsForVehicle(vehicle.vehicleDocuments, item.id);
+    if (
+      documents.length !== vehicleDocuments.length ||
+      coverages.length !== rowsForInsurancePolicies(vehicle.vehicleInsuranceCoverages, insurancePolicyIds).length
+    ) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
       continue;
     }
     closure.vehicles.push(item);
     closure.assetOwners.push(owners[0]);
     closure.vehicleModelDefinitions.push(models[0]);
-    closure.vehicleListingProfiles.push(profiles[0]);
+    closure.vehicleListingProfiles.push(profile);
+    closure.vehicleListingMedia.push(...listingMedia);
+    closure.vehicleListingPlans.push(...listingPlans);
+    closure.vehicleDocumentBatches.push(...documentBatches);
+    closure.vehicleDocuments.push(...documents);
+    closure.vehicleListingSourceBindings.push(...rowsForVehicle(vehicle.vehicleListingSourceBindings, item.id));
+    closure.vehicleInsurancePolicies.push(...insurancePolicies);
+    closure.vehicleInsuranceCoverages.push(...coverages);
+    closure.vehicleSalePriceHistories.push(...rowsForVehicle(vehicle.vehicleSalePriceHistories, item.id));
+    closure.vehicleOwnershipPeriods.push(...rowsForVehicle(vehicle.vehicleOwnershipPeriods, item.id));
+    closure.vehicleAssetCostProfiles.push(...rowsForVehicle(vehicle.vehicleAssetCostProfiles, item.id));
+    closure.vehicleCostLedgerEntries.push(...rowsForVehicle(vehicle.vehicleCostLedgerEntries, item.id));
   }
   return sortRows(closure);
 }
@@ -512,6 +592,41 @@ function validPdfFile(file) {
     file.mimeType.toLowerCase().split(";", 1)[0].trim() === "application/pdf" &&
     positive(file.sizeBytes) &&
     SHA256.test(file.contentSha256 ?? "");
+}
+
+function validCustomerESignAccount(row) {
+  return (
+    row?.deletedAt == null &&
+    row.registrationStatus === "REGISTERED" &&
+    row.realNameStatus === "VERIFIED" &&
+    row.certBindingStatus === "BOUND" &&
+    (nonEmpty(row.providerOpenId) || nonEmpty(row.providerCustomerId))
+  );
+}
+
+function eligibleVehicle(vehicle, evidence) {
+  return (
+    vehicle?.deletedAt == null &&
+    vehicle.status === "AVAILABLE" &&
+    vehicle.currentSalePriceAmount > 0 &&
+    vehicle.salePriceStatus === "EFFECTIVE" &&
+    evidence?.blockingRestrictionCount === 0 &&
+    evidence?.overlappingSubscriptionPeriodCount === 0 &&
+    evidence?.currentSalePricePositive === true &&
+    evidence?.salePriceStatusEffective === true
+  );
+}
+
+function rowsForVehicle(rows, vehicleId) {
+  return array(rows).filter((row) => row?.vehicleId === vehicleId);
+}
+
+function rowsForReference(rows, foreignKey, expectedId) {
+  return array(rows).filter((row) => row?.[foreignKey] === expectedId);
+}
+
+function rowsForInsurancePolicies(rows, policyIds) {
+  return array(rows).filter((row) => policyIds.has(row?.policyId));
 }
 
 function copyTargetCountEvidence(target = {}) {

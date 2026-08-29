@@ -318,6 +318,12 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
   assert.deepEqual(guarded.args.where.subscriptionPeriods, {
     none: diagnostic.args.select._count.select.subscriptionPeriods.where
   });
+  assert.deepEqual(guarded.args.where.modelDefinition, {
+    is: { deletedAt: null, enabled: true, portalVisible: true }
+  });
+  assert.deepEqual(guarded.args.where.listingProfile, {
+    is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+  });
 
   const partial = createPrismaFake({
     rows: {
@@ -352,6 +358,173 @@ test("vehicle eligibility evidence mirrors allocation blockers and rejects parti
     (error) => error?.message === "VEHICLE_NOT_ELIGIBLE"
   );
   assert.equal(partial.calls.filter(({ delegate }) => delegate === "vehicle").length, 2);
+});
+
+test("source loader returns endpoint-closed access/customer rows and catalog model union in stable order", async () => {
+  const now = new Date("2026-08-30T00:00:00.000Z");
+  const product = completeScalarRow("product", {
+    createdAt: now,
+    deletedAt: null,
+    description: null,
+    id: "product-1",
+    name: "Subscription",
+    productNo: "PROD-1",
+    productType: "SUBSCRIPTION",
+    status: "ACTIVE",
+    updatedAt: now
+  });
+  const productVersion = completeScalarRow("productVersion", {
+    createdAt: now,
+    deletedAt: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    id: "product-version-1",
+    productId: product.id,
+    status: "ACTIVE",
+    updatedAt: now,
+    versionNo: "1.0"
+  });
+  const subscriptionPlan = completeScalarRow("subscriptionPlan", {
+    baseMonthlyFeeAmount: 1000n,
+    benefitPackageId: "benefit-1",
+    createdAt: now,
+    deletedAt: null,
+    effectiveFrom: new Date("2026-01-01T00:00:00.000Z"),
+    effectiveTo: null,
+    energyPackageId: "energy-1",
+    id: "plan-1",
+    maxPeriodMonths: 36,
+    mileagePackageId: "mileage-1",
+    minPeriodMonths: 12,
+    monthlyFeeMode: "FIXED_AMOUNT",
+    planName: "Plan",
+    planNo: "PLAN-1",
+    product,
+    productId: product.id,
+    productVersion,
+    productVersionId: productVersion.id,
+    status: "ACTIVE",
+    updatedAt: now,
+    vehiclePackageId: "package-1"
+  });
+  const dataset = {
+    user: [
+      completeScalarRow("user", { createdAt: now, deletedAt: null, id: "user-admin", name: "Admin", passwordHash: "hash", status: "ACTIVE", updatedAt: now, username: "keqi_119" }),
+      completeScalarRow("user", { createdAt: now, deletedAt: now, id: "user-deleted", name: "Deleted", passwordHash: "hash", status: "ACTIVE", updatedAt: now, username: "deleted" })
+    ],
+    role: [
+      completeScalarRow("role", { code: "ADMIN", createdAt: now, deletedAt: null, id: "role-admin", name: "Admin", status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("role", { code: "OPERATIONS", createdAt: now, deletedAt: null, id: "role-inactive", name: "Inactive", status: "INACTIVE", updatedAt: now }),
+      completeScalarRow("role", { code: "DELETED", createdAt: now, deletedAt: now, id: "role-deleted", name: "Deleted", status: "ACTIVE", updatedAt: now })
+    ],
+    permission: [
+      completeScalarRow("permission", { action: "read", code: "permission:b", createdAt: now, deletedAt: null, id: "permission-b", module: "acceptance", name: "B", status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("permission", { action: "read", code: "permission:a", createdAt: now, deletedAt: null, id: "permission-a", module: "acceptance", name: "A", status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("permission", { action: "read", code: "permission:old", createdAt: now, deletedAt: null, id: "permission-inactive", module: "acceptance", name: "Old", status: "INACTIVE", updatedAt: now }),
+      completeScalarRow("permission", { action: "read", code: "permission:deleted", createdAt: now, deletedAt: now, id: "permission-deleted", module: "acceptance", name: "Deleted", status: "ACTIVE", updatedAt: now })
+    ],
+    menu: [
+      completeScalarRow("menu", { code: "menu:child", createdAt: now, deletedAt: null, id: "menu-b", name: "Child", parentId: "menu-a", path: "/child", sortOrder: 2, status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("menu", { code: "menu:root", createdAt: now, deletedAt: null, id: "menu-a", name: "Root", parentId: null, path: "/", sortOrder: 1, status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("menu", { code: "menu:old", createdAt: now, deletedAt: null, id: "menu-inactive", name: "Old", parentId: null, path: "/old", sortOrder: 3, status: "INACTIVE", updatedAt: now }),
+      completeScalarRow("menu", { code: "menu:deleted", createdAt: now, deletedAt: now, id: "menu-deleted", name: "Deleted", parentId: null, path: "/deleted", sortOrder: 4, status: "ACTIVE", updatedAt: now })
+    ],
+    userRole: [
+      completeScalarRow("userRole", { createdAt: now, deletedAt: null, id: "user-role-valid", roleId: "role-admin", userId: "user-admin" }),
+      completeScalarRow("userRole", { createdAt: now, deletedAt: null, id: "user-role-dangling", roleId: "role-inactive", userId: "user-admin" })
+    ],
+    rolePermission: [
+      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-b", permissionId: "permission-b", roleId: "role-admin" }),
+      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-a", permissionId: "permission-a", roleId: "role-admin" }),
+      completeScalarRow("rolePermission", { createdAt: now, deletedAt: null, id: "grant-dangling", permissionId: "permission-inactive", roleId: "role-inactive" })
+    ],
+    roleMenu: [
+      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-b", menuId: "menu-b", roleId: "role-admin" }),
+      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-a", menuId: "menu-a", roleId: "role-admin" }),
+      completeScalarRow("roleMenu", { createdAt: now, deletedAt: null, id: "role-menu-dangling", menuId: "menu-inactive", roleId: "role-inactive" })
+    ],
+    customerAccount: [
+      completeScalarRow("customerAccount", { accountStatus: "ACTIVE", createdAt: now, customerId: "customer-active", deletedAt: null, id: "account-active", phone: "18616570212", updatedAt: now }),
+      completeScalarRow("customerAccount", { accountStatus: "DISABLED", createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "account-disabled", phone: "18600000000", updatedAt: now })
+    ],
+    customer: [
+      completeScalarRow("customer", { createdAt: now, customerNo: "CUS-1", customerType: "PERSONAL", deletedAt: null, id: "customer-active", mobile: "18616570212", name: "Active", status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("customer", { createdAt: now, customerNo: "CUS-2", customerType: "PERSONAL", deletedAt: null, id: "customer-inactive", mobile: "18600000000", name: "Inactive", status: "FROZEN", updatedAt: now })
+    ],
+    customerIdentity: [
+      completeScalarRow("customerIdentity", { createdAt: now, customerId: "customer-active", deletedAt: null, id: "identity-b", realnameVerified: true, updatedAt: now }),
+      completeScalarRow("customerIdentity", { createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "identity-dangling", realnameVerified: true, updatedAt: now })
+    ],
+    customerProfile: [
+      completeScalarRow("customerProfile", { createdAt: now, customerId: "customer-active", deletedAt: null, id: "profile-b", updatedAt: now }),
+      completeScalarRow("customerProfile", { createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "profile-dangling", updatedAt: now })
+    ],
+    customerESignProviderAccount: [
+      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-active", deletedAt: null, id: "esign-b", provider: "FADADA", providerOpenId: "open-active", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
+      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-inactive", deletedAt: null, id: "esign-dangling", provider: "FADADA", providerOpenId: "open-inactive", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
+      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "UNBOUND", createdAt: now, customerId: "customer-active", deletedAt: null, id: "esign-inactive", provider: "FADADA", providerOpenId: "open-unbound", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now }),
+      completeScalarRow("customerESignProviderAccount", { accountType: "PERSONAL", certBindingSource: "CALLBACK", certBindingStatus: "BOUND", createdAt: now, customerId: "customer-active", deletedAt: now, id: "esign-deleted", provider: "FADADA", providerOpenId: "open-deleted", realNameProviderStatusSource: "CALLBACK", realNameStatus: "VERIFIED", registrationStatus: "REGISTERED", source: "SYSTEM_REGISTER", updatedAt: now })
+    ],
+    subscriptionPlan: [
+      subscriptionPlan,
+      { ...subscriptionPlan, id: "plan-inactive-package", planName: "Inactive package", planNo: "PLAN-2", vehiclePackageId: "package-inactive" },
+      { ...subscriptionPlan, id: "plan-deleted-package", planName: "Deleted package", planNo: "PLAN-3", vehiclePackageId: "package-deleted" }
+    ],
+    product: [product],
+    productVersion: [productVersion],
+    depositRule: [completeScalarRow("depositRule", { createdAt: now, defaultRate: 0.1, deletedAt: null, depositAmount: 1000n, effectiveFrom: new Date("2026-01-01T00:00:00.000Z"), effectiveTo: null, grade: "A", id: "deposit-1", status: "ACTIVE", updatedAt: now })],
+    vehiclePackage: [
+      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: null, id: "package-1", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-package", packageName: "Package", packageNo: "PKG-1", productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: null, id: "package-inactive", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-inactive", packageName: "Inactive", packageNo: "PKG-2", productId: product.id, productVersionId: productVersion.id, status: "INACTIVE", updatedAt: now }),
+      completeScalarRow("vehiclePackage", { createdAt: now, deletedAt: now, id: "package-deleted", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", packageName: "Deleted", packageNo: "PKG-3", productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })
+    ],
+    vehiclePackageModelMember: [completeScalarRow("vehiclePackageModelMember", { createdAt: now, id: "member-1", modelDefinitionId: "model-member", vehiclePackageId: "package-1" })],
+    mileagePackage: [completeScalarRow("mileagePackage", { createdAt: now, deletedAt: null, id: "mileage-1", monthlyMileageKm: 1000, overMileageFeeAmount: 1n, packageName: "Mileage", packageNo: "MILE-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
+    energyPackage: [completeScalarRow("energyPackage", { createdAt: now, deletedAt: null, id: "energy-1", packageName: "Energy", packageNo: "ENERGY-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
+    benefitPackage: [completeScalarRow("benefitPackage", { benefitType: "OTHER", createdAt: now, deletedAt: null, id: "benefit-1", packageName: "Benefit", packageNo: "BEN-1", priceAmount: 1n, productId: product.id, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })],
+    productPriceRule: [
+      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-1", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-price", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-deleted-model", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now }),
+      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: null, id: "price-inactive", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-inactive", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "INACTIVE", updatedAt: now }),
+      completeScalarRow("productPriceRule", { baseMileageKm: 1000, createdAt: now, deletedAt: now, id: "price-deleted", maxPeriodMonths: 36, minPeriodMonths: 12, modelDefinitionId: "model-deleted", monthlyFeeRate: 0.1, overMileageFeeAmount: 1n, productVersionId: productVersion.id, status: "ACTIVE", updatedAt: now })
+    ],
+    vehicleModelDefinition: [
+      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Member", enabled: true, id: "model-member", modelCode: "MEMBER", modelName: "Member", portalVisible: true, sortOrder: 2, updatedAt: now }),
+      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Package", enabled: true, id: "model-package", modelCode: "PACKAGE", modelName: "Package", portalVisible: true, sortOrder: 1, updatedAt: now }),
+      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Price", enabled: true, id: "model-price", modelCode: "PRICE", modelName: "Price", portalVisible: true, sortOrder: 3, updatedAt: now }),
+      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: null, displayName: "Inactive", enabled: false, id: "model-inactive", modelCode: "INACTIVE", modelName: "Inactive", portalVisible: true, sortOrder: 4, updatedAt: now }),
+      completeScalarRow("vehicleModelDefinition", { brand: "NIO", createdAt: now, deletedAt: now, displayName: "Deleted", enabled: true, id: "model-deleted", modelCode: "DELETED", modelName: "Deleted", portalVisible: true, sortOrder: 5, updatedAt: now })
+    ]
+  };
+  const fake = createPrismaFake({ rows: dataset });
+  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]));
+
+  assert.deepEqual(snapshot.access.users.map(({ id }) => id), ["user-admin"]);
+  assert.deepEqual(snapshot.access.roles.map(({ id }) => id), ["role-admin"]);
+  assert.deepEqual(snapshot.access.permissions.map(({ id }) => id), ["permission-a", "permission-b"]);
+  assert.deepEqual(snapshot.access.menus.map(({ id }) => id), ["menu-a", "menu-b"]);
+  assert.deepEqual(snapshot.access.userRoles.map(({ id }) => id), ["user-role-valid"]);
+  assert.deepEqual(snapshot.access.rolePermissions.map(({ id }) => id), ["grant-a", "grant-b"]);
+  assert.deepEqual(snapshot.access.roleMenus.map(({ id }) => id), ["role-menu-a", "role-menu-b"]);
+  assert.deepEqual(snapshot.customer.customers.map(({ id }) => id), ["customer-active"]);
+  assert.deepEqual(snapshot.customer.customerIdentities.map(({ id }) => id), ["identity-b"]);
+  assert.deepEqual(snapshot.customer.customerProfiles.map(({ id }) => id), ["profile-b"]);
+  assert.deepEqual(snapshot.customer.customerESignProviderAccounts.map(({ id }) => id), ["esign-b"]);
+  assert.deepEqual(snapshot.catalog.subscriptionPlans.map(({ id }) => id), [
+    "plan-1",
+    "plan-deleted-package",
+    "plan-inactive-package"
+  ]);
+  assert.deepEqual(snapshot.catalog.vehiclePackages.map(({ id }) => id), ["package-1"]);
+  assert.deepEqual(snapshot.catalog.productPriceRules.map(({ id }) => id), [
+    "price-1",
+    "price-deleted-model"
+  ]);
+  assert.deepEqual(snapshot.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
+    "model-member",
+    "model-package",
+    "model-price"
+  ]);
 });
 
 test("target loader counts exact whitelist and forbidden delegates with parameterized fingerprints", async () => {
@@ -402,6 +575,13 @@ function fields(value) {
   return value.split(" ").sort();
 }
 
+function completeScalarRow(delegate, overrides) {
+  return {
+    ...Object.fromEntries(SOURCE_SCALAR_FIELDS[delegate].map((field) => [field, null])),
+    ...overrides
+  };
+}
+
 function selection(vehicleIds) {
   return {
     adminUsername: "keqi_119",
@@ -425,7 +605,14 @@ function createPrismaFake({ counts = {}, rawResults = [], rows = {} } = {}) {
         const callIndex = findManyCallIndex++;
         calls.push({ args, callIndex, delegate, operation: "findMany" });
         const result = rows[delegate];
-        return structuredClone(typeof result === "function" ? result({ args, callIndex }) : result ?? []);
+        if (typeof result === "function") {
+          return structuredClone(result({ args, callIndex }));
+        }
+        return structuredClone(
+          (result ?? [])
+            .filter((row) => matchesWhere(row, args.where ?? {}))
+            .map((row) => projectSelectedRow(row, args.select))
+        );
       }
     };
   }
@@ -447,6 +634,50 @@ function hasKeyDeep(value, key) {
   if (!value || typeof value !== "object") return false;
   if (Object.hasOwn(value, key)) return true;
   return Object.values(value).some((item) => hasKeyDeep(item, key));
+}
+
+function projectSelectedRow(row, select) {
+  return Object.fromEntries(
+    Object.entries(select).map(([field, selected]) => {
+      assert.ok(Object.hasOwn(row, field), `fake row is missing selected field ${field}`);
+      return [field, selected === true ? row[field] : projectNestedSelection(row[field], selected)];
+    })
+  );
+}
+
+function projectNestedSelection(value, selected) {
+  if (!selected?.select) return value;
+  if (Array.isArray(value)) return value.map((item) => projectSelectedRow(item, selected.select));
+  return projectSelectedRow(value, selected.select);
+}
+
+function matchesWhere(row, where) {
+  if (!row) return false;
+  return Object.entries(where).every(([field, expected]) => {
+    if (field === "AND") return expected.every((clause) => matchesWhere(row, clause));
+    if (field === "OR") return expected.some((clause) => matchesWhere(row, clause));
+    const actual = row[field];
+    if (expected === null || typeof expected !== "object" || expected instanceof Date) {
+      return sameScalar(actual, expected);
+    }
+    if (Object.hasOwn(expected, "in")) return expected.in.some((value) => sameScalar(actual, value));
+    if (Object.hasOwn(expected, "not")) return actual != null && !sameScalar(actual, expected.not);
+    const comparisons = [];
+    if (Object.hasOwn(expected, "lte")) comparisons.push(actual <= expected.lte);
+    if (Object.hasOwn(expected, "gte")) comparisons.push(actual >= expected.gte);
+    if (Object.hasOwn(expected, "gt")) comparisons.push(actual > expected.gt);
+    if (comparisons.length > 0) return comparisons.every(Boolean);
+    if (Object.hasOwn(expected, "is")) return matchesWhere(actual, expected.is);
+    if (Object.hasOwn(expected, "none")) {
+      return Array.isArray(actual) && actual.every((item) => !matchesWhere(item, expected.none));
+    }
+    return matchesWhere(actual, expected);
+  });
+}
+
+function sameScalar(left, right) {
+  if (left instanceof Date && right instanceof Date) return left.getTime() === right.getTime();
+  return left === right;
 }
 
 function completeVehicleRow() {

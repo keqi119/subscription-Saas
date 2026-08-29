@@ -141,7 +141,7 @@ function completeSnapshot(overrides = {}) {
         { benefitPackageId: "benefit-1", energyPackageId: "energy-1", id: "plan-1", mileagePackageId: "mileage-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE", vehiclePackageId: "package-1" }
       ],
       vehiclePackageModelMembers: [{ id: "package-member-1", modelDefinitionId: "model-1", vehiclePackageId: "package-1" }],
-      vehiclePackages: [{ id: "package-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }]
+      vehiclePackages: [{ id: "package-1", modelDefinitionId: "model-1", productId: "product-1", productVersionId: "product-version-1", status: "ACTIVE" }]
     },
     customer: {
       customerAccounts: [
@@ -195,7 +195,7 @@ function completeSnapshot(overrides = {}) {
       vehicleInsurancePolicies: [{ id: "policy-1", vehicleId: VEHICLE_A }],
       vehicleListingMedia: [{ id: "media-1", listingProfileId: "listing-1", vehicleId: VEHICLE_A }],
       vehicleListingPlans: [{ id: "listing-plan-1", listingProfileId: "listing-1", subscriptionPlanId: "plan-1", vehicleId: VEHICLE_A }],
-      vehicleListingProfiles: [{ id: "listing-1", listingStatus: "PUBLISHED", vehicleId: VEHICLE_A }],
+      vehicleListingProfiles: [{ id: "listing-1", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_A }],
       vehicleListingSourceBindings: [{ documentId: "document-1", id: "source-binding-1", vehicleId: VEHICLE_A }],
       vehicleModelDefinitions: [{ enabled: true, id: "model-1", portalVisible: true }],
       vehicleOwnershipPeriods: [{ assetOwnerId: "owner-1", endedAt: null, endReason: null, id: "ownership-1", startReason: "INITIAL_ACQUISITION", vehicleId: VEHICLE_A }],
@@ -366,6 +366,118 @@ test("catalog accepts a null benefit-package FK and requires exactly one match f
   }
 });
 
+test("catalog model references close through the union of package, member, price-rule, and selected-vehicle models", () => {
+  const snapshot = completeSnapshot();
+  snapshot.catalog.vehiclePackages[0].modelDefinitionId = "model-package";
+  snapshot.catalog.vehiclePackageModelMembers[0].modelDefinitionId = "model-member";
+  snapshot.catalog.productPriceRules[0].modelDefinitionId = "model-price";
+  snapshot.vehicle.vehicleModelDefinitions.push(
+    { deletedAt: null, enabled: true, id: "model-package", portalVisible: true },
+    { deletedAt: null, enabled: true, id: "model-member", portalVisible: true },
+    { deletedAt: null, enabled: true, id: "model-price", portalVisible: true }
+  );
+
+  const selected = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+  assert.equal(selected.safeToApply, true);
+  assert.deepEqual(selected.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
+    "model-1",
+    "model-member",
+    "model-package",
+    "model-price"
+  ]);
+
+  const discovery = classifyStage1CleanAcceptanceBaseline(snapshot, selection([]));
+  assert.equal(discovery.safeToApply, false);
+  assert.deepEqual(discovery.exceptions.map(({ code }) => code), ["VEHICLE_SELECTION_REQUIRED"]);
+  assert.deepEqual(discovery.rows.vehicle.vehicleModelDefinitions.map(({ id }) => id), [
+    "model-member",
+    "model-package",
+    "model-price"
+  ]);
+
+  for (const mutate of [
+    (value) => value.vehicle.vehicleModelDefinitions.splice(1, 1),
+    (value) => (value.vehicle.vehicleModelDefinitions[1].enabled = false),
+    (value) => (value.vehicle.vehicleModelDefinitions[1].portalVisible = false),
+    (value) => (value.vehicle.vehicleModelDefinitions[1].deletedAt = new Date("2026-08-01T00:00:00.000Z"))
+  ]) {
+    const invalid = structuredClone(snapshot);
+    mutate(invalid);
+    const result = classifyStage1CleanAcceptanceBaseline(invalid, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "CATALOG_REFERENCE_NOT_CLOSED"));
+  }
+});
+
+test("administrator access covers every active permission and menu with a complete acyclic parent chain", () => {
+  const completeAccess = {
+    menus: [
+      { deletedAt: null, id: "menu-child", parentId: "menu-root", status: "ACTIVE" },
+      { deletedAt: null, id: "menu-root", parentId: null, status: "ACTIVE" }
+    ],
+    permissions: [
+      { deletedAt: null, id: "permission-a", status: "ACTIVE" },
+      { deletedAt: null, id: "permission-b", status: "ACTIVE" }
+    ],
+    roleMenus: [
+      { deletedAt: null, menuId: "menu-child", roleId: "role-admin" },
+      { deletedAt: null, menuId: "menu-root", roleId: "role-admin" }
+    ],
+    rolePermissions: [
+      { deletedAt: null, permissionId: "permission-a", roleId: "role-admin" },
+      { deletedAt: null, permissionId: "permission-b", roleId: "role-admin" }
+    ],
+    roles: [{ code: "ADMIN", deletedAt: null, id: "role-admin", status: "ACTIVE" }],
+    userRoles: [{ deletedAt: null, roleId: "role-admin", userId: "admin-user" }],
+    users: [{ deletedAt: null, id: "admin-user", status: "ACTIVE", username: "keqi_119" }]
+  };
+  const valid = classifyStage1CleanAcceptanceBaseline(
+    completeSnapshot({ access: completeAccess }),
+    selection()
+  );
+  assert.equal(valid.safeToApply, true);
+  assert.deepEqual(valid.rows.access.menus.map(({ id }) => id), ["menu-child", "menu-root"]);
+  assert.deepEqual(valid.rows.access.permissions.map(({ id }) => id), ["permission-a", "permission-b"]);
+
+  const cases = [];
+  const missingPermissionGrant = structuredClone(completeAccess);
+  missingPermissionGrant.rolePermissions.pop();
+  cases.push(missingPermissionGrant);
+  const missingParent = structuredClone(completeAccess);
+  missingParent.menus.pop();
+  missingParent.roleMenus.pop();
+  cases.push(missingParent);
+  const inactiveParent = structuredClone(completeAccess);
+  inactiveParent.menus[1].status = "INACTIVE";
+  inactiveParent.roleMenus.pop();
+  cases.push(inactiveParent);
+  const cyclicParents = structuredClone(completeAccess);
+  cyclicParents.menus[1].parentId = "menu-child";
+  cases.push(cyclicParents);
+  for (const access of cases) {
+    const result = classifyStage1CleanAcceptanceBaseline(
+      completeSnapshot({ access }),
+      selection()
+    );
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "ADMIN_ROLE_INCOMPLETE"));
+  }
+});
+
+test("vehicle eligibility requires a published and portal-visible listing profile", () => {
+  for (const mutate of [
+    (profile) => (profile.listingStatus = "DRAFT"),
+    (profile) => (profile.portalVisible = false),
+    (profile) => (profile.deletedAt = new Date("2026-08-01T00:00:00.000Z"))
+  ]) {
+    const snapshot = completeSnapshot();
+    mutate(snapshot.vehicle.vehicleListingProfiles[0]);
+    const result = classifyStage1CleanAcceptanceBaseline(snapshot, selection());
+    assert.equal(result.safeToApply, false);
+    assert.ok(result.exceptions.some(({ code }) => code === "VEHICLE_REFERENCE_NOT_CLOSED"));
+  }
+});
+
 test("vehicle resolves its active owner through exactly one current ownership period", () => {
   const baseline = classifyStage1CleanAcceptanceBaseline(completeSnapshot(), selection());
   assert.equal(baseline.safeToApply, true);
@@ -396,6 +508,7 @@ test("vehicle profile is resolved by its unique vehicle FK", () => {
   duplicateProfile.vehicle.vehicleListingProfiles.push({
     id: "listing-2",
     listingStatus: "PUBLISHED",
+    portalVisible: true,
     vehicleId: VEHICLE_A
   });
   const result = classifyStage1CleanAcceptanceBaseline(duplicateProfile, selection());
@@ -475,7 +588,7 @@ test("vehicle closure keeps each explicitly selected vehicle and its one-to-many
     salePriceStatusEffective: true
   };
   snapshot.vehicle.vehicles.push({ currentSalePriceAmount: 200, id: VEHICLE_B, modelDefinitionId: "model-1", salePriceStatus: "EFFECTIVE", status: "AVAILABLE" });
-  snapshot.vehicle.vehicleListingProfiles.push({ id: "listing-2", listingStatus: "PUBLISHED", vehicleId: VEHICLE_B });
+  snapshot.vehicle.vehicleListingProfiles.push({ id: "listing-2", listingStatus: "PUBLISHED", portalVisible: true, vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleListingMedia.push({ id: "media-2", listingProfileId: "listing-2", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleListingPlans.push({ id: "listing-plan-2", listingProfileId: "listing-2", subscriptionPlanId: "plan-1", vehicleId: VEHICLE_B });
   snapshot.vehicle.vehicleDocumentBatches.push({ id: "document-batch-2", vehicleId: VEHICLE_B });
@@ -751,7 +864,7 @@ test("manifest rejects malformed context and classification and salts every publ
   assert.match(manifest.exceptions[0].subjectDigest, /^[0-9a-f]{64}$/);
   assert.notEqual(manifest.rowDigests.vehicle, classification.rowDigests.vehicle);
   assert.notEqual(manifest.exceptions[0].subjectDigest, "a".repeat(64));
-  assert.equal(manifest.rowDigests.vehicle, "3423a3fe0db1a7539dcc76052c7eb42082a4423bcdf940851a0a03286fb1240a");
+  assert.equal(manifest.rowDigests.vehicle, "a7fc09f4c2b882978d4165eb5b8b82a8e43501d2bb098f3ee2f5120fda9e6507");
   assert.equal(manifest.exceptions[0].subjectDigest, "dd881d6b5f32438dfc1e23709a232088240e855697d0d5baa0789e32fb27833e");
 });
 
@@ -794,7 +907,7 @@ test("manifest canonicalizes object keys and arrays before producing a stable SH
   });
 
   assert.equal(hashStage1CleanAcceptanceManifest(manifest), hashStage1CleanAcceptanceManifest(shuffledManifest));
-  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "a4ca4fb3e1d392aed486ab247223b653079f2b769e275d4ef5da170166c84fba");
+  assert.equal(hashStage1CleanAcceptanceManifest(manifest), "f7eb7e175149d17fb3f2f342ccaed15b2f7ae6ebd006778f27915d886c91464c");
   assert.deepEqual(manifest.selection.vehicleDigests, [...manifest.selection.vehicleDigests].sort());
 });
 

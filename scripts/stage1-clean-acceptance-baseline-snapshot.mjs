@@ -210,7 +210,12 @@ export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection
   const customer = await loadCustomer(tx);
   const catalog = await loadCatalog(tx, asOf);
   const templates = await loadTemplates(tx, asOf);
-  const vehicle = await loadVehicle(tx, selection.vehicleIds, asOf);
+  const vehicle = await loadVehicle(
+    tx,
+    selection.vehicleIds,
+    asOf,
+    catalogModelDefinitionIds(catalog)
+  );
   return { access, asOf, catalog, customer, templates, vehicle };
 }
 
@@ -272,34 +277,33 @@ async function loadAccess(tx) {
     status: "ACTIVE",
     username: "keqi_119"
   });
-  const userRoles = await find(tx, "userRole", {
-    deletedAt: null,
-    userId: { in: ids(users) }
-  });
-  const roleIds = ids(userRoles, "roleId");
   const roles = await find(tx, "role", {
     deletedAt: null,
-    id: { in: roleIds },
     status: "ACTIVE"
-  });
-  const activeRoleIds = ids(roles);
-  const rolePermissions = await find(tx, "rolePermission", {
-    deletedAt: null,
-    roleId: { in: activeRoleIds }
-  });
-  const roleMenus = await find(tx, "roleMenu", {
-    deletedAt: null,
-    roleId: { in: activeRoleIds }
   });
   const permissions = await find(tx, "permission", {
     deletedAt: null,
-    id: { in: ids(rolePermissions, "permissionId") },
     status: "ACTIVE"
   });
   const menus = await find(tx, "menu", {
     deletedAt: null,
-    id: { in: ids(roleMenus, "menuId") },
     status: "ACTIVE"
+  });
+  const roleIds = ids(roles);
+  const userRoles = await find(tx, "userRole", {
+    deletedAt: null,
+    roleId: { in: roleIds },
+    userId: { in: ids(users) }
+  });
+  const rolePermissions = await find(tx, "rolePermission", {
+    deletedAt: null,
+    permissionId: { in: ids(permissions) },
+    roleId: { in: roleIds }
+  });
+  const roleMenus = await find(tx, "roleMenu", {
+    deletedAt: null,
+    menuId: { in: ids(menus) },
+    roleId: { in: roleIds }
   });
   return { menus, permissions, roleMenus, rolePermissions, roles, userRoles, users };
 }
@@ -432,7 +436,7 @@ async function loadTemplates(tx, asOf) {
   };
 }
 
-async function loadVehicle(tx, vehicleIds, asOf) {
+async function loadVehicle(tx, vehicleIds, asOf, catalogModelIds) {
   const blockingRestrictionWhere = {
     scopes: { has: "ALLOCATION" },
     severity: "BLOCKING",
@@ -464,6 +468,12 @@ async function loadVehicle(tx, vehicleIds, asOf) {
       currentSalePriceAmount: { gt: 0 },
       deletedAt: null,
       id: { in: vehicleIds },
+      listingProfile: {
+        is: { deletedAt: null, listingStatus: "PUBLISHED", portalVisible: true }
+      },
+      modelDefinition: {
+        is: { deletedAt: null, enabled: true, portalVisible: true }
+      },
       operationalRestrictions: { none: blockingRestrictionWhere },
       salePriceStatus: "EFFECTIVE",
       status: "AVAILABLE",
@@ -497,7 +507,7 @@ async function loadVehicle(tx, vehicleIds, asOf) {
   const vehicleModelDefinitions = await find(tx, "vehicleModelDefinition", {
     deletedAt: null,
     enabled: true,
-    id: { in: ids(vehicles, "modelDefinitionId") },
+    id: { in: [...new Set([...catalogModelIds, ...ids(vehicles, "modelDefinitionId")])].sort() },
     portalVisible: true
   });
   const vehicleListingProfiles = await find(tx, "vehicleListingProfile", {
@@ -590,6 +600,14 @@ function ids(rows, field = "id") {
 
 function compactIds(rows, field) {
   return ids(rows.filter((row) => row?.[field] !== null), field);
+}
+
+function catalogModelDefinitionIds(catalog) {
+  return ids([
+    ...catalog.vehiclePackages,
+    ...catalog.vehiclePackageModelMembers,
+    ...catalog.productPriceRules
+  ], "modelDefinitionId");
 }
 
 function sameIds(rows, expectedIds) {

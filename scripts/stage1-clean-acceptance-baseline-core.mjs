@@ -125,7 +125,7 @@ export function classifyStage1CleanAcceptanceBaseline(snapshot = {}, inputSelect
   const exceptions = [];
   const access = classifyAccess(snapshot.access, selection, exceptions);
   const customer = classifyCustomer(snapshot.customer, selection, exceptions);
-  const catalog = classifyCatalog(snapshot.catalog, exceptions);
+  const catalog = classifyCatalog(snapshot.catalog, snapshot.vehicle, exceptions);
   const templates = classifyTemplates(snapshot.templates, snapshot.asOf, exceptions);
   const vehicle = classifyVehicle(snapshot.vehicle, selection, catalog, exceptions);
   const targetCountEvidence = copyTargetCountEvidence(snapshot.target);
@@ -206,14 +206,42 @@ function classifyAccess(access = {}, selection, exceptions) {
   if (users.length > 1) exception(exceptions, "ADMIN_AMBIGUOUS", "access", selection.adminUsername);
   const admin = users.length === 1 ? users[0] : undefined;
   const roles = active(array(access.roles));
-  const adminRole = roles.filter((role) => role.code === "ADMIN");
-  const userRoles = admin ? array(access.userRoles).filter((row) => row.userId === admin.id) : [];
-  const hasAdminRole = userRoles.some((row) => adminRole.some((role) => role.id === row.roleId));
-  const rolePermissions = array(access.rolePermissions).filter((row) => userRoles.some((userRole) => userRole.roleId === row.roleId));
-  const roleMenus = array(access.roleMenus).filter((row) => userRoles.some((userRole) => userRole.roleId === row.roleId));
-  const permissions = active(array(access.permissions).filter((row) => rolePermissions.some((grant) => grant.permissionId === row.id)));
-  const menus = active(array(access.menus).filter((row) => roleMenus.some((grant) => grant.menuId === row.id)));
-  if (admin && (!hasAdminRole || permissions.length === 0 || menus.length === 0)) {
+  const permissions = active(array(access.permissions));
+  const menus = active(array(access.menus));
+  const roleIds = new Set(roles.map((row) => row.id));
+  const permissionIds = new Set(permissions.map((row) => row.id));
+  const menuIds = new Set(menus.map((row) => row.id));
+  const userRoles = admin
+    ? array(access.userRoles).filter(
+        (row) => row?.deletedAt == null && row.userId === admin.id && roleIds.has(row.roleId)
+      )
+    : [];
+  const assignedRoleIds = new Set(userRoles.map((row) => row.roleId));
+  const assignedRoles = roles.filter((row) => assignedRoleIds.has(row.id));
+  const adminRoleIds = new Set(assignedRoles.filter((row) => row.code === "ADMIN").map((row) => row.id));
+  const rolePermissions = array(access.rolePermissions).filter(
+    (row) =>
+      row?.deletedAt == null &&
+      assignedRoleIds.has(row.roleId) &&
+      permissionIds.has(row.permissionId)
+  );
+  const roleMenus = array(access.roleMenus).filter(
+    (row) => row?.deletedAt == null && assignedRoleIds.has(row.roleId) && menuIds.has(row.menuId)
+  );
+  const grantedPermissionIds = new Set(
+    rolePermissions.filter((row) => adminRoleIds.has(row.roleId)).map((row) => row.permissionId)
+  );
+  const grantedMenuIds = new Set(
+    roleMenus.filter((row) => adminRoleIds.has(row.roleId)).map((row) => row.menuId)
+  );
+  const completeAdminAccess =
+    adminRoleIds.size > 0 &&
+    permissions.length > 0 &&
+    menus.length > 0 &&
+    permissions.every((row) => grantedPermissionIds.has(row.id)) &&
+    menus.every((row) => grantedMenuIds.has(row.id)) &&
+    completeMenuParentChains(menus);
+  if (admin && !completeAdminAccess) {
     exception(exceptions, "ADMIN_ROLE_INCOMPLETE", "access", admin.id);
   }
   return sortRows({
@@ -221,7 +249,7 @@ function classifyAccess(access = {}, selection, exceptions) {
     permissions,
     roleMenus,
     rolePermissions,
-    roles: roles.filter((role) => userRoles.some((userRole) => userRole.roleId === role.id)),
+    roles: assignedRoles,
     userRoles,
     users
   });
@@ -252,7 +280,7 @@ function classifyCustomer(customer = {}, selection, exceptions) {
   });
 }
 
-function classifyCatalog(catalog = {}, exceptions) {
+function classifyCatalog(catalog = {}, vehicle = {}, exceptions) {
   const products = active(array(catalog.products));
   const productVersions = active(array(catalog.productVersions));
   const depositRules = active(array(catalog.depositRules));
@@ -263,20 +291,26 @@ function classifyCatalog(catalog = {}, exceptions) {
   const benefitPackages = active(array(catalog.benefitPackages));
   const subscriptionPlans = active(array(catalog.subscriptionPlans));
   const productPriceRules = active(array(catalog.productPriceRules));
+  const vehicleModelDefinitions = array(vehicle.vehicleModelDefinitions);
   if (products.length === 0 || productVersions.length === 0 || depositRules.length === 0 || vehiclePackages.length === 0 || subscriptionPlans.length === 0) {
     exception(exceptions, "CATALOG_ACTIVE_SET_EMPTY", "catalog", "active");
   }
   const byId = (rows, id) => rows.filter((row) => row.id === id).length === 1;
   const closesProductVersion = (row) => byId(products, row.productId);
   const closesProductVersionBoundRow = (row) => byId(products, row.productId) && byId(productVersions, row.productVersionId);
+  const closesVehicleModel = (row) =>
+    nonEmpty(row.modelDefinitionId) &&
+    vehicleModelDefinitions.filter(
+      (model) => model?.id === row.modelDefinitionId && usableVehicleModelDefinition(model)
+    ).length === 1;
   const closed =
     productVersions.every(closesProductVersion) &&
-    vehiclePackages.every(closesProductVersionBoundRow) &&
-    vehiclePackageModelMembers.every((row) => byId(vehiclePackages, row.vehiclePackageId) && nonEmpty(row.modelDefinitionId)) &&
+    vehiclePackages.every((row) => closesProductVersionBoundRow(row) && closesVehicleModel(row)) &&
+    vehiclePackageModelMembers.every((row) => byId(vehiclePackages, row.vehiclePackageId) && closesVehicleModel(row)) &&
     mileagePackages.every(closesProductVersionBoundRow) &&
     energyPackages.every(closesProductVersionBoundRow) &&
     benefitPackages.every(closesProductVersionBoundRow) &&
-    productPriceRules.every((row) => byId(productVersions, row.productVersionId) && nonEmpty(row.modelDefinitionId)) &&
+    productPriceRules.every((row) => byId(productVersions, row.productVersionId) && closesVehicleModel(row)) &&
     subscriptionPlans.every(
       (row) =>
         byId(products, row.productId) &&
@@ -381,9 +415,16 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
     vehicleSalePriceHistories: [],
     vehicles: []
   };
+  const allVehicleModelDefinitions = array(vehicle.vehicleModelDefinitions);
+  for (const modelDefinitionId of catalogModelDefinitionIds(catalog)) {
+    const matches = allVehicleModelDefinitions.filter(
+      (row) => row?.id === modelDefinitionId && usableVehicleModelDefinition(row)
+    );
+    if (matches.length === 1) pushUniqueRow(closure.vehicleModelDefinitions, matches[0]);
+  }
   if (selection.vehicleIds.length === 0) {
     exception(exceptions, "VEHICLE_SELECTION_REQUIRED", "vehicle", "selection");
-    return closure;
+    return sortRows(closure);
   }
   const vehicles = array(vehicle.vehicles);
   const allInsurancePolicies = array(vehicle.vehicleInsurancePolicies);
@@ -408,11 +449,15 @@ function classifyVehicle(vehicle = {}, selection, catalog, exceptions) {
           (row) => row?.id === currentOwnership.assetOwnerId && row.status === "ACTIVE"
         )
       : [];
-    const models = array(vehicle.vehicleModelDefinitions).filter(
-      (row) => row?.id === item.modelDefinitionId && row.deletedAt == null && row.enabled === true && row.portalVisible === true
+    const models = allVehicleModelDefinitions.filter(
+      (row) => row?.id === item.modelDefinitionId && usableVehicleModelDefinition(row)
     );
     const profiles = array(vehicle.vehicleListingProfiles).filter(
-      (row) => row?.vehicleId === item.id && row.deletedAt == null && row.listingStatus === "PUBLISHED"
+      (row) =>
+        row?.vehicleId === item.id &&
+        row.deletedAt == null &&
+        row.listingStatus === "PUBLISHED" &&
+        row.portalVisible === true
     );
     if (currentOwnershipPeriods.length !== 1 || owners.length !== 1 || models.length !== 1 || profiles.length !== 1) {
       exception(exceptions, "VEHICLE_REFERENCE_NOT_CLOSED", "vehicle", item.id);
@@ -539,6 +584,38 @@ function exception(exceptions, code, domain, subject) {
 
 function active(rows) {
   return rows.filter((row) => row && row.deletedAt == null && row.status === "ACTIVE");
+}
+
+function completeMenuParentChains(menus) {
+  const byId = new Map();
+  for (const menu of menus) {
+    if (!nonEmpty(menu?.id) || byId.has(menu.id)) return false;
+    byId.set(menu.id, menu);
+  }
+  for (const menu of menus) {
+    const visited = new Set([menu.id]);
+    let current = menu;
+    while (current.parentId != null) {
+      if (!nonEmpty(current.parentId) || visited.has(current.parentId)) return false;
+      const parent = byId.get(current.parentId);
+      if (!parent) return false;
+      visited.add(parent.id);
+      current = parent;
+    }
+  }
+  return true;
+}
+
+function catalogModelDefinitionIds(catalog = {}) {
+  return [...new Set([
+    ...array(catalog.vehiclePackages).map((row) => row?.modelDefinitionId),
+    ...array(catalog.vehiclePackageModelMembers).map((row) => row?.modelDefinitionId),
+    ...array(catalog.productPriceRules).map((row) => row?.modelDefinitionId)
+  ].filter(nonEmpty))].sort();
+}
+
+function usableVehicleModelDefinition(row) {
+  return row?.deletedAt == null && row.enabled === true && row.portalVisible === true;
 }
 
 function sortRows(value) {

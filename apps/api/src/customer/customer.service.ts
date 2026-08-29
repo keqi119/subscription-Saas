@@ -2193,6 +2193,7 @@ export class CustomerService {
   ) {
     const before = await this.findApplicationOrThrow(id);
     ensureCanManageApplication(before, user);
+    assertApplicationHasNoOrder(before);
 
     if (!canEditApplication(before.status)) {
       throw new BadRequestException("Only draft or need-more-info applications can be updated.");
@@ -2231,6 +2232,7 @@ export class CustomerService {
   ) {
     const before = await this.findApplicationOrThrow(id);
     ensureCanManageApplication(before, user);
+    assertApplicationHasNoOrder(before);
 
     if (!canEditApplication(before.status)) {
       throw new BadRequestException("Only draft or need-more-info applications can be submitted.");
@@ -2309,6 +2311,7 @@ export class CustomerService {
   ) {
     const application = await this.findApplicationOrThrow(id);
     ensureCanManageApplication(application, user);
+    assertApplicationHasNoOrder(application);
 
     if (!canUploadMaterialForApplication(application, user)) {
       throw new BadRequestException("Materials can only be uploaded before review is finalized.");
@@ -2476,6 +2479,7 @@ export class CustomerService {
   ) {
     const application = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(application, user);
+    assertApplicationHasNoOrder(application);
     assertReviewMaterialInput(dto.status, dto.comment);
 
     const before = await this.prisma.applicationMaterial.findFirst({
@@ -2540,6 +2544,7 @@ export class CustomerService {
   ) {
     const application = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(application, user);
+    assertApplicationHasNoOrder(application);
     assertCanReviewMaterialGroup(application, user);
     assertReviewMaterialInput(dto.status, dto.comment);
 
@@ -2623,6 +2628,7 @@ export class CustomerService {
   ) {
     const application = await this.findApplicationOrThrow(id);
     ensureCanAccessApplication(application, user);
+    assertApplicationHasNoOrder(application);
     const reason = assertDeleteMaterialFileInput(dto.reason);
 
     const before = await this.prisma.applicationMaterialFile.findFirst({
@@ -2688,6 +2694,7 @@ export class CustomerService {
 
   async needMoreInfo(id: string, dto: NeedMoreInfoDto, user: RequestUser, context: RequestContext) {
     const before = await this.findApplicationOrThrow(id);
+    assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     const comment = normalizeRequiredText(dto.comment ?? dto.reason, "comment");
 
@@ -2736,6 +2743,7 @@ export class CustomerService {
     context: RequestContext
   ) {
     const before = await this.findApplicationOrThrow(id);
+    assertApplicationHasNoOrder(before);
     ensureReviewable(before);
     assertCanApproveApplication(before);
     const approvedAt = new Date();
@@ -3113,9 +3121,16 @@ function ensureApplicationReviewWorkflowAllowed(application: ApplicationWithDeta
   }
 }
 
-function assertApplicationHasNoOrder(application: ApplicationWithDetails) {
-  const activeOrder = application.orders.find((order) => !order.deletedAt);
-  if (activeOrder) {
+type ApplicationOrderBoundary = {
+  orders?: ReadonlyArray<{ deletedAt?: unknown | null }> | null;
+};
+
+function hasFormalApplicationOrder(application: ApplicationOrderBoundary) {
+  return Boolean(application.orders?.some((order) => order.deletedAt == null));
+}
+
+function assertApplicationHasNoOrder(application: ApplicationOrderBoundary) {
+  if (hasFormalApplicationOrder(application)) {
     throw new BadRequestException("该进件已生成订单，请勿重复处理。");
   }
 }
@@ -3569,10 +3584,12 @@ export function canEditApplication(status: ApplicationStatus) {
 }
 
 function canUploadMaterialForApplication(
-  application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
+  application: Pick<ApplicationWithDetails, "salesUserId" | "status"> &
+    ApplicationOrderBoundary,
   user: RequestUser
 ) {
   return (
+    !hasFormalApplicationOrder(application) &&
     user.permissions.includes(PermissionCode.APPLICATION_MATERIAL_UPLOAD) &&
     canAccessScopedApplication(application, user) &&
     canUploadMaterial(application.status, user, application.salesUserId)
@@ -3604,9 +3621,14 @@ export function isUploadableStatus(status: ApplicationStatus) {
 }
 
 export function canDeleteMaterialFile(
-  application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
+  application: Pick<ApplicationWithDetails, "salesUserId" | "status"> &
+    ApplicationOrderBoundary,
   user: RequestUser
 ) {
+  if (hasFormalApplicationOrder(application)) {
+    return false;
+  }
+
   if (!user.permissions.includes(PermissionCode.APPLICATION_MATERIAL_DELETE)) {
     return false;
   }
@@ -3638,9 +3660,13 @@ function assertCanReviewMaterialGroup(
 }
 
 function canReviewMaterialGroup(
-  application: Pick<ApplicationWithDetails, "status">,
+  application: Pick<ApplicationWithDetails, "status"> & ApplicationOrderBoundary,
   user: RequestUser
 ) {
+  if (hasFormalApplicationOrder(application)) {
+    return false;
+  }
+
   if (!user.permissions.includes(PermissionCode.APPLICATION_REVIEW)) {
     return false;
   }
@@ -4163,9 +4189,14 @@ function getMaterialTypeName(type: ApplicationMaterialType) {
 
 export function getAvailableApplicationActions(
   application: Pick<ApplicationWithDetails, "salesUserId" | "status"> &
-    Partial<Pick<ApplicationWithDetails, "planConfirmStatus">>,
+    Partial<Pick<ApplicationWithDetails, "planConfirmStatus">> &
+    ApplicationOrderBoundary,
   user: RequestUser
 ) {
+  if (hasFormalApplicationOrder(application)) {
+    return [];
+  }
+
   const permissions = new Set(user.permissions);
   const actions: string[] = [];
 
@@ -4390,7 +4421,7 @@ function toMaterialView(
 
 function toMaterialGroupView(
   group: Prisma.ApplicationMaterialGroupGetPayload<{ include: typeof materialGroupInclude }>,
-  application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
+  application: Pick<ApplicationWithDetails, "orders" | "salesUserId" | "status">,
   user?: RequestUser
 ) {
   return {
@@ -4414,7 +4445,7 @@ function toMaterialGroupView(
 
 function toMaterialFileView(
   file: Prisma.ApplicationMaterialFileGetPayload<{ include: typeof materialFileInclude }>,
-  application: Pick<ApplicationWithDetails, "salesUserId" | "status">,
+  application: Pick<ApplicationWithDetails, "orders" | "salesUserId" | "status">,
   user?: RequestUser
 ) {
   const source = file.file?.objectKey?.startsWith("customer-profile-materials/")

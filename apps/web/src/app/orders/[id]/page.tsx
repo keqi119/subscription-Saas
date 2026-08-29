@@ -122,6 +122,7 @@ import {
   reconcileAdminStage2CustomerSignature,
   retryAdminStage2WorkflowJob,
   runAdminStage2WorkflowRecovery,
+  shouldShowAdminStage2RegistrationException,
   startAdminStage2HandoverESign,
   type AdminStage2HandoverESignStatus,
   type AdminStage2HandoverWorkflowJob,
@@ -3230,11 +3231,7 @@ function Stage2HandoverWorkflowCell({
         canView={canViewRegistrationException}
         currentUserId={currentUserId}
         onChanged={() => onRefresh(workOrder.id)}
-        visible={Boolean(
-          status?.blockers.some(
-            (blocker) => blocker.code === "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
-          )
-        )}
+        visible={shouldShowAdminStage2RegistrationException(status)}
         workOrderId={workOrder.id}
       />
       <Space size={[6, 6]} wrap>

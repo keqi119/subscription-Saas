@@ -17,6 +17,7 @@ import {
   retryAdminStage2PlatformSeal,
   retryAdminStage2WorkflowJob,
   requestAdminStage2RegistrationException,
+  shouldShowAdminStage2RegistrationException,
   startAdminStage2HandoverESign,
   validateAdminStage2HandoverFallbackReason,
   validateAdminStage2HandoverVoidReason,
@@ -272,6 +273,46 @@ describe("Admin Stage 2 handover eSign API", () => {
       credentials: "include",
       method: "POST"
     });
+  });
+});
+
+describe("Admin Stage 2 registration exception visibility", () => {
+  const registrationBlocker = {
+    code: "VEHICLE_REGISTRATION_DOCUMENT_MISSING"
+  };
+
+  it("shows the exception workflow while the missing registration document still blocks signing", () => {
+    expect(
+      shouldShowAdminStage2RegistrationException(
+        esignStatus({ blockers: [registrationBlocker] })
+      )
+    ).toBe(true);
+  });
+
+  it("hides a stale blocker after both signing parties have completed", () => {
+    expect(
+      shouldShowAdminStage2RegistrationException(
+        esignStatus({
+          blockers: [registrationBlocker],
+          customerSigner: signer({ status: "SIGNED" }),
+          platformSigner: stage2PlatformSigner({ status: "SIGNED" }),
+          status: "COMPLETED",
+          taskId: "completed-task"
+        })
+      )
+    ).toBe(false);
+  });
+
+  it("hides a stale blocker when the signed artifact is already archived", () => {
+    expect(
+      shouldShowAdminStage2RegistrationException(
+        esignStatus({
+          archiveStatus: "ARCHIVED",
+          blockers: [registrationBlocker],
+          signedArtifactAvailable: true
+        })
+      )
+    ).toBe(false);
   });
 });
 

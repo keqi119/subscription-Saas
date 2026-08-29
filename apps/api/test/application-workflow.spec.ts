@@ -45,6 +45,23 @@ const riskUser: RequestUser = {
   username: "rc"
 };
 
+const terminalAdminUser: RequestUser = {
+  id: "00000000-0000-4000-8000-000000000003",
+  menus: [],
+  name: "管理员",
+  permissions: [
+    "application:view",
+    "application:review",
+    "application:submit",
+    "application:material_upload",
+    "application:material_delete",
+    "order:create",
+    "quote:create"
+  ],
+  roles: ["ADMIN"],
+  username: "admin"
+};
+
 describe("application workflow helpers", () => {
   it("validates material review statuses and comment requirements", () => {
     expect(() => assertReviewMaterialInput(MaterialStatus.APPROVED)).not.toThrow();
@@ -88,6 +105,18 @@ describe("application workflow helpers", () => {
     expect(getAvailableApplicationActions(submittedApplication, riskUser)).toEqual(
       expect.arrayContaining(["reviewMaterial", "approve", "needMoreInfo", "reject"])
     );
+  });
+
+  it("exposes no application mutations after a formal order exists", () => {
+    const applicationWithOrder = {
+      orders: [{ deletedAt: null }],
+      planConfirmStatus: "CONFIRMED" as const,
+      salesUserId: salesUser.id,
+      status: ApplicationStatus.APPROVED
+    };
+
+    expect(getAvailableApplicationActions(applicationWithOrder, terminalAdminUser)).toEqual([]);
+    expect(canDeleteMaterialFile(applicationWithOrder, terminalAdminUser)).toBe(false);
   });
 
   it("scopes sales users to their own applications", () => {

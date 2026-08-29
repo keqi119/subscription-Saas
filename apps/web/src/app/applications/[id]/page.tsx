@@ -54,7 +54,8 @@ import {
   actionAvailability,
   canCreateOrderFromApplication as getCreateOrderAvailability,
   canFinalizeApplicationPlan as getFinalizePlanAvailability,
-  canGenerateApplicationQuote
+  canGenerateApplicationQuote,
+  isApplicationWorkspaceReadOnly
 } from "../../../lib/action-guards";
 import {
   formatMoneyCent,
@@ -454,8 +455,8 @@ export default function ApplicationDetailPage() {
   const permissions = useMemo<Set<string>>(() => new Set(me?.user.permissions ?? []), [me]);
   const isSelfServiceApplication = detail?.applicationSource === "SELF_SERVICE";
   const canReviewApplication = permissions.has("application:review");
-  const canCreateOrderChange = permissions.has("order_change:create");
   const currentOrder = detail?.orders?.[0] ?? null;
+  const applicationWorkspaceReadOnly = isApplicationWorkspaceReadOnly(detail);
   const intentSnapshot = detail?.intentSnapshot ?? detail?.customerSelectedSnapshot;
   const finalPlanSnapshot = detail?.finalPlanSnapshot ?? detail?.finalQuoteSnapshot;
   const uploadMaterialAvailability = actionAvailability({
@@ -933,7 +934,7 @@ export default function ApplicationDetailPage() {
                 <Button icon={<EyeOutlined />} onClick={() => openPreview(file)} size="small">
                   预览
                 </Button>
-                {file.canDelete ? (
+                {file.canDelete && !applicationWorkspaceReadOnly ? (
                   <Button danger icon={<DeleteOutlined />} onClick={() => setDeleteTarget(file)} size="small">
                     删除
                   </Button>
@@ -961,6 +962,7 @@ export default function ApplicationDetailPage() {
     { dataIndex: "reviewer", render: (value?: UserRef | null) => value?.name ?? "-", title: "审核人", width: 100 },
     { dataIndex: "reviewedAt", render: formatTime, title: "审核时间", width: 150 },
     {
+      hidden: applicationWorkspaceReadOnly,
       render: (_, record) => (
         <Space wrap>
           <ActionButton
@@ -1046,6 +1048,64 @@ export default function ApplicationDetailPage() {
     }
   ];
 
+  const applicationActionButtons = applicationWorkspaceReadOnly ? null : (
+    <>
+      <ActionButton
+        availability={uploadMaterialAvailability}
+        icon={<UploadOutlined />}
+        onClick={() => openUploadModal()}
+      >
+        上传资料
+      </ActionButton>
+      {!isSelfServiceApplication ? (
+        <ActionButton
+          availability={createQuoteAvailability}
+          onClick={openQuoteModal}
+          type="primary"
+        >
+          生成订阅报价
+        </ActionButton>
+      ) : null}
+      <ActionButton
+        availability={submitAvailability}
+        onClick={() => openActionModal("submit")}
+        type="primary"
+      >
+        提交
+      </ActionButton>
+      <ActionButton
+        availability={approveAvailability}
+        onClick={() => openActionModal("approve")}
+        type="primary"
+      >
+        通过
+      </ActionButton>
+      <ActionButton
+        availability={needMoreInfoAvailability}
+        onClick={() => openActionModal("need-more-info")}
+      >
+        补件
+      </ActionButton>
+      <ActionButton
+        availability={rejectAvailability}
+        danger
+        onClick={() => openActionModal("reject")}
+      >
+        拒绝
+      </ActionButton>
+      {journey ? null : (
+        <ActionButton
+          availability={createOrderFromApplicationAvailability}
+          loading={submitting}
+          onClick={createOrderFromApplication}
+          type="primary"
+        >
+          生成正式订单
+        </ActionButton>
+      )}
+    </>
+  );
+
   return (
     <ProtectedShell>
       <Space orientation="vertical" size={20} style={{ width: "100%" }}>
@@ -1064,70 +1124,11 @@ export default function ApplicationDetailPage() {
           {detail ? (
             <Space wrap>
               {currentOrder ? (
-                <>
-                  <Button onClick={() => router.push(`/orders/${currentOrder.id}`)}>
-                    查看订单
-                  </Button>
-                  {canCreateOrderChange ? (
-                    <Button onClick={() => router.push(`/orders/${currentOrder.id}?createChange=1`)}>
-                      申请变更方案
-                    </Button>
-                  ) : null}
-                </>
+                <Button onClick={() => router.push(`/orders/${currentOrder.id}`)}>
+                  查看订单
+                </Button>
               ) : null}
-              <ActionButton
-                availability={uploadMaterialAvailability}
-                icon={<UploadOutlined />}
-                onClick={() => openUploadModal()}
-              >
-                上传资料
-              </ActionButton>
-              {!isSelfServiceApplication ? (
-                <ActionButton
-                  availability={createQuoteAvailability}
-                  onClick={openQuoteModal}
-                  type="primary"
-                >
-                  生成订阅报价
-                </ActionButton>
-              ) : null}
-              <ActionButton
-                availability={submitAvailability}
-                onClick={() => openActionModal("submit")}
-                type="primary"
-              >
-                提交
-              </ActionButton>
-              <ActionButton
-                availability={approveAvailability}
-                onClick={() => openActionModal("approve")}
-                type="primary"
-              >
-                通过
-              </ActionButton>
-              <ActionButton
-                availability={needMoreInfoAvailability}
-                onClick={() => openActionModal("need-more-info")}
-              >
-                补件
-              </ActionButton>
-              <ActionButton
-                availability={rejectAvailability}
-                danger
-                onClick={() => openActionModal("reject")}
-              >
-                拒绝
-              </ActionButton>
-              {journey ? null : (
-                <ActionButton
-                  availability={createOrderFromApplicationAvailability}
-                  loading={submitting}
-                  onClick={createOrderFromApplication}
-                  type="primary"
-                >
-                  生成正式订单
-                </ActionButton>
-              )}
+              {applicationActionButtons}
             </Space>
           ) : null}
         </Space>
@@ -1384,7 +1385,7 @@ export default function ApplicationDetailPage() {
                   }
                 ]}
               />
-              {canReviewApplication ? (
+              {canReviewApplication && !applicationWorkspaceReadOnly ? (
                 <Space orientation="vertical" size={12} style={{ marginTop: 16, width: "100%" }}>
                   <Alert
                     message="自助进件审核已复用人工进件流程"

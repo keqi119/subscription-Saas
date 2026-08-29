@@ -309,29 +309,32 @@ async function loadAccess(tx) {
 }
 
 async function loadCustomer(tx) {
-  const customerAccounts = await find(tx, "customerAccount", {
+  const candidateCustomerAccounts = await find(tx, "customerAccount", {
     accountStatus: "ACTIVE",
     deletedAt: null,
     phone: "18616570212"
   });
-  const customerIds = ids(customerAccounts, "customerId");
-  const customers = await find(tx, "customer", {
+  const candidateCustomerIds = ids(candidateCustomerAccounts, "customerId");
+  const candidateCustomers = await find(tx, "customer", {
     deletedAt: null,
-    id: { in: customerIds },
+    id: { in: candidateCustomerIds },
     status: "ACTIVE"
   });
-  const activeCustomerIds = ids(customers);
+  const activeCustomerIds = new Set(ids(candidateCustomers));
+  const customerAccounts = candidateCustomerAccounts.filter((row) => activeCustomerIds.has(row.customerId));
+  const selectedCustomerIds = ids(customerAccounts, "customerId");
+  const customers = candidateCustomers.filter((row) => selectedCustomerIds.includes(row.id));
   const customerIdentities = await find(tx, "customerIdentity", {
-    customerId: { in: activeCustomerIds },
+    customerId: { in: selectedCustomerIds },
     deletedAt: null
   });
   const customerProfiles = await find(tx, "customerProfile", {
-    customerId: { in: activeCustomerIds },
+    customerId: { in: selectedCustomerIds },
     deletedAt: null
   });
   const customerESignProviderAccounts = await find(tx, "customerESignProviderAccount", {
     certBindingStatus: "BOUND",
-    customerId: { in: activeCustomerIds },
+    customerId: { in: selectedCustomerIds },
     deletedAt: null,
     OR: [{ providerOpenId: { not: "" } }, { providerCustomerId: { not: "" } }],
     realNameStatus: "VERIFIED",

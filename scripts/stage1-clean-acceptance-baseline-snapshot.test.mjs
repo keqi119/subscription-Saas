@@ -527,6 +527,79 @@ test("source loader returns endpoint-closed access/customer rows and catalog mod
   ]);
 });
 
+test("source loader drops a fixed-phone account and children when its Customer endpoint is inactive or deleted", async () => {
+  const now = new Date("2026-08-30T00:00:00.000Z");
+  for (const endpoint of [
+    { deletedAt: null, id: "customer-inactive", status: "FROZEN" },
+    { deletedAt: now, id: "customer-deleted", status: "ACTIVE" }
+  ]) {
+    const fake = createPrismaFake({
+      rows: {
+        customer: [completeScalarRow("customer", {
+          createdAt: now,
+          customerNo: `CUS-${endpoint.id}`,
+          customerType: "PERSONAL",
+          deletedAt: endpoint.deletedAt,
+          id: endpoint.id,
+          mobile: "18616570212",
+          name: endpoint.id,
+          status: endpoint.status,
+          updatedAt: now
+        })],
+        customerAccount: [completeScalarRow("customerAccount", {
+          accountStatus: "ACTIVE",
+          createdAt: now,
+          customerId: endpoint.id,
+          deletedAt: null,
+          id: `account-${endpoint.id}`,
+          phone: "18616570212",
+          updatedAt: now
+        })],
+        customerESignProviderAccount: [completeScalarRow("customerESignProviderAccount", {
+          accountType: "PERSONAL",
+          certBindingSource: "CALLBACK",
+          certBindingStatus: "BOUND",
+          createdAt: now,
+          customerId: endpoint.id,
+          deletedAt: null,
+          id: `esign-${endpoint.id}`,
+          provider: "FADADA",
+          providerOpenId: `open-${endpoint.id}`,
+          realNameProviderStatusSource: "CALLBACK",
+          realNameStatus: "VERIFIED",
+          registrationStatus: "REGISTERED",
+          source: "SYSTEM_REGISTER",
+          updatedAt: now
+        })],
+        customerIdentity: [completeScalarRow("customerIdentity", {
+          createdAt: now,
+          customerId: endpoint.id,
+          deletedAt: null,
+          id: `identity-${endpoint.id}`,
+          realnameVerified: true,
+          updatedAt: now
+        })],
+        customerProfile: [completeScalarRow("customerProfile", {
+          createdAt: now,
+          customerId: endpoint.id,
+          deletedAt: null,
+          id: `profile-${endpoint.id}`,
+          updatedAt: now
+        })]
+      }
+    });
+
+    const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]));
+    assert.deepEqual(snapshot.customer, {
+      customerAccounts: [],
+      customerESignProviderAccounts: [],
+      customerIdentities: [],
+      customerProfiles: [],
+      customers: []
+    });
+  }
+});
+
 test("target loader counts exact whitelist and forbidden delegates with parameterized fingerprints", async () => {
   assert.deepEqual(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES, EXPECTED_FORBIDDEN_DELEGATES);
   assert.equal(Object.isFrozen(STAGE1_ACCEPTANCE_FORBIDDEN_DELEGATES), true);

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -27,6 +28,7 @@ const HASH_SALT = "b".repeat(64);
 const IMAGE_REF = `registry.example/stage1-acceptance@sha256:${"c".repeat(64)}`;
 const PASSWORD_HASH = "$2b$12$stage1.acceptance.fixture.hash";
 const APPLY_ADVISORY_KEY = "stage1-clean-acceptance-baseline:apply";
+const PRISMA_MIGRATION_SKIP_DOTENV = "STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV";
 const repoRoot = resolve(import.meta.dirname, "..");
 const apiRoot = resolve(repoRoot, "apps/api");
 const requireFromApi = createRequire(resolve(apiRoot, "package.json"));
@@ -181,8 +183,19 @@ test("migration child receives only the derived database URL and captured output
     STAGE1_ACCEPTANCE_TARGET_DATABASE_URL: "target-secret",
     STAGING_DATABASE_URL: "staging-secret",
     POSTGRES_URL: "postgres-secret",
+    DIRECT_URL: "direct-secret",
     PGHOST: "pg-host-secret",
-    PGPASSWORD: "pg-password-secret"
+    PGPASSWORD: "pg-password-secret",
+    pgpassfile: "pg-passfile-secret",
+    PgOptions: "pg-options-secret",
+    PGAPPNAME: "pg-appname-secret",
+    PGCONNECT_TIMEOUT: "pg-timeout-secret",
+    PGCLIENTENCODING: "pg-encoding-secret",
+    PGCHANNELBINDING: "pg-channel-secret",
+    PGTARGETSESSIONATTRS: "pg-target-secret",
+    PGSSLKEY: "pg-key-secret",
+    PGSSLCERT: "pg-cert-secret",
+    PGSSLROOTCERT: "pg-root-cert-secret"
   };
   const derivedUrl = "postgresql://temporary-derived";
   let childOptions;
@@ -205,11 +218,35 @@ test("migration child receives only the derived database URL and captured output
     "target-secret",
     "staging-secret",
     "postgres-secret",
+    "direct-secret",
     "pg-host-secret",
-    "pg-password-secret"
+    "pg-password-secret",
+    "pg-passfile-secret",
+    "pg-options-secret",
+    "pg-appname-secret",
+    "pg-timeout-secret",
+    "pg-encoding-secret",
+    "pg-channel-secret",
+    "pg-target-secret",
+    "pg-key-secret",
+    "pg-cert-secret",
+    "pg-root-cert-secret"
   ]) {
     assert.equal(Object.values(childOptions.env).includes(secret), false);
   }
+  assert.equal(
+    Object.keys(childOptions.env).some((key) => /^pg/i.test(key)),
+    false
+  );
+  assert.deepEqual(
+    Object.keys(childOptions.env).filter((key) =>
+      /(?:database|postgres|direct|(?:^|_)db(?:_|$)).*url|url.*(?:database|postgres|direct|(?:^|_)db(?:_|$))/i.test(
+        key
+      )
+    ),
+    ["DATABASE_URL"]
+  );
+  assert.equal(childOptions.env.STAGE1_ACCEPTANCE_MIGRATION_SKIP_DOTENV, "1");
 
   assert.throws(
     () =>
@@ -219,6 +256,37 @@ test("migration child receives only the derived database URL and captured output
       }),
     (error) => error?.message === "INTEGRATION_MIGRATION_DEPLOY_FAILED"
   );
+});
+
+test("Prisma migration dotenv policy blocks repository and cwd rehydration", () => {
+  const { PRISMA_MIGRATION_SKIP_DOTENV, loadPrismaEnvironment } =
+    requireFromApi("./prisma-env-policy.ts");
+  const temporaryRoot = mkdtempSync(resolve(tmpdir(), "stage1-prisma-env-"));
+  const cwd = resolve(temporaryRoot, "cwd");
+  const repositoryEnvPath = resolve(temporaryRoot, "repository.env");
+  mkdirSync(cwd);
+  writeFileSync(repositoryEnvPath, "DIRECT_URL=repository-direct-secret\n", "utf8");
+  writeFileSync(resolve(cwd, ".env"), "PGPASSFILE=cwd-passfile-secret\n", "utf8");
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(cwd);
+    const normalEnvironment = {};
+    loadPrismaEnvironment({ environment: normalEnvironment, repositoryEnvPath });
+    assert.equal(normalEnvironment.DIRECT_URL, "repository-direct-secret");
+    assert.equal(normalEnvironment.PGPASSFILE, "cwd-passfile-secret");
+
+    const protectedEnvironment = {
+      DATABASE_URL: "postgresql://temporary-derived",
+      [PRISMA_MIGRATION_SKIP_DOTENV]: "1"
+    };
+    loadPrismaEnvironment({ environment: protectedEnvironment, repositoryEnvPath });
+    assert.equal(protectedEnvironment.DATABASE_URL, "postgresql://temporary-derived");
+    assert.equal(protectedEnvironment.DIRECT_URL, undefined);
+    assert.equal(protectedEnvironment.PGPASSFILE, undefined);
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  }
 });
 
 test("apply confirmation is restored once after success and failure", async () => {
@@ -1237,27 +1305,25 @@ function runMigrationDeploy(databaseUrl, injected = {}) {
 function buildMigrationChildEnv(parentEnv, databaseUrl) {
   const childEnv = {};
   for (const [key, value] of Object.entries(parentEnv ?? {})) {
-    if (!isDatabaseUrlEnvKey(key)) childEnv[key] = value;
+    if (!isDatabaseConnectionEnvKey(key)) childEnv[key] = value;
   }
+  childEnv[PRISMA_MIGRATION_SKIP_DOTENV] = "1";
   childEnv.DATABASE_URL = databaseUrl;
   return childEnv;
 }
 
-function isDatabaseUrlEnvKey(key) {
+function isDatabaseConnectionEnvKey(key) {
   const normalized = String(key).toUpperCase();
+  if (normalized.startsWith("PG")) return true;
+  if (normalized === "DIRECT_URL") return true;
+  const hasUrl = normalized.includes("URL");
   return (
-    (normalized.includes("DATABASE") && normalized.includes("URL")) ||
-    (normalized.includes("POSTGRES") && normalized.includes("URL")) ||
-    new Set([
-      "PGDATABASE",
-      "PGHOST",
-      "PGPASSWORD",
-      "PGPORT",
-      "PGSERVICE",
-      "PGSERVICEFILE",
-      "PGSSLMODE",
-      "PGUSER"
-    ]).has(normalized)
+    hasUrl &&
+    (normalized.includes("DATABASE") ||
+      normalized.includes("POSTGRES") ||
+      /(^|_)DB(_|$)/.test(normalized) ||
+      normalized.includes("DIRECT") ||
+      normalized.startsWith("STAGE1_ACCEPTANCE_"))
   );
 }
 

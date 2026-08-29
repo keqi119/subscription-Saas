@@ -271,6 +271,29 @@ test("source loader uses complete explicit scalar selects and fixed whitelist fi
   assert.equal(notificationWhere.templateStatus, "ACTIVE");
 });
 
+test("source loader reuses an explicit approved instant for every effective-window query", async () => {
+  const fake = createPrismaFake();
+  const approvedAsOf = new Date("2026-08-30T12:34:56.000Z");
+
+  const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(
+    fake.tx,
+    selection([]),
+    { asOf: approvedAsOf }
+  );
+
+  assert.equal(snapshot.asOf.toISOString(), "2026-08-30T12:34:56.000Z");
+  for (const delegate of ["subscriptionPlan", "depositRule", "contractVersion"]) {
+    const call = findCall(fake, delegate);
+    assert.equal(call.args.where.effectiveFrom.lte.toISOString(), "2026-08-30T12:34:56.000Z");
+    assert.equal(call.args.where.OR[1].effectiveTo.gte.toISOString(), "2026-08-30T12:34:56.000Z");
+  }
+
+  await assert.rejects(
+    loadStage1CleanAcceptanceSourceSnapshot(fake.tx, selection([]), { asOf: new Date("invalid") }),
+    (error) => error?.message === "MANIFEST_CONTEXT_INVALID"
+  );
+});
+
 test("vehicle eligibility evidence mirrors allocation blockers and rejects partial selections", async () => {
   const vehicleRow = completeVehicleRow();
   const eligible = createPrismaFake({

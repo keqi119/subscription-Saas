@@ -203,9 +203,9 @@ const SELECT = Object.freeze({
 
 const STAGE1_ACCEPTANCE_WHITELIST_DELEGATES = Object.freeze(Object.keys(SELECT).sort());
 
-export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection) {
+export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection, options = {}) {
   const selection = parseStage1CleanAcceptanceSelection(inputSelection);
-  const asOf = new Date();
+  const asOf = resolveAsOf(options.asOf);
   const access = await loadAccess(tx);
   const customer = await loadCustomer(tx);
   const catalog = await loadCatalog(tx, asOf);
@@ -217,6 +217,14 @@ export async function loadStage1CleanAcceptanceSourceSnapshot(tx, inputSelection
     catalogModelDefinitionIds(catalog)
   );
   return { access, asOf, catalog, customer, templates, vehicle };
+}
+
+function resolveAsOf(value) {
+  if (value === undefined) return new Date();
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new Error("MANIFEST_CONTEXT_INVALID");
+  }
+  return new Date(value.getTime());
 }
 
 export async function countStage1CleanAcceptanceForbiddenDomains(tx) {

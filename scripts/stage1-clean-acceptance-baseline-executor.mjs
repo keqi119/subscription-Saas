@@ -14,6 +14,7 @@ import {
 } from "./stage1-clean-acceptance-baseline-snapshot.mjs";
 
 const APPLY_CONFIRMATION = "STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY";
+const APPLY_TRANSACTION_ATTEMPTS = 3;
 const SHA256 = /^[0-9a-f]{64}$/;
 const MODES = new Set(["dry-run", "apply", "replay"]);
 
@@ -30,12 +31,14 @@ async function execute(options) {
   const approved = requireApproval(options);
   const generatedAt = approved?.generatedAt ?? options.generatedAt;
   const hashSalt = approved?.hashSalt ?? options.hashSalt;
-  if (approved && (options.generatedAt !== generatedAt || options.hashSalt !== hashSalt)) fail("MANIFEST_STALE");
+  if (approved && (options.generatedAt !== generatedAt || options.hashSalt !== hashSalt))
+    fail("MANIFEST_STALE");
   const asOf = parseInstant(generatedAt);
 
   const source = await readSource(options.sourcePrisma, options.selection, asOf);
   const target = await readTarget(options.targetPrisma);
-  const targetForManifest = options.mode === "replay" ? emptyTargetEvidence(target.snapshot) : target.snapshot;
+  const targetForManifest =
+    options.mode === "replay" ? emptyTargetEvidence(target.snapshot) : target.snapshot;
   const classification = classifyStage1CleanAcceptanceBaseline(
     { ...source.snapshot, target: targetForManifest },
     options.selection
@@ -55,36 +58,99 @@ async function execute(options) {
   if (manifestSha256 !== options.approvedManifestSha256) fail("MANIFEST_STALE");
 
   if (options.mode === "apply") {
-    await options.targetPrisma.$transaction(async (tx) => {
-      await advisoryLock(tx);
-      const lockedTarget = await readTargetWithinTransaction(tx);
-      const lockedClassification = classifyStage1CleanAcceptanceBaseline(
-        { ...source.snapshot, target: lockedTarget.snapshot },
-        options.selection
-      );
-      const lockedContext = buildContext(options, generatedAt, hashSalt, source, lockedTarget);
-      assertApprovedManifest(lockedClassification, lockedContext, options.approvedManifestSha256);
-      await applyStage1CleanAcceptanceBaseline(tx, lockedClassification, {
-        gitSha: options.gitSha,
-        imageRef: options.imageRef,
-        manifestSha256: options.approvedManifestSha256
-      });
-    }, { isolationLevel: "Serializable" });
+    await applyWithFreshTransactionRecovery(options, source, generatedAt, hashSalt, manifest);
 
     await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
     return result("apply", options.approvedManifestSha256, total(manifest.counts), 1);
   }
 
-  await options.targetPrisma.$transaction(async (tx) => {
-    await advisoryLock(tx);
-    await validateStage1CleanAcceptanceTargetBaseline(tx, {
-      approvedManifest: manifest,
-      approvedManifestSha256: options.approvedManifestSha256
-    });
-  }, { isolationLevel: "Serializable" });
+  await options.targetPrisma.$transaction(
+    async (tx) => {
+      await advisoryLock(tx);
+      await validateStage1CleanAcceptanceTargetBaseline(tx, {
+        approvedManifest: manifest,
+        approvedManifestSha256: options.approvedManifestSha256
+      });
+    },
+    { isolationLevel: "Serializable" }
+  );
 
   await verifyCommittedTarget(options.targetPrisma, manifest, options.approvedManifestSha256);
   return result("replay", options.approvedManifestSha256, 0, 0);
+}
+
+async function applyWithFreshTransactionRecovery(options, source, generatedAt, hashSalt, manifest) {
+  for (let attempt = 1; attempt <= APPLY_TRANSACTION_ATTEMPTS; attempt += 1) {
+    try {
+      await options.targetPrisma.$transaction(
+        async (tx) => {
+          await advisoryLock(tx);
+          const lockedTarget = await readTargetWithinTransaction(tx);
+          const lockedClassification = classifyStage1CleanAcceptanceBaseline(
+            { ...source.snapshot, target: lockedTarget.snapshot },
+            options.selection
+          );
+          const lockedContext = buildContext(options, generatedAt, hashSalt, source, lockedTarget);
+          assertApprovedManifest(
+            lockedClassification,
+            lockedContext,
+            options.approvedManifestSha256
+          );
+          await applyStage1CleanAcceptanceBaseline(tx, lockedClassification, {
+            gitSha: options.gitSha,
+            imageRef: options.imageRef,
+            manifestSha256: options.approvedManifestSha256
+          });
+        },
+        { isolationLevel: "Serializable" }
+      );
+      return;
+    } catch (error) {
+      if (
+        await targetMatchesApprovedBaseline(
+          options.targetPrisma,
+          manifest,
+          options.approvedManifestSha256
+        )
+      ) {
+        fail("MANIFEST_STALE");
+      }
+      if (isSerializationFailure(error) && attempt < APPLY_TRANSACTION_ATTEMPTS) continue;
+      throw error;
+    }
+  }
+}
+
+async function targetMatchesApprovedBaseline(prisma, manifest, manifestSha256) {
+  try {
+    await verifyCommittedTarget(prisma, manifest, manifestSha256);
+    return true;
+  } catch (error) {
+    if (error?.message === "MANIFEST_STALE") return false;
+    throw error;
+  }
+}
+
+function isSerializationFailure(error) {
+  return hasDatabaseErrorCode(error, new Set(["40001", "P2034"]));
+}
+
+function hasDatabaseErrorCode(error, accepted) {
+  const pending = [error];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || (typeof value !== "object" && typeof value !== "function") || seen.has(value))
+      continue;
+    seen.add(value);
+    for (const code of [value.code, value.originalCode]) {
+      if (typeof code === "string" && accepted.has(code)) return true;
+    }
+    for (const key of ["cause", "meta", "driverAdapterError", "error"]) {
+      if (value[key] !== undefined) pending.push(value[key]);
+    }
+  }
+  return false;
 }
 
 export async function applyStage1CleanAcceptanceBaseline(tx, classification, context = {}) {
@@ -93,7 +159,8 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
     !SHA256.test(context.manifestSha256 ?? "") ||
     !/^[0-9a-f]{40}$/.test(context.gitSha ?? "") ||
     !/^.+@sha256:[0-9a-f]{64}$/.test(context.imageRef ?? "")
-  ) fail("MANIFEST_CONTEXT_INVALID");
+  )
+    fail("MANIFEST_CONTEXT_INVALID");
   const { access, customer, catalog, templates, vehicle } = classification.rows;
 
   await insert(tx.permission, access.permissions);
@@ -108,12 +175,20 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
   await insert(tx.customerAccount, customer.customerAccounts);
   await insert(tx.customerIdentity, customer.customerIdentities);
   await insert(tx.customerProfile, customer.customerProfiles);
-  await insert(tx.customerESignProviderAccount, customer.customerESignProviderAccounts, adaptCustomerESignProviderAccount);
+  await insert(
+    tx.customerESignProviderAccount,
+    customer.customerESignProviderAccounts,
+    adaptCustomerESignProviderAccount
+  );
 
   await insert(tx.depositRule, catalog.depositRules);
   await insert(tx.product, catalog.products);
   await insert(tx.productVersion, catalog.productVersions);
-  await insert(tx.vehicleModelDefinition, vehicle.vehicleModelDefinitions, adaptVehicleModelDefinition);
+  await insert(
+    tx.vehicleModelDefinition,
+    vehicle.vehicleModelDefinitions,
+    adaptVehicleModelDefinition
+  );
   await insert(tx.vehiclePackage, catalog.vehiclePackages);
   await insert(tx.vehiclePackageModelMember, catalog.vehiclePackageModelMembers);
   await insert(tx.mileagePackage, catalog.mileagePackages);
@@ -128,18 +203,38 @@ export async function applyStage1CleanAcceptanceBaseline(tx, classification, con
 
   await insert(tx.assetOwner, vehicle.assetOwners, adaptAssetOwner);
   await insert(tx.vehicle, vehicle.vehicles);
-  await insert(tx.vehicleListingProfile, vehicle.vehicleListingProfiles, adaptVehicleListingProfile);
+  await insert(
+    tx.vehicleListingProfile,
+    vehicle.vehicleListingProfiles,
+    adaptVehicleListingProfile
+  );
   await insert(tx.vehicleListingMedia, vehicle.vehicleListingMedia);
   await insert(tx.vehicleListingPlan, vehicle.vehicleListingPlans);
   await insert(tx.vehicleDocumentBatch, vehicle.vehicleDocumentBatches);
-  await insert(tx.vehicleInsurancePolicy, vehicle.vehicleInsurancePolicies, adaptVehicleInsurancePolicy);
+  await insert(
+    tx.vehicleInsurancePolicy,
+    vehicle.vehicleInsurancePolicies,
+    adaptVehicleInsurancePolicy
+  );
   await insert(tx.vehicleDocument, vehicle.vehicleDocuments);
   await insert(tx.vehicleInsuranceCoverage, vehicle.vehicleInsuranceCoverages);
   await insert(tx.vehicleListingSourceBinding, vehicle.vehicleListingSourceBindings);
   await insert(tx.vehicleSalePriceHistory, vehicle.vehicleSalePriceHistories);
-  await insert(tx.vehicleOwnershipPeriod, vehicle.vehicleOwnershipPeriods, adaptVehicleOwnershipPeriod);
-  await insert(tx.vehicleAssetCostProfile, vehicle.vehicleAssetCostProfiles, adaptVehicleAssetCostProfile);
-  await insert(tx.vehicleCostLedgerEntry, vehicle.vehicleCostLedgerEntries, adaptVehicleCostLedgerEntry);
+  await insert(
+    tx.vehicleOwnershipPeriod,
+    vehicle.vehicleOwnershipPeriods,
+    adaptVehicleOwnershipPeriod
+  );
+  await insert(
+    tx.vehicleAssetCostProfile,
+    vehicle.vehicleAssetCostProfiles,
+    adaptVehicleAssetCostProfile
+  );
+  await insert(
+    tx.vehicleCostLedgerEntry,
+    vehicle.vehicleCostLedgerEntries,
+    adaptVehicleCostLedgerEntry
+  );
 
   await tx.auditLog.create({
     data: {
@@ -204,7 +299,12 @@ export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = 
   if (hashStage1CleanAcceptanceManifest(rebuiltManifest) !== approvedManifestSha256) {
     fail("MANIFEST_STALE");
   }
-  const audit = await loadBaselineAudit(tx, rebuiltManifest, approvedManifestSha256, approvedManifest);
+  const audit = await loadBaselineAudit(
+    tx,
+    rebuiltManifest,
+    approvedManifestSha256,
+    approvedManifest
+  );
   if (audit.length !== 1) fail("MANIFEST_STALE");
 
   return {
@@ -216,20 +316,26 @@ export async function validateStage1CleanAcceptanceTargetBaseline(tx, options = 
 }
 
 async function readSource(prisma, selection, asOf) {
-  return prisma.$transaction(async (tx) => {
-    await readOnly(tx);
-    const databaseName = await loadDatabaseName(tx);
-    const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
-    const metadata = await loadStage1CleanAcceptanceTargetSnapshot(tx);
-    return { context: digestContext(databaseName, metadata), snapshot };
-  }, { isolationLevel: "RepeatableRead" });
+  return prisma.$transaction(
+    async (tx) => {
+      await readOnly(tx);
+      const databaseName = await loadDatabaseName(tx);
+      const snapshot = await loadStage1CleanAcceptanceSourceSnapshot(tx, selection, { asOf });
+      const metadata = await loadStage1CleanAcceptanceTargetSnapshot(tx);
+      return { context: digestContext(databaseName, metadata), snapshot };
+    },
+    { isolationLevel: "RepeatableRead" }
+  );
 }
 
 async function readTarget(prisma) {
-  return prisma.$transaction(async (tx) => {
-    await readOnly(tx);
-    return readTargetWithinTransaction(tx);
-  }, { isolationLevel: "RepeatableRead" });
+  return prisma.$transaction(
+    async (tx) => {
+      await readOnly(tx);
+      return readTargetWithinTransaction(tx);
+    },
+    { isolationLevel: "RepeatableRead" }
+  );
 }
 
 async function readTargetWithinTransaction(tx) {
@@ -239,13 +345,16 @@ async function readTargetWithinTransaction(tx) {
 }
 
 async function verifyCommittedTarget(prisma, manifest, manifestSha256) {
-  await prisma.$transaction(async (tx) => {
-    await readOnly(tx);
-    await validateStage1CleanAcceptanceTargetBaseline(tx, {
-      approvedManifest: manifest,
-      approvedManifestSha256: manifestSha256
-    });
-  }, { isolationLevel: "RepeatableRead" });
+  await prisma.$transaction(
+    async (tx) => {
+      await readOnly(tx);
+      await validateStage1CleanAcceptanceTargetBaseline(tx, {
+        approvedManifest: manifest,
+        approvedManifestSha256: manifestSha256
+      });
+    },
+    { isolationLevel: "RepeatableRead" }
+  );
 }
 
 async function loadBaselineAudit(tx, manifest, manifestSha256, context) {
@@ -288,7 +397,11 @@ function assertApprovedManifest(classification, context, approvedSha256) {
 }
 
 function requireOptions(options) {
-  if (!MODES.has(options.mode) || typeof options.sourcePrisma?.$transaction !== "function" || typeof options.targetPrisma?.$transaction !== "function") {
+  if (
+    !MODES.has(options.mode) ||
+    typeof options.sourcePrisma?.$transaction !== "function" ||
+    typeof options.targetPrisma?.$transaction !== "function"
+  ) {
     fail("MANIFEST_CONTEXT_INVALID");
   }
 }
@@ -296,11 +409,17 @@ function requireOptions(options) {
 function requireApproval(options) {
   if (options.mode === "dry-run") return undefined;
   if (process.env[APPLY_CONFIRMATION] !== "1") fail("MANIFEST_CONTEXT_INVALID");
-  if (!options.approvedManifest || typeof options.approvedManifest !== "object" || Array.isArray(options.approvedManifest)) {
+  if (
+    !options.approvedManifest ||
+    typeof options.approvedManifest !== "object" ||
+    Array.isArray(options.approvedManifest)
+  ) {
     fail("MANIFEST_CONTEXT_INVALID");
   }
   if (!SHA256.test(options.approvedManifestSha256 ?? "")) fail("MANIFEST_CONTEXT_INVALID");
-  if (hashStage1CleanAcceptanceManifest(options.approvedManifest) !== options.approvedManifestSha256) {
+  if (
+    hashStage1CleanAcceptanceManifest(options.approvedManifest) !== options.approvedManifestSha256
+  ) {
     fail("MANIFEST_STALE");
   }
   return options.approvedManifest;
@@ -320,7 +439,10 @@ function buildContext(options, generatedAt, hashSalt, source, target) {
 function digestContext(databaseName, snapshot) {
   return {
     databaseDigest: digest("stage1-acceptance:database:", databaseName),
-    migrationCatalogDigest: digest("stage1-acceptance:migrations:", stableJson(snapshot.migrationCatalog)),
+    migrationCatalogDigest: digest(
+      "stage1-acceptance:migrations:",
+      stableJson(snapshot.migrationCatalog)
+    ),
     schemaDigest: digest("stage1-acceptance:schema:", stableJson(snapshot.schemaFingerprint))
   };
 }
@@ -474,14 +596,16 @@ async function advisoryLock(tx) {
 async function loadDatabaseName(tx) {
   const rows = await tx.$queryRaw`SELECT current_database() AS "databaseName"`;
   const databaseName = rows?.[0]?.databaseName;
-  if (typeof databaseName !== "string" || databaseName.length === 0) fail("DATABASE_IDENTITY_INVALID");
+  if (typeof databaseName !== "string" || databaseName.length === 0)
+    fail("DATABASE_IDENTITY_INVALID");
   return databaseName;
 }
 
 function parseInstant(value) {
   if (typeof value !== "string") fail("MANIFEST_CONTEXT_INVALID");
   const instant = new Date(value);
-  if (!Number.isFinite(instant.getTime()) || instant.toISOString() !== value) fail("MANIFEST_CONTEXT_INVALID");
+  if (!Number.isFinite(instant.getTime()) || instant.toISOString() !== value)
+    fail("MANIFEST_CONTEXT_INVALID");
   return instant;
 }
 
@@ -504,9 +628,16 @@ function stableJson(value) {
 function canonical(value) {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "bigint") return value.toString();
-  if (Array.isArray(value)) return value.map(canonical).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  if (Array.isArray(value))
+    return value
+      .map(canonical)
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    );
   }
   return value;
 }

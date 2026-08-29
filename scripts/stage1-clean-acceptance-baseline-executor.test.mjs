@@ -21,14 +21,23 @@ const IMAGE_REF = `registry.example/api@sha256:${"3".repeat(64)}`;
 const APPLY_ENV = "STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY";
 
 const NOTIFICATION_CODES = [
-  "APPLICATION_SUBMITTED_IN_APP", "APPLICATION_SUBMITTED_WECHAT",
-  "AUTO_DEBIT_FAILURE_IN_APP", "AUTO_DEBIT_FAILURE_SMS", "AUTO_DEBIT_FAILURE_WECHAT",
-  "CONTRACT_PENDING_IN_APP", "CONTRACT_PENDING_WECHAT",
-  "FINAL_PLAN_READY_IN_APP", "FINAL_PLAN_READY_WECHAT",
-  "HANDOVER_ESIGN_PENDING_IN_APP", "HANDOVER_ESIGN_PENDING_WECHAT",
-  "MILEAGE_REVIEW_DUE_IN_APP", "MILEAGE_REVIEW_DUE_WECHAT",
-  "PAYMENT_PENDING_IN_APP", "PAYMENT_PENDING_WECHAT",
-  "SERVICE_CASE_UPDATE_IN_APP", "SERVICE_CASE_UPDATE_WECHAT"
+  "APPLICATION_SUBMITTED_IN_APP",
+  "APPLICATION_SUBMITTED_WECHAT",
+  "AUTO_DEBIT_FAILURE_IN_APP",
+  "AUTO_DEBIT_FAILURE_SMS",
+  "AUTO_DEBIT_FAILURE_WECHAT",
+  "CONTRACT_PENDING_IN_APP",
+  "CONTRACT_PENDING_WECHAT",
+  "FINAL_PLAN_READY_IN_APP",
+  "FINAL_PLAN_READY_WECHAT",
+  "HANDOVER_ESIGN_PENDING_IN_APP",
+  "HANDOVER_ESIGN_PENDING_WECHAT",
+  "MILEAGE_REVIEW_DUE_IN_APP",
+  "MILEAGE_REVIEW_DUE_WECHAT",
+  "PAYMENT_PENDING_IN_APP",
+  "PAYMENT_PENDING_WECHAT",
+  "SERVICE_CASE_UPDATE_IN_APP",
+  "SERVICE_CASE_UPDATE_WECHAT"
 ];
 
 test("dry-run starts a RepeatableRead source transaction with tagged READ ONLY and makes zero writes", async () => {
@@ -96,7 +105,10 @@ test("apply rejects a source snapshot changed since the approved manifest withou
       (error) => error?.message === "MANIFEST_STALE"
     );
     assert.equal(target.calls.some(isWrite), false);
-    assert.equal(target.transactions.some((entry) => entry.isolationLevel === "Serializable"), false);
+    assert.equal(
+      target.transactions.some((entry) => entry.isolationLevel === "Serializable"),
+      false
+    );
   } finally {
     restoreEnv(previous);
   }
@@ -117,17 +129,52 @@ test("apply serializes, writes parents before children, preserves scalars, and e
 
     const writeTx = target.transactions.find((entry) => entry.isolationLevel === "Serializable");
     assert.ok(writeTx);
-    assert.match(writeTx.calls[0].sql, /pg_advisory_xact_lock\(hashtext\('stage1-clean-acceptance-baseline:apply'\)\)/);
+    assert.match(
+      writeTx.calls[0].sql,
+      /pg_advisory_xact_lock\(hashtext\('stage1-clean-acceptance-baseline:apply'\)\)/
+    );
     assertOrder(writeTx.calls, [
-      "permission", "menu", "role", "rolePermission", "roleMenu", "user", "userRole",
-      "customer", "customerAccount", "customerIdentity", "customerProfile", "customerESignProviderAccount",
-      "depositRule", "product", "productVersion", "vehicleModelDefinition",
-      "vehiclePackage", "vehiclePackageModelMember", "mileagePackage", "energyPackage", "benefitPackage", "subscriptionPlan", "productPriceRule",
-      "fileObject", "contractVersion", "notificationTemplate", "assetOwner", "vehicle",
-      "vehicleListingProfile", "vehicleListingMedia", "vehicleListingPlan",
-      "vehicleDocumentBatch", "vehicleInsurancePolicy", "vehicleDocument", "vehicleInsuranceCoverage",
-      "vehicleListingSourceBinding", "vehicleSalePriceHistory", "vehicleOwnershipPeriod",
-      "vehicleAssetCostProfile", "vehicleCostLedgerEntry", "auditLog"
+      "permission",
+      "menu",
+      "role",
+      "rolePermission",
+      "roleMenu",
+      "user",
+      "userRole",
+      "customer",
+      "customerAccount",
+      "customerIdentity",
+      "customerProfile",
+      "customerESignProviderAccount",
+      "depositRule",
+      "product",
+      "productVersion",
+      "vehicleModelDefinition",
+      "vehiclePackage",
+      "vehiclePackageModelMember",
+      "mileagePackage",
+      "energyPackage",
+      "benefitPackage",
+      "subscriptionPlan",
+      "productPriceRule",
+      "fileObject",
+      "contractVersion",
+      "notificationTemplate",
+      "assetOwner",
+      "vehicle",
+      "vehicleListingProfile",
+      "vehicleListingMedia",
+      "vehicleListingPlan",
+      "vehicleDocumentBatch",
+      "vehicleInsurancePolicy",
+      "vehicleDocument",
+      "vehicleInsuranceCoverage",
+      "vehicleListingSourceBinding",
+      "vehicleSalePriceHistory",
+      "vehicleOwnershipPeriod",
+      "vehicleAssetCostProfile",
+      "vehicleCostLedgerEntry",
+      "auditLog"
     ]);
     assert.equal(target.rows.user[0].id, ADMIN_ID);
     assert.equal(target.rows.user[0].passwordHash, "argon2-secret-hash");
@@ -136,7 +183,13 @@ test("apply serializes, writes parents before children, preserves scalars, and e
     const audit = target.rows.auditLog[0];
     assert.equal(audit.entityType, "stage1_acceptance_baseline");
     assert.equal(audit.action, "CREATE");
-    assert.deepEqual(Object.keys(audit.afterSnapshot).sort(), ["counts", "gitSha", "imageRef", "manifestSha256", "summary"]);
+    assert.deepEqual(Object.keys(audit.afterSnapshot).sort(), [
+      "counts",
+      "gitSha",
+      "imageRef",
+      "manifestSha256",
+      "summary"
+    ]);
     assert.equal(JSON.stringify(audit).includes("argon2-secret-hash"), false);
     assert.equal(JSON.stringify(audit).includes(HASH_SALT), false);
     assert.equal(JSON.stringify(result).includes("passwordHash"), false);
@@ -147,7 +200,10 @@ test("apply serializes, writes parents before children, preserves scalars, and e
         .filter((call) => call.operation === "createMany")
         .map((call) => [call.delegate, call.data])
     );
-    assert.equal(Object.hasOwn(jsonWrites.customerESignProviderAccount[0], "providerSnapshot"), false);
+    assert.equal(
+      Object.hasOwn(jsonWrites.customerESignProviderAccount[0], "providerSnapshot"),
+      false
+    );
     assert.equal(Object.hasOwn(jsonWrites.notificationTemplate[0], "variables"), false);
     assert.deepEqual(jsonWrites.notificationTemplate[0].providerConfig, { provider: "test" });
     assert.equal(Object.hasOwn(jsonWrites.assetOwner[0], "onboardingSnapshot"), false);
@@ -159,7 +215,9 @@ test("apply serializes, writes parents before children, preserves scalars, and e
     assert.equal(Object.hasOwn(jsonWrites.vehicleAssetCostProfile[0], "snapshot"), false);
     assert.equal(Object.hasOwn(jsonWrites.vehicleCostLedgerEntry[0], "assetOwnerSnapshot"), false);
     assert.equal(Object.hasOwn(jsonWrites.vehicleCostLedgerEntry[0], "evidenceSnapshot"), false);
-    assert.deepEqual(jsonWrites.vehicleCostLedgerEntry[0].responsibilitySnapshot, { party: "PLATFORM" });
+    assert.deepEqual(jsonWrites.vehicleCostLedgerEntry[0].responsibilitySnapshot, {
+      party: "PLATFORM"
+    });
     assert.deepEqual(result, {
       auditCreated: 1,
       deleted: 0,
@@ -182,29 +240,40 @@ test("replay proves the approved target without any writer or repair call", asyn
   process.env[APPLY_ENV] = "1";
   try {
     await executeStage1CleanAcceptanceBaseline({
-      ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
       approvedManifestSha256: dry.manifestSha256
     });
     const writesBefore = target.calls.filter(isWrite).length;
     const replay = await executeStage1CleanAcceptanceBaseline({
-      ...baseOptions("replay", source, target), approvedManifest: dry.manifest,
+      ...baseOptions("replay", source, target),
+      approvedManifest: dry.manifest,
       approvedManifestSha256: dry.manifestSha256
     });
     assert.deepEqual(replay, {
-      auditCreated: 0, deleted: 0, inserted: 0,
-      manifestSha256: dry.manifestSha256, mode: "replay", safe: true, updated: 0
+      auditCreated: 0,
+      deleted: 0,
+      inserted: 0,
+      manifestSha256: dry.manifestSha256,
+      mode: "replay",
+      safe: true,
+      updated: 0
     });
     assert.equal(target.calls.filter(isWrite).length, writesBefore);
 
     target.rows.user[0].name = "tampered";
     await assert.rejects(
       executeStage1CleanAcceptanceBaseline({
-        ...baseOptions("replay", source, target), approvedManifest: dry.manifest,
+        ...baseOptions("replay", source, target),
+        approvedManifest: dry.manifest,
         approvedManifestSha256: dry.manifestSha256
       }),
       (error) => error?.message === "MANIFEST_STALE"
     );
-    assert.equal(target.calls.some((call) => ["update", "upsert", "delete"].includes(call.operation)), false);
+    assert.equal(
+      target.calls.some((call) => ["update", "upsert", "delete"].includes(call.operation)),
+      false
+    );
   } finally {
     restoreEnv(previous);
   }
@@ -212,8 +281,28 @@ test("replay proves the approved target without any writer or repair call", asyn
 
 test("target-only validation proves per-table rows, fingerprints, forbidden domains, and the exact audit", async () => {
   const metadata = {
-    migrationRows: [{ id: "migration-1", checksum: "checksum", migrationName: "0001", startedAt: new Date(0), finishedAt: new Date(1), rolledBackAt: null, appliedStepsCount: 1 }],
-    schemaRows: [{ tableName: "user", columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, columnDefault: null, udtName: "uuid" }]
+    migrationRows: [
+      {
+        id: "migration-1",
+        checksum: "checksum",
+        migrationName: "0001",
+        startedAt: new Date(0),
+        finishedAt: new Date(1),
+        rolledBackAt: null,
+        appliedStepsCount: 1
+      }
+    ],
+    schemaRows: [
+      {
+        tableName: "user",
+        columnName: "id",
+        dataType: "uuid",
+        isNullable: "NO",
+        ordinalPosition: 1,
+        columnDefault: null,
+        udtName: "uuid"
+      }
+    ]
   };
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
   const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, metadata);
@@ -228,16 +317,21 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
     });
     const sourceCallsBefore = source.calls.length;
     const result = await target.client.$transaction(
-      (tx) => validateStage1CleanAcceptanceTargetBaseline(tx, {
-        approvedManifest: dry.manifest,
-        approvedManifestSha256: dry.manifestSha256
-      }),
+      (tx) =>
+        validateStage1CleanAcceptanceTargetBaseline(tx, {
+          approvedManifest: dry.manifest,
+          approvedManifestSha256: dry.manifestSha256
+        }),
       { isolationLevel: "RepeatableRead" }
     );
     assert.equal(result.safe, true);
     assert.equal(result.manifestSha256, dry.manifestSha256);
     assert.deepEqual(result.counts, dry.manifest.counts);
-    assert.deepEqual(Object.keys(result.target).sort(), ["databaseDigest", "migrationCatalogDigest", "schemaDigest"]);
+    assert.deepEqual(Object.keys(result.target).sort(), [
+      "databaseDigest",
+      "migrationCatalogDigest",
+      "schemaDigest"
+    ]);
     assert.equal(JSON.stringify(result).includes(HASH_SALT), false);
     assert.equal(JSON.stringify(result).includes(VEHICLE_ID), false);
     assert.equal(source.calls.length, sourceCallsBefore);
@@ -248,16 +342,36 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
         rows.permission.pop();
         rows.menu.push({ ...structuredClone(rows.menu[0]), id: "replacement-menu" });
       },
-      (rows) => { rows.application = [{ id: "forbidden" }]; },
-      (rows) => { rows.auditLog[0].afterSnapshot.summary = "tampered"; },
-      (_rows, currentMetadata) => currentMetadata.migrationRows.push({ ...currentMetadata.migrationRows[0], id: "migration-2", migrationName: "0002" }),
-      (_rows, currentMetadata) => currentMetadata.schemaRows.push({ ...currentMetadata.schemaRows[0], columnName: "tampered", ordinalPosition: 2 })
+      (rows) => {
+        rows.application = [{ id: "forbidden" }];
+      },
+      (rows) => {
+        rows.auditLog[0].afterSnapshot.summary = "tampered";
+      },
+      (_rows, currentMetadata) =>
+        currentMetadata.migrationRows.push({
+          ...currentMetadata.migrationRows[0],
+          id: "migration-2",
+          migrationName: "0002"
+        }),
+      (_rows, currentMetadata) =>
+        currentMetadata.schemaRows.push({
+          ...currentMetadata.schemaRows[0],
+          columnName: "tampered",
+          ordinalPosition: 2
+        })
     ];
     for (const mutate of mutations) {
       const caseMetadata = structuredClone(metadata);
       const caseSource = createDatabaseFake("subscription_saas_staging", sourceRows());
-      const caseTarget = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, caseMetadata);
-      const caseDry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", caseSource, caseTarget));
+      const caseTarget = createDatabaseFake(
+        "subscription_saas_staging_acceptance_test",
+        {},
+        caseMetadata
+      );
+      const caseDry = await executeStage1CleanAcceptanceBaseline(
+        baseOptions("dry-run", caseSource, caseTarget)
+      );
       await executeStage1CleanAcceptanceBaseline({
         ...baseOptions("apply", caseSource, caseTarget),
         approvedManifest: caseDry.manifest,
@@ -265,10 +379,12 @@ test("target-only validation proves per-table rows, fingerprints, forbidden doma
       });
       mutate(caseTarget.rows, caseMetadata);
       await assert.rejects(
-        caseTarget.client.$transaction((tx) => validateStage1CleanAcceptanceTargetBaseline(tx, {
-          approvedManifest: caseDry.manifest,
-          approvedManifestSha256: caseDry.manifestSha256
-        })),
+        caseTarget.client.$transaction((tx) =>
+          validateStage1CleanAcceptanceTargetBaseline(tx, {
+            approvedManifest: caseDry.manifest,
+            approvedManifestSha256: caseDry.manifestSha256
+          })
+        ),
         (error) => error?.message === "MANIFEST_STALE"
       );
     }
@@ -285,7 +401,8 @@ test("replay rejects any one-field mutation of the unique baseline audit contrac
   process.env[APPLY_ENV] = "1";
   try {
     await executeStage1CleanAcceptanceBaseline({
-      ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
       approvedManifestSha256: dry.manifestSha256
     });
     const pristine = structuredClone(target.rows.auditLog[0]);
@@ -311,7 +428,8 @@ test("replay rejects any one-field mutation of the unique baseline audit contrac
       mutate(target.rows.auditLog[0]);
       await assert.rejects(
         executeStage1CleanAcceptanceBaseline({
-          ...baseOptions("replay", source, target), approvedManifest: dry.manifest,
+          ...baseOptions("replay", source, target),
+          approvedManifest: dry.manifest,
           approvedManifestSha256: dry.manifestSha256
         }),
         (error) => error?.message === "MANIFEST_STALE"
@@ -338,11 +456,14 @@ test("required ownership and cost-ledger JSON rejects null or undefined and roll
       rows[delegate][0][field] = value;
       const source = createDatabaseFake("subscription_saas_staging", rows);
       const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {});
-      const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+      const dry = await executeStage1CleanAcceptanceBaseline(
+        baseOptions("dry-run", source, target)
+      );
       assert.equal(dry.safe, true);
       await assert.rejects(
         executeStage1CleanAcceptanceBaseline({
-          ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+          ...baseOptions("apply", source, target),
+          approvedManifest: dry.manifest,
           approvedManifestSha256: dry.manifestSha256
         }),
         (error) => error?.message === "MANIFEST_CLASSIFICATION_INVALID"
@@ -350,11 +471,19 @@ test("required ownership and cost-ledger JSON rejects null or undefined and roll
       const writeTx = target.transactions.find((entry) => entry.isolationLevel === "Serializable");
       assert.ok(writeTx);
       assert.match(writeTx.calls[0].sql, /pg_advisory_xact_lock/);
-      const expectedPrecedingDelegate = delegate === "vehicleOwnershipPeriod"
-        ? "vehicleSalePriceHistory"
-        : "vehicleAssetCostProfile";
-      assert.ok(writeTx.calls.some((call) => call.operation === "createMany" && call.delegate === expectedPrecedingDelegate));
-      assert.equal(writeTx.calls.some((call) => call.delegate === "auditLog" && isWrite(call)), false);
+      const expectedPrecedingDelegate =
+        delegate === "vehicleOwnershipPeriod"
+          ? "vehicleSalePriceHistory"
+          : "vehicleAssetCostProfile";
+      assert.ok(
+        writeTx.calls.some(
+          (call) => call.operation === "createMany" && call.delegate === expectedPrecedingDelegate
+        )
+      );
+      assert.equal(
+        writeTx.calls.some((call) => call.delegate === "auditLog" && isWrite(call)),
+        false
+      );
       assert.deepEqual(target.rows, {});
     }
   } finally {
@@ -376,7 +505,8 @@ test("the fake rejects a reversal that changes trigger-protected accounting fact
   try {
     await assert.rejects(
       executeStage1CleanAcceptanceBaseline({
-        ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+        ...baseOptions("apply", source, target),
+        approvedManifest: dry.manifest,
         approvedManifestSha256: dry.manifestSha256
       }),
       (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR"
@@ -389,15 +519,23 @@ test("the fake rejects a reversal that changes trigger-protected accounting fact
 
 test("an intermediate createMany failure rolls back all rows and the audit", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
-  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, { failCreateMany: "vehicleDocument" });
+  const target = createDatabaseFake(
+    "subscription_saas_staging_acceptance_test",
+    {},
+    { failCreateMany: "vehicleDocument" }
+  );
   const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
   const previous = process.env[APPLY_ENV];
   process.env[APPLY_ENV] = "1";
   try {
-    await assert.rejects(executeStage1CleanAcceptanceBaseline({
-      ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
-      approvedManifestSha256: dry.manifestSha256
-    }), (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR");
+    await assert.rejects(
+      executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", source, target),
+        approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      }),
+      (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR"
+    );
     assert.deepEqual(target.rows, {});
   } finally {
     restoreEnv(previous);
@@ -406,13 +544,18 @@ test("an intermediate createMany failure rolls back all rows and the audit", asy
 
 test("concurrent apply attempts are serialized by the transaction advisory lock", async () => {
   const source = createDatabaseFake("subscription_saas_staging", sourceRows());
-  const target = createDatabaseFake("subscription_saas_staging_acceptance_test", {}, { serializeTransactions: true });
+  const target = createDatabaseFake(
+    "subscription_saas_staging_acceptance_test",
+    {},
+    { serializeTransactions: true }
+  );
   const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
   const previous = process.env[APPLY_ENV];
   process.env[APPLY_ENV] = "1";
   try {
     const options = {
-      ...baseOptions("apply", source, target), approvedManifest: dry.manifest,
+      ...baseOptions("apply", source, target),
+      approvedManifest: dry.manifest,
       approvedManifestSha256: dry.manifestSha256
     };
     const settled = await Promise.allSettled([
@@ -421,8 +564,147 @@ test("concurrent apply attempts are serialized by the transaction advisory lock"
     ]);
     assert.equal(settled.filter((entry) => entry.status === "fulfilled").length, 1);
     assert.equal(settled.filter((entry) => entry.status === "rejected").length, 1);
-    assert.equal(settled.find((entry) => entry.status === "rejected").reason.message, "MANIFEST_STALE");
+    assert.equal(
+      settled.find((entry) => entry.status === "rejected").reason.message,
+      "MANIFEST_STALE"
+    );
     assert.equal(target.rows.auditLog.length, 1);
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("apply turns an old-snapshot serialization outcome into MANIFEST_STALE after fresh exact validation", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake(
+    "subscription_saas_staging_acceptance_test",
+    {},
+    {
+      serializableFailures: [{ code: "40001", publishWorkingAsCompetitor: true }]
+    }
+  );
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await assert.rejects(
+      executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", source, target),
+        approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      }),
+      (error) => error?.message === "MANIFEST_STALE"
+    );
+    const serializable = target.transactions.filter(
+      ({ isolationLevel }) => isolationLevel === "Serializable"
+    );
+    assert.equal(serializable.length, 1);
+    assert.match(serializable[0].calls[0].sql, /pg_advisory_xact_lock/);
+    assert.equal(target.rows.auditLog.length, 1);
+    assert.ok(
+      target.transactions.some(
+        ({ isolationLevel, calls }) =>
+          isolationLevel === "RepeatableRead" && /^SET TRANSACTION READ ONLY$/.test(calls[0]?.sql)
+      )
+    );
+  } finally {
+    restoreEnv(previous);
+  }
+});
+
+test("apply retries serialization failures in fresh locked transactions and succeeds", async () => {
+  for (const code of ["40001", "P2034"]) {
+    const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+    const target = createDatabaseFake(
+      "subscription_saas_staging_acceptance_test",
+      {},
+      {
+        serializableFailures: [{ code }]
+      }
+    );
+    const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+    const previous = process.env[APPLY_ENV];
+    process.env[APPLY_ENV] = "1";
+    try {
+      const result = await executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", source, target),
+        approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      });
+      assert.equal(result.safe, true);
+      const serializable = target.transactions.filter(
+        ({ isolationLevel }) => isolationLevel === "Serializable"
+      );
+      assert.equal(serializable.length, 2);
+      assert.ok(serializable.every(({ calls }) => /pg_advisory_xact_lock/.test(calls[0]?.sql)));
+      assert.equal(target.rows.auditLog.length, 1);
+    } finally {
+      restoreEnv(previous);
+    }
+  }
+});
+
+test("apply never treats a non-approved unique violation as success", async () => {
+  for (const code of ["23505", "P2002"]) {
+    const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+    const target = createDatabaseFake(
+      "subscription_saas_staging_acceptance_test",
+      {},
+      {
+        serializableFailures: [{ code }]
+      }
+    );
+    const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+    const previous = process.env[APPLY_ENV];
+    process.env[APPLY_ENV] = "1";
+    try {
+      await assert.rejects(
+        executeStage1CleanAcceptanceBaseline({
+          ...baseOptions("apply", source, target),
+          approvedManifest: dry.manifest,
+          approvedManifestSha256: dry.manifestSha256
+        }),
+        (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR"
+      );
+      assert.equal(
+        target.transactions.filter(({ isolationLevel }) => isolationLevel === "Serializable")
+          .length,
+        1
+      );
+      assert.deepEqual(target.rows, {});
+    } finally {
+      restoreEnv(previous);
+    }
+  }
+});
+
+test("apply bounds serialization recovery to three fresh transactions", async () => {
+  const source = createDatabaseFake("subscription_saas_staging", sourceRows());
+  const target = createDatabaseFake(
+    "subscription_saas_staging_acceptance_test",
+    {},
+    {
+      serializableFailures: [{ code: "40001" }, { code: "40001" }, { code: "40001" }]
+    }
+  );
+  const dry = await executeStage1CleanAcceptanceBaseline(baseOptions("dry-run", source, target));
+  const previous = process.env[APPLY_ENV];
+  process.env[APPLY_ENV] = "1";
+  try {
+    await assert.rejects(
+      executeStage1CleanAcceptanceBaseline({
+        ...baseOptions("apply", source, target),
+        approvedManifest: dry.manifest,
+        approvedManifestSha256: dry.manifestSha256
+      }),
+      (error) => error?.message === "STAGE1_ACCEPTANCE_ERROR"
+    );
+    const serializable = target.transactions.filter(
+      ({ isolationLevel }) => isolationLevel === "Serializable"
+    );
+    assert.equal(serializable.length, 3);
+    assert.ok(serializable.every(({ calls }) => /pg_advisory_xact_lock/.test(calls[0]?.sql)));
+    assert.deepEqual(target.rows, {});
   } finally {
     restoreEnv(previous);
   }
@@ -435,7 +717,11 @@ function baseOptions(mode, source, target) {
     hashSalt: HASH_SALT,
     imageRef: IMAGE_REF,
     mode,
-    selection: { adminUsername: "keqi_119", customerPhone: "18616570212", vehicleIds: [VEHICLE_ID] },
+    selection: {
+      adminUsername: "keqi_119",
+      customerPhone: "18616570212",
+      vehicleIds: [VEHICLE_ID]
+    },
     sourcePrisma: source.client,
     targetPrisma: target.client
   };
@@ -448,45 +734,351 @@ function sourceRows() {
     permission: [{ id: "permission-1", code: "stage1:read", status: "ACTIVE", deletedAt: null }],
     menu: [{ id: "menu-1", code: "stage1", parentId: null, status: "ACTIVE", deletedAt: null }],
     role: [{ id: "role-1", code: "ADMIN", status: "ACTIVE", deletedAt: null }],
-    rolePermission: [{ id: "role-permission-1", roleId: "role-1", permissionId: "permission-1", deletedAt: null }],
+    rolePermission: [
+      { id: "role-permission-1", roleId: "role-1", permissionId: "permission-1", deletedAt: null }
+    ],
     roleMenu: [{ id: "role-menu-1", roleId: "role-1", menuId: "menu-1", deletedAt: null }],
-    user: [{ id: ADMIN_ID, username: "keqi_119", name: "Admin", passwordHash: "argon2-secret-hash", status: "ACTIVE", createdAt: at, updatedAt: at, deletedAt: null }],
+    user: [
+      {
+        id: ADMIN_ID,
+        username: "keqi_119",
+        name: "Admin",
+        passwordHash: "argon2-secret-hash",
+        status: "ACTIVE",
+        createdAt: at,
+        updatedAt: at,
+        deletedAt: null
+      }
+    ],
     userRole: [{ id: "user-role-1", userId: ADMIN_ID, roleId: "role-1", deletedAt: null }],
-    customer: [{ id: CUSTOMER_ID, customerNo: "C1", name: "Customer", mobile: "18616570212", ownerUserId: ADMIN_ID, status: "ACTIVE", deletedAt: null }],
-    customerAccount: [{ id: "account-1", customerId: CUSTOMER_ID, phone: "18616570212", accountStatus: "ACTIVE", deletedAt: null }],
+    customer: [
+      {
+        id: CUSTOMER_ID,
+        customerNo: "C1",
+        name: "Customer",
+        mobile: "18616570212",
+        ownerUserId: ADMIN_ID,
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    customerAccount: [
+      {
+        id: "account-1",
+        customerId: CUSTOMER_ID,
+        phone: "18616570212",
+        accountStatus: "ACTIVE",
+        deletedAt: null
+      }
+    ],
     customerIdentity: [{ id: "identity-1", customerId: CUSTOMER_ID, deletedAt: null }],
     customerProfile: [{ id: "profile-1", customerId: CUSTOMER_ID, deletedAt: null }],
-    customerESignProviderAccount: [{ id: "esign-1", customerId: CUSTOMER_ID, providerOpenId: "open-1", providerSnapshot: null, registrationStatus: "REGISTERED", realNameStatus: "VERIFIED", certBindingStatus: "BOUND", deletedAt: null }],
-    depositRule: [{ id: "deposit-1", grade: "A", status: "ACTIVE", effectiveFrom: at, effectiveTo: null, deletedAt: null }],
-    product: [{ id: "product-1", productNo: "P1", productType: "SUBSCRIPTION", status: "ACTIVE", deletedAt: null }],
-    productVersion: [{ id: "version-1", productId: "product-1", versionNo: "1", status: "ACTIVE", deletedAt: null }],
+    customerESignProviderAccount: [
+      {
+        id: "esign-1",
+        customerId: CUSTOMER_ID,
+        providerOpenId: "open-1",
+        providerSnapshot: null,
+        registrationStatus: "REGISTERED",
+        realNameStatus: "VERIFIED",
+        certBindingStatus: "BOUND",
+        deletedAt: null
+      }
+    ],
+    depositRule: [
+      {
+        id: "deposit-1",
+        grade: "A",
+        status: "ACTIVE",
+        effectiveFrom: at,
+        effectiveTo: null,
+        deletedAt: null
+      }
+    ],
+    product: [
+      {
+        id: "product-1",
+        productNo: "P1",
+        productType: "SUBSCRIPTION",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    productVersion: [
+      { id: "version-1", productId: "product-1", versionNo: "1", status: "ACTIVE", deletedAt: null }
+    ],
     vehicleModelDefinition: [{ ...model, snapshot: null }],
-    vehiclePackage: [{ id: "vehicle-package-1", productId: "product-1", productVersionId: "version-1", modelDefinitionId: "model-1", status: "ACTIVE", deletedAt: null }],
-    vehiclePackageModelMember: [{ id: "member-1", vehiclePackageId: "vehicle-package-1", modelDefinitionId: "model-1" }],
-    mileagePackage: [{ id: "mileage-1", productId: "product-1", productVersionId: "version-1", status: "ACTIVE", deletedAt: null }],
-    energyPackage: [{ id: "energy-1", productId: "product-1", productVersionId: "version-1", status: "ACTIVE", deletedAt: null }],
-    benefitPackage: [{ id: "benefit-1", productId: "product-1", productVersionId: "version-1", status: "ACTIVE", deletedAt: null }],
-    subscriptionPlan: [{ id: "plan-1", productId: "product-1", productVersionId: "version-1", vehiclePackageId: "vehicle-package-1", mileagePackageId: "mileage-1", energyPackageId: "energy-1", benefitPackageId: "benefit-1", status: "ACTIVE", effectiveFrom: at, effectiveTo: null, deletedAt: null }],
-    productPriceRule: [{ id: "price-1", productVersionId: "version-1", modelDefinitionId: "model-1", status: "ACTIVE", deletedAt: null }],
-    fileObject: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `file-${index}`, bucket: "contracts", objectKey: `${type}.pdf`, originalName: `${type}.pdf`, mimeType: "application/pdf", sizeBytes: 10n, contentSha256: "a".repeat(64), uploadedBy: ADMIN_ID, createdAt: at })),
-    contractVersion: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map((type, index) => ({ id: `contract-version-${index}`, templateType: type, templateName: type, businessType: "SUBSCRIPTION", fileId: `file-${index}`, approvedBy: ADMIN_ID, approvedAt: at, effectiveFrom: at, effectiveTo: null, status: "ACTIVE", deletedAt: null })),
-    notificationTemplate: NOTIFICATION_CODES.map((code, index) => ({ id: `notification-${index}`, templateCode: code, templateStatus: "ACTIVE", variables: null, providerConfig: index === 0 ? { provider: "test" } : null, deletedAt: null })),
-    assetOwner: [{ id: OWNER_ID, ownerNo: "OWNER-1", status: "ACTIVE", onboardingSnapshot: null, createdBy: ADMIN_ID, updatedBy: ADMIN_ID }],
-    vehicle: [{ id: VEHICLE_ID, vehicleNo: "VEH-1", modelDefinitionId: "model-1", currentSalePriceAmount: 100000n, salePriceStatus: "EFFECTIVE", status: "AVAILABLE", createdAt: at, updatedAt: at, deletedAt: null }],
-    vehicleListingProfile: [{ id: "listing-1", vehicleId: VEHICLE_ID, listingStatus: "PUBLISHED", portalVisible: true, sellingPoints: null, customerTags: null, serviceHighlights: { roadside: true }, faqSnapshot: null, deletedAt: null }],
-    vehicleListingMedia: [{ id: "media-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", deletedAt: null }],
-    vehicleListingPlan: [{ id: "listing-plan-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", subscriptionPlanId: "plan-1", deletedAt: null }],
+    vehiclePackage: [
+      {
+        id: "vehicle-package-1",
+        productId: "product-1",
+        productVersionId: "version-1",
+        modelDefinitionId: "model-1",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    vehiclePackageModelMember: [
+      { id: "member-1", vehiclePackageId: "vehicle-package-1", modelDefinitionId: "model-1" }
+    ],
+    mileagePackage: [
+      {
+        id: "mileage-1",
+        productId: "product-1",
+        productVersionId: "version-1",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    energyPackage: [
+      {
+        id: "energy-1",
+        productId: "product-1",
+        productVersionId: "version-1",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    benefitPackage: [
+      {
+        id: "benefit-1",
+        productId: "product-1",
+        productVersionId: "version-1",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    subscriptionPlan: [
+      {
+        id: "plan-1",
+        productId: "product-1",
+        productVersionId: "version-1",
+        vehiclePackageId: "vehicle-package-1",
+        mileagePackageId: "mileage-1",
+        energyPackageId: "energy-1",
+        benefitPackageId: "benefit-1",
+        status: "ACTIVE",
+        effectiveFrom: at,
+        effectiveTo: null,
+        deletedAt: null
+      }
+    ],
+    productPriceRule: [
+      {
+        id: "price-1",
+        productVersionId: "version-1",
+        modelDefinitionId: "model-1",
+        status: "ACTIVE",
+        deletedAt: null
+      }
+    ],
+    fileObject: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map(
+      (type, index) => ({
+        id: `file-${index}`,
+        bucket: "contracts",
+        objectKey: `${type}.pdf`,
+        originalName: `${type}.pdf`,
+        mimeType: "application/pdf",
+        sizeBytes: 10n,
+        contentSha256: "a".repeat(64),
+        uploadedBy: ADMIN_ID,
+        createdAt: at
+      })
+    ),
+    contractVersion: ["SUBSCRIPTION_STANDARD", "DELIVERY_HANDOVER", "SUBSCRIPTION_EXTENSION"].map(
+      (type, index) => ({
+        id: `contract-version-${index}`,
+        templateType: type,
+        templateName: type,
+        businessType: "SUBSCRIPTION",
+        fileId: `file-${index}`,
+        approvedBy: ADMIN_ID,
+        approvedAt: at,
+        effectiveFrom: at,
+        effectiveTo: null,
+        status: "ACTIVE",
+        deletedAt: null
+      })
+    ),
+    notificationTemplate: NOTIFICATION_CODES.map((code, index) => ({
+      id: `notification-${index}`,
+      templateCode: code,
+      templateStatus: "ACTIVE",
+      variables: null,
+      providerConfig: index === 0 ? { provider: "test" } : null,
+      deletedAt: null
+    })),
+    assetOwner: [
+      {
+        id: OWNER_ID,
+        ownerNo: "OWNER-1",
+        status: "ACTIVE",
+        onboardingSnapshot: null,
+        createdBy: ADMIN_ID,
+        updatedBy: ADMIN_ID
+      }
+    ],
+    vehicle: [
+      {
+        id: VEHICLE_ID,
+        vehicleNo: "VEH-1",
+        modelDefinitionId: "model-1",
+        currentSalePriceAmount: 100000n,
+        salePriceStatus: "EFFECTIVE",
+        status: "AVAILABLE",
+        createdAt: at,
+        updatedAt: at,
+        deletedAt: null
+      }
+    ],
+    vehicleListingProfile: [
+      {
+        id: "listing-1",
+        vehicleId: VEHICLE_ID,
+        listingStatus: "PUBLISHED",
+        portalVisible: true,
+        sellingPoints: null,
+        customerTags: null,
+        serviceHighlights: { roadside: true },
+        faqSnapshot: null,
+        deletedAt: null
+      }
+    ],
+    vehicleListingMedia: [
+      { id: "media-1", vehicleId: VEHICLE_ID, listingProfileId: "listing-1", deletedAt: null }
+    ],
+    vehicleListingPlan: [
+      {
+        id: "listing-plan-1",
+        vehicleId: VEHICLE_ID,
+        listingProfileId: "listing-1",
+        subscriptionPlanId: "plan-1",
+        deletedAt: null
+      }
+    ],
     vehicleDocumentBatch: [{ id: "batch-1", vehicleId: VEHICLE_ID }],
-    vehicleInsurancePolicy: [{ id: "policy-1", vehicleId: VEHICLE_ID, snapshot: null, deletedAt: null }],
-    vehicleDocument: [{ id: "document-1", vehicleId: VEHICLE_ID, batchId: "batch-1", policyId: "policy-1", deletedAt: null }],
+    vehicleInsurancePolicy: [
+      { id: "policy-1", vehicleId: VEHICLE_ID, snapshot: null, deletedAt: null }
+    ],
+    vehicleDocument: [
+      {
+        id: "document-1",
+        vehicleId: VEHICLE_ID,
+        batchId: "batch-1",
+        policyId: "policy-1",
+        deletedAt: null
+      }
+    ],
     vehicleInsuranceCoverage: [{ id: "coverage-1", policyId: "policy-1", deletedAt: null }],
-    vehicleListingSourceBinding: [{ id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }],
+    vehicleListingSourceBinding: [
+      { id: "binding-1", vehicleId: VEHICLE_ID, documentId: "document-1" }
+    ],
     vehicleSalePriceHistory: [{ id: "sale-1", vehicleId: VEHICLE_ID }],
-    vehicleOwnershipPeriod: [{ id: "ownership-1", vehicleId: VEHICLE_ID, assetOwnerId: OWNER_ID, startedAt: at, endedAt: null, startReason: "INITIAL_ACQUISITION", endReason: null, startSourceType: "BASELINE", startSourceId: VEHICLE_ID, startSourceKey: "ownership:start", endSourceType: null, endSourceId: null, endSourceKey: null, startSnapshot: { ownerId: OWNER_ID }, endSnapshot: null, startConfirmedBy: ADMIN_ID, startConfirmedAt: at, endConfirmedBy: null, endConfirmedAt: null, createdAt: at, updatedAt: at, createdBy: ADMIN_ID }],
-    vehicleAssetCostProfile: [{ id: COST_PROFILE_ID, vehicleId: VEHICLE_ID, profileStatus: "ACTIVE", depreciationMethod: "STRAIGHT_LINE", depreciationStartDate: at, usefulLifeMonths: 60, residualValueAmount: 10000n, capitalCostRateBps: null, annualInsuranceCostAmount: null, annualMaintenanceReserveAmount: null, otherMonthlyCostAmount: null, remark: null, snapshot: null, createdAt: at, updatedAt: at, createdBy: null, updatedBy: null, deletedAt: null }],
+    vehicleOwnershipPeriod: [
+      {
+        id: "ownership-1",
+        vehicleId: VEHICLE_ID,
+        assetOwnerId: OWNER_ID,
+        startedAt: at,
+        endedAt: null,
+        startReason: "INITIAL_ACQUISITION",
+        endReason: null,
+        startSourceType: "BASELINE",
+        startSourceId: VEHICLE_ID,
+        startSourceKey: "ownership:start",
+        endSourceType: null,
+        endSourceId: null,
+        endSourceKey: null,
+        startSnapshot: { ownerId: OWNER_ID },
+        endSnapshot: null,
+        startConfirmedBy: ADMIN_ID,
+        startConfirmedAt: at,
+        endConfirmedBy: null,
+        endConfirmedAt: null,
+        createdAt: at,
+        updatedAt: at,
+        createdBy: ADMIN_ID
+      }
+    ],
+    vehicleAssetCostProfile: [
+      {
+        id: COST_PROFILE_ID,
+        vehicleId: VEHICLE_ID,
+        profileStatus: "ACTIVE",
+        depreciationMethod: "STRAIGHT_LINE",
+        depreciationStartDate: at,
+        usefulLifeMonths: 60,
+        residualValueAmount: 10000n,
+        capitalCostRateBps: null,
+        annualInsuranceCostAmount: null,
+        annualMaintenanceReserveAmount: null,
+        otherMonthlyCostAmount: null,
+        remark: null,
+        snapshot: null,
+        createdAt: at,
+        updatedAt: at,
+        createdBy: null,
+        updatedBy: null,
+        deletedAt: null
+      }
+    ],
     vehicleCostLedgerEntry: [
-      { id: LEDGER_ID_1, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: CUSTOMER_ID, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "ORIGINAL", actionType: "ACTUAL_COST", costCategory: "OTHER", amountCents: 10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: null, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:original", createdAt: at },
-      { id: LEDGER_ID_2, vehicleId: VEHICLE_ID, orderId: null, contractId: null, customerId: CUSTOMER_ID, assetOwnerId: OWNER_ID, workOrderId: null, evidenceId: null, assetOwnerSnapshot: null, evidenceSnapshot: null, responsibilitySnapshot: { party: "PLATFORM" }, entryKind: "REVERSAL", actionType: "ACTUAL_COST", costCategory: "OTHER", amountCents: -10000n, responsiblePartyType: "PLATFORM", responsiblePartyId: null, occurredOn: at, accountingPeriod: "2026-01", confirmedAt: at, confirmedBy: ADMIN_ID, reversalOfEntryId: LEDGER_ID_1, sourceType: "BASELINE", sourceId: VEHICLE_ID, sourceKey: "cost:reversal", createdAt: at }
+      {
+        id: LEDGER_ID_1,
+        vehicleId: VEHICLE_ID,
+        orderId: null,
+        contractId: null,
+        customerId: CUSTOMER_ID,
+        assetOwnerId: OWNER_ID,
+        workOrderId: null,
+        evidenceId: null,
+        assetOwnerSnapshot: null,
+        evidenceSnapshot: null,
+        responsibilitySnapshot: { party: "PLATFORM" },
+        entryKind: "ORIGINAL",
+        actionType: "ACTUAL_COST",
+        costCategory: "OTHER",
+        amountCents: 10000n,
+        responsiblePartyType: "PLATFORM",
+        responsiblePartyId: null,
+        occurredOn: at,
+        accountingPeriod: "2026-01",
+        confirmedAt: at,
+        confirmedBy: ADMIN_ID,
+        reversalOfEntryId: null,
+        sourceType: "BASELINE",
+        sourceId: VEHICLE_ID,
+        sourceKey: "cost:original",
+        createdAt: at
+      },
+      {
+        id: LEDGER_ID_2,
+        vehicleId: VEHICLE_ID,
+        orderId: null,
+        contractId: null,
+        customerId: CUSTOMER_ID,
+        assetOwnerId: OWNER_ID,
+        workOrderId: null,
+        evidenceId: null,
+        assetOwnerSnapshot: null,
+        evidenceSnapshot: null,
+        responsibilitySnapshot: { party: "PLATFORM" },
+        entryKind: "REVERSAL",
+        actionType: "ACTUAL_COST",
+        costCategory: "OTHER",
+        amountCents: -10000n,
+        responsiblePartyType: "PLATFORM",
+        responsiblePartyId: null,
+        occurredOn: at,
+        accountingPeriod: "2026-01",
+        confirmedAt: at,
+        confirmedBy: ADMIN_ID,
+        reversalOfEntryId: LEDGER_ID_1,
+        sourceType: "BASELINE",
+        sourceId: VEHICLE_ID,
+        sourceKey: "cost:reversal",
+        createdAt: at
+      }
     ]
   };
   return rows;
@@ -497,6 +1089,7 @@ function createDatabaseFake(databaseName, initialRows, options = {}) {
   const calls = [];
   const transactions = [];
   let queue = Promise.resolve();
+  let serializableAttempt = 0;
 
   const client = createClient(() => state.rows, calls, options);
   client.$transaction = async (callback, transactionOptions = {}) => {
@@ -509,6 +1102,16 @@ function createDatabaseFake(databaseName, initialRows, options = {}) {
       transactions.push(record);
       try {
         const value = await callback(tx);
+        if (transactionOptions.isolationLevel === "Serializable") {
+          const failure = options.serializableFailures?.[serializableAttempt];
+          serializableAttempt += 1;
+          if (failure) {
+            if (failure.publishWorkingAsCompetitor) state.rows = working;
+            const error = new Error(`injected database outcome ${failure.code}`);
+            error.code = failure.code;
+            throw error;
+          }
+        }
         state.rows = working;
         return value;
       } catch (error) {
@@ -517,7 +1120,8 @@ function createDatabaseFake(databaseName, initialRows, options = {}) {
         calls.push(...txCalls);
       }
     };
-    if (!options.serializeTransactions || transactionOptions.isolationLevel !== "Serializable") return run();
+    if (!options.serializeTransactions || transactionOptions.isolationLevel !== "Serializable")
+      return run();
     const pending = queue.then(run, run);
     queue = pending.catch(() => undefined);
     return pending;
@@ -527,7 +1131,9 @@ function createDatabaseFake(databaseName, initialRows, options = {}) {
   return {
     calls,
     client,
-    get rows() { return state.rows; },
+    get rows() {
+      return state.rows;
+    },
     transactions
   };
 }
@@ -538,8 +1144,34 @@ function createClient(getRows, calls, options) {
       const sql = strings.raw ? strings.raw.join("?") : strings.join("?");
       calls.push({ operation: "$queryRaw", sql });
       if (/current_database/i.test(sql)) return [{ databaseName: this.__databaseName }];
-      if (/_prisma_migrations/i.test(sql)) return structuredClone(options.migrationRows ?? [{ id: "migration-1", checksum: "checksum", migrationName: "0001", startedAt: new Date(0), finishedAt: new Date(1), rolledBackAt: null, appliedStepsCount: 1 }]);
-      if (/information_schema\.columns/i.test(sql)) return structuredClone(options.schemaRows ?? [{ tableName: "user", columnName: "id", dataType: "uuid", isNullable: "NO", ordinalPosition: 1, columnDefault: null, udtName: "uuid" }]);
+      if (/_prisma_migrations/i.test(sql))
+        return structuredClone(
+          options.migrationRows ?? [
+            {
+              id: "migration-1",
+              checksum: "checksum",
+              migrationName: "0001",
+              startedAt: new Date(0),
+              finishedAt: new Date(1),
+              rolledBackAt: null,
+              appliedStepsCount: 1
+            }
+          ]
+        );
+      if (/information_schema\.columns/i.test(sql))
+        return structuredClone(
+          options.schemaRows ?? [
+            {
+              tableName: "user",
+              columnName: "id",
+              dataType: "uuid",
+              isNullable: "NO",
+              ordinalPosition: 1,
+              columnDefault: null,
+              udtName: "uuid"
+            }
+          ]
+        );
       return [];
     },
     async $executeRaw() {
@@ -549,7 +1181,8 @@ function createClient(getRows, calls, options) {
   };
   return new Proxy(own, {
     get(target, property, receiver) {
-      if (Reflect.has(target, property) || typeof property !== "string") return Reflect.get(target, property, receiver);
+      if (Reflect.has(target, property) || typeof property !== "string")
+        return Reflect.get(target, property, receiver);
       return {
         async count() {
           calls.push({ delegate: property, operation: "count" });
@@ -559,9 +1192,19 @@ function createClient(getRows, calls, options) {
           calls.push({ args, delegate: property, operation: "findMany" });
           const rows = structuredClone(getRows()[property] ?? []);
           if (property === "vehicle" && args.select?._count) {
-            return rows.map((row) => ({ id: row.id, status: row.status, salePriceStatus: row.salePriceStatus, currentSalePriceAmount: row.currentSalePriceAmount, _count: { operationalRestrictions: 0, subscriptionPeriods: 0 } }));
+            return rows.map((row) => ({
+              id: row.id,
+              status: row.status,
+              salePriceStatus: row.salePriceStatus,
+              currentSalePriceAmount: row.currentSalePriceAmount,
+              _count: { operationalRestrictions: 0, subscriptionPeriods: 0 }
+            }));
           }
-          if (property === "vehicle" && Object.keys(args.select ?? {}).length === 1 && args.select?.id) {
+          if (
+            property === "vehicle" &&
+            Object.keys(args.select ?? {}).length === 1 &&
+            args.select?.id
+          ) {
             return rows.map(({ id }) => ({ id }));
           }
           return rows;
@@ -581,56 +1224,85 @@ function createClient(getRows, calls, options) {
           if (property === "auditLog" && Object.hasOwn(data, "beforeSnapshot")) {
             throw new TypeError("AuditLog.beforeSnapshot must be omitted for database null");
           }
-          const stored = property === "auditLog"
-            ? { entityId: null, operatorId: null, ipAddress: null, userAgent: null, beforeSnapshot: null, ...structuredClone(data) }
-            : structuredClone(data);
+          const stored =
+            property === "auditLog"
+              ? {
+                  entityId: null,
+                  operatorId: null,
+                  ipAddress: null,
+                  userAgent: null,
+                  beforeSnapshot: null,
+                  ...structuredClone(data)
+                }
+              : structuredClone(data);
           getRows()[property] = [...(getRows()[property] ?? []), stored];
           return structuredClone(stored);
         },
-        async update() { calls.push({ delegate: property, operation: "update" }); },
-        async upsert() { calls.push({ delegate: property, operation: "upsert" }); },
-        async delete() { calls.push({ delegate: property, operation: "delete" }); }
+        async update() {
+          calls.push({ delegate: property, operation: "update" });
+        },
+        async upsert() {
+          calls.push({ delegate: property, operation: "upsert" });
+        },
+        async delete() {
+          calls.push({ delegate: property, operation: "delete" });
+        }
       };
     }
   });
 }
 
 function validateFakeCreateInput(delegate, row, rows, batch) {
-  const nullableJsonFields = {
-    assetOwner: ["onboardingSnapshot"],
-    customerESignProviderAccount: ["providerSnapshot"],
-    notificationTemplate: ["variables", "providerConfig"],
-    vehicleAssetCostProfile: ["snapshot"],
-    vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
-    vehicleInsurancePolicy: ["snapshot"],
-    vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
-    vehicleModelDefinition: ["snapshot"],
-    vehicleOwnershipPeriod: ["endSnapshot"]
-  }[delegate] ?? [];
+  const nullableJsonFields =
+    {
+      assetOwner: ["onboardingSnapshot"],
+      customerESignProviderAccount: ["providerSnapshot"],
+      notificationTemplate: ["variables", "providerConfig"],
+      vehicleAssetCostProfile: ["snapshot"],
+      vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
+      vehicleInsurancePolicy: ["snapshot"],
+      vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
+      vehicleModelDefinition: ["snapshot"],
+      vehicleOwnershipPeriod: ["endSnapshot"]
+    }[delegate] ?? [];
   for (const field of nullableJsonFields) {
     if (Object.hasOwn(row, field) && row[field] === null) {
       throw new TypeError(`${delegate}.${field} top-level null is not a Prisma JSON create input`);
     }
   }
-  const requiredJsonFields = {
-    vehicleCostLedgerEntry: ["responsibilitySnapshot"],
-    vehicleOwnershipPeriod: ["startSnapshot"]
-  }[delegate] ?? [];
+  const requiredJsonFields =
+    {
+      vehicleCostLedgerEntry: ["responsibilitySnapshot"],
+      vehicleOwnershipPeriod: ["startSnapshot"]
+    }[delegate] ?? [];
   for (const field of requiredJsonFields) {
-    if (row[field] === null || row[field] === undefined) throw new TypeError(`${delegate}.${field} is required`);
+    if (row[field] === null || row[field] === undefined)
+      throw new TypeError(`${delegate}.${field} is required`);
   }
 
   if (delegate === "vehicleAssetCostProfile") {
     requireNonEmptyString(row.depreciationMethod, `${delegate}.depreciationMethod`);
     requireDate(row.depreciationStartDate, `${delegate}.depreciationStartDate`);
-    if (!Number.isInteger(row.usefulLifeMonths)) throw new TypeError(`${delegate}.usefulLifeMonths is required`);
-    if (typeof row.residualValueAmount !== "bigint") throw new TypeError(`${delegate}.residualValueAmount is required`);
+    if (!Number.isInteger(row.usefulLifeMonths))
+      throw new TypeError(`${delegate}.usefulLifeMonths is required`);
+    if (typeof row.residualValueAmount !== "bigint")
+      throw new TypeError(`${delegate}.residualValueAmount is required`);
   }
   if (delegate === "vehicleCostLedgerEntry") {
-    for (const field of ["entryKind", "actionType", "costCategory", "responsiblePartyType", "accountingPeriod", "sourceType", "sourceId", "sourceKey"]) {
+    for (const field of [
+      "entryKind",
+      "actionType",
+      "costCategory",
+      "responsiblePartyType",
+      "accountingPeriod",
+      "sourceType",
+      "sourceId",
+      "sourceKey"
+    ]) {
       requireNonEmptyString(row[field], `${delegate}.${field}`);
     }
-    if (typeof row.amountCents !== "bigint") throw new TypeError(`${delegate}.amountCents is required`);
+    if (typeof row.amountCents !== "bigint")
+      throw new TypeError(`${delegate}.amountCents is required`);
     requireDate(row.occurredOn, `${delegate}.occurredOn`);
     requireDate(row.confirmedAt, `${delegate}.confirmedAt`);
     validateFakeReversalContract(row, rows, batch);
@@ -638,14 +1310,25 @@ function validateFakeCreateInput(delegate, row, rows, batch) {
 
   const has = (target, id) => (rows[target] ?? []).some((item) => item.id === id);
   const optional = (target, id) => id == null || has(target, id);
-  if (delegate === "productVersion" && !optional("user", row.approvedBy)) throw new Error("dangling ProductVersion.approvedBy");
-  if (delegate === "contractVersion" && !optional("user", row.approvedBy)) throw new Error("dangling ContractVersion.approvedBy");
-  if (delegate === "vehicleListingSourceBinding" && !has("vehicleDocument", row.documentId)) throw new Error("dangling binding document");
+  if (delegate === "productVersion" && !optional("user", row.approvedBy))
+    throw new Error("dangling ProductVersion.approvedBy");
+  if (delegate === "contractVersion" && !optional("user", row.approvedBy))
+    throw new Error("dangling ContractVersion.approvedBy");
+  if (delegate === "vehicleListingSourceBinding" && !has("vehicleDocument", row.documentId))
+    throw new Error("dangling binding document");
   if (delegate === "vehicleCostLedgerEntry") {
-    const ledgerIds = new Set([...(rows.vehicleCostLedgerEntry ?? []).map(({ id }) => id), ...batch.map(({ id }) => id)]);
-    if (!has("vehicle", row.vehicleId) || !optional("customer", row.customerId) || !optional("assetOwner", row.assetOwnerId) ||
-        !has("user", row.confirmedBy) || (row.reversalOfEntryId != null && !ledgerIds.has(row.reversalOfEntryId)) ||
-        [row.orderId, row.contractId, row.workOrderId, row.evidenceId].some((value) => value != null)) {
+    const ledgerIds = new Set([
+      ...(rows.vehicleCostLedgerEntry ?? []).map(({ id }) => id),
+      ...batch.map(({ id }) => id)
+    ]);
+    if (
+      !has("vehicle", row.vehicleId) ||
+      !optional("customer", row.customerId) ||
+      !optional("assetOwner", row.assetOwnerId) ||
+      !has("user", row.confirmedBy) ||
+      (row.reversalOfEntryId != null && !ledgerIds.has(row.reversalOfEntryId)) ||
+      [row.orderId, row.contractId, row.workOrderId, row.evidenceId].some((value) => value != null)
+    ) {
       throw new Error("dangling cost ledger endpoint");
     }
   }
@@ -658,9 +1341,21 @@ function validateFakeReversalContract(row, rows, batch) {
   if (!original || original.entryKind === "REVERSAL") throw new Error("invalid reversal target");
   if (row.amountCents !== -original.amountCents) throw new Error("invalid reversal amount");
   const protectedFields = [
-    "vehicleId", "orderId", "contractId", "customerId", "assetOwnerId", "workOrderId",
-    "occurredOn", "accountingPeriod", "actionType", "costCategory", "responsiblePartyType",
-    "responsiblePartyId", "assetOwnerSnapshot", "evidenceId", "evidenceSnapshot",
+    "vehicleId",
+    "orderId",
+    "contractId",
+    "customerId",
+    "assetOwnerId",
+    "workOrderId",
+    "occurredOn",
+    "accountingPeriod",
+    "actionType",
+    "costCategory",
+    "responsiblePartyType",
+    "responsiblePartyId",
+    "assetOwnerSnapshot",
+    "evidenceId",
+    "evidenceSnapshot",
     "responsibilitySnapshot"
   ];
   if (protectedFields.some((field) => !isDeepStrictEqual(row[field], original[field]))) {
@@ -673,22 +1368,24 @@ function requireNonEmptyString(value, field) {
 }
 
 function requireDate(value, field) {
-  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) throw new TypeError(`${field} is required`);
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime()))
+    throw new TypeError(`${field} is required`);
 }
 
 function normalizeFakeStoredRow(delegate, row) {
   const stored = structuredClone(row);
-  const nullableJsonFields = {
-    assetOwner: ["onboardingSnapshot"],
-    customerESignProviderAccount: ["providerSnapshot"],
-    notificationTemplate: ["variables", "providerConfig"],
-    vehicleAssetCostProfile: ["snapshot"],
-    vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
-    vehicleInsurancePolicy: ["snapshot"],
-    vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
-    vehicleModelDefinition: ["snapshot"],
-    vehicleOwnershipPeriod: ["endSnapshot"]
-  }[delegate] ?? [];
+  const nullableJsonFields =
+    {
+      assetOwner: ["onboardingSnapshot"],
+      customerESignProviderAccount: ["providerSnapshot"],
+      notificationTemplate: ["variables", "providerConfig"],
+      vehicleAssetCostProfile: ["snapshot"],
+      vehicleCostLedgerEntry: ["assetOwnerSnapshot", "evidenceSnapshot"],
+      vehicleInsurancePolicy: ["snapshot"],
+      vehicleListingProfile: ["sellingPoints", "customerTags", "serviceHighlights", "faqSnapshot"],
+      vehicleModelDefinition: ["snapshot"],
+      vehicleOwnershipPeriod: ["endSnapshot"]
+    }[delegate] ?? [];
   for (const field of nullableJsonFields) {
     if (!Object.hasOwn(stored, field)) stored[field] = null;
   }
@@ -696,7 +1393,9 @@ function normalizeFakeStoredRow(delegate, row) {
 }
 
 function isWrite(call) {
-  return ["create", "createMany", "update", "upsert", "delete", "$executeRaw"].includes(call.operation);
+  return ["create", "createMany", "update", "upsert", "delete", "$executeRaw"].includes(
+    call.operation
+  );
 }
 
 function assertOrder(calls, expected) {

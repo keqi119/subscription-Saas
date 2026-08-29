@@ -26,6 +26,7 @@ const GIT_SHA = "a".repeat(40);
 const HASH_SALT = "b".repeat(64);
 const IMAGE_REF = `registry.example/stage1-acceptance@sha256:${"c".repeat(64)}`;
 const PASSWORD_HASH = "$2b$12$stage1.acceptance.fixture.hash";
+const APPLY_ADVISORY_KEY = "stage1-clean-acceptance-baseline:apply";
 const repoRoot = resolve(import.meta.dirname, "..");
 const apiRoot = resolve(repoRoot, "apps/api");
 const requireFromApi = createRequire(resolve(apiRoot, "package.json"));
@@ -115,69 +116,228 @@ test("disposable database names must match the exact source/target test prefixes
   }
 });
 
+test("cleanup ownership is registered only after CREATE DATABASE succeeds", async () => {
+  const name = `subscription_saas_test_stage1_source_${"a".repeat(32)}`;
+  for (const scenario of ["collision", "create-failure"]) {
+    const admin = createAdminFake({
+      collision: scenario === "collision",
+      createFailure: scenario === "create-failure"
+    });
+    const registry = createDisposableDatabaseRegistry(admin.client);
+    await assert.rejects(registry.create(name));
+    await registry.dropCreated();
+    assert.equal(admin.dropCalls.length, 0);
+  }
+
+  const admin = createAdminFake();
+  const registry = createDisposableDatabaseRegistry(admin.client);
+  await registry.create(name);
+  await registry.dropCreated();
+  assert.deepEqual(admin.createCalls, [
+    `CREATE DATABASE "${name}" TEMPLATE template0 ENCODING 'UTF8'`
+  ]);
+  assert.deepEqual(admin.dropCalls, [`DROP DATABASE "${name}" WITH (FORCE)`]);
+});
+
+test("template0 databases must have no public tables before migrations", async () => {
+  const queries = [];
+  let ended = 0;
+  await assertApplicationEmptyBeforeMigrations("postgresql://derived", {
+    createPool: () => ({
+      end: async () => {
+        ended += 1;
+      },
+      query: async (sql) => {
+        queries.push(sql);
+        return { rows: [{ count: 0 }] };
+      }
+    })
+  });
+  assert.equal(queries.length, 1);
+  assert.match(queries[0], /information_schema\.tables/);
+  assert.match(queries[0], /table_schema = 'public'/);
+  assert.equal(ended, 1);
+
+  await assert.rejects(
+    assertApplicationEmptyBeforeMigrations("postgresql://derived", {
+      createPool: () => ({
+        end: async () => {},
+        query: async () => ({ rows: [{ count: 1 }] })
+      })
+    }),
+    (error) => error?.message === "INTEGRATION_DATABASE_NOT_EMPTY_BEFORE_MIGRATIONS"
+  );
+});
+
+test("migration child receives only the derived database URL and captured output", () => {
+  const parentEnv = {
+    PATH: "tool-path",
+    SystemRoot: "system-root",
+    TEMP: "temp-root",
+    HTTP_PROXY: "proxy-url",
+    DATABASE_URL: "generic-secret",
+    STAGE1_ACCEPTANCE_INTEGRATION_ADMIN_DATABASE_URL: "admin-secret",
+    STAGE1_ACCEPTANCE_SOURCE_DATABASE_URL: "source-secret",
+    STAGE1_ACCEPTANCE_TARGET_DATABASE_URL: "target-secret",
+    STAGING_DATABASE_URL: "staging-secret",
+    POSTGRES_URL: "postgres-secret",
+    PGHOST: "pg-host-secret",
+    PGPASSWORD: "pg-password-secret"
+  };
+  const derivedUrl = "postgresql://temporary-derived";
+  let childOptions;
+  runMigrationDeploy(derivedUrl, {
+    parentEnv,
+    spawn: (_executable, _args, options) => {
+      childOptions = options;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+  });
+  assert.equal(childOptions.env.DATABASE_URL, derivedUrl);
+  assert.equal(childOptions.env.PATH, "tool-path");
+  assert.equal(childOptions.env.SystemRoot, "system-root");
+  assert.equal(childOptions.env.HTTP_PROXY, "proxy-url");
+  assert.equal(childOptions.stdio, "pipe");
+  for (const secret of [
+    "generic-secret",
+    "admin-secret",
+    "source-secret",
+    "target-secret",
+    "staging-secret",
+    "postgres-secret",
+    "pg-host-secret",
+    "pg-password-secret"
+  ]) {
+    assert.equal(Object.values(childOptions.env).includes(secret), false);
+  }
+
+  assert.throws(
+    () =>
+      runMigrationDeploy(derivedUrl, {
+        parentEnv,
+        spawn: () => ({ status: 1, stdout: "admin-secret", stderr: "source-secret" })
+      }),
+    (error) => error?.message === "INTEGRATION_MIGRATION_DEPLOY_FAILED"
+  );
+});
+
+test("apply confirmation is restored once after success and failure", async () => {
+  const previous = process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
+  process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY = "before-test";
+  try {
+    await withApplyConfirmation(async () => {
+      assert.equal(process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY, "1");
+    });
+    assert.equal(process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY, "before-test");
+    await assert.rejects(
+      withApplyConfirmation(async () => {
+        assert.equal(process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY, "1");
+        throw new Error("INJECTED_APPLY_FAILURE");
+      }),
+      /INJECTED_APPLY_FAILURE/
+    );
+    assert.equal(process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY, "before-test");
+  } finally {
+    restoreApplyConfirmation(previous);
+  }
+});
+
+test("advisory barrier waits for both named apply sessions with a bounded poll", async () => {
+  let polls = 0;
+  const names = ["stage1_acceptance_apply_a_test", "stage1_acceptance_apply_b_test"];
+  await waitForAdvisoryWaiters(
+    {
+      async query(_sql, parameters) {
+        polls += 1;
+        assert.deepEqual(parameters, [names]);
+        return {
+          rows:
+            polls === 1
+              ? [{ applicationName: names[0], waitEventType: "Lock", waitEvent: "advisory" }]
+              : names.map((applicationName) => ({
+                  applicationName,
+                  waitEvent: "advisory",
+                  waitEventType: "Lock"
+                }))
+        };
+      }
+    },
+    names,
+    { delay: async () => {}, maxPolls: 2 }
+  );
+  assert.equal(polls, 2);
+
+  await assert.rejects(
+    waitForAdvisoryWaiters({ query: async () => ({ rows: [] }) }, names, {
+      delay: async () => {},
+      maxPolls: 2
+    }),
+    (error) => error?.message === "INTEGRATION_ADVISORY_WAIT_TIMEOUT"
+  );
+});
+
 integrationTest(
   "real PostgreSQL proves migrations, rollback, stale guards, locking, replay, and validation",
   { timeout: 240_000 },
   async (t) => {
-    try {
-      const harness = await createPostgresHarness(adminDatabaseUrl);
-      t.after(() => harness.close());
-      await harness.migrateBoth();
-      await harness.assertCanonicalMigrations();
-      await harness.seedSource();
+    return withApplyConfirmation(async () => {
+      try {
+        const harness = await createPostgresHarness(adminDatabaseUrl);
+        t.after(() => harness.close());
+        await harness.migrateBoth();
+        await harness.assertCanonicalMigrations();
+        await harness.seedSource();
 
-      const beforeDryRun = await harness.businessCounts();
-      assertAllWhitelistDelegatesPresent(beforeDryRun.source);
-      assertEmptyDatabaseCounts(beforeDryRun.target);
-      const dryRun = await harness.execute("dry-run");
-      assert.equal(dryRun.safe, true);
-      assert.equal(dryRun.manifest.safeToApply, true);
-      assert.match(dryRun.manifestSha256, /^[a-f0-9]{64}$/);
-      assert.deepEqual(await harness.businessCounts(), beforeDryRun);
+        const beforeDryRun = await harness.businessCounts();
+        assertAllWhitelistDelegatesPresent(beforeDryRun.source);
+        assertEmptyDatabaseCounts(beforeDryRun.target);
+        const dryRun = await harness.execute("dry-run");
+        assert.equal(dryRun.safe, true);
+        assert.equal(dryRun.manifest.safeToApply, true);
+        assert.match(dryRun.manifestSha256, /^[a-f0-9]{64}$/);
+        assert.deepEqual(await harness.businessCounts(), beforeDryRun);
 
-      await harness.mutateAndRestoreSourceFact(async () => {
-        await assert.rejects(
-          harness.execute("apply", dryRun),
-          (error) => error?.message === "MANIFEST_STALE"
-        );
+        await harness.mutateAndRestoreSourceFact(async () => {
+          await assert.rejects(
+            harness.execute("apply", dryRun),
+            (error) => error?.message === "MANIFEST_STALE"
+          );
+          assertEmptyDatabaseCounts((await harness.businessCounts()).target);
+        });
+        await harness.assertForeignKeyRollback();
         assertEmptyDatabaseCounts((await harness.businessCounts()).target);
-      });
-      await harness.assertForeignKeyRollback();
-      assertEmptyDatabaseCounts((await harness.businessCounts()).target);
 
-      const concurrent = await Promise.allSettled([
-        harness.execute("apply", dryRun, 0),
-        harness.execute("apply", dryRun, 1)
-      ]);
-      const fulfilled = concurrent.filter((result) => result.status === "fulfilled");
-      const rejected = concurrent.filter((result) => result.status === "rejected");
-      assert.equal(fulfilled.length, 1);
-      assert.equal(rejected.length, 1);
-      assert.equal(rejected[0].reason?.message, "MANIFEST_STALE");
-      assert.equal(fulfilled[0].value.auditCreated, 1);
+        const concurrent = await harness.concurrentApply(dryRun);
+        const fulfilled = concurrent.filter((result) => result.status === "fulfilled");
+        const rejected = concurrent.filter((result) => result.status === "rejected");
+        assert.equal(fulfilled.length, 1);
+        assert.equal(rejected.length, 1);
+        assert.equal(rejected[0].reason?.message, "MANIFEST_STALE");
+        assert.equal(fulfilled[0].value.auditCreated, 1);
 
-      await harness.assertCopiedBaseline(dryRun);
-      const beforeReplay = await harness.businessCounts();
-      const replay = await harness.execute("replay", dryRun);
-      assert.equal(replay.inserted, 0);
-      assert.equal(replay.auditCreated, 0);
-      assert.deepEqual(await harness.businessCounts(), beforeReplay);
-      await harness.validateTarget(dryRun);
+        await harness.assertCopiedBaseline(dryRun);
+        const beforeReplay = await harness.businessCounts();
+        const replay = await harness.execute("replay", dryRun);
+        assert.equal(replay.inserted, 0);
+        assert.equal(replay.auditCreated, 0);
+        assert.deepEqual(await harness.businessCounts(), beforeReplay);
+        await harness.validateTarget(dryRun);
 
-      await harness.withForbiddenRow(async () => {
-        await assert.rejects(
-          harness.execute("replay", dryRun),
-          (error) => error?.message === "MANIFEST_STALE"
-        );
-        await assert.rejects(
-          harness.validateTarget(dryRun),
-          (error) => error?.message === "MANIFEST_STALE"
-        );
-      });
-      await harness.validateTarget(dryRun);
-    } catch (error) {
-      throw new Error(safeIntegrationError(error));
-    }
+        await harness.withForbiddenRow(async () => {
+          await assert.rejects(
+            harness.execute("replay", dryRun),
+            (error) => error?.message === "MANIFEST_STALE"
+          );
+          await assert.rejects(
+            harness.validateTarget(dryRun),
+            (error) => error?.message === "MANIFEST_STALE"
+          );
+        });
+        await harness.validateTarget(dryRun);
+      } catch (error) {
+        throw new Error(safeIntegrationError(error));
+      }
+    });
   }
 );
 
@@ -190,17 +350,21 @@ async function createPostgresHarness(connectionString) {
     await adminPool.end();
     throw new Error("INTEGRATION_ADMIN_CONNECTION_FAILED");
   }
-  const createdDatabases = new Set();
+  const databaseRegistry = createDisposableDatabaseRegistry(adminClient);
   let closed = false;
   const suffix = randomUUID().replaceAll("-", "");
   const sourceName = `subscription_saas_test_stage1_source_${suffix}`;
   const targetName = `subscription_saas_test_stage1_target_${suffix}`;
   const sourceUrl = databaseUrlFor(connectionString, sourceName);
   const targetUrl = databaseUrlFor(connectionString, targetName);
+  const applyApplicationNames = [
+    `stage1_acceptance_apply_a_${suffix.slice(0, 8)}`,
+    `stage1_acceptance_apply_b_${suffix.slice(0, 8)}`
+  ];
   const clients = [];
   try {
-    await createDatabase(sourceName);
-    await createDatabase(targetName);
+    await databaseRegistry.create(sourceName);
+    await databaseRegistry.create(targetName);
   } catch (error) {
     await cleanup();
     throw error;
@@ -212,15 +376,18 @@ async function createPostgresHarness(connectionString) {
     assertForeignKeyRollback,
     businessCounts,
     close: cleanup,
+    concurrentApply,
     execute,
     migrateBoth: async () => {
-      deployMigrations(sourceUrl);
-      deployMigrations(targetUrl);
+      await assertApplicationEmptyBeforeMigrations(sourceUrl);
+      await assertApplicationEmptyBeforeMigrations(targetUrl);
+      runMigrationDeploy(sourceUrl);
+      runMigrationDeploy(targetUrl);
       clients.push(
         await createPrismaClient(sourceUrl),
-        await createPrismaClient(targetUrl),
+        await createPrismaClient(withApplicationName(targetUrl, applyApplicationNames[0])),
         await createPrismaClient(sourceUrl),
-        await createPrismaClient(targetUrl)
+        await createPrismaClient(withApplicationName(targetUrl, applyApplicationNames[1]))
       );
     },
     mutateAndRestoreSourceFact,
@@ -229,36 +396,15 @@ async function createPostgresHarness(connectionString) {
     withForbiddenRow
   };
 
-  async function createDatabase(name) {
-    assertDisposableDatabaseName(name);
-    const existing = await adminClient.query("SELECT 1 FROM pg_database WHERE datname = $1", [
-      name
-    ]);
-    if (existing.rowCount !== 0) throw new Error("INTEGRATION_DATABASE_NAME_COLLISION");
-    createdDatabases.add(name);
-    await adminClient.query(`CREATE DATABASE ${quoteDatabaseName(name)}`);
-  }
-
   async function cleanup() {
     if (closed) return;
     closed = true;
     await Promise.allSettled(clients.map((client) => client.$disconnect()));
     let cleanupError;
-    for (const name of [...createdDatabases].reverse()) {
-      assertDisposableDatabaseName(name);
-      try {
-        const existing = await adminClient.query("SELECT 1 FROM pg_database WHERE datname = $1", [
-          name
-        ]);
-        if (existing.rowCount === 0) {
-          createdDatabases.delete(name);
-          continue;
-        }
-        await adminClient.query(`DROP DATABASE ${quoteDatabaseName(name)} WITH (FORCE)`);
-        createdDatabases.delete(name);
-      } catch (error) {
-        cleanupError ??= error;
-      }
+    try {
+      await databaseRegistry.dropCreated();
+    } catch (error) {
+      cleanupError = error;
     }
     adminClient.release();
     await adminPool.end();
@@ -730,24 +876,52 @@ async function createPostgresHarness(connectionString) {
   }
 
   async function execute(mode, approved, pairIndex = 0) {
-    const previous = process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
-    if (mode !== "dry-run") process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY = "1";
+    return executeStage1CleanAcceptanceBaseline({
+      approvedManifest: approved?.manifest,
+      approvedManifestSha256: approved?.manifestSha256,
+      generatedAt: GENERATED_AT,
+      gitSha: GIT_SHA,
+      hashSalt: HASH_SALT,
+      imageRef: IMAGE_REF,
+      mode,
+      selection: selection(),
+      sourcePrisma: clients[pairIndex === 0 ? 0 : 2],
+      targetPrisma: clients[pairIndex === 0 ? 1 : 3]
+    });
+  }
+
+  async function concurrentApply(approved) {
+    const blockerPool = new Pool({
+      application_name: `stage1_acceptance_blocker_${suffix.slice(0, 8)}`,
+      connectionString: targetUrl,
+      max: 1
+    });
+    const blocker = await blockerPool.connect();
+    let locked = false;
+    let pending = [];
+    let barrierError;
     try {
-      return await executeStage1CleanAcceptanceBaseline({
-        approvedManifest: approved?.manifest,
-        approvedManifestSha256: approved?.manifestSha256,
-        generatedAt: GENERATED_AT,
-        gitSha: GIT_SHA,
-        hashSalt: HASH_SALT,
-        imageRef: IMAGE_REF,
-        mode,
-        selection: selection(),
-        sourcePrisma: clients[pairIndex === 0 ? 0 : 2],
-        targetPrisma: clients[pairIndex === 0 ? 1 : 3]
-      });
+      await blocker.query("SELECT pg_advisory_lock(hashtext($1))", [APPLY_ADVISORY_KEY]);
+      locked = true;
+      pending = [execute("apply", approved, 0), execute("apply", approved, 1)];
+      try {
+        await waitForAdvisoryWaiters(blocker, applyApplicationNames);
+      } catch (error) {
+        barrierError = error;
+      } finally {
+        await blocker.query("SELECT pg_advisory_unlock(hashtext($1))", [APPLY_ADVISORY_KEY]);
+        locked = false;
+      }
+      const settled = await Promise.allSettled(pending);
+      if (barrierError) throw barrierError;
+      return settled;
     } finally {
-      if (previous === undefined) delete process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
-      else process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY = previous;
+      if (locked) {
+        await blocker.query("SELECT pg_advisory_unlock(hashtext($1))", [APPLY_ADVISORY_KEY]);
+      }
+      if (pending.length > 0) await Promise.allSettled(pending);
+      blocker.release();
+      await blockerPool.end();
     }
   }
 
@@ -916,6 +1090,117 @@ async function createPostgresHarness(connectionString) {
   }
 }
 
+function createDisposableDatabaseRegistry(adminClient) {
+  const createdDatabases = new Set();
+  return { create, dropCreated };
+
+  async function create(name) {
+    assertDisposableDatabaseName(name);
+    const existing = await adminClient.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+      name
+    ]);
+    if (existing.rowCount !== 0) throw new Error("INTEGRATION_DATABASE_NAME_COLLISION");
+    await adminClient.query(
+      `CREATE DATABASE ${quoteDatabaseName(name)} TEMPLATE template0 ENCODING 'UTF8'`
+    );
+    createdDatabases.add(name);
+  }
+
+  async function dropCreated() {
+    let firstError;
+    for (const name of [...createdDatabases].reverse()) {
+      assertDisposableDatabaseName(name);
+      try {
+        const existing = await adminClient.query("SELECT 1 FROM pg_database WHERE datname = $1", [
+          name
+        ]);
+        if (existing.rowCount !== 0) {
+          await adminClient.query(`DROP DATABASE ${quoteDatabaseName(name)} WITH (FORCE)`);
+        }
+        createdDatabases.delete(name);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (firstError) throw firstError;
+  }
+}
+
+function createAdminFake(options = {}) {
+  let exists = options.collision === true;
+  const createCalls = [];
+  const dropCalls = [];
+  return {
+    client: {
+      async query(sql) {
+        if (/^SELECT 1 FROM pg_database/.test(sql)) return { rowCount: exists ? 1 : 0 };
+        if (/^CREATE DATABASE/.test(sql)) {
+          if (options.createFailure) throw new Error("INJECTED_CREATE_FAILURE");
+          createCalls.push(sql);
+          exists = true;
+          return { rowCount: 0 };
+        }
+        if (/^DROP DATABASE/.test(sql)) {
+          dropCalls.push(sql);
+          exists = false;
+          return { rowCount: 0 };
+        }
+        throw new Error("UNEXPECTED_ADMIN_SQL");
+      }
+    },
+    createCalls,
+    dropCalls
+  };
+}
+
+async function assertApplicationEmptyBeforeMigrations(databaseUrl, injected = {}) {
+  const pool = (injected.createPool ?? ((options) => new Pool(options)))({
+    connectionString: databaseUrl,
+    max: 1
+  });
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(*)::int AS count
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `);
+    if (result.rows?.[0]?.count !== 0) {
+      throw new Error("INTEGRATION_DATABASE_NOT_EMPTY_BEFORE_MIGRATIONS");
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+async function waitForAdvisoryWaiters(client, applicationNames, injected = {}) {
+  const maxPolls = injected.maxPolls ?? 100;
+  const delay =
+    injected.delay ??
+    ((milliseconds) =>
+      new Promise((resolveDelay) => {
+        setTimeout(resolveDelay, milliseconds);
+      }));
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    const result = await client.query(
+      `
+        SELECT application_name AS "applicationName", wait_event_type AS "waitEventType",
+               wait_event AS "waitEvent"
+        FROM pg_stat_activity
+        WHERE application_name = ANY($1::text[])
+      `,
+      [applicationNames]
+    );
+    const waiting = new Set(
+      result.rows
+        .filter((row) => row.waitEventType === "Lock" && row.waitEvent === "advisory")
+        .map((row) => row.applicationName)
+    );
+    if (applicationNames.every((name) => waiting.has(name))) return;
+    if (poll + 1 < maxPolls) await delay(50);
+  }
+  throw new Error("INTEGRATION_ADVISORY_WAIT_TIMEOUT");
+}
+
 async function createPrismaClient(databaseUrl) {
   const [{ PrismaPg }, { PrismaClient }] = await Promise.all([
     import(pathToFileURL(requireFromApi.resolve("@prisma/adapter-pg")).href),
@@ -924,9 +1209,9 @@ async function createPrismaClient(databaseUrl) {
   return new PrismaClient({ adapter: new PrismaPg(databaseUrl) });
 }
 
-function deployMigrations(databaseUrl) {
+function runMigrationDeploy(databaseUrl, injected = {}) {
   const executable = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const result = spawnSync(
+  const result = (injected.spawn ?? spawnSync)(
     executable,
     [
       "--filter",
@@ -941,12 +1226,39 @@ function deployMigrations(databaseUrl) {
     {
       cwd: repoRoot,
       encoding: "utf8",
-      env: { ...process.env, DATABASE_URL: databaseUrl },
+      env: buildMigrationChildEnv(injected.parentEnv ?? process.env, databaseUrl),
       stdio: "pipe",
       timeout: 60_000
     }
   );
   if (result.status !== 0) throw new Error("INTEGRATION_MIGRATION_DEPLOY_FAILED");
+}
+
+function buildMigrationChildEnv(parentEnv, databaseUrl) {
+  const childEnv = {};
+  for (const [key, value] of Object.entries(parentEnv ?? {})) {
+    if (!isDatabaseUrlEnvKey(key)) childEnv[key] = value;
+  }
+  childEnv.DATABASE_URL = databaseUrl;
+  return childEnv;
+}
+
+function isDatabaseUrlEnvKey(key) {
+  const normalized = String(key).toUpperCase();
+  return (
+    (normalized.includes("DATABASE") && normalized.includes("URL")) ||
+    (normalized.includes("POSTGRES") && normalized.includes("URL")) ||
+    new Set([
+      "PGDATABASE",
+      "PGHOST",
+      "PGPASSWORD",
+      "PGPORT",
+      "PGSERVICE",
+      "PGSERVICEFILE",
+      "PGSSLMODE",
+      "PGUSER"
+    ]).has(normalized)
+  );
 }
 
 function canonicalMigrationCatalog() {
@@ -996,6 +1308,12 @@ function databaseUrlFor(adminUrl, databaseName) {
   return value.toString();
 }
 
+function withApplicationName(databaseUrl, applicationName) {
+  const value = new URL(databaseUrl);
+  value.searchParams.set("application_name", applicationName);
+  return value.toString();
+}
+
 function assertDisposableDatabaseName(value) {
   if (typeof value !== "string" || !DATABASE_NAME.test(value)) {
     throw new Error("UNSAFE_INTEGRATION_DATABASE_NAME");
@@ -1019,6 +1337,21 @@ function safeIntegrationError(error) {
   return error?.name === "AssertionError"
     ? "INTEGRATION_ASSERTION_FAILED"
     : "STAGE1_ACCEPTANCE_POSTGRES_INTEGRATION_FAILED";
+}
+
+async function withApplyConfirmation(work) {
+  const previous = process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
+  process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY = "1";
+  try {
+    return await work();
+  } finally {
+    restoreApplyConfirmation(previous);
+  }
+}
+
+function restoreApplyConfirmation(value) {
+  if (value === undefined) delete process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY;
+  else process.env.STAGE1_CLEAN_ACCEPTANCE_BASELINE_APPLY = value;
 }
 
 function digest(value) {

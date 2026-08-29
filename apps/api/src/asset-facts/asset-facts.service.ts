@@ -561,12 +561,24 @@ export class AssetFactsService {
 
     return this.runCommand(async (tx) => {
       await this.repository.lockCommandSource(tx, "ownership", "start", dto.source);
+      const replay = await findOwnershipStartReplay(tx, dto);
+      const replayedSnapshot = replaySnapshot(replay?.startSnapshot, metadata);
+      if (replay && replayedSnapshot) {
+        const outcome = await this.repository.openOwnershipPeriodWithOutcome(tx, {
+          actorId: context.actorId,
+          assetOwnerId: dto.assetOwnerId,
+          confirmedAt,
+          reason: dto.reason,
+          snapshot: replayedSnapshot,
+          source: dto.source,
+          startedAt,
+          vehicleId: dto.vehicleId
+        });
+        return outcome.fact;
+      }
       await lockOwnershipAuthorityRows(tx, dto);
       const authority = await loadOwnershipAuthority(tx, dto);
-      const replay = await findOwnershipStartReplay(tx, dto);
-      const snapshot =
-        replaySnapshot(replay?.startSnapshot, metadata) ??
-        buildOwnershipSnapshot(authority, metadata);
+      const snapshot = buildOwnershipSnapshot(authority, metadata);
       const outcome = await this.repository.openOwnershipPeriodWithOutcome(tx, {
         actorId: context.actorId,
         assetOwnerId: authority.assetOwner.id,

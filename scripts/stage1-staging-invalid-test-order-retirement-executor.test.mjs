@@ -52,10 +52,7 @@ test("dry-run uses RepeatableRead and performs zero writes", async () => {
   assert.equal(result.report.classification.disposition, "CANDIDATE");
   assert.equal(result.report.generatedAt, "2026-08-29T00:00:00.000Z");
   assert.deepEqual(calls, [
-    [
-      "transaction",
-      { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 }
-    ]
+    ["transaction", { isolationLevel: "RepeatableRead", maxWait: 10_000, timeout: 120_000 }]
   ]);
 });
 
@@ -68,9 +65,7 @@ test("blocked dry-run returns nonzero without attempting writes", async () => {
   assert.equal(result.report.safeToApply, false);
   assert.equal(result.report.classification.disposition, "BLOCKED");
   assert.ok(
-    result.report.classification.blockers.some(
-      ({ relation }) => relation === "receivableBills"
-    )
+    result.report.classification.blockers.some(({ relation }) => relation === "receivableBills")
   );
 });
 
@@ -87,7 +82,7 @@ test("executor rejects unknown modes", async () => {
 });
 
 test("snapshot loader reads only the hard-coded target and classifier facts", async () => {
-  const { calls, db } = snapshotDatabase();
+  const { calls, db, maxConcurrentReads } = snapshotDatabase();
   const snapshot = await required("loadStage1StagingInvalidTestOrderRetirementSnapshot")(db, {
     operatorId
   });
@@ -100,12 +95,21 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
   assert.deepEqual(snapshot.vehicle.activeRestrictions, []);
   assert.deepEqual(snapshot.evidenceReferences.handoverWorkflowJobs, [
     {
+      eSignTaskId: "00000000-0000-4000-8000-000000000003",
       handoverId: "bfc5a943-0000-4000-8000-000000000000",
       id: "00000000-0000-4000-8000-000000000004",
       jobStatus: "COMPLETED",
       workOrderId: "00000000-0000-4000-8000-000000000005"
     }
   ]);
+  assert.deepEqual(
+    snapshot.evidenceReferences.fileObjects,
+    cleanSnapshot().evidenceReferences.fileObjects
+  );
+  assert.deepEqual(
+    snapshot.evidenceReferences.evidenceFiles,
+    cleanSnapshot().evidenceReferences.evidenceFiles
+  );
   assert.deepEqual(snapshot.blockingCounts, emptyBlockingCounts());
 
   const orderRead = calls.find(
@@ -116,8 +120,28 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
     ([model, method]) => model === "vehicle" && method === "findUnique"
   );
   assert.deepEqual(vehicleRead[2].where, { id: TARGET.vehicleId });
+  const otherLeaseRead = calls.find(
+    ([model, method]) => model === "lease" && method === "findMany"
+  );
+  assert.deepEqual(otherLeaseRead[2].where.status, { not: "COMPLETED" });
   const userRead = calls.find(([model, method]) => model === "user" && method === "findUnique");
   assert.deepEqual(userRead[2].where, { id: operatorId });
+  const evidenceFileRead = calls.find(
+    ([model, method]) => model === "vehicleDeliveryEvidenceFile" && method === "findMany"
+  );
+  assert.deepEqual(evidenceFileRead[2].where, {
+    evidenceItemId: { in: ["00000000-0000-4000-8000-000000000006"] }
+  });
+  const fileObjectRead = calls.find(
+    ([model, method]) => model === "fileObject" && method === "findMany"
+  );
+  assert.deepEqual(fileObjectRead[2].where, {
+    id: {
+      in: ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000013"]
+    }
+  });
+  assert.equal(fileObjectRead[2].select.objectKey, undefined);
+  assert.equal(maxConcurrentReads(), 1);
 
   const serializedQueries = JSON.stringify(calls);
   assert.doesNotMatch(
@@ -127,12 +151,18 @@ test("snapshot loader reads only the hard-coded target and classifier facts", as
   assert.equal(calls.filter(([, method]) => method === "count").length, 29);
 });
 
-test("loader scopes every prohibited relation count to the target order", async () => {
+test("loader scopes prohibited counts to the order and asset work orders to order or vehicle", async () => {
   const { calls, db } = snapshotDatabase();
   await required("loadStage1StagingInvalidTestOrderRetirementSnapshot")(db, { operatorId });
 
   for (const [model, method, query] of calls.filter(([, method]) => method === "count")) {
-    assert.equal(query.where.orderId, TARGET.orderId, model);
+    if (model === "assetWorkOrder") {
+      assert.deepEqual(query.where, {
+        OR: [{ orderId: TARGET.orderId }, { vehicleId: TARGET.vehicleId }]
+      });
+    } else {
+      assert.equal(query.where.orderId, TARGET.orderId, model);
+    }
   }
 });
 
@@ -153,10 +183,7 @@ test("apply updates four states and creates four correlated audits atomically", 
   assert.equal(harness.state.billingSchedule.status, "CANCELLED");
   assert.equal(harness.state.billingSchedule.version, 1);
   assert.equal(harness.state.billingSchedule.cancelledAt.toISOString(), changedAt.toISOString());
-  assert.equal(
-    harness.state.billingSchedule.pauseReason,
-    "STAGING_INVALID_TEST_DATA_RETIREMENT"
-  );
+  assert.equal(harness.state.billingSchedule.pauseReason, "STAGING_INVALID_TEST_DATA_RETIREMENT");
   assert.equal(harness.state.vehicle.status, "AVAILABLE");
   assert.equal(harness.state.order.actualReturnAt, null);
   assert.equal(harness.state.order.actualDeliveryAt.toISOString(), "2026-07-31T03:01:04.000Z");
@@ -244,10 +271,7 @@ test("serialized concurrent apply and replay commit once and audit once", async 
   ]);
   const replay = await executeApply(harness, input);
 
-  assert.deepEqual(
-    [left, right].map(({ report }) => report.applied.ordersUpdated).sort(),
-    [0, 1]
-  );
+  assert.deepEqual([left, right].map(({ report }) => report.applied.ordersUpdated).sort(), [0, 1]);
   assert.equal(replay.report.applied.skippedUnchanged, 1);
   assert.equal(replay.report.applied.ordersUpdated, 0);
   assert.equal(harness.state.auditLogs.length, 4);
@@ -262,9 +286,7 @@ test("apply refuses a partial retirement state instead of continuing it", async 
   assert.equal(result.exitCode, 1);
   assert.equal(result.report.applied.blocked, true);
   assert.ok(
-    result.report.classification.blockers.some(
-      ({ code }) => code === "PARTIAL_RETIREMENT_STATE"
-    )
+    result.report.classification.blockers.some(({ code }) => code === "PARTIAL_RETIREMENT_STATE")
   );
   assert.equal(harness.state.lease.status, "ACTIVE");
   assert.equal(harness.state.auditLogs.length, 0);
@@ -284,16 +306,14 @@ async function executeDryRun(snapshot) {
 async function executeApply(harness, overrides = {}) {
   const execute = required("executeStage1StagingInvalidTestOrderRetirement");
   return execute({
-    expectedEvidenceDigest:
-      overrides.evidenceDigest ?? classify(harness.snapshot()).evidenceDigest,
+    expectedEvidenceDigest: overrides.evidenceDigest ?? classify(harness.snapshot()).evidenceDigest,
     generatedAt: "2026-08-29T01:00:00.000Z",
     loadSnapshot: async () => harness.snapshot(),
     mode: "apply",
     now: overrides.now ?? (() => new Date("2026-08-29T01:00:00.000Z")),
     operatorId,
     prisma: harness.prisma,
-    randomUuid:
-      overrides.randomUuid ?? (() => "22222222-2222-4222-8222-222222222222")
+    randomUuid: overrides.randomUuid ?? (() => "22222222-2222-4222-8222-222222222222")
   });
 }
 
@@ -457,13 +477,29 @@ function replaceObject(target, source) {
 
 function snapshotDatabase() {
   const calls = [];
+  let activeReads = 0;
+  let maximumConcurrentReads = 0;
+  const read = async (operation) => {
+    activeReads += 1;
+    maximumConcurrentReads = Math.max(maximumConcurrentReads, activeReads);
+    try {
+      await Promise.resolve();
+      return operation();
+    } finally {
+      activeReads -= 1;
+    }
+  };
   const record = (model, method, result) => async (query) => {
-    calls.push([model, method, query]);
-    return structuredClone(result);
+    return read(() => {
+      calls.push([model, method, query]);
+      return structuredClone(result);
+    });
   };
   const count = (model) => async (query) => {
-    calls.push([model, "count", query]);
-    return 0;
+    return read(() => {
+      calls.push([model, "count", query]);
+      return 0;
+    });
   };
   const db = {
     assetWorkOrder: { count: count("assetWorkOrder") },
@@ -488,6 +524,9 @@ function snapshotDatabase() {
     },
     debitAttempt: { count: count("debitAttempt") },
     depositLedger: { count: count("depositLedger") },
+    fileObject: {
+      findMany: record("fileObject", "findMany", cleanSnapshot().evidenceReferences.fileObjects)
+    },
     insuranceClaim: { count: count("insuranceClaim") },
     lease: {
       findMany: record("lease", "findMany", []),
@@ -532,6 +571,20 @@ function snapshotDatabase() {
     vehicleDelivery: {
       findMany: record("vehicleDelivery", "findMany", [])
     },
+    vehicleDeliveryEvidenceFile: {
+      findMany: record(
+        "vehicleDeliveryEvidenceFile",
+        "findMany",
+        cleanSnapshot().evidenceReferences.evidenceFiles
+      )
+    },
+    vehicleDeliveryEvidenceItem: {
+      findMany: record(
+        "vehicleDeliveryEvidenceItem",
+        "findMany",
+        cleanSnapshot().evidenceReferences.evidenceItems
+      )
+    },
     vehicleDeliveryHandover: {
       findMany: record(
         "vehicleDeliveryHandover",
@@ -540,9 +593,11 @@ function snapshotDatabase() {
       )
     },
     vehicleHandoverWorkOrder: {
-      findMany: record("vehicleHandoverWorkOrder", "findMany", [
-        { id: "00000000-0000-4000-8000-000000000005" }
-      ])
+      findMany: record(
+        "vehicleHandoverWorkOrder",
+        "findMany",
+        cleanSnapshot().evidenceReferences.handoverWorkOrders
+      )
     },
     vehicleHandoverWorkflowJob: {
       findMany: record(
@@ -559,7 +614,7 @@ function snapshotDatabase() {
     vehicleReturnDamage: { count: count("vehicleReturnDamage") },
     vehicleSubscriptionPeriod: { count: count("vehicleSubscriptionPeriod") }
   };
-  return { calls, db };
+  return { calls, db, maxConcurrentReads: () => maximumConcurrentReads };
 }
 
 function cleanSnapshot() {
@@ -578,7 +633,9 @@ function cleanSnapshot() {
     evidenceReferences: {
       contracts: [
         {
+          contractVersionId: "00000000-0000-4000-8000-000000000012",
           deletedAt: null,
+          fileId: "00000000-0000-4000-8000-000000000011",
           id: "00000000-0000-4000-8000-000000000001",
           orderId: TARGET.orderId,
           status: "SIGNED"
@@ -590,20 +647,69 @@ function cleanSnapshot() {
           deletedAt: null,
           id: "00000000-0000-4000-8000-000000000003",
           orderId: TARGET.orderId,
+          sourceId: "00000000-0000-4000-8000-000000000001",
+          sourceType: "CONTRACT",
           taskStatus: "COMPLETED"
+        }
+      ],
+      evidenceFiles: [
+        {
+          evidenceItemId: "00000000-0000-4000-8000-000000000006",
+          fileId: "00000000-0000-4000-8000-000000000013",
+          id: "00000000-0000-4000-8000-000000000007",
+          lifecycleStatus: "ACTIVE",
+          replacedById: null
+        }
+      ],
+      evidenceItems: [
+        {
+          handoverId: "bfc5a943-0000-4000-8000-000000000000",
+          id: "00000000-0000-4000-8000-000000000006",
+          orderId: TARGET.orderId,
+          reviewStatus: "APPROVED",
+          status: "ACCEPTED",
+          vehicleDeliveryId: null
+        }
+      ],
+      fileObjects: [
+        {
+          contentSha256: "a".repeat(64),
+          createdAt: new Date("2026-07-31T02:00:00.000Z"),
+          id: "00000000-0000-4000-8000-000000000011",
+          sizeBytes: 1024n
+        },
+        {
+          contentSha256: "b".repeat(64),
+          createdAt: new Date("2026-07-31T02:30:00.000Z"),
+          id: "00000000-0000-4000-8000-000000000013",
+          sizeBytes: 2048n
         }
       ],
       handovers: [
         {
           archiveStatus: "ARCHIVED",
           deletedAt: null,
+          handoverContractId: null,
+          handoverESignTaskId: "00000000-0000-4000-8000-000000000003",
           id: "bfc5a943-0000-4000-8000-000000000000",
           orderId: TARGET.orderId,
+          signedDocumentFileId: "00000000-0000-4000-8000-000000000013",
+          sourceDocumentFileId: "00000000-0000-4000-8000-000000000011",
+          stage1ContractId: "00000000-0000-4000-8000-000000000001",
           status: "ARCHIVED"
+        }
+      ],
+      handoverWorkOrders: [
+        {
+          handoverId: "bfc5a943-0000-4000-8000-000000000000",
+          id: "00000000-0000-4000-8000-000000000005",
+          orderId: TARGET.orderId,
+          status: "COMPLETED"
         }
       ],
       handoverWorkflowJobs: [
         {
+          eSignTaskId: "00000000-0000-4000-8000-000000000003",
           handoverId: "bfc5a943-0000-4000-8000-000000000000",
           id: "00000000-0000-4000-8000-000000000004",
           jobStatus: "COMPLETED",
@@ -621,9 +727,7 @@ function cleanSnapshot() {
     operator: {
       deletedAt: null,
       id: operatorId,
-      roles: [
-        { code: "ADMIN", deletedAt: null, roleDeletedAt: null, roleStatus: "ACTIVE" }
-      ],
+      roles: [{ code: "ADMIN", deletedAt: null, roleDeletedAt: null, roleStatus: "ACTIVE" }],
       status: "ACTIVE"
     },
     order: {

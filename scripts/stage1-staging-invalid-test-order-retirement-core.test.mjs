@@ -79,11 +79,11 @@ test("rejects unknown, repeated, malformed, missing, or mode-incompatible argume
     ["--dry-run", ...selectorArgs(), "--output"],
     ["--dry-run", ...selectorArgs(), "--output", "   "],
     ["--dry-run", ...selectorArgs(), "--order-id", selectors.orderId],
-    ["--dry-run", ...selectorArgs().filter((value) => value !== "--vin" && value !== selectors.vin)],
     [
       "--dry-run",
-      ...selectorArgs().map((value) => (value === operatorId ? "not-a-uuid" : value))
-    ]
+      ...selectorArgs().filter((value) => value !== "--vin" && value !== selectors.vin)
+    ],
+    ["--dry-run", ...selectorArgs().map((value) => (value === operatorId ? "not-a-uuid" : value))]
   ]) {
     assert.throws(
       () => parse(args),
@@ -154,10 +154,7 @@ test("every prohibited relation fails closed with a stable count blocker", () =>
 test("rejects target identity, lifecycle, delivery, return, occupation, and price drift", () => {
   const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
   const cases = [
-    [
-      "TARGET_IDENTITY_MISMATCH",
-      { order: { ...cleanSnapshot().order, orderNo: "ORD-WRONG" } }
-    ],
+    ["TARGET_IDENTITY_MISMATCH", { order: { ...cleanSnapshot().order, orderNo: "ORD-WRONG" } }],
     ["ORDER_STATUS_INVALID", { order: { ...cleanSnapshot().order, orderStatus: "SUSPENDED" } }],
     ["LEASE_STATUS_INVALID", { lease: { ...cleanSnapshot().lease, status: "RETURN_DUE" } }],
     [
@@ -198,7 +195,10 @@ test("rejects target identity, lifecycle, delivery, return, occupation, and pric
 
   for (const [code, overrides] of cases) {
     const result = classify(cleanSnapshot(overrides));
-    assert.ok(result.blockers.some((row) => row.code === code), code);
+    assert.ok(
+      result.blockers.some((row) => row.code === code),
+      code
+    );
   }
 });
 
@@ -211,19 +211,19 @@ test("requires one active ADMIN operator and terminal background evidence", () =
   );
 
   const noAdmin = cleanSnapshot();
-  noAdmin.operator.roles = [{
-    code: "OP",
-    deletedAt: null,
-    roleDeletedAt: null,
-    roleStatus: "ACTIVE"
-  }];
+  noAdmin.operator.roles = [
+    {
+      code: "OP",
+      deletedAt: null,
+      roleDeletedAt: null,
+      roleStatus: "ACTIVE"
+    }
+  ];
   assert.ok(classify(noAdmin).blockers.some(({ code }) => code === "OPERATOR_NOT_ACTIVE_ADMIN"));
 
   const pendingEsign = cleanSnapshot();
   pendingEsign.evidenceReferences.eSignTasks[0].taskStatus = "SIGNING";
-  assert.ok(
-    classify(pendingEsign).blockers.some(({ code }) => code === "NONTERMINAL_ESIGN_TASK")
-  );
+  assert.ok(classify(pendingEsign).blockers.some(({ code }) => code === "NONTERMINAL_ESIGN_TASK"));
 
   const pendingHandoverJob = cleanSnapshot();
   pendingHandoverJob.evidenceReferences.handoverWorkflowJobs[0].jobStatus = "PENDING";
@@ -259,11 +259,27 @@ test("evidence digest changes when an evidence row is deleted or re-associated",
   const deleted = structuredClone(baseline);
   deleted.evidenceReferences.contracts[0].deletedAt = "2026-08-29T00:00:00.000Z";
   const reassociated = structuredClone(baseline);
-  reassociated.evidenceReferences.eSignTasks[0].contractId =
-    "99999999-9999-4999-8999-999999999999";
+  reassociated.evidenceReferences.eSignTasks[0].contractId = "99999999-9999-4999-8999-999999999999";
 
   assert.notEqual(classify(deleted).evidenceDigest, classify(baseline).evidenceDigest);
   assert.notEqual(classify(reassociated).evidenceDigest, classify(baseline).evidenceDigest);
+});
+
+test("evidence digest covers handover evidence and referenced file identities", () => {
+  const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
+  const baseline = cleanSnapshot();
+  const changedFile = structuredClone(baseline);
+  changedFile.evidenceReferences.fileObjects[0].contentSha256 = "f".repeat(64);
+  const reassociatedFile = structuredClone(baseline);
+  reassociatedFile.evidenceReferences.evidenceFiles[0].fileId =
+    "00000000-0000-4000-8000-000000000099";
+  const reassociatedHandover = structuredClone(baseline);
+  reassociatedHandover.evidenceReferences.handovers[0].sourceDocumentFileId =
+    "00000000-0000-4000-8000-000000000098";
+
+  assert.notEqual(classify(changedFile).evidenceDigest, classify(baseline).evidenceDigest);
+  assert.notEqual(classify(reassociatedFile).evidenceDigest, classify(baseline).evidenceDigest);
+  assert.notEqual(classify(reassociatedHandover).evidenceDigest, classify(baseline).evidenceDigest);
 });
 
 test("recognizes only a complete matching four-audit replay", () => {
@@ -309,13 +325,15 @@ test("mixed initial and terminal states never auto-continue", () => {
 test("initial state with a prior retirement audit is blocked", () => {
   const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
   const input = cleanSnapshot();
-  input.auditLogs = [{
-    action: "UPDATE",
-    entityId: input.order.id,
-    entityType: "subscription_order",
-    module: "STAGE1_STAGING_TEST_DATA_RETIREMENT",
-    operatorId
-  }];
+  input.auditLogs = [
+    {
+      action: "UPDATE",
+      entityId: input.order.id,
+      entityType: "subscription_order",
+      module: "STAGE1_STAGING_TEST_DATA_RETIREMENT",
+      operatorId
+    }
+  ];
 
   const result = classify(input);
   assert.equal(result.disposition, "BLOCKED");
@@ -337,6 +355,8 @@ function cleanSnapshot(overrides = {}) {
     evidenceReferences: {
       contracts: [
         {
+          contractVersionId: "00000000-0000-4000-8000-000000000012",
+          fileId: "00000000-0000-4000-8000-000000000011",
           id: "00000000-0000-4000-8000-000000000001",
           deletedAt: null,
           objectKey: "private/original-contract.pdf",
@@ -350,21 +370,73 @@ function cleanSnapshot(overrides = {}) {
           contractId: "00000000-0000-4000-8000-000000000001",
           deletedAt: null,
           orderId: selectors.orderId,
+          sourceId: "00000000-0000-4000-8000-000000000001",
+          sourceType: "CONTRACT",
           signedDocumentObjectKey: "private/signed-contract.pdf",
           taskStatus: "COMPLETED"
+        }
+      ],
+      evidenceFiles: [
+        {
+          evidenceItemId: "00000000-0000-4000-8000-000000000006",
+          fileId: "00000000-0000-4000-8000-000000000013",
+          id: "00000000-0000-4000-8000-000000000007",
+          lifecycleStatus: "ACTIVE",
+          replacedById: null
+        }
+      ],
+      evidenceItems: [
+        {
+          handoverId: "bfc5a943-0000-4000-8000-000000000000",
+          id: "00000000-0000-4000-8000-000000000006",
+          orderId: selectors.orderId,
+          reviewStatus: "APPROVED",
+          status: "ACCEPTED",
+          vehicleDeliveryId: null
+        }
+      ],
+      fileObjects: [
+        {
+          contentSha256: "a".repeat(64),
+          createdAt: "2026-07-31T02:00:00.000Z",
+          id: "00000000-0000-4000-8000-000000000011",
+          sizeBytes: 1024n
+        },
+        {
+          contentSha256: "b".repeat(64),
+          createdAt: "2026-07-31T02:30:00.000Z",
+          id: "00000000-0000-4000-8000-000000000013",
+          sizeBytes: 2048n
         }
       ],
       handovers: [
         {
           archiveStatus: "ARCHIVED",
+          handoverContractId: null,
+          handoverESignTaskId: "00000000-0000-4000-8000-000000000003",
           id: "bfc5a943-0000-4000-8000-000000000000",
+          orderId: selectors.orderId,
+          signedDocumentFileId: "00000000-0000-4000-8000-000000000013",
+          sourceDocumentFileId: "00000000-0000-4000-8000-000000000011",
+          stage1ContractId: "00000000-0000-4000-8000-000000000001",
           status: "ARCHIVED"
+        }
+      ],
+      handoverWorkOrders: [
+        {
+          handoverId: "bfc5a943-0000-4000-8000-000000000000",
+          id: "00000000-0000-4000-8000-000000000005",
+          orderId: selectors.orderId,
+          status: "COMPLETED"
         }
       ],
       handoverWorkflowJobs: [
         {
+          eSignTaskId: "00000000-0000-4000-8000-000000000003",
+          handoverId: "bfc5a943-0000-4000-8000-000000000000",
           id: "00000000-0000-4000-8000-000000000004",
-          jobStatus: "COMPLETED"
+          jobStatus: "COMPLETED",
+          workOrderId: "00000000-0000-4000-8000-000000000005"
         }
       ]
     },

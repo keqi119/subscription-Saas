@@ -20,9 +20,7 @@ function required(name) {
 }
 
 test("apply requires staging and the exact narrowly named confirmation", () => {
-  const validate = required(
-    "assertStage1StagingInvalidTestOrderRetirementApplyEnvironment"
-  );
+  const validate = required("assertStage1StagingInvalidTestOrderRetirementApplyEnvironment");
   assert.doesNotThrow(() => validate("dry-run", {}));
   assert.doesNotThrow(() =>
     validate("apply", {
@@ -132,10 +130,7 @@ test("CLI passes the approved inputs, awaits stdout, then writes optional output
   releaseStdout();
   assert.equal(await pending, 0);
   const json = `${JSON.stringify(report, null, 2)}\n`;
-  assert.deepEqual(events, [
-    ["stdout"],
-    ["output", "output/retirement.json", json]
-  ]);
+  assert.deepEqual(events, [["stdout"], ["output", "output/retirement.json", json]]);
 });
 
 test("stdout writer resolves after callback and removes its error listener", async () => {

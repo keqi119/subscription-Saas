@@ -29,10 +29,12 @@
 ### Task 1: Lock the CLI Contract and Hard-Coded Target
 
 **Files:**
+
 - Create: `scripts/stage1-staging-invalid-test-order-retirement-core.mjs`
 - Create: `scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs`
 
 **Interfaces:**
+
 - Produces `STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_TARGET` as a frozen object with `orderId`, `orderNo`, `vehicleId`, `vehicleNo`, and `vin`.
 - Produces `parseStage1StagingInvalidTestOrderRetirementArgs(args)` returning `{ expectedEvidenceDigest, mode, operatorId, output, selectors }`.
 - Produces `assertStage1StagingInvalidTestOrderRetirementTarget(selectors)` which throws a stable target-mismatch error before a Prisma client is created.
@@ -80,13 +82,20 @@ test("parses the exact dry-run contract", () => {
   assert.deepEqual(
     parse([
       "--dry-run",
-      "--order-id", selectors.orderId,
-      "--order-no", selectors.orderNo,
-      "--vehicle-id", selectors.vehicleId,
-      "--vehicle-no", selectors.vehicleNo,
-      "--vin", selectors.vin,
-      "--operator-id", "11111111-1111-4111-8111-111111111111",
-      "--output", "output/retirement-dry-run.json"
+      "--order-id",
+      selectors.orderId,
+      "--order-no",
+      selectors.orderNo,
+      "--vehicle-id",
+      selectors.vehicleId,
+      "--vehicle-no",
+      selectors.vehicleNo,
+      "--vin",
+      selectors.vin,
+      "--operator-id",
+      "11111111-1111-4111-8111-111111111111",
+      "--output",
+      "output/retirement-dry-run.json"
     ]),
     {
       expectedEvidenceDigest: null,
@@ -101,9 +110,19 @@ test("parses the exact dry-run contract", () => {
 test("apply requires one lowercase sha256 evidence digest", () => {
   const parse = required("parseStage1StagingInvalidTestOrderRetirementArgs");
   const base = [
-    "--apply", "--order-id", selectors.orderId, "--order-no", selectors.orderNo,
-    "--vehicle-id", selectors.vehicleId, "--vehicle-no", selectors.vehicleNo,
-    "--vin", selectors.vin, "--operator-id", "11111111-1111-4111-8111-111111111111"
+    "--apply",
+    "--order-id",
+    selectors.orderId,
+    "--order-no",
+    selectors.orderNo,
+    "--vehicle-id",
+    selectors.vehicleId,
+    "--vehicle-no",
+    selectors.vehicleNo,
+    "--vin",
+    selectors.vin,
+    "--operator-id",
+    "11111111-1111-4111-8111-111111111111"
   ];
   assert.throws(() => parse(base), /EXPECTED_EVIDENCE_DIGEST_REQUIRED/);
   assert.equal(
@@ -209,10 +228,12 @@ Expected: one commit containing only the core contract and its tests.
 ### Task 2: Build the Deterministic Classifier and Evidence Digest
 
 **Files:**
+
 - Modify: `scripts/stage1-staging-invalid-test-order-retirement-core.mjs`
 - Modify: `scripts/stage1-staging-invalid-test-order-retirement-core.test.mjs`
 
 **Interfaces:**
+
 - Consumes the frozen target and strict selector contract from Task 1.
 - Produces `classifyStage1StagingInvalidTestOrderRetirement(snapshot)` returning `{ blockers, candidate, disposition, evidenceDigest, summary }`.
 - `disposition` is exactly `CANDIDATE`, `UNCHANGED`, or `BLOCKED`.
@@ -236,13 +257,26 @@ function cleanSnapshot(overrides = {}) {
       version: 0
     },
     blockingCounts: {
-      assetWorkOrders: 0, automationJobs: 0, collectionCases: 0,
-      contractSegments: 0, debitAttempts: 0, depositLedgers: 0,
-      entitlementAccounts: 0, entitlementGrants: 0, entitlementUsages: 0,
-      orderChanges: 0, paymentMandates: 0, paymentOrders: 0,
-      paymentRecords: 0, paymentWriteOffs: 0, receivableBills: 0,
-      renewalConsiderations: 0, returnDamages: 0, returns: 0,
-      subscriptionChanges: 0, subscriptionPeriods: 0
+      assetWorkOrders: 0,
+      automationJobs: 0,
+      collectionCases: 0,
+      contractSegments: 0,
+      debitAttempts: 0,
+      depositLedgers: 0,
+      entitlementAccounts: 0,
+      entitlementGrants: 0,
+      entitlementUsages: 0,
+      orderChanges: 0,
+      paymentMandates: 0,
+      paymentOrders: 0,
+      paymentRecords: 0,
+      paymentWriteOffs: 0,
+      receivableBills: 0,
+      renewalConsiderations: 0,
+      returnDamages: 0,
+      returns: 0,
+      subscriptionChanges: 0,
+      subscriptionPeriods: 0
     },
     evidenceReferences: {
       contracts: [{ id: "contract-legacy", status: "SIGNED" }],
@@ -269,10 +303,16 @@ function cleanSnapshot(overrides = {}) {
       vehicleId: selectors.vehicleId
     },
     vehicle: {
-      activeOtherLeases: [], activeOtherOrders: [], activeRestrictions: [],
-      currentSalePriceAmount: 18500000n, deletedAt: null,
-      id: selectors.vehicleId, salePriceStatus: "EFFECTIVE",
-      status: "LEASED", vehicleNo: selectors.vehicleNo, vin: selectors.vin
+      activeOtherLeases: [],
+      activeOtherOrders: [],
+      activeRestrictions: [],
+      currentSalePriceAmount: 18500000n,
+      deletedAt: null,
+      id: selectors.vehicleId,
+      salePriceStatus: "EFFECTIVE",
+      status: "LEASED",
+      vehicleNo: selectors.vehicleNo,
+      vin: selectors.vin
     },
     vehicleDeliveries: [],
     ...overrides
@@ -310,10 +350,22 @@ test("rejects delivery, return facts, vehicle occupation, restrictions, and inva
   const classify = required("classifyStage1StagingInvalidTestOrderRetirement");
   const cases = [
     ["VEHICLE_DELIVERY_PRESENT", { vehicleDeliveries: [{ id: "delivery-1" }] }],
-    ["ORDER_ACTUAL_RETURN_PRESENT", { order: { ...cleanSnapshot().order, actualReturnAt: "2026-08-29T00:00:00Z" } }],
-    ["VEHICLE_OTHER_ACTIVE_ORDER", { vehicle: { ...cleanSnapshot().vehicle, activeOtherOrders: [{ id: "other" }] } }],
-    ["VEHICLE_ACTIVE_RESTRICTION", { vehicle: { ...cleanSnapshot().vehicle, activeRestrictions: [{ id: "restriction" }] } }],
-    ["VEHICLE_SALE_PRICE_NOT_EFFECTIVE", { vehicle: { ...cleanSnapshot().vehicle, salePriceStatus: "PENDING_INITIALIZE" } }]
+    [
+      "ORDER_ACTUAL_RETURN_PRESENT",
+      { order: { ...cleanSnapshot().order, actualReturnAt: "2026-08-29T00:00:00Z" } }
+    ],
+    [
+      "VEHICLE_OTHER_ACTIVE_ORDER",
+      { vehicle: { ...cleanSnapshot().vehicle, activeOtherOrders: [{ id: "other" }] } }
+    ],
+    [
+      "VEHICLE_ACTIVE_RESTRICTION",
+      { vehicle: { ...cleanSnapshot().vehicle, activeRestrictions: [{ id: "restriction" }] } }
+    ],
+    [
+      "VEHICLE_SALE_PRICE_NOT_EFFECTIVE",
+      { vehicle: { ...cleanSnapshot().vehicle, salePriceStatus: "PENDING_INITIALIZE" } }
+    ]
   ];
   for (const [code, overrides] of cases) {
     assert.ok(classify(cleanSnapshot(overrides)).blockers.some((row) => row.code === code));
@@ -325,7 +377,10 @@ test("evidence digest is deterministic and public output is credential safe", ()
   const left = classify(cleanSnapshot());
   const right = classify(cleanSnapshot());
   assert.equal(left.evidenceDigest, right.evidenceDigest);
-  assert.doesNotMatch(JSON.stringify(left), /objectKey|signedDocumentObjectKey|DATABASE_URL|mobile/);
+  assert.doesNotMatch(
+    JSON.stringify(left),
+    /objectKey|signedDocumentObjectKey|DATABASE_URL|mobile/
+  );
 });
 
 test("recognizes only a complete matching four-audit replay", () => {
@@ -375,17 +430,9 @@ const TERMINAL = Object.freeze({
 export function classifyStage1StagingInvalidTestOrderRetirement(snapshot = {}) {
   if (isTerminalTuple(snapshot)) {
     const replay = inspectRetirementAudits(snapshot.auditLogs);
-    const blockers = [
-      ...inspectStableIdentityAndForbiddenFacts(snapshot),
-      ...replay.blockers
-    ];
+    const blockers = [...inspectStableIdentityAndForbiddenFacts(snapshot), ...replay.blockers];
     const evidenceDigest = replay.evidenceDigest ?? digestEvidence(snapshot);
-    return result(
-      blockers.length === 0 ? "UNCHANGED" : "BLOCKED",
-      blockers,
-      null,
-      evidenceDigest
-    );
+    return result(blockers.length === 0 ? "UNCHANGED" : "BLOCKED", blockers, null, evidenceDigest);
   }
 
   const blockers = inspectCandidateSnapshot(snapshot);
@@ -433,10 +480,12 @@ Expected: the commit contains only deterministic classification and tests.
 ### Task 3: Add the Snapshot Loader and Zero-Write Dry-Run Executor
 
 **Files:**
+
 - Create: `scripts/stage1-staging-invalid-test-order-retirement-executor.mjs`
 - Create: `scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs`
 
 **Interfaces:**
+
 - Consumes `classifyStage1StagingInvalidTestOrderRetirement` and the frozen target.
 - Produces `loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { operatorId })` in the Task 2 snapshot shape.
 - Produces `executeStage1StagingInvalidTestOrderRetirement({ expectedEvidenceDigest, generatedAt, mode, operatorId, prisma })` returning `{ exitCode, report }`.
@@ -579,10 +628,12 @@ Expected: one independently reviewable dry-run commit.
 ### Task 4: Implement Atomic Apply, Audit, Rollback, and Replay
 
 **Files:**
+
 - Modify: `scripts/stage1-staging-invalid-test-order-retirement-executor.mjs`
 - Modify: `scripts/stage1-staging-invalid-test-order-retirement-executor.test.mjs`
 
 **Interfaces:**
+
 - Extends the Task 3 executor's apply path; public signature does not change.
 - Apply report is `{ auditsCreated, billingSchedulesUpdated, blocked, correlationId, leasesUpdated, ordersUpdated, skippedUnchanged, vehiclesUpdated }`.
 - Produces no new database table or API interface.
@@ -609,14 +660,19 @@ test("apply updates the four states and creates four correlated audits atomicall
   assert.equal(harness.state.vehicle.status, "AVAILABLE");
   assert.equal(harness.state.order.actualReturnAt, null);
   assert.equal(harness.state.audits.length, 4);
-  assert.equal(new Set(harness.state.audits.map(a => a.afterSnapshot.correlationId)).size, 1);
+  assert.equal(new Set(harness.state.audits.map((a) => a.afterSnapshot.correlationId)).size, 1);
   assert.equal(result.report.applied.ordersUpdated, 1);
 });
 
 test("apply rejects a stale dry-run evidence digest before any update", async () => {
   const harness = createApplyHarness();
   await assert.rejects(
-    execute({ expectedEvidenceDigest: "0".repeat(64), mode: "apply", operatorId: harness.operatorId, prisma: harness.prisma }),
+    execute({
+      expectedEvidenceDigest: "0".repeat(64),
+      mode: "apply",
+      operatorId: harness.operatorId,
+      prisma: harness.prisma
+    }),
     /EVIDENCE_DIGEST_MISMATCH/
   );
   assert.equal(harness.state.audits.length, 0);
@@ -628,7 +684,12 @@ test("a conditional update or audit failure rolls back all earlier writes", asyn
     const harness = createApplyHarness({ failure });
     const digest = classify(harness.snapshot()).evidenceDigest;
     await assert.rejects(
-      execute({ expectedEvidenceDigest: digest, mode: "apply", operatorId: harness.operatorId, prisma: harness.prisma })
+      execute({
+        expectedEvidenceDigest: digest,
+        mode: "apply",
+        operatorId: harness.operatorId,
+        prisma: harness.prisma
+      })
     );
     assert.deepEqual(harness.businessState(), harness.initialBusinessState());
     assert.equal(harness.state.audits.length, 0);
@@ -638,10 +699,15 @@ test("a conditional update or audit failure rolls back all earlier writes", asyn
 test("serialized concurrent apply and replay commit once and audit once", async () => {
   const harness = createApplyHarness({ serializeTransactions: true });
   const digest = classify(harness.snapshot()).evidenceDigest;
-  const input = { expectedEvidenceDigest: digest, mode: "apply", operatorId: harness.operatorId, prisma: harness.prisma };
+  const input = {
+    expectedEvidenceDigest: digest,
+    mode: "apply",
+    operatorId: harness.operatorId,
+    prisma: harness.prisma
+  };
   const [left, right] = await Promise.all([execute(input), execute(input)]);
   const replay = await execute(input);
-  assert.deepEqual([left, right].map(x => x.report.applied.ordersUpdated).sort(), [0, 1]);
+  assert.deepEqual([left, right].map((x) => x.report.applied.ordersUpdated).sort(), [0, 1]);
   assert.equal(replay.report.applied.skippedUnchanged, 1);
   assert.equal(harness.state.audits.length, 4);
 });
@@ -668,31 +734,39 @@ const APPLY_LOCK_KEY = "stage1-staging-invalid-test-order-retirement:apply";
 const RETIREMENT_REASON = "STAGING_INVALID_TEST_DATA_RETIREMENT";
 
 async function executeApply(input) {
-  const outcome = await input.prisma.$transaction(async (tx) => {
-    await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1))", APPLY_LOCK_KEY);
-    await lockTargetRows(tx);
-    const snapshot = await input.loadSnapshot(tx, { operatorId: input.operatorId });
-    const classification = input.classify(snapshot);
-    if (classification.disposition === "BLOCKED") {
-      return blockedOutcome(classification);
-    }
-    if (classification.evidenceDigest !== input.expectedEvidenceDigest) {
-      throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH");
-    }
-    if (classification.disposition === "UNCHANGED") {
-      return unchangedOutcome(classification);
-    }
+  const outcome = await input.prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext($1))", APPLY_LOCK_KEY);
+      await lockTargetRows(tx);
+      const snapshot = await input.loadSnapshot(tx, { operatorId: input.operatorId });
+      const classification = input.classify(snapshot);
+      if (classification.disposition === "BLOCKED") {
+        return blockedOutcome(classification);
+      }
+      if (classification.evidenceDigest !== input.expectedEvidenceDigest) {
+        throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH");
+      }
+      if (classification.disposition === "UNCHANGED") {
+        return unchangedOutcome(classification);
+      }
 
-    const correlationId = input.randomUuid();
-    const changedAt = input.now();
-    await cancelSchedule(tx, snapshot, changedAt);
-    await completeLease(tx, snapshot, input.operatorId);
-    await cancelOrder(tx, snapshot, input.operatorId);
-    await releaseVehicle(tx, snapshot, input.operatorId);
-    await createAudits(tx, snapshot, { changedAt, correlationId, evidenceDigest: classification.evidenceDigest, operatorId: input.operatorId });
-    await assertPostconditions(tx, { correlationId, operatorId: input.operatorId });
-    return appliedOutcome(classification, correlationId);
-  }, { ...TRANSACTION_BASE, isolationLevel: "Serializable" });
+      const correlationId = input.randomUuid();
+      const changedAt = input.now();
+      await cancelSchedule(tx, snapshot, changedAt);
+      await completeLease(tx, snapshot, input.operatorId);
+      await cancelOrder(tx, snapshot, input.operatorId);
+      await releaseVehicle(tx, snapshot, input.operatorId);
+      await createAudits(tx, snapshot, {
+        changedAt,
+        correlationId,
+        evidenceDigest: classification.evidenceDigest,
+        operatorId: input.operatorId
+      });
+      await assertPostconditions(tx, { correlationId, operatorId: input.operatorId });
+      return appliedOutcome(classification, correlationId);
+    },
+    { ...TRANSACTION_BASE, isolationLevel: "Serializable" }
+  );
   return toPublicResult(outcome, input.generatedAt);
 }
 ```
@@ -729,11 +803,13 @@ Expected: one commit containing the complete transaction and no CLI/runtime chan
 ### Task 5: Add the Credential-Safe CLI and Package Commands
 
 **Files:**
+
 - Create: `scripts/stage1-staging-invalid-test-order-retirement.mjs`
 - Create: `scripts/stage1-staging-invalid-test-order-retirement.test.mjs`
 - Modify: `package.json`
 
 **Interfaces:**
+
 - Consumes the Task 1 parser and Task 3/4 executor.
 - Produces `assertStage1StagingInvalidTestOrderRetirementApplyEnvironment(mode, env)`.
 - Produces `runStage1StagingInvalidTestOrderRetirementCli(dependencies)` and `runStage1StagingInvalidTestOrderRetirementProcess(dependencies)` for isolated tests.
@@ -747,10 +823,12 @@ Create the CLI test with:
 test("apply requires staging and the exact narrowly named confirmation", () => {
   const validate = required("assertStage1StagingInvalidTestOrderRetirementApplyEnvironment");
   assert.doesNotThrow(() => validate("dry-run", {}));
-  assert.doesNotThrow(() => validate("apply", {
-    DEPLOYMENT_ENV: "staging",
-    STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY: "1"
-  }));
+  assert.doesNotThrow(() =>
+    validate("apply", {
+      DEPLOYMENT_ENV: "staging",
+      STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY: "1"
+    })
+  );
   for (const env of [
     {},
     { DEPLOYMENT_ENV: "production", STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_APPLY: "1" },
@@ -762,10 +840,16 @@ test("apply requires staging and the exact narrowly named confirmation", () => {
 
 test("target mismatch fails before Prisma creation", async () => {
   let prismaCreated = false;
-  await assert.rejects(runCli({
-    args: dryRunArgs({ orderNo: "ORD-WRONG" }),
-    createPrisma: async () => { prismaCreated = true; return {}; }
-  }), /TARGET_MISMATCH/);
+  await assert.rejects(
+    runCli({
+      args: dryRunArgs({ orderNo: "ORD-WRONG" }),
+      createPrisma: async () => {
+        prismaCreated = true;
+        return {};
+      }
+    }),
+    /TARGET_MISMATCH/
+  );
   assert.equal(prismaCreated, false);
 });
 
@@ -776,10 +860,16 @@ test("CLI awaits stdout before writing the optional report", async () => {
     args: dryRunArgs(),
     createPrisma: async () => ({ marker: "prisma" }),
     execute: async () => ({ exitCode: 0, report: { safeToApply: true } }),
-    writeStdout: () => new Promise(resolve => { releaseStdout = () => { events.push("stdout"); resolve(); }; }),
+    writeStdout: () =>
+      new Promise((resolve) => {
+        releaseStdout = () => {
+          events.push("stdout");
+          resolve();
+        };
+      }),
     writeOutput: async () => events.push("output")
   });
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events, []);
   releaseStdout();
   await pending;
@@ -789,9 +879,13 @@ test("CLI awaits stdout before writing the optional report", async () => {
 test("process errors expose one stable credential-safe JSON object", async () => {
   const stderr = [];
   const exitCode = await runProcess({
-    disconnect: async () => { throw new Error("postgresql://secret:password@host/db"); },
-    run: async () => { throw new Error("signedDocumentObjectKey=secret.pdf"); },
-    writeStderr: value => stderr.push(value)
+    disconnect: async () => {
+      throw new Error("postgresql://secret:password@host/db");
+    },
+    run: async () => {
+      throw new Error("signedDocumentObjectKey=secret.pdf");
+    },
+    writeStderr: (value) => stderr.push(value)
   });
   assert.equal(exitCode, 1);
   assert.deepEqual(JSON.parse(stderr[0]), {
@@ -861,10 +955,12 @@ Expected: one commit with no Docker changes.
 ### Task 6: Package the Tool in the API Runtime Image
 
 **Files:**
+
 - Modify: `Dockerfile.api`
 - Modify: `apps/api/test/api-runtime-media.spec.ts`
 
 **Interfaces:**
+
 - Consumes the three script files from Tasks 1–5.
 - Produces an API runtime image containing the core, executor, and CLI entry at `/app/scripts/`.
 
@@ -927,11 +1023,13 @@ Expected: one small Docker/runtime-test commit.
 ### Task 7: Verify the Complete Change and Prepare the Operational Handoff
 
 **Files:**
+
 - Modify only if verification exposes a defect: the exact source or test file responsible for that defect
 - Verify: `docs/superpowers/specs/2026-08-29-stage1-staging-invalid-test-order-retirement-design.zh-CN.md`
 - Verify: `docs/superpowers/plans/2026-08-29-stage1-staging-invalid-test-order-retirement-implementation-plan.md`
 
 **Interfaces:**
+
 - Consumes the completed CLI and runtime packaging.
 - Produces a clean branch, reproducible verification evidence, and commands for a later separately approved Staging dry-run.
 

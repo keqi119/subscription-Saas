@@ -100,9 +100,7 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
         };
       }
       if (classification.evidenceDigest !== expectedEvidenceDigest) {
-        throw new Error(
-          "STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH"
-        );
+        throw new Error("STAGE1_STAGING_INVALID_TEST_ORDER_RETIREMENT_EVIDENCE_DIGEST_MISMATCH");
       }
       if (classification.disposition === "UNCHANGED") {
         return {
@@ -155,146 +153,195 @@ export async function executeStage1StagingInvalidTestOrderRetirement({
 }
 
 export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { operatorId }) {
-  const [
-    order,
-    lease,
-    billingSchedule,
-    vehicle,
-    operatorRow,
-    vehicleDeliveries,
-    contracts,
-    eSignTasks,
-    handovers,
-    handoverWorkOrders,
-    activeOtherOrders,
-    activeOtherLeases,
-    activeRestrictions
-  ] = await Promise.all([
-    db.subscriptionOrder.findUnique({
-      select: {
-        actualDeliveryAt: true,
-        actualReturnAt: true,
-        contractId: true,
-        deletedAt: true,
-        endDate: true,
-        id: true,
-        orderNo: true,
-        orderStatus: true,
-        startDate: true,
-        vehicleId: true
+  const order = await db.subscriptionOrder.findUnique({
+    select: {
+      actualDeliveryAt: true,
+      actualReturnAt: true,
+      contractId: true,
+      deletedAt: true,
+      endDate: true,
+      id: true,
+      orderNo: true,
+      orderStatus: true,
+      startDate: true,
+      vehicleId: true
+    },
+    where: { id: TARGET.orderId }
+  });
+  const lease = await db.lease.findUnique({
+    select: {
+      activatedAt: true,
+      deletedAt: true,
+      id: true,
+      orderId: true,
+      status: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const billingSchedule = await db.billingSchedule.findUnique({
+    select: {
+      cancelledAt: true,
+      id: true,
+      lastGeneratedBillId: true,
+      orderId: true,
+      pauseReason: true,
+      status: true,
+      version: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const vehicle = await db.vehicle.findUnique({
+    select: {
+      currentSalePriceAmount: true,
+      deletedAt: true,
+      id: true,
+      salePriceStatus: true,
+      status: true,
+      vehicleNo: true,
+      vin: true
+    },
+    where: { id: TARGET.vehicleId }
+  });
+  const operatorRow = await db.user.findUnique({
+    select: {
+      deletedAt: true,
+      id: true,
+      roles: {
+        orderBy: { id: "asc" },
+        select: {
+          deletedAt: true,
+          role: { select: { code: true, deletedAt: true, status: true } }
+        }
       },
-      where: { id: TARGET.orderId }
-    }),
-    db.lease.findUnique({
-      select: {
-        activatedAt: true,
-        deletedAt: true,
-        id: true,
-        orderId: true,
-        status: true
-      },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.billingSchedule.findUnique({
-      select: {
-        cancelledAt: true,
-        id: true,
-        lastGeneratedBillId: true,
-        orderId: true,
-        pauseReason: true,
-        status: true,
-        version: true
-      },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.vehicle.findUnique({
-      select: {
-        currentSalePriceAmount: true,
-        deletedAt: true,
-        id: true,
-        salePriceStatus: true,
-        status: true,
-        vehicleNo: true,
-        vin: true
-      },
-      where: { id: TARGET.vehicleId }
-    }),
-    db.user.findUnique({
-      select: {
-        deletedAt: true,
-        id: true,
-        roles: {
-          orderBy: { id: "asc" },
-          select: {
-            deletedAt: true,
-            role: { select: { code: true, deletedAt: true, status: true } }
-          }
-        },
-        status: true
-      },
-      where: { id: operatorId }
-    }),
-    db.vehicleDelivery.findMany({
-      orderBy: { id: "asc" },
-      select: { deliveredAt: true, deliveryStatus: true, id: true },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.contract.findMany({
-      orderBy: { id: "asc" },
-      select: { deletedAt: true, id: true, orderId: true, status: true },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.contractESignTask.findMany({
-      orderBy: { id: "asc" },
-      select: {
-        contractId: true,
-        deletedAt: true,
-        id: true,
-        orderId: true,
-        taskStatus: true
-      },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.vehicleDeliveryHandover.findMany({
-      orderBy: { id: "asc" },
-      select: { archiveStatus: true, deletedAt: true, id: true, orderId: true, status: true },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.vehicleHandoverWorkOrder.findMany({
-      orderBy: { id: "asc" },
-      select: { id: true },
-      where: { orderId: TARGET.orderId }
-    }),
-    db.subscriptionOrder.findMany({
-      orderBy: { id: "asc" },
-      select: { id: true, orderNo: true, orderStatus: true },
-      where: {
-        deletedAt: null,
-        id: { not: TARGET.orderId },
-        orderStatus: { in: NONTERMINAL_ORDER_STATUSES },
-        vehicleId: TARGET.vehicleId
-      }
-    }),
-    db.lease.findMany({
-      orderBy: { id: "asc" },
-      select: { id: true, orderId: true },
-      where: {
-        deletedAt: null,
-        order: { id: { not: TARGET.orderId }, vehicleId: TARGET.vehicleId },
-        status: { in: ["ACTIVE", "RETURN_DUE"] }
-      }
-    }),
-    db.vehicleOperationalRestriction.findMany({
-      orderBy: { id: "asc" },
-      select: { id: true, restrictionType: true, severity: true, status: true },
-      where: { status: "ACTIVE", vehicleId: TARGET.vehicleId }
-    })
-  ]);
+      status: true
+    },
+    where: { id: operatorId }
+  });
+  const vehicleDeliveries = await db.vehicleDelivery.findMany({
+    orderBy: { id: "asc" },
+    select: { deliveredAt: true, deliveryStatus: true, id: true },
+    where: { orderId: TARGET.orderId }
+  });
+  const contracts = await db.contract.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      contractVersionId: true,
+      deletedAt: true,
+      fileId: true,
+      id: true,
+      orderId: true,
+      status: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const eSignTasks = await db.contractESignTask.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      contractId: true,
+      deletedAt: true,
+      id: true,
+      orderId: true,
+      sourceId: true,
+      sourceType: true,
+      taskStatus: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const handovers = await db.vehicleDeliveryHandover.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      archiveStatus: true,
+      deletedAt: true,
+      handoverContractId: true,
+      handoverESignTaskId: true,
+      id: true,
+      orderId: true,
+      signedDocumentFileId: true,
+      sourceDocumentFileId: true,
+      stage1ContractId: true,
+      status: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const handoverWorkOrders = await db.vehicleHandoverWorkOrder.findMany({
+    orderBy: { id: "asc" },
+    select: { handoverId: true, id: true, orderId: true, status: true },
+    where: { orderId: TARGET.orderId }
+  });
+  const evidenceItems = await db.vehicleDeliveryEvidenceItem.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      handoverId: true,
+      id: true,
+      orderId: true,
+      reviewStatus: true,
+      status: true,
+      vehicleDeliveryId: true
+    },
+    where: { orderId: TARGET.orderId }
+  });
+  const activeOtherOrders = await db.subscriptionOrder.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, orderNo: true, orderStatus: true },
+    where: {
+      deletedAt: null,
+      id: { not: TARGET.orderId },
+      orderStatus: { in: NONTERMINAL_ORDER_STATUSES },
+      vehicleId: TARGET.vehicleId
+    }
+  });
+  const activeOtherLeases = await db.lease.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, orderId: true },
+    where: {
+      deletedAt: null,
+      order: { id: { not: TARGET.orderId }, vehicleId: TARGET.vehicleId },
+      status: { not: "COMPLETED" }
+    }
+  });
+  const activeRestrictions = await db.vehicleOperationalRestriction.findMany({
+    orderBy: { id: "asc" },
+    select: { id: true, restrictionType: true, severity: true, status: true },
+    where: { status: "ACTIVE", vehicleId: TARGET.vehicleId }
+  });
 
   const handoverWorkflowJobs = await db.vehicleHandoverWorkflowJob.findMany({
     orderBy: { id: "asc" },
-    select: { handoverId: true, id: true, jobStatus: true, workOrderId: true },
+    select: {
+      eSignTaskId: true,
+      handoverId: true,
+      id: true,
+      jobStatus: true,
+      workOrderId: true
+    },
     where: { workOrderId: { in: handoverWorkOrders.map(({ id }) => id) } }
+  });
+  const evidenceFiles = await db.vehicleDeliveryEvidenceFile.findMany({
+    orderBy: { id: "asc" },
+    select: {
+      evidenceItemId: true,
+      fileId: true,
+      id: true,
+      lifecycleStatus: true,
+      replacedById: true
+    },
+    where: { evidenceItemId: { in: evidenceItems.map(({ id }) => id) } }
+  });
+  const referencedFileIds = [
+    ...contracts.map(({ fileId }) => fileId),
+    ...handovers.flatMap(({ signedDocumentFileId, sourceDocumentFileId }) => [
+      signedDocumentFileId,
+      sourceDocumentFileId
+    ]),
+    ...evidenceFiles.map(({ fileId }) => fileId)
+  ]
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .sort();
+  const fileObjects = await db.fileObject.findMany({
+    orderBy: { id: "asc" },
+    select: { contentSha256: true, createdAt: true, id: true, sizeBytes: true },
+    where: { id: { in: referencedFileIds } }
   });
   const entityIds = [billingSchedule?.id, lease?.id, TARGET.orderId, TARGET.vehicleId].filter(
     Boolean
@@ -312,18 +359,29 @@ export async function loadStage1StagingInvalidTestOrderRetirementSnapshot(db, { 
     },
     where: { entityId: { in: entityIds }, module: RETIREMENT_MODULE }
   });
-  const countEntries = await Promise.all(
-    COUNT_QUERIES.map(async ([field, model]) => [
-      field,
-      await db[model].count({ where: { orderId: TARGET.orderId } })
-    ])
-  );
+  const countEntries = [];
+  for (const [field, model] of COUNT_QUERIES) {
+    const where =
+      field === "assetWorkOrders"
+        ? { OR: [{ orderId: TARGET.orderId }, { vehicleId: TARGET.vehicleId }] }
+        : { orderId: TARGET.orderId };
+    countEntries.push([field, await db[model].count({ where })]);
+  }
 
   return {
     auditLogs,
     billingSchedule,
     blockingCounts: Object.fromEntries(countEntries),
-    evidenceReferences: { contracts, eSignTasks, handovers, handoverWorkflowJobs },
+    evidenceReferences: {
+      contracts,
+      eSignTasks,
+      evidenceFiles,
+      evidenceItems,
+      fileObjects,
+      handovers,
+      handoverWorkOrders,
+      handoverWorkflowJobs
+    },
     lease,
     operator: normalizeOperator(operatorRow),
     order,
@@ -513,10 +571,7 @@ function retirementAuditSnapshot(state, { correlationId, entityId, evidenceDiges
   };
 }
 
-async function assertPostconditions(
-  tx,
-  { classify, evidenceDigest, loadSnapshot, operatorId }
-) {
+async function assertPostconditions(tx, { classify, evidenceDigest, loadSnapshot, operatorId }) {
   const classification = classify(await loadSnapshot(tx, { operatorId }));
   if (
     classification.disposition !== "UNCHANGED" ||

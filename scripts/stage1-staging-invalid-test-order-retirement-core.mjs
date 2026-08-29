@@ -368,7 +368,9 @@ function digestEvidence(snapshot) {
     blockingCounts: safeEntity(snapshot.blockingCounts, BLOCKING_COUNT_FIELDS),
     evidenceReferences: {
       contracts: safeRecords(snapshot.evidenceReferences?.contracts, [
+        "contractVersionId",
         "deletedAt",
+        "fileId",
         "id",
         "orderId",
         "status"
@@ -378,16 +380,51 @@ function digestEvidence(snapshot) {
         "deletedAt",
         "id",
         "orderId",
+        "sourceId",
+        "sourceType",
         "taskStatus"
+      ]),
+      evidenceFiles: safeRecords(snapshot.evidenceReferences?.evidenceFiles, [
+        "evidenceItemId",
+        "fileId",
+        "id",
+        "lifecycleStatus",
+        "replacedById"
+      ]),
+      evidenceItems: safeRecords(snapshot.evidenceReferences?.evidenceItems, [
+        "handoverId",
+        "id",
+        "orderId",
+        "reviewStatus",
+        "status",
+        "vehicleDeliveryId"
+      ]),
+      fileObjects: safeRecords(snapshot.evidenceReferences?.fileObjects, [
+        "contentSha256",
+        "createdAt",
+        "id",
+        "sizeBytes"
       ]),
       handovers: safeRecords(snapshot.evidenceReferences?.handovers, [
         "archiveStatus",
         "deletedAt",
+        "handoverContractId",
+        "handoverESignTaskId",
+        "id",
+        "orderId",
+        "signedDocumentFileId",
+        "sourceDocumentFileId",
+        "stage1ContractId",
+        "status"
+      ]),
+      handoverWorkOrders: safeRecords(snapshot.evidenceReferences?.handoverWorkOrders, [
+        "handoverId",
         "id",
         "orderId",
         "status"
       ]),
       handoverWorkflowJobs: safeRecords(snapshot.evidenceReferences?.handoverWorkflowJobs, [
+        "eSignTaskId",
         "handoverId",
         "id",
         "jobStatus",
@@ -445,7 +482,9 @@ function digestEvidence(snapshot) {
       "id"
     ])
   };
-  return createHash("sha256").update(JSON.stringify(canonical(evidence))).digest("hex");
+  return createHash("sha256")
+    .update(JSON.stringify(canonical(evidence)))
+    .digest("hex");
 }
 
 function safeEntity(record, fields) {
@@ -476,15 +515,15 @@ function canonical(value) {
 function isActiveAdmin(operator) {
   return Boolean(
     operator &&
-      operator.deletedAt == null &&
-      operator.status === "ACTIVE" &&
-      array(operator.roles).some(
-        (role) =>
-          role?.code === "ADMIN" &&
-          role.deletedAt == null &&
-          role.roleDeletedAt == null &&
-          role.roleStatus === "ACTIVE"
-      )
+    operator.deletedAt == null &&
+    operator.status === "ACTIVE" &&
+    array(operator.roles).some(
+      (role) =>
+        role?.code === "ADMIN" &&
+        role.deletedAt == null &&
+        role.roleDeletedAt == null &&
+        role.roleStatus === "ACTIVE"
+    )
   );
 }
 
@@ -499,7 +538,10 @@ function positiveAmount(value) {
 function sharedAuditDigest(audits) {
   const values = new Set(
     array(audits)
-      .flatMap((audit) => [audit?.beforeSnapshot?.evidenceDigest, audit?.afterSnapshot?.evidenceDigest])
+      .flatMap((audit) => [
+        audit?.beforeSnapshot?.evidenceDigest,
+        audit?.afterSnapshot?.evidenceDigest
+      ])
       .filter((value) => SHA256.test(value ?? ""))
   );
   return values.size === 1 ? [...values][0] : null;

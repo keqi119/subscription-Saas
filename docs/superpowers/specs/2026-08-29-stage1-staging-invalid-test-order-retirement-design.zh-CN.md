@@ -1,9 +1,9 @@
 # 阶段 1 Staging 无效测试订单一次性退役设计
 
-> 日期：2026-08-29  
-> 基线：`main@06b5ae7`  
-> 目标环境：仅 Staging  
-> 目标订单：`ORD20260726073922TFHF`  
+> 日期：2026-08-29
+> 基线：`main@06b5ae7`
+> 目标环境：仅 Staging
+> 目标订单：`ORD20260726073922TFHF`
 > 设计选择：采用方案 C 一次性清理；不建设常设历史订单治理入口
 
 ## 1. 背景与问题定义
@@ -58,14 +58,14 @@
 
 工具代码内固化唯一允许目标：
 
-| 字段 | 固定值 |
-| --- | --- |
-| orderNo | `ORD20260726073922TFHF` |
-| orderId | `c392fa54-4784-4e04-ad4a-bfe2fd7e2d10` |
+| 字段      | 固定值                                 |
+| --------- | -------------------------------------- |
+| orderNo   | `ORD20260726073922TFHF`                |
+| orderId   | `c392fa54-4784-4e04-ad4a-bfe2fd7e2d10` |
 | vehicleId | `70565059-1841-4c97-a32c-7bd09ce0b90f` |
-| vehicleNo | `VEH20260713140950K4BT` |
-| VIN | `TESTVINET50000001` |
-| 固定原因 | `STAGING_INVALID_TEST_DATA_RETIREMENT` |
+| vehicleNo | `VEH20260713140950K4BT`                |
+| VIN       | `TESTVINET50000001`                    |
+| 固定原因  | `STAGING_INVALID_TEST_DATA_RETIREMENT` |
 
 CLI 仍要求操作者逐项传入订单和车辆选择器，并与代码内固定值完全匹配。这样既防止误选，也避免把脚本演变成通用业务操作面。
 
